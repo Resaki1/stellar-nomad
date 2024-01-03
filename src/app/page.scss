@@ -6,8 +6,20 @@
   height: 100%;
 }
 
+.fullscreen-button {
+  position: absolute;
+  top: 8vmin;
+  right: 8vmin;
+  border: 1px solid #fff;
+  color: #fff;
+  background: transparent;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  z-index: 1;
+}
+
 .joystick {
   position: absolute;
-  bottom: 4vmin;
-  left: 4vmin;
+  bottom: 8vmin;
+  left: 8vmin;
 }

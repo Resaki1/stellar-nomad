@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Box } from "@react-three/drei";
+import { Box, Stars } from "@react-three/drei";
 import "./page.scss";
 import { Mesh } from "three";
 import { Joystick } from "react-joystick-component";
@@ -51,8 +51,21 @@ const Scene = () => {
     <div className="container">
       <Canvas style={{ background: "black" }}>
         <ambientLight intensity={0.5} />
-        <pointLight position={[10, 10, 10]} />
+        <directionalLight
+          intensity={1}
+          position={[0, 0, 50]} // Position the light source far away
+          color="white" // Color of the star
+        />
         <SpaceShip movement={movement} />
+        <Stars
+          radius={100}
+          depth={50}
+          count={5000}
+          factor={4}
+          saturation={0}
+          fade
+          speed={1}
+        />
       </Canvas>
       <div className="joystick">
         <Joystick
