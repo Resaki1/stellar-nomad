@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Box, Stars } from "@react-three/drei";
 import "./page.scss";
-import { Mesh } from "three";
+import { Euler, Mesh, Quaternion, Vector3 } from "three";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 
@@ -14,18 +14,67 @@ const SpaceShip = ({
   movement: { pitch: number | null; yaw: number | null };
 }) => {
   const shipRef = useRef<Mesh>(null!);
+  const speed = 10;
+  const rotationSpeed = 1;
+  const velocity = useRef(new Vector3(0, 0, 0));
 
-  useEffect(() => {
+  useFrame(({ camera }, delta) => {
     if (shipRef.current) {
-      // Update spaceship position and rotation based on movement
-      // This is a simplified example, you might want to add more complex movement logic
-      shipRef.current.rotation.x = movement.pitch ?? 0;
-      shipRef.current.rotation.y = movement.yaw ?? 0;
+      // Update target roll, yaw, and pitch values only when the joystick is being used
+      if (movement.yaw || movement.pitch) {
+        const pitchAxis = new Vector3(1, 0, 0).applyQuaternion(
+          shipRef.current.quaternion
+        );
+        const rollAxis = new Vector3(0, 0, 1).applyQuaternion(
+          shipRef.current.quaternion
+        );
+        const yawAxis = new Vector3(0, 1, 0).applyQuaternion(
+          shipRef.current.quaternion
+        );
+
+        const pitchRotation = new Quaternion().setFromAxisAngle(
+          pitchAxis,
+          movement.pitch ? -movement.pitch * rotationSpeed * delta : 0
+        );
+        const rollRotation = new Quaternion().setFromAxisAngle(
+          rollAxis,
+          movement.yaw ? -movement.yaw * rotationSpeed * delta : 0
+        );
+        const yawRotation = new Quaternion().setFromAxisAngle(
+          yawAxis,
+          movement.yaw ? -movement.yaw * rotationSpeed * delta : 0
+        );
+
+        shipRef.current.quaternion.multiplyQuaternions(
+          yawRotation.multiply(pitchRotation).multiply(rollRotation),
+          shipRef.current.quaternion
+        );
+      }
+
+      // Calculate the forward direction
+      const direction = new Vector3(0, 0, -1); // This is the forward direction in the spaceship's local space
+      direction.applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
+
+      // Set velocity to direction multiplied by speed
+      velocity.current = direction.multiplyScalar(speed);
+
+      // Update spaceship position based on velocity and delta time
+      shipRef.current.position.add(
+        velocity.current.clone().multiplyScalar(delta)
+      );
+
+      // Calculate the camera's position
+      const offset = new Vector3(0, 2, 10); // Offset relative to the spaceship
+      offset.applyQuaternion(shipRef.current.quaternion); // Rotate the offset by the spaceship's rotation
+      camera.position.copy(shipRef.current.position).add(offset); // Add the offset to the spaceship's position
+
+      // Set the camera's rotation to match the spaceship's rotation
+      camera.quaternion.copy(shipRef.current.quaternion);
     }
-  }, [movement]);
+  });
 
   return (
-    <Box ref={shipRef}>
+    <Box ref={shipRef} args={[1, 1, 2]}>
       <meshStandardMaterial color="gray" />
     </Box>
   );
@@ -49,7 +98,7 @@ const Scene = () => {
 
   return (
     <div className="container">
-      <Canvas style={{ background: "black" }}>
+      <Canvas style={{ background: "black" }} frameloop="always">
         <ambientLight intensity={0.5} />
         <directionalLight
           intensity={1}
