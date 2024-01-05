@@ -2,13 +2,19 @@
 
 import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Stats, StatsGl } from "@react-three/drei";
-import "./Scene.scss";
+import { Stats, StatsGl, useDetectGPU } from "@react-three/drei";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
+import {
+  EffectComposer,
+  Bloom,
+  ToneMapping,
+} from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import SpaceShip from "@/components/Spaceship";
 import StarsComponent from "../Stars/StarsComponent";
 import Star from "../Star/Star";
+import "./Scene.scss";
 
 const Scene = () => {
   const [movement, setMovement] = useState<{
@@ -16,6 +22,7 @@ const Scene = () => {
     pitch: number | null;
   }>({ yaw: 0, pitch: 0 });
 
+  const gpu = useDetectGPU();
   const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
   const handleMove = (event: IJoystickUpdateEvent) => {
@@ -30,8 +37,19 @@ const Scene = () => {
 
   return (
     <div className="container">
-      <Canvas style={{ background: "black" }} frameloop="always">
+      <Canvas style={{ background: "black" }} frameloop="always" shadows>
         {isSafari ? <Stats /> : <StatsGl />}
+        {gpu.tier > 1 && (
+          <EffectComposer disableNormalPass>
+            <Bloom
+              mipmapBlur
+              luminanceThreshold={1}
+              levels={16}
+              intensity={0.02}
+            />
+            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+          </EffectComposer>
+        )}
         <ambientLight intensity={0.5} />
         <Star />
         <SpaceShip movement={movement} />

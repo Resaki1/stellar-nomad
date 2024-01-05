@@ -9,7 +9,7 @@ const zeroVector = new Vector3(0, 0, 0);
 const xAxis = new Vector3(1, 0, 0);
 const yAxis = new Vector3(0, 1, 0);
 const direction = new Vector3(0, 0, 1); // This is the forward direction in the spaceship's local space
-const offsetValue = new Vector3(0, -3, 10); // Offset relative to the spaceship
+const offsetValue = new Vector3(0, -4, 10); // Offset relative to the spaceship
 const offsetVector = offsetValue.clone();
 const rotationQuaternion = new Quaternion();
 rotationQuaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
