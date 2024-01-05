@@ -1,3 +1,5 @@
+"use client";
+
 import Scene from "@/components/Scene/Scene";
 
 const Main = () => {
