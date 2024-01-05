@@ -7,6 +7,7 @@ import "./Scene.scss";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import SpaceShip from "@/components/Spaceship";
+import StarsComponent from "../Stars/StarsComponent";
 
 const Scene = () => {
   const [movement, setMovement] = useState<{
@@ -34,15 +35,7 @@ const Scene = () => {
           color="white" // Color of the star
         />
         <SpaceShip movement={movement} />
-        <Stars
-          radius={100}
-          depth={50}
-          count={5000}
-          factor={4}
-          saturation={0}
-          fade
-          speed={1}
-        />
+        <StarsComponent />
       </Canvas>
       <div className="joystick">
         <Joystick
