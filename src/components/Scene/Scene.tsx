@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Stars } from "@react-three/drei";
+import { Stats, StatsGl } from "@react-three/drei";
 import "./Scene.scss";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
@@ -14,6 +14,8 @@ const Scene = () => {
     yaw: number | null;
     pitch: number | null;
   }>({ yaw: 0, pitch: 0 });
+
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
   const handleMove = (event: IJoystickUpdateEvent) => {
     // Update the spaceship movement based on joystick input
@@ -28,11 +30,12 @@ const Scene = () => {
   return (
     <div className="container">
       <Canvas style={{ background: "black" }} frameloop="always">
+        {isSafari ? <Stats /> : <StatsGl />}
         <ambientLight intensity={0.5} />
-        <directionalLight
-          intensity={1}
-          position={[0, 0, 50]} // Position the light source far away
-          color="white" // Color of the star
+        <directionalLight // Star
+          intensity={12}
+          position={[0, 0, 500]}
+          color="white"
         />
         <SpaceShip movement={movement} />
         <StarsComponent />
