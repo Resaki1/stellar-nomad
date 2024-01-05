@@ -8,6 +8,7 @@ import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import SpaceShip from "@/components/Spaceship";
 import StarsComponent from "../Stars/StarsComponent";
+import Star from "../Star/Star";
 
 const Scene = () => {
   const [movement, setMovement] = useState<{
@@ -32,11 +33,7 @@ const Scene = () => {
       <Canvas style={{ background: "black" }} frameloop="always">
         {isSafari ? <Stats /> : <StatsGl />}
         <ambientLight intensity={0.5} />
-        <directionalLight // Star
-          intensity={12}
-          position={[0, 0, 500]}
-          color="white"
-        />
+        <Star />
         <SpaceShip movement={movement} />
         <StarsComponent />
       </Canvas>
