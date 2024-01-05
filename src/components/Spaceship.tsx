@@ -1,16 +1,18 @@
 import { logLimit } from "@/helpers/math";
-import { Box } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
+import { ShipOne } from "./models/ships/ShipOne";
 
 const quaternion = new Quaternion();
 const zeroVector = new Vector3(0, 0, 0);
 const xAxis = new Vector3(1, 0, 0);
 const yAxis = new Vector3(0, 1, 0);
-const direction = new Vector3(0, 0, -1); // This is the forward direction in the spaceship's local space
-const offsetValue = new Vector3(0, 2, 10); // Offset relative to the spaceship
-const offsetVector = new Vector3(0, 2, 10); // Offset relative to the spaceship
+const direction = new Vector3(0, 0, 1); // This is the forward direction in the spaceship's local space
+const offsetValue = new Vector3(0, -3, 10); // Offset relative to the spaceship
+const offsetVector = offsetValue.clone();
+const rotationQuaternion = new Quaternion();
+rotationQuaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
 
 const SpaceShip = ({
   movement,
@@ -22,7 +24,7 @@ const SpaceShip = ({
   const speed = 10;
   const velocity = useRef(zeroVector);
 
-  const shipHandling = 2; // Speed of visual roll
+  const shipHandling = 1.5; // Speed of visual roll
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
@@ -43,7 +45,7 @@ const SpaceShip = ({
 
         // Clamp visualRoll and visualPitch between -45 and 45 degrees
         visualRoll.current = logLimit(visualRoll.current, Math.PI / 6);
-        visualPitch.current = logLimit(visualPitch.current, Math.PI / 6);
+        visualPitch.current = logLimit(visualPitch.current, Math.PI / 12);
 
         // Increase or decrease yaw and pitch based on joystick input
         movementYaw.current += movement.yaw
@@ -85,19 +87,19 @@ const SpaceShip = ({
 
       // Apply visual roll and pitch to Box mesh's rotation
       modelRef.current.rotation.set(
-        -visualPitch.current,
+        visualPitch.current,
         modelRef.current.rotation.y,
-        -visualRoll.current
+        visualRoll.current
       );
 
       // Apply yaw and pitch to ship's rotation using quaternions
       quaternion.setFromAxisAngle(yAxis, -movementYaw.current * delta);
       shipRef.current.quaternion.multiply(quaternion);
-      quaternion.setFromAxisAngle(xAxis, -movementPitch.current * delta);
+      quaternion.setFromAxisAngle(xAxis, movementPitch.current * delta);
       shipRef.current.quaternion.multiply(quaternion);
 
       // Calculate the forward direction
-      direction.set(0, 0, -1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
+      direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
 
       // Set velocity to direction multiplied by speed
       velocity.current = direction.multiplyScalar(speed);
@@ -111,18 +113,21 @@ const SpaceShip = ({
       offsetVector
         .copy(offsetValue)
         .applyQuaternion(shipRef.current.quaternion); // Rotate the offset by the spaceship's rotation
-      camera.position.copy(shipRef.current.position).add(offsetVector); // Add the offset to the spaceship's position
+      camera.position.copy(shipRef.current.position).sub(offsetVector); // Subtract the offset from the spaceship's position
 
       // Set the camera's rotation to match the spaceship's rotation
       camera.quaternion.copy(shipRef.current.quaternion);
+
+      // Multiply the camera's quaternion by the rotation quaternion
+      camera.quaternion.multiply(rotationQuaternion);
     }
   });
 
   return (
     <mesh ref={shipRef}>
-      <Box ref={modelRef} args={[1, 1, 2]}>
-        <meshStandardMaterial color="gray" />
-      </Box>
+      <mesh ref={modelRef}>
+        <ShipOne />
+      </mesh>
     </mesh>
   );
 };
