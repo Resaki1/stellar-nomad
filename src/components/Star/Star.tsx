@@ -1,7 +1,9 @@
 import { Sphere } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
-import { Mesh, MeshPhongMaterial, MeshStandardMaterial } from "three";
+import { Mesh, MeshStandardMaterial, Vector3 } from "three";
+
+const position = new Vector3(0, 0, 500);
 
 const Star = () => {
   const star = useRef<Mesh>(null!);
@@ -16,12 +18,12 @@ const Star = () => {
     <mesh ref={star}>
       <directionalLight // Star
         intensity={12}
-        position={[0, 0, 500]}
+        position={position}
         color="white"
       />
       <Sphere
         args={[5, 128, 128]}
-        position={[0, 0, 500]}
+        position={position}
         material={
           new MeshStandardMaterial({
             color: "white",
