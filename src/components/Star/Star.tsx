@@ -31,7 +31,7 @@ const Star = () => {
         />
       </Sphere>
       <Billboard>
-        <Image url="/assets/star.png" scale={32} transparent />
+        <Image url="/assets/star.png" scale={16} transparent />
       </Billboard>
     </mesh>
   );

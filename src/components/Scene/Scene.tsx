@@ -37,16 +37,16 @@ const Scene = () => {
 
   return (
     <div className="container">
-      <Canvas style={{ background: "black" }} frameloop="always" shadows>
+      <Canvas
+        style={{ background: "black" }}
+        frameloop="always"
+        shadows
+        dpr={[1, 2]}
+      >
         {isSafari ? <Stats /> : <StatsGl />}
         {gpu.tier > 1 && (
           <EffectComposer disableNormalPass>
-            <Bloom
-              mipmapBlur
-              luminanceThreshold={1}
-              levels={16}
-              intensity={0.02}
-            />
+            <Bloom mipmapBlur intensity={0.02} />
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           </EffectComposer>
         )}
