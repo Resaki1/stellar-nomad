@@ -23,7 +23,9 @@ const Scene = () => {
   }>({ yaw: 0, pitch: 0 });
 
   const gpu = useDetectGPU();
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  const isSafari = navigator
+    ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+    : false;
 
   const handleMove = (event: IJoystickUpdateEvent) => {
     // Update the spaceship movement based on joystick input
