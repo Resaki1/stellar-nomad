@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { Mesh, Vector3 } from "three";
 
-const position = new Vector3(0, 0, 500);
+const position = new Vector3(0, 0, 512);
 
 const Star = () => {
   const star = useRef<Mesh>(null!);
@@ -16,24 +16,28 @@ const Star = () => {
   });
 
   return (
-    <mesh ref={star} position={position}>
+    <>
       <directionalLight // Star
+        position={position}
         intensity={12}
         color="white"
         castShadow
+        scale={512}
       />
-      <Sphere args={[5, 128, 128]}>
-        <meshStandardMaterial
-          color="white"
-          emissive="white"
-          emissiveIntensity={512}
-          toneMapped={false}
-        />
-      </Sphere>
-      <Billboard>
-        <Image url="/assets/star.png" scale={16} transparent />
-      </Billboard>
-    </mesh>
+      <mesh ref={star} position={position}>
+        <Billboard>
+          <Image url="/assets/star.png" scale={64} transparent />
+        </Billboard>
+        <Sphere args={[16, 16, 16]}>
+          <meshStandardMaterial
+            color="white"
+            emissive="white"
+            emissiveIntensity={512}
+            toneMapped={false}
+          />
+        </Sphere>
+      </mesh>
+    </>
   );
 };
 

@@ -15,6 +15,7 @@ import SpaceShip from "@/components/Spaceship";
 import StarsComponent from "../Stars/StarsComponent";
 import Star from "../Star/Star";
 import "./Scene.scss";
+import Planet from "../Planet/Planet";
 
 const Scene = () => {
   const [movement, setMovement] = useState<{
@@ -54,6 +55,7 @@ const Scene = () => {
         )}
         <ambientLight intensity={0.5} />
         <Star />
+        <Planet />
         <SpaceShip movement={movement} />
         <StarsComponent />
       </Canvas>
