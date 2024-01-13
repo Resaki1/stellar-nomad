@@ -1,6 +1,6 @@
 import { Sphere, shaderMaterial, useTexture } from "@react-three/drei";
 import { extend, useFrame } from "@react-three/fiber";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import {
   AdditiveBlending,
   DoubleSide,
@@ -104,7 +104,7 @@ const Planet = () => {
 
   return (
     <group position={position} rotation={rotation} ref={planet}>
-      <Sphere args={[81, 48, 48]} ref={atmosphere}>
+      <Sphere args={[81, 64, 64]} ref={atmosphere}>
         <atmosphereShaderMaterial
           attach="material"
           args={[
@@ -124,7 +124,7 @@ const Planet = () => {
           specular={"lightblue"}
         />
       </Sphere>
-      <Sphere args={[80.2, 48, 48]}>
+      <Sphere args={[80.2, 64, 64]}>
         <meshPhongMaterial {...clouds} transparent alphaTest={0} />
       </Sphere>
     </group>
@@ -133,4 +133,4 @@ const Planet = () => {
 
 useTexture.preload("/textures/earth_day.webp");
 
-export default Planet;
+export default memo(Planet);

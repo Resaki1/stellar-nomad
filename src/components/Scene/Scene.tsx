@@ -10,7 +10,7 @@ import {
   Bloom,
   ToneMapping,
 } from "@react-three/postprocessing";
-import { ToneMappingMode } from "postprocessing";
+import { KernelSize, ToneMappingMode } from "postprocessing";
 import SpaceShip from "@/components/Spaceship";
 import StarsComponent from "../Stars/StarsComponent";
 import Star from "../Star/Star";
@@ -47,9 +47,14 @@ const Scene = () => {
         dpr={[1, 2]}
       >
         {isSafari ? <Stats /> : <StatsGl />}
-        {gpu.tier > 1 && (
+        {(gpu.tier > 1 || false) && (
           <EffectComposer disableNormalPass>
-            <Bloom mipmapBlur intensity={0.02} />
+            <Bloom
+              mipmapBlur
+              intensity={0.02}
+              luminanceThreshold={0}
+              kernelSize={KernelSize.VERY_SMALL}
+            />
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           </EffectComposer>
         )}
