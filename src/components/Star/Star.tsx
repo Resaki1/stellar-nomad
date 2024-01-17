@@ -29,7 +29,7 @@ const Star = () => {
           <Image url="/assets/star.png" scale={64} transparent />
         </Billboard>
         <Sphere args={[16, 16, 16]}>
-          <meshStandardMaterial
+          <meshPhongMaterial
             color="white"
             emissive="white"
             emissiveIntensity={512}

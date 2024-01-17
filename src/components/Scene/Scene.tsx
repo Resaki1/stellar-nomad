@@ -45,7 +45,6 @@ const Scene = () => {
         style={{ background: "black" }}
         camera={{ far: 10000 }}
         frameloop="always"
-        shadows
         dpr={[1, 2]}
       >
         {isSafari ? <Stats /> : <StatsGl />}

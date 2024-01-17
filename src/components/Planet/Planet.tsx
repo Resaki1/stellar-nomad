@@ -122,7 +122,7 @@ const Planet = () => {
       <Sphere args={[size, 48, 48]}>
         <meshPhongMaterial
           {...texture}
-          shininess={100}
+          shininess={5}
           specular={"lightblue"}
           side={FrontSide}
         />
