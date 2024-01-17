@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Stats, StatsGl, useDetectGPU } from "@react-three/drei";
+import {
+  AdaptiveDpr,
+  AdaptiveEvents,
+  Stats,
+  StatsGl,
+  useDetectGPU,
+} from "@react-three/drei";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import {
@@ -25,6 +31,8 @@ const Scene = () => {
   }>({ yaw: 0, pitch: 0 });
 
   const gpu = useDetectGPU();
+  const bloomDIsabled = false;
+
   const isSafari = navigator
     ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
     : false;
@@ -45,10 +53,10 @@ const Scene = () => {
         style={{ background: "black" }}
         camera={{ far: 10000 }}
         frameloop="always"
-        dpr={[1, 2]}
+        dpr={[0.5, 2]}
       >
         {isSafari ? <Stats /> : <StatsGl />}
-        {(gpu.tier > 1 || false) && (
+        {(gpu.tier > 1 || bloomDIsabled) && (
           <EffectComposer disableNormalPass>
             <Bloom
               mipmapBlur
@@ -60,11 +68,13 @@ const Scene = () => {
           </EffectComposer>
         )}
         <ambientLight intensity={0.5} />
-        <Star />
+        <Star bloom={gpu.tier > 1 || bloomDIsabled} />
         <Planet />
         <SpaceShip movement={movement} />
         <StarsComponent />
         <AsteroidField />
+        <AdaptiveDpr pixelated />
+        <AdaptiveEvents />
       </Canvas>
       <div className="joystick">
         <Joystick

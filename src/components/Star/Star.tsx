@@ -6,7 +6,11 @@ import { FrontSide, Mesh, Vector3 } from "three";
 
 const position = new Vector3(0, 0, 512);
 
-const Star = () => {
+type StarProps = {
+  bloom: boolean;
+};
+
+const Star = ({ bloom }: StarProps) => {
   const star = useRef<Mesh>(null!);
 
   useFrame(({ camera }) => {
@@ -25,9 +29,11 @@ const Star = () => {
         scale={512}
       />
       <mesh ref={star} position={position}>
-        <Billboard>
-          <Image url="/assets/star.png" scale={64} transparent />
-        </Billboard>
+        {!bloom && (
+          <Billboard>
+            <Image url="/assets/star.png" scale={82} transparent />
+          </Billboard>
+        )}
         <Sphere args={[16, 16, 16]}>
           <meshPhongMaterial
             color="white"
