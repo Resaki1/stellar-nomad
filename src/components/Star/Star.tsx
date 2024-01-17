@@ -2,7 +2,7 @@
 import { Billboard, Image, Sphere } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
-import { Mesh, Vector3 } from "three";
+import { FrontSide, Mesh, Vector3 } from "three";
 
 const position = new Vector3(0, 0, 512);
 
@@ -34,6 +34,8 @@ const Star = () => {
             emissive="white"
             emissiveIntensity={512}
             toneMapped={false}
+            side={FrontSide}
+            depthTest={true}
           />
         </Sphere>
       </mesh>

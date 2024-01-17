@@ -5,6 +5,7 @@ import {
   AdditiveBlending,
   DoubleSide,
   Euler,
+  FrontSide,
   Group,
   Mesh,
   Vector3,
@@ -80,9 +81,10 @@ void main() {
 
 extend({ AtmosphereShaderMaterial });
 
-const position = new Vector3(100, 0, -100);
+const position = new Vector3(1000, 0, -1000);
 const rotation = new Euler(1.1 * Math.PI, 1.8 * Math.PI, 0.8 * Math.PI);
 const sunDirection = new Vector3(0, 0, -1);
+const size = 400;
 
 const Planet = () => {
   const planet = useRef<Group>(null!);
@@ -104,7 +106,7 @@ const Planet = () => {
 
   return (
     <group position={position} rotation={rotation} ref={planet}>
-      <Sphere args={[81, 64, 64]} ref={atmosphere}>
+      {/* <Sphere args={[81, 64, 64]} ref={atmosphere}>
         <atmosphereShaderMaterial
           attach="material"
           args={[
@@ -116,15 +118,16 @@ const Planet = () => {
           depthWrite={false}
           blending={AdditiveBlending}
         />
-      </Sphere>
-      <Sphere args={[80, 48, 48]}>
+      </Sphere> */}
+      <Sphere args={[size, 48, 48]}>
         <meshPhongMaterial
           {...texture}
           shininess={100}
           specular={"lightblue"}
+          side={FrontSide}
         />
       </Sphere>
-      <Sphere args={[80.2, 64, 64]}>
+      <Sphere args={[size * 1.01, 64, 64]}>
         <meshPhongMaterial {...clouds} transparent alphaTest={0} />
       </Sphere>
     </group>

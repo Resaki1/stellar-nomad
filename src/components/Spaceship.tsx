@@ -21,7 +21,7 @@ const SpaceShip = ({
 }) => {
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
-  const speed = 10;
+  const speed = 25;
   const velocity = useRef(zeroVector);
 
   const shipHandling = 1.5; // Speed of visual roll

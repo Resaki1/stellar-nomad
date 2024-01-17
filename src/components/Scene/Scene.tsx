@@ -16,6 +16,7 @@ import StarsComponent from "../Stars/StarsComponent";
 import Star from "../Star/Star";
 import "./Scene.scss";
 import Planet from "../Planet/Planet";
+import AsteroidField from "../Asteroids/AsteroidField";
 
 const Scene = () => {
   const [movement, setMovement] = useState<{
@@ -42,6 +43,7 @@ const Scene = () => {
     <div className="container">
       <Canvas
         style={{ background: "black" }}
+        camera={{ far: 10000 }}
         frameloop="always"
         shadows
         dpr={[1, 2]}
@@ -63,6 +65,7 @@ const Scene = () => {
         <Planet />
         <SpaceShip movement={movement} />
         <StarsComponent />
+        <AsteroidField />
       </Canvas>
       <div className="joystick">
         <Joystick
