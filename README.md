@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Stellar Nomad
 
-## Getting Started
+![Stellar Nomad Screenshot](/screenshot.webp)
 
-First, run the development server:
+Stellar Nomad is a free and open-source browser game that invites you into a boundless journey through space. Inspired by the imaginative expanses of the Bobiverse books and echoing the explorative spirit of games like No Man's Sky and Galaxy on Fire, Stellar Nomad offers a unique blend of space exploration, resource farming, automation, and potential combat.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+[Play the Demo](https://stellar-nomad.vercel.app/)
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Features
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Start Your Journey**: Begin as an AI piloting a spaceship in Earth's orbit.
+- **Mine for Survival**: Harvest resources from asteroids to build and expand your space station.
+- **Advanced Crafting**: Upgrade your ship and craft advanced technology.
+- **Explore the Solar System**: Venture beyond Earth to discover new planets and mysteries.
+- **Infinite Universe**: A planned feature to procedurally generate star systems for endless exploration.
+- **Multiplayer**: Future plans include multiplayer support for shared adventures and competitive resource battles.
 
-This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
+## Technologies
 
-## Learn More
+Stellar Nomad is developed using TypeScript, React Three Fiber, and Next.js.
 
-To learn more about Next.js, take a look at the following resources:
+## Contributing
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Stellar Nomad is a free and open-source project in its early stages, and contributions are warmly welcomed. Whether it's feature development, bug fixes, feature requests, or any other improvements, your help can make a significant impact.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+## Development Status
 
-## Deploy on Vercel
+This game is currently in early development. Support and feedback are very appreciated.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Get Involved
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+If you're as passionate about space exploration and game development as I am, I'd love for you to contribute. Check out the [issues](https://github.com/Resaki1/stellar-nomad/issues) or [discussions](https://github.com/Resaki1/stellar-nomad/discussions) to start.
+
+---
+
+Note: References to other games and books are for thematic inspiration purposes only.
