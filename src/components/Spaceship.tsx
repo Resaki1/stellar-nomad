@@ -4,6 +4,7 @@ import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { Movement } from "./Navigation/Navigation";
+import { lerp } from "three/src/math/MathUtils.js";
 
 const quaternion = new Quaternion();
 const zeroVector = new Vector3(0, 0, 0);
@@ -27,6 +28,7 @@ const SpaceShip = ({ movement }: { movement: Movement }) => {
   const movementPitch = useRef(0); // Current yaw
   const visualRoll = useRef(0); // Current visual roll
   const visualPitch = useRef(0); // Current visual pitch
+  const currentSpeed = useRef(0);
 
   useFrame(({ camera }, delta) => {
     if (shipRef.current && modelRef.current) {
@@ -98,10 +100,10 @@ const SpaceShip = ({ movement }: { movement: Movement }) => {
       // Calculate the forward direction
       direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
 
+      // Smoothly transition currentSpeed towards movement.speed
+      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.05);
       // Set velocity to direction multiplied by speed
-      velocity.current = direction.multiplyScalar(
-        speed * (movement.speed ?? 1)
-      );
+      velocity.current = direction.multiplyScalar(speed * currentSpeed.current);
 
       // Update spaceship position based on velocity and delta time
       shipRef.current.position.add(

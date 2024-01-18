@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { FrontSide, Mesh, Vector3 } from "three";
 
-const position = new Vector3(0, 0, 512);
+const position = new Vector3(0, 0, 19000);
 
 type StarProps = {
   bloom: boolean;
@@ -31,10 +31,10 @@ const Star = ({ bloom }: StarProps) => {
       <mesh ref={star} position={position}>
         {!bloom && (
           <Billboard>
-            <Image url="/assets/star.png" scale={82} transparent />
+            <Image url="/assets/star.png" scale={2048} transparent />
           </Billboard>
         )}
-        <Sphere args={[16, 16, 16]}>
+        <Sphere args={[512, 16, 16]}>
           <meshPhongMaterial
             color="white"
             emissive="white"

@@ -42,7 +42,7 @@ const Scene = () => {
     <div className="container">
       <Canvas
         style={{ background: "black" }}
-        camera={{ far: 20000 }}
+        camera={{ far: 200000 }}
         frameloop="always"
         dpr={[0.5, 2]}
       >
