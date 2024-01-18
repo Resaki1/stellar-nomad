@@ -81,10 +81,10 @@ void main() {
 
 extend({ AtmosphereShaderMaterial });
 
-const position = new Vector3(1000, 0, -1000);
+const position = new Vector3(10000, 0, -10000);
 const rotation = new Euler(1.1 * Math.PI, 1.8 * Math.PI, 0.8 * Math.PI);
 const sunDirection = new Vector3(0, 0, -1);
-const size = 400;
+const size = 4000;
 
 const Planet = () => {
   const planet = useRef<Group>(null!);

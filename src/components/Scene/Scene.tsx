@@ -51,7 +51,7 @@ const Scene = () => {
     <div className="container">
       <Canvas
         style={{ background: "black" }}
-        camera={{ far: 10000 }}
+        camera={{ far: 20000 }}
         frameloop="always"
         dpr={[0.5, 2]}
       >
@@ -68,11 +68,11 @@ const Scene = () => {
           </EffectComposer>
         )}
         <ambientLight intensity={0.5} />
-        <Star bloom={gpu.tier > 1 || bloomDIsabled} />
-        <Planet />
         <SpaceShip movement={movement} />
         <StarsComponent />
         <AsteroidField />
+        <Planet />
+        <Star bloom={gpu.tier > 1 || bloomDIsabled} />
         <AdaptiveDpr pixelated />
         <AdaptiveEvents />
       </Canvas>
