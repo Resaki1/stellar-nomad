@@ -1,6 +1,6 @@
 # Stellar Nomad
 
-![Stellar Nomad Screenshot](/screenshot.webp)
+![Stellar Nomad Screenshot](https://stellar-nomad.vercel.app/screenshot.webp)
 
 Stellar Nomad is a free and open-source browser game that invites you into a boundless journey through space. Inspired by the imaginative expanses of the Bobiverse books and echoing the explorative spirit of games like No Man's Sky and Galaxy on Fire, Stellar Nomad offers a unique blend of space exploration, resource farming, automation, and potential combat.
 
