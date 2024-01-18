@@ -5,10 +5,10 @@ import { Euler, Vector3 } from "three";
 const fieldPosition = new Vector3(0, 0, 400);
 
 const AsteroidField = () => {
-  const width = 500;
-  const depth = 250;
+  const width = 1000;
+  const depth = 500;
   const height = 250;
-  const scale = 20;
+  const scale = 25;
   const probability = 0.0001;
   // Precompute the positions
   const positions = useMemo(() => {
