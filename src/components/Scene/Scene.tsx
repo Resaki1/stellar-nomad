@@ -9,8 +9,6 @@ import {
   StatsGl,
   useDetectGPU,
 } from "@react-three/drei";
-import { Joystick } from "react-joystick-component";
-import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import {
   EffectComposer,
   Bloom,
@@ -23,12 +21,14 @@ import Star from "../Star/Star";
 import "./Scene.scss";
 import Planet from "../Planet/Planet";
 import AsteroidField from "../Asteroids/AsteroidField";
+import Navigation, { Movement } from "../Navigation/Navigation";
 
 const Scene = () => {
-  const [movement, setMovement] = useState<{
-    yaw: number | null;
-    pitch: number | null;
-  }>({ yaw: 0, pitch: 0 });
+  const [movement, setMovement] = useState<Movement>({
+    yaw: 0,
+    pitch: 0,
+    speed: 1,
+  });
 
   const gpu = useDetectGPU();
   const bloomDIsabled = false;
@@ -37,16 +37,6 @@ const Scene = () => {
     typeof window !== "undefined" && navigator
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
       : false;
-
-  const handleMove = (event: IJoystickUpdateEvent) => {
-    // Update the spaceship movement based on joystick input
-    setMovement({ yaw: event.x, pitch: event.y });
-  };
-
-  const handleStop = () => {
-    // Reset the spaceship movement when the joystick is released
-    setMovement({ yaw: 0, pitch: 0 });
-  };
 
   return (
     <div className="container">
@@ -77,16 +67,7 @@ const Scene = () => {
         <AdaptiveDpr pixelated />
         <AdaptiveEvents />
       </Canvas>
-      <div className="joystick">
-        <Joystick
-          size={100}
-          baseColor="#111111"
-          stickColor="#666666"
-          move={handleMove}
-          stop={handleStop}
-          pos={{ x: 0, y: 0 }}
-        />
-      </div>
+      <Navigation setMovement={setMovement} />
     </div>
   );
 };

@@ -3,6 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
+import { Movement } from "./Navigation/Navigation";
 
 const quaternion = new Quaternion();
 const zeroVector = new Vector3(0, 0, 0);
@@ -14,14 +15,10 @@ const offsetVector = offsetValue.clone();
 const rotationQuaternion = new Quaternion();
 rotationQuaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
 
-const SpaceShip = ({
-  movement,
-}: {
-  movement: { pitch: number | null; yaw: number | null };
-}) => {
+const SpaceShip = ({ movement }: { movement: Movement }) => {
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
-  const speed = 25;
+  const speed = 100;
   const velocity = useRef(zeroVector);
 
   const shipHandling = 1.5; // Speed of visual roll
@@ -102,7 +99,9 @@ const SpaceShip = ({
       direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
 
       // Set velocity to direction multiplied by speed
-      velocity.current = direction.multiplyScalar(speed);
+      velocity.current = direction.multiplyScalar(
+        speed * (movement.speed ?? 1)
+      );
 
       // Update spaceship position based on velocity and delta time
       shipRef.current.position.add(

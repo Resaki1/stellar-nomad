@@ -1,0 +1,46 @@
+.navigation {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100%;
+}
+
+.acceleration {
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.acceleration__indicator {
+  opacity: 0;
+  transform: translateX(-24px);
+  transition: opacity 0.5s, transform 0.5s cubic-bezier(0.075, 1.22, 0.165, 1);
+  position: absolute;
+  top: 10vh;
+  left: 16px;
+  width: 8px;
+  height: 30vh;
+
+  &--show {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.acceleration__bar-container {
+  background: gray;
+  border-radius: 16px;
+  position: relative;
+  height: 100%;
+}
+
+.acceleration__bar {
+  /* Initial state */
+  position: absolute;
+  bottom: 0;
+  background: white;
+  border-radius: 16px;
+  height: 100%;
+  width: 100%;
+}
