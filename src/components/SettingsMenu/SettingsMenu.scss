@@ -34,25 +34,35 @@ button {
 }
 
 .settings {
+  box-sizing: border-box;
   position: absolute;
   height: 100%;
   width: 100%;
+  max-height: 100vh;
+  overflow-y: auto;
   top: 0;
   left: 0;
   background: rgba(0, 0, 0, 0.1);
   backdrop-filter: blur(8px);
   display: flex;
   flex-direction: column;
-  justify-content: center;
   align-items: center;
+  padding-top: min(64px, 4vh);
 }
 
 .settings__menu {
+  position: relative;
+  width: min(500px, 90%);
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   gap: 32px;
+  margin-bottom: 32px;
+}
+
+.settings__menu-title {
+  margin-top: 0;
 }
 
 .settings__menu-button {
@@ -61,4 +71,12 @@ button {
   min-width: 128px;
   font-size: 1rem;
   font-weight: bold;
+
+  &--back {
+    //align-self: self-start;
+    position: absolute;
+    top: 0;
+    left: 0;
+    min-width: 64px;
+  }
 }
