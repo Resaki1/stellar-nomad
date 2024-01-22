@@ -22,6 +22,7 @@ import "./Scene.scss";
 import Planet from "../Planet/Planet";
 import AsteroidField from "../Asteroids/AsteroidField";
 import Navigation, { Movement } from "../Navigation/Navigation";
+import SettingsMenu from "../SettingsMenu/SettingsMenu";
 
 const Scene = () => {
   const [movement, setMovement] = useState<Movement>({
@@ -68,6 +69,7 @@ const Scene = () => {
         <AdaptiveEvents />
       </Canvas>
       <Navigation setMovement={setMovement} />
+      <SettingsMenu />
     </div>
   );
 };

@@ -127,7 +127,7 @@ const Planet = () => {
           side={FrontSide}
         />
       </Sphere>
-      <Sphere args={[size * 1.01, 64, 64]}>
+      <Sphere args={[size * 1.02, 64, 64]}>
         <meshPhongMaterial {...clouds} transparent alphaTest={0} />
       </Sphere>
     </group>
