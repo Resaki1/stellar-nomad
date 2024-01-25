@@ -2,6 +2,7 @@ import { useState } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
 import { SetAtom, Settings, settingsAtom } from "@/store/store";
+import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -18,41 +19,41 @@ const renderSubMenu = (
     case SubMenu.Graphics:
       return (
         <>
-          <button
-            className="settings__menu-button"
-            onClick={() =>
-              setSettings((prev) => ({ ...prev, bloom: !prev.bloom }))
+          <SettingsCheckbox
+            active={settings.bloom}
+            onChange={() =>
+              setSettings((prev) => ({
+                ...prev,
+                bloom: !prev.bloom,
+              }))
             }
-          >
-            bloom
-          </button>
-          <button
-            className="settings__menu-button"
-            onClick={() =>
+            label="bloom"
+          />
+          <SettingsCheckbox
+            active={settings.toneMapping}
+            onChange={() =>
               setSettings((prev) => ({
                 ...prev,
                 toneMapping: !prev.toneMapping,
               }))
             }
-          >
-            filmic tone mapping
-          </button>
+            label="filmic tone mapping"
+          />
         </>
       );
     case SubMenu.Controls:
       return (
         <>
-          <button
-            className="settings__menu-button"
-            onClick={() =>
+          <SettingsCheckbox
+            active={settings.invertPitch}
+            onChange={() =>
               setSettings((prev) => ({
                 ...prev,
                 invertPitch: !prev.invertPitch,
               }))
             }
-          >
-            invert pitch
-          </button>
+            label="invert pitch"
+          />
         </>
       );
     case SubMenu.Dev:

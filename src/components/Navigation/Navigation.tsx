@@ -25,7 +25,7 @@ const Navigation = ({ setMovement }: NavigationProps) => {
   const handleMove = (event: IJoystickUpdateEvent) => {
     const pitch = () => {
       if (!event.y) return null;
-      return settings.invertPitch ? -1 * event.y : event.y;
+      return settings.invertPitch ? event.y : -1 * event.y;
     };
     // Update the spaceship movement based on joystick input
     setMovement((prevMovement) => ({
