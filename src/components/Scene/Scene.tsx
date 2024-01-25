@@ -23,8 +23,12 @@ import Planet from "../Planet/Planet";
 import AsteroidField from "../Asteroids/AsteroidField";
 import Navigation, { Movement } from "../Navigation/Navigation";
 import SettingsMenu from "../SettingsMenu/SettingsMenu";
+import { useAtom } from "jotai";
+import { bloomAtom, settingsAtom, toneMappingAtom } from "@/store/store";
 
 const Scene = () => {
+  const [bloomEnabled] = useAtom(bloomAtom);
+  const [toneMappingEnabled] = useAtom(toneMappingAtom);
   const [movement, setMovement] = useState<Movement>({
     yaw: 0,
     pitch: 0,
@@ -32,7 +36,6 @@ const Scene = () => {
   });
 
   const gpu = useDetectGPU();
-  const bloomDIsabled = false;
 
   const isSafari =
     typeof window !== "undefined" && navigator
@@ -48,23 +51,29 @@ const Scene = () => {
         dpr={[0.5, 2]}
       >
         {isSafari ? <Stats /> : <StatsGl />}
-        {(gpu.tier > 1 || bloomDIsabled) && (
-          <EffectComposer disableNormalPass>
+        <EffectComposer disableNormalPass>
+          {bloomEnabled ? (
             <Bloom
               mipmapBlur
               intensity={0.02}
               luminanceThreshold={0}
               kernelSize={KernelSize.VERY_SMALL}
             />
+          ) : (
+            <></>
+          )}
+          {toneMappingEnabled ? (
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-          </EffectComposer>
-        )}
+          ) : (
+            <></>
+          )}
+        </EffectComposer>
         <ambientLight intensity={0.5} />
         <SpaceShip movement={movement} />
         <StarsComponent />
         <AsteroidField />
         <Planet />
-        <Star bloom={gpu.tier > 1 || bloomDIsabled} />
+        <Star bloom={bloomEnabled} />
         <AdaptiveDpr pixelated />
         <AdaptiveEvents />
       </Canvas>

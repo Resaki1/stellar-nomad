@@ -1,5 +1,13 @@
 import { useState } from "react";
 import "./SettingsMenu.scss";
+import { SetStateAction, useAtom } from "jotai";
+import {
+  SetAtom,
+  Settings,
+  bloomAtom,
+  settingsAtom,
+  toneMappingAtom,
+} from "@/store/store";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -7,12 +15,29 @@ enum SubMenu {
   Dev = "dev",
 }
 
-const renderSubMenu = (subMenu: SubMenu) => {
+const renderSubMenu = (
+  subMenu: SubMenu,
+  bloom: boolean,
+  toneMapping: boolean,
+  setBloom: SetAtom<[SetStateAction<boolean>], void>,
+  setToneMapping: SetAtom<[SetStateAction<boolean>], void>
+) => {
   switch (subMenu) {
     case SubMenu.Graphics:
       return (
         <>
-          <button className="settings__menu-button">bloom</button>
+          <button
+            className="settings__menu-button"
+            onClick={() => setBloom(!bloom)}
+          >
+            bloom
+          </button>
+          <button
+            className="settings__menu-button"
+            onClick={() => setToneMapping(!toneMapping)}
+          >
+            filmic tone mapping
+          </button>
         </>
       );
     case SubMenu.Controls:
@@ -31,6 +56,8 @@ const renderSubMenu = (subMenu: SubMenu) => {
 };
 
 const SettingsMenu = () => {
+  const [bloom, setBloom] = useAtom(bloomAtom);
+  const [toneMapping, setToneMapping] = useAtom(toneMappingAtom);
   const [isOpen, setIsOpen] = useState(false);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
 
@@ -71,7 +98,13 @@ const SettingsMenu = () => {
                 >
                   {"<"} back
                 </button>
-                {renderSubMenu(activeSubMenu)}
+                {renderSubMenu(
+                  activeSubMenu,
+                  bloom,
+                  toneMapping,
+                  setBloom,
+                  setToneMapping
+                )}
               </>
             )}
 
