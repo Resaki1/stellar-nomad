@@ -3,6 +3,8 @@ import { useGesture } from "@use-gesture/react";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./Navigation.scss";
+import { useAtomValue } from "jotai";
+import { settingsAtom } from "@/store/store";
 
 export type Movement = {
   yaw: number | null;
@@ -15,15 +17,20 @@ type NavigationProps = {
 };
 
 const Navigation = ({ setMovement }: NavigationProps) => {
+  const settings = useAtomValue(settingsAtom);
   const [acceleration, setAcceleration] = useState(0.5);
   const [showBar, setShowBar] = useState(false);
   const timeoutId = useRef<NodeJS.Timeout | null>(null);
 
   const handleMove = (event: IJoystickUpdateEvent) => {
+    const pitch = () => {
+      if (!event.y) return null;
+      return settings.invertPitch ? -1 * event.y : event.y;
+    };
     // Update the spaceship movement based on joystick input
     setMovement((prevMovement) => ({
       yaw: event.x,
-      pitch: event.y,
+      pitch: pitch(),
       speed: prevMovement.speed,
     }));
   };

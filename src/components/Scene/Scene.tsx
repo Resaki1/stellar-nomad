@@ -23,12 +23,11 @@ import Planet from "../Planet/Planet";
 import AsteroidField from "../Asteroids/AsteroidField";
 import Navigation, { Movement } from "../Navigation/Navigation";
 import SettingsMenu from "../SettingsMenu/SettingsMenu";
-import { useAtom } from "jotai";
-import { bloomAtom, settingsAtom, toneMappingAtom } from "@/store/store";
+import { settingsAtom } from "@/store/store";
+import { useAtomValue } from "jotai";
 
 const Scene = () => {
-  const [bloomEnabled] = useAtom(bloomAtom);
-  const [toneMappingEnabled] = useAtom(toneMappingAtom);
+  const settings = useAtomValue(settingsAtom);
   const [movement, setMovement] = useState<Movement>({
     yaw: 0,
     pitch: 0,
@@ -52,7 +51,7 @@ const Scene = () => {
       >
         {isSafari ? <Stats /> : <StatsGl />}
         <EffectComposer disableNormalPass>
-          {bloomEnabled ? (
+          {settings.bloom ? (
             <Bloom
               mipmapBlur
               intensity={0.02}
@@ -62,7 +61,7 @@ const Scene = () => {
           ) : (
             <></>
           )}
-          {toneMappingEnabled ? (
+          {settings.toneMapping ? (
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           ) : (
             <></>
@@ -73,7 +72,7 @@ const Scene = () => {
         <StarsComponent />
         <AsteroidField />
         <Planet />
-        <Star bloom={bloomEnabled} />
+        <Star bloom={settings.bloom} />
         <AdaptiveDpr pixelated />
         <AdaptiveEvents />
       </Canvas>

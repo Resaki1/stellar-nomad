@@ -1,13 +1,7 @@
 import { useState } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
-import {
-  SetAtom,
-  Settings,
-  bloomAtom,
-  settingsAtom,
-  toneMappingAtom,
-} from "@/store/store";
+import { SetAtom, Settings, settingsAtom } from "@/store/store";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -17,10 +11,8 @@ enum SubMenu {
 
 const renderSubMenu = (
   subMenu: SubMenu,
-  bloom: boolean,
-  toneMapping: boolean,
-  setBloom: SetAtom<[SetStateAction<boolean>], void>,
-  setToneMapping: SetAtom<[SetStateAction<boolean>], void>
+  settings: Settings,
+  setSettings: SetAtom<[SetStateAction<Settings>], void>
 ) => {
   switch (subMenu) {
     case SubMenu.Graphics:
@@ -28,13 +20,20 @@ const renderSubMenu = (
         <>
           <button
             className="settings__menu-button"
-            onClick={() => setBloom(!bloom)}
+            onClick={() =>
+              setSettings((prev) => ({ ...prev, bloom: !prev.bloom }))
+            }
           >
             bloom
           </button>
           <button
             className="settings__menu-button"
-            onClick={() => setToneMapping(!toneMapping)}
+            onClick={() =>
+              setSettings((prev) => ({
+                ...prev,
+                toneMapping: !prev.toneMapping,
+              }))
+            }
           >
             filmic tone mapping
           </button>
@@ -43,7 +42,17 @@ const renderSubMenu = (
     case SubMenu.Controls:
       return (
         <>
-          <button className="settings__menu-button">invert</button>
+          <button
+            className="settings__menu-button"
+            onClick={() =>
+              setSettings((prev) => ({
+                ...prev,
+                invertPitch: !prev.invertPitch,
+              }))
+            }
+          >
+            invert pitch
+          </button>
         </>
       );
     case SubMenu.Dev:
@@ -56,8 +65,7 @@ const renderSubMenu = (
 };
 
 const SettingsMenu = () => {
-  const [bloom, setBloom] = useAtom(bloomAtom);
-  const [toneMapping, setToneMapping] = useAtom(toneMappingAtom);
+  const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useState(false);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
 
@@ -98,13 +106,7 @@ const SettingsMenu = () => {
                 >
                   {"<"} back
                 </button>
-                {renderSubMenu(
-                  activeSubMenu,
-                  bloom,
-                  toneMapping,
-                  setBloom,
-                  setToneMapping
-                )}
+                {renderSubMenu(activeSubMenu, settings, setSettings)}
               </>
             )}
 
