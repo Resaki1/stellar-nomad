@@ -1,23 +1,14 @@
-import React, { Dispatch, SetStateAction, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useGesture } from "@use-gesture/react";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./Navigation.scss";
-import { useAtomValue } from "jotai";
-import { settingsAtom } from "@/store/store";
+import { useAtomValue, useSetAtom } from "jotai";
+import { movementAtom, settingsAtom } from "@/store/store";
 
-export type Movement = {
-  yaw: number | null;
-  pitch: number | null;
-  speed: number;
-};
-
-type NavigationProps = {
-  setMovement: Dispatch<SetStateAction<Movement>>;
-};
-
-const Navigation = ({ setMovement }: NavigationProps) => {
+const Navigation = () => {
   const settings = useAtomValue(settingsAtom);
+  const setMovement = useSetAtom(movementAtom);
   const [acceleration, setAcceleration] = useState(0.5);
   const [showBar, setShowBar] = useState(false);
   const timeoutId = useRef<NodeJS.Timeout | null>(null);

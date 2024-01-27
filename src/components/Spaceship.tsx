@@ -3,8 +3,9 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
-import { Movement } from "./Navigation/Navigation";
 import { lerp } from "three/src/math/MathUtils.js";
+import { useAtomValue } from "jotai";
+import { movementAtom } from "@/store/store";
 
 const quaternion = new Quaternion();
 const zeroVector = new Vector3(0, 0, 0);
@@ -16,7 +17,8 @@ const offsetVector = offsetValue.clone();
 const rotationQuaternion = new Quaternion();
 rotationQuaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
 
-const SpaceShip = ({ movement }: { movement: Movement }) => {
+const SpaceShip = () => {
+  const movement = useAtomValue(movementAtom);
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
   const speed = 100;
