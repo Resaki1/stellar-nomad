@@ -49,7 +49,7 @@ const Scene = () => {
         frameloop="always"
         dpr={[0.5, 2]}
       >
-        {isSafari ? <Stats /> : <StatsGl />}
+        {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
         <EffectComposer disableNormalPass>
           {settings.bloom ? (
             <Bloom

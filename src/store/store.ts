@@ -6,10 +6,12 @@ export type Settings = {
   invertPitch: boolean;
   bloom: boolean;
   toneMapping: boolean;
+  fps: boolean;
 };
 
 export const settingsAtom = atomWithStorage<Settings>("settings", {
   invertPitch: false,
   bloom: false,
   toneMapping: false,
+  fps: false,
 });

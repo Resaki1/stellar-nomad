@@ -59,7 +59,16 @@ const renderSubMenu = (
     case SubMenu.Dev:
       return (
         <>
-          <button className="settings__menu-button">stats</button>
+          <SettingsCheckbox
+            active={settings.fps}
+            onChange={() =>
+              setSettings((prev) => ({
+                ...prev,
+                fps: !prev.fps,
+              }))
+            }
+            label="show fps"
+          />
         </>
       );
   }
