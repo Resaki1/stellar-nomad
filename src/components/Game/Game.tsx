@@ -1,5 +1,3 @@
-"use client";
-
 import Navigation from "../Navigation/Navigation";
 import SettingsMenu from "../SettingsMenu/SettingsMenu";
 import { memo } from "react";

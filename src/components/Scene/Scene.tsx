@@ -1,3 +1,5 @@
+"use client";
+
 import { settingsAtom } from "@/store/store";
 import {
   useDetectGPU,
