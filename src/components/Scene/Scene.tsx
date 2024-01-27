@@ -1,29 +1,25 @@
-"use client";
-
-import { Canvas } from "@react-three/fiber";
+import { settingsAtom } from "@/store/store";
 import {
-  AdaptiveDpr,
-  AdaptiveEvents,
+  useDetectGPU,
   Stats,
   StatsGl,
-  useDetectGPU,
+  AdaptiveDpr,
+  AdaptiveEvents,
 } from "@react-three/drei";
+import { Canvas } from "@react-three/fiber";
 import {
-  EffectComposer,
   Bloom,
+  EffectComposer,
   ToneMapping,
 } from "@react-three/postprocessing";
-import { KernelSize, ToneMappingMode } from "postprocessing";
-import SpaceShip from "@/components/Spaceship";
-import StarsComponent from "../Stars/StarsComponent";
-import Star from "../Star/Star";
-import "./Scene.scss";
-import Planet from "../Planet/Planet";
-import AsteroidField from "../Asteroids/AsteroidField";
-import Navigation from "../Navigation/Navigation";
-import SettingsMenu from "../SettingsMenu/SettingsMenu";
-import { settingsAtom } from "@/store/store";
 import { useAtomValue } from "jotai";
+import { KernelSize, ToneMappingMode } from "postprocessing";
+import AsteroidField from "../Asteroids/AsteroidField";
+import Planet from "../Planet/Planet";
+import SpaceShip from "../Spaceship";
+import Star from "../Star/Star";
+import StarsComponent from "../Stars/StarsComponent";
+import { memo } from "react";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -36,44 +32,40 @@ const Scene = () => {
       : false;
 
   return (
-    <div className="container">
-      <Canvas
-        style={{ background: "black" }}
-        camera={{ far: 200000 }}
-        frameloop="always"
-        dpr={[0.5, 2]}
-      >
-        {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-        <EffectComposer disableNormalPass>
-          {settings.bloom ? (
-            <Bloom
-              mipmapBlur
-              intensity={0.02}
-              luminanceThreshold={0}
-              kernelSize={KernelSize.VERY_SMALL}
-            />
-          ) : (
-            <></>
-          )}
-          {settings.toneMapping ? (
-            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-          ) : (
-            <></>
-          )}
-        </EffectComposer>
-        <ambientLight intensity={0.5} />
-        <SpaceShip />
-        <StarsComponent />
-        <AsteroidField />
-        <Planet />
-        <Star bloom={settings.bloom} />
-        <AdaptiveDpr pixelated />
-        <AdaptiveEvents />
-      </Canvas>
-      <Navigation />
-      <SettingsMenu />
-    </div>
+    <Canvas
+      style={{ background: "black" }}
+      camera={{ far: 200000 }}
+      frameloop="always"
+      dpr={[0.5, 2]}
+    >
+      {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
+      <EffectComposer disableNormalPass>
+        {settings.bloom ? (
+          <Bloom
+            mipmapBlur
+            intensity={0.02}
+            luminanceThreshold={0}
+            kernelSize={KernelSize.VERY_SMALL}
+          />
+        ) : (
+          <></>
+        )}
+        {settings.toneMapping ? (
+          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+        ) : (
+          <></>
+        )}
+      </EffectComposer>
+      <ambientLight intensity={0.5} />
+      <SpaceShip />
+      <StarsComponent />
+      <AsteroidField />
+      <Planet />
+      <Star bloom={settings.bloom} />
+      <AdaptiveDpr pixelated />
+      <AdaptiveEvents />
+    </Canvas>
   );
 };
 
-export default Scene;
+export default memo(Scene);

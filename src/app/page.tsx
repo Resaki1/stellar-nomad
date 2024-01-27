@@ -1,9 +1,9 @@
 "use client";
 
-import Scene from "@/components/Scene/Scene";
+import Game from "@/components/Game/Game";
 
 const Main = () => {
-  return <Scene />;
+  return <Game />;
 };
 
 export default Main;
