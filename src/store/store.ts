@@ -23,6 +23,8 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   fps: false,
 });
 
+export const settingsIsOpenAtom = atom(false);
+
 export const movementAtom = atom<Movement>({
   yaw: 0,
   pitch: 0,

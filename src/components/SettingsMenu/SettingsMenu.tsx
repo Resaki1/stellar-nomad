@@ -1,8 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
-import { SetAtom, Settings, settingsAtom } from "@/store/store";
+import {
+  SetAtom,
+  Settings,
+  settingsAtom,
+  settingsIsOpenAtom,
+} from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
+import { useHotkeys } from "react-hotkeys-hook";
+import { useThree } from "@react-three/fiber";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -76,11 +83,13 @@ const renderSubMenu = (
 
 const SettingsMenu = () => {
   const [settings, setSettings] = useAtom(settingsAtom);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
 
   const toggleMenu = () => setIsOpen(!isOpen);
   const closeMenu = () => setIsOpen(false);
+
+  useHotkeys("escape", toggleMenu);
 
   return (
     <>

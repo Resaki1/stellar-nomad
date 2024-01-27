@@ -22,6 +22,7 @@ import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import StarsComponent from "../Stars/StarsComponent";
 import { memo } from "react";
+import Anchor from "./Anchor";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -66,6 +67,7 @@ const Scene = () => {
       <Star bloom={settings.bloom} />
       <AdaptiveDpr pixelated />
       <AdaptiveEvents />
+      <Anchor />
     </Canvas>
   );
 };
