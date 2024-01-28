@@ -1,10 +1,12 @@
 import { memo, useMemo } from "react";
 import { Asteroid01, Instances } from "../models/asteroids/01/Asteroid01";
 import { Euler, Vector3 } from "three";
+import random from "@/helpers/random";
 
 const fieldPosition = new Vector3(0, 0, 400);
 
 const AsteroidField = () => {
+  const rng = random(12344);
   const width = 1000;
   const depth = 500;
   const height = 250;
@@ -16,8 +18,8 @@ const AsteroidField = () => {
     for (let x = -width; x < width; x += 1) {
       // adjust step size for performance/quality
       for (let z = -depth; z < depth; z += 1) {
-        if (Math.random() > 1 - probability) {
-          temp.push([x, Math.random() * height - height / 2, z]);
+        if (rng.nextFloat() > 1 - probability) {
+          temp.push([x, rng.nextFloat() * height - height / 2, z]);
         }
       }
     }
@@ -33,8 +35,10 @@ const AsteroidField = () => {
             position={
               new Vector3(pos[0] * scale, pos[1] * scale, pos[2] * scale)
             }
-            scale={Math.random() * 10}
-            rotation={new Euler(Math.random(), Math.random(), Math.random())}
+            scale={rng.nextFloat() * 10}
+            rotation={
+              new Euler(rng.nextFloat(), rng.nextFloat(), rng.nextFloat())
+            }
           />
         );
       })}
