@@ -25,6 +25,7 @@ const SpaceShip = () => {
   const velocity = useRef(zeroVector);
 
   const shipHandling = 1.5; // Speed of visual roll
+  const maxRotationSpeed = shipHandling / 2; // Set this to your desired maximum rotation speed
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
@@ -37,27 +38,18 @@ const SpaceShip = () => {
       // Update target roll, yaw, and pitch values only when the joystick is being used
       if (movement.yaw || movement.pitch) {
         // Increase or decrease visual roll and pitch based on joystick input
-        visualRoll.current += movement.yaw
-          ? movement.yaw * shipHandling * delta
-          : 0;
-        visualPitch.current += movement.pitch
-          ? movement.pitch * shipHandling * delta
-          : 0;
+        visualRoll.current += movement.yaw * shipHandling * delta;
+        visualPitch.current += movement.pitch * shipHandling * delta;
 
         // Clamp visualRoll and visualPitch between -45 and 45 degrees
         visualRoll.current = logLimit(visualRoll.current, Math.PI / 6);
         visualPitch.current = logLimit(visualPitch.current, Math.PI / 12);
 
         // Increase or decrease yaw and pitch based on joystick input
-        movementYaw.current += movement.yaw
-          ? movement.yaw * shipHandling * delta
-          : 0;
-        movementPitch.current += movement.pitch
-          ? movement.pitch * shipHandling * delta
-          : 0;
+        movementYaw.current += movement.yaw * shipHandling * delta;
+        movementPitch.current += movement.pitch * shipHandling * delta;
 
         // Clamp movementYaw and movementPitch to a maximum rotation speed
-        const maxRotationSpeed = shipHandling / 2; // Set this to your desired maximum rotation speed
         movementYaw.current = MathUtils.clamp(
           movementYaw.current,
           -maxRotationSpeed,
@@ -103,7 +95,7 @@ const SpaceShip = () => {
       direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
 
       // Smoothly transition currentSpeed towards movement.speed
-      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.05);
+      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.5);
       // Set velocity to direction multiplied by speed
       velocity.current = direction.multiplyScalar(speed * currentSpeed.current);
 

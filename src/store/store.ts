@@ -4,8 +4,8 @@ import { atomWithStorage } from "jotai/utils";
 export type SetAtom<Args extends any[], Result> = (...args: Args) => Result;
 
 export type Movement = {
-  yaw: number | null;
-  pitch: number | null;
+  yaw: number;
+  pitch: number;
   speed: number;
 };
 

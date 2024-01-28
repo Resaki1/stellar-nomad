@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
 import {
@@ -9,7 +9,6 @@ import {
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import { useHotkeys } from "react-hotkeys-hook";
-import { useThree } from "@react-three/fiber";
 
 enum SubMenu {
   Graphics = "graphics",

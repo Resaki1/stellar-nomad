@@ -1,10 +1,13 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useGesture } from "@use-gesture/react";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./Navigation.scss";
 import { useAtomValue, useSetAtom } from "jotai";
 import { movementAtom, settingsAtom } from "@/store/store";
+import { useHotkeys } from "react-hotkeys-hook";
+
+type WASD = "w" | "a" | "s" | "d";
 
 const Navigation = () => {
   const settings = useAtomValue(settingsAtom);
@@ -13,15 +16,46 @@ const Navigation = () => {
   const [showBar, setShowBar] = useState(false);
   const timeoutId = useRef<NodeJS.Timeout | null>(null);
 
+  const pitch = (y: number | null) => {
+    if (!y) return null;
+    return settings.invertPitch ? y : -1 * y;
+  };
+
+  const [keyState, setKeyState] = useState({
+    w: false,
+    a: false,
+    s: false,
+    d: false,
+  });
+
+  // Update movement based on current keyState
+  useEffect(() => {
+    const yaw = keyState.d === keyState.a ? 0 : keyState.d ? 1 : -1;
+    const pitch = keyState.w === keyState.s ? 0 : keyState.w ? 1 : -1;
+    setMovement((prev) => ({ ...prev, yaw, pitch }));
+  }, [keyState, setMovement]);
+
+  // Handlers to update keyState
+  const handleKeyDown = (key: WASD) =>
+    setKeyState((prev) => ({ ...prev, [key]: true }));
+  const handleKeyUp = (key: WASD) =>
+    setKeyState((prev) => ({ ...prev, [key]: false }));
+
+  // Hotkeys setup
+  useHotkeys("w", () => handleKeyDown("w"), { keydown: true });
+  useHotkeys("w", () => handleKeyUp("w"), { keyup: true });
+  useHotkeys("a", () => handleKeyDown("a"), { keydown: true });
+  useHotkeys("a", () => handleKeyUp("a"), { keyup: true });
+  useHotkeys("s", () => handleKeyDown("s"), { keydown: true });
+  useHotkeys("s", () => handleKeyUp("s"), { keyup: true });
+  useHotkeys("d", () => handleKeyDown("d"), { keydown: true });
+  useHotkeys("d", () => handleKeyUp("d"), { keyup: true });
+
   const handleMove = (event: IJoystickUpdateEvent) => {
-    const pitch = () => {
-      if (!event.y) return null;
-      return settings.invertPitch ? event.y : -1 * event.y;
-    };
     // Update the spaceship movement based on joystick input
     setMovement((prevMovement) => ({
-      yaw: event.x,
-      pitch: pitch(),
+      yaw: event.x ?? 0,
+      pitch: pitch(event.y) ?? 0,
       speed: prevMovement.speed,
     }));
   };
