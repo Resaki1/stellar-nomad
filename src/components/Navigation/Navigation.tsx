@@ -3,7 +3,7 @@ import { useGesture } from "@use-gesture/react";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./Navigation.scss";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { movementAtom, settingsAtom } from "@/store/store";
 import { useHotkeys } from "react-hotkeys-hook";
 
@@ -11,10 +11,10 @@ type WASD = "w" | "a" | "s" | "d";
 
 const Navigation = () => {
   const settings = useAtomValue(settingsAtom);
-  const setMovement = useSetAtom(movementAtom);
-  const [acceleration, setAcceleration] = useState(0.5);
+  const [movement, setMovement] = useAtom(movementAtom);
   const [showBar, setShowBar] = useState(false);
   const timeoutId = useRef<NodeJS.Timeout | null>(null);
+  const dragPosition = useRef<number>();
 
   const pitch = (y: number | null) => {
     if (!y) return null;
@@ -72,47 +72,26 @@ const Navigation = () => {
   const bind = useGesture({
     onDrag: ({ down, movement: [_, y] }) => {
       if (down) {
-        if (timeoutId.current) {
-          clearTimeout(timeoutId.current);
-        }
         setShowBar(true);
-        timeoutId.current = setTimeout(() => setShowBar(false), 2000);
-        if (y < 0) {
-          setMovement((prevMovement) => ({
-            ...prevMovement,
-            speed: Math.min(
-              prevMovement.speed ? prevMovement.speed + 0.025 : 1,
-              1
-            ),
-          }));
-          // TODO: replace with state management
-          setAcceleration((prevAcceleration) =>
-            Math.min(prevAcceleration + 0.025, 1)
-          );
+        if (dragPosition.current === undefined) {
+          dragPosition.current = y;
         } else {
+          const screenHeight = window.innerHeight;
+          const delta = (dragPosition.current - y) / screenHeight;
           setMovement((prevMovement) => ({
             ...prevMovement,
-            speed: Math.max(
-              prevMovement.speed ? prevMovement.speed - 0.025 : 0,
-              0
-            ),
+            speed: Math.min(Math.max(prevMovement.speed + delta * 2, 0), 1),
           }));
-          setAcceleration((prevAcceleration) =>
-            Math.max(prevAcceleration - 0.025, 0)
-          );
+          dragPosition.current = y;
         }
+      } else {
+        timeoutId.current = setTimeout(() => setShowBar(false), 2000);
+        dragPosition.current = undefined;
       }
     },
     onScroll: ({ delta: [_, y] }) => {
-      console.log(y);
       if (y < 0) {
-        setAcceleration((prevAcceleration) =>
-          Math.min(prevAcceleration + 0.025, 1)
-        );
       } else {
-        setAcceleration((prevAcceleration) =>
-          Math.max(prevAcceleration - 0.025, 0)
-        );
       }
     },
   });
@@ -137,7 +116,7 @@ const Navigation = () => {
           <div className="acceleration__bar-container">
             <div
               className="acceleration__bar"
-              style={{ height: acceleration * 100 + "%" }}
+              style={{ height: movement.speed * 100 + "%" }}
             />
           </div>
         </div>

@@ -107,6 +107,12 @@ const SpaceShip = () => {
       offsetVector
         .copy(offsetValue)
         .applyQuaternion(shipRef.current.quaternion); // Rotate the offset by the spaceship's rotation
+      /* offsetVector.multiplyScalar(currentSpeed.current * 0.2 + 1); */
+
+      offsetVector.add(
+        direction.normalize().multiplyScalar(currentSpeed.current * 0.75 + 1)
+      );
+
       camera.position.copy(shipRef.current.position).sub(offsetVector); // Subtract the offset from the spaceship's position
 
       // Set the camera's rotation to match the spaceship's rotation
