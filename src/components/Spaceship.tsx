@@ -15,17 +15,17 @@ const direction = new Vector3(0, 0, 1); // This is the forward direction in the 
 const offsetValue = new Vector3(0, -4, 10); // Offset relative to the spaceship
 const offsetVector = offsetValue.clone();
 const rotationQuaternion = new Quaternion();
-rotationQuaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
+rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 
 const SpaceShip = () => {
   const movement = useAtomValue(movementAtom);
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
-  const speed = 100;
+  const shipSpeed = 100;
   const velocity = useRef(zeroVector);
 
-  const shipHandling = 1.5; // Speed of visual roll
-  const maxRotationSpeed = shipHandling / 2; // Set this to your desired maximum rotation speed
+  const shipHandling = 1.5;
+  const maxRotationSpeed = shipHandling / 2;
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
@@ -35,46 +35,45 @@ const SpaceShip = () => {
 
   useFrame(({ camera }, delta) => {
     if (shipRef.current && modelRef.current) {
-      // Update target roll, yaw, and pitch values only when the joystick is being used
-      if (movement.yaw || movement.pitch) {
-        // Increase or decrease visual roll and pitch based on joystick input
-        visualRoll.current += movement.yaw * shipHandling * delta;
-        visualPitch.current += movement.pitch * shipHandling * delta;
-
-        // Clamp visualRoll and visualPitch between -45 and 45 degrees
-        visualRoll.current = logLimit(visualRoll.current, Math.PI / 6);
-        visualPitch.current = logLimit(visualPitch.current, Math.PI / 12);
-
-        // Increase or decrease yaw and pitch based on joystick input
-        movementYaw.current += movement.yaw * shipHandling * delta;
-        movementPitch.current += movement.pitch * shipHandling * delta;
-
-        // Clamp movementYaw and movementPitch to a maximum rotation speed
-        movementYaw.current = MathUtils.clamp(
-          movementYaw.current,
-          -maxRotationSpeed,
-          maxRotationSpeed
+      if (movement.yaw) {
+        visualRoll.current = logLimit(
+          visualRoll.current + movement.yaw * shipHandling * delta,
+          Math.PI / 6
         );
-        movementPitch.current = MathUtils.clamp(
-          movementPitch.current,
+
+        movementYaw.current = MathUtils.clamp(
+          movementYaw.current + movement.yaw * shipHandling * delta,
           -maxRotationSpeed,
           maxRotationSpeed
         );
       } else {
-        // Gradually return visual roll and pitch to 0 when joystick is released
         visualRoll.current = MathUtils.lerp(
           visualRoll.current,
           0,
           shipHandling * delta
         );
+
+        movementYaw.current -= movementYaw.current * shipHandling * delta;
+      }
+
+      if (movement.pitch) {
+        visualPitch.current = logLimit(
+          visualPitch.current + movement.pitch * shipHandling * delta,
+          Math.PI / 6
+        );
+
+        movementPitch.current = MathUtils.clamp(
+          movementPitch.current + movement.pitch * shipHandling * delta,
+          -maxRotationSpeed,
+          maxRotationSpeed
+        );
+      } else {
         visualPitch.current = MathUtils.lerp(
           visualPitch.current,
           0,
           shipHandling * delta
         );
 
-        // Gradually decrease the speed of yaw and pitch when joystick is released
-        movementYaw.current -= movementYaw.current * shipHandling * delta;
         movementPitch.current -= movementPitch.current * shipHandling * delta;
       }
 
@@ -97,12 +96,12 @@ const SpaceShip = () => {
       // Smoothly transition currentSpeed towards movement.speed
       currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.5);
       // Set velocity to direction multiplied by speed
-      velocity.current = direction.multiplyScalar(speed * currentSpeed.current);
+      velocity.current = direction.multiplyScalar(
+        shipSpeed * currentSpeed.current * delta
+      );
 
       // Update spaceship position based on velocity and delta time
-      shipRef.current.position.add(
-        velocity.current.clone().multiplyScalar(delta)
-      );
+      shipRef.current.position.add(velocity.current);
 
       // Calculate the camera's position
       offsetVector
@@ -111,10 +110,9 @@ const SpaceShip = () => {
       camera.position.copy(shipRef.current.position).sub(offsetVector); // Subtract the offset from the spaceship's position
 
       // Set the camera's rotation to match the spaceship's rotation
-      camera.quaternion.copy(shipRef.current.quaternion);
-
-      // Multiply the camera's quaternion by the rotation quaternion
-      camera.quaternion.multiply(rotationQuaternion);
+      camera.quaternion
+        .copy(shipRef.current.quaternion)
+        .multiply(rotationQuaternion);
     }
   });
 
