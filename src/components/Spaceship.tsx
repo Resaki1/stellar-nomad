@@ -4,8 +4,8 @@ import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
-import { useAtomValue } from "jotai";
-import { movementAtom } from "@/store/store";
+import { useAtomValue, useSetAtom } from "jotai";
+import { hudInfoAtom, movementAtom } from "@/store/store";
 
 const quaternion = new Quaternion();
 const zeroVector = new Vector3(0, 0, 0);
@@ -17,21 +17,25 @@ const offsetVector = offsetValue.clone();
 const rotationQuaternion = new Quaternion();
 rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 
+const shipHandling = 1.5;
+const maxRotationSpeed = shipHandling / 2;
+const shipSpeed = 100;
+let timeAccumulator = 0;
+const hudUpdateInterval = 0.25;
+
 const SpaceShip = () => {
   const movement = useAtomValue(movementAtom);
+  const setHudInfo = useSetAtom(hudInfoAtom);
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
-  const shipSpeed = 100;
   const velocity = useRef(zeroVector);
-
-  const shipHandling = 1.5;
-  const maxRotationSpeed = shipHandling / 2;
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
   const visualRoll = useRef(0); // Current visual roll
   const visualPitch = useRef(0); // Current visual pitch
   const currentSpeed = useRef(0);
+  const oldPosition = useRef(zeroVector);
 
   useFrame(({ camera }, delta) => {
     if (shipRef.current && modelRef.current) {
@@ -94,7 +98,7 @@ const SpaceShip = () => {
       direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
 
       // Smoothly transition currentSpeed towards movement.speed
-      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.5);
+      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.01);
       // Set velocity to direction multiplied by speed
       velocity.current = direction.multiplyScalar(
         shipSpeed * currentSpeed.current * delta
@@ -102,6 +106,17 @@ const SpaceShip = () => {
 
       // Update spaceship position based on velocity and delta time
       shipRef.current.position.add(velocity.current);
+
+      timeAccumulator += delta;
+      if (timeAccumulator > hudUpdateInterval) {
+        setHudInfo({
+          speed:
+            shipRef.current.position.distanceTo(oldPosition.current) /
+            hudUpdateInterval,
+        });
+        timeAccumulator = 0;
+        oldPosition.current.copy(shipRef.current.position);
+      }
 
       // Calculate the camera's position
       offsetVector

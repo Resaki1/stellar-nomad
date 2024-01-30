@@ -32,3 +32,7 @@ export const movementAtom = atom<Movement>({
   pitch: 0,
   speed: 1,
 });
+
+export const hudInfoAtom = atom({
+  speed: 0,
+});
