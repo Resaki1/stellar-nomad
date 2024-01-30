@@ -1,16 +1,14 @@
 import { movementAtom, settingsAtom } from "@/store/store";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./TouchControls.scss";
 import { useGesture } from "@use-gesture/react";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 
 const TouchControls = () => {
   const settings = useAtomValue(settingsAtom);
-  const [movement, setMovement] = useAtom(movementAtom);
-  const [showBar, setShowBar] = useState(false);
-  const timeoutId = useRef<NodeJS.Timeout | null>(null);
+  const setMovement = useSetAtom(movementAtom);
   const dragPosition = useRef<number>();
 
   const pitch = (y: number | null) => {
@@ -39,7 +37,6 @@ const TouchControls = () => {
   const bind = useGesture({
     onDrag: ({ down, movement: [_, y] }) => {
       if (down) {
-        setShowBar(true);
         if (dragPosition.current === undefined) {
           dragPosition.current = y;
         } else {
@@ -52,7 +49,6 @@ const TouchControls = () => {
           dragPosition.current = y;
         }
       } else {
-        timeoutId.current = setTimeout(() => setShowBar(false), 2000);
         dragPosition.current = undefined;
       }
     },
@@ -74,20 +70,7 @@ const TouchControls = () => {
           stop={handleStop}
         />
       </div>
-      <div className="acceleration" {...bind()}>
-        <div
-          className={`acceleration__indicator ${
-            showBar ? "acceleration__indicator--show" : ""
-          }`}
-        >
-          <div className="acceleration__bar-container">
-            <div
-              className="acceleration__bar"
-              style={{ height: movement.speed * 100 + "%" }}
-            />
-          </div>
-        </div>
-      </div>
+      <div className="acceleration" {...bind()}></div>
     </>
   );
 };

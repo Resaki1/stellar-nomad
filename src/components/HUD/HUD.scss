@@ -1,0 +1,20 @@
+.hud {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+
+  background: rgba(200, 200, 200, 0.25);
+  backdrop-filter: blur(16px);
+  border-top: rgba(200, 200, 200, 0.8) solid 1px;
+  border-left: rgba(200, 200, 200, 0.8) solid 1px;
+  outline: none;
+  color: rgb(240, 240, 240);
+
+  width: min(36vw, 360px);
+  height: min(12vw, 120px);
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
