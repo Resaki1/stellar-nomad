@@ -1,10 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import { Analytics } from "@vercel/analytics/react";
-import { Inter } from "next/font/google";
+import { Orbitron } from "next/font/google";
 import "./globals.css";
 import Providers from "@/providers";
 
-const inter = Inter({ subsets: ["latin"] });
+const orbitron = Orbitron({
+  subsets: ["latin"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Stellar Nomad",
@@ -24,7 +27,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={orbitron.className}>
         <Providers>{children}</Providers>
         <Analytics />
       </body>
