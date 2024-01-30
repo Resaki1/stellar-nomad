@@ -26,6 +26,8 @@ const Navigation = () => {
     a: false,
     s: false,
     d: false,
+    e: false,
+    c: false,
   });
 
   // Update movement based on current keyState
@@ -50,6 +52,36 @@ const Navigation = () => {
   useHotkeys("s", () => handleKeyUp("s"), { keyup: true });
   useHotkeys("d", () => handleKeyDown("d"), { keydown: true });
   useHotkeys("d", () => handleKeyUp("d"), { keyup: true });
+
+  useHotkeys("e", () => setKeyState((prev) => ({ ...prev, e: true })), {
+    keydown: true,
+  });
+  useHotkeys("e", () => setKeyState((prev) => ({ ...prev, e: false })), {
+    keyup: true,
+  });
+  useHotkeys("c", () => setKeyState((prev) => ({ ...prev, c: true })), {
+    keydown: true,
+  });
+  useHotkeys("c", () => setKeyState((prev) => ({ ...prev, c: false })), {
+    keyup: true,
+  });
+
+  useEffect(() => {
+    const stepSize = 0.1;
+    if (keyState.e) {
+      setMovement((prev) => ({
+        ...prev,
+        speed: Math.min(prev.speed + stepSize, 1),
+      }));
+    }
+
+    if (keyState.c) {
+      setMovement((prev) => ({
+        ...prev,
+        speed: Math.max(prev.speed - stepSize, 0),
+      }));
+    }
+  }, [keyState, setMovement]);
 
   const handleMove = (event: IJoystickUpdateEvent) => {
     // Update the spaceship movement based on joystick input
