@@ -14,6 +14,7 @@ export type Settings = {
   bloom: boolean;
   toneMapping: boolean;
   fps: boolean;
+  initial: boolean;
 };
 
 export const settingsAtom = atomWithStorage<Settings>("settings", {
@@ -21,6 +22,7 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   bloom: false,
   toneMapping: false,
   fps: false,
+  initial: true,
 });
 
 export const settingsIsOpenAtom = atom(false);

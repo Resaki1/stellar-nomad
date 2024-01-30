@@ -1,13 +1,7 @@
 "use client";
 
 import { settingsAtom } from "@/store/store";
-import {
-  useDetectGPU,
-  Stats,
-  StatsGl,
-  AdaptiveDpr,
-  AdaptiveEvents,
-} from "@react-three/drei";
+import { Stats, StatsGl, AdaptiveDpr, AdaptiveEvents } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import {
   Bloom,
@@ -26,8 +20,6 @@ import Anchor from "./Anchor";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
-
-  const gpu = useDetectGPU();
 
   const isSafari =
     typeof window !== "undefined" && navigator

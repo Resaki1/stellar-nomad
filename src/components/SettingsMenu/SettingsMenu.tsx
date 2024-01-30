@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
 import {
@@ -9,6 +9,7 @@ import {
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useDetectGPU } from "@react-three/drei";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -84,6 +85,31 @@ const SettingsMenu = () => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
+  const gpu = useDetectGPU();
+
+  useEffect(() => {
+    const storedSettings = JSON.parse(
+      localStorage.getItem("settings") ?? '{"initial": true}'
+    );
+    if (storedSettings.initial === true) {
+      if (gpu.tier >= 2) {
+        setSettings((prev) => ({
+          ...prev,
+          bloom: true,
+          initial: false,
+        }));
+      }
+
+      if (gpu.tier >= 3) {
+        setSettings((prev) => ({
+          ...prev,
+          bloom: true,
+          toneMapping: true,
+          initial: false,
+        }));
+      }
+    }
+  }, []);
 
   const toggleMenu = () => setIsOpen(!isOpen);
   const closeMenu = () => setIsOpen(false);
