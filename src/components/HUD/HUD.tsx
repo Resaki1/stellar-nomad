@@ -8,8 +8,10 @@ const HUD = () => {
 
   return (
     <div className="hud">
-      <span>acc: {Math.round(movement.speed * 100)}%</span>
-      <span>speed: {Math.round(hudInfo.speed)} m/s</span>
+      <span>target:</span>
+      <span>{Math.round(movement.speed * 100)}%</span>
+      <span>speed:</span>
+      <span>{Math.round(hudInfo.speed)} m/s</span>
     </div>
   );
 };
