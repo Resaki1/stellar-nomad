@@ -15,6 +15,22 @@ Stellar Nomad is a free and open-source browser game that invites you into a bou
 - **Infinite Universe**: A planned feature to procedurally generate star systems for endless exploration.
 - **Multiplayer**: Future plans include multiplayer support for shared adventures and competitive resource battles.
 
+## Controls
+
+### Keyboard
+
+- Steer the ship: WASD
+- Accelerate: E
+- Deccelerate: C
+- Open/Close Menu: Esc / Button
+
+### Touch
+
+- Steer the ship: Joystick
+- Accelerate: Swipe up
+- Deccelerate: Swipe down
+- Open/Close Menu: Button
+
 ## Technologies
 
 Stellar Nomad is developed using TypeScript, React Three Fiber, and Next.js.

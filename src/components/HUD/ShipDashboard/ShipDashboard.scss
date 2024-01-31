@@ -1,0 +1,23 @@
+.ship-dashboard {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+
+  background: rgba(200, 200, 200, 0.25);
+  backdrop-filter: blur(16px);
+  border-top: rgba(200, 200, 200, 0.8) solid 1px;
+  border-left: rgba(200, 200, 200, 0.8) solid 1px;
+  color: rgb(240, 240, 240);
+
+  width: 16vw;
+  min-width: 120px;
+  height: 6vw;
+  min-height: 64px;
+
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 0px 16px;
+  grid-template-rows: 1.2rem 1.2rem;
+  align-content: center;
+  font-size: 0.8rem;
+}
