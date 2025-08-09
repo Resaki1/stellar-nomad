@@ -27,7 +27,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={orbitron.className}>
+  <body className={orbitron.className} suppressHydrationWarning>
         <Providers>{children}</Providers>
         <Analytics />
       </body>

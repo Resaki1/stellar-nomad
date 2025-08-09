@@ -12,6 +12,8 @@ import { useGLTF } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
 import { Mesh, MeshStandardMaterial } from "three";
 
+import type { JSX } from "react";
+
 type GLTFResult = GLTF & {
   nodes: {
     Starship_Material003_0: Mesh;

@@ -9,7 +9,7 @@ import { useRef } from "react";
 const TouchControls = () => {
   const settings = useAtomValue(settingsAtom);
   const setMovement = useSetAtom(movementAtom);
-  const dragPosition = useRef<number>();
+  const dragPosition = useRef<number>(undefined);
 
   const pitch = (y: number | null) => {
     if (!y) return null;

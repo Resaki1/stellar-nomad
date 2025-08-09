@@ -8,12 +8,7 @@ Source: https://sketchfab.com/3d-models/asteroid-low-poly-9a43ef48a70647188576cc
 Title: Asteroid low poly
 */
 
-import {
-  useMemo,
-  useContext,
-  createContext,
-  ForwardRefExoticComponent,
-} from "react";
+import { useMemo, useContext, createContext, ForwardRefExoticComponent, type JSX } from "react";
 import { useGLTF, Merged } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
 
