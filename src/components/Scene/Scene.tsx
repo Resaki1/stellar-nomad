@@ -17,6 +17,7 @@ import Star from "../Star/Star";
 import StarsComponent from "../Stars/StarsComponent";
 import { memo } from "react";
 import Anchor from "./Anchor";
+import { HalfFloatType, NoToneMapping } from "three";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -29,16 +30,23 @@ const Scene = () => {
   return (
     <Canvas
       style={{ background: "black" }}
-      camera={{ far: 200000 }}
+      camera={{ far: 200000000 }}
       frameloop="always"
-      dpr={[0.5, 2]}
+      dpr={[0.5, 1]}
+      gl={{
+        alpha: false,
+        premultipliedAlpha: false,
+        antialias: true,
+        powerPreference: "high-performance",
+        toneMapping: NoToneMapping,
+      }}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-      <EffectComposer enableNormalPass={false}>
+      <EffectComposer enableNormalPass={false} frameBufferType={HalfFloatType}>
         {settings.bloom ? (
           <Bloom
             intensity={0.02}
-            luminanceThreshold={0}
+            luminanceThreshold={1}
             kernelSize={KernelSize.VERY_SMALL}
           />
         ) : (

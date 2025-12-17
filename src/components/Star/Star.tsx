@@ -23,7 +23,7 @@ const Star = ({ bloom }: StarProps) => {
     <>
       <directionalLight // Star
         position={position}
-        intensity={12}
+        intensity={10}
         color="white"
         castShadow
         scale={512}
@@ -35,10 +35,8 @@ const Star = ({ bloom }: StarProps) => {
           </Billboard>
         )}
         <Sphere args={[512, 16, 16]}>
-          <meshStandardMaterial
-            color="white"
-            emissive="white"
-            emissiveIntensity={512}
+          <meshBasicMaterial
+            color={[512, 512, 512]}
             toneMapped={false}
             side={FrontSide}
             depthTest={true}
