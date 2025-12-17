@@ -37,9 +37,11 @@ const Scene = () => {
       <EffectComposer enableNormalPass={false}>
         {settings.bloom ? (
           <Bloom
-            intensity={0.02}
-            luminanceThreshold={0}
-            kernelSize={KernelSize.VERY_SMALL}
+            intensity={0.8}
+            luminanceThreshold={0.8}
+            luminanceSmoothing={0.2}
+            kernelSize={KernelSize.MEDIUM}
+            mipmapBlur
           />
         ) : (
           <></>
@@ -55,7 +57,7 @@ const Scene = () => {
       <StarsComponent />
       <AsteroidField />
       <Planet />
-      <Star bloom={settings.bloom} />
+      <Star />
       <AdaptiveDpr pixelated />
       <AdaptiveEvents />
       <Anchor />
