@@ -35,7 +35,11 @@ const Scene = () => {
       camera={{ far: 200000 }}
       frameloop="always"
       dpr={[1, 2]}
-      gl={{ antialias: true, outputColorSpace: SRGBColorSpace }}
+      gl={{
+        antialias: true,
+        outputColorSpace: SRGBColorSpace,
+        dithering: true,
+      }}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
       <EffectComposer

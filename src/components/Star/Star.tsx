@@ -7,6 +7,7 @@ import {
   DataTexture,
   FrontSide,
   Mesh,
+  MeshStandardMaterial,
   NearestFilter,
   RepeatWrapping,
   RGBAFormat,
@@ -56,11 +57,17 @@ const createRadialGlowTexture = () => {
 
 const Star = () => {
   const star = useRef<Mesh>(null!);
+  const coreMaterial = useRef<MeshStandardMaterial>(null!);
   const glowTexture = useMemo(() => createRadialGlowTexture(), []);
 
   useFrame(({ camera }) => {
     if (star.current) {
       star.current.position.copy(camera.position).add(position);
+    }
+
+    const shader = coreMaterial.current?.userData?.shader;
+    if (shader) {
+      shader.uniforms.uTime.value += 0.016;
     }
   });
 
@@ -82,6 +89,22 @@ const Star = () => {
             side={FrontSide}
             depthTest={true}
             dithering
+            ref={coreMaterial}
+            onBeforeCompile={(shader) => {
+              shader.uniforms.uTime = { value: 0 };
+              shader.fragmentShader = shader.fragmentShader.replace(
+                "#include <dithering_fragment>",
+                `float hash13(vec3 p) {
+                    p = fract(p * 0.1031);
+                    p += dot(p, p.yzx + 33.33);
+                    return fract((p.x + p.y) * p.z);
+                  }
+                  float screenNoise = hash13(vec3(gl_FragCoord.xy * 0.75, uTime));
+                  gl_FragColor.rgb += (screenNoise - 0.5) * (2.5 / 255.0);
+                #include <dithering_fragment>`
+              );
+              coreMaterial.current.userData.shader = shader;
+            }}
           />
         </Sphere>
         <Sphere args={[650, 48, 48]}>
