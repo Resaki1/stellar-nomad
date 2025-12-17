@@ -6,11 +6,12 @@ import { Canvas } from "@react-three/fiber";
 import {
   Bloom,
   EffectComposer,
+  Noise,
   ToneMapping,
 } from "@react-three/postprocessing";
 import { useAtomValue } from "jotai";
-import { KernelSize, ToneMappingMode } from "postprocessing";
-import { HalfFloatType } from "three";
+import { BlendFunction, KernelSize, ToneMappingMode } from "postprocessing";
+import { HalfFloatType, SRGBColorSpace } from "three";
 import AsteroidField from "../Asteroids/AsteroidField";
 import Planet from "../Planet/Planet";
 import SpaceShip from "../Spaceship";
@@ -33,6 +34,7 @@ const Scene = () => {
       camera={{ far: 200000 }}
       frameloop="always"
       dpr={[0.5, 2]}
+      gl={{ outputColorSpace: SRGBColorSpace }}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
       <EffectComposer enableNormalPass={false} frameBufferType={HalfFloatType}>
@@ -47,6 +49,11 @@ const Scene = () => {
         ) : (
           <></>
         )}
+        <Noise
+          opacity={0.08}
+          premultiply
+          blendFunction={BlendFunction.ADD}
+        />
         {settings.toneMapping ? (
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         ) : (

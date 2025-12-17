@@ -6,11 +6,11 @@ import {
   Color,
   DataTexture,
   FrontSide,
-  LinearEncoding,
   Mesh,
   NearestFilter,
   RepeatWrapping,
   RGBAFormat,
+  SRGBColorSpace,
   UnsignedByteType,
   Vector3,
 } from "three";
@@ -49,7 +49,7 @@ const createRadialGlowTexture = () => {
   texture.wrapT = RepeatWrapping;
   texture.magFilter = NearestFilter;
   texture.minFilter = NearestFilter;
-  texture.encoding = LinearEncoding;
+  texture.colorSpace = SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
 };
@@ -78,7 +78,7 @@ const Star = () => {
           <meshStandardMaterial
             color="#fff4e6"
             emissive="#fff4e6"
-            emissiveIntensity={40}
+            emissiveIntensity={28}
             side={FrontSide}
             depthTest={true}
             dithering
