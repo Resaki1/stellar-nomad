@@ -10,6 +10,7 @@ import {
 } from "@react-three/postprocessing";
 import { useAtomValue } from "jotai";
 import { KernelSize, ToneMappingMode } from "postprocessing";
+import { HalfFloatType } from "three";
 import AsteroidField from "../Asteroids/AsteroidField";
 import Planet from "../Planet/Planet";
 import SpaceShip from "../Spaceship";
@@ -34,7 +35,7 @@ const Scene = () => {
       dpr={[0.5, 2]}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-      <EffectComposer enableNormalPass={false}>
+      <EffectComposer enableNormalPass={false} frameBufferType={HalfFloatType}>
         {settings.bloom ? (
           <Bloom
             intensity={0.8}
@@ -58,7 +59,7 @@ const Scene = () => {
       <AsteroidField />
       <Planet />
       <Star />
-      <AdaptiveDpr pixelated />
+      <AdaptiveDpr />
       <AdaptiveEvents />
       <Anchor />
     </Canvas>

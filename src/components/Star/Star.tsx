@@ -28,7 +28,7 @@ const Star = () => {
           <meshStandardMaterial
             color="#fff4e6"
             emissive="#fff4e6"
-            emissiveIntensity={180}
+            emissiveIntensity={60}
             side={FrontSide}
             depthTest={true}
             dithering
