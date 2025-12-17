@@ -35,7 +35,7 @@ const Star = ({ bloom }: StarProps) => {
           </Billboard>
         )}
         <Sphere args={[512, 16, 16]}>
-          <meshPhongMaterial
+          <meshStandardMaterial
             color="white"
             emissive="white"
             emissiveIntensity={512}

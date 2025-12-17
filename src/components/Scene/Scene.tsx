@@ -34,10 +34,9 @@ const Scene = () => {
       dpr={[0.5, 2]}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-      <EffectComposer disableNormalPass>
+      <EffectComposer enableNormalPass={false}>
         {settings.bloom ? (
           <Bloom
-            mipmapBlur
             intensity={0.02}
             luminanceThreshold={0}
             kernelSize={KernelSize.VERY_SMALL}
