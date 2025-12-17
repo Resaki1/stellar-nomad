@@ -7,6 +7,7 @@ import {
   Bloom,
   EffectComposer,
   Noise,
+  SMAA,
   ToneMapping,
 } from "@react-three/postprocessing";
 import { useAtomValue } from "jotai";
@@ -33,11 +34,16 @@ const Scene = () => {
       style={{ background: "black" }}
       camera={{ far: 200000 }}
       frameloop="always"
-      dpr={[0.5, 2]}
-      gl={{ outputColorSpace: SRGBColorSpace }}
+      dpr={[1, 2]}
+      gl={{ antialias: true, outputColorSpace: SRGBColorSpace }}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-      <EffectComposer enableNormalPass={false} frameBufferType={HalfFloatType}>
+      <EffectComposer
+        enableNormalPass={false}
+        multisampling={4}
+        frameBufferType={HalfFloatType}
+      >
+        <SMAA />
         {settings.bloom ? (
           <Bloom
             intensity={0.8}
