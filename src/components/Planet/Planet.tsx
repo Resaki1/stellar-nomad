@@ -365,6 +365,7 @@ function Planet({
   useFrame(({ camera }) => {
     if (!groupRef.current) return;
 
+    // Move planet with camera to avoid unhandled collision issues
     groupRef.current.position.copy(camera.position).add(planetOffset);
 
     const earthWorld = groupRef.current.position.clone();

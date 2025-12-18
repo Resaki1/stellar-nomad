@@ -15,6 +15,7 @@ const RADIUS = 696.34;
 const Star = ({ bloom }: StarProps) => {
   const star = useRef<Mesh>(null!);
 
+  // move star with camera to avoid unhandled colission issues
   useFrame(({ camera }) => {
     if (star.current) {
       star.current.position.copy(camera.position).add(position);
