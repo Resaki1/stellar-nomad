@@ -26,7 +26,7 @@ type GLTFResult = GLTF & {
 export function ShipOne(props: JSX.IntrinsicElements["group"]) {
   const { nodes, materials } = useGLTF(
     "/models/ships/ShipOne.glb"
-  ) as GLTFResult;
+  ) as unknown as GLTFResult;
   return (
     <group {...props} dispose={null} scale={0.3}>
       <mesh
