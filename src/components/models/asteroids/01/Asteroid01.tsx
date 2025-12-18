@@ -8,7 +8,13 @@ Source: https://sketchfab.com/3d-models/asteroid-low-poly-9a43ef48a70647188576cc
 Title: Asteroid low poly
 */
 
-import { useMemo, useContext, createContext, ForwardRefExoticComponent, type JSX } from "react";
+import {
+  useMemo,
+  useContext,
+  createContext,
+  ForwardRefExoticComponent,
+  type JSX,
+} from "react";
 import { useGLTF, Merged } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
 
@@ -31,7 +37,9 @@ export function Instances({
   children,
   ...props
 }: JSX.IntrinsicElements["group"]) {
-  const { nodes } = useGLTF("/models/asteroids/asteroid01.glb") as GLTFResult;
+  const { nodes } = useGLTF(
+    "/models/asteroids/asteroid01.glb"
+  ) as unknown as GLTFResult;
   const instances = useMemo(
     () => ({
       DaphneLP: nodes.Daphne_LP001_1_0,
