@@ -17,13 +17,14 @@ import {
 } from "react";
 import { useGLTF, Merged } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
+import { Mesh, MeshStandardMaterial } from "three";
 
 type GLTFResult = GLTF & {
   nodes: {
-    Daphne_LP001_1_0: THREE.Mesh;
+    Daphne_LP001_1_0: Mesh;
   };
   materials: {
-    material: THREE.MeshStandardMaterial;
+    material: MeshStandardMaterial;
   };
 };
 
