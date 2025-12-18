@@ -1,139 +1,400 @@
-import { Sphere, shaderMaterial, useTexture } from "@react-three/drei";
-import { extend, useFrame } from "@react-three/fiber";
-import { memo, useRef } from "react";
-import {
-  AdditiveBlending,
-  DoubleSide,
-  Euler,
-  FrontSide,
-  Group,
-  Mesh,
-  Vector3,
-} from "three";
+"use client";
 
-const AtmosphereShaderMaterial = shaderMaterial(
-  // Uniforms
-  {
-    sunDirection: new Vector3(0, 0, 1),
-  },
-  `
-  varying vec3 vPosition;
-  varying vec3 vNormal;
+import { memo, useMemo, useRef } from "react";
+import { useFrame } from "@react-three/fiber";
+import { useTexture } from "@react-three/drei";
+import * as THREE from "three";
+import { AdditiveBlending, BackSide, FrontSide, Group, Mesh } from "three";
+
+const PLANET_OFFSET = new THREE.Vector3(10, 0, -10);
+const PLANET_ROTATION = new THREE.Euler(
+  1.1 * Math.PI,
+  1.8 * Math.PI,
+  0.8 * Math.PI
+);
+const PLANET_RADIUS = 6.37;
+
+// matches your Star.tsx convention
+const SUN_OFFSET_FROM_CAMERA = new THREE.Vector3(8000, 0, 19000);
+
+// Eclipse disabled by default (moon far away)
+const DEFAULT_MOON_OFFSET_FROM_CAMERA = new THREE.Vector3(1e9, 0, 0);
+const DEFAULT_MOON_RADIUS = 1.0;
+const DEFAULT_SUN_RADIUS = 695700;
+
+const earthVertexShader = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosWRel;
+  varying mat3 vTbn;
+
+  attribute vec4 tangent;
 
   void main() {
-    vPosition = position;
-    vNormal = normalize(normal);
+    vUv = uv;
+
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    vPosWRel = mat3(modelMatrix) * position;
+
+    vec3 t = normalize(tangent.xyz);
+    vec3 n = normalize(normal.xyz);
+    vec3 b = normalize(cross(t, n));
+
+    t = mat3(modelMatrix) * t;
+    b = mat3(modelMatrix) * b;
+    n = mat3(modelMatrix) * n;
+
+    vTbn = mat3(normalize(t), normalize(b), normalize(n));
+
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
-  `,
-  `
-  uniform vec3 sunDirection;
-varying vec3 vPosition;
-varying vec3 vNormal;
+`;
 
-const float Hr = 8.0; // Rayleigh scale height
-const float Hm = 1.2; // Mie scale height
-const vec3 betaR = vec3(5.8e-6, 1.35e-5, 3.31e-5); // Rayleigh scattering coefficients
-const float betaM = 4e-5; // Mie scattering coefficient
-const float planetRadius = 94.5; // Planet radius
-const float atmosphereThickness = 5.0; // Atmosphere thickness
+const earthFragmentShader = /* glsl */ `
+  uniform sampler2D uDayTex;
+  uniform sampler2D uNightTex;
+  uniform sampler2D uNormalTex;
+  uniform sampler2D uSpecTex;
+  uniform sampler2D uCloudTex;
 
-float rayleighPhase(float cosTheta) {
-  return (3.0 / (16.0 * 3.14159265)) * (1.0 + cosTheta * cosTheta);
+  uniform vec3 uSunRel;
+  uniform vec3 uEarthPos;
+
+  uniform float uNormalPower;
+
+  uniform vec3 uMoonPos;
+  uniform float uMoonRadius;
+  uniform float uSunRadius;
+
+  // simple artistic knobs
+  uniform float uNightBoost;     // helps if night map is too dim
+  uniform float uCloudOpacity;   // overall cloud strength (0..1)
+
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosWRel;
+  varying mat3 vTbn;
+
+  #define PI 3.14159265359
+
+  float eclipseFactor(float angleBetween, float angleLight, float angleOcc) {
+    float r2 = pow(angleOcc / angleLight, 2.0);
+    float v;
+
+    if (angleBetween > angleLight - angleOcc && angleBetween < angleLight + angleOcc) {
+      if (angleBetween < angleOcc - angleLight) {
+        v = 0.0;
+      } else {
+        float x = 0.5 / angleBetween * (angleBetween*angleBetween + angleLight*angleLight - angleOcc*angleOcc);
+        float thL = acos(x / angleLight);
+        float thO = acos((angleBetween - x) / angleOcc);
+        v = 1.0/PI * (PI - thL + 0.5*sin(2.0*thL) - thO*r2 + 0.5*r2*sin(2.0*thO));
+      }
+    } else if (angleBetween > angleLight + angleOcc) {
+      v = 1.0;
+    } else {
+      v = 1.0 - r2;
+    }
+
+    return clamp(v, 0.0, 1.0);
+  }
+
+  void main() {
+    vec3 sunDir = normalize(uSunRel);
+
+    vec3 dayCol   = texture2D(uDayTex, vUv).rgb;
+    vec3 nightCol = texture2D(uNightTex, vUv).rgb * uNightBoost;
+
+    float cosSunToGeomNormal = dot(vNormalW, sunDir);
+    float dayAmount = 1.0 / (1.0 + exp(-20.0 * cosSunToGeomNormal));
+    float hemiAmount = dayAmount;
+
+    vec3 surfacePosW = uEarthPos + vPosWRel;
+
+    float distEarthToSun  = length(uSunRel);
+    float distSurfToMoon  = length(uMoonPos - surfacePosW);
+
+    float cosSunMoon = dot(sunDir, normalize(uMoonPos - surfacePosW));
+    float angSunMoon = acos(clamp(cosSunMoon, -1.0, 1.0));
+
+    float angSunDisk  = asin(clamp(uSunRadius / distEarthToSun,  0.0, 1.0));
+    float angMoonDisk = asin(clamp(uMoonRadius / distSurfToMoon, 0.0, 1.0));
+
+    hemiAmount *= eclipseFactor(angSunMoon, angSunDisk, angMoonDisk);
+
+    // normal mapping
+    vec3 tN = texture2D(uNormalTex, vUv).xyz * 2.0 - 1.0;
+    vec3 nW = normalize(vTbn * tN);
+    float cosSunToMappedNormal = dot(nW, sunDir);
+
+    dayAmount *= (1.0 + uNormalPower * (cosSunToMappedNormal - cosSunToGeomNormal));
+    dayAmount *= hemiAmount;
+    dayAmount = clamp(dayAmount, 0.0, 1.0);
+
+    // IMPORTANT: your clouds.webp likely has NO alpha channel
+    // so we derive the mask from the red channel (grayscale).
+    float cloudMask = texture2D(uCloudTex, vUv).r;
+    cloudMask *= uCloudOpacity;
+
+    // Cloud shadow: sample slightly “towards the sun”
+    vec3 transl = 0.0005 * inverse(vTbn) * (vNormalW - sunDir);
+    float cloudShadow = texture2D(uCloudTex, vUv - transl.xy).r;
+    dayAmount *= (1.0 - 0.5 * cloudShadow);
+
+    // base day/night
+    vec3 col = mix(nightCol, dayCol, dayAmount);
+
+    // specular from spec map (assumed grayscale in R)
+    float specMask = texture2D(uSpecTex, vUv).r;
+    float reflectRatio = 0.3 * specMask + 0.1;
+
+    vec3 refl = reflect(-sunDir, nW);
+    float specPow = clamp(dot(refl, normalize(cameraPosition - surfacePosW)), 0.0, 1.0);
+    col += dayAmount * pow(specPow, 2.0) * reflectRatio;
+
+    // Clouds as white-ish scattering on lit side, but still visible a bit at night
+    float h = clamp(hemiAmount, 0.0, 1.0);
+    vec3 cloudCol = vec3(1.0);
+
+    // slight blue tint on day side
+    cloudCol.r *= clamp(h, 0.2, 1.0);
+    cloudCol.g *= clamp(pow(h, 1.5), 0.2, 1.0);
+    cloudCol.b *= clamp(pow(h, 2.0), 0.2, 1.0);
+
+    // Blend clouds using derived mask
+    col = mix(col, cloudCol, clamp(cloudMask, 0.0, 1.0));
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const addonVertexShader = /* glsl */ `
+  varying vec3 vNormalW;
+  varying vec3 vNormalV;
+  varying vec3 vPosV;
+
+  void main() {
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    vNormalV = normalize(normalMatrix * normal);
+    vPosV = normalize((modelViewMatrix * vec4(position, 1.0)).xyz);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const atmosphereFragmentShader = /* glsl */ `
+  uniform vec3 uSunRel;
+  uniform vec3 uColor;
+
+  varying vec3 vNormalW;
+  varying vec3 vNormalV;
+  varying vec3 vPosV;
+
+  void main() {
+    vec3 sunDir = normalize(uSunRel);
+
+    float cosSunToNormal = dot(vNormalW, sunDir);
+    float dayMask = 1.0 / (1.0 + exp(-7.0 * (cosSunToNormal + 0.1)));
+
+    float raw = 3.0 * max(dot(vPosV, vNormalV), 0.0);
+    float intensity = pow(raw, 3.0);
+
+    gl_FragColor = vec4(uColor, intensity) * dayMask;
+  }
+`;
+
+const fresnelFragmentShader = /* glsl */ `
+  uniform vec3 uSunRel;
+  uniform vec3 uColor;
+
+  varying vec3 vNormalW;
+  varying vec3 vNormalV;
+  varying vec3 vPosV;
+
+  float saturate(float x) { return clamp(x, 0.0, 1.0); }
+
+  void main() {
+    vec3 sunDir = normalize(uSunRel);
+
+    // Keep day masking (as in article)
+    float cosSunToNormal = dot(vNormalW, sunDir);
+    float dayMask = 1.0 / (1.0 + exp(-7.0 * (cosSunToNormal + 0.1)));
+
+    // View dir in view space: camera is at origin in view space, so V = -pos
+    vec3 V = normalize(-vPosV);
+    vec3 N = normalize(vNormalV);
+
+    // Standard Fresnel form: strongest at grazing angles
+    float ndv = saturate(dot(N, V));
+    float fres = pow(1.0 - ndv, 2.0);
+
+    // Soften/widen the rim (these thresholds are the main "photoreal" lever)
+    fres = smoothstep(0.02, 0.55, fres);
+
+    // Reduce energy so it doesn't look like a stroke under ACES
+    float strength = 0.15;
+    vec3 rgb = uColor * fres * strength * dayMask;
+
+    float fresnelTerm = 1.0 + dot(normalize(vPosV), normalize(vNormalV));
+    fresnelTerm = pow(fresnelTerm, 2.0);
+
+    gl_FragColor = vec4(uColor, 1.0) * fresnelTerm * dayMask;
+  }
+`;
+
+type PlanetProps = {
+  planetOffset?: THREE.Vector3;
+  sunOffsetFromCamera?: THREE.Vector3;
+  moonOffsetFromCamera?: THREE.Vector3;
+  moonRadius?: number;
+  sunRadius?: number;
+  radius?: number;
+};
+
+function setTextureColorSpace(
+  tex: THREE.Texture | undefined,
+  kind: "srgb" | "linear"
+) {
+  if (!tex) return;
+
+  // Prefer modern three.js property
+  if ("colorSpace" in tex) {
+    // @ts-ignore
+    tex.colorSpace =
+      kind === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  }
+
+  tex.needsUpdate = true;
 }
 
-float miePhase(float cosTheta, float g) {
-  float g2 = g * g;
-  return (3.0 / (8.0 * 3.14159265)) * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosTheta * cosTheta) / pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
-}
+function Planet({
+  planetOffset = PLANET_OFFSET,
+  sunOffsetFromCamera = SUN_OFFSET_FROM_CAMERA,
+  moonOffsetFromCamera = DEFAULT_MOON_OFFSET_FROM_CAMERA,
+  moonRadius = DEFAULT_MOON_RADIUS,
+  sunRadius = DEFAULT_SUN_RADIUS,
+  radius = PLANET_RADIUS,
+}: PlanetProps) {
+  const groupRef = useRef<Group>(null!);
 
-void main() {
-  vec3 normalizedPosition = normalize(vPosition);
-  float heightAboveSurface = length(vPosition) - planetRadius;
+  const sphereGeo = useMemo(() => {
+    const g = new THREE.SphereGeometry(radius, 64, 64);
+    g.computeTangents();
+    return g;
+  }, [radius]);
 
-  // Calculate the atmospheric density based on height
-  float rho = exp(-heightAboveSurface / Hr) + exp(-heightAboveSurface / Hm);
+  const tex = useTexture({
+    day: "/textures/earth_day.webp",
+    night: "/textures/earth_night.webp",
+    normal: "/textures/earth_normal.webp",
+    spec: "/textures/earth_specular.webp",
+    clouds: "/textures/earth_clouds.webp",
+  }) as Record<string, THREE.Texture>;
 
-  vec3 betaRTheta = betaR * rho;
-  float betaMTheta = betaM * rho;
+  useMemo(() => {
+    // Color textures
+    setTextureColorSpace(tex.day, "srgb");
+    setTextureColorSpace(tex.night, "srgb");
 
-  float cosTheta = dot(normalizedPosition, sunDirection);
-  float rayleigh = rayleighPhase(cosTheta);
-  float mie = miePhase(cosTheta, 0.76);
+    // Data textures (IMPORTANT: clouds is data here)
+    setTextureColorSpace(tex.normal, "linear");
+    setTextureColorSpace(tex.spec, "linear");
+    setTextureColorSpace(tex.clouds, "linear");
 
-  // Intensity of the scattering effect
-  vec3 scatter = (betaRTheta * rayleigh + betaMTheta * mie) * 1.0;
+    // Make the clouds less “sparkly” when far away
+    tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.clouds.magFilter = THREE.LinearFilter;
+    tex.clouds.anisotropy = 8;
+  }, [tex]);
 
-  // Final color based on the scattering
-  vec3 finalColor = vec3(1.0) - exp(-scatter);
+  const earthMat = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader: earthVertexShader,
+      fragmentShader: earthFragmentShader,
+      uniforms: {
+        uDayTex: { value: tex.day },
+        uNightTex: { value: tex.night },
+        uNormalTex: { value: tex.normal },
+        uSpecTex: { value: tex.spec },
+        uCloudTex: { value: tex.clouds },
 
-  // Calculate alpha for the edge fade effect
-  // The alpha should start at 1 at the planet's surface and go to 0 at the edge of the atmosphere
-  float edgeStart = planetRadius; // At the planet's surface
-  float edgeEnd = planetRadius + atmosphereThickness; // At the upper limit of the atmosphere
-  float alpha = smoothstep(edgeEnd, edgeStart, heightAboveSurface);
+        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
+        uEarthPos: { value: new THREE.Vector3() },
 
-  // Apply the calculated alpha value
-  gl_FragColor = vec4(finalColor * scatter, alpha);
-}
-  `
-);
+        uNormalPower: { value: 0.6 },
 
-extend({ AtmosphereShaderMaterial });
+        uMoonPos: { value: new THREE.Vector3(1e9, 0, 0) },
+        uMoonRadius: { value: moonRadius },
+        uSunRadius: { value: sunRadius },
 
-const position = new Vector3(150000, 0, -150000);
-const rotation = new Euler(1.1 * Math.PI, 1.8 * Math.PI, 0.8 * Math.PI);
-const sunDirection = new Vector3(0, 0, -1);
-const size = 60000;
+        uNightBoost: { value: 0.5 }, // tweak 1.0–3.0
+        uCloudOpacity: { value: 0.65 }, // tweak 0.2–0.9
+      },
+      side: FrontSide,
+    });
+  }, [tex, moonRadius, sunRadius]);
 
-const Planet = () => {
-  const planet = useRef<Group>(null!);
-  const atmosphere = useRef<Mesh>(null!);
-  const texture = useTexture({
-    map: "/textures/earth_day.webp",
-    specularMap: "/textures/earth_specular.webp",
-  });
-  const clouds = useTexture({
-    map: "/textures/earth_clouds.webp",
-    alphaMap: "/textures/earth_clouds.webp",
-  });
+  const atmosphereMat = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader: addonVertexShader,
+      fragmentShader: atmosphereFragmentShader,
+      uniforms: {
+        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
+        uColor: { value: new THREE.Vector3(0.2, 0.45, 1.0) },
+      },
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+  }, []);
+
+  const fresnelMat = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader: addonVertexShader,
+      fragmentShader: fresnelFragmentShader,
+      uniforms: {
+        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
+        uColor: { value: new THREE.Vector3(0.2, 0.45, 1.0) },
+      },
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+  }, []);
 
   useFrame(({ camera }) => {
-    if (planet.current) {
-      planet.current.position.copy(camera.position).add(position);
-    }
+    if (!groupRef.current) return;
+
+    groupRef.current.position.copy(camera.position).add(planetOffset);
+
+    const earthWorld = groupRef.current.position.clone();
+
+    const sunWorld = camera.position.clone().add(sunOffsetFromCamera);
+    const moonWorld = camera.position.clone().add(moonOffsetFromCamera);
+
+    const sunRel = sunWorld.sub(earthWorld);
+
+    earthMat.uniforms.uEarthPos.value.copy(groupRef.current.position);
+    earthMat.uniforms.uSunRel.value.copy(sunRel);
+    earthMat.uniforms.uMoonPos.value.copy(moonWorld);
+
+    atmosphereMat.uniforms.uSunRel.value.copy(sunRel);
+    fresnelMat.uniforms.uSunRel.value.copy(sunRel);
   });
 
   return (
-    <group position={position} rotation={rotation} ref={planet}>
-      {/* <Sphere args={[81, 64, 64]} ref={atmosphere}>
-        <atmosphereShaderMaterial
-          attach="material"
-          args={[
-            {
-              sunDirection: sunDirection,
-            },
-          ]}
-          side={DoubleSide}
-          depthWrite={false}
-          blending={AdditiveBlending}
-        />
-      </Sphere> */}
-      <Sphere args={[size, 48, 48]}>
-        <meshPhongMaterial
-          {...texture}
-          shininess={5}
-          specular={"lightblue"}
-          side={FrontSide}
-        />
-      </Sphere>
-      <Sphere args={[size * 1.02, 64, 64]}>
-        <meshPhongMaterial {...clouds} transparent alphaTest={0} />
-      </Sphere>
+    <group ref={groupRef} rotation={PLANET_ROTATION}>
+      <mesh geometry={sphereGeo} material={earthMat} />
+      <mesh geometry={sphereGeo} material={atmosphereMat} scale={1.03} />
+      <mesh geometry={sphereGeo} material={fresnelMat} scale={1.002} />
     </group>
   );
-};
+}
 
 useTexture.preload("/textures/earth_day.webp");
+useTexture.preload("/textures/earth_night.webp");
+useTexture.preload("/textures/earth_normal.webp");
+useTexture.preload("/textures/earth_specular.webp");
+useTexture.preload("/textures/earth_clouds.webp");
 
 export default memo(Planet);

@@ -6,6 +6,7 @@ import { Canvas } from "@react-three/fiber";
 import {
   Bloom,
   EffectComposer,
+  SMAA,
   ToneMapping,
 } from "@react-three/postprocessing";
 import { useAtomValue } from "jotai";
@@ -30,19 +31,24 @@ const Scene = () => {
   return (
     <Canvas
       style={{ background: "black" }}
-      camera={{ far: 200000000 }}
+      camera={{ far: 200_000 }}
       frameloop="always"
-      dpr={[0.5, 1]}
+      dpr={[0.5, 1.5]}
       gl={{
         alpha: false,
         premultipliedAlpha: false,
         antialias: true,
         powerPreference: "high-performance",
         toneMapping: NoToneMapping,
+        logarithmicDepthBuffer: true,
       }}
     >
       {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
-      <EffectComposer enableNormalPass={false} frameBufferType={HalfFloatType}>
+      <EffectComposer
+        enableNormalPass={false}
+        frameBufferType={HalfFloatType}
+        multisampling={8}
+      >
         {settings.bloom ? (
           <Bloom
             intensity={0.02}
@@ -57,6 +63,7 @@ const Scene = () => {
         ) : (
           <></>
         )}
+        <SMAA />
       </EffectComposer>
       <ambientLight intensity={0.5} />
       <SpaceShip />

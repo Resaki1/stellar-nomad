@@ -4,11 +4,13 @@ import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
 import { FrontSide, Mesh, Vector3 } from "three";
 
-const position = new Vector3(0, 0, 19000);
+const position = new Vector3(65_000, 0, 130_000);
 
 type StarProps = {
   bloom: boolean;
 };
+
+const RADIUS = 696.34;
 
 const Star = ({ bloom }: StarProps) => {
   const star = useRef<Mesh>(null!);
@@ -26,7 +28,7 @@ const Star = ({ bloom }: StarProps) => {
         intensity={10}
         color="white"
         castShadow
-        scale={512}
+        scale={RADIUS}
       />
       <mesh ref={star} position={position}>
         {!bloom && (
@@ -34,7 +36,7 @@ const Star = ({ bloom }: StarProps) => {
             <Image url="/assets/star.png" scale={2048} transparent />
           </Billboard>
         )}
-        <Sphere args={[512, 16, 16]}>
+        <Sphere args={[RADIUS, 16, 16]}>
           <meshBasicMaterial
             color={[512, 512, 512]}
             toneMapped={false}

@@ -22,13 +22,13 @@ const StarsComponent = () => {
   return (
     <Stars
       ref={stars}
-      radius={4000}
-      depth={50}
-      count={5000}
-      factor={100}
+      radius={100_000}
+      depth={500}
+      count={20_000}
+      factor={2_000}
       saturation={0}
       fade
-      speed={0.2}
+      speed={0.0}
     />
   );
 };
