@@ -385,9 +385,9 @@ function Planet({
   }, []);
 
   useFrame(() => {
-    if (!groupRef.current) return;
-
-    groupRef.current.getWorldPosition(earthScaled);
+    relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
+    relativeKm.sub(worldOrigin.worldOriginKm);
+    toScaledUnitsKm(relativeKm, earthScaled);
 
     relativeKm.set(sunPositionKm[0], sunPositionKm[1], sunPositionKm[2]);
     relativeKm.sub(worldOrigin.worldOriginKm);
