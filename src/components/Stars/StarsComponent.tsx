@@ -8,6 +8,8 @@ import {
   Material,
 } from "three";
 
+import { SCALED_UNITS_PER_KM } from "@/sim/units";
+
 const StarsComponent = () => {
   const stars = useRef<
     Points<BufferGeometry<NormalBufferAttributes>, Material | Material[]>
@@ -15,7 +17,9 @@ const StarsComponent = () => {
 
   useFrame(({ camera }) => {
     if (stars.current) {
-      stars.current.position.copy(camera.position);
+      stars.current.position
+        .copy(camera.position)
+        .multiplyScalar(SCALED_UNITS_PER_KM);
     }
   });
 

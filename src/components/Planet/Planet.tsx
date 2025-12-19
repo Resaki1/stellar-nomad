@@ -1,26 +1,27 @@
 "use client";
 
-import { memo, useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { AdditiveBlending, BackSide, FrontSide, Group, Mesh } from "three";
 
-const PLANET_OFFSET = new THREE.Vector3(10, 0, -10);
+import {
+  SCALED_UNITS_PER_KM,
+  Vector3Like,
+  asVector3,
+  toScaledUnitsKm,
+} from "@/sim/units";
+import { useWorldOriginKm } from "@/sim/worldOrigin";
+
 const PLANET_ROTATION = new THREE.Euler(
   1.1 * Math.PI,
   1.8 * Math.PI,
   0.8 * Math.PI
 );
-const PLANET_RADIUS = 6.37;
-
-// matches your Star.tsx convention
-const SUN_OFFSET_FROM_CAMERA = new THREE.Vector3(8000, 0, 19000);
-
-// Eclipse disabled by default (moon far away)
-const DEFAULT_MOON_OFFSET_FROM_CAMERA = new THREE.Vector3(1e9, 0, 0);
-const DEFAULT_MOON_RADIUS = 1.0;
-const DEFAULT_SUN_RADIUS = 695700;
+const PLANET_RADIUS_KM = 6371;
+const DEFAULT_MOON_RADIUS_KM = 1737;
+const DEFAULT_SUN_RADIUS_KM = 696_340;
+const DEFAULT_MOON_POSITION_KM = new THREE.Vector3(1e9, 0, 0);
 
 const earthVertexShader = /* glsl */ `
   varying vec2 vUv;
@@ -242,12 +243,12 @@ const fresnelFragmentShader = /* glsl */ `
 `;
 
 type PlanetProps = {
-  planetOffset?: THREE.Vector3;
-  sunOffsetFromCamera?: THREE.Vector3;
-  moonOffsetFromCamera?: THREE.Vector3;
-  moonRadius?: number;
-  sunRadius?: number;
-  radius?: number;
+  planetPositionKm: Vector3Like;
+  sunPositionKm: Vector3Like;
+  moonPositionKm?: Vector3Like;
+  moonRadiusKm?: number;
+  sunRadiusKm?: number;
+  radiusKm?: number;
 };
 
 function setTextureColorSpace(
@@ -267,20 +268,34 @@ function setTextureColorSpace(
 }
 
 function Planet({
-  planetOffset = PLANET_OFFSET,
-  sunOffsetFromCamera = SUN_OFFSET_FROM_CAMERA,
-  moonOffsetFromCamera = DEFAULT_MOON_OFFSET_FROM_CAMERA,
-  moonRadius = DEFAULT_MOON_RADIUS,
-  sunRadius = DEFAULT_SUN_RADIUS,
-  radius = PLANET_RADIUS,
+  planetPositionKm,
+  sunPositionKm,
+  moonPositionKm = DEFAULT_MOON_POSITION_KM,
+  moonRadiusKm = DEFAULT_MOON_RADIUS_KM,
+  sunRadiusKm = DEFAULT_SUN_RADIUS_KM,
+  radiusKm = PLANET_RADIUS_KM,
 }: PlanetProps) {
   const groupRef = useRef<Group>(null!);
+  const worldOrigin = useWorldOriginKm();
+
+  const planetSim = useRef(new THREE.Vector3());
+  const sunSim = useRef(new THREE.Vector3());
+  const moonSim = useRef(new THREE.Vector3());
+  const originVec = useRef(new THREE.Vector3());
+  const planetWorld = useRef(new THREE.Vector3());
+  const sunWorld = useRef(new THREE.Vector3());
+  const moonWorld = useRef(new THREE.Vector3());
+  const sunRelative = useRef(new THREE.Vector3());
 
   const sphereGeo = useMemo(() => {
-    const g = new THREE.SphereGeometry(radius, 64, 64);
+    const g = new THREE.SphereGeometry(
+      radiusKm * SCALED_UNITS_PER_KM,
+      64,
+      64
+    );
     g.computeTangents();
     return g;
-  }, [radius]);
+  }, [radiusKm]);
 
   const tex = useTexture({
     day: "/textures/earth_day.webp",
@@ -323,15 +338,15 @@ function Planet({
         uNormalPower: { value: 0.6 },
 
         uMoonPos: { value: new THREE.Vector3(1e9, 0, 0) },
-        uMoonRadius: { value: moonRadius },
-        uSunRadius: { value: sunRadius },
+        uMoonRadius: { value: moonRadiusKm * SCALED_UNITS_PER_KM },
+        uSunRadius: { value: sunRadiusKm * SCALED_UNITS_PER_KM },
 
         uNightBoost: { value: 0.5 }, // tweak 1.0–3.0
         uCloudOpacity: { value: 0.65 }, // tweak 0.2–0.9
       },
       side: FrontSide,
     });
-  }, [tex, moonRadius, sunRadius]);
+  }, [moonRadiusKm, sunRadiusKm, tex]);
 
   const atmosphereMat = useMemo(() => {
     return new THREE.ShaderMaterial({
@@ -362,26 +377,59 @@ function Planet({
     });
   }, []);
 
-  useFrame(({ camera }) => {
-    if (!groupRef.current) return;
+  useEffect(() => {
+    asVector3(planetPositionKm, planetSim.current);
+  }, [planetPositionKm]);
 
-    // Move planet with camera to avoid unhandled collision issues
-    groupRef.current.position.copy(camera.position).add(planetOffset);
+  useEffect(() => {
+    asVector3(sunPositionKm, sunSim.current);
+  }, [sunPositionKm]);
 
-    const earthWorld = groupRef.current.position.clone();
+  useEffect(() => {
+    asVector3(moonPositionKm, moonSim.current);
+  }, [moonPositionKm]);
 
-    const sunWorld = camera.position.clone().add(sunOffsetFromCamera);
-    const moonWorld = camera.position.clone().add(moonOffsetFromCamera);
+  useEffect(() => {
+    originVec.current.set(worldOrigin[0], worldOrigin[1], worldOrigin[2]);
 
-    const sunRel = sunWorld.sub(earthWorld);
+    if (groupRef.current) {
+      planetWorld.current.copy(groupRef.current.position);
+    } else {
+      planetWorld.current.copy(planetSim.current).sub(originVec.current);
+      toScaledUnitsKm(planetWorld.current, planetWorld.current);
+    }
 
-    earthMat.uniforms.uEarthPos.value.copy(groupRef.current.position);
-    earthMat.uniforms.uSunRel.value.copy(sunRel);
-    earthMat.uniforms.uMoonPos.value.copy(moonWorld);
+    sunWorld.current.copy(sunSim.current).sub(originVec.current);
+    moonWorld.current.copy(moonSim.current).sub(originVec.current);
 
-    atmosphereMat.uniforms.uSunRel.value.copy(sunRel);
-    fresnelMat.uniforms.uSunRel.value.copy(sunRel);
-  });
+    toScaledUnitsKm(sunWorld.current, sunWorld.current);
+    toScaledUnitsKm(moonWorld.current, moonWorld.current);
+
+    sunRelative.current.copy(sunWorld.current).sub(planetWorld.current);
+
+    if (groupRef.current) {
+      groupRef.current.position.copy(planetWorld.current);
+    }
+
+    earthMat.uniforms.uEarthPos.value.copy(planetWorld.current);
+    earthMat.uniforms.uSunRel.value.copy(sunRelative.current);
+    earthMat.uniforms.uMoonPos.value.copy(moonWorld.current);
+    earthMat.uniforms.uMoonRadius.value = moonRadiusKm * SCALED_UNITS_PER_KM;
+    earthMat.uniforms.uSunRadius.value = sunRadiusKm * SCALED_UNITS_PER_KM;
+
+    atmosphereMat.uniforms.uSunRel.value.copy(sunRelative.current);
+    fresnelMat.uniforms.uSunRel.value.copy(sunRelative.current);
+  }, [
+    atmosphereMat,
+    earthMat,
+    fresnelMat,
+    moonPositionKm,
+    moonRadiusKm,
+    planetPositionKm,
+    sunPositionKm,
+    sunRadiusKm,
+    worldOrigin,
+  ]);
 
   return (
     <group ref={groupRef} rotation={PLANET_ROTATION}>

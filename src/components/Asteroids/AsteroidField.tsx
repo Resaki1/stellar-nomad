@@ -3,7 +3,10 @@ import { Asteroid01, Instances } from "../models/asteroids/01/Asteroid01";
 import { Euler, Vector3 } from "three";
 import random from "@/helpers/random";
 
-const fieldPosition = new Vector3(0, 0, 400);
+import SimGroup from "@/components/space/SimGroup";
+import { Vector3Like } from "@/sim/units";
+
+const fieldPositionKm: Vector3Like = [0, 0, 400];
 
 const AsteroidField = () => {
   const rng = random(12344);
@@ -27,22 +30,24 @@ const AsteroidField = () => {
   }, []);
 
   return (
-    <Instances position={fieldPosition} frustumCulled={false}>
-      {positions.map((pos, i) => {
-        return (
-          <Asteroid01
-            key={i}
-            position={
-              new Vector3(pos[0] * scale, pos[1] * scale, pos[2] * scale)
-            }
-            scale={rng.nextFloat() * 10}
-            rotation={
-              new Euler(rng.nextFloat(), rng.nextFloat(), rng.nextFloat())
-            }
-          />
-        );
-      })}
-    </Instances>
+    <SimGroup space="local" positionKm={fieldPositionKm}>
+      <Instances frustumCulled={false}>
+        {positions.map((pos, i) => {
+          return (
+            <Asteroid01
+              key={i}
+              position={
+                new Vector3(pos[0] * scale, pos[1] * scale, pos[2] * scale)
+              }
+              scale={rng.nextFloat() * 10}
+              rotation={
+                new Euler(rng.nextFloat(), rng.nextFloat(), rng.nextFloat())
+              }
+            />
+          );
+        })}
+      </Instances>
+    </SimGroup>
   );
 };
 

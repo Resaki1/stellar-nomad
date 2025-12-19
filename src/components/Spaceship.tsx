@@ -1,14 +1,14 @@
 import { logLimit } from "@/helpers/math";
 import { useFrame } from "@react-three/fiber";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useAtomValue, useSetAtom } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
+import { useMaybeRecenterOrigin, useWorldOriginKm } from "@/sim/worldOrigin";
 
 const quaternion = new Quaternion();
-const zeroVector = new Vector3(0, 0, 0);
 const xAxis = new Vector3(1, 0, 0);
 const yAxis = new Vector3(0, 1, 0);
 const direction = new Vector3(0, 0, 1); // This is the forward direction in the spaceship's local space
@@ -26,16 +26,25 @@ const hudUpdateInterval = 0.25;
 const SpaceShip = () => {
   const movement = useAtomValue(movementAtom);
   const setHudInfo = useSetAtom(hudInfoAtom);
+  const worldOrigin = useWorldOriginKm();
+  const maybeRecenter = useMaybeRecenterOrigin();
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
-  const velocity = useRef(zeroVector);
+  const velocity = useRef(new Vector3());
+  const simPositionKm = useRef(new Vector3());
+  const relativePosition = useRef(new Vector3());
+  const originVec = useRef(new Vector3());
+  const oldSimPosition = useRef(new Vector3());
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
   const visualRoll = useRef(0); // Current visual roll
   const visualPitch = useRef(0); // Current visual pitch
   const currentSpeed = useRef(0);
-  const oldPosition = useRef(zeroVector);
+
+  useEffect(() => {
+    originVec.current.set(worldOrigin[0], worldOrigin[1], worldOrigin[2]);
+  }, [worldOrigin]);
 
   useFrame(({ camera }, delta) => {
     if (shipRef.current && modelRef.current) {
@@ -104,19 +113,24 @@ const SpaceShip = () => {
         shipSpeed * currentSpeed.current * delta
       );
 
-      // Update spaceship position based on velocity and delta time
-      shipRef.current.position.add(velocity.current);
+      // Update simulation position based on velocity and delta time (km)
+      simPositionKm.current.add(velocity.current);
 
       timeAccumulator += delta;
       if (timeAccumulator > hudUpdateInterval) {
         setHudInfo({
           speed:
-            shipRef.current.position.distanceTo(oldPosition.current) /
+            simPositionKm.current.distanceTo(oldSimPosition.current) /
             hudUpdateInterval,
         });
         timeAccumulator = 0;
-        oldPosition.current.copy(shipRef.current.position);
+        oldSimPosition.current.copy(simPositionKm.current);
       }
+
+      relativePosition.current
+        .copy(simPositionKm.current)
+        .sub(originVec.current);
+      shipRef.current.position.copy(relativePosition.current);
 
       // Calculate the camera's position
       offsetVector
@@ -134,12 +148,15 @@ const SpaceShip = () => {
       camera.quaternion
         .copy(shipRef.current.quaternion)
         .multiply(rotationQuaternion);
+
+      maybeRecenter(simPositionKm.current);
     }
   });
 
   return (
     <mesh ref={shipRef}>
       <mesh ref={modelRef}>
+        {/* TODO: rescale ship model to canonical km units when asset scale is defined. */}
         <ShipOne />
       </mesh>
     </mesh>
