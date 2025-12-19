@@ -7,6 +7,7 @@ import { lerp } from "three/src/math/MathUtils.js";
 import { useAtomValue, useSetAtom } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { toLocalUnitsKm } from "@/sim/units";
 
 const quaternion = new Quaternion();
 const xAxis = new Vector3(1, 0, 0);
@@ -34,6 +35,7 @@ const SpaceShip = () => {
   const modelRef = useRef<Mesh>(null!);
   const shipSimPos = useRef(new Vector3());
   const velocity = useRef(new Vector3());
+  const localRelative = useRef(new Vector3());
 
   const movementYaw = useRef(0); // Current roll
   const movementPitch = useRef(0); // Current yaw
@@ -114,9 +116,11 @@ const SpaceShip = () => {
       worldOrigin.setShipPosKm(shipSimPos.current);
       worldOrigin.maybeRecenter(shipSimPos.current);
 
-      shipRef.current.position
+      localRelative.current
         .copy(shipSimPos.current)
         .sub(worldOrigin.worldOriginKm);
+
+      toLocalUnitsKm(localRelative.current, shipRef.current.position);
 
       timeAccumulator += delta;
       if (timeAccumulator > hudUpdateInterval) {

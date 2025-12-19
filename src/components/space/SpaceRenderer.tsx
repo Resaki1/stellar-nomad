@@ -3,10 +3,11 @@
 import { ReactNode, useEffect, useMemo } from "react";
 import { createPortal, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { SCALED_UNITS_PER_KM } from "@/sim/units";
+import { LOCAL_TO_SCALED_FROM_LOCAL_UNITS } from "@/sim/units";
 
 const LOCAL_CAMERA_NEAR = 0.01;
-const LOCAL_CAMERA_FAR = 20_000;
+// 20,000 km expressed in local meters
+const LOCAL_CAMERA_FAR = 20_000 * 1000;
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
 
@@ -49,7 +50,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   }, [localCamera.fov, scaledCamera, size.height, size.width]);
 
   useFrame(() => {
-    tempScaledPos.copy(localCamera.position).multiplyScalar(SCALED_UNITS_PER_KM);
+    tempScaledPos
+      .copy(localCamera.position)
+      .multiplyScalar(LOCAL_TO_SCALED_FROM_LOCAL_UNITS);
     scaledCamera.position.copy(tempScaledPos);
     scaledCamera.quaternion.copy(localCamera.quaternion);
 
