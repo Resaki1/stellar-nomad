@@ -19,7 +19,7 @@ rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 
 const shipHandling = 1.5;
 const maxRotationSpeed = shipHandling / 2;
-const shipSpeed = 100;
+const shipSpeed = 25; // km per second in sim space; keep approach speeds believable
 let timeAccumulator = 0;
 const hudUpdateInterval = 0.25;
 
@@ -109,7 +109,7 @@ const SpaceShip = () => {
       // Update spaceship simulation position based on velocity and delta time
       shipSimPos.current.add(velocity.current);
       worldOrigin.setShipPosKm(shipSimPos.current);
-      worldOrigin.maybeRecenter(shipSimPos.current);
+      worldOrigin.maybeRecenter(shipSimPos.current, delta);
 
       shipRef.current.position
         .copy(shipSimPos.current)
