@@ -3,8 +3,6 @@ import { Asteroid01, Instances } from "../models/asteroids/01/Asteroid01";
 import { Euler, Vector3 } from "three";
 import random from "@/helpers/random";
 
-const fieldPosition = new Vector3(0, 0, 400);
-
 const AsteroidField = () => {
   const rng = random(12344);
   const width = 1000;
@@ -27,7 +25,7 @@ const AsteroidField = () => {
   }, []);
 
   return (
-    <Instances position={fieldPosition} frustumCulled={false}>
+    <Instances position={[0, 0, 0]} frustumCulled={false}>
       {positions.map((pos, i) => {
         return (
           <Asteroid01

@@ -7,15 +7,21 @@ import {
   NormalBufferAttributes,
   Material,
 } from "three";
+import { SCALED_UNITS_PER_KM } from "@/sim/units";
 
-const StarsComponent = () => {
+type StarsComponentProps = {
+  space?: "local" | "scaled";
+};
+const StarsComponent = ({ space = "local" }: StarsComponentProps) => {
   const stars = useRef<
     Points<BufferGeometry<NormalBufferAttributes>, Material | Material[]>
   >(null!);
 
   useFrame(({ camera }) => {
     if (stars.current) {
-      stars.current.position.copy(camera.position);
+      stars.current.position
+        .copy(camera.position)
+        .multiplyScalar(space === "scaled" ? SCALED_UNITS_PER_KM : 1);
     }
   });
 

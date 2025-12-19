@@ -1,43 +1,38 @@
 /* eslint-disable jsx-a11y/alt-text */
 import { Billboard, Image, Sphere } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
-import { useRef } from "react";
-import { FrontSide, Mesh, Vector3 } from "three";
+import { useMemo, useRef } from "react";
+import { FrontSide, Mesh } from "three";
+import SimGroup from "@/components/space/SimGroup";
+import { Vector3Tuple, kmToScaledUnits } from "@/sim/units";
 
-const position = new Vector3(65_000, 0, 130_000);
+const SUN_POSITION_KM: Vector3Tuple = [65_000_000, 0, 130_000_000];
 
 type StarProps = {
   bloom: boolean;
 };
 
-const RADIUS = 696.34;
+const RADIUS_KM = 696_340;
 
 const Star = ({ bloom }: StarProps) => {
   const star = useRef<Mesh>(null!);
-
-  // move star with camera to avoid unhandled colission issues
-  useFrame(({ camera }) => {
-    if (star.current) {
-      star.current.position.copy(camera.position).add(position);
-    }
-  });
+  const radiusScaled = useMemo(() => kmToScaledUnits(RADIUS_KM), []);
 
   return (
-    <>
+    <SimGroup space="scaled" positionKm={SUN_POSITION_KM}>
       <directionalLight // Star
-        position={position}
+        position={[0, 0, 0]}
         intensity={10}
         color="white"
         castShadow
-        scale={RADIUS}
+        scale={radiusScaled}
       />
-      <mesh ref={star} position={position}>
+      <mesh ref={star}>
         {!bloom && (
           <Billboard>
             <Image url="/assets/star.png" scale={2048} transparent />
           </Billboard>
         )}
-        <Sphere args={[RADIUS, 16, 16]}>
+        <Sphere args={[radiusScaled, 16, 16]}>
           <meshBasicMaterial
             color={[512, 512, 512]}
             toneMapped={false}
@@ -46,7 +41,7 @@ const Star = ({ bloom }: StarProps) => {
           />
         </Sphere>
       </mesh>
-    </>
+    </SimGroup>
   );
 };
 
