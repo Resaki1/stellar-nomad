@@ -16,6 +16,7 @@ import Planet from "../Planet/Planet";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import StarsComponent from "../Stars/StarsComponent";
+import SpaceRenderer, { LOCAL_CAMERA_FAR, LOCAL_CAMERA_NEAR } from "../space/SpaceRenderer";
 import { memo } from "react";
 import Anchor from "./Anchor";
 import { HalfFloatType, NoToneMapping } from "three";
@@ -31,7 +32,7 @@ const Scene = () => {
   return (
     <Canvas
       style={{ background: "black" }}
-      camera={{ far: 200_000 }}
+      camera={{ near: LOCAL_CAMERA_NEAR, far: LOCAL_CAMERA_FAR }}
       frameloop="always"
       dpr={[0.5, 1.5]}
       gl={{
@@ -65,12 +66,23 @@ const Scene = () => {
         )}
         <SMAA />
       </EffectComposer>
-      <ambientLight intensity={0.5} />
-      <SpaceShip />
-      <StarsComponent />
-      <AsteroidField />
-      <Planet />
-      <Star bloom={settings.bloom} />
+      <SpaceRenderer
+        scaled={
+          <>
+            <StarsComponent />
+            <Planet />
+            <Star bloom={settings.bloom} />
+          </>
+        }
+        local={
+          <>
+            <ambientLight intensity={0.5} />
+            <SpaceShip />
+            {/* TODO: rescale ship/asteroid meshes to physical km units. */}
+            <AsteroidField />
+          </>
+        }
+      />
       <AdaptiveDpr pixelated />
       <AdaptiveEvents />
       <Anchor />
