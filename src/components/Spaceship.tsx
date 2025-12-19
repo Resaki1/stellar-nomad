@@ -39,6 +39,7 @@ const SpaceShip = () => {
   const currentSpeed = useRef(0);
   const oldPosition = useRef(new Vector3());
 
+  // Run early so floating-origin recentering happens before other scene updates.
   useFrame(({ camera }, delta) => {
     if (shipRef.current && modelRef.current) {
       if (movement.yaw) {
@@ -143,7 +144,7 @@ const SpaceShip = () => {
         .copy(shipRef.current.quaternion)
         .multiply(rotationQuaternion);
     }
-  });
+  }, -1);
 
   return (
     <mesh ref={shipRef}>
