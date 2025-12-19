@@ -19,7 +19,10 @@ rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 
 const shipHandling = 1.5;
 const maxRotationSpeed = shipHandling / 2;
-const shipSpeed = 10;
+// Simulation space is kilometers, but ship speeds are authored in meters/second
+// to align with the HUD and player expectation. Convert to km/s for integration.
+const SHIP_MAX_SPEED_MPS = 100;
+const SHIP_MAX_SPEED_KMPS = SHIP_MAX_SPEED_MPS / 1000;
 let timeAccumulator = 0;
 const hudUpdateInterval = 0.25;
 
@@ -104,7 +107,7 @@ const SpaceShip = () => {
       // Set velocity to direction multiplied by speed
       velocity.current
         .copy(direction)
-        .multiplyScalar(shipSpeed * currentSpeed.current * delta);
+        .multiplyScalar(SHIP_MAX_SPEED_KMPS * currentSpeed.current * delta);
 
       // Update spaceship simulation position based on velocity and delta time
       shipSimPos.current.add(velocity.current);
@@ -117,10 +120,12 @@ const SpaceShip = () => {
 
       timeAccumulator += delta;
       if (timeAccumulator > hudUpdateInterval) {
+        const speedKmPerSec =
+          shipSimPos.current.distanceTo(oldPosition.current) / hudUpdateInterval;
+
         setHudInfo({
-          speed:
-            shipSimPos.current.distanceTo(oldPosition.current) /
-            hudUpdateInterval,
+          // HUD expects meters/second; simulation runs in kilometers.
+          speed: speedKmPerSec * 1000,
         });
         timeAccumulator = 0;
         oldPosition.current.copy(shipSimPos.current);
