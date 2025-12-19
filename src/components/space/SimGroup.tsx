@@ -1,9 +1,10 @@
 "use client";
 
-import { ReactNode, useEffect, useMemo, useRef } from "react";
+import { ReactNode, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { toLocalUnitsKm, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { useFrame } from "@react-three/fiber";
 
 type SimGroupProps = {
   space: "local" | "scaled";
@@ -18,7 +19,7 @@ const SimGroup = ({ space, positionKm, children }: SimGroupProps) => {
   const cachedPosition = useMemo(() => new THREE.Vector3(), []);
   const relativeKm = useMemo(() => new THREE.Vector3(), []);
 
-  useEffect(() => {
+  useFrame(() => {
     relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
     relativeKm.sub(worldOrigin.worldOriginKm);
 
@@ -31,7 +32,7 @@ const SimGroup = ({ space, positionKm, children }: SimGroupProps) => {
     if (groupRef.current) {
       groupRef.current.position.copy(cachedPosition);
     }
-  }, [cachedPosition, positionKm, relativeKm, space, worldOrigin.originVersion, worldOrigin.worldOriginKm]);
+  });
 
   return <group ref={groupRef}>{children}</group>;
 };
