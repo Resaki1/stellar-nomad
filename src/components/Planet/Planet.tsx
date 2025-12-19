@@ -16,9 +16,7 @@ const PLANET_ROTATION = new THREE.Euler(
   0.8 * Math.PI
 );
 const DEFAULT_PLANET_POSITION_KM: readonly [number, number, number] = [
-  150_000,
-  0,
-  -300_000,
+  4_000, 0, -12_000,
 ];
 const DEFAULT_PLANET_RADIUS_KM = 6371;
 const DEFAULT_SUN_POSITION_KM = STAR_POSITION_KM;
@@ -302,7 +300,10 @@ function Planet({
     () => kmToScaledUnits(moonRadiusKm),
     [moonRadiusKm]
   );
-  const sunRadiusScaled = useMemo(() => kmToScaledUnits(sunRadiusKm), [sunRadiusKm]);
+  const sunRadiusScaled = useMemo(
+    () => kmToScaledUnits(sunRadiusKm),
+    [sunRadiusKm]
+  );
 
   const sunScaled = useMemo(() => new THREE.Vector3(), []);
   const moonScaled = useMemo(() => new THREE.Vector3(), []);

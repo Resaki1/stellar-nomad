@@ -125,7 +125,8 @@ const SpaceShip = () => {
       timeAccumulator += delta;
       if (timeAccumulator > hudUpdateInterval) {
         const speedKmPerSec =
-          shipSimPos.current.distanceTo(oldPosition.current) / hudUpdateInterval;
+          shipSimPos.current.distanceTo(oldPosition.current) /
+          hudUpdateInterval;
 
         setHudInfo({
           // HUD expects meters/second; simulation runs in kilometers.

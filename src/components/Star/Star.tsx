@@ -10,9 +10,7 @@ type StarProps = {
 };
 
 export const STAR_POSITION_KM: readonly [number, number, number] = [
-  65_000_000,
-  0,
-  130_000_000,
+  65_000_000, 0, 130_000_000,
 ];
 const RADIUS = kmToScaledUnits(696_340);
 
