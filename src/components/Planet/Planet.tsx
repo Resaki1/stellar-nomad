@@ -2,9 +2,9 @@
 
 import { memo, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { Sphere, useTexture } from "@react-three/drei";
 import * as THREE from "three";
-import { AdditiveBlending, FrontSide } from "three";
+import { FrontSide } from "three";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
@@ -16,17 +16,22 @@ const PLANET_ROTATION = new THREE.Euler(
   0.8 * Math.PI
 );
 const DEFAULT_PLANET_POSITION_KM: readonly [number, number, number] = [
-  150_000,
-  0,
-  -300_000,
+  5_000, 0, -15_000,
 ];
 const DEFAULT_PLANET_RADIUS_KM = 6371;
 const DEFAULT_SUN_POSITION_KM = STAR_POSITION_KM;
 
 // Eclipse disabled by default (moon far away)
 const DEFAULT_MOON_POSITION_KM: readonly [number, number, number] = [1e9, 0, 0];
-const DEFAULT_MOON_RADIUS_KM = 1737;
-const DEFAULT_SUN_RADIUS_KM = 696_340;
+const DEFAULT_MOON_RADIUS_KM = 1.737;
+const DEFAULT_SUN_RADIUS_KM = 696.34;
+
+const sunScaled = new THREE.Vector3();
+const moonScaled = new THREE.Vector3();
+const earthScaled = new THREE.Vector3();
+const sunRelative = new THREE.Vector3();
+const moonRelative = new THREE.Vector3();
+const relativeKm = new THREE.Vector3();
 
 const earthVertexShader = /* glsl */ `
   varying vec2 vUv;
@@ -284,12 +289,6 @@ function Planet({
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
-  const sphereGeo = useMemo(() => {
-    const g = new THREE.SphereGeometry(scaledRadius, 64, 64);
-    g.computeTangents();
-    return g;
-  }, [scaledRadius]);
-
   const tex = useTexture({
     day: "/textures/earth_day.webp",
     night: "/textures/earth_night.webp",
@@ -302,14 +301,10 @@ function Planet({
     () => kmToScaledUnits(moonRadiusKm),
     [moonRadiusKm]
   );
-  const sunRadiusScaled = useMemo(() => kmToScaledUnits(sunRadiusKm), [sunRadiusKm]);
-
-  const sunScaled = useMemo(() => new THREE.Vector3(), []);
-  const moonScaled = useMemo(() => new THREE.Vector3(), []);
-  const earthScaled = useMemo(() => new THREE.Vector3(), []);
-  const sunRelative = useMemo(() => new THREE.Vector3(), []);
-  const moonRelative = useMemo(() => new THREE.Vector3(), []);
-  const relativeKm = useMemo(() => new THREE.Vector3(), []);
+  const sunRadiusScaled = useMemo(
+    () => kmToScaledUnits(sunRadiusKm),
+    [sunRadiusKm]
+  );
 
   useMemo(() => {
     // Color textures
@@ -410,9 +405,17 @@ function Planet({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group rotation={PLANET_ROTATION}>
-        <mesh geometry={sphereGeo} material={earthMat} />
-        <mesh geometry={sphereGeo} material={atmosphereMat} scale={1.03} />
-        <mesh geometry={sphereGeo} material={fresnelMat} scale={1.002} />
+        <Sphere args={[scaledRadius, 64, 64]} material={earthMat} />
+        <Sphere
+          args={[scaledRadius, 64, 64]}
+          material={atmosphereMat}
+          scale={1.03}
+        />
+        <Sphere
+          args={[scaledRadius, 64, 64]}
+          material={fresnelMat}
+          scale={1.002}
+        />
       </group>
     </SimGroup>
   );

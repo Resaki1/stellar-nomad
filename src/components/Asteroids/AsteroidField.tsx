@@ -4,7 +4,7 @@ import { Euler, Vector3 } from "three";
 import random from "@/helpers/random";
 import SimGroup from "../space/SimGroup";
 
-const fieldPositionKm: readonly [number, number, number] = [0, 0, 400];
+const fieldPositionKm: readonly [number, number, number] = [0, 0, 0];
 
 const AsteroidField = () => {
   const rng = random(12344);
