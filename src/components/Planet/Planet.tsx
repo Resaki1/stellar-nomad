@@ -15,14 +15,14 @@ const PLANET_ROTATION = new THREE.Euler(
   1.8 * Math.PI,
   0.8 * Math.PI
 );
-const DEFAULT_PLANET_POSITION_KM: readonly [number, number, number] = [
+const DEFAULT_PLANET_POSITION_KM: [number, number, number] = [
   5_000, 0, -15_000,
 ];
 const DEFAULT_PLANET_RADIUS_KM = 6371;
 const DEFAULT_SUN_POSITION_KM = STAR_POSITION_KM;
 
 // Eclipse disabled by default (moon far away)
-const DEFAULT_MOON_POSITION_KM: readonly [number, number, number] = [1e9, 0, 0];
+const DEFAULT_MOON_POSITION_KM: [number, number, number] = [1e9, 0, 0];
 const DEFAULT_MOON_RADIUS_KM = 1.737;
 const DEFAULT_SUN_RADIUS_KM = 696.34;
 
@@ -253,9 +253,9 @@ const fresnelFragmentShader = /* glsl */ `
 `;
 
 type PlanetProps = {
-  positionKm?: readonly [number, number, number];
-  sunPositionKm?: readonly [number, number, number];
-  moonPositionKm?: readonly [number, number, number];
+  positionKm?: [number, number, number];
+  sunPositionKm?: [number, number, number];
+  moonPositionKm?: [number, number, number];
   moonRadiusKm?: number;
   sunRadiusKm?: number;
   radiusKm?: number;

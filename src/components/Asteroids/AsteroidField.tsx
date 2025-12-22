@@ -4,7 +4,7 @@ import { Euler, Vector3 } from "three";
 import random from "@/helpers/random";
 import SimGroup from "../space/SimGroup";
 
-const fieldPositionKm: readonly [number, number, number] = [0, 0, 0];
+const fieldPositionKm: [number, number, number] = [0, 0, 0];
 
 const AsteroidField = () => {
   const rng = random(12344);
@@ -34,14 +34,10 @@ const AsteroidField = () => {
           return (
             <Asteroid01
               key={i}
-              position={
-                new Vector3(pos[0] * scale, pos[1] * scale, pos[2] * scale)
-              }
+              position={[pos[0] * scale, pos[1] * scale, pos[2] * scale]}
               // TODO: align asset scale with canonical kilometers.
               scale={rng.nextFloat() * 10}
-              rotation={
-                new Euler(rng.nextFloat(), rng.nextFloat(), rng.nextFloat())
-              }
+              rotation={[rng.nextFloat(), rng.nextFloat(), rng.nextFloat()]}
             />
           );
         })}

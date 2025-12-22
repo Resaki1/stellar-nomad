@@ -1,7 +1,7 @@
 /* eslint-disable jsx-a11y/alt-text */
 import { Billboard, Image, Sphere } from "@react-three/drei";
 import { useRef } from "react";
-import { FrontSide, Mesh } from "three";
+import { FrontSide, Group } from "three";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
 
@@ -9,26 +9,17 @@ type StarProps = {
   bloom: boolean;
 };
 
-export const STAR_POSITION_KM: readonly [number, number, number] = [
-  65_000_000,
-  0,
-  130_000_000,
+export const STAR_POSITION_KM: [number, number, number] = [
+  130_000_000, 0, 130_000_000,
 ];
 const RADIUS = kmToScaledUnits(696_340);
 
 const Star = ({ bloom }: StarProps) => {
-  const star = useRef<Mesh>(null!);
+  const star = useRef<Group>(null!);
 
   return (
     <SimGroup space="scaled" positionKm={STAR_POSITION_KM}>
-      <directionalLight // Star
-        position={[0, 0, 0]}
-        intensity={10}
-        color="white"
-        castShadow
-        scale={RADIUS}
-      />
-      <mesh ref={star}>
+      <group ref={star}>
         {!bloom && (
           <Billboard>
             <Image url="/assets/star.png" scale={2048} transparent />
@@ -42,7 +33,7 @@ const Star = ({ bloom }: StarProps) => {
             depthTest={true}
           />
         </Sphere>
-      </mesh>
+      </group>
     </SimGroup>
   );
 };

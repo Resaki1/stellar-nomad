@@ -10,17 +10,16 @@ import {
 } from "three";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 
+const scaledPosition = new Vector3();
+
 const StarsComponent = () => {
   const stars = useRef<
     Points<BufferGeometry<NormalBufferAttributes>, Material | Material[]>
   >(null!);
-  const scaledPosition = useMemo(() => new Vector3(), []);
 
   useFrame(({ camera }) => {
     if (stars.current) {
-      scaledPosition
-        .copy(camera.position)
-        .multiplyScalar(SCALED_UNITS_PER_KM);
+      scaledPosition.copy(camera.position).multiplyScalar(SCALED_UNITS_PER_KM);
       stars.current.position.copy(scaledPosition);
     }
   });

@@ -42,10 +42,6 @@ const Scene = () => {
       >
         {settings.fps ? isSafari ? <Stats /> : <StatsGl /> : <></>}
         <SpaceRenderer
-          postprocess={{
-            bloom: settings.bloom,
-            toneMapping: settings.toneMapping,
-          }}
           scaled={
             <>
               <StarsComponent />

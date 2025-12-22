@@ -8,16 +8,16 @@ import { useFrame } from "@react-three/fiber";
 
 type SimGroupProps = {
   space: "local" | "scaled";
-  positionKm: readonly [number, number, number];
+  positionKm: [number, number, number];
   children?: ReactNode;
 };
+
+const cachedPosition = new THREE.Vector3();
+const relativeKm = new THREE.Vector3();
 
 const SimGroup = ({ space, positionKm, children }: SimGroupProps) => {
   const groupRef = useRef<THREE.Group>(null!);
   const worldOrigin = useWorldOrigin();
-
-  const cachedPosition = useMemo(() => new THREE.Vector3(), []);
-  const relativeKm = useMemo(() => new THREE.Vector3(), []);
 
   useFrame(() => {
     relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
