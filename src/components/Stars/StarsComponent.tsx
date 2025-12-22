@@ -1,12 +1,16 @@
 import { Stars } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 import {
   Points,
   BufferGeometry,
   NormalBufferAttributes,
   Material,
+  Vector3,
 } from "three";
+import { SCALED_UNITS_PER_KM } from "@/sim/units";
+
+const scaledPosition = new Vector3();
 
 const StarsComponent = () => {
   const stars = useRef<
@@ -15,7 +19,8 @@ const StarsComponent = () => {
 
   useFrame(({ camera }) => {
     if (stars.current) {
-      stars.current.position.copy(camera.position);
+      scaledPosition.copy(camera.position).multiplyScalar(SCALED_UNITS_PER_KM);
+      stars.current.position.copy(scaledPosition);
     }
   });
 

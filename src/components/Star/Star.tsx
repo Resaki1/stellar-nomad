@@ -1,37 +1,25 @@
 /* eslint-disable jsx-a11y/alt-text */
 import { Billboard, Image, Sphere } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
 import { useRef } from "react";
-import { FrontSide, Mesh, Vector3 } from "three";
-
-const position = new Vector3(65_000, 0, 130_000);
+import { FrontSide, Group } from "three";
+import SimGroup from "../space/SimGroup";
+import { kmToScaledUnits } from "@/sim/units";
 
 type StarProps = {
   bloom: boolean;
 };
 
-const RADIUS = 696.34;
+export const STAR_POSITION_KM: [number, number, number] = [
+  130_000_000, 0, 130_000_000,
+];
+const RADIUS = kmToScaledUnits(696_340);
 
 const Star = ({ bloom }: StarProps) => {
-  const star = useRef<Mesh>(null!);
-
-  // move star with camera to avoid unhandled colission issues
-  useFrame(({ camera }) => {
-    if (star.current) {
-      star.current.position.copy(camera.position).add(position);
-    }
-  });
+  const star = useRef<Group>(null!);
 
   return (
-    <>
-      <directionalLight // Star
-        position={position}
-        intensity={10}
-        color="white"
-        castShadow
-        scale={RADIUS}
-      />
-      <mesh ref={star} position={position}>
+    <SimGroup space="scaled" positionKm={STAR_POSITION_KM}>
+      <group ref={star}>
         {!bloom && (
           <Billboard>
             <Image url="/assets/star.png" scale={2048} transparent />
@@ -45,8 +33,8 @@ const Star = ({ bloom }: StarProps) => {
             depthTest={true}
           />
         </Sphere>
-      </mesh>
-    </>
+      </group>
+    </SimGroup>
   );
 };
 
