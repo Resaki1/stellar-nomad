@@ -15,6 +15,7 @@ import { NoToneMapping } from "three";
 import SpaceRenderer from "../space/SpaceRenderer";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
 import SunLight from "../Star/SunLight";
+import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -44,7 +45,7 @@ const Scene = () => {
         <SpaceRenderer
           scaled={
             <>
-              <StarsComponent />
+              <MilkyWaySkybox />
               <Planet />
               <Star bloom={settings.bloom} />
             </>

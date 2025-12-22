@@ -27,7 +27,7 @@ const Star = ({ bloom }: StarProps) => {
         )}
         <Sphere args={[RADIUS, 16, 16]}>
           <meshBasicMaterial
-            color={[512, 512, 512]}
+            color={[4096, 4096, 4096]}
             toneMapped={false}
             side={FrontSide}
             depthTest={true}

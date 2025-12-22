@@ -1,6 +1,8 @@
+// Deprecated: using image-based stars for realistic star positioning
+
 import { Stars } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useRef } from "react";
 import {
   Points,
   BufferGeometry,
