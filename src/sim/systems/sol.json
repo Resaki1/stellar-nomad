@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "systemId": "sol",
+  "units": { "distance": "km", "radius": "m", "angle": "deg" },
+
+  "defaults": {
+    "streaming": {
+      "chunkSizeKm": 20,
+      "loadRadiusKm": 15,
+      "unloadRadiusKm": 20,
+      "maxActiveChunks": 300
+    },
+    "render": {
+      "drawRadiusKm": 100,
+      "fadeKm": { "start": 8, "end": 10 }
+    },
+    "generation": {
+      "maxAsteroidsPerChunk": 100
+    }
+  },
+
+  "assets": {
+    "asteroidModels": [
+      {
+        "id": "asteroid_01",
+        "src": "/models/asteroids/asteroid01.glb",
+        "meshName": "Daphne_LP001_1_0",
+        "baseScale": 0.125,
+        "baseRotationDeg": [-90, 0, 0]
+      }
+    ]
+  },
+
+  "asteroidFields": [
+    {
+      "id": "origin_belt",
+      "seed": 12344,
+      "enabled": true,
+      "frame": "system",
+      "anchorKm": [0, 0, 0],
+
+      "shape": { "type": "sphere", "radiusKm": 3000 },
+
+      "population": {
+        "mode": "density",
+        "densityPerKm3": 0.0004,
+        "jitter": 0.25,
+        "maxPerChunk": 100
+      },
+
+      "size": {
+        "minRadiusM": 8,
+        "maxRadiusM": 1024,
+        "distribution": "logNormal",
+        "params": { "sigma": 1.0 }
+      },
+
+      "models": [{ "modelId": "asteroid_01", "weight": 1 }]
+    }
+  ]
+}
