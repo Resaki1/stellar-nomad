@@ -53,6 +53,7 @@ const ChunkModelMesh = memo(
         tempScale.set(s, s, s);
 
         tempMatrix.compose(tempPos, tempQuat, tempScale);
+        tempMatrix.multiply(baseMatrix); // IMPORTANT: post-multiply, doesn't scale translation
         mesh.setMatrixAt(i, tempMatrix);
       }
 
@@ -79,15 +80,24 @@ const ChunkModelMesh = memo(
       mesh.boundingSphere.radius = Math.sqrt(hx * hx + hy * hy + hz * hz) + r;
     }, [asset.baseRadiusM, instances, aabbSizeM]);
 
-    const rotation = asset.baseRotationRad;
-    const scale = asset.baseScale;
+    const baseMatrix = useMemo(() => {
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          asset.baseRotationRad[0],
+          asset.baseRotationRad[1],
+          asset.baseRotationRad[2]
+        )
+      );
+      const s = new THREE.Vector3(asset.baseScale, asset.baseScale, asset.baseScale);
+      m.compose(new THREE.Vector3(0, 0, 0), q, s);
+      return m;
+    }, [asset.baseRotationRad, asset.baseScale]);
 
     return (
       <instancedMesh
         ref={ref}
         args={[asset.geometry, asset.material, instances.count]}
-        rotation={rotation}
-        scale={scale}
         frustumCulled
       />
     );
