@@ -1,14 +1,15 @@
 // src/components/Asteroids/AsteroidField.tsx
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 
 import SimGroup from "@/components/space/SimGroup";
 import AsteroidChunk from "@/components/Asteroids/AsteroidChunk";
 
 import { systemConfigAtom } from "@/store/system";
+import { shipHealthAtom } from "@/store/store";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -70,6 +71,7 @@ const FieldLayer = memo(function FieldLayer({
 }: FieldLayerProps) {
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
+  const setShipHealth = useSetAtom(shipHealthAtom);
 
   const renderCfg = useMemo(() => resolveFieldRender(system, field), [system, field]);
 
@@ -106,6 +108,30 @@ const FieldLayer = memo(function FieldLayer({
 
   // Collision log throttling
   const lastCollisionLogMsRef = useRef<Map<number, number>>(new Map());
+
+  const removeAsteroidInstance = useCallback(
+    (instanceId: number) => {
+      const updatedChunk = fieldRuntime.removeInstance(instanceId);
+      if (!updatedChunk) return;
+
+      setRenderedChunks((prev) => {
+        let changed = false;
+
+        const next = prev.map((chunk) => {
+          if (chunk.key !== updatedChunk.key) return chunk;
+          changed = true;
+          return updatedChunk;
+        });
+
+        return changed ? next : prev;
+      });
+    },
+    [fieldRuntime]
+  );
+
+  const applyShipCollisionDamage = useCallback(() => {
+    setShipHealth((prev) => Math.max(0, prev - 10));
+  }, [setShipHealth]);
 
   useEffect(() => {
     // Reset runtime + render output on re-init.
@@ -458,6 +484,9 @@ const FieldLayer = memo(function FieldLayer({
                   approxDistanceM: Math.sqrt(d2),
                   chunkKey: chunk.key,
                 });
+
+                removeAsteroidInstance(instanceId);
+                applyShipCollisionDamage();
 
                 logsThisTick++;
                 if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;

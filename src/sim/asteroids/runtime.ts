@@ -1,4 +1,7 @@
-import type { AsteroidChunkData } from "./runtimeTypes";
+import type {
+  AsteroidChunkData,
+  AsteroidChunkModelInstances,
+} from "./runtimeTypes";
 
 const POW2_20 = 1_048_576; // 2^20
 const POW2_32 = 4_294_967_296; // 2^32
@@ -149,6 +152,102 @@ export class AsteroidFieldRuntime {
   }
 
   /**
+   * Remove a single asteroid instance from the runtime and return the updated chunk data if present.
+   * Returns null when the instance is not currently loaded.
+   */
+  removeInstance(instanceId: number): AsteroidChunkData | null {
+    const loc = this.getInstanceLocation(instanceId);
+    if (!loc) return null;
+
+    const chunk = this.chunks.get(loc.chunkKey);
+    if (!chunk) {
+      this.instanceIndex.delete(instanceId >>> 0);
+      return null;
+    }
+
+    const chunkHandle = this.chunkHandleByKey.get(loc.chunkKey);
+    const modelSlot = this.modelSlotById.get(loc.modelId);
+
+    if (chunkHandle === undefined || modelSlot === undefined) {
+      this.instanceIndex.delete(instanceId >>> 0);
+      return null;
+    }
+
+    const instances = chunk.instancesByModel[loc.modelId];
+    if (!instances || loc.localIndex >= instances.count) {
+      this.instanceIndex.delete(instanceId >>> 0);
+      return null;
+    }
+
+    const removedId = instances.instanceIds[loc.localIndex] >>> 0;
+    const lastIndex = instances.count - 1;
+    const nextCount = Math.max(0, instances.count - 1);
+
+    // Swap-delete to keep arrays dense, then trim to the new count.
+    const positions = instances.positionsM.slice();
+    const quaternions = instances.quaternions.slice();
+    const radii = instances.radiiM.slice();
+    const ids = instances.instanceIds.slice();
+
+    if (loc.localIndex !== lastIndex) {
+      const lastPos = lastIndex * 3;
+      const dstPos = loc.localIndex * 3;
+
+      positions[dstPos] = positions[lastPos];
+      positions[dstPos + 1] = positions[lastPos + 1];
+      positions[dstPos + 2] = positions[lastPos + 2];
+
+      const lastQuat = lastIndex * 4;
+      const dstQuat = loc.localIndex * 4;
+
+      quaternions[dstQuat] = quaternions[lastQuat];
+      quaternions[dstQuat + 1] = quaternions[lastQuat + 1];
+      quaternions[dstQuat + 2] = quaternions[lastQuat + 2];
+      quaternions[dstQuat + 3] = quaternions[lastQuat + 3];
+
+      radii[loc.localIndex] = radii[lastIndex];
+
+      const movedId = ids[lastIndex] >>> 0;
+      ids[loc.localIndex] = movedId;
+      this.instanceIndex.set(
+        movedId,
+        packInstanceRef(chunkHandle, modelSlot, loc.localIndex)
+      );
+    }
+
+    const trimmedPositions = positions.slice(0, nextCount * 3);
+    const trimmedQuaternions = quaternions.slice(0, nextCount * 4);
+    const trimmedRadii = radii.slice(0, nextCount);
+    const trimmedIds = ids.slice(0, nextCount);
+
+    const updatedInstances: AsteroidChunkModelInstances = {
+      ...instances,
+      count: nextCount,
+      positionsM: trimmedPositions,
+      quaternions: trimmedQuaternions,
+      radiiM: trimmedRadii,
+      instanceIds: trimmedIds,
+      maxRadiusM: instances.maxRadiusM,
+    };
+
+    const updatedInstancesByModel = {
+      ...chunk.instancesByModel,
+      [loc.modelId]: updatedInstances,
+    };
+
+    const updatedChunk: AsteroidChunkData = {
+      ...chunk,
+      instancesByModel: updatedInstancesByModel,
+      maxRadiusM: this.computeChunkMaxRadius(updatedInstancesByModel),
+    };
+
+    this.instanceIndex.delete(removedId);
+    this.chunks.set(loc.chunkKey, updatedChunk);
+
+    return updatedChunk;
+  }
+
+  /**
    * Add/replace a chunk and (re)build instanceId -> location index entries for it.
    */
   upsertChunk(chunk: AsteroidChunkData): void {
@@ -295,6 +394,25 @@ export class AsteroidFieldRuntime {
         if (current === expected) this.instanceIndex.delete(id);
       }
     }
+  }
+
+  private computeChunkMaxRadius(
+    instancesByModel: Record<string, AsteroidChunkModelInstances>
+  ): number {
+    let maxRadius = 0;
+
+    for (const modelId in instancesByModel) {
+      const inst = instancesByModel[modelId];
+      if (inst.count === 0) continue;
+
+      // Scan radii; chunks are small so linear scan is fine here.
+      for (let i = 0; i < inst.count; i++) {
+        const r = inst.radiiM[i];
+        if (r > maxRadius) maxRadius = r;
+      }
+    }
+
+    return maxRadius;
   }
 }
 
