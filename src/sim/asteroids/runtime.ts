@@ -418,13 +418,22 @@ export class AsteroidFieldRuntime {
 
 export class AsteroidSystemRuntime {
   private readonly fields = new Map<string, AsteroidFieldRuntime>();
+  
+  // Debug ID to verify instance identity
+  readonly instanceId = Math.random().toString(36).slice(2, 8);
 
   getOrCreateFieldRuntime(fieldId: string): AsteroidFieldRuntime {
     const existing = this.fields.get(fieldId);
-    if (existing) return existing;
+    if (existing) {
+      // eslint-disable-next-line no-console
+      console.log("[AsteroidSystemRuntime] Returning existing field", { fieldId, fieldsSize: this.fields.size });
+      return existing;
+    }
 
     const rt = new AsteroidFieldRuntime(fieldId);
     this.fields.set(fieldId, rt);
+    // eslint-disable-next-line no-console
+    console.log("[AsteroidSystemRuntime] Created new field", { fieldId, fieldsSize: this.fields.size });
     return rt;
   }
 
@@ -435,12 +444,16 @@ export class AsteroidSystemRuntime {
   removeFieldRuntime(fieldId: string): void {
     const rt = this.fields.get(fieldId);
     if (!rt) return;
+    // eslint-disable-next-line no-console
+    console.log("[AsteroidSystemRuntime] Removing field", { fieldId, fieldsSize: this.fields.size });
 
     rt.clear();
     this.fields.delete(fieldId);
   }
 
   clear(): void {
+    // eslint-disable-next-line no-console
+    console.log("[AsteroidSystemRuntime] Clearing all fields", { fieldsSize: this.fields.size });
     this.fields.forEach((rt) => rt.clear());
     this.fields.clear();
   }
@@ -459,5 +472,26 @@ export class AsteroidSystemRuntime {
     });
 
     return found;
+  }
+
+  /**
+   * Iterate over all field runtimes. Use for operations that need to scan all fields.
+   */
+  forEachField(callback: (fieldRuntime: AsteroidFieldRuntime, fieldId: string) => void): void {
+    this.fields.forEach((rt, id) => callback(rt, id));
+  }
+
+  /**
+   * Get all field IDs currently registered.
+   */
+  getFieldIds(): string[] {
+    return Array.from(this.fields.keys());
+  }
+
+  /**
+   * Get the number of registered fields.
+   */
+  getFieldCount(): number {
+    return this.fields.size;
   }
 }

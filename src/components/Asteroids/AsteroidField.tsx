@@ -1,4 +1,3 @@
-// src/components/Asteroids/AsteroidField.tsx
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,10 +24,7 @@ import { makeChunkKey } from "@/sim/asteroids/runtimeTypes";
 import { useAsteroidModelRegistry } from "@/sim/asteroids/modelRegistry";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import {
-  prepareFieldShape,
-  distancePointToAabbKm,
-} from "@/sim/asteroids/shapes";
+import { prepareFieldShape, distancePointToAabbKm } from "@/sim/asteroids/shapes";
 
 import type { AsteroidChunkWorkerWorkerToMainMessage } from "@/workers/asteroidChunkWorkerProtocol";
 
@@ -80,21 +76,29 @@ const FieldLayer = memo(function FieldLayer({
     [system, field, renderCfg.drawRadiusKm]
   );
 
-  const generationCfg = useMemo(() => resolveFieldGeneration(system, field), [system, field]);
+  const generationCfg = useMemo(
+    () => resolveFieldGeneration(system, field),
+    [system, field]
+  );
 
   const models = useMemo(() => resolveFieldModels(system, field), [system, field]);
 
   const shape = useMemo(() => prepareFieldShape(field.shape), [field.shape]);
 
   // Authoritative runtime for this field (chunks + instanceId -> location index).
-  const fieldRuntime = useMemo(
-    () => asteroidRuntime.getOrCreateFieldRuntime(field.id),
-    [asteroidRuntime, field.id]
-  );
+  const fieldRuntime = useMemo(() => {
+    // eslint-disable-next-line no-console
+    console.log("[AsteroidField] Creating field runtime", {
+      fieldId: field.id,
+      runtimeId: asteroidRuntime.instanceId,
+    });
+    return asteroidRuntime.getOrCreateFieldRuntime(field.id);
+  }, [asteroidRuntime, field.id]);
 
   // Rendering state is derived from the runtime’s loaded chunks.
   const [renderedChunks, setRenderedChunks] = useState<AsteroidChunkData[]>([]);
   const lastRenderedKeysRef = useRef<string[]>([]);
+  const lastRenderedChunksRef = useRef<AsteroidChunkData[]>([]);
 
   // Worker lifecycle
   const workerRef = useRef<Worker | null>(null);
@@ -123,7 +127,12 @@ const FieldLayer = memo(function FieldLayer({
           return updatedChunk;
         });
 
-        return changed ? next : prev;
+        if (!changed) return prev;
+
+        // Nice-to-have: keep the ref in sync so the streaming tick doesn't do a redundant state update.
+        lastRenderedChunksRef.current = next;
+
+        return next;
       });
     },
     [fieldRuntime]
@@ -137,6 +146,7 @@ const FieldLayer = memo(function FieldLayer({
     // Reset runtime + render output on re-init.
     fieldRuntime.clear();
     lastRenderedKeysRef.current = [];
+    lastRenderedChunksRef.current = [];
     setRenderedChunks([]);
 
     // New epoch cancels stale results.
@@ -221,9 +231,13 @@ const FieldLayer = memo(function FieldLayer({
 
   useEffect(() => {
     // Cleanup field runtime when the layer unmounts.
+    // Note: We intentionally do NOT remove the field runtime here because:
+    // 1. React Strict Mode causes mount/unmount/remount cycles
+    // 2. The field runtime is shared and may be accessed by other components (like MiningSystem)
+    // 3. The runtime will be cleared and recreated if the field config changes
     return () => {
+      // Only clear the chunks, don't remove the field from the system runtime
       fieldRuntime.clear();
-      asteroidRuntime.removeFieldRuntime(field.id);
     };
   }, [asteroidRuntime, field.id, fieldRuntime]);
 
@@ -246,6 +260,7 @@ const FieldLayer = memo(function FieldLayer({
 
       if (lastRenderedKeysRef.current.length > 0) {
         lastRenderedKeysRef.current = [];
+        lastRenderedChunksRef.current = [];
         setRenderedChunks([]);
       }
 
@@ -380,8 +395,16 @@ const FieldLayer = memo(function FieldLayer({
       nextChunks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
       const nextKeys = nextChunks.map((c) => c.key);
-      if (!arraysEqual(nextKeys, lastRenderedKeysRef.current)) {
+      const keysChanged = !arraysEqual(nextKeys, lastRenderedKeysRef.current);
+
+      const chunksChanged =
+        !keysChanged &&
+        (nextChunks.length !== lastRenderedChunksRef.current.length ||
+          nextChunks.some((chunk, idx) => chunk !== lastRenderedChunksRef.current[idx]));
+
+      if (keysChanged || chunksChanged) {
         lastRenderedKeysRef.current = nextKeys;
+        lastRenderedChunksRef.current = nextChunks;
         setRenderedChunks(nextChunks);
       }
     }
