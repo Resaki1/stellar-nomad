@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom } from "jotai";
 import {
@@ -10,6 +10,7 @@ import {
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useDetectGPU } from "@react-three/drei";
+import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -20,7 +21,8 @@ enum SubMenu {
 const renderSubMenu = (
   subMenu: SubMenu,
   settings: Settings,
-  setSettings: SetAtom<[SetStateAction<Settings>], void>
+  setSettings: SetAtom<[SetStateAction<Settings>], void>,
+  onResetWorld?: () => void
 ) => {
   switch (subMenu) {
     case SubMenu.Graphics:
@@ -76,6 +78,14 @@ const renderSubMenu = (
             }
             label="show fps"
           />
+          {onResetWorld && (
+            <button
+              className="settings__menu-button settings__menu-button--danger"
+              onClick={onResetWorld}
+            >
+              reset world
+            </button>
+          )}
         </>
       );
   }
@@ -86,6 +96,14 @@ const SettingsMenu = () => {
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
   const gpu = useDetectGPU();
+  const deltaStore = useAsteroidDeltaStore();
+
+  const handleResetWorld = useCallback(() => {
+    if (!window.confirm("Reset asteroid field? All mining progress will be lost.")) return;
+    deltaStore.clearAll();
+    // Force a full reload so the runtime regenerates all chunks from scratch.
+    window.location.reload();
+  }, [deltaStore]);
 
   useEffect(() => {
     const storedSettings = JSON.parse(
@@ -150,7 +168,7 @@ const SettingsMenu = () => {
                 >
                   {"<"} back
                 </button>
-                {renderSubMenu(activeSubMenu, settings, setSettings)}
+                {renderSubMenu(activeSubMenu, settings, setSettings, handleResetWorld)}
               </>
             )}
 

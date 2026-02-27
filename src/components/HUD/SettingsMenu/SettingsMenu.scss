@@ -79,4 +79,17 @@ button {
     left: 0;
     min-width: 64px;
   }
+
+  &--danger {
+    background: rgba(200, 60, 60, 0.35);
+    border-color: rgba(255, 100, 100, 0.7);
+
+    &:hover {
+      background: rgba(200, 60, 60, 0.55);
+    }
+
+    &:active {
+      background: rgba(255, 80, 80, 0.7);
+    }
+  }
 }

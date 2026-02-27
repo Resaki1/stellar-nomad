@@ -2,6 +2,7 @@ import type {
   AsteroidChunkData,
   AsteroidChunkModelInstances,
 } from "./runtimeTypes";
+import type { AsteroidDeltaStore } from "./persistence";
 
 const POW2_20 = 1_048_576; // 2^20
 const POW2_32 = 4_294_967_296; // 2^32
@@ -92,6 +93,12 @@ export class AsteroidFieldRuntime {
    */
   private readonly destroyedInstanceIds = new Set<number>();
 
+  /**
+   * Optional persistent delta store. When provided, destructions are
+   * persisted across page reloads.
+   */
+  private readonly deltaStore: AsteroidDeltaStore | null;
+
   private readonly chunkHandleByKey = new Map<string, number>();
   private readonly chunkKeyByHandle: Array<string | undefined> = [];
   private readonly freeChunkHandles: number[] = [];
@@ -100,8 +107,17 @@ export class AsteroidFieldRuntime {
   private readonly modelSlotById = new Map<string, number>();
   private readonly modelIdBySlot: Array<string | undefined> = [];
 
-  constructor(fieldId: string) {
+  constructor(fieldId: string, deltaStore?: AsteroidDeltaStore | null) {
     this.fieldId = fieldId;
+    this.deltaStore = deltaStore ?? null;
+
+    // Hydrate destroyed set from persisted deltas.
+    if (this.deltaStore) {
+      const deltas = this.deltaStore.getFieldDeltas(fieldId);
+      deltas.destroyedIds.forEach((id) => {
+        this.destroyedInstanceIds.add(id);
+      });
+    }
   }
 
   getChunkCount(): number {
@@ -126,7 +142,14 @@ export class AsteroidFieldRuntime {
    * This is the method you want to call for mining/collisions.
    */
   destroyInstance(instanceId: number): AsteroidChunkData | null {
-    this.destroyedInstanceIds.add(instanceId >>> 0);
+    const id = instanceId >>> 0;
+    this.destroyedInstanceIds.add(id);
+
+    // Persist the destruction so it survives page reloads.
+    if (this.deltaStore) {
+      this.deltaStore.markDestroyed(this.fieldId, id);
+    }
+
     return this.removeInstance(instanceId);
   }
 
@@ -549,9 +572,14 @@ export class AsteroidFieldRuntime {
 
 export class AsteroidSystemRuntime {
   private readonly fields = new Map<string, AsteroidFieldRuntime>();
+  readonly deltaStore: AsteroidDeltaStore | null;
   
   // Debug ID to verify instance identity
   readonly instanceId = Math.random().toString(36).slice(2, 8);
+
+  constructor(deltaStore?: AsteroidDeltaStore | null) {
+    this.deltaStore = deltaStore ?? null;
+  }
 
   getOrCreateFieldRuntime(fieldId: string): AsteroidFieldRuntime {
     const existing = this.fields.get(fieldId);
@@ -559,7 +587,7 @@ export class AsteroidSystemRuntime {
       return existing;
     }
 
-    const rt = new AsteroidFieldRuntime(fieldId);
+    const rt = new AsteroidFieldRuntime(fieldId, this.deltaStore);
     this.fields.set(fieldId, rt);
     return rt;
   }

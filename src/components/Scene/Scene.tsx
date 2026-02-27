@@ -19,9 +19,6 @@ import Anchor from "./Anchor";
 import MiningSystem from "../Mining/MiningSystem";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 
-import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
-import { WorldOriginProvider } from "@/sim/worldOrigin";
-
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
 
@@ -31,22 +28,20 @@ const Scene = () => {
       : false;
 
   return (
-    <WorldOriginProvider>
-      <AsteroidRuntimeProvider>
-        <Canvas
-          style={{ background: "black" }}
-          camera={{ near: 0.01, far: 20_000 }}
-          frameloop="always"
-          dpr={[0.5, 1.5]}
-          gl={{
-            alpha: false,
-            premultipliedAlpha: false,
-            antialias: true,
-            powerPreference: "high-performance",
-            toneMapping: NoToneMapping,
-            logarithmicDepthBuffer: true,
-          }}
-        >
+    <Canvas
+      style={{ background: "black" }}
+      camera={{ near: 0.01, far: 20_000 }}
+      frameloop="always"
+      dpr={[0.5, 1.5]}
+      gl={{
+        alpha: false,
+        premultipliedAlpha: false,
+        antialias: true,
+        powerPreference: "high-performance",
+        toneMapping: NoToneMapping,
+        logarithmicDepthBuffer: true,
+      }}
+    >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
 
           <SpaceRenderer
@@ -72,9 +67,7 @@ const Scene = () => {
           <AdaptiveDpr pixelated />
           <AdaptiveEvents />
           <Anchor />
-        </Canvas>
-      </AsteroidRuntimeProvider>
-    </WorldOriginProvider>
+    </Canvas>
   );
 };
 

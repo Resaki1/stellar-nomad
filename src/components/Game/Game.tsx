@@ -5,13 +5,20 @@ import "./Game.scss";
 import Scene from "../Scene/Scene";
 import HUD from "../HUD/HUD";
 
+import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
+import { WorldOriginProvider } from "@/sim/worldOrigin";
+
 const Game = () => {
   return (
-    <div className="container">
-      <Scene />
-      <HUD />
-      <Navigation />
-    </div>
+    <WorldOriginProvider>
+      <AsteroidRuntimeProvider>
+        <div className="container">
+          <Scene />
+          <HUD />
+          <Navigation />
+        </div>
+      </AsteroidRuntimeProvider>
+    </WorldOriginProvider>
   );
 };
 
