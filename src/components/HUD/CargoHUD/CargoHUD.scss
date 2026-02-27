@@ -1,0 +1,99 @@
+.cargo-hud {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  width: 260px;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  color: rgba(255, 255, 255, 0.9);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  &__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  &__title {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.8;
+  }
+
+  &__amount {
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  &__bar {
+    margin-top: 8px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    background: rgba(255, 255, 255, 0.55);
+  }
+
+  &__list {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  &__row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    opacity: 0.9;
+  }
+
+  &__resource {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  &__icon {
+    width: 1.1em;
+    text-align: center;
+    flex: 0 0 auto;
+  }
+
+  &__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__count {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+
+  &__empty {
+    font-size: 12px;
+    opacity: 0.6;
+  }
+}

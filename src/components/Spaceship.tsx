@@ -4,43 +4,51 @@ import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
+import { knockbackImpulseAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 
 const quaternion = new Quaternion();
 const xAxis = new Vector3(1, 0, 0);
 const yAxis = new Vector3(0, 1, 0);
-const direction = new Vector3(0, 0, 1); // This is the forward direction in the spaceship's local space
-const offsetValue = new Vector3(0, -4, 10); // Offset relative to the spaceship
-const offsetVector = offsetValue.clone();
+const forwardDirection = new Vector3(0, 0, 1);
+const cameraOffset = new Vector3(0, -4, 10);
+const offsetVector = cameraOffset.clone();
 const rotationQuaternion = new Quaternion();
 rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 
 const shipHandling = 1.5;
 const maxRotationSpeed = shipHandling / 2;
-// Simulation space is kilometers, but ship speeds are authored in meters/second
-// to align with the HUD and player expectation. Convert to km/s for integration.
-const SHIP_MAX_SPEED_MPS = 100;
+
+const SHIP_MAX_SPEED_MPS = 400;
 const SHIP_MAX_SPEED_KMPS = SHIP_MAX_SPEED_MPS / 1000;
+
+const KNOCKBACK_DECAY = 4.0; // how fast knockback decays per second
+
 let timeAccumulator = 0;
 const hudUpdateInterval = 0.25;
 
 const SpaceShip = () => {
   const movement = useAtomValue(movementAtom);
   const setHudInfo = useSetAtom(hudInfoAtom);
+  const [knockbackImpulse, setKnockbackImpulse] = useAtom(knockbackImpulseAtom);
   const worldOrigin = useWorldOrigin();
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
+
   const shipSimPos = useRef(new Vector3());
   const velocity = useRef(new Vector3());
   const localRelative = useRef(new Vector3());
 
-  const movementYaw = useRef(0); // Current roll
-  const movementPitch = useRef(0); // Current yaw
-  const visualRoll = useRef(0); // Current visual roll
-  const visualPitch = useRef(0); // Current visual pitch
+  // Knockback velocity (decays over time, in km/s components)
+  const knockbackVel = useRef(new Vector3());
+
+  const movementYaw = useRef(0);
+  const movementPitch = useRef(0);
+  const visualRoll = useRef(0);
+  const visualPitch = useRef(0);
   const currentSpeed = useRef(0);
   const oldPosition = useRef(new Vector3());
 
@@ -58,12 +66,7 @@ const SpaceShip = () => {
           maxRotationSpeed
         );
       } else {
-        visualRoll.current = MathUtils.lerp(
-          visualRoll.current,
-          0,
-          shipHandling * delta
-        );
-
+        visualRoll.current = MathUtils.lerp(visualRoll.current, 0, shipHandling * delta);
         movementYaw.current -= movementYaw.current * shipHandling * delta;
       }
 
@@ -79,85 +82,76 @@ const SpaceShip = () => {
           maxRotationSpeed
         );
       } else {
-        visualPitch.current = MathUtils.lerp(
-          visualPitch.current,
-          0,
-          shipHandling * delta
-        );
-
+        visualPitch.current = MathUtils.lerp(visualPitch.current, 0, shipHandling * delta);
         movementPitch.current -= movementPitch.current * shipHandling * delta;
       }
 
-      // Apply visual roll and pitch to Box mesh's rotation
-      modelRef.current.rotation.set(
-        visualPitch.current,
-        modelRef.current.rotation.y,
-        visualRoll.current
-      );
+      modelRef.current.rotation.set(visualPitch.current, modelRef.current.rotation.y, visualRoll.current);
 
-      // Apply yaw and pitch to ship's rotation using quaternions
+      // Apply yaw and pitch to ship rotation
       quaternion.setFromAxisAngle(yAxis, -movementYaw.current * delta);
       shipRef.current.quaternion.multiply(quaternion);
       quaternion.setFromAxisAngle(xAxis, movementPitch.current * delta);
       shipRef.current.quaternion.multiply(quaternion);
 
-      // Calculate the forward direction
-      direction.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion); // Rotate the direction by the spaceship's rotation
+      forwardDirection.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
 
-      // Smoothly transition currentSpeed towards movement.speed
       currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.01);
-      // Set velocity to direction multiplied by speed
+
+      // Consume knockback impulse if present
+      if (knockbackImpulse) {
+        knockbackVel.current.set(
+          knockbackImpulse.dx * knockbackImpulse.magnitude,
+          knockbackImpulse.dy * knockbackImpulse.magnitude,
+          knockbackImpulse.dz * knockbackImpulse.magnitude
+        );
+        setKnockbackImpulse(null);
+      }
+
       velocity.current
-        .copy(direction)
+        .copy(forwardDirection)
         .multiplyScalar(SHIP_MAX_SPEED_KMPS * currentSpeed.current * delta);
 
-      // Update spaceship simulation position based on velocity and delta time
+      // Add knockback contribution
+      if (knockbackVel.current.lengthSq() > 1e-12) {
+        velocity.current.addScaledVector(knockbackVel.current, delta);
+        // Decay knockback
+        knockbackVel.current.multiplyScalar(Math.max(0, 1 - KNOCKBACK_DECAY * delta));
+        if (knockbackVel.current.lengthSq() < 1e-12) {
+          knockbackVel.current.set(0, 0, 0);
+        }
+      }
+
       shipSimPos.current.add(velocity.current);
       worldOrigin.setShipPosKm(shipSimPos.current);
       worldOrigin.maybeRecenter(shipSimPos.current);
 
-      localRelative.current
-        .copy(shipSimPos.current)
-        .sub(worldOrigin.worldOriginKm);
-
+      localRelative.current.copy(shipSimPos.current).sub(worldOrigin.worldOriginKm);
       toLocalUnitsKm(localRelative.current, shipRef.current.position);
 
       timeAccumulator += delta;
       if (timeAccumulator > hudUpdateInterval) {
-        const speedKmPerSec =
-          shipSimPos.current.distanceTo(oldPosition.current) /
-          hudUpdateInterval;
+        const speedKmPerSec = shipSimPos.current.distanceTo(oldPosition.current) / hudUpdateInterval;
 
         setHudInfo({
-          // HUD expects meters/second; simulation runs in kilometers.
           speed: speedKmPerSec * 1000,
         });
+
         timeAccumulator = 0;
         oldPosition.current.copy(shipSimPos.current);
       }
 
-      // Calculate the camera's position
-      offsetVector
-        .copy(offsetValue)
-        .applyQuaternion(shipRef.current.quaternion); // Rotate the offset by the spaceship's rotation
-      /* offsetVector.multiplyScalar(currentSpeed.current * 0.2 + 1); */
+      offsetVector.copy(cameraOffset).applyQuaternion(shipRef.current.quaternion);
+      offsetVector.add(forwardDirection.normalize().multiplyScalar(currentSpeed.current * 0.75 + 1));
 
-      offsetVector.add(
-        direction.normalize().multiplyScalar(currentSpeed.current * 0.75 + 1)
-      );
-
-      camera.position.copy(shipRef.current.position).sub(offsetVector); // Subtract the offset from the spaceship's position
-
-      // Set the camera's rotation to match the spaceship's rotation
-      camera.quaternion
-        .copy(shipRef.current.quaternion)
-        .multiply(rotationQuaternion);
+      camera.position.copy(shipRef.current.position).sub(offsetVector);
+      camera.quaternion.copy(shipRef.current.quaternion).multiply(rotationQuaternion);
     }
   });
 
   return (
-    <mesh ref={shipRef}>
-      <ShipOne ref={modelRef} />
+    <mesh ref={shipRef} name="playerShip">
+      <ShipOne ref={modelRef} name="playerShipModel" />
     </mesh>
   );
 };

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "systemId": "sol",
+  "units": { "distance": "km", "radius": "m", "angle": "deg" },
+
+  "defaults": {
+    "render": {
+      "nearRadiusKm": 16,
+      "farRadiusKm": 100,
+      "crossFadeKm": 0.2
+    }
+  },
+
+  "assets": {
+    "asteroidModels": [
+      {
+        "id": "asteroid_01",
+        "src": "/models/asteroids/asteroid01.glb",
+        "meshName": "Daphne_LP001_1_0",
+        "baseScale": 0.125,
+        "baseRotationDeg": [-90, 0, 0]
+      },
+      {
+        "id": "asteroid_02",
+        "src": "/models/asteroids/asteroid02.glb",
+        "meshName": "Group24690_Standard_0",
+        "baseScale": 1.0,
+        "baseRotationDeg": [0, 0, 0]
+      },
+      {
+        "id": "asteroid_03",
+        "src": "/models/asteroids/asteroid03.glb",
+        "meshName": "Object_0",
+        "baseScale": 1.0,
+        "baseRotationDeg": [0, 0, 0]
+      }
+    ]
+  },
+
+  "resources": {
+    "types": [
+      { "id": "water_ice", "name": "Water Ice", "icon": "💧" },
+      { "id": "silicates", "name": "Silicates", "icon": "🪨" },
+      { "id": "iron_nickel", "name": "Iron-Nickel", "icon": "🧲" },
+      { "id": "carbonaceous", "name": "Carbonaceous", "icon": "🧪" },
+      { "id": "platinum_group", "name": "Platinum Group", "icon": "💎" }
+    ],
+    "defaultDistribution": [
+      { "resourceId": "water_ice", "weight": 0.35 },
+      { "resourceId": "silicates", "weight": 0.3 },
+      { "resourceId": "iron_nickel", "weight": 0.2 },
+      { "resourceId": "carbonaceous", "weight": 0.13 },
+      { "resourceId": "platinum_group", "weight": 0.02 }
+    ]
+  },
+
+  "asteroidFields": [
+    {
+      "id": "origin_belt",
+      "seed": 1337,
+      "enabled": true,
+      "frame": "system",
+      "anchorKm": [0, 0, 0],
+      "shape": { "type": "sphere", "radiusKm": 3000 },
+      "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 100 },
+      "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
+      "models": [
+        { "modelId": "asteroid_01", "weight": 0.6 },
+        { "modelId": "asteroid_02", "weight": 0.25 },
+        { "modelId": "asteroid_03", "weight": 0.15 }
+      ],
+
+      "resources": {
+        "seedSalt": "sol-origin-belt-v1",
+        "distribution": [
+          { "resourceId": "water_ice", "weight": 0.35 },
+          { "resourceId": "silicates", "weight": 0.3 },
+          { "resourceId": "iron_nickel", "weight": 0.2 },
+          { "resourceId": "carbonaceous", "weight": 0.13 },
+          { "resourceId": "platinum_group", "weight": 0.02 }
+        ],
+        "yield": {
+          "referenceRadiusM": 50,
+          "baseAmount": 15,
+          "exponent": 1.6,
+          "variance": 0.15,
+          "minAmount": 1,
+          "maxAmount": 2500
+        }
+      }
+    }
+  ]
+}

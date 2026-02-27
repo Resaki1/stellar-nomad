@@ -36,3 +36,5 @@ export const movementAtom = atom<Movement>({
 export const hudInfoAtom = atom({
   speed: 0,
 });
+
+export const shipHealthAtom = atom(100);
