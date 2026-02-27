@@ -11,6 +11,7 @@ import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useDetectGPU } from "@react-three/drei";
 import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
+import { clearShipState } from "@/sim/shipPersistence";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -101,6 +102,7 @@ const SettingsMenu = () => {
   const handleResetWorld = useCallback(() => {
     if (!window.confirm("Reset asteroid field? All mining progress will be lost.")) return;
     deltaStore.clearAll();
+    clearShipState();
     // Force a full reload so the runtime regenerates all chunks from scratch.
     window.location.reload();
   }, [deltaStore]);

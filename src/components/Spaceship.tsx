@@ -1,6 +1,6 @@
 import { logLimit } from "@/helpers/math";
 import { useFrame } from "@react-three/fiber";
-import { memo, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
@@ -9,6 +9,7 @@ import { hudInfoAtom, movementAtom } from "@/store/store";
 import { knockbackImpulseAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
+import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
 const _quat = new Quaternion();
@@ -27,6 +28,7 @@ const MAX_ROT_SPEED = SHIP_HANDLING / 2;
 const SHIP_MAX_SPEED_KMPS = 400 / 1000;
 const KNOCKBACK_DECAY = 4.0;
 const HUD_UPDATE_INTERVAL = 0.25;
+const PERSIST_INTERVAL = 2.0; // seconds between position saves
 
 // ── Fixed-timestep physics ───────────────────────────────────────────
 // Physics advances in fixed increments; rendering interpolates between
@@ -60,7 +62,35 @@ const SpaceShip = memo(() => {
   // ── Misc ────────────────────────────────────────────────────────────
   const physicsAcc = useRef(0);
   const hudAcc = useRef(0);
+  const persistAcc = useRef(0);
   const oldPosition = useRef(new Vector3());
+
+  // ── Hydrate from persisted state (once, on mount) ──────────────────
+  const hydrated = useRef(false);
+  if (!hydrated.current) {
+    hydrated.current = true;
+    const saved = loadShipState();
+    if (saved) {
+      posKm.current.set(saved.positionKm[0], saved.positionKm[1], saved.positionKm[2]);
+      simQuat.current.set(saved.quaternion[0], saved.quaternion[1], saved.quaternion[2], saved.quaternion[3]);
+      prevPosKm.current.copy(posKm.current);
+      prevQuat.current.copy(simQuat.current);
+      oldPosition.current.copy(posKm.current);
+      // Sync world origin so camera / SimGroups don't jump
+      worldOrigin.setShipPosKm(posKm.current);
+      worldOrigin.setWorldOriginKm(posKm.current);
+    }
+  }
+
+  // ── Flush on beforeunload ───────────────────────────────────────────
+  useEffect(() => {
+    const flush = () => saveShipState(posKm.current, simQuat.current);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flush(); // also save on unmount
+    };
+  }, []);
 
   useFrame(({ camera }, delta) => {
     if (!shipRef.current || !modelRef.current) return;
@@ -193,6 +223,13 @@ const SpaceShip = memo(() => {
       store.set(hudInfoAtom, { speed: speedKmPerSec * 1000 });
       hudAcc.current = 0;
       oldPosition.current.copy(posKm.current);
+    }
+
+    // ── Periodic persist ──────────────────────────────────────────────
+    persistAcc.current += delta;
+    if (persistAcc.current >= PERSIST_INTERVAL) {
+      persistAcc.current = 0;
+      saveShipState(posKm.current, simQuat.current);
     }
   });
 
