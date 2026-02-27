@@ -4,8 +4,9 @@ import { useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
+import { knockbackImpulseAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 
@@ -21,8 +22,10 @@ rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 const shipHandling = 1.5;
 const maxRotationSpeed = shipHandling / 2;
 
-const SHIP_MAX_SPEED_MPS = 100;
+const SHIP_MAX_SPEED_MPS = 200;
 const SHIP_MAX_SPEED_KMPS = SHIP_MAX_SPEED_MPS / 1000;
+
+const KNOCKBACK_DECAY = 4.0; // how fast knockback decays per second
 
 let timeAccumulator = 0;
 const hudUpdateInterval = 0.25;
@@ -30,6 +33,7 @@ const hudUpdateInterval = 0.25;
 const SpaceShip = () => {
   const movement = useAtomValue(movementAtom);
   const setHudInfo = useSetAtom(hudInfoAtom);
+  const [knockbackImpulse, setKnockbackImpulse] = useAtom(knockbackImpulseAtom);
   const worldOrigin = useWorldOrigin();
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
@@ -37,6 +41,9 @@ const SpaceShip = () => {
   const shipSimPos = useRef(new Vector3());
   const velocity = useRef(new Vector3());
   const localRelative = useRef(new Vector3());
+
+  // Knockback velocity (decays over time, in km/s components)
+  const knockbackVel = useRef(new Vector3());
 
   const movementYaw = useRef(0);
   const movementPitch = useRef(0);
@@ -91,9 +98,29 @@ const SpaceShip = () => {
 
       currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.01);
 
+      // Consume knockback impulse if present
+      if (knockbackImpulse) {
+        knockbackVel.current.set(
+          knockbackImpulse.dx * knockbackImpulse.magnitude,
+          knockbackImpulse.dy * knockbackImpulse.magnitude,
+          knockbackImpulse.dz * knockbackImpulse.magnitude
+        );
+        setKnockbackImpulse(null);
+      }
+
       velocity.current
         .copy(forwardDirection)
         .multiplyScalar(SHIP_MAX_SPEED_KMPS * currentSpeed.current * delta);
+
+      // Add knockback contribution
+      if (knockbackVel.current.lengthSq() > 1e-12) {
+        velocity.current.addScaledVector(knockbackVel.current, delta);
+        // Decay knockback
+        knockbackVel.current.multiplyScalar(Math.max(0, 1 - KNOCKBACK_DECAY * delta));
+        if (knockbackVel.current.lengthSq() < 1e-12) {
+          knockbackVel.current.set(0, 0, 0);
+        }
+      }
 
       shipSimPos.current.add(velocity.current);
       worldOrigin.setShipPosKm(shipSimPos.current);

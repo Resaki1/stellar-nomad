@@ -9,6 +9,7 @@ import AsteroidChunk from "@/components/Asteroids/AsteroidChunk";
 
 import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
+import { spawnVFXEventAtom } from "@/store/vfx";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -68,6 +69,7 @@ const FieldLayer = memo(function FieldLayer({
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
   const setShipHealth = useSetAtom(shipHealthAtom);
+  const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
   const renderCfg = useMemo(() => resolveFieldRender(system, field), [system, field]);
 
@@ -493,23 +495,43 @@ const FieldLayer = memo(function FieldLayer({
                 }
                 lastLog.set(instanceId, nowMs);
 
-                const loc = fieldRuntime.getInstanceLocation(instanceId);
+                // Compute asteroid position in local render-space meters
+                // (for VFX spawning — relative to world origin, not chunk)
+                const chunkOriginLocalX =
+                  (field.anchorKm[0] + chunk.originKm[0] - worldOrigin.worldOriginKm.x) * 1000;
+                const chunkOriginLocalY =
+                  (field.anchorKm[1] + chunk.originKm[1] - worldOrigin.worldOriginKm.y) * 1000;
+                const chunkOriginLocalZ =
+                  (field.anchorKm[2] + chunk.originKm[2] - worldOrigin.worldOriginKm.z) * 1000;
 
-                // eslint-disable-next-line no-console
-                console.log("[collision] ship hit asteroid", {
-                  fieldId: field.id,
-                  instanceId,
-                  modelId,
-                  // Sanity check: proves the runtime mapping is live and correct.
-                  runtimeLocation: loc,
-                  asteroidRadiusM: radii[i],
-                  shipRadiusM,
-                  approxDistanceM: Math.sqrt(d2),
-                  chunkKey: chunk.key,
-                });
+                const asteroidLocalX = chunkOriginLocalX + positions[pIndex];
+                const asteroidLocalY = chunkOriginLocalY + positions[pIndex + 1];
+                const asteroidLocalZ = chunkOriginLocalZ + positions[pIndex + 2];
+
+                // Ship position in local render-space meters
+                const shipLocalX = (ship.x - worldOrigin.worldOriginKm.x) * 1000;
+                const shipLocalY = (ship.y - worldOrigin.worldOriginKm.y) * 1000;
+                const shipLocalZ = (ship.z - worldOrigin.worldOriginKm.z) * 1000;
+
+                // Impact direction: from asteroid center toward ship (normalized)
+                const idX = shipLocalX - asteroidLocalX;
+                const idY = shipLocalY - asteroidLocalY;
+                const idZ = shipLocalZ - asteroidLocalZ;
+                const idLen = Math.sqrt(idX * idX + idY * idY + idZ * idZ);
+                const impactDir: [number, number, number] =
+                  idLen > 0.01
+                    ? [idX / idLen, idY / idLen, idZ / idLen]
+                    : [0, 1, 0];
 
                 removeAsteroidInstance(instanceId);
                 applyShipCollisionDamage();
+
+                spawnVFX({
+                  type: "collision",
+                  position: [asteroidLocalX, asteroidLocalY, asteroidLocalZ],
+                  radiusM: radii[i],
+                  impactDirection: impactDir,
+                });
 
                 logsThisTick++;
                 if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;

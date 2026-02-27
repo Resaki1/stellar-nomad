@@ -18,6 +18,7 @@ import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
 import { addCargoAtom } from "@/store/cargo";
+import { spawnVFXEventAtom } from "@/store/vfx";
 
 // --------------------
 // Gameplay / tuning
@@ -565,8 +566,17 @@ const MiningSystem = () => {
   // One frame delay to remove the asteroid after state update is committed
   const pendingRemovalIdRef = useRef<number | null>(null);
   const pendingMiningRewardRef = useRef<
-    { instanceId: number; fieldId: string; resourceId: string; amount: number } | null
-    >(null);
+    {
+      instanceId: number;
+      fieldId: string;
+      resourceId: string;
+      amount: number;
+      positionLocal: [number, number, number];
+      radiusM: number;
+      resourceName: string;
+      resourceIcon: string;
+    } | null
+  >(null);
   
   const shipPosLocalRef = useRef(new THREE.Vector3());
   const beamStartLocalRef = useRef(new THREE.Vector3());
@@ -581,6 +591,7 @@ const MiningSystem = () => {
   const miningDurationForAsteroidIdRef = useRef<number | null>(null);
 
   const addCargo = useSetAtom(addCargoAtom);
+  const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
   const removeAsteroid = useCallback(
     (instanceId: number) => {
@@ -986,6 +997,10 @@ const MiningSystem = () => {
                 fieldId,
                 resourceId: reward.resourceId,
                 amount: reward.amount,
+                positionLocal: snapshot.positionLocal,
+                radiusM: snapshot.radiusM,
+                resourceName: reward.resource?.name ?? reward.resourceId,
+                resourceIcon: reward.resource?.icon ?? "⛏",
               };
             }
 
@@ -1060,6 +1075,18 @@ const MiningSystem = () => {
       const reward = pendingMiningRewardRef.current;
       if (reward && reward.instanceId === removeId) {
         addCargo({ resourceId: reward.resourceId, amount: reward.amount });
+
+        spawnVFX({
+          type: "mined",
+          position: reward.positionLocal,
+          radiusM: reward.radiusM,
+          loot: {
+            resourceId: reward.resourceId,
+            amount: reward.amount,
+            name: reward.resourceName,
+            icon: reward.resourceIcon,
+          },
+        });
       }
 
       removeAsteroid(removeId);

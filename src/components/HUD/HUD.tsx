@@ -7,6 +7,7 @@ import MiningHUD from "./MiningHUD/MiningHUD";
 import CargoHUD from "./CargoHUD/CargoHUD";
 import CargoDetail from "./CargoHUD/CargoDetail";
 import SettingsMenu from "./SettingsMenu/SettingsMenu";
+import DamageVignette from "./DamageVignette/DamageVignette";
 
 import "./HUD.scss";
 
@@ -37,6 +38,7 @@ export default function HUD() {
 
   return (
     <div className="hud">
+      <DamageVignette />
       <ShipDashboard />
       <Reticle />
       <MiningHUD />

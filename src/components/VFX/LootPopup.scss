@@ -1,0 +1,38 @@
+.loot-popup {
+  animation: lootFadeUp 2s ease-out forwards;
+  font-family: inherit;
+}
+
+.loot-popup__text {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(100, 200, 255, 0.35);
+  color: #b8e8ff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 6px rgba(100, 200, 255, 0.6);
+}
+
+@keyframes lootFadeUp {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.85);
+  }
+  8% {
+    opacity: 1;
+    transform: translateY(0) scale(1.05);
+  }
+  15% {
+    transform: translateY(-2px) scale(1);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-30px) scale(0.9);
+  }
+}

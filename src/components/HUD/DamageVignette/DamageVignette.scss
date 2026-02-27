@@ -1,0 +1,34 @@
+.damage-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.08s ease-in;
+
+  // Radial gradient: transparent center, red edges
+  background: radial-gradient(
+    ellipse at center,
+    transparent 45%,
+    rgba(200, 20, 20, 0.25) 70%,
+    rgba(180, 0, 0, 0.55) 90%,
+    rgba(140, 0, 0, 0.7) 100%
+  );
+
+  &--active {
+    opacity: 1;
+    animation: damage-pulse 0.5s ease-out forwards;
+  }
+}
+
+@keyframes damage-pulse {
+  0% {
+    opacity: 1;
+  }
+  30% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}

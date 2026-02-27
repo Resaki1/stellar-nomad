@@ -17,6 +17,7 @@ import SunLight from "../Star/SunLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import Anchor from "./Anchor";
 import MiningSystem from "../Mining/MiningSystem";
+import AsteroidVFX from "../VFX/AsteroidVFX";
 
 import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
@@ -63,6 +64,7 @@ const Scene = () => {
                 <SpaceShip />
                 <AsteroidField />
                 <MiningSystem />
+                <AsteroidVFX />
               </>
             }
           />
