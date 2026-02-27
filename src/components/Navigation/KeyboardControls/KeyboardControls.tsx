@@ -30,11 +30,12 @@ const KeyboardControls = () => {
     setMovement((prev) => ({ ...prev, yaw, pitch: setPitch(pitch) }));
   }, [keyState, setMovement]);
 
-  // Handlers to update keyState
+  // Handlers to update keyState — bail out if already in desired state
+  // to avoid creating new objects on browser key-repeat events.
   const handleKeyDown = (key: WASD) =>
-    setKeyState((prev) => ({ ...prev, [key]: true }));
+    setKeyState((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
   const handleKeyUp = (key: WASD) =>
-    setKeyState((prev) => ({ ...prev, [key]: false }));
+    setKeyState((prev) => (!prev[key] ? prev : { ...prev, [key]: false }));
 
   // Hotkeys setup
   useHotkeys("w", () => handleKeyDown("w"), { keydown: true });
@@ -46,16 +47,16 @@ const KeyboardControls = () => {
   useHotkeys("d", () => handleKeyDown("d"), { keydown: true });
   useHotkeys("d", () => handleKeyUp("d"), { keyup: true });
 
-  useHotkeys("e", () => setKeyState((prev) => ({ ...prev, e: true })), {
+  useHotkeys("e", () => setKeyState((prev) => (prev.e ? prev : { ...prev, e: true })), {
     keydown: true,
   });
-  useHotkeys("e", () => setKeyState((prev) => ({ ...prev, e: false })), {
+  useHotkeys("e", () => setKeyState((prev) => (!prev.e ? prev : { ...prev, e: false })), {
     keyup: true,
   });
-  useHotkeys("c", () => setKeyState((prev) => ({ ...prev, c: true })), {
+  useHotkeys("c", () => setKeyState((prev) => (prev.c ? prev : { ...prev, c: true })), {
     keydown: true,
   });
-  useHotkeys("c", () => setKeyState((prev) => ({ ...prev, c: false })), {
+  useHotkeys("c", () => setKeyState((prev) => (!prev.c ? prev : { ...prev, c: false })), {
     keyup: true,
   });
 

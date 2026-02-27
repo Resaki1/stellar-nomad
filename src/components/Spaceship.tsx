@@ -1,151 +1,198 @@
 import { logLimit } from "@/helpers/math";
 import { useFrame } from "@react-three/fiber";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
 import { knockbackImpulseAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 
-const quaternion = new Quaternion();
-const xAxis = new Vector3(1, 0, 0);
-const yAxis = new Vector3(0, 1, 0);
-const forwardDirection = new Vector3(0, 0, 1);
-const cameraOffset = new Vector3(0, -4, 10);
-const offsetVector = cameraOffset.clone();
-const rotationQuaternion = new Quaternion();
-rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
+// ── Module-level temps (reused every frame, never GC'd) ──────────────
+const _quat = new Quaternion();
+const _xAxis = new Vector3(1, 0, 0);
+const _yAxis = new Vector3(0, 1, 0);
+const _fwd = new Vector3();
+const _cameraOffset = new Vector3(0, -4, 10);
+const _offset = new Vector3();
+const _rotationQuat = new Quaternion().setFromAxisAngle(_yAxis, Math.PI);
+const _vel = new Vector3();
+const _localRel = new Vector3();
 
-const shipHandling = 1.5;
-const maxRotationSpeed = shipHandling / 2;
+// ── Tuning constants ─────────────────────────────────────────────────
+const SHIP_HANDLING = 1.5;
+const MAX_ROT_SPEED = SHIP_HANDLING / 2;
+const SHIP_MAX_SPEED_KMPS = 400 / 1000;
+const KNOCKBACK_DECAY = 4.0;
+const HUD_UPDATE_INTERVAL = 0.25;
 
-const SHIP_MAX_SPEED_MPS = 400;
-const SHIP_MAX_SPEED_KMPS = SHIP_MAX_SPEED_MPS / 1000;
+// ── Fixed-timestep physics ───────────────────────────────────────────
+// Physics advances in fixed increments; rendering interpolates between
+// the two most recent states. This eliminates micro-jitter caused by
+// natural frame-time (delta) variation on the GPU/compositor side.
+const FIXED_DT = 1 / 120;
+const MAX_FRAME_DT = 0.05; // cap: prevents spiral-of-death after tab-away
 
-const KNOCKBACK_DECAY = 4.0; // how fast knockback decays per second
-
-let timeAccumulator = 0;
-const hudUpdateInterval = 0.25;
-
-const SpaceShip = () => {
-  const movement = useAtomValue(movementAtom);
-  const setHudInfo = useSetAtom(hudInfoAtom);
-  const [knockbackImpulse, setKnockbackImpulse] = useAtom(knockbackImpulseAtom);
+const SpaceShip = memo(() => {
+  const store = useStore();
   const worldOrigin = useWorldOrigin();
   const shipRef = useRef<Mesh>(null!);
   const modelRef = useRef<Mesh>(null!);
 
-  const shipSimPos = useRef(new Vector3());
-  const velocity = useRef(new Vector3());
-  const localRelative = useRef(new Vector3());
-
-  // Knockback velocity (decays over time, in km/s components)
+  // ── Simulation state (advanced at fixed FIXED_DT) ──────────────────
+  const posKm = useRef(new Vector3());
+  const simQuat = useRef(new Quaternion());
+  const yawRate = useRef(0);
+  const pitchRate = useRef(0);
+  const vRoll = useRef(0);
+  const vPitch = useRef(0);
+  const speed = useRef(0);
   const knockbackVel = useRef(new Vector3());
 
-  const movementYaw = useRef(0);
-  const movementPitch = useRef(0);
-  const visualRoll = useRef(0);
-  const visualPitch = useRef(0);
-  const currentSpeed = useRef(0);
+  // ── Previous-step snapshot (for interpolation) ─────────────────────
+  const prevPosKm = useRef(new Vector3());
+  const prevQuat = useRef(new Quaternion());
+  const prevVRoll = useRef(0);
+  const prevVPitch = useRef(0);
+
+  // ── Misc ────────────────────────────────────────────────────────────
+  const physicsAcc = useRef(0);
+  const hudAcc = useRef(0);
   const oldPosition = useRef(new Vector3());
 
   useFrame(({ camera }, delta) => {
-    if (shipRef.current && modelRef.current) {
+    if (!shipRef.current || !modelRef.current) return;
+
+    // Read input imperatively (zero subscriptions → zero re-renders).
+    const movement = store.get(movementAtom);
+
+    // Consume knockback once per frame, before the physics loop.
+    const knockbackImpulse = store.get(knockbackImpulseAtom);
+    if (knockbackImpulse) {
+      knockbackVel.current.set(
+        knockbackImpulse.dx * knockbackImpulse.magnitude,
+        knockbackImpulse.dy * knockbackImpulse.magnitude,
+        knockbackImpulse.dz * knockbackImpulse.magnitude
+      );
+      store.set(knockbackImpulseAtom, null);
+    }
+
+    // ── Fixed-timestep physics loop ────────────────────────────────────
+    physicsAcc.current += Math.min(delta, MAX_FRAME_DT);
+
+    while (physicsAcc.current >= FIXED_DT) {
+      // Snapshot previous state for interpolation.
+      prevPosKm.current.copy(posKm.current);
+      prevQuat.current.copy(simQuat.current);
+      prevVRoll.current = vRoll.current;
+      prevVPitch.current = vPitch.current;
+
+      // Yaw
       if (movement.yaw) {
-        visualRoll.current = logLimit(
-          visualRoll.current + movement.yaw * shipHandling * delta,
+        vRoll.current = logLimit(
+          vRoll.current + movement.yaw * SHIP_HANDLING * FIXED_DT,
           Math.PI / 6
         );
-
-        movementYaw.current = MathUtils.clamp(
-          movementYaw.current + movement.yaw * shipHandling * delta,
-          -maxRotationSpeed,
-          maxRotationSpeed
+        yawRate.current = MathUtils.clamp(
+          yawRate.current + movement.yaw * SHIP_HANDLING * FIXED_DT,
+          -MAX_ROT_SPEED,
+          MAX_ROT_SPEED
         );
       } else {
-        visualRoll.current = MathUtils.lerp(visualRoll.current, 0, shipHandling * delta);
-        movementYaw.current -= movementYaw.current * shipHandling * delta;
+        vRoll.current = MathUtils.lerp(vRoll.current, 0, SHIP_HANDLING * FIXED_DT);
+        yawRate.current -= yawRate.current * SHIP_HANDLING * FIXED_DT;
       }
 
+      // Pitch
       if (movement.pitch) {
-        visualPitch.current = logLimit(
-          visualPitch.current + movement.pitch * shipHandling * delta,
+        vPitch.current = logLimit(
+          vPitch.current + movement.pitch * SHIP_HANDLING * FIXED_DT,
           Math.PI / 6
         );
-
-        movementPitch.current = MathUtils.clamp(
-          movementPitch.current + movement.pitch * shipHandling * delta,
-          -maxRotationSpeed,
-          maxRotationSpeed
+        pitchRate.current = MathUtils.clamp(
+          pitchRate.current + movement.pitch * SHIP_HANDLING * FIXED_DT,
+          -MAX_ROT_SPEED,
+          MAX_ROT_SPEED
         );
       } else {
-        visualPitch.current = MathUtils.lerp(visualPitch.current, 0, shipHandling * delta);
-        movementPitch.current -= movementPitch.current * shipHandling * delta;
+        vPitch.current = MathUtils.lerp(vPitch.current, 0, SHIP_HANDLING * FIXED_DT);
+        pitchRate.current -= pitchRate.current * SHIP_HANDLING * FIXED_DT;
       }
 
-      modelRef.current.rotation.set(visualPitch.current, modelRef.current.rotation.y, visualRoll.current);
+      // Rotation
+      _quat.setFromAxisAngle(_yAxis, -yawRate.current * FIXED_DT);
+      simQuat.current.multiply(_quat);
+      _quat.setFromAxisAngle(_xAxis, pitchRate.current * FIXED_DT);
+      simQuat.current.multiply(_quat);
+      simQuat.current.normalize();
 
-      // Apply yaw and pitch to ship rotation
-      quaternion.setFromAxisAngle(yAxis, -movementYaw.current * delta);
-      shipRef.current.quaternion.multiply(quaternion);
-      quaternion.setFromAxisAngle(xAxis, movementPitch.current * delta);
-      shipRef.current.quaternion.multiply(quaternion);
+      // Forward direction
+      _fwd.set(0, 0, 1).applyQuaternion(simQuat.current);
 
-      forwardDirection.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
+      // Speed
+      const speedAlpha = 1 - Math.pow(0.99, FIXED_DT * 60);
+      speed.current = lerp(speed.current, movement.speed, speedAlpha);
 
-      currentSpeed.current = lerp(currentSpeed.current, movement.speed, 0.01);
+      // Velocity
+      _vel.copy(_fwd).multiplyScalar(SHIP_MAX_SPEED_KMPS * speed.current * FIXED_DT);
 
-      // Consume knockback impulse if present
-      if (knockbackImpulse) {
-        knockbackVel.current.set(
-          knockbackImpulse.dx * knockbackImpulse.magnitude,
-          knockbackImpulse.dy * knockbackImpulse.magnitude,
-          knockbackImpulse.dz * knockbackImpulse.magnitude
-        );
-        setKnockbackImpulse(null);
-      }
-
-      velocity.current
-        .copy(forwardDirection)
-        .multiplyScalar(SHIP_MAX_SPEED_KMPS * currentSpeed.current * delta);
-
-      // Add knockback contribution
+      // Knockback
       if (knockbackVel.current.lengthSq() > 1e-12) {
-        velocity.current.addScaledVector(knockbackVel.current, delta);
-        // Decay knockback
-        knockbackVel.current.multiplyScalar(Math.max(0, 1 - KNOCKBACK_DECAY * delta));
-        if (knockbackVel.current.lengthSq() < 1e-12) {
-          knockbackVel.current.set(0, 0, 0);
-        }
+        _vel.addScaledVector(knockbackVel.current, FIXED_DT);
+        knockbackVel.current.multiplyScalar(Math.max(0, 1 - KNOCKBACK_DECAY * FIXED_DT));
+        if (knockbackVel.current.lengthSq() < 1e-12) knockbackVel.current.set(0, 0, 0);
       }
 
-      shipSimPos.current.add(velocity.current);
-      worldOrigin.setShipPosKm(shipSimPos.current);
-      worldOrigin.maybeRecenter(shipSimPos.current);
+      posKm.current.add(_vel);
+      physicsAcc.current -= FIXED_DT;
+    }
 
-      localRelative.current.copy(shipSimPos.current).sub(worldOrigin.worldOriginKm);
-      toLocalUnitsKm(localRelative.current, shipRef.current.position);
+    // ── Interpolation ──────────────────────────────────────────────────
+    // alpha ∈ [0,1) — how far between prev and current the render instant is.
+    const alpha = physicsAcc.current / FIXED_DT;
 
-      timeAccumulator += delta;
-      if (timeAccumulator > hudUpdateInterval) {
-        const speedKmPerSec = shipSimPos.current.distanceTo(oldPosition.current) / hudUpdateInterval;
+    // Quaternion
+    shipRef.current.quaternion.slerpQuaternions(
+      prevQuat.current,
+      simQuat.current,
+      alpha
+    );
 
-        setHudInfo({
-          speed: speedKmPerSec * 1000,
-        });
+    // Position (interpolate in km, then convert to local render units)
+    _localRel.lerpVectors(prevPosKm.current, posKm.current, alpha);
+    // Update world origin with the true (non-interpolated) sim position.
+    worldOrigin.setShipPosKm(posKm.current);
+    worldOrigin.maybeRecenter(posKm.current);
+    _localRel.sub(worldOrigin.worldOriginKm);
+    toLocalUnitsKm(_localRel, shipRef.current.position);
 
-        timeAccumulator = 0;
-        oldPosition.current.copy(shipSimPos.current);
-      }
+    // Model visual tilt (interpolated)
+    const renderRoll = prevVRoll.current + (vRoll.current - prevVRoll.current) * alpha;
+    const renderPitch = prevVPitch.current + (vPitch.current - prevVPitch.current) * alpha;
+    modelRef.current.rotation.set(
+      renderPitch,
+      modelRef.current.rotation.y,
+      renderRoll
+    );
 
-      offsetVector.copy(cameraOffset).applyQuaternion(shipRef.current.quaternion);
-      offsetVector.add(forwardDirection.normalize().multiplyScalar(currentSpeed.current * 0.75 + 1));
+    // ── Camera ─────────────────────────────────────────────────────────
+    _fwd.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
+    _offset.copy(_cameraOffset).applyQuaternion(shipRef.current.quaternion);
+    _offset.add(_fwd.normalize().multiplyScalar(speed.current * 0.75 + 1));
 
-      camera.position.copy(shipRef.current.position).sub(offsetVector);
-      camera.quaternion.copy(shipRef.current.quaternion).multiply(rotationQuaternion);
+    camera.position.copy(shipRef.current.position).sub(_offset);
+    camera.quaternion.copy(shipRef.current.quaternion).multiply(_rotationQuat);
+
+    // ── HUD speed ──────────────────────────────────────────────────────
+    hudAcc.current += delta;
+    if (hudAcc.current > HUD_UPDATE_INTERVAL) {
+      const speedKmPerSec =
+        posKm.current.distanceTo(oldPosition.current) / hudAcc.current;
+      store.set(hudInfoAtom, { speed: speedKmPerSec * 1000 });
+      hudAcc.current = 0;
+      oldPosition.current.copy(posKm.current);
     }
   });
 
@@ -154,6 +201,8 @@ const SpaceShip = () => {
       <ShipOne ref={modelRef} name="playerShipModel" />
     </mesh>
   );
-};
+});
+
+SpaceShip.displayName = "SpaceShip";
 
 export default SpaceShip;
