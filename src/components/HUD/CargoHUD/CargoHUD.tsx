@@ -14,6 +14,10 @@ import { getResourceTypes } from "@/sim/asteroids/resources";
 
 import "./CargoHUD.scss";
 
+type CargoHUDProps = {
+  onClick?: () => void;
+};
+
 type CargoRow = {
   id: string;
   name: string;
@@ -21,7 +25,7 @@ type CargoRow = {
   amount: number;
 };
 
-export default function CargoHUD() {
+export default function CargoHUD({ onClick }: CargoHUDProps) {
   const systemConfig = useAtomValue(systemConfigAtom);
 
   const cargo = useAtomValue(cargoAtom);
@@ -55,7 +59,7 @@ export default function CargoHUD() {
   }, [cargo.items, resourceMap]);
 
   return (
-    <div className="cargo-hud">
+    <div className="cargo-hud" onClick={onClick}>
       <div className="cargo-hud__header">
         <div className="cargo-hud__title">Cargo</div>
         <div className="cargo-hud__amount">

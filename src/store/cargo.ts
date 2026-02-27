@@ -68,6 +68,38 @@ export const addCargoAtom = atom(
   }
 );
 
+/**
+ * Remove a specific amount of a resource from cargo.
+ * Pass `Infinity` or omit amount to remove all of that resource.
+ */
+export const removeCargoAtom = atom(
+  null,
+  (get, set, update: { resourceId: string; amount?: number }): void => {
+    const { resourceId, amount } = update;
+    if (!resourceId) return;
+
+    const state = get(cargoAtom);
+    const current = Math.max(0, Math.floor(state.items[resourceId] ?? 0));
+    if (current <= 0) return;
+
+    const toRemove =
+      amount === undefined || !Number.isFinite(amount)
+        ? current
+        : Math.max(0, Math.floor(amount));
+
+    const remaining = current - toRemove;
+
+    const newItems = { ...state.items };
+    if (remaining <= 0) {
+      delete newItems[resourceId];
+    } else {
+      newItems[resourceId] = remaining;
+    }
+
+    set(cargoAtom, { ...state, items: newItems });
+  }
+);
+
 export const clearCargoAtom = atom(null, (get, set) => {
   const state = get(cargoAtom);
   set(cargoAtom, { ...state, items: {} });
