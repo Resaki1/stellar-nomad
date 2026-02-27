@@ -12,8 +12,14 @@ export type StreamingConfig = {
 };
 
 export type RenderConfig = {
-  drawRadiusKm: number;
+  drawRadiusKm?: number;
   fadeKm?: { start: number; end: number };
+  /** Full-geometry render range (km). Defaults to drawRadiusKm when unset. */
+  nearRadiusKm?: number;
+  /** Billboard impostor render range (km). 0 = disabled. */
+  farRadiusKm?: number;
+  /** Width of the LOD cross-fade zone at the near/far boundary (km). */
+  crossFadeKm?: number;
 };
 
 export type GenerationConfig = {
@@ -166,7 +172,14 @@ export type ResolvedStreamingConfig = Required<
 };
 
 export type ResolvedRenderConfig = {
+  /** Max visible range (= max of nearRadiusKm, farRadiusKm). Used for streaming. */
   drawRadiusKm: number;
+  /** Full-geometry render cutoff. */
+  nearRadiusKm: number;
+  /** Billboard impostor render cutoff. 0 = disabled. */
+  farRadiusKm: number;
+  /** LOD cross-fade width. */
+  crossFadeKm: number;
   fadeKm?: { start: number; end: number };
 };
 
@@ -194,11 +207,14 @@ export const DEFAULT_STREAMING: ResolvedStreamingConfig = {
   chunkSizeKm: 5,
   loadRadiusKm: 15,
   unloadRadiusKm: 20,
-  maxActiveChunks: 300,
+  maxActiveChunks: 1200,
 };
 
 export const DEFAULT_RENDER: ResolvedRenderConfig = {
   drawRadiusKm: 10,
+  nearRadiusKm: 10,
+  farRadiusKm: 0,
+  crossFadeKm: 0,
 };
 
 export const DEFAULT_GENERATION: ResolvedGenerationConfig = {
@@ -245,17 +261,45 @@ export function resolveFieldRender(
   const sysRender = system.defaults?.render ?? {};
   const fieldRender = field.render ?? {};
 
-  const drawRadiusKm = clampMin(
+  // Legacy drawRadiusKm used as fallback for nearRadiusKm.
+  const rawDrawRadius = asFiniteNumber(
+    fieldRender.drawRadiusKm,
+    asFiniteNumber(sysRender.drawRadiusKm, DEFAULT_RENDER.drawRadiusKm)
+  );
+
+  const nearRadiusKm = clampMin(
     asFiniteNumber(
-      fieldRender.drawRadiusKm,
-      asFiniteNumber(sysRender.drawRadiusKm, DEFAULT_RENDER.drawRadiusKm)
+      fieldRender.nearRadiusKm,
+      asFiniteNumber(sysRender.nearRadiusKm, rawDrawRadius)
     ),
+    0.001
+  );
+
+  const farRadiusKm = clampMin(
+    asFiniteNumber(
+      fieldRender.farRadiusKm,
+      asFiniteNumber(sysRender.farRadiusKm, DEFAULT_RENDER.farRadiusKm)
+    ),
+    0
+  );
+
+  const crossFadeKm = clampMin(
+    asFiniteNumber(
+      fieldRender.crossFadeKm,
+      asFiniteNumber(sysRender.crossFadeKm, DEFAULT_RENDER.crossFadeKm)
+    ),
+    0
+  );
+
+  // drawRadiusKm drives streaming — must cover the full visible range.
+  const drawRadiusKm = clampMin(
+    farRadiusKm > 0 ? Math.max(nearRadiusKm, farRadiusKm) : nearRadiusKm,
     0.001
   );
 
   const fadeKm = fieldRender.fadeKm ?? sysRender.fadeKm;
 
-  return { drawRadiusKm, fadeKm };
+  return { drawRadiusKm, nearRadiusKm, farRadiusKm, crossFadeKm, fadeKm };
 }
 
 export function resolveFieldStreaming(

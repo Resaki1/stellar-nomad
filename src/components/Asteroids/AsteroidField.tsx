@@ -6,6 +6,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 
 import SimGroup from "@/components/space/SimGroup";
 import AsteroidChunk from "@/components/Asteroids/AsteroidChunk";
+import AsteroidImpostors from "@/components/Asteroids/AsteroidImpostors";
 
 import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
@@ -30,7 +31,7 @@ import { prepareFieldShape, distancePointToAabbKm } from "@/sim/asteroids/shapes
 import type { AsteroidChunkWorkerWorkerToMainMessage } from "@/workers/asteroidChunkWorkerProtocol";
 
 const UPDATE_INTERVAL_S = 0.2; // streaming / culling updates
-const MAX_NEW_CHUNKS_PER_TICK = 8;
+const MAX_NEW_CHUNKS_PER_TICK = 16;
 
 // Collision logging is intentionally conservative to keep perf stable while you validate plumbing.
 const COLLISION_INTERVAL_S = 0.1; // 10 Hz collision checks
@@ -97,7 +98,8 @@ const FieldLayer = memo(function FieldLayer({
   const [renderedChunks, setRenderedChunks] = useState<AsteroidChunkData[]>([]);
   const lastRenderedKeysRef = useRef<string[]>([]);
   const lastRenderedChunksRef = useRef<AsteroidChunkData[]>([]);
-
+  // Distance from ship to each rendered chunk (km), updated each streaming tick.
+  const chunkDistancesKmRef = useRef<Map<string, number>>(new Map());
   // Worker lifecycle
   const workerRef = useRef<Worker | null>(null);
   const epochRef = useRef(0);
@@ -378,6 +380,7 @@ const FieldLayer = memo(function FieldLayer({
 
       // Determine which chunks should be rendered (within draw radius).
       const nextChunks: AsteroidChunkData[] = [];
+      const nextDistances = new Map<string, number>();
       fieldRuntime.chunks.forEach((chunk) => {
         const d = distancePointToAabbKm(
           px,
@@ -392,6 +395,7 @@ const FieldLayer = memo(function FieldLayer({
         );
         if (d > renderCfg.drawRadiusKm) return;
         nextChunks.push(chunk);
+        nextDistances.set(chunk.key, d);
       });
 
       nextChunks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -407,7 +411,11 @@ const FieldLayer = memo(function FieldLayer({
       if (keysChanged || chunksChanged) {
         lastRenderedKeysRef.current = nextKeys;
         lastRenderedChunksRef.current = nextChunks;
+        chunkDistancesKmRef.current = nextDistances;
         setRenderedChunks(nextChunks);
+      } else {
+        // Even if chunks haven't changed, update distances for smooth fade
+        chunkDistancesKmRef.current = nextDistances;
       }
     }
 
@@ -545,11 +553,58 @@ const FieldLayer = memo(function FieldLayer({
     }
   });
 
+  // ── LOD tier classification ─────────────────────────────────────────
+
+  // Far tier: chunks beyond the near-geometry cutoff, rendered as billboards.
+  const farChunks = useMemo(() => {
+    if (renderCfg.farRadiusKm <= 0) return [];
+    // Include cross-fade zone so impostors back the dissolving near meshes.
+    const farStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
+    return renderedChunks.filter((chunk) => {
+      const d = chunkDistancesKmRef.current.get(chunk.key) ?? 0;
+      return d >= farStart;
+    });
+  }, [renderedChunks, renderCfg.farRadiusKm, renderCfg.nearRadiusKm, renderCfg.crossFadeKm]);
+
+  // Near-tier opacity: full at inner range, alphaHash-fading at boundary.
+  const computeNearOpacity = useCallback(
+    (chunkKey: string): number => {
+      const dist = chunkDistancesKmRef.current.get(chunkKey);
+      if (dist === undefined) return 1;
+
+      if (renderCfg.crossFadeKm > 0) {
+        const fadeStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
+        if (dist <= fadeStart) return 1;
+        if (dist >= renderCfg.nearRadiusKm) return 0;
+        return 1 - (dist - fadeStart) / renderCfg.crossFadeKm;
+      }
+
+      // No cross-fade: hard cutoff at nearRadius.
+      return dist < renderCfg.nearRadiusKm ? 1 : 0;
+    },
+    [renderCfg.nearRadiusKm, renderCfg.crossFadeKm]
+  );
+
   return (
     <SimGroup space="local" positionKm={field.anchorKm}>
-      {renderedChunks.map((chunk) => (
-        <AsteroidChunk key={chunk.key} chunk={chunk} modelRegistry={modelRegistry} />
-      ))}
+      {/* Near tier: full-geometry instanced meshes */}
+      {renderedChunks.map((chunk) => {
+        const opacity = computeNearOpacity(chunk.key);
+        if (opacity <= 0) return null;
+        return (
+          <AsteroidChunk
+            key={chunk.key}
+            chunk={chunk}
+            modelRegistry={modelRegistry}
+            fadeOpacity={opacity}
+          />
+        );
+      })}
+
+      {/* Far tier: billboard impostors (single batched draw call) */}
+      {renderCfg.farRadiusKm > 0 && farChunks.length > 0 && (
+        <AsteroidImpostors chunks={farChunks} />
+      )}
     </SimGroup>
   );
 });

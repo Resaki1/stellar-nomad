@@ -3,6 +3,14 @@
   "systemId": "sol",
   "units": { "distance": "km", "radius": "m", "angle": "deg" },
 
+  "defaults": {
+    "render": {
+      "nearRadiusKm": 16,
+      "farRadiusKm": 100,
+      "crossFadeKm": 0.2
+    }
+  },
+
   "assets": {
     "asteroidModels": [
       {
@@ -11,6 +19,20 @@
         "meshName": "Daphne_LP001_1_0",
         "baseScale": 0.125,
         "baseRotationDeg": [-90, 0, 0]
+      },
+      {
+        "id": "asteroid_02",
+        "src": "/models/asteroids/asteroid02.glb",
+        "meshName": "Group24690_Standard_0",
+        "baseScale": 1.0,
+        "baseRotationDeg": [0, 0, 0]
+      },
+      {
+        "id": "asteroid_03",
+        "src": "/models/asteroids/asteroid03.glb",
+        "meshName": "Object_0",
+        "baseScale": 1.0,
+        "baseRotationDeg": [0, 0, 0]
       }
     ]
   },
@@ -40,9 +62,13 @@
       "frame": "system",
       "anchorKm": [0, 0, 0],
       "shape": { "type": "sphere", "radiusKm": 3000 },
-      "population": { "mode": "density", "densityPerKm3": 0.01, "jitter": 0.2, "maxPerChunk": 100 },
+      "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 100 },
       "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
-      "models": [{ "modelId": "asteroid_01", "weight": 1 }],
+      "models": [
+        { "modelId": "asteroid_01", "weight": 0.6 },
+        { "modelId": "asteroid_02", "weight": 0.25 },
+        { "modelId": "asteroid_03", "weight": 0.15 }
+      ],
 
       "resources": {
         "seedSalt": "sol-origin-belt-v1",

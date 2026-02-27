@@ -22,7 +22,7 @@ rotationQuaternion.setFromAxisAngle(yAxis, Math.PI);
 const shipHandling = 1.5;
 const maxRotationSpeed = shipHandling / 2;
 
-const SHIP_MAX_SPEED_MPS = 200;
+const SHIP_MAX_SPEED_MPS = 400;
 const SHIP_MAX_SPEED_KMPS = SHIP_MAX_SPEED_MPS / 1000;
 
 const KNOCKBACK_DECAY = 4.0; // how fast knockback decays per second
