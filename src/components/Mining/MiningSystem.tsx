@@ -885,6 +885,18 @@ const MiningSystem = () => {
 
     currentSnapshotRef.current = snapshot;
 
+    // Keep beam-end ref warm so it's never stale when the beam first appears.
+    // Without this, MiningBeam can mount (React state says isMining=true) one
+    // frame before the mining block below writes a real endpoint — causing the
+    // beam to flash to (0,0,0) or the previous asteroid's position.
+    if (snapshot) {
+      beamEndLocalRef.current.set(
+        snapshot.positionLocal[0],
+        snapshot.positionLocal[1],
+        snapshot.positionLocal[2]
+      );
+    }
+
     // --- Targeting time accumulation (only while not mining)
     if (snapshot && !isMiningNow) {
       targetingTimeRef.current += delta;
