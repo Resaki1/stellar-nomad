@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { isCargoFullAtom } from "@/store/cargo";
 import type { AsteroidInstanceLocation } from "@/sim/asteroids/runtime";
 
 export const TARGET_FOCUS_TIME_S = 3;
@@ -54,7 +55,8 @@ export const targetingProgressAtom = atom((get) => {
 /** Action atom: start mining */
 export const startMiningAtom = atom(null, (get, set) => {
   const state = get(miningStateAtom);
-  if (!state.isFocused || state.isMining) return;
+  const cargoFull = get(isCargoFullAtom);
+  if (!state.isFocused || state.isMining || cargoFull) return;
   set(miningStateAtom, { ...state, isMining: true, miningProgress: 0 });
 });
 

@@ -88,8 +88,8 @@ function pump(state: FieldState) {
         chunk,
       };
 
-      const transferables = collectTransferables(chunk);
       // Transfer ownership (no copy).
+      const transferables = collectTransferables(chunk);
       (self as any).postMessage(msg, transferables);
     }
   } catch (e) {
@@ -141,7 +141,9 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
 
     case "generate": {
       const state = states.get(msg.fieldId);
-      if (!state) return;
+      if (!state) {
+        return;
+      }
 
       // Ignore stale requests.
       if (msg.epoch !== state.epoch) return;

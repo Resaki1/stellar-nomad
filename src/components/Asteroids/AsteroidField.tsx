@@ -86,14 +86,10 @@ const FieldLayer = memo(function FieldLayer({
   const shape = useMemo(() => prepareFieldShape(field.shape), [field.shape]);
 
   // Authoritative runtime for this field (chunks + instanceId -> location index).
-  const fieldRuntime = useMemo(() => {
-    // eslint-disable-next-line no-console
-    console.log("[AsteroidField] Creating field runtime", {
-      fieldId: field.id,
-      runtimeId: asteroidRuntime.instanceId,
-    });
-    return asteroidRuntime.getOrCreateFieldRuntime(field.id);
-  }, [asteroidRuntime, field.id]);
+  const fieldRuntime = useMemo(
+    () => asteroidRuntime.getOrCreateFieldRuntime(field.id),
+    [asteroidRuntime, field.id]
+  );
 
   // Rendering state is derived from the runtime’s loaded chunks.
   const [renderedChunks, setRenderedChunks] = useState<AsteroidChunkData[]>([]);
@@ -115,7 +111,7 @@ const FieldLayer = memo(function FieldLayer({
 
   const removeAsteroidInstance = useCallback(
     (instanceId: number) => {
-      const updatedChunk = fieldRuntime.removeInstance(instanceId);
+      const updatedChunk = fieldRuntime.destroyInstance(instanceId);
       if (!updatedChunk) return;
 
       setRenderedChunks((prev) => {
@@ -178,7 +174,9 @@ const FieldLayer = memo(function FieldLayer({
       inFlightRef.current.delete(chunk.key);
 
       // If the chunk is no longer wanted (player moved / cap changed), drop it.
-      if (!wantedKeysRef.current.has(chunk.key)) return;
+      if (!wantedKeysRef.current.has(chunk.key)) {
+        return;
+      }
 
       // Authoritatively store chunk and build instanceId -> location index.
       fieldRuntime.upsertChunk(chunk);
@@ -374,6 +372,8 @@ const FieldLayer = memo(function FieldLayer({
         }
       }
 
+      // (streaming tick runs silently; heartbeat useEffect reports status)
+
       // Determine which chunks should be rendered (within draw radius).
       const nextChunks: AsteroidChunkData[] = [];
       fieldRuntime.chunks.forEach((chunk) => {
@@ -536,7 +536,6 @@ FieldLayer.displayName = "FieldLayer";
 
 function AsteroidField() {
   const system = useAtomValue(systemConfigAtom);
-
   const modelDefs = useMemo(() => getSystemAsteroidModelDefs(system), [system]);
   const modelRegistry = useAsteroidModelRegistry(modelDefs);
 

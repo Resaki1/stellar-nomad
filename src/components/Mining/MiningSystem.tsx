@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import * as THREE from "three";
 import { Billboard, Line } from "@react-three/drei";
 
@@ -16,6 +16,8 @@ import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
+import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
+import { addCargoAtom } from "@/store/cargo";
 
 // --------------------
 // Gameplay / tuning
@@ -28,10 +30,7 @@ const RAYCAST_INTERVAL_S = 0.05; // 20 Hz ray selection
 const STATE_COMMIT_INTERVAL_S = 1 / 30; // 30 Hz UI commits
 const TARGET_LOCK_GRACE_S = 0.18;
 
-// Mining
-const MINING_DURATION_S = 5;
-
-// Requiring aim during mining (kept)
+// Requiring aim during mining
 const MINING_AIM_GRACE_S = 0.15; // small forgiveness for jitter
 const MINING_AIM_RADIUS_SCALE = 1.08;
 const MINING_AIM_RADIUS_BONUS_M = 0.75;
@@ -558,14 +557,17 @@ const MiningSystem = () => {
   const targetLostTimeRef = useRef(0);
   const targetingTimeRef = useRef(0);
 
-  const miningProgressRef = useRef(0);
   const miningAimLostTimeRef = useRef(0);
 
   const currentSnapshotRef = useRef<TargetedAsteroid | null>(null);
+  const miningProgressRef = useRef(0);
 
+  // One frame delay to remove the asteroid after state update is committed
   const pendingRemovalIdRef = useRef<number | null>(null);
-
-  // Beam endpoints in local render space
+  const pendingMiningRewardRef = useRef<
+    { instanceId: number; fieldId: string; resourceId: string; amount: number } | null
+    >(null);
+  
   const shipPosLocalRef = useRef(new THREE.Vector3());
   const beamStartLocalRef = useRef(new THREE.Vector3());
   const beamEndLocalRef = useRef(new THREE.Vector3());
@@ -575,6 +577,11 @@ const MiningSystem = () => {
   const lockedEndOffsetFromCenterRef = useRef(new THREE.Vector3(0, 0, 0));
   const lockedEndForAsteroidIdRef = useRef<number | null>(null);
 
+  const miningDurationSRef = useRef<number>(5);
+  const miningDurationForAsteroidIdRef = useRef<number | null>(null);
+
+  const addCargo = useSetAtom(addCargoAtom);
+
   const removeAsteroid = useCallback(
     (instanceId: number) => {
       const loc = asteroidRuntime.findInstanceLocation(instanceId);
@@ -583,7 +590,7 @@ const MiningSystem = () => {
       const fieldRuntime = asteroidRuntime.getFieldRuntime(loc.fieldId);
       if (!fieldRuntime) return;
 
-      fieldRuntime.removeInstance(instanceId);
+      fieldRuntime.destroyInstance(instanceId);
     },
     [asteroidRuntime]
   );
@@ -934,6 +941,7 @@ const MiningSystem = () => {
           }
 
           lockedEndForAsteroidIdRef.current = snapshot.instanceId;
+          miningDurationSRef.current = computeMiningDurationS(snapshot.radiusM);
         }
 
         // Always place beam end at the locked point (NOT at the camera ray each frame)
@@ -946,11 +954,28 @@ const MiningSystem = () => {
           miningAimLostTimeRef.current = 0;
 
           // Advance mining
-          miningProgressRef.current += delta / MINING_DURATION_S;
+          miningProgressRef.current += delta / miningDurationSRef.current;
 
           if (miningProgressRef.current >= 1) {
             miningProgressRef.current = 1;
             pendingRemovalIdRef.current = snapshot.instanceId;
+
+            // Compute deterministic mining reward before we clear the snapshot
+            const fieldId = snapshot.location.fieldId;
+            const reward = getAsteroidMiningReward(
+              systemConfig,
+              fieldId,
+              snapshot.instanceId,
+              snapshot.radiusM
+            );
+            if (reward) {
+              pendingMiningRewardRef.current = {
+                instanceId: snapshot.instanceId,
+                fieldId,
+                resourceId: reward.resourceId,
+                amount: reward.amount,
+              };
+            }
 
             // Completed => stop mining and clear target
             cancelMining = true;
@@ -1020,8 +1045,14 @@ const MiningSystem = () => {
     // Apply side effect: remove asteroid
     const removeId = pendingRemovalIdRef.current;
     if (removeId !== null) {
+      const reward = pendingMiningRewardRef.current;
+      if (reward && reward.instanceId === removeId) {
+        addCargo({ resourceId: reward.resourceId, amount: reward.amount });
+      }
+
       removeAsteroid(removeId);
       pendingRemovalIdRef.current = null;
+      pendingMiningRewardRef.current = null;
     }
   });
 

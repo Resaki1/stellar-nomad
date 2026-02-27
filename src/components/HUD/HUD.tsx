@@ -1,18 +1,19 @@
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
-import SettingsMenu from "./SettingsMenu/SettingsMenu";
 import Reticle from "./Reticle/Reticle";
 import MiningHUD from "./MiningHUD/MiningHUD";
+import CargoHUD from "./CargoHUD/CargoHUD";
+import SettingsMenu from "./SettingsMenu/SettingsMenu";
+
 import "./HUD.scss";
 
-const HUD = () => {
+export default function HUD() {
   return (
     <div className="hud">
       <ShipDashboard />
-      <SettingsMenu />
       <Reticle />
       <MiningHUD />
+      <CargoHUD />
+      <SettingsMenu />
     </div>
   );
-};
-
-export default HUD;
+}

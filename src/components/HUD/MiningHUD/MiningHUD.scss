@@ -1,29 +1,82 @@
 .mining-hud {
-  position: fixed;
-  bottom: 120px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
   pointer-events: none;
-  z-index: 100;
+
+  // ── Info panel: above the reticle ──
+  &__info {
+    position: fixed;
+    // Sit just above the reticle centre (reticle is 50%/50%)
+    bottom: calc(50% + 40px);
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.25s ease-in-out;
+
+    &--visible {
+      opacity: 1;
+    }
+  }
+
+  &__distance {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  &__loot {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.75);
+  }
+
+  &__cargo {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  &__warning {
+    margin-top: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: rgba(255, 80, 80, 0.95);
+    text-shadow: 0 0 10px rgba(255, 80, 80, 0.25);
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+
+    &--visible {
+      opacity: 1;
+    }
+  }
+
+  // ── Actions: bottom-centre ──
+  &__actions {
+    position: fixed;
+    bottom: 120px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
 
   &__button {
     pointer-events: auto;
-    background: rgba(100, 200, 255, 0.2);
-    border: 2px solid rgba(100, 200, 255, 0.8);
-    color: rgba(255, 255, 255, 0.9);
-    padding: 12px 32px;
-    border-radius: 8px;
-    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 2px;
+    padding: 12px 24px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(0, 0, 0, 0.4);
+    color: rgba(255, 255, 255, 0.8);
     cursor: pointer;
-    transition: all 0.2s ease-in-out;
     opacity: 0;
+    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out,
+      background 0.2s ease-in-out;
     transform: translateY(10px);
 
     &--visible {
@@ -32,26 +85,51 @@
     }
 
     &:hover {
-      background: rgba(100, 200, 255, 0.4);
-      box-shadow: 0 0 20px rgba(100, 200, 255, 0.4);
-    }
-
-    &:active {
-      transform: scale(0.95);
+      background: rgba(0, 0, 0, 0.6);
     }
 
     &--mining {
-      background: rgba(255, 180, 100, 0.3);
-      border-color: rgba(255, 180, 100, 0.8);
+      background: rgba(255, 140, 0, 0.25);
+      border-color: rgba(255, 140, 0, 0.6);
+    }
+
+    &--disabled {
+      background: rgba(255, 80, 80, 0.15);
+      border-color: rgba(255, 80, 80, 0.9);
+      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25);
+      cursor: not-allowed;
+    }
+
+    &:disabled {
       pointer-events: none;
+    }
+
+    &:disabled:hover {
+      background: rgba(255, 80, 80, 0.15);
+      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25);
     }
   }
 
-  &__progress-container {
-    width: 200px;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.1);
+  &__hotkey {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+    font-weight: 700;
+    border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.6);
+    line-height: 1;
+  }
+
+  &__progress-container {
+    width: 240px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
     overflow: hidden;
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
@@ -63,28 +141,13 @@
 
   &__progress-bar {
     height: 100%;
-    background: linear-gradient(90deg, rgba(100, 200, 255, 0.8), rgba(150, 220, 255, 1));
-    border-radius: 4px;
-    transition: width 0.1s ease-out;
-    box-shadow: 0 0 10px rgba(100, 200, 255, 0.6);
+    background: rgba(255, 255, 255, 0.9);
+    transition: width 0.1s linear;
   }
 
   &__progress-text {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.7);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out;
-
-    &--visible {
-      opacity: 1;
-    }
-  }
-
-  &__distance {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.5);
+    color: rgba(255, 255, 255, 0.6);
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
 

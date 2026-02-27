@@ -51,6 +51,34 @@ export type WeightedModelRef = {
   weight: number;
 };
 
+export type ResourceTypeDef = {
+  id: string;
+  name: string;
+  /** Optional unit label (e.g. "kg", "t"). */
+  unit?: string;
+  /** Optional icon for HUD (emoji or short string). */
+  icon?: string;
+  /**
+   * Optional cargo units per 1 unit of this resource.
+   * Defaults to 1 if omitted.
+   */
+  cargoUnitsPerUnit?: number;
+};
+
+export type WeightedResourceRef = {
+  resourceId: string;
+  weight: number;
+};
+
+export type SystemResources = {
+  /** Declares which resource IDs exist in this system. */
+  types: ResourceTypeDef[];
+  /**
+   * Default weighted distribution used for asteroid fields that don't override it.
+   */
+  defaultDistribution?: WeightedResourceRef[];
+};
+
 export type BoxShape = {
   type: "box";
   halfExtentsKm: [number, number, number];
@@ -112,6 +140,7 @@ export type AsteroidFieldDef = {
   streaming?: Partial<StreamingConfig>;
   render?: Partial<RenderConfig>;
   tags?: string[];
+  resources?: AsteroidResourcesDef;
 };
 
 export type SystemAssets = {
@@ -122,6 +151,7 @@ export type SystemConfigV1 = {
   schemaVersion: 1;
   systemId: string;
   units: UnitsSpec;
+  resources?: SystemResources;
   defaults?: SystemDefaults;
   assets?: SystemAssets;
   asteroidFields: AsteroidFieldDef[];
@@ -143,6 +173,22 @@ export type ResolvedRenderConfig = {
 export type ResolvedGenerationConfig = {
   maxAsteroidsPerChunk: number;
 };
+
+export type ResourceYieldDef = {
+  referenceRadiusM: number;
+  baseAmount: number;
+  exponent: number;
+  variance?: number;
+  minAmount?: number;
+  maxAmount?: number;
+};
+
+export type AsteroidResourcesDef = {
+  seedSalt?: number | string;
+  distribution: WeightedResourceRef[];
+  yield: ResourceYieldDef;
+};
+
 
 export const DEFAULT_STREAMING: ResolvedStreamingConfig = {
   chunkSizeKm: 5,
@@ -167,11 +213,29 @@ function clampMin(value: number, min: number): number {
   return value < min ? min : value;
 }
 
+const FALLBACK_ASTEROID_MODEL_DEFS: AsteroidModelDef[] = [
+  {
+    id: "asteroid_01",
+    src: "/models/asteroids/asteroid01.glb",
+    meshName: "Daphne_LP001_1_0",
+    baseScale: 0.125,
+    baseRotationDeg: [-90, 0, 0],
+  },
+];
+
 export function getSystemAsteroidModelDefs(
   system: SystemConfig
 ): AsteroidModelDef[] {
   const defs = system.assets?.asteroidModels ?? [];
-  return defs.length > 0 ? defs : [];
+  if (defs.length > 0) return defs;
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[systemTypes] system.assets.asteroidModels is empty/missing — using fallback.",
+    { hasAssets: !!system.assets, assets: system.assets }
+  );
+
+  return FALLBACK_ASTEROID_MODEL_DEFS;
 }
 
 export function resolveFieldRender(
@@ -277,12 +341,17 @@ export function resolveFieldModels(
   system: SystemConfig,
   field: AsteroidFieldDef
 ): WeightedModelRef[] {
-  const models = field.models ?? [];
-  if (models.length > 0) return models;
-
   const defs = getSystemAsteroidModelDefs(system);
+  const available = new Set(defs.map((d) => d.id));
+
+  const fieldModels = field.models ?? [];
+  const filtered = fieldModels.filter((m) => available.has(m.modelId));
+
+  if (filtered.length > 0) return filtered;
+
+  // Fall back to the first available model def.
   if (defs.length > 0) return [{ modelId: defs[0].id, weight: 1 }];
 
-  // Fallback for safety (should not happen if your system JSON defines assets).
+  // Extra safety fallback.
   return [{ modelId: "asteroid_01", weight: 1 }];
 }

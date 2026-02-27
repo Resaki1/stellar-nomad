@@ -12,11 +12,7 @@ const Navigation = () => {
     setIsTouchDevice(window.matchMedia("(pointer: coarse)").matches)
   );
 
-  return (
-    <div className="navigation">
-      {isTouchDevice ? <TouchControls /> : <KeyboardControls />}
-    </div>
-  );
+  return isTouchDevice ? <TouchControls /> : <KeyboardControls />;
 };
 
 export default Navigation;
