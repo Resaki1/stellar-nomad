@@ -1,81 +1,140 @@
 import { movementAtom, settingsAtom } from "@/store/store";
 import { useAtomValue, useSetAtom } from "jotai";
-import { useState, useEffect } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
+import { useEffect, useRef, useCallback } from "react";
 
-type WASD = "w" | "a" | "s" | "d";
+// Speed change per second while holding accel/decel key
+const SPEED_RATE_PER_S = 0.5;
+
+// All keys we care about, mapped to a stable set for O(1) lookup
+const STEERING_KEYS = new Set(["w", "a", "s", "d"]);
+const ACCEL_KEYS = new Set(["shift", "e"]);
+const DECEL_KEYS = new Set(["control", "c"]);
 
 const KeyboardControls = () => {
   const settings = useAtomValue(settingsAtom);
-
-  const setPitch = (y: number) => {
-    return settings.invertPitch ? y : -1 * y;
-  };
-
   const setMovement = useSetAtom(movementAtom);
 
-  const [keyState, setKeyState] = useState({
-    w: false,
-    a: false,
-    s: false,
-    d: false,
-    e: false,
-    c: false,
-  });
+  // Ref that holds a live Set of currently-pressed keys.
+  // Using a ref + Set avoids re-renders on every keydown/keyup and
+  // lets us handle any number of simultaneous keys correctly.
+  const pressedKeys = useRef(new Set<string>());
 
-  // Update movement based on current keyState
+  // Keep settings in a ref so the event-listener closure never goes stale
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  // ── Raw keydown / keyup listeners ─────────────────────────────────
   useEffect(() => {
-    const yaw = keyState.d === keyState.a ? 0 : keyState.d ? 1 : -1;
-    const pitch = keyState.w === keyState.s ? 0 : keyState.w ? 1 : -1;
-    setMovement((prev) => ({ ...prev, yaw, pitch: setPitch(pitch) }));
-  }, [keyState, setMovement]);
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Ignore key repeats (browser fires keydown repeatedly while
+      // a key is held — the key is already in our set)
+      if (e.repeat) return;
 
-  // Handlers to update keyState — bail out if already in desired state
-  // to avoid creating new objects on browser key-repeat events.
-  const handleKeyDown = (key: WASD) =>
-    setKeyState((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
-  const handleKeyUp = (key: WASD) =>
-    setKeyState((prev) => (!prev[key] ? prev : { ...prev, [key]: false }));
+      // Ignore if user is typing in an input
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-  // Hotkeys setup
-  useHotkeys("w", () => handleKeyDown("w"), { keydown: true });
-  useHotkeys("w", () => handleKeyUp("w"), { keyup: true });
-  useHotkeys("a", () => handleKeyDown("a"), { keydown: true });
-  useHotkeys("a", () => handleKeyUp("a"), { keyup: true });
-  useHotkeys("s", () => handleKeyDown("s"), { keydown: true });
-  useHotkeys("s", () => handleKeyUp("s"), { keyup: true });
-  useHotkeys("d", () => handleKeyDown("d"), { keydown: true });
-  useHotkeys("d", () => handleKeyUp("d"), { keyup: true });
+      const key = e.key.toLowerCase();
+      pressedKeys.current.add(key);
 
-  useHotkeys("e", () => setKeyState((prev) => (prev.e ? prev : { ...prev, e: true })), {
-    keydown: true,
-  });
-  useHotkeys("e", () => setKeyState((prev) => (!prev.e ? prev : { ...prev, e: false })), {
-    keyup: true,
-  });
-  useHotkeys("c", () => setKeyState((prev) => (prev.c ? prev : { ...prev, c: true })), {
-    keydown: true,
-  });
-  useHotkeys("c", () => setKeyState((prev) => (!prev.c ? prev : { ...prev, c: false })), {
-    keyup: true,
-  });
+      // Update steering immediately on keydown for responsiveness
+      if (STEERING_KEYS.has(key)) {
+        const k = pressedKeys.current;
+        const yaw = k.has("d") === k.has("a") ? 0 : k.has("d") ? 1 : -1;
+        const rawPitch = k.has("w") === k.has("s") ? 0 : k.has("w") ? 1 : -1;
+        const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
+        setMovement((prev) => ({ ...prev, yaw, pitch }));
+      }
+    };
 
-  useEffect(() => {
-    const stepSize = 0.1;
-    if (keyState.e) {
+    const onKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      pressedKeys.current.delete(key);
+
+      if (STEERING_KEYS.has(key)) {
+        const k = pressedKeys.current;
+        const yaw = k.has("d") === k.has("a") ? 0 : k.has("d") ? 1 : -1;
+        const rawPitch = k.has("w") === k.has("s") ? 0 : k.has("w") ? 1 : -1;
+        const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
+        setMovement((prev) => ({ ...prev, yaw, pitch }));
+      }
+    };
+
+    // Clear all keys when the tab/window loses focus so we don't get
+    // stuck keys from alt-tabbing, etc.
+    const onBlur = () => {
+      pressedKeys.current.clear();
+      setMovement((prev) => ({ ...prev, yaw: 0, pitch: 0 }));
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [setMovement]);
+
+  // ── Scroll wheel: immediate speed steps ───────────────────────────
+  const handleWheel = useCallback(
+    (e: WheelEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const step = e.deltaY < 0 ? 0.05 : -0.05;
       setMovement((prev) => ({
         ...prev,
-        speed: Math.min(prev.speed + stepSize, 1),
+        speed: Math.min(Math.max(prev.speed + step, 0), 1),
       }));
-    }
+    },
+    [setMovement]
+  );
 
-    if (keyState.c) {
-      setMovement((prev) => ({
-        ...prev,
-        speed: Math.max(prev.speed - stepSize, 0),
-      }));
-    }
-  }, [keyState, setMovement]);
+  useEffect(() => {
+    window.addEventListener("wheel", handleWheel, { passive: true });
+    return () => window.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
+  // ── Continuous speed adjustment via rAF ───────────────────────────
+  const rafRef = useRef<number>(0);
+  const lastTimeRef = useRef(0);
+
+  useEffect(() => {
+    let running = true;
+
+    const tick = (time: number) => {
+      if (!running) return;
+      const dt = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 : 0;
+      lastTimeRef.current = time;
+
+      const k = pressedKeys.current;
+      const accel = ACCEL_KEYS.values().some((ak) => k.has(ak));
+      const decel = DECEL_KEYS.values().some((dk) => k.has(dk));
+
+      if (accel) {
+        setMovement((prev) => ({
+          ...prev,
+          speed: Math.min(prev.speed + SPEED_RATE_PER_S * dt, 1),
+        }));
+      }
+      if (decel) {
+        setMovement((prev) => ({
+          ...prev,
+          speed: Math.max(prev.speed - SPEED_RATE_PER_S * dt, 0),
+        }));
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      running = false;
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, [setMovement]);
 
   return <></>;
 };
