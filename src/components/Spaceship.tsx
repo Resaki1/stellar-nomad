@@ -6,7 +6,7 @@ import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
-import { knockbackImpulseAtom } from "@/store/vfx";
+import { collisionImpactAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
@@ -26,8 +26,9 @@ const _localRel = new Vector3();
 const SHIP_HANDLING = 1.5;
 const MAX_ROT_SPEED = SHIP_HANDLING / 2;
 const SHIP_MAX_SPEED_KMPS = 400 / 1000;
-const KNOCKBACK_DECAY = 4.0;
-const HUD_UPDATE_INTERVAL = 0.25;
+const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
+const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
+const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max
 const PERSIST_INTERVAL = 2.0; // seconds between position saves
 
 // ── Fixed-timestep physics ───────────────────────────────────────────
@@ -51,7 +52,6 @@ const SpaceShip = memo(() => {
   const vRoll = useRef(0);
   const vPitch = useRef(0);
   const speed = useRef(0);
-  const knockbackVel = useRef(new Vector3());
 
   // ── Previous-step snapshot (for interpolation) ─────────────────────
   const prevPosKm = useRef(new Vector3());
@@ -61,9 +61,7 @@ const SpaceShip = memo(() => {
 
   // ── Misc ────────────────────────────────────────────────────────────
   const physicsAcc = useRef(0);
-  const hudAcc = useRef(0);
   const persistAcc = useRef(0);
-  const oldPosition = useRef(new Vector3());
 
   // ── Hydrate from persisted state (once, on mount) ──────────────────
   const hydrated = useRef(false);
@@ -75,7 +73,6 @@ const SpaceShip = memo(() => {
       simQuat.current.set(saved.quaternion[0], saved.quaternion[1], saved.quaternion[2], saved.quaternion[3]);
       prevPosKm.current.copy(posKm.current);
       prevQuat.current.copy(simQuat.current);
-      oldPosition.current.copy(posKm.current);
       // Sync world origin so camera / SimGroups don't jump
       worldOrigin.setShipPosKm(posKm.current);
       worldOrigin.setWorldOriginKm(posKm.current);
@@ -98,15 +95,14 @@ const SpaceShip = memo(() => {
     // Read input imperatively (zero subscriptions → zero re-renders).
     const movement = store.get(movementAtom);
 
-    // Consume knockback once per frame, before the physics loop.
-    const knockbackImpulse = store.get(knockbackImpulseAtom);
-    if (knockbackImpulse) {
-      knockbackVel.current.set(
-        knockbackImpulse.dx * knockbackImpulse.magnitude,
-        knockbackImpulse.dy * knockbackImpulse.magnitude,
-        knockbackImpulse.dz * knockbackImpulse.magnitude
-      );
-      store.set(knockbackImpulseAtom, null);
+    // Consume collision impact once per frame, before the physics loop.
+    const impact = store.get(collisionImpactAtom);
+    if (impact) {
+      // Size-dependent speed dip: small asteroids = mild, large = severe.
+      const t = Math.min(impact.radiusM / COLLISION_SIZE_REF_M, 1);
+      const dip = COLLISION_SPEED_DIP_MIN + (COLLISION_SPEED_DIP_MAX - COLLISION_SPEED_DIP_MIN) * t;
+      speed.current *= (1 - dip);
+      store.set(collisionImpactAtom, null);
     }
 
     // ── Fixed-timestep physics loop ────────────────────────────────────
@@ -168,13 +164,6 @@ const SpaceShip = memo(() => {
       // Velocity
       _vel.copy(_fwd).multiplyScalar(SHIP_MAX_SPEED_KMPS * speed.current * FIXED_DT);
 
-      // Knockback
-      if (knockbackVel.current.lengthSq() > 1e-12) {
-        _vel.addScaledVector(knockbackVel.current, FIXED_DT);
-        knockbackVel.current.multiplyScalar(Math.max(0, 1 - KNOCKBACK_DECAY * FIXED_DT));
-        if (knockbackVel.current.lengthSq() < 1e-12) knockbackVel.current.set(0, 0, 0);
-      }
-
       posKm.current.add(_vel);
       physicsAcc.current -= FIXED_DT;
     }
@@ -215,15 +204,8 @@ const SpaceShip = memo(() => {
     camera.position.copy(shipRef.current.position).sub(_offset);
     camera.quaternion.copy(shipRef.current.quaternion).multiply(_rotationQuat);
 
-    // ── HUD speed ──────────────────────────────────────────────────────
-    hudAcc.current += delta;
-    if (hudAcc.current > HUD_UPDATE_INTERVAL) {
-      const speedKmPerSec =
-        posKm.current.distanceTo(oldPosition.current) / hudAcc.current;
-      store.set(hudInfoAtom, { speed: speedKmPerSec * 1000 });
-      hudAcc.current = 0;
-      oldPosition.current.copy(posKm.current);
-    }
+    // ── HUD speed (analytical — no sampling jitter) ─────────────────────
+    store.set(hudInfoAtom, { speed: speed.current * SHIP_MAX_SPEED_KMPS * 1000 });
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;

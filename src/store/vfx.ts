@@ -33,15 +33,12 @@ export const vfxEventsAtom = atom<AsteroidVFXEvent[]>([]);
 /** Camera shake intensity: 0 = none, 1 = max. Decays in the consumer. */
 export const cameraShakeIntensityAtom = atom(0);
 
-/** Ship knockback impulse in local meters (consumed once by Spaceship). */
-export type KnockbackImpulse = {
-  dx: number;
-  dy: number;
-  dz: number;
-  /** km/s magnitude applied once */
-  magnitude: number;
+/** Collision impact signal (consumed once by Spaceship for speed dip). */
+export type CollisionImpact = {
+  /** Radius of the asteroid that was hit, in meters */
+  radiusM: number;
 };
-export const knockbackImpulseAtom = atom<KnockbackImpulse | null>(null);
+export const collisionImpactAtom = atom<CollisionImpact | null>(null);
 
 // ---------------------------------------------------------------------------
 // Action atoms
@@ -58,13 +55,7 @@ export const spawnVFXEventAtom = atom(
     // Collision-specific side effects
     if (event.type === "collision") {
       set(cameraShakeIntensityAtom, 1);
-
-      if (event.impactDirection) {
-        const [dx, dy, dz] = event.impactDirection;
-        // Knockback scales with asteroid size (bigger = harder hit)
-        const mag = Math.min(0.012, 0.003 + (event.radiusM / 500) * 0.009);
-        set(knockbackImpulseAtom, { dx, dy, dz, magnitude: mag });
-      }
+      set(collisionImpactAtom, { radiusM: event.radiusM });
     }
   }
 );
