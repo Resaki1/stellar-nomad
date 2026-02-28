@@ -41,10 +41,17 @@ const MINING_MAT = new THREE.MeshStandardMaterial({
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+// Module-level temps (shared across instances; safe because useFrame is sequential)
+const _dMat = new THREE.Matrix4();
+const _dPos = new THREE.Vector3();
+const _dQuat = new THREE.Quaternion();
+const _dScale = new THREE.Vector3();
+const _dEuler = new THREE.Euler();
+
 type ParticleState = {
-  ox: number;
-  oy: number;
-  oz: number;
+  px: number;
+  py: number;
+  pz: number;
   vx: number;
   vy: number;
   vz: number;
@@ -121,9 +128,9 @@ const DebrisEffect = memo(function DebrisEffect({
       const spread = radiusM * INITIAL_SPREAD_FACTOR * (0.3 + Math.random() * 0.7);
 
       arr.push({
-        ox: dx * spread,
-        oy: dy * spread,
-        oz: dz * spread,
+        px: position[0] + dx * spread,
+        py: position[1] + dy * spread,
+        pz: position[2] + dz * spread,
         vx: dx * v,
         vy: dy * v,
         vz: dz * v,
@@ -135,32 +142,22 @@ const DebrisEffect = memo(function DebrisEffect({
     }
 
     return arr;
-  }, [radiusM, type, impactDirection]);
+  }, [radiusM, type, impactDirection, position]);
 
-  // Initialize instance matrices at spawn position
+  // Initialize instance matrices on mount (prevents 1-frame flash).
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
-
-    const m = new THREE.Matrix4();
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const p = particles[i];
-      m.makeTranslation(
-        position[0] + p.ox,
-        position[1] + p.oy,
-        position[2] + p.oz
-      );
-      m.scale(new THREE.Vector3(p.scale, p.scale, p.scale));
-      mesh.setMatrixAt(i, m);
+      _dPos.set(p.px, p.py, p.pz);
+      _dQuat.identity();
+      _dScale.set(p.scale, p.scale, p.scale);
+      _dMat.compose(_dPos, _dQuat, _dScale);
+      mesh.setMatrixAt(i, _dMat);
     }
     mesh.instanceMatrix.needsUpdate = true;
-  }, [particles, position]);
-
-  const tmpMat = useMemo(() => new THREE.Matrix4(), []);
-  const tmpPos = useMemo(() => new THREE.Vector3(), []);
-  const tmpQuat = useMemo(() => new THREE.Quaternion(), []);
-  const tmpScale = useMemo(() => new THREE.Vector3(), []);
-  const tmpEuler = useMemo(() => new THREE.Euler(), []);
+  }, [particles]);
 
   useFrame((_, delta) => {
     if (doneRef.current) return;
@@ -185,13 +182,10 @@ const DebrisEffect = memo(function DebrisEffect({
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const p = particles[i];
 
-      // Integrate position (particles store cumulative offset via matrix)
-      mesh.getMatrixAt(i, tmpMat);
-      tmpMat.decompose(tmpPos, tmpQuat, tmpScale);
-
-      tmpPos.x += p.vx * delta;
-      tmpPos.y += p.vy * delta;
-      tmpPos.z += p.vz * delta;
+      // Integrate position directly from state (no getMatrixAt/decompose).
+      p.px += p.vx * delta;
+      p.py += p.vy * delta;
+      p.pz += p.vz * delta;
 
       // Drag
       p.vx *= DECELERATION;
@@ -199,18 +193,15 @@ const DebrisEffect = memo(function DebrisEffect({
       p.vz *= DECELERATION;
 
       // Tumble rotation
-      tmpEuler.set(
-        p.tumbleX * t,
-        p.tumbleY * t,
-        p.tumbleZ * t
-      );
-      tmpQuat.setFromEuler(tmpEuler);
+      _dEuler.set(p.tumbleX * t, p.tumbleY * t, p.tumbleZ * t);
+      _dQuat.setFromEuler(_dEuler);
 
       const s = p.scale * fadeScale;
-      tmpScale.set(s, s, s);
+      _dPos.set(p.px, p.py, p.pz);
+      _dScale.set(s, s, s);
 
-      tmpMat.compose(tmpPos, tmpQuat, tmpScale);
-      mesh.setMatrixAt(i, tmpMat);
+      _dMat.compose(_dPos, _dQuat, _dScale);
+      mesh.setMatrixAt(i, _dMat);
     }
 
     mesh.instanceMatrix.needsUpdate = true;

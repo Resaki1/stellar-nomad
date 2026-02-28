@@ -1,7 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { CameraShake } from "@react-three/drei";
 
@@ -98,21 +97,23 @@ const AsteroidVFX = () => {
   const removeEvent = useSetAtom(removeVFXEventAtom);
   const shakeIntensity = useAtomValue(cameraShakeIntensityAtom);
   const setShakeIntensity = useSetAtom(cameraShakeIntensityAtom);
-  const shakeRef = useRef(shakeIntensity);
+  const [shakeActive, setShakeActive] = useState(false);
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Keep ref in sync
+  // Activate shake on collision, reset atom so re-triggers work.
+  // CameraShake's built-in decay handles the smooth visual fade.
   useEffect(() => {
-    shakeRef.current = shakeIntensity;
-  }, [shakeIntensity]);
-
-  // Decay camera shake over time
-  useFrame((_, delta) => {
-    if (shakeRef.current > 0) {
-      const next = Math.max(0, shakeRef.current - SHAKE_DECAY_RATE * delta);
-      shakeRef.current = next;
-      setShakeIntensity(next);
+    if (shakeIntensity > 0) {
+      setShakeActive(true);
+      setShakeIntensity(0);
+      if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+      shakeTimerRef.current = setTimeout(() => setShakeActive(false), 1000);
     }
-  });
+  }, [shakeIntensity, setShakeIntensity]);
+
+  useEffect(() => () => {
+    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+  }, []);
 
   // Auto-cleanup very old events (safety net)
   useEffect(() => {
@@ -137,9 +138,6 @@ const AsteroidVFX = () => {
   // Limit concurrent effects
   const activeEvents = events.slice(0, MAX_CONCURRENT_EFFECTS);
 
-  // CameraShake intensity factor — only active when > 0
-  const shakeActive = shakeIntensity > 0.01;
-
   return (
     <>
       {activeEvents.map((event) => (
@@ -152,13 +150,13 @@ const AsteroidVFX = () => {
 
       {shakeActive && (
         <CameraShake
-          maxYaw={SHAKE_MAX_YAW * shakeIntensity}
-          maxPitch={SHAKE_MAX_PITCH * shakeIntensity}
-          maxRoll={SHAKE_MAX_ROLL * shakeIntensity}
+          maxYaw={SHAKE_MAX_YAW}
+          maxPitch={SHAKE_MAX_PITCH}
+          maxRoll={SHAKE_MAX_ROLL}
           yawFrequency={SHAKE_FREQUENCY}
           pitchFrequency={SHAKE_FREQUENCY}
           rollFrequency={SHAKE_FREQUENCY * 0.7}
-          intensity={shakeIntensity}
+          intensity={1}
           decay
           decayRate={SHAKE_DECAY_RATE}
         />

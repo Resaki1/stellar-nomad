@@ -8,9 +8,9 @@ import { useEffect, useState } from "react";
 const Navigation = () => {
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
-  useEffect(() =>
-    setIsTouchDevice(window.matchMedia("(pointer: coarse)").matches)
-  );
+  useEffect(() => {
+    setIsTouchDevice(window.matchMedia("(pointer: coarse)").matches);
+  }, []);
 
   return isTouchDevice ? <TouchControls /> : <KeyboardControls />;
 };
