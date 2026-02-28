@@ -19,6 +19,7 @@ import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
 import { addCargoAtom } from "@/store/cargo";
 import { spawnVFXEventAtom } from "@/store/vfx";
+import { shipConfigAtom } from "@/store/shipConfig";
 
 // --------------------
 // Gameplay / tuning
@@ -529,12 +530,19 @@ const MiningSystem = () => {
   const systemConfig = useAtomValue(systemConfigAtom);
 
   const [miningState, setMiningState] = useAtom(miningStateAtom);
+  const shipConfig = useAtomValue(shipConfigAtom);
 
   // Latest mining state ref (avoid render timing issues inside useFrame)
   const miningStateRef = useRef(miningState);
   useEffect(() => {
     miningStateRef.current = miningState;
   }, [miningState]);
+
+  // Latest ship config ref for use inside useFrame
+  const shipConfigRef = useRef(shipConfig);
+  useEffect(() => {
+    shipConfigRef.current = shipConfig;
+  }, [shipConfig]);
 
   // Build field anchor map from system config
   const fieldAnchorMap = useMemo(() => {
@@ -586,6 +594,10 @@ const MiningSystem = () => {
 
   const miningDurationSRef = useRef<number>(5);
   const miningDurationForAsteroidIdRef = useRef<number | null>(null);
+
+  // --- Laser heat tracking (0 = cool, 1 = overheated)
+  const laserHeatRef = useRef(0);
+  const isOverheatedRef = useRef(false);
 
   const addCargo = useSetAtom(addCargoAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
@@ -961,7 +973,9 @@ const MiningSystem = () => {
           }
 
           lockedEndForAsteroidIdRef.current = snapshot.instanceId;
-          miningDurationSRef.current = computeMiningDurationS(snapshot.radiusM);
+          // Apply mining speed multiplier to duration
+          miningDurationSRef.current =
+            computeMiningDurationS(snapshot.radiusM) / shipConfigRef.current.miningSpeedMult;
         }
 
         // Always place beam end at the locked point (NOT at the camera ray each frame)
@@ -972,6 +986,23 @@ const MiningSystem = () => {
 
         if (aimed) {
           miningAimLostTimeRef.current = 0;
+
+          // --- Heat up the laser
+          const heatCapS = shipConfigRef.current.miningHeatCapacityS;
+          laserHeatRef.current = Math.min(1, laserHeatRef.current + delta / heatCapS);
+
+          // Overheat check
+          if (laserHeatRef.current >= 1) {
+            isOverheatedRef.current = true;
+            cancelMining = true;
+            miningProgressRef.current = 0;
+            miningAimLostTimeRef.current = 0;
+            targetIdRef.current = null;
+            targetingTimeRef.current = 0;
+            targetLostTimeRef.current = 0;
+            currentSnapshotRef.current = null;
+            lockedEndForAsteroidIdRef.current = null;
+          }
 
           // Advance mining
           miningProgressRef.current += delta / miningDurationSRef.current;
@@ -1034,6 +1065,17 @@ const MiningSystem = () => {
       miningProgressRef.current = 0;
       miningAimLostTimeRef.current = 0;
       lockedEndForAsteroidIdRef.current = null;
+
+      // --- Cool down the laser when not mining
+      if (laserHeatRef.current > 0) {
+        const cooldownS = shipConfigRef.current.miningCooldownS;
+        laserHeatRef.current = Math.max(0, laserHeatRef.current - delta / cooldownS);
+
+        // Clear overheat once fully cooled
+        if (isOverheatedRef.current && laserHeatRef.current <= 0) {
+          isOverheatedRef.current = false;
+        }
+      }
     }
 
     // Force an immediate state commit if we just cancelled or completed mining
@@ -1064,6 +1106,8 @@ const MiningSystem = () => {
           isFocused: nextFocused,
           isMining: nextIsMining,
           miningProgress: nextMiningProgress,
+          laserHeat: laserHeatRef.current,
+          isOverheated: isOverheatedRef.current,
         };
       });
     }
@@ -1073,9 +1117,11 @@ const MiningSystem = () => {
     if (removeId !== null) {
       const reward = pendingMiningRewardRef.current;
       if (reward && reward.instanceId === removeId) {
-        // Add each resource to cargo
+        // Apply efficiency multiplier and add each resource to cargo
+        const effMult = shipConfigRef.current.miningEfficiencyMult;
         for (const r of reward.resources) {
-          addCargo({ resourceId: r.resourceId, amount: r.amount });
+          const boostedAmount = Math.max(1, Math.round(r.amount * effMult));
+          addCargo({ resourceId: r.resourceId, amount: boostedAmount });
         }
 
         spawnVFX({

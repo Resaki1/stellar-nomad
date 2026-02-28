@@ -103,6 +103,8 @@ const SettingsMenu = () => {
     if (!window.confirm("Reset asteroid field? All mining progress will be lost.")) return;
     deltaStore.clearAll();
     clearShipState();
+    localStorage.removeItem("ship-config-v1");
+    localStorage.removeItem("cargo");
     // Force a full reload so the runtime regenerates all chunks from scratch.
     window.location.reload();
   }, [deltaStore]);

@@ -26,6 +26,10 @@ export type MiningState = {
   isMining: boolean;
   /** Mining progress from 0 to 1 */
   miningProgress: number;
+  /** Mining laser heat from 0 to 1 (1 = overheated). */
+  laserHeat: number;
+  /** True when the laser has overheated and is still cooling down. */
+  isOverheated: boolean;
 };
 
 export const miningStateAtom = atom<MiningState>({
@@ -34,6 +38,8 @@ export const miningStateAtom = atom<MiningState>({
   isFocused: false,
   isMining: false,
   miningProgress: 0,
+  laserHeat: 0,
+  isOverheated: false,
 });
 
 /**
@@ -56,7 +62,7 @@ export const targetingProgressAtom = atom((get) => {
 export const startMiningAtom = atom(null, (get, set) => {
   const state = get(miningStateAtom);
   const cargoFull = get(isCargoFullAtom);
-  if (!state.isFocused || state.isMining || cargoFull) return;
+  if (!state.isFocused || state.isMining || cargoFull || state.isOverheated) return;
   set(miningStateAtom, { ...state, isMining: true, miningProgress: 0 });
 });
 

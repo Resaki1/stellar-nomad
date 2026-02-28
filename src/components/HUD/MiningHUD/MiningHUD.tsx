@@ -47,8 +47,14 @@ export default function MiningHUD() {
   const showButton = miningState.isFocused;
   const showProgress = miningState.isMining;
 
-  const mineDisabled = !miningState.isMining && cargoFull;
+  const mineDisabled =
+    !miningState.isMining && (cargoFull || miningState.isOverheated);
   const showCargoFullWarning = showButton && !miningState.isMining && cargoFull;
+  const showOverheatWarning =
+    showButton && !miningState.isMining && miningState.isOverheated && !cargoFull;
+
+  // Show heat bar whenever there is heat, or we're focused
+  const showHeatBar = miningState.laserHeat > 0 || miningState.isMining;
 
   const handleMineClick = () => {
     if (miningState.isMining) cancelMining();
@@ -65,14 +71,14 @@ export default function MiningHUD() {
 
         if (miningState.isMining) {
           cancelMining();
-        } else if (miningState.isFocused && !cargoFull) {
+        } else if (miningState.isFocused && !cargoFull && !miningState.isOverheated) {
           startMining();
         }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [miningState.isFocused, miningState.isMining, cargoFull, startMining, cancelMining]);
+  }, [miningState.isFocused, miningState.isMining, miningState.isOverheated, cargoFull, startMining, cancelMining]);
 
   return (
     <div className="mining-hud">
@@ -101,10 +107,33 @@ export default function MiningHUD() {
         >
           Cargo is full
         </div>
+
+        <div
+          className={`mining-hud__warning mining-hud__warning--overheat ${
+            showOverheatWarning ? "mining-hud__warning--visible" : ""
+          }`}
+        >
+          Overheated
+        </div>
       </div>
 
       {/* Actions – positioned at bottom center */}
       <div className="mining-hud__actions">
+        {/* Heat bar */}
+        <div
+          className={`mining-hud__heat-container ${
+            showHeatBar ? "mining-hud__heat-container--visible" : ""
+          }`}
+        >
+          <div
+            className={`mining-hud__heat-bar ${
+              miningState.isOverheated ? "mining-hud__heat-bar--overheated" : ""
+            } ${miningState.laserHeat > 0.75 && !miningState.isOverheated ? "mining-hud__heat-bar--warning" : ""}`}
+            style={{ width: `${miningState.laserHeat * 100}%` }}
+          />
+          <span className="mining-hud__heat-label">HEAT</span>
+        </div>
+
         <div
           className={`mining-hud__progress-container ${
             showProgress ? "mining-hud__progress-container--visible" : ""
