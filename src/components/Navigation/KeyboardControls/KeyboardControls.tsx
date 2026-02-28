@@ -1,49 +1,68 @@
 import { movementAtom, settingsAtom } from "@/store/store";
+import { keybindsAtom } from "@/store/keybinds";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useRef, useCallback } from "react";
 
 // Speed change per second while holding accel/decel key
 const SPEED_RATE_PER_S = 0.5;
 
-// All keys we care about, mapped to a stable set for O(1) lookup
-const STEERING_KEYS = new Set(["w", "a", "s", "d"]);
-const ACCEL_KEYS = new Set(["shift", "e"]);
-const DECEL_KEYS = new Set(["control", "c"]);
-
 const KeyboardControls = () => {
   const settings = useAtomValue(settingsAtom);
   const setMovement = useSetAtom(movementAtom);
+  const keybinds = useAtomValue(keybindsAtom);
 
   // Ref that holds a live Set of currently-pressed keys.
-  // Using a ref + Set avoids re-renders on every keydown/keyup and
-  // lets us handle any number of simultaneous keys correctly.
   const pressedKeys = useRef(new Set<string>());
 
-  // Keep settings in a ref so the event-listener closure never goes stale
+  // Keep settings & keybinds in refs so listener closures never go stale
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const keybindsRef = useRef(keybinds);
+  keybindsRef.current = keybinds;
+
+  /** Check if any key bound to the given action is pressed. */
+  const isActionPressed = (action: keyof typeof keybinds) => {
+    const k = pressedKeys.current;
+    return keybindsRef.current[action].some((key) => k.has(key));
+  };
+
+  /** Recompute and push yaw/pitch from current pressed keys. */
+  const updateSteering = () => {
+    const left = isActionPressed("yawLeft");
+    const right = isActionPressed("yawRight");
+    const up = isActionPressed("pitchUp");
+    const down = isActionPressed("pitchDown");
+
+    const yaw = right === left ? 0 : right ? 1 : -1;
+    const rawPitch = up === down ? 0 : up ? 1 : -1;
+    const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
+    setMovement((prev) => ({ ...prev, yaw, pitch }));
+  };
+
+  // Build a Set of all steering keys for fast lookup
+  const steeringKeysRef = useRef(new Set<string>());
+  useEffect(() => {
+    const s = new Set<string>();
+    for (const k of keybinds.pitchUp) s.add(k);
+    for (const k of keybinds.pitchDown) s.add(k);
+    for (const k of keybinds.yawLeft) s.add(k);
+    for (const k of keybinds.yawRight) s.add(k);
+    steeringKeysRef.current = s;
+  }, [keybinds]);
 
   // ── Raw keydown / keyup listeners ─────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Ignore key repeats (browser fires keydown repeatedly while
-      // a key is held — the key is already in our set)
       if (e.repeat) return;
 
-      // Ignore if user is typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       const key = e.key.toLowerCase();
       pressedKeys.current.add(key);
 
-      // Update steering immediately on keydown for responsiveness
-      if (STEERING_KEYS.has(key)) {
-        const k = pressedKeys.current;
-        const yaw = k.has("d") === k.has("a") ? 0 : k.has("d") ? 1 : -1;
-        const rawPitch = k.has("w") === k.has("s") ? 0 : k.has("w") ? 1 : -1;
-        const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
-        setMovement((prev) => ({ ...prev, yaw, pitch }));
+      if (steeringKeysRef.current.has(key)) {
+        updateSteering();
       }
     };
 
@@ -51,17 +70,11 @@ const KeyboardControls = () => {
       const key = e.key.toLowerCase();
       pressedKeys.current.delete(key);
 
-      if (STEERING_KEYS.has(key)) {
-        const k = pressedKeys.current;
-        const yaw = k.has("d") === k.has("a") ? 0 : k.has("d") ? 1 : -1;
-        const rawPitch = k.has("w") === k.has("s") ? 0 : k.has("w") ? 1 : -1;
-        const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
-        setMovement((prev) => ({ ...prev, yaw, pitch }));
+      if (steeringKeysRef.current.has(key)) {
+        updateSteering();
       }
     };
 
-    // Clear all keys when the tab/window loses focus so we don't get
-    // stuck keys from alt-tabbing, etc.
     const onBlur = () => {
       pressedKeys.current.clear();
       setMovement((prev) => ({ ...prev, yaw: 0, pitch: 0 }));
@@ -109,9 +122,8 @@ const KeyboardControls = () => {
       const dt = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 : 0;
       lastTimeRef.current = time;
 
-      const k = pressedKeys.current;
-      const accel = ACCEL_KEYS.values().some((ak) => k.has(ak));
-      const decel = DECEL_KEYS.values().some((dk) => k.has(dk));
+      const accel = isActionPressed("accelerate");
+      const decel = isActionPressed("decelerate");
 
       if (accel) {
         setMovement((prev) => ({

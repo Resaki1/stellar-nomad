@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAtomValue } from "jotai";
+import { keybindsAtom } from "@/store/keybinds";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import MiningHUD from "./MiningHUD/MiningHUD";
@@ -13,28 +15,39 @@ import "./HUD.scss";
 
 export default function HUD() {
   const [cargoOpen, setCargoOpen] = useState(false);
+  const keybinds = useAtomValue(keybindsAtom);
+  const keybindsRef = useRef(keybinds);
+  keybindsRef.current = keybinds;
+  const cargoOpenRef = useRef(cargoOpen);
+  cargoOpenRef.current = cargoOpen;
 
   const toggleCargo = useCallback(() => setCargoOpen((prev) => !prev), []);
   const closeCargo = useCallback(() => setCargoOpen(false), []);
 
-  // Tab / I hotkey to open/close cargo
+  // Cargo hotkey + Escape to close
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-      if (e.key === "Tab" || e.key === "i" || e.key === "I") {
+      const key = e.key.toLowerCase();
+
+      if (keybindsRef.current.toggleCargo.includes(key)) {
         e.preventDefault();
         setCargoOpen((prev) => !prev);
       }
 
-      if (e.key === "Escape" && cargoOpen) {
+      // Also allow the settings key to close cargo
+      if (
+        keybindsRef.current.toggleSettings.includes(key) &&
+        cargoOpenRef.current
+      ) {
         setCargoOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cargoOpen]);
+  }, []);
 
   return (
     <div className="hud">

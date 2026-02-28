@@ -1,7 +1,8 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { keybindsAtom } from "@/store/keybinds";
 import { miningStateAtom, startMiningAtom, cancelMiningAtom } from "@/store/mining";
 import {
   cargoCapacityUnitsAtom,
@@ -61,19 +62,23 @@ export default function MiningHUD() {
     else startMining();
   };
 
-  // 'M' hotkey to start / abort mining
+  // Mine hotkey — reads bound keys from keybinds store
+  const keybinds = useAtomValue(keybindsAtom);
+  const keybindsRef = useRef(keybinds);
+  keybindsRef.current = keybinds;
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "m" || e.key === "M") {
-        // Ignore if user is typing in an input/textarea
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-        if (miningState.isMining) {
-          cancelMining();
-        } else if (miningState.isFocused && !cargoFull && !miningState.isOverheated) {
-          startMining();
-        }
+      const key = e.key.toLowerCase();
+      if (!keybindsRef.current.mine.includes(key)) return;
+
+      if (miningState.isMining) {
+        cancelMining();
+      } else if (miningState.isFocused && !cargoFull && !miningState.isOverheated) {
+        startMining();
       }
     };
     window.addEventListener("keydown", onKeyDown);

@@ -92,4 +92,15 @@ button {
       background: rgba(255, 80, 80, 0.7);
     }
   }
+
+  &--subtle {
+    background: rgba(200, 200, 200, 0.1);
+    border-color: rgba(200, 200, 200, 0.3);
+    font-size: 0.8rem;
+    min-width: 96px;
+
+    &:hover {
+      background: rgba(200, 200, 200, 0.25);
+    }
+  }
 }

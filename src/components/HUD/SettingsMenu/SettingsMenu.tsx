@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import "./SettingsMenu.scss";
-import { SetStateAction, useAtom } from "jotai";
+import { SetStateAction, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   SetAtom,
   Settings,
@@ -8,7 +8,14 @@ import {
   settingsIsOpenAtom,
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
-import { useHotkeys } from "react-hotkeys-hook";
+import KeybindRow from "./KeybindRow/KeybindRow";
+import {
+  KEYBIND_ACTIONS,
+  CATEGORY_LABELS,
+  KeybindCategory,
+  keybindsAtom,
+  resetKeybindsAtom,
+} from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
 import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
 import { clearShipState } from "@/sim/shipPersistence";
@@ -23,7 +30,8 @@ const renderSubMenu = (
   subMenu: SubMenu,
   settings: Settings,
   setSettings: SetAtom<[SetStateAction<Settings>], void>,
-  onResetWorld?: () => void
+  onResetWorld?: () => void,
+  onResetKeybinds?: () => void
 ) => {
   switch (subMenu) {
     case SubMenu.Graphics:
@@ -51,7 +59,14 @@ const renderSubMenu = (
           />
         </>
       );
-    case SubMenu.Controls:
+    case SubMenu.Controls: {
+      // Group keybind actions by category
+      const categories = new Map<KeybindCategory, typeof KEYBIND_ACTIONS>();
+      for (const a of KEYBIND_ACTIONS) {
+        if (!categories.has(a.category)) categories.set(a.category, []);
+        categories.get(a.category)!.push(a);
+      }
+
       return (
         <>
           <SettingsCheckbox
@@ -64,8 +79,31 @@ const renderSubMenu = (
             }
             label="invert pitch"
           />
+
+          {Array.from(categories.entries()).map(([cat, actions]) => (
+            <div key={cat} className="keybind-category">
+              <div className="keybind-category__title">
+                {CATEGORY_LABELS[cat]}
+              </div>
+              <div className="keybind-category__rows">
+                {actions.map((a) => (
+                  <KeybindRow key={a.id} action={a.id} label={a.label} />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {onResetKeybinds && (
+            <button
+              className="settings__menu-button settings__menu-button--subtle"
+              onClick={onResetKeybinds}
+            >
+              reset keybinds
+            </button>
+          )}
         </>
       );
+    }
     case SubMenu.Dev:
       return (
         <>
@@ -99,13 +137,20 @@ const SettingsMenu = () => {
   const gpu = useDetectGPU();
   const deltaStore = useAsteroidDeltaStore();
 
+  const keybinds = useAtomValue(keybindsAtom);
+  const resetKeybinds = useSetAtom(resetKeybindsAtom);
+
+  const handleResetKeybinds = useCallback(() => {
+    resetKeybinds();
+  }, [resetKeybinds]);
+
   const handleResetWorld = useCallback(() => {
     if (!window.confirm("Reset asteroid field? All mining progress will be lost.")) return;
     deltaStore.clearAll();
     clearShipState();
     localStorage.removeItem("ship-config-v1");
     localStorage.removeItem("cargo");
-    // Force a full reload so the runtime regenerates all chunks from scratch.
+    localStorage.removeItem("keybinds-v1");
     window.location.reload();
   }, [deltaStore]);
 
@@ -133,10 +178,25 @@ const SettingsMenu = () => {
     }
   }, []);
 
-  const toggleMenu = () => setIsOpen(!isOpen);
-  const closeMenu = () => setIsOpen(false);
+  const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
 
-  useHotkeys("escape", toggleMenu);
+  // Settings toggle hotkey — reads from keybinds store
+  const keybindsRef = useRef(keybinds);
+  keybindsRef.current = keybinds;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const key = e.key.toLowerCase();
+      if (keybindsRef.current.toggleSettings.includes(key)) {
+        toggleMenu();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleMenu]);
 
   return (
     <>
@@ -145,13 +205,12 @@ const SettingsMenu = () => {
       </button>
 
       {isOpen && (
-        <div className="settings" onClick={closeMenu}>
+        <div className="settings" onClick={() => setIsOpen(false)}>
           <div className="settings__menu" onClick={(e) => e.stopPropagation()}>
             <h2 className="settings__menu-title">
               {activeSubMenu ?? "settings"}
             </h2>
             {!activeSubMenu ? (
-              // render main settings menu
               <>
                 {Object.values(SubMenu).map((subMenu) => (
                   <button
@@ -164,7 +223,6 @@ const SettingsMenu = () => {
                 ))}
               </>
             ) : (
-              // render sub menu
               <>
                 <button
                   className="settings__menu-button settings__menu-button--back"
@@ -172,11 +230,20 @@ const SettingsMenu = () => {
                 >
                   {"<"} back
                 </button>
-                {renderSubMenu(activeSubMenu, settings, setSettings, handleResetWorld)}
+                {renderSubMenu(
+                  activeSubMenu,
+                  settings,
+                  setSettings,
+                  handleResetWorld,
+                  handleResetKeybinds
+                )}
               </>
             )}
 
-            <button className="settings__menu-button" onClick={closeMenu}>
+            <button
+              className="settings__menu-button"
+              onClick={() => setIsOpen(false)}
+            >
               close
             </button>
           </div>
