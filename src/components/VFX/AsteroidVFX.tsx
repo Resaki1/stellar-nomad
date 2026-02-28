@@ -1,13 +1,11 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { CameraShake } from "@react-three/drei";
 
 import {
   vfxEventsAtom,
   removeVFXEventAtom,
-  cameraShakeIntensityAtom,
   type AsteroidVFXEvent,
 } from "@/store/vfx";
 
@@ -20,13 +18,6 @@ import LootPopup from "./LootPopup";
 // ---------------------------------------------------------------------------
 const MAX_CONCURRENT_EFFECTS = 12; // prevent frame drops from too many simultaneous explosions
 const VFX_CLEANUP_TIMEOUT_S = 3; // auto-cleanup stale events
-
-// Camera shake config
-const SHAKE_DECAY_RATE = 2.0; // how fast shake fades per second (lower = longer shake)
-const SHAKE_MAX_YAW = 0.12;
-const SHAKE_MAX_PITCH = 0.12;
-const SHAKE_MAX_ROLL = 0.06;
-const SHAKE_FREQUENCY = 10;
 
 // ---------------------------------------------------------------------------
 // Single-event renderer
@@ -93,25 +84,6 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
 const AsteroidVFX = () => {
   const events = useAtomValue(vfxEventsAtom);
   const removeEvent = useSetAtom(removeVFXEventAtom);
-  const shakeIntensity = useAtomValue(cameraShakeIntensityAtom);
-  const setShakeIntensity = useSetAtom(cameraShakeIntensityAtom);
-  const [shakeActive, setShakeActive] = useState(false);
-  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  // Activate shake on collision, reset atom so re-triggers work.
-  // CameraShake's built-in decay handles the smooth visual fade.
-  useEffect(() => {
-    if (shakeIntensity > 0) {
-      setShakeActive(true);
-      setShakeIntensity(0);
-      if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
-      shakeTimerRef.current = setTimeout(() => setShakeActive(false), 1000);
-    }
-  }, [shakeIntensity, setShakeIntensity]);
-
-  useEffect(() => () => {
-    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
-  }, []);
 
   // Auto-cleanup very old events (safety net)
   useEffect(() => {
@@ -145,20 +117,6 @@ const AsteroidVFX = () => {
           onComplete={handleComplete}
         />
       ))}
-
-      {shakeActive && (
-        <CameraShake
-          maxYaw={SHAKE_MAX_YAW}
-          maxPitch={SHAKE_MAX_PITCH}
-          maxRoll={SHAKE_MAX_ROLL}
-          yawFrequency={SHAKE_FREQUENCY}
-          pitchFrequency={SHAKE_FREQUENCY}
-          rollFrequency={SHAKE_FREQUENCY * 0.7}
-          intensity={1}
-          decay
-          decayRate={SHAKE_DECAY_RATE}
-        />
-      )}
     </>
   );
 };

@@ -6,7 +6,7 @@ import { ShipOne } from "./models/ships/ShipOne";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
-import { collisionImpactAtom } from "@/store/vfx";
+import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
@@ -21,6 +21,8 @@ const _offset = new Vector3();
 const _rotationQuat = new Quaternion().setFromAxisAngle(_yAxis, Math.PI);
 const _vel = new Vector3();
 const _localRel = new Vector3();
+const _shakeOffset = new Vector3();
+const _shakeEuler = new Quaternion();
 
 // ── Tuning constants ─────────────────────────────────────────────────
 const SHIP_HANDLING = 1.5;
@@ -30,6 +32,11 @@ const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
 const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
 const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max
 const PERSIST_INTERVAL = 2.0; // seconds between position saves
+
+// ── Camera shake ─────────────────────────────────────────────────────
+const SHAKE_DECAY_RATE = 3.0;   // exponential decay speed
+const SHAKE_MAX_OFFSET = 0.8;   // meters
+const SHAKE_MAX_ANGLE = 0.025;  // radians
 
 // ── Fixed-timestep physics ───────────────────────────────────────────
 // Physics advances in fixed increments; rendering interpolates between
@@ -62,6 +69,9 @@ const SpaceShip = memo(() => {
   // ── Misc ────────────────────────────────────────────────────────────
   const physicsAcc = useRef(0);
   const persistAcc = useRef(0);
+
+  // ── Camera shake state ──────────────────────────────────────────────
+  const shakeIntensity = useRef(0);
 
   // ── Hydrate from persisted state (once, on mount) ──────────────────
   const hydrated = useRef(false);
@@ -203,6 +213,42 @@ const SpaceShip = memo(() => {
 
     camera.position.copy(shipRef.current.position).sub(_offset);
     camera.quaternion.copy(shipRef.current.quaternion).multiply(_rotationQuat);
+
+    // ── Camera shake (applied on top of chase-cam) ─────────────────────
+    // Consume new shake trigger
+    const shakeSignal = store.get(cameraShakeIntensityAtom);
+    if (shakeSignal > 0) {
+      shakeIntensity.current = Math.min(1, shakeIntensity.current + shakeSignal);
+      store.set(cameraShakeIntensityAtom, 0);
+    }
+
+    if (shakeIntensity.current > 0.001) {
+      const s = shakeIntensity.current;
+
+      // Pseudo-random offsets using sin with high-frequency time seeding
+      const t = performance.now() * 0.001;
+      const ox = Math.sin(t * 37.7 + 1.3) * Math.cos(t * 23.1);
+      const oy = Math.sin(t * 41.3 + 2.7) * Math.cos(t * 29.7);
+      const oz = Math.sin(t * 31.1 + 4.1) * Math.cos(t * 19.3);
+
+      _shakeOffset.set(
+        ox * SHAKE_MAX_OFFSET * s,
+        oy * SHAKE_MAX_OFFSET * s,
+        oz * SHAKE_MAX_OFFSET * 0.3 * s
+      ).applyQuaternion(shipRef.current.quaternion);
+      camera.position.add(_shakeOffset);
+
+      // Small rotation shake
+      const ry = Math.sin(t * 43.7 + 0.5) * SHAKE_MAX_ANGLE * s;
+      const rp = Math.sin(t * 47.3 + 3.2) * SHAKE_MAX_ANGLE * s;
+      _shakeEuler.setFromAxisAngle(_yAxis, ry);
+      camera.quaternion.multiply(_shakeEuler);
+      _shakeEuler.setFromAxisAngle(_xAxis, rp);
+      camera.quaternion.multiply(_shakeEuler);
+
+      // Exponential decay
+      shakeIntensity.current *= Math.exp(-SHAKE_DECAY_RATE * delta);
+    }
 
     // ── HUD speed (analytical — no sampling jitter) ─────────────────────
     store.set(hudInfoAtom, { speed: speed.current * SHIP_MAX_SPEED_KMPS * 1000 });
