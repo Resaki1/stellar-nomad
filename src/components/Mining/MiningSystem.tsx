@@ -569,12 +569,9 @@ const MiningSystem = () => {
     {
       instanceId: number;
       fieldId: string;
-      resourceId: string;
-      amount: number;
+      resources: { resourceId: string; amount: number; name: string; icon: string }[];
       positionLocal: [number, number, number];
       radiusM: number;
-      resourceName: string;
-      resourceIcon: string;
     } | null
   >(null);
   
@@ -995,12 +992,14 @@ const MiningSystem = () => {
               pendingMiningRewardRef.current = {
                 instanceId: snapshot.instanceId,
                 fieldId,
-                resourceId: reward.resourceId,
-                amount: reward.amount,
+                resources: reward.resources.map((r) => ({
+                  resourceId: r.resourceId,
+                  amount: r.amount,
+                  name: r.resource?.name ?? r.resourceId,
+                  icon: r.resource?.icon ?? "⛏",
+                })),
                 positionLocal: snapshot.positionLocal,
                 radiusM: snapshot.radiusM,
-                resourceName: reward.resource?.name ?? reward.resourceId,
-                resourceIcon: reward.resource?.icon ?? "⛏",
               };
             }
 
@@ -1074,18 +1073,16 @@ const MiningSystem = () => {
     if (removeId !== null) {
       const reward = pendingMiningRewardRef.current;
       if (reward && reward.instanceId === removeId) {
-        addCargo({ resourceId: reward.resourceId, amount: reward.amount });
+        // Add each resource to cargo
+        for (const r of reward.resources) {
+          addCargo({ resourceId: r.resourceId, amount: r.amount });
+        }
 
         spawnVFX({
           type: "mined",
           position: reward.positionLocal,
           radiusM: reward.radiusM,
-          loot: {
-            resourceId: reward.resourceId,
-            amount: reward.amount,
-            name: reward.resourceName,
-            icon: reward.resourceIcon,
-          },
+          loot: reward.resources,
         });
       }
 

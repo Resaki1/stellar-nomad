@@ -76,11 +76,37 @@ export type WeightedResourceRef = {
   weight: number;
 };
 
+// ---------------------------------------------------------------------------
+// Asteroid-class / multi-resource types
+// ---------------------------------------------------------------------------
+
+/** Min/max fraction (0–1) for a single resource within an asteroid class. */
+export type ResourceRange = {
+  resourceId: string;
+  /** Minimum fraction (0–1). */
+  min: number;
+  /** Maximum fraction (0–1). */
+  max: number;
+};
+
+/**
+ * Defines one asteroid spectral class (e.g. S-Type, C-Type, X-Type).
+ * Each class has a selection weight and a set of resource ranges.
+ */
+export type AsteroidClassDef = {
+  id: string;
+  name: string;
+  /** Selection weight (higher = more common). */
+  weight: number;
+  /** Per-resource composition ranges. Rolled independently then normalised. */
+  resources: ResourceRange[];
+};
+
 export type SystemResources = {
   /** Declares which resource IDs exist in this system. */
   types: ResourceTypeDef[];
   /**
-   * Default weighted distribution used for asteroid fields that don't override it.
+   * @deprecated Replaced by AsteroidResourcesDef.classes
    */
   defaultDistribution?: WeightedResourceRef[];
 };
@@ -198,7 +224,10 @@ export type ResourceYieldDef = {
 
 export type AsteroidResourcesDef = {
   seedSalt?: number | string;
-  distribution: WeightedResourceRef[];
+  /** Asteroid spectral classes with per-class resource composition ranges. */
+  classes: AsteroidClassDef[];
+  /** @deprecated Legacy single-resource distribution. Ignored when classes is set. */
+  distribution?: WeightedResourceRef[];
   yield: ResourceYieldDef;
 };
 

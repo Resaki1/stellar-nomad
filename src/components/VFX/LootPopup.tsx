@@ -12,19 +12,21 @@ import "./LootPopup.scss";
 const POPUP_LIFETIME_S = 2.0;
 const FLOAT_SPEED_M = 25; // meters/s upward drift
 
-type Props = {
-  position: [number, number, number];
+type LootEntry = {
   icon: string;
   name: string;
   amount: number;
+};
+
+type Props = {
+  position: [number, number, number];
+  loot: LootEntry[];
   onComplete: () => void;
 };
 
 const LootPopup = memo(function LootPopup({
   position,
-  icon,
-  name,
-  amount,
+  loot,
   onComplete,
 }: Props) {
   const groupRef = useRef<THREE.Group>(null!);
@@ -65,9 +67,11 @@ const LootPopup = memo(function LootPopup({
         }}
       >
         <div className="loot-popup">
-          <span className="loot-popup__text">
-            +{amount} {icon ? `${icon} ` : ""}{name}
-          </span>
+          {loot.map((entry, i) => (
+            <span key={i} className="loot-popup__text">
+              +{entry.amount} {entry.icon ? `${entry.icon} ` : ""}{entry.name}
+            </span>
+          ))}
         </div>
       </Html>
     </group>

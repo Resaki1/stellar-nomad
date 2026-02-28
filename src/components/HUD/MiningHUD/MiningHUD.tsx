@@ -9,7 +9,7 @@ import {
   isCargoFullAtom,
 } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
-import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
+import { getAsteroidClass, computeMiningDurationS } from "@/sim/asteroids/resources";
 
 import "./MiningHUD.scss";
 
@@ -29,22 +29,17 @@ export default function MiningHUD() {
     const t = miningState.targetedAsteroid;
     if (!t) return null;
 
-    const reward = getAsteroidMiningReward(
+    const classDef = getAsteroidClass(
       systemConfig,
       t.location.fieldId,
-      t.instanceId,
-      t.radiusM
+      t.instanceId
     );
-    if (!reward) return null;
 
     const durationS = computeMiningDurationS(t.radiusM);
 
     return {
-      resourceId: reward.resourceId,
-      amount: reward.amount,
+      className: classDef?.name ?? "Unknown",
       durationS,
-      name: reward.resource?.name ?? reward.resourceId,
-      icon: reward.resource?.icon ?? "",
     };
   }, [miningState.targetedAsteroid, systemConfig]);
 
@@ -91,9 +86,7 @@ export default function MiningHUD() {
 
         <div className="mining-hud__loot">
           {lootPreview
-            ? `Yield: +${lootPreview.amount} ${lootPreview.icon}${
-                lootPreview.icon ? " " : ""
-              }${lootPreview.name} · ~${lootPreview.durationS.toFixed(1)}s`
+            ? `${lootPreview.className} · ~${lootPreview.durationS.toFixed(1)}s`
             : ""}
         </div>
 

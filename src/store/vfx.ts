@@ -15,8 +15,8 @@ export type AsteroidVFXEvent = {
   radiusM: number;
   /** Normalized direction of impact (from asteroid toward ship) for collision bias */
   impactDirection?: [number, number, number];
-  /** Resource info for loot popup */
-  loot?: { resourceId: string; amount: number; name: string; icon: string };
+  /** Resource info for loot popup (multi-resource) */
+  loot?: { resourceId: string; amount: number; name: string; icon: string }[];
   /** Timestamp (ms) when the event was created */
   createdAt: number;
 };

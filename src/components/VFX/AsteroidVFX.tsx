@@ -69,16 +69,14 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
           checkAllDone();
         }}
       />
-      {event.loot && (
+      {event.loot && event.loot.length > 0 && (
         <LootPopup
           position={[
             event.position[0],
             event.position[1] + event.radiusM * 1.2 + 5,
             event.position[2],
           ]}
-          icon={event.loot.icon}
-          name={event.loot.name}
-          amount={event.loot.amount}
+          loot={event.loot}
           onComplete={() => {
             lootDone.current = true;
             checkAllDone();

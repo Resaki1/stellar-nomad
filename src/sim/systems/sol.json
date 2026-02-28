@@ -39,18 +39,11 @@
 
   "resources": {
     "types": [
-      { "id": "water_ice", "name": "Water Ice", "icon": "💧" },
       { "id": "silicates", "name": "Silicates", "icon": "🪨" },
-      { "id": "iron_nickel", "name": "Iron-Nickel", "icon": "🧲" },
-      { "id": "carbonaceous", "name": "Carbonaceous", "icon": "🧪" },
-      { "id": "platinum_group", "name": "Platinum Group", "icon": "💎" }
-    ],
-    "defaultDistribution": [
-      { "resourceId": "water_ice", "weight": 0.35 },
-      { "resourceId": "silicates", "weight": 0.3 },
-      { "resourceId": "iron_nickel", "weight": 0.2 },
-      { "resourceId": "carbonaceous", "weight": 0.13 },
-      { "resourceId": "platinum_group", "weight": 0.02 }
+      { "id": "fe_ni_metal", "name": "Fe–Ni Metal", "icon": "🧲" },
+      { "id": "sulfur", "name": "Sulfur", "icon": "🔶" },
+      { "id": "carbon", "name": "Carbon", "icon": "⚫" },
+      { "id": "hydrates", "name": "Hydrates", "icon": "💧" }
     ]
   },
 
@@ -72,12 +65,43 @@
 
       "resources": {
         "seedSalt": "sol-origin-belt-v1",
-        "distribution": [
-          { "resourceId": "water_ice", "weight": 0.35 },
-          { "resourceId": "silicates", "weight": 0.3 },
-          { "resourceId": "iron_nickel", "weight": 0.2 },
-          { "resourceId": "carbonaceous", "weight": 0.13 },
-          { "resourceId": "platinum_group", "weight": 0.02 }
+        "classes": [
+          {
+            "id": "s_type",
+            "name": "S-Type",
+            "weight": 0.55,
+            "resources": [
+              { "resourceId": "silicates",    "min": 0.65, "max": 0.80 },
+              { "resourceId": "fe_ni_metal",  "min": 0.12, "max": 0.25 },
+              { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+              { "resourceId": "carbon",       "min": 0.00, "max": 0.02 },
+              { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+            ]
+          },
+          {
+            "id": "c_type",
+            "name": "C-Type",
+            "weight": 0.25,
+            "resources": [
+              { "resourceId": "silicates",    "min": 0.45, "max": 0.65 },
+              { "resourceId": "hydrates",     "min": 0.05, "max": 0.15 },
+              { "resourceId": "carbon",       "min": 0.02, "max": 0.06 },
+              { "resourceId": "fe_ni_metal",  "min": 0.05, "max": 0.15 },
+              { "resourceId": "sulfur",       "min": 0.02, "max": 0.07 }
+            ]
+          },
+          {
+            "id": "x_type",
+            "name": "X-Type",
+            "weight": 0.20,
+            "resources": [
+              { "resourceId": "fe_ni_metal",  "min": 0.60, "max": 0.90 },
+              { "resourceId": "silicates",    "min": 0.08, "max": 0.30 },
+              { "resourceId": "sulfur",       "min": 0.01, "max": 0.06 },
+              { "resourceId": "carbon",       "min": 0.00, "max": 0.03 },
+              { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+            ]
+          }
         ],
         "yield": {
           "referenceRadiusM": 50,
