@@ -38,7 +38,6 @@
 - Input: `@use-gesture/react`, `react-joystick-component`
 - State: `jotai` (with `@swc-jotai/react-refresh` in dev)
 - Styling: `sass`
-- Analytics: `@vercel/analytics`
 
 Follow existing patterns and folder conventions. Don’t introduce new frameworks (ECS/physics/state) unless explicitly asked.
 

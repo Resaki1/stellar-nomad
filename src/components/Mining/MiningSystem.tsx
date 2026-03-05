@@ -19,7 +19,9 @@ import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
 import { addCargoAtom } from "@/store/cargo";
 import { spawnVFXEventAtom } from "@/store/vfx";
-import { shipConfigAtom } from "@/store/shipConfig";
+import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
+import { addAssaySamplesAtom } from "@/store/research";
+import { addToastAtom } from "@/store/toast";
 
 // --------------------
 // Gameplay / tuning
@@ -530,7 +532,7 @@ const MiningSystem = () => {
   const systemConfig = useAtomValue(systemConfigAtom);
 
   const [miningState, setMiningState] = useAtom(miningStateAtom);
-  const shipConfig = useAtomValue(shipConfigAtom);
+  const shipConfig = useAtomValue(effectiveShipConfigAtom);
 
   // Latest mining state ref (avoid render timing issues inside useFrame)
   const miningStateRef = useRef(miningState);
@@ -600,6 +602,8 @@ const MiningSystem = () => {
   const isOverheatedRef = useRef(false);
 
   const addCargo = useSetAtom(addCargoAtom);
+  const addAssaySamples = useSetAtom(addAssaySamplesAtom);
+  const addToast = useSetAtom(addToastAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
   const removeAsteroid = useCallback(
@@ -1124,11 +1128,36 @@ const MiningSystem = () => {
           addCargo({ resourceId: r.resourceId, amount: boostedAmount });
         }
 
+        // --- Assay samples yield based on asteroid size ---
+        const field = systemConfig.asteroidFields?.find(
+          (f) => f.id === reward.fieldId
+        );
+        const minR = field?.size?.minRadiusM ?? 8;
+        const maxR = field?.size?.maxRadiusM ?? 1024;
+        const t = maxR > minR ? Math.max(0, Math.min(1, (reward.radiusM - minR) / (maxR - minR))) : 0;
+        // Piecewise-linear: t=0→1, t=0.35→2, t=0.70→4, t=1.0→6
+        let assayYield: number;
+        if (t <= 0.35) {
+          assayYield = 1 + (t / 0.35) * (2 - 1);
+        } else if (t <= 0.70) {
+          assayYield = 2 + ((t - 0.35) / 0.35) * (4 - 2);
+        } else {
+          assayYield = 4 + ((t - 0.70) / 0.30) * (6 - 4);
+        }
+        const assayAmount = Math.max(1, Math.round(assayYield));
+        addAssaySamples(assayAmount);
+
+        // Build loot entries including assay samples
+        const lootEntries = [
+          ...reward.resources,
+          { resourceId: "_assay", amount: assayAmount, name: "Assay Samples", icon: "🔬" },
+        ];
+
         spawnVFX({
           type: "mined",
           position: reward.positionLocal,
           radiusM: reward.radiusM,
-          loot: reward.resources,
+          loot: lootEntries,
         });
       }
 

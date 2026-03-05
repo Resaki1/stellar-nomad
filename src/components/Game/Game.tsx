@@ -4,6 +4,7 @@ import { memo } from "react";
 import "./Game.scss";
 import Scene from "../Scene/Scene";
 import HUD from "../HUD/HUD";
+import DevTools from "../DevTools";
 
 import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
@@ -16,6 +17,7 @@ const Game = () => {
           <Scene />
           <HUD />
           <Navigation />
+          <DevTools />
         </div>
       </AsteroidRuntimeProvider>
     </WorldOriginProvider>

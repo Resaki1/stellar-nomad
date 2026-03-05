@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
 
 import SimGroup from "@/components/space/SimGroup";
 import AsteroidChunk from "@/components/Asteroids/AsteroidChunk";
@@ -11,6 +11,7 @@ import AsteroidImpostors from "@/components/Asteroids/AsteroidImpostors";
 import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
 import { spawnVFXEventAtom } from "@/store/vfx";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -69,6 +70,7 @@ const FieldLayer = memo(function FieldLayer({
 }: FieldLayerProps) {
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
+  const store = useStore();
   const setShipHealth = useSetAtom(shipHealthAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
@@ -139,8 +141,14 @@ const FieldLayer = memo(function FieldLayer({
   );
 
   const applyShipCollisionDamage = useCallback(() => {
-    setShipHealth((prev) => Math.max(0, prev - 10));
-  }, [setShipHealth]);
+    const cfg = store.get(effectiveShipConfigAtom);
+    const baseDamage = 10;
+    // collisionDamageMult reduces/increases damage per hit
+    // maxHealth scales the effective HP pool — implemented as damage reduction
+    const effectiveDamage = baseDamage * cfg.collisionDamageMult / (cfg.maxHealth / 100);
+    const damage = Math.max(1, Math.round(effectiveDamage));
+    setShipHealth((prev) => Math.max(0, prev - damage));
+  }, [setShipHealth, store]);
 
   useEffect(() => {
     // Reset runtime + render output on re-init.

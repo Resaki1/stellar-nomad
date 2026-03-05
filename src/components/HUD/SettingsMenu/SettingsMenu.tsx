@@ -151,6 +151,8 @@ const SettingsMenu = () => {
     localStorage.removeItem("ship-config-v1");
     localStorage.removeItem("cargo");
     localStorage.removeItem("keybinds-v1");
+    localStorage.removeItem("research-v1");
+    localStorage.removeItem("modules-v1");
     window.location.reload();
   }, [deltaStore]);
 

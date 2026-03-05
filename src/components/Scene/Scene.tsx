@@ -18,6 +18,7 @@ import SpaceRenderer from "../space/SpaceRenderer";
 import Anchor from "./Anchor";
 import MiningSystem from "../Mining/MiningSystem";
 import AsteroidVFX from "../VFX/AsteroidVFX";
+import ResearchTicker from "../Research/ResearchTicker";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -60,6 +61,7 @@ const Scene = () => {
                 <AsteroidField />
                 <MiningSystem />
                 <AsteroidVFX />
+                <ResearchTicker />
               </>
             }
           />

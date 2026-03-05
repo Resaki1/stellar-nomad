@@ -1,0 +1,70 @@
+.hotbar {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.hotbar__slot {
+  width: 52px;
+  height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 9px;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+
+  &--filled {
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(0, 0, 0, 0.45);
+
+    &:hover {
+      border-color: rgba(80, 160, 255, 0.4);
+      background: rgba(0, 0, 0, 0.55);
+    }
+  }
+
+  &--cooldown {
+    opacity: 0.4;
+  }
+}
+
+.hotbar__key {
+  font-size: 8px;
+  font-weight: 700;
+  opacity: 0.5;
+  position: absolute;
+  top: 2px;
+  left: 4px;
+}
+
+.hotbar__name {
+  font-size: 8px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 44px;
+}
+
+.hotbar__count {
+  font-size: 8px;
+  font-weight: 600;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}

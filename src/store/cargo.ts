@@ -1,5 +1,6 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
 
 export type CargoState = {
   /** Maximum cargo capacity in "cargo units". */
@@ -15,7 +16,11 @@ export const cargoAtom = atomWithStorage<CargoState>("cargo", {
   items: {},
 });
 
-export const cargoCapacityUnitsAtom = atom((get) => get(cargoAtom).capacityUnits);
+export const cargoCapacityUnitsAtom = atom((get) => {
+  const base = get(cargoAtom).capacityUnits;
+  const bonus = get(effectiveShipConfigAtom).bonusCargoCapacity;
+  return base + bonus;
+});
 
 export const cargoUsedUnitsAtom = atom((get) => {
   const { items } = get(cargoAtom);

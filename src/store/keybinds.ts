@@ -10,6 +10,9 @@ export type KeybindAction =
   | "accelerate"
   | "decelerate"
   | "toggleCargo"
+  | "toggleResearch"
+  | "toggleCrafting"
+  | "toggleLoadout"
   | "mine"
   | "toggleSettings";
 
@@ -33,6 +36,9 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "accelerate", label: "Throttle Up", category: "flight" },
   { id: "decelerate", label: "Throttle Down", category: "flight" },
   { id: "toggleCargo", label: "Inventory", category: "actions" },
+  { id: "toggleResearch", label: "Research", category: "actions" },
+  { id: "toggleCrafting", label: "Crafting", category: "actions" },
+  { id: "toggleLoadout", label: "Loadout", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
   { id: "toggleSettings", label: "Settings", category: "menu" },
 ];
@@ -52,6 +58,9 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   accelerate: ["shift", "e"],
   decelerate: ["control", "c"],
   toggleCargo: ["tab", "i"],
+  toggleResearch: ["r"],
+  toggleCrafting: ["f"],
+  toggleLoadout: ["l"],
   mine: ["m"],
   toggleSettings: ["escape"],
 };
@@ -60,9 +69,32 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
 export const MAX_KEYS_PER_ACTION = 2;
 
 // ── Atom (persisted) ────────────────────────────────────────────────
-export const keybindsAtom = atomWithStorage<KeybindConfig>(
+const _rawKeybindsAtom = atomWithStorage<KeybindConfig>(
   "keybinds-v1",
   DEFAULT_KEYBINDS
+);
+
+/**
+ * Migration-safe keybinds atom: ensures any newly-added actions get their
+ * default bindings even when loading an older saved config from localStorage.
+ */
+export const keybindsAtom = atom(
+  (get): KeybindConfig => {
+    const raw = get(_rawKeybindsAtom);
+    // Fill in defaults for any missing actions
+    let patched = false;
+    const result = { ...raw };
+    for (const key of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
+      if (!(key in result)) {
+        (result as any)[key] = DEFAULT_KEYBINDS[key];
+        patched = true;
+      }
+    }
+    return result;
+  },
+  (_get, set, value: KeybindConfig) => {
+    set(_rawKeybindsAtom, value);
+  },
 );
 
 // ── Write atom: bind a key to an action (removes conflicts) ────────

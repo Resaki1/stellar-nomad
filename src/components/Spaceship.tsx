@@ -7,6 +7,7 @@ import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
@@ -167,12 +168,16 @@ const SpaceShip = memo(() => {
       // Forward direction
       _fwd.set(0, 0, 1).applyQuaternion(simQuat.current);
 
-      // Speed
-      const speedAlpha = 1 - Math.pow(0.99, FIXED_DT * 60);
+      // Speed — apply acceleration/deceleration modifiers from modules
+      const cfg = store.get(effectiveShipConfigAtom);
+      const isAccelerating = movement.speed > speed.current;
+      const responseMult = isAccelerating ? cfg.accelerationMult : cfg.decelerationMult;
+      const baseAlpha = 1 - Math.pow(0.99, FIXED_DT * 60);
+      const speedAlpha = Math.min(1, baseAlpha * responseMult);
       speed.current = lerp(speed.current, movement.speed, speedAlpha);
 
-      // Velocity
-      _vel.copy(_fwd).multiplyScalar(SHIP_MAX_SPEED_KMPS * speed.current * FIXED_DT);
+      // Velocity — max speed scaled by module modifier
+      _vel.copy(_fwd).multiplyScalar(SHIP_MAX_SPEED_KMPS * cfg.speedMult * speed.current * FIXED_DT);
 
       posKm.current.add(_vel);
       physicsAcc.current -= FIXED_DT;
