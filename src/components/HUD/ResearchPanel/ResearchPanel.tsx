@@ -6,12 +6,11 @@ import { useMemo } from "react";
 import {
   researchAtom,
   assaySamplesAtom,
-  visibleNodesAtom,
   activeResearchNodeAtom,
   startResearchAtom,
 } from "@/store/research";
 import { addToastAtom } from "@/store/toast";
-import { RESEARCH_NODES } from "@/data/content";
+import { RESEARCH_NODES, type ResearchNodeDef } from "@/data/content";
 
 import "./ResearchPanel.scss";
 
@@ -22,22 +21,68 @@ function formatTime(seconds: number): string {
   return `${s}s`;
 }
 
+type NodeState = "completed" | "active" | "available" | "locked";
+
+type TreeNode = {
+  def: ResearchNodeDef;
+  state: NodeState;
+  children: TreeNode[];
+};
+
+/**
+ * Build a top-down tree from the flat RESEARCH_NODES list.
+ * Root nodes have no prerequisites.
+ */
+function buildTree(
+  completed: Set<string>,
+  activeId: string | null,
+): TreeNode[] {
+  // Index: parentId → children that list parentId in prerequisites
+  const childrenOf = new Map<string, ResearchNodeDef[]>();
+  const roots: ResearchNodeDef[] = [];
+
+  for (const node of RESEARCH_NODES) {
+    if (node.prerequisites.length === 0) {
+      roots.push(node);
+    } else {
+      // A node can appear under EACH of its prerequisites
+      // But to avoid duplication, we use the FIRST prerequisite as primary parent
+      const parent = node.prerequisites[0];
+      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+      childrenOf.get(parent)!.push(node);
+    }
+  }
+
+  function getState(node: ResearchNodeDef): NodeState {
+    if (completed.has(node.id)) return "completed";
+    if (activeId === node.id) return "active";
+    const allPrereqsDone = node.prerequisites.every((p) => completed.has(p));
+    return allPrereqsDone ? "available" : "locked";
+  }
+
+  function recurse(nodeDef: ResearchNodeDef): TreeNode {
+    const children = (childrenOf.get(nodeDef.id) ?? []).map(recurse);
+    return { def: nodeDef, state: getState(nodeDef), children };
+  }
+
+  return roots.map(recurse);
+}
+
 export default function ResearchPanel({ onClose }: { onClose: () => void }) {
   const assaySamples = useAtomValue(assaySamplesAtom);
-  const visibleNodes = useAtomValue(visibleNodesAtom);
   const activeResearch = useAtomValue(activeResearchNodeAtom);
   const researchState = useAtomValue(researchAtom);
   const startResearch = useSetAtom(startResearchAtom);
   const addToast = useSetAtom(addToastAtom);
 
-  const completedNodes = useMemo(
+  const completed = useMemo(
     () => new Set(researchState.completedNodes),
     [researchState.completedNodes],
   );
 
-  const completedNodeDefs = useMemo(
-    () => RESEARCH_NODES.filter((n) => completedNodes.has(n.id)),
-    [completedNodes],
+  const tree = useMemo(
+    () => buildTree(completed, researchState.activeResearch?.nodeId ?? null),
+    [completed, researchState.activeResearch?.nodeId],
   );
 
   const handleStart = (nodeId: string) => {
@@ -61,7 +106,7 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Active research */}
+        {/* Active research progress */}
         {activeResearch && (
           <div className="research-panel__active">
             <div className="research-panel__active-label">Researching</div>
@@ -93,77 +138,115 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {/* Available nodes */}
-        <div className="research-panel__section-title">Available Research</div>
-        <div className="research-panel__list">
-          {visibleNodes.length === 0 && !activeResearch ? (
+        {/* Research tree */}
+        <div className="research-panel__section-title">Research Tree</div>
+        <div className="research-panel__tree">
+          {tree.length === 0 ? (
             <div className="research-panel__empty">
-              {completedNodes.size === 0
-                ? "Mine asteroids to collect Assay Samples and begin research."
-                : "No new research available."}
-            </div>
-          ) : visibleNodes.length === 0 && activeResearch ? (
-            <div className="research-panel__empty">
-              Finish current research to unlock next tier.
+              Mine asteroids to collect Assay Samples and begin research.
             </div>
           ) : (
-            visibleNodes.map((node) => {
-              const canAfford = assaySamples >= node.costs.assaySamples;
-              const disabled = !!activeResearch || !canAfford;
-
-              return (
-                <div key={node.id} className="research-panel__node">
-                  <div className="research-panel__node-header">
-                    <span className="research-panel__node-name">
-                      {node.name}
-                    </span>
-                    <span className="research-panel__node-duration">
-                      {formatTime(node.durationSeconds)}
-                    </span>
-                  </div>
-                  <div className="research-panel__node-desc">{node.desc}</div>
-                  <div className="research-panel__node-footer">
-                    <span
-                      className={`research-panel__node-cost ${
-                        !canAfford ? "research-panel__node-cost--insufficient" : ""
-                      }`}
-                    >
-                      🔬 {node.costs.assaySamples}
-                    </span>
-                    <button
-                      className="research-panel__node-btn"
-                      disabled={disabled}
-                      onClick={() => handleStart(node.id)}
-                    >
-                      {activeResearch
-                        ? "Busy"
-                        : !canAfford
-                          ? "Need samples"
-                          : "Start"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })
+            tree.map((node) => (
+              <ResearchTreeNode
+                key={node.def.id}
+                node={node}
+                depth={0}
+                assaySamples={assaySamples}
+                isResearching={!!activeResearch}
+                onStart={handleStart}
+              />
+            ))
           )}
         </div>
-
-        {/* Completed research (collapsible) */}
-        {completedNodeDefs.length > 0 && (
-          <>
-            <div className="research-panel__section-title">
-              Completed ({completedNodeDefs.length})
-            </div>
-            <div className="research-panel__completed">
-              {completedNodeDefs.map((n) => (
-                <div key={n.id} className="research-panel__completed-node">
-                  ✓ {n.name}
-                </div>
-              ))}
-            </div>
-          </>
-        )}
       </div>
+    </div>
+  );
+}
+
+function ResearchTreeNode({
+  node,
+  depth,
+  assaySamples,
+  isResearching,
+  onStart,
+}: {
+  node: TreeNode;
+  depth: number;
+  assaySamples: number;
+  isResearching: boolean;
+  onStart: (id: string) => void;
+}) {
+  const { def, state, children } = node;
+  const canAfford = assaySamples >= def.costs.assaySamples;
+  const canStart = state === "available" && !isResearching && canAfford;
+  // Show children if completed, active, or available
+  const showChildren = state !== "locked" || children.some((c) => c.state !== "locked");
+
+  return (
+    <div className="research-tree__branch" style={{ paddingLeft: depth > 0 ? 20 : 0 }}>
+      {depth > 0 && <div className="research-tree__connector" />}
+      <div
+        className={`research-tree__node research-tree__node--${state}`}
+      >
+        <div className="research-tree__node-row">
+          <span className="research-tree__node-icon">
+            {state === "completed"
+              ? "✓"
+              : state === "active"
+                ? "◉"
+                : state === "available"
+                  ? "○"
+                  : "🔒"}
+          </span>
+          <div className="research-tree__node-info">
+            <div className="research-tree__node-name">{def.name}</div>
+            <div className="research-tree__node-desc">{def.desc}</div>
+          </div>
+          <div className="research-tree__node-meta">
+            {state === "available" || state === "locked" ? (
+              <>
+                <span
+                  className={`research-tree__node-cost ${
+                    !canAfford && state === "available"
+                      ? "research-tree__node-cost--insufficient"
+                      : ""
+                  }`}
+                >
+                  🔬 {def.costs.assaySamples}
+                </span>
+                <span className="research-tree__node-duration">
+                  {formatTime(def.durationSeconds)}
+                </span>
+              </>
+            ) : state === "active" ? (
+              <span className="research-tree__node-duration">In Progress</span>
+            ) : null}
+          </div>
+          {state === "available" && (
+            <button
+              className="research-tree__start-btn"
+              disabled={!canStart}
+              onClick={() => onStart(def.id)}
+            >
+              {isResearching ? "Busy" : !canAfford ? "Need" : "Start"}
+            </button>
+          )}
+        </div>
+      </div>
+      {showChildren && children.length > 0 && (
+        <div className="research-tree__children">
+          {children.map((child) => (
+            <ResearchTreeNode
+              key={child.def.id}
+              node={child}
+              depth={depth + 1}
+              assaySamples={assaySamples}
+              isResearching={isResearching}
+              onStart={onStart}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

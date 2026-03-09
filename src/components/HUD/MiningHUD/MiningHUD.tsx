@@ -10,7 +10,9 @@ import {
   isCargoFullAtom,
 } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
-import { getAsteroidClass, computeMiningDurationS } from "@/sim/asteroids/resources";
+import { getAsteroidClass, computeMiningDurationS, getResourceType } from "@/sim/asteroids/resources";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { computedModifiersAtom, getFlag } from "@/store/modules";
 
 import "./MiningHUD.scss";
 
@@ -18,6 +20,10 @@ export default function MiningHUD() {
   const miningState = useAtomValue(miningStateAtom);
 
   const systemConfig = useAtomValue(systemConfigAtom);
+  const shipConfig = useAtomValue(effectiveShipConfigAtom);
+  const modifiers = useAtomValue(computedModifiersAtom);
+  const showAsteroidType = getFlag(modifiers, "scanner.lockShowsAsteroidType");
+  const showCompositionBands = getFlag(modifiers, "scanner.lockShowsCompositionBands");
 
   const cargoUsedUnits = useAtomValue(cargoUsedUnitsAtom);
   const cargoCapacityUnits = useAtomValue(cargoCapacityUnitsAtom);
@@ -36,13 +42,32 @@ export default function MiningHUD() {
       t.instanceId
     );
 
-    const durationS = computeMiningDurationS(t.radiusM);
+    const baseDurationS = computeMiningDurationS(t.radiusM);
+    const durationS = baseDurationS / shipConfig.miningSpeedMult;
+
+    // Composition bands: top resources by midpoint fraction
+    let compositionBands: string[] = [];
+    if (classDef && showCompositionBands) {
+      compositionBands = classDef.resources
+        .map((r) => ({
+          id: r.resourceId,
+          mid: (r.min + r.max) / 2,
+        }))
+        .filter((r) => r.mid > 0.05) // skip trace amounts
+        .sort((a, b) => b.mid - a.mid)
+        .slice(0, 3)
+        .map((r) => {
+          const rt = getResourceType(systemConfig, r.id);
+          return rt?.name ?? r.id;
+        });
+    }
 
     return {
       className: classDef?.name ?? "Unknown",
       durationS,
+      compositionBands,
     };
-  }, [miningState.targetedAsteroid, systemConfig]);
+  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, showCompositionBands]);
 
   const showInfo = miningState.isFocused;
   const showButton = miningState.isFocused;
@@ -97,9 +122,15 @@ export default function MiningHUD() {
 
         <div className="mining-hud__loot">
           {lootPreview
-            ? `${lootPreview.className} · ~${lootPreview.durationS.toFixed(1)}s`
+            ? `${showAsteroidType ? lootPreview.className : "Asteroid"} · ~${lootPreview.durationS.toFixed(1)}s`
             : ""}
         </div>
+
+        {lootPreview && lootPreview.compositionBands.length > 0 && (
+          <div className="mining-hud__composition">
+            {lootPreview.compositionBands.join(" · ")}
+          </div>
+        )}
 
         <div className="mining-hud__cargo">
           Cargo: {cargoUsedUnits}/{cargoCapacityUnits}

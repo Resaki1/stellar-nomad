@@ -14,6 +14,7 @@ import {
   ITEMS,
   ALL_ITEM_SLOTS,
   SLOT_LABELS,
+  describeEffect,
   type ItemDef,
   type ItemSlot,
 } from "@/data/content";
@@ -31,6 +32,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   const addToast = useSetAtom(addToastAtom);
 
   const [slotFilter, setSlotFilter] = useState<ItemSlot | "all">("all");
+  const [confirmItem, setConfirmItem] = useState<ItemDef | null>(null);
 
   const resourceMap = useMemo(() => {
     const types = getResourceTypes(systemConfig);
@@ -47,8 +49,18 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
     });
   }, [unlockedIds, slotFilter]);
 
+  const isModuleOwned = useCallback(
+    (item: ItemDef): boolean =>
+      item.type === "module" && modulesState.ownedModules.includes(item.id),
+    [modulesState.ownedModules],
+  );
+
   const canAfford = useCallback(
     (item: ItemDef): boolean => {
+      // Modules are one-time crafts
+      if (item.type === "module" && modulesState.ownedModules.includes(item.id))
+        return false;
+
       for (const [resourceId, needed] of Object.entries(item.recipe)) {
         const have = Math.floor(cargo.items[resourceId] ?? 0);
         if (have < needed) return false;
@@ -60,11 +72,22 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       }
       return true;
     },
-    [cargo.items, modulesState.consumables],
+    [cargo.items, modulesState.consumables, modulesState.ownedModules],
   );
+
+  const requestCraft = (item: ItemDef) => {
+    if (!canAfford(item)) return;
+    // Modules: show confirmation; consumables: craft immediately
+    if (item.type === "module") {
+      setConfirmItem(item);
+    } else {
+      handleCraft(item);
+    }
+  };
 
   const handleCraft = (item: ItemDef) => {
     if (!canAfford(item)) return;
+    setConfirmItem(null);
 
     // Deduct resources
     for (const [resourceId, needed] of Object.entries(item.recipe)) {
@@ -144,10 +167,11 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
             </div>
           ) : (
             craftableItems.map((item) => {
+              const owned = isModuleOwned(item);
               const affordable = canAfford(item);
 
               return (
-                <div key={item.id} className="crafting-panel__item">
+                <div key={item.id} className={`crafting-panel__item ${owned ? "crafting-panel__item--owned" : ""}`}>
                   <div className="crafting-panel__item-header">
                     <span className="crafting-panel__item-name">
                       {item.name}
@@ -163,7 +187,17 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                     <div className="crafting-panel__item-effects">
                       {item.effects.map((eff, i) => (
                         <span key={i} className="crafting-panel__item-effect">
-                          {formatEffect(eff)}
+                          {describeEffect(eff)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {item.useEffects && item.useEffects.length > 0 && (
+                    <div className="crafting-panel__item-effects">
+                      {item.useEffects.map((eff, i) => (
+                        <span key={i} className="crafting-panel__item-effect">
+                          {describeEffect(eff)}
                         </span>
                       ))}
                     </div>
@@ -191,31 +225,61 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                   </div>
 
                   <div className="crafting-panel__item-actions">
-                    <button
-                      className="crafting-panel__craft-btn"
-                      disabled={!affordable}
-                      onClick={() => handleCraft(item)}
-                    >
-                      Craft
-                    </button>
+                    {owned ? (
+                      <span className="crafting-panel__owned-badge">✓ Owned</span>
+                    ) : (
+                      <button
+                        className="crafting-panel__craft-btn"
+                        disabled={!affordable}
+                        onClick={() => requestCraft(item)}
+                      >
+                        Craft
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })
           )}
         </div>
+
+        {/* Confirmation dialog for modules */}
+        {confirmItem && (
+          <div className="crafting-panel__confirm-overlay" onClick={() => setConfirmItem(null)}>
+            <div className="crafting-panel__confirm" onClick={(e) => e.stopPropagation()}>
+              <div className="crafting-panel__confirm-title">Confirm Craft</div>
+              <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
+              <div className="crafting-panel__confirm-desc">{confirmItem.uiDesc}</div>
+              {confirmItem.effects && confirmItem.effects.length > 0 && (
+                <div className="crafting-panel__confirm-effects">
+                  {confirmItem.effects.map((eff, i) => (
+                    <span key={i} className="crafting-panel__item-effect">
+                      {describeEffect(eff)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="crafting-panel__confirm-note">
+                This is a one-time upgrade and cannot be undone.
+              </div>
+              <div className="crafting-panel__confirm-actions">
+                <button
+                  className="crafting-panel__confirm-cancel"
+                  onClick={() => setConfirmItem(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="crafting-panel__craft-btn"
+                  onClick={() => handleCraft(confirmItem)}
+                >
+                  Craft
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-}
-
-function formatEffect(eff: { key: string; op: string; value: number | boolean }): string {
-  const label = eff.key.split(".").pop() ?? eff.key;
-  if (eff.op === "set") return `${label}: ${eff.value ? "ON" : "OFF"}`;
-  if (eff.op === "multiply") {
-    const pct = Math.round(((eff.value as number) - 1) * 100);
-    return `${label} ${pct >= 0 ? "+" : ""}${pct}%`;
-  }
-  if (eff.op === "add") return `${label} +${eff.value}`;
-  return `${label}: ${eff.value}`;
 }

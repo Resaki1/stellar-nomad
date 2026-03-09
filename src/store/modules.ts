@@ -7,7 +7,6 @@ import {
   ITEMS,
   getItemDef,
   type ItemDef,
-  type ItemSlot,
   type ItemEffect,
 } from "@/data/content";
 
@@ -16,10 +15,8 @@ import {
 // ---------------------------------------------------------------------------
 
 export type ModulesState = {
-  /** moduleItemId[] — all owned module items (can have duplicates from multiple crafts). */
+  /** moduleItemId[] — all owned module items. */
   ownedModules: string[];
-  /** slot → equipped module item ID (or null). */
-  equipped: Partial<Record<ItemSlot, string>>;
   /** consumableItemId → current stack count. */
   consumables: Record<string, number>;
   /** consumableItemId → timestamp (ms) of last use for cooldown tracking. */
@@ -30,7 +27,6 @@ export type ModulesState = {
 
 const DEFAULT_MODULES: ModulesState = {
   ownedModules: [],
-  equipped: {},
   consumables: {},
   consumableCooldowns: {},
   hotbar: Array(10).fill(null),
@@ -60,9 +56,7 @@ export const computedModifiersAtom = atom((get): ComputedModifiers => {
   const multipliers: Record<string, number> = {};
   const additions: Record<string, number> = {};
 
-  for (const slot in state.equipped) {
-    const itemId = state.equipped[slot as ItemSlot];
-    if (!itemId) continue;
+  for (const itemId of state.ownedModules) {
     const def = getItemDef(itemId);
     if (!def?.effects) continue;
 
@@ -120,50 +114,14 @@ export const addCraftedItemAtom = atom(
         consumables: { ...state.consumables, [itemId]: current + 1 },
       });
     } else {
-      // Module — add to owned, optionally auto-equip if slot free
-      const newOwned = [...state.ownedModules, itemId];
-      const newEquipped = { ...state.equipped };
-      if (!newEquipped[def.slot]) {
-        newEquipped[def.slot] = itemId;
-      }
+      // Module — one-time craft; skip if already owned
+      if (state.ownedModules.includes(itemId)) return;
+
       set(modulesAtom, {
         ...state,
-        ownedModules: newOwned,
-        equipped: newEquipped,
+        ownedModules: [...state.ownedModules, itemId],
       });
     }
-  },
-);
-
-// ---------------------------------------------------------------------------
-// Actions: equip / unequip
-// ---------------------------------------------------------------------------
-
-export const equipModuleAtom = atom(
-  null,
-  (get, set, itemId: string): void => {
-    const def = getItemDef(itemId);
-    if (!def || def.type !== "module") return;
-
-    const state = get(modulesAtom);
-    if (!state.ownedModules.includes(itemId)) return;
-
-    set(modulesAtom, {
-      ...state,
-      equipped: { ...state.equipped, [def.slot]: itemId },
-    });
-  },
-);
-
-export const unequipModuleAtom = atom(
-  null,
-  (get, set, slot: ItemSlot): void => {
-    const state = get(modulesAtom);
-    if (!state.equipped[slot]) return;
-
-    const newEquipped = { ...state.equipped };
-    delete newEquipped[slot];
-    set(modulesAtom, { ...state, equipped: newEquipped });
   },
 );
 
@@ -224,23 +182,4 @@ export const setHotbarSlotAtom = atom(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Derived: owned modules grouped by slot
-// ---------------------------------------------------------------------------
 
-export const ownedModulesBySlotAtom = atom((get) => {
-  const state = get(modulesAtom);
-  const map: Partial<Record<ItemSlot, ItemDef[]>> = {};
-
-  for (const itemId of state.ownedModules) {
-    const def = getItemDef(itemId);
-    if (!def || def.type !== "module") continue;
-    if (!map[def.slot]) map[def.slot] = [];
-    // Avoid duplicates in display (player owns the blueprint, not multiple copies)
-    if (!map[def.slot]!.find((d) => d.id === def.id)) {
-      map[def.slot]!.push(def);
-    }
-  }
-
-  return map;
-});

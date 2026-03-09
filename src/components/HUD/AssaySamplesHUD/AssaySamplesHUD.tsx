@@ -18,9 +18,11 @@ export default function AssaySamplesHUD() {
 
   return (
     <div className="assay-hud">
+      <div className="assay-hud__label">Assay Samples</div>
       <div className="assay-hud__samples">🔬 {samples}</div>
       {active && (
         <div className="assay-hud__research">
+          <div className="assay-hud__research-label">Active Research</div>
           <div className="assay-hud__research-name">{active.node.name}</div>
           <div className="assay-hud__progress-bar">
             <div

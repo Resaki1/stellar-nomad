@@ -16,6 +16,7 @@ import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
 import ToastDisplay from "./ToastDisplay/ToastDisplay";
 import Hotbar from "./Hotbar/Hotbar";
 import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
+import PingBrackets from "./PingBrackets/PingBrackets";
 
 import "./HUD.scss";
 
@@ -79,6 +80,7 @@ export default function HUD() {
   return (
     <div className="hud">
       <DamageVignette />
+      <PingBrackets />
       <ShipDashboard />
       <Reticle />
       <MiningHUD />

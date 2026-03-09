@@ -1,55 +1,22 @@
 "use client";
 
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue } from "jotai";
 import { useMemo } from "react";
 
-import {
-  modulesAtom,
-  ownedModulesBySlotAtom,
-  equipModuleAtom,
-  unequipModuleAtom,
-  computedModifiersAtom,
-} from "@/store/modules";
-import { ALL_ITEM_SLOTS, SLOT_LABELS, getItemDef, type ItemSlot } from "@/data/content";
+import { modulesAtom } from "@/store/modules";
+import { getItemDef, describeEffect } from "@/data/content";
 
 import "./LoadoutPanel.scss";
 
 export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
   const modulesState = useAtomValue(modulesAtom);
-  const ownedBySlot = useAtomValue(ownedModulesBySlotAtom);
-  const modifiers = useAtomValue(computedModifiersAtom);
-  const equipModule = useSetAtom(equipModuleAtom);
-  const unequipModule = useSetAtom(unequipModuleAtom);
 
-  const slotsWithContent = useMemo(() => {
-    return ALL_ITEM_SLOTS.filter((slot) => {
-      const equipped = modulesState.equipped[slot];
-      const owned = ownedBySlot[slot];
-      return equipped || (owned && owned.length > 0);
-    });
-  }, [modulesState.equipped, ownedBySlot]);
-
-  // Active modifier summary
-  const modSummary = useMemo(() => {
-    const lines: string[] = [];
-
-    for (const [key, val] of Object.entries(modifiers.flags)) {
-      if (val) lines.push(`${key.split(".").pop()}: ON`);
-    }
-    for (const [key, val] of Object.entries(modifiers.multipliers)) {
-      if (val !== 1) {
-        const pct = Math.round((val - 1) * 100);
-        lines.push(`${key.split(".").pop()} ${pct >= 0 ? "+" : ""}${pct}%`);
-      }
-    }
-    for (const [key, val] of Object.entries(modifiers.additions)) {
-      if (val !== 0) {
-        lines.push(`${key.split(".").pop()} +${val}`);
-      }
-    }
-
-    return lines;
-  }, [modifiers]);
+  // Owned modules with their defs
+  const ownedModules = useMemo(() => {
+    return modulesState.ownedModules
+      .map((id) => getItemDef(id))
+      .filter(Boolean) as NonNullable<ReturnType<typeof getItemDef>>[];
+  }, [modulesState.ownedModules]);
 
   // Consumable summary
   const consumables = useMemo(() => {
@@ -65,79 +32,33 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
     <div className="loadout-panel__backdrop" onClick={onClose}>
       <div className="loadout-panel" onClick={(e) => e.stopPropagation()}>
         <div className="loadout-panel__header">
-          <div className="loadout-panel__title">Loadout</div>
+          <div className="loadout-panel__title">Ship Modules</div>
           <button className="loadout-panel__close" onClick={onClose}>
             ✕
           </button>
         </div>
 
-        {/* Modifier summary */}
-        {modSummary.length > 0 && (
-          <div className="loadout-panel__mods">
-            <div className="loadout-panel__mods-title">Active Effects</div>
-            <div className="loadout-panel__mods-list">
-              {modSummary.map((line, i) => (
-                <span key={i} className="loadout-panel__mod-tag">
-                  {line}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Slots */}
-        <div className="loadout-panel__slots">
-          {slotsWithContent.length === 0 ? (
+        {/* Installed modules */}
+        <div className="loadout-panel__modules">
+          {ownedModules.length === 0 ? (
             <div className="loadout-panel__empty">
-              No modules. Craft modules to equip them here.
+              No modules installed. Craft modules to upgrade your ship.
             </div>
           ) : (
-            slotsWithContent.map((slot) => {
-              const equippedId = modulesState.equipped[slot] ?? null;
-              const equippedDef = equippedId ? getItemDef(equippedId) : null;
-              const owned = ownedBySlot[slot] ?? [];
-
-              return (
-                <div key={slot} className="loadout-panel__slot">
-                  <div className="loadout-panel__slot-label">
-                    {SLOT_LABELS[slot]}
-                  </div>
-
-                  {equippedDef ? (
-                    <div className="loadout-panel__equipped">
-                      <span className="loadout-panel__equipped-name">
-                        {equippedDef.name}
+            ownedModules.map((def) => (
+              <div key={def.id} className="loadout-panel__module">
+                <div className="loadout-panel__module-name">{def.name}</div>
+                {def.effects && def.effects.length > 0 && (
+                  <div className="loadout-panel__module-effects">
+                    {def.effects.map((eff, i) => (
+                      <span key={i} className="loadout-panel__effect-tag">
+                        {describeEffect(eff)}
                       </span>
-                      <button
-                        className="loadout-panel__unequip-btn"
-                        onClick={() => unequipModule(slot)}
-                      >
-                        Unequip
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="loadout-panel__empty-slot">— empty —</div>
-                  )}
-
-                  {/* Owned alternatives */}
-                  {owned
-                    .filter((d) => d.id !== equippedId)
-                    .map((d) => (
-                      <div key={d.id} className="loadout-panel__alt">
-                        <span className="loadout-panel__alt-name">
-                          {d.name}
-                        </span>
-                        <button
-                          className="loadout-panel__equip-btn"
-                          onClick={() => equipModule(d.id)}
-                        >
-                          Equip
-                        </button>
-                      </div>
                     ))}
-                </div>
-              );
-            })
+                  </div>
+                )}
+              </div>
+            ))
           )}
         </div>
 

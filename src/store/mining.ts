@@ -72,3 +72,23 @@ export const cancelMiningAtom = atom(null, (get, set) => {
   if (!state.isMining) return;
   set(miningStateAtom, { ...state, isMining: false, miningProgress: 0 });
 });
+
+// ---------------------------------------------------------------------------
+// Ping bracket candidates (nearby mineable asteroids for HUD overlay)
+// ---------------------------------------------------------------------------
+
+export type PingCandidate = {
+  instanceId: number;
+  /** Screen-space X (0 = left, 1 = right). */
+  sx: number;
+  /** Screen-space Y (0 = top, 1 = bottom). */
+  sy: number;
+  /** Approximate bracket size in CSS pixels (half-width). */
+  halfSize: number;
+};
+
+/**
+ * Mutable shared buffer written by MiningSystem every frame.
+ * Read by PingBrackets rAF loop — bypasses React entirely for 90 fps updates.
+ */
+export const pingBracketBuffer: { candidates: PingCandidate[] } = { candidates: [] };

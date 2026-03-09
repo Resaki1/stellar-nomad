@@ -8,7 +8,9 @@ import { Billboard, Line } from "@react-three/drei";
 
 import {
   miningStateAtom,
+  pingBracketBuffer,
   type TargetedAsteroid,
+  type PingCandidate,
   TARGET_FOCUS_TIME_S,
 } from "@/store/mining";
 import { systemConfigAtom } from "@/store/system";
@@ -22,6 +24,7 @@ import { spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addAssaySamplesAtom } from "@/store/research";
 import { addToastAtom } from "@/store/toast";
+import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
 
 // --------------------
 // Gameplay / tuning
@@ -62,6 +65,9 @@ const HIGHLIGHT_HALO_WIDTH_PX = 7.0;
 
 // Ship lookup (beam starts at ship tip)
 const PLAYER_SHIP_NAME = "playerShip";
+
+// Ping Array
+const MAX_PING_INDICATORS = 60;
 
 // --------------------
 // Colors (no arrays in JSX)
@@ -606,6 +612,15 @@ const MiningSystem = () => {
   const addToast = useSetAtom(addToastAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
+  // Ping Array: modules state for flags
+  const modifiers = useAtomValue(computedModifiersAtom);
+  const modifiersRef = useRef(modifiers);
+  useEffect(() => { modifiersRef.current = modifiers; }, [modifiers]);
+
+  // Nearby asteroid data for ping bracket overlay (written to atom)
+  type RawPingEntry = { instanceId: number; x: number; y: number; z: number; radiusM: number };
+  const pingRawRef = useRef<RawPingEntry[]>([]);
+
   const removeAsteroid = useCallback(
     (instanceId: number) => {
       const loc = asteroidRuntime.findInstanceLocation(instanceId);
@@ -692,6 +707,10 @@ const MiningSystem = () => {
     let locked: TargetedAsteroid | null = null;
     let lockedT = Infinity;
 
+    // Ping collection — use targeting range as source of truth
+    const pingEnabled = getFlag(modifiersRef.current, "scanner.pingHighlightEnabled");
+    const nearbyCollected: RawPingEntry[] = [];
+
     const checkChunk = (chunk: AsteroidChunkData, fieldAnchorKm: [number, number, number]) => {
       const byModel = chunk.instancesByModel;
 
@@ -745,6 +764,17 @@ const MiningSystem = () => {
 
           const distShipSq = dxS * dxS + dyS * dyS + dzS * dzS;
           if (distShipSq > MAX_TARGETING_DISTANCE_M * MAX_TARGETING_DISTANCE_M) continue;
+
+          // Collect for ping bracket overlay (all within targeting range)
+          if (pingEnabled && nearbyCollected.length < MAX_PING_INDICATORS) {
+            nearbyCollected.push({
+              instanceId: ids[i],
+              x: chunkOriginLocalX + ax,
+              y: chunkOriginLocalY + ay,
+              z: chunkOriginLocalZ + az,
+              radiusM: radiusM,
+            });
+          }
 
           // Camera ray test (crosshair selection)
           const dxC = ax - camCxM;
@@ -822,6 +852,9 @@ const MiningSystem = () => {
         checkChunk(chunk, fieldAnchor);
       });
     });
+
+    // Update ping raw data for projection during commit
+    pingRawRef.current = nearbyCollected;
 
     return locked ?? best;
   }, [asteroidRuntime, camera, fieldAnchorMap, worldOrigin]);
@@ -1114,6 +1147,40 @@ const MiningSystem = () => {
           isOverheated: isOverheatedRef.current,
         };
       });
+
+    }
+
+    // --- Project ping brackets every frame for smooth tracking ---
+    {
+      const targetId = targetIdRef.current;
+      const rawPing = pingRawRef.current;
+      const w = window.innerWidth;
+      const projected: PingCandidate[] = [];
+
+      for (let p = 0; p < rawPing.length; p++) {
+        const entry = rawPing[p];
+        if (entry.instanceId === targetId) continue;
+
+        _centerLocal.set(entry.x, entry.y, entry.z);
+        _centerLocal.project(camera);
+
+        if (_centerLocal.z > 1 || _centerLocal.z < -1) continue;
+
+        const nx = (_centerLocal.x * 0.5 + 0.5);
+        const ny = (1 - (_centerLocal.y * 0.5 + 0.5));
+
+        if (nx < -0.05 || nx > 1.05 || ny < -0.05 || ny > 1.05) continue;
+
+        _tmp.set(entry.x + entry.radiusM, entry.y, entry.z);
+        _tmp.project(camera);
+        const edgeNx = (_tmp.x * 0.5 + 0.5);
+        const screenRadiusPx = Math.abs(edgeNx - nx) * w;
+
+        const halfSize = Math.max(12, screenRadiusPx * 1.35 + 6);
+        projected.push({ instanceId: entry.instanceId, sx: nx, sy: ny, halfSize });
+      }
+
+      pingBracketBuffer.candidates = projected;
     }
 
     // Apply side effect: remove asteroid

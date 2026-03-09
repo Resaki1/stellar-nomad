@@ -35,6 +35,12 @@
     color: rgba(255, 255, 255, 0.55);
   }
 
+  &__composition {
+    font-size: 10px;
+    color: rgba(140, 200, 255, 0.75);
+    letter-spacing: 0.04em;
+  }
+
   &__warning {
     margin-top: 4px;
     font-size: 12px;

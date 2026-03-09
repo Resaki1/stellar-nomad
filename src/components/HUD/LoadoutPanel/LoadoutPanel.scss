@@ -60,47 +60,15 @@
     }
   }
 
-  // ── Modifier summary ──
-  &__mods {
-    margin: 12px 18px 0;
-    padding: 10px 12px;
-    background: rgba(80, 200, 120, 0.06);
-    border: 1px solid rgba(80, 200, 120, 0.2);
-    border-radius: 8px;
-  }
-
-  &__mods-title {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    opacity: 0.5;
-    margin-bottom: 6px;
-  }
-
-  &__mods-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-
-  &__mod-tag {
-    font-size: 10px;
-    font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(80, 200, 120, 0.12);
-    color: rgba(120, 220, 160, 0.9);
-  }
-
-  // ── Slots ──
-  &__slots {
+  // ── Module list ──
+  &__modules {
     margin-top: 12px;
     padding: 0 18px;
     overflow-y: auto;
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
   }
 
   &__empty {
@@ -110,86 +78,33 @@
     opacity: 0.45;
   }
 
-  &__slot {
+  &__module {
     padding: 10px 12px;
     background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
   }
 
-  &__slot-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    opacity: 0.45;
-    margin-bottom: 6px;
-  }
-
-  &__equipped {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-  }
-
-  &__equipped-name {
+  &__module-name {
     font-size: 13px;
     font-weight: 600;
     color: rgba(160, 210, 255, 0.95);
   }
 
-  &__empty-slot {
-    font-size: 12px;
-    opacity: 0.35;
-    font-style: italic;
-  }
-
-  &__unequip-btn {
-    font-size: 10px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 120, 120, 0.3);
-    background: rgba(255, 80, 80, 0.08);
-    color: rgba(255, 140, 140, 0.85);
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-
-    &:hover {
-      background: rgba(255, 80, 80, 0.18);
-      border-color: rgba(255, 120, 120, 0.5);
-    }
-  }
-
-  &__alt {
+  &__module-effects {
     margin-top: 4px;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    opacity: 0.65;
+    flex-wrap: wrap;
+    gap: 4px;
   }
 
-  &__alt-name {
-    font-size: 12px;
-  }
-
-  &__equip-btn {
+  &__effect-tag {
     font-size: 10px;
     font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 4px;
-    border: 1px solid rgba(80, 160, 255, 0.3);
-    background: rgba(80, 160, 255, 0.08);
-    color: rgba(140, 200, 255, 0.85);
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-
-    &:hover {
-      background: rgba(80, 160, 255, 0.18);
-      border-color: rgba(80, 160, 255, 0.5);
-    }
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(80, 200, 120, 0.1);
+    color: rgba(120, 220, 160, 0.9);
   }
 
   // ── Section titles ──

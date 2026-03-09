@@ -64,7 +64,16 @@ export const visibleNodesAtom = atom((get): ResearchNodeDef[] => {
 });
 
 // ---------------------------------------------------------------------------
+// Volatile: frame-rate elapsed time for smooth progress bars.
+// The ResearchTicker writes here every frame; UI reads this for display.
+// The persisted researchAtom is only updated on completion or periodically.
+// ---------------------------------------------------------------------------
+
+export const researchElapsedAtom = atom(0);
+
+// ---------------------------------------------------------------------------
 // Derived: active research node def (convenience)
+// Uses volatile elapsed for smooth progress.
 // ---------------------------------------------------------------------------
 
 export const activeResearchNodeAtom = atom((get) => {
@@ -72,7 +81,9 @@ export const activeResearchNodeAtom = atom((get) => {
   if (!state.activeResearch) return null;
   const node = getResearchNode(state.activeResearch.nodeId);
   if (!node) return null;
-  return { ...state.activeResearch, node };
+  // Prefer volatile elapsed for smooth UI; fallback to persisted
+  const elapsed = get(researchElapsedAtom) || state.activeResearch.elapsedS;
+  return { ...state.activeResearch, elapsedS: elapsed, node };
 });
 
 // ---------------------------------------------------------------------------

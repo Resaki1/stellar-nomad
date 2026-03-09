@@ -373,3 +373,53 @@ export const SLOT_LABELS: Record<ItemSlot, string> = {
   propulsion: "Propulsion",
   utility: "Utility",
 };
+
+// ---------------------------------------------------------------------------
+// Human-readable effect descriptions
+// ---------------------------------------------------------------------------
+
+const EFFECT_DESCRIPTIONS: Record<string, (value: number | boolean, op: string) => string> = {
+  "scanner.lockShowsAsteroidType": () => "Target lock reveals asteroid type (S/C/X)",
+  "scanner.pingHighlightEnabled": () => "Active ping highlights nearby asteroids",
+  "scanner.pingHighlightRangeMultiplier": (v, op) =>
+    op === "multiply" ? `Ping range ${fmtPct(v as number)}` : `Ping range +${v}`,
+  "scanner.lockShowsCompositionBands": () => "Target lock shows composition bands",
+  "ship.cargoCapacity": (v) => `Cargo capacity +${v} units`,
+  "mining.timePerAsteroidMultiplier": (v) =>
+    `Mining time ${fmtPct(v as number)}`,
+  "mining.heatBuildUpRateMultiplier": (v) =>
+    `Heat buildup ${fmtPct(v as number)}`,
+  "ship.maxHealthMultiplier": (v) => `Max hull HP ${fmtPct(v as number)}`,
+  "ship.collisionDamageMultiplier": (v) =>
+    `Collision damage ${fmtPct(v as number)}`,
+  "ship.decelerationMultiplier": (v) =>
+    `Braking power ${fmtPct(v as number)}`,
+  "ship.accelerationMultiplier": (v) =>
+    `Acceleration ${fmtPct(v as number)}`,
+  "ship.maxSpeedMultiplier": (v) => `Top speed ${fmtPct(v as number)}`,
+  "ability.pulseMiningEnabled": () => "Unlocks Pulse Mining mode",
+  "mining.currentHeat": (v, op) =>
+    op === "multiply"
+      ? `Heat ×${v} (${Math.round((1 - (v as number)) * 100)}% reduction)`
+      : `Set heat to ${v}`,
+};
+
+function fmtPct(multiplier: number): string {
+  const pct = Math.round((multiplier - 1) * 100);
+  return `${pct >= 0 ? "+" : ""}${pct}%`;
+}
+
+/**
+ * Returns a human-readable description of an item effect.
+ */
+export function describeEffect(eff: { key: string; op: string; value: number | boolean }): string {
+  const fn = EFFECT_DESCRIPTIONS[eff.key];
+  if (fn) return fn(eff.value, eff.op);
+
+  // Fallback: auto-format from key
+  const label = eff.key.split(".").pop() ?? eff.key;
+  if (eff.op === "set") return `${label}: ${eff.value ? "ON" : "OFF"}`;
+  if (eff.op === "multiply") return `${label} ${fmtPct(eff.value as number)}`;
+  if (eff.op === "add") return `${label} +${eff.value}`;
+  return `${label}: ${eff.value}`;
+}

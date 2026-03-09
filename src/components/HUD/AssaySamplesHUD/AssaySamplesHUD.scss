@@ -12,6 +12,15 @@
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   pointer-events: none;
 
+  &__label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.4;
+    margin-bottom: 2px;
+  }
+
   &__samples {
     font-size: 13px;
     font-weight: 700;
@@ -20,6 +29,15 @@
 
   &__research {
     margin-top: 8px;
+  }
+
+  &__research-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.4;
+    margin-bottom: 3px;
   }
 
   &__research-name {
@@ -42,7 +60,6 @@
   &__progress-fill {
     height: 100%;
     background: rgba(80, 160, 255, 0.7);
-    transition: width 0.5s ease;
   }
 
   &__time {
