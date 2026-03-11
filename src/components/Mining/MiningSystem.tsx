@@ -1064,7 +1064,7 @@ const MiningSystem = () => {
                   resourceId: r.resourceId,
                   amount: r.amount,
                   name: r.resource?.name ?? r.resourceId,
-                  icon: r.resource?.icon ?? "⛏",
+                  icon: r.resource?.icon ?? "",
                 })),
                 positionLocal: snapshot.positionLocal,
                 radiusM: snapshot.radiusM,
@@ -1217,7 +1217,7 @@ const MiningSystem = () => {
         // Build loot entries including assay samples
         const lootEntries = [
           ...reward.resources,
-          { resourceId: "_assay", amount: assayAmount, name: "Assay Samples", icon: "🔬" },
+          { resourceId: "_assay", amount: assayAmount, name: "Assay Samples", icon: "" },
         ];
 
         spawnVFX({

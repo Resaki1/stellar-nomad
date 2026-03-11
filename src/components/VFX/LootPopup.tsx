@@ -69,7 +69,7 @@ const LootPopup = memo(function LootPopup({
         <div className="loot-popup">
           {loot.map((entry, i) => (
             <span key={i} className="loot-popup__text">
-              +{entry.amount} {entry.icon ? `${entry.icon} ` : ""}{entry.name}
+              +{entry.amount} {entry.icon && <img className="loot-popup__icon" src={entry.icon} alt="" />}{entry.name}
             </span>
           ))}
         </div>

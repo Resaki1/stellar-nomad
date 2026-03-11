@@ -107,7 +107,7 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
               <div key={r.id} className="cargo-detail__row">
                 <div className="cargo-detail__resource">
                   {r.icon && (
-                    <span className="cargo-detail__icon">{r.icon}</span>
+                    <img className="cargo-detail__icon" src={r.icon} alt="" />
                   )}
                   <span className="cargo-detail__name">{r.name}</span>
                   <span className="cargo-detail__amount">{r.amount}</span>

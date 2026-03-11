@@ -82,7 +82,7 @@ export default function CargoHUD({ onClick }: CargoHUDProps) {
             <div key={r.id} className="cargo-hud__row">
               <div className="cargo-hud__resource">
                 {r.icon ? (
-                  <span className="cargo-hud__icon">{r.icon}</span>
+                  <img className="cargo-hud__icon" src={r.icon} alt="" />
                 ) : null}
                 <span className="cargo-hud__name">{r.name}</span>
               </div>

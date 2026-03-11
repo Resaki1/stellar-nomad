@@ -192,8 +192,8 @@ export const ITEMS: ItemDef[] = [
     recipe: { silicates: 210, fe_ni_metal: 55, carbon: 15, sulfur: 15 },
   },
   {
-    id: "module_spectral_mapper_mk2",
-    name: "Spectral Mapper Mk2",
+    id: "module_spectral_mapper_mk1",
+    name: "Spectral Mapper Mk1",
     uiDesc: "Target lock shows rough composition bands (metal / hydrate / carbon rich)",
     slot: "scanner",
     type: "module",
@@ -324,7 +324,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     costs: { assaySamples: 10 },
     prerequisites: ["r1_prospector_algorithms"],
     unlocks: {
-      items: ["module_spectral_mapper_mk2"],
+      items: ["module_spectral_mapper_mk1"],
     },
   },
 ];

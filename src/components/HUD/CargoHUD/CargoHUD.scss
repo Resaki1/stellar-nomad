@@ -77,8 +77,10 @@
 
   &__icon {
     width: 1.1em;
-    text-align: center;
+    height: 1.1em;
+    object-fit: contain;
     flex: 0 0 auto;
+    display: block;
   }
 
   &__name {

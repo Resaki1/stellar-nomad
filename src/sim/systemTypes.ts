@@ -62,7 +62,7 @@ export type ResourceTypeDef = {
   name: string;
   /** Optional unit label (e.g. "kg", "t"). */
   unit?: string;
-  /** Optional icon for HUD (emoji or short string). */
+  /** Optional icon URL for HUD (e.g. "/assets/resources/silicates.png"). */
   icon?: string;
   /**
    * Optional cargo units per 1 unit of this resource.

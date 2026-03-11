@@ -7,6 +7,14 @@
   gap: 3px;
 }
 
+.loot-popup__icon {
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+  vertical-align: middle;
+  display: inline-block;
+}
+
 .loot-popup__text {
   display: inline-block;
   padding: 4px 12px;

@@ -39,11 +39,11 @@
 
   "resources": {
     "types": [
-      { "id": "silicates", "name": "Silicates", "icon": "🪨" },
-      { "id": "fe_ni_metal", "name": "Fe–Ni Metal", "icon": "🧲" },
-      { "id": "sulfur", "name": "Sulfur", "icon": "🔶" },
-      { "id": "carbon", "name": "Carbon", "icon": "⚫" },
-      { "id": "hydrates", "name": "Hydrates", "icon": "💧" }
+      { "id": "silicates", "name": "Silicates", "icon": "/assets/resources/silicates.png" },
+      { "id": "fe_ni_metal", "name": "Fe–Ni Metal", "icon": "/assets/resources/fe_ni_metal.png" },
+      { "id": "sulfur", "name": "Sulfur", "icon": "/assets/resources/sulfur.png" },
+      { "id": "carbon", "name": "Carbon", "icon": "/assets/resources/carbon.png" },
+      { "id": "hydrates", "name": "Hydrates", "icon": "/assets/resources/hydrates.png" }
     ]
   },
 

@@ -129,7 +129,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
         <div className="crafting-panel__cargo-row">
           {Array.from(resourceMap.entries()).map(([id, def]) => (
             <span key={id} className="crafting-panel__cargo-item">
-              {def.icon} {Math.floor(cargo.items[id] ?? 0)}
+              {def.icon && <img className="crafting-panel__resource-icon" src={def.icon} alt="" />}
+              {Math.floor(cargo.items[id] ?? 0)}
             </span>
           ))}
         </div>
@@ -218,7 +219,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                               : ""
                           }`}
                         >
-                          {def?.icon ?? ""} {have}/{needed}
+                          {def?.icon && <img className="crafting-panel__resource-icon" src={def.icon} alt="" />}
+                          {have}/{needed}
                         </span>
                       );
                     })}

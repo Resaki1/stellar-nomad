@@ -125,7 +125,9 @@
   &__icon {
     flex: 0 0 auto;
     width: 1.2em;
-    text-align: center;
+    height: 1.2em;
+    object-fit: contain;
+    display: block;
   }
 
   &__name {
