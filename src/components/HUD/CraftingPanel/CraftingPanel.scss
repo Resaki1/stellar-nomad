@@ -150,9 +150,27 @@
 
   &__item-header {
     display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  &__item-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 3px;
+  }
+
+  &__item-title {
+    flex: 1 1 0;
+    display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 10px;
+    gap: 8px;
+    min-width: 0;
   }
 
   &__item-name {
@@ -165,6 +183,7 @@
     opacity: 0.45;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    flex: 0 0 auto;
   }
 
   &__item-desc {
@@ -280,6 +299,22 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     opacity: 0.6;
+  }
+
+  &__confirm-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  &__confirm-icon {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 4px;
   }
 
   &__confirm-name {

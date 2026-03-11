@@ -15,6 +15,7 @@ import {
   ALL_ITEM_SLOTS,
   SLOT_LABELS,
   describeEffect,
+  getItemIconUrl,
   type ItemDef,
   type ItemSlot,
 } from "@/data/content";
@@ -174,12 +175,19 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
               return (
                 <div key={item.id} className={`crafting-panel__item ${owned ? "crafting-panel__item--owned" : ""}`}>
                   <div className="crafting-panel__item-header">
-                    <span className="crafting-panel__item-name">
-                      {item.name}
-                    </span>
-                    <span className="crafting-panel__item-slot">
-                      {SLOT_LABELS[item.slot]}
-                    </span>
+                    <img
+                      className="crafting-panel__item-icon"
+                      src={getItemIconUrl(item)}
+                      alt=""
+                    />
+                    <div className="crafting-panel__item-title">
+                      <span className="crafting-panel__item-name">
+                        {item.name}
+                      </span>
+                      <span className="crafting-panel__item-slot">
+                        {SLOT_LABELS[item.slot]}
+                      </span>
+                    </div>
                   </div>
                   <div className="crafting-panel__item-desc">{item.uiDesc}</div>
 
@@ -250,7 +258,14 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
           <div className="crafting-panel__confirm-overlay" onClick={() => setConfirmItem(null)}>
             <div className="crafting-panel__confirm" onClick={(e) => e.stopPropagation()}>
               <div className="crafting-panel__confirm-title">Confirm Craft</div>
-              <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
+              <div className="crafting-panel__confirm-identity">
+                <img
+                  className="crafting-panel__confirm-icon"
+                  src={getItemIconUrl(confirmItem)}
+                  alt=""
+                />
+                <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
+              </div>
               <div className="crafting-panel__confirm-desc">{confirmItem.uiDesc}</div>
               {confirmItem.effects && confirmItem.effects.length > 0 && (
                 <div className="crafting-panel__confirm-effects">

@@ -51,15 +51,11 @@
   left: 4px;
 }
 
-.hotbar__name {
-  font-size: 8px;
-  font-weight: 600;
-  text-align: center;
-  line-height: 1.1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 44px;
+.hotbar__icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  display: block;
 }
 
 .hotbar__count {

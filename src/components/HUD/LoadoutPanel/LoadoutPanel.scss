@@ -83,6 +83,24 @@
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  &__module-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 3px;
+  }
+
+  &__module-info {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   &__module-name {
@@ -126,15 +144,26 @@
 
   &__consumable {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 8px;
     padding: 5px 10px;
     background: rgba(255, 255, 255, 0.03);
     border-radius: 6px;
     font-size: 12px;
   }
 
+  &__consumable-icon {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 2px;
+  }
+
   &__consumable-name {
+    flex: 1 1 0;
     opacity: 0.8;
   }
 

@@ -6,7 +6,7 @@ import { useEffect, useRef, useMemo } from "react";
 import { modulesAtom, useConsumableAtom, setHotbarSlotAtom } from "@/store/modules";
 import { miningStateAtom } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
-import { getItemDef } from "@/data/content";
+import { getItemDef, getItemIconUrl } from "@/data/content";
 
 import "./Hotbar.scss";
 
@@ -91,7 +91,11 @@ export default function Hotbar() {
             <span className="hotbar__key">{index}</span>
             {hasItem && (
               <>
-                <span className="hotbar__name">{def.name.substring(0, 8)}</span>
+                <img
+                  className="hotbar__icon"
+                  src={getItemIconUrl(def)}
+                  alt={def.name}
+                />
                 <span className="hotbar__count">×{count}</span>
               </>
             )}

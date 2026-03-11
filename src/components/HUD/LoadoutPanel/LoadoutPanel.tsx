@@ -4,7 +4,7 @@ import { useAtomValue } from "jotai";
 import { useMemo } from "react";
 
 import { modulesAtom } from "@/store/modules";
-import { getItemDef, describeEffect } from "@/data/content";
+import { getItemDef, getItemIconUrl, describeEffect } from "@/data/content";
 
 import "./LoadoutPanel.scss";
 
@@ -24,7 +24,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
       .filter(([, count]) => count > 0)
       .map(([id, count]) => {
         const def = getItemDef(id);
-        return { id, name: def?.name ?? id, count, stackMax: def?.stackMax ?? 99 };
+        return { id, name: def?.name ?? id, count, stackMax: def?.stackMax ?? 99, iconUrl: def ? getItemIconUrl(def) : "" };
       });
   }, [modulesState.consumables]);
 
@@ -47,16 +47,23 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
           ) : (
             ownedModules.map((def) => (
               <div key={def.id} className="loadout-panel__module">
-                <div className="loadout-panel__module-name">{def.name}</div>
-                {def.effects && def.effects.length > 0 && (
-                  <div className="loadout-panel__module-effects">
-                    {def.effects.map((eff, i) => (
-                      <span key={i} className="loadout-panel__effect-tag">
-                        {describeEffect(eff)}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <img
+                  className="loadout-panel__module-icon"
+                  src={getItemIconUrl(def)}
+                  alt=""
+                />
+                <div className="loadout-panel__module-info">
+                  <div className="loadout-panel__module-name">{def.name}</div>
+                  {def.effects && def.effects.length > 0 && (
+                    <div className="loadout-panel__module-effects">
+                      {def.effects.map((eff, i) => (
+                        <span key={i} className="loadout-panel__effect-tag">
+                          {describeEffect(eff)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             ))
           )}
@@ -69,6 +76,9 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
             <div className="loadout-panel__consumables">
               {consumables.map((c) => (
                 <div key={c.id} className="loadout-panel__consumable">
+                  {c.iconUrl && (
+                    <img className="loadout-panel__consumable-icon" src={c.iconUrl} alt="" />
+                  )}
                   <span className="loadout-panel__consumable-name">
                     {c.name}
                   </span>

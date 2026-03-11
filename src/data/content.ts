@@ -352,6 +352,15 @@ export function getItemsBySlot(slot: ItemSlot): ItemDef[] {
   return ITEMS.filter((i) => i.slot === slot);
 }
 
+/**
+ * Returns the icon image URL for an item, derived from its type and id.
+ * Modules live in /assets/modules/, consumables in /assets/consumables/.
+ */
+export function getItemIconUrl(item: Pick<ItemDef, "id" | "type">): string {
+  const folder = item.type === "consumable" ? "consumables" : "modules";
+  return `/assets/${folder}/${item.id}.png`;
+}
+
 /** All slots that have at least one item defined. */
 export const ALL_ITEM_SLOTS: ItemSlot[] = [
   "scanner",
