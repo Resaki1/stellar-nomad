@@ -139,10 +139,14 @@ export const useConsumableAtom = atom(
     const count = state.consumables[itemId] ?? 0;
     if (count <= 0) return false;
 
-    // Check cooldown
-    const lastUse = state.consumableCooldowns[itemId] ?? 0;
-    const cooldownMs = (def.cooldownS ?? 0) * 1000;
-    if (performance.now() - lastUse < cooldownMs) return false;
+    // Check cooldown (guard against stale timestamps from previous sessions —
+    // performance.now() resets on reload but consumableCooldowns are persisted)
+    const cooldownS = def.cooldownS ?? 0;
+    if (cooldownS > 0) {
+      const lastUse = state.consumableCooldowns[itemId] ?? 0;
+      const elapsed = performance.now() - lastUse;
+      if (elapsed >= 0 && elapsed < cooldownS * 1000) return false;
+    }
 
     // Consume
     const newConsumables = { ...state.consumables };

@@ -1,10 +1,10 @@
 "use client";
 
-import { useAtomValue, useSetAtom, useStore } from "jotai";
-import { useEffect, useRef, useMemo } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { modulesAtom, useConsumableAtom, setHotbarSlotAtom } from "@/store/modules";
-import { miningStateAtom } from "@/store/mining";
+import { modulesAtom, useConsumableAtom } from "@/store/modules";
+import { heatSinkBuffer } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
 import { getItemDef, getItemIconUrl } from "@/data/content";
 
@@ -12,10 +12,72 @@ import "./Hotbar.scss";
 
 export default function Hotbar() {
   const modulesState = useAtomValue(modulesAtom);
-  const miningState = useAtomValue(miningStateAtom);
   const useConsumable = useSetAtom(useConsumableAtom);
   const addToast = useSetAtom(addToastAtom);
-  const store = useStore();
+
+  // Tick counter to force re-render while any cooldown is active
+  const [, setTick] = useState(0);
+  const rafRef = useRef<number | null>(null);
+
+  // Track whether any cooldown is active to drive the rAF loop
+  const hasActiveCooldown = useMemo(() => {
+    const now = performance.now();
+    for (const itemId of modulesState.hotbar) {
+      if (!itemId) continue;
+      const def = getItemDef(itemId);
+      if (!def?.cooldownS) continue;
+      const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
+      if ((now - lastUse) / 1000 < def.cooldownS) return true;
+    }
+    return false;
+  }, [modulesState.hotbar, modulesState.consumableCooldowns]);
+
+  // Re-render at ~10 fps while a cooldown is active so the timer updates
+  useEffect(() => {
+    if (!hasActiveCooldown) return;
+    let active = true;
+    const loop = () => {
+      if (!active) return;
+      setTick((t) => t + 1);
+      rafRef.current = window.setTimeout(() => {
+        if (active) requestAnimationFrame(loop);
+      }, 100) as unknown as number;
+    };
+    requestAnimationFrame(loop);
+    return () => {
+      active = false;
+      if (rafRef.current !== null) clearTimeout(rafRef.current);
+    };
+  }, [hasActiveCooldown]);
+
+  // Activate a hotbar slot by index
+  const activateSlot = useCallback(
+    (index: number) => {
+      const itemId = modulesState.hotbar[index];
+      if (!itemId) return;
+
+      const def = getItemDef(itemId);
+      if (!def) return;
+
+      const ok = useConsumable(itemId);
+      if (ok) {
+        // Apply instant effects via shared buffer
+        if (def.useEffects) {
+          for (const eff of def.useEffects) {
+            if (eff.key === "mining.currentHeat") {
+              if (eff.op === "multiply") {
+                heatSinkBuffer.pendingMultiplier = eff.value as number;
+              } else if (eff.op === "add") {
+                heatSinkBuffer.pendingAdd = eff.value as number;
+              }
+            }
+          }
+        }
+        addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
+      }
+    },
+    [modulesState.hotbar, useConsumable, addToast],
+  );
 
   // Handle key presses 0-9 for hotbar
   useEffect(() => {
@@ -25,38 +87,13 @@ export default function Hotbar() {
 
       const key = e.key;
       if (key >= "0" && key <= "9") {
-        const index = parseInt(key, 10);
-        const itemId = modulesState.hotbar[index];
-        if (!itemId) return;
-
-        const def = getItemDef(itemId);
-        if (!def) return;
-
-        // Apply consumable use effects
-        const ok = useConsumable(itemId);
-        if (ok) {
-          // Apply instant effects
-          if (def.useEffects) {
-            for (const eff of def.useEffects) {
-              if (eff.key === "mining.currentHeat" && eff.op === "multiply") {
-                // Directly modify mining state heat
-                const ms = store.get(miningStateAtom);
-                store.set(miningStateAtom, {
-                  ...ms,
-                  laserHeat: ms.laserHeat * (eff.value as number),
-                  isOverheated: ms.laserHeat * (eff.value as number) < 1 ? false : ms.isOverheated,
-                });
-              }
-            }
-          }
-          addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
-        }
+        activateSlot(parseInt(key, 10));
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [modulesState.hotbar, useConsumable, addToast, store]);
+  }, [activateSlot]);
 
   // Only show hotbar if there are consumables
   const hasConsumables = useMemo(
@@ -65,6 +102,8 @@ export default function Hotbar() {
   );
 
   if (!hasConsumables) return null;
+
+  const now = performance.now();
 
   return (
     <div className="hotbar">
@@ -75,10 +114,16 @@ export default function Hotbar() {
 
         // Check cooldown
         let onCooldown = false;
+        let cooldownFraction = 0;
+        let cooldownRemaining = 0;
         if (itemId && def?.cooldownS) {
           const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
-          const elapsed = (performance.now() - lastUse) / 1000;
-          onCooldown = elapsed < def.cooldownS;
+          const elapsed = (now - lastUse) / 1000;
+          if (elapsed < def.cooldownS) {
+            onCooldown = true;
+            cooldownRemaining = Math.ceil(def.cooldownS - elapsed);
+            cooldownFraction = 1 - elapsed / def.cooldownS;
+          }
         }
 
         return (
@@ -87,6 +132,7 @@ export default function Hotbar() {
             className={`hotbar__slot ${hasItem ? "hotbar__slot--filled" : ""} ${
               onCooldown ? "hotbar__slot--cooldown" : ""
             }`}
+            onClick={hasItem && !onCooldown ? () => activateSlot(index) : undefined}
           >
             <span className="hotbar__key">{index}</span>
             {hasItem && (
@@ -96,7 +142,17 @@ export default function Hotbar() {
                   src={getItemIconUrl(def)}
                   alt={def.name}
                 />
-                <span className="hotbar__count">×{count}</span>
+                {onCooldown ? (
+                  <>
+                    <div
+                      className="hotbar__cooldown-fill"
+                      style={{ height: `${cooldownFraction * 100}%` }}
+                    />
+                    <span className="hotbar__cooldown-text">{cooldownRemaining}s</span>
+                  </>
+                ) : (
+                  <span className="hotbar__count">×{count}</span>
+                )}
               </>
             )}
           </div>

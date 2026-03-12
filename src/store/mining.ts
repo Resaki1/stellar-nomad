@@ -92,3 +92,13 @@ export type PingCandidate = {
  * Read by PingBrackets rAF loop — bypasses React entirely for 90 fps updates.
  */
 export const pingBracketBuffer: { candidates: PingCandidate[] } = { candidates: [] };
+
+/**
+ * Mutable shared buffer for heat-sink effects.
+ * Written by Hotbar when a heat-sink consumable is used.
+ * Read (and cleared) by MiningSystem each frame so laserHeatRef stays in sync.
+ */
+export const heatSinkBuffer: {
+  pendingMultiplier: number | null;
+  pendingAdd: number | null;
+} = { pendingMultiplier: null, pendingAdd: null };

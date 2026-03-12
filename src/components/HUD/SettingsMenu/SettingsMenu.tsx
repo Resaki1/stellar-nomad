@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -18,7 +18,8 @@ import {
 } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
 import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
-import { clearShipState } from "@/sim/shipPersistence";
+import { clearShipState, loadShipState } from "@/sim/shipPersistence";
+import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -26,12 +27,19 @@ enum SubMenu {
   Dev = "dev",
 }
 
+const IS_DEV = process.env.NODE_ENV === "development";
+
 const renderSubMenu = (
   subMenu: SubMenu,
   settings: Settings,
   setSettings: SetAtom<[SetStateAction<Settings>], void>,
   onResetWorld?: () => void,
-  onResetKeybinds?: () => void
+  onResetKeybinds?: () => void,
+  devHandlers?: {
+    onTeleport: (x: number, y: number, z: number) => void;
+    onSetMaxSpeed: (speed: number | null) => void;
+    currentMaxSpeedOverride: number | null;
+  }
 ) => {
   switch (subMenu) {
     case SubMenu.Graphics:
@@ -117,6 +125,7 @@ const renderSubMenu = (
             }
             label="show fps"
           />
+          {devHandlers && <DevControls {...devHandlers} />}
           {onResetWorld && (
             <button
               className="settings__menu-button settings__menu-button--danger"
@@ -130,6 +139,117 @@ const renderSubMenu = (
   }
 };
 
+// ---------------------------------------------------------------------------
+// Dev-only controls (position teleport + max speed override)
+// ---------------------------------------------------------------------------
+
+function DevControls({
+  onTeleport,
+  onSetMaxSpeed,
+  currentMaxSpeedOverride,
+}: {
+  onTeleport: (x: number, y: number, z: number) => void;
+  onSetMaxSpeed: (speed: number | null) => void;
+  currentMaxSpeedOverride: number | null;
+}) {
+  const [posX, setPosX] = useState("");
+  const [posY, setPosY] = useState("");
+  const [posZ, setPosZ] = useState("");
+  const [speedVal, setSpeedVal] = useState(
+    currentMaxSpeedOverride !== null ? String(currentMaxSpeedOverride) : ""
+  );
+
+  const handleLoadCurrent = () => {
+    const saved = loadShipState();
+    if (saved) {
+      setPosX(String(Math.round(saved.positionKm[0] * 100) / 100));
+      setPosY(String(Math.round(saved.positionKm[1] * 100) / 100));
+      setPosZ(String(Math.round(saved.positionKm[2] * 100) / 100));
+    }
+  };
+
+  const handleTeleport = () => {
+    const x = parseFloat(posX);
+    const y = parseFloat(posY);
+    const z = parseFloat(posZ);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+    onTeleport(x, y, z);
+  };
+
+  const handleSpeedApply = () => {
+    const v = parseFloat(speedVal);
+    if (!speedVal.trim()) {
+      onSetMaxSpeed(null);
+      return;
+    }
+    if (!Number.isFinite(v) || v <= 0) return;
+    onSetMaxSpeed(v);
+  };
+
+  return (
+    <div className="dev-controls">
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">teleport (km)</div>
+        <div className="dev-controls__row">
+          <input
+            className="dev-controls__input"
+            type="number"
+            placeholder="X"
+            value={posX}
+            onChange={(e) => setPosX(e.target.value)}
+          />
+          <input
+            className="dev-controls__input"
+            type="number"
+            placeholder="Y"
+            value={posY}
+            onChange={(e) => setPosY(e.target.value)}
+          />
+          <input
+            className="dev-controls__input"
+            type="number"
+            placeholder="Z"
+            value={posZ}
+            onChange={(e) => setPosZ(e.target.value)}
+          />
+        </div>
+        <div className="dev-controls__row">
+          <button
+            className="settings__menu-button settings__menu-button--subtle"
+            onClick={handleLoadCurrent}
+          >
+            load current
+          </button>
+          <button
+            className="settings__menu-button settings__menu-button--subtle"
+            onClick={handleTeleport}
+          >
+            teleport
+          </button>
+        </div>
+      </div>
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">max speed (m/s) — default: 400</div>
+        <div className="dev-controls__row">
+          <input
+            className="dev-controls__input dev-controls__input--wide"
+            type="number"
+            placeholder="400"
+            value={speedVal}
+            onChange={(e) => setSpeedVal(e.target.value)}
+          />
+          <button
+            className="settings__menu-button settings__menu-button--subtle"
+            onClick={handleSpeedApply}
+          >
+            {speedVal.trim() ? "apply" : "reset"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const SettingsMenu = () => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
@@ -139,6 +259,31 @@ const SettingsMenu = () => {
 
   const keybinds = useAtomValue(keybindsAtom);
   const resetKeybinds = useSetAtom(resetKeybindsAtom);
+
+  // Dev-only atoms
+  const setDevTeleport = useSetAtom(devTeleportAtom);
+  const [devMaxSpeed, setDevMaxSpeed] = useAtom(devMaxSpeedOverrideAtom);
+
+  const availableSubMenus = useMemo(
+    () =>
+      Object.values(SubMenu).filter(
+        (s) => s !== SubMenu.Dev || IS_DEV
+      ),
+    []
+  );
+
+  const devHandlers = useMemo(
+    () =>
+      IS_DEV
+        ? {
+            onTeleport: (x: number, y: number, z: number) =>
+              setDevTeleport([x, y, z]),
+            onSetMaxSpeed: (speed: number | null) => setDevMaxSpeed(speed),
+            currentMaxSpeedOverride: devMaxSpeed,
+          }
+        : undefined,
+    [setDevTeleport, setDevMaxSpeed, devMaxSpeed]
+  );
 
   const handleResetKeybinds = useCallback(() => {
     resetKeybinds();
@@ -214,7 +359,7 @@ const SettingsMenu = () => {
             </h2>
             {!activeSubMenu ? (
               <>
-                {Object.values(SubMenu).map((subMenu) => (
+                {availableSubMenus.map((subMenu) => (
                   <button
                     key={subMenu}
                     className="settings__menu-button"
@@ -237,7 +382,8 @@ const SettingsMenu = () => {
                   settings,
                   setSettings,
                   handleResetWorld,
-                  handleResetKeybinds
+                  handleResetKeybinds,
+                  devHandlers
                 )}
               </>
             )}

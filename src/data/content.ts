@@ -38,7 +38,7 @@ export type ItemEffect = {
  */
 export type ConsumableUseEffect = {
   key: string;
-  op: "multiply" | "set";
+  op: "multiply" | "set" | "add";
   value: number;
 };
 
@@ -135,13 +135,12 @@ export const ITEMS: ItemDef[] = [
   {
     id: "consumable_heat_sink_cartridge",
     name: "Heat Sink Cartridge",
-    uiDesc: "Emergency heat dump, cooldown-based",
+    uiDesc: "Emergency heat dump — consumes one cartridge",
     slot: "utility",
     type: "consumable",
     useEffects: [
-      { key: "mining.currentHeat", op: "multiply", value: 0.5 },
+      { key: "mining.currentHeat", op: "add", value: -0.5 },
     ],
-    cooldownS: 60,
     stackMax: 10,
     recipe: { silicates: 90, carbon: 30, sulfur: 8 },
   },
@@ -408,9 +407,11 @@ const EFFECT_DESCRIPTIONS: Record<string, (value: number | boolean, op: string) 
   "ship.maxSpeedMultiplier": (v) => `Top speed ${fmtPct(v as number)}`,
   "ability.pulseMiningEnabled": () => "Unlocks Pulse Mining mode",
   "mining.currentHeat": (v, op) =>
-    op === "multiply"
-      ? `Heat ×${v} (${Math.round((1 - (v as number)) * 100)}% reduction)`
-      : `Set heat to ${v}`,
+    op === "add"
+      ? `Heat ${(v as number) > 0 ? "+" : ""}${Math.round((v as number) * 100)}%`
+      : op === "multiply"
+        ? `Heat ×${v} (${Math.round((1 - (v as number)) * 100)}% reduction)`
+        : `Set heat to ${v}`,
 };
 
 function fmtPct(multiplier: number): string {

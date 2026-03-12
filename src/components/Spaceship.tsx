@@ -8,6 +8,7 @@ import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { toLocalUnitsKm } from "@/sim/units";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
@@ -116,6 +117,17 @@ const SpaceShip = memo(() => {
       store.set(collisionImpactAtom, null);
     }
 
+    // ── Dev teleport (one-shot) ────────────────────────────────────────
+    const teleport = store.get(devTeleportAtom);
+    if (teleport) {
+      posKm.current.set(teleport[0], teleport[1], teleport[2]);
+      prevPosKm.current.copy(posKm.current);
+      worldOrigin.setShipPosKm(posKm.current);
+      worldOrigin.setWorldOriginKm(posKm.current);
+      speed.current = 0;
+      store.set(devTeleportAtom, null);
+    }
+
     // ── Fixed-timestep physics loop ────────────────────────────────────
     physicsAcc.current += Math.min(delta, MAX_FRAME_DT);
 
@@ -176,8 +188,10 @@ const SpaceShip = memo(() => {
       const speedAlpha = Math.min(1, baseAlpha * responseMult);
       speed.current = lerp(speed.current, movement.speed, speedAlpha);
 
-      // Velocity — max speed scaled by module modifier
-      _vel.copy(_fwd).multiplyScalar(SHIP_MAX_SPEED_KMPS * cfg.speedMult * speed.current * FIXED_DT);
+      // Velocity — max speed scaled by module modifier (with optional dev override)
+      const devSpeed = store.get(devMaxSpeedOverrideAtom);
+      const maxSpeedKmps = devSpeed !== null ? devSpeed / 1000 : SHIP_MAX_SPEED_KMPS;
+      _vel.copy(_fwd).multiplyScalar(maxSpeedKmps * cfg.speedMult * speed.current * FIXED_DT);
 
       posKm.current.add(_vel);
       physicsAcc.current -= FIXED_DT;
@@ -256,7 +270,9 @@ const SpaceShip = memo(() => {
     }
 
     // ── HUD speed (analytical — no sampling jitter) ─────────────────────
-    store.set(hudInfoAtom, { speed: speed.current * SHIP_MAX_SPEED_KMPS * 1000 });
+    const hudDevSpeed = store.get(devMaxSpeedOverrideAtom);
+    const hudMaxSpeedKmps = hudDevSpeed !== null ? hudDevSpeed / 1000 : SHIP_MAX_SPEED_KMPS;
+    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * 1000 });
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;

@@ -9,6 +9,7 @@ import { Billboard, Line } from "@react-three/drei";
 import {
   miningStateAtom,
   pingBracketBuffer,
+  heatSinkBuffer,
   type TargetedAsteroid,
   type PingCandidate,
   TARGET_FOCUS_TIME_S,
@@ -1115,6 +1116,20 @@ const MiningSystem = () => {
       }
     }
 
+    // --- Apply pending heat-sink effects (from consumables)
+    if (heatSinkBuffer.pendingMultiplier !== null) {
+      laserHeatRef.current = Math.max(0, laserHeatRef.current * heatSinkBuffer.pendingMultiplier);
+      heatSinkBuffer.pendingMultiplier = null;
+    }
+    if (heatSinkBuffer.pendingAdd !== null) {
+      laserHeatRef.current = Math.max(0, Math.min(1, laserHeatRef.current + heatSinkBuffer.pendingAdd));
+      heatSinkBuffer.pendingAdd = null;
+    }
+    // Clear overheat if heat dropped below threshold
+    if (laserHeatRef.current < 1 && isOverheatedRef.current) {
+      isOverheatedRef.current = false;
+    }
+
     // Force an immediate state commit if we just cancelled or completed mining
     if (cancelMining || pendingRemovalIdRef.current !== null) {
       commitAccRef.current = STATE_COMMIT_INTERVAL_S;
@@ -1174,7 +1189,11 @@ const MiningSystem = () => {
         _tmp.set(entry.x + entry.radiusM, entry.y, entry.z);
         _tmp.project(camera);
         const edgeNx = (_tmp.x * 0.5 + 0.5);
-        const screenRadiusPx = Math.abs(edgeNx - nx) * w;
+        const edgeNy = (1 - (_tmp.y * 0.5 + 0.5));
+        const h = window.innerHeight;
+        const dxPx = (edgeNx - nx) * w;
+        const dyPx = (edgeNy - ny) * h;
+        const screenRadiusPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
 
         const halfSize = Math.max(12, screenRadiusPx * 1.35 + 6);
         projected.push({ instanceId: entry.instanceId, sx: nx, sy: ny, halfSize });

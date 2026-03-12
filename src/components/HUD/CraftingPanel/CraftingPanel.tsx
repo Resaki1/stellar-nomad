@@ -47,8 +47,12 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       if (!unlockedIds.has(item.id)) return false;
       if (slotFilter !== "all" && item.slot !== slotFilter) return false;
       return true;
+    }).sort((a, b) => {
+      const aOwned = a.type === "module" && modulesState.ownedModules.includes(a.id) ? 1 : 0;
+      const bOwned = b.type === "module" && modulesState.ownedModules.includes(b.id) ? 1 : 0;
+      return aOwned - bOwned;
     });
-  }, [unlockedIds, slotFilter]);
+  }, [unlockedIds, slotFilter, modulesState.ownedModules]);
 
   const isModuleOwned = useCallback(
     (item: ItemDef): boolean =>
