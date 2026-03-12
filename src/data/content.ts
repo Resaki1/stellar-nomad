@@ -175,7 +175,7 @@ export const ITEMS: ItemDef[] = [
     type: "module",
     effects: [
       { key: "ship.accelerationMultiplier", op: "multiply", value: 1.12 },
-      { key: "ship.maxSpeedMultiplier", op: "multiply", value: 1.08 },
+      { key: "ship.maxSpeedMultiplier", op: "multiply", value: 2.0 },
     ],
     recipe: { silicates: 260, fe_ni_metal: 190, carbon: 15, sulfur: 18 },
   },

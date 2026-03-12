@@ -4,14 +4,20 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { modulesAtom, useConsumableAtom } from "@/store/modules";
-import { heatSinkBuffer } from "@/store/mining";
+import { heatSinkBuffer, miningStateAtom } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
-import { getItemDef, getItemIconUrl } from "@/data/content";
+import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
 
 import "./Hotbar.scss";
 
+/** Returns true if this item requires heat to be usable. */
+function requiresHeat(def: ItemDef): boolean {
+  return !!def.useEffects?.some((e) => e.key === "mining.currentHeat");
+}
+
 export default function Hotbar() {
   const modulesState = useAtomValue(modulesAtom);
+  const miningState = useAtomValue(miningStateAtom);
   const useConsumable = useSetAtom(useConsumableAtom);
   const addToast = useSetAtom(addToastAtom);
 
@@ -59,6 +65,12 @@ export default function Hotbar() {
       const def = getItemDef(itemId);
       if (!def) return;
 
+      // Block heat-related consumables when there's no heat
+      if (requiresHeat(def) && miningState.laserHeat <= 0) {
+        addToast({ message: "No heat to reduce", durationMs: 1500 });
+        return;
+      }
+
       const ok = useConsumable(itemId);
       if (ok) {
         // Apply instant effects via shared buffer
@@ -76,7 +88,7 @@ export default function Hotbar() {
         addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
       }
     },
-    [modulesState.hotbar, useConsumable, addToast],
+    [modulesState.hotbar, miningState.laserHeat, useConsumable, addToast],
   );
 
   // Handle key presses 0-9 for hotbar
@@ -119,20 +131,23 @@ export default function Hotbar() {
         if (itemId && def?.cooldownS) {
           const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
           const elapsed = (now - lastUse) / 1000;
-          if (elapsed < def.cooldownS) {
+          if (elapsed >= 0 && elapsed < def.cooldownS) {
             onCooldown = true;
             cooldownRemaining = Math.ceil(def.cooldownS - elapsed);
             cooldownFraction = 1 - elapsed / def.cooldownS;
           }
         }
 
+        // Gray out heat-dependent items when there's no heat
+        const unavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
+
         return (
           <div
             key={index}
             className={`hotbar__slot ${hasItem ? "hotbar__slot--filled" : ""} ${
               onCooldown ? "hotbar__slot--cooldown" : ""
-            }`}
-            onClick={hasItem && !onCooldown ? () => activateSlot(index) : undefined}
+            } ${unavailable ? "hotbar__slot--unavailable" : ""}`}
+            onClick={hasItem && !onCooldown && !unavailable ? () => activateSlot(index) : undefined}
           >
             <span className="hotbar__key">{index}</span>
             {hasItem && (

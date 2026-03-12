@@ -29,7 +29,7 @@ const _shakeEuler = new Quaternion();
 // ── Tuning constants ─────────────────────────────────────────────────
 const SHIP_HANDLING = 1.5;
 const MAX_ROT_SPEED = SHIP_HANDLING / 2;
-const SHIP_MAX_SPEED_KMPS = 400 / 1000;
+const SHIP_MAX_SPEED_KMPS = 200 / 1000;
 const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
 const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
 const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max
@@ -270,9 +270,11 @@ const SpaceShip = memo(() => {
     }
 
     // ── HUD speed (analytical — no sampling jitter) ─────────────────────
+    // Must include cfg.speedMult so the HUD reflects module-boosted top speed.
+    const hudCfg = store.get(effectiveShipConfigAtom);
     const hudDevSpeed = store.get(devMaxSpeedOverrideAtom);
     const hudMaxSpeedKmps = hudDevSpeed !== null ? hudDevSpeed / 1000 : SHIP_MAX_SPEED_KMPS;
-    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * 1000 });
+    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * hudCfg.speedMult * 1000 });
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;

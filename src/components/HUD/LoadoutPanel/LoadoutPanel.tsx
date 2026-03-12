@@ -32,7 +32,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
     <div className="loadout-panel__backdrop" onClick={onClose}>
       <div className="loadout-panel" onClick={(e) => e.stopPropagation()}>
         <div className="loadout-panel__header">
-          <div className="loadout-panel__title">Ship Modules</div>
+          <div className="loadout-panel__title">Ship Loadout</div>
           <button className="loadout-panel__close" onClick={onClose}>
             ✕
           </button>
