@@ -139,17 +139,12 @@ Optimize big wins first: allocations/GC, draw calls, shader complexity, postFX p
 ## Testing & verification
 
 No formal test setup is assumed.
+
 Before concluding work:
-
-Run pnpm lint
-
-Run pnpm build
-
-If you fail to run these because of environment issues, let the user know and just let them test it manually in dev mode.
 
 Provide brief manual verification steps (what to click/observe).
 
-For logic-heavy modules (economy/orbits/progression), prefer adding unit tests if/when a test runner is introduced.
+Do not try to build the project, as that would fail in sandbox mode.
 
 
 ## Boundaries (follow strictly)
