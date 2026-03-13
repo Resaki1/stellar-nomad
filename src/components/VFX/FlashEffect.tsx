@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import type { VFXEventType } from "@/store/vfx";
@@ -33,7 +33,7 @@ const FlashEffect = memo(function FlashEffect({
   // Size proportional to asteroid radius (clamped)
   const baseSize = Math.min(120, Math.max(8, radiusM * 1.8));
 
-  const glowTexture = useMemo(() => {
+  const glowTexture = useMemo<THREE.Texture>(() => {
     const size = 64;
     const canvas = document.createElement("canvas");
     canvas.width = size;
@@ -73,6 +73,8 @@ const FlashEffect = memo(function FlashEffect({
     tex.needsUpdate = true;
     return tex;
   }, []);
+
+  useEffect(() => () => { glowTexture.dispose(); }, [glowTexture]);
 
   const color = type === "collision" ? COLOR_COLLISION : COLOR_MINED;
 

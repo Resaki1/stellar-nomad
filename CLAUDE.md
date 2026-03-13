@@ -35,8 +35,8 @@
 ## Stack & libraries (assume these unless repo contradicts)
 - Next.js `/app` (App Router)
 - React 19 + TypeScript
-- Rendering: `three`, `@react-three/fiber`, `@react-three/drei`
-- PostFX: `@react-three/postprocessing` + `postprocessing`
+- Rendering: `three` (WebGPU via `three/webgpu`), `@react-three/fiber`, `@react-three/drei`
+- PostFX: TSL node system (`three/tsl`) + `RenderPipeline` (WebGPU-native bloom, tonemapping)
 - Input: `@use-gesture/react`, `react-joystick-component`
 - State: `jotai` (with `@swc-jotai/react-refresh` in dev)
 - Styling: `sass`
@@ -144,6 +144,8 @@ Before concluding work:
 Run pnpm lint
 
 Run pnpm build
+
+If you fail to run these because of environment issues, let the user know and just let them test it manually in dev mode.
 
 Provide brief manual verification steps (what to click/observe).
 

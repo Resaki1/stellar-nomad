@@ -1,10 +1,2 @@
-import "@react-three/fiber";
-
-declare module "@react-three/fiber" {
-  interface ThreeElements {
-    atmosphereShaderMaterial: ReactThreeFiber.MaterialNode<
-      THREE.ShaderMaterial,
-      [THREE.ShaderMaterialParameters]
-    >;
-  }
-}
+// Project-wide type augmentations
+// (WebGL ShaderMaterial declarations removed — all custom materials now use NodeMaterial/TSL)

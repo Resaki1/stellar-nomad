@@ -6,7 +6,7 @@ import { Stats, StatsGl, AdaptiveDpr, AdaptiveEvents } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
 import { memo } from "react";
-import { NoToneMapping } from "three";
+import * as THREE from "three/webgpu";
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
@@ -22,7 +22,6 @@ import ResearchTicker from "../Research/ResearchTicker";
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
-
   const isSafari =
     typeof window !== "undefined" && navigator
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
@@ -34,14 +33,33 @@ const Scene = () => {
       camera={{ near: 0.01, far: 20_000 }}
       frameloop="always"
       dpr={[0.5, 1.5]}
-      gl={{
-        alpha: false,
-        premultipliedAlpha: false,
-        antialias: true,
-        powerPreference: "high-performance",
-        toneMapping: NoToneMapping,
-        logarithmicDepthBuffer: true,
-      }}
+      gl={(defaultProps) => {
+          const renderer = new THREE.WebGPURenderer({
+            canvas: defaultProps.canvas as HTMLCanvasElement,
+            powerPreference: "high-performance",
+            antialias: false,
+            alpha: false,
+            stencil: false,
+            logarithmicDepthBuffer: true,
+          });
+
+          // R3F's loop starts immediately (frameloop="always") but
+          // WebGPU init is async. Patch render() to silently no-op
+          // until the backend is ready, instead of throwing.
+          const origRender = renderer.render.bind(renderer);
+          renderer.render = function (scene: any, camera: any) {
+            if (!(this as any)._initialized) return;
+            return origRender(scene, camera);
+          };
+
+          renderer.init().then(() => {
+            // Stop the renderer's internal rAF loop. R3F owns the frame loop;
+            // we manually tick nodeFrame + info in SpaceRenderer's useFrame.
+            (renderer as any)._animation?.stop();
+            console.log("WebGPU initialized successfully");
+          });
+          return renderer;
+        }}
     >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
 
@@ -66,7 +84,7 @@ const Scene = () => {
             }
           />
 
-          <AdaptiveDpr pixelated />
+          {/* <AdaptiveDpr pixelated /> */}
           <AdaptiveEvents />
           <Anchor />
     </Canvas>

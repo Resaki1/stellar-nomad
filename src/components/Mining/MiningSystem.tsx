@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import * as THREE from "three";
-import { Billboard, Line } from "@react-three/drei";
+import { Billboard } from "@react-three/drei";
 
 import {
   miningStateAtom,
@@ -101,28 +101,108 @@ const _tmpBox = new THREE.Box3();
 const _invRootWorld = new THREE.Matrix4();
 const _meshToRoot = new THREE.Matrix4();
 
-function makeCirclePoints(segments: number): Array<[number, number, number]> {
-  const pts: Array<[number, number, number]> = [];
+function makeCircleArray(segments: number): Float32Array {
+  const arr = new Float32Array((segments + 1) * 3);
   for (let i = 0; i <= segments; i++) {
     const a = (i / segments) * Math.PI * 2;
-    pts.push([Math.cos(a), Math.sin(a), 0]);
+    arr[i * 3] = Math.cos(a);
+    arr[i * 3 + 1] = Math.sin(a);
+    arr[i * 3 + 2] = 0;
   }
-  return pts;
+  return arr;
 }
 
-function makeArcPoints(
+function makeArcArray(
   segments: number,
   startAngleRad: number,
   endAngleRad: number
-): Array<[number, number, number]> {
-  const pts: Array<[number, number, number]> = [];
+): Float32Array {
+  const arr = new Float32Array((segments + 1) * 3);
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
     const a = THREE.MathUtils.lerp(startAngleRad, endAngleRad, t);
-    pts.push([Math.cos(a), Math.sin(a), 0]);
+    arr[i * 3] = Math.cos(a);
+    arr[i * 3 + 1] = Math.sin(a);
+    arr[i * 3 + 2] = 0;
   }
-  return pts;
+  return arr;
 }
+
+/** Ref handle for updating beam line positions each frame. */
+type NativeLineHandle = {
+  setPositions: (positions: number[]) => void;
+  setOpacity: (opacity: number) => void;
+};
+
+/**
+ * WebGPU-compatible replacement for drei's <Line>.
+ * Uses native THREE.Line + LineBasicMaterial (auto-converted to NodeMaterial).
+ * Line width is always 1px (GPU limitation), but avoids LineMaterial crash.
+ */
+const NativeLineSegment = memo(
+  forwardRef<
+    NativeLineHandle,
+    {
+      points: Float32Array | Array<[number, number, number]>;
+      color: THREE.Color;
+      opacity: number;
+      depthTest?: boolean;
+      depthWrite?: boolean;
+      blending?: THREE.Blending;
+      frustumCulled?: boolean;
+    }
+  >(function NativeLineSegment(
+    { points, color, opacity, depthTest = true, depthWrite = false, blending = THREE.AdditiveBlending, frustumCulled = false },
+    ref
+  ) {
+    const matRef = useRef<THREE.LineBasicMaterial>(null!);
+
+    const lineObj = useMemo(() => {
+      const geo = new THREE.BufferGeometry();
+      let arr: Float32Array;
+      if (points instanceof Float32Array) {
+        arr = new Float32Array(points);
+      } else {
+        arr = new Float32Array(points.length * 3);
+        for (let i = 0; i < points.length; i++) {
+          arr[i * 3] = points[i][0];
+          arr[i * 3 + 1] = points[i][1];
+          arr[i * 3 + 2] = points[i][2];
+        }
+      }
+      geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+
+      const mat = new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthTest,
+        depthWrite,
+        blending,
+        toneMapped: false,
+      });
+
+      const line = new THREE.Line(geo, mat);
+      line.frustumCulled = frustumCulled;
+      return line;
+    }, [points, color, opacity, depthTest, depthWrite, blending, frustumCulled]);
+
+    useImperativeHandle(ref, () => ({
+      setPositions(positions: number[]) {
+        const attr = lineObj.geometry.getAttribute("position") as THREE.BufferAttribute;
+        const arr = attr.array as Float32Array;
+        const count = Math.min(positions.length, arr.length);
+        for (let i = 0; i < count; i++) arr[i] = positions[i];
+        attr.needsUpdate = true;
+      },
+      setOpacity(value: number) {
+        (lineObj.material as THREE.LineBasicMaterial).opacity = value;
+      },
+    }), [lineObj]);
+
+    return <primitive object={lineObj} />;
+  })
+);
 
 function clamp01(x: number) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
@@ -232,8 +312,8 @@ type MiningBeamProps = {
 };
 
 const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
-  const coreRef = useRef<any>(null);
-  const haloRef = useRef<any>(null);
+  const coreRef = useRef<NativeLineHandle>(null);
+  const haloRef = useRef<NativeLineHandle>(null);
 
   const muzzleRef = useRef<THREE.Sprite | null>(null);
   const impactRef = useRef<THREE.Sprite | null>(null);
@@ -271,11 +351,7 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
   }, []);
 
   const placeholderPoints = useMemo(
-    () =>
-      [
-        [0, 0, 0] as [number, number, number],
-        [0, 0, 0] as [number, number, number],
-      ] as Array<[number, number, number]>,
+    () => new Float32Array([0, 0, 0, 0, 0, 0]),
     []
   );
 
@@ -285,11 +361,8 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
     // Update line geometry every frame
     const positions = [start.x, start.y, start.z, end.x, end.y, end.z];
 
-    const core = coreRef.current as any;
-    if (core?.geometry?.setPositions) core.geometry.setPositions(positions);
-
-    const halo = haloRef.current as any;
-    if (halo?.geometry?.setPositions) halo.geometry.setPositions(positions);
+    coreRef.current?.setPositions(positions);
+    haloRef.current?.setPositions(positions);
 
     // Vector start->end (for general beam metrics)
     const sx = start.x, sy = start.y, sz = start.z;
@@ -355,38 +428,30 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
       mat.opacity = pulseBase * alpha;
     }
 
-    if (core?.material) core.material.opacity = 0.78 * beamIntensity;
-    if (halo?.material) halo.material.opacity = 0.16 * beamIntensity;
+    coreRef.current?.setOpacity(0.78 * beamIntensity);
+    haloRef.current?.setOpacity(0.16 * beamIntensity);
   });
 
   return (
     <group renderOrder={2000}>
-      <Line
+      <NativeLineSegment
         ref={haloRef}
         points={placeholderPoints}
         color={COLOR_BEAM_HALO}
-        worldUnits={false}
-        lineWidth={BEAM_HALO_WIDTH_PX}
-        transparent
         opacity={0.16}
         depthTest
         depthWrite={false}
-        toneMapped={false}
         blending={THREE.AdditiveBlending}
         frustumCulled={false}
       />
 
-      <Line
+      <NativeLineSegment
         ref={coreRef}
         points={placeholderPoints}
         color={COLOR_BEAM_CORE}
-        worldUnits={false}
-        lineWidth={BEAM_CORE_WIDTH_PX}
-        transparent
         opacity={0.78}
         depthTest
         depthWrite={false}
-        toneMapped={false}
         blending={THREE.AdditiveBlending}
         frustumCulled={false}
       />
@@ -459,8 +524,8 @@ const AsteroidHighlight = ({
   const ringRef = useRef<THREE.Group | null>(null);
   const arcRef = useRef<THREE.Group | null>(null);
 
-  const circlePts = useMemo(() => makeCirclePoints(HIGHLIGHT_SEGMENTS), []);
-  const arcPts = useMemo(() => makeArcPoints(32, -Math.PI * 0.15, Math.PI * 0.45), []);
+  const circlePts = useMemo(() => makeCircleArray(HIGHLIGHT_SEGMENTS), []);
+  const arcPts = useMemo(() => makeArcArray(32, -Math.PI * 0.15, Math.PI * 0.45), []);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
@@ -486,43 +551,31 @@ const AsteroidHighlight = ({
     <group position={positionLocal} renderOrder={1500}>
       <Billboard>
         <group ref={ringRef}>
-          <Line
+          <NativeLineSegment
             points={circlePts}
             color={COLOR_HIGHLIGHT_HALO}
-            worldUnits={false}
-            lineWidth={HIGHLIGHT_HALO_WIDTH_PX}
-            transparent
             opacity={haloOpacity}
             depthTest={false}
             depthWrite={false}
-            toneMapped={false}
             blending={THREE.AdditiveBlending}
           />
 
-          <Line
+          <NativeLineSegment
             points={circlePts}
             color={COLOR_HIGHLIGHT_CORE}
-            worldUnits={false}
-            lineWidth={HIGHLIGHT_CORE_WIDTH_PX}
-            transparent
             opacity={coreOpacity}
             depthTest={false}
             depthWrite={false}
-            toneMapped={false}
             blending={THREE.AdditiveBlending}
           />
 
           <group ref={arcRef}>
-            <Line
+            <NativeLineSegment
               points={arcPts}
               color={COLOR_HIGHLIGHT_ARC}
-              worldUnits={false}
-              lineWidth={HIGHLIGHT_CORE_WIDTH_PX}
-              transparent
               opacity={arcOpacity}
               depthTest={false}
               depthWrite={false}
-              toneMapped={false}
               blending={THREE.AdditiveBlending}
             />
           </group>

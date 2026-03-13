@@ -2,9 +2,39 @@
 
 import { memo, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Sphere, useTexture } from "@react-three/drei";
+import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
-import { FrontSide } from "three";
+import { NodeMaterial } from "three/webgpu";
+import {
+  Fn,
+  If,
+  uniform,
+  texture,
+  uv,
+  normalWorld,
+  normalView,
+  positionWorld,
+  positionView,
+  tangentWorld,
+  bitangentWorld,
+  cameraPosition,
+  vec3,
+  vec4,
+  float,
+  dot,
+  normalize,
+  mix,
+  clamp,
+  pow,
+  exp,
+  acos,
+  asin,
+  sin,
+  reflect,
+  length,
+  sub,
+  PI,
+} from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
@@ -33,224 +63,61 @@ const sunRelative = new THREE.Vector3();
 const moonRelative = new THREE.Vector3();
 const relativeKm = new THREE.Vector3();
 
-const earthVertexShader = /* glsl */ `
-  varying vec2 vUv;
-  varying vec3 vNormalW;
-  varying vec3 vPosWRel;
-  varying mat3 vTbn;
+// ---------- TSL: Eclipse function ----------
+const eclipseFn = Fn(
+  ([
+    angleBetween,
+    angleLight,
+    angleOcc,
+  ]: [
+    ReturnType<typeof float>,
+    ReturnType<typeof float>,
+    ReturnType<typeof float>,
+  ]) => {
+    const r2 = pow(angleOcc.div(angleLight), float(2));
+    const v = float(1.0).toVar();
 
-  attribute vec4 tangent;
-
-  void main() {
-    vUv = uv;
-
-    vNormalW = normalize(mat3(modelMatrix) * normal);
-    vPosWRel = mat3(modelMatrix) * position;
-
-    vec3 t = normalize(tangent.xyz);
-    vec3 n = normalize(normal.xyz);
-    vec3 b = normalize(cross(t, n));
-
-    t = mat3(modelMatrix) * t;
-    b = mat3(modelMatrix) * b;
-    n = mat3(modelMatrix) * n;
-
-    vTbn = mat3(normalize(t), normalize(b), normalize(n));
-
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-const earthFragmentShader = /* glsl */ `
-  uniform sampler2D uDayTex;
-  uniform sampler2D uNightTex;
-  uniform sampler2D uNormalTex;
-  uniform sampler2D uSpecTex;
-  uniform sampler2D uCloudTex;
-
-  uniform vec3 uSunRel;
-  uniform vec3 uEarthPos;
-
-  uniform float uNormalPower;
-
-  uniform vec3 uMoonPos;
-  uniform float uMoonRadius;
-  uniform float uSunRadius;
-
-  // simple artistic knobs
-  uniform float uNightBoost;     // helps if night map is too dim
-  uniform float uCloudOpacity;   // overall cloud strength (0..1)
-
-  varying vec2 vUv;
-  varying vec3 vNormalW;
-  varying vec3 vPosWRel;
-  varying mat3 vTbn;
-
-  #define PI 3.14159265359
-
-  float eclipseFactor(float angleBetween, float angleLight, float angleOcc) {
-    float r2 = pow(angleOcc / angleLight, 2.0);
-    float v;
-
-    if (angleBetween > angleLight - angleOcc && angleBetween < angleLight + angleOcc) {
-      if (angleBetween < angleOcc - angleLight) {
-        v = 0.0;
-      } else {
-        float x = 0.5 / angleBetween * (angleBetween*angleBetween + angleLight*angleLight - angleOcc*angleOcc);
-        float thL = acos(x / angleLight);
-        float thO = acos((angleBetween - x) / angleOcc);
-        v = 1.0/PI * (PI - thL + 0.5*sin(2.0*thL) - thO*r2 + 0.5*r2*sin(2.0*thO));
+    If(
+      angleBetween
+        .greaterThan(angleLight.sub(angleOcc))
+        .and(angleBetween.lessThan(angleLight.add(angleOcc))),
+      () => {
+        If(angleBetween.lessThan(angleOcc.sub(angleLight)), () => {
+          v.assign(0.0);
+        }).Else(() => {
+          const x = float(0.5)
+            .div(angleBetween)
+            .mul(
+              angleBetween
+                .mul(angleBetween)
+                .add(angleLight.mul(angleLight))
+                .sub(angleOcc.mul(angleOcc))
+            );
+          const thL = acos(x.div(angleLight));
+          const thO = acos(angleBetween.sub(x).div(angleOcc));
+          v.assign(
+            float(1.0)
+              .div(PI)
+              .mul(
+                sub(PI, thL)
+                  .add(float(0.5).mul(sin(thL.mul(2))))
+                  .sub(thO.mul(r2))
+                  .add(float(0.5).mul(r2).mul(sin(thO.mul(2))))
+              )
+          );
+        });
       }
-    } else if (angleBetween > angleLight + angleOcc) {
-      v = 1.0;
-    } else {
-      v = 1.0 - r2;
-    }
+    )
+      .ElseIf(angleBetween.greaterThan(angleLight.add(angleOcc)), () => {
+        v.assign(1.0);
+      })
+      .Else(() => {
+        v.assign(float(1.0).sub(r2));
+      });
 
-    return clamp(v, 0.0, 1.0);
+    return clamp(v, 0, 1);
   }
-
-  void main() {
-    vec3 sunDir = normalize(uSunRel);
-
-    vec3 dayCol   = texture2D(uDayTex, vUv).rgb;
-    vec3 nightCol = texture2D(uNightTex, vUv).rgb * uNightBoost;
-
-    float cosSunToGeomNormal = dot(vNormalW, sunDir);
-    float dayAmount = 1.0 / (1.0 + exp(-20.0 * cosSunToGeomNormal));
-    float hemiAmount = dayAmount;
-
-    vec3 surfacePosW = uEarthPos + vPosWRel;
-
-    float distEarthToSun  = length(uSunRel);
-    float distSurfToMoon  = length(uMoonPos - surfacePosW);
-
-    float cosSunMoon = dot(sunDir, normalize(uMoonPos - surfacePosW));
-    float angSunMoon = acos(clamp(cosSunMoon, -1.0, 1.0));
-
-    float angSunDisk  = asin(clamp(uSunRadius / distEarthToSun,  0.0, 1.0));
-    float angMoonDisk = asin(clamp(uMoonRadius / distSurfToMoon, 0.0, 1.0));
-
-    hemiAmount *= eclipseFactor(angSunMoon, angSunDisk, angMoonDisk);
-
-    // normal mapping
-    vec3 tN = texture2D(uNormalTex, vUv).xyz * 2.0 - 1.0;
-    vec3 nW = normalize(vTbn * tN);
-    float cosSunToMappedNormal = dot(nW, sunDir);
-
-    dayAmount *= (1.0 + uNormalPower * (cosSunToMappedNormal - cosSunToGeomNormal));
-    dayAmount *= hemiAmount;
-    dayAmount = clamp(dayAmount, 0.0, 1.0);
-
-    // IMPORTANT: your clouds.webp likely has NO alpha channel
-    // so we derive the mask from the red channel (grayscale).
-    float cloudMask = texture2D(uCloudTex, vUv).r;
-    cloudMask *= uCloudOpacity;
-
-    // Cloud shadow: sample slightly “towards the sun”
-    vec3 transl = 0.0005 * inverse(vTbn) * (vNormalW - sunDir);
-    float cloudShadow = texture2D(uCloudTex, vUv - transl.xy).r;
-    dayAmount *= (1.0 - 0.5 * cloudShadow);
-
-    // base day/night
-    vec3 col = mix(nightCol, dayCol, dayAmount);
-
-    // specular from spec map (assumed grayscale in R)
-    float specMask = texture2D(uSpecTex, vUv).r;
-    float reflectRatio = 0.3 * specMask + 0.1;
-
-    vec3 refl = reflect(-sunDir, nW);
-    float specPow = clamp(dot(refl, normalize(cameraPosition - surfacePosW)), 0.0, 1.0);
-    col += dayAmount * pow(specPow, 2.0) * reflectRatio;
-
-    // Clouds as white-ish scattering on lit side, but still visible a bit at night
-    float h = clamp(hemiAmount, 0.0, 1.0);
-    vec3 cloudCol = vec3(1.0);
-
-    // slight blue tint on day side
-    cloudCol.r *= clamp(h, 0.2, 1.0);
-    cloudCol.g *= clamp(pow(h, 1.5), 0.2, 1.0);
-    cloudCol.b *= clamp(pow(h, 2.0), 0.2, 1.0);
-
-    // Blend clouds using derived mask
-    col = mix(col, cloudCol, clamp(cloudMask, 0.0, 1.0));
-
-    gl_FragColor = vec4(col, 1.0);
-  }
-`;
-
-const addonVertexShader = /* glsl */ `
-  varying vec3 vNormalW;
-  varying vec3 vNormalV;
-  varying vec3 vPosV;
-
-  void main() {
-    vNormalW = normalize(mat3(modelMatrix) * normal);
-    vNormalV = normalize(normalMatrix * normal);
-    vPosV = normalize((modelViewMatrix * vec4(position, 1.0)).xyz);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-const atmosphereFragmentShader = /* glsl */ `
-  uniform vec3 uSunRel;
-  uniform vec3 uColor;
-
-  varying vec3 vNormalW;
-  varying vec3 vNormalV;
-  varying vec3 vPosV;
-
-  void main() {
-    vec3 sunDir = normalize(uSunRel);
-
-    float cosSunToNormal = dot(vNormalW, sunDir);
-    float dayMask = 1.0 / (1.0 + exp(-7.0 * (cosSunToNormal + 0.1)));
-
-    float raw = 3.0 * max(dot(vPosV, vNormalV), 0.0);
-    float intensity = pow(raw, 3.0);
-
-    gl_FragColor = vec4(uColor, intensity) * dayMask;
-  }
-`;
-
-const fresnelFragmentShader = /* glsl */ `
-  uniform vec3 uSunRel;
-  uniform vec3 uColor;
-
-  varying vec3 vNormalW;
-  varying vec3 vNormalV;
-  varying vec3 vPosV;
-
-  float saturate(float x) { return clamp(x, 0.0, 1.0); }
-
-  void main() {
-    vec3 sunDir = normalize(uSunRel);
-
-    // Keep day masking (as in article)
-    float cosSunToNormal = dot(vNormalW, sunDir);
-    float dayMask = 1.0 / (1.0 + exp(-7.0 * (cosSunToNormal + 0.1)));
-
-    // View dir in view space: camera is at origin in view space, so V = -pos
-    vec3 V = normalize(-vPosV);
-    vec3 N = normalize(vNormalV);
-
-    // Standard Fresnel form: strongest at grazing angles
-    float ndv = saturate(dot(N, V));
-    float fres = pow(1.0 - ndv, 2.0);
-
-    // Soften/widen the rim (these thresholds are the main "photoreal" lever)
-    fres = smoothstep(0.02, 0.55, fres);
-
-    // Reduce energy so it doesn't look like a stroke under ACES
-    float strength = 0.15;
-    vec3 rgb = uColor * fres * strength * dayMask;
-
-    float fresnelTerm = 1.0 + dot(normalize(vPosV), normalize(vNormalV));
-    fresnelTerm = pow(fresnelTerm, 2.0);
-
-    gl_FragColor = vec4(uColor, 1.0) * fresnelTerm * dayMask;
-  }
-`;
+);
 
 type PlanetProps = {
   positionKm?: [number, number, number];
@@ -267,7 +134,6 @@ function setTextureColorSpace(
 ) {
   if (!tex) return;
 
-  // Prefer modern three.js property
   if ("colorSpace" in tex) {
     // @ts-ignore
     tex.colorSpace =
@@ -297,86 +163,209 @@ function Planet({
     clouds: "/textures/earth_clouds.webp",
   }) as Record<string, THREE.Texture>;
 
-  const moonRadiusScaled = useMemo(
-    () => kmToScaledUnits(moonRadiusKm),
-    [moonRadiusKm]
-  );
-  const sunRadiusScaled = useMemo(
-    () => kmToScaledUnits(sunRadiusKm),
-    [sunRadiusKm]
-  );
-
   useMemo(() => {
-    // Color textures
     setTextureColorSpace(tex.day, "srgb");
     setTextureColorSpace(tex.night, "srgb");
-
-    // Data textures (IMPORTANT: clouds is data here)
     setTextureColorSpace(tex.normal, "linear");
     setTextureColorSpace(tex.spec, "linear");
     setTextureColorSpace(tex.clouds, "linear");
-
-    // Make the clouds less “sparkly” when far away
     tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
     tex.clouds.magFilter = THREE.LinearFilter;
     tex.clouds.anisotropy = 8;
   }, [tex]);
 
+  // Sphere geometry with tangents computed for normal mapping
+  const sphereGeo = useMemo(() => {
+    const geo = new THREE.SphereGeometry(scaledRadius, 128, 128);
+    geo.computeTangents();
+    return geo;
+  }, [scaledRadius]);
+
+  // TSL uniforms (shared across materials)
+  const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
+  const uEarthPos = useMemo(() => uniform(new THREE.Vector3()), []);
+  const uMoonPos = useMemo(
+    () => uniform(new THREE.Vector3(1e9, 0, 0)),
+    []
+  );
+  const uMoonRadius = useMemo(
+    () => uniform(kmToScaledUnits(moonRadiusKm)),
+    [moonRadiusKm]
+  );
+  const uSunRadius = useMemo(
+    () => uniform(kmToScaledUnits(sunRadiusKm)),
+    [sunRadiusKm]
+  );
+
+  // ---------- Earth material ----------
   const earthMat = useMemo(() => {
-    return new THREE.ShaderMaterial({
-      vertexShader: earthVertexShader,
-      fragmentShader: earthFragmentShader,
-      uniforms: {
-        uDayTex: { value: tex.day },
-        uNightTex: { value: tex.night },
-        uNormalTex: { value: tex.normal },
-        uSpecTex: { value: tex.spec },
-        uCloudTex: { value: tex.clouds },
+    const mat = new NodeMaterial();
+    mat.side = THREE.FrontSide;
 
-        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
-        uEarthPos: { value: new THREE.Vector3() },
+    const uNormalPower = float(0.6);
+    const uNightBoost = float(0.5);
+    const uCloudOpacity = float(0.65);
 
-        uNormalPower: { value: 0.6 },
+    mat.fragmentNode = Fn(() => {
+      const uvCoord = uv();
+      const sunDir = normalize(uSunRel);
 
-        uMoonPos: { value: new THREE.Vector3(1e9, 0, 0) },
-        uMoonRadius: { value: moonRadiusScaled },
-        uSunRadius: { value: sunRadiusScaled },
+      const dayCol = texture(tex.day, uvCoord).rgb;
+      const nightCol = texture(tex.night, uvCoord).rgb.mul(uNightBoost);
 
-        uNightBoost: { value: 0.5 }, // tweak 1.0–3.0
-        uCloudOpacity: { value: 0.65 }, // tweak 0.2–0.9
-      },
-      side: FrontSide,
-    });
-  }, [moonRadiusScaled, sunRadiusScaled, tex]);
+      // Geometric normal in world space
+      const nGeom = normalize(normalWorld);
+      const cosSunToGeomNormal = dot(nGeom, sunDir);
 
+      // Day/night sigmoid
+      const dayAmount = float(1.0)
+        .div(float(1.0).add(exp(float(-20).mul(cosSunToGeomNormal))))
+        .toVar();
+      const hemiAmount = dayAmount.toVar();
+
+      // Surface world position
+      const surfacePosW = positionWorld;
+
+      // Eclipse calculation
+      const distEarthToSun = length(uSunRel);
+      const moonToSurf = sub(uMoonPos, surfacePosW);
+      const distSurfToMoon = length(moonToSurf);
+
+      const cosSunMoon = dot(sunDir, normalize(moonToSurf));
+      const angSunMoon = acos(clamp(cosSunMoon, -1, 1));
+      const angSunDisk = asin(
+        clamp(uSunRadius.div(distEarthToSun), 0, 1)
+      );
+      const angMoonDisk = asin(
+        clamp(uMoonRadius.div(distSurfToMoon), 0, 1)
+      );
+
+      hemiAmount.mulAssign(eclipseFn(angSunMoon, angSunDisk, angMoonDisk));
+
+      // Normal mapping via TBN
+      const tN = texture(tex.normal, uvCoord).xyz.mul(2).sub(1);
+      // @ts-ignore – TSL node type inference limitation
+      const tW = normalize(tangentWorld) as ReturnType<typeof vec3>;
+      // @ts-ignore – TSL node type inference limitation
+      const bW = normalize(bitangentWorld) as ReturnType<typeof vec3>;
+      // TBN * tangentSpaceNormal
+      const nW = normalize(
+        tW.mul(tN.x).add(bW.mul(tN.y)).add(nGeom.mul(tN.z))
+      );
+
+      const cosSunToMappedNormal = dot(nW, sunDir);
+      dayAmount.mulAssign(
+        float(1.0).add(
+          uNormalPower.mul(cosSunToMappedNormal.sub(cosSunToGeomNormal))
+        )
+      );
+      dayAmount.mulAssign(hemiAmount);
+      dayAmount.assign(clamp(dayAmount, 0, 1));
+
+      // Clouds
+      const cloudMask = texture(tex.clouds, uvCoord).r
+        .mul(uCloudOpacity)
+        .toVar();
+
+      // Cloud shadow: approximate UV offset towards sun in tangent space
+      const delta = nGeom.sub(sunDir).mul(0.0005);
+      const deltaT = vec3(dot(tW, delta), dot(bW, delta), dot(nGeom, delta));
+      const cloudShadow = texture(
+        tex.clouds,
+        uvCoord.sub(deltaT.xy)
+      ).r;
+      dayAmount.mulAssign(float(1.0).sub(float(0.5).mul(cloudShadow)));
+
+      // Base day/night blend
+      const col = mix(nightCol, dayCol, dayAmount).toVar();
+
+      // Specular
+      const specMask = texture(tex.spec, uvCoord).r;
+      const reflectRatio = float(0.3).mul(specMask).add(0.1);
+      const refl = reflect(sunDir.negate(), nW);
+      const specPow = clamp(
+        dot(refl, normalize(cameraPosition.sub(surfacePosW))),
+        0,
+        1
+      );
+      col.addAssign(dayAmount.mul(pow(specPow, float(2))).mul(reflectRatio));
+
+      // Cloud overlay
+      const h = clamp(hemiAmount, 0, 1);
+      const cloudCol = vec3(
+        clamp(h, 0.2, 1.0),
+        clamp(pow(h, float(1.5)), 0.2, 1.0),
+        clamp(pow(h, float(2.0)), 0.2, 1.0)
+      );
+      col.assign(mix(col, cloudCol, clamp(cloudMask, 0, 1)));
+
+      return vec4(col, 1.0);
+    })();
+
+    return mat;
+  }, [tex, uSunRel, uEarthPos, uMoonPos, uMoonRadius, uSunRadius]);
+
+  // ---------- Atmosphere material ----------
   const atmosphereMat = useMemo(() => {
-    return new THREE.ShaderMaterial({
-      vertexShader: addonVertexShader,
-      fragmentShader: atmosphereFragmentShader,
-      uniforms: {
-        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
-        uColor: { value: new THREE.Vector3(0.2, 0.45, 1.0) },
-      },
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-  }, []);
+    const mat = new NodeMaterial();
+    mat.transparent = true;
+    mat.depthWrite = false;
+    mat.side = THREE.DoubleSide;
 
+    const uColor = vec3(0.2, 0.45, 1.0);
+
+    mat.fragmentNode = Fn(() => {
+      const sunDir = normalize(uSunRel);
+      const nW = normalize(normalWorld);
+      const nV = normalize(normalView);
+      const posV = normalize(positionView);
+
+      const cosSunToNormal = dot(nW, sunDir);
+      const dayMask = float(1.0).div(
+        float(1.0).add(exp(float(-7).mul(cosSunToNormal.add(0.1))))
+      );
+
+      const raw = float(3.0).mul(
+        dot(posV, nV).max(0)
+      );
+      const intensity = pow(raw, float(3.0));
+
+      return vec4(uColor, intensity).mul(dayMask);
+    })();
+
+    return mat;
+  }, [uSunRel]);
+
+  // ---------- Fresnel material ----------
   const fresnelMat = useMemo(() => {
-    return new THREE.ShaderMaterial({
-      vertexShader: addonVertexShader,
-      fragmentShader: fresnelFragmentShader,
-      uniforms: {
-        uSunRel: { value: new THREE.Vector3(0, 0, 1) },
-        uColor: { value: new THREE.Vector3(0.2, 0.45, 1.0) },
-      },
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-  }, []);
+    const mat = new NodeMaterial();
+    mat.transparent = true;
+    mat.blending = THREE.AdditiveBlending;
+    mat.depthWrite = false;
+    mat.side = THREE.DoubleSide;
+
+    const uColor = vec3(0.2, 0.45, 1.0);
+
+    mat.fragmentNode = Fn(() => {
+      const sunDir = normalize(uSunRel);
+      const nW = normalize(normalWorld);
+      const nV = normalize(normalView);
+
+      // Day mask
+      const cosSunToNormal = dot(nW, sunDir);
+      const dayMask = float(1.0).div(
+        float(1.0).add(exp(float(-7).mul(cosSunToNormal.add(0.1))))
+      );
+
+      // Fresnel
+      const fresnelTerm = float(1.0).add(dot(normalize(positionView), nV));
+      const fres = pow(fresnelTerm, float(2.0));
+
+      return vec4(uColor, 1.0).mul(fres).mul(dayMask);
+    })();
+
+    return mat;
+  }, [uSunRel]);
 
   useFrame(() => {
     relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
@@ -394,28 +383,17 @@ function Planet({
     sunRelative.copy(sunScaled).sub(earthScaled);
     moonRelative.copy(moonScaled);
 
-    earthMat.uniforms.uEarthPos.value.copy(earthScaled);
-    earthMat.uniforms.uSunRel.value.copy(sunRelative);
-    earthMat.uniforms.uMoonPos.value.copy(moonRelative);
-
-    atmosphereMat.uniforms.uSunRel.value.copy(sunRelative);
-    fresnelMat.uniforms.uSunRel.value.copy(sunRelative);
+    uEarthPos.value.copy(earthScaled);
+    uSunRel.value.copy(sunRelative);
+    uMoonPos.value.copy(moonRelative);
   });
 
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group rotation={PLANET_ROTATION}>
-        <Sphere args={[scaledRadius, 64, 64]} material={earthMat} />
-        <Sphere
-          args={[scaledRadius, 64, 64]}
-          material={atmosphereMat}
-          scale={1.03}
-        />
-        <Sphere
-          args={[scaledRadius, 64, 64]}
-          material={fresnelMat}
-          scale={1.002}
-        />
+        <mesh geometry={sphereGeo} material={earthMat} />
+        <mesh geometry={sphereGeo} material={atmosphereMat} scale={1.03} />
+        <mesh geometry={sphereGeo} material={fresnelMat} scale={1.002} />
       </group>
     </SimGroup>
   );

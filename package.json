@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "start": "next dev -H 0.0.0.0",
+    "dev": "next dev -H 0.0.0.0",
     "build": "next build",
     "serve": "next start",
     "lint": "next lint"
@@ -11,13 +12,11 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.4.2",
-    "@react-three/postprocessing": "^3.0.4",
     "@types/three": "^0.183.1",
     "@use-gesture/react": "^10.3.0",
     "@vercel/analytics": "^1.6.1",
     "jotai": "^2.16.0",
     "next": "^16.0.10",
-    "postprocessing": "^6.38.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-joystick-component": "^6.2.1",

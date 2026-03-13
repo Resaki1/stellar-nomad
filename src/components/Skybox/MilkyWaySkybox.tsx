@@ -1,37 +1,54 @@
 "use client";
 
 import { useTexture } from "@react-three/drei";
-import { useThree } from "@react-three/fiber";
-import { useEffect } from "react";
+import { useMemo } from "react";
 import * as THREE from "three";
 
 type Props = {
   url?: string;
 };
 
+/**
+ * Renders the star panorama as a large inverted sphere instead of scene.background.
+ * This avoids issues with the WebGPU renderer's internal background caching
+ * when using a cloned camera in a portal scene.
+ */
 export default function MilkyWaySkybox({
   url = "/assets/8k_stars.webp",
 }: Props) {
   const tex = useTexture(url);
-  const { scene } = useThree();
 
-  useEffect(() => {
-    // Correct color management for an LDR image
+  const [geometry, material] = useMemo(() => {
     tex.colorSpace = THREE.SRGBColorSpace;
-
-    // Treat as an equirectangular panorama
     tex.mapping = THREE.EquirectangularReflectionMapping;
-
-    // Optional: crisper stars (trade-offs: shimmering vs blur)
     tex.generateMipmaps = false;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    scene.backgroundIntensity = 2.0;
-
     tex.needsUpdate = true;
+
+    const geo = new THREE.SphereGeometry(1, 64, 32);
+    // Flip faces inward so the texture is visible from inside
+    geo.scale(-1, 1, 1);
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      side: THREE.FrontSide,
+      depthWrite: false,
+      toneMapped: false,
+    });
+
+    return [geo, mat];
   }, [tex]);
 
-  // Attach to *the current scene* (and since this component will live in the scaled portal,
-  // it will attach to scaledScene, not the default scene)
-  return <primitive attach="background" object={tex} />;
+  // Render at a large radius within the scaled camera's far plane.
+  // depthWrite=false ensures it never occludes other scaled objects.
+  return (
+    <mesh
+      geometry={geometry}
+      material={material}
+      scale={[1_000_000, 1_000_000, 1_000_000]}
+      frustumCulled={false}
+      renderOrder={-1000}
+    />
+  );
 }

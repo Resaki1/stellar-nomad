@@ -2,6 +2,22 @@
 
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { NodeMaterial } from "three/webgpu";
+import {
+  Fn,
+  uv,
+  normalize,
+  vec2,
+  vec3,
+  vec4,
+  float,
+  dot,
+  length,
+  smoothstep,
+  max,
+  Discard,
+  billboarding,
+} from "three/tsl";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 
 /**
@@ -9,59 +25,6 @@ import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
  * Unused slots are hidden via mesh.count.
  */
 const MAX_IMPOSTOR_INSTANCES = 4000;
-
-// ─── Shaders ─────────────────────────────────────────────────────────
-
-const IMPOSTOR_VS = /* glsl */ `
-varying vec2 vUv;
-varying float vShade;
-
-void main() {
-  vUv = uv;
-
-  // Instance world position (model matrix includes the SimGroup offset).
-  vec3 worldPos = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-
-  // Uniform scale encoded in the instance matrix.
-  float scale = length((modelMatrix * instanceMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
-
-  // Billboard: align the quad to the camera using view-matrix columns.
-  vec3 camRight = vec3(viewMatrix[0].x, viewMatrix[1].x, viewMatrix[2].x);
-  vec3 camUp    = vec3(viewMatrix[0].y, viewMatrix[1].y, viewMatrix[2].y);
-
-  vec3 billboardPos = worldPos
-    + camRight * position.x * scale
-    + camUp    * position.y * scale;
-
-  gl_Position = projectionMatrix * viewMatrix * vec4(billboardPos, 1.0);
-
-  // Simple directional shading (light from upper-right).
-  vec2 lightDir = normalize(vec2(0.5, 0.7));
-  vShade = 0.25 + 0.35 * max(0.0, dot(normalize(position.xy), lightDir));
-}
-`;
-
-const IMPOSTOR_FS = /* glsl */ `
-varying vec2 vUv;
-varying float vShade;
-
-void main() {
-  // Map UV 0..1 → -1..1 for circular disc test.
-  vec2 p = vUv * 2.0 - 1.0;
-  float dist = length(p);
-
-  if (dist > 1.0) discard;
-
-  // Soft edge.
-  float edge = smoothstep(1.0, 0.45, dist);
-  if (edge < 0.01) discard;
-
-  // Dark rocky grey to blend with space background.
-  vec3 color = vec3(0.04, 0.04, 0.04) * vShade;
-
-  gl_FragColor = vec4(color, 1.0);
-}
-`;
 
 // ─── Reusable temps ──────────────────────────────────────────────────
 
@@ -86,17 +49,41 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
 }: AsteroidImpostorsProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null!);
 
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: IMPOSTOR_VS,
-        fragmentShader: IMPOSTOR_FS,
-        side: THREE.DoubleSide,
-        depthWrite: true,
-        depthTest: true,
-      }),
-    []
-  );
+  const material = useMemo(() => {
+    const mat = new NodeMaterial();
+    mat.side = THREE.FrontSide;
+    mat.depthWrite = true;
+
+    // Billboard vertex: face the camera, instance matrix provides position + scale
+    mat.vertexNode = billboarding({ horizontal: true, vertical: true });
+
+    // Fragment: circular disc with simple shading
+    mat.fragmentNode = Fn(() => {
+      const uvCoord = uv();
+      // Map UV 0..1 → -1..1 for circular disc test
+      const p = uvCoord.mul(2).sub(1);
+      const dist = length(p);
+
+      // Discard outside circle
+      Discard(dist.greaterThan(1.0));
+
+      // Soft edge
+      const edge = smoothstep(float(1.0), float(0.45), dist);
+      Discard(edge.lessThan(0.01));
+
+      // Simple directional shading (light from upper-right)
+      const lightDir = normalize(vec2(0.5, 0.7));
+      const shade = float(0.25).add(
+        float(0.35).mul(max(float(0), dot(normalize(p), lightDir)))
+      );
+
+      // Dark rocky grey
+      const color = vec3(0.04, 0.04, 0.04).mul(shade);
+      return vec4(color, 1.0);
+    })();
+
+    return mat;
+  }, []);
 
   // PlaneGeometry spans -1..1 so the vertex shader knows quad extents.
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), []);
