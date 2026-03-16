@@ -225,7 +225,14 @@ const FieldLayer = memo(function FieldLayer({
       }
 
       // 3. Update distances for all wanted chunks.
+      // Prune stale distance entries first to prevent slow leak from
+      // keys that were wanted but never rendered.
       const distances = chunkDistancesKmRef.current;
+      distances.forEach((_, key) => {
+        if (!wanted.has(key) && !rendered.has(key)) {
+          distances.delete(key);
+        }
+      });
       for (let i = 0; i < msg.wantedKeys.length; i++) {
         distances.set(msg.wantedKeys[i], msg.wantedDists[i]);
       }
@@ -338,7 +345,6 @@ const FieldLayer = memo(function FieldLayer({
       epoch,
       streaming: {
         loadRadiusKm: streamingCfg.loadRadiusKm,
-        unloadRadiusKm: streamingCfg.unloadRadiusKm,
         maxActiveChunks: streamingCfg.maxActiveChunks,
         drawRadiusKm: renderCfg.drawRadiusKm,
       },
@@ -364,7 +370,6 @@ const FieldLayer = memo(function FieldLayer({
     models,
     streamingCfg.chunkSizeKm,
     streamingCfg.loadRadiusKm,
-    streamingCfg.unloadRadiusKm,
     streamingCfg.maxActiveChunks,
     renderCfg.drawRadiusKm,
     generationCfg.maxAsteroidsPerChunk,

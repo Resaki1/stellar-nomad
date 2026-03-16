@@ -20,13 +20,13 @@ export function normalizeSeed(seed: number | string): number {
   return toLcgSeed(h);
 }
 
-// Small 32-bit mixing function.
+// Murmur3-style 32-bit finalizer. Provides good avalanche for a single value.
 function mix32(n: number): number {
   n |= 0;
   n ^= n >>> 16;
-  n = Math.imul(n, 0x7feb352d);
-  n ^= n >>> 15;
-  n = Math.imul(n, 0x846ca68b);
+  n = Math.imul(n, 0x85ebca6b);
+  n ^= n >>> 13;
+  n = Math.imul(n, 0xc2b2ae35);
   n ^= n >>> 16;
   return n | 0;
 }
@@ -37,14 +37,25 @@ export function hashChunkSeed(
   cy: number,
   cz: number
 ): number {
-  let h = normalizeSeed(fieldSeed);
-  h = mix32(h ^ cx);
-  h = mix32(h ^ cy);
-  h = mix32(h ^ cz);
+  // Combine field seed with each coordinate using different large primes as
+  // salts so that identical coordinate values in different dimensions don't
+  // cancel each other out (as plain XOR would).
+  let h = normalizeSeed(fieldSeed) | 0;
+  h = Math.imul(h, 0x9e3779b9) + mix32((cx | 0) + 0x517cc1b7) | 0;
+  h = Math.imul(h, 0x9e3779b9) + mix32((cy | 0) + 0x6c078965) | 0;
+  h = Math.imul(h, 0x9e3779b9) + mix32((cz | 0) + 0x2545f491) | 0;
+  h = mix32(h);
   return toLcgSeed(h);
 }
 
 export function hashInstanceId(chunkSeed: number, localIndex: number): number {
-  const h = mix32((chunkSeed | 0) ^ (localIndex | 0));
+  // Combine chunkSeed and localIndex with independent mixing so low-bit-only
+  // differences in localIndex spread across the full 32-bit range.
+  // Step 1: Widen the localIndex contribution by multiplying by a large odd
+  // constant (related to the golden ratio / Weyl sequence), then add
+  // chunkSeed. Addition preserves more entropy than XOR for correlated inputs.
+  let h = (Math.imul(localIndex | 0, 0x9e3779b9) + (chunkSeed | 0)) | 0;
+  // Step 2: Full murmur3 finalizer to avalanche all bits.
+  h = mix32(h);
   return h >>> 0;
 }

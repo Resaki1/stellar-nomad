@@ -17,7 +17,6 @@ export type AsteroidChunkWorkerInitMsg = {
   /** Streaming config so the worker can run the full planning loop. */
   streaming: {
     loadRadiusKm: number;
-    unloadRadiusKm: number;
     maxActiveChunks: number;
     drawRadiusKm: number;
   };
@@ -85,8 +84,6 @@ export type AsteroidChunkWorkerStreamingResultMsg = {
   epoch: number;
   /** Keys the worker considers wanted (closest N chunks). */
   wantedKeys: string[];
-  /** Keys that should be unloaded (beyond unload radius). */
-  unloadKeys: string[];
   /** Keys that are beyond draw radius (should be removed from rendering). */
   removeRenderKeys: string[];
   /**

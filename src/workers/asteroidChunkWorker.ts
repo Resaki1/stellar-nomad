@@ -38,7 +38,6 @@ type FieldState = {
 
   // Streaming config (set at init)
   loadRadiusKm: number;
-  unloadRadiusKm: number;
   maxActiveChunks: number;
   drawRadiusKm: number;
   effectiveLoadRadiusKm: number;
@@ -212,41 +211,10 @@ function handleStreamingTick(
   pz: number,
   epoch: number,
 ): void {
-  const { chunkSizeKm, shape, maxActiveChunks, drawRadiusKm, unloadRadiusKm } = state;
+  const { chunkSizeKm, shape, maxActiveChunks, drawRadiusKm } = state;
   const loadR = state.effectiveLoadRadiusKm;
 
-  // 1. Determine unload keys (chunks beyond unload radius).
-  const unloadKeys: string[] = [];
-  state.generatedKeys.forEach((key) => {
-    // Parse chunk coord from key: "fieldId:cx,cy,cz"
-    const colonIdx = key.indexOf(":");
-    const coordStr = key.substring(colonIdx + 1);
-    const parts = coordStr.split(",");
-    const cx = parseInt(parts[0], 10);
-    const cy = parseInt(parts[1], 10);
-    const cz = parseInt(parts[2], 10);
-
-    const minX = cx * chunkSizeKm;
-    const minY = cy * chunkSizeKm;
-    const minZ = cz * chunkSizeKm;
-
-    const d = chunkDistKm(
-      px, py, pz,
-      minX, minY, minZ,
-      minX + chunkSizeKm, minY + chunkSizeKm, minZ + chunkSizeKm,
-    );
-
-    if (d > unloadRadiusKm) {
-      unloadKeys.push(key);
-    }
-  });
-
-  // Remove unloaded keys from tracking.
-  for (const key of unloadKeys) {
-    state.generatedKeys.delete(key);
-  }
-
-  // 2. Triple loop: find candidate chunks within effective load radius.
+  // 1. Triple loop: find candidate chunks within effective load radius.
   const [minCx, maxCx] = computeChunkRange(px, loadR, chunkSizeKm);
   const [minCy, maxCy] = computeChunkRange(py, loadR, chunkSizeKm);
   const [minCz, maxCz] = computeChunkRange(pz, loadR, chunkSizeKm);
@@ -281,7 +249,7 @@ function handleStreamingTick(
     }
   }
 
-  // 3. Sort by distance using index array.
+  // 2. Sort by distance using index array.
   if (candidateCount > _candIndices.length) {
     _candIndices = new Uint32Array(candidateCount);
   }
@@ -291,7 +259,7 @@ function handleStreamingTick(
 
   const capped = Math.min(candidateCount, maxActiveChunks);
 
-  // 4. Build wanted set + queue generation for missing chunks.
+  // 3. Build wanted set + queue generation for missing chunks.
   const wantedKeys: string[] = [];
   const wantedDists = new Float64Array(capped);
   const removeRenderKeys: string[] = [];
@@ -323,7 +291,7 @@ function handleStreamingTick(
     requestedThisTick++;
   }
 
-  // 5. Prune generatedKeys to the wanted set. Chunks that are no longer
+  // 4. Prune generatedKeys to the wanted set. Chunks that are no longer
   // wanted get "forgotten" so they can be re-generated if needed. This
   // keeps the worker in sync with the main thread (which also prunes its
   // runtime to wanted+rendered chunks).
@@ -341,13 +309,12 @@ function handleStreamingTick(
     for (const job of state.queue) state.queuedKeys.add(job.key);
   }
 
-  // 6. Send result back to main thread.
+  // 5. Send result back to main thread.
   const msg: AsteroidChunkWorkerWorkerToMainMessage = {
     type: "streamingResult",
     fieldId: state.fieldId,
     epoch,
     wantedKeys,
-    unloadKeys,
     removeRenderKeys,
     wantedDists,
   };
@@ -385,7 +352,6 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
         epoch: msg.epoch,
 
         loadRadiusKm: msg.streaming.loadRadiusKm,
-        unloadRadiusKm: msg.streaming.unloadRadiusKm,
         maxActiveChunks: msg.streaming.maxActiveChunks,
         drawRadiusKm: msg.streaming.drawRadiusKm,
         effectiveLoadRadiusKm,
