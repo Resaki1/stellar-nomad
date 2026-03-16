@@ -31,7 +31,7 @@ const Scene = () => {
     <Canvas
       style={{ background: "black" }}
       camera={{ near: 0.01, far: 20_000 }}
-      frameloop="always"
+      frameloop="demand"
       dpr={[0.5, 1.5]}
       gl={(defaultProps) => {
           const renderer = new THREE.WebGPURenderer({

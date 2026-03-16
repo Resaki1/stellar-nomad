@@ -35,11 +35,8 @@ import type {
 } from "@/workers/asteroidChunkWorkerProtocol";
 
 // ─── Tuning constants ───────────────────────────────────────────────
-const MAX_CHUNK_MOUNTS_PER_FRAME = 3; // near-tier React mounts per frame
+const MAX_CHUNK_OPS_PER_FRAME = 64; // chunk add operations per frame (cheap Map ops, no GPU work)
 const FAR_TIER_UPDATE_FRAMES = 6; // update far impostor list every N frames
-/** Max streaming-result items (unloads + distance updates + remove-renders)
- *  applied per frame to avoid processing an entire result in one go. */
-const MAX_STREAMING_OPS_PER_FRAME = 200;
 
 // Collision
 const COLLISION_INTERVAL_S = 0.1;
@@ -111,11 +108,10 @@ const FieldLayer = memo(function FieldLayer({
   const renderedMapRef = useRef<Map<string, AsteroidChunkData>>(new Map());
   const chunkDistancesKmRef = useRef<Map<string, number>>(new Map());
 
-  // Near tier (~17 elements): React renders AsteroidChunk components.
-  // Updated per frame (budgeted) so chunks pop in smoothly.
+  // Near tier (~17 chunks): passed to NearTierBatch (one InstancedMesh per model).
   const [nearChunks, setNearChunks] = useState<AsteroidChunkData[]>([]);
 
-  // Far tier (~4000 elements): passed to AsteroidImpostors (single draw call).
+  // Far tier (~4000 chunks): passed to AsteroidImpostors (single draw call).
   // Updated less frequently since distant dots don't need per-frame accuracy.
   const [farChunks, setFarChunks] = useState<AsteroidChunkData[]>([]);
 
@@ -134,11 +130,8 @@ const FieldLayer = memo(function FieldLayer({
   const wantedKeysRef = useRef<Set<string>>(new Set());
 
   // Async streaming: no fixed interval. We send a tick when the worker
-  // isn't busy and process results incrementally across frames.
-  const streamingPendingRef = useRef(false); // true = waiting for worker result
-  const pendingResultRef = useRef<AsteroidChunkWorkerStreamingResultMsg | null>(null);
-  /** Progress cursor into the pending result's arrays. */
-  const pendingResultCursorRef = useRef(0);
+  // isn't busy. Results are processed fully in the message handler (<1ms).
+  const streamingPendingRef = useRef(false);
 
   // Collision accumulator
   const collisionAccRef = useRef(0);
@@ -208,17 +201,66 @@ const FieldLayer = memo(function FieldLayer({
   }, [setShipHealth, store]);
 
   // ── Streaming result handler (called from worker message) ──────
-  // Stashes the result for incremental processing in the frame loop.
-  // The wanted Set is built eagerly so that incoming "generated" chunks
-  // aren't rejected while we're still draining distances.
+  // Processes the entire result synchronously. This is cheap (<1ms for
+  // ~4000 keys): just Map.set for distances + Set construction for wanted.
   const handleStreamingResult = useCallback(
     (msg: AsteroidChunkWorkerStreamingResultMsg) => {
-      wantedKeysRef.current = new Set(msg.wantedKeys);
-      pendingResultRef.current = msg;
-      pendingResultCursorRef.current = 0;
+      // 1. Build wanted set (used by "generated" handler to accept chunks).
+      const wanted = new Set(msg.wantedKeys);
+      wantedKeysRef.current = wanted;
+      const rendered = renderedMapRef.current;
+
+      // 2. Prune fieldRuntime: remove chunks that are neither wanted nor
+      // rendered. The worker also prunes its generatedKeys to the wanted
+      // set, so both sides stay in sync. This bounds runtime size to
+      // ~wanted + rendered ≈ 5000–10000 chunks.
+      const pruneKeys: string[] = [];
+      fieldRuntime.chunks.forEach((_, key) => {
+        if (!wanted.has(key) && !rendered.has(key)) {
+          pruneKeys.push(key);
+        }
+      });
+      for (let i = 0; i < pruneKeys.length; i++) {
+        fieldRuntime.removeChunk(pruneKeys[i]);
+      }
+
+      // 3. Update distances for all wanted chunks.
+      const distances = chunkDistancesKmRef.current;
+      for (let i = 0; i < msg.wantedKeys.length; i++) {
+        distances.set(msg.wantedKeys[i], msg.wantedDists[i]);
+      }
+
+      // 4. Queue rendered chunks beyond draw radius for removal.
+      for (let i = 0; i < msg.removeRenderKeys.length; i++) {
+        if (rendered.has(msg.removeRenderKeys[i])) {
+          removeQueueRef.current.push(msg.removeRenderKeys[i]);
+        }
+      }
+
+      // 5. Queue rendered chunks that aren't wanted at all for removal.
+      rendered.forEach((_, key) => {
+        if (!wanted.has(key)) {
+          removeQueueRef.current.push(key);
+        }
+      });
+
+      // 6. Rebuild addQueue: wanted chunks in runtime but not yet rendered.
+      // Replaces the entire queue (wantedKeys is already distance-sorted by
+      // the worker). This prevents unbounded queue growth.
+      const freshQueue: string[] = [];
+      for (let i = 0; i < msg.wantedKeys.length; i++) {
+        const key = msg.wantedKeys[i];
+        if (!rendered.has(key) && fieldRuntime.hasChunk(key)) {
+          freshQueue.push(key);
+        }
+      }
+      addQueueRef.current = freshQueue;
+
+      nearDirtyRef.current = true;
+      farDirtyRef.current = true;
       streamingPendingRef.current = false; // worker is free for next tick
     },
-    []
+    [fieldRuntime]
   );
 
   // ── Worker lifecycle ────────────────────────────────────────────
@@ -255,6 +297,10 @@ const FieldLayer = memo(function FieldLayer({
 
       if (msg.type === "generated") {
         const chunk = msg.chunk;
+
+        // Only accept chunks that are still wanted. The worker prunes its
+        // generatedKeys to match the wanted set each tick, so any rejected
+        // chunk here will be re-generated when it becomes wanted again.
         if (!wantedKeysRef.current.has(chunk.key)) return;
 
         fieldRuntime.upsertChunk(chunk);
@@ -306,7 +352,6 @@ const FieldLayer = memo(function FieldLayer({
 
       workerRef.current = null;
       wantedKeysRef.current.clear();
-      pendingResultRef.current = null;
       streamingPendingRef.current = false;
       fieldRuntime.clear();
     };
@@ -357,7 +402,6 @@ const FieldLayer = memo(function FieldLayer({
 
       epochRef.current += 1;
       wantedKeysRef.current.clear();
-      pendingResultRef.current = null;
       streamingPendingRef.current = false;
 
       const w = workerRef.current;
@@ -371,86 +415,31 @@ const FieldLayer = memo(function FieldLayer({
       return;
     }
 
-    // ── Phase A: Process pending streaming result + apply queued
-    //    chunk changes. Everything is budgeted per frame. ──
-
-    // A1: Incrementally drain the pending streaming result.
+    // ── Phase A: Apply queued chunk adds/removes. ──
+    // Streaming results are processed fully in the message handler.
+    // Removes are unbounded (trivially cheap Map.delete). Adds are
+    // budgeted to spread chunk lookups + distance computations.
     {
-      const result = pendingResultRef.current;
-      if (result) {
-        let ops = MAX_STREAMING_OPS_PER_FRAME;
-        const cursor = pendingResultCursorRef.current;
-        const totalKeys = result.wantedKeys.length;
-        const unloads = result.unloadKeys;
-        const removeRenders = result.removeRenderKeys;
-
-        // Step 1: Process unloads (small array, do all at once — typically 0-few).
-        if (cursor === 0) {
-          for (let i = 0; i < unloads.length && ops > 0; i++) {
-            fieldRuntime.removeChunk(unloads[i]);
-            ops--;
-          }
-
-          // Queue rendered chunks for removal.
-          for (let i = 0; i < removeRenders.length && ops > 0; i++) {
-            if (renderedMapRef.current.has(removeRenders[i])) {
-              removeQueueRef.current.push(removeRenders[i]);
-              ops--;
-            }
-          }
-        }
-
-        // Step 2: Apply wanted keys + distances in batches.
-        let i = cursor;
-        const distances = chunkDistancesKmRef.current;
-        while (i < totalKeys && ops > 0) {
-          distances.set(result.wantedKeys[i], result.wantedDists[i]);
-          ops--;
-          i++;
-        }
-        pendingResultCursorRef.current = i;
-
-        // Step 3: When fully processed, queue removes for rendered
-        // chunks no longer wanted (wanted set was built eagerly in the
-        // message handler so "generated" chunks aren't rejected).
-        if (i >= totalKeys) {
-          const wanted = wantedKeysRef.current;
-
-          renderedMapRef.current.forEach((_, key) => {
-            if (!wanted.has(key)) {
-              removeQueueRef.current.push(key);
-            }
-          });
-
-          nearDirtyRef.current = true;
-          farDirtyRef.current = true;
-          pendingResultRef.current = null;
-        }
-      }
-    }
-
-    // A2: Apply queued chunk adds/removes (budgeted).
-    {
-      let budget = MAX_CHUNK_MOUNTS_PER_FRAME;
       const rendered = renderedMapRef.current;
 
-      // Removes
+      // Removes — drain entire queue (Map.delete is O(1)).
       const removeQueue = removeQueueRef.current;
-      while (removeQueue.length > 0 && budget > 0) {
+      while (removeQueue.length > 0) {
         const key = removeQueue.pop()!;
         if (rendered.delete(key)) {
           chunkDistancesKmRef.current.delete(key);
           nearDirtyRef.current = true;
           farDirtyRef.current = true;
-          budget--;
         }
       }
 
-      // Adds
+      // Adds — budgeted. The addQueue is rebuilt each streaming result
+      // (distance-sorted, no duplicates, max ~5000 entries).
+      let addBudget = MAX_CHUNK_OPS_PER_FRAME;
       const addQueue = addQueueRef.current;
-      while (addQueue.length > 0 && budget > 0) {
-        const key = addQueue[0];
-        addQueue.shift();
+      let addIdx = 0;
+      while (addIdx < addQueue.length && addBudget > 0) {
+        const key = addQueue[addIdx++];
 
         if (rendered.has(key)) continue;
         const chunk = fieldRuntime.getChunk(key);
@@ -467,26 +456,28 @@ const FieldLayer = memo(function FieldLayer({
         chunkDistancesKmRef.current.set(key, d);
         nearDirtyRef.current = true;
         farDirtyRef.current = true;
-        budget--;
+        addBudget--;
       }
+      // Trim consumed entries. Queue is small (≤5000) so splice is cheap.
+      if (addIdx > 0) addQueueRef.current.splice(0, addIdx);
 
-      // Update near-tier React state (cheap — ~17 elements).
-      if (nearDirtyRef.current) {
+      // Update React state at reduced frequency to limit re-renders.
+      // Near tier: every 3 frames (~20Hz at 60fps) — enough for smooth pop-in.
+      // Far tier: every 6 frames (~10Hz) — distant dots don't need more.
+      farFrameCountRef.current++;
+      const frame = farFrameCountRef.current;
+      if (nearDirtyRef.current && frame % 3 === 0) {
         rebuildNearChunks();
       }
-
-      // Update far-tier React state at lower frequency.
-      farFrameCountRef.current++;
-      if (farDirtyRef.current && farFrameCountRef.current % FAR_TIER_UPDATE_FRAMES === 0) {
+      if (farDirtyRef.current && frame % FAR_TIER_UPDATE_FRAMES === 0) {
         rebuildFarChunks();
       }
     }
 
     // ── Phase B: Dispatch streaming tick to worker (async) ───────────
-    // No fixed interval. As soon as the worker finishes a result and we've
-    // processed it, fire the next tick immediately. The worker naturally
-    // throttles to its own computation speed.
-    if (!streamingPendingRef.current && !pendingResultRef.current) {
+    // No fixed interval. As soon as the worker finishes a result, fire the
+    // next tick immediately. The worker naturally throttles to its own speed.
+    if (!streamingPendingRef.current) {
       const w = workerRef.current;
       if (w) {
         streamingPendingRef.current = true;
@@ -614,16 +605,16 @@ const FieldLayer = memo(function FieldLayer({
 
   return (
     <SimGroup space="local" positionKm={field.anchorKm}>
-      {/* Near tier: batched InstancedMesh per model type (stable, no mount/unmount churn). */}
-      {nearChunks.length > 0 && (
-        <NearTierBatch
-          chunks={nearChunks}
-          modelRegistry={modelRegistry}
-        />
-      )}
+      {/* Near tier: batched InstancedMesh per model type (stable, no mount/unmount churn).
+         Always mounted so WebGPU shaders stay compiled even when chunks are temporarily empty. */}
+      <NearTierBatch
+        chunks={nearChunks}
+        modelRegistry={modelRegistry}
+      />
 
-      {/* Far tier: billboard impostors (single batched draw call). */}
-      {renderCfg.farRadiusKm > 0 && farChunks.length > 0 && (
+      {/* Far tier: billboard impostors (single batched draw call).
+         Config guard only — stays mounted when chunks temporarily empty. */}
+      {renderCfg.farRadiusKm > 0 && (
         <AsteroidImpostors
           chunks={farChunks}
           farRadiusKm={renderCfg.farRadiusKm}

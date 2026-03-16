@@ -323,11 +323,25 @@ function handleStreamingTick(
     requestedThisTick++;
   }
 
-  // Also mark any rendered chunks beyond draw radius that aren't in the
-  // wanted set (they'll be in generatedKeys but not in wantedKeys).
-  // The main thread will handle this via the wanted set comparison.
+  // 5. Prune generatedKeys to the wanted set. Chunks that are no longer
+  // wanted get "forgotten" so they can be re-generated if needed. This
+  // keeps the worker in sync with the main thread (which also prunes its
+  // runtime to wanted+rendered chunks).
+  const wantedSet = new Set(wantedKeys);
+  state.generatedKeys.forEach((key) => {
+    if (!wantedSet.has(key)) {
+      state.generatedKeys.delete(key);
+    }
+  });
 
-  // 5. Send result back to main thread.
+  // Also drop queued generation jobs for chunks no longer wanted.
+  if (state.queue.length > 0) {
+    state.queue = state.queue.filter((job) => wantedSet.has(job.key));
+    state.queuedKeys.clear();
+    for (const job of state.queue) state.queuedKeys.add(job.key);
+  }
+
+  // 6. Send result back to main thread.
   const msg: AsteroidChunkWorkerWorkerToMainMessage = {
     type: "streamingResult",
     fieldId: state.fieldId,

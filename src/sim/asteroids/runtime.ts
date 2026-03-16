@@ -116,6 +116,9 @@ export class AsteroidFieldRuntime {
     (chunkKey: string, chunk: AsteroidChunkData) => void
   >();
 
+  /** Throttle instanceId collision warnings in dev mode. */
+  private collisionCount = 0;
+
   onChunkUpdate(
     listener: (chunkKey: string, chunk: AsteroidChunkData) => void
   ): () => void {
@@ -543,13 +546,20 @@ export class AsteroidFieldRuntime {
         if (IS_DEV) {
           const prev = this.instanceIndex.get(id);
           if (prev !== undefined && prev !== packed) {
-            // eslint-disable-next-line no-console
-            console.warn("[AsteroidRuntime] instanceId collision detected", {
-              fieldId: this.fieldId,
-              instanceId: id,
-              prev,
-              next: packed,
-            });
+            this.collisionCount++;
+            if (this.collisionCount <= 5) {
+              // eslint-disable-next-line no-console
+              console.warn("[AsteroidRuntime] instanceId collision detected", {
+                fieldId: this.fieldId,
+                instanceId: id,
+                prev,
+                next: packed,
+                totalCollisions: this.collisionCount,
+              });
+            } else if (this.collisionCount === 6) {
+              // eslint-disable-next-line no-console
+              console.warn("[AsteroidRuntime] Suppressing further collision warnings.");
+            }
           }
         }
 
