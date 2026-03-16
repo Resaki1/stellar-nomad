@@ -26,7 +26,8 @@
 - Realistic scale/feel while staying fun.
 - Deep, engaging gameplay loop with meaningful progression and player choice.
 - UX is key: intuitive controls, clear feedback, and a polished presentation that draws players in.
-- Photoreal-ish visuals within browser performance constraints.
+- Photorealistic triple-A visuals.
+- Solid performance by optimizing rendering, simulation, and data streaming.
 - Clean, modular, maintainable code with strong TypeScript types.
 - Push modern web tech, but keep debuggability and stability.
 
@@ -82,6 +83,8 @@ Rules of thumb:
 ## R3F / three.js conventions
 
 ### Performance-first defaults
+- Follow existing patterns for performance.
+- Use optimization techniques just like top-tier game engines.
 - Avoid allocations in hot paths:
   - Don’t create new `Vector3/Quaternion/Color` each frame.
   - Reuse objects; allocate once and mutate.
