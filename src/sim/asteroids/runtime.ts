@@ -107,6 +107,28 @@ export class AsteroidFieldRuntime {
   private readonly modelSlotById = new Map<string, number>();
   private readonly modelIdBySlot: Array<string | undefined> = [];
 
+  /**
+   * Listeners notified when a chunk's data changes (instance destroyed, etc.).
+   * Used by AsteroidField to keep its rendered state in sync when external
+   * systems (e.g. MiningSystem) mutate chunks via destroyInstance().
+   */
+  private readonly chunkUpdateListeners = new Set<
+    (chunkKey: string, chunk: AsteroidChunkData) => void
+  >();
+
+  onChunkUpdate(
+    listener: (chunkKey: string, chunk: AsteroidChunkData) => void
+  ): () => void {
+    this.chunkUpdateListeners.add(listener);
+    return () => {
+      this.chunkUpdateListeners.delete(listener);
+    };
+  }
+
+  private notifyChunkUpdate(chunkKey: string, chunk: AsteroidChunkData): void {
+    this.chunkUpdateListeners.forEach((fn) => fn(chunkKey, chunk));
+  }
+
   constructor(fieldId: string, deltaStore?: AsteroidDeltaStore | null) {
     this.fieldId = fieldId;
     this.deltaStore = deltaStore ?? null;
@@ -150,7 +172,15 @@ export class AsteroidFieldRuntime {
       this.deltaStore.markDestroyed(this.fieldId, id);
     }
 
-    return this.removeInstance(instanceId);
+    const updatedChunk = this.removeInstance(instanceId);
+
+    // Notify listeners (e.g. AsteroidField) so rendering state stays in sync
+    // even when the caller is external (e.g. MiningSystem).
+    if (updatedChunk) {
+      this.notifyChunkUpdate(updatedChunk.key, updatedChunk);
+    }
+
+    return updatedChunk;
   }
 
   getChunk(chunkKey: string): AsteroidChunkData | undefined {

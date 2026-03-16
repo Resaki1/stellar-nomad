@@ -5,9 +5,13 @@
 
   "defaults": {
     "render": {
-      "nearRadiusKm": 16,
-      "farRadiusKm": 100,
+      "nearRadiusKm": 32,
+      "farRadiusKm": 600,
       "crossFadeKm": 0.2
+    },
+    "streaming": {
+      "chunkSizeKm": 20,
+      "maxActiveChunks": 5000
     }
   },
 

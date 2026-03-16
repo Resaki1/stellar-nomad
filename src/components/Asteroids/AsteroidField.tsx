@@ -5,7 +5,7 @@ import { useFrame } from "@react-three/fiber";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 
 import SimGroup from "@/components/space/SimGroup";
-import AsteroidChunk from "@/components/Asteroids/AsteroidChunk";
+import NearTierBatch from "@/components/Asteroids/NearTierBatch";
 import AsteroidImpostors from "@/components/Asteroids/AsteroidImpostors";
 
 import { systemConfigAtom } from "@/store/system";
@@ -29,33 +29,45 @@ import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { prepareFieldShape, distancePointToAabbKm } from "@/sim/asteroids/shapes";
 
-import type { AsteroidChunkWorkerWorkerToMainMessage } from "@/workers/asteroidChunkWorkerProtocol";
+import type {
+  AsteroidChunkWorkerWorkerToMainMessage,
+  AsteroidChunkWorkerStreamingResultMsg,
+} from "@/workers/asteroidChunkWorkerProtocol";
 
-const UPDATE_INTERVAL_S = 0.2; // streaming / culling updates
-const MAX_NEW_CHUNKS_PER_TICK = 16;
+// ─── Tuning constants ───────────────────────────────────────────────
+const MAX_CHUNK_MOUNTS_PER_FRAME = 3; // near-tier React mounts per frame
+const FAR_TIER_UPDATE_FRAMES = 6; // update far impostor list every N frames
+/** Max streaming-result items (unloads + distance updates + remove-renders)
+ *  applied per frame to avoid processing an entire result in one go. */
+const MAX_STREAMING_OPS_PER_FRAME = 200;
 
-// Collision logging is intentionally conservative to keep perf stable while you validate plumbing.
-const COLLISION_INTERVAL_S = 0.1; // 10 Hz collision checks
-const SHIP_COLLIDER_RADIUS_M = 60; // tune later; kept small to avoid spam
-const COLLISION_LOG_COOLDOWN_MS = 1000; // per asteroid id
+// Collision
+const COLLISION_INTERVAL_S = 0.1;
+const SHIP_COLLIDER_RADIUS_M = 60;
+const COLLISION_LOG_COOLDOWN_MS = 1000;
 const MAX_COLLISION_LOGS_PER_TICK = 3;
 
-function arraysEqual(a: string[], b: string[]) {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+// ─── Helpers ────────────────────────────────────────────────────────
+
+/** Inlined point-to-AABB distance for chunk distance checks on main thread. */
+function chunkDistKm(
+  px: number, py: number, pz: number,
+  minX: number, minY: number, minZ: number,
+  maxX: number, maxY: number, maxZ: number,
+): number {
+  let dx = 0;
+  if (px < minX) dx = minX - px;
+  else if (px > maxX) dx = px - maxX;
+  let dy = 0;
+  if (py < minY) dy = minY - py;
+  else if (py > maxY) dy = py - maxY;
+  let dz = 0;
+  if (pz < minZ) dz = minZ - pz;
+  else if (pz > maxZ) dz = pz - maxZ;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-function computeChunkRange(
-  pKm: number,
-  radiusKm: number,
-  chunkSizeKm: number
-): [number, number] {
-  const min = Math.floor((pKm - radiusKm) / chunkSizeKm);
-  const max = Math.floor((pKm + radiusKm) / chunkSizeKm);
-  return [min, max];
-}
+// ─── FieldLayer ─────────────────────────────────────────────────────
 
 type FieldLayerProps = {
   system: SystemConfig;
@@ -87,55 +99,102 @@ const FieldLayer = memo(function FieldLayer({
   );
 
   const models = useMemo(() => resolveFieldModels(system, field), [system, field]);
-
   const shape = useMemo(() => prepareFieldShape(field.shape), [field.shape]);
 
-  // Authoritative runtime for this field (chunks + instanceId -> location index).
   const fieldRuntime = useMemo(
     () => asteroidRuntime.getOrCreateFieldRuntime(field.id),
     [asteroidRuntime, field.id]
   );
 
-  // Rendering state is derived from the runtime’s loaded chunks.
-  const [renderedChunks, setRenderedChunks] = useState<AsteroidChunkData[]>([]);
-  const lastRenderedKeysRef = useRef<string[]>([]);
-  const lastRenderedChunksRef = useRef<AsteroidChunkData[]>([]);
-  // Distance from ship to each rendered chunk (km), updated each streaming tick.
+  // ── Rendering state ─────────────────────────────────────────────
+  // Source of truth: Map ref. Two React states derived for each LOD tier.
+  const renderedMapRef = useRef<Map<string, AsteroidChunkData>>(new Map());
   const chunkDistancesKmRef = useRef<Map<string, number>>(new Map());
+
+  // Near tier (~17 elements): React renders AsteroidChunk components.
+  // Updated per frame (budgeted) so chunks pop in smoothly.
+  const [nearChunks, setNearChunks] = useState<AsteroidChunkData[]>([]);
+
+  // Far tier (~4000 elements): passed to AsteroidImpostors (single draw call).
+  // Updated less frequently since distant dots don't need per-frame accuracy.
+  const [farChunks, setFarChunks] = useState<AsteroidChunkData[]>([]);
+
+  // Incremental add/remove queues for renderedMap.
+  const addQueueRef = useRef<string[]>([]);
+  const removeQueueRef = useRef<string[]>([]);
+
+  // Flags for deferred updates.
+  const nearDirtyRef = useRef(false);
+  const farDirtyRef = useRef(false);
+  const farFrameCountRef = useRef(0);
+
   // Worker lifecycle
   const workerRef = useRef<Worker | null>(null);
   const epochRef = useRef(0);
-  const inFlightRef = useRef<Set<string>>(new Set());
   const wantedKeysRef = useRef<Set<string>>(new Set());
 
-  // Tick accumulators
-  const updateAccRef = useRef(0);
+  // Async streaming: no fixed interval. We send a tick when the worker
+  // isn't busy and process results incrementally across frames.
+  const streamingPendingRef = useRef(false); // true = waiting for worker result
+  const pendingResultRef = useRef<AsteroidChunkWorkerStreamingResultMsg | null>(null);
+  /** Progress cursor into the pending result's arrays. */
+  const pendingResultCursorRef = useRef(0);
+
+  // Collision accumulator
   const collisionAccRef = useRef(0);
 
   // Collision log throttling
   const lastCollisionLogMsRef = useRef<Map<number, number>>(new Map());
 
+  // ── Helpers ─────────────────────────────────────────────────────
+
+  /** Rebuild nearChunks state from the renderedMap. Fast — only ~17 near-tier elements. */
+  const rebuildNearChunks = useCallback(() => {
+    const nearRadius = renderCfg.nearRadiusKm;
+    const chunks: AsteroidChunkData[] = [];
+    renderedMapRef.current.forEach((chunk, key) => {
+      const d = chunkDistancesKmRef.current.get(key) ?? Infinity;
+      if (d < nearRadius) chunks.push(chunk);
+    });
+    setNearChunks(chunks);
+    nearDirtyRef.current = false;
+  }, [renderCfg.nearRadiusKm]);
+
+  /** Rebuild farChunks state from the renderedMap. */
+  const rebuildFarChunks = useCallback(() => {
+    if (renderCfg.farRadiusKm <= 0) {
+      if (farChunks.length > 0) setFarChunks([]);
+      farDirtyRef.current = false;
+      return;
+    }
+    const farStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
+    const chunks: AsteroidChunkData[] = [];
+    renderedMapRef.current.forEach((chunk, key) => {
+      const d = chunkDistancesKmRef.current.get(key) ?? 0;
+      if (d >= farStart) chunks.push(chunk);
+    });
+    setFarChunks(chunks);
+    farDirtyRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderCfg.farRadiusKm, renderCfg.nearRadiusKm, renderCfg.crossFadeKm]);
+
+  // Listen for chunk mutations from ANY caller (MiningSystem, collisions, etc.).
+  // This keeps renderedMapRef in sync when external systems call destroyInstance().
+  useEffect(() => {
+    const unsubscribe = fieldRuntime.onChunkUpdate((chunkKey, updatedChunk) => {
+      if (renderedMapRef.current.has(chunkKey)) {
+        renderedMapRef.current.set(chunkKey, updatedChunk);
+        nearDirtyRef.current = true;
+        farDirtyRef.current = true;
+      }
+    });
+    return unsubscribe;
+  }, [fieldRuntime]);
+
+  // Collision helper: just delegates to the runtime (listener handles the rest).
   const removeAsteroidInstance = useCallback(
     (instanceId: number) => {
-      const updatedChunk = fieldRuntime.destroyInstance(instanceId);
-      if (!updatedChunk) return;
-
-      setRenderedChunks((prev) => {
-        let changed = false;
-
-        const next = prev.map((chunk) => {
-          if (chunk.key !== updatedChunk.key) return chunk;
-          changed = true;
-          return updatedChunk;
-        });
-
-        if (!changed) return prev;
-
-        // Nice-to-have: keep the ref in sync so the streaming tick doesn't do a redundant state update.
-        lastRenderedChunksRef.current = next;
-
-        return next;
-      });
+      fieldRuntime.destroyInstance(instanceId);
     },
     [fieldRuntime]
   );
@@ -143,25 +202,39 @@ const FieldLayer = memo(function FieldLayer({
   const applyShipCollisionDamage = useCallback(() => {
     const cfg = store.get(effectiveShipConfigAtom);
     const baseDamage = 10;
-    // collisionDamageMult reduces/increases damage per hit
-    // maxHealth scales the effective HP pool — implemented as damage reduction
     const effectiveDamage = baseDamage * cfg.collisionDamageMult / (cfg.maxHealth / 100);
     const damage = Math.max(1, Math.round(effectiveDamage));
     setShipHealth((prev) => Math.max(0, prev - damage));
   }, [setShipHealth, store]);
 
-  useEffect(() => {
-    // Reset runtime + render output on re-init.
-    fieldRuntime.clear();
-    lastRenderedKeysRef.current = [];
-    lastRenderedChunksRef.current = [];
-    setRenderedChunks([]);
+  // ── Streaming result handler (called from worker message) ──────
+  // Stashes the result for incremental processing in the frame loop.
+  // The wanted Set is built eagerly so that incoming "generated" chunks
+  // aren't rejected while we're still draining distances.
+  const handleStreamingResult = useCallback(
+    (msg: AsteroidChunkWorkerStreamingResultMsg) => {
+      wantedKeysRef.current = new Set(msg.wantedKeys);
+      pendingResultRef.current = msg;
+      pendingResultCursorRef.current = 0;
+      streamingPendingRef.current = false; // worker is free for next tick
+    },
+    []
+  );
 
-    // New epoch cancels stale results.
+  // ── Worker lifecycle ────────────────────────────────────────────
+
+  useEffect(() => {
+    fieldRuntime.clear();
+    renderedMapRef.current.clear();
+    chunkDistancesKmRef.current.clear();
+    addQueueRef.current.length = 0;
+    removeQueueRef.current.length = 0;
+    setNearChunks([]);
+    setFarChunks([]);
+
     epochRef.current += 1;
     const epoch = epochRef.current;
 
-    // Module worker is required (worker file contains ESM imports).
     const w = new Worker(
       new URL("../../workers/asteroidChunkWorker.ts", import.meta.url),
       { type: "module" }
@@ -177,21 +250,22 @@ const FieldLayer = memo(function FieldLayer({
         return;
       }
 
-      // msg.type === "generated"
       if (msg.fieldId !== field.id) return;
       if (msg.epoch !== epochRef.current) return;
 
-      const chunk = msg.chunk;
+      if (msg.type === "generated") {
+        const chunk = msg.chunk;
+        if (!wantedKeysRef.current.has(chunk.key)) return;
 
-      inFlightRef.current.delete(chunk.key);
-
-      // If the chunk is no longer wanted (player moved / cap changed), drop it.
-      if (!wantedKeysRef.current.has(chunk.key)) {
+        fieldRuntime.upsertChunk(chunk);
+        addQueueRef.current.push(chunk.key);
         return;
       }
 
-      // Authoritatively store chunk and build instanceId -> location index.
-      fieldRuntime.upsertChunk(chunk);
+      if (msg.type === "streamingResult") {
+        handleStreamingResult(msg);
+        return;
+      }
     };
 
     const onError = (ev: ErrorEvent) => {
@@ -208,7 +282,6 @@ const FieldLayer = memo(function FieldLayer({
     w.addEventListener("error", onError);
     w.addEventListener("messageerror", onMessageError);
 
-    // IMPORTANT: match asteroidChunkWorkerProtocol.ts exactly.
     w.postMessage({
       type: "init",
       fieldId: field.id,
@@ -217,6 +290,12 @@ const FieldLayer = memo(function FieldLayer({
       chunkSizeKm: streamingCfg.chunkSizeKm,
       maxAsteroidsPerChunk: generationCfg.maxAsteroidsPerChunk,
       epoch,
+      streaming: {
+        loadRadiusKm: streamingCfg.loadRadiusKm,
+        unloadRadiusKm: streamingCfg.unloadRadiusKm,
+        maxActiveChunks: streamingCfg.maxActiveChunks,
+        drawRadiusKm: renderCfg.drawRadiusKm,
+      },
     });
 
     return () => {
@@ -226,57 +305,60 @@ const FieldLayer = memo(function FieldLayer({
       w.terminate();
 
       workerRef.current = null;
-      inFlightRef.current.clear();
       wantedKeysRef.current.clear();
+      pendingResultRef.current = null;
+      streamingPendingRef.current = false;
       fieldRuntime.clear();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     field,
     field.id,
     fieldRuntime,
+    handleStreamingResult,
     models,
     streamingCfg.chunkSizeKm,
+    streamingCfg.loadRadiusKm,
+    streamingCfg.unloadRadiusKm,
+    streamingCfg.maxActiveChunks,
+    renderCfg.drawRadiusKm,
     generationCfg.maxAsteroidsPerChunk,
   ]);
 
   useEffect(() => {
-    // Cleanup field runtime when the layer unmounts.
-    // Note: We intentionally do NOT remove the field runtime here because:
-    // 1. React Strict Mode causes mount/unmount/remount cycles
-    // 2. The field runtime is shared and may be accessed by other components (like MiningSystem)
-    // 3. The runtime will be cleared and recreated if the field config changes
     return () => {
-      // Only clear the chunks, don't remove the field from the system runtime
       fieldRuntime.clear();
     };
   }, [asteroidRuntime, field.id, fieldRuntime]);
 
+  // ── Frame loop ──────────────────────────────────────────────────
+
   useFrame((_, delta) => {
-    // Always advance both accumulators.
-    updateAccRef.current += delta;
     collisionAccRef.current += delta;
 
     const ship = worldOrigin.shipPosKm;
-
-    // Ship in field-local KM coordinates (relative to field anchor).
     const px = ship.x - field.anchorKm[0];
     const py = ship.y - field.anchorKm[1];
     const pz = ship.z - field.anchorKm[2];
 
-    // If far away, hard-clear and cancel.
+    // If far away, hard-clear.
     const distToFieldKm = shape.distanceToKm(px, py, pz);
     if (distToFieldKm > streamingCfg.unloadRadiusKm) {
       if (fieldRuntime.chunks.size > 0) fieldRuntime.clear();
 
-      if (lastRenderedKeysRef.current.length > 0) {
-        lastRenderedKeysRef.current = [];
-        lastRenderedChunksRef.current = [];
-        setRenderedChunks([]);
+      if (renderedMapRef.current.size > 0) {
+        renderedMapRef.current.clear();
+        chunkDistancesKmRef.current.clear();
+        addQueueRef.current.length = 0;
+        removeQueueRef.current.length = 0;
+        setNearChunks([]);
+        setFarChunks([]);
       }
 
       epochRef.current += 1;
-      inFlightRef.current.clear();
       wantedKeysRef.current.clear();
+      pendingResultRef.current = null;
+      streamingPendingRef.current = false;
 
       const w = workerRef.current;
       if (w) {
@@ -286,148 +368,140 @@ const FieldLayer = memo(function FieldLayer({
           epoch: epochRef.current,
         });
       }
-
       return;
     }
 
-    // Streaming / culling updates at 5 Hz.
-    if (updateAccRef.current >= UPDATE_INTERVAL_S) {
-      updateAccRef.current = 0;
+    // ── Phase A: Process pending streaming result + apply queued
+    //    chunk changes. Everything is budgeted per frame. ──
 
-      // Unload chunks beyond unload radius (must go through runtime to keep index correct).
-      fieldRuntime.chunks.forEach((chunk, key) => {
-        const d = distancePointToAabbKm(
-          px,
-          py,
-          pz,
-          chunk.aabbMinKm[0],
-          chunk.aabbMinKm[1],
-          chunk.aabbMinKm[2],
-          chunk.aabbMaxKm[0],
-          chunk.aabbMaxKm[1],
-          chunk.aabbMaxKm[2]
-        );
+    // A1: Incrementally drain the pending streaming result.
+    {
+      const result = pendingResultRef.current;
+      if (result) {
+        let ops = MAX_STREAMING_OPS_PER_FRAME;
+        const cursor = pendingResultCursorRef.current;
+        const totalKeys = result.wantedKeys.length;
+        const unloads = result.unloadKeys;
+        const removeRenders = result.removeRenderKeys;
 
-        if (d > streamingCfg.unloadRadiusKm) {
-          fieldRuntime.removeChunk(key);
-          inFlightRef.current.delete(key);
-        }
-      });
+        // Step 1: Process unloads (small array, do all at once — typically 0-few).
+        if (cursor === 0) {
+          for (let i = 0; i < unloads.length && ops > 0; i++) {
+            fieldRuntime.removeChunk(unloads[i]);
+            ops--;
+          }
 
-      // Determine missing chunks within load radius.
-      const chunkSizeKm = streamingCfg.chunkSizeKm;
-
-      const [minCx, maxCx] = computeChunkRange(px, streamingCfg.loadRadiusKm, chunkSizeKm);
-      const [minCy, maxCy] = computeChunkRange(py, streamingCfg.loadRadiusKm, chunkSizeKm);
-      const [minCz, maxCz] = computeChunkRange(pz, streamingCfg.loadRadiusKm, chunkSizeKm);
-
-      const candidates: Array<{ coord: ChunkCoord; key: string; dist: number }> = [];
-
-      for (let cx = minCx; cx <= maxCx; cx++) {
-        const minX = cx * chunkSizeKm;
-        const maxX = minX + chunkSizeKm;
-
-        for (let cy = minCy; cy <= maxCy; cy++) {
-          const minY = cy * chunkSizeKm;
-          const maxY = minY + chunkSizeKm;
-
-          for (let cz = minCz; cz <= maxCz; cz++) {
-            const minZ = cz * chunkSizeKm;
-            const maxZ = minZ + chunkSizeKm;
-
-            if (!shape.intersectsAabbKm(minX, minY, minZ, maxX, maxY, maxZ)) continue;
-
-            const dist = distancePointToAabbKm(
-              px,
-              py,
-              pz,
-              minX,
-              minY,
-              minZ,
-              maxX,
-              maxY,
-              maxZ
-            );
-            if (dist > streamingCfg.loadRadiusKm) continue;
-
-            const coord: ChunkCoord = { x: cx, y: cy, z: cz };
-            const key = makeChunkKey(field.id, coord);
-            candidates.push({ coord, key, dist });
+          // Queue rendered chunks for removal.
+          for (let i = 0; i < removeRenders.length && ops > 0; i++) {
+            if (renderedMapRef.current.has(removeRenders[i])) {
+              removeQueueRef.current.push(removeRenders[i]);
+              ops--;
+            }
           }
         }
-      }
 
-      candidates.sort((a, b) => a.dist - b.dist);
-      const capped = candidates.slice(0, streamingCfg.maxActiveChunks);
-
-      // Update wanted set for accepting/ignoring worker results.
-      const wanted = new Set<string>();
-      for (let i = 0; i < capped.length; i++) wanted.add(capped[i].key);
-      wantedKeysRef.current = wanted;
-
-      // Request missing chunks (bounded).
-      const w = workerRef.current;
-      const epoch = epochRef.current;
-      let requestedThisTick = 0;
-
-      for (let i = 0; i < capped.length; i++) {
-        const { coord, key } = capped[i];
-
-        if (fieldRuntime.hasChunk(key)) continue;
-        if (inFlightRef.current.has(key)) continue;
-        if (requestedThisTick >= MAX_NEW_CHUNKS_PER_TICK) break;
-
-        if (w) {
-          inFlightRef.current.add(key);
-          w.postMessage({ type: "generate", fieldId: field.id, coord, epoch });
-          requestedThisTick++;
+        // Step 2: Apply wanted keys + distances in batches.
+        let i = cursor;
+        const distances = chunkDistancesKmRef.current;
+        while (i < totalKeys && ops > 0) {
+          distances.set(result.wantedKeys[i], result.wantedDists[i]);
+          ops--;
+          i++;
         }
-      }
+        pendingResultCursorRef.current = i;
 
-      // (streaming tick runs silently; heartbeat useEffect reports status)
+        // Step 3: When fully processed, queue removes for rendered
+        // chunks no longer wanted (wanted set was built eagerly in the
+        // message handler so "generated" chunks aren't rejected).
+        if (i >= totalKeys) {
+          const wanted = wantedKeysRef.current;
 
-      // Determine which chunks should be rendered (within draw radius).
-      const nextChunks: AsteroidChunkData[] = [];
-      const nextDistances = new Map<string, number>();
-      fieldRuntime.chunks.forEach((chunk) => {
-        const d = distancePointToAabbKm(
-          px,
-          py,
-          pz,
-          chunk.aabbMinKm[0],
-          chunk.aabbMinKm[1],
-          chunk.aabbMinKm[2],
-          chunk.aabbMaxKm[0],
-          chunk.aabbMaxKm[1],
-          chunk.aabbMaxKm[2]
-        );
-        if (d > renderCfg.drawRadiusKm) return;
-        nextChunks.push(chunk);
-        nextDistances.set(chunk.key, d);
-      });
+          renderedMapRef.current.forEach((_, key) => {
+            if (!wanted.has(key)) {
+              removeQueueRef.current.push(key);
+            }
+          });
 
-      nextChunks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-
-      const nextKeys = nextChunks.map((c) => c.key);
-      const keysChanged = !arraysEqual(nextKeys, lastRenderedKeysRef.current);
-
-      const chunksChanged =
-        !keysChanged &&
-        (nextChunks.length !== lastRenderedChunksRef.current.length ||
-          nextChunks.some((chunk, idx) => chunk !== lastRenderedChunksRef.current[idx]));
-
-      if (keysChanged || chunksChanged) {
-        lastRenderedKeysRef.current = nextKeys;
-        lastRenderedChunksRef.current = nextChunks;
-        chunkDistancesKmRef.current = nextDistances;
-        setRenderedChunks(nextChunks);
-      } else {
-        // Even if chunks haven't changed, update distances for smooth fade
-        chunkDistancesKmRef.current = nextDistances;
+          nearDirtyRef.current = true;
+          farDirtyRef.current = true;
+          pendingResultRef.current = null;
+        }
       }
     }
 
-    // Collision checks at 10 Hz (simple sphere–sphere, logs only).
+    // A2: Apply queued chunk adds/removes (budgeted).
+    {
+      let budget = MAX_CHUNK_MOUNTS_PER_FRAME;
+      const rendered = renderedMapRef.current;
+
+      // Removes
+      const removeQueue = removeQueueRef.current;
+      while (removeQueue.length > 0 && budget > 0) {
+        const key = removeQueue.pop()!;
+        if (rendered.delete(key)) {
+          chunkDistancesKmRef.current.delete(key);
+          nearDirtyRef.current = true;
+          farDirtyRef.current = true;
+          budget--;
+        }
+      }
+
+      // Adds
+      const addQueue = addQueueRef.current;
+      while (addQueue.length > 0 && budget > 0) {
+        const key = addQueue[0];
+        addQueue.shift();
+
+        if (rendered.has(key)) continue;
+        const chunk = fieldRuntime.getChunk(key);
+        if (!chunk) continue;
+
+        const d = chunkDistKm(
+          px, py, pz,
+          chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
+          chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
+        );
+        if (d > renderCfg.drawRadiusKm) continue;
+
+        rendered.set(key, chunk);
+        chunkDistancesKmRef.current.set(key, d);
+        nearDirtyRef.current = true;
+        farDirtyRef.current = true;
+        budget--;
+      }
+
+      // Update near-tier React state (cheap — ~17 elements).
+      if (nearDirtyRef.current) {
+        rebuildNearChunks();
+      }
+
+      // Update far-tier React state at lower frequency.
+      farFrameCountRef.current++;
+      if (farDirtyRef.current && farFrameCountRef.current % FAR_TIER_UPDATE_FRAMES === 0) {
+        rebuildFarChunks();
+      }
+    }
+
+    // ── Phase B: Dispatch streaming tick to worker (async) ───────────
+    // No fixed interval. As soon as the worker finishes a result and we've
+    // processed it, fire the next tick immediately. The worker naturally
+    // throttles to its own computation speed.
+    if (!streamingPendingRef.current && !pendingResultRef.current) {
+      const w = workerRef.current;
+      if (w) {
+        streamingPendingRef.current = true;
+        w.postMessage({
+          type: "streamingTick",
+          fieldId: field.id,
+          epoch: epochRef.current,
+          px,
+          py,
+          pz,
+        });
+      }
+    }
+
+    // ── Phase C: Collision checks ───────────────────────────────────
     if (collisionAccRef.current >= COLLISION_INTERVAL_S) {
       collisionAccRef.current = 0;
 
@@ -435,20 +509,16 @@ const FieldLayer = memo(function FieldLayer({
       const shipRadiusKm = shipRadiusM / 1000;
       const chunkSizeKm = streamingCfg.chunkSizeKm;
 
-      // Only check the chunk the ship is in and its neighbors (3x3x3) for performance.
       const shipCx = Math.floor(px / chunkSizeKm);
       const shipCy = Math.floor(py / chunkSizeKm);
       const shipCz = Math.floor(pz / chunkSizeKm);
 
       const nowMs = performance.now();
       const lastLog = lastCollisionLogMsRef.current;
-
-      // Avoid unbounded growth in long sessions.
       if (lastLog.size > 20_000) lastLog.clear();
 
       let logsThisTick = 0;
 
-      // Iterate 27 chunks.
       for (let ox = -1; ox <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; ox++) {
         for (let oy = -1; oy <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; oy++) {
           for (let oz = -1; oz <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; oz++) {
@@ -458,31 +528,21 @@ const FieldLayer = memo(function FieldLayer({
             const chunk = fieldRuntime.getChunk(key);
             if (!chunk) continue;
 
-            // Chunk-level reject using AABB distance.
             const aabbDistKm = distancePointToAabbKm(
-              px,
-              py,
-              pz,
-              chunk.aabbMinKm[0],
-              chunk.aabbMinKm[1],
-              chunk.aabbMinKm[2],
-              chunk.aabbMaxKm[0],
-              chunk.aabbMaxKm[1],
-              chunk.aabbMaxKm[2]
+              px, py, pz,
+              chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
+              chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
             );
 
             const chunkInflationKm = shipRadiusKm + chunk.maxRadiusM / 1000;
             if (aabbDistKm > chunkInflationKm) continue;
 
-            // Ship in chunk-local meters.
             const sxM = (px - chunk.originKm[0]) * 1000;
             const syM = (py - chunk.originKm[1]) * 1000;
             const szM = (pz - chunk.originKm[2]) * 1000;
 
             const byModel = chunk.instancesByModel;
 
-            // Iterate models and instances.
-            // Note: Object.keys allocates; use for..in to avoid per-tick allocations.
             for (const modelId in byModel) {
               const inst = byModel[modelId];
               const positions = inst.positionsM;
@@ -492,27 +552,19 @@ const FieldLayer = memo(function FieldLayer({
 
               for (let i = 0; i < count; i++) {
                 const pIndex = i * 3;
-
                 const dx = positions[pIndex] - sxM;
                 const dy = positions[pIndex + 1] - syM;
                 const dz = positions[pIndex + 2] - szM;
 
                 const r = radii[i] + shipRadiusM;
-                const r2 = r * r;
-
                 const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > r2) continue;
+                if (d2 > r * r) continue;
 
                 const instanceId = ids[i] >>> 0;
-
                 const prevMs = lastLog.get(instanceId);
-                if (prevMs !== undefined && nowMs - prevMs < COLLISION_LOG_COOLDOWN_MS) {
-                  continue;
-                }
+                if (prevMs !== undefined && nowMs - prevMs < COLLISION_LOG_COOLDOWN_MS) continue;
                 lastLog.set(instanceId, nowMs);
 
-                // Compute asteroid position in local render-space meters
-                // (for VFX spawning — relative to world origin, not chunk)
                 const chunkOriginLocalX =
                   (field.anchorKm[0] + chunk.originKm[0] - worldOrigin.worldOriginKm.x) * 1000;
                 const chunkOriginLocalY =
@@ -524,12 +576,10 @@ const FieldLayer = memo(function FieldLayer({
                 const asteroidLocalY = chunkOriginLocalY + positions[pIndex + 1];
                 const asteroidLocalZ = chunkOriginLocalZ + positions[pIndex + 2];
 
-                // Ship position in local render-space meters
                 const shipLocalX = (ship.x - worldOrigin.worldOriginKm.x) * 1000;
                 const shipLocalY = (ship.y - worldOrigin.worldOriginKm.y) * 1000;
                 const shipLocalZ = (ship.z - worldOrigin.worldOriginKm.z) * 1000;
 
-                // Impact direction: from asteroid center toward ship (normalized)
                 const idX = shipLocalX - asteroidLocalX;
                 const idY = shipLocalY - asteroidLocalY;
                 const idZ = shipLocalZ - asteroidLocalZ;
@@ -552,7 +602,6 @@ const FieldLayer = memo(function FieldLayer({
                 logsThisTick++;
                 if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;
               }
-
               if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;
             }
           }
@@ -561,63 +610,33 @@ const FieldLayer = memo(function FieldLayer({
     }
   });
 
-  // ── LOD tier classification ─────────────────────────────────────────
-
-  // Far tier: chunks beyond the near-geometry cutoff, rendered as billboards.
-  const farChunks = useMemo(() => {
-    if (renderCfg.farRadiusKm <= 0) return [];
-    // Include cross-fade zone so impostors back the dissolving near meshes.
-    const farStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
-    return renderedChunks.filter((chunk) => {
-      const d = chunkDistancesKmRef.current.get(chunk.key) ?? 0;
-      return d >= farStart;
-    });
-  }, [renderedChunks, renderCfg.farRadiusKm, renderCfg.nearRadiusKm, renderCfg.crossFadeKm]);
-
-  // Near-tier opacity: full at inner range, alphaHash-fading at boundary.
-  const computeNearOpacity = useCallback(
-    (chunkKey: string): number => {
-      const dist = chunkDistancesKmRef.current.get(chunkKey);
-      if (dist === undefined) return 1;
-
-      if (renderCfg.crossFadeKm > 0) {
-        const fadeStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
-        if (dist <= fadeStart) return 1;
-        if (dist >= renderCfg.nearRadiusKm) return 0;
-        return 1 - (dist - fadeStart) / renderCfg.crossFadeKm;
-      }
-
-      // No cross-fade: hard cutoff at nearRadius.
-      return dist < renderCfg.nearRadiusKm ? 1 : 0;
-    },
-    [renderCfg.nearRadiusKm, renderCfg.crossFadeKm]
-  );
+  // ── Render ──────────────────────────────────────────────────────
 
   return (
     <SimGroup space="local" positionKm={field.anchorKm}>
-      {/* Near tier: full-geometry instanced meshes */}
-      {renderedChunks.map((chunk) => {
-        const opacity = computeNearOpacity(chunk.key);
-        if (opacity <= 0) return null;
-        return (
-          <AsteroidChunk
-            key={chunk.key}
-            chunk={chunk}
-            modelRegistry={modelRegistry}
-            fadeOpacity={opacity}
-          />
-        );
-      })}
+      {/* Near tier: batched InstancedMesh per model type (stable, no mount/unmount churn). */}
+      {nearChunks.length > 0 && (
+        <NearTierBatch
+          chunks={nearChunks}
+          modelRegistry={modelRegistry}
+        />
+      )}
 
-      {/* Far tier: billboard impostors (single batched draw call) */}
+      {/* Far tier: billboard impostors (single batched draw call). */}
       {renderCfg.farRadiusKm > 0 && farChunks.length > 0 && (
-        <AsteroidImpostors chunks={farChunks} />
+        <AsteroidImpostors
+          chunks={farChunks}
+          farRadiusKm={renderCfg.farRadiusKm}
+          fadeOutKm={renderCfg.crossFadeKm}
+        />
       )}
     </SimGroup>
   );
 });
 
 FieldLayer.displayName = "FieldLayer";
+
+// ─── AsteroidField ──────────────────────────────────────────────────
 
 function AsteroidField() {
   const system = useAtomValue(systemConfigAtom);
