@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { NodeMaterial } from "three/webgpu";
@@ -42,8 +42,10 @@ const _sunDir = new THREE.Vector3();
 // ─── Component ───────────────────────────────────────────────────────
 
 type AsteroidImpostorsProps = {
-  /** Chunks to render as billboards (already filtered to far tier). */
-  chunks: AsteroidChunkData[];
+  renderedMapRef: { readonly current: Map<string, AsteroidChunkData> };
+  chunkDistancesRef: { readonly current: Map<string, number> };
+  renderedGenRef: { readonly current: number };
+  nearRadiusKm: number;
   /** Far-tier draw radius in km — impostors fade out approaching this. */
   farRadiusKm: number;
   /** Width of the fade-out zone at the far boundary (km). */
@@ -57,7 +59,10 @@ type AsteroidImpostorsProps = {
  * Used for the far LOD tier where full geometry is too expensive.
  */
 const AsteroidImpostors = memo(function AsteroidImpostors({
-  chunks,
+  renderedMapRef,
+  chunkDistancesRef,
+  renderedGenRef,
+  nearRadiusKm,
   farRadiusKm,
   fadeOutKm,
 }: AsteroidImpostorsProps) {
@@ -97,7 +102,7 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     // Instanced attributes are vertex-only in WebGPU. Any value the
     // fragment shader needs must be forwarded as a varying.
     const aCenter = attribute("aCenter", "vec3");
-    const aScale = attribute("aScale", "float");
+    const aScale = float(attribute("aScale", "float"));
 
     // Distance from field origin → fragment needs it for the fade.
     const vCenterDist = length(aCenter).toVarying("v_centerDist");
@@ -147,8 +152,8 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
       const sunDot = max(float(0), dot(pseudoNormal, uSunDir));
       const shade = float(0.15).add(float(0.45).mul(sunDot));
 
-      // Dark rocky grey
-      const color = vec3(0.04, 0.04, 0.04).mul(shade);
+      // rocky grey
+      const color = vec3(0.2, 0.2, 0.2).mul(shade);
 
       // Distance fade via alphaHash: opacity ramps 1→0 over the fade zone.
       // vCenterDist is a varying computed in the vertex stage from the
@@ -164,8 +169,17 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uSunDir, uFadeStart, uFadeEnd]);
 
-  // Update sun direction + fade uniforms each frame.
+  // Track generation to know when to rebuild buffer.
+  const prevGenRef = useRef(-1);
+  const frameCountRef = useRef(0);
+
+  // Single useFrame: updates uniforms every frame, rebuilds buffer on gen change.
   useFrame(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    frameCountRef.current++;
+
     // Sun direction in field-local space: sun position minus field anchor
     // (the SimGroup puts us at the field anchor). The impostor positions
     // are in field-local meters, but for a directional light the position
@@ -182,17 +196,24 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     const fadeStart = Math.max(0, fadeEnd - fadeOutKm * 1000);
     uFadeStart.value = fadeStart;
     uFadeEnd.value = fadeEnd;
-  });
 
-  // Fill instance buffers when chunks change.
-  useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
+    // Rebuild buffer only when generation changes, throttled to every 6 frames.
+    // This limits the 1.3MB impostor buffer upload to ~20Hz at 120fps.
+    // Uniform updates (sun dir, fade) still run every frame.
+    const gen = renderedGenRef.current;
+    if (gen === prevGenRef.current || frameCountRef.current % 6 !== 0) return;
+    prevGenRef.current = gen;
 
     mesh.visible = false;
     let idx = 0;
 
-    for (const chunk of chunks) {
+    const farStart = nearRadiusKm - fadeOutKm;
+    const distances = chunkDistancesRef.current;
+
+    renderedMapRef.current.forEach((chunk, key) => {
+      const d = distances.get(key) ?? 0;
+      if (d < farStart) return;
+
       const ox = chunk.originKm[0] * 1000;
       const oy = chunk.originKm[1] * 1000;
       const oz = chunk.originKm[2] * 1000;
@@ -216,13 +237,13 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
           idx++;
         }
       }
-    }
+    });
 
     mesh.count = idx;
     interleavedBuffer.needsUpdate = true;
     mesh.frustumCulled = false;
     mesh.visible = idx > 0;
-  }, [chunks, interleavedBuffer, interleavedArray]);
+  });
 
   return (
     <instancedMesh

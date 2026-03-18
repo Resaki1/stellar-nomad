@@ -1,12 +1,15 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 
 import SimGroup from "@/components/space/SimGroup";
 import NearTierBatch from "@/components/Asteroids/NearTierBatch";
+import type { NearTierAllocators } from "@/components/Asteroids/NearTierBatch";
 import AsteroidImpostors from "@/components/Asteroids/AsteroidImpostors";
+import { GpuSlotAllocator } from "@/components/Asteroids/GpuSlotAllocator";
+import { MAX_NEAR_INSTANCES } from "@/components/Asteroids/NearTierBatch";
 
 import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
@@ -36,7 +39,6 @@ import type {
 
 // ─── Tuning constants ───────────────────────────────────────────────
 const MAX_CHUNK_OPS_PER_FRAME = 64; // chunk add operations per frame (cheap Map ops, no GPU work)
-const FAR_TIER_UPDATE_FRAMES = 6; // update far impostor list every N frames
 
 // Collision
 const COLLISION_INTERVAL_S = 0.1;
@@ -104,25 +106,28 @@ const FieldLayer = memo(function FieldLayer({
   );
 
   // ── Rendering state ─────────────────────────────────────────────
-  // Source of truth: Map ref. Two React states derived for each LOD tier.
+  // Source of truth: Map ref. Both renderers read this directly in useFrame.
   const renderedMapRef = useRef<Map<string, AsteroidChunkData>>(new Map());
   const chunkDistancesKmRef = useRef<Map<string, number>>(new Map());
 
-  // Near tier (~17 chunks): passed to NearTierBatch (one InstancedMesh per model).
-  const [nearChunks, setNearChunks] = useState<AsteroidChunkData[]>([]);
+  // Generation counter: bumped on any renderedMap mutation. Far-tier impostor
+  // renderer compares against its prevGen to know when to rebuild its buffer.
+  // Near-tier no longer uses this (GPU compute handles it).
+  const renderedGenRef = useRef(0);
 
-  // Far tier (~4000 chunks): passed to AsteroidImpostors (single draw call).
-  // Updated less frequently since distant dots don't need per-frame accuracy.
-  const [farChunks, setFarChunks] = useState<AsteroidChunkData[]>([]);
+  // GPU slot allocators: one per model type, created once when modelRegistry is available.
+  const allocatorsRef = useRef<NearTierAllocators>(new Map());
+  useMemo(() => {
+    const allocs = new Map<string, GpuSlotAllocator>();
+    modelRegistry.forEach((_asset, id) => {
+      allocs.set(id, new GpuSlotAllocator(MAX_NEAR_INSTANCES));
+    });
+    allocatorsRef.current = allocs;
+  }, [modelRegistry]);
 
   // Incremental add/remove queues for renderedMap.
   const addQueueRef = useRef<string[]>([]);
   const removeQueueRef = useRef<string[]>([]);
-
-  // Flags for deferred updates.
-  const nearDirtyRef = useRef(false);
-  const farDirtyRef = useRef(false);
-  const farFrameCountRef = useRef(0);
 
   // Worker lifecycle
   const workerRef = useRef<Worker | null>(null);
@@ -139,46 +144,26 @@ const FieldLayer = memo(function FieldLayer({
   // Collision log throttling
   const lastCollisionLogMsRef = useRef<Map<number, number>>(new Map());
 
-  // ── Helpers ─────────────────────────────────────────────────────
-
-  /** Rebuild nearChunks state from the renderedMap. Fast — only ~17 near-tier elements. */
-  const rebuildNearChunks = useCallback(() => {
-    const nearRadius = renderCfg.nearRadiusKm;
-    const chunks: AsteroidChunkData[] = [];
-    renderedMapRef.current.forEach((chunk, key) => {
-      const d = chunkDistancesKmRef.current.get(key) ?? Infinity;
-      if (d < nearRadius) chunks.push(chunk);
-    });
-    setNearChunks(chunks);
-    nearDirtyRef.current = false;
-  }, [renderCfg.nearRadiusKm]);
-
-  /** Rebuild farChunks state from the renderedMap. */
-  const rebuildFarChunks = useCallback(() => {
-    if (renderCfg.farRadiusKm <= 0) {
-      if (farChunks.length > 0) setFarChunks([]);
-      farDirtyRef.current = false;
-      return;
-    }
-    const farStart = renderCfg.nearRadiusKm - renderCfg.crossFadeKm;
-    const chunks: AsteroidChunkData[] = [];
-    renderedMapRef.current.forEach((chunk, key) => {
-      const d = chunkDistancesKmRef.current.get(key) ?? 0;
-      if (d >= farStart) chunks.push(chunk);
-    });
-    setFarChunks(chunks);
-    farDirtyRef.current = false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderCfg.farRadiusKm, renderCfg.nearRadiusKm, renderCfg.crossFadeKm]);
-
   // Listen for chunk mutations from ANY caller (MiningSystem, collisions, etc.).
   // This keeps renderedMapRef in sync when external systems call destroyInstance().
   useEffect(() => {
     const unsubscribe = fieldRuntime.onChunkUpdate((chunkKey, updatedChunk) => {
       if (renderedMapRef.current.has(chunkKey)) {
         renderedMapRef.current.set(chunkKey, updatedChunk);
-        nearDirtyRef.current = true;
-        farDirtyRef.current = true;
+        renderedGenRef.current++;
+
+        // Re-sync GPU allocators: free old slots, re-allocate with updated data.
+        // Free ALL model allocators for this chunk (covers models whose count went to 0).
+        allocatorsRef.current.forEach((alloc) => {
+          if (alloc.hasChunk(chunkKey)) alloc.freeChunk(chunkKey);
+        });
+        // Re-allocate with the updated instance data.
+        for (const modelId in updatedChunk.instancesByModel) {
+          const alloc = allocatorsRef.current.get(modelId);
+          if (alloc) {
+            alloc.allocateChunk(chunkKey, updatedChunk.originKm, updatedChunk.instancesByModel[modelId]);
+          }
+        }
       }
     });
     return unsubscribe;
@@ -263,8 +248,10 @@ const FieldLayer = memo(function FieldLayer({
       }
       addQueueRef.current = freshQueue;
 
-      nearDirtyRef.current = true;
-      farDirtyRef.current = true;
+      // Don't unconditionally bump generation here. Phase A bumps it when
+      // actual adds/removes happen. Unconditional bumps were causing ~20Hz
+      // matrix rebuilds (32K instances × Matrix4.compose each) even when
+      // nothing changed → 30ms CPU spikes.
       streamingPendingRef.current = false; // worker is free for next tick
     },
     [fieldRuntime]
@@ -278,8 +265,8 @@ const FieldLayer = memo(function FieldLayer({
     chunkDistancesKmRef.current.clear();
     addQueueRef.current.length = 0;
     removeQueueRef.current.length = 0;
-    setNearChunks([]);
-    setFarChunks([]);
+    renderedGenRef.current++;
+    allocatorsRef.current.forEach((alloc) => alloc.clear());
 
     epochRef.current += 1;
     const epoch = epochRef.current;
@@ -383,7 +370,7 @@ const FieldLayer = memo(function FieldLayer({
 
   // ── Frame loop ──────────────────────────────────────────────────
 
-  useFrame((_, delta) => {
+  useFrame((_state, delta) => {
     collisionAccRef.current += delta;
 
     const ship = worldOrigin.shipPosKm;
@@ -401,8 +388,9 @@ const FieldLayer = memo(function FieldLayer({
         chunkDistancesKmRef.current.clear();
         addQueueRef.current.length = 0;
         removeQueueRef.current.length = 0;
-        setNearChunks([]);
-        setFarChunks([]);
+        renderedGenRef.current++;
+        // Clear all GPU slot allocators.
+        allocatorsRef.current.forEach((alloc) => alloc.clear());
       }
 
       epochRef.current += 1;
@@ -420,62 +408,122 @@ const FieldLayer = memo(function FieldLayer({
       return;
     }
 
-    // ── Phase A: Apply queued chunk adds/removes. ──
-    // Streaming results are processed fully in the message handler.
-    // Removes are unbounded (trivially cheap Map.delete). Adds are
-    // budgeted to spread chunk lookups + distance computations.
+    // ── Phase A: Apply queued chunk adds/removes + GPU sync. ──
     {
       const rendered = renderedMapRef.current;
+      let changed = false;
 
-      // Removes — drain entire queue (Map.delete is O(1)).
-      const removeQueue = removeQueueRef.current;
-      while (removeQueue.length > 0) {
-        const key = removeQueue.pop()!;
-        if (rendered.delete(key)) {
-          chunkDistancesKmRef.current.delete(key);
-          nearDirtyRef.current = true;
-          farDirtyRef.current = true;
-        }
-      }
-
-      // Adds — budgeted. The addQueue is rebuilt each streaming result
-      // (distance-sorted, no duplicates, max ~5000 entries).
-      let addBudget = MAX_CHUNK_OPS_PER_FRAME;
-      const addQueue = addQueueRef.current;
-      let addIdx = 0;
-      while (addIdx < addQueue.length && addBudget > 0) {
-        const key = addQueue[addIdx++];
-
-        if (rendered.has(key)) continue;
-        const chunk = fieldRuntime.getChunk(key);
-        if (!chunk) continue;
-
+      // 0. Sync GPU allocations with current ship position.
+      // Runs every frame so near/far transitions happen immediately,
+      // independent of streaming result timing. For ~5000 rendered
+      // chunks this is ~0.15ms (AABB distance + Map lookup per chunk).
+      const nearR = renderCfg.nearRadiusKm;
+      rendered.forEach((chunk, key) => {
         const d = chunkDistKm(
           px, py, pz,
           chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
           chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
         );
-        if (d > renderCfg.drawRadiusKm) continue;
-
-        rendered.set(key, chunk);
         chunkDistancesKmRef.current.set(key, d);
-        nearDirtyRef.current = true;
-        farDirtyRef.current = true;
-        addBudget--;
-      }
-      // Trim consumed entries. Queue is small (≤5000) so splice is cheap.
-      if (addIdx > 0) addQueueRef.current.splice(0, addIdx);
 
-      // Update React state at reduced frequency to limit re-renders.
-      // Near tier: every 3 frames (~20Hz at 60fps) — enough for smooth pop-in.
-      // Far tier: every 6 frames (~10Hz) — distant dots don't need more.
-      farFrameCountRef.current++;
-      const frame = farFrameCountRef.current;
-      if (nearDirtyRef.current && frame % 3 === 0) {
-        rebuildNearChunks();
+        if (d > nearR) {
+          // Beyond near radius — free GPU slots if allocated.
+          allocatorsRef.current.forEach((alloc) => {
+            if (alloc.hasChunk(key)) {
+              alloc.freeChunk(key);
+              changed = true;
+            }
+          });
+        } else {
+          // Within near radius — allocate GPU slots if missing
+          // (handles far→near transitions for existing rendered chunks).
+          for (const modelId in chunk.instancesByModel) {
+            const alloc = allocatorsRef.current.get(modelId);
+            if (alloc && !alloc.hasChunk(key)) {
+              if (alloc.allocateChunk(key, chunk.originKm, chunk.instancesByModel[modelId])) {
+                changed = true;
+              }
+            }
+          }
+        }
+      });
+
+      // 1. Removes — drain entire queue (Map.delete is O(1)).
+      const removeQueue = removeQueueRef.current;
+      while (removeQueue.length > 0) {
+        const key = removeQueue.pop()!;
+        const removedChunk = rendered.get(key);
+        if (removedChunk && rendered.delete(key)) {
+          chunkDistancesKmRef.current.delete(key);
+          // Free GPU slots for each model in the removed chunk.
+          for (const modelId in removedChunk.instancesByModel) {
+            allocatorsRef.current.get(modelId)?.freeChunk(key);
+          }
+          changed = true;
+        }
       }
-      if (farDirtyRef.current && frame % FAR_TIER_UPDATE_FRAMES === 0) {
-        rebuildFarChunks();
+
+      // 2. Adds — budgeted. Retain entries that aren't ready yet (not
+      // yet generated, or GPU capacity full) so they're retried next frame
+      // instead of waiting for the next streaming result to rebuild the queue.
+      {
+        let addBudget = MAX_CHUNK_OPS_PER_FRAME;
+        const addQueue = addQueueRef.current;
+        const retainQueue: string[] = [];
+
+        for (let i = 0; i < addQueue.length; i++) {
+          const key = addQueue[i];
+
+          if (rendered.has(key)) continue; // already rendered, drop
+
+          if (addBudget <= 0) {
+            retainQueue.push(key); // over budget, keep for next frame
+            continue;
+          }
+
+          const chunk = fieldRuntime.getChunk(key);
+          if (!chunk) {
+            retainQueue.push(key); // not yet generated, retry later
+            continue;
+          }
+
+          const d = chunkDistKm(
+            px, py, pz,
+            chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
+            chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
+          );
+          if (d > renderCfg.drawRadiusKm) continue; // out of range, drop
+
+          // Allocate GPU slots for each model. If any model can't fit,
+          // keep the chunk for retry when slots free up.
+          let gpuOk = true;
+          if (d <= renderCfg.nearRadiusKm) {
+            for (const modelId in chunk.instancesByModel) {
+              const alloc = allocatorsRef.current.get(modelId);
+              if (alloc && !alloc.allocateChunk(key, chunk.originKm, chunk.instancesByModel[modelId])) {
+                allocatorsRef.current.forEach((a) => { if (a.hasChunk(key)) a.freeChunk(key); });
+                gpuOk = false;
+                break;
+              }
+            }
+          }
+          if (!gpuOk) {
+            retainQueue.push(key); // retry when slots free up
+            continue;
+          }
+
+          rendered.set(key, chunk);
+          chunkDistancesKmRef.current.set(key, d);
+          changed = true;
+          addBudget--;
+        }
+
+        addQueueRef.current = retainQueue;
+      }
+
+      // Bump generation once if anything changed (batched).
+      if (changed) {
+        renderedGenRef.current++;
       }
     }
 
@@ -610,18 +658,22 @@ const FieldLayer = memo(function FieldLayer({
 
   return (
     <SimGroup space="local" positionKm={field.anchorKm}>
-      {/* Near tier: batched InstancedMesh per model type (stable, no mount/unmount churn).
-         Always mounted so WebGPU shaders stay compiled even when chunks are temporarily empty. */}
+      {/* Near tier: GPU-driven indirect draw. Compute shader culls + compacts
+         visible instances, drawIndexedIndirect skips invisible ones entirely. */}
       <NearTierBatch
-        chunks={nearChunks}
+        nearRadiusKm={renderCfg.nearRadiusKm}
         modelRegistry={modelRegistry}
+        allocatorsRef={allocatorsRef}
       />
 
       {/* Far tier: billboard impostors (single batched draw call).
          Config guard only — stays mounted when chunks temporarily empty. */}
       {renderCfg.farRadiusKm > 0 && (
         <AsteroidImpostors
-          chunks={farChunks}
+          renderedMapRef={renderedMapRef}
+          chunkDistancesRef={chunkDistancesKmRef}
+          renderedGenRef={renderedGenRef}
+          nearRadiusKm={renderCfg.nearRadiusKm}
           farRadiusKm={renderCfg.farRadiusKm}
           fadeOutKm={renderCfg.crossFadeKm}
         />

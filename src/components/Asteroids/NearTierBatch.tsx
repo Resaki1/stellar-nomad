@@ -1,44 +1,48 @@
 "use client";
 
-import { memo, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
-import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
+import { GpuSlotAllocator } from "./GpuSlotAllocator";
+import {
+  createCullComputeNode,
+  createCullUniforms,
+  extractFrustumPlanes,
+} from "./asteroidCullCompute";
 
 /**
  * Upper bound for instances per model in the near tier.
- * With nearRadius=32km, chunkSize=20km, density=0.004/km³:
- *   ~11 chunks × ~32 asteroids ≈ 352 total, split across models.
- * 4096 is generous headroom.
+ * GPU-resident with indirect draw — only visible instances reach the vertex shader.
  */
-const MAX_NEAR_INSTANCES = 4096;
-
-// Reusable temporaries for matrix composition (no per-frame allocations).
-const _pos = new THREE.Vector3();
-const _quat = new THREE.Quaternion();
-const _scale = new THREE.Vector3();
-const _matrix = new THREE.Matrix4();
+export const MAX_NEAR_INSTANCES = 4096 * 32;
 
 // ─── Per-model batch ────────────────────────────────────────────────
 
 type ModelBatchProps = {
   modelId: string;
   asset: AsteroidModelAsset;
-  chunks: AsteroidChunkData[];
+  allocator: GpuSlotAllocator;
+  nearRadiusKm: number;
 };
 
 /**
- * A single stable InstancedMesh for one asteroid model type.
- * Created once, never destroyed — only instance matrices + count change.
- * This avoids the WebGPU shader build cost that occurs when new InstancedMesh
- * objects enter the scene.
+ * GPU-driven InstancedMesh with indirect draw for one asteroid model.
+ *
+ * A compute shader runs every frame: tests each instance for visibility
+ * (alive + distance + frustum), compacts visible ones to the front of
+ * the output buffer via atomic counter, and writes the visible count
+ * to an indirect draw argument buffer.
+ *
+ * drawIndexedIndirect reads the count from the GPU — invisible instances
+ * never enter the vertex shader. Zero wasted vertex processing.
  */
 const ModelBatch = memo(function ModelBatch({
-  modelId,
   asset,
-  chunks,
+  allocator,
+  nearRadiusKm,
 }: ModelBatchProps) {
-  const meshRef = useRef<THREE.InstancedMesh>(null!);
+  const gl = useThree((state) => state.gl);
 
   // Pre-compute base rotation quaternion for the asset (stable).
   const baseQuat = useMemo(() => {
@@ -51,116 +55,122 @@ const ModelBatch = memo(function ModelBatch({
     );
   }, [asset.baseRotationRad]);
 
-  // Fill instance matrices whenever the chunk list changes.
-  useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
+  // Create uniforms and compute node (once).
+  const uniforms = useMemo(() => createCullUniforms(), []);
 
-    mesh.visible = false;
-    let idx = 0;
-
-    const invBaseRadius = 1 / asset.baseRadiusM;
-
-    for (const chunk of chunks) {
-      const inst = chunk.instancesByModel[modelId];
-      if (!inst) continue;
-
-      const ox = chunk.originKm[0] * 1000;
-      const oy = chunk.originKm[1] * 1000;
-      const oz = chunk.originKm[2] * 1000;
-
-      const { positionsM, quaternions, radiiM, count } = inst;
-
-      for (let i = 0; i < count && idx < MAX_NEAR_INSTANCES; i++) {
-        const pi = i * 3;
-        const qi = i * 4;
-
-        // Position: chunk origin (m) + instance offset (m).
-        _pos.set(
-          ox + positionsM[pi],
-          oy + positionsM[pi + 1],
-          oz + positionsM[pi + 2]
-        );
-
-        // Rotation: instance quaternion × base asset rotation.
-        _quat.set(
-          quaternions[qi],
-          quaternions[qi + 1],
-          quaternions[qi + 2],
-          quaternions[qi + 3]
-        );
-        _quat.multiply(baseQuat);
-
-        // Scale: (desired radius / base radius) × baseScale.
-        const s = (radiiM[i] * invBaseRadius) * asset.baseScale;
-        _scale.set(s, s, s);
-
-        _matrix.compose(_pos, _quat, _scale);
-        mesh.setMatrixAt(idx, _matrix);
-        idx++;
-      }
-    }
-
-    mesh.count = idx;
-    if (idx > 0) {
-      mesh.instanceMatrix.needsUpdate = true;
-    }
-
-    // Disable per-instance bounding computation — instances span the
-    // entire near sphere so individual culling isn't useful.
-    mesh.frustumCulled = false;
-    mesh.visible = idx > 0;
-  }, [chunks, modelId, asset.baseRadiusM, asset.baseScale, baseQuat]);
-
-  return (
-    <instancedMesh
-      ref={meshRef}
-      args={[asset.geometry, asset.material, MAX_NEAR_INSTANCES]}
-      frustumCulled={false}
-    />
+  const { computeNode, resetNode, outputAttr, indirectAttr } = useMemo(
+    () => createCullComputeNode(
+      allocator,
+      MAX_NEAR_INSTANCES,
+      uniforms,
+      asset.geometry.index ? asset.geometry.index.count : asset.geometry.attributes.position.count,
+    ),
+    [allocator, uniforms, asset.geometry]
   );
+
+  // Create the InstancedMesh imperatively:
+  // - StorageInstancedBufferAttribute as instanceMatrix (compute writes to it)
+  // - IndirectStorageBufferAttribute on geometry (GPU sets instance count)
+  const mesh = useMemo(() => {
+    // Clone geometry so setIndirect doesn't affect other users.
+    const geo = asset.geometry.clone();
+    geo.setIndirect(indirectAttr, 0);
+
+    const m = new THREE.InstancedMesh(geo, asset.material, MAX_NEAR_INSTANCES);
+    m.instanceMatrix = outputAttr;
+    m.count = MAX_NEAR_INSTANCES; // Needed for three.js internals; actual count comes from indirect
+    m.frustumCulled = false;
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asset.geometry, asset.material, outputAttr, indirectAttr]);
+
+  // Set stable model uniforms once.
+  useEffect(() => {
+    uniforms.uBaseQuat.value.set(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
+    uniforms.uInvBaseRadius.value = 1 / asset.baseRadiusM;
+    uniforms.uBaseScale.value = asset.baseScale;
+  }, [uniforms, baseQuat, asset.baseRadiusM, asset.baseScale]);
+
+  useFrame((state) => {
+    // Ensure matrixWorld is up to date (parent SimGroup sets position in useFrame).
+    mesh.updateWorldMatrix(true, false);
+
+    // Skip compute if no instances are allocated.
+    if (allocator.highWaterMark === 0) {
+      mesh.visible = false;
+      return;
+    }
+    mesh.visible = true;
+
+    // Update per-frame uniforms.
+    const camWorld = state.camera.matrixWorld.elements;
+    const mw = mesh.matrixWorld.elements;
+    uniforms.uCameraPos.value.set(
+      camWorld[12] - mw[12],
+      camWorld[13] - mw[13],
+      camWorld[14] - mw[14],
+    );
+    uniforms.uNearRadiusM.value = nearRadiusKm * 1000;
+
+    // Extract frustum planes in field-local space.
+    extractFrustumPlanes(state.camera, mesh.matrixWorld, uniforms.uFrustum);
+
+    // Dispatch compute: reset atomic counter on GPU, then cull + compact.
+    // Both run on GPU — no CPU→GPU race from needsUpdate.
+    (gl as any).compute([resetNode, computeNode]);
+  });
+
+  return <primitive object={mesh} />;
 });
 
 ModelBatch.displayName = "ModelBatch";
 
 // ─── NearTierBatch ──────────────────────────────────────────────────
 
+export type NearTierAllocators = Map<string, GpuSlotAllocator>;
+
 type NearTierBatchProps = {
-  chunks: AsteroidChunkData[];
+  nearRadiusKm: number;
   modelRegistry: Map<string, AsteroidModelAsset>;
+  allocatorsRef: { readonly current: NearTierAllocators };
 };
 
 /**
- * Renders all near-tier asteroid instances using one batched InstancedMesh
- * per model type. The meshes are created once and persisted — only their
- * instance data (matrices + count) changes when chunks update.
+ * Renders all near-tier asteroid instances using GPU-driven indirect draw.
  *
- * This eliminates the WebGPU shader compilation stutter that occurred when
- * individual AsteroidChunk components mounted/unmounted (creating new
- * THREE.InstancedMesh objects that each triggered a full TSL node build).
+ * Per frame:
+ * - Compute shader tests all allocated instances (frustum + distance)
+ * - Visible instances are compacted to the front of the output buffer
+ * - Atomic counter writes the visible count to an indirect draw argument buffer
+ * - drawIndexedIndirect renders ONLY visible instances — zero wasted vertex work
+ *
+ * CPU per-frame cost: ~120 bytes of uniforms + 20 bytes indirect reset.
  */
 const NearTierBatch = memo(function NearTierBatch({
-  chunks,
+  nearRadiusKm,
   modelRegistry,
+  allocatorsRef,
 }: NearTierBatchProps) {
-  // Stable list of model IDs — only changes if modelRegistry changes
-  // (which only happens on system config change, not during gameplay).
   const modelEntries = useMemo(() => {
-    const entries: Array<{ id: string; asset: AsteroidModelAsset }> = [];
+    const entries: Array<{ id: string; asset: AsteroidModelAsset; allocator: GpuSlotAllocator }> = [];
     modelRegistry.forEach((asset, id) => {
-      entries.push({ id, asset });
+      const allocator = allocatorsRef.current.get(id);
+      if (allocator) {
+        entries.push({ id, asset, allocator });
+      }
     });
     return entries;
-  }, [modelRegistry]);
+  }, [modelRegistry, allocatorsRef]);
 
   return (
     <>
-      {modelEntries.map(({ id, asset }) => (
+      {modelEntries.map(({ id, asset, allocator }) => (
         <ModelBatch
           key={id}
           modelId={id}
           asset={asset}
-          chunks={chunks}
+          allocator={allocator}
+          nearRadiusKm={nearRadiusKm}
         />
       ))}
     </>

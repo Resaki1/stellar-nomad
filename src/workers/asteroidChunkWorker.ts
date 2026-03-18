@@ -20,10 +20,10 @@ import type {
  * loop. This spreads postMessage delivery across frames so the main
  * thread doesn't receive 32+ chunk messages in a single microtask batch.
  */
-const CHUNKS_PER_YIELD = 4;
+const CHUNKS_PER_YIELD = 16;
 
 /** Max new chunk generations queued per streaming tick. */
-const MAX_NEW_CHUNKS_PER_TICK = 32;
+const MAX_NEW_CHUNKS_PER_TICK = 128;
 
 type FieldState = {
   fieldId: string;
