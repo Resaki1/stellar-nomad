@@ -48,6 +48,10 @@ export type AsteroidChunkWorkerStreamingTickMsg = {
   px: number;
   py: number;
   pz: number;
+  /** Player velocity in field-local km/s (for generation look-ahead). */
+  vx: number;
+  vy: number;
+  vz: number;
 };
 
 export type AsteroidChunkWorkerMainToWorkerMessage =

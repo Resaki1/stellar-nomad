@@ -134,9 +134,11 @@ const FieldLayer = memo(function FieldLayer({
   const epochRef = useRef(0);
   const wantedKeysRef = useRef<Set<string>>(new Set());
 
-  // Async streaming: no fixed interval. We send a tick when the worker
-  // isn't busy. Results are processed fully in the message handler (<1ms).
-  const streamingPendingRef = useRef(false);
+  // Streaming tick throttle: send every 2 frames so the worker's planning
+  // sphere tracks the player without consuming too much worker time.
+  const tickFrameRef = useRef(0);
+  // Previous field-local position for velocity computation (km/s).
+  const prevFieldPosRef = useRef({ x: 0, y: 0, z: 0, valid: false });
 
   // Collision accumulator
   const collisionAccRef = useRef(0);
@@ -252,7 +254,6 @@ const FieldLayer = memo(function FieldLayer({
       // actual adds/removes happen. Unconditional bumps were causing ~20Hz
       // matrix rebuilds (32K instances × Matrix4.compose each) even when
       // nothing changed → 30ms CPU spikes.
-      streamingPendingRef.current = false; // worker is free for next tick
     },
     [fieldRuntime]
   );
@@ -345,7 +346,8 @@ const FieldLayer = memo(function FieldLayer({
 
       workerRef.current = null;
       wantedKeysRef.current.clear();
-      streamingPendingRef.current = false;
+      prevFieldPosRef.current.valid = false;
+      tickFrameRef.current = 0;
       fieldRuntime.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -395,7 +397,8 @@ const FieldLayer = memo(function FieldLayer({
 
       epochRef.current += 1;
       wantedKeysRef.current.clear();
-      streamingPendingRef.current = false;
+      prevFieldPosRef.current.valid = false;
+      tickFrameRef.current = 0;
 
       const w = workerRef.current;
       if (w) {
@@ -527,20 +530,34 @@ const FieldLayer = memo(function FieldLayer({
       }
     }
 
-    // ── Phase B: Dispatch streaming tick to worker (async) ───────────
-    // No fixed interval. As soon as the worker finishes a result, fire the
-    // next tick immediately. The worker naturally throttles to its own speed.
-    if (!streamingPendingRef.current) {
+    // ── Phase B: Dispatch streaming tick to worker (throttled) ────────
+    // Compute velocity every frame (for accurate look-ahead on tick frames).
+    const prev = prevFieldPosRef.current;
+    let vx = 0, vy = 0, vz = 0;
+    if (prev.valid && delta > 0) {
+      vx = (px - prev.x) / delta;
+      vy = (py - prev.y) / delta;
+      vz = (pz - prev.z) / delta;
+    }
+    prev.x = px;
+    prev.y = py;
+    prev.z = pz;
+    prev.valid = true;
+
+    // Send a tick every 2 frames. Velocity enables Minecraft-style
+    // generation look-ahead: chunks in the direction of travel are
+    // generated before the player reaches them, reducing pop-in.
+    tickFrameRef.current++;
+    if (tickFrameRef.current >= 2) {
+      tickFrameRef.current = 0;
       const w = workerRef.current;
       if (w) {
-        streamingPendingRef.current = true;
         w.postMessage({
           type: "streamingTick",
           fieldId: field.id,
           epoch: epochRef.current,
-          px,
-          py,
-          pz,
+          px, py, pz,
+          vx, vy, vz,
         });
       }
     }

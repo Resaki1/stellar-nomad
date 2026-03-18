@@ -25,6 +25,14 @@ const CHUNKS_PER_YIELD = 16;
 /** Max new chunk generations queued per streaming tick. */
 const MAX_NEW_CHUNKS_PER_TICK = 128;
 
+/**
+ * Look-ahead time in seconds. Chunk generation is prioritised by
+ * distance to the predicted player position (pos + vel × lookAhead),
+ * so chunks in the direction of travel are generated before the player
+ * reaches them. The offset is capped at half the effective load radius.
+ */
+const GENERATION_LOOK_AHEAD_S = 2.0;
+
 type FieldState = {
   fieldId: string;
   field: AsteroidFieldDef;
@@ -69,6 +77,20 @@ function ensureCandidateBuffers(size: number): void {
   _candCz = new Int32Array(newSize);
   _candDist = new Float64Array(newSize);
   _candIndices = new Uint32Array(newSize);
+}
+
+// ─── Pre-allocated generation candidate buffers (sorted by predicted dist) ──
+const _GEN_INIT = 4096;
+let _genSrcIdx = new Uint32Array(_GEN_INIT);
+let _genPredDist = new Float64Array(_GEN_INIT);
+let _genSortIdx = new Uint32Array(_GEN_INIT);
+
+function ensureGenBuffers(size: number): void {
+  if (size <= _genSrcIdx.length) return;
+  const newSize = Math.max(size, _genSrcIdx.length * 2);
+  _genSrcIdx = new Uint32Array(newSize);
+  _genPredDist = new Float64Array(newSize);
+  _genSortIdx = new Uint32Array(newSize);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -209,6 +231,9 @@ function handleStreamingTick(
   px: number,
   py: number,
   pz: number,
+  vx: number,
+  vy: number,
+  vz: number,
   epoch: number,
 ): void {
   const { chunkSizeKm, shape, maxActiveChunks, drawRadiusKm } = state;
@@ -259,11 +284,25 @@ function handleStreamingTick(
 
   const capped = Math.min(candidateCount, maxActiveChunks);
 
-  // 3. Build wanted set + queue generation for missing chunks.
+  // 3. Predicted position for generation ordering (velocity look-ahead).
+  //    Chunks closest to where the player is HEADING get generated first,
+  //    so they're ready well before the player reaches them. The offset is
+  //    capped at half the load radius to maintain rearward coverage.
+  const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+  const lookAheadKm = Math.min(speed * GENERATION_LOOK_AHEAD_S, loadR * 0.5);
+  let predX = px, predY = py, predZ = pz;
+  if (speed > 0.001) {
+    const scale = lookAheadKm / speed;
+    predX += vx * scale;
+    predY += vy * scale;
+    predZ += vz * scale;
+  }
+
+  // 4. Build wanted set + collect generation candidates.
   const wantedKeys: string[] = [];
   const wantedDists = new Float64Array(capped);
   const removeRenderKeys: string[] = [];
-  let requestedThisTick = 0;
+  let genCount = 0;
 
   for (let i = 0; i < capped; i++) {
     const idx = indicesView[i];
@@ -280,18 +319,49 @@ function handleStreamingTick(
       removeRenderKeys.push(key);
     }
 
-    // Auto-queue generation for missing chunks.
-    if (requestedThisTick >= MAX_NEW_CHUNKS_PER_TICK) continue;
+    // Collect generation candidates (not yet generated or queued).
     if (state.generatedKeys.has(key)) continue;
     if (state.queuedKeys.has(key)) continue;
 
+    const cMinX = cx * chunkSizeKm;
+    const cMinY = cy * chunkSizeKm;
+    const cMinZ = cz * chunkSizeKm;
+    ensureGenBuffers(genCount + 1);
+    _genSrcIdx[genCount] = i;
+    _genPredDist[genCount] = chunkDistKm(
+      predX, predY, predZ,
+      cMinX, cMinY, cMinZ,
+      cMinX + chunkSizeKm, cMinY + chunkSizeKm, cMinZ + chunkSizeKm,
+    );
+    genCount++;
+  }
+
+  // 5. Sort generation candidates by predicted distance (closest to where
+  //    the player is heading get generated first → reduces pop-in).
+  if (genCount > _genSortIdx.length) {
+    _genSortIdx = new Uint32Array(genCount);
+  }
+  for (let i = 0; i < genCount; i++) _genSortIdx[i] = i;
+  const genView = _genSortIdx.subarray(0, genCount);
+  genView.sort((a, b) => _genPredDist[a] - _genPredDist[b]);
+
+  // 6. Queue generation in predicted-distance order.
+  let requestedThisTick = 0;
+  for (let g = 0; g < genCount && requestedThisTick < MAX_NEW_CHUNKS_PER_TICK; g++) {
+    const gi = genView[g];
+    const i = _genSrcIdx[gi];
+    const origIdx = indicesView[i];
+    const cx = _candCx[origIdx];
+    const cy = _candCy[origIdx];
+    const cz = _candCz[origIdx];
+    const key = wantedKeys[i];
     const coord: ChunkCoord = { x: cx, y: cy, z: cz };
     state.queue.push({ coord, key, epoch });
     state.queuedKeys.add(key);
     requestedThisTick++;
   }
 
-  // 4. Prune generatedKeys to the wanted set. Chunks that are no longer
+  // 7. Prune generatedKeys to the wanted set. Chunks that are no longer
   // wanted get "forgotten" so they can be re-generated if needed. This
   // keeps the worker in sync with the main thread (which also prunes its
   // runtime to wanted+rendered chunks).
@@ -309,7 +379,7 @@ function handleStreamingTick(
     for (const job of state.queue) state.queuedKeys.add(job.key);
   }
 
-  // 5. Send result back to main thread.
+  // 8. Send result back to main thread.
   const msg: AsteroidChunkWorkerWorkerToMainMessage = {
     type: "streamingResult",
     fieldId: state.fieldId,
@@ -321,7 +391,7 @@ function handleStreamingTick(
 
   (self as any).postMessage(msg, [wantedDists.buffer]);
 
-  // 6. Kick the generation pump if we queued new work.
+  // 9. Kick the generation pump if we queued new work.
   if (requestedThisTick > 0) {
     pump(state);
   }
@@ -400,7 +470,7 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
 
       if (msg.epoch !== state.epoch) return;
 
-      handleStreamingTick(state, msg.px, msg.py, msg.pz, msg.epoch);
+      handleStreamingTick(state, msg.px, msg.py, msg.pz, msg.vx, msg.vy, msg.vz, msg.epoch);
       return;
     }
   }
