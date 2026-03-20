@@ -17,21 +17,9 @@ import type {
 
 /**
  * Max chunks generated per microtask before yielding back to the event
- * loop. This spreads postMessage delivery across frames so the main
- * thread doesn't receive 32+ chunk messages in a single microtask batch.
+ * loop via setTimeout(0). Spreads postMessage delivery across frames.
  */
 const CHUNKS_PER_YIELD = 16;
-
-/** Max new chunk generations queued per streaming tick. */
-const MAX_NEW_CHUNKS_PER_TICK = 128;
-
-/**
- * Look-ahead time in seconds. Chunk generation is prioritised by
- * distance to the predicted player position (pos + vel × lookAhead),
- * so chunks in the direction of travel are generated before the player
- * reaches them. The offset is capped at half the effective load radius.
- */
-const GENERATION_LOOK_AHEAD_S = 2.0;
 
 type FieldState = {
   fieldId: string;
@@ -44,98 +32,17 @@ type FieldState = {
 
   epoch: number;
 
-  // Streaming config (set at init)
-  loadRadiusKm: number;
-  maxActiveChunks: number;
-  drawRadiusKm: number;
-  effectiveLoadRadiusKm: number;
-
-  // Track which chunks have been generated (keys we've sent to main thread).
-  generatedKeys: Set<string>;
-
-  // queue + dedupe
+  // Generation queue + dedupe
   queue: Array<{ coord: ChunkCoord; key: string; epoch: number }>;
   queuedKeys: Set<string>;
   busy: boolean;
+
+  // Chunks generated and posted back this epoch.
+  // Prevents re-generation when the main thread re-requests.
+  generatedKeys: Set<string>;
 };
 
 const states = new Map<string, FieldState>();
-
-// ─── Pre-allocated candidate buffers (reused across streaming ticks) ──
-const _MAX_CANDIDATES = 32768;
-let _candCx = new Int32Array(_MAX_CANDIDATES);
-let _candCy = new Int32Array(_MAX_CANDIDATES);
-let _candCz = new Int32Array(_MAX_CANDIDATES);
-let _candDist = new Float64Array(_MAX_CANDIDATES);
-let _candIndices = new Uint32Array(_MAX_CANDIDATES);
-
-function ensureCandidateBuffers(size: number): void {
-  if (size <= _candCx.length) return;
-  const newSize = Math.max(size, _candCx.length * 2);
-  _candCx = new Int32Array(newSize);
-  _candCy = new Int32Array(newSize);
-  _candCz = new Int32Array(newSize);
-  _candDist = new Float64Array(newSize);
-  _candIndices = new Uint32Array(newSize);
-}
-
-// ─── Pre-allocated generation candidate buffers (sorted by predicted dist) ──
-const _GEN_INIT = 4096;
-let _genSrcIdx = new Uint32Array(_GEN_INIT);
-let _genPredDist = new Float64Array(_GEN_INIT);
-let _genSortIdx = new Uint32Array(_GEN_INIT);
-
-function ensureGenBuffers(size: number): void {
-  if (size <= _genSrcIdx.length) return;
-  const newSize = Math.max(size, _genSrcIdx.length * 2);
-  _genSrcIdx = new Uint32Array(newSize);
-  _genPredDist = new Float64Array(newSize);
-  _genSortIdx = new Uint32Array(newSize);
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────
-
-function computeChunkRange(
-  pKm: number,
-  radiusKm: number,
-  chunkSizeKm: number
-): [number, number] {
-  return [
-    Math.floor((pKm - radiusKm) / chunkSizeKm),
-    Math.floor((pKm + radiusKm) / chunkSizeKm),
-  ];
-}
-
-function computeEffectiveLoadRadius(
-  loadRadiusKm: number,
-  chunkSizeKm: number,
-  maxActiveChunks: number
-): number {
-  const chunkVol = chunkSizeKm * chunkSizeKm * chunkSizeKm;
-  const sphereRadius = Math.pow(
-    (maxActiveChunks * chunkVol * 3) / (4 * Math.PI),
-    1 / 3
-  );
-  return Math.min(loadRadiusKm, sphereRadius + chunkSizeKm);
-}
-
-/** Inlined point-to-AABB distance in km. */
-function chunkDistKm(
-  px: number, py: number, pz: number,
-  minX: number, minY: number, minZ: number,
-  maxX: number, maxY: number, maxZ: number,
-): number {
-  let dx = 0;
-  if (px < minX) dx = minX - px;
-  else if (px > maxX) dx = px - maxX;
-  let dy = 0;
-  if (py < minY) dy = minY - py;
-  else if (py > maxY) dy = py - maxY;
-  let dz = 0;
-  if (pz < minZ) dz = minZ - pz;
-  else if (pz > maxZ) dz = pz - maxZ;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
 
 // ─── Chunk generation ───────────────────────────────────────────────
 
@@ -162,9 +69,8 @@ function collectTransferables(chunk: AsteroidChunkData): Transferable[] {
 
 /**
  * Process up to CHUNKS_PER_YIELD chunks, then yield to the event loop
- * via setTimeout(0). This prevents the worker from blocking its own
- * message handling and spreads postMessage delivery so the main thread
- * receives chunks across multiple frames instead of all at once.
+ * via setTimeout(0). This lets new messages (generateChunks, forgetChunks)
+ * be processed between batches.
  */
 function pump(state: FieldState) {
   if (state.busy) return;
@@ -177,10 +83,11 @@ function pump(state: FieldState) {
       const job = state.queue.shift()!;
       state.queuedKeys.delete(job.key);
 
-      // Drop stale work (epoch mismatch).
-      if (job.epoch !== state.epoch) {
-        continue;
-      }
+      // Drop stale work.
+      if (job.epoch !== state.epoch) continue;
+
+      // Skip if already generated this epoch (dedup).
+      if (state.generatedKeys.has(job.key)) continue;
 
       const chunk = generateAsteroidChunk({
         field: state.field,
@@ -192,8 +99,7 @@ function pump(state: FieldState) {
         maxAsteroidsPerChunk: state.maxAsteroidsPerChunk,
       });
 
-      // Track that this chunk has been generated.
-      state.generatedKeys.add(chunk.key);
+      state.generatedKeys.add(job.key);
 
       const msg: AsteroidChunkWorkerWorkerToMainMessage = {
         type: "generated",
@@ -218,182 +124,8 @@ function pump(state: FieldState) {
     state.busy = false;
   }
 
-  // If there's more work, yield to the event loop then continue.
   if (state.queue.length > 0) {
     setTimeout(() => pump(state), 0);
-  }
-}
-
-// ─── Streaming tick (full planning computation) ─────────────────────
-
-function handleStreamingTick(
-  state: FieldState,
-  px: number,
-  py: number,
-  pz: number,
-  vx: number,
-  vy: number,
-  vz: number,
-  epoch: number,
-): void {
-  const { chunkSizeKm, shape, maxActiveChunks, drawRadiusKm } = state;
-  const loadR = state.effectiveLoadRadiusKm;
-
-  // 1. Triple loop: find candidate chunks within effective load radius.
-  const [minCx, maxCx] = computeChunkRange(px, loadR, chunkSizeKm);
-  const [minCy, maxCy] = computeChunkRange(py, loadR, chunkSizeKm);
-  const [minCz, maxCz] = computeChunkRange(pz, loadR, chunkSizeKm);
-
-  let candidateCount = 0;
-
-  for (let cx = minCx; cx <= maxCx; cx++) {
-    const cMinX = cx * chunkSizeKm;
-    const cMaxX = cMinX + chunkSizeKm;
-
-    for (let cy = minCy; cy <= maxCy; cy++) {
-      const cMinY = cy * chunkSizeKm;
-      const cMaxY = cMinY + chunkSizeKm;
-
-      for (let cz = minCz; cz <= maxCz; cz++) {
-        const cMinZ = cz * chunkSizeKm;
-        const cMaxZ = cMinZ + chunkSizeKm;
-
-        if (!shape.intersectsAabbKm(cMinX, cMinY, cMinZ, cMaxX, cMaxY, cMaxZ)) continue;
-
-        const dist = chunkDistKm(px, py, pz, cMinX, cMinY, cMinZ, cMaxX, cMaxY, cMaxZ);
-        if (dist > loadR) continue;
-
-        ensureCandidateBuffers(candidateCount + 1);
-
-        _candCx[candidateCount] = cx;
-        _candCy[candidateCount] = cy;
-        _candCz[candidateCount] = cz;
-        _candDist[candidateCount] = dist;
-        candidateCount++;
-      }
-    }
-  }
-
-  // 2. Sort by distance using index array.
-  if (candidateCount > _candIndices.length) {
-    _candIndices = new Uint32Array(candidateCount);
-  }
-  for (let i = 0; i < candidateCount; i++) _candIndices[i] = i;
-  const indicesView = _candIndices.subarray(0, candidateCount);
-  indicesView.sort((a, b) => _candDist[a] - _candDist[b]);
-
-  const capped = Math.min(candidateCount, maxActiveChunks);
-
-  // 3. Predicted position for generation ordering (velocity look-ahead).
-  //    Chunks closest to where the player is HEADING get generated first,
-  //    so they're ready well before the player reaches them. The offset is
-  //    capped at half the load radius to maintain rearward coverage.
-  const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
-  const lookAheadKm = Math.min(speed * GENERATION_LOOK_AHEAD_S, loadR * 0.5);
-  let predX = px, predY = py, predZ = pz;
-  if (speed > 0.001) {
-    const scale = lookAheadKm / speed;
-    predX += vx * scale;
-    predY += vy * scale;
-    predZ += vz * scale;
-  }
-
-  // 4. Build wanted set + collect generation candidates.
-  const wantedKeys: string[] = [];
-  const wantedDists = new Float64Array(capped);
-  const removeRenderKeys: string[] = [];
-  let genCount = 0;
-
-  for (let i = 0; i < capped; i++) {
-    const idx = indicesView[i];
-    const cx = _candCx[idx];
-    const cy = _candCy[idx];
-    const cz = _candCz[idx];
-    const key = `${state.fieldId}:${cx},${cy},${cz}`;
-
-    wantedKeys.push(key);
-    wantedDists[i] = _candDist[idx];
-
-    // Check if beyond draw radius → mark for render removal.
-    if (_candDist[idx] > drawRadiusKm) {
-      removeRenderKeys.push(key);
-    }
-
-    // Collect generation candidates (not yet generated or queued).
-    if (state.generatedKeys.has(key)) continue;
-    if (state.queuedKeys.has(key)) continue;
-
-    const cMinX = cx * chunkSizeKm;
-    const cMinY = cy * chunkSizeKm;
-    const cMinZ = cz * chunkSizeKm;
-    ensureGenBuffers(genCount + 1);
-    _genSrcIdx[genCount] = i;
-    _genPredDist[genCount] = chunkDistKm(
-      predX, predY, predZ,
-      cMinX, cMinY, cMinZ,
-      cMinX + chunkSizeKm, cMinY + chunkSizeKm, cMinZ + chunkSizeKm,
-    );
-    genCount++;
-  }
-
-  // 5. Sort generation candidates by predicted distance (closest to where
-  //    the player is heading get generated first → reduces pop-in).
-  if (genCount > _genSortIdx.length) {
-    _genSortIdx = new Uint32Array(genCount);
-  }
-  for (let i = 0; i < genCount; i++) _genSortIdx[i] = i;
-  const genView = _genSortIdx.subarray(0, genCount);
-  genView.sort((a, b) => _genPredDist[a] - _genPredDist[b]);
-
-  // 6. Queue generation in predicted-distance order.
-  let requestedThisTick = 0;
-  for (let g = 0; g < genCount && requestedThisTick < MAX_NEW_CHUNKS_PER_TICK; g++) {
-    const gi = genView[g];
-    const i = _genSrcIdx[gi];
-    const origIdx = indicesView[i];
-    const cx = _candCx[origIdx];
-    const cy = _candCy[origIdx];
-    const cz = _candCz[origIdx];
-    const key = wantedKeys[i];
-    const coord: ChunkCoord = { x: cx, y: cy, z: cz };
-    state.queue.push({ coord, key, epoch });
-    state.queuedKeys.add(key);
-    requestedThisTick++;
-  }
-
-  // 7. Prune generatedKeys to the wanted set. Chunks that are no longer
-  // wanted get "forgotten" so they can be re-generated if needed. This
-  // keeps the worker in sync with the main thread (which also prunes its
-  // runtime to wanted+rendered chunks).
-  const wantedSet = new Set(wantedKeys);
-  state.generatedKeys.forEach((key) => {
-    if (!wantedSet.has(key)) {
-      state.generatedKeys.delete(key);
-    }
-  });
-
-  // Also drop queued generation jobs for chunks no longer wanted.
-  if (state.queue.length > 0) {
-    state.queue = state.queue.filter((job) => wantedSet.has(job.key));
-    state.queuedKeys.clear();
-    for (const job of state.queue) state.queuedKeys.add(job.key);
-  }
-
-  // 8. Send result back to main thread.
-  const msg: AsteroidChunkWorkerWorkerToMainMessage = {
-    type: "streamingResult",
-    fieldId: state.fieldId,
-    epoch,
-    wantedKeys,
-    removeRenderKeys,
-    wantedDists,
-  };
-
-  (self as any).postMessage(msg, [wantedDists.buffer]);
-
-  // 9. Kick the generation pump if we queued new work.
-  if (requestedThisTick > 0) {
-    pump(state);
   }
 }
 
@@ -406,12 +138,6 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
     case "init": {
       const shape = prepareFieldShape(msg.field.shape);
 
-      const effectiveLoadRadiusKm = computeEffectiveLoadRadius(
-        msg.streaming.loadRadiusKm,
-        msg.chunkSizeKm,
-        msg.streaming.maxActiveChunks,
-      );
-
       const state: FieldState = {
         fieldId: msg.fieldId,
         field: msg.field,
@@ -421,16 +147,10 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
         maxAsteroidsPerChunk: msg.maxAsteroidsPerChunk,
         epoch: msg.epoch,
 
-        loadRadiusKm: msg.streaming.loadRadiusKm,
-        maxActiveChunks: msg.streaming.maxActiveChunks,
-        drawRadiusKm: msg.streaming.drawRadiusKm,
-        effectiveLoadRadiusKm,
-
-        generatedKeys: new Set<string>(),
-
         queue: [],
         queuedKeys: new Set<string>(),
         busy: false,
+        generatedKeys: new Set<string>(),
       };
 
       states.set(msg.fieldId, state);
@@ -448,29 +168,36 @@ self.onmessage = (ev: MessageEvent<AsteroidChunkWorkerMainToWorkerMessage>) => {
       return;
     }
 
-    case "generate": {
+    case "generateChunks": {
       const state = states.get(msg.fieldId);
       if (!state) return;
-
       if (msg.epoch !== state.epoch) return;
 
-      const key = makeChunkKey(msg.fieldId, msg.coord);
-      if (state.queuedKeys.has(key)) return;
+      // APPEND to queue. Skip already-generated or already-queued keys.
+      for (let i = 0; i < msg.items.length; i++) {
+        const item = msg.items[i];
+        const coord: ChunkCoord = { x: item.cx, y: item.cy, z: item.cz };
+        const key = makeChunkKey(msg.fieldId, coord);
 
-      state.queue.push({ coord: msg.coord, key, epoch: msg.epoch });
-      state.queuedKeys.add(key);
+        if (state.generatedKeys.has(key)) continue;
+        if (state.queuedKeys.has(key)) continue;
+
+        state.queue.push({ coord, key, epoch: msg.epoch });
+        state.queuedKeys.add(key);
+      }
 
       pump(state);
       return;
     }
 
-    case "streamingTick": {
+    case "forgetChunks": {
       const state = states.get(msg.fieldId);
       if (!state) return;
-
       if (msg.epoch !== state.epoch) return;
 
-      handleStreamingTick(state, msg.px, msg.py, msg.pz, msg.vx, msg.vy, msg.vz, msg.epoch);
+      for (let i = 0; i < msg.keys.length; i++) {
+        state.generatedKeys.delete(msg.keys[i]);
+      }
       return;
     }
   }

@@ -1,6 +1,5 @@
 import type {
   AsteroidChunkData,
-  ChunkCoord,
 } from "@/sim/asteroids/runtimeTypes";
 import type { AsteroidFieldDef, WeightedModelRef } from "@/sim/systemTypes";
 
@@ -14,19 +13,29 @@ export type AsteroidChunkWorkerInitMsg = {
   chunkSizeKm: number;
   maxAsteroidsPerChunk: number;
   epoch: number;
-  /** Streaming config so the worker can run the full planning loop. */
-  streaming: {
-    loadRadiusKm: number;
-    maxActiveChunks: number;
-    drawRadiusKm: number;
-  };
 };
 
-export type AsteroidChunkWorkerGenerateMsg = {
-  type: "generate";
+/**
+ * Incremental generation request. Worker APPENDS these to its queue
+ * (does not replace). Worker deduplicates via generatedKeys + queuedKeys.
+ */
+export type AsteroidChunkWorkerGenerateChunksMsg = {
+  type: "generateChunks";
   fieldId: string;
-  coord: ChunkCoord;
   epoch: number;
+  items: Array<{ cx: number; cy: number; cz: number }>;
+};
+
+/**
+ * Tell the worker to forget specific chunk keys so they can be
+ * re-generated if the player returns to the area. Sent when the
+ * main thread unloads chunks from fieldRuntime.
+ */
+export type AsteroidChunkWorkerForgetChunksMsg = {
+  type: "forgetChunks";
+  fieldId: string;
+  epoch: number;
+  keys: string[];
 };
 
 export type AsteroidChunkWorkerSetEpochMsg = {
@@ -35,30 +44,11 @@ export type AsteroidChunkWorkerSetEpochMsg = {
   epoch: number;
 };
 
-/**
- * Sent every streaming tick from the main thread. Contains the player
- * position in field-local km so the worker can run the full chunk
- * planning computation (triple loop + sort + wanted set + unloads).
- */
-export type AsteroidChunkWorkerStreamingTickMsg = {
-  type: "streamingTick";
-  fieldId: string;
-  epoch: number;
-  /** Player position in field-local km. */
-  px: number;
-  py: number;
-  pz: number;
-  /** Player velocity in field-local km/s (for generation look-ahead). */
-  vx: number;
-  vy: number;
-  vz: number;
-};
-
 export type AsteroidChunkWorkerMainToWorkerMessage =
   | AsteroidChunkWorkerInitMsg
-  | AsteroidChunkWorkerGenerateMsg
-  | AsteroidChunkWorkerSetEpochMsg
-  | AsteroidChunkWorkerStreamingTickMsg;
+  | AsteroidChunkWorkerGenerateChunksMsg
+  | AsteroidChunkWorkerForgetChunksMsg
+  | AsteroidChunkWorkerSetEpochMsg;
 
 // ── Worker → Main ───────────────────────────────────────────────────
 
@@ -77,27 +67,6 @@ export type AsteroidChunkWorkerErrorMsg = {
   stack?: string;
 };
 
-/**
- * Result of the worker-side streaming tick. Contains the full planning
- * output so the main thread just applies the results without any heavy
- * computation.
- */
-export type AsteroidChunkWorkerStreamingResultMsg = {
-  type: "streamingResult";
-  fieldId: string;
-  epoch: number;
-  /** Keys the worker considers wanted (closest N chunks). */
-  wantedKeys: string[];
-  /** Keys that are beyond draw radius (should be removed from rendering). */
-  removeRenderKeys: string[];
-  /**
-   * Distance per wanted key (same order as wantedKeys).
-   * Main thread uses these for LOD tier assignment.
-   */
-  wantedDists: Float64Array;
-};
-
 export type AsteroidChunkWorkerWorkerToMainMessage =
   | AsteroidChunkWorkerGeneratedMsg
-  | AsteroidChunkWorkerErrorMsg
-  | AsteroidChunkWorkerStreamingResultMsg;
+  | AsteroidChunkWorkerErrorMsg;

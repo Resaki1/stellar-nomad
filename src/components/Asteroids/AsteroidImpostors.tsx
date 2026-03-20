@@ -139,21 +139,20 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
       const edge = smoothstep(float(1.0), float(0.45), dist);
       Discard(edge.lessThan(0.01));
 
-      // World-space directional shading: project the sun direction onto
-      // the billboard's implicit normal hemisphere.
+      // Directional shading: project the sun direction onto the
+      // billboard's implicit normal hemisphere.
       //
-      // The billboard faces the camera, so we treat `p` as a tangent-
-      // space direction on a virtual hemisphere. We construct a pseudo-
-      // normal by combining the 2D position with a dome height and dot
-      // it against the sun direction (already in world space — close
-      // enough for distant dots).
+      // The billboard faces the camera, so the pseudoNormal is in VIEW
+      // space (x = right, y = up, z = toward camera). Transform the
+      // world-space sun direction into view space to match.
       const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
       const pseudoNormal = normalize(vec3(p.x, p.y, domeZ));
-      const sunDot = max(float(0), dot(pseudoNormal, uSunDir));
-      const shade = float(0.15).add(float(0.45).mul(sunDot));
+      const viewSunDir = normalize(cameraViewMatrix.mul(vec4(uSunDir, float(0))).xyz);
+      const sunDot = max(float(0), dot(pseudoNormal, viewSunDir));
+      const shade = float(0.15).add(float(8.0).mul(sunDot));
 
       // rocky grey
-      const color = vec3(0.2, 0.2, 0.2).mul(shade);
+      const color = vec3(0.1, 0.1, 0.1).mul(shade);
 
       // Distance fade via alphaHash: opacity ramps 1→0 over the fade zone.
       // vCenterDist is a varying computed in the vertex stage from the
@@ -207,13 +206,21 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     mesh.visible = false;
     let idx = 0;
 
-    const farStart = nearRadiusKm - fadeOutKm;
+    // Hard LOD switch: skip chunks inside the near tier radius (3D
+    // models handle those). Impostors start exactly at nearRadiusKm.
     const distances = chunkDistancesRef.current;
 
+    // Sort by distance so closest chunks get priority in the buffer.
+    const sorted: Array<[string, AsteroidChunkData]> = [];
     renderedMapRef.current.forEach((chunk, key) => {
       const d = distances.get(key) ?? 0;
-      if (d < farStart) return;
+      if (d < nearRadiusKm) return; // covered by near tier 3D models
+      sorted.push([key, chunk]);
+    });
+    sorted.sort((a, b) => (distances.get(a[0]) ?? 1e9) - (distances.get(b[0]) ?? 1e9));
 
+    for (let si = 0; si < sorted.length && idx < MAX_IMPOSTOR_INSTANCES; si++) {
+      const chunk = sorted[si][1];
       const ox = chunk.originKm[0] * 1000;
       const oy = chunk.originKm[1] * 1000;
       const oz = chunk.originKm[2] * 1000;
@@ -230,14 +237,12 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
           interleavedArray[off] = ox + positions[pi];
           interleavedArray[off + 1] = oy + positions[pi + 1];
           interleavedArray[off + 2] = oz + positions[pi + 2];
-          // Scale down to ~40% of bounding radius → closer to the visual
-          // silhouette of an irregular rocky mesh.
           interleavedArray[off + 3] = radii[i] * 0.4;
 
           idx++;
         }
       }
-    });
+    }
 
     mesh.count = idx;
     interleavedBuffer.needsUpdate = true;
