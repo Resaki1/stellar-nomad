@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
-import { GpuSlotAllocator } from "./GpuSlotAllocator";
+import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "./GpuSlotAllocator";
 import {
   createCullComputeNode,
   createCullUniforms,
@@ -12,8 +12,9 @@ import {
 } from "./asteroidCullCompute";
 
 /**
- * Upper bound for instances per model in the near tier.
- * GPU-resident with indirect draw — only visible instances reach the vertex shader.
+ * Max visible near-tier instances per model in the output buffer.
+ * The allocator may hold more (MAX_INSTANCES_PER_MODEL), but the
+ * near tier only renders a subset within nearRadius.
  */
 export const MAX_NEAR_INSTANCES = 4096 * 32;
 
@@ -61,6 +62,7 @@ const ModelBatch = memo(function ModelBatch({
   const { computeNode, resetNode, outputAttr, indirectAttr } = useMemo(
     () => createCullComputeNode(
       allocator,
+      MAX_INSTANCES_PER_MODEL,
       MAX_NEAR_INSTANCES,
       uniforms,
       asset.geometry.index ? asset.geometry.index.count : asset.geometry.attributes.position.count,

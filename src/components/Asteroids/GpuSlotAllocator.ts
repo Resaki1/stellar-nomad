@@ -1,4 +1,10 @@
 import { StorageBufferAttribute } from "three/webgpu";
+
+/**
+ * Max instances per model type in the GPU allocator. Both near and far
+ * tier compute shaders read from the same allocator buffer.
+ */
+export const MAX_INSTANCES_PER_MODEL = 4096 * 128; // 524288
 import type { AsteroidChunkModelInstances } from "@/sim/asteroids/runtimeTypes";
 
 /**

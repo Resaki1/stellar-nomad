@@ -68,7 +68,7 @@ const HIGHLIGHT_HALO_WIDTH_PX = 7.0;
 const PLAYER_SHIP_NAME = "playerShip";
 
 // Ping Array
-const MAX_PING_INDICATORS = 60;
+const MAX_PING_INDICATORS = 128;
 
 // --------------------
 // Colors (no arrays in JSX)

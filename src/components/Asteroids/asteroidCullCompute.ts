@@ -20,7 +20,7 @@ import {
 } from "three/webgpu";
 import type { GpuSlotAllocator } from "./GpuSlotAllocator";
 
-// ─── Types ─────────────────────────────────────────────────────────
+// ─── Near tier types ────────────────────────────────────────────────
 
 export type CullComputeUniforms = {
   uCameraPos: ReturnType<typeof uniform<THREE.Vector3>>;
@@ -30,8 +30,6 @@ export type CullComputeUniforms = {
   uInvBaseRadius: ReturnType<typeof uniform<number>>;
   uBaseScale: ReturnType<typeof uniform<number>>;
 };
-
-// ─── Uniform factory ───────────────────────────────────────────────
 
 export function createCullUniforms(): CullComputeUniforms {
   return {
@@ -44,41 +42,53 @@ export function createCullUniforms(): CullComputeUniforms {
   };
 }
 
-// ─── Compute node factory ──────────────────────────────────────────
+// ─── Far tier types ─────────────────────────────────────────────────
+
+export type FarCullComputeUniforms = {
+  uCameraPos: ReturnType<typeof uniform<THREE.Vector3>>;
+  uNearRadiusM: ReturnType<typeof uniform<number>>;
+  uFarRadiusM: ReturnType<typeof uniform<number>>;
+  uFrustum: ReturnType<typeof uniform<THREE.Vector4>>[];
+};
+
+export function createFarCullUniforms(): FarCullComputeUniforms {
+  return {
+    uCameraPos: uniform(new THREE.Vector3()),
+    uNearRadiusM: uniform(0),
+    uFarRadiusM: uniform(0),
+    uFrustum: Array.from({ length: 6 }, () => uniform(new THREE.Vector4())),
+  };
+}
+
+// ─── Near tier compute ──────────────────────────────────────────────
 
 /**
- * Creates a TSL compute node that:
- * 1. Reads per-instance (pos, quat, radius) from inputStorage
- * 2. Performs frustum culling + distance check
- * 3. Compacts visible instances to the front of the output buffer
- * 4. Writes the visible count to an indirect draw buffer (instanceCount)
- *
- * Only visible instances enter the vertex shader — invisible ones are
- * skipped entirely via drawIndexedIndirect, not degenerate matrices.
+ * GPU compute: cull + compact for the near tier (3D models).
+ * Reads all allocator slots, keeps instances within nearRadius + frustum,
+ * outputs compacted mat4s for indirect draw.
  */
 export function createCullComputeNode(
   allocator: GpuSlotAllocator,
-  maxInstances: number,
+  maxAllocSlots: number,
+  maxOutputInstances: number,
   uniforms: CullComputeUniforms,
   indexCount: number,
 ) {
-  // Input: 2 × vec4 per instance (pos+radius, quat)
-  const inputNode = storage(allocator.inputAttr, "vec4", maxInstances * 2).toReadOnly();
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
 
-  // Output: 4 × vec4 per instance (= mat4 column-major, compacted).
-  const outputAttr = new StorageInstancedBufferAttribute(maxInstances, 16);
-  const outputNode = storage(outputAttr, "vec4", maxInstances * 4);
+  const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 16);
+  const outputNode = storage(outputAttr, "vec4", maxOutputInstances * 4);
 
-  // Indirect draw args: [indexCount, instanceCount, firstIndex, baseVertex, firstInstance]
-  // The compute shader atomically increments instanceCount for each visible instance.
   const indirectAttr = new IndirectStorageBufferAttribute(5, 1);
   indirectAttr.array[0] = indexCount;
-  indirectAttr.array[1] = 0; // instanceCount — reset each frame, compute increments
+  indirectAttr.array[1] = 0;
   indirectAttr.array[2] = 0;
   indirectAttr.array[3] = 0;
   indirectAttr.array[4] = 0;
 
   const indirectNode = storage(indirectAttr, "uint", 5).toAtomic();
+
+  const maxOut = uint(maxOutputInstances);
 
   const {
     uCameraPos, uNearRadiusM, uFrustum,
@@ -88,21 +98,19 @@ export function createCullComputeNode(
   const computeFn = Fn(() => {
     const i = instanceIndex;
 
-    // Read instance data: slot i → elements [i*2] and [i*2+1]
     const posRadius = inputNode.element(i.mul(2));
     const quat = inputNode.element(i.mul(2).add(1));
     const radius = posRadius.w;
 
-    // ── Visibility checks (branchless for the test) ─────────────
     // Dead slot: radius ≤ 0
     const alive = step(float(0.001), radius);
 
-    // Distance check: beyond near radius → invisible
+    // Distance: within near radius
     const toCamera = posRadius.xyz.sub(uCameraPos);
     const dist = length(toCamera);
     const inRange = float(1.0).sub(step(uNearRadiusM, dist));
 
-    // Frustum test: dot(center, plane.xyz) + plane.w > -radius for all 6 planes
+    // Frustum test
     let inFrustum = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
@@ -112,51 +120,47 @@ export function createCullComputeNode(
 
     const visible = alive.mul(inRange).mul(inFrustum);
 
-    // ── Compact visible instances to the front of the output ────
-    // Only visible instances get a matrix; invisible ones are skipped
-    // entirely by drawIndexedIndirect (no wasted vertex processing).
     If(visible.greaterThan(0.5), () => {
-      // Atomic counter gives us the compact output index.
       const outIdx = atomicAdd(indirectNode.element(1), uint(1));
 
-      const s = radius.mul(uInvBaseRadius).mul(uBaseScale);
+      // Output buffer overflow guard.
+      If(outIdx.lessThan(maxOut), () => {
+        const s = radius.mul(uInvBaseRadius).mul(uBaseScale);
 
-      // ── Quaternion multiply: instanceQuat × baseQuat ──────────
-      const ax = quat.x, ay = quat.y, az = quat.z, aw = quat.w;
-      const bx = uBaseQuat.x, by = uBaseQuat.y, bz = uBaseQuat.z, bw = uBaseQuat.w;
+        // Quaternion multiply: instanceQuat × baseQuat
+        const ax = quat.x, ay = quat.y, az = quat.z, aw = quat.w;
+        const bx = uBaseQuat.x, by = uBaseQuat.y, bz = uBaseQuat.z, bw = uBaseQuat.w;
 
-      const cx = aw.mul(bx).add(ax.mul(bw)).add(ay.mul(bz)).sub(az.mul(by));
-      const cy = aw.mul(by).sub(ax.mul(bz)).add(ay.mul(bw)).add(az.mul(bx));
-      const cz = aw.mul(bz).add(ax.mul(by)).sub(ay.mul(bx)).add(az.mul(bw));
-      const cw = aw.mul(bw).sub(ax.mul(bx)).sub(ay.mul(by)).sub(az.mul(bz));
+        const cx = aw.mul(bx).add(ax.mul(bw)).add(ay.mul(bz)).sub(az.mul(by));
+        const cy = aw.mul(by).sub(ax.mul(bz)).add(ay.mul(bw)).add(az.mul(bx));
+        const cz = aw.mul(bz).add(ax.mul(by)).sub(ay.mul(bx)).add(az.mul(bw));
+        const cw = aw.mul(bw).sub(ax.mul(bx)).sub(ay.mul(by)).sub(az.mul(bz));
 
-      // ── TRS → mat4 (column-major) ────────────────────────────
-      const x2 = cx.add(cx), y2 = cy.add(cy), z2 = cz.add(cz);
-      const xx = cx.mul(x2), xy = cx.mul(y2), xz = cx.mul(z2);
-      const yy = cy.mul(y2), yz = cy.mul(z2), zz = cz.mul(z2);
-      const wx = cw.mul(x2), wy = cw.mul(y2), wz = cw.mul(z2);
+        // TRS → mat4
+        const x2 = cx.add(cx), y2 = cy.add(cy), z2 = cz.add(cz);
+        const xx = cx.mul(x2), xy = cx.mul(y2), xz = cx.mul(z2);
+        const yy = cy.mul(y2), yz = cy.mul(z2), zz = cz.mul(z2);
+        const wx = cw.mul(x2), wy = cw.mul(y2), wz = cw.mul(z2);
 
-      // Write 4 columns of the mat4 to the compacted output.
-      const base = outIdx.mul(4);
-      outputNode.element(base).assign(
-        vec4(float(1).sub(yy.add(zz)).mul(s), xy.add(wz).mul(s), xz.sub(wy).mul(s), float(0))
-      );
-      outputNode.element(base.add(1)).assign(
-        vec4(xy.sub(wz).mul(s), float(1).sub(xx.add(zz)).mul(s), yz.add(wx).mul(s), float(0))
-      );
-      outputNode.element(base.add(2)).assign(
-        vec4(xz.add(wy).mul(s), yz.sub(wx).mul(s), float(1).sub(xx.add(yy)).mul(s), float(0))
-      );
-      outputNode.element(base.add(3)).assign(
-        vec4(posRadius.x, posRadius.y, posRadius.z, float(1))
-      );
+        const base = outIdx.mul(4);
+        outputNode.element(base).assign(
+          vec4(float(1).sub(yy.add(zz)).mul(s), xy.add(wz).mul(s), xz.sub(wy).mul(s), float(0))
+        );
+        outputNode.element(base.add(1)).assign(
+          vec4(xy.sub(wz).mul(s), float(1).sub(xx.add(zz)).mul(s), yz.add(wx).mul(s), float(0))
+        );
+        outputNode.element(base.add(2)).assign(
+          vec4(xz.add(wy).mul(s), yz.sub(wx).mul(s), float(1).sub(xx.add(yy)).mul(s), float(0))
+        );
+        outputNode.element(base.add(3)).assign(
+          vec4(posRadius.x, posRadius.y, posRadius.z, float(1))
+        );
+      });
     });
   });
 
-  const computeNode = computeFn().compute(maxInstances);
+  const computeNode = computeFn().compute(maxAllocSlots);
 
-  // Reset compute: zeros the atomic instanceCount before the cull pass.
-  // Runs on GPU (1 thread) so there's no CPU→GPU race with needsUpdate.
   const resetFn = Fn(() => {
     atomicStore(indirectNode.element(1), uint(0));
   });
@@ -165,16 +169,91 @@ export function createCullComputeNode(
   return { computeNode, resetNode, outputAttr, indirectAttr };
 }
 
-// ─── Frustum plane extraction helper ───────────────────────────────
+// ─── Far tier compute ───────────────────────────────────────────────
+
+/**
+ * GPU compute: cull + compact for the far tier (billboard impostors).
+ * Band-pass distance filter: nearRadius ≤ dist < farRadius.
+ * Outputs compacted vec4(pos.xyz, radius) packed into mat4 column 0.
+ */
+export function createFarCullComputeNode(
+  allocator: GpuSlotAllocator,
+  maxAllocSlots: number,
+  maxOutputInstances: number,
+  uniforms: FarCullComputeUniforms,
+) {
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
+
+  // Output: one vec4(pos.xyz, radius) per visible instance.
+  // Added to the geometry as a named instanced attribute "aFarData".
+  const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 4);
+  const outputNode = storage(outputAttr, "vec4", maxOutputInstances);
+
+  // Indirect draw: PlaneGeometry has 6 indices (2 triangles).
+  const indirectAttr = new IndirectStorageBufferAttribute(5, 1);
+  indirectAttr.array[0] = 6; // indexCount for PlaneGeometry
+  indirectAttr.array[1] = 0;
+  indirectAttr.array[2] = 0;
+  indirectAttr.array[3] = 0;
+  indirectAttr.array[4] = 0;
+
+  const indirectNode = storage(indirectAttr, "uint", 5).toAtomic();
+
+  const maxOut = uint(maxOutputInstances);
+
+  const { uCameraPos, uNearRadiusM, uFarRadiusM, uFrustum } = uniforms;
+
+  const computeFn = Fn(() => {
+    const i = instanceIndex;
+
+    // Read only pos+radius (skip quat — billboards don't need orientation).
+    const posRadius = inputNode.element(i.mul(2));
+    const radius = posRadius.w;
+
+    const alive = step(float(0.001), radius);
+
+    // Band-pass: nearRadius ≤ dist < farRadius
+    const toCamera = posRadius.xyz.sub(uCameraPos);
+    const dist = length(toCamera);
+    const beyondNear = step(uNearRadiusM, dist);       // 1 if dist ≥ near
+    const withinFar = float(1.0).sub(step(uFarRadiusM, dist)); // 1 if dist < far
+    const inRange = beyondNear.mul(withinFar);
+
+    // Frustum test
+    let inFrustum = float(1.0);
+    for (let p = 0; p < 6; p++) {
+      const plane = uFrustum[p];
+      const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
+      inFrustum = inFrustum.mul(step(radius.negate(), d));
+    }
+
+    const visible = alive.mul(inRange).mul(inFrustum);
+
+    If(visible.greaterThan(0.5), () => {
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1));
+
+      If(outIdx.lessThan(maxOut), () => {
+        outputNode.element(outIdx).assign(
+          vec4(posRadius.x, posRadius.y, posRadius.z, radius)
+        );
+      });
+    });
+  });
+
+  const computeNode = computeFn().compute(maxAllocSlots);
+
+  const resetFn = Fn(() => {
+    atomicStore(indirectNode.element(1), uint(0));
+  });
+  const resetNode = resetFn().compute(1);
+
+  return { computeNode, resetNode, outputAttr, indirectAttr };
+}
+
+// ─── Frustum plane extraction helper ────────────────────────────────
 
 const _projScreen = new THREE.Matrix4();
 
-/**
- * Extract 6 frustum planes from a combined projection-view-model matrix.
- * Each plane is (nx, ny, nz, d) such that dot(point, normal) + d ≥ 0 means inside.
- *
- * Writes directly into the uniform vec4s — zero allocations per call.
- */
 export function extractFrustumPlanes(
   camera: THREE.Camera,
   meshMatrixWorld: THREE.Matrix4,
@@ -186,12 +265,12 @@ export function extractFrustumPlanes(
 
   const me = _projScreen.elements;
 
-  _setPlane(planes[0], me[3] + me[0], me[7] + me[4], me[11] + me[8],  me[15] + me[12]);  // left
-  _setPlane(planes[1], me[3] - me[0], me[7] - me[4], me[11] - me[8],  me[15] - me[12]);  // right
-  _setPlane(planes[2], me[3] + me[1], me[7] + me[5], me[11] + me[9],  me[15] + me[13]);  // bottom
-  _setPlane(planes[3], me[3] - me[1], me[7] - me[5], me[11] - me[9],  me[15] - me[13]);  // top
-  _setPlane(planes[4], me[3] + me[2], me[7] + me[6], me[11] + me[10], me[15] + me[14]);  // near
-  _setPlane(planes[5], me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]);  // far
+  _setPlane(planes[0], me[3] + me[0], me[7] + me[4], me[11] + me[8],  me[15] + me[12]);
+  _setPlane(planes[1], me[3] - me[0], me[7] - me[4], me[11] - me[8],  me[15] - me[12]);
+  _setPlane(planes[2], me[3] + me[1], me[7] + me[5], me[11] + me[9],  me[15] + me[13]);
+  _setPlane(planes[3], me[3] - me[1], me[7] - me[5], me[11] - me[9],  me[15] - me[13]);
+  _setPlane(planes[4], me[3] + me[2], me[7] + me[6], me[11] + me[10], me[15] + me[14]);
+  _setPlane(planes[5], me[3] - me[2], me[7] - me[6], me[11] - me[10], me[15] - me[14]);
 }
 
 function _setPlane(

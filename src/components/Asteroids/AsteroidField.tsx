@@ -7,9 +7,8 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import SimGroup from "@/components/space/SimGroup";
 import NearTierBatch from "@/components/Asteroids/NearTierBatch";
 import type { NearTierAllocators } from "@/components/Asteroids/NearTierBatch";
-import AsteroidImpostors from "@/components/Asteroids/AsteroidImpostors";
-import { GpuSlotAllocator } from "@/components/Asteroids/GpuSlotAllocator";
-import { MAX_NEAR_INSTANCES } from "@/components/Asteroids/NearTierBatch";
+import FarTierBatch from "@/components/Asteroids/FarTierBatch";
+import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "@/components/Asteroids/GpuSlotAllocator";
 
 import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
@@ -24,7 +23,7 @@ import {
   resolveFieldStreaming,
 } from "@/sim/systemTypes";
 
-import type { AsteroidChunkData, ChunkCoord } from "@/sim/asteroids/runtimeTypes";
+import type { ChunkCoord } from "@/sim/asteroids/runtimeTypes";
 import { makeChunkKey } from "@/sim/asteroids/runtimeTypes";
 
 import { useAsteroidModelRegistry } from "@/sim/asteroids/modelRegistry";
@@ -38,14 +37,7 @@ import type {
 
 // ─── Tuning constants ───────────────────────────────────────────────
 
-/**
- * Look-ahead time in seconds for generation priority. The planning
- * sphere is centered on (pos + vel × lookAhead) so chunks in the
- * direction of travel are discovered and generated first.
- */
 const GENERATION_LOOK_AHEAD_S = 2.0;
-
-/** Max new generation requests sent to worker per planning tick. */
 const MAX_GEN_REQUESTS_PER_TICK = 256;
 
 // Collision
@@ -97,7 +89,7 @@ function computeEffectiveLoadRadius(
   return Math.min(loadRadiusKm, sphereRadius + chunkSizeKm);
 }
 
-// ─── Pre-allocated candidate buffers (reused across planning ticks) ──
+// ─── Pre-allocated candidate buffers ────────────────────────────────
 const _MAX_CANDIDATES = 32768;
 let _candCx = new Int32Array(_MAX_CANDIDATES);
 let _candCy = new Int32Array(_MAX_CANDIDATES);
@@ -135,17 +127,14 @@ const FieldLayer = memo(function FieldLayer({
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
 
   const renderCfg = useMemo(() => resolveFieldRender(system, field), [system, field]);
-
   const streamingCfg = useMemo(
     () => resolveFieldStreaming(system, field, renderCfg.drawRadiusKm),
     [system, field, renderCfg.drawRadiusKm]
   );
-
   const generationCfg = useMemo(
     () => resolveFieldGeneration(system, field),
     [system, field]
   );
-
   const models = useMemo(() => resolveFieldModels(system, field), [system, field]);
   const shape = useMemo(() => prepareFieldShape(field.shape), [field.shape]);
 
@@ -163,17 +152,12 @@ const FieldLayer = memo(function FieldLayer({
     [asteroidRuntime, field.id]
   );
 
-  // ── Rendering state ─────────────────────────────────────────────
-  const renderedMapRef = useRef<Map<string, AsteroidChunkData>>(new Map());
-  const chunkDistancesKmRef = useRef<Map<string, number>>(new Map());
-  const renderedGenRef = useRef(0);
-
-  // GPU slot allocators: one per model type.
+  // ── GPU allocators: one per model, shared by near + far tiers ───
   const allocatorsRef = useRef<NearTierAllocators>(new Map());
   useMemo(() => {
     const allocs = new Map<string, GpuSlotAllocator>();
     modelRegistry.forEach((_asset, id) => {
-      allocs.set(id, new GpuSlotAllocator(MAX_NEAR_INSTANCES));
+      allocs.set(id, new GpuSlotAllocator(MAX_INSTANCES_PER_MODEL));
     });
     allocatorsRef.current = allocs;
   }, [modelRegistry]);
@@ -182,7 +166,7 @@ const FieldLayer = memo(function FieldLayer({
   const workerRef = useRef<Worker | null>(null);
   const epochRef = useRef(0);
 
-  // Planning tick throttle + velocity.
+  // Planning tick throttle + velocity
   const tickFrameRef = useRef(0);
   const prevFieldPosRef = useRef({ x: 0, y: 0, z: 0, valid: false });
 
@@ -190,24 +174,18 @@ const FieldLayer = memo(function FieldLayer({
   const collisionAccRef = useRef(0);
   const lastCollisionLogMsRef = useRef<Map<number, number>>(new Map());
 
-  // DEBUG: diagnostic timer for stuck chunks
-  const debugAccRef = useRef(0);
-
-  // Listen for chunk mutations from external systems (mining, collisions).
+  // ── Chunk mutation listener (mining/collision) ────────────────
+  // Re-allocates GPU slots when an external system mutates a chunk.
   useEffect(() => {
     const unsubscribe = fieldRuntime.onChunkUpdate((chunkKey, updatedChunk) => {
-      if (renderedMapRef.current.has(chunkKey)) {
-        renderedMapRef.current.set(chunkKey, updatedChunk);
-        renderedGenRef.current++;
-
-        allocatorsRef.current.forEach((alloc) => {
-          if (alloc.hasChunk(chunkKey)) alloc.freeChunk(chunkKey);
-        });
-        for (const modelId in updatedChunk.instancesByModel) {
-          const alloc = allocatorsRef.current.get(modelId);
-          if (alloc) {
-            alloc.allocateChunk(chunkKey, updatedChunk.originKm, updatedChunk.instancesByModel[modelId]);
-          }
+      // Re-sync GPU allocators for the mutated chunk.
+      allocatorsRef.current.forEach((alloc) => {
+        if (alloc.hasChunk(chunkKey)) alloc.freeChunk(chunkKey);
+      });
+      for (const modelId in updatedChunk.instancesByModel) {
+        const alloc = allocatorsRef.current.get(modelId);
+        if (alloc) {
+          alloc.allocateChunk(chunkKey, updatedChunk.originKm, updatedChunk.instancesByModel[modelId]);
         }
       }
     });
@@ -215,9 +193,7 @@ const FieldLayer = memo(function FieldLayer({
   }, [fieldRuntime]);
 
   const removeAsteroidInstance = useCallback(
-    (instanceId: number) => {
-      fieldRuntime.destroyInstance(instanceId);
-    },
+    (instanceId: number) => { fieldRuntime.destroyInstance(instanceId); },
     [fieldRuntime]
   );
 
@@ -233,9 +209,6 @@ const FieldLayer = memo(function FieldLayer({
 
   useEffect(() => {
     fieldRuntime.clear();
-    renderedMapRef.current.clear();
-    chunkDistancesKmRef.current.clear();
-    renderedGenRef.current++;
     allocatorsRef.current.forEach((alloc) => alloc.clear());
 
     epochRef.current += 1;
@@ -260,8 +233,16 @@ const FieldLayer = memo(function FieldLayer({
       if (msg.epoch !== epochRef.current) return;
 
       if (msg.type === "generated") {
-        // Upsert into runtime. Phase A will pick it up next frame.
-        fieldRuntime.upsertChunk(msg.chunk);
+        const chunk = msg.chunk;
+        fieldRuntime.upsertChunk(chunk);
+
+        // Immediately allocate GPU slots so both compute shaders see it next frame.
+        for (const modelId in chunk.instancesByModel) {
+          const alloc = allocatorsRef.current.get(modelId);
+          if (alloc) {
+            alloc.allocateChunk(chunk.key, chunk.originKm, chunk.instancesByModel[modelId]);
+          }
+        }
         return;
       }
     };
@@ -312,9 +293,7 @@ const FieldLayer = memo(function FieldLayer({
   ]);
 
   useEffect(() => {
-    return () => {
-      fieldRuntime.clear();
-    };
+    return () => { fieldRuntime.clear(); };
   }, [asteroidRuntime, field.id, fieldRuntime]);
 
   // ── Frame loop ──────────────────────────────────────────────────
@@ -331,13 +310,7 @@ const FieldLayer = memo(function FieldLayer({
     const distToFieldKm = shape.distanceToKm(px, py, pz);
     if (distToFieldKm > streamingCfg.unloadRadiusKm) {
       if (fieldRuntime.chunks.size > 0) fieldRuntime.clear();
-
-      if (renderedMapRef.current.size > 0) {
-        renderedMapRef.current.clear();
-        chunkDistancesKmRef.current.clear();
-        renderedGenRef.current++;
-        allocatorsRef.current.forEach((alloc) => alloc.clear());
-      }
+      allocatorsRef.current.forEach((alloc) => alloc.clear());
 
       epochRef.current += 1;
       prevFieldPosRef.current.valid = false;
@@ -354,133 +327,12 @@ const FieldLayer = memo(function FieldLayer({
       return;
     }
 
-    // ── Phase A: Sync rendered state from fieldRuntime. ─────────
-    // Iterate all loaded chunks. Add/remove from rendered based on
-    // actual player distance. Sync GPU allocations for near/far.
-    // This is the Minecraft model: rendered = loaded ∩ drawRadius.
-    {
-      const rendered = renderedMapRef.current;
-      const distances = chunkDistancesKmRef.current;
-      const nearR = renderCfg.nearRadiusKm;
-      const drawR = renderCfg.drawRadiusKm;
-      let changed = false;
-
-      // 1. Sync loaded chunks → rendered.
-      fieldRuntime.chunks.forEach((chunk, key) => {
-        const d = chunkDistKm(
-          px, py, pz,
-          chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
-          chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
-        );
-        distances.set(key, d);
-
-        if (d <= drawR) {
-          if (!rendered.has(key)) {
-            // New chunk entering draw range — always add to rendered
-            // so the far tier (impostors) can display it. GPU allocation
-            // for the near tier is best-effort on top of that.
-            rendered.set(key, chunk);
-            changed = true;
-
-            if (d <= nearR) {
-              // Best-effort GPU allocation per model. Models that can't
-              // fit stay as impostors — no rollback, no all-or-nothing.
-              for (const modelId in chunk.instancesByModel) {
-                const alloc = allocatorsRef.current.get(modelId);
-                if (alloc) {
-                  alloc.allocateChunk(key, chunk.originKm, chunk.instancesByModel[modelId]);
-                }
-              }
-            }
-          } else {
-            // Already rendered — sync GPU near/far transitions.
-            if (d <= nearR) {
-              for (const modelId in chunk.instancesByModel) {
-                const alloc = allocatorsRef.current.get(modelId);
-                if (alloc && !alloc.hasChunk(key)) {
-                  if (alloc.allocateChunk(key, chunk.originKm, chunk.instancesByModel[modelId])) {
-                    changed = true;
-                  }
-                }
-              }
-            } else {
-              allocatorsRef.current.forEach((alloc) => {
-                if (alloc.hasChunk(key)) {
-                  alloc.freeChunk(key);
-                  changed = true;
-                }
-              });
-            }
-          }
-        } else {
-          // Beyond draw range — remove if rendered.
-          if (rendered.has(key)) {
-            rendered.delete(key);
-            distances.delete(key);
-            for (const modelId in chunk.instancesByModel) {
-              allocatorsRef.current.get(modelId)?.freeChunk(key);
-            }
-            changed = true;
-          }
-        }
-      });
-
-      // 2. Clean up rendered entries whose chunks were unloaded
-      //    (by Phase B's unload from the previous frame).
-      rendered.forEach((_, key) => {
-        if (!fieldRuntime.hasChunk(key)) {
-          rendered.delete(key);
-          distances.delete(key);
-          allocatorsRef.current.forEach((alloc) => {
-            if (alloc.hasChunk(key)) alloc.freeChunk(key);
-          });
-          changed = true;
-        }
-      });
-
-      if (changed) renderedGenRef.current++;
-    }
-
-    // ── DEBUG: Report all chunks within 10km every 2 seconds ────
-    debugAccRef.current += delta;
-    if (debugAccRef.current >= 2) {
-      debugAccRef.current = 0;
-      const rendered = renderedMapRef.current;
-      const nearbyInfo: string[] = [];
-      fieldRuntime.chunks.forEach((chunk, key) => {
-        const d = chunkDistKm(
-          px, py, pz,
-          chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
-          chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
-        );
-        if (d > 10) return; // only chunks within 10km
-        const inRendered = rendered.has(key);
-        const renderedChunk = rendered.get(key);
-        const modelIds = Object.keys(chunk.instancesByModel);
-        const gpuState = modelIds.map((mid) => {
-          const alloc = allocatorsRef.current.get(mid);
-          const ftCount = chunk.instancesByModel[mid].count;
-          const rtSame = renderedChunk ? renderedChunk.instancesByModel[mid] === chunk.instancesByModel[mid] : false;
-          return `${mid}(count=${ftCount},gpu=${alloc?.hasChunk(key)},sameRef=${rtSame})`;
-        });
-        nearbyInfo.push(
-          `  ${key} d=${d.toFixed(2)}km rendered=${inRendered} models=[${gpuState.join(", ")}]`
-        );
-      });
-      if (nearbyInfo.length > 0) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[DEBUG] ${nearbyInfo.length} chunks within 10km.`,
-          `ftSize=${fieldRuntime.chunks.size} rendSize=${rendered.size}`,
-          `nearR=${renderCfg.nearRadiusKm} drawR=${renderCfg.drawRadiusKm}`,
-          `\n${nearbyInfo.join("\n")}`
-        );
-      }
-    }
+    // ── Phase A: Nothing. ───────────────────────────────────────
+    // GPU allocations happen in onMessage (chunk arrives → allocate)
+    // and in Phase B (chunk unloads → free). Both compute shaders
+    // read the allocator buffer directly — no CPU per-frame sync.
 
     // ── Phase B: Planning (every 2 frames). ─────────────────────
-    // Discover which chunks should be loaded, request generation for
-    // new ones, unload chunks that left the load sphere.
     const prev = prevFieldPosRef.current;
     let vx = 0, vy = 0, vz = 0;
     if (prev.valid && delta > 0) {
@@ -500,7 +352,7 @@ const FieldLayer = memo(function FieldLayer({
       const loadR = effectiveLoadRadiusKm;
       const chunkSizeKm = streamingCfg.chunkSizeKm;
 
-      // 1. Predicted position for candidate discovery.
+      // Predicted position for generation priority.
       const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
       const lookAheadKm = Math.min(speed * GENERATION_LOOK_AHEAD_S, loadR * 0.5);
       let predX = px, predY = py, predZ = pz;
@@ -511,7 +363,7 @@ const FieldLayer = memo(function FieldLayer({
         predZ += vz * scale;
       }
 
-      // 2. Triple loop: find candidates within load radius of predicted pos.
+      // Triple loop: candidates within load radius of predicted pos.
       const [minCx, maxCx] = computeChunkRange(predX, loadR, chunkSizeKm);
       const [minCy, maxCy] = computeChunkRange(predY, loadR, chunkSizeKm);
       const [minCz, maxCz] = computeChunkRange(predZ, loadR, chunkSizeKm);
@@ -543,7 +395,7 @@ const FieldLayer = memo(function FieldLayer({
         }
       }
 
-      // 3. Sort by predicted distance, cap to maxActiveChunks.
+      // Sort by predicted distance, cap to maxActiveChunks.
       if (candidateCount > _candIndices.length) {
         _candIndices = new Uint32Array(candidateCount);
       }
@@ -553,7 +405,7 @@ const FieldLayer = memo(function FieldLayer({
 
       const capped = Math.min(candidateCount, streamingCfg.maxActiveChunks);
 
-      // 4. Build "should be loaded" set + collect generation requests.
+      // Build "should be loaded" set + collect generation requests.
       const shouldBeLoaded = new Set<string>();
       const genItems: Array<{ cx: number; cy: number; cz: number }> = [];
 
@@ -571,7 +423,7 @@ const FieldLayer = memo(function FieldLayer({
         }
       }
 
-      // 5. Unload chunks not in the "should be loaded" set.
+      // Unload chunks not in shouldBeLoaded + free GPU slots.
       const unloadKeys: string[] = [];
       fieldRuntime.chunks.forEach((_, key) => {
         if (!shouldBeLoaded.has(key)) {
@@ -580,10 +432,12 @@ const FieldLayer = memo(function FieldLayer({
       });
       for (let i = 0; i < unloadKeys.length; i++) {
         fieldRuntime.removeChunk(unloadKeys[i]);
+        allocatorsRef.current.forEach((alloc) => {
+          if (alloc.hasChunk(unloadKeys[i])) alloc.freeChunk(unloadKeys[i]);
+        });
       }
 
-      // 6. Tell worker to forget unloaded keys (so it can re-generate
-      //    them if the player returns to the area).
+      // Tell worker to forget unloaded keys.
       if (unloadKeys.length > 0) {
         const w = workerRef.current;
         if (w) {
@@ -596,7 +450,7 @@ const FieldLayer = memo(function FieldLayer({
         }
       }
 
-      // 7. Send generation requests (append, not replace).
+      // Send generation requests (append, not replace).
       if (genItems.length > 0) {
         const w = workerRef.current;
         if (w) {
@@ -610,7 +464,7 @@ const FieldLayer = memo(function FieldLayer({
       }
     }
 
-    // ── Phase C: Collision checks ───────────────────────────────────
+    // ── Phase C: Collision checks ───────────────────────────────
     if (collisionAccRef.current >= COLLISION_INTERVAL_S) {
       collisionAccRef.current = 0;
 
@@ -730,13 +584,12 @@ const FieldLayer = memo(function FieldLayer({
       />
 
       {renderCfg.farRadiusKm > 0 && (
-        <AsteroidImpostors
-          renderedMapRef={renderedMapRef}
-          chunkDistancesRef={chunkDistancesKmRef}
-          renderedGenRef={renderedGenRef}
-          nearRadiusKm={Math.max(0, renderCfg.nearRadiusKm - Math.sqrt(3) * streamingCfg.chunkSizeKm)}
+        <FarTierBatch
+          nearRadiusKm={renderCfg.nearRadiusKm}
           farRadiusKm={renderCfg.farRadiusKm}
           fadeOutKm={renderCfg.crossFadeKm}
+          modelRegistry={modelRegistry}
+          allocatorsRef={allocatorsRef}
         />
       )}
     </SimGroup>
