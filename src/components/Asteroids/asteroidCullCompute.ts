@@ -22,13 +22,22 @@ import type { GpuSlotAllocator } from "./GpuSlotAllocator";
 
 // ─── Near tier types ────────────────────────────────────────────────
 
+// Use typeof on concrete instances to avoid ReturnType<typeof uniform<T>>
+// which fails TypeScript's constraint check with three.js TSL types.
+const _uVec3 = uniform(new THREE.Vector3());
+const _uVec4 = uniform(new THREE.Vector4());
+const _uNum = uniform(0);
+type UniformVec3 = typeof _uVec3;
+type UniformVec4 = typeof _uVec4;
+type UniformNum = typeof _uNum;
+
 export type CullComputeUniforms = {
-  uCameraPos: ReturnType<typeof uniform<THREE.Vector3>>;
-  uNearRadiusM: ReturnType<typeof uniform<number>>;
-  uFrustum: ReturnType<typeof uniform<THREE.Vector4>>[];
-  uBaseQuat: ReturnType<typeof uniform<THREE.Vector4>>;
-  uInvBaseRadius: ReturnType<typeof uniform<number>>;
-  uBaseScale: ReturnType<typeof uniform<number>>;
+  uCameraPos: UniformVec3;
+  uNearRadiusM: UniformNum;
+  uFrustum: UniformVec4[];
+  uBaseQuat: UniformVec4;
+  uInvBaseRadius: UniformNum;
+  uBaseScale: UniformNum;
 };
 
 export function createCullUniforms(): CullComputeUniforms {
@@ -45,10 +54,10 @@ export function createCullUniforms(): CullComputeUniforms {
 // ─── Far tier types ─────────────────────────────────────────────────
 
 export type FarCullComputeUniforms = {
-  uCameraPos: ReturnType<typeof uniform<THREE.Vector3>>;
-  uNearRadiusM: ReturnType<typeof uniform<number>>;
-  uFarRadiusM: ReturnType<typeof uniform<number>>;
-  uFrustum: ReturnType<typeof uniform<THREE.Vector4>>[];
+  uCameraPos: UniformVec3;
+  uNearRadiusM: UniformNum;
+  uFarRadiusM: UniformNum;
+  uFrustum: UniformVec4[];
 };
 
 export function createFarCullUniforms(): FarCullComputeUniforms {
@@ -79,12 +88,7 @@ export function createCullComputeNode(
   const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 16);
   const outputNode = storage(outputAttr, "vec4", maxOutputInstances * 4);
 
-  const indirectAttr = new IndirectStorageBufferAttribute(5, 1);
-  indirectAttr.array[0] = indexCount;
-  indirectAttr.array[1] = 0;
-  indirectAttr.array[2] = 0;
-  indirectAttr.array[3] = 0;
-  indirectAttr.array[4] = 0;
+  const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([indexCount, 0, 0, 0, 0]), 1);
 
   const indirectNode = storage(indirectAttr, "uint", 5).toAtomic();
 
@@ -111,17 +115,17 @@ export function createCullComputeNode(
     const inRange = float(1.0).sub(step(uNearRadiusM, dist));
 
     // Frustum test
-    let inFrustum = float(1.0);
+    let inFrustum: any = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
       const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
-    const visible = alive.mul(inRange).mul(inFrustum);
+    const visible: any = alive.mul(inRange).mul(inFrustum);
 
     If(visible.greaterThan(0.5), () => {
-      const outIdx = atomicAdd(indirectNode.element(1), uint(1));
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
 
       // Output buffer overflow guard.
       If(outIdx.lessThan(maxOut), () => {
@@ -190,12 +194,7 @@ export function createFarCullComputeNode(
   const outputNode = storage(outputAttr, "vec4", maxOutputInstances);
 
   // Indirect draw: PlaneGeometry has 6 indices (2 triangles).
-  const indirectAttr = new IndirectStorageBufferAttribute(5, 1);
-  indirectAttr.array[0] = 6; // indexCount for PlaneGeometry
-  indirectAttr.array[1] = 0;
-  indirectAttr.array[2] = 0;
-  indirectAttr.array[3] = 0;
-  indirectAttr.array[4] = 0;
+  const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([6, 0, 0, 0, 0]), 1);
 
   const indirectNode = storage(indirectAttr, "uint", 5).toAtomic();
 
@@ -220,17 +219,17 @@ export function createFarCullComputeNode(
     const inRange = beyondNear.mul(withinFar);
 
     // Frustum test
-    let inFrustum = float(1.0);
+    let inFrustum: any = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
       const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
-    const visible = alive.mul(inRange).mul(inFrustum);
+    const visible: any = alive.mul(inRange).mul(inFrustum);
 
     If(visible.greaterThan(0.5), () => {
-      const outIdx = atomicAdd(indirectNode.element(1), uint(1));
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
 
       If(outIdx.lessThan(maxOut), () => {
         outputNode.element(outIdx).assign(
@@ -257,7 +256,7 @@ const _projScreen = new THREE.Matrix4();
 export function extractFrustumPlanes(
   camera: THREE.Camera,
   meshMatrixWorld: THREE.Matrix4,
-  planes: ReturnType<typeof uniform<THREE.Vector4>>[],
+  planes: UniformVec4[],
 ): void {
   _projScreen
     .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
@@ -274,7 +273,7 @@ export function extractFrustumPlanes(
 }
 
 function _setPlane(
-  plane: ReturnType<typeof uniform<THREE.Vector4>>,
+  plane: UniformVec4,
   a: number, b: number, c: number, d: number,
 ): void {
   const len = Math.sqrt(a * a + b * b + c * c);

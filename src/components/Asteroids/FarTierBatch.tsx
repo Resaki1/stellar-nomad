@@ -94,7 +94,7 @@ const FarModelBatch = memo(function FarModelBatch({
 
     // Read per-instance data from compute output via named attribute.
     // Compute writes vec4(pos.xyz, radius) per visible instance.
-    const aFarData = attribute("aFarData", "vec4");
+    const aFarData: any = attribute("aFarData", "vec4");
     const aCenter = aFarData.xyz;
     const aScale = aFarData.w.mul(float(0.4)); // visual scale factor
 
