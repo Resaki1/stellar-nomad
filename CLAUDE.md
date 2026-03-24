@@ -16,6 +16,27 @@
 
 > There is currently no dedicated `typecheck` or `test` script. If you add one, update this section.
 
+**Generating LOD1 asteroid models:**
+
+To create simplified LOD1 `.glb` models (stripped textures, ~50% geometry, flat grey material):
+
+```bash
+# Install deps in a temp dir (not in project)
+cd /tmp && npm init -y && npm install @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions meshoptimizer draco3dgltf
+
+# Run the strip script (from repo root)
+node /tmp/strip-lod.mjs public/models/asteroids/asteroid01.glb public/models/asteroids/asteroid02.glb public/models/asteroids/asteroid03.glb
+```
+
+The script (`strip-lod.mjs`) does: strip all textures, set flat grey material (baseColor 0.15/0.14/0.13, roughness 1.0, metallic 0.0), weld vertices, simplify to 50% ratio with 0.05 error tolerance, dedup, and prune. Output goes to `*_lod1.glb` alongside the originals.
+
+Alternatively, using only the CLI (without the script):
+```bash
+# One-liner per model (less control over material color):
+pnpm dlx @gltf-transform/cli simplify INPUT.glb OUTPUT.glb --ratio 0.5 --error 0.05
+```
+Note: the CLI alone can't strip textures or set material properties — use the script for full LOD1 generation.
+
 ---
 
 ## Project overview

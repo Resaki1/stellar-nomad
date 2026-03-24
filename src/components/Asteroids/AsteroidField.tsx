@@ -7,6 +7,7 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import SimGroup from "@/components/space/SimGroup";
 import NearTierBatch from "@/components/Asteroids/NearTierBatch";
 import type { NearTierAllocators } from "@/components/Asteroids/NearTierBatch";
+import MidTierBatch from "@/components/Asteroids/MidTierBatch";
 import FarTierBatch from "@/components/Asteroids/FarTierBatch";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "@/components/Asteroids/GpuSlotAllocator";
 
@@ -27,6 +28,7 @@ import type { ChunkCoord } from "@/sim/asteroids/runtimeTypes";
 import { makeChunkKey } from "@/sim/asteroids/runtimeTypes";
 
 import { useAsteroidModelRegistry } from "@/sim/asteroids/modelRegistry";
+import type { AsteroidModelRegistries } from "@/sim/asteroids/modelRegistry";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { prepareFieldShape, distancePointToAabbKm } from "@/sim/asteroids/shapes";
@@ -112,14 +114,15 @@ function ensureCandidateBuffers(size: number): void {
 type FieldLayerProps = {
   system: SystemConfig;
   field: AsteroidFieldDef;
-  modelRegistry: ReturnType<typeof useAsteroidModelRegistry>;
+  modelRegistries: AsteroidModelRegistries;
 };
 
 const FieldLayer = memo(function FieldLayer({
   system,
   field,
-  modelRegistry,
+  modelRegistries,
 }: FieldLayerProps) {
+  const modelRegistry = modelRegistries.lod0;
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
   const store = useStore();
@@ -583,9 +586,18 @@ const FieldLayer = memo(function FieldLayer({
         allocatorsRef={allocatorsRef}
       />
 
+      {renderCfg.midRadiusKm > 0 && modelRegistries.lod1.size > 0 && (
+        <MidTierBatch
+          nearRadiusKm={renderCfg.nearRadiusKm}
+          midRadiusKm={renderCfg.midRadiusKm}
+          modelRegistry={modelRegistries.lod1}
+          allocatorsRef={allocatorsRef}
+        />
+      )}
+
       {renderCfg.farRadiusKm > 0 && (
         <FarTierBatch
-          nearRadiusKm={renderCfg.nearRadiusKm}
+          nearRadiusKm={renderCfg.midRadiusKm > 0 ? renderCfg.midRadiusKm : renderCfg.nearRadiusKm}
           farRadiusKm={renderCfg.farRadiusKm}
           fadeOutKm={renderCfg.crossFadeKm}
           modelRegistry={modelRegistry}
@@ -603,7 +615,7 @@ FieldLayer.displayName = "FieldLayer";
 function AsteroidField() {
   const system = useAtomValue(systemConfigAtom);
   const modelDefs = useMemo(() => getSystemAsteroidModelDefs(system), [system]);
-  const modelRegistry = useAsteroidModelRegistry(modelDefs);
+  const modelRegistries = useAsteroidModelRegistry(modelDefs);
 
   const enabledFields = useMemo(
     () => (system.asteroidFields ?? []).filter((f) => f.enabled !== false),
@@ -615,7 +627,7 @@ function AsteroidField() {
   return (
     <>
       {enabledFields.map((field) => (
-        <FieldLayer key={field.id} system={system} field={field} modelRegistry={modelRegistry} />
+        <FieldLayer key={field.id} system={system} field={field} modelRegistries={modelRegistries} />
       ))}
     </>
   );

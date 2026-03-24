@@ -173,6 +173,133 @@ export function createCullComputeNode(
   return { computeNode, resetNode, outputAttr, indirectAttr };
 }
 
+// ─── Mid tier types ──────────────────────────────────────────────────
+
+export type MidCullComputeUniforms = {
+  uCameraPos: UniformVec3;
+  uMinRadiusM: UniformNum;
+  uMaxRadiusM: UniformNum;
+  uFrustum: UniformVec4[];
+  uBaseQuat: UniformVec4;
+  uInvBaseRadius: UniformNum;
+  uBaseScale: UniformNum;
+};
+
+export function createMidCullUniforms(): MidCullComputeUniforms {
+  return {
+    uCameraPos: uniform(new THREE.Vector3()),
+    uMinRadiusM: uniform(0),
+    uMaxRadiusM: uniform(0),
+    uFrustum: Array.from({ length: 6 }, () => uniform(new THREE.Vector4())),
+    uBaseQuat: uniform(new THREE.Vector4(0, 0, 0, 1)),
+    uInvBaseRadius: uniform(1),
+    uBaseScale: uniform(1),
+  };
+}
+
+// ─── Mid tier compute ──────────────────────────────────────────────
+
+/**
+ * GPU compute: cull + compact for the mid tier (simplified 3D models).
+ * Band-pass distance filter: minRadius ≤ dist < maxRadius.
+ * Outputs compacted mat4s for indirect draw (same as near tier).
+ */
+export function createMidCullComputeNode(
+  allocator: GpuSlotAllocator,
+  maxAllocSlots: number,
+  maxOutputInstances: number,
+  uniforms: MidCullComputeUniforms,
+  indexCount: number,
+) {
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
+
+  const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 16);
+  const outputNode = storage(outputAttr, "vec4", maxOutputInstances * 4);
+
+  const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([indexCount, 0, 0, 0, 0]), 1);
+  const indirectNode = storage(indirectAttr, "uint", 5).toAtomic();
+
+  const maxOut = uint(maxOutputInstances);
+
+  const {
+    uCameraPos, uMinRadiusM, uMaxRadiusM, uFrustum,
+    uBaseQuat, uInvBaseRadius, uBaseScale,
+  } = uniforms;
+
+  const computeFn = Fn(() => {
+    const i = instanceIndex;
+
+    const posRadius = inputNode.element(i.mul(2));
+    const quat = inputNode.element(i.mul(2).add(1));
+    const radius = posRadius.w;
+
+    const alive = step(float(0.001), radius);
+
+    // Band-pass: minRadius ≤ dist < maxRadius
+    const toCamera = posRadius.xyz.sub(uCameraPos);
+    const dist = length(toCamera);
+    const beyondMin = step(uMinRadiusM, dist);
+    const withinMax = float(1.0).sub(step(uMaxRadiusM, dist));
+    const inRange = beyondMin.mul(withinMax);
+
+    // Frustum test
+    let inFrustum: any = float(1.0);
+    for (let p = 0; p < 6; p++) {
+      const plane = uFrustum[p];
+      const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
+      inFrustum = inFrustum.mul(step(radius.negate(), d));
+    }
+
+    const visible: any = alive.mul(inRange).mul(inFrustum);
+
+    If(visible.greaterThan(0.5), () => {
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
+
+      If(outIdx.lessThan(maxOut), () => {
+        const s = radius.mul(uInvBaseRadius).mul(uBaseScale);
+
+        // Quaternion multiply: instanceQuat × baseQuat
+        const ax = quat.x, ay = quat.y, az = quat.z, aw = quat.w;
+        const bx = uBaseQuat.x, by = uBaseQuat.y, bz = uBaseQuat.z, bw = uBaseQuat.w;
+
+        const cx = aw.mul(bx).add(ax.mul(bw)).add(ay.mul(bz)).sub(az.mul(by));
+        const cy = aw.mul(by).sub(ax.mul(bz)).add(ay.mul(bw)).add(az.mul(bx));
+        const cz = aw.mul(bz).add(ax.mul(by)).sub(ay.mul(bx)).add(az.mul(bw));
+        const cw = aw.mul(bw).sub(ax.mul(bx)).sub(ay.mul(by)).sub(az.mul(bz));
+
+        // TRS → mat4
+        const x2 = cx.add(cx), y2 = cy.add(cy), z2 = cz.add(cz);
+        const xx = cx.mul(x2), xy = cx.mul(y2), xz = cx.mul(z2);
+        const yy = cy.mul(y2), yz = cy.mul(z2), zz = cz.mul(z2);
+        const wx = cw.mul(x2), wy = cw.mul(y2), wz = cw.mul(z2);
+
+        const base = outIdx.mul(4);
+        outputNode.element(base).assign(
+          vec4(float(1).sub(yy.add(zz)).mul(s), xy.add(wz).mul(s), xz.sub(wy).mul(s), float(0))
+        );
+        outputNode.element(base.add(1)).assign(
+          vec4(xy.sub(wz).mul(s), float(1).sub(xx.add(zz)).mul(s), yz.add(wx).mul(s), float(0))
+        );
+        outputNode.element(base.add(2)).assign(
+          vec4(xz.add(wy).mul(s), yz.sub(wx).mul(s), float(1).sub(xx.add(yy)).mul(s), float(0))
+        );
+        outputNode.element(base.add(3)).assign(
+          vec4(posRadius.x, posRadius.y, posRadius.z, float(1))
+        );
+      });
+    });
+  });
+
+  const computeNode = computeFn().compute(maxAllocSlots);
+
+  const resetFn = Fn(() => {
+    atomicStore(indirectNode.element(1), uint(0));
+  });
+  const resetNode = resetFn().compute(1);
+
+  return { computeNode, resetNode, outputAttr, indirectAttr };
+}
+
 // ─── Far tier compute ───────────────────────────────────────────────
 
 /**

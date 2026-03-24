@@ -64,14 +64,72 @@ function findMesh(scene: THREE.Object3D, meshName?: string): THREE.Mesh | null {
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
 
-export function useAsteroidModelRegistry(modelDefs: AsteroidModelDef[]) {
+export type AsteroidModelRegistries = {
+  lod0: Map<string, AsteroidModelAsset>;
+  lod1: Map<string, AsteroidModelAsset>;
+};
+
+function buildAsset(
+  def: AsteroidModelDef,
+  gltf: GLTF,
+  meshName?: string,
+): AsteroidModelAsset | null {
+  const mesh = findMesh(gltf.scene, meshName);
+
+  if (!mesh) {
+    // eslint-disable-next-line no-console
+    console.warn(`[Asteroids] Could not find a Mesh in GLB: ${def.src}`);
+    return null;
+  }
+
+  const geometry = mesh.geometry;
+  const material = mesh.material;
+
+  const baseScale = typeof def.baseScale === "number" ? def.baseScale : 1.0;
+
+  const rotDeg = def.baseRotationDeg ?? [0, 0, 0];
+  const baseRotationRad: [number, number, number] = [
+    THREE.MathUtils.degToRad(rotDeg[0]),
+    THREE.MathUtils.degToRad(rotDeg[1]),
+    THREE.MathUtils.degToRad(rotDeg[2]),
+  ];
+
+  if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+  const geomRadius = geometry.boundingSphere?.radius ?? 1.0;
+
+  const baseRadiusM = Math.max(0.0001, geomRadius * baseScale);
+
+  return {
+    id: def.id,
+    src: def.src,
+    geometry,
+    material,
+    baseScale,
+    baseRotationRad,
+    baseRadiusM,
+  };
+}
+
+export function useAsteroidModelRegistry(modelDefs: AsteroidModelDef[]): AsteroidModelRegistries {
   const urls = useMemo(() => modelDefs.map((m) => m.src), [modelDefs]);
+  const lod1Urls = useMemo(
+    () => modelDefs.filter((m) => m.lod1Src).map((m) => m.lod1Src!),
+    [modelDefs]
+  );
 
   // When `urls` is an array, useLoader returns an array of results in the same order.
   const gltfs = useLoader(
     GLTFLoader,
     urls,
-    // Important: attach DRACOLoader so Draco-compressed GLBs can load.
+    (loader) => {
+      const gltfLoader = loader as GLTFLoader;
+      gltfLoader.setDRACOLoader(dracoLoader);
+    }
+  ) as unknown as GLTF[];
+
+  const lod1Gltfs = useLoader(
+    GLTFLoader,
+    lod1Urls.length > 0 ? lod1Urls : [urls[0]], // fallback to avoid empty array
     (loader) => {
       const gltfLoader = loader as GLTFLoader;
       gltfLoader.setDRACOLoader(dracoLoader);
@@ -79,49 +137,27 @@ export function useAsteroidModelRegistry(modelDefs: AsteroidModelDef[]) {
   ) as unknown as GLTF[];
 
   return useMemo(() => {
-    const map = new Map<string, AsteroidModelAsset>();
+    const lod0 = new Map<string, AsteroidModelAsset>();
+    const lod1 = new Map<string, AsteroidModelAsset>();
 
     for (let i = 0; i < modelDefs.length; i++) {
       const def = modelDefs[i];
-      const gltf = gltfs[i];
-
-      const mesh = findMesh(gltf.scene, def.meshName);
-
-      if (!mesh) {
-        // Non-fatal: skip missing assets so the app still runs.
-        // eslint-disable-next-line no-console
-        console.warn(`[Asteroids] Could not find a Mesh in GLB: ${def.src}`);
-        continue;
-      }
-
-      const geometry = mesh.geometry;
-      const material = mesh.material;
-
-      const baseScale = typeof def.baseScale === "number" ? def.baseScale : 1.0;
-
-      const rotDeg = def.baseRotationDeg ?? [0, 0, 0];
-      const baseRotationRad: [number, number, number] = [
-        THREE.MathUtils.degToRad(rotDeg[0]),
-        THREE.MathUtils.degToRad(rotDeg[1]),
-        THREE.MathUtils.degToRad(rotDeg[2]),
-      ];
-
-      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-      const geomRadius = geometry.boundingSphere?.radius ?? 1.0;
-
-      const baseRadiusM = Math.max(0.0001, geomRadius * baseScale);
-
-      map.set(def.id, {
-        id: def.id,
-        src: def.src,
-        geometry,
-        material,
-        baseScale,
-        baseRotationRad,
-        baseRadiusM,
-      });
+      const asset = buildAsset(def, gltfs[i], def.meshName);
+      if (asset) lod0.set(def.id, asset);
     }
 
-    return map;
-  }, [gltfs, modelDefs]);
+    // Build LOD1 map from defs that have lod1Src.
+    let lod1Idx = 0;
+    for (let i = 0; i < modelDefs.length; i++) {
+      const def = modelDefs[i];
+      if (!def.lod1Src) continue;
+      if (lod1Urls.length === 0) break;
+
+      const gltf = lod1Gltfs[lod1Idx++];
+      const asset = buildAsset(def, gltf, def.lod1MeshName);
+      if (asset) lod1.set(def.id, asset);
+    }
+
+    return { lod0, lod1 };
+  }, [gltfs, lod1Gltfs, modelDefs, lod1Urls.length]);
 }

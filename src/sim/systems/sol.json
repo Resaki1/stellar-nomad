@@ -5,7 +5,8 @@
 
   "defaults": {
     "render": {
-      "nearRadiusKm": 64,
+      "nearRadiusKm": 32,
+      "midRadiusKm": 128,
       "farRadiusKm": 120000,
       "crossFadeKm": 0.0
     },
@@ -20,6 +21,7 @@
       {
         "id": "asteroid_01",
         "src": "/models/asteroids/asteroid01.glb",
+        "lod1Src": "/models/asteroids/asteroid01_lod1.glb",
         "meshName": "Daphne_LP001_1_0",
         "baseScale": 0.125,
         "baseRotationDeg": [-90, 0, 0]
@@ -27,6 +29,7 @@
       {
         "id": "asteroid_02",
         "src": "/models/asteroids/asteroid02.glb",
+        "lod1Src": "/models/asteroids/asteroid02_lod1.glb",
         "meshName": "Group24690_Standard_0",
         "baseScale": 1.0,
         "baseRotationDeg": [0, 0, 0]
@@ -34,6 +37,7 @@
       {
         "id": "asteroid_03",
         "src": "/models/asteroids/asteroid03.glb",
+        "lod1Src": "/models/asteroids/asteroid03_lod1.glb",
         "meshName": "Object_0",
         "baseScale": 1.0,
         "baseRotationDeg": [0, 0, 0]
@@ -59,7 +63,7 @@
       "frame": "system",
       "anchorKm": [0, 0, 0],
       "shape": { "type": "sphere", "radiusKm": 3000 },
-      "population": { "mode": "density", "densityPerKm3": 0.4, "jitter": 0.2, "maxPerChunk": 10000 },
+      "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 10000 },
       "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
       "models": [
         { "modelId": "asteroid_01", "weight": 0.6 },

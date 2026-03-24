@@ -16,6 +16,8 @@ export type RenderConfig = {
   fadeKm?: { start: number; end: number };
   /** Full-geometry render range (km). Defaults to drawRadiusKm when unset. */
   nearRadiusKm?: number;
+  /** Simplified LOD1 geometry render range (km). 0 = disabled. */
+  midRadiusKm?: number;
   /** Billboard impostor render range (km). 0 = disabled. */
   farRadiusKm?: number;
   /** Width of the LOD cross-fade zone at the near/far boundary (km). */
@@ -35,6 +37,10 @@ export type SystemDefaults = {
 export type AsteroidModelDef = {
   id: string;
   src: string;
+  /** Simplified LOD1 model source. If omitted, mid tier is skipped for this model. */
+  lod1Src?: string;
+  /** Mesh name for the LOD1 model. Falls back to first mesh if omitted. */
+  lod1MeshName?: string;
   /**
    * Name of the mesh inside the GLB to instance. If omitted, the first Mesh
    * found in the scene will be used.
@@ -198,10 +204,12 @@ export type ResolvedStreamingConfig = Required<
 };
 
 export type ResolvedRenderConfig = {
-  /** Max visible range (= max of nearRadiusKm, farRadiusKm). Used for streaming. */
+  /** Max visible range (= max of nearRadiusKm, midRadiusKm, farRadiusKm). Used for streaming. */
   drawRadiusKm: number;
   /** Full-geometry render cutoff. */
   nearRadiusKm: number;
+  /** Simplified LOD1 geometry cutoff. 0 = disabled. */
+  midRadiusKm: number;
   /** Billboard impostor render cutoff. 0 = disabled. */
   farRadiusKm: number;
   /** LOD cross-fade width. */
@@ -242,6 +250,7 @@ export const DEFAULT_STREAMING: ResolvedStreamingConfig = {
 export const DEFAULT_RENDER: ResolvedRenderConfig = {
   drawRadiusKm: 10,
   nearRadiusKm: 10,
+  midRadiusKm: 0,
   farRadiusKm: 0,
   crossFadeKm: 0,
 };
@@ -304,6 +313,14 @@ export function resolveFieldRender(
     0.001
   );
 
+  const midRadiusKm = clampMin(
+    asFiniteNumber(
+      fieldRender.midRadiusKm,
+      asFiniteNumber(sysRender.midRadiusKm, DEFAULT_RENDER.midRadiusKm)
+    ),
+    0
+  );
+
   const farRadiusKm = clampMin(
     asFiniteNumber(
       fieldRender.farRadiusKm,
@@ -322,13 +339,13 @@ export function resolveFieldRender(
 
   // drawRadiusKm drives streaming — must cover the full visible range.
   const drawRadiusKm = clampMin(
-    farRadiusKm > 0 ? Math.max(nearRadiusKm, farRadiusKm) : nearRadiusKm,
+    Math.max(nearRadiusKm, midRadiusKm, farRadiusKm),
     0.001
   );
 
   const fadeKm = fieldRender.fadeKm ?? sysRender.fadeKm;
 
-  return { drawRadiusKm, nearRadiusKm, farRadiusKm, crossFadeKm, fadeKm };
+  return { drawRadiusKm, nearRadiusKm, midRadiusKm, farRadiusKm, crossFadeKm, fadeKm };
 }
 
 export function resolveFieldStreaming(
