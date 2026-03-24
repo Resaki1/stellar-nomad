@@ -179,6 +179,10 @@ export function generateAsteroidChunk(
 
     if (!shape.isInsideKm(fxKm, fyKm, fzKm)) continue;
 
+    // Edge density falloff: probabilistically reject samples near the boundary.
+    const density = shape.densityFactorKm(fxKm, fyKm, fzKm);
+    if (density < 1 && rng.nextFloat() > density) continue;
+
     const radiusM = sampleRadiusM(rng, field.size);
     const modelId = pickWeightedModelId(rng, models);
 

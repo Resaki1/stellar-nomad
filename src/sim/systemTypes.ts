@@ -121,11 +121,15 @@ export type BoxShape = {
   type: "box";
   halfExtentsKm: [number, number, number];
   rotationDeg?: [number, number, number];
+  /** Width (km) of the density falloff zone at the edge. 0 = hard cutoff. */
+  edgeFalloffKm?: number;
 };
 
 export type SphereShape = {
   type: "sphere";
   radiusKm: number;
+  /** Width (km) of the density falloff zone at the edge. 0 = hard cutoff. */
+  edgeFalloffKm?: number;
 };
 
 export type FieldShape = BoxShape | SphereShape;

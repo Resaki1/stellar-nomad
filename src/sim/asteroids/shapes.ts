@@ -20,6 +20,13 @@ export type PreparedFieldShape = {
   distanceToKm: (x: number, y: number, z: number) => number;
 
   /**
+   * Density multiplier (0–1) at a point inside the shape.
+   * Returns 1.0 in the core region, smoothly falls to 0.0 near the edge
+   * over the configured edgeFalloffKm zone. Points outside return 0.
+   */
+  densityFactorKm: (x: number, y: number, z: number) => number;
+
+  /**
    * Conservative intersection test between the field shape and an AABB.
    * The AABB is specified in field-local KM.
    */
@@ -109,6 +116,8 @@ export function prepareFieldShape(shape: FieldShape): PreparedFieldShape {
   if (shape.type === "sphere") {
     const radius = Math.max(0.0001, shape.radiusKm);
     const r2 = radius * radius;
+    const falloff = Math.max(0, shape.edgeFalloffKm ?? 0);
+    const falloffStart = radius - falloff;
 
     return {
       type: "sphere",
@@ -116,6 +125,16 @@ export function prepareFieldShape(shape: FieldShape): PreparedFieldShape {
       isInsideKm: (x, y, z) => x * x + y * y + z * z <= r2,
       distanceToKm: (x, y, z) =>
         Math.max(0, Math.sqrt(x * x + y * y + z * z) - radius),
+      densityFactorKm: (x, y, z) => {
+        const d2 = x * x + y * y + z * z;
+        if (d2 > r2) return 0;
+        if (falloff <= 0) return 1;
+        const d = Math.sqrt(d2);
+        if (d <= falloffStart) return 1;
+        // Smoothstep: smooth hermite from 1 → 0
+        const t = (d - falloffStart) / falloff;
+        return 1 - t * t * (3 - 2 * t);
+      },
       intersectsAabbKm: (minX, minY, minZ, maxX, maxY, maxZ) =>
         distanceSqPointToAabbFromOrigin(minX, minY, minZ, maxX, maxY, maxZ) <=
         r2,
@@ -182,6 +201,22 @@ export function prepareFieldShape(shape: FieldShape): PreparedFieldShape {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   };
 
+  const boxFalloff = Math.max(0, shape.edgeFalloffKm ?? 0);
+
+  const densityFactorKm = (x: number, y: number, z: number) => {
+    const v = toLocalBox(x, y, z);
+    const ax = Math.abs(v[0]);
+    const ay = Math.abs(v[1]);
+    const az = Math.abs(v[2]);
+    if (ax > hx || ay > hy || az > hz) return 0;
+    if (boxFalloff <= 0) return 1;
+    // Distance to nearest face (how deep inside the box)
+    const depth = Math.min(hx - ax, hy - ay, hz - az);
+    if (depth >= boxFalloff) return 1;
+    const t = 1 - depth / boxFalloff;
+    return 1 - t * t * (3 - 2 * t);
+  };
+
   const intersectsAabbKm = (
     minX: number,
     minY: number,
@@ -221,6 +256,7 @@ export function prepareFieldShape(shape: FieldShape): PreparedFieldShape {
     boundingRadiusKm,
     isInsideKm,
     distanceToKm,
+    densityFactorKm,
     intersectsAabbKm,
   };
 }

@@ -6,8 +6,8 @@
   "defaults": {
     "render": {
       "nearRadiusKm": 32,
-      "midRadiusKm": 128,
-      "farRadiusKm": 120000,
+      "midRadiusKm": 64,
+      "farRadiusKm": 512,
       "crossFadeKm": 0.0
     },
     "streaming": {
@@ -62,7 +62,7 @@
       "enabled": true,
       "frame": "system",
       "anchorKm": [0, 0, 0],
-      "shape": { "type": "sphere", "radiusKm": 3000 },
+      "shape": { "type": "sphere", "radiusKm": 3000, "edgeFalloffKm": 3000 },
       "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 10000 },
       "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
       "models": [
