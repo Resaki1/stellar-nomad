@@ -169,8 +169,21 @@ export type SizeDef = {
   params?: Record<string, number>;
 };
 
+/**
+ * Optional POI marker display config. Attached to any game object that
+ * generates a POI (asteroid fields, planets, stations, etc.).
+ * When omitted, the POI system applies per-type defaults.
+ */
+export type POIMarkerConfig = {
+  /** Hide marker when closer than this (km). Default varies by type. */
+  minDistanceKm?: number;
+  /** Hide marker when farther than this (km). Default varies by type. */
+  maxDistanceKm?: number;
+};
+
 export type AsteroidFieldDef = {
   id: string;
+  name: string;
   seed: number | string;
   enabled?: boolean;
   frame?: "system";
@@ -183,6 +196,7 @@ export type AsteroidFieldDef = {
   render?: Partial<RenderConfig>;
   tags?: string[];
   resources?: AsteroidResourcesDef;
+  marker?: POIMarkerConfig;
 };
 
 export type SystemAssets = {
