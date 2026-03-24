@@ -181,6 +181,19 @@ export type POIMarkerConfig = {
   maxDistanceKm?: number;
 };
 
+export type CelestialBodyDef = {
+  id: string;
+  name: string;
+  type: "star" | "planet" | "moon";
+  /** Position in km (system coordinates). */
+  positionKm: [number, number, number];
+  /** Radius in km. */
+  radiusKm: number;
+  /** Optional parent body ID (e.g. moon orbiting a planet). */
+  parent?: string;
+  marker?: POIMarkerConfig;
+};
+
 export type AsteroidFieldDef = {
   id: string;
   name: string;
@@ -210,6 +223,7 @@ export type SystemConfigV1 = {
   resources?: SystemResources;
   defaults?: SystemDefaults;
   assets?: SystemAssets;
+  celestialBodies?: CelestialBodyDef[];
   asteroidFields: AsteroidFieldDef[];
 };
 

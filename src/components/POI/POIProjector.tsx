@@ -19,15 +19,31 @@ const FOCUS_HALF_ANGLE_NDC = 0.06; // ~3.4° at center of NDC space
 // ─── Per-type defaults (used when marker config is omitted) ──────
 
 const ASTEROID_FIELD_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 50_000 };
+const CELESTIAL_BODY_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 500_000 };
 
 /**
  * Derives POI definitions from the active system config.
- * Currently: one POI per asteroid field. Future: planets, stations, etc.
+ * Sources: celestial bodies (planets, moons) + asteroid fields.
  */
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   return useMemo(() => {
     const pois: POIDef[] = [];
+
+    // Celestial bodies (planets, moons — stars are excluded)
+    for (const body of system.celestialBodies ?? []) {
+      if (body.type === "star") continue;
+      if (!body.marker) continue;
+      pois.push({
+        id: `body:${body.id}`,
+        name: body.name,
+        positionKm: body.positionKm,
+        minDistanceKm: body.marker.minDistanceKm ?? CELESTIAL_BODY_DEFAULTS.minDistanceKm,
+        maxDistanceKm: body.marker.maxDistanceKm ?? CELESTIAL_BODY_DEFAULTS.maxDistanceKm,
+      });
+    }
+
+    // Asteroid fields
     for (const field of system.asteroidFields ?? []) {
       if (field.enabled === false) continue;
       pois.push({
@@ -76,6 +92,15 @@ const POIProjector = memo(function POIProjector() {
         (py - originKm.y) * 1000,
         (pz - originKm.z) * 1000,
       );
+
+      // For distant POIs (beyond camera far plane), normalize to a safe
+      // distance so the projection matrix doesn't clip them. We only
+      // need the screen-space direction, not depth accuracy.
+      const len = _pos.length();
+      const farPlane = camera.far * 0.5;
+      if (len > farPlane) {
+        _pos.multiplyScalar(farPlane / len);
+      }
 
       // Project to NDC.
       _ndc.copy(_pos).project(camera);

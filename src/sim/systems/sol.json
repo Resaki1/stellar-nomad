@@ -16,6 +16,33 @@
     }
   },
 
+  "celestialBodies": [
+    {
+      "id": "sol",
+      "name": "Sol",
+      "type": "star",
+      "positionKm": [130000000, 0, 65000000],
+      "radiusKm": 696340
+    },
+    {
+      "id": "earth",
+      "name": "Earth",
+      "type": "planet",
+      "positionKm": [5000, 0, -15000],
+      "radiusKm": 6371,
+      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 500000 }
+    },
+    {
+      "id": "luna",
+      "name": "Luna",
+      "type": "moon",
+      "parent": "earth",
+      "positionKm": [-379400, 0, -15000],
+      "radiusKm": 1737,
+      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 500000 }
+    }
+  ],
+
   "assets": {
     "asteroidModels": [
       {
