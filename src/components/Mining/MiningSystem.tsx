@@ -356,7 +356,7 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
   );
 
   useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
+    const t = clock.elapsedTime;
 
     // Update line geometry every frame
     const positions = [start.x, start.y, start.z, end.x, end.y, end.z];
@@ -528,7 +528,7 @@ const AsteroidHighlight = ({
   const arcPts = useMemo(() => makeArcArray(32, -Math.PI * 0.15, Math.PI * 0.45), []);
 
   useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
+    const t = clock.elapsedTime;
 
     if (ringRef.current) {
       const pulse = 1 + Math.sin(t * 3.5) * 0.02 * (0.2 + 0.8 * focus01);

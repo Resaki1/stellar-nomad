@@ -10,7 +10,6 @@ import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { toLocalUnitsKm } from "@/sim/units";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
@@ -45,7 +44,7 @@ const SHAKE_MAX_ANGLE = 0.025;  // radians
 // the two most recent states. This eliminates micro-jitter caused by
 // natural frame-time (delta) variation on the GPU/compositor side.
 const FIXED_DT = 1 / 120;
-const MAX_FRAME_DT = 0.05; // cap: prevents spiral-of-death after tab-away
+const MAX_FRAME_DT = 0.25; // cap: prevents spiral-of-death after tab-away
 
 const SpaceShip = memo(() => {
   const store = useStore();
@@ -208,13 +207,14 @@ const SpaceShip = memo(() => {
       alpha
     );
 
-    // Position (interpolate in km, then convert to local render units)
+    // Position: interpolate in km, then move the world origin to the
+    // interpolated position so the ship always sits at local (0,0,0).
+    // This prevents float32 precision jitter in the GPU transform pipeline
+    // when the ship has drifted far from the previous origin.
     _localRel.lerpVectors(prevPosKm.current, posKm.current, alpha);
-    // Update world origin with the true (non-interpolated) sim position.
     worldOrigin.setShipPosKm(posKm.current);
-    worldOrigin.maybeRecenter(posKm.current);
-    _localRel.sub(worldOrigin.worldOriginKm);
-    toLocalUnitsKm(_localRel, shipRef.current.position);
+    worldOrigin.setWorldOriginKm(_localRel);
+    shipRef.current.position.set(0, 0, 0);
 
     // Model visual tilt (interpolated)
     const renderRoll = prevVRoll.current + (vRoll.current - prevVRoll.current) * alpha;
