@@ -15,12 +15,17 @@ import {
   length,
   smoothstep,
   max,
+  abs,
+  step,
+  mix,
+  cross,
   Discard,
   uniform,
   positionGeometry,
   modelWorldMatrix,
   cameraViewMatrix,
   cameraProjectionMatrix,
+  cameraPosition,
   attribute,
 } from "three/tsl";
 
@@ -101,9 +106,12 @@ const FarModelBatch = memo(function FarModelBatch({
     // Distance from field origin for fragment fade (must be a varying).
     const vCenterDist = length(aCenter).toVarying("v_centerDist");
 
+    // World-space face direction (asteroid → camera) for lighting.
+    const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
+    const vFaceDir = normalize(cameraPosition.sub(worldCenter.xyz)).toVarying("v_faceDir");
+
     // ── Vertex: camera-facing billboard ──────────────────────────
     mat.vertexNode = Fn(() => {
-      const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
       const viewCenter = cameraViewMatrix.mul(worldCenter);
       const viewPos = viewCenter.add(
         vec4(positionGeometry.xy.mul(aScale), float(0), float(0))
@@ -120,11 +128,21 @@ const FarModelBatch = memo(function FarModelBatch({
       const edge = smoothstep(float(1.0), float(0.45), dist);
       Discard(edge.lessThan(0.01));
 
-      // Hemisphere shading with view-space sun direction.
+      // World-space hemisphere shading (view-independent).
+      // Build a tangent frame from the face direction so the
+      // pseudo-normal is in world space, not view space.
+      const fwd = normalize(vFaceDir);
+      const dotUp = abs(dot(fwd, vec3(0, 1, 0)));
+      const refUp = mix(vec3(0, 1, 0), vec3(1, 0, 0), step(float(0.99), dotUp));
+      const right = normalize(cross(refUp, fwd));
+      const up = cross(fwd, right);
+
       const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
-      const pseudoNormal = normalize(vec3(p.x, p.y, domeZ));
-      const viewSunDir = normalize(cameraViewMatrix.mul(vec4(uSunDir, float(0))).xyz);
-      const sunDot = max(float(0), dot(pseudoNormal, viewSunDir));
+      const worldNormal = normalize(
+        right.mul(p.x).add(up.mul(p.y)).add(fwd.mul(domeZ))
+      );
+
+      const sunDot = max(float(0), dot(worldNormal, uSunDir));
       const shade = float(0.15).add(float(8.0).mul(sunDot));
       const color = vec3(0.1, 0.1, 0.1).mul(shade);
 

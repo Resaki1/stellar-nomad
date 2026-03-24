@@ -15,6 +15,10 @@ import {
   length,
   smoothstep,
   max,
+  abs,
+  step,
+  mix,
+  cross,
   Discard,
   attribute,
   uniform,
@@ -22,6 +26,7 @@ import {
   modelWorldMatrix,
   cameraViewMatrix,
   cameraProjectionMatrix,
+  cameraPosition,
 } from "three/tsl";
 import { STAR_POSITION_KM } from "@/components/Star/Star";
 import { useWorldOrigin } from "@/sim/worldOrigin";
@@ -107,6 +112,10 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     // Distance from field origin → fragment needs it for the fade.
     const vCenterDist = length(aCenter).toVarying("v_centerDist");
 
+    // World-space face direction (asteroid → camera) for lighting.
+    const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
+    const vFaceDir = normalize(cameraPosition.sub(worldCenter.xyz)).toVarying("v_faceDir");
+
     // ── Vertex: custom billboard for InstancedMesh ──────────────
     //
     // The built-in billboarding() uses modelWorldMatrix (a per-object
@@ -114,8 +123,6 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     // transforms. We bypass InstanceNode entirely and read per-instance
     // center + scale from dedicated instanced attributes.
     mat.vertexNode = Fn(() => {
-      // Transform instance center: local → world → view.
-      const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
       const viewCenter = cameraViewMatrix.mul(worldCenter);
 
       // Add billboard quad offset in view space (screen-aligned).
@@ -139,16 +146,21 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
       const edge = smoothstep(float(1.0), float(0.45), dist);
       Discard(edge.lessThan(0.01));
 
-      // Directional shading: project the sun direction onto the
-      // billboard's implicit normal hemisphere.
-      //
-      // The billboard faces the camera, so the pseudoNormal is in VIEW
-      // space (x = right, y = up, z = toward camera). Transform the
-      // world-space sun direction into view space to match.
+      // World-space hemisphere shading (view-independent).
+      // Build a tangent frame from the face direction so the
+      // pseudo-normal is in world space, not view space.
+      const fwd = normalize(vFaceDir);
+      const dotUp = abs(dot(fwd, vec3(0, 1, 0)));
+      const refUp = mix(vec3(0, 1, 0), vec3(1, 0, 0), step(float(0.99), dotUp));
+      const right = normalize(cross(refUp, fwd));
+      const up = cross(fwd, right);
+
       const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
-      const pseudoNormal = normalize(vec3(p.x, p.y, domeZ));
-      const viewSunDir = normalize(cameraViewMatrix.mul(vec4(uSunDir, float(0))).xyz);
-      const sunDot = max(float(0), dot(pseudoNormal, viewSunDir));
+      const worldNormal = normalize(
+        right.mul(p.x).add(up.mul(p.y)).add(fwd.mul(domeZ))
+      );
+
+      const sunDot = max(float(0), dot(worldNormal, uSunDir));
       const shade = float(0.15).add(float(8.0).mul(sunDot));
 
       // rocky grey
