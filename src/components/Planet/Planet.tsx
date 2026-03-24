@@ -36,23 +36,23 @@ import {
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { STAR_POSITION_KM } from "../Star/Star";
+import {
+  STAR_POSITION_KM,
+  STAR_RADIUS_KM,
+  PLANET_POSITION_KM,
+  LUNA_POSITION_KM,
+  LUNA_RADIUS_KM,
+} from "@/sim/celestialConstants";
+
+export { PLANET_POSITION_KM };
 
 const PLANET_ROTATION = new THREE.Euler(
   0.0 * Math.PI,
   0.5 * Math.PI,
   0.8 * Math.PI
 );
-const DEFAULT_PLANET_POSITION_KM: [number, number, number] = [
-  5_000, 0, -15_000,
-];
 const DEFAULT_PLANET_RADIUS_KM = 6371;
 const DEFAULT_SUN_POSITION_KM = STAR_POSITION_KM;
-
-// Eclipse disabled by default (moon far away)
-const DEFAULT_MOON_POSITION_KM: [number, number, number] = [1e9, 0, 0];
-const DEFAULT_MOON_RADIUS_KM = 1.737;
-const DEFAULT_SUN_RADIUS_KM = 696.34;
 
 const sunScaled = new THREE.Vector3();
 const moonScaled = new THREE.Vector3();
@@ -142,11 +142,11 @@ function setTextureColorSpace(
 }
 
 function Planet({
-  positionKm = DEFAULT_PLANET_POSITION_KM,
+  positionKm = PLANET_POSITION_KM,
   sunPositionKm = DEFAULT_SUN_POSITION_KM,
-  moonPositionKm = DEFAULT_MOON_POSITION_KM,
-  moonRadiusKm = DEFAULT_MOON_RADIUS_KM,
-  sunRadiusKm = DEFAULT_SUN_RADIUS_KM,
+  moonPositionKm = LUNA_POSITION_KM,
+  moonRadiusKm = LUNA_RADIUS_KM,
+  sunRadiusKm = STAR_RADIUS_KM,
   radiusKm = DEFAULT_PLANET_RADIUS_KM,
 }: PlanetProps) {
   const worldOrigin = useWorldOrigin();

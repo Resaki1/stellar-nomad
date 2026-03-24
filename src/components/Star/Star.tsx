@@ -4,14 +4,14 @@ import { useRef } from "react";
 import { FrontSide, Group } from "three";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
+import { STAR_POSITION_KM } from "@/sim/celestialConstants";
+
+export { STAR_POSITION_KM };
 
 type StarProps = {
   bloom: boolean;
 };
 
-export const STAR_POSITION_KM: [number, number, number] = [
-  130_000_000, 0, 65_000_000,
-];
 const RADIUS = kmToScaledUnits(696_340);
 
 const Star = ({ bloom }: StarProps) => {

@@ -11,6 +11,7 @@ import * as THREE from "three/webgpu";
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
 import Planet from "../Planet/Planet";
+import Luna from "../Moon/Luna";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
@@ -69,6 +70,7 @@ const Scene = () => {
               <>
                 <MilkyWaySkybox />
                 <Planet />
+                <Luna />
                 <Star bloom={settings.bloom} />
               </>
             }
