@@ -22,7 +22,19 @@ import {
   clamp,
   pow,
   sub,
+  length,
+  smoothstep,
+  max,
+  abs,
+  step,
+  mix,
+  cross,
+  Discard,
   cameraPosition,
+  positionGeometry,
+  modelWorldMatrix,
+  cameraViewMatrix,
+  cameraProjectionMatrix,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
@@ -35,9 +47,11 @@ import {
 
 export { LUNA_POSITION_KM, LUNA_RADIUS_KM };
 
-const LUNA_ROTATION = new THREE.Euler(0, 0, 0);
+// ── LOD thresholds (km from Luna center) ──
+const LOD_NEAR_THRESHOLD = 5_000;
+const LOD_FAR_THRESHOLD = 250_000;
 
-// ── Displacement settings ──
+// ── Displacement ──
 const DISPLACEMENT_SCALE_KM = 10.786; // ~10.8 km peak-to-valley (real lunar range)
 
 // ── Reusable vectors (no per-frame allocs) ──
@@ -45,12 +59,221 @@ const _sunScaled = new THREE.Vector3();
 const _lunaScaled = new THREE.Vector3();
 const _sunRelative = new THREE.Vector3();
 const _relativeKm = new THREE.Vector3();
+const _shipToLuna = new THREE.Vector3();
+
+// ── Moon color (average albedo for far impostor) ──
+const LUNA_ALBEDO = new THREE.Color(0.44, 0.42, 0.40);
 
 type LunaProps = {
   positionKm?: [number, number, number];
   sunPositionKm?: [number, number, number];
   radiusKm?: number;
 };
+
+// ─────────────────────────────────────────────────────────────────────
+// Shared fragment logic for the textured sphere LODs (near + mid).
+// ─────────────────────────────────────────────────────────────────────
+
+function buildSphereFragmentNode(
+  colorTex: THREE.Texture,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunRel: any,
+) {
+  return Fn(() => {
+    const uvCoord = uv();
+    const sunDir = normalize(uSunRel);
+    const albedo = texture(colorTex, uvCoord).rgb;
+    const N = normalize(normalWorld);
+    const NdotL = dot(N, sunDir);
+
+    const diffuse = clamp(NdotL, 0, 1);
+
+    const viewDir = normalize(sub(cameraPosition, positionWorld));
+    const halfVec = normalize(sunDir.add(viewDir));
+    const NdotH = dot(N, halfVec).max(0);
+    const surge = pow(NdotH, float(3.0)).mul(0.12).mul(diffuse);
+
+    const earthshine = float(0.002);
+    const earthshineColor = vec3(0.55, 0.65, 1.0);
+    const darkSideMask = clamp(NdotL.negate().mul(2.0), 0, 1);
+    const darkColor = albedo
+      .mul(earthshine)
+      .mul(earthshineColor)
+      .mul(darkSideMask);
+
+    const col = albedo.mul(diffuse.add(surge)).add(darkColor);
+    return vec4(col, 1.0);
+  })();
+}
+
+function buildSpherePositionNode(
+  dispTex: THREE.Texture,
+  displacementScaled: number,
+) {
+  const uDisp = float(displacementScaled);
+  return Fn(() => {
+    const d = texture(dispTex, uv()).r;
+    return positionLocal.add(normalLocal.mul(d.mul(uDisp)));
+  })();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Near LOD: 8k textures, 128-segment sphere
+// ─────────────────────────────────────────────────────────────────────
+
+function useNearLOD(
+  scaledRadius: number,
+  displacementScaled: number,
+  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
+) {
+  const tex = useTexture({
+    color: "/textures/luna/luna_color_8k.webp",
+    displacement: "/textures/luna/luna_displacement_16.webp",
+  }) as Record<string, THREE.Texture>;
+
+  useMemo(() => {
+    tex.color.colorSpace = THREE.SRGBColorSpace;
+    tex.color.needsUpdate = true;
+    tex.displacement.colorSpace = THREE.NoColorSpace;
+    tex.displacement.needsUpdate = true;
+  }, [tex]);
+
+  const geo = useMemo(
+    () => new THREE.SphereGeometry(scaledRadius, 128, 128),
+    [scaledRadius],
+  );
+
+  const mat = useMemo(() => {
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
+    m.fragmentNode = buildSphereFragmentNode(tex.color, uSunRel);
+    return m;
+  }, [tex, uSunRel, displacementScaled]);
+
+  return { geo, mat };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Mid LOD: 2k textures, 48-segment sphere
+// ─────────────────────────────────────────────────────────────────────
+
+function useMidLOD(
+  scaledRadius: number,
+  displacementScaled: number,
+  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
+) {
+  const tex = useTexture({
+    color: "/textures/luna/luna_color_2k.webp",
+    displacement: "/textures/luna/luna_displacement_4.webp",
+  }) as Record<string, THREE.Texture>;
+
+  useMemo(() => {
+    tex.color.colorSpace = THREE.SRGBColorSpace;
+    tex.color.needsUpdate = true;
+    tex.displacement.colorSpace = THREE.NoColorSpace;
+    tex.displacement.needsUpdate = true;
+  }, [tex]);
+
+  const geo = useMemo(
+    () => new THREE.SphereGeometry(scaledRadius, 48, 48),
+    [scaledRadius],
+  );
+
+  const mat = useMemo(() => {
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
+    m.fragmentNode = buildSphereFragmentNode(tex.color, uSunRel);
+    return m;
+  }, [tex, uSunRel, displacementScaled]);
+
+  return { geo, mat };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Far LOD: billboard impostor (no geometry, no textures)
+// ─────────────────────────────────────────────────────────────────────
+
+function useFarLOD(
+  scaledRadius: number,
+  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
+) {
+  // A plane large enough to encompass the moon's silhouette.
+  // Factor of 2.1 to account for the UV→[-1,1] mapping plus a small margin.
+  const geo = useMemo(
+    () => new THREE.PlaneGeometry(scaledRadius * 2.1, scaledRadius * 2.1),
+    [scaledRadius],
+  );
+
+  const mat = useMemo(() => {
+    const m = new NodeMaterial();
+    m.side = THREE.DoubleSide;
+    m.depthWrite = true;
+    m.transparent = false;
+    m.alphaHash = true;
+
+    // Billboard vertex: make the quad always face the camera.
+    const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
+
+    m.vertexNode = Fn(() => {
+      const viewCenter = cameraViewMatrix.mul(worldCenter);
+      // positionGeometry is in [-halfSize, +halfSize]. Scale factor = 1
+      // because the geometry is already sized to the moon's diameter.
+      const viewPos = viewCenter.add(
+        vec4(positionGeometry.xy, float(0), float(0)),
+      );
+      return cameraProjectionMatrix.mul(viewPos);
+    })();
+
+    // World-space face direction for hemisphere shading.
+    const vFaceDir = normalize(
+      cameraPosition.sub(worldCenter.xyz),
+    ).toVarying("v_faceDir");
+
+    m.fragmentNode = Fn(() => {
+      const p = uv().mul(2).sub(1);
+      const dist = length(p);
+
+      // Circular disc with soft edge.
+      const edge = smoothstep(float(1.0), float(0.92), dist);
+      Discard(edge.lessThan(0.01));
+
+      // World-space hemisphere shading (same approach as asteroid impostors).
+      const fwd = normalize(vFaceDir);
+      const dotUp = abs(dot(fwd, vec3(0, 1, 0)));
+      const refUp = mix(
+        vec3(0, 1, 0),
+        vec3(1, 0, 0),
+        step(float(0.99), dotUp),
+      );
+      const right = normalize(cross(refUp, fwd));
+      const up = cross(fwd, right);
+
+      const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
+      const worldNormal = normalize(
+        right.mul(p.x).add(up.mul(p.y)).add(fwd.mul(domeZ)),
+      );
+
+      const sunDir = normalize(uSunRel);
+      const NdotL = max(float(0), dot(worldNormal, sunDir));
+
+      // Simple diffuse with the moon's average albedo.
+      const albedo = vec3(LUNA_ALBEDO.r, LUNA_ALBEDO.g, LUNA_ALBEDO.b);
+      const col = albedo.mul(NdotL);
+
+      return vec4(col, edge);
+    })();
+
+    return m;
+  }, [uSunRel, scaledRadius]);
+
+  return { geo, mat };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Main Luna component with LOD switching
+// ─────────────────────────────────────────────────────────────────────
 
 function Luna({
   positionKm = LUNA_POSITION_KM,
@@ -62,90 +285,22 @@ function Luna({
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
   const displacementScaled = useMemo(
     () => kmToScaledUnits(DISPLACEMENT_SCALE_KM),
-    []
+    [],
   );
 
-  const tex = useTexture({
-    color: "/textures/luna/luna_color_2k.webp",
-    displacement: "/textures/luna/luna_displacement_8bit.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    // Color map is sRGB
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-    // Displacement is linear data
-    tex.displacement.colorSpace = THREE.NoColorSpace;
-    tex.displacement.needsUpdate = true;
-  }, [tex]);
-
-  // Sphere geometry — 96 segments is enough for the moon at typical viewing distances
-  const sphereGeo = useMemo(() => {
-    const geo = new THREE.SphereGeometry(scaledRadius, 96, 96);
-    return geo;
-  }, [scaledRadius]);
-
-  // Sun direction uniform (relative to luna, in scaled units)
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
 
-  // ── TSL Node Material ──
-  const lunaMat = useMemo(() => {
-    const mat = new NodeMaterial();
-    mat.side = THREE.FrontSide;
+  const near = useNearLOD(scaledRadius, displacementScaled, uSunRel);
+  const mid = useMidLOD(scaledRadius, displacementScaled, uSunRel);
+  const far = useFarLOD(scaledRadius, uSunRel);
 
-    // Vertex displacement from heightmap
-    const uDisplacementScale = float(displacementScaled);
-    mat.positionNode = Fn(() => {
-      const dispSample = texture(tex.displacement, uv()).r;
-      const displaced = positionLocal.add(
-        normalLocal.mul(dispSample.mul(uDisplacementScale))
-      );
-      return displaced;
-    })();
-
-    // Fragment: diffuse lighting with subtle backscatter
-    mat.fragmentNode = Fn(() => {
-      const uvCoord = uv();
-      const sunDir = normalize(uSunRel);
-
-      const albedo = texture(tex.color, uvCoord).rgb;
-
-      // Geometric normal in world space
-      const N = normalize(normalWorld);
-      const NdotL = dot(N, sunDir);
-
-      // ── Lambertian diffuse — sharp cutoff like the real Moon ──
-      // No wrap: the Moon has no atmosphere, so the terminator is hard.
-      // Clamp to zero; negative = shadow.
-      const diffuse = clamp(NdotL, 0, 1);
-
-      // ── Opposition surge (Hapke backscatter) ──
-      // The Moon brightens near full phase (shadow hiding + coherent
-      // backscatter). Only applies on the lit side.
-      const viewDir = normalize(sub(cameraPosition, positionWorld));
-      const halfVec = normalize(sunDir.add(viewDir));
-      const NdotH = dot(N, halfVec).max(0);
-      const surge = pow(NdotH, float(3.0)).mul(0.12).mul(diffuse);
-
-      // ── Earthshine ──
-      // Extremely faint — only perceptible when adapted to darkness,
-      // essentially invisible in a game scene with the lit side nearby.
-      const earthshine = float(0.002);
-      const earthshineColor = vec3(0.55, 0.65, 1.0);
-      const darkSideMask = clamp(NdotL.negate().mul(2.0), 0, 1);
-      const darkColor = albedo.mul(earthshine).mul(earthshineColor).mul(darkSideMask);
-
-      // Combine: lit contribution + earthshine on dark side only
-      const col = albedo.mul(diffuse.add(surge)).add(darkColor);
-
-      return vec4(col, 1.0);
-    })();
-
-    return mat;
-  }, [tex, uSunRel, displacementScaled]);
+  // Refs for the three LOD meshes so we can toggle visibility without re-renders.
+  const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
+  const midRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
+  const farRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
   useFrame(() => {
-    // Compute sun direction relative to Luna in scaled space
+    // ── Sun direction relative to Luna ──
     _relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
     _relativeKm.sub(worldOrigin.worldOriginKm);
     toScaledUnitsKm(_relativeKm, _lunaScaled);
@@ -156,18 +311,54 @@ function Luna({
 
     _sunRelative.copy(_sunScaled).sub(_lunaScaled);
     uSunRel.value.copy(_sunRelative);
+
+    // ── LOD selection based on ship distance ──
+    _shipToLuna.set(
+      positionKm[0] - worldOrigin.shipPosKm.x,
+      positionKm[1] - worldOrigin.shipPosKm.y,
+      positionKm[2] - worldOrigin.shipPosKm.z,
+    );
+    const distKm = _shipToLuna.length();
+
+    const showNear = distKm < LOD_NEAR_THRESHOLD;
+    const showMid = !showNear && distKm < LOD_FAR_THRESHOLD;
+    const showFar = !showNear && !showMid;
+
+    if (nearRef.current) nearRef.current.visible = showNear;
+    if (midRef.current) midRef.current.visible = showMid;
+    if (farRef.current) farRef.current.visible = showFar;
   });
 
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
-      <group rotation={LUNA_ROTATION}>
-        <mesh geometry={sphereGeo} material={lunaMat} />
+      <group>
+        <mesh
+          ref={(m) => { nearRef.current = m; }}
+          geometry={near.geo}
+          material={near.mat}
+          visible={false}
+        />
+        <mesh
+          ref={(m) => { midRef.current = m; }}
+          geometry={mid.geo}
+          material={mid.mat}
+          visible={false}
+        />
+        <mesh
+          ref={(m) => { farRef.current = m; }}
+          geometry={far.geo}
+          material={far.mat}
+          visible={false}
+        />
       </group>
     </SimGroup>
   );
 }
 
+// Preload all textures so LOD transitions don't stall.
+useTexture.preload("/textures/luna/luna_color_8k.webp");
+useTexture.preload("/textures/luna/luna_displacement_16.webp");
 useTexture.preload("/textures/luna/luna_color_2k.webp");
-useTexture.preload("/textures/luna/luna_displacement_8bit.webp");
+useTexture.preload("/textures/luna/luna_displacement_4.webp");
 
 export default memo(Luna);
