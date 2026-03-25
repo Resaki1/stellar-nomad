@@ -11,9 +11,12 @@ import {
   texture,
   uv,
   normalWorld,
+  tangentWorld,
+  bitangentWorld,
   positionWorld,
   positionLocal,
   normalLocal,
+  vec2,
   vec3,
   vec4,
   float,
@@ -48,7 +51,7 @@ import {
 export { LUNA_POSITION_KM, LUNA_RADIUS_KM };
 
 // ── LOD thresholds (km from Luna center) ──
-const LOD_NEAR_THRESHOLD = 5_000;
+const LOD_NEAR_THRESHOLD = 40_000;
 const LOD_FAR_THRESHOLD = 250_000;
 
 // ── Displacement ──
@@ -76,6 +79,9 @@ type LunaProps = {
 
 function buildSphereFragmentNode(
   colorTex: THREE.Texture,
+  dispTex: THREE.Texture,
+  bumpStrength: number,
+  texelSize: number,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
 ) {
@@ -83,9 +89,49 @@ function buildSphereFragmentNode(
     const uvCoord = uv();
     const sunDir = normalize(uSunRel);
     const albedo = texture(colorTex, uvCoord).rgb;
-    const N = normalize(normalWorld);
-    const NdotL = dot(N, sunDir);
 
+    // ── Perturbed normal from heightmap (Sobel filter) ──
+    // A 3×3 Sobel kernel smooths out compression quantisation in the
+    // displacement texture that otherwise shows as blocky grid artifacts.
+    // Wider sampling (3-texel radius) averages over enough neighbours to
+    // hide 8-bit webp banding while preserving crater-scale features.
+    const t = float(texelSize * 2.0);
+
+    // 3×3 neighbourhood heights
+    const hTL = texture(dispTex, uvCoord.add(vec2(t.negate(), t))).r;
+    const hTC = texture(dispTex, uvCoord.add(vec2(0, t))).r;
+    const hTR = texture(dispTex, uvCoord.add(vec2(t, t))).r;
+    const hML = texture(dispTex, uvCoord.add(vec2(t.negate(), 0))).r;
+    const hMR = texture(dispTex, uvCoord.add(vec2(t, 0))).r;
+    const hBL = texture(dispTex, uvCoord.add(vec2(t.negate(), t.negate()))).r;
+    const hBC = texture(dispTex, uvCoord.add(vec2(0, t.negate()))).r;
+    const hBR = texture(dispTex, uvCoord.add(vec2(t, t.negate()))).r;
+
+    // Sobel horizontal: [-1 0 +1; -2 0 +2; -1 0 +1]
+    const gradU = hTR.add(hMR.mul(2)).add(hBR)
+      .sub(hTL).sub(hML.mul(2)).sub(hBL)
+      .mul(float(bumpStrength));
+
+    // Sobel vertical:   [+1 +2 +1;  0  0  0; -1 -2 -1]
+    const gradV = hTL.add(hTC.mul(2)).add(hTR)
+      .sub(hBL).sub(hBC.mul(2)).sub(hBR)
+      .mul(float(bumpStrength));
+
+    // Tangent-space perturbed normal
+    // @ts-ignore -- TSL MathNode inference limitation
+    const tsNormal = normalize(vec3(gradU.negate(), gradV.negate(), float(1.0)));
+
+    // TBN matrix — requires geometry with computed tangents
+    // @ts-ignore -- TSL node type inference limitation
+    const T: any = normalize(tangentWorld);
+    // @ts-ignore -- TSL node type inference limitation
+    const B: any = normalize(bitangentWorld);
+    const N_geom: any = normalize(normalWorld);
+    const N = normalize(
+      T.mul(tsNormal.x).add(B.mul(tsNormal.y)).add(N_geom.mul(tsNormal.z)),
+    );
+
+    const NdotL = dot(N, sunDir);
     const diffuse = clamp(NdotL, 0, 1);
 
     const viewDir = normalize(sub(cameraPosition, positionWorld));
@@ -135,19 +181,24 @@ function useNearLOD(
     tex.color.colorSpace = THREE.SRGBColorSpace;
     tex.color.needsUpdate = true;
     tex.displacement.colorSpace = THREE.NoColorSpace;
+    tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.displacement.magFilter = THREE.LinearFilter;
     tex.displacement.needsUpdate = true;
   }, [tex]);
 
-  const geo = useMemo(
-    () => new THREE.SphereGeometry(scaledRadius, 128, 128),
-    [scaledRadius],
-  );
+  const geo = useMemo(() => {
+    const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
+    g.computeTangents();
+    return g;
+  }, [scaledRadius]);
 
   const mat = useMemo(() => {
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
-    m.fragmentNode = buildSphereFragmentNode(tex.color, uSunRel);
+    // Near LOD: 8k color, 16-bit displacement (assume ~4096 wide map → 1/4096 texel)
+    // Sobel kernel amplifies ~4x vs central diff, so bump strength is lower.
+    m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.8, 1 / 4096, uSunRel);
     return m;
   }, [tex, uSunRel, displacementScaled]);
 
@@ -172,19 +223,23 @@ function useMidLOD(
     tex.color.colorSpace = THREE.SRGBColorSpace;
     tex.color.needsUpdate = true;
     tex.displacement.colorSpace = THREE.NoColorSpace;
+    tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.displacement.magFilter = THREE.LinearFilter;
     tex.displacement.needsUpdate = true;
   }, [tex]);
 
-  const geo = useMemo(
-    () => new THREE.SphereGeometry(scaledRadius, 48, 48),
-    [scaledRadius],
-  );
+  const geo = useMemo(() => {
+    const g = new THREE.SphereGeometry(scaledRadius, 48, 48);
+    g.computeTangents();
+    return g;
+  }, [scaledRadius]);
 
   const mat = useMemo(() => {
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
-    m.fragmentNode = buildSphereFragmentNode(tex.color, uSunRel);
+    // Mid LOD: 2k color, 4-bit displacement (assume ~1024 wide map → 1/1024 texel)
+    m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.6, 1 / 1024, uSunRel);
     return m;
   }, [tex, uSunRel, displacementScaled]);
 
