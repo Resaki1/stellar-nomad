@@ -252,10 +252,12 @@ function useMidLOD(
 
 function useFarLOD(
   scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
+  // Sun projection onto billboard frame, as separate floats to avoid
+  // any swizzle ambiguity with vec3 uniforms in TSL.
+  uSpR: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- dot(right, sunDir)
+  uSpU: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- dot(up, sunDir)
+  uSpF: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- dot(fwd, sunDir)
 ) {
-  // A plane large enough to encompass the moon's silhouette.
-  // Factor of 2.1 to account for the UV→[-1,1] mapping plus a small margin.
   const geo = useMemo(
     () => new THREE.PlaneGeometry(scaledRadius * 2.1, scaledRadius * 2.1),
     [scaledRadius],
@@ -268,60 +270,40 @@ function useFarLOD(
     m.transparent = false;
     m.alphaHash = true;
 
-    // Billboard vertex: make the quad always face the camera.
     const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
 
     m.vertexNode = Fn(() => {
       const viewCenter = cameraViewMatrix.mul(worldCenter);
-      // positionGeometry is in [-halfSize, +halfSize]. Scale factor = 1
-      // because the geometry is already sized to the moon's diameter.
       const viewPos = viewCenter.add(
         vec4(positionGeometry.xy, float(0), float(0)),
       );
       return cameraProjectionMatrix.mul(viewPos);
     })();
 
-    // World-space face direction for hemisphere shading.
-    const vFaceDir = normalize(
-      cameraPosition.sub(worldCenter.xyz),
-    ).toVarying("v_faceDir");
-
+    // Fragment: hemisphere shading with CPU-precomputed sun projection.
+    // NdotL = spR * p.x + spU * p.y + spF * domeZ
     m.fragmentNode = Fn(() => {
       const p = uv().mul(2).sub(1);
       const dist = length(p);
 
-      // Circular disc with soft edge.
       const edge = smoothstep(float(1.0), float(0.92), dist);
       Discard(edge.lessThan(0.01));
 
-      // World-space hemisphere shading (same approach as asteroid impostors).
-      const fwd = normalize(vFaceDir);
-      const dotUp = abs(dot(fwd, vec3(0, 1, 0)));
-      const refUp = mix(
-        vec3(0, 1, 0),
-        vec3(1, 0, 0),
-        step(float(0.99), dotUp),
-      );
-      const right = normalize(cross(refUp, fwd));
-      const up = cross(fwd, right);
-
       const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
-      const worldNormal = normalize(
-        right.mul(p.x).add(up.mul(p.y)).add(fwd.mul(domeZ)),
+
+      const sunDot = clamp(
+        uSpR.mul(p.x).add(uSpU.mul(p.y)).add(uSpF.mul(domeZ)),
+        0, 1,
       );
 
-      const sunDir = normalize(uSunRel);
-      const NdotL = max(float(0), dot(worldNormal, sunDir));
-
-      // Simple diffuse with the moon's average albedo.
       const albedo = vec3(LUNA_ALBEDO.r, LUNA_ALBEDO.g, LUNA_ALBEDO.b);
-      const col = albedo.mul(NdotL);
+      const col = albedo.mul(sunDot);
 
       return vec4(col, edge);
     })();
 
     return m;
-  }, [uSunRel, scaledRadius]);
+  }, [uSpR, uSpU, uSpF, scaledRadius]);
 
   return { geo, mat };
 }
@@ -344,10 +326,14 @@ function Luna({
   );
 
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
+  // Sun projection onto billboard frame — separate floats to avoid TSL issues.
+  const uSpR = useMemo(() => uniform(0), []); // dot(right, sunDir)
+  const uSpU = useMemo(() => uniform(0), []); // dot(up, sunDir)
+  const uSpF = useMemo(() => uniform(0), []); // dot(fwd, sunDir)
 
   const near = useNearLOD(scaledRadius, displacementScaled, uSunRel);
   const mid = useMidLOD(scaledRadius, displacementScaled, uSunRel);
-  const far = useFarLOD(scaledRadius, uSunRel);
+  const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   // Refs for the three LOD meshes so we can toggle visibility without re-renders.
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -382,6 +368,27 @@ function Luna({
     if (nearRef.current) nearRef.current.visible = showNear;
     if (midRef.current) midRef.current.visible = showMid;
     if (farRef.current) farRef.current.visible = showFar;
+
+    // ── Sun projection for far impostor billboard ──
+    // Build body-to-camera frame and project sun onto it.
+    // Must NOT depend on camera rotation — only on body/ship/sun positions.
+    {
+      // Both in km space, normalized — ensures same coordinate system.
+      const sd = new THREE.Vector3(
+        sunPositionKm[0] - positionKm[0],
+        sunPositionKm[1] - positionKm[1],
+        sunPositionKm[2] - positionKm[2],
+      ).normalize();
+      const fw = _shipToLuna.clone().negate().normalize(); // body → camera
+      const ru = Math.abs(fw.y) > 0.99
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0);
+      const ri = new THREE.Vector3().crossVectors(ru, fw).normalize();
+      const up = new THREE.Vector3().crossVectors(fw, ri);
+      uSpR.value = ri.dot(sd);
+      uSpU.value = up.dot(sd);
+      uSpF.value = fw.dot(sd);
+    }
   });
 
   return (

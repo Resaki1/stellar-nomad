@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
@@ -58,7 +58,7 @@ export { PLANET_POSITION_KM };
 
 // ── LOD thresholds (km from Earth center) ──
 const LOD_NEAR_THRESHOLD = 35_000;
-const LOD_FAR_THRESHOLD = 500_000;
+const LOD_FAR_THRESHOLD = 1_500_000;
 
 const PLANET_ROTATION = new THREE.Euler(
   0.0 * Math.PI,
@@ -76,9 +76,6 @@ const sunRelative = new THREE.Vector3();
 const moonRelative = new THREE.Vector3();
 const relativeKm = new THREE.Vector3();
 const _shipToEarth = new THREE.Vector3();
-
-// Average Earth albedo for far billboard
-const EARTH_ALBEDO = new THREE.Color(0.28, 0.36, 0.52);
 
 // ---------- TSL: Eclipse function ----------
 const eclipseFn = Fn(
@@ -421,7 +418,8 @@ function useMidLOD(scaledRadius: number, uniforms: any) {
 // ─────────────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function useFarLOD(scaledRadius: number, uSunRel: any) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function useFarLOD(scaledRadius: number, uSpR: any, uSpU: any, uSpF: any) {
   const geo = useMemo(
     () => new THREE.PlaneGeometry(scaledRadius * 2.1, scaledRadius * 2.1),
     [scaledRadius],
@@ -434,7 +432,6 @@ function useFarLOD(scaledRadius: number, uSunRel: any) {
     m.transparent = false;
     m.alphaHash = true;
 
-    // Billboard vertex: quad always faces the camera.
     const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
 
     m.vertexNode = Fn(() => {
@@ -445,52 +442,35 @@ function useFarLOD(scaledRadius: number, uSunRel: any) {
       return cameraProjectionMatrix.mul(viewPos);
     })();
 
-    // World-space face direction for hemisphere shading.
-    const vFaceDir = normalize(
-      cameraPosition.sub(worldCenter.xyz),
-    ).toVarying("v_faceDir");
-
+    // Fragment: hemisphere shading with CPU-precomputed sun projection.
     m.fragmentNode = Fn(() => {
       const p = uv().mul(2).sub(1);
       const dist = length(p);
 
-      // Circular disc with soft edge.
       const edge = smoothstep(float(1.0), float(0.92), dist);
       Discard(edge.lessThan(0.01));
 
-      // World-space hemisphere shading.
-      const fwd = normalize(vFaceDir);
-      const dotUp = abs(dot(fwd, vec3(0, 1, 0)));
-      const refUp = mix(
-        vec3(0, 1, 0),
-        vec3(1, 0, 0),
-        step(float(0.99), dotUp),
-      );
-      const right = normalize(cross(refUp, fwd));
-      const up = cross(fwd, right);
-
       const domeZ = float(1.0).sub(dist.mul(dist)).max(0).sqrt();
-      const worldNormal = normalize(
-        right.mul(p.x).add(up.mul(p.y)).add(fwd.mul(domeZ)),
+
+      const sunDot = clamp(
+        uSpR.mul(p.x).add(uSpU.mul(p.y)).add(uSpF.mul(domeZ)),
+        0, 1,
       );
 
-      const sunDir = normalize(uSunRel);
-      const NdotL = max(float(0), dot(worldNormal, sunDir));
+      // Earth-like coloring.
+      const dayAlbedo = vec3(0.38, 0.42, 0.80).mul(2.0);
+      const col = dayAlbedo.mul(sunDot).toVar();
 
-      // Diffuse with Earth's average albedo.
-      const albedo = vec3(EARTH_ALBEDO.r, EARTH_ALBEDO.g, EARTH_ALBEDO.b);
-      const col = albedo.mul(NdotL).toVar();
-
-      // Atmosphere rim glow — Earth's most distinctive far-field feature.
-      const rimFactor = clamp(float(1.0).sub(domeZ).mul(2.0), 0, 1);
+      // Atmosphere rim glow on lit side.
+      const rimFactor = clamp(float(1.0).sub(domeZ).mul(2.5), 0, 1);
       const atmosColor = vec3(0.3, 0.5, 0.9);
-      col.addAssign(atmosColor.mul(rimFactor).mul(0.15));
+      col.addAssign(atmosColor.mul(rimFactor).mul(sunDot).mul(0.2));
 
       return vec4(col, edge);
     })();
 
     return m;
-  }, [uSunRel, scaledRadius]);
+  }, [uSpR, uSpU, uSpF, scaledRadius]);
 
   return { geo, mat };
 }
@@ -517,11 +497,16 @@ function Planet({
   radiusKm = DEFAULT_PLANET_RADIUS_KM,
 }: PlanetProps) {
   const worldOrigin = useWorldOrigin();
+  const camera = useThree((s) => s.camera);
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
   // TSL uniforms (shared across LOD materials)
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
+  // Sun projection onto billboard frame — separate floats, camera axes.
+  const uSpR = useMemo(() => uniform(0), []);
+  const uSpU = useMemo(() => uniform(0), []);
+  const uSpF = useMemo(() => uniform(0), []);
   const uMoonPos = useMemo(
     () => uniform(new THREE.Vector3(1e9, 0, 0)),
     []
@@ -543,7 +528,7 @@ function Planet({
 
   const near = useNearLOD(scaledRadius, uniforms);
   const mid = useMidLOD(scaledRadius, uniforms);
-  const far = useFarLOD(scaledRadius, uSunRel);
+  const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   // Refs for LOD meshes — toggle visibility without re-renders.
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -585,6 +570,30 @@ function Planet({
     if (nearRef.current) nearRef.current.visible = showNear;
     if (midRef.current) midRef.current.visible = showMid;
     if (farRef.current) farRef.current.visible = showFar;
+
+    // ── Sun projection for far impostor billboard ──
+    // The billboard is in VIEW space — build dome frame in view space too.
+    {
+      const qInv = camera.quaternion.clone().invert();
+
+      const sdView = new THREE.Vector3(
+        sunPositionKm[0] - positionKm[0],
+        sunPositionKm[1] - positionKm[1],
+        sunPositionKm[2] - positionKm[2],
+      ).normalize().applyQuaternion(qInv);
+
+      const bodyView = _shipToEarth.clone().applyQuaternion(qInv);
+      const fw = bodyView.negate().normalize();
+
+      const ru = Math.abs(fw.y) > 0.99
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0);
+      const ri = new THREE.Vector3().crossVectors(ru, fw).normalize();
+      const up = new THREE.Vector3().crossVectors(fw, ri);
+      uSpR.value = ri.dot(sdView);
+      uSpU.value = up.dot(sdView);
+      uSpF.value = fw.dot(sdView);
+    }
   });
 
   return (
