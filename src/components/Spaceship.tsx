@@ -11,6 +11,7 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
+import { PLANET_POSITION_KM } from "@/sim/celestialConstants";
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
 const _quat = new Quaternion();
@@ -53,7 +54,7 @@ const SpaceShip = memo(() => {
   const modelRef = useRef<Mesh>(null!);
 
   // ── Simulation state (advanced at fixed FIXED_DT) ──────────────────
-  const posKm = useRef(new Vector3());
+  const posKm = useRef(new Vector3(PLANET_POSITION_KM[0], PLANET_POSITION_KM[1], PLANET_POSITION_KM[2]));
   const simQuat = useRef(new Quaternion());
   const yawRate = useRef(0);
   const pitchRate = useRef(0);
@@ -62,7 +63,7 @@ const SpaceShip = memo(() => {
   const speed = useRef(0);
 
   // ── Previous-step snapshot (for interpolation) ─────────────────────
-  const prevPosKm = useRef(new Vector3());
+  const prevPosKm = useRef(new Vector3(PLANET_POSITION_KM[0], PLANET_POSITION_KM[1], PLANET_POSITION_KM[2]));
   const prevQuat = useRef(new Quaternion());
   const prevVRoll = useRef(0);
   const prevVPitch = useRef(0);
@@ -84,10 +85,10 @@ const SpaceShip = memo(() => {
       simQuat.current.set(saved.quaternion[0], saved.quaternion[1], saved.quaternion[2], saved.quaternion[3]);
       prevPosKm.current.copy(posKm.current);
       prevQuat.current.copy(simQuat.current);
-      // Sync world origin so camera / SimGroups don't jump
-      worldOrigin.setShipPosKm(posKm.current);
-      worldOrigin.setWorldOriginKm(posKm.current);
     }
+    // Sync world origin so camera / SimGroups don't jump
+    worldOrigin.setShipPosKm(posKm.current);
+    worldOrigin.setWorldOriginKm(posKm.current);
   }
 
   // ── Flush on beforeunload ───────────────────────────────────────────

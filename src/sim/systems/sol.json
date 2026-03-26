@@ -21,23 +21,23 @@
       "id": "sol",
       "name": "Sol",
       "type": "star",
-      "positionKm": [130000000, 0, 65000000],
+      "positionKm": [0, 0, 0],
       "radiusKm": 696340
     },
     {
       "id": "earth",
       "name": "Earth",
       "type": "planet",
-      "positionKm": [5000, 0, -15000],
+      "positionKm": [-129995000, 0, -65015000],
       "radiusKm": 6371,
-      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 1000000 }
+      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 100000000 }
     },
     {
       "id": "luna",
       "name": "Luna",
       "type": "moon",
       "parent": "earth",
-      "positionKm": [-379400, 0, -15000],
+      "positionKm": [-130379400, 0, -65015000],
       "radiusKm": 1737,
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 500000 }
     },
@@ -45,9 +45,9 @@
       "id": "mars",
       "name": "Mars",
       "type": "planet",
-      "positionKm": [-67500000, 0, -49000000],
+      "positionKm": [-197500000, 0, -114000000],
       "radiusKm": 3390,
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 1000000 }
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 100000000 }
     }
   ],
 
@@ -97,7 +97,7 @@
       "seed": 1337,
       "enabled": true,
       "frame": "system",
-      "anchorKm": [0, 0, 0],
+      "anchorKm": [-130000000, 0, -65000000],
       "shape": { "type": "sphere", "radiusKm": 3000, "edgeFalloffKm": 3000 },
       "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 10000 },
       "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
