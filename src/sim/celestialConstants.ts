@@ -1,36 +1,39 @@
 // Shared positional constants for celestial bodies in the Sol system.
-// Centralised here to avoid circular imports between component modules.
+// Derived from sol.json (single source of truth) to avoid circular imports
+// between component modules.
+
+import solSystem from "@/sim/systems/sol.json";
+import type { CelestialBodyDef } from "@/sim/systemTypes";
+
+const bodies = solSystem.celestialBodies as CelestialBodyDef[];
+
+function findBody(id: string): CelestialBodyDef {
+  const body = bodies.find((b) => b.id === id);
+  if (!body) throw new Error(`[celestialConstants] body "${id}" not found in sol.json`);
+  return body;
+}
+
+const sol = findBody("sol");
+const earth = findBody("earth");
+const luna = findBody("luna");
+const mars = findBody("mars");
 
 /** Sun position in km (system coordinates). */
-export const STAR_POSITION_KM: [number, number, number] = [
-  130_000_000, 0, 65_000_000,
-];
-
+export const STAR_POSITION_KM = sol.positionKm as [number, number, number];
 /** Sun radius in km. */
-export const STAR_RADIUS_KM = 696_340;
+export const STAR_RADIUS_KM = sol.radiusKm;
 
 /** Earth position in km (system coordinates). */
-export const PLANET_POSITION_KM: [number, number, number] = [
-  5_000, 0, -15_000,
-];
-
+export const PLANET_POSITION_KM = earth.positionKm as [number, number, number];
 /** Earth radius in km. */
-export const PLANET_RADIUS_KM = 6_371;
+export const PLANET_RADIUS_KM = earth.radiusKm;
 
-/** Luna radius in km (real: 1737). */
-export const LUNA_RADIUS_KM = 1_737;
+/** Luna position in km. */
+export const LUNA_POSITION_KM = luna.positionKm as [number, number, number];
+/** Luna radius in km. */
+export const LUNA_RADIUS_KM = luna.radiusKm;
 
-/** Luna position in km — 384,400 km from Earth along +X. */
-export const LUNA_POSITION_KM: [number, number, number] = [
-  PLANET_POSITION_KM[0] + -384_400,
-  PLANET_POSITION_KM[1],
-  PLANET_POSITION_KM[2],
-];
-
-/** Mars radius in km (real: 3390). */
-export const MARS_RADIUS_KM = 3_390;
-
-/** Mars position in km — ~228M km from the Sun, ~83M km from Earth. */
-export const MARS_POSITION_KM: [number, number, number] = [
-  -67_500_000, 0, -49_000_000,
-];
+/** Mars position in km. */
+export const MARS_POSITION_KM = mars.positionKm as [number, number, number];
+/** Mars radius in km. */
+export const MARS_RADIUS_KM = mars.radiusKm;
