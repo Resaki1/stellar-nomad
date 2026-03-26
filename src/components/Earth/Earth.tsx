@@ -499,7 +499,7 @@ function Planet({
   radiusKm = DEFAULT_PLANET_RADIUS_KM,
 }: PlanetProps) {
   const worldOrigin = useWorldOrigin();
-  const camera = useThree((s) => s.camera);
+  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -536,6 +536,9 @@ function Planet({
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
   const midRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
   const farRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
+
+  // Warm up the near-LOD shader so the mid→near switch doesn't compile-stall.
+  const nearCompiled = useMemo(() => ({ current: false }), []);
 
   useFrame(() => {
     // ── Update uniforms ──
@@ -602,7 +605,13 @@ function Planet({
     <SimGroup space="scaled" positionKm={positionKm}>
       <group rotation={PLANET_ROTATION}>
         <mesh
-          ref={(m) => { nearRef.current = m; }}
+          ref={(m) => {
+            nearRef.current = m;
+            if (m && !nearCompiled.current) {
+              nearCompiled.current = true;
+              gl.compileAsync(m, camera).catch(() => {});
+            }
+          }}
           geometry={near.geo}
           material={near.mat}
           visible={false}
