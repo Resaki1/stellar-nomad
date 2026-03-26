@@ -2,7 +2,7 @@
 "use client";
 
 import { settingsAtom } from "@/store/store";
-import { Stats, StatsGl, AdaptiveDpr, AdaptiveEvents } from "@react-three/drei";
+import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
 import { memo } from "react";
@@ -10,7 +10,7 @@ import * as THREE from "three/webgpu";
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
-import Planet from "../Planet/Planet";
+import Earth from "../Earth/Earth";
 import Luna from "../Moon/Luna";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
@@ -69,7 +69,7 @@ const Scene = () => {
             scaled={
               <>
                 <MilkyWaySkybox />
-                <Planet />
+                <Earth />
                 <Luna />
                 <Star bloom={settings.bloom} />
               </>

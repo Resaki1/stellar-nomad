@@ -37,10 +37,6 @@ import {
   sub,
   PI,
   smoothstep,
-  max,
-  abs,
-  step,
-  cross,
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
