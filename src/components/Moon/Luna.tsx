@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useMemo } from "react";
-import { useFrame } from "@react-three/fiber";
+import { memo, useEffect, useMemo } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
@@ -172,6 +172,7 @@ function useNearLOD(
   displacementScaled: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
 ) {
+  const gl = useThree((s) => s.gl);
   const tex = useTexture({
     color: "/textures/luna/luna_color_8k.webp",
     displacement: "/textures/luna/luna_displacement_16.webp",
@@ -185,6 +186,11 @@ function useNearLOD(
     tex.displacement.magFilter = THREE.LinearFilter;
     tex.displacement.needsUpdate = true;
   }, [tex]);
+
+  // Force GPU upload eagerly so the mid→near LOD switch doesn't stall.
+  useEffect(() => {
+    for (const t of Object.values(tex)) gl.initTexture(t);
+  }, [gl, tex]);
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
