@@ -26,3 +26,11 @@ export const LUNA_POSITION_KM: [number, number, number] = [
   PLANET_POSITION_KM[1],
   PLANET_POSITION_KM[2],
 ];
+
+/** Mars radius in km (real: 3390). */
+export const MARS_RADIUS_KM = 3_390;
+
+/** Mars position in km — ~228M km from the Sun, ~83M km from Earth. */
+export const MARS_POSITION_KM: [number, number, number] = [
+  -67_500_000, 0, -49_000_000,
+];

@@ -40,6 +40,14 @@
       "positionKm": [-379400, 0, -15000],
       "radiusKm": 1737,
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 500000 }
+    },
+    {
+      "id": "mars",
+      "name": "Mars",
+      "type": "planet",
+      "positionKm": [-67500000, 0, -49000000],
+      "radiusKm": 3390,
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 1000000 }
     }
   ],
 

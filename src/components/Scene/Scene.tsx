@@ -12,6 +12,7 @@ import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
 import Earth from "../Earth/Earth";
 import Luna from "../Moon/Luna";
+import Mars from "../Mars/Mars";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
@@ -71,6 +72,7 @@ const Scene = () => {
                 <MilkyWaySkybox />
                 <Earth />
                 <Luna />
+                <Mars />
                 <Star bloom={settings.bloom} />
               </>
             }
