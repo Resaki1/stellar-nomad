@@ -48,6 +48,14 @@
       "positionKm": [-197500000, 0, -114000000],
       "radiusKm": 3390,
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 100000000 }
+    },
+    {
+      "id": "jupiter",
+      "name": "Jupiter",
+      "type": "planet",
+      "positionKm": [90000000, 0, -779000000],
+      "radiusKm": 69911,
+      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 500000000 }
     }
   ],
 

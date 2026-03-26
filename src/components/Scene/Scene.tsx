@@ -13,6 +13,7 @@ import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
 import Earth from "../Earth/Earth";
 import Luna from "../Moon/Luna";
 import Mars from "../Mars/Mars";
+import Jupiter from "../Jupiter/Jupiter";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
@@ -73,6 +74,7 @@ const Scene = () => {
                 <Earth />
                 <Luna />
                 <Mars />
+                <Jupiter />
                 <Star bloom={settings.bloom} />
               </>
             }

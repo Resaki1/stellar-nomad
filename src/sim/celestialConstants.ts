@@ -17,6 +17,7 @@ const sol = findBody("sol");
 const earth = findBody("earth");
 const luna = findBody("luna");
 const mars = findBody("mars");
+const jupiter = findBody("jupiter");
 
 /** Sun position in km (system coordinates). */
 export const STAR_POSITION_KM = sol.positionKm as [number, number, number];
@@ -37,3 +38,8 @@ export const LUNA_RADIUS_KM = luna.radiusKm;
 export const MARS_POSITION_KM = mars.positionKm as [number, number, number];
 /** Mars radius in km. */
 export const MARS_RADIUS_KM = mars.radiusKm;
+
+/** Jupiter position in km. */
+export const JUPITER_POSITION_KM = jupiter.positionKm as [number, number, number];
+/** Jupiter radius in km. */
+export const JUPITER_RADIUS_KM = jupiter.radiusKm;
