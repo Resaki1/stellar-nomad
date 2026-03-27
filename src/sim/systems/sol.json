@@ -58,6 +58,15 @@
       "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {
+      "id": "io",
+      "name": "Io",
+      "type": "moon",
+      "parent": "jupiter",
+      "positionKm": [90421700, 0, -779000000],
+      "radiusKm": 1822,
+      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
+    },
+    {
       "id": "ganymede",
       "name": "Ganymede",
       "type": "moon",

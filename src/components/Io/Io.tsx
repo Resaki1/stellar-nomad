@@ -34,28 +34,27 @@ import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
   STAR_POSITION_KM,
-  GANYMEDE_POSITION_KM,
-  GANYMEDE_RADIUS_KM,
+  IO_POSITION_KM,
+  IO_RADIUS_KM,
 } from "@/sim/celestialConstants";
 
-export { GANYMEDE_POSITION_KM, GANYMEDE_RADIUS_KM };
+export { IO_POSITION_KM, IO_RADIUS_KM };
 
-// ── LOD thresholds (km from Ganymede center) ──
-// Ganymede radius 2634 km — ~19 radii near, ~133 radii far
-const LOD_NEAR_THRESHOLD = 50_000;
+// ── LOD thresholds (km from Io center) ──
+const LOD_NEAR_THRESHOLD = 40_000;
 const LOD_FAR_THRESHOLD = 350_000;
 
 // ── Reusable vectors (no per-frame allocs) ──
 const _sunScaled = new THREE.Vector3();
-const _ganymedeScaled = new THREE.Vector3();
+const _ioScaled = new THREE.Vector3();
 const _sunRelative = new THREE.Vector3();
 const _relativeKm = new THREE.Vector3();
-const _shipToGanymede = new THREE.Vector3();
+const _shipToIo = new THREE.Vector3();
 
-// ── Ganymede average albedo for far impostor (icy grey) ──
-const GANYMEDE_ALBEDO = new THREE.Color(0.45, 0.43, 0.40);
+// ── Io average albedo for far impostor (sulfurous yellow-orange) ──
+const IO_ALBEDO = new THREE.Color(0.36, 0.26, 0.14);
 
-type GanymedeProps = {
+type IoProps = {
   positionKm?: [number, number, number];
   sunPositionKm?: [number, number, number];
   radiusKm?: number;
@@ -64,15 +63,15 @@ type GanymedeProps = {
 // ─────────────────────────────────────────────────────────────────────
 // Shared fragment logic for the textured sphere LODs (near + mid).
 //
-// Physical considerations for Ganymede shading:
-// - Largest moon in the solar system, icy surface with dark terrain
-// - Grooved terrain: mix of ancient dark regions and younger bright ice
+// Physical considerations for Io shading:
+// - Most volcanically active body in the solar system
 // - No atmosphere → hard terminator, no light-wrap
-// - Moderate opposition surge from regolith backscatter
+// - Sulfur and sulfur dioxide frost create vivid yellow/orange/white palette
+// - Opposition surge from regolith backscatter
 // - Subtle limb darkening from surface roughness
 // ─────────────────────────────────────────────────────────────────────
 
-function buildGanymedeFragmentNode(
+function buildIoFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
@@ -85,7 +84,7 @@ function buildGanymedeFragmentNode(
     const N = normalize(normalWorld);
     const NdotL = dot(N, sunDir);
 
-    // Hard diffuse — no atmosphere, so no light-wrap
+    // Hard diffuse — no atmosphere
     const diffuse = clamp(NdotL, 0, 1);
 
     // Opposition surge: regolith backscatters light when Sun is behind camera
@@ -105,7 +104,7 @@ function buildGanymedeFragmentNode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Near LOD: 8k texture, 128-segment sphere
+// Near LOD: 4k texture, 128-segment sphere
 // ─────────────────────────────────────────────────────────────────────
 
 function useNearLOD(
@@ -114,7 +113,7 @@ function useNearLOD(
 ) {
   const gl = useThree((s) => s.gl);
   const tex = useTexture({
-    color: "/textures/ganymede/8k_ganymede.webp",
+    color: "/textures/io/4k_io.webp",
   }) as Record<string, THREE.Texture>;
 
   useMemo(() => {
@@ -133,7 +132,7 @@ function useNearLOD(
   const mat = useMemo(() => {
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = buildGanymedeFragmentNode(tex.color, uSunRel);
+    m.fragmentNode = buildIoFragmentNode(tex.color, uSunRel);
     return m;
   }, [tex, uSunRel]);
 
@@ -149,7 +148,7 @@ function useMidLOD(
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
   const tex = useTexture({
-    color: "/textures/ganymede/2k_ganymede.webp",
+    color: "/textures/io/2k_io.webp",
   }) as Record<string, THREE.Texture>;
 
   useMemo(() => {
@@ -164,7 +163,7 @@ function useMidLOD(
   const mat = useMemo(() => {
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = buildGanymedeFragmentNode(tex.color, uSunRel);
+    m.fragmentNode = buildIoFragmentNode(tex.color, uSunRel);
     return m;
   }, [tex, uSunRel]);
 
@@ -172,7 +171,7 @@ function useMidLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Far LOD: billboard impostor — icy grey disc with lighting
+// Far LOD: billboard impostor — sulfurous yellow disc with lighting
 // ─────────────────────────────────────────────────────────────────────
 
 function useFarLOD(
@@ -217,7 +216,7 @@ function useFarLOD(
         0, 1,
       );
 
-      const albedo = vec3(GANYMEDE_ALBEDO.r, GANYMEDE_ALBEDO.g, GANYMEDE_ALBEDO.b);
+      const albedo = vec3(IO_ALBEDO.r, IO_ALBEDO.g, IO_ALBEDO.b);
       const col = albedo.mul(sunDot);
 
       return vec4(col, edge);
@@ -230,14 +229,14 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Main Ganymede component with LOD switching
+// Main Io component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
-function Ganymede({
-  positionKm = GANYMEDE_POSITION_KM,
+function Io({
+  positionKm = IO_POSITION_KM,
   sunPositionKm = STAR_POSITION_KM,
-  radiusKm = GANYMEDE_RADIUS_KM,
-}: GanymedeProps) {
+  radiusKm = IO_RADIUS_KM,
+}: IoProps) {
   const worldOrigin = useWorldOrigin();
   const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
 
@@ -258,25 +257,25 @@ function Ganymede({
   const nearCompiled = useMemo(() => ({ current: false }), []);
 
   useFrame(() => {
-    // ── Sun direction relative to Ganymede ──
+    // ── Sun direction relative to Io ──
     _relativeKm.set(positionKm[0], positionKm[1], positionKm[2]);
     _relativeKm.sub(worldOrigin.worldOriginKm);
-    toScaledUnitsKm(_relativeKm, _ganymedeScaled);
+    toScaledUnitsKm(_relativeKm, _ioScaled);
 
     _relativeKm.set(sunPositionKm[0], sunPositionKm[1], sunPositionKm[2]);
     _relativeKm.sub(worldOrigin.worldOriginKm);
     toScaledUnitsKm(_relativeKm, _sunScaled);
 
-    _sunRelative.copy(_sunScaled).sub(_ganymedeScaled);
+    _sunRelative.copy(_sunScaled).sub(_ioScaled);
     uSunRel.value.copy(_sunRelative);
 
     // ── LOD selection based on ship distance ──
-    _shipToGanymede.set(
+    _shipToIo.set(
       positionKm[0] - worldOrigin.shipPosKm.x,
       positionKm[1] - worldOrigin.shipPosKm.y,
       positionKm[2] - worldOrigin.shipPosKm.z,
     );
-    const distKm = _shipToGanymede.length();
+    const distKm = _shipToIo.length();
 
     const showNear = distKm < LOD_NEAR_THRESHOLD;
     const showMid = !showNear && distKm < LOD_FAR_THRESHOLD;
@@ -296,7 +295,7 @@ function Ganymede({
         sunPositionKm[2] - positionKm[2],
       ).normalize().applyQuaternion(qInv);
 
-      const bodyView = _shipToGanymede.clone().applyQuaternion(qInv);
+      const bodyView = _shipToIo.clone().applyQuaternion(qInv);
       const fw = bodyView.negate().normalize();
 
       const ru = Math.abs(fw.y) > 0.99
@@ -343,7 +342,7 @@ function Ganymede({
 }
 
 // Preload textures so LOD transitions don't stall.
-useTexture.preload("/textures/ganymede/8k_ganymede.webp");
-useTexture.preload("/textures/ganymede/2k_ganymede.webp");
+useTexture.preload("/textures/io/4k_io.webp");
+useTexture.preload("/textures/io/2k_io.webp");
 
-export default memo(Ganymede);
+export default memo(Io);
