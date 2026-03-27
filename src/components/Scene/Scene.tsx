@@ -15,6 +15,7 @@ import Luna from "../Moon/Luna";
 import Mars from "../Mars/Mars";
 import Jupiter from "../Jupiter/Jupiter";
 import Callisto from "../Callisto/Callisto";
+import Europa from "../Europa/Europa";
 import Ganymede from "../Ganymede/Ganymede";
 import Io from "../Io/Io";
 import SpaceShip from "../Spaceship";
@@ -79,6 +80,7 @@ const Scene = () => {
                 <Mars />
                 <Jupiter />
                 <Callisto />
+                <Europa />
                 <Ganymede />
                 <Io />
                 <Star bloom={settings.bloom} />

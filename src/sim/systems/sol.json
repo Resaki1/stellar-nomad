@@ -58,6 +58,15 @@
       "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {
+      "id": "europa",
+      "name": "Europa",
+      "type": "moon",
+      "parent": "jupiter",
+      "positionKm": [90671000, 0, -779000000],
+      "radiusKm": 1561,
+      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
+    },
+    {
       "id": "io",
       "name": "Io",
       "type": "moon",
