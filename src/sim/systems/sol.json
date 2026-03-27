@@ -55,7 +55,16 @@
       "type": "planet",
       "positionKm": [90000000, 0, -779000000],
       "radiusKm": 69911,
-      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 500000000 }
+      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
+    },
+    {
+      "id": "ganymede",
+      "name": "Ganymede",
+      "type": "moon",
+      "parent": "jupiter",
+      "positionKm": [91070000, 0, -779000000],
+      "radiusKm": 2634,
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
     }
   ],
 

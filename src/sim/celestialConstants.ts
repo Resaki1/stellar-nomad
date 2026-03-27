@@ -18,6 +18,7 @@ const earth = findBody("earth");
 const luna = findBody("luna");
 const mars = findBody("mars");
 const jupiter = findBody("jupiter");
+const ganymede = findBody("ganymede");
 
 /** Sun position in km (system coordinates). */
 export const STAR_POSITION_KM = sol.positionKm as [number, number, number];
@@ -43,3 +44,8 @@ export const MARS_RADIUS_KM = mars.radiusKm;
 export const JUPITER_POSITION_KM = jupiter.positionKm as [number, number, number];
 /** Jupiter radius in km. */
 export const JUPITER_RADIUS_KM = jupiter.radiusKm;
+
+/** Ganymede position in km. */
+export const GANYMEDE_POSITION_KM = ganymede.positionKm as [number, number, number];
+/** Ganymede radius in km. */
+export const GANYMEDE_RADIUS_KM = ganymede.radiusKm;
