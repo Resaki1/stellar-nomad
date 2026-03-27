@@ -10,6 +10,7 @@ import * as THREE from "three/webgpu";
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
+import Mercury from "../Mercury/Mercury";
 import Earth from "../Earth/Earth";
 import Luna from "../Moon/Luna";
 import Mars from "../Mars/Mars";
@@ -75,6 +76,7 @@ const Scene = () => {
             scaled={
               <>
                 <MilkyWaySkybox />
+                <Mercury />
                 <Earth />
                 <Luna />
                 <Mars />

@@ -25,12 +25,20 @@
       "radiusKm": 696340
     },
     {
+      "id": "mercury",
+      "name": "Mercury",
+      "type": "planet",
+      "positionKm": [58000000, 0, 0],
+      "radiusKm": 2440,
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
+    },
+    {
       "id": "earth",
       "name": "Earth",
       "type": "planet",
       "positionKm": [-129995000, 0, -65015000],
       "radiusKm": 6371,
-      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 100000000 }
+      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "luna",
@@ -47,7 +55,7 @@
       "type": "planet",
       "positionKm": [-197500000, 0, -114000000],
       "radiusKm": 3390,
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 100000000 }
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "jupiter",
