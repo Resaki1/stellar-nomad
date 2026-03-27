@@ -67,6 +67,15 @@
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
     },
     {
+      "id": "callisto",
+      "name": "Callisto",
+      "type": "moon",
+      "parent": "jupiter",
+      "positionKm": [91883000, 0, -779000000],
+      "radiusKm": 2405,
+      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
+    },
+    {
       "id": "ganymede",
       "name": "Ganymede",
       "type": "moon",
