@@ -15,6 +15,7 @@ function findBody(id: string): CelestialBodyDef {
 
 const sol = findBody("sol");
 const mercury = findBody("mercury");
+const venus = findBody("venus");
 const earth = findBody("earth");
 const luna = findBody("luna");
 const mars = findBody("mars");
@@ -33,6 +34,11 @@ export const STAR_RADIUS_KM = sol.radiusKm;
 export const MERCURY_POSITION_KM = mercury.positionKm as [number, number, number];
 /** Mercury radius in km. */
 export const MERCURY_RADIUS_KM = mercury.radiusKm;
+
+/** Venus position in km. */
+export const VENUS_POSITION_KM = venus.positionKm as [number, number, number];
+/** Venus radius in km. */
+export const VENUS_RADIUS_KM = venus.radiusKm;
 
 /** Earth position in km (system coordinates). */
 export const PLANET_POSITION_KM = earth.positionKm as [number, number, number];
