@@ -19,6 +19,7 @@ const venus = findBody("venus");
 const earth = findBody("earth");
 const luna = findBody("luna");
 const mars = findBody("mars");
+const saturn = findBody("saturn");
 const jupiter = findBody("jupiter");
 const europa = findBody("europa");
 const io = findBody("io");
@@ -54,6 +55,11 @@ export const LUNA_RADIUS_KM = luna.radiusKm;
 export const MARS_POSITION_KM = mars.positionKm as [number, number, number];
 /** Mars radius in km. */
 export const MARS_RADIUS_KM = mars.radiusKm;
+
+/** Saturn position in km. */
+export const SATURN_POSITION_KM = saturn.positionKm as [number, number, number];
+/** Saturn radius in km. */
+export const SATURN_RADIUS_KM = saturn.radiusKm;
 
 /** Jupiter position in km. */
 export const JUPITER_POSITION_KM = jupiter.positionKm as [number, number, number];

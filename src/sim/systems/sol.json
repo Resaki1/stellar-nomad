@@ -66,6 +66,14 @@
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
+      "id": "saturn",
+      "name": "Saturn",
+      "type": "planet",
+      "positionKm": [1430000000, 0, 0],
+      "radiusKm": 58232,
+      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
+    },
+    {
       "id": "jupiter",
       "name": "Jupiter",
       "type": "planet",
