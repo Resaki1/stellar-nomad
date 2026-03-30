@@ -115,6 +115,8 @@ function buildRingFragmentNode(
   ringTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uPlanetRadius: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -134,7 +136,31 @@ function buildRingFragmentNode(
     const sunElevation = clamp(sunDir.y.abs(), 0, 1);
     const diffuse = sunElevation.mul(0.7).add(0.3);
 
-    const col = albedo.mul(diffuse);
+    // ── Planet shadow on rings ──
+    // Ray-sphere intersection in world space: cast ray from ring fragment toward sun.
+    // Planet center in world space = model origin.
+    const planetCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1)).xyz;
+    const fragWorld = positionWorld;
+    const R = uPlanetRadius;
+
+    // oc = vector from planet center to fragment (world space)
+    const oc = fragWorld.sub(planetCenter);
+    const b = dot(oc, sunDir);
+    const c = dot(oc, oc).sub(R.mul(R));
+    const discriminant = b.mul(b).sub(c);
+
+    // If discriminant >= 0, the ray hits the sphere.
+    // Also need t > 0 (sphere is between fragment and sun, not behind).
+    // t = -b ± sqrt(discriminant). Hit if -b + sqrt(disc) > 0 and disc >= 0.
+    const sqrtDisc = discriminant.max(0).sqrt();
+    const tNearest = b.negate().sub(sqrtDisc);
+    // In shadow when disc >= 0 AND at least one positive t intersection
+    const inShadow = discriminant.greaterThanEqual(0).and(
+      tNearest.greaterThan(0).or(b.negate().add(sqrtDisc).greaterThan(0)),
+    );
+    const shadowMask = inShadow.select(float(0.05), float(1.0));
+
+    const col = albedo.mul(diffuse).mul(shadowMask);
 
     return vec4(col, alpha);
   })();
@@ -188,6 +214,7 @@ function buildSaturnFragmentNode(
 function useNearLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
   const gl = useThree((s) => s.gl);
   const tex = useTexture({
@@ -228,9 +255,9 @@ function useNearLOD(
     m.side = THREE.DoubleSide;
     m.transparent = true;
     m.depthWrite = false;
-    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel);
+    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex, uSunRel, uPlanetRadius]);
 
   return { planetGeo, ringGeo, planetMat, ringMat };
 }
@@ -242,6 +269,7 @@ function useNearLOD(
 function useMidLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
   const tex = useTexture({
     color: "/textures/saturn/2k_saturn.webp",
@@ -277,9 +305,9 @@ function useMidLOD(
     m.side = THREE.DoubleSide;
     m.transparent = true;
     m.depthWrite = false;
-    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel);
+    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex, uSunRel, uPlanetRadius]);
 
   return { planetGeo, ringGeo, planetMat, ringMat };
 }
@@ -361,12 +389,13 @@ function Saturn({
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
+  const uPlanetRadius = useMemo(() => uniform(scaledRadius), [scaledRadius]);
   const uSpR = useMemo(() => uniform(0), []);
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
 
-  const near = useNearLOD(scaledRadius, uSunRel);
-  const mid = useMidLOD(scaledRadius, uSunRel);
+  const near = useNearLOD(scaledRadius, uSunRel, uPlanetRadius);
+  const mid = useMidLOD(scaledRadius, uSunRel, uPlanetRadius);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   const nearPlanetRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
