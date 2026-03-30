@@ -15,6 +15,8 @@ import Venus from "../Venus/Venus";
 import Earth from "../Earth/Earth";
 import Luna from "../Moon/Luna";
 import Mars from "../Mars/Mars";
+import Uranus from "../Uranus/Uranus";
+import Neptune from "../Neptune/Neptune";
 import Saturn from "../Saturn/Saturn";
 import Jupiter from "../Jupiter/Jupiter";
 import Callisto from "../Callisto/Callisto";
@@ -83,6 +85,8 @@ const Scene = () => {
                 <Earth />
                 <Luna />
                 <Mars />
+                <Uranus />
+                <Neptune />
                 <Saturn />
                 <Jupiter />
                 <Callisto />

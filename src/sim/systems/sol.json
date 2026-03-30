@@ -66,6 +66,22 @@
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
+      "id": "uranus",
+      "name": "Uranus",
+      "type": "planet",
+      "positionKm": [2870000000, 0, 0],
+      "radiusKm": 25559,
+      "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
+    },
+    {
+      "id": "neptune",
+      "name": "Neptune",
+      "type": "planet",
+      "positionKm": [4500000000, 0, 0],
+      "radiusKm": 24622,
+      "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
+    },
+    {
       "id": "saturn",
       "name": "Saturn",
       "type": "planet",
