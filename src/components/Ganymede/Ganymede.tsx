@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
@@ -112,7 +112,6 @@ function useNearLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const gl = useThree((s) => s.gl);
   const tex = useTexture({
     color: "/textures/ganymede/8k_ganymede.webp",
   }) as Record<string, THREE.Texture>;
@@ -120,11 +119,7 @@ function useNearLOD(
   useMemo(() => {
     tex.color.colorSpace = THREE.SRGBColorSpace;
     tex.color.needsUpdate = true;
-  }, [tex]);
-
-  useEffect(() => {
-    for (const t of Object.values(tex)) gl.initTexture(t);
-  }, [gl, tex]);
+  }, [tex.color]);
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -135,7 +130,7 @@ function useNearLOD(
     m.side = THREE.FrontSide;
     m.fragmentNode = buildGanymedeFragmentNode(tex.color, uSunRel);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex.color, uSunRel]);
 
   return { geo, mat };
 }
@@ -155,7 +150,7 @@ function useMidLOD(
   useMemo(() => {
     tex.color.colorSpace = THREE.SRGBColorSpace;
     tex.color.needsUpdate = true;
-  }, [tex]);
+  }, [tex.color]);
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -166,7 +161,7 @@ function useMidLOD(
     m.side = THREE.FrontSide;
     m.fragmentNode = buildGanymedeFragmentNode(tex.color, uSunRel);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex.color, uSunRel]);
 
   return { geo, mat };
 }
@@ -343,7 +338,6 @@ function Ganymede({
 }
 
 // Preload textures so LOD transitions don't stall.
-useTexture.preload("/textures/ganymede/8k_ganymede.webp");
 useTexture.preload("/textures/ganymede/2k_ganymede.webp");
 
 export default memo(Ganymede);

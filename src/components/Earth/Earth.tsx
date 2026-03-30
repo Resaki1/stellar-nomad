@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
@@ -323,7 +323,6 @@ function setTextureColorSpace(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function useNearLOD(scaledRadius: number, uniforms: any) {
-  const gl = useThree((s) => s.gl);
   const tex = useTexture({
     day: "/textures/earth_day_8k.webp",
     night: "/textures/earth_night_8k.webp",
@@ -341,12 +340,7 @@ function useNearLOD(scaledRadius: number, uniforms: any) {
     tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
     tex.clouds.magFilter = THREE.LinearFilter;
     tex.clouds.anisotropy = 8;
-  }, [tex]);
-
-  // Force GPU upload eagerly so the mid→near LOD switch doesn't stall.
-  useEffect(() => {
-    for (const t of Object.values(tex)) gl.initTexture(t);
-  }, [gl, tex]);
+  }, [tex.day, tex.night, tex.normal, tex.spec, tex.clouds]);
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -366,7 +360,7 @@ function useNearLOD(scaledRadius: number, uniforms: any) {
       ...uniforms,
     });
     return m;
-  }, [tex, uniforms]);
+  }, [tex.day, tex.night, tex.clouds, tex.normal, tex.spec, uniforms]);
 
   return { geo, mat };
 }
@@ -392,7 +386,7 @@ function useMidLOD(scaledRadius: number, uniforms: any) {
     tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
     tex.clouds.magFilter = THREE.LinearFilter;
     tex.clouds.anisotropy = 4;
-  }, [tex]);
+  }, [tex.day, tex.night, tex.clouds, tex.spec]);
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -410,7 +404,7 @@ function useMidLOD(scaledRadius: number, uniforms: any) {
       ...uniforms,
     });
     return m;
-  }, [tex, uniforms]);
+  }, [tex.day, tex.night, tex.clouds, tex.spec, uniforms]);
 
   return { geo, mat };
 }
@@ -633,14 +627,9 @@ function Planet({
   );
 }
 
-// Preload all textures so LOD transitions don't stall.
-useTexture.preload("/textures/earth_day_8k.webp");
-useTexture.preload("/textures/earth_night_8k.webp");
-useTexture.preload("/textures/earth_clouds_8k.webp");
-useTexture.preload("/textures/earth_normal.webp");
-useTexture.preload("/textures/earth_specular.webp");
 useTexture.preload("/textures/earth_day_2k.webp");
 useTexture.preload("/textures/earth_night_2k.webp");
 useTexture.preload("/textures/earth_clouds_2k.webp");
+useTexture.preload("/textures/earth_specular.webp");
 
 export default memo(Planet);

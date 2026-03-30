@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
@@ -216,7 +216,6 @@ function useNearLOD(
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const gl = useThree((s) => s.gl);
   const tex = useTexture({
     color: "/textures/saturn/8k_saturn.webp",
     ring: "/textures/saturn/8k_saturn_ring_alpha.webp",
@@ -227,11 +226,7 @@ function useNearLOD(
     tex.color.needsUpdate = true;
     tex.ring.colorSpace = THREE.SRGBColorSpace;
     tex.ring.needsUpdate = true;
-  }, [tex]);
-
-  useEffect(() => {
-    for (const t of Object.values(tex)) gl.initTexture(t);
-  }, [gl, tex]);
+  }, [tex.color, tex.ring]);
 
   const planetGeo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -248,7 +243,7 @@ function useNearLOD(
     m.side = THREE.FrontSide;
     m.fragmentNode = buildSaturnFragmentNode(tex.color, uSunRel);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex.color, uSunRel]);
 
   const ringMat = useMemo(() => {
     const m = new NodeMaterial();
@@ -257,7 +252,7 @@ function useNearLOD(
     m.depthWrite = false;
     m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
     return m;
-  }, [tex, uSunRel, uPlanetRadius]);
+  }, [tex.ring, uSunRel, uPlanetRadius]);
 
   return { planetGeo, ringGeo, planetMat, ringMat };
 }
@@ -281,7 +276,7 @@ function useMidLOD(
     tex.color.needsUpdate = true;
     tex.ring.colorSpace = THREE.SRGBColorSpace;
     tex.ring.needsUpdate = true;
-  }, [tex]);
+  }, [tex.color, tex.ring]);
 
   const planetGeo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -298,7 +293,7 @@ function useMidLOD(
     m.side = THREE.FrontSide;
     m.fragmentNode = buildSaturnFragmentNode(tex.color, uSunRel);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex.color, uSunRel]);
 
   const ringMat = useMemo(() => {
     const m = new NodeMaterial();
@@ -307,7 +302,7 @@ function useMidLOD(
     m.depthWrite = false;
     m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
     return m;
-  }, [tex, uSunRel, uPlanetRadius]);
+  }, [tex.ring, uSunRel, uPlanetRadius]);
 
   return { planetGeo, ringGeo, planetMat, ringMat };
 }
@@ -507,10 +502,7 @@ function Saturn({
   );
 }
 
-// Preload textures so LOD transitions don't stall.
-useTexture.preload("/textures/saturn/8k_saturn.webp");
 useTexture.preload("/textures/saturn/2k_saturn.webp");
-useTexture.preload("/textures/saturn/8k_saturn_ring_alpha.webp");
 useTexture.preload("/textures/saturn/2k_saturn_ring_alpha.webp");
 
 export default memo(Saturn);

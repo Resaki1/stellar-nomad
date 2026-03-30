@@ -5,7 +5,7 @@ import { settingsAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import * as THREE from "three/webgpu";
 
 import AsteroidField from "../Asteroids/AsteroidField";
@@ -40,6 +40,45 @@ const Scene = () => {
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
       : false;
 
+  const scaledContent = useMemo(
+    () => (
+      <>
+        <MilkyWaySkybox />
+        <Mercury />
+        <Venus />
+        <Earth />
+        <Luna />
+        <Mars />
+        <Uranus />
+        <Neptune />
+        <Saturn />
+        <Jupiter />
+        <Callisto />
+        <Europa />
+        <Ganymede />
+        <Io />
+        <Star bloom={settings.bloom} />
+      </>
+    ),
+    [settings.bloom],
+  );
+
+  const localContent = useMemo(
+    () => (
+      <>
+        <ambientLight intensity={0.5} />
+        <SunLight />
+        <SpaceShip />
+        <AsteroidField />
+        <MiningSystem />
+        <AsteroidVFX />
+        <ResearchTicker />
+        <POIProjector />
+      </>
+    ),
+    [],
+  );
+
   return (
     <Canvas
       style={{ background: "black" }}
@@ -56,9 +95,6 @@ const Scene = () => {
             logarithmicDepthBuffer: true,
           });
 
-          // R3F's loop starts immediately (frameloop="always") but
-          // WebGPU init is async. Patch render() to silently no-op
-          // until the backend is ready, instead of throwing.
           const origRender = renderer.render.bind(renderer);
           renderer.render = function (scene: any, camera: any) {
             if (!(this as any)._initialized) return;
@@ -66,8 +102,6 @@ const Scene = () => {
           };
 
           renderer.init().then(() => {
-            // Stop the renderer's internal rAF loop. R3F owns the frame loop;
-            // we manually tick nodeFrame + info in SpaceRenderer's useFrame.
             (renderer as any)._animation?.stop();
             console.log("WebGPU initialized successfully");
           });
@@ -76,39 +110,7 @@ const Scene = () => {
     >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
 
-          <SpaceRenderer
-            scaled={
-              <>
-                <MilkyWaySkybox />
-                <Mercury />
-                <Venus />
-                <Earth />
-                <Luna />
-                <Mars />
-                <Uranus />
-                <Neptune />
-                <Saturn />
-                <Jupiter />
-                <Callisto />
-                <Europa />
-                <Ganymede />
-                <Io />
-                <Star bloom={settings.bloom} />
-              </>
-            }
-            local={
-              <>
-                <ambientLight intensity={0.5} />
-                <SunLight />
-                <SpaceShip />
-                <AsteroidField />
-                <MiningSystem />
-                <AsteroidVFX />
-                <ResearchTicker />
-                <POIProjector />
-              </>
-            }
-          />
+          <SpaceRenderer scaled={scaledContent} local={localContent} />
 
           {/* <AdaptiveDpr pixelated /> */}
           <AdaptiveEvents />

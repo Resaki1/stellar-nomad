@@ -121,7 +121,7 @@ function useMidLOD(
   useMemo(() => {
     tex.color.colorSpace = THREE.SRGBColorSpace;
     tex.color.needsUpdate = true;
-  }, [tex]);
+  }, [tex.color]);
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 64, 64);
@@ -132,7 +132,7 @@ function useMidLOD(
     m.side = THREE.FrontSide;
     m.fragmentNode = buildNeptuneFragmentNode(tex.color, uSunRel);
     return m;
-  }, [tex, uSunRel]);
+  }, [tex.color, uSunRel]);
 
   return { geo, mat };
 }

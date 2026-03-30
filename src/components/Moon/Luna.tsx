@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useEffect, useMemo } from "react";
-import { useFrame, useThree } from "@react-three/fiber";
+import { memo, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
 import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
@@ -172,7 +172,6 @@ function useNearLOD(
   displacementScaled: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
 ) {
-  const gl = useThree((s) => s.gl);
   const tex = useTexture({
     color: "/textures/luna/luna_color_8k.webp",
     displacement: "/textures/luna/luna_displacement_16.webp",
@@ -185,12 +184,7 @@ function useNearLOD(
     tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
     tex.displacement.magFilter = THREE.LinearFilter;
     tex.displacement.needsUpdate = true;
-  }, [tex]);
-
-  // Force GPU upload eagerly so the mid→near LOD switch doesn't stall.
-  useEffect(() => {
-    for (const t of Object.values(tex)) gl.initTexture(t);
-  }, [gl, tex]);
+  }, [tex.color, tex.displacement]);
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -206,7 +200,7 @@ function useNearLOD(
     // Sobel kernel amplifies ~4x vs central diff, so bump strength is lower.
     m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.8, 1 / 4096, uSunRel);
     return m;
-  }, [tex, uSunRel, displacementScaled]);
+  }, [tex.color, tex.displacement, uSunRel, displacementScaled]);
 
   return { geo, mat };
 }
@@ -232,7 +226,7 @@ function useMidLOD(
     tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
     tex.displacement.magFilter = THREE.LinearFilter;
     tex.displacement.needsUpdate = true;
-  }, [tex]);
+  }, [tex.color, tex.displacement]);
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -247,7 +241,7 @@ function useMidLOD(
     // Mid LOD: 2k color, 4-bit displacement (assume ~1024 wide map → 1/1024 texel)
     m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.6, 1 / 1024, uSunRel);
     return m;
-  }, [tex, uSunRel, displacementScaled]);
+  }, [tex.color, tex.displacement, uSunRel, displacementScaled]);
 
   return { geo, mat };
 }
@@ -423,9 +417,6 @@ function Luna({
   );
 }
 
-// Preload all textures so LOD transitions don't stall.
-useTexture.preload("/textures/luna/luna_color_8k.webp");
-useTexture.preload("/textures/luna/luna_displacement_16.webp");
 useTexture.preload("/textures/luna/luna_color_2k.webp");
 useTexture.preload("/textures/luna/luna_displacement_4.webp");
 
