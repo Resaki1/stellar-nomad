@@ -3,7 +3,7 @@
 // between component modules.
 
 import solSystem from "@/sim/systems/sol.json";
-import type { CelestialBodyDef } from "@/sim/systemTypes";
+import type { CelestialBodyDef, AsteroidFieldDef } from "@/sim/systemTypes";
 
 const bodies = solSystem.celestialBodies as CelestialBodyDef[];
 
@@ -97,3 +97,11 @@ export const CALLISTO_RADIUS_KM = callisto.radiusKm;
 export const GANYMEDE_POSITION_KM = ganymede.positionKm as [number, number, number];
 /** Ganymede radius in km. */
 export const GANYMEDE_RADIUS_KM = ganymede.radiusKm;
+
+// ── Starting position (origin_belt anchor) ──────────────────────────
+const fields = solSystem.asteroidFields as unknown as AsteroidFieldDef[];
+const originBelt = fields.find((f) => f.id === "origin_belt");
+if (!originBelt) throw new Error("[celestialConstants] origin_belt not found in sol.json");
+
+/** Default spawn / starting position in km (origin_belt anchor). */
+export const STARTING_POSITION_KM = originBelt.anchorKm as [number, number, number];
