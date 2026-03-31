@@ -3,9 +3,9 @@
 
 import { settingsAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
-import { memo, useMemo } from "react";
+import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import * as THREE from "three/webgpu";
 
 import AsteroidField from "../Asteroids/AsteroidField";
@@ -32,6 +32,20 @@ import MiningSystem from "../Mining/MiningSystem";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 import ResearchTicker from "../Research/ResearchTicker";
 import POIProjector from "../POI/POIProjector";
+
+/** Renders children only after the WebGPU renderer has finished async init(). */
+function WebGPUGate({ children }: { children: ReactNode }) {
+  const gl = useThree((s) => s.gl);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const p = (gl as any).__initPromise as Promise<void> | undefined;
+    if (!p) return;
+    p.then(() => setReady(true));
+  }, [gl]);
+
+  return ready ? <>{children}</> : null;
+}
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
@@ -101,16 +115,19 @@ const Scene = () => {
             return origRender(scene, camera);
           };
 
-          renderer.init().then(() => {
+          const initPromise = renderer.init().then(() => {
             (renderer as any)._animation?.stop();
             console.log("WebGPU initialized successfully");
           });
+          (renderer as any).__initPromise = initPromise;
           return renderer;
         }}
     >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
 
-          <SpaceRenderer scaled={scaledContent} local={localContent} />
+          <WebGPUGate>
+            <SpaceRenderer scaled={scaledContent} local={localContent} />
+          </WebGPUGate>
 
           {/* <AdaptiveDpr pixelated /> */}
           <AdaptiveEvents />

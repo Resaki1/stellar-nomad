@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { useKTX2 } from "@/hooks/useKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -114,14 +114,9 @@ function useNearLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/uranus/8k_uranus.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-  }, [tex.color]);
+  const tex = useKTX2({
+    color: "/textures/uranus/8k_uranus.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -145,14 +140,9 @@ function useMidLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/uranus/2k_uranus.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-  }, [tex.color]);
+  const tex = useKTX2({
+    color: "/textures/uranus/2k_uranus.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -337,7 +327,5 @@ function Uranus({
     </SimGroup>
   );
 }
-
-useTexture.preload("/textures/uranus/2k_uranus.webp");
 
 export default memo(Uranus);

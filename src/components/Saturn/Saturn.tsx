@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { useKTX2 } from "@/hooks/useKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -216,17 +216,10 @@ function useNearLOD(
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/saturn/8k_saturn.webp",
-    ring: "/textures/saturn/8k_saturn_ring_alpha.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-    tex.ring.colorSpace = THREE.SRGBColorSpace;
-    tex.ring.needsUpdate = true;
-  }, [tex.color, tex.ring]);
+  const tex = useKTX2({
+    color: "/textures/saturn/8k_saturn.ktx2",
+    ring: "/textures/saturn/8k_saturn_ring_alpha.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const planetGeo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -266,17 +259,10 @@ function useMidLOD(
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/saturn/2k_saturn.webp",
-    ring: "/textures/saturn/2k_saturn_ring_alpha.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-    tex.ring.colorSpace = THREE.SRGBColorSpace;
-    tex.ring.needsUpdate = true;
-  }, [tex.color, tex.ring]);
+  const tex = useKTX2({
+    color: "/textures/saturn/2k_saturn.ktx2",
+    ring: "/textures/saturn/2k_saturn_ring_alpha.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const planetGeo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -501,8 +487,5 @@ function Saturn({
     </SimGroup>
   );
 }
-
-useTexture.preload("/textures/saturn/2k_saturn.webp");
-useTexture.preload("/textures/saturn/2k_saturn_ring_alpha.webp");
 
 export default memo(Saturn);

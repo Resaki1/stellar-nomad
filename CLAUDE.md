@@ -37,6 +37,36 @@ pnpm dlx @gltf-transform/cli simplify INPUT.glb OUTPUT.glb --ratio 0.5 --error 0
 ```
 Note: the CLI alone can't strip textures or set material properties — use the script for full LOD1 generation.
 
+**Converting textures to KTX2 (GPU-compressed):**
+
+All planet/moon textures use KTX2 with Basis Universal UASTC compression. This eliminates CPU image decode on load — compressed data goes straight to GPU VRAM.
+
+Prerequisites: `brew install ktx-software` (provides `toktx`)
+
+```bash
+# Batch-convert all textures (auto-detects sRGB vs linear from filename):
+./scripts/convert-to-ktx2.sh --all
+
+# Single file (sRGB color texture):
+./scripts/convert-to-ktx2.sh public/textures/mercury/8k_mercury.webp
+
+# Single file (linear data — normals, displacement, specular):
+./scripts/convert-to-ktx2.sh --linear public/textures/earth_normal.webp
+```
+
+The script converts WebP/JPG/PNG → KTX2 (UASTC quality 2, Zstandard supercompression, with mipmaps). Output `.ktx2` is placed alongside the original. Files named `*normal*`, `*displacement*`, or `*specular*` are auto-detected as linear in batch mode.
+
+In code, textures are loaded via `useKTX2` from drei (not `useTexture`):
+```tsx
+import { useKTX2 } from "@react-three/drei";
+const tex = useKTX2({ color: "/textures/foo/bar.ktx2" }, '/basis/');
+```
+
+The Basis Universal transcoder WASM files live in `public/basis/` (copied from `node_modules/three/examples/jsm/libs/basis/`). If you update three.js, re-copy them:
+```bash
+cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/basis/
+```
+
 ---
 
 ## Project overview
@@ -45,6 +75,7 @@ Note: the CLI alone can't strip textures or set material properties — use the 
 
 **North-star goals**
 - Realistic scale/feel while staying fun.
+- Inspired by games like Space Engine, No Man's Sky, and Star Citizen, and books like the Bobiverse series and Project Hail Mary.
 - Deep, engaging gameplay loop with meaningful progression and player choice.
 - UX is key: intuitive controls, clear feedback, and a polished presentation that draws players in.
 - Photorealistic triple-A visuals.

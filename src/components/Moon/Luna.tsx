@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { useKTX2 } from "@/hooks/useKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -172,19 +172,10 @@ function useNearLOD(
   displacementScaled: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
 ) {
-  const tex = useTexture({
-    color: "/textures/luna/luna_color_8k.webp",
-    displacement: "/textures/luna/luna_displacement_16.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-    tex.displacement.colorSpace = THREE.NoColorSpace;
-    tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.displacement.magFilter = THREE.LinearFilter;
-    tex.displacement.needsUpdate = true;
-  }, [tex.color, tex.displacement]);
+  const tex = useKTX2({
+    color: "/textures/luna/luna_color_8k.ktx2",
+    displacement: "/textures/luna/luna_displacement_16.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -214,19 +205,10 @@ function useMidLOD(
   displacementScaled: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
 ) {
-  const tex = useTexture({
-    color: "/textures/luna/luna_color_2k.webp",
-    displacement: "/textures/luna/luna_displacement_4.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-    tex.displacement.colorSpace = THREE.NoColorSpace;
-    tex.displacement.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.displacement.magFilter = THREE.LinearFilter;
-    tex.displacement.needsUpdate = true;
-  }, [tex.color, tex.displacement]);
+  const tex = useKTX2({
+    color: "/textures/luna/luna_color_2k.ktx2",
+    displacement: "/textures/luna/luna_displacement_4.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -416,8 +398,5 @@ function Luna({
     </SimGroup>
   );
 }
-
-useTexture.preload("/textures/luna/luna_color_2k.webp");
-useTexture.preload("/textures/luna/luna_displacement_4.webp");
 
 export default memo(Luna);

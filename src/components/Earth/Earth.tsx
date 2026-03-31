@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { useKTX2 } from "@/hooks/useKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -303,44 +303,22 @@ function buildEarthFragmentNode(opts: {
 // ─────────────────────────────────────────────────────────────────────
 // Helper
 // ─────────────────────────────────────────────────────────────────────
-
-function setTextureColorSpace(
-  tex: THREE.Texture | undefined,
-  kind: "srgb" | "linear"
-) {
-  if (!tex) return;
-  if ("colorSpace" in tex) {
-    // @ts-ignore
-    tex.colorSpace =
-      kind === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  }
-  tex.needsUpdate = true;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Near LOD: 8k textures + normal + specular, 128-segment sphere
 // ─────────────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function useNearLOD(scaledRadius: number, uniforms: any) {
-  const tex = useTexture({
-    day: "/textures/earth_day_8k.webp",
-    night: "/textures/earth_night_8k.webp",
-    clouds: "/textures/earth_clouds_8k.webp",
-    normal: "/textures/earth_normal.webp",
-    spec: "/textures/earth_specular.webp",
-  }) as Record<string, THREE.Texture>;
+  const tex = useKTX2({
+    day: "/textures/earth_day_8k.ktx2",
+    night: "/textures/earth_night_8k.ktx2",
+    clouds: "/textures/earth_clouds_8k.ktx2",
+    normal: "/textures/earth_normal.ktx2",
+    spec: "/textures/earth_specular.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   useMemo(() => {
-    setTextureColorSpace(tex.day, "srgb");
-    setTextureColorSpace(tex.night, "srgb");
-    setTextureColorSpace(tex.normal, "linear");
-    setTextureColorSpace(tex.spec, "linear");
-    setTextureColorSpace(tex.clouds, "linear");
-    tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.clouds.magFilter = THREE.LinearFilter;
     tex.clouds.anisotropy = 8;
-  }, [tex.day, tex.night, tex.normal, tex.spec, tex.clouds]);
+  }, [tex.clouds]);
 
   const geo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -371,22 +349,16 @@ function useNearLOD(scaledRadius: number, uniforms: any) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function useMidLOD(scaledRadius: number, uniforms: any) {
-  const tex = useTexture({
-    day: "/textures/earth_day_2k.webp",
-    night: "/textures/earth_night_2k.webp",
-    clouds: "/textures/earth_clouds_2k.webp",
-    spec: "/textures/earth_specular.webp",
-  }) as Record<string, THREE.Texture>;
+  const tex = useKTX2({
+    day: "/textures/earth_day_2k.ktx2",
+    night: "/textures/earth_night_2k.ktx2",
+    clouds: "/textures/earth_clouds_2k.ktx2",
+    spec: "/textures/earth_specular.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   useMemo(() => {
-    setTextureColorSpace(tex.day, "srgb");
-    setTextureColorSpace(tex.night, "srgb");
-    setTextureColorSpace(tex.clouds, "linear");
-    setTextureColorSpace(tex.spec, "linear");
-    tex.clouds.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.clouds.magFilter = THREE.LinearFilter;
     tex.clouds.anisotropy = 4;
-  }, [tex.day, tex.night, tex.clouds, tex.spec]);
+  }, [tex.clouds]);
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -626,10 +598,5 @@ function Planet({
     </SimGroup>
   );
 }
-
-useTexture.preload("/textures/earth_day_2k.webp");
-useTexture.preload("/textures/earth_night_2k.webp");
-useTexture.preload("/textures/earth_clouds_2k.webp");
-useTexture.preload("/textures/earth_specular.webp");
 
 export default memo(Planet);

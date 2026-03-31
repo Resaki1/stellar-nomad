@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useTexture } from "@react-three/drei";
+import { useKTX2 } from "@/hooks/useKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -119,14 +119,9 @@ function useNearLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/venus/4k_venus.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-  }, [tex.color]);
+  const tex = useKTX2({
+    color: "/textures/venus/4k_venus.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 128, 128);
@@ -150,14 +145,9 @@ function useMidLOD(
   scaledRadius: number,
   uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
-  const tex = useTexture({
-    color: "/textures/venus/2k_venus.webp",
-  }) as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.color.colorSpace = THREE.SRGBColorSpace;
-    tex.color.needsUpdate = true;
-  }, [tex.color]);
+  const tex = useKTX2({
+    color: "/textures/venus/2k_venus.ktx2",
+  }, '/basis/') as Record<string, THREE.Texture>;
 
   const geo = useMemo(() => {
     return new THREE.SphereGeometry(scaledRadius, 48, 48);
@@ -345,8 +335,5 @@ function Venus({
     </SimGroup>
   );
 }
-
-// Preload textures so LOD transitions don't stall.
-useTexture.preload("/textures/venus/2k_venus.webp");
 
 export default memo(Venus);
