@@ -20,6 +20,9 @@ import {
   clamp,
   smoothstep,
   max,
+  varying,
+  log2,
+  cameraFar,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
@@ -96,6 +99,9 @@ function Star({ bloom: _bloom }: StarProps) {
 
     const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
 
+    // Varying to forward clip W to the fragment shader for log depth.
+    const vLogZ = varying(float(1.0), "v_starLogZ");
+
     // ── Vertex: screen-aligned billboard ──
     m.vertexNode = Fn(() => {
       const viewCenter = cameraViewMatrix.mul(worldCenter);
@@ -107,8 +113,15 @@ function Star({ bloom: _bloom }: StarProps) {
           float(0),
         ),
       );
-      return cameraProjectionMatrix.mul(viewPos);
+      const clip = cameraProjectionMatrix.mul(viewPos);
+      vLogZ.assign(clip.w.add(1.0));
+      return clip;
     })();
+
+    // Explicit logarithmic depth — custom vertexNode scaling means
+    // the renderer's internal log depth doesn't match our clip output.
+    const logDepthBufFC = float(2.0).div(log2(cameraFar.add(1.0)));
+    m.depthNode = log2(vLogZ).mul(logDepthBufFC).mul(0.5);
 
     // ── Fragment: star disc + baked glow ──
     m.fragmentNode = Fn(() => {

@@ -30,6 +30,7 @@ import {
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
+import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
@@ -321,6 +322,13 @@ function Mercury({
           visible={false}
         />
       </group>
+      <StellarPoint
+        positionKm={positionKm}
+        sunPositionKm={sunPositionKm}
+        radiusKm={radiusKm}
+        geometricAlbedo={0.142}
+        color={[0.78, 0.74, 0.70]}
+      />
     </SimGroup>
   );
 }

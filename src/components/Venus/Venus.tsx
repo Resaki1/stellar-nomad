@@ -31,6 +31,7 @@ import {
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
+import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
@@ -332,6 +333,13 @@ function Venus({
           visible={false}
         />
       </group>
+      <StellarPoint
+        positionKm={positionKm}
+        sunPositionKm={sunPositionKm}
+        radiusKm={radiusKm}
+        geometricAlbedo={0.689}
+        color={[1.0, 0.97, 0.85]}
+      />
     </SimGroup>
   );
 }

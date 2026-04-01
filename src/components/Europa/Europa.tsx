@@ -30,6 +30,7 @@ import {
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
+import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
@@ -321,6 +322,13 @@ function Europa({
           visible={false}
         />
       </group>
+      <StellarPoint
+        positionKm={positionKm}
+        sunPositionKm={sunPositionKm}
+        radiusKm={radiusKm}
+        geometricAlbedo={0.67}
+        color={[0.88, 0.85, 0.80]}
+      />
     </SimGroup>
   );
 }

@@ -7,13 +7,18 @@ import { RenderPipeline, RenderTarget } from "three/webgpu";
 import { texture } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { LOCAL_TO_SCALED_FROM_LOCAL_UNITS } from "@/sim/units";
-import { HalfFloatType, CineonToneMapping, NoToneMapping } from "three";
+import { HalfFloatType, AgXToneMapping, NeutralToneMapping, NoToneMapping } from "three";
 import { useAtomValue } from "jotai/react";
 import { settingsAtom } from "@/store/store";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
 const LOCAL_CAMERA_FAR = 20_000 * 1000;
+// 0.1 scaled units = 100 km. The closest geometry in the scaled scene
+// is a planet surface at ~30+ scaled units (with floating origin), so
+// this is safe. A tighter near plane gives far better depth precision
+// at medium distances — fixes z-fighting on Saturn's rings at ~1.4M km.
+// (Don't use logarithmicDepthBuffer — it breaks depth for custom vertexNode.)
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
 
@@ -73,8 +78,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Tone mapping applied by RenderPipeline's renderOutput() wrapper
     const renderer = gl as any;
     renderer.toneMapping = settings.toneMapping
-      ? CineonToneMapping
-      : NoToneMapping;
+      ? AgXToneMapping
+      : NeutralToneMapping;
 
     return () => {
       pipeline.needsUpdate = true;

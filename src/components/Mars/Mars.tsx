@@ -31,6 +31,7 @@ import {
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
+import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
@@ -369,6 +370,13 @@ function Mars({
         geometry={far.geo}
         material={far.mat}
         visible={false}
+      />
+      <StellarPoint
+        positionKm={positionKm}
+        sunPositionKm={sunPositionKm}
+        radiusKm={radiusKm}
+        geometricAlbedo={0.170}
+        color={[1.0, 0.36, 0.20]}
       />
     </SimGroup>
   );

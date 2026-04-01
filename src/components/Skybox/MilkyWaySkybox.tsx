@@ -14,7 +14,7 @@ type Props = {
  * when using a cloned camera in a portal scene.
  */
 export default function MilkyWaySkybox({
-  url = "/assets/8k_stars.webp",
+  url = "/assets/8k_stars_nasa.webp",
 }: Props) {
   const tex = useTexture(url);
 
@@ -24,6 +24,7 @@ export default function MilkyWaySkybox({
     tex.generateMipmaps = false;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
+
     tex.needsUpdate = true;
 
     const geo = new THREE.SphereGeometry(1, 64, 32);

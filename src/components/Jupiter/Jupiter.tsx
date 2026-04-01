@@ -31,6 +31,7 @@ import {
   Discard,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
+import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
@@ -359,6 +360,13 @@ function Jupiter({
         geometry={far.geo}
         material={far.mat}
         visible={false}
+      />
+      <StellarPoint
+        positionKm={positionKm}
+        sunPositionKm={sunPositionKm}
+        radiusKm={radiusKm}
+        geometricAlbedo={0.538}
+        color={[0.90, 0.83, 0.65]}
       />
     </SimGroup>
   );

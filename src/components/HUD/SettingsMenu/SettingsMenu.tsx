@@ -63,7 +63,7 @@ const renderSubMenu = (
                 toneMapping: !prev.toneMapping,
               }))
             }
-            label="filmic tone mapping"
+            label="AgX tone mapping"
           />
         </>
       );

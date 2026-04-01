@@ -103,9 +103,6 @@ const Scene = () => {
           const renderer = new THREE.WebGPURenderer({
             canvas: defaultProps.canvas as HTMLCanvasElement,
             powerPreference: "high-performance",
-            antialias: false,
-            alpha: false,
-            stencil: false,
             logarithmicDepthBuffer: true,
           });
 
