@@ -3,6 +3,8 @@ import { useFrame } from "@react-three/fiber";
 import { memo, useEffect, useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
+import EngineExhaust from "./VFX/EngineExhaust";
+import type { ExhaustConfig } from "./VFX/EngineExhaust";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom } from "@/store/store";
@@ -34,6 +36,17 @@ const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
 const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
 const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max
 const PERSIST_INTERVAL = 2.0; // seconds between position saves
+
+// ── Engine exhaust nozzle config (model-local space, inside 0.3× group) ──
+// Adjust positions / count here when swapping ship models.
+const EXHAUST_CONFIGS: ExhaustConfig[] = [
+  // position: [X, Y, Z], +X is left, +Y is up, +Z is forward
+  { position: [4.1, 1.2, -9.5], radius: 1.32 }, // left nozzle
+  { position: [-4.1, 1.2, -9.5], radius: 1.32 },  // right nozzle
+];
+
+// ── Smoothing for visual exhaust intensity ───────────────────────────
+const EXHAUST_SMOOTH_RATE = 6.0; // higher = faster responsew
 
 // ── Camera shake ─────────────────────────────────────────────────────
 const SHAKE_DECAY_RATE = 3.0;   // exponential decay speed
@@ -71,6 +84,9 @@ const SpaceShip = memo(() => {
   // ── Misc ────────────────────────────────────────────────────────────
   const physicsAcc = useRef(0);
   const persistAcc = useRef(0);
+
+  // ── Engine exhaust state ────────────────────────────────────────────
+  const exhaustIntensity = useRef(0);
 
   // ── Camera shake state ──────────────────────────────────────────────
   const shakeIntensity = useRef(0);
@@ -197,6 +213,18 @@ const SpaceShip = memo(() => {
       physicsAcc.current -= FIXED_DT;
     }
 
+    // ── Engine exhaust intensity (thrust demand) ──────────────────────
+    // Proportional to how much the engines need to push: the gap between
+    // the pilot's requested speed and the current speed. Negative values
+    // (decelerating / coasting) produce no thrust — this is space.
+    {
+      const thrustDemand = Math.max(0, movement.speed - speed.current);
+      // Smooth toward target so the plume doesn't snap on/off
+      exhaustIntensity.current += (thrustDemand - exhaustIntensity.current)
+        * Math.min(1, EXHAUST_SMOOTH_RATE * delta);
+      if (exhaustIntensity.current < 0.001) exhaustIntensity.current = 0;
+    }
+
     // ── Interpolation ──────────────────────────────────────────────────
     // alpha ∈ [0,1) — how far between prev and current the render instant is.
     const alpha = physicsAcc.current / FIXED_DT;
@@ -287,7 +315,12 @@ const SpaceShip = memo(() => {
 
   return (
     <mesh ref={shipRef} name="playerShip">
-      <ShipOne ref={modelRef} name="playerShipModel" />
+      <ShipOne ref={modelRef} name="playerShipModel">
+        <EngineExhaust
+          configs={EXHAUST_CONFIGS}
+          intensityRef={exhaustIntensity}
+        />
+      </ShipOne>
     </mesh>
   );
 });

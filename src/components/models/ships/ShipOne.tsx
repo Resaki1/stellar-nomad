@@ -23,7 +23,7 @@ type GLTFResult = GLTF & {
   };
 };
 
-export function ShipOne(props: JSX.IntrinsicElements["group"]) {
+export function ShipOne({ children, ...props }: JSX.IntrinsicElements["group"]) {
   const { nodes, materials } = useGLTF(
     "/models/ships/ShipOne.glb"
   ) as unknown as GLTFResult;
@@ -36,6 +36,7 @@ export function ShipOne(props: JSX.IntrinsicElements["group"]) {
         material={materials["Material.003"]}
         scale={0.01}
       />
+      {children}
     </group>
   );
 }
