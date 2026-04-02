@@ -15,7 +15,7 @@ const Game = () => {
       <AsteroidRuntimeProvider>
         <div className="container">
           <Scene />
-          {/* <HUD /> */}
+          <HUD />
           <Navigation />
           <DevTools />
         </div>
