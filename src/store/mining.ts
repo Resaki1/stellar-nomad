@@ -77,21 +77,26 @@ export const cancelMiningAtom = atom(null, (get, set) => {
 // Ping bracket candidates (nearby mineable asteroids for HUD overlay)
 // ---------------------------------------------------------------------------
 
-export type PingCandidate = {
+export type PingCandidate3D = {
   instanceId: number;
-  /** Screen-space X (0 = left, 1 = right). */
-  sx: number;
-  /** Screen-space Y (0 = top, 1 = bottom). */
-  sy: number;
-  /** Approximate bracket size in CSS pixels (half-width). */
-  halfSize: number;
+  /** World-local position X (render-space meters). */
+  x: number;
+  /** World-local position Y (render-space meters). */
+  y: number;
+  /** World-local position Z (render-space meters). */
+  z: number;
+  /** Asteroid radius in meters. */
+  radiusM: number;
 };
 
 /**
  * Mutable shared buffer written by MiningSystem every frame.
- * Read by PingBrackets rAF loop — bypasses React entirely for 90 fps updates.
+ * Read by PingBrackets3D in useFrame — world-space positions for 3D rendering.
  */
-export const pingBracketBuffer: { candidates: PingCandidate[] } = { candidates: [] };
+export const pingWorldBuffer: {
+  candidates: PingCandidate3D[];
+  generation: number;
+} = { candidates: [], generation: 0 };
 
 /**
  * Mutable shared buffer for heat-sink effects.

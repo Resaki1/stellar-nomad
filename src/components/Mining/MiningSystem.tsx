@@ -8,10 +8,9 @@ import { Billboard } from "@react-three/drei";
 
 import {
   miningStateAtom,
-  pingBracketBuffer,
+  pingWorldBuffer,
   heatSinkBuffer,
   type TargetedAsteroid,
-  type PingCandidate,
   TARGET_FOCUS_TIME_S,
 } from "@/store/mining";
 import { systemConfigAtom } from "@/store/system";
@@ -740,6 +739,83 @@ const MiningSystem = () => {
     [asteroidRuntime, fieldAnchorMap, worldOrigin]
   );
 
+  // Collect nearby asteroids within targeting range for ping bracket overlay.
+  // Separated from raycast so it can run even while mining.
+  const collectPingCandidates = useCallback((): RawPingEntry[] => {
+    const shipKm = worldOrigin.shipPosKm;
+    const pingEnabled = getFlag(modifiersRef.current, "scanner.pingHighlightEnabled");
+    if (!pingEnabled) return [];
+
+    const nearbyCollected: RawPingEntry[] = [];
+
+    asteroidRuntime.forEachField((fieldRuntime, fieldId) => {
+      const fieldAnchor = fieldAnchorMap.get(fieldId) ?? [0, 0, 0];
+
+      const shipLocalKm: [number, number, number] = [
+        shipKm.x - fieldAnchor[0],
+        shipKm.y - fieldAnchor[1],
+        shipKm.z - fieldAnchor[2],
+      ];
+
+      fieldRuntime.chunks.forEach((chunk) => {
+        const aabbDistKm = distancePointToAabbKm(
+          shipLocalKm[0],
+          shipLocalKm[1],
+          shipLocalKm[2],
+          chunk.aabbMinKm[0],
+          chunk.aabbMinKm[1],
+          chunk.aabbMinKm[2],
+          chunk.aabbMaxKm[0],
+          chunk.aabbMaxKm[1],
+          chunk.aabbMaxKm[2]
+        );
+
+        if (aabbDistKm > MAX_TARGETING_DISTANCE_KM + chunk.maxRadiusM / 1000) return;
+
+        const byModel = chunk.instancesByModel;
+        const shipCxM = (shipLocalKm[0] - chunk.originKm[0]) * 1000;
+        const shipCyM = (shipLocalKm[1] - chunk.originKm[1]) * 1000;
+        const shipCzM = (shipLocalKm[2] - chunk.originKm[2]) * 1000;
+
+        const chunkOriginLocalX =
+          (fieldAnchor[0] + chunk.originKm[0] - worldOrigin.worldOriginKm.x) * 1000;
+        const chunkOriginLocalY =
+          (fieldAnchor[1] + chunk.originKm[1] - worldOrigin.worldOriginKm.y) * 1000;
+        const chunkOriginLocalZ =
+          (fieldAnchor[2] + chunk.originKm[2] - worldOrigin.worldOriginKm.z) * 1000;
+
+        for (const modelId in byModel) {
+          const inst = byModel[modelId];
+          const positions = inst.positionsM;
+          const radii = inst.radiiM;
+          const ids = inst.instanceIds;
+
+          for (let i = 0; i < inst.count && nearbyCollected.length < MAX_PING_INDICATORS; i++) {
+            const pIdx = i * 3;
+            const ax = positions[pIdx];
+            const ay = positions[pIdx + 1];
+            const az = positions[pIdx + 2];
+
+            const dxS = ax - shipCxM;
+            const dyS = ay - shipCyM;
+            const dzS = az - shipCzM;
+            if (dxS * dxS + dyS * dyS + dzS * dzS > MAX_TARGETING_DISTANCE_M * MAX_TARGETING_DISTANCE_M) continue;
+
+            nearbyCollected.push({
+              instanceId: ids[i],
+              x: chunkOriginLocalX + ax,
+              y: chunkOriginLocalY + ay,
+              z: chunkOriginLocalZ + az,
+              radiusM: radii[i],
+            });
+          }
+        }
+      });
+    });
+
+    return nearbyCollected;
+  }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
+
   const findNearestAsteroidOnRay = useCallback((): TargetedAsteroid | null => {
     const shipKm = worldOrigin.shipPosKm;
 
@@ -760,10 +836,6 @@ const MiningSystem = () => {
 
     let locked: TargetedAsteroid | null = null;
     let lockedT = Infinity;
-
-    // Ping collection — use targeting range as source of truth
-    const pingEnabled = getFlag(modifiersRef.current, "scanner.pingHighlightEnabled");
-    const nearbyCollected: RawPingEntry[] = [];
 
     const checkChunk = (chunk: AsteroidChunkData, fieldAnchorKm: [number, number, number]) => {
       const byModel = chunk.instancesByModel;
@@ -818,17 +890,6 @@ const MiningSystem = () => {
 
           const distShipSq = dxS * dxS + dyS * dyS + dzS * dzS;
           if (distShipSq > MAX_TARGETING_DISTANCE_M * MAX_TARGETING_DISTANCE_M) continue;
-
-          // Collect for ping bracket overlay (all within targeting range)
-          if (pingEnabled && nearbyCollected.length < MAX_PING_INDICATORS) {
-            nearbyCollected.push({
-              instanceId: ids[i],
-              x: chunkOriginLocalX + ax,
-              y: chunkOriginLocalY + ay,
-              z: chunkOriginLocalZ + az,
-              radiusM: radiusM,
-            });
-          }
 
           // Camera ray test (crosshair selection)
           const dxC = ax - camCxM;
@@ -907,9 +968,6 @@ const MiningSystem = () => {
       });
     });
 
-    // Update ping raw data for projection during commit
-    pingRawRef.current = nearbyCollected;
-
     return locked ?? best;
   }, [asteroidRuntime, camera, fieldAnchorMap, worldOrigin]);
 
@@ -947,6 +1005,9 @@ const MiningSystem = () => {
     raycastAccRef.current += delta;
     if (raycastAccRef.current >= RAYCAST_INTERVAL_S) {
       raycastAccRef.current = 0;
+
+      // Ping collection always runs (even during mining)
+      pingRawRef.current = collectPingCandidates();
 
       if (!isMiningNow) {
         const hit = findNearestAsteroidOnRay();
@@ -1218,41 +1279,18 @@ const MiningSystem = () => {
 
     }
 
-    // --- Project ping brackets every frame for smooth tracking ---
+    // --- Write world-space ping data for PingBrackets3D ---
     {
       const targetId = targetIdRef.current;
       const rawPing = pingRawRef.current;
-      const w = window.innerWidth;
-      const projected: PingCandidate[] = [];
-
+      const out = [];
       for (let p = 0; p < rawPing.length; p++) {
         const entry = rawPing[p];
         if (entry.instanceId === targetId) continue;
-
-        _centerLocal.set(entry.x, entry.y, entry.z);
-        _centerLocal.project(camera);
-
-        if (_centerLocal.z > 1 || _centerLocal.z < -1) continue;
-
-        const nx = (_centerLocal.x * 0.5 + 0.5);
-        const ny = (1 - (_centerLocal.y * 0.5 + 0.5));
-
-        if (nx < -0.05 || nx > 1.05 || ny < -0.05 || ny > 1.05) continue;
-
-        _tmp.set(entry.x + entry.radiusM, entry.y, entry.z);
-        _tmp.project(camera);
-        const edgeNx = (_tmp.x * 0.5 + 0.5);
-        const edgeNy = (1 - (_tmp.y * 0.5 + 0.5));
-        const h = window.innerHeight;
-        const dxPx = (edgeNx - nx) * w;
-        const dyPx = (edgeNy - ny) * h;
-        const screenRadiusPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
-
-        const halfSize = Math.max(12, screenRadiusPx * 1.35 + 6);
-        projected.push({ instanceId: entry.instanceId, sx: nx, sy: ny, halfSize });
+        out.push(entry);
       }
-
-      pingBracketBuffer.candidates = projected;
+      pingWorldBuffer.candidates = out;
+      pingWorldBuffer.generation++;
     }
 
     // Apply side effect: remove asteroid

@@ -29,6 +29,7 @@ import SunLight from "../Star/SunLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import Anchor from "./Anchor";
 import MiningSystem from "../Mining/MiningSystem";
+import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 import ResearchTicker from "../Research/ResearchTicker";
 import POIProjector from "../POI/POIProjector";
@@ -92,6 +93,7 @@ const Scene = () => {
         <SpaceShip />
         <AsteroidField />
         <MiningSystem />
+        <PingBrackets3D />
         <AsteroidVFX />
         <ResearchTicker />
         <POIProjector />

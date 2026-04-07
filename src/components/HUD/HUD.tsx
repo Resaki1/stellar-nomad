@@ -16,7 +16,6 @@ import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
 import ToastDisplay from "./ToastDisplay/ToastDisplay";
 import Hotbar from "./Hotbar/Hotbar";
 import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
-import PingBrackets from "./PingBrackets/PingBrackets";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 
@@ -82,7 +81,6 @@ export default function HUD() {
   return (
     <div className="hud">
       <DamageVignette />
-      <PingBrackets />
       <POIMarkers />
       <ShipDashboard />
       <Reticle />
