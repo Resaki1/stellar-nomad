@@ -5,7 +5,7 @@ import * as THREE from "three";
 
 const RECENTER_THRESHOLD_KM = 10_000;
 
-type WorldOriginContextValue = {
+export type WorldOriginContextValue = {
   worldOriginKm: THREE.Vector3;
   shipPosKm: THREE.Vector3;
   setShipPosKm: (pos: THREE.Vector3) => void;
