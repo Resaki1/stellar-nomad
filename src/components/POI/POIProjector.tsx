@@ -147,6 +147,7 @@ const POIProjector = memo(function POIProjector() {
     }
 
     poiBuffer.pois = projected;
+    poiBuffer.flush?.();
   });
 
   return null;

@@ -34,9 +34,13 @@ export type ProjectedPOI = {
 };
 
 /**
- * Mutable shared buffer — written by POIProjector every frame,
- * read by POIMarkers via rAF. No React state in the hot path.
+ * Mutable shared buffer — written by POIProjector every frame.
+ * POIMarkers registers a `flush` callback that POIProjector invokes
+ * immediately after writing, so DOM updates happen in the same frame
+ * as the 3D projection (eliminates one-frame lag).
  */
 export const poiBuffer = {
   pois: [] as ProjectedPOI[],
+  /** Called by POIProjector after writing pois. Set by POIMarkers. */
+  flush: null as (() => void) | null,
 };

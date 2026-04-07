@@ -24,11 +24,9 @@ export default function POIMarkers() {
     const markerEls = new Map<string, HTMLElement>();
     const arrowEls = new Map<string, HTMLElement>();
 
-    let rafId: number;
-
-    const tick = () => {
-      rafId = requestAnimationFrame(tick);
-
+    // Called by POIProjector at the end of its useFrame — same frame as
+    // the 3D projection, so markers are perfectly in sync with the scene.
+    const flush = () => {
       const pois = poiBuffer.pois;
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -131,9 +129,9 @@ export default function POIMarkers() {
       }
     };
 
-    rafId = requestAnimationFrame(tick);
+    poiBuffer.flush = flush;
     return () => {
-      cancelAnimationFrame(rafId);
+      poiBuffer.flush = null;
       el.innerHTML = "";
       markerEls.clear();
       arrowEls.clear();
