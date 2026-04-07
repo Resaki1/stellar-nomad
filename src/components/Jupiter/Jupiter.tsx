@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -97,22 +97,14 @@ function buildJupiterFragmentNode(
     const NdotL = dot(N, sunDir);
 
     // ── Soft diffuse with atmospheric light-wrap ──
-    // Jupiter's thick atmosphere forward-scatters sunlight around the
-    // terminator. The wrap term lets light bleed ~10% into the shadow.
     const diffuse = clamp(NdotL.mul(0.9).add(0.1), 0, 1);
 
     // ── Limb darkening ──
-    // Deep atmosphere: photons entering at grazing angles travel through
-    // more gas and get scattered/absorbed before reaching bright cloud tops.
-    // This is the dominant visual effect for gas giants — the disc appears
-    // noticeably brighter at center than at the edges.
     const viewDir = normalize(sub(cameraPosition, positionWorld));
     const viewDotN = dot(viewDir, N).max(0.05);
     const limbDarkening = pow(viewDotN, float(0.4));
 
     // ── Warm atmospheric limb haze ──
-    // Molecular hydrogen Rayleigh scattering plus high-altitude haze
-    // creates a subtle warm glow at the limb, visible on the lit side.
     const limb = clamp(float(1.0).sub(viewDotN).mul(2.0), 0, 1);
     const limbPow = pow(limb, float(3.0));
     const hazeColor = vec3(0.7, 0.55, 0.35);
@@ -131,58 +123,6 @@ function buildJupiterFragmentNode(
 
     return vec4(col, 1.0);
   })();
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Near LOD: 8k texture, 128-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-function useNearLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/jupiter/8k_jupiter.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 128, 128);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildJupiterFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k texture, 48-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-function useMidLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/jupiter/2k_jupiter.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 48, 48);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildJupiterFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  return { geo, mat };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -252,6 +192,75 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Textured LODs (near + mid) — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  uSunRel: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  nearRef: { current: THREE.Mesh | null };
+  midRef: { current: THREE.Mesh | null };
+  nearCompiled: { current: boolean };
+};
+
+function TexturedLODs({
+  scaledRadius,
+  uSunRel,
+  nearRef,
+  midRef,
+  nearCompiled,
+}: TexturedLODsProps) {
+  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+
+  const nearTex = useDeferredKTX2({ color: "/textures/jupiter/8k_jupiter.ktx2" }, '/basis/');
+  const midTex = useDeferredKTX2({ color: "/textures/jupiter/2k_jupiter.ktx2" }, '/basis/');
+
+  const nearGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 128, 128), [scaledRadius]);
+  const midGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 48, 48), [scaledRadius]);
+
+  const nearMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildJupiterFragmentNode(nearTex.color, uSunRel);
+    return m;
+  }, [nearTex, uSunRel]);
+
+  const midMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildJupiterFragmentNode(midTex.color, uSunRel);
+    return m;
+  }, [midTex, uSunRel]);
+
+  if (!nearMat || !midMat) return null;
+
+  return (
+    <>
+      <mesh
+        ref={(m) => {
+          nearRef.current = m;
+          if (m && !nearCompiled.current) {
+            nearCompiled.current = true;
+            gl.compileAsync(m, camera).catch(() => {});
+          }
+        }}
+        geometry={nearGeo}
+        material={nearMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midRef.current = m; }}
+        geometry={midGeo}
+        material={midMat}
+        visible={false}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Jupiter component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
@@ -261,7 +270,7 @@ function Jupiter({
   radiusKm = JUPITER_RADIUS_KM,
 }: JupiterProps) {
   const worldOrigin = useWorldOrigin();
-  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+  const camera = useThree((s) => s.camera);
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -270,8 +279,6 @@ function Jupiter({
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
 
-  const near = useNearLOD(scaledRadius, uSunRel);
-  const mid = useMidLOD(scaledRadius, uSunRel);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -336,23 +343,12 @@ function Jupiter({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group rotation={JUPITER_ROTATION}>
-        <mesh
-          ref={(m) => {
-            nearRef.current = m;
-            if (m && !nearCompiled.current) {
-              nearCompiled.current = true;
-              gl.compileAsync(m, camera).catch(() => {});
-            }
-          }}
-          geometry={near.geo}
-          material={near.mat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { midRef.current = m; }}
-          geometry={mid.geo}
-          material={mid.mat}
-          visible={false}
+        <TexturedLODs
+          scaledRadius={scaledRadius}
+          uSunRel={uSunRel}
+          nearRef={nearRef}
+          midRef={midRef}
+          nearCompiled={nearCompiled}
         />
       </group>
       <mesh

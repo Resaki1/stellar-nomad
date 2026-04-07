@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -209,92 +209,6 @@ function buildSaturnFragmentNode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Near LOD: 8k planet + 8k rings, 128 segments
-// ─────────────────────────────────────────────────────────────────────
-
-function useNearLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-  uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/saturn/8k_saturn.ktx2",
-    ring: "/textures/saturn/8k_saturn_ring_alpha.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const planetGeo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 128, 128);
-  }, [scaledRadius]);
-
-  const ringGeo = useMemo(() => {
-    const inner = kmToScaledUnits(RING_INNER_RADIUS_KM);
-    const outer = kmToScaledUnits(RING_OUTER_RADIUS_KM);
-    return createRingGeometry(inner, outer, 128);
-  }, []);
-
-  const planetMat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildSaturnFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  const ringMat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.DoubleSide;
-    m.transparent = true;
-    m.depthWrite = false;
-    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
-    return m;
-  }, [tex.ring, uSunRel, uPlanetRadius]);
-
-  return { planetGeo, ringGeo, planetMat, ringMat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k planet + 2k rings, 48 segments
-// ─────────────────────────────────────────────────────────────────────
-
-function useMidLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-  uPlanetRadius: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/saturn/2k_saturn.ktx2",
-    ring: "/textures/saturn/2k_saturn_ring_alpha.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const planetGeo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 48, 48);
-  }, [scaledRadius]);
-
-  const ringGeo = useMemo(() => {
-    const inner = kmToScaledUnits(RING_INNER_RADIUS_KM);
-    const outer = kmToScaledUnits(RING_OUTER_RADIUS_KM);
-    return createRingGeometry(inner, outer, 64);
-  }, []);
-
-  const planetMat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildSaturnFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  const ringMat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.DoubleSide;
-    m.transparent = true;
-    m.depthWrite = false;
-    m.fragmentNode = buildRingFragmentNode(tex.ring, uSunRel, uPlanetRadius);
-    return m;
-  }, [tex.ring, uSunRel, uPlanetRadius]);
-
-  return { planetGeo, ringGeo, planetMat, ringMat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Far LOD: billboard impostor (planet only, no rings at extreme distance)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -357,6 +271,118 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Textured LODs (near + mid) — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  uSunRel: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  uPlanetRadius: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  nearPlanetRef: { current: THREE.Mesh | null };
+  nearRingRef: { current: THREE.Mesh | null };
+  midPlanetRef: { current: THREE.Mesh | null };
+  midRingRef: { current: THREE.Mesh | null };
+  nearCompiled: { current: boolean };
+};
+
+function TexturedLODs({
+  scaledRadius,
+  uSunRel,
+  uPlanetRadius,
+  nearPlanetRef,
+  nearRingRef,
+  midPlanetRef,
+  midRingRef,
+  nearCompiled,
+}: TexturedLODsProps) {
+  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+
+  const nearTex = useDeferredKTX2({ color: "/textures/saturn/8k_saturn.ktx2", ring: "/textures/saturn/8k_saturn_ring_alpha.ktx2" }, '/basis/');
+  const midTex = useDeferredKTX2({ color: "/textures/saturn/2k_saturn.ktx2", ring: "/textures/saturn/2k_saturn_ring_alpha.ktx2" }, '/basis/');
+
+  const innerRing = kmToScaledUnits(RING_INNER_RADIUS_KM);
+  const outerRing = kmToScaledUnits(RING_OUTER_RADIUS_KM);
+
+  const nearPlanetGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 128, 128), [scaledRadius]);
+  const nearRingGeo = useMemo(() => createRingGeometry(innerRing, outerRing, 128), [innerRing, outerRing]);
+  const midPlanetGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 48, 48), [scaledRadius]);
+  const midRingGeo = useMemo(() => createRingGeometry(innerRing, outerRing, 64), [innerRing, outerRing]);
+
+  const nearPlanetMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildSaturnFragmentNode(nearTex.color, uSunRel);
+    return m;
+  }, [nearTex, uSunRel]);
+
+  const nearRingMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.DoubleSide;
+    m.transparent = true;
+    m.depthWrite = false;
+    m.fragmentNode = buildRingFragmentNode(nearTex.ring, uSunRel, uPlanetRadius);
+    return m;
+  }, [nearTex, uSunRel, uPlanetRadius]);
+
+  const midPlanetMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildSaturnFragmentNode(midTex.color, uSunRel);
+    return m;
+  }, [midTex, uSunRel]);
+
+  const midRingMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.DoubleSide;
+    m.transparent = true;
+    m.depthWrite = false;
+    m.fragmentNode = buildRingFragmentNode(midTex.ring, uSunRel, uPlanetRadius);
+    return m;
+  }, [midTex, uSunRel, uPlanetRadius]);
+
+  if (!nearPlanetMat || !nearRingMat || !midPlanetMat || !midRingMat) return null;
+
+  return (
+    <>
+      <mesh
+        ref={(m) => {
+          nearPlanetRef.current = m;
+          if (m && !nearCompiled.current) {
+            nearCompiled.current = true;
+            gl.compileAsync(m, camera).catch(() => {});
+          }
+        }}
+        geometry={nearPlanetGeo}
+        material={nearPlanetMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { nearRingRef.current = m; }}
+        geometry={nearRingGeo}
+        material={nearRingMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midPlanetRef.current = m; }}
+        geometry={midPlanetGeo}
+        material={midPlanetMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midRingRef.current = m; }}
+        geometry={midRingGeo}
+        material={midRingMat}
+        visible={false}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Saturn component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
@@ -366,7 +392,7 @@ function Saturn({
   radiusKm = SATURN_RADIUS_KM,
 }: SaturnProps) {
   const worldOrigin = useWorldOrigin();
-  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+  const { camera } = useThree((s) => ({ camera: s.camera }));
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -376,8 +402,6 @@ function Saturn({
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
 
-  const near = useNearLOD(scaledRadius, uSunRel, uPlanetRadius);
-  const mid = useMidLOD(scaledRadius, uSunRel, uPlanetRadius);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   const nearPlanetRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -445,37 +469,15 @@ function Saturn({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group>
-        {/* Near LOD: planet + ring */}
-        <mesh
-          ref={(m) => {
-            nearPlanetRef.current = m;
-            if (m && !nearCompiled.current) {
-              nearCompiled.current = true;
-              gl.compileAsync(m, camera).catch(() => {});
-            }
-          }}
-          geometry={near.planetGeo}
-          material={near.planetMat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { nearRingRef.current = m; }}
-          geometry={near.ringGeo}
-          material={near.ringMat}
-          visible={false}
-        />
-        {/* Mid LOD: planet + ring */}
-        <mesh
-          ref={(m) => { midPlanetRef.current = m; }}
-          geometry={mid.planetGeo}
-          material={mid.planetMat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { midRingRef.current = m; }}
-          geometry={mid.ringGeo}
-          material={mid.ringMat}
-          visible={false}
+        <TexturedLODs
+          scaledRadius={scaledRadius}
+          uSunRel={uSunRel}
+          uPlanetRadius={uPlanetRadius}
+          nearPlanetRef={nearPlanetRef}
+          nearRingRef={nearRingRef}
+          midPlanetRef={midPlanetRef}
+          midRingRef={midRingRef}
+          nearCompiled={nearCompiled}
         />
         {/* Far LOD: billboard (planet only) */}
         <mesh

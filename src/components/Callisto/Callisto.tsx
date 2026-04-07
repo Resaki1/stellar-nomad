@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -107,53 +107,7 @@ function buildCallistoFragmentNode(
 // Near LOD: 8k texture, 128-segment sphere
 // ─────────────────────────────────────────────────────────────────────
 
-function useNearLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/callisto/8k_callisto.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 128, 128);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildCallistoFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k texture, 48-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-function useMidLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/callisto/2k_callisto.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 48, 48);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildCallistoFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  return { geo, mat };
-}
+// (useNearLOD/useMidLOD removed — textures now loaded via useDeferredKTX2 in TexturedLODs)
 
 // ─────────────────────────────────────────────────────────────────────
 // Far LOD: billboard impostor
@@ -214,6 +168,75 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Textured LODs (near + mid) — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  uSunRel: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  nearRef: { current: THREE.Mesh | null };
+  midRef: { current: THREE.Mesh | null };
+  nearCompiled: { current: boolean };
+};
+
+function TexturedLODs({
+  scaledRadius,
+  uSunRel,
+  nearRef,
+  midRef,
+  nearCompiled,
+}: TexturedLODsProps) {
+  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+
+  const nearTex = useDeferredKTX2({ color: "/textures/callisto/8k_callisto.ktx2" }, '/basis/');
+  const midTex = useDeferredKTX2({ color: "/textures/callisto/2k_callisto.ktx2" }, '/basis/');
+
+  const nearGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 128, 128), [scaledRadius]);
+  const midGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 48, 48), [scaledRadius]);
+
+  const nearMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildCallistoFragmentNode(nearTex.color, uSunRel);
+    return m;
+  }, [nearTex, uSunRel]);
+
+  const midMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildCallistoFragmentNode(midTex.color, uSunRel);
+    return m;
+  }, [midTex, uSunRel]);
+
+  if (!nearMat || !midMat) return null;
+
+  return (
+    <>
+      <mesh
+        ref={(m) => {
+          nearRef.current = m;
+          if (m && !nearCompiled.current) {
+            nearCompiled.current = true;
+            gl.compileAsync(m, camera).catch(() => {});
+          }
+        }}
+        geometry={nearGeo}
+        material={nearMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midRef.current = m; }}
+        geometry={midGeo}
+        material={midMat}
+        visible={false}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Callisto component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
@@ -223,7 +246,7 @@ function Callisto({
   radiusKm = CALLISTO_RADIUS_KM,
 }: CallistoProps) {
   const worldOrigin = useWorldOrigin();
-  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+  const camera = useThree((s) => s.camera);
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -232,8 +255,6 @@ function Callisto({
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
 
-  const near = useNearLOD(scaledRadius, uSunRel);
-  const mid = useMidLOD(scaledRadius, uSunRel);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -296,32 +317,19 @@ function Callisto({
 
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
-      <group>
-        <mesh
-          ref={(m) => {
-            nearRef.current = m;
-            if (m && !nearCompiled.current) {
-              nearCompiled.current = true;
-              gl.compileAsync(m, camera).catch(() => {});
-            }
-          }}
-          geometry={near.geo}
-          material={near.mat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { midRef.current = m; }}
-          geometry={mid.geo}
-          material={mid.mat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { farRef.current = m; }}
-          geometry={far.geo}
-          material={far.mat}
-          visible={false}
-        />
-      </group>
+      <TexturedLODs
+        scaledRadius={scaledRadius}
+        uSunRel={uSunRel}
+        nearRef={nearRef}
+        midRef={midRef}
+        nearCompiled={nearCompiled}
+      />
+      <mesh
+        ref={(m) => { farRef.current = m; }}
+        geometry={far.geo}
+        material={far.mat}
+        visible={false}
+      />
       <StellarPoint
         positionKm={positionKm}
         sunPositionKm={sunPositionKm}

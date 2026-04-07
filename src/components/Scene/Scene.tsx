@@ -41,7 +41,14 @@ function WebGPUGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     const p = (gl as any).__initPromise as Promise<void> | undefined;
     if (!p) return;
-    p.then(() => setReady(true));
+    p.then(() => {
+      performance.mark("webgpu-gate-open");
+      console.log(
+        "[perf] WebGPU gate open — scene tree will mount",
+        performance.now().toFixed(0) + "ms",
+      );
+      setReady(true);
+    });
   }, [gl]);
 
   return ready ? <>{children}</> : null;
@@ -112,9 +119,14 @@ const Scene = () => {
             return origRender(scene, camera);
           };
 
+          performance.mark("webgpu-init-start");
           const initPromise = renderer.init().then(() => {
             (renderer as any)._animation?.stop();
-            console.log("WebGPU initialized successfully");
+            performance.mark("webgpu-init-end");
+            console.log(
+              "[perf] WebGPU renderer.init() done",
+              performance.measure("webgpu-init", "webgpu-init-start", "webgpu-init-end").duration.toFixed(0) + "ms",
+            );
           });
           (renderer as any).__initPromise = initPromise;
           return renderer;

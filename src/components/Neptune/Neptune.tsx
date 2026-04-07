@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -108,32 +108,6 @@ function buildNeptuneFragmentNode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k texture, 64-segment sphere (primary textured tier)
-// ─────────────────────────────────────────────────────────────────────
-
-function useMidLOD(
-  scaledRadius: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any
-) {
-  const tex = useKTX2({
-    color: "/textures/neptune/2k_neptune.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 64, 64);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildNeptuneFragmentNode(tex.color, uSunRel);
-    return m;
-  }, [tex.color, uSunRel]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Far LOD: billboard impostor
 // ─────────────────────────────────────────────────────────────────────
 
@@ -194,6 +168,41 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// TexturedLODs — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  uSunRel: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  midRef: { current: THREE.Mesh | null };
+};
+
+function TexturedLODs({ scaledRadius, uSunRel, midRef }: TexturedLODsProps) {
+  const midTex = useDeferredKTX2({ color: "/textures/neptune/2k_neptune.ktx2" }, '/basis/');
+
+  const midGeo = useMemo(() => new THREE.SphereGeometry(scaledRadius, 64, 64), [scaledRadius]);
+
+  const midMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildNeptuneFragmentNode(midTex.color, uSunRel);
+    return m;
+  }, [midTex, uSunRel]);
+
+  if (!midMat) return null;
+
+  return (
+    <mesh
+      ref={(m) => { midRef.current = m; }}
+      geometry={midGeo}
+      material={midMat}
+      visible={false}
+    />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Neptune component — 2-tier LOD (no 8k texture available)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -212,7 +221,6 @@ function Neptune({
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
 
-  const mid = useMidLOD(scaledRadius, uSunRel);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   const midRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -269,11 +277,10 @@ function Neptune({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group>
-        <mesh
-          ref={(m) => { midRef.current = m; }}
-          geometry={mid.geo}
-          material={mid.mat}
-          visible={false}
+        <TexturedLODs
+          scaledRadius={scaledRadius}
+          uSunRel={uSunRel}
+          midRef={midRef}
         />
         <mesh
           ref={(m) => { farRef.current = m; }}

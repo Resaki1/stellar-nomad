@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -164,70 +164,6 @@ function buildSpherePositionNode(
   })();
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Near LOD: 8k textures, 128-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-function useNearLOD(
-  scaledRadius: number,
-  displacementScaled: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
-) {
-  const tex = useKTX2({
-    color: "/textures/luna/luna_color_8k.ktx2",
-    displacement: "/textures/luna/luna_displacement_16.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
-    g.computeTangents();
-    return g;
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
-    // Near LOD: 8k color, 16-bit displacement (assume ~4096 wide map → 1/4096 texel)
-    // Sobel kernel amplifies ~4x vs central diff, so bump strength is lower.
-    m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.8, 1 / 4096, uSunRel);
-    return m;
-  }, [tex.color, tex.displacement, uSunRel, displacementScaled]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k textures, 48-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-function useMidLOD(
-  scaledRadius: number,
-  displacementScaled: number,
-  uSunRel: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
-) {
-  const tex = useKTX2({
-    color: "/textures/luna/luna_color_2k.ktx2",
-    displacement: "/textures/luna/luna_displacement_4.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  const geo = useMemo(() => {
-    const g = new THREE.SphereGeometry(scaledRadius, 48, 48);
-    g.computeTangents();
-    return g;
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.positionNode = buildSpherePositionNode(tex.displacement, displacementScaled);
-    // Mid LOD: 2k color, 4-bit displacement (assume ~1024 wide map → 1/1024 texel)
-    m.fragmentNode = buildSphereFragmentNode(tex.color, tex.displacement, 0.6, 1 / 1024, uSunRel);
-    return m;
-  }, [tex.color, tex.displacement, uSunRel, displacementScaled]);
-
-  return { geo, mat };
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Far LOD: billboard impostor (no geometry, no textures)
@@ -292,6 +228,72 @@ function useFarLOD(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Textured LODs (near + mid) — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  displacementScaled: number;
+  uSunRel: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- TSL node type inference limitation
+  nearRef: { current: THREE.Mesh | null };
+  midRef: { current: THREE.Mesh | null };
+};
+
+function TexturedLODs({ scaledRadius, displacementScaled, uSunRel, nearRef, midRef }: TexturedLODsProps) {
+  const nearTex = useDeferredKTX2({ color: "/textures/luna/luna_color_8k.ktx2", displacement: "/textures/luna/luna_displacement_16.ktx2" }, '/basis/');
+  const midTex = useDeferredKTX2({ color: "/textures/luna/luna_color_2k.ktx2", displacement: "/textures/luna/luna_displacement_4.ktx2" }, '/basis/');
+
+  const nearGeo = useMemo(() => {
+    const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
+    g.computeTangents();
+    return g;
+  }, [scaledRadius]);
+
+  const midGeo = useMemo(() => {
+    const g = new THREE.SphereGeometry(scaledRadius, 48, 48);
+    g.computeTangents();
+    return g;
+  }, [scaledRadius]);
+
+  const nearMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.positionNode = buildSpherePositionNode(nearTex.displacement, displacementScaled);
+    m.fragmentNode = buildSphereFragmentNode(nearTex.color, nearTex.displacement, 0.8, 1 / 4096, uSunRel);
+    return m;
+  }, [nearTex, displacementScaled, uSunRel]);
+
+  const midMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.positionNode = buildSpherePositionNode(midTex.displacement, displacementScaled);
+    m.fragmentNode = buildSphereFragmentNode(midTex.color, midTex.displacement, 0.6, 1 / 1024, uSunRel);
+    return m;
+  }, [midTex, displacementScaled, uSunRel]);
+
+  if (!nearMat || !midMat) return null;
+
+  return (
+    <>
+      <mesh
+        ref={(m) => { nearRef.current = m; }}
+        geometry={nearGeo}
+        material={nearMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midRef.current = m; }}
+        geometry={midGeo}
+        material={midMat}
+        visible={false}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Luna component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
@@ -314,8 +316,6 @@ function Luna({
   const uSpU = useMemo(() => uniform(0), []); // dot(up, sunDir)
   const uSpF = useMemo(() => uniform(0), []); // dot(fwd, sunDir)
 
-  const near = useNearLOD(scaledRadius, displacementScaled, uSunRel);
-  const mid = useMidLOD(scaledRadius, displacementScaled, uSunRel);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   // Refs for the three LOD meshes so we can toggle visibility without re-renders.
@@ -377,17 +377,12 @@ function Luna({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group>
-        <mesh
-          ref={(m) => { nearRef.current = m; }}
-          geometry={near.geo}
-          material={near.mat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { midRef.current = m; }}
-          geometry={mid.geo}
-          material={mid.mat}
-          visible={false}
+        <TexturedLODs
+          scaledRadius={scaledRadius}
+          displacementScaled={displacementScaled}
+          uSunRel={uSunRel}
+          nearRef={nearRef}
+          midRef={midRef}
         />
         <mesh
           ref={(m) => { farRef.current = m; }}

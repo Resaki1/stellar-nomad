@@ -38,8 +38,17 @@ export function useKTX2<
 
   // Eagerly upload to GPU (fast for GPU-compressed KTX2 data).
   useEffect(() => {
+    const urls = isObject(input) ? Object.values(input) : Array.isArray(input) ? input : [input];
     const arr = Array.isArray(textures) ? textures : [textures];
-    arr.forEach((t) => gl.initTexture(t));
+    arr.forEach((t, i) => {
+      const label = urls[i] ?? "unknown";
+      const t0 = performance.now();
+      gl.initTexture(t);
+      const dt = performance.now() - t0;
+      if (dt > 1) {
+        console.log(`[perf] initTexture ${label} — ${dt.toFixed(1)}ms`);
+      }
+    });
   }, [gl, textures]);
 
   if (isObject(input)) {

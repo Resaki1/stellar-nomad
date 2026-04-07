@@ -104,9 +104,20 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // Cleanup
   useEffect(() => () => { pipeline.dispose(); }, [pipeline]);
 
+  const firstFrameLogged = useRef(false);
+
   useFrame(() => {
     // Skip until WebGPU backend is ready (init is async).
     if (!(gl as any).initialized) return;
+
+    if (!firstFrameLogged.current) {
+      firstFrameLogged.current = true;
+      performance.mark("first-frame-render");
+      console.log(
+        "[perf] First frame render",
+        performance.now().toFixed(0) + "ms",
+      );
+    }
 
     // Advance the node frame so BloomNode's updateBefore runs each frame.
     // Normally the renderer's internal animation loop does this, but we

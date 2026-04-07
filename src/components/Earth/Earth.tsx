@@ -2,7 +2,7 @@
 
 import { memo, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useKTX2 } from "@/hooks/useKTX2";
+import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -302,87 +302,6 @@ function buildEarthFragmentNode(opts: {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Helper
-// ─────────────────────────────────────────────────────────────────────
-// Near LOD: 8k textures + normal + specular, 128-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function useNearLOD(scaledRadius: number, uniforms: any) {
-  const tex = useKTX2({
-    day: "/textures/earth_day_8k.ktx2",
-    night: "/textures/earth_night_8k.ktx2",
-    clouds: "/textures/earth_clouds_8k.ktx2",
-    normal: "/textures/earth_normal.ktx2",
-    spec: "/textures/earth_specular.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.clouds.anisotropy = 8;
-  }, [tex.clouds]);
-
-  const geo = useMemo(() => {
-    const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
-    g.computeTangents();
-    return g;
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildEarthFragmentNode({
-      texDay: tex.day,
-      texNight: tex.night,
-      texClouds: tex.clouds,
-      texNormal: tex.normal,
-      texSpec: tex.spec,
-      ...uniforms,
-    });
-    return m;
-  }, [tex.day, tex.night, tex.clouds, tex.normal, tex.spec, uniforms]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Mid LOD: 2k textures + specular, no normal mapping, 48-segment sphere
-// ─────────────────────────────────────────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function useMidLOD(scaledRadius: number, uniforms: any) {
-  const tex = useKTX2({
-    day: "/textures/earth_day_2k.ktx2",
-    night: "/textures/earth_night_2k.ktx2",
-    clouds: "/textures/earth_clouds_2k.ktx2",
-    spec: "/textures/earth_specular.ktx2",
-  }, '/basis/') as Record<string, THREE.Texture>;
-
-  useMemo(() => {
-    tex.clouds.anisotropy = 4;
-  }, [tex.clouds]);
-
-  const geo = useMemo(() => {
-    return new THREE.SphereGeometry(scaledRadius, 48, 48);
-  }, [scaledRadius]);
-
-  const mat = useMemo(() => {
-    const m = new NodeMaterial();
-    m.side = THREE.FrontSide;
-    m.fragmentNode = buildEarthFragmentNode({
-      texDay: tex.day,
-      texNight: tex.night,
-      texClouds: tex.clouds,
-      texNormal: null,
-      texSpec: tex.spec,
-      ...uniforms,
-    });
-    return m;
-  }, [tex.day, tex.night, tex.clouds, tex.spec, uniforms]);
-
-  return { geo, mat };
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Far LOD: billboard impostor
 // ─────────────────────────────────────────────────────────────────────
 
@@ -445,6 +364,111 @@ function useFarLOD(scaledRadius: number, uSpR: any, uSpU: any, uSpF: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Textured LODs (near + mid) — loaded via useDeferredKTX2 (no Suspense)
+// ─────────────────────────────────────────────────────────────────────
+
+type TexturedLODsProps = {
+  scaledRadius: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uniforms: any;
+  nearRef: { current: THREE.Mesh | null };
+  midRef: { current: THREE.Mesh | null };
+  nearCompiled: { current: boolean };
+};
+
+function TexturedLODs({ scaledRadius, uniforms, nearRef, midRef, nearCompiled }: TexturedLODsProps) {
+  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+
+  const nearTex = useDeferredKTX2({
+    day: "/textures/earth_day_8k.ktx2",
+    night: "/textures/earth_night_8k.ktx2",
+    clouds: "/textures/earth_clouds_8k.ktx2",
+    normal: "/textures/earth_normal.ktx2",
+    spec: "/textures/earth_specular.ktx2",
+  }, '/basis/');
+
+  const midTex = useDeferredKTX2({
+    day: "/textures/earth_day_2k.ktx2",
+    night: "/textures/earth_night_2k.ktx2",
+    clouds: "/textures/earth_clouds_2k.ktx2",
+    spec: "/textures/earth_specular.ktx2",
+  }, '/basis/');
+
+  useMemo(() => {
+    if (nearTex) nearTex.clouds.anisotropy = 8;
+  }, [nearTex]);
+
+  useMemo(() => {
+    if (midTex) midTex.clouds.anisotropy = 4;
+  }, [midTex]);
+
+  const nearGeo = useMemo(() => {
+    const g = new THREE.SphereGeometry(scaledRadius, 128, 128);
+    g.computeTangents();
+    return g;
+  }, [scaledRadius]);
+
+  const midGeo = useMemo(() => {
+    return new THREE.SphereGeometry(scaledRadius, 48, 48);
+  }, [scaledRadius]);
+
+  const nearMat = useMemo(() => {
+    if (!nearTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildEarthFragmentNode({
+      texDay: nearTex.day,
+      texNight: nearTex.night,
+      texClouds: nearTex.clouds,
+      texNormal: nearTex.normal,
+      texSpec: nearTex.spec,
+      ...uniforms,
+    });
+    return m;
+  }, [nearTex, uniforms]);
+
+  const midMat = useMemo(() => {
+    if (!midTex) return null;
+    const m = new NodeMaterial();
+    m.side = THREE.FrontSide;
+    m.fragmentNode = buildEarthFragmentNode({
+      texDay: midTex.day,
+      texNight: midTex.night,
+      texClouds: midTex.clouds,
+      texNormal: null,
+      texSpec: midTex.spec,
+      ...uniforms,
+    });
+    return m;
+  }, [midTex, uniforms]);
+
+  if (!nearMat || !midMat) return null;
+
+  return (
+    <>
+      <mesh
+        ref={(m) => {
+          nearRef.current = m;
+          if (m && !nearCompiled.current) {
+            nearCompiled.current = true;
+            gl.compileAsync(m, camera).catch(() => {});
+          }
+        }}
+        geometry={nearGeo}
+        material={nearMat}
+        visible={false}
+      />
+      <mesh
+        ref={(m) => { midRef.current = m; }}
+        geometry={midGeo}
+        material={midMat}
+        visible={false}
+      />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main Planet component with LOD switching
 // ─────────────────────────────────────────────────────────────────────
 
@@ -466,7 +490,7 @@ function Planet({
   radiusKm = DEFAULT_PLANET_RADIUS_KM,
 }: PlanetProps) {
   const worldOrigin = useWorldOrigin();
-  const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
+  const camera = useThree((s) => s.camera);
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -495,8 +519,6 @@ function Planet({
     [uSunRel, uMoonPos, uMoonRadius, uSunRadius],
   );
 
-  const near = useNearLOD(scaledRadius, uniforms);
-  const mid = useMidLOD(scaledRadius, uniforms);
   const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF);
 
   // Refs for LOD meshes — toggle visibility without re-renders.
@@ -571,23 +593,12 @@ function Planet({
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
       <group rotation={PLANET_ROTATION}>
-        <mesh
-          ref={(m) => {
-            nearRef.current = m;
-            if (m && !nearCompiled.current) {
-              nearCompiled.current = true;
-              gl.compileAsync(m, camera).catch(() => {});
-            }
-          }}
-          geometry={near.geo}
-          material={near.mat}
-          visible={false}
-        />
-        <mesh
-          ref={(m) => { midRef.current = m; }}
-          geometry={mid.geo}
-          material={mid.mat}
-          visible={false}
+        <TexturedLODs
+          scaledRadius={scaledRadius}
+          uniforms={uniforms}
+          nearRef={nearRef}
+          midRef={midRef}
+          nearCompiled={nearCompiled}
         />
       </group>
       <mesh
