@@ -1,8 +1,8 @@
 "use client";
 
-import { useTexture } from "@react-three/drei";
 import { useMemo } from "react";
 import * as THREE from "three";
+import { useKTX2 } from "@/hooks/useKTX2";
 
 type Props = {
   url?: string;
@@ -14,9 +14,9 @@ type Props = {
  * when using a cloned camera in a portal scene.
  */
 export default function MilkyWaySkybox({
-  url = "/assets/8k_stars_nasa.webp",
+  url = "/assets/8k_stars_nasa.ktx2",
 }: Props) {
-  const tex = useTexture(url);
+  const tex = useKTX2(url);
 
   const [geometry, material] = useMemo(() => {
     tex.colorSpace = THREE.SRGBColorSpace;
