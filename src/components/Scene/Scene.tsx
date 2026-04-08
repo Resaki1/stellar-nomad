@@ -1,7 +1,7 @@
 // src/components/Scene/Scene.tsx
 "use client";
 
-import { settingsAtom } from "@/store/store";
+import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
@@ -27,7 +27,6 @@ import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
 import SpaceRenderer from "../space/SpaceRenderer";
-import Anchor from "./Anchor";
 import MiningSystem from "../Mining/MiningSystem";
 import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
@@ -57,6 +56,7 @@ function WebGPUGate({ children }: { children: ReactNode }) {
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
+  const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
   const isSafari =
     typeof window !== "undefined" && navigator
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
@@ -106,7 +106,7 @@ const Scene = () => {
     <Canvas
       style={{ background: "black" }}
       camera={{ near: 0.01, far: 20_000 }}
-      frameloop="always"
+      frameloop={settingsIsOpen ? "never" : "always"}
       dpr={[0.5, 1.5]}
       gl={(defaultProps) => {
           const renderer = new THREE.WebGPURenderer({
@@ -142,7 +142,6 @@ const Scene = () => {
 
           {/* <AdaptiveDpr pixelated /> */}
           <AdaptiveEvents />
-          <Anchor />
     </Canvas>
   );
 };
