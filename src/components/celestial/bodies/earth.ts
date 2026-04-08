@@ -168,6 +168,7 @@ function buildEarthFragmentNode(opts: {
     // ── Detail-dependent: normal mapping + cloud shadow ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let nMapped: any = nGeom;
+    const cloudShadowVal = float(0).toVar();
 
     if (detailed && texNormal) {
       // Normal mapping via TBN
@@ -187,11 +188,22 @@ function buildEarthFragmentNode(opts: {
         )
       );
 
-      // Cloud shadow: offset UV along sun direction in tangent space
-      const delta = nGeom.sub(sunDir).mul(0.0006);
-      const deltaT = vec3(dot(tW, delta), dot(bW, delta), dot(nGeom, delta));
-      const cloudShadow = texture(texClouds, uvCoord.sub(deltaT.xy)).r;
-      dayAmount.mulAssign(float(1.0).sub(float(0.65).mul(cloudShadow)));
+      // Cloud shadow: project sun onto tangent plane for shadow offset
+      const sunOnSurface = sunDir.sub(nGeom.mul(cosSunToGeomNormal));
+      const shadowOffset = vec3(
+        dot(tW, sunOnSurface),
+        dot(bW, sunOnSurface),
+        float(0)
+      );
+      // Shadows stretch at grazing sun angles (longer projection of cloud height)
+      const shadowScale = float(0.0015).div(cosSunToGeomNormal.max(0.12));
+      const shadowUV = shadowOffset.xy.mul(shadowScale);
+
+      // Two-tap soft shadow for penumbra
+      const cs1 = texture(texClouds, uvCoord.add(shadowUV.mul(0.4))).r;
+      const cs2 = texture(texClouds, uvCoord.add(shadowUV)).r;
+      cloudShadowVal.assign(cs1.mul(0.6).add(cs2.mul(0.4)));
+      dayAmount.mulAssign(float(1.0).sub(float(0.7).mul(cloudShadowVal)));
     }
 
     // Apply only eclipse darkening — the base sigmoid is already in dayAmount.
@@ -253,7 +265,9 @@ function buildEarthFragmentNode(opts: {
     const cloudHemi = float(1.0).div(
       float(1.0).add(exp(float(-40).mul(cosSunToGeomNormal.add(0.025))))
     );
-    const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi);
+    // Self-shadow: clouds with other clouds sunward of them get darker bases
+    const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
+    const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow);
     col.assign(mix(col, cloudLit, clamp(cloudMask, 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
