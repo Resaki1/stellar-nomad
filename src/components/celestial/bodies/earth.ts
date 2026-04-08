@@ -143,7 +143,7 @@ function buildEarthFragmentNode(opts: {
 
     // ── Day/night transition ──
     const dayAmount = float(1.0)
-      .div(float(1.0).add(exp(float(-10).mul(cosSunToGeomNormal))))
+      .div(float(1.0).add(exp(float(-40).mul(cosSunToGeomNormal))))
       .toVar();
     const hemiAmount = dayAmount.toVar();
 
@@ -162,7 +162,8 @@ function buildEarthFragmentNode(opts: {
       clamp(uMoonRadius.div(distSurfToMoon), 0, 1)
     );
 
-    hemiAmount.mulAssign(eclipseFn(angSunMoon, angSunDisk, angMoonDisk));
+    const eclipseAmount = eclipseFn(angSunMoon, angSunDisk, angMoonDisk);
+    hemiAmount.mulAssign(eclipseAmount);
 
     // ── Detail-dependent: normal mapping + cloud shadow ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -193,7 +194,8 @@ function buildEarthFragmentNode(opts: {
       dayAmount.mulAssign(float(1.0).sub(float(0.65).mul(cloudShadow)));
     }
 
-    dayAmount.mulAssign(hemiAmount);
+    // Apply only eclipse darkening — the base sigmoid is already in dayAmount.
+    dayAmount.mulAssign(eclipseAmount);
     dayAmount.assign(clamp(dayAmount, 0, 1));
 
     // ── Terminator warm tones (Rayleigh at low sun angles) ──
@@ -239,14 +241,19 @@ function buildEarthFragmentNode(opts: {
     );
     const csf = cloudSunFactor
       .mul(cloudSunFactor)
-      .mul(float(5.0).sub(cloudSunFactor.mul(2.0)));
+      .mul(float(8.0).sub(cloudSunFactor.mul(2.0)));
 
     // Cloud color: white in full sunlight, warm at the terminator.
     const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
-    const cloudWhite = vec3(1.12, 1.12, 1.12);
-    const cloudWarm = vec3(0.7, 0.4, 0.3);
+    const cloudWhite = vec3(1, 1, 1);
+    const cloudWarm = vec3(1.0, 0.8, 0.7);
     const cloudBaseCol = mix(cloudWarm, cloudWhite, cloudSunBlend);
-    const cloudLit = cloudBaseCol.mul(csf);
+    // Clouds at ~10 km altitude catch sunlight slightly past the surface
+    // terminator. Offset ≈ sqrt(2h/R) in cos-space for h=10 km, R=6371 km.
+    const cloudHemi = float(1.0).div(
+      float(1.0).add(exp(float(-40).mul(cosSunToGeomNormal.add(0.025))))
+    );
+    const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi);
     col.assign(mix(col, cloudLit, clamp(cloudMask, 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
