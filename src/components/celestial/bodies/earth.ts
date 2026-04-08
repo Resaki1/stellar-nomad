@@ -220,7 +220,6 @@ function buildEarthFragmentNode(opts: {
 
     // ── Clouds ──
     const cloudMask = texture(texClouds, uvCoord).r
-      .mul(float(0.8))
       .toVar();
 
     // Night mask (sharper city-light cutoff)
@@ -240,9 +239,26 @@ function buildEarthFragmentNode(opts: {
       const specMask = texture(texSpec, uvCoord).r;
       const refl = reflect(sunDir.negate(), nMapped);
       const specAngle = dot(refl, viewDir).max(0);
-      const specHighlight = pow(specAngle, float(80.0)).mul(1.8).mul(specMask);
+      const specHighlight = pow(specAngle, float(40.0)).mul(0.8).mul(specMask);
       const specBroad = pow(specAngle, float(8.0)).mul(0.15).mul(specMask);
       col.addAssign(dayAmount.mul(specHighlight.add(specBroad)));
+
+      // ── Fresnel ocean reflection + land limb darkening ──
+      const vDotN = clamp(dot(viewDir, nGeom), 0, 1);
+      const oneMinusVdotN = float(1.0).sub(vDotN);
+      // Schlick Fresnel: F0 ≈ 0.02 for water
+      const fresnel = float(0.02).add(
+        float(2.0).mul(pow(oneMinusVdotN, float(2.5)))
+      );
+      // Ocean reflects atmosphere blue at grazing angles
+      col.addAssign(
+        vec3(0.0, 0.25, 1.0).mul(fresnel).mul(specMask).mul(dayAmount)
+      );
+
+      // Land: rough diffuse surfaces darken at oblique viewing angles
+      const landMask = float(1.0).sub(specMask);
+      const limbDarken = pow(vDotN.max(0.05), float(0.3));
+      col.mulAssign(float(1.0).sub(landMask.mul(float(1.0).sub(limbDarken))));
     }
 
     // ── Cloud overlay ──
@@ -253,7 +269,7 @@ function buildEarthFragmentNode(opts: {
     );
     const csf = cloudSunFactor
       .mul(cloudSunFactor)
-      .mul(float(8.0).sub(cloudSunFactor.mul(2.0)));
+      .mul(float(8.0).sub(cloudSunFactor.mul(1.0)));
 
     // Cloud color: white in full sunlight, warm at the terminator.
     const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
