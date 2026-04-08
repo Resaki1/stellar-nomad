@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
@@ -21,6 +21,17 @@ const _sunRelative = new THREE.Vector3();
 const _relativeKm = new THREE.Vector3();
 const _shipToBody = new THREE.Vector3();
 
+/** Prefetch multiplier: start loading textures at this factor × LOD threshold */
+const PREFETCH_MULT = 1.5;
+
+/** Treat empty or pending texture results as null */
+function texOrNull(
+  tex: Record<string, THREE.Texture> | null,
+): Record<string, THREE.Texture> | null {
+  if (!tex || Object.keys(tex).length === 0) return null;
+  return tex;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // TexturedLODs: inner component that loads textures + builds materials
 // ─────────────────────────────────────────────────────────────────────
@@ -34,9 +45,14 @@ type TexturedLODsProps = {
   uniforms: Record<string, any>;
   nearRef: { current: THREE.Mesh | null };
   midRef: { current: THREE.Mesh | null };
-  nearCompiled: { current: boolean };
   extraNearRefs: React.MutableRefObject<(THREE.Mesh | null)[]>;
   extraMidRefs: React.MutableRefObject<(THREE.Mesh | null)[]>;
+  shouldLoadMid: boolean;
+  shouldLoadNear: boolean;
+  /** 0 = not loaded, 1 = compiling, 2 = ready */
+  nearReadyState: { current: number };
+  /** 0 = not loaded, 1 = compiling, 2 = ready */
+  midReadyState: { current: number };
 };
 
 function TexturedLODs({
@@ -46,14 +62,26 @@ function TexturedLODs({
   uniforms,
   nearRef,
   midRef,
-  nearCompiled,
   extraNearRefs,
   extraMidRefs,
+  shouldLoadMid,
+  shouldLoadNear,
+  nearReadyState,
+  midReadyState,
 }: TexturedLODsProps) {
   const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
 
-  const nearTex = useDeferredKTX2(config.near?.textures ?? {}, "/basis/");
-  const midTex = useDeferredKTX2(config.mid.textures, "/basis/");
+  // Gate texture loading by distance-based prefetch flags
+  const rawNearTex = useDeferredKTX2(
+    shouldLoadNear ? (config.near?.textures ?? {}) : {},
+    "/basis/",
+  );
+  const rawMidTex = useDeferredKTX2(
+    shouldLoadMid ? config.mid.textures : {},
+    "/basis/",
+  );
+  const nearTex = texOrNull(rawNearTex as Record<string, THREE.Texture> | null);
+  const midTex = texOrNull(rawMidTex as Record<string, THREE.Texture> | null);
 
   // Post-load texture tweaks
   useMemo(() => {
@@ -111,10 +139,10 @@ function TexturedLODs({
     return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uniforms, tier: "mid" });
   }, [config, scaledRadius, midTex, uSunRel, uniforms]);
 
-  // For 3-tier LOD: both near + mid must be ready. For 2-tier: only mid.
+  // Allow partial rendering: tiers load independently as they become ready.
+  // Far billboard (always available) covers until the first textured tier loads.
   const hasNear = config.near != null;
-  if (hasNear && (!nearMat || !midMat)) return null;
-  if (!hasNear && !midMat) return null;
+  if (!nearMat && !midMat) return null;
 
   return (
     <>
@@ -122,9 +150,11 @@ function TexturedLODs({
         <mesh
           ref={(m) => {
             nearRef.current = m;
-            if (m && !nearCompiled.current) {
-              nearCompiled.current = true;
-              gl.compileAsync(m, camera).catch(() => {});
+            if (m && nearReadyState.current === 0) {
+              nearReadyState.current = 1;
+              gl.compileAsync(m, camera).then(() => {
+                nearReadyState.current = 2;
+              }).catch(() => {});
             }
           }}
           geometry={nearGeo}
@@ -132,12 +162,22 @@ function TexturedLODs({
           visible={false}
         />
       )}
-      <mesh
-        ref={(m) => { midRef.current = m; }}
-        geometry={midGeo}
-        material={midMat!}
-        visible={false}
-      />
+      {midMat && (
+        <mesh
+          ref={(m) => {
+            midRef.current = m;
+            if (m && midReadyState.current === 0) {
+              midReadyState.current = 1;
+              gl.compileAsync(m, camera).then(() => {
+                midReadyState.current = 2;
+              }).catch(() => {});
+            }
+          }}
+          geometry={midGeo}
+          material={midMat}
+          visible={false}
+        />
+      )}
       {nearExtras.map((ex, i) => (
         <mesh
           key={ex.key}
@@ -196,9 +236,30 @@ function CelestialBody({ config }: CelestialBodyProps) {
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
   const midRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
   const farRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
-  const nearCompiled = useMemo(() => ({ current: false }), []);
   const extraNearRefs = useMemo(() => ({ current: [] as (THREE.Mesh | null)[] }), []);
   const extraMidRefs = useMemo(() => ({ current: [] as (THREE.Mesh | null)[] }), []);
+
+  // ── Distance-gated texture loading ──
+  const prefetchFarDist = config.lod.far * PREFETCH_MULT;
+  const prefetchNearDist = (config.lod.near ?? Infinity) * PREFETCH_MULT;
+
+  // Compute initial distance to decide what to pre-load immediately at startup
+  const [loadMid, setLoadMid] = useState(() => {
+    const dx = positionKm[0] - worldOrigin.shipPosKm.x;
+    const dy = positionKm[1] - worldOrigin.shipPosKm.y;
+    const dz = positionKm[2] - worldOrigin.shipPosKm.z;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) < prefetchFarDist;
+  });
+  const [loadNear, setLoadNear] = useState(() => {
+    const dx = positionKm[0] - worldOrigin.shipPosKm.x;
+    const dy = positionKm[1] - worldOrigin.shipPosKm.y;
+    const dz = positionKm[2] - worldOrigin.shipPosKm.z;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz) < prefetchNearDist;
+  });
+
+  /** 0 = not loaded, 1 = compiling, 2 = ready */
+  const nearReadyState = useMemo(() => ({ current: 0 }), []);
+  const midReadyState = useMemo(() => ({ current: 0 }), []);
 
   const hasNear = config.near != null;
   const billboardMode = config.billboardMode ?? "camera-space";
@@ -224,9 +285,20 @@ function CelestialBody({ config }: CelestialBodyProps) {
     );
     const distKm = _shipToBody.length();
 
-    // ── LOD selection ──
-    const showNear = hasNear && distKm < config.lod.near!;
-    const showMid = hasNear ? (!showNear && distKm < config.lod.far) : (distKm < config.lod.far);
+    // ── Prefetch texture loading triggers (one-shot per tier) ──
+    if (distKm < prefetchFarDist) setLoadMid(true);
+    if (distKm < prefetchNearDist) setLoadNear(true);
+
+    // ── LOD selection with graceful fallback ──
+    // Only switch to a tier once its textures are loaded AND shader is compiled.
+    const wantNear = hasNear && distKm < config.lod.near!;
+    const wantMid = hasNear ? (!wantNear && distKm < config.lod.far) : (distKm < config.lod.far);
+
+    const nearReady = nearReadyState.current === 2;
+    const midReady = midReadyState.current === 2;
+
+    const showNear = wantNear && nearReady;
+    const showMid = (wantMid && midReady) || (wantNear && !nearReady && midReady);
     const showFar = !showNear && !showMid;
 
     if (nearRef.current) nearRef.current.visible = showNear;
@@ -304,9 +376,12 @@ function CelestialBody({ config }: CelestialBodyProps) {
             uniforms={extraUniforms}
             nearRef={nearRef}
             midRef={midRef}
-            nearCompiled={nearCompiled}
             extraNearRefs={extraNearRefs}
             extraMidRefs={extraMidRefs}
+            shouldLoadMid={loadMid}
+            shouldLoadNear={loadNear}
+            nearReadyState={nearReadyState}
+            midReadyState={midReadyState}
           />
         </group>
       ) : (
@@ -317,9 +392,12 @@ function CelestialBody({ config }: CelestialBodyProps) {
           uniforms={extraUniforms}
           nearRef={nearRef}
           midRef={midRef}
-          nearCompiled={nearCompiled}
           extraNearRefs={extraNearRefs}
           extraMidRefs={extraMidRefs}
+          shouldLoadMid={loadMid}
+          shouldLoadNear={loadNear}
+          nearReadyState={nearReadyState}
+          midReadyState={midReadyState}
         />
       )}
       <mesh
