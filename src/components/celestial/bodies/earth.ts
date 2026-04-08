@@ -10,6 +10,7 @@ import {
   tangentWorld,
   bitangentWorld,
   cameraPosition,
+  vec2,
   vec3,
   vec4,
   float,
@@ -190,14 +191,11 @@ function buildEarthFragmentNode(opts: {
 
       // Cloud shadow: project sun onto tangent plane for shadow offset
       const sunOnSurface = sunDir.sub(nGeom.mul(cosSunToGeomNormal));
-      const shadowOffset = vec3(
-        dot(tW, sunOnSurface),
-        dot(bW, sunOnSurface),
-        float(0)
-      );
       // Shadows stretch at grazing sun angles (longer projection of cloud height)
-      const shadowScale = float(0.0015).div(cosSunToGeomNormal.max(0.12));
-      const shadowUV = shadowOffset.xy.mul(shadowScale);
+      const shadowUV = vec2(
+        dot(tW, sunOnSurface),
+        dot(bW, sunOnSurface)
+      ).mul(float(0.0015).div(cosSunToGeomNormal.max(0.12)));
 
       // Two-tap soft shadow for penumbra
       const cs1 = texture(texClouds, uvCoord.add(shadowUV.mul(0.4))).r;
@@ -211,11 +209,8 @@ function buildEarthFragmentNode(opts: {
     dayAmount.assign(clamp(dayAmount, 0, 1));
 
     // ── Terminator warm tones (Rayleigh at low sun angles) ──
-    const tA = clamp(dayAmount.div(0.5), 0, 1);
-    const ssA = tA.mul(tA).mul(float(3.0).sub(tA.mul(2.0)));
-    const tB = clamp(float(1.0).sub(dayAmount).div(0.5), 0, 1);
-    const ssB = tB.mul(tB).mul(float(3.0).sub(tB.mul(2.0)));
-    const terminatorBand = ssA.mul(ssB);
+    const terminatorBand = smoothstep(float(0), float(0.5), dayAmount)
+      .mul(smoothstep(float(1), float(0.5), dayAmount));
     const warmTint = vec3(1.0, 0.6, 0.3);
 
     // ── Clouds ──
@@ -223,8 +218,7 @@ function buildEarthFragmentNode(opts: {
       .toVar();
 
     // Night mask (sharper city-light cutoff)
-    const tN2 = clamp(float(0.15).sub(dayAmount).div(0.15), 0, 1);
-    const nightMask = tN2.mul(tN2).mul(float(3.0).sub(tN2.mul(2.0)));
+    const nightMask = smoothstep(float(0.15), float(0), dayAmount);
     const col = mix(nightCol.mul(nightMask), dayCol, dayAmount).toVar();
 
     // Apply terminator warmth -- reduced for mid LOD where the smooth geometric
@@ -234,6 +228,7 @@ function buildEarthFragmentNode(opts: {
 
     // ── Ocean specular ──
     const viewDir = normalize(cameraPosition.sub(surfacePosW));
+    const viewDotNRaw = dot(viewDir, nGeom);
 
     if (texSpec) {
       const specMask = texture(texSpec, uvCoord).r;
@@ -244,7 +239,7 @@ function buildEarthFragmentNode(opts: {
       col.addAssign(dayAmount.mul(specHighlight.add(specBroad)));
 
       // ── Fresnel ocean reflection + land limb darkening ──
-      const vDotN = clamp(dot(viewDir, nGeom), 0, 1);
+      const vDotN = clamp(viewDotNRaw, 0, 1);
       const oneMinusVdotN = float(1.0).sub(vDotN);
       // Schlick Fresnel: F0 ≈ 0.02 for water
       const fresnel = float(0.02).add(
@@ -269,7 +264,7 @@ function buildEarthFragmentNode(opts: {
     );
     const csf = cloudSunFactor
       .mul(cloudSunFactor)
-      .mul(float(8.0).sub(cloudSunFactor.mul(1.0)));
+      .mul(float(8.0).sub(cloudSunFactor));
 
     // Cloud color: white in full sunlight, warm at the terminator.
     const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
@@ -287,7 +282,7 @@ function buildEarthFragmentNode(opts: {
     col.assign(mix(col, cloudLit, clamp(cloudMask, 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
-    const viewDotN = dot(viewDir, nGeom).max(0.08);
+    const viewDotN = viewDotNRaw.max(0.08);
     const opticalDepth = clamp(float(1.0).div(viewDotN), 1, 12);
     const scatter01 = clamp(opticalDepth.sub(1).div(11), 0, 1);
 
@@ -312,7 +307,7 @@ function buildEarthFragmentNode(opts: {
 // ── Custom billboard fragment (Earth with atmosphere rim glow) ──
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function earthBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.Color; uSpR: any; uSpU: any; uSpF: any }) {
+function earthBillboardFragment({ uSpR, uSpU, uSpF }: { albedo: THREE.Color; uSpR: any; uSpU: any; uSpF: any }) {
   return Fn(() => {
     const p = uv().mul(2).sub(1);
     const dist = length(p);
