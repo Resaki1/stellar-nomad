@@ -15,6 +15,8 @@ import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom } from "@/store/store";
 import { spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { dieAtom, isDeadAtom } from "@/store/death";
+import { cargoAtom } from "@/store/cargo";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -128,6 +130,7 @@ const FieldLayer = memo(function FieldLayer({
   const store = useStore();
   const setShipHealth = useSetAtom(shipHealthAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
+  const triggerDeath = useSetAtom(dieAtom);
 
   const renderCfg = useMemo(() => resolveFieldRender(system, field), [system, field]);
   const streamingCfg = useMemo(
@@ -200,12 +203,17 @@ const FieldLayer = memo(function FieldLayer({
     [fieldRuntime]
   );
 
-  const applyShipCollisionDamage = useCallback(() => {
+  const applyShipCollisionDamage = useCallback((): number => {
     const cfg = store.get(effectiveShipConfigAtom);
     const baseDamage = 10;
     const effectiveDamage = baseDamage * cfg.collisionDamageMult / (cfg.maxHealth / 100);
     const damage = Math.max(1, Math.round(effectiveDamage));
-    setShipHealth((prev) => Math.max(0, prev - damage));
+    let newHealth = 0;
+    setShipHealth((prev) => {
+      newHealth = Math.max(0, prev - damage);
+      return newHealth;
+    });
+    return newHealth;
   }, [setShipHealth, store]);
 
   // ── Worker lifecycle ────────────────────────────────────────────
@@ -471,6 +479,9 @@ const FieldLayer = memo(function FieldLayer({
     if (collisionAccRef.current >= COLLISION_INTERVAL_S) {
       collisionAccRef.current = 0;
 
+      // Skip collisions when ship is destroyed
+      if (store.get(isDeadAtom)) return;
+
       const shipRadiusM = SHIP_COLLIDER_RADIUS_M;
       const shipRadiusKm = shipRadiusM / 1000;
       const chunkSizeKm = streamingCfg.chunkSizeKm;
@@ -556,7 +567,7 @@ const FieldLayer = memo(function FieldLayer({
                     : [0, 1, 0];
 
                 removeAsteroidInstance(instanceId);
-                applyShipCollisionDamage();
+                const newHealth = applyShipCollisionDamage();
 
                 spawnVFX({
                   type: "collision",
@@ -564,6 +575,21 @@ const FieldLayer = memo(function FieldLayer({
                   radiusM: radii[i],
                   impactDirection: impactDir,
                 });
+
+                if (newHealth <= 0) {
+                  // Ship destroyed — spawn large debris at ship position and trigger death
+                  spawnVFX({
+                    type: "collision",
+                    position: [shipLocalX, shipLocalY, shipLocalZ],
+                    radiusM: 120,
+                  });
+                  const cargo = store.get(cargoAtom);
+                  triggerDeath({
+                    positionKm: [ship.x, ship.y, ship.z],
+                    cargoItems: cargo.items,
+                  });
+                  return;
+                }
 
                 logsThisTick++;
                 if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;

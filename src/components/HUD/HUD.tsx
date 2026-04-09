@@ -18,6 +18,7 @@ import Hotbar from "./Hotbar/Hotbar";
 import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
+import DeathScreen from "./DeathScreen/DeathScreen";
 
 import "./HUD.scss";
 
@@ -90,6 +91,7 @@ export default function HUD() {
       <SettingsMenu />
       <ToastDisplay />
       <SpawnFixDialog />
+      <DeathScreen />
       <Hotbar />
 
       {/* Quick-access buttons */}

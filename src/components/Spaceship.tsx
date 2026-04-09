@@ -11,6 +11,7 @@ import { hudInfoAtom, movementAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
+import { isDeadAtom } from "@/store/death";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
@@ -117,8 +118,28 @@ const SpaceShip = memo(() => {
     };
   }, []);
 
+  // Track dead state to show/hide ship mesh
+  const wasDeadRef = useRef(false);
+
   useFrame(({ camera }, delta) => {
     if (!shipRef.current || !modelRef.current) return;
+
+    // ── Death gate: hide ship and freeze everything when dead ──────
+    const dead = store.get(isDeadAtom);
+    if (dead) {
+      if (!wasDeadRef.current) {
+        shipRef.current.visible = false;
+        wasDeadRef.current = true;
+      }
+      return;
+    }
+    if (wasDeadRef.current) {
+      // Just respawned — re-show ship, kill residual shake
+      shipRef.current.visible = true;
+      shakeIntensity.current = 0;
+      store.set(cameraShakeIntensityAtom, 0);
+      wasDeadRef.current = false;
+    }
 
     // Read input imperatively (zero subscriptions → zero re-renders).
     const movement = store.get(movementAtom);

@@ -8,6 +8,7 @@ import { useAtomValue } from "jotai";
 import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import { wrecksAtom } from "@/store/death";
 
 // Reusable temp vectors — zero allocation in the hot path.
 const _pos = new THREE.Vector3();
@@ -25,8 +26,11 @@ const CELESTIAL_BODY_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 500_000 };
  * Derives POI definitions from the active system config.
  * Sources: celestial bodies (planets, moons) + asteroid fields.
  */
+const WRECK_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 100_000 };
+
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
+  const wrecks = useAtomValue(wrecksAtom);
   return useMemo(() => {
     const pois: POIDef[] = [];
 
@@ -54,8 +58,20 @@ function usePOIDefs(): POIDef[] {
         maxDistanceKm: field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
       });
     }
+
+    // Wrecks (death sites with recoverable cargo)
+    for (const wreck of wrecks) {
+      pois.push({
+        id: `wreck:${wreck.id}`,
+        name: "Wreck",
+        positionKm: wreck.positionKm,
+        minDistanceKm: WRECK_DEFAULTS.minDistanceKm,
+        maxDistanceKm: WRECK_DEFAULTS.maxDistanceKm,
+      });
+    }
+
     return pois;
-  }, [system]);
+  }, [system, wrecks]);
 }
 
 /**

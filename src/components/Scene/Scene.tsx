@@ -32,6 +32,8 @@ import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 import ResearchTicker from "../Research/ResearchTicker";
 import POIProjector from "../POI/POIProjector";
+import WreckCollector from "../WreckCollector";
+import CelestialCollider from "../CelestialCollider";
 
 /** Renders children only after the WebGPU renderer has finished async init(). */
 function WebGPUGate({ children }: { children: ReactNode }) {
@@ -97,6 +99,8 @@ const Scene = () => {
         <AsteroidVFX />
         <ResearchTicker />
         <POIProjector />
+        <WreckCollector />
+        <CelestialCollider />
       </>
     ),
     [],

@@ -20,4 +20,12 @@
   grid-template-rows: 1.2rem 1.2rem;
   align-content: center;
   font-size: 0.8rem;
+
+  &__health--warning {
+    color: rgb(255, 180, 50);
+  }
+
+  &__health--critical {
+    color: rgb(255, 60, 60);
+  }
 }
