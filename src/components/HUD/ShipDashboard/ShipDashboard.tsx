@@ -2,6 +2,7 @@ import "./ShipDashboard.scss";
 import { useAtomValue } from "jotai";
 import { hudInfoAtom, movementAtom, shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { formatSpeed } from "@/sim/units";
 
 const ShipDashboard = () => {
   const movement = useAtomValue(movementAtom);
@@ -22,7 +23,7 @@ const ShipDashboard = () => {
       <span>target:</span>
       <span>{Math.round(movement.speed * 100)}%</span>
       <span>speed:</span>
-      <span>{Math.round(hudInfo.speed)} m/s</span>
+      <span>{formatSpeed(hudInfo.speed)}</span>
       <span>health:</span>
       <span className={healthClass}>{Math.round(healthPct * 100)}%</span>
     </div>

@@ -19,7 +19,8 @@ import {
 import { useDetectGPU } from "@react-three/drei";
 import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
 import { clearShipState, loadShipState } from "@/sim/shipPersistence";
-import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
+import { devTeleportAtom, devMaxSpeedOverrideAtom, devSpeedUnitAtom } from "@/store/dev";
+import { type SpeedUnit, SPEED_UNIT_TO_MPS } from "@/sim/units";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -155,8 +156,11 @@ function DevControls({
   const [posX, setPosX] = useState("");
   const [posY, setPosY] = useState("");
   const [posZ, setPosZ] = useState("");
+  const [speedUnit, setSpeedUnit] = useAtom(devSpeedUnitAtom);
   const [speedVal, setSpeedVal] = useState(
-    currentMaxSpeedOverride !== null ? String(currentMaxSpeedOverride) : ""
+    currentMaxSpeedOverride !== null
+      ? String(currentMaxSpeedOverride / SPEED_UNIT_TO_MPS[speedUnit])
+      : ""
   );
 
   const handleLoadCurrent = () => {
@@ -176,6 +180,15 @@ function DevControls({
     onTeleport(x, y, z);
   };
 
+  const handleUnitChange = (newUnit: SpeedUnit) => {
+    const v = parseFloat(speedVal);
+    if (Number.isFinite(v) && v > 0) {
+      const mps = v * SPEED_UNIT_TO_MPS[speedUnit];
+      setSpeedVal(String(mps / SPEED_UNIT_TO_MPS[newUnit]));
+    }
+    setSpeedUnit(newUnit);
+  };
+
   const handleSpeedApply = () => {
     const v = parseFloat(speedVal);
     if (!speedVal.trim()) {
@@ -183,7 +196,7 @@ function DevControls({
       return;
     }
     if (!Number.isFinite(v) || v <= 0) return;
-    onSetMaxSpeed(v);
+    onSetMaxSpeed(v * SPEED_UNIT_TO_MPS[speedUnit]);
   };
 
   return (
@@ -229,15 +242,24 @@ function DevControls({
         </div>
       </div>
       <div className="dev-controls__section">
-        <div className="dev-controls__label">max speed (m/s) — default: 400</div>
+        <div className="dev-controls__label">max speed — default: 400 m/s</div>
         <div className="dev-controls__row">
           <input
             className="dev-controls__input dev-controls__input--wide"
             type="number"
-            placeholder="400"
+            placeholder={String(400 / SPEED_UNIT_TO_MPS[speedUnit])}
             value={speedVal}
             onChange={(e) => setSpeedVal(e.target.value)}
           />
+          <select
+            className="dev-controls__select"
+            value={speedUnit}
+            onChange={(e) => handleUnitChange(e.target.value as SpeedUnit)}
+          >
+            <option value="m/s">m/s</option>
+            <option value="km/s">km/s</option>
+            <option value="AU/s">AU/s</option>
+          </select>
           <button
             className="settings__menu-button settings__menu-button--subtle"
             onClick={handleSpeedApply}

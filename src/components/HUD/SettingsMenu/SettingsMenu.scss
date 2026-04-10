@@ -164,3 +164,19 @@ button {
     width: 120px;
   }
 }
+
+.dev-controls__select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(200, 200, 200, 0.3);
+  background: rgba(0, 0, 0, 0.3);
+  color: rgb(240, 240, 240);
+  font-size: 0.85rem;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+
+  &:focus {
+    border-color: rgba(200, 200, 200, 0.6);
+  }
+}

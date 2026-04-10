@@ -2,6 +2,7 @@
 
 import { useRef, useEffect } from "react";
 import { poiBuffer } from "@/store/poi";
+import { formatDistance } from "@/sim/units";
 
 import "./POIMarkers.scss";
 
@@ -177,7 +178,3 @@ function createArrowElement(id: string): HTMLDivElement {
   return el;
 }
 
-function formatDistance(km: number): string {
-  if (km < 1) return `${Math.round(km * 1000)}m`;
-  return `${Math.round(km)}km`;
-}

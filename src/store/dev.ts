@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import type { SpeedUnit } from "@/sim/units";
 
 /**
  * Dev-only overrides consumed by the Spaceship component.
@@ -17,3 +18,6 @@ export const devTeleportAtom = atom<[number, number, number] | null>(null);
  * null = use default (400 m/s).
  */
 export const devMaxSpeedOverrideAtom = atom<number | null>(null);
+
+/** Unit selected in the dev speed-override input. */
+export const devSpeedUnitAtom = atom<SpeedUnit>("m/s");
