@@ -247,11 +247,16 @@ const FieldLayer = memo(function FieldLayer({
         const chunk = msg.chunk;
         fieldRuntime.upsertChunk(chunk);
 
+        // Use the runtime's filtered chunk (destroyed instances removed)
+        // instead of the raw worker chunk.
+        const filtered = fieldRuntime.getChunk(chunk.key);
+        if (!filtered) return;
+
         // Immediately allocate GPU slots so both compute shaders see it next frame.
-        for (const modelId in chunk.instancesByModel) {
+        for (const modelId in filtered.instancesByModel) {
           const alloc = allocatorsRef.current.get(modelId);
           if (alloc) {
-            alloc.allocateChunk(chunk.key, chunk.originKm, chunk.instancesByModel[modelId]);
+            alloc.allocateChunk(filtered.key, filtered.originKm, filtered.instancesByModel[modelId]);
           }
         }
         return;
