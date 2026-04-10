@@ -24,7 +24,7 @@ const ShipDashboard = () => {
       <span>speed:</span>
       <span>{Math.round(hudInfo.speed)} m/s</span>
       <span>health:</span>
-      <span className={healthClass}>{Math.round(shipHealth)}%</span>
+      <span className={healthClass}>{Math.round(healthPct * 100)}%</span>
     </div>
   );
 };

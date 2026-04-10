@@ -227,8 +227,10 @@ const SpaceShip = memo(() => {
 
       // Velocity — max speed scaled by module modifier (with optional dev override)
       const devSpeed = store.get(devMaxSpeedOverrideAtom);
-      const maxSpeedKmps = devSpeed !== null ? devSpeed / 1000 : SHIP_MAX_SPEED_KMPS;
-      _vel.copy(_fwd).multiplyScalar(maxSpeedKmps * cfg.speedMult * speed.current * FIXED_DT);
+      const maxSpeedKmps = devSpeed !== null
+        ? devSpeed / 1000                       // dev override is absolute — skip speedMult
+        : SHIP_MAX_SPEED_KMPS * cfg.speedMult;  // normal: base * module multiplier
+      _vel.copy(_fwd).multiplyScalar(maxSpeedKmps * speed.current * FIXED_DT);
 
       posKm.current.add(_vel);
       physicsAcc.current -= FIXED_DT;
@@ -323,8 +325,10 @@ const SpaceShip = memo(() => {
     // Must include cfg.speedMult so the HUD reflects module-boosted top speed.
     const hudCfg = store.get(effectiveShipConfigAtom);
     const hudDevSpeed = store.get(devMaxSpeedOverrideAtom);
-    const hudMaxSpeedKmps = hudDevSpeed !== null ? hudDevSpeed / 1000 : SHIP_MAX_SPEED_KMPS;
-    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * hudCfg.speedMult * 1000 });
+    const hudMaxSpeedKmps = hudDevSpeed !== null
+      ? hudDevSpeed / 1000
+      : SHIP_MAX_SPEED_KMPS * hudCfg.speedMult;
+    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * 1000 });
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;

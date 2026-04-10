@@ -79,7 +79,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - Deep, engaging gameplay loop with meaningful progression and player choice.
 - UX is key: intuitive controls, clear feedback, and a polished presentation that draws players in.
 - Photorealistic triple-A visuals.
-- Solid performance by optimizing rendering, simulation, and data streaming.
+- Solid performance by cleverly optimizing rendering, simulation, and data streaming.
 - Clean, modular, maintainable code with strong TypeScript types.
 - Push modern web tech, but keep debuggability and stability.
 
@@ -136,7 +136,7 @@ Rules of thumb:
 
 ### Performance-first defaults
 - Follow existing patterns for performance.
-- Use optimization techniques just like top-tier game engines.
+- Use modern optimization techniques just like top-tier game engines.
 - Avoid allocations in hot paths:
   - Don’t create new `Vector3/Quaternion/Color` each frame.
   - Reuse objects; allocate once and mutate.
