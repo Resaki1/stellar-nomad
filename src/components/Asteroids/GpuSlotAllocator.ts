@@ -40,6 +40,11 @@ export class GpuSlotAllocator {
   /** Map from chunkKey → array of slot indices used by that chunk. */
   private chunkSlots = new Map<string, number[]>();
 
+  /** Dirty slot range accumulated between flushes. */
+  private _dirtyMin = Infinity;
+  private _dirtyMax = -1;
+  private _needsFullUpload = false;
+
   constructor(maxSlots: number) {
     this.maxSlots = maxSlots;
 
@@ -80,6 +85,9 @@ export class GpuSlotAllocator {
     const radii = instances.radiiM;
     const d = this.data;
 
+    let minSlot = Infinity;
+    let maxSlot = -1;
+
     for (let i = 0; i < count; i++) {
       let slot: number;
       if (this.freeSlots.length > 0) {
@@ -88,6 +96,9 @@ export class GpuSlotAllocator {
         slot = this.highWaterMark++;
       }
       slots[i] = slot;
+
+      if (slot < minSlot) minSlot = slot;
+      if (slot > maxSlot) maxSlot = slot;
 
       const off = slot * FLOATS_PER_SLOT;
       const pi = i * 3;
@@ -107,7 +118,8 @@ export class GpuSlotAllocator {
     }
 
     this.chunkSlots.set(chunkKey, slots);
-    this.inputAttr.needsUpdate = true;
+    if (minSlot < this._dirtyMin) this._dirtyMin = minSlot;
+    if (maxSlot > this._dirtyMax) this._dirtyMax = maxSlot;
     return true;
   }
 
@@ -119,13 +131,20 @@ export class GpuSlotAllocator {
     if (!slots) return;
 
     const d = this.data;
+    let minSlot = Infinity;
+    let maxSlot = -1;
+
     for (let i = 0; i < slots.length; i++) {
-      d[slots[i] * FLOATS_PER_SLOT + 3] = 0;
-      this.freeSlots.push(slots[i]);
+      const slot = slots[i];
+      d[slot * FLOATS_PER_SLOT + 3] = 0;
+      this.freeSlots.push(slot);
+      if (slot < minSlot) minSlot = slot;
+      if (slot > maxSlot) maxSlot = slot;
     }
 
     this.chunkSlots.delete(chunkKey);
-    this.inputAttr.needsUpdate = true;
+    if (minSlot < this._dirtyMin) this._dirtyMin = minSlot;
+    if (maxSlot > this._dirtyMax) this._dirtyMax = maxSlot;
   }
 
   /**
@@ -136,7 +155,34 @@ export class GpuSlotAllocator {
     this.freeSlots.length = 0;
     this.chunkSlots.clear();
     this.highWaterMark = 0;
+    this._dirtyMin = Infinity;
+    this._dirtyMax = -1;
+    this._needsFullUpload = true;
+  }
+
+  /**
+   * Flush pending CPU writes to the GPU buffer. Call once per frame
+   * before compute dispatch. Coalesces all dirty slots into a single
+   * partial writeBuffer (or a full upload after clear()).
+   */
+  flushToGpu(): void {
+    if (this._needsFullUpload) {
+      this.inputAttr.clearUpdateRanges();
+      this.inputAttr.needsUpdate = true;
+      this._needsFullUpload = false;
+      this._dirtyMin = Infinity;
+      this._dirtyMax = -1;
+      return;
+    }
+    if (this._dirtyMax < 0) return;
+
+    this.inputAttr.clearUpdateRanges();
+    const minOff = this._dirtyMin * FLOATS_PER_SLOT;
+    const maxOff = (this._dirtyMax + 1) * FLOATS_PER_SLOT;
+    this.inputAttr.addUpdateRange(minOff, maxOff - minOff);
     this.inputAttr.needsUpdate = true;
+    this._dirtyMin = Infinity;
+    this._dirtyMax = -1;
   }
 
   /** Check if a chunk is already allocated. */

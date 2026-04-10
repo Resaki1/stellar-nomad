@@ -98,6 +98,7 @@ const MidModelBatch = memo(function MidModelBatch({
       return;
     }
     mesh.visible = true;
+    allocator.flushToGpu();
 
     const camWorld = state.camera.matrixWorld.elements;
     const mw = mesh.matrixWorld.elements;

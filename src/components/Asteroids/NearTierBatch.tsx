@@ -103,6 +103,7 @@ const ModelBatch = memo(function ModelBatch({
       return;
     }
     mesh.visible = true;
+    allocator.flushToGpu();
 
     // Update per-frame uniforms.
     const camWorld = state.camera.matrixWorld.elements;

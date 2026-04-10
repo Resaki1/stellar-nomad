@@ -189,6 +189,7 @@ const FarModelBatch = memo(function FarModelBatch({
       return;
     }
     mesh.visible = true;
+    allocator.flushToGpu();
 
     // Per-frame uniforms.
     const camWorld = state.camera.matrixWorld.elements;
