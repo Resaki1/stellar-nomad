@@ -10,10 +10,28 @@ import type { CommsMessage } from "@/data/commsMessages";
 // Survives page reloads so the player never sees the same message twice.
 // ---------------------------------------------------------------------------
 
+const PLAYED_STORAGE_KEY = "comms-played-v1";
+
 export const playedMessageIdsAtom = atomWithStorage<string[]>(
-  "comms-played-v1",
+  PLAYED_STORAGE_KEY,
   [],
 );
+
+/**
+ * Read played IDs directly from localStorage. This avoids the race where
+ * atomWithStorage hasn't hydrated yet (returns default []) but localStorage
+ * already has the persisted list.
+ */
+function readPlayedIdsFromStorage(): string[] {
+  try {
+    const raw = localStorage.getItem(PLAYED_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch { /* ignore */ }
+  return [];
+}
 
 // ---------------------------------------------------------------------------
 // Live queue — ordered by priority (highest first), then insertion order.
@@ -40,8 +58,10 @@ export const activeCommsMessageAtom = atom<CommsMessage | null>((get) => {
 export const enqueueCommsAtom = atom(
   null,
   (get, set, message: CommsMessage): void => {
+    // Check both the atom (may not be hydrated yet) and localStorage directly
     const played = get(playedMessageIdsAtom);
-    if (played.includes(message.messageId)) return;
+    const stored = readPlayedIdsFromStorage();
+    if (played.includes(message.messageId) || stored.includes(message.messageId)) return;
 
     const queue = get(commsQueueAtom);
     if (queue.some((m) => m.messageId === message.messageId)) return;
@@ -68,11 +88,15 @@ export const dismissCommsAtom = atom(null, (get, set): void => {
 
   const dismissed = queue[0];
 
-  // Persist as played
-  const played = get(playedMessageIdsAtom);
-  if (!played.includes(dismissed.messageId)) {
-    set(playedMessageIdsAtom, [...played, dismissed.messageId]);
+  // Merge atom + localStorage to avoid overwriting during hydration race
+  const fromAtom = get(playedMessageIdsAtom);
+  const fromStorage = readPlayedIdsFromStorage();
+  const merged = Array.from(new Set([...fromAtom, ...fromStorage]));
+
+  if (!merged.includes(dismissed.messageId)) {
+    merged.push(dismissed.messageId);
   }
+  set(playedMessageIdsAtom, merged);
 
   // Remove from queue
   set(commsQueueAtom, queue.slice(1));
