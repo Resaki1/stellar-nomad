@@ -1,0 +1,167 @@
+.comms-overlay {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 700;
+  pointer-events: auto;
+  width: min(560px, calc(100vw - 48px));
+  animation: commsSlideUp 0.35s ease-out;
+}
+
+.comms-overlay__panel {
+  background: rgba(8, 12, 24, 0.92);
+  border: 1px solid rgba(80, 160, 255, 0.3);
+  border-radius: 10px;
+  backdrop-filter: blur(14px);
+  padding: 16px 20px 12px;
+}
+
+// ── Body (avatar + content side-by-side) ─────────────────────────────
+
+.comms-overlay__body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+// ── Avatar ───────────────────────────────────────────────────────────
+
+.comms-overlay__avatar {
+  flex-shrink: 0;
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(80, 160, 255, 0.25);
+  background: rgba(20, 28, 50, 0.7);
+  align-self: center;
+}
+
+.comms-overlay__avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.comms-overlay__avatar-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 28px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.3);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+// ── Content (right column) ───────────────────────────────────────────
+
+.comms-overlay__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+// ── Speaker ──────────────────────────────────────────────────────────
+
+.comms-overlay__speaker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(100, 180, 255, 0.95);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.comms-overlay__signal {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(80, 200, 120, 0.9);
+  box-shadow: 0 0 6px rgba(80, 200, 120, 0.6);
+  animation: commsPulse 1.8s ease-in-out infinite;
+}
+
+// ── Text ─────────────────────────────────────────────────────────────
+
+.comms-overlay__text {
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+// ── Footer ───────────────────────────────────────────────────────────
+
+.comms-overlay__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.comms-overlay__page-indicator {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.comms-overlay__continue {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(80, 160, 255, 0.35);
+  background: rgba(80, 160, 255, 0.1);
+  color: rgba(160, 210, 255, 0.95);
+  cursor: pointer;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:hover {
+    background: rgba(80, 160, 255, 0.22);
+    border-color: rgba(80, 160, 255, 0.55);
+  }
+
+  &:active {
+    background: rgba(80, 160, 255, 0.3);
+  }
+}
+
+.comms-overlay__key-hint {
+  font-size: 10px;
+  opacity: 0.5;
+  font-weight: 400;
+}
+
+// ── Animations ───────────────────────────────────────────────────────
+
+@keyframes commsSlideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes commsPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}

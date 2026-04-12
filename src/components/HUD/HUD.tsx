@@ -19,6 +19,8 @@ import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 import DeathScreen from "./DeathScreen/DeathScreen";
+import CommsOverlay from "./CommsOverlay/CommsOverlay";
+import { CommsWelcomeTrigger } from "./CommsOverlay/CommsWelcomeTrigger";
 
 import "./HUD.scss";
 
@@ -90,6 +92,8 @@ export default function HUD() {
       <AssaySamplesHUD />
       <SettingsMenu />
       <ToastDisplay />
+      <CommsOverlay />
+      <CommsWelcomeTrigger />
       <SpawnFixDialog />
       <DeathScreen />
       <Hotbar />
