@@ -232,6 +232,69 @@ Edit generated files or node_modules
 
 Introduce new major frameworks (ECS, physics engines, state stores) without request
 
+## Comms System (in-game messages)
+
+Event-driven message overlay for tutorials, story beats, and reactive dialogue. Messages require manual dismissal (no auto-timeout).
+
+### File layout
+
+| File | Purpose |
+|------|---------|
+| `src/data/commsMessages.ts` | `CommsMessage` interface + `COMMS_MESSAGES` catalogue |
+| `src/store/comms.ts` | Jotai atoms: priority queue, played-registry persistence, enqueue/dismiss |
+| `src/components/HUD/CommsOverlay/CommsOverlay.tsx` | UI overlay (HTML over canvas) |
+| `src/components/HUD/CommsOverlay/CommsWelcomeTrigger.tsx` | Fires welcome message on mount |
+| `src/components/Comms/CommsTriggers.tsx` | Trigger helpers: `useCommsTrigger`, `SpatialCommsTrigger`, `CommsStatWatcher` |
+
+### Adding a new message
+
+1. Add an entry to `COMMS_MESSAGES` in `src/data/commsMessages.ts`:
+```ts
+new_message_id: {
+  messageId: "new_message_id",
+  speaker: "Speaker Name",
+  avatar: "/assets/avatars/speaker.jpeg", // optional — shows "?" if omitted
+  textContent: [
+    "First page of dialogue.",
+    "Second page shown after player clicks Continue.",
+  ],
+  priority: 2, // higher = jumps queue (1=low, 2=medium, 3=high)
+},
+```
+
+2. Trigger it using one of three methods:
+
+**Action trigger** — call from any component when a game event fires:
+```ts
+import { useCommsTrigger } from "@/components/Comms/CommsTriggers";
+const triggerComms = useCommsTrigger();
+// later, in a callback:
+triggerComms("new_message_id");
+```
+
+**Spatial trigger** — R3F component, fires when player enters a sphere (must be inside Canvas):
+```tsx
+import { SpatialCommsTrigger } from "@/components/Comms/CommsTriggers";
+<SpatialCommsTrigger messageId="new_message_id" positionKm={[100, 0, 50]} radiusKm={5} />
+```
+
+**Stat trigger** — React component, fires when a condition becomes true:
+```tsx
+import { CommsStatWatcher } from "@/components/Comms/CommsTriggers";
+const health = useAtomValue(shipHealthAtom);
+<CommsStatWatcher messageId="low_health_001" value={health} condition={(h) => h < 20} />
+```
+
+### Key behaviours
+- Messages are **manually dismissed** (Enter key or click). Never auto-timeout.
+- `textContent` is an array of strings — each string is one page.
+- Played message IDs persist in localStorage (`comms-played-v1`). Messages only play once per save.
+- `dismissCommsAtom` merges atom + localStorage to avoid hydration race with `atomWithStorage`.
+- `resetCommsPlayedAtom` clears the registry (for "new game" flows).
+- Priority queue: higher-priority messages inserted ahead of lower ones; equal priority preserves insertion order.
+
+---
+
 ## Communication style
 
 Be concise and actionable. Sacrifice grammar for clarity if needed.
