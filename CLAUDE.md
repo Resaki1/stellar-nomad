@@ -241,10 +241,10 @@ Event-driven message overlay for tutorials, story beats, and reactive dialogue. 
 | File | Purpose |
 |------|---------|
 | `src/data/commsMessages.ts` | `CommsMessage` interface + `COMMS_MESSAGES` catalogue |
-| `src/store/comms.ts` | Jotai atoms: priority queue, played-registry persistence, enqueue/dismiss |
+| `src/store/comms.ts` | Jotai atoms: priority queue, played-registry persistence, enqueue/dismiss, delay handling |
 | `src/components/HUD/CommsOverlay/CommsOverlay.tsx` | UI overlay (HTML over canvas) |
-| `src/components/HUD/CommsOverlay/CommsWelcomeTrigger.tsx` | Fires welcome message on mount |
-| `src/components/Comms/CommsTriggers.tsx` | Trigger helpers: `useCommsTrigger`, `SpatialCommsTrigger`, `CommsStatWatcher` |
+| `src/components/Comms/GameCommsTriggers.tsx` | **Centralized** trigger component — ALL comms triggers live here |
+| `src/components/Comms/CommsTriggers.tsx` | Reusable trigger helpers: `useCommsTrigger`, `SpatialCommsTrigger`, `CommsStatWatcher` |
 
 ### Adding a new message
 
@@ -259,6 +259,7 @@ new_message_id: {
     "Second page shown after player clicks Continue.",
   ],
   priority: 2, // higher = jumps queue (1=low, 2=medium, 3=high)
+  delaySec: 5, // optional — wait N seconds after trigger before entering queue
 },
 ```
 
@@ -288,10 +289,12 @@ const health = useAtomValue(shipHealthAtom);
 ### Key behaviours
 - Messages are **manually dismissed** (Enter key or click). Never auto-timeout.
 - `textContent` is an array of strings — each string is one page.
+- `delaySec` is optional: if set, the message waits N seconds after the trigger fires before entering the queue. Tracked in a `pendingDelayedIds` set to prevent double-scheduling.
 - Played message IDs persist in localStorage (`comms-played-v1`). Messages only play once per save.
 - `dismissCommsAtom` merges atom + localStorage to avoid hydration race with `atomWithStorage`.
 - `resetCommsPlayedAtom` clears the registry (for "new game" flows).
 - Priority queue: higher-priority messages inserted ahead of lower ones; equal priority preserves insertion order.
+- **All triggers live in `GameCommsTriggers.tsx`.** Do not enqueue messages directly from gameplay components. Instead, use signal atoms (e.g., `asteroidMinedSignalAtom`, `itemCraftedSignalAtom`) or watch existing state atoms from GameCommsTriggers.
 
 ---
 

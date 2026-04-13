@@ -20,8 +20,8 @@ import POIMarkers from "./POIMarkers/POIMarkers";
 import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
-import { CommsWelcomeTrigger } from "./CommsOverlay/CommsWelcomeTrigger";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
+import GameCommsTriggers from "../Comms/GameCommsTriggers";
 
 import "./HUD.scss";
 
@@ -95,7 +95,7 @@ export default function HUD() {
       <ToastDisplay />
       <AINameOverlay />
       <CommsOverlay />
-      <CommsWelcomeTrigger />
+      <GameCommsTriggers />
       <SpawnFixDialog />
       <DeathScreen />
       <Hotbar />

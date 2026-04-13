@@ -170,6 +170,13 @@ export const useConsumableAtom = atom(
 // Actions: hotbar management
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Craft-completed signal — incremented by CraftingPanel each time an item
+// is crafted. GameCommsTriggers watches this to fire comms messages.
+// ---------------------------------------------------------------------------
+
+export const itemCraftedSignalAtom = atom(0);
+
 export const setHotbarSlotAtom = atom(
   null,
   (get, set, update: { index: number; itemId: string | null }): void => {

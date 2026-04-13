@@ -50,15 +50,16 @@ export const activeCommsMessageAtom = atom<CommsMessage | null>((get) => {
 // Actions
 // ---------------------------------------------------------------------------
 
+/** Message IDs currently waiting out their delaySec before entering the queue. */
+const pendingDelayedIds = new Set<string>();
+
 /**
- * Enqueue a message. Skips if the messageId is already in the played registry
- * or already in the queue. Inserts sorted by descending priority (stable for
- * equal priorities — new messages go after existing ones with the same level).
+ * Internal: insert a message into the priority queue immediately.
+ * Skips if already played or already queued.
  */
-export const enqueueCommsAtom = atom(
+const insertIntoQueueAtom = atom(
   null,
   (get, set, message: CommsMessage): void => {
-    // Check both the atom (may not be hydrated yet) and localStorage directly
     const played = get(playedMessageIdsAtom);
     const stored = readPlayedIdsFromStorage();
     if (played.includes(message.messageId) || stored.includes(message.messageId)) return;
@@ -75,6 +76,38 @@ export const enqueueCommsAtom = atom(
     const next = [...queue];
     next.splice(idx, 0, message);
     set(commsQueueAtom, next);
+  },
+);
+
+/**
+ * Enqueue a message. Skips if the messageId is already in the played registry,
+ * already in the queue, or already waiting out a delay.
+ *
+ * If the message defines `delaySec`, the actual queue insertion is deferred by
+ * that many seconds after the trigger fires.
+ */
+export const enqueueCommsAtom = atom(
+  null,
+  (get, set, message: CommsMessage): void => {
+    // Check both the atom (may not be hydrated yet) and localStorage directly
+    const played = get(playedMessageIdsAtom);
+    const stored = readPlayedIdsFromStorage();
+    if (played.includes(message.messageId) || stored.includes(message.messageId)) return;
+
+    const queue = get(commsQueueAtom);
+    if (queue.some((m) => m.messageId === message.messageId)) return;
+    if (pendingDelayedIds.has(message.messageId)) return;
+
+    if (message.delaySec != null && message.delaySec > 0) {
+      pendingDelayedIds.add(message.messageId);
+      setTimeout(() => {
+        pendingDelayedIds.delete(message.messageId);
+        set(insertIntoQueueAtom, message);
+      }, message.delaySec * 1000);
+      return;
+    }
+
+    set(insertIntoQueueAtom, message);
   },
 );
 

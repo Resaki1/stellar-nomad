@@ -107,3 +107,10 @@ export const heatSinkBuffer: {
   pendingMultiplier: number | null;
   pendingAdd: number | null;
 } = { pendingMultiplier: null, pendingAdd: null };
+
+// ---------------------------------------------------------------------------
+// Mining-completed signal — incremented by MiningSystem each time an asteroid
+// is fully mined. GameCommsTriggers watches this to fire comms messages.
+// ---------------------------------------------------------------------------
+
+export const asteroidMinedSignalAtom = atom(0);

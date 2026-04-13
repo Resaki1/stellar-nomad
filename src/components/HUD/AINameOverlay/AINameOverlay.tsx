@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
-import { activeCommsMessageAtom } from "@/store/comms";
+import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
 
 import "./AINameOverlay.scss";
 
@@ -18,6 +18,7 @@ export default function AINameOverlay() {
   const aiName = useAtomValue(aiNameAtom);
   const setAiName = useSetAtom(aiNameAtom);
   const activeMessage = useAtomValue(activeCommsMessageAtom);
+  const playedIds = useAtomValue(playedMessageIdsAtom);
 
   // Read localStorage directly on mount to avoid hydration flash
   const [isNamed, setIsNamed] = useState(() => readAiNameFromStorage() !== null);
@@ -29,8 +30,10 @@ export default function AINameOverlay() {
     if (aiName) setIsNamed(true);
   }, [aiName]);
 
-  // Auto-focus the input when the panel becomes visible
-  const visible = !isNamed && !activeMessage;
+  // Only show once the greeting has been dismissed (prevents flash on first boot
+  // where the greeting hasn't been enqueued yet and activeMessage is still null)
+  const greetingPlayed = playedIds.includes("ai_greeting_001");
+  const visible = !isNamed && !activeMessage && greetingPlayed;
   useEffect(() => {
     if (visible) inputRef.current?.focus();
   }, [visible]);

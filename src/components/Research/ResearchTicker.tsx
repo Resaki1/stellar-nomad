@@ -8,7 +8,7 @@
 
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
-import { useRef, useCallback } from "react";
+import { useRef } from "react";
 
 import { researchAtom, researchElapsedAtom, tickResearchAtom } from "@/store/research";
 import { settingsIsOpenAtom } from "@/store/store";

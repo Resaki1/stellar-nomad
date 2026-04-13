@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { unlockedItemIdsAtom } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
 import { removeCargoAtom } from "@/store/cargo";
-import { addCraftedItemAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
+import { addCraftedItemAtom, itemCraftedSignalAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
 import { addToastAtom } from "@/store/toast";
 import { systemConfigAtom } from "@/store/system";
 import { getResourceTypes } from "@/sim/asteroids/resources";
@@ -30,6 +30,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   const removeCargo = useSetAtom(removeCargoAtom);
   const addCraftedItem = useSetAtom(addCraftedItemAtom);
   const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
+  const incrementCraftSignal = useSetAtom(itemCraftedSignalAtom);
   const addToast = useSetAtom(addToastAtom);
 
   const [slotFilter, setSlotFilter] = useState<ItemSlot | "all">("all");
@@ -112,6 +113,9 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
         }
       }
     }
+
+    // Signal that crafting completed (GameCommsTriggers watches this)
+    incrementCraftSignal((c) => c + 1);
 
     addToast({
       message: `Crafted: ${item.name}`,

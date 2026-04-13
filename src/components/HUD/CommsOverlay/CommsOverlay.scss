@@ -3,7 +3,7 @@
   bottom: 48px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 700;
+  z-index: 99;
   pointer-events: auto;
   width: min(560px, calc(100vw - 48px));
   animation: commsSlideUp 0.35s ease-out;

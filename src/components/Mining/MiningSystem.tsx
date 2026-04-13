@@ -10,6 +10,7 @@ import {
   miningStateAtom,
   pingWorldBuffer,
   heatSinkBuffer,
+  asteroidMinedSignalAtom,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
 } from "@/store/mining";
@@ -25,8 +26,6 @@ import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addAssaySamplesAtom } from "@/store/research";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
-import { enqueueCommsAtom } from "@/store/comms";
-import { COMMS_MESSAGES } from "@/data/commsMessages";
 
 // --------------------
 // Gameplay / tuning
@@ -666,7 +665,7 @@ const MiningSystem = () => {
   const addAssaySamples = useSetAtom(addAssaySamplesAtom);
   const addToast = useSetAtom(addToastAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
-  const enqueueComms = useSetAtom(enqueueCommsAtom);
+  const incrementMinedSignal = useSetAtom(asteroidMinedSignalAtom);
 
   // Ping Array: modules state for flags
   const modifiers = useAtomValue(computedModifiersAtom);
@@ -1340,9 +1339,8 @@ const MiningSystem = () => {
           loot: lootEntries,
         });
 
-        // Comms: first-mine tutorial message
-        const miningMsg = COMMS_MESSAGES.mining_001;
-        if (miningMsg) enqueueComms(miningMsg);
+        // Signal that mining completed (GameCommsTriggers watches this)
+        incrementMinedSignal((c) => c + 1);
       }
 
       removeAsteroid(removeId);
