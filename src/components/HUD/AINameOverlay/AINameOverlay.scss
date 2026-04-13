@@ -1,0 +1,115 @@
+// Bottom-center panel that matches the comms overlay position and style.
+// Appears after the AI greeting is dismissed, asking for a designation.
+
+.ai-name-overlay {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 700;
+  pointer-events: auto;
+  width: min(560px, calc(100vw - 48px));
+  animation: aiNameSlideUp 0.35s ease-out;
+}
+
+.ai-name-overlay__panel {
+  background: rgba(8, 12, 24, 0.92);
+  border: 1px solid rgba(80, 160, 255, 0.3);
+  border-radius: 10px;
+  backdrop-filter: blur(14px);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+// ── Label ───────────────────────────────────────────────────────────
+
+.ai-name-overlay__label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(100, 180, 255, 0.95);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+// ── Input row ───────────────────────────────────────────────────────
+
+.ai-name-overlay__row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.ai-name-overlay__input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(12, 18, 36, 0.9);
+  border: 1px solid rgba(80, 160, 255, 0.35);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+
+  &::placeholder {
+    color: rgba(255, 255, 255, 0.25);
+  }
+
+  &:focus {
+    border-color: rgba(80, 160, 255, 0.6);
+    box-shadow: 0 0 12px rgba(80, 160, 255, 0.15);
+  }
+}
+
+// ── Confirm button ──────────────────────────────────────────────────
+
+.ai-name-overlay__confirm {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(80, 160, 255, 0.35);
+  background: rgba(80, 160, 255, 0.1);
+  color: rgba(160, 210, 255, 0.95);
+  cursor: pointer;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:hover:not(:disabled) {
+    background: rgba(80, 160, 255, 0.22);
+    border-color: rgba(80, 160, 255, 0.55);
+  }
+
+  &:active:not(:disabled) {
+    background: rgba(80, 160, 255, 0.3);
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+}
+
+.ai-name-overlay__key-hint {
+  font-size: 10px;
+  opacity: 0.5;
+  font-weight: 400;
+}
+
+// ── Animation ───────────────────────────────────────────────────────
+
+@keyframes aiNameSlideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}

@@ -3,12 +3,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { activeCommsMessageAtom, dismissCommsAtom } from "@/store/comms";
+import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
 
 import "./CommsOverlay.scss";
+
+/** Replace `{{AI_NAME}}` with the player-chosen AI name. */
+function resolveAiName(text: string, name: string | null): string {
+  if (!name) return text;
+  return text.replaceAll("{{AI_NAME}}", name);
+}
 
 export default function CommsOverlay() {
   const message = useAtomValue(activeCommsMessageAtom);
   const dismiss = useSetAtom(dismissCommsAtom);
+  const aiName = useAtomValue(aiNameAtom) ?? readAiNameFromStorage();
 
   const [pageIndex, setPageIndex] = useState(0);
 
@@ -71,11 +79,13 @@ export default function CommsOverlay() {
           <div className="comms-overlay__content">
             {/* Speaker */}
             <div className="comms-overlay__speaker">
-              {message.speaker}
+              {resolveAiName(message.speaker, aiName)}
             </div>
 
             {/* Message text */}
-            <div className="comms-overlay__text">{pages[pageIndex]}</div>
+            <div className="comms-overlay__text">
+              {resolveAiName(pages[pageIndex], aiName)}
+            </div>
 
             {/* Footer: pagination + continue */}
             <div className="comms-overlay__footer">

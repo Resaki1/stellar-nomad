@@ -21,6 +21,7 @@ import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import { CommsWelcomeTrigger } from "./CommsOverlay/CommsWelcomeTrigger";
+import AINameOverlay from "./AINameOverlay/AINameOverlay";
 
 import "./HUD.scss";
 
@@ -92,6 +93,7 @@ export default function HUD() {
       <AssaySamplesHUD />
       <SettingsMenu />
       <ToastDisplay />
+      <AINameOverlay />
       <CommsOverlay />
       <CommsWelcomeTrigger />
       <SpawnFixDialog />
