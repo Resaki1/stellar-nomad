@@ -66,7 +66,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "mining_001",
     speaker: "Dr. Stern",
     avatar: "/assets/avatars/stern.jpeg",
-    delaySec: 5,
+    delaySec: 2,
     textContent: [
       "Good work, Nomad. Along with those resources, you collected your first assay sample. That's exactly what we need to start calibrating your MicroLab.",
       "The MicroLab is your onboard analysis station. Once it's operational, it opens up the full research tree. Better mining equipment, ship systems, sensor upgrades.",
@@ -103,7 +103,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "research_start_001",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "MicroLab initialization sequence started. Calibration should take a few minutes.",
+      "MicroLab initialization sequence started. Calibration should take a few seconds.",
       "Once it's online, you'll have access to the full research tree. I'll let you know when it's ready.",
     ],
     priority: 1,
@@ -113,6 +113,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
   research_complete_001: {
     messageId: "research_complete_001",
     speaker: "Dr. Stern",
+    delaySec: 2,
     avatar: "/assets/avatars/stern.jpeg",
     textContent: [
       "Nomad, we're receiving MicroLab telemetry. Analysis framework is online. Good work.",

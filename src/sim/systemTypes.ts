@@ -220,6 +220,10 @@ export type SystemConfigV1 = {
   schemaVersion: 1;
   systemId: string;
   units: UnitsSpec;
+  /** Default spawn position for new players (km). */
+  startingPositionKm: [number, number, number];
+  /** Default spawn rotation for new players (quaternion [x, y, z, w]). */
+  startingRotationQuat: [number, number, number, number];
   resources?: SystemResources;
   defaults?: SystemDefaults;
   assets?: SystemAssets;

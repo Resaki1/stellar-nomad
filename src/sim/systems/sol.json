@@ -3,6 +3,14 @@
   "systemId": "sol",
   "units": { "distance": "km", "radius": "m", "angle": "deg" },
 
+  "startingPositionKm": [-130002822, 175, -65000194],
+  "startingRotationQuat": [
+        0.1927031433248278,
+        0.6675546187214699,
+        -0.12626226852761574,
+        0.7080213055569897
+    ],
+
   "defaults": {
     "render": {
       "nearRadiusKm": 32,

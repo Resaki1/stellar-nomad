@@ -14,7 +14,7 @@ import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 import { isDeadAtom } from "@/store/death";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
-import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
+import { STARTING_POSITION_KM, STARTING_ROTATION_QUAT } from "@/sim/celestialConstants";
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
 const _quat = new Quaternion();
@@ -69,7 +69,7 @@ const SpaceShip = memo(() => {
 
   // ── Simulation state (advanced at fixed FIXED_DT) ──────────────────
   const posKm = useRef(new Vector3(STARTING_POSITION_KM[0], STARTING_POSITION_KM[1], STARTING_POSITION_KM[2]));
-  const simQuat = useRef(new Quaternion());
+  const simQuat = useRef(new Quaternion(STARTING_ROTATION_QUAT[0], STARTING_ROTATION_QUAT[1], STARTING_ROTATION_QUAT[2], STARTING_ROTATION_QUAT[3]));
   const yawRate = useRef(0);
   const pitchRate = useRef(0);
   const vRoll = useRef(0);
@@ -78,7 +78,7 @@ const SpaceShip = memo(() => {
 
   // ── Previous-step snapshot (for interpolation) ─────────────────────
   const prevPosKm = useRef(new Vector3(STARTING_POSITION_KM[0], STARTING_POSITION_KM[1], STARTING_POSITION_KM[2]));
-  const prevQuat = useRef(new Quaternion());
+  const prevQuat = useRef(new Quaternion(STARTING_ROTATION_QUAT[0], STARTING_ROTATION_QUAT[1], STARTING_ROTATION_QUAT[2], STARTING_ROTATION_QUAT[3]));
   const prevVRoll = useRef(0);
   const prevVPitch = useRef(0);
 
