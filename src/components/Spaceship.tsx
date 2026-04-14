@@ -32,7 +32,7 @@ const _shakeEuler = new Quaternion();
 // ── Tuning constants ─────────────────────────────────────────────────
 const SHIP_HANDLING = 1.5;
 const MAX_ROT_SPEED = SHIP_HANDLING / 2;
-const SHIP_MAX_SPEED_KMPS = 200 / 1000;
+const SHIP_MAX_SPEED_KMPS = 400 / 1000;
 const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
 const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
 const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max

@@ -88,19 +88,20 @@ export default function GameCommsTriggers() {
     if (heatSinkCount > 0) {
       // Player has heat sinks: tell them to use one
       textContent = [
-        "Laser overheated. You have Heat Sink Cartridges in your inventory. Use one to skip the cooldown.",
+        "Laser overheated. You have heat sink cartridges on hand — one of those would skip the cooldown entirely.",
       ];
     } else if (hasThermalResearch) {
       // Research done but no cartridges: suggest crafting
       textContent = [
         "Laser overheated. Forced cooldown. The current optics still can't handle sustained mining on larger asteroids without hitting the thermal limit.",
-        "You have the Heat Sink Cartridge blueprint unlocked. Craft a few when you get the chance. They dump laser heat instantly, lets you keep mining without waiting out the full cooldown.",
+        "You have the fabrication specs for heat sink cartridges. Worth putting a few together when you get the chance — they dump laser heat on the spot.",
       ];
     } else {
       // No research yet: point them to the research tree
       textContent = [
         "Mining laser thermal capacity exceeded. Forced cooldown in progress. The current optics can't sustain fire long enough to mine larger asteroids in a single pass.",
-        "I've identified a Thermal Management research path that would unlock heat sink cartridges. Single-use, but they dump excess heat on the spot. Could be worth prioritizing.",
+        "There's a thermal management approach in the research data that could help. It would unlock heat sink cartridges. Single-use, but they dump excess heat on the spot. Could be worth prioritizing.",
+        "Alternatively, search for smaller asteroids."
       ];
     }
 
@@ -158,6 +159,90 @@ export default function GameCommsTriggers() {
     const msg = COMMS_MESSAGES.first_craft_001;
     if (msg) enqueue(msg);
   }, [craftCount, enqueue]);
+
+  // ── Elara's first message (after first craft) ──────────────────────
+  const elara1FiredRef = useRef(false);
+
+  useEffect(() => {
+    if (elara1FiredRef.current || craftCount === 0) return;
+    elara1FiredRef.current = true;
+    const msg = COMMS_MESSAGES.elara_001;
+    if (msg) enqueue(msg);
+  }, [craftCount, enqueue]);
+
+  // ── Stern foreshadowing: overbuilt (after 2+ tier-1 nodes) ─────────
+  const sternOverbuiltFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (sternOverbuiltFiredRef.current) return;
+    const tier1Nodes = [
+      "r1_prospector_algorithms",
+      "r1_modular_hardpoints",
+      "r1_laser_optics",
+    ];
+    const completedTier1 = tier1Nodes.filter((n) => completedNodes.has(n));
+    if (completedTier1.length >= 2) {
+      sternOverbuiltFiredRef.current = true;
+      const msg = COMMS_MESSAGES.stern_overbuilt_001;
+      if (msg) enqueue(msg);
+    }
+  }, [completedNodes, enqueue]);
+
+  // ── AI observation: pattern-noticing (after 8+ asteroids mined) ────
+  const aiObsFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (aiObsFiredRef.current || minedCount < 8) return;
+    aiObsFiredRef.current = true;
+    const msg = COMMS_MESSAGES.ai_observation_001;
+    if (msg) enqueue(msg);
+  }, [minedCount, enqueue]);
+
+  // ── Elara's second message (after 5+ research nodes completed) ─────
+  const elara2FiredRef = useRef(false);
+
+  useEffect(() => {
+    if (elara2FiredRef.current) return;
+    if (completedNodes.size >= 5) {
+      elara2FiredRef.current = true;
+      const msg = COMMS_MESSAGES.elara_002;
+      if (msg) enqueue(msg);
+    }
+  }, [completedNodes, enqueue]);
+
+  // ── Stern earth update (after any tier-2 node) ─────────────────────
+  const sternUpdateFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (sternUpdateFiredRef.current) return;
+    const tier2Nodes = [
+      "r2_wide_angle_ping",
+      "r2_thermal_management",
+      "r2_ablative_plating",
+      "r2_attitude_thrust",
+    ];
+    const hasAnyTier2 = tier2Nodes.some((n) => completedNodes.has(n));
+    if (hasAnyTier2) {
+      sternUpdateFiredRef.current = true;
+      const msg = COMMS_MESSAGES.stern_earth_update_001;
+      if (msg) enqueue(msg);
+    }
+  }, [completedNodes, enqueue]);
+
+  // ── ESA bulletin (after thermal management OR attitude thrust) ──────
+  const esaBulletinFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (esaBulletinFiredRef.current) return;
+    if (
+      completedNodes.has("r2_thermal_management") ||
+      completedNodes.has("r2_attitude_thrust")
+    ) {
+      esaBulletinFiredRef.current = true;
+      const msg = COMMS_MESSAGES.esa_bulletin_001;
+      if (msg) enqueue(msg);
+    }
+  }, [completedNodes, enqueue]);
 
   return null;
 }

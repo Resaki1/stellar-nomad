@@ -62,7 +62,7 @@ export default function AINameOverlay() {
     <div className="ai-name-overlay">
       <div className="ai-name-overlay__panel">
         <label className="ai-name-overlay__label" htmlFor="ai-name-input">
-          Enter AI designation:
+          Enter AI Name:
         </label>
 
         <div className="ai-name-overlay__row">
@@ -74,7 +74,7 @@ export default function AINameOverlay() {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value.slice(0, MAX_NAME_LENGTH))}
             onKeyDown={onKeyDown}
-            placeholder="Enter designation..."
+            placeholder="Enter name..."
             maxLength={MAX_NAME_LENGTH}
             autoComplete="off"
             spellCheck={false}

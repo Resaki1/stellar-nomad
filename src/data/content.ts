@@ -211,7 +211,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r0_microlab_boot",
     name: "MicroLab Boot Sequence",
-    desc: "Onboard lab online, ESA uplink handshake, blueprint validation pipeline",
+    desc: "Initialize onboard analysis lab. ESA uplink handshake, assay framework bootstrap",
     durationSeconds: 45,
     costs: { assaySamples: 1 },
     prerequisites: [],
@@ -226,7 +226,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r1_prospector_algorithms",
     name: "Prospector Algorithms",
-    desc: "Classify asteroid type from sensor returns (S/C/X)",
+    desc: "Refine sensor algorithms to classify asteroid composition from return signals",
     durationSeconds: 90,
     costs: { assaySamples: 2 },
     prerequisites: ["r0_microlab_boot"],
@@ -238,7 +238,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r1_modular_hardpoints",
     name: "Modular Hardpoints",
-    desc: "Standardized mounts + power/data bus, quick module integration",
+    desc: "Adapt the ship's hardpoint architecture for field-fabricated module integration",
     durationSeconds: 90,
     costs: { assaySamples: 2 },
     prerequisites: ["r0_microlab_boot"],
@@ -250,7 +250,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r1_laser_optics",
     name: "Laser Optics Calibration",
-    desc: "Improved coherence/focus, faster ablation stability",
+    desc: "Recalibrate mining laser optics for tighter coherence and faster ablation",
     durationSeconds: 120,
     costs: { assaySamples: 3 },
     prerequisites: ["r0_microlab_boot"],
@@ -273,7 +273,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r2_thermal_management",
     name: "Thermal Management Basics",
-    desc: "Radiator routing + emergency dump procedures for sustained mining",
+    desc: "Develop thermal routing and emergency heat-dump procedures for sustained extraction",
     durationSeconds: 240,
     costs: { assaySamples: 7 },
     prerequisites: ["r1_laser_optics"],
@@ -285,7 +285,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r2_ablative_plating",
     name: "Ablative Composite Plating",
-    desc: "Sacrificial outer layer, collision survivability",
+    desc: "Engineer a sacrificial composite layer to improve collision survivability",
     durationSeconds: 210,
     costs: { assaySamples: 6 },
     prerequisites: ["r1_modular_hardpoints"],
@@ -296,7 +296,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r2_attitude_thrust",
     name: "Attitude & Thrust Control",
-    desc: "Improved control authority, nozzle efficiency, flight handling",
+    desc: "Optimize RCS authority and main nozzle efficiency for better flight handling",
     durationSeconds: 300,
     costs: { assaySamples: 8 },
     prerequisites: ["r1_modular_hardpoints"],
@@ -307,7 +307,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r3_pulse_extraction_firmware",
     name: "Pulse Extraction Firmware",
-    desc: "Pulse mode parameters, thermal stability, controlled extraction",
+    desc: "Develop pulsed extraction firmware for thermally stable, controlled mining",
     durationSeconds: 360,
     costs: { assaySamples: 10 },
     prerequisites: ["r2_thermal_management"],
@@ -318,7 +318,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
   {
     id: "r3_spectral_mapping",
     name: "Spectral Mapping",
-    desc: "Rough composition bands on target lock (metal/hydrate/carbon rich)",
+    desc: "Map spectral signatures to resolve composition bands during target analysis",
     durationSeconds: 360,
     costs: { assaySamples: 10 },
     prerequisites: ["r1_prospector_algorithms"],
