@@ -74,7 +74,7 @@ export default function DevTools() {
         });
         store.set(modulesAtom, {
           ownedModules: [],
-          equipped: {},
+          equippedModules: {},
           consumables: {},
           consumableCooldowns: {},
           hotbar: Array(10).fill(null),

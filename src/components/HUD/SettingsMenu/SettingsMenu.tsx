@@ -320,6 +320,7 @@ const SettingsMenu = () => {
     localStorage.removeItem("keybinds-v1");
     localStorage.removeItem("research-v1");
     localStorage.removeItem("modules-v1");
+    localStorage.removeItem("modules-v2");
     window.location.reload();
   }, [deltaStore]);
 

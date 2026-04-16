@@ -1,0 +1,3 @@
+1. damage from asteroid impacts should not only depend on the size of the asteroid but also, and more importantly, on the relative velocity of the impact. A small asteroid hitting at high speed can cause more damage than a larger one moving slowly. We should calculate damage based on kinetic energy (which is 0.5 * mass * velocity^2) rather than just size. This will make the gameplay more realistic and add an extra layer of strategy when navigating through asteroid fields.
+2. Make sure first ever mined asteroid always yiels exactly 1 lab assay.
+3. Add a message explaining the asteroid classes and their correlation to different resources when Prospect Scanner Mk1 is unlocked.

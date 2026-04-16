@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { modulesAtom, useConsumableAtom } from "@/store/modules";
 import { heatSinkBuffer, miningStateAtom } from "@/store/mining";
+import { shipHealthAtom } from "@/store/store";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
 import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
 
@@ -15,10 +18,24 @@ function requiresHeat(def: ItemDef): boolean {
   return !!def.useEffects?.some((e) => e.key === "mining.currentHeat");
 }
 
+/** Returns true if this consumable has a timed duration. */
+function isTimedConsumable(def: ItemDef): boolean {
+  return !!def.useDurationS && def.useDurationS > 0;
+}
+
+/** Returns true if this consumable is an information tool (no useEffects, has duration). */
+function isInfoConsumable(def: ItemDef): boolean {
+  return !def.useEffects && !!def.useDurationS;
+}
+
 export default function Hotbar() {
   const modulesState = useAtomValue(modulesAtom);
   const miningState = useAtomValue(miningStateAtom);
+  const shipHealth = useAtomValue(shipHealthAtom);
+  const shipConfig = useAtomValue(effectiveShipConfigAtom);
   const useConsumable = useSetAtom(useConsumableAtom);
+  const setShipHealth = useSetAtom(shipHealthAtom);
+  const addTimedEffect = useSetAtom(addTimedEffectAtom);
   const addToast = useSetAtom(addToastAtom);
 
   // Tick counter to force re-render while any cooldown is active
@@ -71,16 +88,49 @@ export default function Hotbar() {
         return;
       }
 
+      // Block hull repair when at full health
+      if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth) {
+        addToast({ message: "Hull already at full integrity", durationMs: 1500 });
+        return;
+      }
+
+      // Information consumables — stub: show toast, consume item
+      if (isInfoConsumable(def)) {
+        const ok = useConsumable(itemId);
+        if (ok) {
+          addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 3000 });
+        }
+        return;
+      }
+
       const ok = useConsumable(itemId);
       if (ok) {
-        // Apply instant effects via shared buffer
+        // Timed consumables: add to timed effects system
+        if (isTimedConsumable(def) && def.useEffects) {
+          addTimedEffect({
+            itemId,
+            effects: def.useEffects,
+            durationS: def.useDurationS!,
+          });
+          addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 2000 });
+          return;
+        }
+
+        // Instant effects
         if (def.useEffects) {
           for (const eff of def.useEffects) {
             if (eff.key === "mining.currentHeat") {
-              if (eff.op === "multiply") {
+              if (eff.op === "set") {
+                heatSinkBuffer.pendingSet = eff.value as number;
+              } else if (eff.op === "multiply") {
                 heatSinkBuffer.pendingMultiplier = eff.value as number;
               } else if (eff.op === "add") {
                 heatSinkBuffer.pendingAdd = eff.value as number;
+              }
+            } else if (eff.key === "ship.currentHealth") {
+              if (eff.op === "add") {
+                const newHealth = Math.min(shipConfig.maxHealth, shipHealth + (eff.value as number));
+                setShipHealth(newHealth);
               }
             }
           }
@@ -88,7 +138,7 @@ export default function Hotbar() {
         addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
       }
     },
-    [modulesState.hotbar, miningState.laserHeat, useConsumable, addToast],
+    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, useConsumable, setShipHealth, addTimedEffect, addToast],
   );
 
   // Handle key presses 0-9 for hotbar
@@ -138,8 +188,10 @@ export default function Hotbar() {
           }
         }
 
-        // Gray out heat-dependent items when there's no heat
-        const unavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
+        // Gray out items that can't be used right now
+        const heatUnavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
+        const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth;
+        const unavailable = heatUnavailable || healthUnavailable;
 
         return (
           <div

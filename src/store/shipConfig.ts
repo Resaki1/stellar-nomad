@@ -5,13 +5,18 @@ import {
   getMultiplier,
   getAddition,
   type ComputedModifiers,
+  aggregateEffects,
+  mergeModifiers,
 } from "@/store/modules";
+import { completedNodeSetAtom } from "@/store/research";
+import { timedEffectModifiersAtom } from "@/store/timedEffects";
+import { RESEARCH_NODES, type ItemEffect } from "@/data/content";
 
 // ---------------------------------------------------------------------------
 // Ship configuration — central place for all upgradable stats.
 //
 // Every value starts at the un-upgraded default. Module modifiers from the
-// loadout system are folded in via `effectiveShipConfigAtom`.
+// loadout system and research bonuses are folded in via `effectiveShipConfigAtom`.
 //
 // Using atomWithStorage so upgrades persist across sessions.
 // ---------------------------------------------------------------------------
@@ -38,8 +43,22 @@ export type ShipConfig = {
   decelerationMult: number;
   /** Collision damage multiplier (1 = base). Lower = less damage. */
   collisionDamageMult: number;
-  /** Extra cargo capacity from modules (added on top of base). */
+  /** Extra cargo capacity from modules/research (added on top of base). */
   bonusCargoCapacity: number;
+
+  // ── Scanner ──
+  /** Target lock speed multiplier (1 = base). Lower = faster lock. */
+  scannerLockSpeedMult: number;
+  /** All sensor ranges multiplier (1 = base). */
+  scannerRangeMult: number;
+
+  // ── Economy ──
+  /** Probability (0-1) of receiving a bonus assay sample from mining. */
+  assaySampleBonusChance: number;
+
+  // ── Survivability ──
+  /** Passive hull regeneration per second. */
+  hullRegenPerSecond: number;
 };
 
 const DEFAULT_SHIP_CONFIG: ShipConfig = {
@@ -53,6 +72,10 @@ const DEFAULT_SHIP_CONFIG: ShipConfig = {
   decelerationMult: 1,
   collisionDamageMult: 1,
   bonusCargoCapacity: 0,
+  scannerLockSpeedMult: 1,
+  scannerRangeMult: 1,
+  assaySampleBonusChance: 0,
+  hullRegenPerSecond: 0,
 };
 
 export const shipConfigAtom = atomWithStorage<ShipConfig>(
@@ -61,18 +84,41 @@ export const shipConfigAtom = atomWithStorage<ShipConfig>(
 );
 
 // ---------------------------------------------------------------------------
-// Effective config: base values * equipped module modifiers
+// Research modifiers: passive bonuses from completed research nodes
+// ---------------------------------------------------------------------------
+
+export const researchModifiersAtom = atom((get): ComputedModifiers => {
+  const completed = get(completedNodeSetAtom);
+  const allEffects: ItemEffect[] = [];
+
+  for (const node of RESEARCH_NODES) {
+    if (!completed.has(node.id)) continue;
+    if (node.researchEffects) {
+      allEffects.push(...node.researchEffects);
+    }
+  }
+
+  return aggregateEffects(allEffects);
+});
+
+// ---------------------------------------------------------------------------
+// Effective config: base values * equipped module modifiers * research bonuses
 // ---------------------------------------------------------------------------
 
 function applyModifiers(base: ShipConfig, mods: ComputedModifiers): ShipConfig {
+  // Handle overallEfficiencyMultiplier: affects both speed and yield
+  const overallMult = getMultiplier(mods, "mining.overallEfficiencyMultiplier");
+
   return {
     // Mining: timePerAsteroidMultiplier < 1 means faster mining → invert for speedMult
     miningSpeedMult:
-      base.miningSpeedMult / getMultiplier(mods, "mining.timePerAsteroidMultiplier"),
-    miningEfficiencyMult: base.miningEfficiencyMult,
+      base.miningSpeedMult / getMultiplier(mods, "mining.timePerAsteroidMultiplier") * overallMult,
+    miningEfficiencyMult:
+      base.miningEfficiencyMult * getMultiplier(mods, "mining.yieldMultiplier") * overallMult,
     miningHeatCapacityS:
       base.miningHeatCapacityS / getMultiplier(mods, "mining.heatBuildUpRateMultiplier"),
-    miningCooldownS: base.miningCooldownS,
+    miningCooldownS:
+      base.miningCooldownS / getMultiplier(mods, "mining.cooldownSpeedMultiplier"),
 
     // Ship
     maxHealth:
@@ -87,17 +133,35 @@ function applyModifiers(base: ShipConfig, mods: ComputedModifiers): ShipConfig {
       base.collisionDamageMult * getMultiplier(mods, "ship.collisionDamageMultiplier"),
     bonusCargoCapacity:
       base.bonusCargoCapacity + getAddition(mods, "ship.cargoCapacity"),
+
+    // Scanner
+    scannerLockSpeedMult:
+      base.scannerLockSpeedMult * getMultiplier(mods, "scanner.lockSpeedMultiplier"),
+    scannerRangeMult:
+      base.scannerRangeMult * getMultiplier(mods, "scanner.allRangeMultiplier"),
+
+    // Economy
+    assaySampleBonusChance:
+      Math.min(1, base.assaySampleBonusChance + getAddition(mods, "mining.assaySampleBonusChance")),
+
+    // Survivability
+    hullRegenPerSecond:
+      base.hullRegenPerSecond + getAddition(mods, "ship.hullRegenPerSecond"),
   };
 }
 
 /**
- * Derived atom that combines base ship config with equipped module effects.
+ * Derived atom that combines base ship config with equipped module effects,
+ * research passive bonuses, AND active timed consumable effects.
  * Consumers should prefer this over raw `shipConfigAtom`.
  */
 export const effectiveShipConfigAtom = atom((get): ShipConfig => {
   const base = get(shipConfigAtom);
-  const mods = get(computedModifiersAtom);
-  return applyModifiers(base, mods);
+  const moduleMods = get(computedModifiersAtom);
+  const researchMods = get(researchModifiersAtom);
+  const timedMods = get(timedEffectModifiersAtom);
+  const combinedMods = mergeModifiers(mergeModifiers(moduleMods, researchMods), timedMods);
+  return applyModifiers(base, combinedMods);
 });
 
 // ---------------------------------------------------------------------------

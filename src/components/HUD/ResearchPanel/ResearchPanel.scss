@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// Research Panel — tree view layout
+// ---------------------------------------------------------------------------
+
 .research-panel__backdrop {
   position: fixed;
   inset: 0;
@@ -11,9 +15,9 @@
 }
 
 .research-panel {
-  width: min(560px, 92vw);
+  width: min(920px, 95vw);
   height: 100%;
-  max-height: min(700px, 85vh);
+  max-height: min(720px, 90vh);
   display: flex;
   flex-direction: column;
   background: rgba(12, 14, 22, 0.92);
@@ -29,6 +33,7 @@
     align-items: baseline;
     gap: 10px;
     padding: 16px 18px 0;
+    flex: 0 0 auto;
   }
 
   &__title {
@@ -70,11 +75,12 @@
 
   // ── Active research ──
   &__active {
-    margin: 14px 18px 0;
-    padding: 12px 14px;
+    margin: 10px 18px 0;
+    padding: 10px 14px;
     background: rgba(80, 160, 255, 0.08);
     border: 1px solid rgba(80, 160, 255, 0.25);
     border-radius: 10px;
+    flex: 0 0 auto;
   }
 
   &__active-label {
@@ -82,17 +88,17 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
     opacity: 0.6;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
 
   &__active-name {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
 
   &__progress-bar {
-    margin-top: 8px;
-    height: 5px;
+    margin-top: 6px;
+    height: 4px;
     background: rgba(255, 255, 255, 0.1);
     border-radius: 999px;
     overflow: hidden;
@@ -104,171 +110,267 @@
   }
 
   &__active-time {
-    margin-top: 4px;
-    font-size: 11px;
+    margin-top: 3px;
+    font-size: 10px;
     opacity: 0.6;
     text-align: right;
   }
 
-  // ── Section titles ──
-  &__section-title {
-    padding: 14px 18px 6px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    opacity: 0.5;
-  }
-
-  // ── Tree container ──
-  &__tree {
-    padding: 0 18px 18px;
-    overflow-y: auto;
+  // ── Body: tree + detail side by side ──
+  &__body {
     flex: 1 1 0;
+    display: flex;
+    overflow: hidden;
+    margin-top: 10px;
   }
 
-  &__empty {
-    padding: 20px 0;
-    text-align: center;
-    font-size: 13px;
-    opacity: 0.45;
+  &__tree-scroll {
+    flex: 1 1 0;
+    overflow: auto;
+    padding: 12px 18px 18px;
+  }
+
+  &__tree-canvas {
+    position: relative;
+    min-width: fit-content;
+  }
+
+  &__edges {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+  }
+
+  // ── Detail panel ──
+  &__detail {
+    flex: 0 0 240px;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 14px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
 }
 
-// ── Research tree nodes ──
-.research-tree {
-  &__branch {
-    position: relative;
-  }
+// ---------------------------------------------------------------------------
+// Tree nodes (positioned absolutely within the canvas)
+// ---------------------------------------------------------------------------
 
-  &__connector {
-    position: absolute;
-    top: 0;
-    left: -10px;
-    width: 10px;
-    height: 20px;
-    border-left: 1px solid rgba(255, 255, 255, 0.12);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 0 0 0 4px;
-  }
+.rt-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
 
-  &__children {
-    margin-top: 2px;
-    position: relative;
-
-    // Vertical line connecting siblings
-    &::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 10px;
-      bottom: 20px;
-      width: 1px;
-      background: rgba(255, 255, 255, 0.08);
-    }
-  }
-
-  &__node {
-    padding: 8px 10px;
-    margin: 2px 0;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 8px;
-    transition: background 0.15s, border-color 0.15s;
-
-    // ─── States ───
-    &--completed {
-      opacity: 0.55;
-      background: rgba(80, 200, 120, 0.06);
-      border-color: rgba(80, 200, 120, 0.15);
-    }
-
-    &--active {
-      background: rgba(80, 160, 255, 0.1);
-      border-color: rgba(80, 160, 255, 0.35);
-    }
-
-    &--available {
-      background: rgba(255, 255, 255, 0.06);
-      border-color: rgba(80, 160, 255, 0.2);
-
-      &:hover {
-        background: rgba(255, 255, 255, 0.09);
-      }
-    }
-
-    &--locked {
-      opacity: 0.35;
-    }
-  }
-
-  &__node-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
-  &__node-icon {
+  &__icon {
     flex: 0 0 auto;
-    font-size: 13px;
+    font-size: 11px;
     line-height: 1;
-    margin-top: 2px;
   }
 
-  &__node-info {
+  &__name {
     flex: 1 1 0;
-    min-width: 0;
-  }
-
-  &__node-name {
-    font-size: 13px;
+    font-size: 10px;
     font-weight: 600;
     line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  &__node-desc {
-    font-size: 11px;
-    opacity: 0.55;
-    line-height: 1.3;
-    margin-top: 2px;
-  }
-
-  &__node-meta {
+  &__cost {
     flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 2px;
-    margin-left: auto;
+    font-size: 9px;
+    font-weight: 700;
+    color: rgba(140, 200, 255, 0.8);
+    background: rgba(140, 200, 255, 0.08);
+    padding: 1px 4px;
+    border-radius: 3px;
+
+    &--insufficient {
+      color: rgba(255, 120, 120, 0.8);
+      background: rgba(255, 120, 120, 0.08);
+    }
   }
 
-  &__node-cost {
+  // ── States ──
+  &--locked {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  &--available {
+    border-color: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.05);
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+  }
+
+  &--active {
+    border-color: rgba(80, 160, 255, 0.4);
+    background: rgba(80, 160, 255, 0.1);
+  }
+
+  &--completed {
+    opacity: 0.6;
+    background: rgba(80, 200, 120, 0.05);
+    border-color: rgba(80, 200, 120, 0.2);
+  }
+
+  &--selected {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+  }
+
+  // ── Branch colors (border tint for available/completed) ──
+  &--a.rt-node--available,
+  &--a.rt-node--active {
+    border-color: rgba(100, 160, 255, 0.35);
+  }
+  &--a.rt-node--completed {
+    border-color: rgba(100, 160, 255, 0.25);
+    background: rgba(100, 160, 255, 0.05);
+  }
+
+  &--b.rt-node--available,
+  &--b.rt-node--active {
+    border-color: rgba(255, 160, 60, 0.35);
+  }
+  &--b.rt-node--completed {
+    border-color: rgba(255, 160, 60, 0.25);
+    background: rgba(255, 160, 60, 0.05);
+  }
+
+  &--c.rt-node--available,
+  &--c.rt-node--active {
+    border-color: rgba(80, 200, 120, 0.35);
+  }
+  &--c.rt-node--completed {
+    border-color: rgba(80, 200, 120, 0.25);
+    background: rgba(80, 200, 120, 0.05);
+  }
+
+  &--milestone.rt-node--available,
+  &--milestone.rt-node--active {
+    border-color: rgba(255, 200, 60, 0.4);
+    background: rgba(255, 200, 60, 0.06);
+  }
+  &--milestone.rt-node--completed {
+    border-color: rgba(255, 200, 60, 0.3);
+    background: rgba(255, 200, 60, 0.05);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Detail panel
+// ---------------------------------------------------------------------------
+
+.rt-detail {
+  &__name {
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  &__desc {
+    font-size: 11px;
+    opacity: 0.6;
+    line-height: 1.4;
+  }
+
+  &__meta {
+    display: flex;
+    gap: 12px;
     font-size: 11px;
     font-weight: 600;
     color: rgba(140, 200, 255, 0.9);
-
-    &--insufficient {
-      color: rgba(255, 120, 120, 0.9);
-    }
   }
 
-  &__node-duration {
+  &__section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  &__section-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.4;
+  }
+
+  &__bonuses {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
+  &__bonus-tag {
     font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(80, 200, 120, 0.1);
+    color: rgba(120, 220, 160, 0.9);
+  }
+
+  &__items {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  &__item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+  }
+
+  &__item-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(160, 210, 255, 0.9);
+  }
+
+  &__item-desc {
+    font-size: 9px;
     opacity: 0.5;
+    line-height: 1.3;
+  }
+
+  &__prereq {
+    font-size: 11px;
+    opacity: 0.7;
   }
 
   &__start-btn {
-    flex: 0 0 auto;
-    font-size: 11px;
+    margin-top: auto;
+    padding: 8px 14px;
+    font-size: 12px;
     font-weight: 600;
-    padding: 4px 12px;
-    border-radius: 5px;
+    border-radius: 6px;
     border: 1px solid rgba(80, 160, 255, 0.4);
     background: rgba(80, 160, 255, 0.12);
     color: rgba(160, 210, 255, 0.95);
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-    align-self: center;
+    transition: background 0.15s, border-color 0.15s;
 
     &:hover:not(:disabled) {
       background: rgba(80, 160, 255, 0.25);
@@ -276,9 +378,39 @@
     }
 
     &:disabled {
-      opacity: 0.35;
+      opacity: 0.4;
       cursor: not-allowed;
-      pointer-events: none;
     }
+  }
+
+  &__completed-badge {
+    margin-top: auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(80, 200, 120, 0.8);
+    text-align: center;
+    padding: 6px;
+  }
+
+  &__active-badge {
+    margin-top: auto;
+    font-size: 11px;
+    color: rgba(80, 160, 255, 0.8);
+    text-align: center;
+    padding: 6px;
+  }
+
+  // Branch-colored detail panel accent
+  &--a {
+    border-left-color: rgba(100, 160, 255, 0.2) !important;
+  }
+  &--b {
+    border-left-color: rgba(255, 160, 60, 0.2) !important;
+  }
+  &--c {
+    border-left-color: rgba(80, 200, 120, 0.2) !important;
+  }
+  &--milestone {
+    border-left-color: rgba(255, 200, 60, 0.2) !important;
   }
 }

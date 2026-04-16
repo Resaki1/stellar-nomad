@@ -12,11 +12,12 @@ import { atom, useAtomValue, useSetAtom } from "jotai";
 import { shipHealthAtom } from "@/store/store";
 import { miningStateAtom, asteroidMinedSignalAtom } from "@/store/mining";
 import { isCargoFullAtom } from "@/store/cargo";
-import { researchAtom, completedNodeSetAtom } from "@/store/research";
-import { modulesAtom, itemCraftedSignalAtom } from "@/store/modules";
+import { researchAtom, completedNodeSetAtom, lastCompletedResearchIdAtom } from "@/store/research";
+import { modulesAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom } from "@/store/modules";
 import { aiNameAtom } from "@/store/aiName";
 import { enqueueCommsAtom } from "@/store/comms";
-import { COMMS_MESSAGES, type CommsMessage } from "@/data/commsMessages";
+import { COMMS_MESSAGES, RESEARCH_COMPLETE_MESSAGES, ITEM_CRAFTED_MESSAGES } from "@/data/commsMessages";
+import { TIER_2_NODE_IDS } from "@/data/content";
 
 // Derived atom so we don't rerender on every mining-state frame update
 const isOverheatedAtom = atom((get) => get(miningStateAtom).isOverheated);
@@ -79,7 +80,7 @@ export default function GameCommsTriggers() {
     if (overheatFiredRef.current || !isOverheated) return;
     overheatFiredRef.current = true;
 
-    const hasThermalResearch = completedNodes.has("r2_thermal_management");
+    const hasThermalResearch = completedNodes.has("b2b_thermal_dynamics");
     const heatSinkCount =
       modules.consumables["consumable_heat_sink_cartridge"] ?? 0;
 
@@ -176,9 +177,9 @@ export default function GameCommsTriggers() {
   useEffect(() => {
     if (sternOverbuiltFiredRef.current) return;
     const tier1Nodes = [
-      "r1_prospector_algorithms",
-      "r1_modular_hardpoints",
-      "r1_laser_optics",
+      "a1_sensor_calibration",
+      "b1_laser_optics",
+      "c1_structural_engineering",
     ];
     const completedTier1 = tier1Nodes.filter((n) => completedNodes.has(n));
     if (completedTier1.length >= 2) {
@@ -215,13 +216,7 @@ export default function GameCommsTriggers() {
 
   useEffect(() => {
     if (sternUpdateFiredRef.current) return;
-    const tier2Nodes = [
-      "r2_wide_angle_ping",
-      "r2_thermal_management",
-      "r2_ablative_plating",
-      "r2_attitude_thrust",
-    ];
-    const hasAnyTier2 = tier2Nodes.some((n) => completedNodes.has(n));
+    const hasAnyTier2 = TIER_2_NODE_IDS.some((n) => completedNodes.has(n));
     if (hasAnyTier2) {
       sternUpdateFiredRef.current = true;
       const msg = COMMS_MESSAGES.stern_earth_update_001;
@@ -229,20 +224,38 @@ export default function GameCommsTriggers() {
     }
   }, [completedNodes, enqueue]);
 
-  // ── ESA bulletin (after thermal management OR attitude thrust) ──────
+  // ── ESA bulletin (after thermal dynamics OR propulsion systems) ──────
   const esaBulletinFiredRef = useRef(false);
 
   useEffect(() => {
     if (esaBulletinFiredRef.current) return;
     if (
-      completedNodes.has("r2_thermal_management") ||
-      completedNodes.has("r2_attitude_thrust")
+      completedNodes.has("b2b_thermal_dynamics") ||
+      completedNodes.has("c2b_propulsion_systems")
     ) {
       esaBulletinFiredRef.current = true;
       const msg = COMMS_MESSAGES.esa_bulletin_001;
       if (msg) enqueue(msg);
     }
   }, [completedNodes, enqueue]);
+
+  // ── Per-research completion messages ────────────────────────────────
+  const lastResearchId = useAtomValue(lastCompletedResearchIdAtom);
+
+  useEffect(() => {
+    if (!lastResearchId) return;
+    const msg = RESEARCH_COMPLETE_MESSAGES[lastResearchId];
+    if (msg) enqueue(msg);
+  }, [lastResearchId, enqueue]);
+
+  // ── Per-item craft messages ────────────────────────────────────────
+  const lastCraftedId = useAtomValue(lastCraftedItemIdAtom);
+
+  useEffect(() => {
+    if (!lastCraftedId) return;
+    const msg = ITEM_CRAFTED_MESSAGES[lastCraftedId];
+    if (msg) enqueue(msg);
+  }, [lastCraftedId, enqueue]);
 
   return null;
 }

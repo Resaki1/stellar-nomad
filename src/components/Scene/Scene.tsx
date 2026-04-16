@@ -31,6 +31,7 @@ import MiningSystem from "../Mining/MiningSystem";
 import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 import ResearchTicker from "../Research/ResearchTicker";
+import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
 import POIProjector from "../POI/POIProjector";
 import WreckCollector from "../WreckCollector";
 import CelestialCollider from "../CelestialCollider";
@@ -98,6 +99,7 @@ const Scene = () => {
         <PingBrackets3D />
         <AsteroidVFX />
         <ResearchTicker />
+        <TimedEffectsTicker />
         <POIProjector />
         <WreckCollector />
         <CelestialCollider />

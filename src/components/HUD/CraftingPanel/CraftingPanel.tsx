@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { unlockedItemIdsAtom } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
 import { removeCargoAtom } from "@/store/cargo";
-import { addCraftedItemAtom, itemCraftedSignalAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
+import { addCraftedItemAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
 import { addToastAtom } from "@/store/toast";
 import { systemConfigAtom } from "@/store/system";
 import { getResourceTypes } from "@/sim/asteroids/resources";
@@ -31,6 +31,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   const addCraftedItem = useSetAtom(addCraftedItemAtom);
   const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
   const incrementCraftSignal = useSetAtom(itemCraftedSignalAtom);
+  const setLastCraftedId = useSetAtom(lastCraftedItemIdAtom);
   const addToast = useSetAtom(addToastAtom);
 
   const [slotFilter, setSlotFilter] = useState<ItemSlot | "all">("all");
@@ -57,14 +58,20 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
   const isModuleOwned = useCallback(
     (item: ItemDef): boolean =>
-      item.type === "module" && modulesState.ownedModules.includes(item.id),
+      (item.type === "module" || item.type === "special") && modulesState.ownedModules.includes(item.id),
     [modulesState.ownedModules],
+  );
+
+  const isEquipped = useCallback(
+    (item: ItemDef): boolean =>
+      item.type === "module" && modulesState.equippedModules[item.slot] === item.id,
+    [modulesState.equippedModules],
   );
 
   const canAfford = useCallback(
     (item: ItemDef): boolean => {
-      // Modules are one-time crafts
-      if (item.type === "module" && modulesState.ownedModules.includes(item.id))
+      // Modules/special are one-time crafts
+      if ((item.type === "module" || item.type === "special") && modulesState.ownedModules.includes(item.id))
         return false;
 
       for (const [resourceId, needed] of Object.entries(item.recipe)) {
@@ -83,8 +90,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
   const requestCraft = (item: ItemDef) => {
     if (!canAfford(item)) return;
-    // Modules: show confirmation; consumables: craft immediately
-    if (item.type === "module") {
+    // Modules and special items: show confirmation; consumables: craft immediately
+    if (item.type === "module" || item.type === "special") {
       setConfirmItem(item);
     } else {
       handleCraft(item);
@@ -100,8 +107,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       removeCargo({ resourceId, amount: needed });
     }
 
-    // Add item
-    addCraftedItem(item.id);
+    // Add item — returns true if auto-equipped into empty slot
+    const autoEquipped = addCraftedItem(item.id);
 
     // Auto-assign consumables to the first empty hotbar slot
     if (item.type === "consumable") {
@@ -116,11 +123,26 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
     // Signal that crafting completed (GameCommsTriggers watches this)
     incrementCraftSignal((c) => c + 1);
+    setLastCraftedId(item.id);
 
-    addToast({
-      message: `Crafted: ${item.name}`,
-      durationMs: 3000,
-    });
+    if (item.type === "module") {
+      if (autoEquipped) {
+        addToast({
+          message: `Crafted & equipped: ${item.name}`,
+          durationMs: 3000,
+        });
+      } else {
+        addToast({
+          message: `Crafted: ${item.name} (${SLOT_LABELS[item.slot]} slot in use)`,
+          durationMs: 4000,
+        });
+      }
+    } else {
+      addToast({
+        message: `Crafted: ${item.name}`,
+        durationMs: 3000,
+      });
+    }
   };
 
   return (
@@ -178,6 +200,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
           ) : (
             craftableItems.map((item) => {
               const owned = isModuleOwned(item);
+              const equipped = isEquipped(item);
               const affordable = canAfford(item);
 
               return (
@@ -244,7 +267,9 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
                   <div className="crafting-panel__item-actions">
                     {owned ? (
-                      <span className="crafting-panel__owned-badge">✓ Owned</span>
+                      <span className={`crafting-panel__owned-badge ${equipped ? "crafting-panel__owned-badge--equipped" : ""}`}>
+                        {equipped ? "Equipped" : "Owned"}
+                      </span>
                     ) : (
                       <button
                         className="crafting-panel__craft-btn"
@@ -285,7 +310,11 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                 </div>
               )}
               <div className="crafting-panel__confirm-note">
-                This is a one-time upgrade and cannot be undone.
+                {confirmItem.type === "module" && !modulesState.equippedModules[confirmItem.slot]
+                  ? "This module will be auto-equipped into the empty slot."
+                  : confirmItem.type === "module"
+                    ? `This module will be added to inventory. The ${SLOT_LABELS[confirmItem.slot]} slot is currently in use — swap from the loadout panel.`
+                    : "This is a one-time craft."}
               </div>
               <div className="crafting-panel__confirm-actions">
                 <button

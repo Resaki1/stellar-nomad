@@ -8,6 +8,7 @@ import {
   getItemDef,
   type ItemDef,
   type ItemEffect,
+  type ItemSlot,
 } from "@/data/content";
 
 // ---------------------------------------------------------------------------
@@ -17,6 +18,8 @@ import {
 export type ModulesState = {
   /** moduleItemId[] — all owned module items. */
   ownedModules: string[];
+  /** One module per slot. Only equipped modules contribute stat effects. */
+  equippedModules: Partial<Record<ItemSlot, string>>;
   /** consumableItemId → current stack count. */
   consumables: Record<string, number>;
   /** consumableItemId → timestamp (ms) of last use for cooldown tracking. */
@@ -27,18 +30,91 @@ export type ModulesState = {
 
 const DEFAULT_MODULES: ModulesState = {
   ownedModules: [],
+  equippedModules: {},
   consumables: {},
   consumableCooldowns: {},
   hotbar: Array(10).fill(null),
 };
 
+/**
+ * Migrate from v1 (no equippedModules) to v2 format.
+ * Auto-equips all owned modules (one per slot, last wins).
+ */
+function migrateV1toV2(raw: Record<string, unknown>): ModulesState {
+  const ownedModules = (raw.ownedModules as string[]) ?? [];
+  const equippedModules: Partial<Record<ItemSlot, string>> = {};
+
+  // Auto-equip each owned module into its slot (last item wins per slot)
+  for (const itemId of ownedModules) {
+    const def = getItemDef(itemId);
+    if (def && def.type === "module") {
+      equippedModules[def.slot] = itemId;
+    }
+  }
+
+  return {
+    ownedModules,
+    equippedModules,
+    consumables: (raw.consumables as Record<string, number>) ?? {},
+    consumableCooldowns: (raw.consumableCooldowns as Record<string, number>) ?? {},
+    hotbar: (raw.hotbar as (string | null)[]) ?? Array(10).fill(null),
+  };
+}
+
+// Read v1 data from localStorage and migrate if needed, then clean up
+function getInitialModulesState(): ModulesState {
+  if (typeof window === "undefined") return DEFAULT_MODULES;
+
+  // Check for v2 data first
+  const v2Raw = localStorage.getItem("modules-v2");
+  if (v2Raw) {
+    try {
+      const parsed = JSON.parse(v2Raw);
+      // Ensure equippedModules exists (guard against partial data)
+      if (!parsed.equippedModules) {
+        return migrateV1toV2(parsed);
+      }
+      return parsed as ModulesState;
+    } catch { /* fall through */ }
+  }
+
+  // Check for v1 data and migrate
+  const v1Raw = localStorage.getItem("modules-v1");
+  if (v1Raw) {
+    try {
+      const parsed = JSON.parse(v1Raw);
+      const migrated = migrateV1toV2(parsed);
+      // Write migrated data to v2 key
+      localStorage.setItem("modules-v2", JSON.stringify(migrated));
+      // Clean up v1 key
+      localStorage.removeItem("modules-v1");
+      return migrated;
+    } catch { /* fall through */ }
+  }
+
+  return DEFAULT_MODULES;
+}
+
 export const modulesAtom = atomWithStorage<ModulesState>(
-  "modules-v1",
+  "modules-v2",
   DEFAULT_MODULES,
+  {
+    getItem: (_key, _initialValue) => getInitialModulesState(),
+    setItem: (key, value) => {
+      if (typeof window !== "undefined") {
+        localStorage.setItem(key, JSON.stringify(value));
+      }
+    },
+    removeItem: (key) => {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(key);
+      }
+    },
+  },
 );
 
 // ---------------------------------------------------------------------------
-// Derived: computed stat modifiers from equipped modules
+// Derived: computed stat modifiers from EQUIPPED modules only
 // ---------------------------------------------------------------------------
 
 export type ComputedModifiers = {
@@ -50,28 +126,52 @@ export type ComputedModifiers = {
   additions: Record<string, number>;
 };
 
-export const computedModifiersAtom = atom((get): ComputedModifiers => {
-  const state = get(modulesAtom);
+export function aggregateEffects(effects: ItemEffect[]): ComputedModifiers {
   const flags: Record<string, boolean> = {};
   const multipliers: Record<string, number> = {};
   const additions: Record<string, number> = {};
 
-  for (const itemId of state.ownedModules) {
-    const def = getItemDef(itemId);
-    if (!def?.effects) continue;
-
-    for (const eff of def.effects) {
-      if (eff.op === "set") {
-        flags[eff.key] = eff.value as boolean;
-      } else if (eff.op === "multiply") {
-        multipliers[eff.key] = (multipliers[eff.key] ?? 1) * (eff.value as number);
-      } else if (eff.op === "add") {
-        additions[eff.key] = (additions[eff.key] ?? 0) + (eff.value as number);
-      }
+  for (const eff of effects) {
+    if (eff.op === "set") {
+      flags[eff.key] = eff.value as boolean;
+    } else if (eff.op === "multiply") {
+      multipliers[eff.key] = (multipliers[eff.key] ?? 1) * (eff.value as number);
+    } else if (eff.op === "add") {
+      additions[eff.key] = (additions[eff.key] ?? 0) + (eff.value as number);
     }
   }
 
   return { flags, multipliers, additions };
+}
+
+export function mergeModifiers(a: ComputedModifiers, b: ComputedModifiers): ComputedModifiers {
+  const flags = { ...a.flags, ...b.flags };
+  const multipliers = { ...a.multipliers };
+  const additions = { ...a.additions };
+
+  for (const [key, val] of Object.entries(b.multipliers)) {
+    multipliers[key] = (multipliers[key] ?? 1) * val;
+  }
+  for (const [key, val] of Object.entries(b.additions)) {
+    additions[key] = (additions[key] ?? 0) + val;
+  }
+
+  return { flags, multipliers, additions };
+}
+
+export const computedModifiersAtom = atom((get): ComputedModifiers => {
+  const state = get(modulesAtom);
+  const allEffects: ItemEffect[] = [];
+
+  // Only iterate EQUIPPED modules, not all owned modules
+  for (const itemId of Object.values(state.equippedModules)) {
+    if (!itemId) continue;
+    const def = getItemDef(itemId);
+    if (!def?.effects) continue;
+    allEffects.push(...def.effects);
+  }
+
+  return aggregateEffects(allEffects);
 });
 
 // ---------------------------------------------------------------------------
@@ -91,36 +191,96 @@ export function getAddition(mods: ComputedModifiers, key: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Actions: equip / unequip modules
+// ---------------------------------------------------------------------------
+
+/**
+ * Equip a module into its slot. The module must be owned.
+ * Replaces whatever is currently in that slot.
+ */
+export const equipModuleAtom = atom(
+  null,
+  (get, set, itemId: string): boolean => {
+    const def = getItemDef(itemId);
+    if (!def || def.type !== "module") return false;
+
+    const state = get(modulesAtom);
+    if (!state.ownedModules.includes(itemId)) return false;
+
+    set(modulesAtom, {
+      ...state,
+      equippedModules: { ...state.equippedModules, [def.slot]: itemId },
+    });
+    return true;
+  },
+);
+
+/**
+ * Unequip whatever module is in the given slot.
+ */
+export const unequipSlotAtom = atom(
+  null,
+  (get, set, slot: ItemSlot): void => {
+    const state = get(modulesAtom);
+    if (!state.equippedModules[slot]) return;
+
+    const newEquipped = { ...state.equippedModules };
+    delete newEquipped[slot];
+
+    set(modulesAtom, {
+      ...state,
+      equippedModules: newEquipped,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Actions: craft item
 // ---------------------------------------------------------------------------
 
 /**
  * Add a crafted item to inventory. Does NOT deduct cargo (caller does that).
+ * Returns whether the item was auto-equipped into an empty slot.
  */
 export const addCraftedItemAtom = atom(
   null,
-  (get, set, itemId: string): void => {
+  (get, set, itemId: string): boolean => {
     const def = getItemDef(itemId);
-    if (!def) return;
+    if (!def) return false;
 
     const state = get(modulesAtom);
 
     if (def.type === "consumable") {
       const current = state.consumables[itemId] ?? 0;
       const max = def.stackMax ?? 99;
-      if (current >= max) return;
+      if (current >= max) return false;
       set(modulesAtom, {
         ...state,
         consumables: { ...state.consumables, [itemId]: current + 1 },
       });
-    } else {
+      return false;
+    } else if (def.type === "module") {
       // Module — one-time craft; skip if already owned
-      if (state.ownedModules.includes(itemId)) return;
+      if (state.ownedModules.includes(itemId)) return false;
 
+      const slotEmpty = !state.equippedModules[def.slot];
+      set(modulesAtom, {
+        ...state,
+        ownedModules: [...state.ownedModules, itemId],
+        // Auto-equip if slot is empty
+        equippedModules: slotEmpty
+          ? { ...state.equippedModules, [def.slot]: itemId }
+          : state.equippedModules,
+      });
+      return slotEmpty;
+    } else {
+      // Special items — just track as owned
+      if (state.ownedModules.includes(itemId)) return false;
       set(modulesAtom, {
         ...state,
         ownedModules: [...state.ownedModules, itemId],
       });
+      return false;
     }
   },
 );
@@ -177,6 +337,13 @@ export const useConsumableAtom = atom(
 
 export const itemCraftedSignalAtom = atom(0);
 
+/**
+ * Signal: last crafted item ID.
+ * GameCommsTriggers watches this to fire per-item comms messages.
+ * The played-message registry prevents replays for consumables.
+ */
+export const lastCraftedItemIdAtom = atom<string | null>(null);
+
 export const setHotbarSlotAtom = atom(
   null,
   (get, set, update: { index: number; itemId: string | null }): void => {
@@ -192,5 +359,3 @@ export const setHotbarSlotAtom = atom(
     set(modulesAtom, { ...state, hotbar: newHotbar });
   },
 );
-
-

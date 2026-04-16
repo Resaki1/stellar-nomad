@@ -26,14 +26,16 @@ export default function CommsOverlay() {
   }, [message?.messageId]);
 
   const pages = message?.textContent ?? [];
-  const isLastPage = pageIndex >= pages.length - 1;
+  // Clamp in case the active message changed but the effect hasn't reset pageIndex yet
+  const safePage = Math.min(pageIndex, Math.max(pages.length - 1, 0));
+  const isLastPage = safePage >= pages.length - 1;
 
   const advance = useCallback(() => {
     if (!message) return;
     if (isLastPage) {
       dismiss();
     } else {
-      setPageIndex((p) => p + 1);
+      setPageIndex((p) => Math.min(p + 1, pages.length - 1));
     }
   }, [message, isLastPage, dismiss]);
 
@@ -84,14 +86,14 @@ export default function CommsOverlay() {
 
             {/* Message text */}
             <div className="comms-overlay__text">
-              {resolveAiName(pages[pageIndex], aiName)}
+              {resolveAiName(pages[safePage], aiName)}
             </div>
 
             {/* Footer: pagination + continue */}
             <div className="comms-overlay__footer">
               {pages.length > 1 && (
                 <span className="comms-overlay__page-indicator">
-                  {pageIndex + 1} / {pages.length}
+                  {safePage + 1} / {pages.length}
                 </span>
               )}
               <button

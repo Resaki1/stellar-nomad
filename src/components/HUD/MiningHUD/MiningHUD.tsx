@@ -13,6 +13,7 @@ import { systemConfigAtom } from "@/store/system";
 import { getAsteroidClass, computeMiningDurationS, getResourceType } from "@/sim/asteroids/resources";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
+import { pulseMiningActiveAtom, togglePulseMiningAtom } from "@/store/mining";
 
 import "./MiningHUD.scss";
 
@@ -24,6 +25,10 @@ export default function MiningHUD() {
   const modifiers = useAtomValue(computedModifiersAtom);
   const showAsteroidType = getFlag(modifiers, "scanner.lockShowsAsteroidType");
   const showCompositionBands = getFlag(modifiers, "scanner.lockShowsCompositionBands");
+  const pulseMiningUnlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
+
+  const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
+  const togglePulseMining = useSetAtom(togglePulseMiningAtom);
 
   const cargoUsedUnits = useAtomValue(cargoUsedUnitsAtom);
   const cargoCapacityUnits = useAtomValue(cargoCapacityUnitsAtom);
@@ -155,6 +160,17 @@ export default function MiningHUD() {
 
       {/* Actions – positioned at bottom center */}
       <div className="mining-hud__actions">
+        {/* Pulse mining toggle */}
+        {pulseMiningUnlocked && (
+          <button
+            className={`mining-hud__pulse-toggle ${pulseMiningActive ? "mining-hud__pulse-toggle--active" : ""}`}
+            onClick={() => togglePulseMining()}
+            title={pulseMiningActive ? "Switch to Continuous Mining" : "Switch to Pulse Mining"}
+          >
+            {pulseMiningActive ? "PULSE" : "CONT"}
+          </button>
+        )}
+
         {/* Heat bar */}
         <div
           className={`mining-hud__heat-container ${

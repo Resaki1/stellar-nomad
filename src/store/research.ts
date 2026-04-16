@@ -6,6 +6,7 @@ import { atomWithStorage } from "jotai/utils";
 import {
   RESEARCH_NODES,
   getResearchNode,
+  arePrerequisitesMet,
   type ResearchNodeDef,
 } from "@/data/content";
 
@@ -59,7 +60,7 @@ export const visibleNodesAtom = atom((get): ResearchNodeDef[] => {
   return RESEARCH_NODES.filter((node) => {
     if (completed.has(node.id)) return false;
     if (active?.nodeId === node.id) return false;
-    return node.prerequisites.every((pre) => completed.has(pre));
+    return arePrerequisitesMet(node, completed);
   });
 });
 
@@ -70,6 +71,13 @@ export const visibleNodesAtom = atom((get): ResearchNodeDef[] => {
 // ---------------------------------------------------------------------------
 
 export const researchElapsedAtom = atom(0);
+
+// ---------------------------------------------------------------------------
+// Signal: last completed research node ID
+// GameCommsTriggers watches this to fire per-research comms messages.
+// ---------------------------------------------------------------------------
+
+export const lastCompletedResearchIdAtom = atom<string | null>(null);
 
 // ---------------------------------------------------------------------------
 // Derived: active research node def (convenience)
@@ -131,9 +139,9 @@ export const startResearchAtom = atom(
     const node = getResearchNode(nodeId);
     if (!node) return false;
 
-    // Check prerequisites
+    // Check prerequisites (including special rules like milestone nodes)
     const completed = new Set(state.completedNodes);
-    if (!node.prerequisites.every((p) => completed.has(p))) return false;
+    if (!arePrerequisitesMet(node, completed)) return false;
 
     // Check cost
     if (state.assaySamples < node.costs.assaySamples) return false;
@@ -169,6 +177,8 @@ export const tickResearchAtom = atom(
         completedNodes: [...state.completedNodes, node.id],
         activeResearch: null,
       });
+      // Signal for comms triggers
+      set(lastCompletedResearchIdAtom, node.id);
       return node.id;
     }
 

@@ -10,9 +10,13 @@ import {
   miningStateAtom,
   pingWorldBuffer,
   heatSinkBuffer,
+  pulseCycleBuffer,
+  pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
+  PULSE_ON_S,
+  PULSE_CYCLE_S,
 } from "@/store/mining";
 import { systemConfigAtom } from "@/store/system";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
@@ -373,10 +377,14 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
     const dzSE = ez - sz;
     const len = Math.sqrt(dxSE * dxSE + dySE * dySE + dzSE * dzSE);
 
+    // Pulse mining: fade beam during "off" phase
+    const pulseOn = pulseCycleBuffer.beamOn;
+    const pulseFade = pulseOn ? 1.0 : 0.08; // dim but visible during off-phase
+
     // Beam intensity (keep subtle flicker for the beam itself)
     const ramp = 0.65 + 0.35 * clamp01(progress01 * 1.25);
     const flicker = 0.9 + 0.1 * Math.sin(t * 16.0 + len * 0.01);
-    const beamIntensity = ramp * flicker;
+    const beamIntensity = ramp * flicker * pulseFade;
 
     // Muzzle glow (small + dim)
     if (muzzleRef.current) {
@@ -660,6 +668,12 @@ const MiningSystem = () => {
   // --- Laser heat tracking (0 = cool, 1 = overheated)
   const laserHeatRef = useRef(0);
   const isOverheatedRef = useRef(false);
+
+  // --- Pulse mining state
+  const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
+  const pulseMiningActiveRef = useRef(pulseMiningActive);
+  useEffect(() => { pulseMiningActiveRef.current = pulseMiningActive; }, [pulseMiningActive]);
+  const pulseCycleTimerRef = useRef(0);
 
   const addCargo = useSetAtom(addCargoAtom);
   const addAssaySamples = useSetAtom(addAssaySamplesAtom);
@@ -1141,9 +1155,34 @@ const MiningSystem = () => {
         if (aimed) {
           miningAimLostTimeRef.current = 0;
 
-          // --- Heat up the laser
+          // --- Pulse mining cycle logic
+          const isPulseMode = pulseMiningActiveRef.current &&
+            getFlag(modifiersRef.current, "ability.pulseMiningEnabled");
+
+          let beamFiring = true; // continuous mode: always firing
+
+          if (isPulseMode) {
+            // Advance pulse cycle timer
+            pulseCycleTimerRef.current = (pulseCycleTimerRef.current + delta) % PULSE_CYCLE_S;
+            beamFiring = pulseCycleTimerRef.current < PULSE_ON_S;
+
+            // Update shared buffer for beam visual
+            pulseCycleBuffer.timer = pulseCycleTimerRef.current;
+            pulseCycleBuffer.beamOn = beamFiring;
+          } else {
+            pulseCycleBuffer.beamOn = true;
+          }
+
           const heatCapS = shipConfigRef.current.miningHeatCapacityS;
-          laserHeatRef.current = Math.min(1, laserHeatRef.current + delta / heatCapS);
+
+          if (beamFiring) {
+            // --- "On" phase: heat up + advance mining
+            laserHeatRef.current = Math.min(1, laserHeatRef.current + delta / heatCapS);
+          } else {
+            // --- "Off" phase: partial heat dissipation, no mining progress
+            const cooldownS = shipConfigRef.current.miningCooldownS;
+            laserHeatRef.current = Math.max(0, laserHeatRef.current - delta / cooldownS);
+          }
 
           // Overheat check
           if (laserHeatRef.current >= 1) {
@@ -1156,10 +1195,13 @@ const MiningSystem = () => {
             targetLostTimeRef.current = 0;
             currentSnapshotRef.current = null;
             lockedEndForAsteroidIdRef.current = null;
+            pulseCycleTimerRef.current = 0;
           }
 
-          // Advance mining
-          miningProgressRef.current += delta / miningDurationSRef.current;
+          // Advance mining (only during beam-on phases)
+          if (beamFiring) {
+            miningProgressRef.current += delta / miningDurationSRef.current;
+          }
 
           if (miningProgressRef.current >= 1) {
             miningProgressRef.current = 1;
@@ -1219,6 +1261,8 @@ const MiningSystem = () => {
       miningProgressRef.current = 0;
       miningAimLostTimeRef.current = 0;
       lockedEndForAsteroidIdRef.current = null;
+      pulseCycleTimerRef.current = 0;
+      pulseCycleBuffer.beamOn = true;
 
       // --- Cool down the laser when not mining
       if (laserHeatRef.current > 0) {
@@ -1233,6 +1277,13 @@ const MiningSystem = () => {
     }
 
     // --- Apply pending heat-sink effects (from consumables)
+    if (heatSinkBuffer.pendingSet !== null) {
+      laserHeatRef.current = Math.max(0, Math.min(1, heatSinkBuffer.pendingSet));
+      heatSinkBuffer.pendingSet = null;
+      // Clear multiply/add if set takes priority
+      heatSinkBuffer.pendingMultiplier = null;
+      heatSinkBuffer.pendingAdd = null;
+    }
     if (heatSinkBuffer.pendingMultiplier !== null) {
       laserHeatRef.current = Math.max(0, laserHeatRef.current * heatSinkBuffer.pendingMultiplier);
       heatSinkBuffer.pendingMultiplier = null;

@@ -106,7 +106,9 @@ export const pingWorldBuffer: {
 export const heatSinkBuffer: {
   pendingMultiplier: number | null;
   pendingAdd: number | null;
-} = { pendingMultiplier: null, pendingAdd: null };
+  /** Set heat to an exact value (0.0 for full reset). Takes priority over multiply/add. */
+  pendingSet: number | null;
+} = { pendingMultiplier: null, pendingAdd: null, pendingSet: null };
 
 // ---------------------------------------------------------------------------
 // Mining-completed signal — incremented by MiningSystem each time an asteroid
@@ -114,3 +116,30 @@ export const heatSinkBuffer: {
 // ---------------------------------------------------------------------------
 
 export const asteroidMinedSignalAtom = atom(0);
+
+// ---------------------------------------------------------------------------
+// Pulse Mining mode
+// ---------------------------------------------------------------------------
+
+/** Pulse mining cycle constants. */
+export const PULSE_ON_S = 1.5;
+export const PULSE_OFF_S = 0.5;
+export const PULSE_CYCLE_S = PULSE_ON_S + PULSE_OFF_S;
+
+/** Whether pulse mining mode is currently selected (toggled by player). */
+export const pulseMiningActiveAtom = atom(false);
+
+/** Toggle pulse mining mode on/off. */
+export const togglePulseMiningAtom = atom(null, (get, set) => {
+  set(pulseMiningActiveAtom, !get(pulseMiningActiveAtom));
+});
+
+/**
+ * Mutable shared state for the pulse mining cycle timer.
+ * Written by MiningSystem each frame. Read by the beam visual.
+ * `beamOn` indicates whether the laser is currently firing in the pulse cycle.
+ */
+export const pulseCycleBuffer: {
+  timer: number;
+  beamOn: boolean;
+} = { timer: 0, beamOn: true };

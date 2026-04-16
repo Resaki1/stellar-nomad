@@ -11,8 +11,8 @@
 }
 
 .loadout-panel {
-  width: min(520px, 92vw);
-  max-height: min(680px, 85vh);
+  width: min(560px, 92vw);
+  max-height: min(720px, 85vh);
   display: flex;
   flex-direction: column;
   background: rgba(12, 14, 22, 0.92);
@@ -68,7 +68,7 @@
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 12px;
   }
 
   &__empty {
@@ -78,20 +78,63 @@
     opacity: 0.45;
   }
 
+  // ── Slot groups ──
+  &__slot-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  &__slot-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.45;
+    padding-bottom: 2px;
+  }
+
   &__module {
-    padding: 10px 12px;
+    padding: 8px 10px;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 10px;
+
+    &--equipped {
+      border-color: rgba(80, 200, 120, 0.25);
+      background: rgba(80, 200, 120, 0.04);
+    }
+
+    &--alt {
+      opacity: 0.7;
+      border-style: dashed;
+
+      &:hover {
+        opacity: 0.9;
+        background: rgba(255, 255, 255, 0.06);
+      }
+    }
+
+    &--empty {
+      border-style: dashed;
+      opacity: 0.4;
+      justify-content: center;
+      padding: 6px 10px;
+    }
+  }
+
+  &__empty-slot {
+    font-size: 11px;
+    font-style: italic;
   }
 
   &__module-icon {
     flex: 0 0 auto;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     object-fit: contain;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.05);
@@ -104,25 +147,79 @@
   }
 
   &__module-name {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: rgba(160, 210, 255, 0.95);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  &__equipped-tag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: rgba(80, 200, 120, 0.9);
+    background: rgba(80, 200, 120, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
   }
 
   &__module-effects {
-    margin-top: 4px;
+    margin-top: 3px;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 3px;
   }
 
   &__effect-tag {
     font-size: 10px;
     font-weight: 600;
-    padding: 2px 6px;
+    padding: 1px 5px;
     border-radius: 3px;
     background: rgba(80, 200, 120, 0.1);
     color: rgba(120, 220, 160, 0.9);
+  }
+
+  &__equip-btn {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(160, 210, 255, 0.9);
+    background: rgba(160, 210, 255, 0.1);
+    border: 1px solid rgba(160, 210, 255, 0.2);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+
+    &:hover {
+      background: rgba(160, 210, 255, 0.2);
+      color: #fff;
+    }
+  }
+
+  &__unequip-btn {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+
+    &:hover {
+      background: rgba(255, 80, 80, 0.12);
+      color: rgba(255, 120, 120, 0.9);
+      border-color: rgba(255, 80, 80, 0.2);
+    }
   }
 
   // ── Section titles ──
