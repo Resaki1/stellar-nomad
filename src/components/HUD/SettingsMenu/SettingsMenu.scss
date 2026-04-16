@@ -131,6 +131,10 @@ button {
   display: flex;
   gap: 6px;
   align-items: center;
+
+  &--wrap {
+    flex-wrap: wrap;
+  }
 }
 
 .dev-controls__input {
