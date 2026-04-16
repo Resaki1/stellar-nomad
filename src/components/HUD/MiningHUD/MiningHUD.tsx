@@ -115,6 +115,22 @@ export default function MiningHUD() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [miningState.isFocused, miningState.isMining, miningState.isOverheated, cargoFull, startMining, cancelMining]);
 
+  // Pulse mining hotkey
+  useEffect(() => {
+    if (!pulseMiningUnlocked) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const key = e.key.toLowerCase();
+      if (keybindsRef.current.togglePulseMining.includes(key)) {
+        togglePulseMining();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pulseMiningUnlocked, togglePulseMining]);
+
   return (
     <div className="mining-hud">
       {/* Info panel – positioned above the reticle */}
@@ -165,9 +181,10 @@ export default function MiningHUD() {
           <button
             className={`mining-hud__pulse-toggle ${pulseMiningActive ? "mining-hud__pulse-toggle--active" : ""}`}
             onClick={() => togglePulseMining()}
-            title={pulseMiningActive ? "Switch to Continuous Mining" : "Switch to Pulse Mining"}
+            title={pulseMiningActive ? "Switch to Continuous Mining (P)" : "Switch to Pulse Mining (P)"}
           >
             {pulseMiningActive ? "PULSE" : "CONT"}
+            <span className="mining-hud__pulse-key">P</span>
           </button>
         )}
 

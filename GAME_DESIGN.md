@@ -858,7 +858,7 @@ Ordered by dependency. Each step can be a separate session.
 **Changes:**
 - Transit Drive crafting (special item type)
 - Navigation UI for transit
-- Flight sequence (30-60s, visual spectacle)
+- Flight sequence (30-60s)
 - Lunar asteroid field environment
 - New resources (titanium, helium_3) in system config
 - Lunar asteroid classes with new resource compositions

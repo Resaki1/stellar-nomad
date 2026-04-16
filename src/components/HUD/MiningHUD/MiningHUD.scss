@@ -166,6 +166,12 @@
     }
   }
 
+  &__pulse-key {
+    font-size: 8px;
+    opacity: 0.4;
+    margin-left: 4px;
+  }
+
   &__heat-container {
     position: relative;
     width: 240px;
