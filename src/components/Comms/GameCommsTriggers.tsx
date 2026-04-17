@@ -151,6 +151,18 @@ export default function GameCommsTriggers() {
     }
   }, [completedNodes, enqueue]);
 
+  // ── Stern reinforces lunar goal (delayed follow-up to MicroLab) ─────
+  const sternLunarGoalFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (sternLunarGoalFiredRef.current) return;
+    if (completedNodes.has("r0_microlab_boot")) {
+      sternLunarGoalFiredRef.current = true;
+      const msg = COMMS_MESSAGES.stern_lunar_goal_001;
+      if (msg) enqueue(msg);
+    }
+  }, [completedNodes, enqueue]);
+
   // ── First item crafted ──────────────────────────────────────────────
   const craftCount = useAtomValue(itemCraftedSignalAtom);
   const craftFiredRef = useRef(false);

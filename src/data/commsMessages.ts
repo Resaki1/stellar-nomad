@@ -59,7 +59,8 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     textContent: [
       "Nomad, this is Flight Director Stern. We have your signal. Good to hear from you. We were starting to worry about the hibernation lag.",
       "I'll keep this brief. The situation on the ground has deteriorated since your launch. Methane readings from the Siberian shelf are accelerating. The timeline is tighter than anyone hoped.",
-      "There's an asteroid cluster in your sensor range. We need raw materials and assay data. Everything you collect feeds directly into our atmospheric models. Get to it. And Nomad... stay safe out there.",
+      "There's an asteroid cluster in your sensor range. Start there. Mine what you can, get your lab running, feed the data back to us.",
+      "The long game is lunar orbit. The Moon carries concentrations of helium-3 and rare elements we can't get from asteroids. It's beyond your conventional thruster range, but you'll build up to it. Stay safe out there.",
     ],
     priority: 2,
   },
@@ -120,6 +121,19 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     textContent: [
       "Nomad, we're receiving your MicroLab telemetry. Analysis framework is live. This is what we needed.",
       "From here, your assay data opens up real research paths. Better extraction methods, sensor capability, ship hardening. Prioritize what keeps you operational out there. Stern out.",
+    ],
+    priority: 1,
+  },
+
+  // -- Stern reinforces the lunar goal (follows MicroLab completion) --------
+  stern_lunar_goal_001: {
+    messageId: "stern_lunar_goal_001",
+    speaker: "Dr. Stern",
+    avatar: "/assets/avatars/stern.jpeg",
+    delaySec: 60,
+    textContent: [
+      "Nomad, we're tracking steady returns from your research framework. The engineering models you're feeding us are clarifying options we didn't have before.",
+      "The Moon is still the target. Helium-3, rare regolith elements — the serious material is concentrated there. Keep working. You'll know when you're ready to make the crossing.",
     ],
     priority: 1,
   },
@@ -360,7 +374,7 @@ export const RESEARCH_COMPLETE_MESSAGES: Record<string, CommsMessage> = {
     messageId: "rc_m1_transit_drive",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Transit drive calibration complete. Interplanetary burn parameters validated. The Moon is within reach — fabricate the drive and we can make the crossing.",
+      "Transit drive calibration complete. Interplanetary burn parameters validated. You've been building toward this since hibernation woke you — the Moon is finally in range. Fabricate the drive and we can make the crossing.",
     ],
     priority: 1,
   },
