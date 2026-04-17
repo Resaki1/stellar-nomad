@@ -17,7 +17,6 @@ import ToastDisplay from "./ToastDisplay/ToastDisplay";
 import Hotbar from "./Hotbar/Hotbar";
 import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
 import POIMarkers from "./POIMarkers/POIMarkers";
-import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
@@ -97,7 +96,6 @@ export default function HUD() {
       <AINameOverlay />
       <CommsOverlay />
       <GameCommsTriggers />
-      <SpawnFixDialog />
       <DeathScreen />
       <Hotbar />
       <TransitHUD />
