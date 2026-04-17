@@ -14,6 +14,10 @@ export type POIDef = {
   minDistanceKm: number;
   /** Hide marker when farther than this (km). */
   maxDistanceKm: number;
+  /** Stand-off distance (km) for autopilot arrival. For celestial bodies this
+   *  is their radius + padding so the ship arrives above the surface rather
+   *  than at the center. Defaults to 0 (arrive at the exact position). */
+  arrivalOffsetKm?: number;
 };
 
 export type ProjectedPOI = {
@@ -43,4 +47,12 @@ export const poiBuffer = {
   pois: [] as ProjectedPOI[],
   /** Called by POIProjector after writing pois. Set by POIMarkers. */
   flush: null as (() => void) | null,
+  /** ID of the currently targeted POI (for transit autopilot). */
+  targetedId: null as string | null,
+  /** Transit ETA in seconds for the targeted POI (null if not targeted). */
+  targetedEtaS: null as number | null,
+  /** Gaze progress 0..1 toward locking a new POI target. */
+  gazeProgress: 0,
+  /** True while the player is actively gazing at a POI that isn't yet targeted. */
+  gazeActive: false,
 };

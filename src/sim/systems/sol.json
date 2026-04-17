@@ -179,7 +179,8 @@
       { "id": "sulfur", "name": "Sulfur", "icon": "/assets/resources/sulfur.png" },
       { "id": "carbon", "name": "Carbon", "icon": "/assets/resources/carbon.png" },
       { "id": "hydrates", "name": "Hydrates", "icon": "/assets/resources/hydrates.png" },
-      { "id": "helium_3", "name": "Helium-3", "icon": "/assets/resources/helium_3.png" }
+      { "id": "helium_3", "name": "Helium-3", "icon": "/assets/resources/helium_3.png" },
+      { "id": "titanium", "name": "Titanium", "icon": "/assets/resources/titanium.png" }
     ]
   },
 
@@ -248,6 +249,73 @@
           "variance": 0.15,
           "minAmount": 1,
           "maxAmount": 2500
+        }
+      }
+    },
+    {
+      "id": "luna_belt",
+      "name": "Lunar Asteroid Field",
+      "seed": 7331,
+      "enabled": true,
+      "frame": "system",
+      "anchorKm": [-130376000, 0, -65015000],
+      "shape": { "type": "sphere", "radiusKm": 2000, "edgeFalloffKm": 2000 },
+      "population": { "mode": "density", "densityPerKm3": 0.003, "jitter": 0.2, "maxPerChunk": 8000 },
+      "size": { "minRadiusM": 10, "maxRadiusM": 1200, "distribution": "logNormal", "params": { "mu": 1.4, "sigma": 1.1 } },
+      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 10000 },
+      "models": [
+        { "modelId": "asteroid_01", "weight": 0.5 },
+        { "modelId": "asteroid_02", "weight": 0.3 },
+        { "modelId": "asteroid_03", "weight": 0.2 }
+      ],
+
+      "resources": {
+        "seedSalt": "sol-luna-belt-v1",
+        "classes": [
+          {
+            "id": "l_regolith",
+            "name": "L-Regolith",
+            "weight": 0.40,
+            "resources": [
+              { "resourceId": "silicates",    "min": 0.35, "max": 0.50 },
+              { "resourceId": "titanium",     "min": 0.15, "max": 0.30 },
+              { "resourceId": "fe_ni_metal",  "min": 0.10, "max": 0.20 },
+              { "resourceId": "helium_3",     "min": 0.05, "max": 0.12 },
+              { "resourceId": "sulfur",       "min": 0.01, "max": 0.04 }
+            ]
+          },
+          {
+            "id": "l_metallic",
+            "name": "L-Metallic",
+            "weight": 0.30,
+            "resources": [
+              { "resourceId": "fe_ni_metal",  "min": 0.35, "max": 0.55 },
+              { "resourceId": "titanium",     "min": 0.20, "max": 0.35 },
+              { "resourceId": "silicates",    "min": 0.10, "max": 0.25 },
+              { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+              { "resourceId": "helium_3",     "min": 0.02, "max": 0.08 }
+            ]
+          },
+          {
+            "id": "l_volatile",
+            "name": "L-Volatile",
+            "weight": 0.30,
+            "resources": [
+              { "resourceId": "helium_3",     "min": 0.20, "max": 0.40 },
+              { "resourceId": "silicates",    "min": 0.20, "max": 0.40 },
+              { "resourceId": "carbon",       "min": 0.05, "max": 0.12 },
+              { "resourceId": "hydrates",     "min": 0.05, "max": 0.10 },
+              { "resourceId": "titanium",     "min": 0.05, "max": 0.15 }
+            ]
+          }
+        ],
+        "yield": {
+          "referenceRadiusM": 50,
+          "baseAmount": 18,
+          "exponent": 1.6,
+          "variance": 0.15,
+          "minAmount": 2,
+          "maxAmount": 3000
         }
       }
     }

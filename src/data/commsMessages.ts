@@ -214,6 +214,43 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     priority: 1,
   },
 
+  // == TRANSIT & LUNAR ARRIVAL ==================================================
+
+  // -- Transit drive first use -------------------------------------------------
+  transit_first_001: {
+    messageId: "transit_first_001",
+    speaker: "{{AI_NAME}}",
+    textContent: [
+      "Inertial compensation field active. The acceleration you're about to experience would be... inadvisable without it.",
+      "Drive is yours. Throttle at your discretion.",
+    ],
+    priority: 2,
+  },
+
+  // -- Lunar arrival (first time) ---------------------------------------------
+  lunar_arrival_001: {
+    messageId: "lunar_arrival_001",
+    speaker: "{{AI_NAME}}",
+    textContent: [
+      "Drive disengaged. Lunar proximity confirmed. I'm reading a dense asteroid cluster in the local field.",
+      "Composition scans show unfamiliar signatures. Titanium. And something else. Helium-3, if the spectral data is right. That's... significant.",
+    ],
+    priority: 2,
+  },
+
+  // -- Stern reacts to lunar arrival ------------------------------------------
+  lunar_stern_001: {
+    messageId: "lunar_stern_001",
+    speaker: "Dr. Stern",
+    avatar: "/assets/avatars/stern.jpeg",
+    delaySec: 10,
+    textContent: [
+      "Nomad, we're tracking your position update. You made it to lunar orbit. That drive performed well.",
+      "The helium-3 readings alone justify the trip. Get samples. Everything you pull from that field opens engineering options we didn't have before.",
+    ],
+    priority: 2,
+  },
+
   // NOTE: overheat_001 is constructed dynamically in GameCommsTriggers.tsx
   // because its text depends on the player's research/inventory state.
 };

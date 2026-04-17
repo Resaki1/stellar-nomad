@@ -16,6 +16,7 @@ import { researchAtom, completedNodeSetAtom, lastCompletedResearchIdAtom } from 
 import { modulesAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom } from "@/store/modules";
 import { aiNameAtom } from "@/store/aiName";
 import { enqueueCommsAtom } from "@/store/comms";
+import { transitStateAtom } from "@/store/transit";
 import { COMMS_MESSAGES, RESEARCH_COMPLETE_MESSAGES, ITEM_CRAFTED_MESSAGES } from "@/data/commsMessages";
 import { TIER_2_NODE_IDS } from "@/data/content";
 
@@ -256,6 +257,36 @@ export default function GameCommsTriggers() {
     const msg = ITEM_CRAFTED_MESSAGES[lastCraftedId];
     if (msg) enqueue(msg);
   }, [lastCraftedId, enqueue]);
+
+  // ── Transit drive: first use + arrival ──────────────────────────────
+  const transitState = useAtomValue(transitStateAtom);
+  const prevPhaseRef = useRef(transitState.phase);
+  const transitUsedRef = useRef(false);
+
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    const curr = transitState.phase;
+
+    // Fire "first transit" message when drive first engages
+    if (curr === "accelerating" && prev !== "accelerating" && !transitUsedRef.current) {
+      transitUsedRef.current = true;
+      const msg = COMMS_MESSAGES.transit_first_001;
+      if (msg) enqueue(msg);
+    }
+
+    // Fire arrival messages when drive disengages (was active, now idle)
+    if (curr === "idle" && (prev === "decelerating" || prev === "accelerating") && transitUsedRef.current) {
+      // Lunar arrival (if target was lunar)
+      if (transitState.target?.id?.includes("luna") || transitState.target?.id?.includes("moon")) {
+        const arrival = COMMS_MESSAGES.lunar_arrival_001;
+        if (arrival) enqueue(arrival);
+        const stern = COMMS_MESSAGES.lunar_stern_001;
+        if (stern) enqueue(stern);
+      }
+    }
+
+    prevPhaseRef.current = curr;
+  }, [transitState.phase, transitState.target, enqueue]);
 
   return null;
 }

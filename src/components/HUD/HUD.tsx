@@ -21,6 +21,7 @@ import SpawnFixDialog from "./SpawnFixDialog/SpawnFixDialog";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
+import TransitHUD from "./TransitHUD/TransitHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 
 import "./HUD.scss";
@@ -99,6 +100,7 @@ export default function HUD() {
       <SpawnFixDialog />
       <DeathScreen />
       <Hotbar />
+      <TransitHUD />
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">

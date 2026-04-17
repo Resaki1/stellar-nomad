@@ -1,5 +1,6 @@
 import { movementAtom, settingsAtom } from "@/store/store";
 import { keybindsAtom } from "@/store/keybinds";
+import { transitDriveBuffer } from "@/store/transit";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useRef, useCallback } from "react";
 
@@ -64,6 +65,18 @@ const KeyboardControls = () => {
       if (steeringKeysRef.current.has(key)) {
         updateSteering();
       }
+
+      // Transit drive: hold to spool, tap to toggle decel.
+      if (keybindsRef.current.transitDrive.includes(key)) {
+        const phase = transitDriveBuffer.phase;
+        if (phase === "idle" || phase === "spooling") {
+          // Start or continue holding for spool.
+          transitDriveBuffer.keyHeld = true;
+        } else if (phase === "accelerating" || phase === "decelerating") {
+          // Tap while in flight — signal decel/accel toggle.
+          transitDriveBuffer.keyTapped = true;
+        }
+      }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -72,6 +85,11 @@ const KeyboardControls = () => {
 
       if (steeringKeysRef.current.has(key)) {
         updateSteering();
+      }
+
+      // Transit drive key released — stop holding.
+      if (keybindsRef.current.transitDrive.includes(key)) {
+        transitDriveBuffer.keyHeld = false;
       }
     };
 

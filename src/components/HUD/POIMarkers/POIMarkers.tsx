@@ -73,17 +73,29 @@ export default function POIMarkers() {
           marker.style.left = `${poi.sx * 100}%`;
           marker.style.top = `${poi.sy * 100}%`;
 
-          // Distance label.
+          const isTargeted = poiBuffer.targetedId === poi.id;
+
+          // Distance label (+ ETA if targeted).
           const distEl = marker.querySelector(".poi-marker__distance") as HTMLElement;
           if (distEl) {
-            distEl.textContent = formatDistance(poi.distanceKm);
+            let text = formatDistance(poi.distanceKm);
+            if (isTargeted && poiBuffer.targetedEtaS != null) {
+              text += ` · ~${Math.ceil(poiBuffer.targetedEtaS)}s transit`;
+            }
+            distEl.textContent = text;
           }
 
-          // Name label — show only when focused.
+          // Name label — show when focused OR targeted.
           const nameEl = marker.querySelector(".poi-marker__name") as HTMLElement;
           if (nameEl) {
-            nameEl.style.display = poi.focused ? "" : "none";
+            nameEl.style.display = (poi.focused || isTargeted) ? "" : "none";
             nameEl.textContent = poi.name;
+          }
+
+          // Diamond highlight when targeted.
+          const diamond = marker.querySelector(".poi-marker__diamond") as HTMLElement;
+          if (diamond) {
+            diamond.classList.toggle("poi-marker__diamond--targeted", isTargeted);
           }
         } else {
           // ── Off-screen arrow ─────────────────────────────────────

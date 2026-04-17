@@ -12,6 +12,7 @@ import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
 import { isDeadAtom } from "@/store/death";
+import { transitDriveBuffer, TRANSIT_STEER_MULT } from "@/store/transit";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 import { STARTING_POSITION_KM, STARTING_ROTATION_QUAT } from "@/sim/celestialConstants";
@@ -25,6 +26,9 @@ const _cameraOffset = new Vector3(0, -4, 10);
 const _offset = new Vector3();
 const _rotationQuat = new Quaternion().setFromAxisAngle(_yAxis, Math.PI);
 const _vel = new Vector3();
+const _transitVel = new Vector3();
+const _autopilotTarget = new Vector3();
+const _autopilotAxis = new Vector3();
 const _localRel = new Vector3();
 const _shakeOffset = new Vector3();
 const _shakeEuler = new Quaternion();
@@ -130,6 +134,11 @@ const SpaceShip = memo(() => {
       if (!wasDeadRef.current) {
         shipRef.current.visible = false;
         wasDeadRef.current = true;
+        // Kill transit drive on death.
+        transitDriveBuffer.velocityKmps = { x: 0, y: 0, z: 0 };
+        transitDriveBuffer.phase = "idle";
+        transitDriveBuffer.spoolAccS = 0;
+        transitDriveBuffer.autopilot = false;
       }
       return;
     }
@@ -175,16 +184,23 @@ const SpaceShip = memo(() => {
       prevVRoll.current = vRoll.current;
       prevVPitch.current = vPitch.current;
 
+      // Steering rate — reduced during transit drive.
+      const transitActive = transitDriveBuffer.phase === "accelerating"
+        || transitDriveBuffer.phase === "decelerating";
+      const steerMult = transitActive ? TRANSIT_STEER_MULT : 1;
+      const handling = SHIP_HANDLING * steerMult;
+      const maxRot = MAX_ROT_SPEED * steerMult;
+
       // Yaw
       if (movement.yaw) {
         vRoll.current = logLimit(
-          vRoll.current + movement.yaw * SHIP_HANDLING * FIXED_DT,
-          Math.PI / 6
+          vRoll.current + movement.yaw * handling * FIXED_DT,
+          Math.PI / 6 * steerMult
         );
         yawRate.current = MathUtils.clamp(
-          yawRate.current + movement.yaw * SHIP_HANDLING * FIXED_DT,
-          -MAX_ROT_SPEED,
-          MAX_ROT_SPEED
+          yawRate.current + movement.yaw * handling * FIXED_DT,
+          -maxRot,
+          maxRot
         );
       } else {
         vRoll.current = MathUtils.lerp(vRoll.current, 0, SHIP_HANDLING * FIXED_DT);
@@ -194,13 +210,13 @@ const SpaceShip = memo(() => {
       // Pitch
       if (movement.pitch) {
         vPitch.current = logLimit(
-          vPitch.current + movement.pitch * SHIP_HANDLING * FIXED_DT,
-          Math.PI / 6
+          vPitch.current + movement.pitch * handling * FIXED_DT,
+          Math.PI / 6 * steerMult
         );
         pitchRate.current = MathUtils.clamp(
-          pitchRate.current + movement.pitch * SHIP_HANDLING * FIXED_DT,
-          -MAX_ROT_SPEED,
-          MAX_ROT_SPEED
+          pitchRate.current + movement.pitch * handling * FIXED_DT,
+          -maxRot,
+          maxRot
         );
       } else {
         vPitch.current = MathUtils.lerp(vPitch.current, 0, SHIP_HANDLING * FIXED_DT);
@@ -216,6 +232,36 @@ const SpaceShip = memo(() => {
 
       // Forward direction
       _fwd.set(0, 0, 1).applyQuaternion(simQuat.current);
+
+      // ── Autopilot orientation override ───────────────────────────────
+      // When TransitTicker sets a desiredForward, rotate simQuat toward it
+      // at the specified rate. This drives both spool-phase auto-align and
+      // acceleration-phase continuous course correction.
+      const desired = transitDriveBuffer.desiredForward;
+      if (desired) {
+        _autopilotTarget.set(desired.x, desired.y, desired.z);
+        if (_autopilotTarget.lengthSq() > 0) {
+          _autopilotTarget.normalize();
+          const dot = Math.max(-1, Math.min(1, _fwd.dot(_autopilotTarget)));
+          const angle = Math.acos(dot);
+          if (angle > 1e-4) {
+            const maxStep = transitDriveBuffer.desiredForwardRateRadPerS * FIXED_DT;
+            const step = Math.min(angle, maxStep);
+            _autopilotAxis.crossVectors(_fwd, _autopilotTarget);
+            if (_autopilotAxis.lengthSq() > 1e-12) {
+              _autopilotAxis.normalize();
+              _quat.setFromAxisAngle(_autopilotAxis, step);
+              simQuat.current.premultiply(_quat);
+              simQuat.current.normalize();
+              // Recompute forward after override.
+              _fwd.set(0, 0, 1).applyQuaternion(simQuat.current);
+            }
+            // Kill residual angular velocity so autopilot holds the heading.
+            yawRate.current *= 0.5;
+            pitchRate.current *= 0.5;
+          }
+        }
+      }
 
       // Speed — apply acceleration/deceleration modifiers from modules
       const cfg = store.get(effectiveShipConfigAtom);
@@ -233,6 +279,21 @@ const SpaceShip = memo(() => {
       _vel.copy(_fwd).multiplyScalar(maxSpeedKmps * speed.current * FIXED_DT);
 
       posKm.current.add(_vel);
+
+      // ── Transit drive velocity (additive, independent of normal flight) ──
+      const tBuf = transitDriveBuffer;
+      _transitVel.set(tBuf.velocityKmps.x, tBuf.velocityKmps.y, tBuf.velocityKmps.z);
+      if (_transitVel.lengthSq() > 0) {
+        _transitVel.multiplyScalar(FIXED_DT);
+        posKm.current.add(_transitVel);
+      }
+
+      // Write ship forward direction + position to transit buffer
+      // so TransitTicker can compute acceleration direction and flip point.
+      // _fwd was computed earlier this tick from simQuat.
+      tBuf.shipForward = { x: _fwd.x, y: _fwd.y, z: _fwd.z };
+      tBuf.shipPosKm = { x: posKm.current.x, y: posKm.current.y, z: posKm.current.z };
+
       physicsAcc.current -= FIXED_DT;
     }
 
@@ -328,7 +389,16 @@ const SpaceShip = memo(() => {
     const hudMaxSpeedKmps = hudDevSpeed !== null
       ? hudDevSpeed / 1000
       : SHIP_MAX_SPEED_KMPS * hudCfg.speedMult;
-    store.set(hudInfoAtom, { speed: speed.current * hudMaxSpeedKmps * 1000 });
+    // During transit, show transit velocity (much larger) instead of normal flight speed.
+    const transitSpeedMps = _transitVel.length() > 0
+      ? Math.sqrt(
+          transitDriveBuffer.velocityKmps.x ** 2 +
+          transitDriveBuffer.velocityKmps.y ** 2 +
+          transitDriveBuffer.velocityKmps.z ** 2
+        ) * 1000 // km/s → m/s
+      : 0;
+    const normalSpeedMps = speed.current * hudMaxSpeedKmps * 1000;
+    store.set(hudInfoAtom, { speed: Math.max(normalSpeedMps, transitSpeedMps) });
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;

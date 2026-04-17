@@ -15,6 +15,7 @@ export type KeybindAction =
   | "toggleLoadout"
   | "mine"
   | "togglePulseMining"
+  | "transitDrive"
   | "toggleSettings";
 
 /** Maps each action → array of bound key strings (e.key.toLowerCase()). */
@@ -42,6 +43,7 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "toggleLoadout", label: "Loadout", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
+  { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
   { id: "toggleSettings", label: "Settings", category: "menu" },
 ];
 
@@ -65,6 +67,7 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   toggleLoadout: ["l"],
   mine: ["m"],
   togglePulseMining: ["p"],
+  transitDrive: ["t"],
   toggleSettings: ["escape"],
 };
 

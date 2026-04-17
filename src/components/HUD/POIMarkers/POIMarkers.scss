@@ -25,6 +25,13 @@
   border: 1.5px solid rgba(160, 215, 245, 0.7);
   transform: rotate(45deg);
   background: rgba(160, 215, 245, 0.1);
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+
+  &--targeted {
+    border-color: rgba(255, 200, 60, 0.9);
+    background: rgba(255, 200, 60, 0.25);
+    box-shadow: 0 0 8px rgba(255, 200, 60, 0.4);
+  }
 }
 
 .poi-marker__label {
