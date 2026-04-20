@@ -3,13 +3,21 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { modulesAtom, useConsumableAtom } from "@/store/modules";
+import {
+  modulesAtom,
+  useConsumableAtom,
+  setHotbarSlotAtom,
+  HOTBAR_DRAG_MIME,
+  HOTBAR_SOURCE_SLOT_MIME,
+} from "@/store/modules";
 import { heatSinkBuffer, miningStateAtom } from "@/store/mining";
 import { shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
 import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
+
+import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
 
 import "./Hotbar.scss";
 
@@ -37,10 +45,16 @@ export default function Hotbar() {
   const setShipHealth = useSetAtom(shipHealthAtom);
   const addTimedEffect = useSetAtom(addTimedEffectAtom);
   const addToast = useSetAtom(addToastAtom);
+  const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
 
   // Tick counter to force re-render while any cooldown is active
   const [, setTick] = useState(0);
   const rafRef = useRef<number | null>(null);
+
+  // DnD + right-click UI state
+  const [dragOverSlot, setDragOverSlot] = useState<number | null>(null);
+  const [justAssignedSlot, setJustAssignedSlot] = useState<number | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
 
   // Track whether any cooldown is active to drive the rAF loop
   const hasActiveCooldown = useMemo(() => {
@@ -72,6 +86,13 @@ export default function Hotbar() {
       if (rafRef.current !== null) clearTimeout(rafRef.current);
     };
   }, [hasActiveCooldown]);
+
+  // Clear the "just assigned" pulse class after the animation finishes
+  useEffect(() => {
+    if (justAssignedSlot === null) return;
+    const id = window.setTimeout(() => setJustAssignedSlot(null), 800);
+    return () => clearTimeout(id);
+  }, [justAssignedSlot]);
 
   // Activate a hotbar slot by index
   const activateSlot = useCallback(
@@ -157,6 +178,96 @@ export default function Hotbar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activateSlot]);
 
+  // ── Drag-and-drop wiring ─────────────────────────────────────────
+  const hasConsumableDragType = (dt: DataTransfer): boolean => {
+    for (const t of dt.types) {
+      if (t === HOTBAR_DRAG_MIME || t === HOTBAR_SOURCE_SLOT_MIME) return true;
+    }
+    return false;
+  };
+
+  const onSlotDragEnter = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!hasConsumableDragType(e.dataTransfer)) return;
+    e.preventDefault();
+    setDragOverSlot(index);
+  };
+
+  const onSlotDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!hasConsumableDragType(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const onSlotDragLeave = (_e: React.DragEvent<HTMLDivElement>, index: number) => {
+    setDragOverSlot((prev) => (prev === index ? null : prev));
+  };
+
+  const onSlotDrop = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    setDragOverSlot(null);
+    const itemId =
+      e.dataTransfer.getData(HOTBAR_DRAG_MIME) ||
+      e.dataTransfer.getData("text/plain");
+    if (!itemId) return;
+    e.preventDefault();
+    const def = getItemDef(itemId);
+    if (!def || def.type !== "consumable") return;
+    setHotbarSlot({ index, itemId });
+    setJustAssignedSlot(index);
+    document.body.classList.remove("sn-dragging-consumable");
+  };
+
+  const onSlotDragStart = (e: React.DragEvent<HTMLDivElement>, index: number, itemId: string) => {
+    e.dataTransfer.setData(HOTBAR_DRAG_MIME, itemId);
+    e.dataTransfer.setData(HOTBAR_SOURCE_SLOT_MIME, String(index));
+    e.dataTransfer.setData("text/plain", itemId);
+    e.dataTransfer.effectAllowed = "move";
+    document.body.classList.add("sn-dragging-consumable");
+  };
+
+  const onSlotDragEnd = () => {
+    document.body.classList.remove("sn-dragging-consumable");
+    setDragOverSlot(null);
+  };
+
+  const onSlotContextMenu = (e: React.MouseEvent, index: number) => {
+    // Only useful on filled slots
+    if (!modulesState.hotbar[index]) return;
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, index });
+  };
+
+  const buildSlotMenu = (index: number): ContextMenuItem[] => {
+    const itemId = modulesState.hotbar[index];
+    if (!itemId) return [];
+    const def = getItemDef(itemId);
+    const items: ContextMenuItem[] = [];
+
+    items.push({
+      label: "Use",
+      hint: String(index),
+      disabled: (() => {
+        if (!def) return true;
+        if (requiresHeat(def) && miningState.laserHeat <= 0) return true;
+        if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth) return true;
+        const cdS = def.cooldownS ?? 0;
+        if (cdS > 0) {
+          const last = modulesState.consumableCooldowns[itemId] ?? 0;
+          if ((performance.now() - last) / 1000 < cdS) return true;
+        }
+        return false;
+      })(),
+      onSelect: () => activateSlot(index),
+    });
+
+    items.push({
+      separator: true,
+      label: "Clear slot",
+      onSelect: () => setHotbarSlot({ index, itemId: null }),
+    });
+
+    return items;
+  };
+
   // Only show hotbar if there are consumables
   const hasConsumables = useMemo(
     () => Object.values(modulesState.consumables).some((c) => c > 0),
@@ -168,66 +279,99 @@ export default function Hotbar() {
   const now = performance.now();
 
   return (
-    <div className="hotbar">
-      {modulesState.hotbar.map((itemId, index) => {
-        const def = itemId ? getItemDef(itemId) : null;
-        const count = itemId ? (modulesState.consumables[itemId] ?? 0) : 0;
-        const hasItem = def && count > 0;
+    <>
+      <div className="hotbar">
+        {modulesState.hotbar.map((itemId, index) => {
+          const def = itemId ? getItemDef(itemId) : null;
+          const count = itemId ? (modulesState.consumables[itemId] ?? 0) : 0;
+          const hasItem = def && count > 0;
 
-        // Check cooldown
-        let onCooldown = false;
-        let cooldownFraction = 0;
-        let cooldownRemaining = 0;
-        if (itemId && def?.cooldownS) {
-          const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
-          const elapsed = (now - lastUse) / 1000;
-          if (elapsed >= 0 && elapsed < def.cooldownS) {
-            onCooldown = true;
-            cooldownRemaining = Math.ceil(def.cooldownS - elapsed);
-            cooldownFraction = 1 - elapsed / def.cooldownS;
+          // Check cooldown
+          let onCooldown = false;
+          let cooldownFraction = 0;
+          let cooldownRemaining = 0;
+          if (itemId && def?.cooldownS) {
+            const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
+            const elapsed = (now - lastUse) / 1000;
+            if (elapsed >= 0 && elapsed < def.cooldownS) {
+              onCooldown = true;
+              cooldownRemaining = Math.ceil(def.cooldownS - elapsed);
+              cooldownFraction = 1 - elapsed / def.cooldownS;
+            }
           }
-        }
 
-        // Gray out items that can't be used right now
-        const heatUnavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
-        const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth;
-        const unavailable = heatUnavailable || healthUnavailable;
+          // Gray out items that can't be used right now
+          const heatUnavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
+          const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth;
+          const unavailable = heatUnavailable || healthUnavailable;
 
-        const remainingAngle = `${cooldownFraction * 360}deg`;
+          const remainingAngle = `${cooldownFraction * 360}deg`;
+          const isDragOver = dragOverSlot === index;
+          const justAssigned = justAssignedSlot === index;
 
-        return (
-          <div
-            key={index}
-            className={`hotbar__slot ${hasItem ? "hotbar__slot--filled" : ""} ${
-              onCooldown ? "hotbar__slot--cooldown" : ""
-            } ${unavailable ? "hotbar__slot--unavailable" : ""}`}
-            onClick={hasItem && !onCooldown && !unavailable ? () => activateSlot(index) : undefined}
-          >
-            <span className="hotbar__key">{index}</span>
-            {hasItem && (
-              <>
-                <img
-                  className="hotbar__icon"
-                  src={getItemIconUrl(def)}
-                  alt={def.name}
-                />
-                <span className="hotbar__count">×{count}</span>
-                {onCooldown && (
-                  <>
-                    <div
-                      className="hotbar__cooldown-wipe"
-                      style={{ ["--cooldown-deg" as string]: remainingAngle }}
-                    />
-                    {cooldownRemaining >= 1 && (
-                      <span className="hotbar__cooldown-text">{cooldownRemaining}s</span>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        );
-      })}
-    </div>
+          const slotClass = [
+            "hotbar__slot",
+            hasItem && "hotbar__slot--filled",
+            !hasItem && "hotbar__slot--empty",
+            onCooldown && "hotbar__slot--cooldown",
+            unavailable && "hotbar__slot--unavailable",
+            isDragOver && "hotbar__slot--drag-over",
+            justAssigned && "hotbar__slot--just-assigned",
+          ].filter(Boolean).join(" ");
+
+          return (
+            <div
+              key={index}
+              className={slotClass}
+              onClick={hasItem && !onCooldown && !unavailable ? () => activateSlot(index) : undefined}
+              onContextMenu={(e) => onSlotContextMenu(e, index)}
+              draggable={!!hasItem}
+              onDragStart={hasItem ? (e) => onSlotDragStart(e, index, itemId!) : undefined}
+              onDragEnd={onSlotDragEnd}
+              onDragEnter={(e) => onSlotDragEnter(e, index)}
+              onDragOver={onSlotDragOver}
+              onDragLeave={(e) => onSlotDragLeave(e, index)}
+              onDrop={(e) => onSlotDrop(e, index)}
+            >
+              <span className="hotbar__key">{index}</span>
+              {hasItem && (
+                <>
+                  <img
+                    className="hotbar__icon"
+                    src={getItemIconUrl(def)}
+                    alt={def.name}
+                  />
+                  <span className="hotbar__count">×{count}</span>
+                  {onCooldown && (
+                    <>
+                      <div
+                        className="hotbar__cooldown-wipe"
+                        style={{ ["--cooldown-deg" as string]: remainingAngle }}
+                      />
+                      {cooldownRemaining >= 1 && (
+                        <span className="hotbar__cooldown-text">{cooldownRemaining}s</span>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          title={(() => {
+            const id = modulesState.hotbar[menu.index];
+            return id ? (getItemDef(id)?.name ?? `Slot ${menu.index}`) : `Slot ${menu.index}`;
+          })()}
+          items={buildSlotMenu(menu.index)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
   );
 }

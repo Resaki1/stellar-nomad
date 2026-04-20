@@ -196,8 +196,40 @@
     gap: s.$space-2;
     padding: 5px s.$space-3;
     background: rgba(255, 255, 255, 0.03);
+    border: 1px solid transparent;
     border-radius: s.$radius-md;
     font-size: 12px;
+    cursor: grab;
+    user-select: none;
+    transition:
+      background s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: s.$stroke-faint;
+    }
+
+    &:active {
+      cursor: grabbing;
+    }
+
+    &--assigned {
+      border-color: rgba(127, 184, 255, 0.25); // $accent-info tinted
+      background: rgba(127, 184, 255, 0.05);
+    }
+  }
+
+  &__consumable-slot-tag {
+    flex: 0 0 auto;
+    font-family: s.$font-mono;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 1px 5px;
+    border-radius: s.$radius-sm;
+    color: s.$accent-info;
+    background: rgba(127, 184, 255, 0.12);
   }
 
   &__consumable-icon {

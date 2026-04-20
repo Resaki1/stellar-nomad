@@ -1,10 +1,10 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Unplug } from "lucide-react";
 
-import { modulesAtom, equipModuleAtom, unequipSlotAtom } from "@/store/modules";
+import { modulesAtom, equipModuleAtom, unequipSlotAtom, setHotbarSlotAtom, HOTBAR_DRAG_MIME } from "@/store/modules";
 import {
   getItemDef,
   getItemIconUrl,
@@ -15,6 +15,7 @@ import {
   type ItemDef,
 } from "@/data/content";
 import Panel from "../Shell/Panel";
+import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
 
 import "./LoadoutPanel.scss";
 
@@ -22,6 +23,10 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
   const modulesState = useAtomValue(modulesAtom);
   const equipModule = useSetAtom(equipModuleAtom);
   const unequipSlot = useSetAtom(unequipSlotAtom);
+  const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
+
+  // Right-click context menu state (consumable-scoped)
+  const [menu, setMenu] = useState<{ x: number; y: number; itemId: string } | null>(null);
 
   // Group owned modules by slot, with equipped state
   const slotData = useMemo(() => {
@@ -67,7 +72,61 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
       });
   }, [modulesState.consumables]);
 
+  const currentHotbarSlotOf = (itemId: string): number => {
+    return modulesState.hotbar.indexOf(itemId);
+  };
+
   const hasModules = slotData.length > 0;
+
+  // Build the right-click menu items for a consumable
+  const buildAssignMenu = (itemId: string): ContextMenuItem[] => {
+    const currentSlot = currentHotbarSlotOf(itemId);
+    const items: ContextMenuItem[] = [];
+
+    for (let i = 0; i < modulesState.hotbar.length; i++) {
+      const occupantId = modulesState.hotbar[i];
+      const occupantDef = occupantId ? getItemDef(occupantId) : null;
+      const isCurrent = i === currentSlot;
+
+      let hint: React.ReactNode = "—";
+      if (isCurrent) hint = "current";
+      else if (occupantDef) hint = occupantDef.name;
+
+      items.push({
+        label: `Assign to slot ${i}`,
+        hint,
+        disabled: isCurrent,
+        onSelect: () => setHotbarSlot({ index: i, itemId }),
+      });
+    }
+
+    if (currentSlot >= 0) {
+      items.push({
+        separator: true,
+        label: "Remove from hotbar",
+        hint: `slot ${currentSlot}`,
+        onSelect: () => setHotbarSlot({ index: currentSlot, itemId: null }),
+      });
+    }
+
+    return items;
+  };
+
+  const onConsumableDragStart = (e: React.DragEvent<HTMLDivElement>, itemId: string) => {
+    e.dataTransfer.setData(HOTBAR_DRAG_MIME, itemId);
+    e.dataTransfer.setData("text/plain", itemId);
+    e.dataTransfer.effectAllowed = "copyMove";
+    document.body.classList.add("sn-dragging-consumable");
+  };
+
+  const onConsumableDragEnd = () => {
+    document.body.classList.remove("sn-dragging-consumable");
+  };
+
+  const onConsumableContextMenu = (e: React.MouseEvent, itemId: string) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, itemId });
+  };
 
   return (
     <Panel
@@ -165,28 +224,55 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
           <>
             <div className="loadout-panel__section-title">Consumables</div>
             <div className="loadout-panel__consumables">
-              {consumables.map((c) => (
-                <div key={c.id} className="loadout-panel__consumable">
-                  {c.iconUrl && (
-                    <img className="loadout-panel__consumable-icon" src={c.iconUrl} alt="" />
-                  )}
-                  <span className="loadout-panel__consumable-name">
-                    {c.name}
-                  </span>
-                  <span className="loadout-panel__consumable-count">
-                    {c.count}/{c.stackMax}
-                  </span>
-                </div>
-              ))}
+              {consumables.map((c) => {
+                const slotIdx = currentHotbarSlotOf(c.id);
+                const inHotbar = slotIdx >= 0;
+                return (
+                  <div
+                    key={c.id}
+                    className={`loadout-panel__consumable ${inHotbar ? "loadout-panel__consumable--assigned" : ""}`}
+                    draggable
+                    onDragStart={(e) => onConsumableDragStart(e, c.id)}
+                    onDragEnd={onConsumableDragEnd}
+                    onContextMenu={(e) => onConsumableContextMenu(e, c.id)}
+                    title="Drag to hotbar · Right-click to assign"
+                  >
+                    {c.iconUrl && (
+                      <img className="loadout-panel__consumable-icon" src={c.iconUrl} alt="" />
+                    )}
+                    <span className="loadout-panel__consumable-name">
+                      {c.name}
+                    </span>
+                    {inHotbar && (
+                      <span className="loadout-panel__consumable-slot-tag">
+                        SLOT {slotIdx}
+                      </span>
+                    )}
+                    <span className="loadout-panel__consumable-count">
+                      {c.count}/{c.stackMax}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </>
         )}
 
         {/* Hotbar info */}
         <div className="loadout-panel__hotbar-info">
-          Consumables can be used via hotbar keys 0-9
+          Drag a consumable to the hotbar, or right-click to assign a slot.
         </div>
       </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          title={getItemDef(menu.itemId)?.name ?? "Consumable"}
+          items={buildAssignMenu(menu.itemId)}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </Panel>
   );
 }

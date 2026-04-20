@@ -344,6 +344,14 @@ export const itemCraftedSignalAtom = atom(0);
  */
 export const lastCraftedItemIdAtom = atom<string | null>(null);
 
+/**
+ * MIME types used for drag-and-drop between LoadoutPanel and Hotbar.
+ * Payload is the consumable itemId string.
+ */
+export const HOTBAR_DRAG_MIME = "application/x-sn-consumable";
+/** Source slot index (as string) when dragging from one hotbar slot to another. */
+export const HOTBAR_SOURCE_SLOT_MIME = "application/x-sn-hotbar-source";
+
 export const setHotbarSlotAtom = atom(
   null,
   (get, set, update: { index: number; itemId: string | null }): void => {

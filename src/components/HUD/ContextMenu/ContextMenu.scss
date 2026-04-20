@@ -1,0 +1,100 @@
+@use '../../../styles' as s;
+
+.context-menu {
+  position: fixed;
+  z-index: s.$z-context-menu;
+  min-width: 200px;
+  max-width: 280px;
+  padding: s.$space-1;
+  background: s.$surface-glass-2;
+  backdrop-filter: blur(s.$blur-md);
+  -webkit-backdrop-filter: blur(s.$blur-md);
+  border: 1px solid s.$stroke-base;
+  @include s.chamfer(s.$radius-lg, ('tr', 'bl'));
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.35);
+  font-family: s.$font-ui;
+  color: s.$text-primary;
+  animation: contextMenuIn s.$dur-fast s.$ease-out;
+
+  &__title {
+    padding: s.$space-1 s.$space-2 s.$space-2;
+    font-family: s.$font-display;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: s.$text-tertiary;
+    border-bottom: 1px solid s.$stroke-faint;
+    margin-bottom: s.$space-1;
+  }
+
+  &__separator {
+    height: 1px;
+    background: s.$stroke-faint;
+    margin: s.$space-1 0;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: s.$space-3;
+    width: 100%;
+    padding: 6px s.$space-2;
+    background: transparent;
+    border: none;
+    color: s.$text-primary;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: s.$radius-sm;
+    transition:
+      background s.$dur-instant s.$ease-out,
+      color s.$dur-instant s.$ease-out;
+
+    &:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.06);
+      color: s.$text-primary;
+    }
+
+    &:focus-visible {
+      outline: 1px solid s.$stroke-active;
+      outline-offset: -1px;
+    }
+  }
+
+  &__item--disabled {
+    color: s.$text-disabled;
+    cursor: not-allowed;
+  }
+
+  &__label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__hint {
+    flex: 0 0 auto;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    color: s.$text-tertiary;
+  }
+
+  @keyframes contextMenuIn {
+    from {
+      opacity: 0;
+      transform: translateY(-2px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+}

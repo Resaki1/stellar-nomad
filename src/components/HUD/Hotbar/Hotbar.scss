@@ -11,6 +11,13 @@
   pointer-events: auto;
 }
 
+// While a consumable drag is active, lift the hotbar above any open
+// modal (Loadout panel backdrop sits at $z-modal) so drops land on the
+// slots instead of the backdrop.
+body.sn-dragging-consumable .hotbar {
+  z-index: s.$z-modal-critical;
+}
+
 .hotbar__slot {
   position: relative;
   width: 48px;
@@ -24,7 +31,10 @@
   font-family: s.$font-ui;
   overflow: hidden;
   @include s.chamfer(s.$radius-lg, ('tr', 'bl'));
-  transition: border-color s.$dur-fast s.$ease-out;
+  transition:
+    border-color s.$dur-fast s.$ease-out,
+    background s.$dur-fast s.$ease-out,
+    box-shadow s.$dur-fast s.$ease-out;
 
   &--filled {
     border-color: s.$stroke-base;
@@ -53,6 +63,36 @@
 
     &:hover {
       border-color: s.$stroke-base;
+    }
+  }
+
+  // While the user is dragging a consumable, every slot becomes a
+  // visible drop target (dashed accent border) so the affordance is
+  // unambiguous. Driven by a body-level class the drag source toggles.
+  body.sn-dragging-consumable & {
+    border-style: dashed;
+    border-color: rgba(127, 184, 255, 0.35);
+  }
+
+  &--drag-over {
+    border-style: solid !important;
+    border-color: s.$accent-info !important;
+    background: rgba(127, 184, 255, 0.12);
+    box-shadow: 0 0 12px s.$glow-info;
+  }
+
+  &--just-assigned {
+    animation: hotbarAssignPulse s.$dur-cine s.$ease-bounce;
+  }
+
+  @keyframes hotbarAssignPulse {
+    0% {
+      border-color: s.$accent-signal;
+      box-shadow: 0 0 16px s.$glow-signal;
+    }
+    100% {
+      border-color: s.$stroke-base;
+      box-shadow: none;
     }
   }
 }
