@@ -1,9 +1,11 @@
+@use '../../../styles' as s;
+
 .transit-hud {
   position: fixed;
-  z-index: 95;
+  z-index: 95; // TODO(phase-3): normalize to $z scale (needs layering decision)
   pointer-events: none;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: rgba(255, 255, 255, 0.92);
+  font-family: s.$font-ui;
+  color: rgba(255, 255, 255, 0.92); // close to $text-primary; keep raw to preserve visuals
 
   // ── Spooling state: centered ring ──────────────────────────────
   &--spooling {
@@ -13,14 +15,14 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
-    margin-top: 60px; // offset below reticle
+    gap: s.$space-2;
+    margin-top: 60px; // offset below reticle — TODO(phase-3): normalize spacing
   }
 
   &__spool-ring {
     position: relative;
-    width: 48px;
-    height: 48px;
+    width: s.$space-7;
+    height: s.$space-7;
   }
 
   &__spool-svg {
@@ -31,16 +33,16 @@
 
   &__spool-track {
     fill: none;
-    stroke: rgba(255, 200, 60, 0.15);
+    stroke: rgba(255, 200, 60, 0.15); // $accent-signal-tinted stroke; keep raw to preserve visuals
     stroke-width: 3;
   }
 
   &__spool-fill {
     fill: none;
-    stroke: rgba(255, 200, 60, 0.8);
+    stroke: rgba(255, 200, 60, 0.8); // $accent-signal-tinted stroke; keep raw to preserve visuals
     stroke-width: 3;
     stroke-linecap: round;
-    transition: stroke-dasharray 50ms linear;
+    transition: stroke-dasharray s.$dur-instant linear;
   }
 
   &__spool-label {
@@ -51,7 +53,7 @@
     justify-content: center;
     font-size: 10px;
     font-weight: 700;
-    color: rgba(255, 200, 60, 0.9);
+    color: rgba(255, 200, 60, 0.9); // $accent-signal-tinted text; keep raw to preserve visuals
   }
 
   &__spool-text {
@@ -59,7 +61,7 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: rgba(255, 200, 60, 0.85);
+    color: rgba(255, 200, 60, 0.85); // $accent-signal-tinted text; keep raw to preserve visuals
   }
 
   &__spool-hint {
@@ -69,18 +71,18 @@
 
   // ── Active transit: bottom center ──────────────────────────────
   &--active {
-    bottom: 100px;
+    bottom: 100px; // TODO(phase-3): normalize spacing
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
-    background: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(6px);
-    border: 1px solid rgba(255, 200, 60, 0.2);
-    border-radius: 10px;
-    padding: 12px 20px;
+    gap: s.$space-1;
+    background: rgba(0, 0, 0, 0.4); // TODO(phase-3): migrate to glass tier
+    backdrop-filter: blur(s.$blur-sm);
+    border: 1px solid rgba(255, 200, 60, 0.2); // $accent-signal-tinted stroke; keep raw to preserve visuals
+    border-radius: 10px; // TODO(phase-3): normalize radius
+    padding: s.$space-3 20px; // TODO(phase-3): normalize spacing (20px)
     min-width: 180px;
   }
 
@@ -89,26 +91,26 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: rgba(255, 200, 60, 0.7);
+    color: rgba(255, 200, 60, 0.7); // $accent-signal-tinted text; keep raw to preserve visuals
   }
 
   &__velocity {
     font-size: 22px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    color: rgba(255, 255, 255, 0.95);
+    color: rgba(255, 255, 255, 0.95); // close to $text-primary; keep raw to preserve visuals
     line-height: 1.1;
   }
 
   &__light-pct {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(255, 200, 60, 0.8);
+    color: rgba(255, 200, 60, 0.8); // $accent-signal-tinted text; keep raw to preserve visuals
     font-variant-numeric: tabular-nums;
   }
 
   &__target-info {
-    margin-top: 4px;
+    margin-top: s.$space-1;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -118,7 +120,7 @@
   &__target-name {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(255, 220, 120, 0.9);
+    color: rgba(255, 220, 120, 0.9); // $accent-signal-tinted text; keep raw to preserve visuals
   }
 
   &__target-dist {
@@ -130,7 +132,7 @@
   &__eta {
     font-size: 10px;
     font-weight: 600;
-    color: rgba(255, 200, 60, 0.8);
+    color: rgba(255, 200, 60, 0.8); // $accent-signal-tinted text; keep raw to preserve visuals
     font-variant-numeric: tabular-nums;
   }
 

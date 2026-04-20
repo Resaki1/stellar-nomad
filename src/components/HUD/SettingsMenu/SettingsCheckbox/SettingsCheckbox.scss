@@ -1,34 +1,36 @@
+@use '../../../../styles' as s;
+
 .settings-checkbox__container {
   box-sizing: border-box;
-  padding: 8px 8px 8px 16px;
-  border-radius: 8px;
+  padding: s.$space-2 s.$space-2 s.$space-2 s.$space-4;
+  border-radius: s.$radius-xl;
   min-width: 128px;
   font-size: 1rem;
   font-weight: bold;
   cursor: pointer;
-  background: rgba(200, 200, 200, 0.25);
-  backdrop-filter: blur(16px);
-  border: rgba(200, 200, 200, 0.8) solid 1px;
+  background: s.$legacy-bright-glass-bg;
+  backdrop-filter: blur(16px); // TODO(phase-3): map to $blur-md (14px) when legacy-bright-glass is retired
+  border: s.$legacy-bright-glass-stroke solid 1px;
   outline: none;
-  color: rgb(240, 240, 240);
+  color: rgb(240, 240, 240); // near-white; keep raw to preserve visuals
   display: flex;
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
   width: 100%;
 
-  transition: all 0.5s cubic-bezier(0.075, 1.22, 0.165, 1);
+  transition: all 0.5s cubic-bezier(0.075, 1.22, 0.165, 1); // TODO(phase-3): audit motion
 
   &:hover {
-    background: rgba(200, 200, 200, 0.5);
+    background: rgba(200, 200, 200, 0.5); // legacy bright-glass variant; keep raw to preserve visuals
   }
 
   &:focus {
-    background: rgba(200, 200, 200, 0.75);
+    background: rgba(200, 200, 200, 0.75); // legacy bright-glass variant; keep raw to preserve visuals
   }
 
   &:active {
-    background: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.75); // bright-white active; keep raw to preserve visuals
   }
 }
 
@@ -38,18 +40,18 @@
 
 .settings-checkbox__indicator {
   position: relative;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  border: rgba(200, 200, 200, 0.8) solid 1px;
+  width: s.$space-4;
+  height: s.$space-4;
+  border-radius: s.$radius-md;
+  border: s.$legacy-bright-glass-stroke solid 1px;
   padding: 1px;
 }
 
 .settings-checkbox__indicator-fill {
   height: 100%;
   width: 100%;
-  background: rgba(255, 255, 255, 0.75);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.75); // bright-white fill; keep raw to preserve visuals
+  border-radius: 3px; // TODO(phase-3): normalize radius
   animation: check-animation 0.15s ease;
 }
 

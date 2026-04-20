@@ -1,11 +1,13 @@
+@use '../../../styles' as s;
+
 .hotbar {
   position: fixed;
-  bottom: 16px;
+  bottom: s.$space-4;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 300;
+  z-index: 300; // TODO(phase-3): normalize to $z scale (between hud-overlay and toast)
   display: flex;
-  gap: 4px;
+  gap: s.$space-1;
   pointer-events: auto;
 }
 
@@ -17,25 +19,27 @@
   align-items: center;
   justify-content: center;
   gap: 1px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.3); // TODO(phase-3): migrate to scrim tier
+  border: 1px solid s.$stroke-faint;
+  font-family: s.$font-ui;
+  color: rgba(255, 255, 255, 0.35); // close to $text-disabled; keep raw to preserve visuals
   font-size: 9px;
   position: relative;
   overflow: hidden;
-  transition: border-color 0.15s, background 0.15s;
+  @include s.chamfer(s.$radius-lg, ('tr', 'bl'));
+  transition:
+    border-color s.$dur-fast s.$ease-out,
+    background s.$dur-fast s.$ease-out;
 
   &--filled {
-    border-color: rgba(255, 255, 255, 0.2);
-    color: rgba(255, 255, 255, 0.8);
-    background: rgba(0, 0, 0, 0.45);
+    border-color: rgba(255, 255, 255, 0.2); // close to $stroke-base; keep raw to preserve visuals
+    color: rgba(255, 255, 255, 0.8); // close to $text-secondary; keep raw to preserve visuals
+    background: rgba(0, 0, 0, 0.45); // TODO(phase-3): migrate to scrim/glass tier
     cursor: pointer;
 
     &:hover {
-      border-color: rgba(80, 160, 255, 0.4);
-      background: rgba(0, 0, 0, 0.55);
+      border-color: rgba(80, 160, 255, 0.4); // $accent-info-tinted stroke; keep raw to preserve visuals
+      background: rgba(0, 0, 0, 0.55); // TODO(phase-3): migrate to scrim/glass tier
     }
   }
 
@@ -56,7 +60,7 @@
   opacity: 0.5;
   position: absolute;
   top: 2px;
-  left: 4px;
+  left: s.$space-1;
 }
 
 .hotbar__icon {
@@ -78,10 +82,11 @@
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 0 0 6px 6px;
+  background: rgba(0, 0, 0, 0.55); // TODO(phase-3): migrate to scrim tier
   pointer-events: none;
   transition: height 0.1s linear;
+  // The parent's chamfer clip-path carries through to this absolutely
+  // positioned child, so explicit border-radius is no longer needed.
 }
 
 .hotbar__cooldown-text {
@@ -91,8 +96,8 @@
   transform: translateX(-50%);
   font-size: 10px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.85); // close to $text-primary; keep raw to preserve visuals
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); // black shadow; keep raw to preserve visuals
   z-index: 1;
 }

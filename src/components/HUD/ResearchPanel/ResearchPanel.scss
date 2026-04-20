@@ -1,85 +1,49 @@
-// ---------------------------------------------------------------------------
-// Research Panel — tree view layout
-// ---------------------------------------------------------------------------
+@use '../../../styles' as s;
 
-.research-panel__backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(4px);
-  display: flex;
+// Modal chrome (backdrop, container, header, title, close) moved to the
+// universal Panel shell in ../Shell/Panel. This file styles only the
+// content inside Panel's body + headerRight slot.
+
+// ─── Samples pill (header-right slot) ────────────────────────────
+.research-panel__samples {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  pointer-events: auto;
+  gap: s.$space-1 + 2px; // 6px
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(140, 200, 255, 0.95); // info-blue-tinted; keep raw
+
+  svg {
+    flex: 0 0 auto;
+  }
 }
 
+.research-panel__samples-label {
+  font-family: s.$font-ui;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: s.$text-tertiary;
+  margin-left: 2px;
+}
+
+// ─── Panel body layout ───────────────────────────────────────────
 .research-panel {
-  width: min(920px, 95vw);
-  height: 100%;
-  max-height: min(720px, 90vh);
   display: flex;
   flex-direction: column;
-  background: rgba(12, 14, 22, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  backdrop-filter: blur(16px);
-  color: rgba(255, 255, 255, 0.92);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  overflow: hidden;
-
-  &__header {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 16px 18px 0;
-    flex: 0 0 auto;
-  }
-
-  &__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    opacity: 0.85;
-  }
-
-  &__samples {
-    font-size: 13px;
-    font-weight: 600;
-    margin-left: auto;
-    color: rgba(140, 200, 255, 0.95);
-  }
-
-  &__close {
-    flex: 0 0 auto;
-    margin-left: 6px;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: rgba(255, 255, 255, 0.85);
-    }
-  }
+  height: 100%;
+  min-height: 0;
 
   // ── Active research ──
   &__active {
-    margin: 10px 18px 0;
-    padding: 10px 14px;
-    background: rgba(80, 160, 255, 0.08);
-    border: 1px solid rgba(80, 160, 255, 0.25);
-    border-radius: 10px;
+    margin: s.$space-3 s.$space-4 0;
+    padding: s.$space-2 14px; // TODO(phase-3): normalize spacing (14px)
+    background: rgba(127, 184, 255, 0.08);
+    border: 1px solid rgba(127, 184, 255, 0.25);
+    border-radius: s.$radius-lg;
     flex: 0 0 auto;
   }
 
@@ -87,7 +51,7 @@
     font-size: 10px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    opacity: 0.6;
+    color: s.$text-tertiary;
     margin-bottom: 3px;
   }
 
@@ -97,22 +61,25 @@
   }
 
   &__progress-bar {
-    margin-top: 6px;
-    height: 4px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
+    margin-top: s.$radius-lg;
+    height: s.$space-1;
+    background: s.$stroke-faint;
+    border-radius: s.$radius-pill;
     overflow: hidden;
   }
 
   &__progress-fill {
     height: 100%;
-    background: rgba(80, 160, 255, 0.7);
+    background: rgba(127, 184, 255, 0.7); // $accent-info-tinted
+    transition: width s.$dur-base linear;
   }
 
   &__active-time {
     margin-top: 3px;
+    font-family: s.$font-mono;
     font-size: 10px;
-    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+    color: s.$text-tertiary;
     text-align: right;
   }
 
@@ -121,13 +88,14 @@
     flex: 1 1 0;
     display: flex;
     overflow: hidden;
-    margin-top: 10px;
+    margin-top: s.$space-3;
+    min-height: 80vh;
   }
 
   &__tree-scroll {
     flex: 1 1 0;
     overflow: auto;
-    padding: 12px 18px 18px;
+    padding: s.$space-3 s.$space-4 s.$space-4;
   }
 
   &__tree-canvas {
@@ -145,12 +113,12 @@
   // ── Detail panel ──
   &__detail {
     flex: 0 0 240px;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 14px 16px;
+    border-left: 1px solid s.$stroke-faint;
+    padding: 14px s.$space-4;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: s.$space-2;
   }
 }
 
@@ -163,20 +131,32 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 s.$space-2;
+  border-radius: 7px; // TODO(phase-3): normalize radius
+  border: 1px solid s.$stroke-faint;
   background: rgba(255, 255, 255, 0.03);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, opacity 0.15s, box-shadow 0.15s;
+  transition:
+    background s.$dur-fast s.$ease-out,
+    border-color s.$dur-fast s.$ease-out,
+    opacity s.$dur-fast s.$ease-out,
+    box-shadow s.$dur-fast s.$ease-out;
   font-family: inherit;
   color: inherit;
   text-align: left;
 
   &__icon {
     flex: 0 0 auto;
-    font-size: 11px;
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: s.$text-secondary;
+
+    svg {
+      display: block;
+    }
   }
 
   &__name {
@@ -191,12 +171,14 @@
 
   &__cost {
     flex: 0 0 auto;
+    font-family: s.$font-mono;
     font-size: 9px;
     font-weight: 700;
+    font-variant-numeric: tabular-nums;
     color: rgba(140, 200, 255, 0.8);
     background: rgba(140, 200, 255, 0.08);
-    padding: 1px 4px;
-    border-radius: 3px;
+    padding: 1px s.$space-1;
+    border-radius: s.$radius-sm;
 
     &--insufficient {
       color: rgba(255, 120, 120, 0.8);
@@ -221,21 +203,21 @@
   }
 
   &--active {
-    border-color: rgba(80, 160, 255, 0.4);
-    background: rgba(80, 160, 255, 0.1);
+    border-color: rgba(127, 184, 255, 0.4);
+    background: rgba(127, 184, 255, 0.1);
   }
 
   &--completed {
     opacity: 0.6;
-    background: rgba(80, 200, 120, 0.05);
-    border-color: rgba(80, 200, 120, 0.2);
+    background: rgba(107, 227, 164, 0.05);
+    border-color: rgba(107, 227, 164, 0.2);
   }
 
   &--selected {
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
   }
 
-  // ── Branch colors (border tint for available/completed) ──
+  // ── Branch colors ──
   &--a.rt-node--available,
   &--a.rt-node--active {
     border-color: rgba(100, 160, 255, 0.35);
@@ -287,22 +269,34 @@
 
   &__desc {
     font-size: 11px;
-    opacity: 0.6;
+    color: s.$text-tertiary;
     line-height: 1.4;
   }
 
   &__meta {
     display: flex;
-    gap: 12px;
+    gap: s.$space-3;
+    font-family: s.$font-mono;
     font-size: 11px;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
     color: rgba(140, 200, 255, 0.9);
+
+    &-cost {
+      display: inline-flex;
+      align-items: center;
+      gap: s.$space-1;
+
+      svg {
+        flex: 0 0 auto;
+      }
+    }
   }
 
   &__section {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: s.$space-1;
   }
 
   &__section-label {
@@ -310,7 +304,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    opacity: 0.4;
+    color: s.$text-tertiary;
   }
 
   &__bonuses {
@@ -322,25 +316,25 @@
   &__bonus-tag {
     font-size: 10px;
     font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(80, 200, 120, 0.1);
+    padding: 2px s.$radius-lg;
+    border-radius: s.$radius-sm;
+    background: rgba(107, 227, 164, 0.1);
     color: rgba(120, 220, 160, 0.9);
   }
 
   &__items {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: s.$space-1;
   }
 
   &__item {
     display: flex;
     flex-direction: column;
     gap: 1px;
-    padding: 4px 6px;
+    padding: s.$space-1 s.$radius-lg;
     background: rgba(255, 255, 255, 0.03);
-    border-radius: 4px;
+    border-radius: s.$radius-md;
   }
 
   &__item-name {
@@ -351,30 +345,32 @@
 
   &__item-desc {
     font-size: 9px;
-    opacity: 0.5;
+    color: s.$text-tertiary;
     line-height: 1.3;
   }
 
   &__prereq {
     font-size: 11px;
-    opacity: 0.7;
+    color: s.$text-secondary;
   }
 
   &__start-btn {
     margin-top: auto;
-    padding: 8px 14px;
+    padding: s.$space-2 14px;
     font-size: 12px;
     font-weight: 600;
-    border-radius: 6px;
-    border: 1px solid rgba(80, 160, 255, 0.4);
-    background: rgba(80, 160, 255, 0.12);
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(127, 184, 255, 0.4);
+    background: rgba(127, 184, 255, 0.12);
     color: rgba(160, 210, 255, 0.95);
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition:
+      background s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out;
 
     &:hover:not(:disabled) {
-      background: rgba(80, 160, 255, 0.25);
-      border-color: rgba(80, 160, 255, 0.6);
+      background: rgba(127, 184, 255, 0.25);
+      border-color: rgba(127, 184, 255, 0.6);
     }
 
     &:disabled {
@@ -387,17 +383,17 @@
     margin-top: auto;
     font-size: 11px;
     font-weight: 600;
-    color: rgba(80, 200, 120, 0.8);
+    color: rgba(107, 227, 164, 0.8);
     text-align: center;
-    padding: 6px;
+    padding: s.$radius-lg;
   }
 
   &__active-badge {
     margin-top: auto;
     font-size: 11px;
-    color: rgba(80, 160, 255, 0.8);
+    color: rgba(127, 184, 255, 0.8);
     text-align: center;
-    padding: 6px;
+    padding: s.$radius-lg;
   }
 
   // Branch-colored detail panel accent

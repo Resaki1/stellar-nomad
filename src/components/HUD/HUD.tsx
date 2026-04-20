@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
+import { Microscope, Shield, Wrench } from "lucide-react";
 import { keybindsAtom } from "@/store/keybinds";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
@@ -107,21 +108,24 @@ export default function HUD() {
           onClick={() => openPanel("research")}
           title="Research (R)"
         >
-          🔬 Research
+          <Microscope size={14} strokeWidth={1.75} aria-hidden />
+          <span>Research</span>
         </button>
         <button
           className={`hud__panel-btn ${activePanel === "crafting" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("crafting")}
           title="Crafting (F)"
         >
-          ⚙️ Craft
+          <Wrench size={14} strokeWidth={1.75} aria-hidden />
+          <span>Craft</span>
         </button>
         <button
           className={`hud__panel-btn ${activePanel === "loadout" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("loadout")}
           title="Loadout (L)"
         >
-          🛡️ Loadout
+          <Shield size={14} strokeWidth={1.75} aria-hidden />
+          <span>Loadout</span>
         </button>
       </div>
 

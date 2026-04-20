@@ -1,10 +1,12 @@
+@use '../../../styles' as s;
+
 .damage-vignette {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 9999;
+  z-index: s.$z-vignette;
   opacity: 0;
-  transition: opacity 0.08s ease-in;
+  transition: opacity s.$dur-instant ease-in;
 
   // Radial gradient: transparent center, red edges
   background: radial-gradient(
@@ -13,7 +15,7 @@
     rgba(200, 20, 20, 0.25) 70%,
     rgba(180, 0, 0, 0.55) 90%,
     rgba(140, 0, 0, 0.7) 100%
-  );
+  ); // $accent-crit-tinted gradient; keep raw to preserve visuals
 
   &--active {
     opacity: 1;

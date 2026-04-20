@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom } from "jotai";
+import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
 import {
   SetAtom,
   Settings,
@@ -9,6 +10,7 @@ import {
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import KeybindRow from "./KeybindRow/KeybindRow";
+import Panel from "../Shell/Panel";
 import {
   KEYBIND_ACTIONS,
   CATEGORY_LABELS,
@@ -80,7 +82,6 @@ const renderSubMenu = (
         </>
       );
     case SubMenu.Controls: {
-      // Group keybind actions by category
       const categories = new Map<KeybindCategory, typeof KEYBIND_ACTIONS>();
       for (const a of KEYBIND_ACTIONS) {
         if (!categories.has(a.category)) categories.set(a.category, []);
@@ -115,7 +116,7 @@ const renderSubMenu = (
 
           {onResetKeybinds && (
             <button
-              className="settings__menu-button settings__menu-button--subtle"
+              className="settings-menu__button settings-menu__button--subtle"
               onClick={onResetKeybinds}
             >
               reset keybinds
@@ -140,7 +141,7 @@ const renderSubMenu = (
           {devHandlers && <DevControls {...devHandlers} />}
           {onResetWorld && (
             <button
-              className="settings__menu-button settings__menu-button--danger"
+              className="settings-menu__button settings-menu__button--danger"
               onClick={onResetWorld}
             >
               reset world
@@ -196,7 +197,6 @@ function DevControls({
       : ""
   );
 
-  // Resource grant state
   const [selectedResource, setSelectedResource] = useState<string>(RESOURCE_IDS[0]);
   const [resourceAmount, setResourceAmount] = useState("500");
   const [assayAmount, setAssayAmount] = useState("500");
@@ -286,13 +286,13 @@ function DevControls({
         </div>
         <div className="dev-controls__row">
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleLoadCurrent}
           >
             load current
           </button>
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleTeleport}
           >
             teleport
@@ -321,7 +321,7 @@ function DevControls({
             <option value="AU/s">AU/s</option>
           </select>
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleSpeedApply}
           >
             {speedVal.trim() ? "apply" : "reset"}
@@ -350,7 +350,7 @@ function DevControls({
             onChange={(e) => setResourceAmount(e.target.value)}
           />
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleGrantCargo}
           >
             add
@@ -358,7 +358,7 @@ function DevControls({
         </div>
         <div className="dev-controls__row">
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleGrantAllCargo}
           >
             grant all resources
@@ -378,7 +378,7 @@ function DevControls({
             onChange={(e) => setAssayAmount(e.target.value)}
           />
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={handleGrantAssay}
           >
             add
@@ -391,25 +391,25 @@ function DevControls({
         <div className="dev-controls__label">progression</div>
         <div className="dev-controls__row dev-controls__row--wrap">
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={onUnlockAllResearch}
           >
             unlock all research
           </button>
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={onGrantAllItems}
           >
             grant all items
           </button>
           <button
-            className="settings__menu-button settings__menu-button--subtle"
+            className="settings-menu__button settings-menu__button--subtle"
             onClick={onResetComms}
           >
             reset comms
           </button>
           <button
-            className="settings__menu-button settings__menu-button--danger"
+            className="settings-menu__button settings-menu__button--danger"
             onClick={onResetProgress}
           >
             reset progress
@@ -430,7 +430,6 @@ const SettingsMenu = () => {
   const keybinds = useAtomValue(keybindsAtom);
   const resetKeybinds = useSetAtom(resetKeybindsAtom);
 
-  // Dev-only atoms
   const setDevTeleport = useSetAtom(devTeleportAtom);
   const [devMaxSpeed, setDevMaxSpeed] = useAtom(devMaxSpeedOverrideAtom);
   const setAddAssay = useSetAtom(addAssaySamplesAtom);
@@ -538,58 +537,83 @@ const SettingsMenu = () => {
     }
   }, []);
 
+  const handleClose = useCallback(() => {
+    setIsOpen(false);
+    setActiveSubMenu(null);
+  }, [setIsOpen]);
+
   const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
 
-  // Settings toggle hotkey — reads from keybinds store
+  // Hotkey handler: when closed, toggle key opens settings. When open, Panel
+  // handles Esc / backdrop close.
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
+  const isOpenRef = useRef(isOpen);
+  isOpenRef.current = isOpen;
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (isOpenRef.current) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       const key = e.key.toLowerCase();
       if (keybindsRef.current.toggleSettings.includes(key)) {
-        toggleMenu();
+        setIsOpen(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleMenu]);
+  }, [setIsOpen]);
+
+  const title = activeSubMenu
+    ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
+    : "Settings";
+  const eyebrow = activeSubMenu ? "Settings" : undefined;
 
   return (
     <>
-      <button className="settings__open-button" onClick={toggleMenu}>
-        I I
+      <button
+        className="settings__open-button"
+        onClick={toggleMenu}
+        aria-label="Open settings"
+      >
+        <SettingsIcon size={16} strokeWidth={1.75} aria-hidden />
       </button>
 
       {isOpen && (
-        <div className="settings" onClick={() => setIsOpen(false)}>
-          <div className="settings__menu" onClick={(e) => e.stopPropagation()}>
-            <h2 className="settings__menu-title">
-              {activeSubMenu ?? "settings"}
-            </h2>
+        <Panel
+          title={title}
+          eyebrow={eyebrow}
+          tier={2}
+          width={560}
+          onClose={handleClose}
+          secondaryAction={
+            activeSubMenu
+              ? {
+                  label: "Back",
+                  icon: <ChevronLeft size={14} strokeWidth={1.75} aria-hidden />,
+                  variant: "subtle",
+                  onClick: () => setActiveSubMenu(null),
+                }
+              : undefined
+          }
+        >
+          <div className="settings-menu">
             {!activeSubMenu ? (
-              <>
+              <div className="settings-menu__nav">
                 {availableSubMenus.map((subMenu) => (
                   <button
                     key={subMenu}
-                    className="settings__menu-button"
+                    className="settings-menu__button"
                     onClick={() => setActiveSubMenu(subMenu)}
                   >
                     {subMenu}
                   </button>
                 ))}
-              </>
+              </div>
             ) : (
-              <>
-                <button
-                  className="settings__menu-button settings__menu-button--back"
-                  onClick={() => setActiveSubMenu(null)}
-                >
-                  {"<"} back
-                </button>
+              <div className="settings-menu__content">
                 {renderSubMenu(
                   activeSubMenu,
                   settings,
@@ -598,17 +622,10 @@ const SettingsMenu = () => {
                   handleResetKeybinds,
                   devHandlers
                 )}
-              </>
+              </div>
             )}
-
-            <button
-              className="settings__menu-button"
-              onClick={() => setIsOpen(false)}
-            >
-              close
-            </button>
           </div>
-        </div>
+        </Panel>
       )}
     </>
   );

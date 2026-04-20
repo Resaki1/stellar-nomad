@@ -1,82 +1,30 @@
-.crafting-panel__backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-}
+@use '../../../styles' as s;
+
+// Modal chrome (backdrop, container, header, title, close) moved to the
+// universal Panel shell in ../Shell/Panel. This file styles only the
+// content inside Panel's body + the nested craft-confirmation dialog.
 
 .crafting-panel {
-  position: relative;
-  width: min(600px, 92vw);
-  height: 100%;
-  max-height: min(720px, 85vh);
   display: flex;
   flex-direction: column;
-  background: rgba(12, 14, 22, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  backdrop-filter: blur(16px);
-  color: rgba(255, 255, 255, 0.92);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  overflow: hidden;
-
-  &__header {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 16px 18px 0;
-  }
-
-  &__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    opacity: 0.85;
-  }
-
-  &__close {
-    flex: 0 0 auto;
-    margin-left: auto;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: rgba(255, 255, 255, 0.85);
-    }
-  }
+  gap: s.$space-3;
+  min-height: 0;
 
   // ── Cargo summary ──
   &__cargo-row {
     display: flex;
-    gap: 12px;
-    padding: 10px 18px 0;
+    gap: s.$space-3;
     flex-wrap: wrap;
   }
 
   &__cargo-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: s.$space-1;
+    font-family: s.$font-mono;
     font-size: 12px;
     font-weight: 600;
-    opacity: 0.7;
+    color: s.$text-secondary;
     font-variant-numeric: tabular-nums;
   }
 
@@ -90,8 +38,7 @@
   // ── Slot filters ──
   &__filters {
     display: flex;
-    gap: 4px;
-    padding: 12px 18px 0;
+    gap: s.$space-1;
     flex-wrap: wrap;
   }
 
@@ -99,49 +46,51 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.05em;
-    padding: 4px 10px;
-    border-radius: 4px;
+    padding: s.$space-1 s.$space-3;
+    border-radius: s.$radius-md;
     border: 1px solid rgba(255, 255, 255, 0.12);
     background: rgba(255, 255, 255, 0.04);
-    color: rgba(255, 255, 255, 0.6);
+    color: s.$text-secondary;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition:
+      background s.$dur-fast s.$ease-out,
+      color s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out;
 
     &:hover {
       background: rgba(255, 255, 255, 0.08);
-      color: rgba(255, 255, 255, 0.85);
+      color: s.$text-primary;
     }
 
     &--active {
-      background: rgba(80, 160, 255, 0.15);
-      border-color: rgba(80, 160, 255, 0.4);
-      color: rgba(160, 210, 255, 0.95);
+      background: rgba(127, 184, 255, 0.15);
+      border-color: rgba(127, 184, 255, 0.4);
+      color: rgba(160, 210, 255, 0.95); // light info-blue; keep raw
     }
   }
 
   // ── Items list ──
   &__list {
-    margin-top: 10px;
-    padding: 0 18px 18px;
     overflow-y: auto;
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: s.$space-2;
+    min-height: 0;
   }
 
   &__empty {
-    padding: 24px 0;
+    padding: s.$space-5 0;
     text-align: center;
     font-size: 13px;
-    opacity: 0.45;
+    color: s.$text-tertiary;
   }
 
   &__item {
-    padding: 10px 12px;
+    padding: s.$space-2 s.$space-3;
     background: rgba(255, 255, 255, 0.04);
-    border-radius: 8px;
-    transition: background 0.15s;
+    border-radius: s.$radius-lg;
+    transition: background s.$dur-fast s.$ease-out;
 
     &:hover {
       background: rgba(255, 255, 255, 0.07);
@@ -151,7 +100,7 @@
   &__item-header {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: s.$space-2;
   }
 
   &__item-icon {
@@ -159,7 +108,7 @@
     width: 36px;
     height: 36px;
     object-fit: contain;
-    border-radius: 6px;
+    border-radius: s.$radius-md;
     background: rgba(255, 255, 255, 0.05);
     padding: 3px;
   }
@@ -169,7 +118,7 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 8px;
+    gap: s.$space-2;
     min-width: 0;
   }
 
@@ -180,7 +129,7 @@
 
   &__item-slot {
     font-size: 10px;
-    opacity: 0.45;
+    color: s.$text-tertiary;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     flex: 0 0 auto;
@@ -189,7 +138,7 @@
   &__item-desc {
     margin-top: 3px;
     font-size: 11px;
-    opacity: 0.55;
+    color: s.$text-tertiary;
     line-height: 1.35;
   }
 
@@ -197,42 +146,43 @@
     margin-top: 5px;
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: s.$space-1 + 2px; // 6px
   }
 
   &__item-effect {
     font-size: 10px;
     font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(80, 200, 120, 0.1);
+    padding: 2px s.$radius-lg;
+    border-radius: s.$radius-sm;
+    background: rgba(107, 227, 164, 0.10); // $accent-ok-tinted
     color: rgba(120, 220, 160, 0.9);
   }
 
   // ── Recipe ──
   &__recipe {
-    margin-top: 6px;
+    margin-top: s.$space-2;
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: s.$space-2;
   }
 
   &__recipe-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: s.$space-1;
+    font-family: s.$font-mono;
     font-size: 11px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    opacity: 0.75;
+    color: s.$text-secondary;
 
     &--insufficient {
-      color: rgba(255, 120, 120, 0.9);
+      color: rgba(255, 120, 120, 0.9); // $accent-crit-tinted
     }
   }
 
   &__item-actions {
-    margin-top: 8px;
+    margin-top: s.$space-2;
     display: flex;
     justify-content: flex-end;
   }
@@ -240,17 +190,20 @@
   &__craft-btn {
     font-size: 11px;
     font-weight: 600;
-    padding: 5px 16px;
-    border-radius: 5px;
-    border: 1px solid rgba(80, 200, 120, 0.4);
-    background: rgba(80, 200, 120, 0.12);
+    padding: 5px s.$space-4;
+    border-radius: s.$radius-sm;
+    border: 1px solid rgba(107, 227, 164, 0.4); // $accent-ok-tinted
+    background: rgba(107, 227, 164, 0.12);
     color: rgba(140, 230, 170, 0.95);
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    transition:
+      background s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out,
+      opacity s.$dur-fast s.$ease-out;
 
     &:hover:not(:disabled) {
-      background: rgba(80, 200, 120, 0.25);
-      border-color: rgba(80, 200, 120, 0.6);
+      background: rgba(107, 227, 164, 0.25);
+      border-color: rgba(107, 227, 164, 0.6);
     }
 
     &:disabled {
@@ -267,48 +220,50 @@
   &__owned-badge {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(180, 180, 180, 0.7);
+    color: s.$text-tertiary;
     padding: 5px 14px;
 
     &--equipped {
-      color: rgba(120, 220, 160, 0.85);
+      color: rgba(120, 220, 160, 0.85); // $accent-ok-tinted
     }
   }
 
   // ── Confirmation dialog ──
+  // Fixed overlay above the Panel (higher z than $z-modal).
   &__confirm-overlay {
-    position: absolute;
+    position: fixed;
     inset: 0;
+    z-index: s.$z-modal-critical;
     background: rgba(0, 0, 0, 0.55);
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 14px;
   }
 
   &__confirm {
     width: min(340px, 85%);
-    padding: 18px;
-    background: rgba(18, 20, 30, 0.97);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 12px;
+    padding: s.$space-4;
+    @include s.glass(2);
+    border-radius: s.$radius-lg;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: s.$space-2;
+    @include s.chamfer(s.$radius-xl, ('tl', 'br'));
   }
 
   &__confirm-title {
+    font-family: s.$font-display;
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    opacity: 0.6;
+    color: s.$text-tertiary;
   }
 
   &__confirm-identity {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: s.$space-3;
   }
 
   &__confirm-icon {
@@ -316,20 +271,20 @@
     width: 44px;
     height: 44px;
     object-fit: contain;
-    border-radius: 8px;
+    border-radius: s.$radius-md;
     background: rgba(255, 255, 255, 0.05);
-    padding: 4px;
+    padding: s.$space-1;
   }
 
   &__confirm-name {
     font-size: 15px;
     font-weight: 600;
-    color: rgba(160, 210, 255, 0.95);
+    color: rgba(160, 210, 255, 0.95); // light info-blue
   }
 
   &__confirm-desc {
     font-size: 11px;
-    opacity: 0.6;
+    color: s.$text-tertiary;
     line-height: 1.35;
   }
 
@@ -342,28 +297,28 @@
 
   &__confirm-note {
     font-size: 10px;
-    opacity: 0.4;
+    color: s.$text-disabled;
     font-style: italic;
-    margin-top: 4px;
+    margin-top: s.$space-1;
   }
 
   &__confirm-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 8px;
+    gap: s.$space-2;
+    margin-top: s.$space-2;
   }
 
   &__confirm-cancel {
     font-size: 11px;
     font-weight: 600;
     padding: 5px 14px;
-    border-radius: 5px;
+    border-radius: s.$radius-sm;
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.6);
+    color: s.$text-secondary;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background s.$dur-fast s.$ease-out;
 
     &:hover {
       background: rgba(255, 255, 255, 0.12);

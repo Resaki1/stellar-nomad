@@ -1,0 +1,64 @@
+@use 'tokens' as t;
+
+// ─── Type scale ─────────────────────────────────────────────────
+// Each mixin bundles font-size + line-height + letter-spacing as
+// one unit. Font family and color stay component-defined.
+
+@mixin t-xs {
+  font-size: 10px;
+  line-height: 12px;
+  letter-spacing: 0.12em;
+}
+
+@mixin t-sm {
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.08em;
+}
+
+@mixin t-md {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: 0.02em;
+}
+
+@mixin t-lg {
+  font-size: 15px;
+  line-height: 20px;
+  letter-spacing: 0;
+}
+
+@mixin t-xl {
+  font-size: 18px;
+  line-height: 22px;
+  letter-spacing: 0.04em;
+}
+
+@mixin t-2xl {
+  font-size: 24px;
+  line-height: 28px;
+  letter-spacing: 0.02em;
+}
+
+@mixin t-hero {
+  font-size: 40px;
+  line-height: 44px;
+  letter-spacing: 0.06em;
+}
+
+// ─── Utility: tabular numeric text ──────────────────────────────
+// Apply to any element displaying numbers that change at runtime
+// (velocity, distance, counts) so digits don't jitter.
+@mixin tabular {
+  font-family: t.$font-mono;
+  font-variant-numeric: tabular-nums;
+}
+
+// ─── Utility: uppercase label ───────────────────────────────────
+// Canonical look for caption labels, section headers, tags.
+@mixin label {
+  @include t-xs;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: t.$text-tertiary;
+}

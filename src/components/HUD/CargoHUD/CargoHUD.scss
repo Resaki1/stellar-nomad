@@ -1,19 +1,21 @@
+@use '../../../styles' as s;
+
 .cargo-hud {
   position: absolute;
-  left: 12px;
-  top: 12px;
+  left: s.$space-3;
+  top: s.$space-3;
   width: 260px;
-  padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.35);
+  padding: s.$space-3 14px; // TODO(phase-3): normalize to $space-3 once spacing audit done
+  background: rgba(0, 0, 0, 0.35); // close to $surface-scrim; keep raw to preserve visuals
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
+  border-radius: s.$radius-lg * 2; // 12px — panel radius
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   color: rgba(255, 255, 255, 0.9);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: s.$font-ui;
   pointer-events: auto;
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  transition: border-color s.$dur-base s.$ease-out, background s.$dur-base s.$ease-out;
 
   &:hover {
     border-color: rgba(255, 255, 255, 0.24);
@@ -24,7 +26,7 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 12px;
+    gap: s.$space-3;
   }
 
   &__title {
@@ -40,10 +42,10 @@
   }
 
   &__bar {
-    margin-top: 8px;
+    margin-top: s.$space-2;
     height: 6px;
     background: rgba(255, 255, 255, 0.12);
-    border-radius: 999px;
+    border-radius: s.$radius-pill;
     overflow: hidden;
   }
 
@@ -53,17 +55,17 @@
   }
 
   &__list {
-    margin-top: 10px;
+    margin-top: 10px; // TODO(phase-3): normalize to $space-3
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize to $space-2
   }
 
   &__row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    gap: s.$space-3;
     font-size: 12px;
     opacity: 0.9;
   }
@@ -71,7 +73,7 @@
   &__resource {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: s.$space-2;
     min-width: 0;
   }
 

@@ -1,0 +1,261 @@
+@use '../../../styles' as s;
+
+.panel__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: s.$z-modal;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: panel__backdrop-fade s.$dur-base s.$ease-out;
+}
+
+@keyframes panel__backdrop-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 640px;
+  max-width: 92vw;
+  max-height: 88vh;
+  min-height: 0;
+  color: s.$text-primary;
+  font-family: s.$font-ui;
+  animation: panel__enter s.$dur-slow s.$ease-out;
+
+  &--tier-1 {
+    @include s.glass(1);
+  }
+
+  &--tier-2 {
+    @include s.glass(2);
+  }
+
+  @include s.chamfer(s.$radius-xl + 4px, ('tl', 'br'));
+}
+
+@keyframes panel__enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+// ─── Header ──────────────────────────────────────────────────────
+.panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: s.$space-3;
+  padding: s.$space-4 s.$space-5;
+  border-bottom: 1px solid s.$stroke-base;
+  flex: 0 0 auto;
+}
+
+.panel__header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.panel__eyebrow {
+  @include s.label;
+  color: s.$accent-info;
+  letter-spacing: 0.14em;
+}
+
+.panel__title {
+  font-family: s.$font-display;
+  @include s.t-xl;
+  margin: 0;
+  font-weight: 600;
+  color: s.$text-primary;
+  text-transform: uppercase;
+}
+
+.panel__subtitle {
+  @include s.t-sm;
+  margin: 2px 0 0 0;
+  color: s.$text-tertiary;
+  max-width: 56ch;
+  font-family: s.$font-ui;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.panel__header-right {
+  display: flex;
+  align-items: center;
+  gap: s.$space-2;
+  color: s.$text-secondary;
+  font-size: 12px;
+}
+
+.panel__close {
+  @include s.reset-button;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: s.$space-5;
+  height: s.$space-5;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-sm;
+  color: s.$text-secondary;
+  transition:
+    border-color s.$dur-fast s.$ease-out,
+    color s.$dur-fast s.$ease-out,
+    background s.$dur-fast s.$ease-out;
+  flex: 0 0 auto;
+
+  &:hover {
+    border-color: s.$stroke-active;
+    color: s.$text-primary;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  &:active {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
+
+// ─── Body ────────────────────────────────────────────────────────
+.panel__body {
+  padding: s.$space-4 s.$space-5;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+
+  &--flush {
+    padding: 0;
+  }
+}
+
+// ─── Footer ──────────────────────────────────────────────────────
+.panel__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: s.$space-2;
+  padding: s.$space-3 s.$space-5;
+  border-top: 1px solid s.$stroke-base;
+  flex: 0 0 auto;
+}
+
+.panel__footer-left,
+.panel__footer-right {
+  display: flex;
+  align-items: center;
+  gap: s.$space-2;
+}
+
+// ─── Action buttons ──────────────────────────────────────────────
+.panel__action {
+  @include s.reset-button;
+  display: inline-flex;
+  align-items: center;
+  gap: s.$space-2;
+  padding: s.$space-2 s.$space-4;
+  border-radius: s.$radius-md;
+  font-family: s.$font-ui;
+  @include s.t-xs;
+  font-weight: 500;
+  text-transform: uppercase;
+  transition:
+    background s.$dur-fast s.$ease-out,
+    border-color s.$dur-fast s.$ease-out,
+    color s.$dur-fast s.$ease-out;
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  // ── primary: info-blue filled button ──
+  &--primary {
+    background: rgba(127, 184, 255, 0.15);
+    border: 1px solid rgba(127, 184, 255, 0.4);
+    color: s.$accent-info;
+
+    &:hover:not(:disabled) {
+      background: rgba(127, 184, 255, 0.22);
+      border-color: s.$accent-info;
+    }
+  }
+
+  // ── secondary: neutral outline (default) ──
+  &--secondary {
+    background: transparent;
+    border: 1px solid s.$stroke-base;
+    color: s.$text-secondary;
+
+    &:hover:not(:disabled) {
+      border-color: s.$stroke-active;
+      color: s.$text-primary;
+    }
+  }
+
+  // ── subtle: borderless text button ──
+  &--subtle {
+    background: transparent;
+    border: 1px solid transparent;
+    color: s.$text-tertiary;
+
+    &:hover:not(:disabled) {
+      color: s.$text-primary;
+      border-color: s.$stroke-faint;
+    }
+  }
+
+  // ── danger: red-tinted destructive action ──
+  &--danger {
+    background: rgba(255, 92, 92, 0.12);
+    border: 1px solid rgba(255, 92, 92, 0.4);
+    color: s.$accent-crit;
+
+    &:hover:not(:disabled) {
+      background: rgba(255, 92, 92, 0.22);
+      border-color: s.$accent-crit;
+    }
+  }
+}
+
+.panel__action-icon {
+  display: inline-flex;
+  align-items: center;
+
+  svg {
+    display: block;
+  }
+}
+
+.panel__action-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  min-width: 16px;
+  padding: 0 s.$space-1;
+  margin-left: s.$space-1;
+  font-family: s.$font-mono;
+  font-size: 9px;
+  font-weight: 600;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-sm;
+  color: s.$text-tertiary;
+  text-transform: none;
+  letter-spacing: 0;
+}

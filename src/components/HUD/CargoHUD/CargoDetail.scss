@@ -1,113 +1,67 @@
-.cargo-detail__backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 500;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-}
+@use '../../../styles' as s;
+
+// Chrome (backdrop, panel container, header, close button) moved to the
+// universal Panel shell (../Shell/Panel). This file styles only the
+// content that lives inside Panel's body + headerRight slot.
 
 .cargo-detail {
-  width: min(520px, 90vw);
-  height: min(600px, 80vh);
   display: flex;
   flex-direction: column;
-  background: rgba(12, 14, 22, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  backdrop-filter: blur(16px);
-  color: rgba(255, 255, 255, 0.92);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  overflow: hidden;
-
-  &__header {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 16px 18px 0;
-  }
-
-  &__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    opacity: 0.85;
-  }
+  gap: s.$space-3;
+  min-height: 0;
 
   &__capacity {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
     font-size: 13px;
     font-weight: 600;
-    margin-left: auto;
-    opacity: 0.7;
+    color: s.$text-secondary;
   }
 
-  &__close {
-    flex: 0 0 auto;
-    margin-left: 6px;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.12);
-      color: rgba(255, 255, 255, 0.85);
-    }
+  &__capacity-unit {
+    color: s.$text-tertiary;
+    font-weight: 400;
+    margin-left: 2px;
   }
 
   &__bar {
-    margin: 12px 18px 0;
-    height: 5px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
+    height: 5px; // TODO(phase-3): normalize to 4 or 6px
+    background: s.$stroke-faint;
+    border-radius: s.$radius-pill;
     overflow: hidden;
   }
 
   &__bar-fill {
     height: 100%;
-    background: rgba(255, 255, 255, 0.5);
-    transition: width 0.2s ease;
+    background: s.$text-tertiary;
+    transition: width s.$dur-base s.$ease-out;
   }
 
   &__list {
-    margin-top: 14px;
-    padding: 0 18px 18px;
     overflow-y: auto;
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: s.$space-2;
+    min-height: 0;
   }
 
   &__empty {
-    padding: 24px 0;
+    padding: s.$space-5 0;
     text-align: center;
     font-size: 13px;
-    opacity: 0.45;
+    color: s.$text-tertiary;
   }
 
   &__row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
+    gap: s.$space-3;
+    padding: s.$space-2 s.$space-3;
     background: rgba(255, 255, 255, 0.04);
-    border-radius: 8px;
-    transition: background 0.15s;
+    border-radius: s.$radius-md;
+    transition: background s.$dur-fast s.$ease-out;
 
     &:hover {
       background: rgba(255, 255, 255, 0.07);
@@ -117,7 +71,7 @@
   &__resource {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: s.$space-2;
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -138,10 +92,11 @@
   }
 
   &__amount {
+    font-family: s.$font-mono;
     font-size: 13px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    opacity: 0.75;
+    color: s.$text-secondary;
     margin-left: auto;
     flex: 0 0 auto;
   }
@@ -149,47 +104,51 @@
   &__actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing
     flex: 0 0 auto;
   }
 
   &__input {
     width: 52px;
-    padding: 4px 6px;
+    padding: s.$space-1 (s.$space-1 + 2px); // 4px 6px — TODO(phase-3): normalize
+    font-family: s.$font-mono;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     text-align: right;
-    color: rgba(255, 255, 255, 0.9);
+    color: s.$text-primary;
     background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 5px;
+    border: 1px solid s.$stroke-faint;
+    border-radius: s.$radius-sm;
     outline: none;
-    transition: border-color 0.15s;
+    transition: border-color s.$dur-fast s.$ease-out;
 
     &::placeholder {
-      color: rgba(255, 255, 255, 0.3);
+      color: s.$text-disabled;
     }
 
     &:focus {
-      border-color: rgba(100, 200, 255, 0.55);
+      border-color: s.$stroke-active;
     }
   }
 
   &__jettison {
     font-size: 11px;
     font-weight: 600;
-    padding: 5px 10px;
-    border-radius: 5px;
-    border: 1px solid rgba(255, 80, 80, 0.35);
-    background: rgba(255, 80, 80, 0.1);
-    color: rgba(255, 120, 120, 0.9);
+    padding: s.$space-1 s.$space-2;
+    border-radius: s.$radius-sm;
+    border: 1px solid rgba(255, 92, 92, 0.35);
+    background: rgba(255, 92, 92, 0.10);
+    color: rgba(255, 120, 120, 0.9); // close to $accent-crit tint
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    transition:
+      background s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out,
+      opacity s.$dur-fast s.$ease-out;
 
     &:hover:not(:disabled) {
-      background: rgba(255, 80, 80, 0.2);
-      border-color: rgba(255, 80, 80, 0.5);
+      background: rgba(255, 92, 92, 0.20);
+      border-color: rgba(255, 92, 92, 0.50);
     }
 
     &:disabled {

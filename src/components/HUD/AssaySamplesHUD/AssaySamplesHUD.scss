@@ -1,15 +1,17 @@
+@use '../../../styles' as s;
+
 .assay-hud {
   position: absolute;
-  left: 12px;
+  left: s.$space-3;
   top: 220px; // below CargoHUD
   width: 200px;
-  padding: 10px 12px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  backdrop-filter: blur(10px);
-  color: rgba(255, 255, 255, 0.9);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 10px s.$space-3; // TODO(phase-3): normalize spacing (10px)
+  background: rgba(0, 0, 0, 0.35); // close to $surface-scrim; keep raw to preserve visuals
+  border: 1px solid s.$stroke-base;
+  border-radius: 10px; // TODO(phase-3): normalize radius (10px)
+  backdrop-filter: blur(10px); // TODO(phase-3): normalize blur
+  color: rgba(255, 255, 255, 0.9); // close to $text-primary; keep raw to preserve visuals
+  font-family: s.$font-ui;
   pointer-events: none;
 
   &__label {
@@ -22,13 +24,22 @@
   }
 
   &__samples {
+    display: inline-flex;
+    align-items: center;
+    gap: s.$space-1 + 2px; // 6px
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
     font-size: 13px;
     font-weight: 700;
-    color: rgba(140, 200, 255, 0.95);
+    color: rgba(140, 200, 255, 0.95); // info-blue-tinted text; keep raw to preserve visuals
+
+    svg {
+      flex: 0 0 auto;
+    }
   }
 
   &__research {
-    margin-top: 8px;
+    margin-top: s.$space-2;
   }
 
   &__research-label {
@@ -44,22 +55,22 @@
     font-size: 11px;
     font-weight: 600;
     opacity: 0.8;
-    margin-bottom: 4px;
+    margin-bottom: s.$space-1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   &__progress-bar {
-    height: 4px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
+    height: s.$space-1;
+    background: rgba(255, 255, 255, 0.1); // TODO(phase-3): bg at stroke-faint alpha
+    border-radius: s.$radius-pill;
     overflow: hidden;
   }
 
   &__progress-fill {
     height: 100%;
-    background: rgba(80, 160, 255, 0.7);
+    background: rgba(80, 160, 255, 0.7); // $accent-info-tinted fill; keep raw to preserve visuals
   }
 
   &__time {

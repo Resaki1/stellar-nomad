@@ -2,6 +2,7 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { useMemo } from "react";
+import { Unplug } from "lucide-react";
 
 import { modulesAtom, equipModuleAtom, unequipSlotAtom } from "@/store/modules";
 import {
@@ -13,6 +14,7 @@ import {
   type ItemSlot,
   type ItemDef,
 } from "@/data/content";
+import Panel from "../Shell/Panel";
 
 import "./LoadoutPanel.scss";
 
@@ -32,7 +34,6 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
     }[] = [];
 
     for (const slot of ALL_ITEM_SLOTS) {
-      // Skip utility — only has one module and consumables live elsewhere
       const modulesInSlot = modulesState.ownedModules
         .map((id) => ({ id, def: getItemDef(id) }))
         .filter((m): m is { id: string; def: ItemDef } =>
@@ -57,7 +58,6 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
     return result;
   }, [modulesState.ownedModules, modulesState.equippedModules]);
 
-  // Consumable summary
   const consumables = useMemo(() => {
     return Object.entries(modulesState.consumables)
       .filter(([, count]) => count > 0)
@@ -70,15 +70,14 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
   const hasModules = slotData.length > 0;
 
   return (
-    <div className="loadout-panel__backdrop" onClick={onClose}>
-      <div className="loadout-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="loadout-panel__header">
-          <div className="loadout-panel__title">Ship Loadout</div>
-          <button className="loadout-panel__close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Panel
+      title="Ship Loadout"
+      subtitle="Equip modules and review crafted consumables."
+      tier={2}
+      width={560}
+      onClose={onClose}
+    >
+      <div className="loadout-panel">
         {/* Equipped modules by slot */}
         <div className="loadout-panel__modules">
           {!hasModules ? (
@@ -86,7 +85,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
               No modules owned. Craft modules to upgrade your ship.
             </div>
           ) : (
-            slotData.map(({ slot, label, equippedId, equippedDef, alternatives }) => (
+            slotData.map(({ slot, label, equippedDef, alternatives }) => (
               <div key={slot} className="loadout-panel__slot-group">
                 <div className="loadout-panel__slot-label">{label}</div>
 
@@ -117,8 +116,9 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
                       className="loadout-panel__unequip-btn"
                       onClick={() => unequipSlot(slot)}
                       title="Unequip"
+                      aria-label="Unequip"
                     >
-                      ✕
+                      <Unplug size={13} strokeWidth={1.75} aria-hidden />
                     </button>
                   </div>
                 ) : (
@@ -187,6 +187,6 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
           Consumables can be used via hotbar keys 0-9
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }

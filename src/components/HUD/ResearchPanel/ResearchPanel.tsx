@@ -2,6 +2,7 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { useMemo, useState } from "react";
+import { Check, Circle, CircleDot, Lock, Microscope } from "lucide-react";
 
 import {
   researchAtom,
@@ -18,6 +19,7 @@ import {
   TIER_2_NODE_IDS,
   type ResearchNodeDef,
 } from "@/data/content";
+import Panel from "../Shell/Panel";
 
 import "./ResearchPanel.scss";
 
@@ -45,21 +47,27 @@ function getBranch(nodeId: string): Branch {
   return "root";
 }
 
+function StateIcon({ state }: { state: NodeState }) {
+  switch (state) {
+    case "completed":
+      return <Check size={11} strokeWidth={2.25} aria-hidden />;
+    case "active":
+      return <CircleDot size={11} strokeWidth={2} aria-hidden />;
+    case "available":
+      return <Circle size={11} strokeWidth={2} aria-hidden />;
+    case "locked":
+      return <Lock size={11} strokeWidth={2} aria-hidden />;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Layout: fixed positions for the tree graph (column, row)
-// Columns: 0=root, 1=tier1, 2=tier2a, 3=tier2b -> merged to capstone at col 3
-// Actually using a 5-column layout for the diamond:
-//   col 0: root
-//   col 1: tier-1
-//   col 2: tier-2 (upper/lower per branch)
-//   col 3: capstone (tier-3)
-// Each branch occupies 2 rows (for upper and lower tier-2 split)
 // ---------------------------------------------------------------------------
 
 type LayoutNode = {
   id: string;
-  col: number; // 0-3
-  row: number; // 0-based
+  col: number;
+  row: number;
   branch: Branch;
 };
 
@@ -101,25 +109,20 @@ function getNodePos(layout: LayoutNode): { x: number; y: number } {
   };
 }
 
-// Edges: prerequisite connections
 type Edge = { from: string; to: string };
 
 const TREE_EDGES: Edge[] = [
-  // Root → tier-1
   { from: "r0_microlab_boot", to: "a1_sensor_calibration" },
   { from: "r0_microlab_boot", to: "b1_laser_optics" },
   { from: "r0_microlab_boot", to: "c1_structural_engineering" },
-  // A branch
   { from: "a1_sensor_calibration", to: "a2a_active_scanning" },
   { from: "a1_sensor_calibration", to: "a2b_spectral_analysis" },
   { from: "a2a_active_scanning", to: "a3_integrated_survey" },
   { from: "a2b_spectral_analysis", to: "a3_integrated_survey" },
-  // B branch
   { from: "b1_laser_optics", to: "b2a_beam_optimization" },
   { from: "b1_laser_optics", to: "b2b_thermal_dynamics" },
   { from: "b2a_beam_optimization", to: "b3_pulse_extraction" },
   { from: "b2b_thermal_dynamics", to: "b3_pulse_extraction" },
-  // C branch
   { from: "c1_structural_engineering", to: "c2a_hull_reinforcement" },
   { from: "c1_structural_engineering", to: "c2b_propulsion_systems" },
   { from: "c2a_hull_reinforcement", to: "c3_integrated_platform" },
@@ -132,7 +135,6 @@ for (const ln of TREE_LAYOUT) layoutMap.set(ln.id, ln);
 const nodeMap = new Map<string, ResearchNodeDef>();
 for (const node of RESEARCH_NODES) nodeMap.set(node.id, node);
 
-// Total canvas size
 const CANVAS_W = 4 * (NODE_W + COL_GAP) - COL_GAP;
 const CANVAS_H = 11 * (NODE_H + ROW_GAP) - ROW_GAP;
 
@@ -175,19 +177,21 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
   const selectedState = selectedNodeId ? getState(selectedNodeId) : null;
 
   return (
-    <div className="research-panel__backdrop" onClick={onClose}>
-      <div className="research-panel" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="research-panel__header">
-          <div className="research-panel__title">Research Lab</div>
-          <div className="research-panel__samples">
-            🔬 {assaySamples} Assay Samples
-          </div>
-          <button className="research-panel__close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Panel
+      title="Research Lab"
+      tier={2}
+      width={960}
+      onClose={onClose}
+      noBodyPadding
+      headerRight={
+        <span className="research-panel__samples">
+          <Microscope size={14} strokeWidth={1.75} aria-hidden />
+          <span>{assaySamples}</span>
+          <span className="research-panel__samples-label">Assay Samples</span>
+        </span>
+      }
+    >
+      <div className="research-panel">
         {/* Active research progress */}
         {activeResearch && (
           <div className="research-panel__active">
@@ -274,7 +278,6 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
                   const mLayout = layoutMap.get("m1_transit_drive");
                   if (!mLayout) return null;
                   const mPos = getNodePos(mLayout);
-                  const completedTier2Count = TIER_2_NODE_IDS.filter((n) => completed.has(n)).length;
 
                   return TIER_2_NODE_IDS.map((nodeId) => {
                     const nLayout = layoutMap.get(nodeId);
@@ -322,10 +325,7 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
                     onClick={() => setSelectedNodeId(layout.id === selectedNodeId ? null : layout.id)}
                   >
                     <span className="rt-node__icon">
-                      {state === "completed" ? "✓"
-                        : state === "active" ? "◉"
-                        : state === "available" ? "○"
-                        : "🔒"}
+                      <StateIcon state={state} />
                     </span>
                     <span className="rt-node__name">{def.name}</span>
                     {(state === "available" || state === "locked") && (
@@ -346,7 +346,10 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
               <div className="rt-detail__desc">{selectedDef.desc}</div>
 
               <div className="rt-detail__meta">
-                <span>🔬 {selectedDef.costs.assaySamples} samples</span>
+                <span className="rt-detail__meta-cost">
+                  <Microscope size={12} strokeWidth={1.75} aria-hidden />
+                  {selectedDef.costs.assaySamples} samples
+                </span>
                 <span>{formatTime(selectedDef.durationSeconds)}</span>
               </div>
 
@@ -412,6 +415,6 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }

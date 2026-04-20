@@ -1,6 +1,7 @@
 "use client";
 
 import { useAtomValue } from "jotai";
+import { Microscope } from "lucide-react";
 import { assaySamplesAtom, activeResearchNodeAtom } from "@/store/research";
 
 import "./AssaySamplesHUD.scss";
@@ -19,7 +20,10 @@ export default function AssaySamplesHUD() {
   return (
     <div className="assay-hud">
       <div className="assay-hud__label">Assay Samples</div>
-      <div className="assay-hud__samples">🔬 {samples}</div>
+      <div className="assay-hud__samples">
+        <Microscope size={14} strokeWidth={1.75} aria-hidden />
+        <span>{samples}</span>
+      </div>
       {active && (
         <div className="assay-hud__research">
           <div className="assay-hud__research-label">Active Research</div>

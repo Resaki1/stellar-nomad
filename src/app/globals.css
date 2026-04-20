@@ -1,0 +1,17 @@
+/* Default body font is Inter (UI family). Orbitron is reserved for
+   display contexts per the style guide (titles, readouts, menu
+   headers). Components that want Orbitron opt in via the $font-display
+   SCSS token or by applying a display class. */
+body {
+  font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  margin: 0;
+  background: #000;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}

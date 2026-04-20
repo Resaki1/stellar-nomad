@@ -1,13 +1,26 @@
+@use '../../../styles' as s;
+
+// Phase 2 flip: the dashboard used to be a bright inverted-glass strip.
+// It's now a thin dark scrim with a 1px rule along the top / left, a
+// chamfered top-left corner as the house signature, and hologram-style
+// text glow. Phase 3 may refine this to a three-column instrument strip
+// per the style guide §7.2.
 .ship-dashboard {
   position: absolute;
   bottom: 0;
   right: 0;
 
-  background: rgba(200, 200, 200, 0.25);
-  backdrop-filter: blur(16px);
-  border-top: rgba(200, 200, 200, 0.8) solid 1px;
-  border-left: rgba(200, 200, 200, 0.8) solid 1px;
-  color: rgb(240, 240, 240);
+  background: rgba(0, 0, 0, 0.35); // subtle scrim so the chamfer reads
+  backdrop-filter: blur(s.$blur-sm);
+  -webkit-backdrop-filter: blur(s.$blur-sm);
+  border-top: 1px solid s.$stroke-base;
+  border-left: 1px solid s.$stroke-base;
+  color: s.$text-primary;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 0 8px s.$glow-info;
+
+  @include s.chamfer(s.$radius-xl, ('tl'));
 
   width: 16vw;
   min-width: 120px;
@@ -16,16 +29,16 @@
 
   display: grid;
   grid-template-columns: 1fr 1fr;
-  padding: 0px 16px;
+  padding: 0 s.$space-4;
   grid-template-rows: 1.2rem 1.2rem;
   align-content: center;
   font-size: 0.8rem;
 
   &__health--warning {
-    color: rgb(255, 180, 50);
+    color: s.$accent-warn;
   }
 
   &__health--critical {
-    color: rgb(255, 60, 60);
+    color: s.$accent-crit;
   }
 }

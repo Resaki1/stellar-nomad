@@ -1,10 +1,12 @@
+@use '../../styles' as s;
+
 .loot-popup {
   animation: lootFadeUp 2s ease-out forwards;
   font-family: inherit;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 3px; // TODO(phase-3): normalize spacing
 }
 
 .loot-popup__icon {
@@ -17,15 +19,15 @@
 
 .loot-popup__text {
   display: inline-block;
-  padding: 4px 12px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid rgba(100, 200, 255, 0.35);
-  color: #b8e8ff;
+  padding: s.$space-1 s.$space-3;
+  border-radius: s.$radius-md;
+  background: rgba(0, 0, 0, 0.55); // TODO(phase-3): migrate to glass tier
+  border: 1px solid rgba(100, 200, 255, 0.35); // info-blue-tinted stroke; keep raw to preserve visuals
+  color: #b8e8ff; // light info-blue text; keep raw to preserve visuals
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  text-shadow: 0 0 6px rgba(100, 200, 255, 0.6);
+  text-shadow: 0 0 6px rgba(100, 200, 255, 0.6); // info-blue glow; keep raw to preserve visuals
 }
 
 @keyframes lootFadeUp {

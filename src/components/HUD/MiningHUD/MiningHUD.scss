@@ -1,3 +1,5 @@
+@use '../../../styles' as s;
+
 .mining-hud {
   pointer-events: none;
 
@@ -11,9 +13,9 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: s.$space-1;
     opacity: 0;
-    transition: opacity 0.25s ease-in-out;
+    transition: opacity s.$dur-base ease-in-out;
 
     &--visible {
       opacity: 1;
@@ -22,72 +24,74 @@
 
   &__distance {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.5);
+    color: s.$text-tertiary;
   }
 
   &__loot {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.75); // close to $text-secondary; keep raw to preserve visuals
   }
 
   &__cargo {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.55);
+    color: s.$text-tertiary;
   }
 
   &__composition {
     font-size: 10px;
-    color: rgba(140, 200, 255, 0.75);
+    color: rgba(140, 200, 255, 0.75); // info-blue-tinted text; keep raw to preserve visuals
     letter-spacing: 0.04em;
   }
 
   &__warning {
-    margin-top: 4px;
+    margin-top: s.$space-1;
     font-size: 12px;
     font-weight: 600;
-    color: rgba(255, 80, 80, 0.95);
-    text-shadow: 0 0 10px rgba(255, 80, 80, 0.25);
+    color: rgba(255, 80, 80, 0.95); // close to $accent-crit; keep raw to preserve visuals
+    text-shadow: 0 0 10px rgba(255, 80, 80, 0.25); // $accent-crit-tinted glow; keep raw to preserve visuals
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity s.$dur-base ease-in-out;
 
     &--visible {
       opacity: 1;
     }
 
     &--overheat {
-      color: rgba(255, 160, 40, 0.95);
-      text-shadow: 0 0 10px rgba(255, 140, 0, 0.35);
+      color: rgba(255, 160, 40, 0.95); // close to $accent-heat; keep raw to preserve visuals
+      text-shadow: 0 0 10px rgba(255, 140, 0, 0.35); // $accent-heat-tinted glow; keep raw to preserve visuals
     }
   }
 
   // ── Actions: bottom-centre ──
   &__actions {
     position: fixed;
-    bottom: 120px;
+    bottom: 120px; // TODO(phase-3): normalize spacing
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 10px;
+    gap: 10px; // TODO(phase-3): normalize to $space-3
   }
 
   &__button {
     pointer-events: auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: s.$space-2;
     font-size: 12px;
     font-weight: 600;
-    padding: 12px 24px;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(0, 0, 0, 0.4);
-    color: rgba(255, 255, 255, 0.8);
+    padding: s.$space-3 s.$space-5;
+    border-radius: s.$radius-xl;
+    border: 1px solid s.$stroke-strong;
+    background: rgba(0, 0, 0, 0.4); // TODO(phase-3): migrate to glass tier
+    color: rgba(255, 255, 255, 0.8); // close to $text-secondary; keep raw to preserve visuals
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out,
-      background 0.2s ease-in-out;
+    transition:
+      opacity s.$dur-base ease-in-out,
+      transform s.$dur-base ease-in-out,
+      background s.$dur-base ease-in-out;
     transform: translateY(10px);
 
     &--visible {
@@ -96,18 +100,18 @@
     }
 
     &:hover {
-      background: rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.6); // TODO(phase-3): migrate to glass tier
     }
 
     &--mining {
-      background: rgba(255, 140, 0, 0.25);
-      border-color: rgba(255, 140, 0, 0.6);
+      background: rgba(255, 140, 0, 0.25); // $accent-heat-tinted fill; keep raw to preserve visuals
+      border-color: rgba(255, 140, 0, 0.6); // $accent-heat-tinted stroke; keep raw to preserve visuals
     }
 
     &--disabled {
-      background: rgba(255, 80, 80, 0.15);
-      border-color: rgba(255, 80, 80, 0.9);
-      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25);
+      background: rgba(255, 80, 80, 0.15); // $accent-crit-tinted fill; keep raw to preserve visuals
+      border-color: rgba(255, 80, 80, 0.9); // $accent-crit-tinted stroke; keep raw to preserve visuals
+      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25); // $accent-crit-tinted glow; keep raw to preserve visuals
       cursor: not-allowed;
     }
 
@@ -116,8 +120,8 @@
     }
 
     &:disabled:hover {
-      background: rgba(255, 80, 80, 0.15);
-      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25);
+      background: rgba(255, 80, 80, 0.15); // $accent-crit-tinted fill; keep raw to preserve visuals
+      box-shadow: 0 0 12px rgba(255, 80, 80, 0.25); // $accent-crit-tinted glow; keep raw to preserve visuals
     }
   }
 
@@ -129,10 +133,10 @@
     height: 20px;
     font-size: 10px;
     font-weight: 700;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.6);
+    border: 1px solid s.$stroke-strong;
+    border-radius: s.$radius-md;
+    background: s.$stroke-faint;
+    color: rgba(255, 255, 255, 0.6); // close to $text-secondary; keep raw to preserve visuals
     line-height: 1;
   }
 
@@ -141,27 +145,30 @@
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    padding: 3px 10px;
-    border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    background: rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.5);
+    padding: 3px 10px; // TODO(phase-3): normalize spacing
+    border-radius: s.$radius-md;
+    border: 1px solid s.$stroke-base;
+    background: rgba(255, 255, 255, 0.06); // TODO(phase-3): bg at stroke-faint alpha; decide in hologram pass
+    color: s.$text-tertiary;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-    margin-bottom: 4px;
+    transition:
+      background s.$dur-fast,
+      color s.$dur-fast,
+      border-color s.$dur-fast;
+    margin-bottom: s.$space-1;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.1);
-      color: rgba(255, 255, 255, 0.8);
+      background: rgba(255, 255, 255, 0.1); // TODO(phase-3): bg; decide in hologram pass
+      color: rgba(255, 255, 255, 0.8); // close to $text-secondary; keep raw to preserve visuals
     }
 
     &--active {
-      border-color: rgba(255, 180, 60, 0.4);
-      background: rgba(255, 180, 60, 0.12);
-      color: rgba(255, 200, 100, 0.9);
+      border-color: rgba(255, 180, 60, 0.4); // $accent-warn-tinted stroke; keep raw to preserve visuals
+      background: rgba(255, 180, 60, 0.12); // $accent-warn-tinted fill; keep raw to preserve visuals
+      color: rgba(255, 200, 100, 0.9); // amber text; keep raw to preserve visuals
 
       &:hover {
-        background: rgba(255, 180, 60, 0.2);
+        background: rgba(255, 180, 60, 0.2); // $accent-warn-tinted fill; keep raw to preserve visuals
       }
     }
   }
@@ -169,18 +176,18 @@
   &__pulse-key {
     font-size: 8px;
     opacity: 0.4;
-    margin-left: 4px;
+    margin-left: s.$space-1;
   }
 
   &__heat-container {
     position: relative;
     width: 240px;
-    height: 6px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.06);
+    height: 6px; // TODO(phase-3): normalize spacing
+    border-radius: s.$radius-pill;
+    background: rgba(255, 255, 255, 0.06); // TODO(phase-3): bg at stroke-faint alpha
     overflow: hidden;
     opacity: 0;
-    transition: opacity 0.25s ease-in-out;
+    transition: opacity s.$dur-base ease-in-out;
 
     &--visible {
       opacity: 1;
@@ -189,16 +196,16 @@
 
   &__heat-bar {
     height: 100%;
-    border-radius: 999px;
-    background: linear-gradient(90deg, rgba(255, 180, 50, 0.8), rgba(255, 100, 20, 0.9));
-    transition: width 0.1s linear;
+    border-radius: s.$radius-pill;
+    background: linear-gradient(90deg, rgba(255, 180, 50, 0.8), rgba(255, 100, 20, 0.9)); // heat gradient; keep raw to preserve visuals
+    transition: width s.$dur-instant linear;
 
     &--warning {
-      background: linear-gradient(90deg, rgba(255, 140, 20, 0.9), rgba(255, 60, 20, 1));
+      background: linear-gradient(90deg, rgba(255, 140, 20, 0.9), rgba(255, 60, 20, 1)); // heat gradient; keep raw to preserve visuals
     }
 
     &--overheated {
-      background: rgba(255, 50, 30, 1);
+      background: rgba(255, 50, 30, 1); // $accent-crit-like solid; keep raw to preserve visuals
       animation: heatPulse 0.6s ease-in-out infinite alternate;
     }
   }
@@ -211,7 +218,7 @@
     font-size: 7px;
     font-weight: 700;
     letter-spacing: 1.5px;
-    color: rgba(255, 255, 255, 0.5);
+    color: s.$text-tertiary;
     text-transform: uppercase;
   }
 
@@ -226,12 +233,12 @@
 
   &__progress-container {
     width: 240px;
-    height: 6px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.08);
+    height: 6px; // TODO(phase-3): normalize spacing
+    border-radius: s.$radius-pill;
+    background: s.$stroke-faint;
     overflow: hidden;
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity s.$dur-base ease-in-out;
 
     &--visible {
       opacity: 1;
@@ -240,15 +247,15 @@
 
   &__progress-bar {
     height: 100%;
-    background: rgba(255, 255, 255, 0.9);
-    transition: width 0.1s linear;
+    background: rgba(255, 255, 255, 0.9); // close to $text-primary; keep raw to preserve visuals
+    transition: width s.$dur-instant linear;
   }
 
   &__progress-text {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.6); // close to $text-secondary; keep raw to preserve visuals
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity s.$dur-base ease-in-out;
 
     &--visible {
       opacity: 1;

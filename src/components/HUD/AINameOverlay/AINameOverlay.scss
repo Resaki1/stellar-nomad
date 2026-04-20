@@ -1,26 +1,28 @@
+@use '../../../styles' as s;
+
 // Bottom-center panel that matches the comms overlay position and style.
 // Appears after the AI greeting is dismissed, asking for a designation.
 
 .ai-name-overlay {
   position: fixed;
-  bottom: 48px;
+  bottom: s.$space-7;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 700;
+  z-index: s.$z-modal;
   pointer-events: auto;
-  width: min(560px, calc(100vw - 48px));
+  width: min(560px, calc(100vw - #{s.$space-7}));
   animation: aiNameSlideUp 0.35s ease-out;
 }
 
 .ai-name-overlay__panel {
-  background: rgba(8, 12, 24, 0.92);
-  border: 1px solid rgba(80, 160, 255, 0.3);
-  border-radius: 10px;
-  backdrop-filter: blur(14px);
-  padding: 16px 20px;
+  background: rgba(8, 12, 24, 0.92); // TODO(phase-3): migrate to $surface-glass-2
+  border: 1px solid rgba(80, 160, 255, 0.3); // $accent-info-tinted stroke; keep raw to preserve visuals
+  border-radius: 10px; // TODO(phase-3): normalize radius
+  backdrop-filter: blur(s.$blur-md);
+  padding: s.$space-4 20px; // TODO(phase-3): normalize spacing (20px)
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 10px; // TODO(phase-3): normalize spacing
 }
 
 // ── Label ───────────────────────────────────────────────────────────
@@ -30,38 +32,38 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(100, 180, 255, 0.95);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(100, 180, 255, 0.95); // $accent-comms-tinted text; keep raw to preserve visuals
+  font-family: s.$font-ui;
 }
 
 // ── Input row ───────────────────────────────────────────────────────
 
 .ai-name-overlay__row {
   display: flex;
-  gap: 10px;
+  gap: 10px; // TODO(phase-3): normalize spacing
   align-items: center;
 }
 
 .ai-name-overlay__input {
   flex: 1;
   min-width: 0;
-  padding: 8px 12px;
+  padding: s.$space-2 s.$space-3;
   font-size: 14px;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: rgba(255, 255, 255, 0.95);
-  background: rgba(12, 18, 36, 0.9);
-  border: 1px solid rgba(80, 160, 255, 0.35);
-  border-radius: 6px;
+  font-family: s.$font-ui;
+  color: rgba(255, 255, 255, 0.95); // close to $text-primary; keep raw to preserve visuals
+  background: rgba(12, 18, 36, 0.9); // deep info-blue fill; keep raw to preserve visuals
+  border: 1px solid rgba(80, 160, 255, 0.35); // $accent-info-tinted stroke; keep raw to preserve visuals
+  border-radius: s.$radius-lg;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color s.$dur-fast, box-shadow s.$dur-fast;
 
   &::placeholder {
-    color: rgba(255, 255, 255, 0.25);
+    color: rgba(255, 255, 255, 0.25); // close to $text-disabled; keep raw to preserve visuals
   }
 
   &:focus {
-    border-color: rgba(80, 160, 255, 0.6);
-    box-shadow: 0 0 12px rgba(80, 160, 255, 0.15);
+    border-color: rgba(80, 160, 255, 0.6); // $accent-info-tinted stroke; keep raw to preserve visuals
+    box-shadow: 0 0 12px rgba(80, 160, 255, 0.15); // $accent-info-tinted glow; keep raw to preserve visuals
   }
 }
 
@@ -71,22 +73,22 @@
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid rgba(80, 160, 255, 0.35);
-  background: rgba(80, 160, 255, 0.1);
-  color: rgba(160, 210, 255, 0.95);
+  padding: s.$space-2 s.$space-4;
+  border-radius: s.$radius-lg;
+  border: 1px solid rgba(80, 160, 255, 0.35); // $accent-info-tinted stroke; keep raw to preserve visuals
+  background: rgba(80, 160, 255, 0.1); // $accent-info-tinted fill; keep raw to preserve visuals
+  color: rgba(160, 210, 255, 0.95); // light info-blue text; keep raw to preserve visuals
   cursor: pointer;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  transition: background 0.15s, border-color 0.15s;
+  font-family: s.$font-ui;
+  transition: background s.$dur-fast, border-color s.$dur-fast;
 
   &:hover:not(:disabled) {
-    background: rgba(80, 160, 255, 0.22);
-    border-color: rgba(80, 160, 255, 0.55);
+    background: rgba(80, 160, 255, 0.22); // $accent-info-tinted fill; keep raw to preserve visuals
+    border-color: rgba(80, 160, 255, 0.55); // $accent-info-tinted stroke; keep raw to preserve visuals
   }
 
   &:active:not(:disabled) {
-    background: rgba(80, 160, 255, 0.3);
+    background: rgba(80, 160, 255, 0.3); // $accent-info-tinted fill; keep raw to preserve visuals
   }
 
   &:disabled {

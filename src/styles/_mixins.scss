@@ -1,0 +1,98 @@
+@use 'sass:list';
+@use 'tokens' as t;
+
+// ─── Hologram: default screen-space HUD treatment ───────────────
+// Transparent background, bright text with subtle glow for scene
+// legibility. Use as the base for any always-on glance-tier element.
+@mixin hologram($glow: t.$glow-info) {
+  background: transparent;
+  color: t.$text-primary;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 0 8px $glow;
+}
+
+// ─── Null-surface: legibility scrim for HUD elements ────────────
+// Radial fade — darker at the center, transparent at the edges, so
+// the scene still breathes through. Apply only when a hologram
+// element genuinely fails legibility against bright scenes.
+@mixin null-surface {
+  background: radial-gradient(
+    ellipse at center,
+    t.$surface-scrim 0%,
+    transparent 70%
+  );
+  padding: t.$space-3 t.$space-4;
+}
+
+// ─── Glass: menu-space panels (modals, inspect surfaces) ────────
+// Tier 1 = inspect (cargo detail, side panels).
+// Tier 2 = deep   (research, crafting, settings).
+@mixin glass($tier: 1) {
+  @if $tier == 1 {
+    background: t.$surface-glass-1;
+    backdrop-filter: blur(t.$blur-md) saturate(1.1);
+    -webkit-backdrop-filter: blur(t.$blur-md) saturate(1.1);
+    border: 1px solid t.$stroke-base;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
+  } @else if $tier == 2 {
+    background: t.$surface-glass-2;
+    backdrop-filter: blur(t.$blur-lg) saturate(1.15);
+    -webkit-backdrop-filter: blur(t.$blur-lg) saturate(1.15);
+    border: 1px solid t.$stroke-strong;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.6),
+      0 24px 80px rgba(0, 0, 0, 0.75);
+  }
+}
+
+// ─── Chamfer: house-signature diagonal corner cut ───────────────
+// Pass one or more corners: 'tl', 'tr', 'bl', 'br'. Default is a
+// diagonal pair (top-left + bottom-right) that reads as a subtle
+// slope across the panel.
+@mixin chamfer($cut: t.$radius-xl, $corners: ('tl', 'br')) {
+  $tl: 0;
+  $tr: 0;
+  $bl: 0;
+  $br: 0;
+  @if list.index($corners, 'tl') { $tl: $cut; }
+  @if list.index($corners, 'tr') { $tr: $cut; }
+  @if list.index($corners, 'bl') { $bl: $cut; }
+  @if list.index($corners, 'br') { $br: $cut; }
+
+  clip-path: polygon(
+    #{$tl} 0,
+    calc(100% - #{$tr}) 0,
+    100% #{$tr},
+    100% calc(100% - #{$br}),
+    calc(100% - #{$br}) 100%,
+    #{$bl} 100%,
+    0 calc(100% - #{$bl}),
+    0 #{$tl}
+  );
+}
+
+// ─── Reset-button: neutral baseline for custom buttons ──────────
+@mixin reset-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+// ─── Visually hidden (accessible to screen readers) ─────────────
+@mixin visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

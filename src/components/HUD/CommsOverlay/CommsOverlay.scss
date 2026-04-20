@@ -1,27 +1,29 @@
+@use '../../../styles' as s;
+
 .comms-overlay {
   position: fixed;
-  bottom: 48px;
+  bottom: s.$space-7;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 99;
+  z-index: 99; // TODO(phase-3): normalize to $z scale (layering with other HUD overlays)
   pointer-events: auto;
-  width: min(560px, calc(100vw - 48px));
+  width: min(560px, calc(100vw - #{s.$space-7}));
   animation: commsSlideUp 0.35s ease-out;
 }
 
 .comms-overlay__panel {
-  background: rgba(8, 12, 24, 0.92);
-  border: 1px solid rgba(80, 160, 255, 0.3);
-  border-radius: 10px;
-  backdrop-filter: blur(14px);
-  padding: 16px 20px 12px;
+  background: rgba(8, 12, 24, 0.92); // TODO(phase-3): migrate to $surface-glass-2
+  border: 1px solid rgba(80, 160, 255, 0.3); // $accent-info-tinted stroke; keep raw to preserve visuals
+  border-radius: 10px; // TODO(phase-3): normalize radius
+  backdrop-filter: blur(s.$blur-md);
+  padding: s.$space-4 20px s.$space-3; // TODO(phase-3): normalize spacing (20px)
 }
 
 // ── Body (avatar + content side-by-side) ─────────────────────────────
 
 .comms-overlay__body {
   display: flex;
-  gap: 14px;
+  gap: 14px; // TODO(phase-3): normalize spacing
   align-items: flex-start;
 }
 
@@ -31,10 +33,10 @@
   flex-shrink: 0;
   width: 72px;
   height: 72px;
-  border-radius: 8px;
+  border-radius: s.$radius-xl;
   overflow: hidden;
-  border: 1px solid rgba(80, 160, 255, 0.25);
-  background: rgba(20, 28, 50, 0.7);
+  border: 1px solid rgba(80, 160, 255, 0.25); // $accent-info-tinted stroke; keep raw to preserve visuals
+  background: rgba(20, 28, 50, 0.7); // deep info-blue fill; keep raw to preserve visuals
   align-self: center;
 }
 
@@ -53,8 +55,8 @@
   height: 100%;
   font-size: 28px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.3);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: s.$text-disabled;
+  font-family: s.$font-ui;
 }
 
 // ── Content (right column) ───────────────────────────────────────────
@@ -64,7 +66,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: s.$space-2;
 }
 
 // ── Speaker ──────────────────────────────────────────────────────────
@@ -72,22 +74,22 @@
 .comms-overlay__speaker {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: s.$space-2;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(100, 180, 255, 0.95);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(100, 180, 255, 0.95); // $accent-comms-tinted text; keep raw to preserve visuals
+  font-family: s.$font-ui;
 }
 
 .comms-overlay__signal {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: s.$radius-lg;
+  height: s.$radius-lg;
   border-radius: 50%;
-  background: rgba(80, 200, 120, 0.9);
-  box-shadow: 0 0 6px rgba(80, 200, 120, 0.6);
+  background: rgba(80, 200, 120, 0.9); // $accent-ok-tinted fill; keep raw to preserve visuals
+  box-shadow: 0 0 6px rgba(80, 200, 120, 0.6); // $accent-ok-tinted glow; keep raw to preserve visuals
   animation: commsPulse 1.8s ease-in-out infinite;
 }
 
@@ -96,8 +98,8 @@
 .comms-overlay__text {
   font-size: 14px;
   line-height: 1.55;
-  color: rgba(255, 255, 255, 0.88);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.88); // close to $text-primary; keep raw to preserve visuals
+  font-family: s.$font-ui;
 }
 
 // ── Footer ───────────────────────────────────────────────────────────
@@ -106,34 +108,34 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: s.$space-3;
 }
 
 .comms-overlay__page-indicator {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.4);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.4); // close to $text-tertiary; keep raw to preserve visuals
+  font-family: s.$font-ui;
 }
 
 .comms-overlay__continue {
   font-size: 12px;
   font-weight: 600;
-  padding: 6px 16px;
-  border-radius: 6px;
-  border: 1px solid rgba(80, 160, 255, 0.35);
-  background: rgba(80, 160, 255, 0.1);
-  color: rgba(160, 210, 255, 0.95);
+  padding: (s.$space-1 + 2px) s.$space-4; // 6px 16px — TODO(phase-3): normalize spacing
+  border-radius: s.$radius-lg;
+  border: 1px solid rgba(80, 160, 255, 0.35); // $accent-info-tinted stroke; keep raw to preserve visuals
+  background: rgba(80, 160, 255, 0.1); // $accent-info-tinted fill; keep raw to preserve visuals
+  color: rgba(160, 210, 255, 0.95); // light info-blue text; keep raw to preserve visuals
   cursor: pointer;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  transition: background 0.15s, border-color 0.15s;
+  font-family: s.$font-ui;
+  transition: background s.$dur-fast, border-color s.$dur-fast;
 
   &:hover {
-    background: rgba(80, 160, 255, 0.22);
-    border-color: rgba(80, 160, 255, 0.55);
+    background: rgba(80, 160, 255, 0.22); // $accent-info-tinted fill; keep raw to preserve visuals
+    border-color: rgba(80, 160, 255, 0.55); // $accent-info-tinted stroke; keep raw to preserve visuals
   }
 
   &:active {
-    background: rgba(80, 160, 255, 0.3);
+    background: rgba(80, 160, 255, 0.3); // $accent-info-tinted fill; keep raw to preserve visuals
   }
 }
 

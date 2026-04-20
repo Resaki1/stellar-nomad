@@ -1,7 +1,9 @@
+@use '../../../styles' as s;
+
 .death-screen {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: s.$z-modal-critical;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -18,35 +20,38 @@
   &__title {
     font-size: 3rem;
     font-weight: 300;
-    color: rgb(220, 60, 60);
+    color: rgb(220, 60, 60); // $accent-crit-like red; keep raw to preserve visuals
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    margin: 0 0 12px;
+    margin: 0 0 s.$space-3;
   }
 
   &__subtitle {
     font-size: 0.95rem;
-    color: rgba(255, 255, 255, 0.5);
-    margin: 0 0 40px;
+    color: rgba(255, 255, 255, 0.5); // close to $text-tertiary; keep raw to preserve visuals
+    margin: 0 0 40px; // TODO(phase-3): normalize spacing
     font-weight: 400;
   }
 
   &__respawn {
     font-size: 1rem;
     font-weight: 600;
-    padding: 12px 48px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.85);
+    padding: s.$space-3 s.$space-7;
+    border-radius: s.$radius-lg;
+    border: 1px solid rgba(255, 255, 255, 0.2); // close to $stroke-base; keep raw to preserve visuals
+    background: s.$stroke-faint;
+    color: rgba(255, 255, 255, 0.85); // close to $text-primary; keep raw to preserve visuals
     cursor: pointer;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    transition: background 0.2s, border-color 0.2s, color 0.2s;
+    transition:
+      background s.$dur-base,
+      border-color s.$dur-base,
+      color s.$dur-base;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.15);
-      border-color: rgba(255, 255, 255, 0.4);
+      background: s.$stroke-base;
+      border-color: s.$stroke-strong;
       color: white;
     }
   }

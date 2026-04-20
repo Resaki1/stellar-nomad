@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { unlockedItemIdsAtom } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
@@ -19,6 +19,7 @@ import {
   type ItemDef,
   type ItemSlot,
 } from "@/data/content";
+import Panel from "../Shell/Panel";
 
 import "./CraftingPanel.scss";
 
@@ -70,7 +71,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
   const canAfford = useCallback(
     (item: ItemDef): boolean => {
-      // Modules/special are one-time crafts
       if ((item.type === "module" || item.type === "special") && modulesState.ownedModules.includes(item.id))
         return false;
 
@@ -78,7 +78,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
         const have = Math.floor(cargo.items[resourceId] ?? 0);
         if (have < needed) return false;
       }
-      // Check consumable stack limit
       if (item.type === "consumable") {
         const current = modulesState.consumables[item.id] ?? 0;
         if (current >= (item.stackMax ?? 99)) return false;
@@ -90,7 +89,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
 
   const requestCraft = (item: ItemDef) => {
     if (!canAfford(item)) return;
-    // Modules and special items: show confirmation; consumables: craft immediately
     if (item.type === "module" || item.type === "special") {
       setConfirmItem(item);
     } else {
@@ -102,15 +100,12 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
     if (!canAfford(item)) return;
     setConfirmItem(null);
 
-    // Deduct resources
     for (const [resourceId, needed] of Object.entries(item.recipe)) {
       removeCargo({ resourceId, amount: needed });
     }
 
-    // Add item — returns true if auto-equipped into empty slot
     const autoEquipped = addCraftedItem(item.id);
 
-    // Auto-assign consumables to the first empty hotbar slot
     if (item.type === "consumable") {
       const alreadyOnHotbar = modulesState.hotbar.includes(item.id);
       if (!alreadyOnHotbar) {
@@ -121,7 +116,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       }
     }
 
-    // Signal that crafting completed (GameCommsTriggers watches this)
     incrementCraftSignal((c) => c + 1);
     setLastCraftedId(item.id);
 
@@ -145,17 +139,31 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  return (
-    <div className="crafting-panel__backdrop" onClick={onClose}>
-      <div className="crafting-panel" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="crafting-panel__header">
-          <div className="crafting-panel__title">Crafting</div>
-          <button className="crafting-panel__close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
+  // Local Esc handler: when the confirmation dialog is open, Esc dismisses
+  // it. Panel's own Esc handler is disabled while confirmItem is set so the
+  // two don't both fire at once.
+  useEffect(() => {
+    if (!confirmItem) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setConfirmItem(null);
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [confirmItem]);
 
+  return (
+    <Panel
+      title="Crafting"
+      tier={2}
+      width={640}
+      onClose={onClose}
+      closeOnEsc={!confirmItem}
+      closeOnBackdrop={!confirmItem}
+    >
+      <div className="crafting-panel">
         {/* Cargo summary */}
         <div className="crafting-panel__cargo-row">
           {Array.from(resourceMap.entries()).map(([id, def]) => (
@@ -222,7 +230,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                   </div>
                   <div className="crafting-panel__item-desc">{item.uiDesc}</div>
 
-                  {/* Effects summary */}
                   {item.effects && item.effects.length > 0 && (
                     <div className="crafting-panel__item-effects">
                       {item.effects.map((eff, i) => (
@@ -243,7 +250,6 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                     </div>
                   )}
 
-                  {/* Recipe costs */}
                   <div className="crafting-panel__recipe">
                     {Object.entries(item.recipe).map(([resId, needed]) => {
                       const have = Math.floor(cargo.items[resId] ?? 0);
@@ -285,55 +291,55 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
             })
           )}
         </div>
+      </div>
 
-        {/* Confirmation dialog for modules */}
-        {confirmItem && (
-          <div className="crafting-panel__confirm-overlay" onClick={() => setConfirmItem(null)}>
-            <div className="crafting-panel__confirm" onClick={(e) => e.stopPropagation()}>
-              <div className="crafting-panel__confirm-title">Confirm Craft</div>
-              <div className="crafting-panel__confirm-identity">
-                <img
-                  className="crafting-panel__confirm-icon"
-                  src={getItemIconUrl(confirmItem)}
-                  alt=""
-                />
-                <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
+      {/* Confirmation dialog (fixed overlay, above the Panel) */}
+      {confirmItem && (
+        <div className="crafting-panel__confirm-overlay" onClick={() => setConfirmItem(null)}>
+          <div className="crafting-panel__confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="crafting-panel__confirm-title">Confirm Craft</div>
+            <div className="crafting-panel__confirm-identity">
+              <img
+                className="crafting-panel__confirm-icon"
+                src={getItemIconUrl(confirmItem)}
+                alt=""
+              />
+              <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
+            </div>
+            <div className="crafting-panel__confirm-desc">{confirmItem.uiDesc}</div>
+            {confirmItem.effects && confirmItem.effects.length > 0 && (
+              <div className="crafting-panel__confirm-effects">
+                {confirmItem.effects.map((eff, i) => (
+                  <span key={i} className="crafting-panel__item-effect">
+                    {describeEffect(eff)}
+                  </span>
+                ))}
               </div>
-              <div className="crafting-panel__confirm-desc">{confirmItem.uiDesc}</div>
-              {confirmItem.effects && confirmItem.effects.length > 0 && (
-                <div className="crafting-panel__confirm-effects">
-                  {confirmItem.effects.map((eff, i) => (
-                    <span key={i} className="crafting-panel__item-effect">
-                      {describeEffect(eff)}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="crafting-panel__confirm-note">
-                {confirmItem.type === "module" && !modulesState.equippedModules[confirmItem.slot]
-                  ? "This module will be auto-equipped into the empty slot."
-                  : confirmItem.type === "module"
-                    ? `This module will be added to inventory. The ${SLOT_LABELS[confirmItem.slot]} slot is currently in use — swap from the loadout panel.`
-                    : "This is a one-time craft."}
-              </div>
-              <div className="crafting-panel__confirm-actions">
-                <button
-                  className="crafting-panel__confirm-cancel"
-                  onClick={() => setConfirmItem(null)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="crafting-panel__craft-btn"
-                  onClick={() => handleCraft(confirmItem)}
-                >
-                  Craft
-                </button>
-              </div>
+            )}
+            <div className="crafting-panel__confirm-note">
+              {confirmItem.type === "module" && !modulesState.equippedModules[confirmItem.slot]
+                ? "This module will be auto-equipped into the empty slot."
+                : confirmItem.type === "module"
+                  ? `This module will be added to inventory. The ${SLOT_LABELS[confirmItem.slot]} slot is currently in use — swap from the loadout panel.`
+                  : "This is a one-time craft."}
+            </div>
+            <div className="crafting-panel__confirm-actions">
+              <button
+                className="crafting-panel__confirm-cancel"
+                onClick={() => setConfirmItem(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="crafting-panel__craft-btn"
+                onClick={() => handleCraft(confirmItem)}
+              >
+                Craft
+              </button>
             </div>
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </Panel>
   );
 }

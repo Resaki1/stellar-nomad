@@ -1,14 +1,18 @@
+@use '../../../styles' as s;
+
 .reticle {
   position: fixed;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  z-index: 100;
+  z-index: s.$z-hud-base;
 
   &__center-ring {
     width: 24px;
     height: 24px;
+    // TODO(phase-3): reticle rewrite — thinner stroke, micro-dots, no
+    // hard ring. See style guide §7.1.
     border: 1.5px solid rgba(255, 255, 255, 0.6);
     border-radius: 50%;
     position: absolute;
@@ -25,7 +29,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity s.$dur-fast s.$ease-out;
 
     &--visible {
       opacity: 1;
@@ -34,7 +38,7 @@
     svg {
       width: 100%;
       height: 100%;
-      transform: rotate(-90deg); // Start from top
+      transform: rotate(-90deg); // start from top
     }
 
     circle {
@@ -53,7 +57,7 @@
     }
   }
 
-  // POI gaze progress — gold/amber styling to distinguish from asteroid targeting.
+  // POI gaze progress — signal color distinguishes from asteroid targeting.
   &__poi-indicator {
     width: 40px;
     height: 40px;
@@ -62,7 +66,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity s.$dur-fast s.$ease-out;
 
     &--visible {
       opacity: 1;
@@ -80,11 +84,11 @@
       stroke-linecap: round;
 
       &.bg {
-        stroke: rgba(255, 200, 60, 0.15);
+        stroke: rgba(255, 211, 107, 0.15); // $accent-signal at low alpha
       }
 
       &.progress {
-        stroke: rgba(255, 200, 60, 0.9);
+        stroke: s.$accent-signal;
         transition: stroke-dashoffset 0.1s linear;
       }
     }
@@ -93,15 +97,16 @@
   &__focused-indicator {
     width: 44px;
     height: 44px;
-    border: 2px solid rgba(100, 200, 255, 0.9);
+    // Mining focus ring — info-blue per semantic color rules.
+    border: 2px solid rgba(127, 184, 255, 0.9); // $accent-info at high alpha
     border-radius: 50%;
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     opacity: 0;
-    box-shadow: 0 0 10px rgba(100, 200, 255, 0.5);
-    transition: opacity 0.2s ease-in-out;
+    box-shadow: 0 0 10px s.$glow-info;
+    transition: opacity s.$dur-fast s.$ease-out;
 
     &--visible {
       opacity: 1;

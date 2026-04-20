@@ -1,0 +1,19 @@
+// Umbrella entry point for the design system.
+//
+// Usage in any component SCSS — use a RELATIVE path (Next 16 +
+// Turbopack doesn't honor Sass loadPaths reliably yet):
+//
+//   @use '../../../styles' as s;
+//
+//   .thing {
+//     color: s.$text-primary;
+//     padding: s.$space-3 s.$space-4;
+//     @include s.hologram();
+//     @include s.t-md;
+//   }
+//
+// Canonical reference: docs/UI_STYLE_GUIDE.md
+
+@forward 'tokens';
+@forward 'mixins';
+@forward 'typography';

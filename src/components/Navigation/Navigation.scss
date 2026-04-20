@@ -1,3 +1,5 @@
+@use '../../styles' as s;
+
 .navigation {
   position: absolute;
   top: 0;
@@ -15,11 +17,11 @@
 .acceleration__indicator {
   opacity: 0;
   transform: translateX(-24px);
-  transition: opacity 0.5s, transform 0.5s cubic-bezier(0.075, 1.22, 0.165, 1);
+  transition: opacity 0.5s, transform 0.5s cubic-bezier(0.075, 1.22, 0.165, 1); // TODO(phase-3): audit motion (custom curve)
   position: absolute;
   top: 10vh;
-  left: 16px;
-  width: 8px;
+  left: s.$space-4;
+  width: s.$space-2;
   height: 30vh;
 
   &--show {
@@ -30,7 +32,7 @@
 
 .acceleration__bar-container {
   background: gray;
-  border-radius: 16px;
+  border-radius: s.$space-4;
   position: relative;
   height: 100%;
 }
@@ -40,7 +42,7 @@
   position: absolute;
   bottom: 0;
   background: white;
-  border-radius: 16px;
+  border-radius: s.$space-4;
   height: 100%;
   width: 100%;
 }

@@ -11,6 +11,7 @@ import {
 } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
 import { getResourceTypes } from "@/sim/asteroids/resources";
+import Panel from "../Shell/Panel";
 
 import "./CargoDetail.scss";
 
@@ -56,7 +57,6 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
   }, [cargo.items, resourceMap]);
 
   const handleAmountChange = useCallback((id: string, value: string) => {
-    // Allow only digits
     const cleaned = value.replace(/\D/g, "");
     setAmounts((prev) => ({ ...prev, [id]: cleaned }));
   }, []);
@@ -78,18 +78,18 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="cargo-detail__backdrop" onClick={onClose}>
-      <div className="cargo-detail" onClick={(e) => e.stopPropagation()}>
-        <div className="cargo-detail__header">
-          <div className="cargo-detail__title">Cargo Hold</div>
-          <div className="cargo-detail__capacity">
-            {used} / {capacity} units
-          </div>
-          <button className="cargo-detail__close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Panel
+      title="Cargo Hold"
+      tier={2}
+      width={560}
+      onClose={onClose}
+      headerRight={
+        <span className="cargo-detail__capacity">
+          {used} / {capacity} <span className="cargo-detail__capacity-unit">units</span>
+        </span>
+      }
+    >
+      <div className="cargo-detail">
         <div className="cargo-detail__bar">
           <div
             className="cargo-detail__bar-fill"
@@ -137,6 +137,6 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }

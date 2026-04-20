@@ -1,25 +1,27 @@
+@use '../../../../styles' as s;
+
 .keybind-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(200, 200, 200, 0.1);
-  border: 1px solid rgba(200, 200, 200, 0.25);
+  padding: (s.$space-1 + 2px) s.$space-3; // 6px 12px — TODO(phase-3): normalize spacing
+  border-radius: s.$radius-xl;
+  background: rgba(200, 200, 200, 0.1); // legacy bright-glass variant; keep raw to preserve visuals
+  border: 1px solid rgba(200, 200, 200, 0.25); // legacy bright-glass variant; keep raw to preserve visuals
 
   &__label {
     font-size: 0.85rem;
     font-weight: 600;
-    color: rgba(240, 240, 240, 0.9);
+    color: rgba(240, 240, 240, 0.9); // near-white text; keep raw to preserve visuals
     white-space: nowrap;
     user-select: none;
   }
 
   &__keys {
     display: flex;
-    gap: 6px;
-    margin-left: 16px;
+    gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing
+    margin-left: s.$space-4;
   }
 
   &__key {
@@ -28,43 +30,43 @@
     justify-content: center;
     min-width: 40px;
     height: 30px;
-    padding: 0 10px;
-    border-radius: 5px;
+    padding: 0 10px; // TODO(phase-3): normalize spacing (10px)
+    border-radius: 5px; // TODO(phase-3): normalize radius
     font-size: 0.8rem;
     font-weight: 700;
     font-family: inherit;
-    color: rgba(255, 255, 255, 0.95);
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.95); // close to $text-primary; keep raw to preserve visuals
+    background: rgba(255, 255, 255, 0.12); // TODO(phase-3): bg at low-alpha white; decide in hologram pass
+    border: 1px solid rgba(255, 255, 255, 0.3); // close to $stroke-strong; keep raw to preserve visuals
     cursor: pointer;
     user-select: none;
-    transition: all 0.15s ease;
+    transition: all s.$dur-fast ease;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.22);
-      border-color: rgba(255, 255, 255, 0.5);
+      background: rgba(255, 255, 255, 0.22); // TODO(phase-3): bg; decide in hologram pass
+      border-color: rgba(255, 255, 255, 0.5); // TODO(phase-3): above $stroke-strong scale
     }
 
     &--listening {
-      background: rgba(100, 180, 255, 0.3);
-      border-color: rgba(100, 180, 255, 0.8);
-      color: rgba(100, 180, 255, 1);
+      background: rgba(100, 180, 255, 0.3); // $accent-comms-tinted fill; keep raw to preserve visuals
+      border-color: rgba(100, 180, 255, 0.8); // $accent-comms-tinted stroke; keep raw to preserve visuals
+      color: rgba(100, 180, 255, 1); // $accent-comms-like solid; keep raw to preserve visuals
       animation: keybind-pulse 1s ease-in-out infinite;
     }
 
     &--empty {
       min-width: 30px;
-      color: rgba(255, 255, 255, 0.3);
+      color: s.$text-disabled;
       border-style: dashed;
-      border-color: rgba(255, 255, 255, 0.15);
+      border-color: s.$stroke-base;
       background: transparent;
       font-size: 1rem;
       font-weight: 400;
 
       &:hover {
-        color: rgba(255, 255, 255, 0.6);
-        border-color: rgba(255, 255, 255, 0.35);
-        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.6); // close to $text-secondary; keep raw to preserve visuals
+        border-color: rgba(255, 255, 255, 0.35); // close to $stroke-strong; keep raw to preserve visuals
+        background: rgba(255, 255, 255, 0.06); // TODO(phase-3): bg; decide in hologram pass
       }
     }
   }
@@ -83,21 +85,21 @@
 // Category headers inside the controls submenu
 .keybind-category {
   width: 100%;
-  margin-top: 4px;
+  margin-top: s.$space-1;
 
   &__title {
     font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    color: rgba(255, 255, 255, 0.4);
-    margin: 0 0 6px 4px;
+    color: s.$text-tertiary;
+    margin: 0 0 (s.$space-1 + 2px) s.$space-1; // 6px 4px — TODO(phase-3): normalize spacing
     user-select: none;
   }
 
   &__rows {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: s.$space-1;
   }
 }
