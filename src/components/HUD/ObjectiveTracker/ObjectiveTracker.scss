@@ -1,0 +1,69 @@
+@use '../../../styles' as s;
+
+.objective-tracker {
+  position: fixed;
+  // Sits below the panel-buttons row (top s.$space-3 + button height + gap).
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: s.$z-hud-base;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: s.$space-1 s.$space-3;
+  pointer-events: none;
+  font-family: s.$font-ui;
+  color: s.$text-primary;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 0 8px s.$glow-info;
+  border-top: 1px solid s.$stroke-faint;
+
+  &__row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    column-gap: s.$space-2;
+
+    &--progress {
+      grid-template-rows: auto auto;
+      row-gap: 3px;
+      padding-bottom: 2px;
+    }
+  }
+
+  &__icon {
+    color: s.$accent-info;
+    flex: 0 0 auto;
+  }
+
+  &__label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: s.$text-secondary;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__value {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    font-weight: 700;
+    color: s.$text-primary;
+  }
+
+  &__bar {
+    grid-column: 2 / 4;
+    height: 2px;
+    background: s.$stroke-faint;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    background: s.$accent-info;
+    transition: width s.$dur-instant linear;
+  }
+}

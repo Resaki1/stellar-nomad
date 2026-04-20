@@ -85,11 +85,9 @@
 
   // ── Body: tree + detail side by side ──
   &__body {
-    flex: 1 1 0;
     display: flex;
     overflow: hidden;
     margin-top: s.$space-3;
-    min-height: 80vh;
   }
 
   &__tree-scroll {

@@ -16,7 +16,7 @@ import CraftingPanel from "./CraftingPanel/CraftingPanel";
 import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
 import ToastDisplay from "./ToastDisplay/ToastDisplay";
 import Hotbar from "./Hotbar/Hotbar";
-import AssaySamplesHUD from "./AssaySamplesHUD/AssaySamplesHUD";
+import ObjectiveTracker from "./ObjectiveTracker/ObjectiveTracker";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
@@ -91,7 +91,7 @@ export default function HUD() {
       <Reticle />
       <MiningHUD />
       <CargoHUD onClick={() => openPanel("cargo")} />
-      <AssaySamplesHUD />
+      <ObjectiveTracker />
       <SettingsMenu />
       <ToastDisplay />
       <AINameOverlay />

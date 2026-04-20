@@ -147,43 +147,67 @@
     line-height: 1;
   }
 
+  // Laser-mode instrument: docked above the ShipDashboard (bottom-right)
+  // as a persistent state indicator, not a floating center-screen button.
   &__pulse-toggle {
+    position: fixed;
+    right: s.$space-3;
+    bottom: calc(max(6vw, 64px) + #{s.$space-2});
     pointer-events: auto;
-    font-size: 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: s.$space-2;
+    padding: s.$space-1 s.$space-2;
+    border: 1px solid s.$stroke-faint;
+    background: s.$surface-null;
+    font-family: s.$font-mono;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    padding: 3px 10px; // TODO(phase-3): normalize spacing
-    border-radius: s.$radius-md;
-    border: 1px solid s.$stroke-base;
-    background: rgba(255, 255, 255, 0.06); // TODO(phase-3): bg at stroke-faint alpha; decide in hologram pass
-    color: s.$text-tertiary;
+    color: s.$text-secondary;
     cursor: pointer;
+    @include s.chamfer(s.$radius-sm, ('tr', 'bl'));
     transition:
-      background s.$dur-fast,
-      color s.$dur-fast,
-      border-color s.$dur-fast;
-    margin-bottom: s.$space-1;
+      color s.$dur-fast s.$ease-out,
+      border-color s.$dur-fast s.$ease-out;
+    text-shadow:
+      0 0 1px rgba(0, 0, 0, 0.9),
+      0 0 8px s.$glow-info;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.1); // TODO(phase-3): bg; decide in hologram pass
-      color: rgba(255, 255, 255, 0.8); // close to $text-secondary; keep raw to preserve visuals
+      border-color: s.$stroke-active;
+      color: s.$text-primary;
     }
 
     &--active {
-      border-color: rgba(255, 180, 60, 0.4); // $accent-warn-tinted stroke; keep raw to preserve visuals
-      background: rgba(255, 180, 60, 0.12); // $accent-warn-tinted fill; keep raw to preserve visuals
-      color: rgba(255, 200, 100, 0.9); // amber text; keep raw to preserve visuals
+      border-color: rgba(255, 138, 61, 0.5); // $accent-heat-tinted stroke
+      color: s.$accent-heat;
+      text-shadow:
+        0 0 1px rgba(0, 0, 0, 0.9),
+        0 0 8px s.$glow-heat;
 
       &:hover {
-        background: rgba(255, 180, 60, 0.2); // $accent-warn-tinted fill; keep raw to preserve visuals
+        border-color: s.$accent-heat;
       }
     }
   }
 
+  &__pulse-label {
+    color: s.$text-tertiary;
+    font-weight: 600;
+  }
+
+  &__pulse-mode {
+    font-variant-numeric: tabular-nums;
+  }
+
   &__pulse-key {
-    font-size: 8px;
-    opacity: 0.4;
-    margin-left: s.$space-1;
+    font-size: 9px;
+    color: s.$text-tertiary;
+    border: 1px solid s.$stroke-faint;
+    border-radius: s.$radius-sm;
+    padding: 0 4px;
+    font-weight: 700;
   }
 
   &__heat-container {

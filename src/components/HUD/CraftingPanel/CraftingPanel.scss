@@ -72,7 +72,6 @@
   // ── Items list ──
   &__list {
     overflow-y: auto;
-    flex: 1 1 0;
     display: flex;
     flex-direction: column;
     gap: s.$space-2;

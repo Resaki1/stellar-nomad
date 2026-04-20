@@ -4,66 +4,61 @@
   position: fixed;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: s.$z-hud-base;
+  width: 0;
+  height: 0;
 
-  &__center-ring {
-    width: 24px;
-    height: 24px;
-    // TODO(phase-3): reticle rewrite — thinner stroke, micro-dots, no
-    // hard ring. See style guide §7.1.
-    border: 1.5px solid rgba(255, 255, 255, 0.6);
-    border-radius: 50%;
+  // ── Default state: 18px circle + 2 micro-dots ───────────────
+  &__default {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-  }
-
-  &__targeting-indicator {
-    width: 40px;
-    height: 40px;
-    position: absolute;
-    top: 50%;
-    left: 50%;
+    top: 0;
+    left: 0;
+    width: 18px;
+    height: 18px;
     transform: translate(-50%, -50%);
     opacity: 0;
-    transition: opacity s.$dur-fast s.$ease-out;
+    transition:
+      opacity s.$dur-fast s.$ease-out,
+      transform s.$dur-fast s.$ease-out;
 
     &--visible {
       opacity: 1;
     }
+  }
 
-    svg {
-      width: 100%;
-      height: 100%;
-      transform: rotate(-90deg); // start from top
+  &__circle {
+    position: absolute;
+    inset: 0;
+    border: 1px solid s.$stroke-faint;
+    border-radius: 50%;
+  }
+
+  &__dot {
+    position: absolute;
+    left: 50%;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: s.$text-tertiary;
+    transform: translateX(-50%);
+
+    &--top {
+      top: -5px;
     }
 
-    circle {
-      fill: none;
-      stroke-width: 3;
-      stroke-linecap: round;
-
-      &.bg {
-        stroke: rgba(255, 255, 255, 0.2);
-      }
-
-      &.progress {
-        stroke: rgba(255, 255, 255, 0.9);
-        transition: stroke-dashoffset 0.1s ease-out;
-      }
+    &--bottom {
+      bottom: -5px;
     }
   }
 
-  // POI gaze progress — signal color distinguishes from asteroid targeting.
-  &__poi-indicator {
-    width: 40px;
-    height: 40px;
+  // ── Progress ring: 28px, info (asteroid) or signal (POI) ────
+  &__ring {
     position: absolute;
-    top: 50%;
-    left: 50%;
+    top: 0;
+    left: 0;
+    width: 28px;
+    height: 28px;
     transform: translate(-50%, -50%);
     opacity: 0;
     transition: opacity s.$dur-fast s.$ease-out;
@@ -77,38 +72,135 @@
       height: 100%;
       transform: rotate(-90deg);
     }
+  }
 
-    circle {
-      fill: none;
-      stroke-width: 3;
-      stroke-linecap: round;
+  &__ring-bg {
+    fill: none;
+    stroke: s.$stroke-faint;
+    stroke-width: 1.5;
+  }
 
-      &.bg {
-        stroke: rgba(255, 211, 107, 0.15); // $accent-signal at low alpha
-      }
+  &__ring-progress {
+    fill: none;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+  }
 
-      &.progress {
-        stroke: s.$accent-signal;
-        transition: stroke-dashoffset 0.1s linear;
-      }
+  &__ring--asteroid &__ring-progress {
+    stroke: s.$accent-info;
+    filter: drop-shadow(0 0 3px s.$glow-info);
+    transition: stroke-dashoffset s.$dur-fast s.$ease-out;
+  }
+
+  // When fully focused, thicken and glow a touch to signal lock.
+  &__ring--asteroid.reticle__ring--locked &__ring-progress {
+    stroke-width: 2;
+    filter: drop-shadow(0 0 5px s.$glow-info);
+  }
+
+  &__ring--poi &__ring-progress {
+    stroke: s.$accent-signal;
+    filter: drop-shadow(0 0 3px s.$glow-signal);
+    transition: stroke-dashoffset 100ms linear;
+  }
+
+  // ── Hint text (below reticle) ───────────────────────────────
+  &__hint {
+    position: absolute;
+    top: 22px;
+    left: 0;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: s.$space-1;
+    font-family: s.$font-mono;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: s.$text-primary;
+    text-transform: uppercase;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity s.$dur-fast s.$ease-out;
+    text-shadow:
+      0 0 1px rgba(0, 0, 0, 0.9),
+      0 0 8px s.$glow-info;
+
+    &--visible {
+      opacity: 1;
+    }
+
+    &--transit {
+      text-shadow:
+        0 0 1px rgba(0, 0, 0, 0.9),
+        0 0 8px s.$glow-signal;
     }
   }
 
-  &__focused-indicator {
-    width: 44px;
-    height: 44px;
-    // Mining focus ring — info-blue per semantic color rules.
-    border: 2px solid rgba(127, 184, 255, 0.9); // $accent-info at high alpha
-    border-radius: 50%;
+  &__hint-key {
+    color: s.$text-tertiary;
+  }
+
+  // ── Mining brackets: 40px corners, heat accent, 1Hz pulse ───
+  &__brackets {
     position: absolute;
-    top: 50%;
-    left: 50%;
+    top: 0;
+    left: 0;
+    width: 40px;
+    height: 40px;
     transform: translate(-50%, -50%);
     opacity: 0;
-    box-shadow: 0 0 10px s.$glow-info;
     transition: opacity s.$dur-fast s.$ease-out;
+    visibility: hidden;
 
     &--visible {
+      opacity: 1;
+      visibility: visible;
+      animation: reticleBracketPulse 1s ease-in-out infinite alternate;
+    }
+  }
+
+  &__bracket {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border: 0 solid s.$accent-heat;
+    filter: drop-shadow(0 0 3px s.$glow-heat);
+
+    &--tl {
+      top: 0;
+      left: 0;
+      border-top-width: 1.5px;
+      border-left-width: 1.5px;
+    }
+
+    &--tr {
+      top: 0;
+      right: 0;
+      border-top-width: 1.5px;
+      border-right-width: 1.5px;
+    }
+
+    &--bl {
+      bottom: 0;
+      left: 0;
+      border-bottom-width: 1.5px;
+      border-left-width: 1.5px;
+    }
+
+    &--br {
+      bottom: 0;
+      right: 0;
+      border-bottom-width: 1.5px;
+      border-right-width: 1.5px;
+    }
+  }
+
+  @keyframes reticleBracketPulse {
+    from {
+      opacity: 0.55;
+    }
+    to {
       opacity: 1;
     }
   }

@@ -196,20 +196,25 @@ export default function MiningHUD() {
         </div>
       </div>
 
+      {/* Pulse mining mode indicator — docked above the ShipDashboard
+          (bottom-right) so it reads as a persistent "laser mode" instrument
+          rather than a center-of-screen button over the ship. */}
+      {pulseMiningUnlocked && (
+        <button
+          className={`mining-hud__pulse-toggle ${pulseMiningActive ? "mining-hud__pulse-toggle--active" : ""}`}
+          onClick={() => togglePulseMining()}
+          title={pulseMiningActive ? "Switch to Continuous Mining (P)" : "Switch to Pulse Mining (P)"}
+        >
+          <span className="mining-hud__pulse-label">LASER</span>
+          <span className="mining-hud__pulse-mode">
+            {pulseMiningActive ? "PULSE" : "CONT"}
+          </span>
+          <span className="mining-hud__pulse-key">P</span>
+        </button>
+      )}
+
       {/* Actions – positioned at bottom center */}
       <div className="mining-hud__actions">
-        {/* Pulse mining toggle */}
-        {pulseMiningUnlocked && (
-          <button
-            className={`mining-hud__pulse-toggle ${pulseMiningActive ? "mining-hud__pulse-toggle--active" : ""}`}
-            onClick={() => togglePulseMining()}
-            title={pulseMiningActive ? "Switch to Continuous Mining (P)" : "Switch to Pulse Mining (P)"}
-          >
-            {pulseMiningActive ? "PULSE" : "CONT"}
-            <span className="mining-hud__pulse-key">P</span>
-          </button>
-        )}
-
         {/* Heat bar */}
         <div
           className={`mining-hud__heat-container ${

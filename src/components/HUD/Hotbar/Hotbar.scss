@@ -5,62 +5,69 @@
   bottom: s.$space-4;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 300; // TODO(phase-3): normalize to $z scale (between hud-overlay and toast)
+  z-index: s.$z-hud-overlay;
   display: flex;
   gap: s.$space-1;
   pointer-events: auto;
 }
 
 .hotbar__slot {
-  width: 52px;
+  position: relative;
+  width: 48px;
   height: 48px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
-  background: rgba(0, 0, 0, 0.3); // TODO(phase-3): migrate to scrim tier
+  background: s.$surface-null;
   border: 1px solid s.$stroke-faint;
+  color: s.$text-disabled;
   font-family: s.$font-ui;
-  color: rgba(255, 255, 255, 0.35); // close to $text-disabled; keep raw to preserve visuals
-  font-size: 9px;
-  position: relative;
   overflow: hidden;
   @include s.chamfer(s.$radius-lg, ('tr', 'bl'));
-  transition:
-    border-color s.$dur-fast s.$ease-out,
-    background s.$dur-fast s.$ease-out;
+  transition: border-color s.$dur-fast s.$ease-out;
 
   &--filled {
-    border-color: rgba(255, 255, 255, 0.2); // close to $stroke-base; keep raw to preserve visuals
-    color: rgba(255, 255, 255, 0.8); // close to $text-secondary; keep raw to preserve visuals
-    background: rgba(0, 0, 0, 0.45); // TODO(phase-3): migrate to scrim/glass tier
+    border-color: s.$stroke-base;
+    color: s.$text-primary;
     cursor: pointer;
 
     &:hover {
-      border-color: rgba(80, 160, 255, 0.4); // $accent-info-tinted stroke; keep raw to preserve visuals
-      background: rgba(0, 0, 0, 0.55); // TODO(phase-3): migrate to scrim/glass tier
+      border-color: s.$stroke-active;
+    }
+  }
+
+  &--unavailable {
+    cursor: default;
+
+    .hotbar__icon {
+      opacity: 0.25;
+    }
+
+    &:hover {
+      border-color: s.$stroke-base;
     }
   }
 
   &--cooldown {
-    opacity: 0.7;
-  }
-
-  &--unavailable {
-    opacity: 0.35;
     cursor: default;
-    filter: grayscale(0.6);
+
+    &:hover {
+      border-color: s.$stroke-base;
+    }
   }
 }
 
 .hotbar__key {
-  font-size: 8px;
-  font-weight: 700;
-  opacity: 0.5;
   position: absolute;
   top: 2px;
   left: s.$space-1;
+  font-family: s.$font-mono;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: s.$text-tertiary;
+  font-variant-numeric: tabular-nums;
+  z-index: 2;
 }
 
 .hotbar__icon {
@@ -68,36 +75,47 @@
   height: 28px;
   object-fit: contain;
   display: block;
+  transition: opacity s.$dur-fast s.$ease-out;
 }
 
 .hotbar__count {
-  font-size: 8px;
+  position: absolute;
+  right: s.$space-1;
+  bottom: 2px;
+  font-family: s.$font-mono;
+  font-size: 10px;
   font-weight: 600;
-  opacity: 0.6;
+  color: s.$text-secondary;
   font-variant-numeric: tabular-nums;
+  z-index: 2;
 }
 
-.hotbar__cooldown-fill {
+// Counter-clockwise radial wipe — scrim arc shrinks back toward 0°
+// as the cooldown elapses. Uses a CSS custom property updated per
+// frame via inline style.
+.hotbar__cooldown-wipe {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: rgba(0, 0, 0, 0.55); // TODO(phase-3): migrate to scrim tier
+  inset: 0;
   pointer-events: none;
-  transition: height 0.1s linear;
-  // The parent's chamfer clip-path carries through to this absolutely
-  // positioned child, so explicit border-radius is no longer needed.
+  z-index: 1;
+  background: conic-gradient(
+    s.$surface-scrim 0deg,
+    s.$surface-scrim var(--cooldown-deg, 0deg),
+    transparent var(--cooldown-deg, 0deg)
+  );
 }
 
 .hotbar__cooldown-text {
   position: absolute;
-  bottom: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: s.$font-mono;
+  font-size: 12px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.85); // close to $text-primary; keep raw to preserve visuals
+  color: s.$text-primary;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); // black shadow; keep raw to preserve visuals
-  z-index: 1;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.8);
+  z-index: 3;
 }

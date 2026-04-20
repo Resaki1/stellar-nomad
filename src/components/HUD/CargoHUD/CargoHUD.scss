@@ -2,102 +2,102 @@
 
 .cargo-hud {
   position: absolute;
-  left: s.$space-3;
-  top: s.$space-3;
-  width: 260px;
-  padding: s.$space-3 14px; // TODO(phase-3): normalize to $space-3 once spacing audit done
-  background: rgba(0, 0, 0, 0.35); // close to $surface-scrim; keep raw to preserve visuals
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: s.$radius-lg * 2; // 12px — panel radius
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  color: rgba(255, 255, 255, 0.9);
+  left: s.$space-4;
+  top: s.$space-4;
+  min-width: 180px;
+  padding: s.$space-2 s.$space-3;
   font-family: s.$font-ui;
+  color: s.$text-primary;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 0 8px s.$glow-info;
+  border-top: 1px solid s.$stroke-faint;
   pointer-events: auto;
   cursor: pointer;
-  transition: border-color s.$dur-base s.$ease-out, background s.$dur-base s.$ease-out;
+  transition: border-top-color s.$dur-fast s.$ease-out;
 
   &:hover {
-    border-color: rgba(255, 255, 255, 0.24);
-    background: rgba(0, 0, 0, 0.45);
-  }
-
-  &__header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: s.$space-3;
-  }
-
-  &__title {
-    font-size: 12px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    opacity: 0.8;
-  }
-
-  &__amount {
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  &__bar {
-    margin-top: s.$space-2;
-    height: 6px;
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: s.$radius-pill;
-    overflow: hidden;
-  }
-
-  &__bar-fill {
-    height: 100%;
-    background: rgba(255, 255, 255, 0.55);
-  }
-
-  &__list {
-    margin-top: 10px; // TODO(phase-3): normalize to $space-3
-    display: flex;
-    flex-direction: column;
-    gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize to $space-2
+    border-top-color: s.$stroke-active;
   }
 
   &__row {
     display: flex;
+    align-items: baseline;
     justify-content: space-between;
-    align-items: center;
     gap: s.$space-3;
-    font-size: 12px;
-    opacity: 0.9;
   }
 
-  &__resource {
-    display: flex;
-    align-items: center;
-    gap: s.$space-2;
-    min-width: 0;
+  &__label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: s.$text-tertiary;
   }
 
-  &__icon {
-    width: 1.1em;
-    height: 1.1em;
-    object-fit: contain;
-    flex: 0 0 auto;
-    display: block;
-  }
-
-  &__name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  &__count {
+  &__amount {
+    font-family: s.$font-mono;
     font-variant-numeric: tabular-nums;
-    opacity: 0.85;
+    font-size: 13px;
+    font-weight: 700;
+    color: s.$text-primary;
   }
 
-  &__empty {
-    font-size: 12px;
-    opacity: 0.6;
+  &__slash {
+    color: s.$text-tertiary;
+    margin: 0 2px;
+    font-weight: 400;
+  }
+
+  &__bar {
+    margin-top: 6px;
+    height: 2px;
+    background: s.$stroke-faint;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    background: s.$accent-info;
+    transition: width s.$dur-fast linear;
+  }
+
+  &__deltas {
+    margin-top: s.$space-1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 14px;
+    pointer-events: none;
+  }
+
+  &__delta {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: s.$accent-ok;
+    text-shadow:
+      0 0 1px rgba(0, 0, 0, 0.9),
+      0 0 6px s.$glow-ok;
+    animation: cargoDeltaIn s.$dur-base s.$ease-out,
+      cargoDeltaOut s.$dur-slow s.$ease-out 4.6s forwards;
+  }
+
+  @keyframes cargoDeltaIn {
+    from {
+      opacity: 0;
+      transform: translateX(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes cargoDeltaOut {
+    to {
+      opacity: 0;
+      transform: translateX(-4px);
+    }
   }
 }

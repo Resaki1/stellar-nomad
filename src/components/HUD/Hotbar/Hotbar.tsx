@@ -193,6 +193,8 @@ export default function Hotbar() {
         const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth;
         const unavailable = heatUnavailable || healthUnavailable;
 
+        const remainingAngle = `${cooldownFraction * 360}deg`;
+
         return (
           <div
             key={index}
@@ -209,16 +211,17 @@ export default function Hotbar() {
                   src={getItemIconUrl(def)}
                   alt={def.name}
                 />
-                {onCooldown ? (
+                <span className="hotbar__count">×{count}</span>
+                {onCooldown && (
                   <>
                     <div
-                      className="hotbar__cooldown-fill"
-                      style={{ height: `${cooldownFraction * 100}%` }}
+                      className="hotbar__cooldown-wipe"
+                      style={{ ["--cooldown-deg" as string]: remainingAngle }}
                     />
-                    <span className="hotbar__cooldown-text">{cooldownRemaining}s</span>
+                    {cooldownRemaining >= 1 && (
+                      <span className="hotbar__cooldown-text">{cooldownRemaining}s</span>
+                    )}
                   </>
-                ) : (
-                  <span className="hotbar__count">×{count}</span>
                 )}
               </>
             )}

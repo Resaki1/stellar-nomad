@@ -2,94 +2,139 @@
 
 import { useAtomValue } from "jotai";
 import { useEffect, useRef } from "react";
-import { miningStateAtom, showTargetingIndicatorAtom, targetingProgressAtom } from "@/store/mining";
+import {
+  miningStateAtom,
+  showTargetingIndicatorAtom,
+  targetingProgressAtom,
+} from "@/store/mining";
 import { poiBuffer } from "@/store/poi";
+import { keybindsAtom, displayKey } from "@/store/keybinds";
 import "./Reticle.scss";
 
-const CIRCLE_RADIUS = 16;
-const CIRCLE_CIRCUMFERENCE = 2 * Math.PI * CIRCLE_RADIUS;
+const RING_R = 14;
+const RING_C = 2 * Math.PI * RING_R;
 
-const Reticle = () => {
+export default function Reticle() {
   const miningState = useAtomValue(miningStateAtom);
-  const showTargetingIndicator = useAtomValue(showTargetingIndicatorAtom);
+  const showTargeting = useAtomValue(showTargetingIndicatorAtom);
   const targetingProgress = useAtomValue(targetingProgressAtom);
+  const keybinds = useAtomValue(keybindsAtom);
 
-  // POI gaze progress — read from mutable buffer via rAF (no React rerenders).
-  const poiProgressCircleRef = useRef<SVGCircleElement>(null);
-  const poiContainerRef = useRef<HTMLDivElement>(null);
+  const poiRingContainerRef = useRef<HTMLDivElement>(null);
+  const poiRingProgressRef = useRef<SVGCircleElement>(null);
+  const poiHintRef = useRef<HTMLDivElement>(null);
 
+  // POI gaze progress lives in a mutable buffer — drive the SVG and hint
+  // via rAF so we don't trigger React re-renders for a continuous signal.
   useEffect(() => {
     let running = true;
+    let rafId = 0;
     const tick = () => {
       if (!running) return;
-      const container = poiContainerRef.current;
-      const circle = poiProgressCircleRef.current;
+      const container = poiRingContainerRef.current;
+      const circle = poiRingProgressRef.current;
+      const hint = poiHintRef.current;
       if (container && circle) {
         const active = poiBuffer.gazeActive && poiBuffer.gazeProgress > 0.01;
-        container.classList.toggle("reticle__poi-indicator--visible", active);
+        container.classList.toggle("reticle__ring--visible", active);
         if (active) {
-          const offset = CIRCLE_CIRCUMFERENCE * (1 - poiBuffer.gazeProgress);
-          circle.style.strokeDashoffset = `${offset}`;
+          circle.style.strokeDashoffset = `${RING_C * (1 - poiBuffer.gazeProgress)}`;
         }
       }
-      requestAnimationFrame(tick);
+      if (hint) {
+        const locked =
+          poiBuffer.targetedId !== null && poiBuffer.gazeProgress >= 0.99;
+        hint.classList.toggle("reticle__hint--visible", locked);
+      }
+      rafId = requestAnimationFrame(tick);
     };
-    const id = requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
     return () => {
       running = false;
-      cancelAnimationFrame(id);
+      cancelAnimationFrame(rafId);
     };
   }, []);
 
-  const strokeDashoffset = CIRCLE_CIRCUMFERENCE * (1 - targetingProgress);
+  const isMining = miningState.isMining;
+  const showDefault = !isMining;
+  const showAsteroidRing = showTargeting && !isMining;
+  const showMineHint = miningState.isFocused && !isMining;
+  const mineKey = displayKey(keybinds.mine[0] ?? "m");
+  const transitKey = displayKey(keybinds.transitDrive[0] ?? "t");
 
   return (
     <div className="reticle">
-      <div className="reticle__center-ring" />
-
+      {/* Default: 18px circle + 2 micro-dots */}
       <div
-        className={`reticle__targeting-indicator ${
-          showTargetingIndicator && !miningState.isFocused ? "reticle__targeting-indicator--visible" : ""
+        className={`reticle__default ${
+          showDefault ? "reticle__default--visible" : ""
         }`}
       >
-        <svg viewBox="0 0 40 40">
-          <circle className="bg" cx="20" cy="20" r={CIRCLE_RADIUS} />
+        <div className="reticle__circle" />
+        <div className="reticle__dot reticle__dot--top" />
+        <div className="reticle__dot reticle__dot--bottom" />
+      </div>
+
+      {/* Asteroid targeting / focus ring */}
+      <div
+        className={`reticle__ring reticle__ring--asteroid ${
+          showAsteroidRing ? "reticle__ring--visible" : ""
+        } ${miningState.isFocused ? "reticle__ring--locked" : ""}`}
+      >
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <circle className="reticle__ring-bg" cx="16" cy="16" r={RING_R} />
           <circle
-            className="progress"
-            cx="20"
-            cy="20"
-            r={CIRCLE_RADIUS}
-            strokeDasharray={CIRCLE_CIRCUMFERENCE}
-            strokeDashoffset={strokeDashoffset}
+            className="reticle__ring-progress"
+            cx="16"
+            cy="16"
+            r={RING_R}
+            strokeDasharray={RING_C}
+            strokeDashoffset={RING_C * (1 - targetingProgress)}
           />
         </svg>
       </div>
 
-      <div
-        ref={poiContainerRef}
-        className="reticle__poi-indicator"
-      >
-        <svg viewBox="0 0 40 40">
-          <circle className="bg" cx="20" cy="20" r={CIRCLE_RADIUS} />
+      {/* POI gaze ring */}
+      <div ref={poiRingContainerRef} className="reticle__ring reticle__ring--poi">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <circle className="reticle__ring-bg" cx="16" cy="16" r={RING_R} />
           <circle
-            ref={poiProgressCircleRef}
-            className="progress"
-            cx="20"
-            cy="20"
-            r={CIRCLE_RADIUS}
-            strokeDasharray={CIRCLE_CIRCUMFERENCE}
-            strokeDashoffset={CIRCLE_CIRCUMFERENCE}
+            ref={poiRingProgressRef}
+            className="reticle__ring-progress"
+            cx="16"
+            cy="16"
+            r={RING_R}
+            strokeDasharray={RING_C}
+            strokeDashoffset={RING_C}
           />
         </svg>
       </div>
 
+      {/* Hints */}
       <div
-        className={`reticle__focused-indicator ${
-          miningState.isFocused ? "reticle__focused-indicator--visible" : ""
+        className={`reticle__hint reticle__hint--mine ${
+          showMineHint ? "reticle__hint--visible" : ""
         }`}
-      />
+      >
+        <span className="reticle__hint-key">[{mineKey}]</span>
+        <span>MINE</span>
+      </div>
+      <div ref={poiHintRef} className="reticle__hint reticle__hint--transit">
+        <span className="reticle__hint-key">[{transitKey}]</span>
+        <span>TRANSIT</span>
+      </div>
+
+      {/* Mining brackets */}
+      <div
+        className={`reticle__brackets ${
+          isMining ? "reticle__brackets--visible" : ""
+        }`}
+      >
+        <span className="reticle__bracket reticle__bracket--tl" />
+        <span className="reticle__bracket reticle__bracket--tr" />
+        <span className="reticle__bracket reticle__bracket--bl" />
+        <span className="reticle__bracket reticle__bracket--br" />
+      </div>
     </div>
   );
-};
-
-export default Reticle;
+}

@@ -854,6 +854,10 @@ progresses rather than re-litigating choices.
 | 2026-04-19 | ShipDashboard flip = subtle dark scrim, not pure hologram | A fully transparent dashboard makes the chamfer edge invisible. A 0.35 alpha scrim keeps the signature cut visible while still reading as "not bright glass" |
 | 2026-04-19 | Hotbar slot chamfer uses `tr` + `bl` (diagonal pair, key-free corners) | Style guide §7.4. The existing top-left key number stays intact; bottom-right is the busiest corner (cooldown fill), so the remaining corners get the cut |
 | 2026-04-19 | Research state icons ✓ ◉ ○ 🔒 → `Check` / `CircleDot` / `Circle` / `Lock` (Lucide) | Exact semantic mapping; all render at 11px with `strokeWidth=2` for a consistent tree-node look |
+| 2026-04-20 | Reticle hint text uses live keybind (`keybindsAtom.mine[0]` / `transitDrive[0]`) | The letter in `[M] MINE` should follow player rebinds, not hardcode `M` |
+| 2026-04-20 | Hotbar cooldown is a conic-gradient scrim driven by `--cooldown-deg` CSS var | Conic arc shrinking from 360° → 0° reads as a CCW wipe; CSS var avoids per-frame recomputation of the gradient string |
+| 2026-04-20 | CargoHUD deltas are local component state, not a store atom | "Top 3 recent additions" is purely a glance-tier affordance; diffing `cargoAtom.items` in a `useEffect` keeps the glance surface stateless across sessions |
+| 2026-04-20 | AssaySamplesHUD deleted; assay + active research folded into `ObjectiveTracker` | The tracker is the single top-center home for "what am I working toward?" rows; future story objectives append to the same component |
 
 ---
 

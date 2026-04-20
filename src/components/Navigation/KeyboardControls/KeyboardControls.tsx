@@ -111,8 +111,14 @@ const KeyboardControls = () => {
   // ── Scroll wheel: immediate speed steps ───────────────────────────
   const handleWheel = useCallback(
     (e: WheelEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      // Don't hijack scroll when the player is interacting with a modal
+      // (including Settings, which uses the Panel shell) — the wheel is
+      // meant for that panel's own scrollable content.
+      if (target?.closest(".panel__backdrop")) return;
 
       const step = e.deltaY < 0 ? 0.05 : -0.05;
       setMovement((prev) => ({

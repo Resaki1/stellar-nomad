@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue } from "jotai";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   cargoAtom,
@@ -18,11 +18,15 @@ type CargoHUDProps = {
   onClick?: () => void;
 };
 
-type CargoRow = {
+const DELTA_TTL_MS = 5000;
+const DELTA_MAX = 3;
+
+type CargoDelta = {
+  key: string;
   id: string;
   name: string;
-  icon: string;
   amount: number;
+  expiresAt: number;
 };
 
 export default function CargoHUD({ onClick }: CargoHUDProps) {
@@ -35,36 +39,72 @@ export default function CargoHUD({ onClick }: CargoHUDProps) {
 
   const resourceMap = useMemo(() => {
     const types = getResourceTypes(systemConfig);
-    const map = new Map<string, { name: string; icon: string }>();
-    for (const d of types) map.set(d.id, { name: d.name, icon: d.icon ?? "" });
+    const map = new Map<string, { name: string }>();
+    for (const d of types) map.set(d.id, { name: d.name });
     return map;
   }, [systemConfig]);
 
-  const rows: CargoRow[] = useMemo(() => {
-    const entries = Object.entries(cargo.items)
-      .map(([id, amount]) => ({ id, amount: Math.max(0, Math.floor(amount)) }))
-      .filter((e) => e.amount > 0)
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 8);
+  // Diff `cargo.items` against the previous snapshot to surface positive
+  // deltas as transient "+N Resource" rows. No global atom needed — the
+  // glance tier only shows what changed recently.
+  const prevItemsRef = useRef<Record<string, number>>({});
+  const [deltas, setDeltas] = useState<CargoDelta[]>([]);
+  const deltaCounterRef = useRef(0);
 
-    return entries.map((e) => {
-      const def = resourceMap.get(e.id);
-      return {
-        id: e.id,
-        amount: e.amount,
-        name: def?.name ?? e.id,
-        icon: def?.icon ?? "",
-      };
-    });
+  useEffect(() => {
+    const prev = prevItemsRef.current;
+    const curr = cargo.items;
+    const now = performance.now();
+    const newDeltas: CargoDelta[] = [];
+
+    for (const id in curr) {
+      const delta =
+        Math.floor(curr[id] ?? 0) - Math.floor(prev[id] ?? 0);
+      if (delta > 0) {
+        deltaCounterRef.current += 1;
+        newDeltas.push({
+          key: `${id}-${deltaCounterRef.current}`,
+          id,
+          name: resourceMap.get(id)?.name ?? id,
+          amount: delta,
+          expiresAt: now + DELTA_TTL_MS,
+        });
+      }
+    }
+
+    prevItemsRef.current = { ...curr };
+
+    if (newDeltas.length > 0) {
+      setDeltas((prev) =>
+        [...newDeltas, ...prev].filter((d) => d.expiresAt > now).slice(0, 8),
+      );
+    }
   }, [cargo.items, resourceMap]);
+
+  // Prune expired deltas on a coarse timer so we don't rerender every frame.
+  useEffect(() => {
+    if (deltas.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      setDeltas((prev) => {
+        const next = prev.filter((d) => d.expiresAt > now);
+        return next.length === prev.length ? prev : next;
+      });
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [deltas.length]);
+
+  const visibleDeltas = deltas.slice(0, DELTA_MAX);
 
   return (
     <div className="cargo-hud" onClick={onClick}>
-      <div className="cargo-hud__header">
-        <div className="cargo-hud__title">Cargo</div>
-        <div className="cargo-hud__amount">
-          {used}/{capacity}
-        </div>
+      <div className="cargo-hud__row">
+        <span className="cargo-hud__label">Cargo</span>
+        <span className="cargo-hud__amount">
+          {used}
+          <span className="cargo-hud__slash">/</span>
+          {capacity}
+        </span>
       </div>
 
       <div className="cargo-hud__bar">
@@ -74,22 +114,12 @@ export default function CargoHUD({ onClick }: CargoHUDProps) {
         />
       </div>
 
-      <div className="cargo-hud__list">
-        {rows.length === 0 ? (
-          <div className="cargo-hud__empty">Empty</div>
-        ) : (
-          rows.map((r) => (
-            <div key={r.id} className="cargo-hud__row">
-              <div className="cargo-hud__resource">
-                {r.icon ? (
-                  <img className="cargo-hud__icon" src={r.icon} alt="" />
-                ) : null}
-                <span className="cargo-hud__name">{r.name}</span>
-              </div>
-              <div className="cargo-hud__count">{r.amount}</div>
-            </div>
-          ))
-        )}
+      <div className="cargo-hud__deltas">
+        {visibleDeltas.map((d) => (
+          <div key={d.key} className="cargo-hud__delta">
+            +{d.amount} {d.name}
+          </div>
+        ))}
       </div>
     </div>
   );
