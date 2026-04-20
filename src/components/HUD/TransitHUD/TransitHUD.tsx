@@ -119,74 +119,75 @@ export default function TransitHUD() {
   const transitKey = keybinds.transitDrive[0];
   const keyLabel = transitKey ? displayKey(transitKey) : "T";
 
-  // ── Spooling overlay (structure is static, values update via rAF) ──
-  if (state.phase === "spooling") {
-    return (
-      <div className="transit-hud transit-hud--spooling">
-        <div className="transit-hud__spool-ring">
-          <svg viewBox="0 0 48 48" className="transit-hud__spool-svg">
-            <circle
-              cx="24" cy="24" r="20"
-              className="transit-hud__spool-track"
-            />
-            <circle
-              ref={spoolFillRef}
-              cx="24" cy="24" r="20"
-              className="transit-hud__spool-fill"
-              strokeDasharray={`0 ${SPOOL_CIRCUMFERENCE}`}
-            />
-          </svg>
-          <div ref={spoolLabelRef} className="transit-hud__spool-label">
-            0%
+  const active = state.phase === "accelerating" || state.phase === "decelerating";
+  const spooling = state.phase === "spooling";
+  const isAutopilot = active && !!state.target;
+
+  return (
+    <>
+      {spooling && (
+        <div className="transit-hud transit-hud--spooling">
+          <div className="transit-hud__spool-ring">
+            <svg viewBox="0 0 48 48" className="transit-hud__spool-svg">
+              <circle
+                cx="24" cy="24" r="20"
+                className="transit-hud__spool-track"
+              />
+              <circle
+                ref={spoolFillRef}
+                cx="24" cy="24" r="20"
+                className="transit-hud__spool-fill"
+                strokeDasharray={`0 ${SPOOL_CIRCUMFERENCE}`}
+              />
+            </svg>
+            <div ref={spoolLabelRef} className="transit-hud__spool-label">
+              0%
+            </div>
+          </div>
+          <div className="transit-hud__spool-text">
+            TRANSIT DRIVE SPOOLING
+          </div>
+          <div className="transit-hud__spool-hint">
+            Hold {keyLabel} to engage
           </div>
         </div>
-        <div className="transit-hud__spool-text">
-          TRANSIT DRIVE SPOOLING
-        </div>
-        <div className="transit-hud__spool-hint">
-          Hold {keyLabel} to engage
-        </div>
-      </div>
-    );
-  }
+      )}
 
-  // ── Active transit overlay ──────────────────────────────────────
-  if (state.phase === "accelerating" || state.phase === "decelerating") {
-    const isAutopilot = !!state.target;
-
-    return (
-      <div className="transit-hud transit-hud--active">
-        <div className="transit-hud__phase-label">
-          {state.phase === "accelerating" ? "ACCELERATING" : "DECELERATING"}
-        </div>
-
-        <div ref={velocityRef} className="transit-hud__velocity">
-          0 km/s
-        </div>
-        <div ref={lightPctRef} className="transit-hud__light-pct" style={{ display: "none" }} />
-
-        {isAutopilot && state.target && (
-          <div className="transit-hud__target-info">
-            <div className="transit-hud__target-name">{state.target.name}</div>
-            <div ref={targetDistRef} className="transit-hud__target-dist">—</div>
-            <div ref={etaRef} className="transit-hud__eta">—</div>
+      {active && (
+        <div className="transit-hud transit-hud--active">
+          <div className="transit-hud__phase-label">
+            {state.phase === "accelerating" ? "ACCELERATING" : "DECELERATING"}
           </div>
-        )}
 
-        <div className="transit-hud__hint">
-          {state.phase === "accelerating" && !isAutopilot && (
-            <>Press {keyLabel} to decelerate</>
+          <div ref={velocityRef} className="transit-hud__velocity">
+            0 km/s
+          </div>
+          <div ref={lightPctRef} className="transit-hud__light-pct" style={{ display: "none" }} />
+
+          {isAutopilot && state.target && (
+            <div className="transit-hud__target-info">
+              <div className="transit-hud__target-name">{state.target.name}</div>
+              <div className="transit-hud__target-meta">
+                <span ref={targetDistRef} className="transit-hud__target-dist">—</span>
+                <span className="transit-hud__target-sep">·</span>
+                <span ref={etaRef} className="transit-hud__eta">—</span>
+              </div>
+            </div>
           )}
-          {state.phase === "accelerating" && isAutopilot && (
-            <>Autopilot active</>
-          )}
-          {state.phase === "decelerating" && (
-            <>Decelerating...</>
-          )}
+
+          <div className="transit-hud__hint">
+            {state.phase === "accelerating" && !isAutopilot && (
+              <>Press {keyLabel} to decelerate</>
+            )}
+            {state.phase === "accelerating" && isAutopilot && (
+              <>Autopilot active</>
+            )}
+            {state.phase === "decelerating" && (
+              <>Decelerating…</>
+            )}
+          </div>
         </div>
-      </div>
-    );
-  }
-
-  return null;
+      )}
+    </>
+  );
 }

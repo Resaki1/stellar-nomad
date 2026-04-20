@@ -858,6 +858,9 @@ progresses rather than re-litigating choices.
 | 2026-04-20 | Hotbar cooldown is a conic-gradient scrim driven by `--cooldown-deg` CSS var | Conic arc shrinking from 360° → 0° reads as a CCW wipe; CSS var avoids per-frame recomputation of the gradient string |
 | 2026-04-20 | CargoHUD deltas are local component state, not a store atom | "Top 3 recent additions" is purely a glance-tier affordance; diffing `cargoAtom.items` in a `useEffect` keeps the glance surface stateless across sessions |
 | 2026-04-20 | AssaySamplesHUD deleted; assay + active research folded into `ObjectiveTracker` | The tracker is the single top-center home for "what am I working toward?" rows; future story objectives append to the same component |
+| 2026-04-20 | `CommsMessage.accent` (optional enum) drives the overlay's speaker color | "Speaker-coloured" per §7.8 needs a data source — an opt-in token keeps the `COMMS_MESSAGES` catalogue terse while allowing per-speaker visual language |
+| 2026-04-20 | Pulse-mining toggle docked above ShipDashboard as a "LASER CONT/PULSE" instrument | Player needs the mode visible at all times (affects next action); the bottom-right dashboard area groups it with other ship-state instruments and keeps it off the ship model |
+| 2026-04-20 | Transit letterbox is a fixed-inset, fixed-mount element with CSS transform slide | Lets the bars stay mounted and animate cleanly back out over `$dur-slow` when transit ends, even though the rest of the active readout unmounts immediately |
 
 ---
 

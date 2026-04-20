@@ -2,6 +2,8 @@
 // Comms message definitions
 // ---------------------------------------------------------------------------
 
+export type CommsAccent = "comms" | "info" | "signal" | "ok" | "warn" | "crit";
+
 export interface CommsMessage {
   messageId: string;
   speaker: string;
@@ -14,6 +16,8 @@ export interface CommsMessage {
   priority: number;
   /** Seconds to wait after the trigger fires before the message enters the queue. */
   delaySec?: number;
+  /** Accent color token for rules, avatar rim, and speaker name. Defaults to "comms". */
+  accent?: CommsAccent;
 }
 
 // ---------------------------------------------------------------------------

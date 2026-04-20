@@ -2,12 +2,12 @@
 
 .transit-hud {
   position: fixed;
-  z-index: 95; // TODO(phase-3): normalize to $z scale (needs layering decision)
+  z-index: s.$z-hud-overlay;
   pointer-events: none;
   font-family: s.$font-ui;
-  color: rgba(255, 255, 255, 0.92); // close to $text-primary; keep raw to preserve visuals
+  color: s.$text-primary;
 
-  // ── Spooling state: centered ring ──────────────────────────────
+  // ── Spooling state: centered ring below reticle ─────────────────
   &--spooling {
     top: 50%;
     left: 50%;
@@ -16,7 +16,8 @@
     flex-direction: column;
     align-items: center;
     gap: s.$space-2;
-    margin-top: 60px; // offset below reticle — TODO(phase-3): normalize spacing
+    margin-top: 60px;
+    animation: spoolAppear s.$dur-cine s.$ease-bounce;
   }
 
   &__spool-ring {
@@ -33,15 +34,16 @@
 
   &__spool-track {
     fill: none;
-    stroke: rgba(255, 200, 60, 0.15); // $accent-signal-tinted stroke; keep raw to preserve visuals
-    stroke-width: 3;
+    stroke: rgba(255, 211, 107, 0.15);
+    stroke-width: 2;
   }
 
   &__spool-fill {
     fill: none;
-    stroke: rgba(255, 200, 60, 0.8); // $accent-signal-tinted stroke; keep raw to preserve visuals
-    stroke-width: 3;
+    stroke: s.$accent-signal;
+    stroke-width: 2;
     stroke-linecap: round;
+    filter: drop-shadow(0 0 4px s.$glow-signal);
     transition: stroke-dasharray s.$dur-instant linear;
   }
 
@@ -51,94 +53,143 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
     font-weight: 700;
-    color: rgba(255, 200, 60, 0.9); // $accent-signal-tinted text; keep raw to preserve visuals
+    color: s.$accent-signal;
+    text-shadow: 0 0 6px s.$glow-signal;
   }
 
   &__spool-text {
+    font-family: s.$font-display;
     font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: rgba(255, 200, 60, 0.85); // $accent-signal-tinted text; keep raw to preserve visuals
-  }
-
-  &__spool-hint {
-    font-size: 10px;
-    opacity: 0.5;
-  }
-
-  // ── Active transit: bottom center ──────────────────────────────
-  &--active {
-    bottom: 100px; // TODO(phase-3): normalize spacing
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: s.$space-1;
-    background: rgba(0, 0, 0, 0.4); // TODO(phase-3): migrate to glass tier
-    backdrop-filter: blur(s.$blur-sm);
-    border: 1px solid rgba(255, 200, 60, 0.2); // $accent-signal-tinted stroke; keep raw to preserve visuals
-    border-radius: 10px; // TODO(phase-3): normalize radius
-    padding: s.$space-3 20px; // TODO(phase-3): normalize spacing (20px)
-    min-width: 180px;
-  }
-
-  &__phase-label {
-    font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: rgba(255, 200, 60, 0.7); // $accent-signal-tinted text; keep raw to preserve visuals
+    color: s.$accent-signal;
+    text-shadow: 0 0 6px s.$glow-signal;
+  }
+
+  &__spool-hint {
+    font-family: s.$font-mono;
+    font-size: 10px;
+    color: s.$text-tertiary;
+    letter-spacing: 0.04em;
+  }
+
+  // ── Active transit: centered cinematic readout ──────────────────
+  &--active {
+    top: 50%;
+    right: 16px;
+    transform: translate(0, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: end;
+    gap: s.$space-1;
+    animation: transitActiveIn s.$dur-slow s.$ease-out;
+  }
+
+  &__phase-label {
+    font-family: s.$font-display;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: s.$accent-signal;
+    text-shadow: 0 0 8px s.$glow-signal;
   }
 
   &__velocity {
-    font-size: 22px;
+    font-family: s.$font-display;
+    font-size: 40px;
+    line-height: 44px;
     font-weight: 700;
+    letter-spacing: 0.06em;
     font-variant-numeric: tabular-nums;
-    color: rgba(255, 255, 255, 0.95); // close to $text-primary; keep raw to preserve visuals
-    line-height: 1.1;
+    color: s.$text-primary;
+    text-shadow:
+      0 0 1px rgba(0, 0, 0, 0.9),
+      0 0 16px s.$glow-signal;
   }
 
   &__light-pct {
-    font-size: 11px;
-    font-weight: 600;
-    color: rgba(255, 200, 60, 0.8); // $accent-signal-tinted text; keep raw to preserve visuals
+    font-family: s.$font-mono;
     font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    font-weight: 600;
+    color: s.$accent-signal;
+    text-shadow: 0 0 6px s.$glow-signal;
   }
 
   &__target-info {
-    margin-top: s.$space-1;
+    margin-top: s.$space-2;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1px;
+    gap: 2px;
   }
 
   &__target-name {
-    font-size: 11px;
+    font-family: s.$font-display;
+    font-size: 15px;
     font-weight: 600;
-    color: rgba(255, 220, 120, 0.9); // $accent-signal-tinted text; keep raw to preserve visuals
+    letter-spacing: 0.04em;
+    color: s.$accent-signal;
+    text-shadow: 0 0 8px s.$glow-signal;
   }
 
-  &__target-dist {
-    font-size: 10px;
-    opacity: 0.5;
+  &__target-meta {
+    display: flex;
+    align-items: baseline;
+    gap: s.$space-2;
+    font-family: s.$font-mono;
     font-variant-numeric: tabular-nums;
+    font-size: 15px;
+    color: s.$text-secondary;
+  }
+
+  &__target-sep {
+    color: s.$text-tertiary;
   }
 
   &__eta {
-    font-size: 10px;
-    font-weight: 600;
-    color: rgba(255, 200, 60, 0.8); // $accent-signal-tinted text; keep raw to preserve visuals
-    font-variant-numeric: tabular-nums;
+    color: s.$accent-signal;
+    text-shadow: 0 0 6px s.$glow-signal;
+  }
+
+  &__target-dist {
+    color: s.$text-secondary;
   }
 
   &__hint {
-    margin-top: 2px;
+    margin-top: s.$space-2;
+    font-family: s.$font-mono;
     font-size: 10px;
-    opacity: 0.45;
+    letter-spacing: 0.08em;
+    color: s.$text-tertiary;
+    text-transform: uppercase;
+  }
+
+  @keyframes spoolAppear {
+    from {
+      opacity: 0;
+      transform: translate(-50%, calc(-50% + 16px)) scale(0.92);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  }
+
+  @keyframes transitActiveIn {
+    from {
+      opacity: 0;
+      transform: translate(16px, -50%);
+    }
+    to {
+      opacity: 1;
+      transform: translate(0, -50%);
+    }
   }
 }

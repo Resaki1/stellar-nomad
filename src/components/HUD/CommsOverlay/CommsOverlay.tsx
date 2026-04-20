@@ -37,9 +37,9 @@ export default function CommsOverlay() {
     } else {
       setPageIndex((p) => Math.min(p + 1, pages.length - 1));
     }
-  }, [message, isLastPage, dismiss]);
+  }, [message, isLastPage, dismiss, pages.length]);
 
-  // Keyboard: Enter to advance / dismiss
+  // Keyboard: Enter or Space to advance / dismiss
   useEffect(() => {
     if (!message) return;
 
@@ -60,53 +60,55 @@ export default function CommsOverlay() {
 
   if (!message || pages.length === 0) return null;
 
+  const accent = message.accent ?? "comms";
+
   return (
-    <div className="comms-overlay">
-      <div className="comms-overlay__panel">
-        <div className="comms-overlay__body">
-          {/* Avatar */}
-          <div className="comms-overlay__avatar">
-            {message.avatar ? (
-              <img
-                className="comms-overlay__avatar-img"
-                src={message.avatar}
-                alt={message.speaker}
-              />
-            ) : (
-              <span className="comms-overlay__avatar-placeholder">?</span>
+    <div
+      className={`comms-overlay comms-overlay--accent-${accent}`}
+      onClick={advance}
+      role="button"
+      tabIndex={-1}
+    >
+      <div className="comms-overlay__rule comms-overlay__rule--top" />
+
+      <div className="comms-overlay__body">
+        {/* Avatar: desaturated photo with an accent rim light */}
+        <div className="comms-overlay__avatar">
+          {message.avatar ? (
+            <img
+              className="comms-overlay__avatar-img"
+              src={message.avatar}
+              alt={message.speaker}
+            />
+          ) : (
+            <span className="comms-overlay__avatar-placeholder">?</span>
+          )}
+        </div>
+
+        <div className="comms-overlay__content">
+          <div className="comms-overlay__header">
+            <span className="comms-overlay__speaker">
+              {resolveAiName(message.speaker, aiName)}
+            </span>
+            {pages.length > 1 && (
+              <span className="comms-overlay__page">
+                {safePage + 1} / {pages.length}
+              </span>
             )}
           </div>
 
-          {/* Right column: speaker + text + footer */}
-          <div className="comms-overlay__content">
-            {/* Speaker */}
-            <div className="comms-overlay__speaker">
-              {resolveAiName(message.speaker, aiName)}
-            </div>
+          <div className="comms-overlay__text">
+            {resolveAiName(pages[safePage], aiName)}
+          </div>
 
-            {/* Message text */}
-            <div className="comms-overlay__text">
-              {resolveAiName(pages[safePage], aiName)}
-            </div>
-
-            {/* Footer: pagination + continue */}
-            <div className="comms-overlay__footer">
-              {pages.length > 1 && (
-                <span className="comms-overlay__page-indicator">
-                  {safePage + 1} / {pages.length}
-                </span>
-              )}
-              <button
-                className="comms-overlay__continue"
-                onClick={advance}
-              >
-                {isLastPage ? "Dismiss" : "Continue"}{" "}
-                <span className="comms-overlay__key-hint">[Enter]</span>
-              </button>
-            </div>
+          <div className="comms-overlay__hint">
+            <span className="comms-overlay__hint-key">[SPACE]</span>
+            <span>{isLastPage ? "Dismiss" : "Continue"}</span>
           </div>
         </div>
       </div>
+
+      <div className="comms-overlay__rule comms-overlay__rule--bottom" />
     </div>
   );
 }

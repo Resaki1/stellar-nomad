@@ -1,169 +1,178 @@
 @use '../../../styles' as s;
 
+// Film lower-third. No glass, no blur. Two thin accent-colored rules
+// bracket the body. The speaker's accent drives every color on the
+// surface: rules, speaker label, avatar rim.
 .comms-overlay {
   position: fixed;
-  bottom: s.$space-7;
   left: 50%;
+  bottom: 10vh;
   transform: translateX(-50%);
-  z-index: 99; // TODO(phase-3): normalize to $z scale (layering with other HUD overlays)
+  z-index: s.$z-hud-overlay;
+  width: min(760px, calc(100vw - #{s.$space-7}));
   pointer-events: auto;
-  width: min(560px, calc(100vw - #{s.$space-7}));
-  animation: commsSlideUp 0.35s ease-out;
-}
-
-.comms-overlay__panel {
-  background: rgba(8, 12, 24, 0.92); // TODO(phase-3): migrate to $surface-glass-2
-  border: 1px solid rgba(80, 160, 255, 0.3); // $accent-info-tinted stroke; keep raw to preserve visuals
-  border-radius: 10px; // TODO(phase-3): normalize radius
-  backdrop-filter: blur(s.$blur-md);
-  padding: s.$space-4 20px s.$space-3; // TODO(phase-3): normalize spacing (20px)
-}
-
-// ── Body (avatar + content side-by-side) ─────────────────────────────
-
-.comms-overlay__body {
-  display: flex;
-  gap: 14px; // TODO(phase-3): normalize spacing
-  align-items: flex-start;
-}
-
-// ── Avatar ───────────────────────────────────────────────────────────
-
-.comms-overlay__avatar {
-  flex-shrink: 0;
-  width: 72px;
-  height: 72px;
-  border-radius: s.$radius-xl;
-  overflow: hidden;
-  border: 1px solid rgba(80, 160, 255, 0.25); // $accent-info-tinted stroke; keep raw to preserve visuals
-  background: rgba(20, 28, 50, 0.7); // deep info-blue fill; keep raw to preserve visuals
-  align-self: center;
-}
-
-.comms-overlay__avatar-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.comms-overlay__avatar-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  font-size: 28px;
-  font-weight: 700;
-  color: s.$text-disabled;
-  font-family: s.$font-ui;
-}
-
-// ── Content (right column) ───────────────────────────────────────────
-
-.comms-overlay__content {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: s.$space-2;
-}
-
-// ── Speaker ──────────────────────────────────────────────────────────
-
-.comms-overlay__speaker {
-  display: flex;
-  align-items: center;
-  gap: s.$space-2;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: rgba(100, 180, 255, 0.95); // $accent-comms-tinted text; keep raw to preserve visuals
-  font-family: s.$font-ui;
-}
-
-.comms-overlay__signal {
-  display: inline-block;
-  width: s.$radius-lg;
-  height: s.$radius-lg;
-  border-radius: 50%;
-  background: rgba(80, 200, 120, 0.9); // $accent-ok-tinted fill; keep raw to preserve visuals
-  box-shadow: 0 0 6px rgba(80, 200, 120, 0.6); // $accent-ok-tinted glow; keep raw to preserve visuals
-  animation: commsPulse 1.8s ease-in-out infinite;
-}
-
-// ── Text ─────────────────────────────────────────────────────────────
-
-.comms-overlay__text {
-  font-size: 14px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.88); // close to $text-primary; keep raw to preserve visuals
-  font-family: s.$font-ui;
-}
-
-// ── Footer ───────────────────────────────────────────────────────────
-
-.comms-overlay__footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: s.$space-3;
-}
-
-.comms-overlay__page-indicator {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.4); // close to $text-tertiary; keep raw to preserve visuals
-  font-family: s.$font-ui;
-}
-
-.comms-overlay__continue {
-  font-size: 12px;
-  font-weight: 600;
-  padding: (s.$space-1 + 2px) s.$space-4; // 6px 16px — TODO(phase-3): normalize spacing
-  border-radius: s.$radius-lg;
-  border: 1px solid rgba(80, 160, 255, 0.35); // $accent-info-tinted stroke; keep raw to preserve visuals
-  background: rgba(80, 160, 255, 0.1); // $accent-info-tinted fill; keep raw to preserve visuals
-  color: rgba(160, 210, 255, 0.95); // light info-blue text; keep raw to preserve visuals
   cursor: pointer;
   font-family: s.$font-ui;
-  transition: background s.$dur-fast, border-color s.$dur-fast;
+  color: s.$text-primary;
 
-  &:hover {
-    background: rgba(80, 160, 255, 0.22); // $accent-info-tinted fill; keep raw to preserve visuals
-    border-color: rgba(80, 160, 255, 0.55); // $accent-info-tinted stroke; keep raw to preserve visuals
+  // Default accent (overridden by `--accent-<token>` modifier below).
+  --comms-accent: #{s.$accent-comms};
+  --comms-glow: #{s.$glow-comms};
+
+  animation: commsSlideUp s.$dur-slow s.$ease-out;
+
+  &--accent-comms {
+    --comms-accent: #{s.$accent-comms};
+    --comms-glow: #{s.$glow-comms};
   }
 
-  &:active {
-    background: rgba(80, 160, 255, 0.3); // $accent-info-tinted fill; keep raw to preserve visuals
+  &--accent-signal {
+    --comms-accent: #{s.$accent-signal};
+    --comms-glow: #{s.$glow-signal};
   }
-}
 
-.comms-overlay__key-hint {
-  font-size: 10px;
-  opacity: 0.5;
-  font-weight: 400;
-}
-
-// ── Animations ───────────────────────────────────────────────────────
-
-@keyframes commsSlideUp {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(20px);
+  &--accent-info {
+    --comms-accent: #{s.$accent-info};
+    --comms-glow: #{s.$glow-info};
   }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-}
 
-@keyframes commsPulse {
-  0%,
-  100% {
-    opacity: 1;
+  &--accent-ok {
+    --comms-accent: #{s.$accent-ok};
+    --comms-glow: #{s.$glow-ok};
   }
-  50% {
-    opacity: 0.4;
+
+  &--accent-warn {
+    --comms-accent: #{s.$accent-warn};
+    --comms-glow: #{s.$glow-warn};
+  }
+
+  &--accent-crit {
+    --comms-accent: #{s.$accent-crit};
+    --comms-glow: #{s.$glow-crit};
+  }
+
+  &__rule {
+    height: 1px;
+    background: var(--comms-accent);
+    box-shadow: 0 0 6px var(--comms-glow);
+
+    &--top {
+      margin-bottom: s.$space-3;
+    }
+
+    &--bottom {
+      margin-top: s.$space-3;
+    }
+  }
+
+  &__body {
+    display: flex;
+    gap: s.$space-4;
+    align-items: flex-start;
+  }
+
+  // ── Avatar: desaturated with an accent rim light ─────────────────
+  &__avatar {
+    flex: 0 0 auto;
+    width: 72px;
+    height: 72px;
+    position: relative;
+    overflow: hidden;
+    @include s.chamfer(s.$radius-sm, ('tr', 'bl'));
+    // Rim light — two crisp inset strokes in the speaker accent.
+    box-shadow:
+      inset 0 0 0 1px var(--comms-accent),
+      0 0 12px var(--comms-glow);
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  &__avatar-img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    filter: saturate(0.55) contrast(1.05);
+  }
+
+  &__avatar-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-family: s.$font-display;
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--comms-accent);
+    text-shadow: 0 0 8px var(--comms-glow);
+  }
+
+  // ── Content ──────────────────────────────────────────────────────
+  &__content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: s.$space-2;
+  }
+
+  &__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: s.$space-3;
+  }
+
+  &__speaker {
+    font-family: s.$font-display;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--comms-accent);
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.9), 0 0 8px var(--comms-glow);
+  }
+
+  &__page {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    font-weight: 600;
+    color: s.$text-tertiary;
+  }
+
+  &__text {
+    font-family: s.$font-ui;
+    font-size: 13px;
+    line-height: 1.55;
+    color: s.$text-primary;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  }
+
+  &__hint {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: s.$space-1;
+    font-family: s.$font-mono;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: s.$text-disabled;
+    text-transform: uppercase;
+  }
+
+  &__hint-key {
+    color: s.$text-tertiary;
+  }
+
+  @keyframes commsSlideUp {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
   }
 }
