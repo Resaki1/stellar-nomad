@@ -25,6 +25,7 @@ export default function MiningHUD() {
   const modifiers = useAtomValue(computedModifiersAtom);
   const showAsteroidType = getFlag(modifiers, "scanner.lockShowsAsteroidType");
   const showCompositionBands = getFlag(modifiers, "scanner.lockShowsCompositionBands");
+  const showYieldEstimate = getFlag(modifiers, "scanner.lockShowsYieldEstimate");
   const pulseMiningUnlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
 
   const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
@@ -67,12 +68,27 @@ export default function MiningHUD() {
         });
     }
 
+    // Assay yield estimate (piecewise-linear by size) — mirrors MiningSystem reward calc.
+    let assayEstimate: number | null = null;
+    if (showYieldEstimate) {
+      const field = systemConfig.asteroidFields?.find((f) => f.id === t.location.fieldId);
+      const minR = field?.size?.minRadiusM ?? 8;
+      const maxR = field?.size?.maxRadiusM ?? 1024;
+      const tt = maxR > minR ? Math.max(0, Math.min(1, (t.radiusM - minR) / (maxR - minR))) : 0;
+      let y: number;
+      if (tt <= 0.35) y = 1 + (tt / 0.35) * (2 - 1);
+      else if (tt <= 0.7) y = 2 + ((tt - 0.35) / 0.35) * (4 - 2);
+      else y = 4 + ((tt - 0.7) / 0.3) * (6 - 4);
+      assayEstimate = Math.max(1, Math.round(y));
+    }
+
     return {
       className: classDef?.name ?? "Unknown",
       durationS,
       compositionBands,
+      assayEstimate,
     };
-  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, showCompositionBands]);
+  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, showCompositionBands, showYieldEstimate]);
 
   const showInfo = miningState.isFocused;
   const showButton = miningState.isFocused;
@@ -150,6 +166,12 @@ export default function MiningHUD() {
         {lootPreview && lootPreview.compositionBands.length > 0 && (
           <div className="mining-hud__composition">
             {lootPreview.compositionBands.join(" · ")}
+          </div>
+        )}
+
+        {lootPreview && lootPreview.assayEstimate !== null && (
+          <div className="mining-hud__yield-estimate">
+            Est. yield: ~{lootPreview.assayEstimate} samples
           </div>
         )}
 

@@ -887,11 +887,6 @@ Ordered by dependency. Each step can be a separate session.
 | `ship.maxSpeedMultiplier` | multiply | Thruster Nozzles Mk1/Mk2, C2b/C3 research bonuses, Afterburner Charge |
 | `ability.pulseMiningEnabled` | set | Pulse Modulator Mk1 |
 | `mining.currentHeat` | add/set | Heat Sink Cartridge, Thermal Purge Charge |
-
-### New (Need Implementation)
-
-| Key | Op | Used by | Config field |
-|-----|-----|---------|-------------|
 | `scanner.lockSpeedMultiplier` | multiply | A1 research bonus | New: `scannerLockSpeedMult` |
 | `scanner.allRangeMultiplier` | multiply | A3 research bonus | New: `scannerRangeMult` |
 | `scanner.lockShowsYieldEstimate` | set | Integrated Sensor Suite | New flag |

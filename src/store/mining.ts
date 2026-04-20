@@ -1,8 +1,15 @@
 import { atom } from "jotai";
 import { isCargoFullAtom } from "@/store/cargo";
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import type { AsteroidInstanceLocation } from "@/sim/asteroids/runtime";
 
 export const TARGET_FOCUS_TIME_S = 3;
+
+/** Effective focus window after applying scanner.lockSpeedMultiplier. */
+export const effectiveTargetFocusTimeSAtom = atom((get) => {
+  const mult = get(effectiveShipConfigAtom).scannerLockSpeedMult;
+  return TARGET_FOCUS_TIME_S * mult;
+});
 
 export type TargetedAsteroid = {
   instanceId: number;
@@ -55,7 +62,8 @@ export const showTargetingIndicatorAtom = atom((get) => {
 export const targetingProgressAtom = atom((get) => {
   const state = get(miningStateAtom);
   if (!state.targetedAsteroid) return 0;
-  return Math.min(state.targetingTimeS / TARGET_FOCUS_TIME_S, 1);
+  const focusTime = get(effectiveTargetFocusTimeSAtom);
+  return Math.min(state.targetingTimeS / focusTime, 1);
 });
 
 /** Action atom: start mining */

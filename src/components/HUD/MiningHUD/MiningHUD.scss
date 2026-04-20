@@ -43,6 +43,13 @@
     letter-spacing: 0.04em;
   }
 
+  &__yield-estimate {
+    font-size: 10px;
+    color: rgba(140, 200, 255, 0.75); // info-blue-tinted text; keep raw to preserve visuals
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+  }
+
   &__warning {
     margin-top: s.$space-1;
     font-size: 12px;

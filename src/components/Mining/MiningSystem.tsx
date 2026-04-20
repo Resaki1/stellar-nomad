@@ -762,6 +762,9 @@ const MiningSystem = () => {
     const pingEnabled = getFlag(modifiersRef.current, "scanner.pingHighlightEnabled");
     if (!pingEnabled) return [];
 
+    const rangeMult = shipConfigRef.current.scannerRangeMult;
+    const maxDistM = MAX_TARGETING_DISTANCE_M * rangeMult;
+    const maxDistKm = MAX_TARGETING_DISTANCE_KM * rangeMult;
     const nearbyCollected: RawPingEntry[] = [];
 
     asteroidRuntime.forEachField((fieldRuntime, fieldId) => {
@@ -786,7 +789,7 @@ const MiningSystem = () => {
           chunk.aabbMaxKm[2]
         );
 
-        if (aabbDistKm > MAX_TARGETING_DISTANCE_KM + chunk.maxRadiusM / 1000) return;
+        if (aabbDistKm > maxDistKm + chunk.maxRadiusM / 1000) return;
 
         const byModel = chunk.instancesByModel;
         const shipCxM = (shipLocalKm[0] - chunk.originKm[0]) * 1000;
@@ -815,7 +818,7 @@ const MiningSystem = () => {
             const dxS = ax - shipCxM;
             const dyS = ay - shipCyM;
             const dzS = az - shipCzM;
-            if (dxS * dxS + dyS * dyS + dzS * dzS > MAX_TARGETING_DISTANCE_M * MAX_TARGETING_DISTANCE_M) continue;
+            if (dxS * dxS + dyS * dyS + dzS * dzS > maxDistM * maxDistM) continue;
 
             nearbyCollected.push({
               instanceId: ids[i],
@@ -834,6 +837,9 @@ const MiningSystem = () => {
 
   const findNearestAsteroidOnRay = useCallback((): TargetedAsteroid | null => {
     const shipKm = worldOrigin.shipPosKm;
+    const rangeMult = shipConfigRef.current.scannerRangeMult;
+    const maxDistM = MAX_TARGETING_DISTANCE_M * rangeMult;
+    const maxDistKm = MAX_TARGETING_DISTANCE_KM * rangeMult;
 
     camera.getWorldDirection(_rayDir);
     _rayOrigin.copy(camera.position);
@@ -905,7 +911,7 @@ const MiningSystem = () => {
           const dzS = az - shipCzM;
 
           const distShipSq = dxS * dxS + dyS * dyS + dzS * dzS;
-          if (distShipSq > MAX_TARGETING_DISTANCE_M * MAX_TARGETING_DISTANCE_M) continue;
+          if (distShipSq > maxDistM * maxDistM) continue;
 
           // Camera ray test (crosshair selection)
           const dxC = ax - camCxM;
@@ -979,7 +985,7 @@ const MiningSystem = () => {
           chunk.aabbMaxKm[2]
         );
 
-        if (aabbDistKm > MAX_TARGETING_DISTANCE_KM + chunk.maxRadiusM / 1000) return;
+        if (aabbDistKm > maxDistKm + chunk.maxRadiusM / 1000) return;
         checkChunk(chunk, fieldAnchor);
       });
     });
@@ -1063,7 +1069,7 @@ const MiningSystem = () => {
         targetIdRef.current = null;
         targetingTimeRef.current = 0;
         targetLostTimeRef.current = 0;
-      } else if (snapshot.distanceM > MAX_TARGETING_DISTANCE_M) {
+      } else if (snapshot.distanceM > MAX_TARGETING_DISTANCE_M * shipConfigRef.current.scannerRangeMult) {
         targetIdRef.current = null;
         targetingTimeRef.current = 0;
         targetLostTimeRef.current = 0;
@@ -1092,7 +1098,8 @@ const MiningSystem = () => {
       targetingTimeRef.current = 0;
     }
 
-    const isFocused = !!snapshot && targetingTimeRef.current >= TARGET_FOCUS_TIME_S;
+    const focusTimeS = TARGET_FOCUS_TIME_S * shipConfigRef.current.scannerLockSpeedMult;
+    const isFocused = !!snapshot && targetingTimeRef.current >= focusTimeS;
 
     // --- Mining progression + must keep aim
     let cancelMining = false;
@@ -1309,7 +1316,7 @@ const MiningSystem = () => {
 
       const snapshotForState = currentSnapshotRef.current;
       const nextTargetingTimeS = snapshotForState ? targetingTimeRef.current : 0;
-      const nextFocused = snapshotForState ? nextTargetingTimeS >= TARGET_FOCUS_TIME_S : false;
+      const nextFocused = snapshotForState ? nextTargetingTimeS >= focusTimeS : false;
 
       setMiningState((prev) => {
         let nextIsMining = prev.isMining;
@@ -1374,7 +1381,11 @@ const MiningSystem = () => {
         } else {
           assayYield = 4 + ((t - 0.70) / 0.30) * (6 - 4);
         }
-        const assayAmount = Math.max(1, Math.round(assayYield));
+        let assayAmount = Math.max(1, Math.round(assayYield));
+        const bonusChance = shipConfigRef.current.assaySampleBonusChance;
+        if (bonusChance > 0 && Math.random() < bonusChance) {
+          assayAmount += 1;
+        }
         addAssaySamples(assayAmount);
 
         // Build loot entries including assay samples
@@ -1408,7 +1419,7 @@ const MiningSystem = () => {
 
   const focus01 =
     miningState.targetedAsteroid !== null
-      ? clamp01(miningState.targetingTimeS / TARGET_FOCUS_TIME_S)
+      ? clamp01(miningState.targetingTimeS / (TARGET_FOCUS_TIME_S * shipConfig.scannerLockSpeedMult))
       : 0;
 
   return (
