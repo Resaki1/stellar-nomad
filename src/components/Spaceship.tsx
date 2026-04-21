@@ -1,21 +1,24 @@
 import { logLimit } from "@/helpers/math";
 import { useFrame } from "@react-three/fiber";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { Quaternion, Vector3, Mesh, MathUtils } from "three";
 import { ShipOne } from "./models/ships/ShipOne";
 import EngineExhaust from "./VFX/EngineExhaust";
 import type { ExhaustConfig } from "./VFX/EngineExhaust";
 import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
-import { hudInfoAtom, movementAtom } from "@/store/store";
-import { collisionImpactAtom, cameraShakeIntensityAtom } from "@/store/vfx";
+import { hudInfoAtom, movementAtom, shipHealthAtom } from "@/store/store";
+import { collisionImpactAtom, cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
-import { isDeadAtom } from "@/store/death";
+import { dieAtom, isDeadAtom } from "@/store/death";
+import { cargoAtom } from "@/store/cargo";
+import { systemConfigAtom } from "@/store/system";
 import { transitDriveBuffer, TRANSIT_STEER_MULT } from "@/store/transit";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 import { STARTING_POSITION_KM, STARTING_ROTATION_QUAT } from "@/sim/celestialConstants";
+import { sweptSphereCollide, type CelestialCollider } from "@/sim/celestialCollision";
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
 const _quat = new Quaternion();
@@ -65,6 +68,11 @@ const SHAKE_MAX_ANGLE = 0.025;  // radians
 const FIXED_DT = 1 / 120;
 const MAX_FRAME_DT = 0.25; // cap: prevents spiral-of-death after tab-away
 
+// Ship hull radius used for continuous celestial-body collision. Kept tiny
+// so surface-buzzing flights still work; exists only to avoid visual
+// penetration at the mesh scale.
+const SHIP_HULL_RADIUS_KM = 0.05;
+
 const SpaceShip = memo(() => {
   const store = useStore();
   const worldOrigin = useWorldOrigin();
@@ -95,6 +103,22 @@ const SpaceShip = memo(() => {
 
   // ── Camera shake state ──────────────────────────────────────────────
   const shakeIntensity = useRef(0);
+
+  // ── Celestial colliders (built once from the active system) ────────
+  // Flat numeric layout avoids array-of-arrays indirection in the hot path.
+  const celestialColliders = useMemo<CelestialCollider[]>(() => {
+    const system = store.get(systemConfigAtom);
+    const bodies = system.celestialBodies ?? [];
+    return bodies.map((b) => ({
+      id: b.id,
+      x: b.positionKm[0],
+      y: b.positionKm[1],
+      z: b.positionKm[2],
+      r: b.radiusKm,
+    }));
+    // systemConfigAtom is effectively static in the current codebase.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Hydrate from persisted state (once, on mount) ──────────────────
   const hydrated = useRef(false);
@@ -286,6 +310,51 @@ const SpaceShip = memo(() => {
       if (_transitVel.lengthSq() > 0) {
         _transitVel.multiplyScalar(FIXED_DT);
         posKm.current.add(_transitVel);
+      }
+
+      // ── Continuous celestial-body collision (swept segment-vs-sphere) ──
+      // Transit can push the ship >100,000 km per step; a point test would
+      // tunnel through planets between frames. Sweep from prev-step position
+      // to this-step position and trigger death at the entry point.
+      if (celestialColliders.length > 0) {
+        const hit = sweptSphereCollide(
+          prevPosKm.current.x, prevPosKm.current.y, prevPosKm.current.z,
+          posKm.current.x, posKm.current.y, posKm.current.z,
+          celestialColliders,
+          SHIP_HULL_RADIUS_KM,
+        );
+        if (hit) {
+          // Clamp the ship to the entry point so it never visually penetrates.
+          posKm.current.set(
+            prevPosKm.current.x + (posKm.current.x - prevPosKm.current.x) * hit.t,
+            prevPosKm.current.y + (posKm.current.y - prevPosKm.current.y) * hit.t,
+            prevPosKm.current.z + (posKm.current.z - prevPosKm.current.z) * hit.t,
+          );
+
+          // Kill the transit drive immediately so deceleration doesn't keep
+          // shoving velocity into the body after impact.
+          transitDriveBuffer.velocityKmps = { x: 0, y: 0, z: 0 };
+          transitDriveBuffer.phase = "idle";
+          transitDriveBuffer.spoolAccS = 0;
+          transitDriveBuffer.autopilot = false;
+
+          store.set(shipHealthAtom, 0);
+          store.set(spawnVFXEventAtom, {
+            type: "collision",
+            position: [0, 0, 0],
+            radiusM: 120,
+          });
+          const cargo = store.get(cargoAtom);
+          store.set(dieAtom, {
+            positionKm: [posKm.current.x, posKm.current.y, posKm.current.z],
+            cargoItems: cargo.items,
+          });
+
+          // Stop further substeps this frame; the top-of-frame dead gate
+          // will handle subsequent frames.
+          physicsAcc.current = 0;
+          break;
+        }
       }
 
       // Write ship forward direction + position to transit buffer

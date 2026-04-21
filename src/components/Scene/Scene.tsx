@@ -36,7 +36,6 @@ import HullRegenTicker from "../Effects/HullRegenTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
 import WreckCollector from "../WreckCollector";
-import CelestialCollider from "../CelestialCollider";
 
 /** Renders children only after the WebGPU renderer has finished async init(). */
 function WebGPUGate({ children }: { children: ReactNode }) {
@@ -106,7 +105,6 @@ const Scene = () => {
         <TransitTicker />
         <POIProjector />
         <WreckCollector />
-        <CelestialCollider />
       </>
     ),
     [],

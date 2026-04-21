@@ -8,6 +8,7 @@
 
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
+import { useMemo } from "react";
 import { Vector3 } from "three";
 
 import {
@@ -21,6 +22,7 @@ import {
 import { settingsIsOpenAtom, movementAtom } from "@/store/store";
 import { miningStateAtom } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
+import { systemConfigAtom } from "@/store/system";
 
 // Reusable temp vectors — zero allocation in hot path.
 const _vel = new Vector3();
@@ -45,6 +47,21 @@ const SPOOL_TRACKING_ROT_RATE = 4.0; // rad/s
 /** Deadzone for manual steering during autopilot. Any yaw/pitch input above
  *  this magnitude is treated as a deliberate "take over" and aborts autopilot. */
 const AUTOPILOT_ABORT_INPUT_THRESHOLD = 0.2;
+
+// ── Proximity auto-brake (predictive collision avoidance) ──────────────
+// Realistic flip-and-burn: decel distance = v² / (2a). The drive MUST begin
+// braking while still far enough out to stop before entering the safety
+// sphere around any celestial body, or else the swept-collision CCD will
+// kill the ship. Auto-brake watches every body ahead of the velocity vector
+// and triggers a decel phase as soon as the remaining distance to entry
+// equals (or slightly exceeds) the current brake distance.
+
+/** Fraction of body radius added as safety standoff (atmosphere/corona margin). */
+const AUTO_BRAKE_STANDOFF_FRAC = 0.02;
+/** Absolute floor for the standoff — stops ~200 km above surface at minimum. */
+const AUTO_BRAKE_MIN_STANDOFF_KM = 200;
+/** Multiplier on brake distance to absorb frame jitter and fp error. 1.0 = exact. */
+const AUTO_BRAKE_SAFETY_FACTOR = 1.03;
 
 // Reusable temps for rotation math.
 const _desired = new Vector3();
@@ -78,8 +95,39 @@ function slerpDirection(from: Vector3, to: Vector3, t: number, out: Vector3) {
   out.normalize();
 }
 
+type BrakeCollider = {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  /** Body radius + safety standoff (km). */
+  safeR: number;
+};
+
 export default function TransitTicker() {
   const store = useStore();
+
+  // Flat-numeric collider list, built once. Each collider's radius is already
+  // inflated with the auto-brake standoff so the inner loop stays branchless.
+  const brakeColliders = useMemo<BrakeCollider[]>(() => {
+    const system = store.get(systemConfigAtom);
+    const bodies = system.celestialBodies ?? [];
+    return bodies.map((b) => {
+      const standoff = Math.max(
+        b.radiusKm * AUTO_BRAKE_STANDOFF_FRAC,
+        AUTO_BRAKE_MIN_STANDOFF_KM,
+      );
+      return {
+        id: b.id,
+        x: b.positionKm[0],
+        y: b.positionKm[1],
+        z: b.positionKm[2],
+        safeR: b.radiusKm + standoff,
+      };
+    });
+    // systemConfigAtom is effectively static in the current codebase.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useFrame((_, delta) => {
     // Don't tick while paused.
@@ -261,6 +309,61 @@ export default function TransitTicker() {
       }
 
       buf.velocityKmps = { x: _vel.x, y: _vel.y, z: _vel.z };
+
+      // ── Proximity auto-brake ─────────────────────────────────────────
+      // Scan every celestial body in front of the ship; if the remaining
+      // distance to the entry of its safety sphere is ≤ our brake distance
+      // (plus a small safety factor), force deceleration now. Skips the
+      // current autopilot target, whose own flip logic runs below.
+      if (buf.shipPosKm) {
+        const speed = _vel.length();
+        if (speed > 0) {
+          const brakeDistKm = (speed * speed) / (2 * TRANSIT_ACCEL_KMPS2);
+          const triggerDistKm = brakeDistKm * AUTO_BRAKE_SAFETY_FACTOR;
+          const target = store.get(targetedPOIAtom);
+          // POIProjector prefixes celestial-body POI IDs with "body:" — match
+          // that form when skipping the autopilot target here.
+          const targetBodyId =
+            target?.id && target.id.startsWith("body:")
+              ? target.id.slice(5)
+              : null;
+
+          const vdx = _vel.x / speed;
+          const vdy = _vel.y / speed;
+          const vdz = _vel.z / speed;
+          const sx = buf.shipPosKm.x;
+          const sy = buf.shipPosKm.y;
+          const sz = buf.shipPosKm.z;
+
+          for (let i = 0; i < brakeColliders.length; i++) {
+            const c = brakeColliders[i];
+            if (c.id === targetBodyId) continue; // autopilot handles its target
+
+            const tx = c.x - sx;
+            const ty = c.y - sy;
+            const tz = c.z - sz;
+            const along = tx * vdx + ty * vdy + tz * vdz;
+            if (along <= 0) continue; // behind the ship
+
+            const distSq = tx * tx + ty * ty + tz * tz;
+            const perpSq = distSq - along * along;
+            const safeSq = c.safeR * c.safeR;
+            if (perpSq > safeSq) continue; // trajectory misses the safety sphere
+
+            // Distance along velocity to the entry of the safety sphere.
+            const entryDist = along - Math.sqrt(safeSq - perpSq);
+            if (entryDist <= triggerDistKm) {
+              buf.phase = "decelerating";
+              store.set(addToastAtom, {
+                message: "TRANSIT DISENGAGED",
+                detail: `Proximity: ${c.id.toUpperCase()}`,
+                durationMs: 3000,
+              });
+              break;
+            }
+          }
+        }
+      }
 
       // Check autopilot flip point.
       if (buf.autopilot && buf.shipPosKm) {
