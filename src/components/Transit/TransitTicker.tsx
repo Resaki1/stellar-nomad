@@ -26,7 +26,6 @@ import { systemConfigAtom } from "@/store/system";
 
 // Reusable temp vectors — zero allocation in hot path.
 const _vel = new Vector3();
-const _accel = new Vector3();
 const _toTarget = new Vector3();
 const _shipPos = new Vector3();
 
@@ -391,7 +390,10 @@ export default function TransitTicker() {
         buf.keyTapped = false;
       }
     } else if (buf.phase === "decelerating") {
-      // DECELERATING — thrust opposite to velocity. Clear any orientation override.
+      // DECELERATING. Mirrors the acceleration rule: velocity direction
+      // tracks ship forward, magnitude is integrated from real decel. This
+      // keeps steering responsive during the brake phase — rotating the
+      // ship redirects momentum, matching normal flight feel.
       buf.desiredForward = null;
       buf.desiredForwardRateRadPerS = 0;
 
@@ -405,19 +407,18 @@ export default function TransitTicker() {
         buf.spoolAccS = 0;
         buf.autopilot = false;
       } else {
-        // Decelerate opposite to current velocity.
-        const decelMag = TRANSIT_ACCEL_KMPS2 * dt;
-        _accel.copy(_vel).normalize().multiplyScalar(-decelMag);
-        _vel.add(_accel);
+        _velDir.set(buf.shipForward?.x ?? 0, buf.shipForward?.y ?? 0, buf.shipForward?.z ?? 0);
+        if (_velDir.lengthSq() < 0.001) _velDir.copy(_vel).normalize();
+        else _velDir.normalize();
 
-        // Check for overshoot (velocity reversed direction).
-        if (_vel.dot(_accel) > 0) {
-          // Decelerated past zero — clamp.
+        const newSpeed = speed - TRANSIT_ACCEL_KMPS2 * dt;
+        if (newSpeed <= 0) {
           buf.velocityKmps = { x: 0, y: 0, z: 0 };
           buf.phase = "idle";
           buf.spoolAccS = 0;
           buf.autopilot = false;
         } else {
+          _vel.copy(_velDir).multiplyScalar(newSpeed);
           buf.velocityKmps = { x: _vel.x, y: _vel.y, z: _vel.z };
         }
       }
