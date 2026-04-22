@@ -395,7 +395,11 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     messageId: "ic_prospector_scanner_mk1",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Prospector Scanner online. Target lock will now identify asteroid classification — S-type, C-type, or X-type.",
+      "Prospector Scanner online. Target lock will now identify asteroid classification: S-type, C-type, or X-type.",
+      "Quick primer on what those classes mean for you. S-types are the common silicate rocks: Mostly silicates with a respectable fraction of iron-nickel metal.",
+      "C-types are carbonaceous. Lower silicate content, but they're the only reliable source of hydrates, along with measurable carbon and sulfur.",
+      "X-types are metallic. Sixty to ninety percent iron-nickel by composition: Dense, heavy, and the richest metal yield in the belt.",
+      "Pick your targets by class and you'll save a lot of wasted cargo runs.",
     ],
     priority: 1,
   },

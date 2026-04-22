@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useStore } from "jotai";
 import { Microscope, Shield, Wrench } from "lucide-react";
 import { keybindsAtom } from "@/store/keybinds";
+import { settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import MiningHUD from "./MiningHUD/MiningHUD";
@@ -31,14 +32,25 @@ type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | null;
 export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
+  const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const store = useStore();
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
   const activePanelRef = useRef(activePanel);
   activePanelRef.current = activePanel;
 
+  // Close any open gameplay panel when the settings menu opens — settings is
+  // modal and must own input focus exclusively.
+  useEffect(() => {
+    if (settingsIsOpen && activePanelRef.current !== null) {
+      setActivePanel(null);
+    }
+  }, [settingsIsOpen]);
+
   const openPanel = useCallback((panel: OverlayPanel) => {
+    if (store.get(settingsIsOpenAtom)) return;
     setActivePanel((prev) => (prev === panel ? null : panel));
-  }, []);
+  }, [store]);
 
   const closePanel = useCallback(() => setActivePanel(null), []);
 
@@ -49,6 +61,10 @@ export default function HUD() {
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       const key = e.key.toLowerCase();
+
+      // Settings menu is modal — it swallows all non-settings hotkeys so the
+      // player can't toggle gameplay panels while paused.
+      if (store.get(settingsIsOpenAtom)) return;
 
       if (keybindsRef.current.toggleCargo.includes(key)) {
         e.preventDefault();
@@ -81,7 +97,7 @@ export default function HUD() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [store]);
 
   return (
     <div className="hud">

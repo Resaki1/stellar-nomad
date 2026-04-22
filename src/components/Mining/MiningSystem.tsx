@@ -13,6 +13,7 @@ import {
   pulseCycleBuffer,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
+  asteroidsMinedLifetimeAtom,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
   PULSE_ON_S,
@@ -680,6 +681,7 @@ const MiningSystem = () => {
   const addToast = useSetAtom(addToastAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
   const incrementMinedSignal = useSetAtom(asteroidMinedSignalAtom);
+  const incrementMinedLifetime = useSetAtom(asteroidsMinedLifetimeAtom);
 
   // Ping Array: modules state for flags
   const modifiers = useAtomValue(computedModifiersAtom);
@@ -1366,25 +1368,39 @@ const MiningSystem = () => {
         }
 
         // --- Assay samples yield based on asteroid size ---
-        const field = systemConfig.asteroidFields?.find(
-          (f) => f.id === reward.fieldId
-        );
-        const minR = field?.size?.minRadiusM ?? 8;
-        const maxR = field?.size?.maxRadiusM ?? 1024;
-        const t = maxR > minR ? Math.max(0, Math.min(1, (reward.radiusM - minR) / (maxR - minR))) : 0;
-        // Piecewise-linear: t=0→1, t=0.35→2, t=0.70→4, t=1.0→6
-        let assayYield: number;
-        if (t <= 0.35) {
-          assayYield = 1 + (t / 0.35) * (2 - 1);
-        } else if (t <= 0.70) {
-          assayYield = 2 + ((t - 0.35) / 0.35) * (4 - 2);
+        // Tutorial guarantee: the player's very first mined asteroid always
+        // yields exactly 1 assay sample so the intro reward is deterministic.
+        // Read localStorage directly to dodge atomWithStorage hydration race.
+        const lifetimeRaw =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem("asteroids-mined-lifetime-v1")
+            : null;
+        const lifetimeMined = lifetimeRaw ? Number(JSON.parse(lifetimeRaw)) : 0;
+        const isFirstEverMine = !Number.isFinite(lifetimeMined) || lifetimeMined <= 0;
+        let assayAmount: number;
+        if (isFirstEverMine) {
+          assayAmount = 1;
         } else {
-          assayYield = 4 + ((t - 0.70) / 0.30) * (6 - 4);
-        }
-        let assayAmount = Math.max(1, Math.round(assayYield));
-        const bonusChance = shipConfigRef.current.assaySampleBonusChance;
-        if (bonusChance > 0 && Math.random() < bonusChance) {
-          assayAmount += 1;
+          const field = systemConfig.asteroidFields?.find(
+            (f) => f.id === reward.fieldId
+          );
+          const minR = field?.size?.minRadiusM ?? 8;
+          const maxR = field?.size?.maxRadiusM ?? 1024;
+          const t = maxR > minR ? Math.max(0, Math.min(1, (reward.radiusM - minR) / (maxR - minR))) : 0;
+          // Piecewise-linear: t=0→1, t=0.35→2, t=0.70→4, t=1.0→6
+          let assayYield: number;
+          if (t <= 0.35) {
+            assayYield = 1 + (t / 0.35) * (2 - 1);
+          } else if (t <= 0.70) {
+            assayYield = 2 + ((t - 0.35) / 0.35) * (4 - 2);
+          } else {
+            assayYield = 4 + ((t - 0.70) / 0.30) * (6 - 4);
+          }
+          assayAmount = Math.max(1, Math.round(assayYield));
+          const bonusChance = shipConfigRef.current.assaySampleBonusChance;
+          if (bonusChance > 0 && Math.random() < bonusChance) {
+            assayAmount += 1;
+          }
         }
         addAssaySamples(assayAmount);
 
@@ -1403,6 +1419,7 @@ const MiningSystem = () => {
 
         // Signal that mining completed (GameCommsTriggers watches this)
         incrementMinedSignal((c) => c + 1);
+        incrementMinedLifetime((c) => c + 1);
       }
 
       removeAsteroid(removeId);

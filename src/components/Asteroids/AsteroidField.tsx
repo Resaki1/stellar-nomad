@@ -12,7 +12,7 @@ import FarTierBatch from "@/components/Asteroids/FarTierBatch";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "@/components/Asteroids/GpuSlotAllocator";
 
 import { systemConfigAtom } from "@/store/system";
-import { shipHealthAtom } from "@/store/store";
+import { shipHealthAtom, hudInfoAtom } from "@/store/store";
 import { spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { dieAtom, isDeadAtom } from "@/store/death";
@@ -49,6 +49,21 @@ const COLLISION_INTERVAL_S = 0.1;
 const SHIP_COLLIDER_RADIUS_M = 60;
 const COLLISION_LOG_COOLDOWN_MS = 1000;
 const MAX_COLLISION_LOGS_PER_TICK = 3;
+
+// Kinetic-energy damage model
+// Damage = baseDamage * (0.5·m·v²) / referenceKE, m = ρ·(4/3)π·r³.
+// Calibrated so a ~30 m rock at full burn (400 m/s) — the median field hit —
+// costs roughly 20% of an unarmored hull. Exponent < 1 compresses the huge
+// mass range (10 m pebble → 500 m boulder) into a gameplay-sane damage band.
+const ASTEROID_DENSITY_KG_M3 = 3000;      // typical rocky asteroid density
+const REF_BASE_DAMAGE = 20;               // damage at the reference impact
+const REF_KINETIC_ENERGY_J = 3e13;        // ~30 m rock @ 400 m/s
+const KE_DAMAGE_EXPONENT = 0.4;           // flattens the r³·v² range
+const MIN_IMPACT_VELOCITY_MPS = 20;       // below this: grazing bump only
+// Hard cap at 80% of max hull. A full-speed smack into a giant rock is
+// brutal but must never one-shot the ship — the player always gets a
+// chance to react.
+const MAX_DAMAGE_FRACTION = 0.8;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -203,11 +218,23 @@ const FieldLayer = memo(function FieldLayer({
     [fieldRuntime]
   );
 
-  const applyShipCollisionDamage = useCallback((): number => {
+  const applyShipCollisionDamage = useCallback((asteroidRadiusM: number): number => {
     const cfg = store.get(effectiveShipConfigAtom);
-    const baseDamage = 10;
+    // Asteroids are effectively static in their field — the ship's absolute
+    // speed (m/s) is a good proxy for relative impact velocity.
+    const velocityMps = Math.max(store.get(hudInfoAtom).speed, MIN_IMPACT_VELOCITY_MPS);
+
+    const volumeM3 = (4 / 3) * Math.PI * asteroidRadiusM * asteroidRadiusM * asteroidRadiusM;
+    const massKg = ASTEROID_DENSITY_KG_M3 * volumeM3;
+    const kineticEnergyJ = 0.5 * massKg * velocityMps * velocityMps;
+
+    const keRatio = kineticEnergyJ / REF_KINETIC_ENERGY_J;
+    const baseDamage = REF_BASE_DAMAGE * Math.pow(keRatio, KE_DAMAGE_EXPONENT);
+
     const effectiveDamage = baseDamage * cfg.collisionDamageMult / (cfg.maxHealth / 100);
-    const damage = Math.max(1, Math.round(effectiveDamage));
+    const maxDamage = cfg.maxHealth * MAX_DAMAGE_FRACTION;
+    const damage = Math.max(1, Math.min(maxDamage, Math.round(effectiveDamage)));
+
     let newHealth = 0;
     setShipHealth((prev) => {
       newHealth = Math.max(0, prev - damage);
@@ -572,7 +599,7 @@ const FieldLayer = memo(function FieldLayer({
                     : [0, 1, 0];
 
                 removeAsteroidInstance(instanceId);
-                const newHealth = applyShipCollisionDamage();
+                const newHealth = applyShipCollisionDamage(radii[i]);
 
                 spawnVFX({
                   type: "collision",

@@ -510,6 +510,7 @@ const SettingsMenu = () => {
     localStorage.removeItem("research-v1");
     localStorage.removeItem("modules-v1");
     localStorage.removeItem("modules-v2");
+    localStorage.removeItem("asteroids-mined-lifetime-v1");
     window.location.reload();
   }, [deltaStore]);
 

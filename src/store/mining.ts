@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
 import { isCargoFullAtom } from "@/store/cargo";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import type { AsteroidInstanceLocation } from "@/sim/asteroids/runtime";
@@ -124,6 +125,16 @@ export const heatSinkBuffer: {
 // ---------------------------------------------------------------------------
 
 export const asteroidMinedSignalAtom = atom(0);
+
+/**
+ * Lifetime count of asteroids the player has ever mined. Persists across
+ * sessions (unlike asteroidMinedSignalAtom which is a session signal).
+ * Used for one-shot tutorial guarantees (e.g. first-ever mine = 1 assay).
+ */
+export const asteroidsMinedLifetimeAtom = atomWithStorage<number>(
+  "asteroids-mined-lifetime-v1",
+  0,
+);
 
 // ---------------------------------------------------------------------------
 // Pulse Mining mode
