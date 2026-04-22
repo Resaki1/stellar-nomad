@@ -149,7 +149,7 @@ export const lunaConfig: CelestialBodyConfig = {
     computeTangents: true,
   },
   far: { albedo: LUNA_ALBEDO },
-  stellarPoint: { geometricAlbedo: 0.136, color: [0.85, 0.82, 0.78] },
+  stellarPoint: { geometricAlbedo: 0.0036, color: [0.85, 0.82, 0.78] },
 
   buildFragmentNode: ({ textures, uSunRel, tier }) => {
     const bumpStrength = tier === "near" ? 0.8 : 0.6;

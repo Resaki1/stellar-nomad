@@ -43,6 +43,7 @@ import type { CelestialBodyConfig } from "../types";
 export { PLANET_POSITION_KM };
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
+const CLOUD_BRIGHTNESS = 3;
 
 // ── Scratch vectors for onFrame ──
 const _moonScaled = new THREE.Vector3();
@@ -268,7 +269,7 @@ function buildEarthFragmentNode(opts: {
 
     // Cloud color: white in full sunlight, warm at the terminator.
     const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
-    const cloudWhite = vec3(1, 1, 1);
+    const cloudWhite = vec3(1, 1, 1).mul(CLOUD_BRIGHTNESS);
     const cloudWarm = vec3(1.0, 0.8, 0.7);
     const cloudBaseCol = mix(cloudWarm, cloudWhite, cloudSunBlend);
     // Clouds at ~10 km altitude catch sunlight slightly past the surface
