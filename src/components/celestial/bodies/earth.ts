@@ -39,6 +39,7 @@ import {
 } from "@/sim/celestialConstants";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
+import { buildEarthCloudShell } from "./earthClouds";
 
 export { PLANET_POSITION_KM };
 
@@ -125,10 +126,12 @@ function buildEarthFragmentNode(opts: {
   uMoonRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRadius: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uVolumetricBlend: any;
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
-    uSunRel, uMoonPos, uMoonRadius, uSunRadius,
+    uSunRel, uMoonPos, uMoonRadius, uSunRadius, uVolumetricBlend,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -280,7 +283,14 @@ function buildEarthFragmentNode(opts: {
     // Self-shadow: clouds with other clouds sunward of them get darker bases
     const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
     const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow);
-    col.assign(mix(col, cloudLit, clamp(cloudMask, 0, 1)));
+    // Crossfade with the volumetric shell: as the volumetric shell fades in
+    // (uVolumetricBlend → 1, 25–35 k km), the flat cloud overlay fades out so
+    // we don't see "double clouds" painted on the surface and overhead.
+    // The cloud-on-ground shadow tap above stays active throughout — it
+    // approximates the 3D cloud's ground shadow well enough at this scale and
+    // the proper shell-shadow RT is deferred (Tier 2 of the perf plan).
+    const flatCloudOpacity = float(1).sub(uVolumetricBlend);
+    col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
     const viewDotN = viewDotNRaw.max(0.08);
@@ -372,9 +382,14 @@ export const earthConfig: CelestialBodyConfig = {
   far: { albedo: EARTH_FAR_ALBEDO, buildFragment: earthBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.434, color: [0.55, 0.65, 0.95] },
 
+  extraMeshes: buildEarthCloudShell,
+
   onTexturesLoaded: (tier, textures) => {
     if (tier === "near" && textures.clouds) {
       textures.clouds.anisotropy = 8;
+      // Shell ray-march samples across the atan2 seam; wrap to avoid a visible line.
+      textures.clouds.wrapS = THREE.RepeatWrapping;
+      textures.clouds.needsUpdate = true;
     }
     if (tier === "mid" && textures.clouds) {
       textures.clouds.anisotropy = 4;
@@ -385,15 +400,29 @@ export const earthConfig: CelestialBodyConfig = {
     uMoonPos: uniform(new THREE.Vector3(1e9, 0, 0)),
     uMoonRadius: uniform(kmToScaledUnits(LUNA_RADIUS_KM)),
     uSunRadius: uniform(kmToScaledUnits(STAR_RADIUS_KM)),
+    // 0 = far (flat overlay only), 1 = close (volumetric shell only).
+    // Driven from distKm in onFrame; ramps linearly across 35 k → 25 k.
+    uVolumetricBlend: uniform(0),
   }),
 
-  onFrame: ({ uniforms, worldOrigin }) => {
+  onFrame: ({ uniforms, worldOrigin, distKm }) => {
     // Update moon position in scaled coords
     const moonKm = LUNA_POSITION_KM;
     _earthRelKm.set(moonKm[0], moonKm[1], moonKm[2]);
     _earthRelKm.sub(worldOrigin.worldOriginKm);
     toScaledUnitsKm(_earthRelKm, _moonScaled);
     uniforms.uMoonPos.value.copy(_moonScaled);
+
+    // Volumetric/flat cloud crossfade. 1.0 below 25 k km (volumetric only),
+    // 0.0 above 35 k km (flat overlay only — also matches mid tier where the
+    // shell isn't mounted at all). The shell mounts at the lod.near boundary
+    // (35 k) and ramps in from 0 alpha, hiding both the tier swap and the
+    // shell-mount discontinuity.
+    uniforms.uVolumetricBlend.value = THREE.MathUtils.clamp(
+      (35_000 - distKm) / 10_000,
+      0,
+      1,
+    );
   },
 
   buildFragmentNode: ({ textures, uSunRel, uniforms, tier }) => {
@@ -407,6 +436,7 @@ export const earthConfig: CelestialBodyConfig = {
       uMoonPos: uniforms.uMoonPos,
       uMoonRadius: uniforms.uMoonRadius,
       uSunRadius: uniforms.uSunRadius,
+      uVolumetricBlend: uniforms.uVolumetricBlend,
     });
   },
 };

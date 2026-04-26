@@ -26,6 +26,9 @@ export type ExtraMeshDef = {
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
   tier: "near" | "mid";
+  // Optional Three.js layer to route this mesh through a separate render pass
+  // (e.g. cloud shell rendered at half-res — see src/components/space/renderLayers.ts).
+  renderLayer?: number;
 };
 
 export type FragmentNodeContext = {

@@ -181,7 +181,10 @@ function TexturedLODs({
       {nearExtras.map((ex, i) => (
         <mesh
           key={ex.key}
-          ref={(m) => { extraNearRefs.current[i] = m; }}
+          ref={(m) => {
+            extraNearRefs.current[i] = m;
+            if (m && ex.renderLayer != null) m.layers.set(ex.renderLayer);
+          }}
           geometry={ex.geometry}
           material={ex.material}
           visible={false}
@@ -190,7 +193,10 @@ function TexturedLODs({
       {midExtras.map((ex, i) => (
         <mesh
           key={ex.key}
-          ref={(m) => { extraMidRefs.current[i] = m; }}
+          ref={(m) => {
+            extraMidRefs.current[i] = m;
+            if (m && ex.renderLayer != null) m.layers.set(ex.renderLayer);
+          }}
           geometry={ex.geometry}
           material={ex.material}
           visible={false}
