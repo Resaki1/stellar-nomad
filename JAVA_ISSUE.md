@@ -1,0 +1,3 @@
+Bash(find /Users/privat/Code/stellar-nomad/node_modules/three -name "*.d.ts" -path "*nodes*" 2>&1 | grep -v Java | xargs grep -lE "export.*uniform.*=|export const un…)
+  ⎿  The operation couldn’t be completed. Unable to locate a Java Runtime.                                                                                                                                                                                                           
+     Please visit http://www.java.com for information on installing Java.
