@@ -29,6 +29,11 @@ export type ExtraMeshDef = {
   // Optional Three.js layer to route this mesh through a separate render pass
   // (e.g. cloud shell rendered at half-res — see src/components/space/renderLayers.ts).
   renderLayer?: number;
+  // Fired by the React ref callback when the mesh mounts (with the mesh) or
+  // unmounts (with null). Lets a body-specific module register the mesh as a
+  // matrixWorld provider for off-scene-graph passes (e.g. the fullscreen-quad
+  // cloud ray-march needs Earth's world transform but renders in its own scene).
+  onMount?: (mesh: THREE.Mesh | null) => void;
 };
 
 export type FragmentNodeContext = {

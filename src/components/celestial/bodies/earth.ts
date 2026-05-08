@@ -39,7 +39,7 @@ import {
 } from "@/sim/celestialConstants";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
-import { buildEarthCloudShell } from "./earthClouds";
+import { buildEarthClouds } from "./earthClouds";
 
 export { PLANET_POSITION_KM };
 
@@ -382,7 +382,7 @@ export const earthConfig: CelestialBodyConfig = {
   far: { albedo: EARTH_FAR_ALBEDO, buildFragment: earthBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.434, color: [0.55, 0.65, 0.95] },
 
-  extraMeshes: buildEarthCloudShell,
+  extraMeshes: buildEarthClouds,
 
   onTexturesLoaded: (tier, textures) => {
     if (tier === "near" && textures.clouds) {

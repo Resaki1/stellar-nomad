@@ -10,7 +10,10 @@ import { LOCAL_TO_SCALED_FROM_LOCAL_UNITS } from "@/sim/units";
 import { HalfFloatType, AgXToneMapping, NeutralToneMapping, NoToneMapping } from "three";
 import { useAtomValue } from "jotai/react";
 import { settingsAtom } from "@/store/store";
-import { CLOUD_LAYER } from "./renderLayers";
+import {
+  getActiveFullscreenCloudPass,
+  getEarthMatrixWorldRef,
+} from "./cloudFullscreenPass";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
@@ -32,8 +35,35 @@ const CLOUD_RT_SCALE = 0.5;
 
 const tempScaledPos = new THREE.Vector3();
 const tempClearColor = new THREE.Color();
+const tempJitter = new THREE.Vector2();
+const tempViewProj = new THREE.Matrix4();
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
+
+// Phase D2: 16-entry Halton(2,3) low-discrepancy sequence, centred so each
+// entry is in [-0.5, 0.5]. Each frame we pick the next entry, divide by RT
+// pixel dims, and feed it as a sub-pixel jitter for the cloud ray-march.
+// Halton beats random and Bayer for spatial-coverage convergence within a
+// short cycle (16 frames here = 4×4 effective stratification).
+const HALTON_LEN = 16;
+const HALTON_JITTER: ReadonlyArray<readonly [number, number]> = (() => {
+  const halton = (index: number, base: number): number => {
+    let f = 1;
+    let r = 0;
+    let i = index;
+    while (i > 0) {
+      f /= base;
+      r += f * (i % base);
+      i = Math.floor(i / base);
+    }
+    return r;
+  };
+  const out: [number, number][] = [];
+  for (let i = 1; i <= HALTON_LEN; i++) {
+    out.push([halton(i, 2) - 0.5, halton(i, 3) - 0.5]);
+  }
+  return out;
+})();
 
 // Full-screen quad for the cloud composite pass. One per SpaceRenderer
 // lifetime — the cloud-texture node inside the material is rebuilt when the
@@ -70,51 +100,59 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rt.dispose(); }, [rt]);
 
-  // Half-res RT for the volumetric cloud pass. ¼ the fragments of the main RT
-  // — the single biggest fill-rate reduction for a fragment-shader-bound
-  // effect like this one. Sized from the same DPR so clouds are crisp enough
-  // on high-DPI displays without paying full cost.
-  const cloudRt = useMemo(() => {
+  // Phase D ping-pong cloud RTs. Each frame writes one and (once D6
+  // lands) reads the other as history. Half-res for now; D5 lifts to full
+  // res alongside the 1/16 stochastic schedule that pays the perf cost back.
+  // (An MRT layout for a 2nd "tFront" attachment was attempted but three's
+  // NodeMaterial only honours MRT when fragmentNode is a direct
+  // OutputStructNode, which is incompatible with the Fn(()=>...)() wrapping
+  // the marcher needs for Loop/If stack scope. D6 falls back to camera-only
+  // reprojection — accurate at orbit altitudes; close-range parallax is the
+  // tradeoff.)
+  const cloudRts = useMemo(() => {
     const dpr = gl.getPixelRatio();
-    return new RenderTarget(
-      Math.max(1, Math.floor(size.width * dpr * CLOUD_RT_SCALE)),
-      Math.max(1, Math.floor(size.height * dpr * CLOUD_RT_SCALE)),
-      { type: HalfFloatType, depthBuffer: true },
-    );
+    const w = Math.max(1, Math.floor(size.width * dpr * CLOUD_RT_SCALE));
+    const h = Math.max(1, Math.floor(size.height * dpr * CLOUD_RT_SCALE));
+    return [
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: true }),
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: true }),
+    ] as const;
   }, [gl, size.width, size.height]);
 
-  useEffect(() => () => { cloudRt.dispose(); }, [cloudRt]);
+  useEffect(() => () => {
+    cloudRts[0].dispose();
+    cloudRts[1].dispose();
+  }, [cloudRts]);
 
-  // Composite material: full-screen quad that samples the cloud RT and blends
-  // it into the main RT with premultiplied alpha. Bilinear sampling on a
-  // premul texture is the correct resampling for alpha-blended colour — it
-  // matches what an N× higher-res render would converge to at the same
-  // filtered sample point.
-  const compositeMesh = useMemo(() => {
-    const mat = new NodeMaterial();
-    mat.transparent = true;
-    mat.depthTest = false;
-    mat.depthWrite = false;
-    mat.blending = THREE.CustomBlending;
-    mat.blendSrc = THREE.OneFactor;
-    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
-    mat.blendSrcAlpha = THREE.OneFactor;
-    mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-    // Use screenUV (not the plane's geometry uv) — WebGPU RTs have origin at
-    // top-left, matching screenUV.y=0 at top. Geometry uv has origin at
-    // bottom-left, which flips the composite vertically and produces a "ghost"
-    // Earth reflected across the horizon line.
-    mat.fragmentNode = texture(cloudRt.texture, screenUV);
-    return new THREE.Mesh(compositeGeometry, mat);
-  }, [cloudRt]);
-
-  useEffect(() => {
-    compositeScene.add(compositeMesh);
-    return () => {
-      compositeScene.remove(compositeMesh);
-      (compositeMesh.material as NodeMaterial).dispose();
+  // One composite mesh per cloud RT. Pre-built so swapping which one is in
+  // compositeScene each frame is a parent/child mutation, not a TSL
+  // recompile. (Reassigning a TextureNode's `.value` mid-frame is not
+  // reliably honoured by the WebGPU backend's bind-group caching.)
+  const compositeMeshes = useMemo(() => {
+    const make = (rt: RenderTarget) => {
+      const mat = new NodeMaterial();
+      mat.transparent = true;
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.blending = THREE.CustomBlending;
+      mat.blendSrc = THREE.OneFactor;
+      mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+      mat.blendSrcAlpha = THREE.OneFactor;
+      mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+      // Use screenUV (not the plane's geometry uv) — WebGPU RTs have origin
+      // at top-left, matching screenUV.y=0 at top. Geometry uv has origin at
+      // bottom-left, which flips the composite vertically.
+      mat.fragmentNode = texture(rt.texture, screenUV);
+      return new THREE.Mesh(compositeGeometry, mat);
     };
-  }, [compositeMesh]);
+    return [make(cloudRts[0]), make(cloudRts[1])] as const;
+  }, [cloudRts]);
+
+  useEffect(() => () => {
+    for (const mesh of compositeMeshes) {
+      (mesh.material as NodeMaterial).dispose();
+    }
+  }, [compositeMeshes]);
 
   // RenderPipeline (replaces the old EffectComposer)
   const pipeline = useMemo(
@@ -167,6 +205,25 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   useEffect(() => () => { pipeline.dispose(); }, [pipeline]);
 
   const firstFrameLogged = useRef(false);
+  // Ping-pong index: this frame writes cloudRts[frameParity], next frame
+  // writes the other. compositeScene gets the matching mesh swapped in.
+  const frameParity = useRef(0);
+  const mountedCompositeMesh = useRef<THREE.Mesh | null>(null);
+  // Phase D2: monotonic frame counter (mod HALTON_LEN) drives sub-pixel
+  // jitter selection. Distinct from frameParity (which is just 2-state).
+  const cloudFrameIndex = useRef(0);
+  // Phase D3: previous frame's combined view-projection matrix in scaled
+  // world space, snapshotted at end of frame. Identity on the first frame.
+  const prevCloudViewProj = useRef(new THREE.Matrix4());
+  // Phase D6: history-validity flag passed to the cloud pass each frame.
+  // Starts at 0 so the first cloud render outputs only the new sample
+  // (history is uninitialised). Flips to 1 after one full cycle. Reset to
+  // 0 whenever the RT pair is recreated (resize) — the new RT may share
+  // memory with a torn-down one but its content is undefined.
+  const cloudHistoryValid = useRef(0);
+  useEffect(() => {
+    cloudHistoryValid.current = 0;
+  }, [cloudRts]);
 
   useFrame(() => {
     // Skip until WebGPU backend is ready (init is async).
@@ -202,36 +259,79 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     renderer.toneMapping = NoToneMapping;
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
-    // Pass 1: scaled scene WITHOUT the cloud layer — planets, skybox, stars.
+    // Pass 1: scaled scene — planets, skybox, stars. Layer 0 only; the cloud
+    // anchor mesh sits on CLOUD_LAYER (which no camera enables) and never
+    // renders. It exists only as a matrixWorld provider for the fullscreen
+    // pass below.
     scaledCamera.layers.enable(0);
-    scaledCamera.layers.disable(CLOUD_LAYER);
     renderer.setRenderTarget(rt);
     gl.autoClear = true;
     gl.render(scaledScene, scaledCamera);
 
-    // Pass 2: cloud shell only, rendered at half-res into cloudRt.
-    // The premul-alpha clear ((0,0,0,0)) is critical — non-zero clear alpha
-    // would bleed the clear colour into cloud fringes on composite.
-    scaledCamera.layers.disable(0);
-    scaledCamera.layers.enable(CLOUD_LAYER);
-
+    // Pass 2: per-pixel cloud ray-march into the half-res cloudRt. Premul-
+    // alpha clear (0,0,0,0) is critical — non-zero clear alpha would bleed
+    // the clear colour into cloud fringes on composite. Each fragment shoots
+    // its own ray into the slab, so cloud-front depth varies per pixel and
+    // camera motion produces real 3D parallax (Phase G).
     gl.getClearColor(tempClearColor);
     const savedClearAlpha = gl.getClearAlpha();
     gl.setClearColor(0x000000, 0);
 
-    renderer.setRenderTarget(cloudRt);
-    gl.autoClear = true;
-    gl.render(scaledScene, scaledCamera);
+    const writeIdx = frameParity.current;
+    const writeRt = cloudRts[writeIdx];
+    const writeCompositeMesh = compositeMeshes[writeIdx];
+
+    const fullscreenPass = getActiveFullscreenCloudPass();
+    const earthMesh = fullscreenPass ? getEarthMatrixWorldRef() : null;
+
+    if (fullscreenPass && earthMesh) {
+      // Phase D2: pick this frame's Halton offset and convert pixel-space
+      // jitter to UV space using the actual cloud RT dims.
+      const haltonIdx = cloudFrameIndex.current % HALTON_LEN;
+      const [hx, hy] = HALTON_JITTER[haltonIdx];
+      tempJitter.set(hx / writeRt.width, hy / writeRt.height);
+      // Phase D6: feed the *off-parity* RT in as history. Its content was
+      // written one frame ago by the same shader, so reprojection has
+      // something coherent to sample. cloudHistoryValid is 0 on the first
+      // post-mount frame so the shader skips the blend; flips to 1 after.
+      const historyRt = cloudRts[writeIdx ^ 1];
+      fullscreenPass.updateUniforms(
+        scaledCamera,
+        earthMesh,
+        tempJitter,
+        prevCloudViewProj.current,
+        historyRt.texture,
+        cloudHistoryValid.current,
+      );
+      renderer.setRenderTarget(writeRt);
+      gl.autoClear = true;
+      gl.render(fullscreenPass.cloudScene, fullscreenPass.cloudCamera);
+      cloudHistoryValid.current = 1;
+    } else {
+      // No active pass (Earth not yet mounted, or player out of near range).
+      // Clear cloudRt to fully transparent so the composite contributes
+      // nothing this frame. Also invalidate history — when the pass
+      // resumes, the off-parity RT may have just been cleared here, and
+      // blending against (0,0,0,0) would briefly erase the cloud.
+      renderer.setRenderTarget(writeRt);
+      gl.autoClear = true;
+      gl.clear();
+      cloudHistoryValid.current = 0;
+    }
 
     gl.setClearColor(tempClearColor, savedClearAlpha);
 
-    // Restore default camera layer mask so consumers that reuse scaledCamera
-    // (e.g. R3F's raycaster, future debug overlays) see the scaled layer.
-    scaledCamera.layers.enable(0);
-    scaledCamera.layers.disable(CLOUD_LAYER);
-
-    // Pass 3: composite cloudRt → rt with premultiplied alpha blend.
-    // Bilinear upsample happens automatically via the sampler.
+    // Pass 3: composite the just-written cloud RT → main rt with premul-
+    // alpha blend. Swap which mesh sits in compositeScene to match the RT
+    // we just wrote (each mesh has its TextureNode bound to one specific RT
+    // at compile time).
+    if (mountedCompositeMesh.current !== writeCompositeMesh) {
+      if (mountedCompositeMesh.current) {
+        compositeScene.remove(mountedCompositeMesh.current);
+      }
+      compositeScene.add(writeCompositeMesh);
+      mountedCompositeMesh.current = writeCompositeMesh;
+    }
     renderer.setRenderTarget(rt);
     gl.autoClear = false;
     gl.render(compositeScene, compositeCamera);
@@ -250,6 +350,22 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();
+
+    // Advance the ping-pong parity so next frame writes the *other* RT
+    // (and, once D6 lands, reads this one as history).
+    frameParity.current ^= 1;
+    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % HALTON_LEN;
+
+    // Phase D3: snapshot this frame's combined view-projection in scaled
+    // space. Next frame this becomes `uPrevViewProj` and lets the shader
+    // compute the previous-frame UV for the world point each pixel sampled.
+    // matrixWorldInverse was updated by `gl.render(scaledScene, scaledCamera)`
+    // above, so it's current as of this frame.
+    tempViewProj.multiplyMatrices(
+      scaledCamera.projectionMatrix,
+      scaledCamera.matrixWorldInverse,
+    );
+    prevCloudViewProj.current.copy(tempViewProj);
   }, 1);
 
   return (

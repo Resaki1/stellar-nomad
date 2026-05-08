@@ -1,23 +1,18 @@
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
-  Fn,
   If,
   Loop,
   Break,
   uniform,
   texture,
   texture3D,
-  positionLocal,
-  cameraPosition,
-  modelWorldMatrixInverse,
   screenCoordinate,
   vec2,
   vec3,
   vec4,
   float,
   dot,
-  normalize,
   sub,
   clamp,
   length,
@@ -36,11 +31,14 @@ import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
 import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
+import {
+  setupFullscreenCloudPass,
+  setEarthMatrixWorldSource,
+} from "@/components/space/cloudFullscreenPass";
 
 // Troposphere-ish slab. Photoreal-leaning, not exaggerated.
 const CLOUD_INNER_ALTITUDE_KM = 1;
 const CLOUD_OUTER_ALTITUDE_KM = 14;
-const CLOUD_SEGMENTS = 64;
 
 // Ray-march config. MUST be constants — TSL Loop count is baked into the shader.
 //
@@ -100,7 +98,7 @@ const HG_G = 0.6;
 //                   is reaching α=1 in regions where coverage is high (i.e.
 //                   are we density-limited, or sampling-limited?)
 //   'topAlt'      : per-column topAlt sampled at the slab midpoint, mapped to
-//                   grayscale: black = topAlt=0.55, white = topAlt=0.95. The
+//                   grayscale: black = topAlt=0.4, white = topAlt=0.95. The
 //                   key question this answers: does topAlt actually vary
 //                   across the FOV, or does it cluster around one value
 //                   (which would mean Perlin distribution is too narrow and
@@ -117,8 +115,24 @@ const HG_G = 0.6;
 //   'slabLen'     : slab path length normalised. Helps spot grazing-angle
 //                   pixels where the slab is much longer than nominal
 //                   13 km (e.g. limb views).
+//   'firstHit'    : t-value of first cloud sample (premul alpha first
+//                   exceeds 0.01) divided by tExit, false-coloured. The
+//                   parallax-sanity check: per-pixel depth variation
+//                   means adjacent pixels can show very different colours
+//                   wherever they hit clouds at different distances along
+//                   their respective rays. A uniform colour across the
+//                   cloud disk means cloud-front depth is locked (i.e.
+//                   shell-painting behaviour). Empty pixels = black
+//                   (no hit, sentinel = 0).
 // =============================================================================
-const DEBUG_VIZ: "off" | "alpha" | "topAlt" | "insideInner" | "iters" | "slabLen" = "off";
+const DEBUG_VIZ:
+  | "off"
+  | "alpha"
+  | "topAlt"
+  | "insideInner"
+  | "iters"
+  | "slabLen"
+  | "firstHit" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, base+top decomposition).
 //
@@ -135,6 +149,32 @@ const DEBUG_VIZ: "off" | "alpha" | "topAlt" | "insideInner" | "iters" | "slabLen
 // 0.95 (5.2 km vertical difference) rendered as identical low blankets.
 // The gate is removed so topAlt variation translates directly into
 // visible cloud-top altitude variation, regardless of coverage.
+//
+// Top-heavy density bias (BASE_WEIGHT 0.5, TOP_WEIGHT 2.0): the DEBUG_VIZ
+// 'firstHit' map showed every ray's first cloud hit clustering around
+// depth01 ≈ 0.5 — the base-band entry altitude — regardless of topAlt.
+// That's because the base band is dense enough at altitude01 0.05–0.25 to
+// saturate alpha before the top band's altitude variation can register.
+// Halving the base band and doubling the top band biases visible cloud-top
+// altitude toward the topAlt-driven upper region, so tall columns (topAlt
+// near 0.95) and short columns (topAlt near 0.4) read as visibly different
+// heights from above. Total density per dense column ≈ unchanged because
+// the top band fills most of the slab when topAlt is high.
+// Provisional weights pending Phase D (temporal reprojection). The
+// fundamental tradeoff:
+//   high BASE_WEIGHT → solid continuous cloud blanket, looks "2D shell"
+//     from above, no per-pixel speckle.
+//   low BASE_WEIGHT  → real 3D column-top variation visible, but the
+//     screen-space dither becomes obvious as a dotted/noisy pattern
+//     because each pixel's first-hit lands at a slightly different
+//     t-value with no spatial or temporal smoothing.
+// Mid values balance the two failure modes. After TAA averages dither
+// across frames the visible-3D end of the spectrum becomes viable;
+// until then we sit closer to the shell-look end. Slight top-bias
+// (2× / 0.5×) gives a nudge in the right direction without breaking
+// the bulk cloud cover.
+const BASE_WEIGHT = 0.5;
+const TOP_WEIGHT = 2.0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function cloudHeightProfile(alt01: any, topAlt: any): any {
   const baseBand = smoothstep(float(0), float(0.05), alt01).mul(
@@ -143,14 +183,19 @@ function cloudHeightProfile(alt01: any, topAlt: any): any {
   const topBand = smoothstep(float(0.4), float(0.55), alt01).mul(
     float(1).sub(smoothstep(topAlt.sub(float(0.2)), topAlt, alt01)),
   );
-  return baseBand.add(topBand);
+  return baseBand.mul(BASE_WEIGHT).add(topBand.mul(TOP_WEIGHT));
 }
 
 /**
- * STEP 2 — density ray-march driven by the existing cloud texture (weather map)
- * and a height gradient. No lighting yet; output is white with alpha = 1 − T.
+ * Earth cloud system: registers a fullscreen-quad ray-march pass that
+ * produces per-pixel cloud-front depth (real 3D parallax under camera
+ * motion). Returns a tiny anchor mesh whose only role is to inherit
+ * Earth's matrixWorld via the rotation-group parent — `onMount` registers
+ * it as the world-transform source for the fullscreen pass's
+ * `uEarthInverseModel` uniform. Mesh is on CLOUD_LAYER (which no camera
+ * enables), so it never renders.
  */
-export function buildEarthCloudShell(ctx: ExtraMeshContext): ExtraMeshDef[] {
+export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   if (ctx.tier !== "near") return [];
 
   const weatherMap = ctx.textures.clouds;
@@ -162,35 +207,6 @@ export function buildEarthCloudShell(ctx: ExtraMeshContext): ExtraMeshDef[] {
   const outerRadiusScaled = kmToScaledUnits(
     PLANET_RADIUS_KM + CLOUD_OUTER_ALTITUDE_KM,
   );
-
-  const geo = new THREE.SphereGeometry(
-    outerRadiusScaled,
-    CLOUD_SEGMENTS,
-    CLOUD_SEGMENTS,
-  );
-
-  const mat = new NodeMaterial();
-  // BackSide: renders the far hemisphere of the geometry. From outside the
-  // shell this produces an identical result to FrontSide — the back-face
-  // fragment sits on the same view ray as the front-face would, so the
-  // analytic intersection inside the fragment shader returns identical
-  // tEnter/tExit and the march outputs the same colour. From INSIDE the
-  // shell (camera flying below 14 km altitude), FrontSide culls every face
-  // and the cloud layer disappears entirely; BackSide keeps the inner
-  // surface visible so the shell stays rendered when the player is in or
-  // below it.
-  mat.side = THREE.BackSide;
-  mat.transparent = true;
-  mat.depthWrite = false;
-  // Premultiplied alpha — simpler compositing pipeline. Shader returns
-  // (color*alpha, alpha) directly; we blend with (ONE, 1-α) on both channels
-  // so sampling the half-res RT interpolates correctly (bilinear filtering on
-  // non-premul colors bleeds fringes at transparency edges).
-  mat.blending = THREE.CustomBlending;
-  mat.blendSrc = THREE.OneFactor;
-  mat.blendDst = THREE.OneMinusSrcAlphaFactor;
-  mat.blendSrcAlpha = THREE.OneFactor;
-  mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
 
   const baseVolume = getCloudBaseVolume();
   const detailVolume = getCloudDetailVolume();
@@ -227,15 +243,12 @@ export function buildEarthCloudShell(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // some sharpness but cloud bodies become visibly opaque.
   // 0 = no erosion, 1 = can fully remove edges.
   const uDetailErosion = uniform(0.2);
-  // Domain-warp amount in UV space. Perturbs the weather-map UV by a
-  // noise-driven offset to break up alignment with the 8 k texture's grid.
-  // 0.002 ≈ 70 km world at the equator — small enough that volumetric
-  // cloud features stay aligned with the weather map (no visible "stereo"
-  // offset between flat-overlay and volumetric clouds during the 25-35 k
-  // crossfade), large enough to break up texel-grid silhouettes at close
-  // range. Was 0.005 — too aggressive, shifted clouds ~200 km off their
-  // weather-map positions.
-  const uWarpAmount = uniform(0.002);
+  // Domain warp is currently disabled inside the marcher (see DIAGNOSTIC
+  // note where uvWarped = uvMid). When re-introducing with a smoother
+  // (Perlin-only) warp source, recreate a `uWarpAmount = uniform(0.002)`
+  // uniform here and pass it to the marcher; ~70 km world equivalent at the
+  // equator is the sweet spot between visible structure breakup and
+  // weather-map alignment with the flat overlay during 25–35 k crossfade.
   // Column-scale tile for per-column cloud-top variation (Nubis B2). Sampled
   // from baseVolume.r (Perlin) at the column's projection onto the inner
   // shell. The base volume's R channel is Perlin at G_LOW=4 (volume cycles
@@ -252,11 +265,11 @@ export function buildEarthCloudShell(ctx: ExtraMeshContext): ExtraMeshDef[] {
 
   // Shared crossfade uniform owned by earth.ts (`createUniforms`). 0 → flat
   // overlay only (above 35 k km), 1 → volumetric only (below 25 k km). The
-  // shell mounts at the lod.near boundary (35 k) and ramps in from 0 alpha,
-  // hiding both the tier swap and the shell-mount discontinuity.
+  // anchor mesh registers at the lod.near boundary (35 k); the fullscreen
+  // pass ramps in from 0 alpha as the player closes, hiding the tier swap.
   const uVolumetricBlend = ctx.uniforms.uVolumetricBlend;
 
-  mat.fragmentNode = buildCloudFragment({
+  setupFullscreenCloudPass({
     weatherMap,
     baseVolume,
     detailVolume,
@@ -267,25 +280,52 @@ export function buildEarthCloudShell(ctx: ExtraMeshContext): ExtraMeshDef[] {
     uBaseScale,
     uDetailScale,
     uDetailErosion,
-    uWarpAmount,
     uColumnScale,
     uLightConeRadius,
-    uSunRel: ctx.uSunRel,
     uVolumetricBlend,
+    uSunRel: ctx.uSunRel,
   });
 
+  // Anchor mesh: empty geometry + material, parented to Earth's rotation
+  // group via the celestial framework so its matrixWorld inherits the full
+  // Earth transform. Lives on CLOUD_LAYER (no camera enables this layer →
+  // never rendered). `onMount` registers it as the world-transform source
+  // for the fullscreen pass's uEarthInverseModel.
+  const anchorGeo = new THREE.BufferGeometry();
+  const anchorMat = new NodeMaterial();
   return [
     {
       key: "earth-clouds",
-      geometry: geo,
-      material: mat,
+      geometry: anchorGeo,
+      material: anchorMat,
       tier: "near",
       renderLayer: CLOUD_LAYER,
+      onMount: (mesh) => setEarthMatrixWorldSource(mesh),
     },
   ];
 }
 
-function buildCloudFragment({
+/**
+ * Pure cloud-volume marcher. Inputs are the Earth-local ray (`roEarth`,
+ * `rdEarth`) and Earth-local sun direction (`sunDirEarth`); driven by the
+ * fullscreen-quad pass (`cloudFullscreenPass.ts`) which reconstructs these
+ * via `screenUV → FOV-based ray dir → uEarthInverseModel`. Geometry-agnostic
+ * — anything that can produce the inputs can drive the same marcher.
+ *
+ * Returns `{ rgba, tFront }`:
+ * - `rgba` — premultiplied `vec4(col, alpha) * uVolumetricBlend`.
+ * - `tFront` — first-hit ray parameter in Earth-local units (= scaled-world
+ *   units; magnitudes are preserved by Earth's rotation-only model matrix).
+ *   Sentinel `-1` means the ray missed every cloud body. Used by Phase D3
+ *   reprojection to compute the world-space cloud-front for history sampling.
+ *
+ * DEBUG_VIZ branches force α = 1 to bypass the volumetric crossfade and
+ * return `tFront = 0` (reprojection is meaningless under diagnostic modes).
+ */
+export function marchCloudVolume({
+  roEarth,
+  rdEarth,
+  sunDirEarth,
   weatherMap,
   baseVolume,
   detailVolume,
@@ -296,12 +336,17 @@ function buildCloudFragment({
   uBaseScale,
   uDetailScale,
   uDetailErosion,
-  uWarpAmount,
   uColumnScale,
   uLightConeRadius,
-  uSunRel,
   uVolumetricBlend,
+  uDitherPhase,
 }: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  roEarth: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rdEarth: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sunDirEarth: any;
   weatherMap: THREE.Texture;
   baseVolume: THREE.Data3DTexture;
   detailVolume: THREE.Data3DTexture;
@@ -320,24 +365,16 @@ function buildCloudFragment({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uDetailErosion: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uWarpAmount: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uColumnScale: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLightConeRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uSunRel: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumetricBlend: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uDitherPhase: any;
 }) {
-  return Fn(() => {
-    // Ray in local (object) space — sphere is origin-centred, so UVs come out
-    // in the same frame the surface texture was authored in.
-    const roLocal = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz;
-    const rdLocal = normalize(sub(positionLocal, roLocal));
-
-    const b = dot(roLocal, rdLocal);
-    const d2 = dot(roLocal, roLocal);
+    const b = dot(roEarth, rdEarth);
+    const d2 = dot(roEarth, roEarth);
 
     // Outer shell: entry + far exit.
     const cOuter = d2.sub(uOuterRadius.mul(uOuterRadius));
@@ -382,19 +419,25 @@ function buildCloudFragment({
     // visible than the old 16-step uniform march (dense regions are 4× finer
     // than the dither stride), but the dither still helps at the skip→dense
     // transition where dtSkip-spaced "discovery" samples land randomly.
+    //
+    // Phase D (TAA) needs the dither to vary FRAME-TO-FRAME per pixel so
+    // exponential history blending averages it out. Pure-screen-position
+    // hash (no time term) produces the same value at the same pixel every
+    // frame: TAA can integrate within-pixel jitter from D2 but is helpless
+    // against between-pixel pattern. Adding `uDitherPhase` (set per frame
+    // by the caller from a low-discrepancy sequence) shifts the sin's
+    // argument so each pixel cycles through a different value each frame,
+    // and the 16-frame TAA window converges on a smooth result.
     const dither = fract(
-      sin(dot(screenCoordinate.xy, vec2(12.9898, 78.233))).mul(43758.5453),
+      sin(
+        dot(screenCoordinate.xy, vec2(12.9898, 78.233)).add(uDitherPhase),
+      ).mul(43758.5453),
     );
     const tStart = tEnter.add(dither.mul(dtSkip));
 
-    // Sun direction in local space — pure-rotation transform (w=0 ignores translation).
-    const sunDirLocal = normalize(
-      modelWorldMatrixInverse.mul(vec4(uSunRel, 0)).xyz,
-    );
-
     // Henyey-Greenstein phase, constant per fragment (sun is effectively infinite
     // distance compared to cloud scale, and view dir is constant along the march).
-    const cosTheta = dot(rdLocal, sunDirLocal);
+    const cosTheta = dot(rdEarth, sunDirEarth);
     const g = float(HG_G);
     const gg = g.mul(g);
     const phaseDenom = pow(
@@ -426,7 +469,7 @@ function buildCloudFragment({
     // both vary continuously and smoothly across 14 km, so per-step sampling
     // is wasted work.
     const tMid = tEnter.add(slabLen.mul(0.5));
-    const pMid = roLocal.add(rdLocal.mul(tMid));
+    const pMid = roEarth.add(rdEarth.mul(tMid));
     const rMid = length(pMid).max(0.0001);
     const dirMid = pMid.div(rMid);
 
@@ -437,7 +480,12 @@ function buildCloudFragment({
     const pMidColumn = dirMid.mul(uInnerRadius);
     const colSampleMid = texture3D(baseVolume, pMidColumn.mul(uColumnScale)).r;
     const colSharpMid = smoothstep(float(0.3), float(0.7), colSampleMid);
-    const topAltMid = float(0.55).add(colSharpMid.mul(0.4));
+    // topAlt range widened from [0.55, 0.95] to [0.4, 0.95] — 7.2 km vs
+    // 5.2 km vertical span between short and tall columns. Wider span
+    // makes the difference between cumulus and stratocumulus dramatic
+    // enough to be obviously visible from above, given the new top-heavy
+    // density bias above.
+    const topAltMid = float(0.4).add(colSharpMid.mul(0.55));
     const uMid = fract(atan(dirMid.z, dirMid.x.negate()).mul(invTwoPi));
     const vMid = acos(clamp(dirMid.y.negate(), -1, 1)).mul(invPi);
     const uvMid = vec2(uMid, vMid).add(uCloudUvOffset);
@@ -454,19 +502,15 @@ function buildCloudFragment({
     // ── Smooth terminator ──
     // sunDotPoint is cos of the sun-zenith angle at the cloud point.
     //   1 → sun overhead, 0 → sun on horizon, < 0 → below horizon.
-    // ASYMMETRIC window: tight night-side cutoff at sunDotPoint = -0.1
-    // (no light past the geometric umbra — clouds go fully dark on the
-    // night side, matching real cloud-shadow behaviour and the city-light
-    // backdrop), but wide day-side falloff to sunDotPoint = 0.5 so the
-    // brightness ramps gradually across the lit hemisphere matching the
-    // surface flat-overlay's natural lighting curve. A symmetric wide
-    // window leaks daylight onto the night side; a symmetric tight window
-    // produces a hard step at the terminator during crossfade.
-    const pDotS_Mid = dot(pMid, sunDirLocal);
+    // Narrow symmetric band centred on sunDotPoint = 0. Sunset (`4·d·(1-d)`)
+    // peaks at daylight = 0.5, which now lands exactly at the geometric
+    // horizon — peak orange tint reads as a thin band right at the
+    // terminator instead of bleeding across the entire day side. Beyond
+    // ±0.15 (≈ 8.6° sun elevation) the curve saturates: daylight = 1 →
+    // pure white sunlit clouds; daylight = 0 → black night side.
+    const pDotS_Mid = dot(pMid, sunDirEarth);
     const sunDotPoint = pDotS_Mid.div(rMid);
-    const daylight = smoothstep(float(-0.1), float(0.5), sunDotPoint);
-    // Sunset peaking: `4·d·(1-d)` is a tent that peaks at daylight = 0.5,
-    // i.e. exactly the terminator band. No extra smoothstep math needed.
+    const daylight = smoothstep(float(-0.1), float(0.1), sunDotPoint);
     const sunset = daylight.mul(daylight.oneMinus()).mul(4);
     // Tint sunlight toward warm orange at the terminator (Rayleigh-reddened
     // light path through thicker atmosphere).
@@ -520,6 +564,11 @@ function buildCloudFragment({
     // these stay 0, which correctly reads as "march never engaged".
     const primaryIters = float(0).toVar();
     const denseIters = float(0).toVar();
+    // Sentinel = -1 (no hit). Captured the first time dense-mode finds
+    // density > 0.01 along the ray; the t-value at that point is the cloud-
+    // front depth for this pixel. Used by DEBUG_VIZ='firstHit' to verify
+    // that adjacent pixels see clouds at different distances.
+    const firstHitT = float(-1).toVar();
 
     // ── Whole-pixel empty-space skip ──
     // If the slab-midpoint coverage is already near-zero, the entire column is
@@ -553,7 +602,7 @@ function buildCloudFragment({
         });
         primaryIters.addAssign(1);
 
-        const p = roLocal.add(rdLocal.mul(t));
+        const p = roEarth.add(rdEarth.mul(t));
         const r = length(p).max(0.0001);
         const altitude01 = clamp(
           sub(r, uInnerRadius).mul(invSlabThickness),
@@ -572,12 +621,14 @@ function buildCloudFragment({
         // subtle to read as 3D cumulus towers. The smoothstep(0.3, 0.7)
         // contrast curve stretches the typical Perlin range to fill
         // [0, 1], pushing values away from the middle toward the extremes,
-        // so topAlt actually spans most of [0.55, 0.95] (5.2 km of
-        // column-top variation).
+        // so topAlt actually spans most of [0.4, 0.95] (7.2 km of column-
+        // top variation; widened from [0.55, 0.95] for more dramatic
+        // tall-vs-short visual separation paired with the top-heavy
+        // density bias).
         const pColumn = p.div(r).mul(uInnerRadius);
         const colSample = texture3D(baseVolume, pColumn.mul(uColumnScale)).r;
         const colSharp = smoothstep(float(0.3), float(0.7), colSample);
-        const topAlt = float(0.55).add(colSharp.mul(0.4));
+        const topAlt = float(0.4).add(colSharp.mul(0.55));
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const profile: any = cloudHeightProfile(altitude01, topAlt);
@@ -627,6 +678,10 @@ function buildCloudFragment({
               t.subAssign(dtSkip.mul(0.5));
               stepMode.assign(1);
               emptyStreak.assign(0);
+              // Capture cloud-front depth on first hit (sentinel was -1).
+              If(firstHitT.lessThan(0), () => {
+                firstHitT.assign(t);
+              });
             }).Else(() => {
               // ── Steady-state dense: full sample + accumulate ──
               emptyStreak.assign(0);
@@ -689,7 +744,7 @@ function buildCloudFragment({
                   const conePerturb = vec3(kx, ky, kz)
                     .mul(stepDist)
                     .mul(uLightConeRadius);
-                  const pL = p.add(sunDirLocal.mul(stepDist)).add(conePerturb);
+                  const pL = p.add(sunDirEarth.mul(stepDist)).add(conePerturb);
                   const rL = length(pL);
                   const altL = clamp(
                     sub(rL, uInnerRadius).mul(invSlabThickness),
@@ -775,20 +830,23 @@ function buildCloudFragment({
     // underlying scene at every shell-fragment pixel — diagnostic is
     // unambiguous, bypasses the volumetric-blend crossfade.
     if (DEBUG_VIZ === "alpha") {
-      return vec4(alpha, alpha, alpha, float(1));
+      return { rgba: vec4(alpha, alpha, alpha, float(1)), tFront: float(0) };
     }
     if (DEBUG_VIZ === "topAlt") {
-      // Map [0.55, 0.95] → [0, 1] for grayscale display.
+      // Map [0.4, 0.95] → [0, 1] for grayscale display.
       const topAltNorm = topAltMid
-        .sub(float(0.55))
-        .div(float(0.4))
+        .sub(float(0.4))
+        .div(float(0.55))
         .clamp(0, 1);
-      return vec4(topAltNorm, topAltNorm, topAltNorm, float(1));
+      return {
+        rgba: vec4(topAltNorm, topAltNorm, topAltNorm, float(1)),
+        tFront: float(0),
+      };
     }
     if (DEBUG_VIZ === "insideInner") {
       const r = insideInner.select(float(1), float(0));
       const g = insideInner.select(float(0), float(1));
-      return vec4(r, g, float(0), float(1));
+      return { rgba: vec4(r, g, float(0), float(1)), tFront: float(0) };
     }
     if (DEBUG_VIZ === "iters") {
       const primaryNorm = primaryIters
@@ -797,13 +855,46 @@ function buildCloudFragment({
       const denseNorm = denseIters
         .div(float(MAX_PRIMARY_STEPS))
         .clamp(0, 1);
-      return vec4(primaryNorm, denseNorm, float(0), float(1));
+      return {
+        rgba: vec4(primaryNorm, denseNorm, float(0), float(1)),
+        tFront: float(0),
+      };
     }
     if (DEBUG_VIZ === "slabLen") {
       // Normalise against the nominal vertical slab length (13 km in
       // scaled units = 0.013). Grazing-angle slabs go well above 1.0.
       const slabNorm = slabLen.div(float(0.013)).clamp(0, 1);
-      return vec4(slabNorm, slabNorm, slabNorm, float(1));
+      return {
+        rgba: vec4(slabNorm, slabNorm, slabNorm, float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "firstHit") {
+      // Sentinel -1 (no hit) → black. Otherwise normalise (firstHitT -
+      // tEnter) by slabLen so depth maps to [0, 1]: 0 = entered slab and
+      // hit immediately at the front face, 1 = hit at the back face.
+      // False-coloured: blue→cyan→green→yellow→red as depth increases,
+      // so adjacent pixels with different cloud-front depths show
+      // visibly different colours. Uniform colour across the cloud disk
+      // = depth is locked (shell-painting bug); colour gradient =
+      // per-pixel parallax working.
+      const hit = firstHitT.greaterThan(0);
+      const depth01 = firstHitT.sub(tEnter).div(slabLen.max(0.0001)).clamp(0, 1);
+      // Simple jet-like ramp via four piecewise channels.
+      const r = smoothstep(float(0.5), float(0.9), depth01);
+      const g = float(1).sub(
+        smoothstep(float(0.7), float(1.0), depth01).mul(1),
+      ).mul(smoothstep(float(0.2), float(0.5), depth01));
+      const b = float(1).sub(smoothstep(float(0.3), float(0.6), depth01));
+      return {
+        rgba: vec4(
+          hit.select(r, float(0)),
+          hit.select(g, float(0)),
+          hit.select(b, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
     }
 
     // Premultiplied output — `col` is already color·α from front-to-back
@@ -812,6 +903,8 @@ function buildCloudFragment({
     // is `out = src + (1-src.a)*dst`, multiplying (col, alpha) by k uniformly
     // scales the cloud's contribution toward fully transparent without
     // changing the unpremultiplied colour.
-    return vec4(col, alpha).mul(uVolumetricBlend);
-  })();
+    return {
+      rgba: vec4(col, alpha).mul(uVolumetricBlend),
+      tFront: firstHitT,
+    };
 }

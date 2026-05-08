@@ -184,6 +184,7 @@ function TexturedLODs({
           ref={(m) => {
             extraNearRefs.current[i] = m;
             if (m && ex.renderLayer != null) m.layers.set(ex.renderLayer);
+            ex.onMount?.(m);
           }}
           geometry={ex.geometry}
           material={ex.material}
@@ -196,6 +197,7 @@ function TexturedLODs({
           ref={(m) => {
             extraMidRefs.current[i] = m;
             if (m && ex.renderLayer != null) m.layers.set(ex.renderLayer);
+            ex.onMount?.(m);
           }}
           geometry={ex.geometry}
           material={ex.material}
