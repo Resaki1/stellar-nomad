@@ -298,6 +298,23 @@ const health = useAtomValue(shipHealthAtom);
 
 ---
 
+## Hard-won lessons (READ before debugging these areas)
+
+If you're touching code in any of these areas, open the linked file first. It
+captures past debugging journeys whose lessons are not visible in the code:
+
+- **Cloud rendering** (`earthClouds.ts`, `cloudFullscreenPass.ts`, `noiseVolumes.ts`):
+  See [`docs/CLOUD_DEBUGGING_LESSONS.md`](docs/CLOUD_DEBUGGING_LESSONS.md). Slab-
+  midpoint optimisations degenerate when the camera is inside the cloud band —
+  diagnose with DEBUG_VIZ before theorising, distrust "this varies slowly across
+  the slab" comments, and run binary one-line falsification tests early.
+
+Each entry here represents days-to-weeks of debugging that the linked file is
+designed to make unnecessary the second time. If you do another major
+debugging journey on something covered here, append to the file.
+
+---
+
 ## Communication style
 
 Be concise and actionable. Sacrifice grammar for clarity if needed.

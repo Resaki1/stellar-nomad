@@ -132,6 +132,7 @@ const DEBUG_VIZ:
   | "insideInner"
   | "iters"
   | "slabLen"
+  | "profile"
   | "firstHit" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, base+top decomposition).
@@ -177,13 +178,14 @@ const BASE_WEIGHT = 0.5;
 const TOP_WEIGHT = 2.0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function cloudHeightProfile(alt01: any, topAlt: any): any {
-  const baseBand = smoothstep(float(0), float(0.05), alt01).mul(
-    float(1).sub(smoothstep(float(0.25), float(0.45), alt01)),
-  );
-  const topBand = smoothstep(float(0.4), float(0.55), alt01).mul(
-    float(1).sub(smoothstep(topAlt.sub(float(0.2)), topAlt, alt01)),
-  );
-  return baseBand.mul(BASE_WEIGHT).add(topBand.mul(TOP_WEIGHT));
+  // Single asymmetric band — no second band anywhere.
+  // Sharp bottom edge at alt01 = 0.05–0.10 (cumulus condensation base).
+  // Gradual fall from alt01 = 0.20 down to 0 at 0.55 (puffy top).
+  // topAlt is unused — we're decoupling per-column tower variation
+  // from the profile so we can isolate the gap question.
+  const baseEdge = smoothstep(float(0.05), float(0.10), alt01);
+  const topFall = float(1).sub(smoothstep(float(0.20), float(0.55), alt01));
+  return baseEdge.mul(topFall);
 }
 
 /**
@@ -409,9 +411,9 @@ export function marchCloudVolume({
     // total coverage as the old uniform march in empty regions); dtDense is
     // 4× finer for sampling inside cloud bodies. MIN_STEP_SCALED floor
     // protects against grazing hits with sub-meter slab paths.
-    const dtSkip = slabLen
-      .div(float(SKIP_STEP_DENOM))
-      .max(float(MIN_STEP_SCALED));
+  const dtSkip = slabLen
+    .div(float(SKIP_STEP_DENOM))
+    .max(float(MIN_STEP_SCALED));
     const dtDense = dtSkip.mul(float(DENSE_STEP_RATIO));
 
     // Per-pixel dither: breaks up banding by jittering the ray entry point
@@ -456,18 +458,25 @@ export function marchCloudVolume({
     const invTwoPi = float(1.0).div(PI.mul(2));
     const invPi = float(1.0).div(PI);
 
-    // ── Per-pixel cache (the big perf win) ──
-    // The slab is 14 km thick; the planet radius is 6378 km. Along a non-grazing
-    // view ray, the direction from Earth's centre changes by <0.13° across the
-    // slab, which translates to a UV change of <0.001. So the weather-map value
-    // is effectively constant along the ray. Sampling it ONCE at the slab mid-
-    // point and reusing it in both the primary loop and the light march drops
-    // the texture-tap count from ~(PRIMARY_STEPS * (1 + LIGHT_STEPS)) = 64 down
-    // to 1. That's the difference between sampler-throttled and ALU-bound.
+    // ── Per-pixel coverage cache (two-tap + lerp) ──
+    // Coverage is sampled at the ray's slab ENTRY and EXIT points and lerped
+    // per-step along the march. The previous single-midpoint cache failed
+    // catastrophically for camera-inside-slab views: horizontal rays have
+    // slab paths of 300+ km, so the midpoint projected to a lat/lon
+    // 100–200 km off the camera's nadir, sampling coverage at a totally
+    // unrelated location → outer gate failed → empty horizontal middle even
+    // inside a real cloud deck.
     //
-    // Planet-shadow + skylight are likewise approximated at the slab midpoint —
-    // both vary continuously and smoothly across 14 km, so per-step sampling
-    // is wasted work.
+    // The two-tap+lerp scheme is correct for both regimes:
+    //   - From outside: tEnter and tExit are both inside the slab altitude
+    //     band, ~13 km apart. uvNear ≈ uvFar. Lerp degenerates to a constant.
+    //     Visually identical to the old midpoint cache.
+    //   - From inside: tEnter sits at the camera, tExit at the ray's outer-
+    //     shell or planet exit. uvNear = camera's nadir UV; uvFar = the far-
+    //     projection UV. Lerp captures the ray's actual lat/lon path.
+    //
+    // pMid is still computed — sunDotPoint and the 'topAlt' diagnostic
+    // sample at the midpoint, where they're slow-varying and accurate.
     const tMid = tEnter.add(slabLen.mul(0.5));
     const pMid = roEarth.add(rdEarth.mul(tMid));
     const rMid = length(pMid).max(0.0001);
@@ -486,18 +495,31 @@ export function marchCloudVolume({
     // enough to be obviously visible from above, given the new top-heavy
     // density bias above.
     const topAltMid = float(0.4).add(colSharpMid.mul(0.55));
-    const uMid = fract(atan(dirMid.z, dirMid.x.negate()).mul(invTwoPi));
-    const vMid = acos(clamp(dirMid.y.negate(), -1, 1)).mul(invPi);
-    const uvMid = vec2(uMid, vMid).add(uCloudUvOffset);
-    // ── DIAGNOSTIC: domain warp disabled ──
-    // The warp tap reads detail volume's Worley channels (cells 1.4–2.75 km),
-    // and at close camera range those cells resolve as visible UV
-    // displacement, baking a cellular grid pattern into the weather map
-    // sampling itself. Disabling to confirm. The original warp lines are
-    // preserved in git history; once we verify this is the source we'll
-    // re-introduce with a smoother (Perlin-only, lower-freq) warp source.
-    const uvWarped = uvMid;
-    const coverage = texture(weatherMap, uvWarped).r;
+
+    // Coverage near/far hoisted samples — see comment block above.
+    const pNear = roEarth.add(rdEarth.mul(tEnter));
+    const pFar = roEarth.add(rdEarth.mul(tExit));
+    const rNear = length(pNear).max(0.0001);
+    const rFar = length(pFar).max(0.0001);
+    const dirNear = pNear.div(rNear);
+    const dirFar = pFar.div(rFar);
+    const uNear = fract(atan(dirNear.z, dirNear.x.negate()).mul(invTwoPi));
+    const vNear = acos(clamp(dirNear.y.negate(), -1, 1)).mul(invPi);
+    const uvNear = vec2(uNear, vNear).add(uCloudUvOffset);
+    const uFar = fract(atan(dirFar.z, dirFar.x.negate()).mul(invTwoPi));
+    const vFar = acos(clamp(dirFar.y.negate(), -1, 1)).mul(invPi);
+    const uvFar = vec2(uFar, vFar).add(uCloudUvOffset);
+    // Domain warping (previously applied to the single uvMid sample) is
+    // currently disabled — the warp source had Worley cells visible at
+    // close range. Keep the clean uvNear/uvFar values for now; re-enable
+    // with a Perlin-only low-frequency warp source when we revisit it.
+    const covNear = texture(weatherMap, uvNear).r;
+    const covFar = texture(weatherMap, uvFar).r;
+    // Outer-gate proxy: skip the whole march only if BOTH endpoints have
+    // near-zero coverage. Using max means we don't skip rays that find
+    // cloud at one end of their slab traversal but not the other (common
+    // for from-inside views grazing the edge of a cloud deck).
+    const coverageMax = covNear.max(covFar);
 
     // ── Smooth terminator ──
     // sunDotPoint is cos of the sun-zenith angle at the cloud point.
@@ -571,10 +593,11 @@ export function marchCloudVolume({
     const firstHitT = float(-1).toVar();
 
     // ── Whole-pixel empty-space skip ──
-    // If the slab-midpoint coverage is already near-zero, the entire column is
-    // empty: skip all primary iterations and both nested loops. Dark regions
-    // of the weather map (oceans with clear sky) cost almost nothing.
-    If(coverage.greaterThan(0.01), () => {
+    // If BOTH endpoints of the ray's slab traversal have near-zero coverage,
+    // the entire ray is empty: skip all primary iterations and both nested
+    // loops. Dark regions of the weather map (oceans with clear sky) cost
+    // almost nothing.
+    If(coverageMax.greaterThan(0.01), () => {
       // ── Two-state adaptive march (Nubis C1+C2) ──
       //
       // stepMode  0 = skip mode (cheap probe, big steps)
@@ -601,6 +624,14 @@ export function marchCloudVolume({
           Break();
         });
         primaryIters.addAssign(1);
+
+        // Per-step coverage lerp: blends the camera-near and far-projection
+        // weather-map samples by how far along the slab we are. For from-
+        // outside views covNear ≈ covFar so this is essentially a constant;
+        // for from-inside views it's where the marcher learns the ray's
+        // actual lat/lon path through the cloud field.
+        const lerpT = t.sub(tEnter).div(slabLen.max(0.0001)).clamp(0, 1);
+        const coverage = mix(covNear, covFar, lerpT);
 
         const p = roEarth.add(rdEarth.mul(t));
         const r = length(p).max(0.0001);
@@ -832,6 +863,12 @@ export function marchCloudVolume({
     if (DEBUG_VIZ === "alpha") {
       return { rgba: vec4(alpha, alpha, alpha, float(1)), tFront: float(0) };
     }
+  if (DEBUG_VIZ === "profile") {
+  const p25 = cloudHeightProfile(float(0.25), topAltMid);
+  const p50 = cloudHeightProfile(float(0.50), topAltMid);
+  const p75 = cloudHeightProfile(float(0.75), topAltMid);
+  return vec4(p25, p50, p75, float(1));
+}
     if (DEBUG_VIZ === "topAlt") {
       // Map [0.4, 0.95] → [0, 1] for grayscale display.
       const topAltNorm = topAltMid

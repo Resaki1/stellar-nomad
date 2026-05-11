@@ -1,76 +1,199 @@
 # Volumetric Clouds — Nubis-tier Roadmap
 
-Path to AAA-grade volumetric clouds on Earth (and later other planets), targeting **photorealistic Horizon Zero Dawn quality** at **120 FPS on M2 Pro**.
+Path to AAA-grade volumetric clouds on Earth (and later other planets), targeting
+**photoreal, shipped 2.5D Nubis quality** as seen in Horizon Zero Dawn / Forbidden West,
+KSP EVE volumetrics, RDR2, and Star Citizen.
 
-Reference: Andrew Schneider, *"Real-Time Volumetric Cloudscapes of Horizon: Zero Dawn"*, SIGGRAPH 2015 / GDC 2017. The Nubis system is the canonical implementation; everything below is an adaptation of those techniques to WebGPU + TSL.
+Reference: Andrew Schneider, *"Real-Time Volumetric Cloudscapes of Horizon: Zero Dawn"*,
+SIGGRAPH 2015 / GDC 2017. Schneider's HZD-era 2.5D Nubis is the canonical
+implementation we're adapting; everything below is that algorithm reworked for WebGPU + TSL.
+
+We are explicitly **not** targeting Nubis³ (Burning Shores 2023) — that requires an offline
+Houdini NVDF authoring pipeline, BC6/BC1-compressed 3D voxel grids per cloudscape,
+sphere-traced SDFs, and pre-baked voxel-based lighting. Different architecture, different
+tooling, much more memory. HZD-era 2.5D is photoreal and shipped, and is the right target
+for a browser engine.
+
+**Order of priorities (per user direction):** quality first. Performance is a follow-up
+phase once the look is right. The cost map at the end is qualitative, not a budget.
 
 ---
 
-## Where we are (2026-05-06)
+## The Nubis algorithm in 60 seconds
 
-> **Architecture pivot — Phase G complete.** The cloud pass no longer
-> renders onto a sphere shell; it's a fullscreen-quad ray-march that
-> preserves per-pixel cloud-front depth (real 3D parallax under camera
-> motion, prerequisite for seamless orbit-to-surface flythrough). Shell
-> path removed. See `docs/CLOUD_FULLSCREEN_MIGRATION.md` for the
-> rationale and the *Phase G* section below.
+For each pixel, fire a primary ray. Find where it enters and exits the cloud altitude
+slab (an annular spherical shell ~1–14 km above the planet surface). Step along the ray
+inside the slab. At each step:
 
-The baseline volumetric system is **shipped and looks decent**. Steps 1–6, the first round of visual tuning, Phases A–C (sans C4 curl advection), Phase G (fullscreen migration), and most of Phase D (TAA, with caveats) are done.
+1. **Sample density** = function of weather-map coverage, an altitude-and-cloud-type
+   height curve, and 3D noise (base + detail).
+2. **Sample direct light** = a short march toward the sun (cone of 6 samples), accumulating
+   density to compute Beer-Lambert transmittance, modulated by Henyey-Greenstein phase
+   and a powder approximation.
+3. **Sample ambient and multi-scatter** = analytic approximations driven by the *dimensional
+   profile* (see next section).
+4. **Integrate** premultiplied colour and alpha into the pixel along the view ray.
+5. **Choose the next step size** adaptively: long steps in empty space, short steps inside
+   cloud bodies.
+6. **Stop** when transmittance is below a threshold or the ray exits the slab.
 
-### Built
+Off-frame, animate UVs by wind drift; carve organic motion with curl noise advection.
 
-- **Fullscreen ray-march** (Phase G): `PlaneGeometry(2,2)` quad in dedicated `cloudScene` + `OrthographicCamera`; per-pixel `screenUV → NDC → rdView (FOV-based) → rdWorld → rdEarth` reconstruction. Per-pixel cloud-front depth (real parallax). Half-res `HalfFloatType` RT (ping-pong pair for D1).
-- **Premultiplied alpha pipeline** end-to-end: `(ONE, 1-α)` blending, bilinear upsample on a premultiplied texture in the composite pass.
-- **Analytic ray-shell intersection** with a "below-inner-shell" branch so the slab is still marched correctly when the camera flies under 1 km altitude.
-- **Two-state adaptive march** (Phase C1+C2): skip mode at `dtSkip = slab/16` with cheap base-only probe; on first hit, half-step rewind into dense mode at `dtDense = dtSkip/4`; `EMPTY_THRESHOLD=8` consecutive empty samples drop back to skip mode. `MAX_PRIMARY_STEPS=96`, `MIN_STEP_SCALED` floor for grazing rays.
-- **Slab-midpoint caches**: weather-map UV, coverage, sun-zenith dot, daylight/sunset terms all computed once per fragment (≪ 0.13° angular drift across the slab).
-- **128³ RGBA8 base volume** (Phase A1, `noiseVolumes.ts`): R = pure low-freq Perlin macro shape (avoids cellular GPU-mip artefacts); GBA = three Worley FBM bands at progressively higher octaves [4,8,16] / [8,16,32] / [16,32,48]. Hand-built mip chain.
-- **32³ RGBA8 detail volume** (Phase A2): three independent Worley octaves [4, 8, 16] in RGB; A unused (WebGPU drops RGBFormat).
-- **Schneider density pipeline** (Phase A3–A5, B3): `baseFbm = 0.625·G + 0.25·B + 0.125·A`; `baseShape = (R + 1-fbm) / (2-fbm)`; `baseCloud = baseShape · coverage`; detail erosion with edge-weighted strength (floor 0.35 in cores, ramps to 1.0 at silhouette edges) and altitude-modulated FBM inversion (raw FBM low, `1-fbm` high). Per-column cloud-top altitude `topAlt` sampled from baseVolume.r Perlin at column projection (`uColumnScale`), driving the cloud-type vertical profile.
-- **Cloud-type vertical profile** (Phase B1+B2): base band [0.05–0.45] + top band [0.4 → topAlt], BASE_WEIGHT=0.5, TOP_WEIGHT=2.0 to bias visible cloud-top altitude toward the topAlt-driven upper region.
-- **Cone-traced light march** (Phase C3): 6 stratified samples toward the sun with a pre-baked low-discrepancy 3D kernel, scaled by step distance so the cone widens with depth. Coverage cached from slab midpoint.
-- **Sun colour & terminator**: asymmetric `daylight = smoothstep(-0.1, 0.5, sunDotPoint)` (tight night cutoff, wide day falloff); `sunset = 4·d·(1-d)` tent. Sun colour multiplier 21× HDR; skylight 0.45×daylight. Multi-scatter via Wrenninge's `pow(Tsun, 0.15) · 0.7`. Powder term active.
-- **Distance crossfade with flat overlay**: `uVolumetricBlend` uniform ramps `(35k - distKm) / 10k` clamped 0..1.
-- **TAA** (Phase D, partial — see "Done differently" below): ping-pong RTs (D1), Halton(2,3) sub-pixel jitter on ray origin (D2), camera-motion reprojection via outer-shell intersection (D3 substitute), motion×alpha disocclusion gate (D4/D7 single-pass approximation), 0.95 history blend (D6), animated sin-hash dither phase to converge across frames.
-- **Performance**: easily 120 FPS on M2 Pro (frame cap; we have substantial headroom).
+For temporal reconstruction (Phase D), only render 1 in 16 pixels per frame and reproject
+the rest from the previous frame's history buffer.
 
-### Done differently / partial
+---
 
-- **Phase D3 — per-pixel cloud-front reprojection depth.** Plan called for MRT (RGBA + R32F secondary) so reprojection samples history at the *true* cloud-front t. **MRT abandoned** because TSL's `Fn(...)` wrapper strips `isOutputStructNode`, and `NodeMaterial` path B requires that flag for MRT setup. Substitute is **analytic outer-shell t** (radius R+14 km) — adequate at orbital distance, will under-reproject parallax up close. Marcher already returns `tFront` (sentinel −1 = no hit) for future re-attempt. Re-enabling needs splitting the cloud pass into a marcher-pass + TAA-composite-pass.
-- **Phase D5 — 1/16 stratified pixel schedule.** **Skipped.** Currently every pixel marches every frame; only sub-pixel jitter + history blend is active. The 16× perf reduction lever is unused — but isn't needed (we're at 120 FPS already with substantial headroom).
-- **Phase D7 — variance clamping.** Implemented as **single-pass motion×alpha logical-AND gate** in `cloudFullscreenPass.ts`, not a true 3×3 neighbourhood clamp (which would require the same two-pass split as MRT D3). v3 holds up empirically as of 2026-05-06.
-- **Cloud type axis** (Phase B1). Plan called for `stratus / stratocumulus / cumulus` with three discrete profiles; built version is a single base+top decomposition with per-column `topAlt` Perlin variation, which functionally produces the same height variety without the discrete-type complexity.
+## The Nubis density and lighting model
 
-### Not built yet
+This is the **central abstraction the previous version of this plan was missing**. The
+algorithm is most legible if we organise it around one concept: the *dimensional profile*.
 
-- **C4** Curl-noise UV advection (organic detail-UV drift; the only Phase C item still missing). Domain warp on the weather-map UV is currently disabled (`uvWarped = uvMid`, line 499) because the previous warp source baked detail-volume Worley cells into weather sampling — fresh implementation required.
-- **D3 (proper)** Per-pixel cloud-front depth via MRT or two-pass cloud pipeline.
-- **D5** Stratified 4×4 march schedule (deferred, not currently needed for perf).
-- **D7 (proper)** True 3×3 neighbourhood variance clamp.
-- **D — floating-origin invalidation** Hook into `worldOrigin` rebase events to clear history RT.
-- **Bilateral / depth-aware upsample** (only relevant if half-res is kept — currently it is).
-- **E1** Shell-shadow RT (replacing the surface shader's 2-tap cloud-shadow trick).
-- **E3** Aerial perspective coupling (Rayleigh attenuation on cloud colour using `tFront`).
-- **E4** Optional dual-lobe HG.
-- **F1** Generalisation to `volumetricCloudShell.ts` + `VolumetricCloudConfig` (per-planet).
-- **F2** Quality tiers (low/medium/high pipeline variants).
-- **F3** Pre-warm shader compile.
-- **F4** Venus port (validation of the config abstraction).
+### Dimensional profile
+
+A smooth 3D scalar field, range `[0, 1]`, that **increases toward the interior** of a
+cloud body. It is *distinct from the detail noise*. Two ways to build it:
+
+- **Analytic (HZD 2015 / our target)**: reconstructed in the shader from a 2D weather
+  map (coverage) and a 1D vertical curve (height profile per cloud type):
+
+  ```
+  profile = coverage(uv) × heightProfile(altitude01, cloudType)
+  ```
+
+- **Voxel (Nubis³ 2023)**: authored in Houdini, stored as a low-res 3D NVDF. Out of scope
+  for this plan.
+
+### Density (Schneider's value erosion)
+
+```
+shape           = remap(baseSample.r, -(1 - baseFbm), 1, 0, 1)        // multi-octave shape
+shape          *= profile                                              // shape lives where profile is non-zero
+noiseComposite  = mix(billowyNoise, wispyNoise, cloudType_at_uv)
+heightFraction  = (alt - cloudBottom) / (cloudTop - cloudBottom)
+detailMask      = mix(detailFbm, 1 - detailFbm, saturate(heightFraction × 10))
+density         = remap(shape, detailMask × detailMul, 1, 0, 1) × densityScale
+```
+
+Two things to notice:
+
+- The detail erosion mask flips with **height**, not density. Bottom of cloud → subtractive
+  billowy noise (rounded undersides). Top of cloud → subtractive wispy noise (feathery tops).
+  This is what gives clouds anatomy.
+- The detail mask is keyed by the **cloud type** (billowy for cumulus, wispy for stratus),
+  read from the weather map.
+
+### Lighting driven by profile
+
+The profile is not just a density scaffold — it's also a **probability field for light
+transport**. Several Nubis lighting components fall out of it directly:
+
+- **Direct light** = `HG(view·sun) × exp(-sumDensitySun × k)` — Beer-Lambert along the
+  sun march.
+- **Powder** = `1 - exp(-density × 2k)`, applied to direct light only, **before** the
+  phase function. Models how thin cloud edges back-lit by the sun look brighter.
+- **Ambient** = `pow(1 - profile, 0.5) × skyColor` — the *outward* gradient acts as a
+  probability that sky light reaches the sample. High at edges, low in cores.
+- **Multi-scatter** = `profile × exp(-sumDensitySun × k_ms)` — the *inward* gradient acts
+  as a probability that sun light, having bounced multiple times, has reached the sample.
+  High in cores, drops off at edges. This is the "inner glow" thunderhead effect.
+- **Detail-noise frequency blend** = low-frequency noise where profile is high (rounded
+  cores), high-frequency where profile is low (feathery edges). Mimics real cloud anatomy
+  where billows are larger near the centre and finer near the surface.
+
+Plug these into the integrator:
+
+```
+ambient   = pow(1 - profile, 0.5) × skyColor
+ms        = profile × exp(-sumDensitySun × kMS)
+direct    = HG(cosTheta) × powder × exp(-sumDensitySun × kDirect) × sunColor
+inscatter = direct + (ambient + ms) × density
+```
+
+### Why this matters
+
+Earlier versions of this plan combined `coverage × height × noise` into one density
+expression and computed lighting separately from a single density value. That collapses
+the profile and the noise into one number, which loses the "smooth core, eroded surface"
+gradient that all of Nubis's lighting depends on. The visible symptom is uniformly grey,
+flat-shaded cloud bodies — the speckle look — rather than sunlit tops and shadowed
+undersides with internal glow.
+
+### Coordinates
+
+- Profile, density, and noise are all sampled in **planet-local space** (rotation-aware).
+  Weather-map UV is the horizontal-plane projection (sphere → equirect).
+- `altitude01` is the normalised height inside the slab.
+- All cosine terms (sun direction, view direction, up vector) are computed against
+  planet-local up at the sample point, not screen-space.
+
+---
+
+## Reference targets (visual fidelity)
+
+The four screenshots in `docs/VolumetricCloudReferences/ExampleScreenshots/` are the
+quality bar. They share a recipe (≈ Schneider 2015), differ only in tuning:
+
+- **Star Citizen (orbit-to-surface)**: dense stratocumulus deck with regional cloud-type
+  variation; tall cumulus columns visible against the planet limb.
+- **RDR2**: convincing cumulus with sunlit tops and shadowed undersides, soft silver-lining,
+  internal density variation.
+- **KSP EVE**: same recipe, plus curl-noise advection and STBN blue-noise jittering for
+  temporal stability — the closest in spirit to what we're building.
+- **Nubis (HZD)**: the original, with the cleanest example of profile-driven multi-scatter
+  glow.
+
+If our render ever diverges qualitatively from this set (uniform speckle, flat 2D bands,
+mirrored shapes, fixed silhouettes, no parallax), something below this line is wrong, not
+the plan.
+
+---
+
+## Status snapshot
+
+The previous version of this doc carried a "Built / Not built yet" list dated 2026-04-26.
+Several items have changed since (notably the in-progress fullscreen-pass migration, see
+`CLOUD_FULLSCREEN_MIGRATION.md`), and the live code may have drifted from what's listed
+here. Treat this section as historical orientation, not ground truth — the next code
+audit will produce a fresh status.
+
+### Approximate state at last writing
+
+Fullscreen ray-march pass under migration (was previously a sphere-shell-mounted
+back-side mesh). Half-res `HalfFloatType` cloud RT, premultiplied alpha pipeline end
+to end, bilinear upsample composite. Analytic ray-shell intersection with a "below-inner-shell"
+branch. 16-step primary march, sin-hash `tStart` dither. 64³ inverted-Worley single-channel
+3D noise volume with hand-built mips. Single domain-warped 2D weather-map tap (single
+channel R = coverage). Symmetric height curve (`hRamp × hFade`). 3-step linear sun
+march. Henyey-Greenstein g = 0.6, Wrenninge octave-hack multi-scatter at 0.7, powder
+term active. Distance crossfade with the surface shader's flat overlay (`uVolumetricBlend`).
+
+### Active visible defects
+
+From `CLOUD_VISIBLE_ISSUES.md` (2026-05-06), reported as still active:
+
+1. Inverted terminator colour curve (orange across the day side, grey at the actual
+   terminator).
+2. Up-close volumetric reads as pixel-sized speckle field rather than cloud bodies.
+3. Cloud bodies show no internal shading variation (likely a knock-on of #2).
+
+These are bugs in the current implementation, not problems with this plan. They will get
+audited and fixed alongside the plan execution.
 
 ### Files involved
 
 | File | Purpose |
 |------|---------|
-| `src/components/celestial/bodies/earthClouds.ts` | Earth-side cloud setup + the geometry-agnostic `marchCloudVolume` TSL function. **Heart of the work.** |
-| `src/components/space/cloudFullscreenPass.ts` | Fullscreen-quad cloud pass: scene + ortho camera + ray reconstruction (FOV-based) + uniform plumbing. Calls `marchCloudVolume`. |
-| `src/components/celestial/bodies/earth.ts` | Surface shader; owns `uVolumetricBlend`; flat overlay fade. |
-| `src/components/celestial/bodies/noiseVolumes.ts` | 128³ RGBA base volume + 32³ RGB detail volume generators. |
-| `src/components/space/SpaceRenderer.tsx` | Multi-pass orchestration: scaled background → cloud fullscreen pass → composite → local scene → postFX. |
-| `src/components/space/renderLayers.ts` | `CLOUD_LAYER` (now used only to isolate the matrixWorld anchor mesh from rendering). |
+| `src/components/celestial/bodies/earthClouds.ts` | Marcher source / shell-era plumbing. Migrating to fullscreen pass. |
+| `src/components/celestial/bodies/earth.ts` | Surface shader; owns `uVolumetricBlend`; surface flat overlay. |
+| `src/components/celestial/bodies/cloudNoise.ts` | 64³ Worley generator + mip chain. Will become `noiseVolumes.ts`. |
+| `src/components/space/cloudFullscreenPass.ts` (planned) | New fullscreen quad scene + per-frame uniform updates. |
+| `src/components/space/SpaceRenderer.tsx` | Multi-pass orchestration: cloud RT, composite, postFX. |
+| `src/components/space/renderLayers.ts` | `CLOUD_LAYER` enum (will be removed post-migration). |
 
 ---
 
-## Architecture overview
+## Architecture overview (post-migration)
 
 ```
 ┌─────────────────── Frame ───────────────────┐
@@ -78,10 +201,10 @@ The baseline volumetric system is **shipped and looks decent**. Steps 1–6, the
 │  scaledScene  → rt (full-res, depth)        │  Pass 1: planets, skybox, stars
 │                  ↑ no clouds                │
 │                                             │
-│  cloudShell  → cloudRt (half-res)           │  Pass 2: volumetric clouds only
-│                  premul α, depth ignored    │
+│  cloudFullscreenPass → cloudRt              │  Pass 2: fullscreen quad ray-march
+│                  premul α, planet-occluded  │
 │                                             │
-│  cloudRt → rt (composite, ONE/1-α)          │  Pass 3: bilinear upsample
+│  cloudRt → rt (composite, ONE/1-α)          │  Pass 3: bilinear / bilateral upsample
 │                                             │
 │  localScene → rt (depth-cleared)            │  Pass 4: ship, asteroids, beam
 │                                             │
@@ -90,499 +213,560 @@ The baseline volumetric system is **shipped and looks decent**. Steps 1–6, the
 └─────────────────────────────────────────────┘
 ```
 
-The Nubis architecture slots in **between Pass 2 and Pass 3** — the cloud RT becomes a *temporally accumulated* full-res image, with current-frame samples sparsely contributing into a history RT.
+The Nubis temporal layer slots **between Pass 2 and Pass 3** as a history-RT ping-pong.
+
+### Marcher contract (non-negotiable from day 1)
+
+The fullscreen pass marcher must, in this order:
+
+1. Reconstruct the world-space ray from screen UV via inverse view-projection.
+2. Transform into planet-local space via `uPlanetInverseModel`.
+3. Compute slab entry/exit from the analytic ring intersection, with the inside-inner-shell
+   branch for camera-below-1km cases.
+4. **Clamp ray exit at the planet surface intersection** (sphere of radius
+   `PLANET_RADIUS_KM`). If the planet entry comes before the slab entry, output
+   alpha = 0. This prevents rays from sampling cloud volume on the antipode and is
+   what causes the "mirrored shapes between two shells" symptom when omitted. This is
+   **required from the first version** of the fullscreen marcher, not deferred.
+5. March the (possibly clipped) slab segment.
+6. Output `(R, G, B, alpha)` premultiplied, plus `t_front` (front-of-cloud distance) packed
+   into alpha or a secondary channel — needed for Phase D reprojection and Phase E3 aerial
+   perspective.
 
 ---
 
-## Gap analysis — current vs Nubis
+## Gap analysis — current vs Schneider 2015
 
-| Subsystem | Nubis | Current | Gap |
+| Subsystem | Schneider 2015 | Current (approx.) | Gap |
 |---|---|---|---|
-| Base volume | 128³ RGBA: Perlin-Worley + 3 Worley octaves | 64³ R: single Worley | **Big** |
-| Detail volume | 32³ RGB: 3 Worley octaves at high-freq | none | **Big** |
-| Coverage / weather | RGBA: coverage, type, height, wetness | R only (8k) | Medium |
-| Density model | Type-aware vertical profiles, Schneider remap | Symmetric height curve, single profile | Medium |
-| Phase | HG g=0.6, optional dual-lobe | HG g=0.6 | Tiny |
-| Light march | 6 cone samples, multi-octave | 3 linear samples | Medium |
+| Base volume | 128³ RGBA: Perlin-Worley + 3 Worley FBM octaves | 64³ R: single Worley | **Big** |
+| Detail volume | 32³ RGB: 3 Worley FBM octaves at high freq | none | **Big** |
+| Curl volume | 64³ RGB curl noise for advection | none | Medium |
+| Weather map | RGBA: coverage, type, height bias, wetness | R only (coverage) | Medium |
+| Profile | `coverage × heightProfile(alt, type)` as first-class | implicit, conflated with noise | **Big** |
+| Density | Schneider value erosion with height-driven detail mask | `shape × cov × heightCurve − densityMaskedDetail` (density-driven) | **Big** |
+| Type-driven detail blend | mix(billowy, wispy, type) per sample | single detail noise | **Big** |
+| Phase | HG (optional dual-lobe / Mie LUT for limb halo) | HG g=0.6 | Tiny |
+| Powder | `1 - exp(-density · 2k)` on direct only, before phase | active, formula not pinned | Small |
+| Multi-scatter | profile-driven probability field (Nubis 2018+) or N-octave HG | Wrenninge octave hack | Small–Medium |
+| Ambient | `pow(1 - profile, 0.5) × skyColor` | flat ambient | Small |
+| Light march | 6 cone samples, multi-octave, blue-noise jitter | 3 linear samples | Medium |
 | Primary march | 64–128 adaptive | 16 fixed | **Big** |
-| Empty-space skip | 2-state (skip / density) | 1-tap mid-coverage gate + step-level coverage gate | Medium |
-| Animation | Curl noise UV warp + UV scroll | Static | Medium |
-| **Temporal** | Halton jitter + 4×4 reproject + history blend | None | **Huge** |
-| Upsample | Depth-aware bilateral or 1:1 (post-temporal) | Bilinear | Small (post-D) |
-| Surface shadows | Sun-projected shell-shadow RT | 2-tap surface trick | Small |
+| Tile classification | coarse 2D pre-pass marks empty/edge/dense tiles | per-fragment guard only | Medium |
+| Animation | Curl-warped UVs + UV scroll | static | Medium |
+| **Temporal** | Bayer 4×4 1/16 reconstruction + history reproject | None | **Huge** |
+| Upsample | Depth-aware bilateral (or 1:1 post-temporal) | Bilinear | Small post-D |
+| Surface shadows | Sun-projected shadow RT | 2-tap surface trick | Small |
 | Atmosphere coupling | Aerial perspective fog into clouds | None | Small |
+| Cloud-terrain interaction | density clipped to terrain height | None | **Big** for landings |
 
-The visible "low-res / not photoreal up-close" complaint maps directly to the three **Big**/**Huge** gaps: detail noise, more steps, and temporal reprojection.
+Big/Huge gaps are what's keeping us short of the reference shots. Items in **Big** map
+roughly 1:1 to phases A–C below; **Huge** is Phase D.
 
 ---
 
-## Phase A — Volume authoring (the missing fluff) *(complete)*
+## Phase A — Noise volumes
 
-> **Status:** built. See `noiseVolumes.ts` (`generateBaseVolume`, `generateDetailVolume`)
-> and the Schneider density pipeline in `earthClouds.ts:marchCloudVolume` (lines
-> 657–725 in the current file). The build differs from the original sketch in
-> two places: the base-volume R channel is **pure Perlin** (not Perlin-Worley
-> blend) because Worley at any scale produces visible cells in the GPU's fine
-> mip levels at close camera ranges; cellular character is deferred to the
-> GBA Worley FBM channels and reintroduced via the Schneider remap. Detail
-> erosion uses **edge-weighted strength** (floor 0.35 in cores, ramp to 1.0 at
-> silhouette edges) and **altitude-modulated FBM inversion** so high-altitude
-> remnants poke up like puffy tops.
+**Goal**: replace the single 64³ Worley with the full Nubis noise pipeline. Closes ~40 %
+of the visual gap on its own.
 
-**Goal**: replace the single 64³ Worley with the full Nubis noise pipeline. This phase alone closes ~50 % of the visual gap.
+### A1. 128³ RGBA8 base volume
 
-### A1. Generate 128³ RGBA8 base volume
+Refactor `cloudNoise.ts` → `noiseVolumes.ts`, exporting `getCloudBaseVolume()`,
+`getCloudDetailVolume()`, and `getCurlVolume()`.
 
-Refactor `cloudNoise.ts` → `noiseVolumes.ts` (rename), exporting `getCloudBaseVolume()` and `getCloudDetailVolume()`.
-
-- **R channel**: Perlin-Worley combination. Take inverted Worley (current behaviour) and remap with a low-frequency Perlin: `pwl = remap(perlin, 0, 1, worley, 1)`. This is what gives Nubis its bumpy-but-puffy base — pure Worley alone is too "cellular".
+- **R channel**: Perlin-Worley combination. `pwl = remap(perlin, 0, 1, worley, 1)`. This
+  is the formula from the Schneider 2015 paper. It gives the base its bumpy-but-puffy
+  shape; pure Worley alone is too cellular.
 - **G channel**: Worley FBM at base frequency (3 octaves, lacunarity 2, gain 0.5).
 - **B channel**: Worley FBM at 2× base frequency.
 - **A channel**: Worley FBM at 4× base frequency.
-- All inverted (1 - distance) and tileable via the existing wrap-around `((n % GRID) + GRID) % GRID` pattern.
+- All inverted (`1 - distance`) and tileable via the existing wrap-around `((n % GRID) + GRID) % GRID`.
 
-Memory: 128³ RGBA8 = 8 MB. Acceptable. Generation cost: ~200–400 ms one-time at boot (current 64³ is ~50–80 ms). Move generation into a `setTimeout(0)` chunk after first frame so it doesn't block startup.
+Memory: 128³ × RGBA8 = 8 MB. Generation cost: ~200–400 ms one-time at boot. Move into a
+deferred chunk after first frame so it doesn't block startup. Keep the manual mip chain.
 
-Mip chain: keep the manual `downsample3D` with per-channel averaging.
-
-### A2. Generate 32³ RGB detail volume
+### A2. 32³ RGB detail volume
 
 `getCloudDetailVolume()` — small, high-frequency.
 
-- **R/G/B**: 3 octaves of Worley FBM, each at progressively higher frequency. Tiles aggressively.
+- **R/G/B**: 3 octaves of Worley FBM at progressively higher frequency. Tiles aggressively.
 - 32³ × RGB8 = 96 KB. Fits in L1 cache effortlessly.
 
-### A3. Wire both volumes into shader
+### A3. 64³ RGB curl-noise volume
 
-`buildEarthCloudShell` accepts both volumes; pass the detail volume as a second `texture3D` uniform. Replace existing single-tap noise pattern.
+For organic flow advection (used in C5).
 
-### A4. Sample base correctly
+- Curl noise = `∇ × noise3D`. Divergence-free vector field; sampled positions appear to
+  swirl rather than scroll uniformly.
+- 64³ × RGB8 = 768 KB.
 
-Replace `noise = texture3D(noiseVolume, p * uNoiseScale).r` with:
+### A4. Wire all three volumes into the fullscreen marcher
+
+Pass `baseVolume`, `detailVolume`, `curlVolume` as `texture3D` uniforms.
+
+### A5. Sample base correctly (Schneider remap)
 
 ```ts
 const baseSample = texture3D(baseVolume, p.mul(uBaseScale));
-// Schneider FBM weighting: 0.625 R + 0.25 G + 0.125 B (or similar)
 const baseFbm = baseSample.g.mul(0.625)
   .add(baseSample.b.mul(0.25))
   .add(baseSample.a.mul(0.125));
-// Combine the Perlin-Worley macro shape with the FBM detail
-const baseShape = baseSample.r.sub(float(1).sub(baseFbm)).max(0);
+const shape = remap(baseSample.r, baseFbm.oneMinus().negate(), float(1), float(0), float(1));
 ```
 
-This produces visibly different-shaped cloud bodies depending on coverage region — exactly what's missing currently.
+This is the textbook Schneider remap — it keeps the Perlin-Worley macro shape but
+modulates its low-frequency dynamic range by the FBM tail. Use a `remap` helper
+(`(v - inMin) / (inMax - inMin) × (outMax - outMin) + outMin`).
 
-### A5. Detail erosion (Schneider remap)
-
-Sample the detail volume at high freq and erode the base **only at edges**:
+### A6. Detail erosion with height-driven mask (Schneider recipe)
 
 ```ts
+const heightFraction = saturate((alt - bottom).div(top.sub(bottom)));
+const dilateAmount = saturate(heightFraction.mul(10.0));
 const detailFbm = detailSample.r.mul(0.625)
   .add(detailSample.g.mul(0.25))
   .add(detailSample.b.mul(0.125));
-// Schneider's "remap" trick: the detail texture compresses the low end of base,
-// which carves out fine wisps without hollowing dense cores.
-const detailErosion = mix(detailFbm, detailFbm.oneMinus(), edgeMask);
-const finalDensity = remap(baseShape, detailErosion.mul(uDetailErosion), 1, 0, 1).max(0);
+const detailMask = mix(detailFbm, detailFbm.oneMinus(), dilateAmount);
 ```
 
-Where `edgeMask` is roughly `1 - smoothstep(0.5, 0.7, baseShape)` — only the silhouette gets carved.
+The mask flips from `detailFbm` (subtractive billows) at the base to `1 - detailFbm`
+(subtractive wisps) at the top. **This is the key fix from the previous version of this
+plan**, which used a density-driven edge mask and produced uniform erosion.
 
-**Risk**: detail erosion is the technique most sensitive to noise frequency tuning. Budget half a day for the visual pass.
+### A7. Combine into density (Phase B integrates with profile)
 
-**Performance**: +1 `texture3D` tap per primary step in dense regions (gated behind the cheap-tap-first guard). Net impact at 16 steps and current density: ~+0.2 ms.
+The combined density formula lives in Phase B once the dimensional profile is built.
+Until then, an interim test using a flat profile is acceptable for visual sanity-checking
+the noise pipeline alone.
+
+**Risk**: noise volume tuning is sensitive — base scale, detail scale, FBM weights all
+matter. Budget half a day per pass for visual tuning. Keep tuneable as uniforms while
+iterating.
 
 ---
 
-## Phase B — Density model upgrade *(complete, with simpler axis)*
+## Phase B — Density and lighting model
 
-> **Status:** built. The `cloudHeightProfile` function in `earthClouds.ts`
-> (lines 179–187) is a base-band + top-band decomposition with per-column
-> `topAlt` derived from a Perlin sample of `baseVolume.r` at the column's
-> projection onto the inner shell (`uColumnScale` uniform). This produces
-> visibly different cloud-top altitudes per column (range 0.4 → 0.95
-> normalised, ≈ 7.2 km vertical span) without the explicit
-> stratus/stratocumulus/cumulus axis. `BASE_WEIGHT=0.5`, `TOP_WEIGHT=2.0`
-> bias visible cloud-top toward the topAlt-driven upper region. The
-> Schneider density remap (B3) is the eroded-line in lines 720–725.
-> A weather-map RGBA re-encoding (B2 "Full") was deferred — current
-> single-channel coverage is sufficient.
+**Goal**: introduce the dimensional profile as a first-class quantity, drive both density
+and the lighting approximations from it. This is the difference between "noise blobs that
+look 2D" and "cloud bodies with anatomy".
 
-**Goal**: Different cloud regions look like *different cloud types*, not the same texture extruded.
+### B1. Cloud-type-aware vertical profiles
 
-### B1. Cloud-type-aware vertical profile
+The current symmetric height curve (`hRamp · hFade`) is the wrong shape. Real clouds
+aren't symmetric: stratus is flat, stratocumulus has a soft bottom and a smoother top,
+cumulus has a strong bottom-up bulge with a higher anvil.
 
-The current height gradient is symmetric (`hRamp · hFade`). Real clouds aren't: stratus is flat-bottomed and flat-topped, cumulus has a high anvil, stratocumulus is wide and lumpy.
-
-Add an analytic profile per cloud type:
+Define analytic profiles per type:
 
 ```ts
-// cloudType ∈ [0,1]: 0=stratus, 0.5=stratocumulus, 1=cumulus
 function densityHeightProfile(altitude01, cloudType) {
-  const stratus = saturate(remap(altitude01, 0, 0.1, 0, 1))
-                 * saturate(remap(altitude01, 0.2, 0.3, 1, 0));
-  const stratocumulus = saturate(remap(altitude01, 0, 0.25, 0, 1))
+  const stratus = saturate(remap(altitude01, 0,    0.1,  0, 1))
+                * saturate(remap(altitude01, 0.2,  0.3,  1, 0));
+  const stratocumulus = saturate(remap(altitude01, 0,    0.25, 0, 1))
                       * saturate(remap(altitude01, 0.45, 0.65, 1, 0));
-  const cumulus = saturate(remap(altitude01, 0, 0.4, 0, 1))
-                * saturate(remap(altitude01, 0.6, 0.95, 1, 0));
-  return mix(mix(stratus, stratocumulus, smoothstep(0, 0.5, cloudType)),
-             cumulus, smoothstep(0.5, 1, cloudType));
+  const cumulus = saturate(remap(altitude01, 0,    0.4,  0, 1))
+                * saturate(remap(altitude01, 0.6,  0.95, 1, 0));
+  return mix(mix(stratus, stratocumulus, smoothstep(0,   0.5, cloudType)),
+             cumulus,                  smoothstep(0.5, 1,   cloudType));
 }
 ```
 
-### B2. Cloud-type encoding in weather map
+`cloudType ∈ [0, 1]` is sampled from the weather map (B2).
 
-Two options, in order of effort:
+### B2. Weather map structure and cloud-type encoding
 
-- **Cheap (start here)**: derive cloud type procedurally from coverage. `cloudType = smoothstep(0.4, 0.8, coverage)` — denser regions read as cumulus, sparser as stratus. Free, no asset work.
-- **Full (later)**: re-author the weather map to RGBA. R = coverage, G = type, B = height-offset bias, A = unused. The existing `earth_clouds_8k.ktx2` is single-channel; would need re-export. Defer until visual tuning shows we need the control.
+Two stages:
 
-### B3. Density remap (Schneider style)
+- **Stage 1 (cheap, do first)**: derive `cloudType` procedurally from `coverage`.
+  `cloudType = smoothstep(0.4, 0.8, coverage)` — denser regions read as cumulus, sparser
+  as stratus. Free, no asset work, gives type variation.
+- **Stage 2 (asset work, defer until tuning needs it)**: re-author the Earth weather map
+  to RGBA. R = coverage, G = type, B = height-offset bias (regional cloud-deck altitude
+  variation), A = wetness (used in Phase E for tinting / rain). The current
+  `earth_clouds_8k.ktx2` is single-channel; needs re-export. Do not block on this for
+  visual completion.
 
-Replace the linear erosion with the textbook remap. This handles "detail subtracts at edges, leaves cores alone" automatically:
+Wetness is on the spec but the *only* current consumer is desaturation tinting in B5;
+deciding whether to author it is a Phase E decision, not Phase B.
+
+### B3. Type-driven detail blend (billowy vs wispy)
+
+Schneider's detail noise is *not* a single texture — it's a **mix** keyed by cloud type:
 
 ```ts
-finalDensity = remap(saturate(baseShape * coverage), detailFbm * edgeMask, 1, 0, 1) * heightProfile * uDensityMul;
+const billowyNoise = detailFbm;                     // existing detail volume FBM
+const wispyNoise   = curlAdvected(detailFbm);       // detail FBM warped by curl noise
+                                                    // (or a separate FBM channel)
+const noiseComposite = mix(billowyNoise, wispyNoise, cloudType);
 ```
 
-Lifting `heightProfile` outside the `coverage * baseShape` product means cumulus-shaped clouds get the cumulus bottom-up bulge regardless of coverage value — fixes the "all clouds look like the same flat slab" complaint.
+Cumulus regions get billowy detail; stratus gets wispy. Without this, all clouds share one
+anatomy and the variety in the reference shots can't appear. Implementation note: with our
+single detail volume, the wispy variant can be the same FBM warped by the curl volume
+sampled at a lower frequency — cheap, no extra texture.
 
-**Performance**: math-only changes after Phase A. ~+0.05 ms.
+### B4. Final density via Schneider value erosion
+
+Build the dimensional profile and apply value erosion:
+
+```ts
+const profile        = coverage.mul(densityHeightProfile(altitude01, cloudType));
+const shape          = baseShape.mul(profile);                             // see A5 for baseShape
+const detailMaskAmt  = detailMask.mul(uDetailErosion);                     // see A6
+const density        = remap(shape, detailMaskAmt, 1, 0, 1).mul(uDensityMul);
+```
+
+Make `profile` a top-level shader local — pass it into B5 lighting unchanged. **Do not
+recompute it** for lighting; reuse the same value to ensure consistency between density
+and lighting.
+
+### B5. Lighting approximations from profile
+
+Replace the current ambient + multi-scatter with profile-driven probability fields:
+
+```ts
+// in the integrate-step:
+const ambient = profile.oneMinus().pow(0.5).mul(uSkyColor);
+const ms      = profile.mul(exp(sumDensitySun.negate().mul(uMSCoef)));
+const direct  = phaseHG(cosTheta, uPhaseG)
+                 .mul(powder)
+                 .mul(exp(sumDensitySun.negate().mul(uDirectCoef)))
+                 .mul(uSunColor);
+
+const radiance = direct.add(ambient.add(ms).mul(density));
+```
+
+- `powder = 1 - exp(-density × 2 × uPowderK)` — applied to direct only, **before**
+  multiplication by phase function. Drop powder when sun is behind camera (cosTheta < 0).
+- `uPhaseG = 0.6` to start; tune.
+- `uMSCoef`, `uDirectCoef`, `uPowderK` exposed as uniforms for tuning.
+
+This replaces the Wrenninge octave-hack multi-scatter currently in use. Wrenninge's hack
+works but undershoots the inner-glow effect that makes thunderheads look right; the
+profile-driven MS is the Nubis 2018+ technique and gives cleaner shapes.
+
+**Performance impact of B**: math-only after A. ~+0.05 ms.
 
 ---
 
-## Phase C — March quality *(C1–C3, C5 complete; C4 pending)*
+## Phase C — March quality
 
-> **Status:** C1 (two-state adaptive march), C2 (`MAX_PRIMARY_STEPS=96`,
-> `dtSkip = slab/16`, `dtDense = dtSkip/4`), C3 (6-tap cone-traced light
-> march with low-discrepancy 3D kernel) and C5 (whole-column + per-step
-> empty-space gates) are all in `earthClouds.ts:marchCloudVolume`.
-> **C4 (curl-noise UV advection) is the only Phase C item still missing.**
-> The previous static domain-warp on the weather-map UV is currently
-> disabled (`uvWarped = uvMid`, line 499) because its detail-volume Worley
-> source baked cellular structure into weather sampling. A clean curl-noise
-> implementation should advect the **detail UV**, not the weather UV, and
-> use a pre-baked curl volume (separate from the existing detail volume).
+**Goal**: fewer wasted samples in clear sky, more samples where it counts (inside cloud
+bodies). The current 16-step uniform march is the proximate cause of "blurry close-up"
+and contributes heavily to the speckle problem.
 
-**Goal**: more samples where they matter (inside cloud bodies), fewer where they don't (clear sky). Current 16-step uniform march is the proximate cause of "blurry close-up".
+### C1. Coverage tile-classification pre-pass
 
-### C1. Two-state adaptive march
+Before the heavy fullscreen march, run a *cheap* classification pass at 1/8 resolution:
+for each tile, sample `coverage(uv)` once at the tile's view-ray midpoint. Three classes:
 
-The Nubis pattern: every ray has two modes, controlled by a state variable:
+- `coverage < 0.05` → **empty tile**, skip the march entirely (composite as zero alpha).
+- `coverage > 0.95` AND density-along-mid-ray saturates → **dense tile**, march with
+  reduced steps and early-out aggressively.
+- otherwise → **edge tile**, full march.
 
-- **Skip mode** (default): step length = `dt_long` (~2× current). Sample only the cheap base shape, no detail. If density > 0, switch to dense mode and **back up** half a step.
-- **Dense mode**: step length = `dt_short` (~0.5× current). Sample full density (base + detail erosion). If density falls back to 0 for N consecutive steps, return to skip mode.
+Output: a 1/8-res R8 mask + an indirect dispatch mask. Most clear-sky pixels become near-free.
 
-Translates to TSL like:
+This is what shipped Nubis-style implementations do at the screen-tiling level. It
+combines well with C2/C3 and is the single biggest perf-and-quality win after Phase A/B.
+
+### C2. Adaptive two-state march
+
+Per-ray state machine. Both states share the same compile-time-constant `MAX_STEPS`
+(WebGPU/TSL requirement); termination is via `Break`.
+
+- **Skip mode** (default): step `dt_long` (~2× current). Sample only the *cheap base
+  shape* (coverage × profile, no 3D noise, no detail). If shape > epsilon, transition
+  to dense mode at the **next** step, sampling at the shape-detection point with the
+  short step (no half-step rewind — it can re-confuse the state machine). Set a 2-step
+  "warm-up" counter to prevent flicker on the boundary.
+- **Dense mode**: step `dt_short` (~0.5× current). Full density evaluation
+  (base + detail + erosion). Integrate. If `density < epsilon` for N consecutive steps,
+  return to skip mode.
 
 ```ts
 const stepMode = float(0).toVar(); // 0 = skip, 1 = dense
 const t = tStart.toVar();
-const consecutiveEmpty = float(0).toVar();
+const consecEmpty = float(0).toVar();
+const transmittance = float(1).toVar();
 
 Loop(MAX_STEPS, () => {
-  If(t.greaterThan(tExit), () => Break());
+  If(t.greaterThan(tExit).or(transmittance.lessThan(0.005)), () => Break());
 
   const dt = stepMode.equal(0).select(dtLong, dtShort);
   const p = ro.add(rd.mul(t));
 
-  // Cheap base-only sample
-  const baseDensity = sampleBase(p);
+  // Cheap shape probe in skip mode
+  const baseShape = stepMode.equal(0)
+    .select(cheapShape(p), float(1));  // skip detail / coverage in dense state
 
-  If(baseDensity.greaterThan(eps), () => {
-    If(stepMode.equal(0), () => {
-      // First hit: rewind half a long step, switch mode
-      t.subAssign(dtLong.mul(0.5));
-      stepMode.assign(1);
-      consecutiveEmpty.assign(0);
+  If(stepMode.equal(0).and(baseShape.greaterThan(eps)), () => {
+    stepMode.assign(1);
+    consecEmpty.assign(0);
+  }).ElseIf(stepMode.equal(1), () => {
+    const density = fullDensity(p);   // full Schneider value-erosion + profile
+    If(density.greaterThan(eps), () => {
+      consecEmpty.assign(0);
+      integrateSample(density, p, transmittance, /* radiance accum */);
     }).Else(() => {
-      // Already dense — full sample with detail, accumulate
-      const fullDensity = applyDetail(baseDensity, p);
-      accumulate(fullDensity);
-      consecutiveEmpty.assign(0);
+      consecEmpty.addAssign(1);
+      If(consecEmpty.greaterThan(2), () => stepMode.assign(0));
     });
-  }).Else(() => {
-    consecutiveEmpty.addAssign(1);
-    If(consecutiveEmpty.greaterThan(2), () => stepMode.assign(0));
   });
 
   t.addAssign(dt);
 });
 ```
 
-WebGPU caveat: `MAX_STEPS` must be a compile-time constant. Set it generously (e.g. 96) — the early `Break` on `tExit` and `T < 0.01` keeps real cost bounded.
+`MAX_STEPS = 96`. Real cost is gated by adaptive stepping + early termination.
 
-### C2. Bump primary steps
+### C3. Distance-scaled step length
 
-Set `PRIMARY_STEPS = 96` (max; actual cost is gated by adaptive stepping + early-out). Skip mode in fully-empty columns terminates in ~7 long steps.
+Step lengths grow with `√(distance from camera) × k` (Nubis formula). Distant samples
+don't need short steps because their projected screen footprint is large and detail noise
+isn't visible. Combine with C2 by scaling `dt_long` and `dt_short` by this factor.
 
-### C3. Cone light march
+### C4. Cone light march
 
-Replace the linear 3-step march toward the sun with 6 samples spread in a cone. Each sample is offset slightly perpendicular to the sun direction, sampling a small neighbourhood:
+Replace the linear 3-step march with 6 cone samples toward the sun. Each sample is
+offset slightly perpendicular to the sun direction; the cone widens with distance:
 
 ```ts
-const coneOffsets = [
-  vec3( 0.30, 0.00,  0.00), vec3(-0.30, 0.10,  0.00),
-  vec3( 0.00, 0.30,  0.00), vec3( 0.10,-0.30,  0.10),
-  vec3( 0.00, 0.00,  0.30), vec3( 0.10, 0.10, -0.30),
-];
+const coneOffsets = [ /* 6 stratified directions */ ];
 Loop(LIGHT_STEPS, ({ i }) => {
-  const stepDist = float(LIGHT_STEP_SCALED).mul(float(i).add(0.5));
-  // Cone widens with distance
+  const stepDist = float(LIGHT_STEP_LEN).mul(float(i).add(0.5));
   const conePerturb = coneOffsets[i].mul(stepDist).mul(uConeRadius);
   const pL = p.add(sunDirLocal.mul(stepDist)).add(conePerturb);
-  // ... sample density at pL
+  // accumulate density at pL into sumDensitySun
 });
 ```
 
-The neighbourhood sampling smooths the per-pixel transmittance variance, which removes the "speckled" look common to short light marches.
+The neighbourhood sampling smooths per-pixel transmittance variance, which is what
+removes the "speckle" look of a short linear march. The longest sample can drop the
+detail noise (cheap multi-octave lighting; Schneider does this).
 
-Last sample (longest step) can drop detail noise — Schneider does this for cheap multi-octave lighting.
+Jitter the per-frame ray-origin offset using a **STBN texture** (spatiotemporal blue
+noise; KSP-EVE ships one as `stbn.R8`). Blue noise averages perceptually well across
+frames and pixels — far better than per-pixel `fract(sin(...))` hashes which produce the
+incoherent speckle currently visible.
 
-### C4. Curl-noise UV advection
+### C5. Curl-noise UV advection
 
-To kill the "static texture" look, add curl-noise advection of the **detail noise UV** (not the base — base movement is too obvious):
+Add curl-noise advection of the **detail noise position**, not the base — base movement
+is too obvious:
 
 ```ts
-const flowVec = curlNoise(p * uFlowScale + uTime * uFlowSpeed);
+const flowVec = texture3D(curlVolume, p.mul(uFlowScale).add(uTime.mul(uFlowSpeed))).rgb
+                  .sub(0.5).mul(2);                          // re-centre to [-1,1]
 const pDetail = p.mul(uDetailScale).add(flowVec.mul(uFlowAmount));
 const detailSample = texture3D(detailVolume, pDetail);
 ```
 
-Curl noise = ∇ × noise; gives divergence-free flow that looks organic. Can pre-bake a curl-noise volume (R8G8B8) at boot, same pattern as base.
+Drives `uTime` from sim time at slow rate (≈ 1/300 of camera relative motion). Combine
+with a cheap UV scroll (wind-direction × time) on both base and detail for parallax
+animation.
 
-Drive `uTime` from sim time (slow drift, ~1/300 of camera relative motion).
+### C6. (Deferred / optional) SDF-based step distance
 
-**Performance impact**: +1 `texture3D` tap per detail sample (curl read). ~+0.1 ms.
+Nubis³ uses a low-res signed-distance field of the cloudscape to set step length
+("sphere tracing"). Step grows with the closest empty distance, so empty space is
+traversed in one big step.
 
-### C5. Tighten empty-space skip
+Out of scope for this plan unless C2's two-state proves insufficient up close. If we
+adopt it later: 512×512×64 BC1-encoded SDF with the sphere-trace-safe custom packing
+described in the Nubis³ slides. Bake offline.
 
-Current skip is "midpoint coverage < 0.01 → no march". Phase C1 makes this more granular but we should still gate the *whole shell* against coverage at the slab midpoint to short-circuit clear-sky pixels at zero cost.
+**Performance impact of C**: hard to predict without profiling — depends heavily on the
+tile-classification hit rate. Expect an *increase* over current frame cost in dense
+scenes (more total samples) and a *decrease* in clear-sky scenes (tile skip + adaptive
+step). Phase D pulls it back hard.
 
 ---
 
-## Phase D — Temporal reprojection (the AAA layer) *(D1, D2, D6 complete; D3/D4/D7 done differently; D5 skipped)*
+## Phase D — Temporal reconstruction (the AAA layer)
 
-> **Status, as built (2026-05-06):**
-> - **D1** ping-pong RTs in `SpaceRenderer.tsx` (`cloudRts[2]`, `frameParity` ref, two pre-built composite meshes swapped via `mountedCompositeMesh`).
-> - **D2** Halton(2,3) sub-pixel jitter on ray origin (16-entry table at module scope, `uJitterUv` uniform). Animated `uDitherPhase` derived from jitter so the dither term in the marcher varies frame-to-frame and converges under TAA.
-> - **D3** Camera-motion reprojection uses **analytic outer-shell t** as a substitute for per-pixel cloud-front depth. MRT was attempted and abandoned (TSL `Fn(...)` wrapper strips `isOutputStructNode`, breaking NodeMaterial path B). Marcher returns `tFront` (sentinel −1 = no hit) for future re-enablement via a two-pass split. Adequate at orbital distance; will under-reproject parallax up close.
-> - **D4** Disocclusion gating implemented as **motion×alpha logical-AND** (not the canonical offscreen + worldPos-delta + alpha-mismatch trio). Floating-origin rebase invalidation **not yet hooked up**.
-> - **D5** Stratified 1/16 schedule **skipped** — every pixel marches every frame. Lever unused; not currently needed for perf.
-> - **D6** Reconstruction blend at 0.95 history weight, premultiplied-alpha mix.
-> - **D7** Variance clamp implemented as **single-pass motion×alpha gate** (cf. D4) instead of true 3×3 neighbourhood clamp. v3 holds up empirically. Two-pass split (marcher → currentRt, separate TAA composite reading 3×3 currentRt + historyRt) is the path to a proper variance clamp; deferred until visibly required.
->
-> The reprojection logic lives in `cloudFullscreenPass.ts`; ping-pong orchestration and uniform plumbing in `SpaceRenderer.tsx`.
+**Goal**: render `1/16` of pixels per frame, reuse history for the rest. The single
+biggest engineering lift, and the single biggest unlock for matching reference quality
+at sane cost.
 
-**Goal**: render `1/16` rays per frame, reuse history for the rest. This is the single biggest engineering lift but unlocks Nubis-tier visual quality at a fraction of the per-frame compute.
-
-The principle: the cloud RT already exists. Add a *history* RT, and each frame:
-1. Render only `1/16` of pixels in a stratified pattern (4×4 Bayer).
-2. Reproject the history RT into the current frame using camera motion.
-3. Blend new samples over reprojected history with high temporal weight (~0.95).
-
-After 16 frames every pixel has been resampled at least once, and the cloud image is full-quality at full res, but per-frame fragment count is `(width × height × 1/16)` — a 16× reduction.
+**Pick one technique and stick to it.** The Nubis approach is *geometric 1/16
+reconstruction* with a deterministic Bayer 4×4 sub-pixel pattern, *not* TAA-style Halton
+jitter on every-pixel rendering. This plan commits to the geometric method. Mixing the
+two (as the previous plan did) causes one to undo the other.
 
 ### D1. History RT infrastructure
 
-Two RTs ping-pong (read prev, write next).
+Two RTs ping-pong (read previous, write current):
 
 ```ts
-const cloudRtA = new RenderTarget(fullWidth, fullHeight, { type: HalfFloatType });
-const cloudRtB = new RenderTarget(fullWidth, fullHeight, { type: HalfFloatType });
+const cloudRtA = new RenderTarget(fullW, fullH, { type: HalfFloatType });
+const cloudRtB = new RenderTarget(fullW, fullH, { type: HalfFloatType });
 let frameParity = 0;
-// each frame: src = parity===0 ? A : B; dst = the other
 ```
 
-**Note**: half-res is no longer needed (or even desired) once temporal is on — D handles the perf, not the resolution drop. Lift back to full res at this point.
+Half-res is no longer needed (or desired) once temporal is on — D handles perf, not the
+resolution drop. Lift back to full-res at this point.
 
-The cloud RT now must store `(R, G, B, α, depth_or_t)` — the front-of-cloud t value is needed for reprojection. Either pack into the alpha channel (16-bit float depth — sufficient) or use a 5-channel RT (RGBA + R32F secondary).
+The cloud RT now carries `(R, G, B, alpha, t_front)`. `t_front` is needed for
+reprojection. Pack into the alpha channel as 16-bit float (sufficient precision over
+the 14 km slab) or use a 5-channel RT (RGBA + R32F secondary).
 
-### D2. Halton jitter
+### D2. Geometric 1/16 schedule (Bayer 4×4)
 
-Each frame, jitter the ray origin sub-pixel by `(haltonX[frame % 16], haltonY[frame % 16])`. Halton(2,3) sequence gives low-discrepancy stratification — better than random, much better than Bayer for spatial coverage convergence.
+Each frame, render only one of 16 deterministic sub-pixel positions inside every 4×4
+tile. After 16 frames every sub-pixel has been written.
 
-In TSL: pass jitter as a 2D uniform updated each frame from a precomputed 16-entry table.
+Two implementation options:
 
-```ts
-const sampleJitter = uniform(new THREE.Vector2());
-// in onFrame:
-sampleJitter.value.set(haltonX[frameIndex], haltonY[frameIndex]);
-// in shader:
-const jitteredFragCoord = screenCoordinate.xy.add(sampleJitter);
-```
+- **(A) 1/4-res buffer + scattered composite**: render the cloud march at 1/4 × 1/4 the
+  full resolution (so 1/16 the pixel count). Each frame, the 1/4-res buffer corresponds
+  to a different sub-pixel in the full-res 4×4 tile. Composite into the full-res history
+  at the correct sub-pixel slot. **This is what HZD shipped.** Slightly more pipeline
+  work but predictable convergence and cheap shading.
+- **(B) Full-res with stochastic skip**: render full-res but the fragment shader
+  early-outs unless `(frameIndex % 16) == bayer4x4(pixelX, pixelY)`. Simpler — single
+  shader — but wastes fragment-shader launches even on skipped pixels.
+
+**Plan commits to (A).** The added pipeline complexity is worth the predictable quality.
 
 ### D3. Camera-motion reprojection
 
-Each frame, store the previous frame's combined view-projection matrix (camera position + orientation in scaled-world space).
+Each frame, store the previous frame's combined view-projection matrix.
 
-In the cloud shader:
-1. Compute the world-space position of the cloud sample at front-of-cloud t (from the new RGBA + t output).
-2. Project that world position through `prevViewProjection` → previous-frame UV.
-3. Sample history RT at that UV.
+In the current frame, for each pixel that wasn't marched this frame, reproject from
+history:
+
+1. Read `t_front` from the current-frame's neighbourhood (the marched sub-pixel inside
+   this 4×4 tile).
+2. Reconstruct the world-space cloud-front position: `worldFront = camPos + rd × t_front`.
+3. Project through the stored `prevViewProjection` to get `prevUV`.
+4. Sample history RT at `prevUV` (bilinear).
 
 ```ts
-const worldPos = cameraPosition.add(rdLocal.mul(tFrontCloud));
-const prevClip = prevViewProjMat.mul(vec4(worldPos, 1));
-const prevUv = prevClip.xy.div(prevClip.w).mul(0.5).add(0.5);
-const history = texture(prevCloudRt, prevUv);
+const prevClip = prevViewProjMat.mul(vec4(worldFront, 1));
+const prevUv   = prevClip.xy.div(prevClip.w).mul(0.5).add(0.5);
+const history  = texture(prevCloudRt, prevUv);
 ```
 
-Three-js / R3F pattern: store prev VP matrix in a ref, update at end of useFrame.
+Store `prevViewProjection` in the *same coordinate space* the marcher operates in
+(planet-local or scaled-world — pick one and keep both consistent).
 
 ### D4. Disocclusion handling
 
 History sample is invalid if:
-- `prevUv` is outside `[0, 1]` (off-screen last frame)
-- `length(prevWorldPos - currentWorldPos) > threshold` (camera teleport — floating origin recentre triggers this)
-- `historyAlpha == 0 && currentAlpha > 0` or vice versa (cloud silhouette change, e.g. frame after Earth rotation moved a cloud across the limb)
 
-When invalid, skip the history blend; output the new sample at full weight. Causes a transient blocky frame on disocclusion — acceptable, and the next 16 frames repair it.
+- `prevUV` is outside `[0, 1]` (off-screen last frame).
+- `length(prevWorldFront - currentWorldFront) > threshold` (camera teleport).
+- Cloud silhouette change: `historyAlpha == 0 && currentAlpha > 0` or vice versa.
+- Floating-origin rebase: the entire history is invalid; clear cloud RT entirely. Detect
+  via the `worldOrigin` rebase event already plumbed in the engine.
 
-**Floating origin caveat**: when `worldOrigin` rebases (>10 000 km drift), the entire history is invalid. Detect rebase and clear history RT.
+When invalid, skip the history blend; output the current-frame sample at full weight.
+Causes a transient blocky frame on disocclusion — acceptable; the next 16 frames repair.
 
-### D5. 4×4 stratified pixel schedule
+### D5. Variance clamp using fresh neighbours only
 
-Two implementation options:
+The standard "clamp history to 3×3 neighbourhood mean ± k×stddev" is *broken under
+1/16 reconstruction* because 15/16 of the neighbourhood is itself stale history. Two
+working approaches:
 
-- **Stochastic schedule**: each fragment computes `marchThisFrame = (frameIndex % 16) == hash(pixelX, pixelY) % 16`. If false, skip the march entirely, just reproject history.
-- **Geometric schedule**: render the cloud shell at 1/4 × 1/4 size each frame, composite into the full-res RT at the correct 4×4 pixel pattern. More complex but exactly matches Nubis.
+- **(A) Fresh-only neighbourhood**: build the variance bounds using *only* the freshly
+  marched pixel(s) in the current 4×4 tile. Smaller sample, larger bounds, but
+  guaranteed stale-free.
+- **(B) YCoCg chroma clamp**: clamp in YCoCg colour space rather than RGB, with looser
+  bounds. Less aggressive ghost rejection but more forgiving of sparse fresh samples.
+  Karis 2014 / Salvi 2016 style.
 
-Start with the **stochastic schedule** — simpler, single shader, no extra RTs.
+Recommend (A) for v1; revisit if ghosting appears on fast camera motion.
 
 ### D6. Reconstruction blend
 
 ```ts
-const valid = isHistoryValid;
-const alpha = valid.select(0.95, 0); // exponential history weight
-const finalRgba = mix(currentRgba, historyRgba, alpha.mul(marchedThisFrame.oneMinus()));
+const isFresh = pixelMatchesFrameSchedule;
+const isHistoryValid = ... ;  // D4 checks
+
+const finalColour = isFresh.select(
+  currentSample,
+  isHistoryValid.select(historyClamped, currentSample)
+);
 ```
 
-Marched-this-frame pixels: replace history with new sample.
-Not-marched pixels: copy history forward (subject to disocclusion).
+Fresh pixels: replace history outright with the new sample (no exponential blend).
+Stale-valid pixels: pure history (clamped). Stale-invalid: fall back to current frame's
+unconverged sample (acceptable artefact in the disocclusion frame).
 
-The 0.95 history weight gives a 16-frame effective integration window; tune for ghosting vs noise.
+### D7. Floating-origin invalidation hook
 
-### D7. Variance clamping (anti-ghost)
+Hook into the existing `worldOrigin` rebase signal. On rebase:
 
-Sample the 3×3 neighbourhood of the current frame in the cloud RT, clamp the historical sample to `mean ± k·stddev`. Standard TAA technique; eliminates ghosting on fast-moving silhouettes (e.g. fast camera pan across cloud edge).
+- Clear both ping-pong cloud RTs to zero alpha.
+- Reset the frame schedule index (effectively force 16-frame reconvergence).
+- One-frame artefact is unavoidable; document and ship.
 
-**Performance impact of Phase D**: this is where you spend perf to *save* perf. The march is now done at 1/16 cost (huge net win), but we add: 1× history texture lookup, 1× matrix multiply, 1× 3×3 neighbourhood sample for variance clamp. Net: cloud cost drops from current ~1–2 ms to **~0.3–0.5 ms** at full res.
-
-**Risks**:
-- Ghosting on high-motion scenes (fast yaw/pitch): variance clamp mitigates but not perfectly.
-- Disocclusion artefacts at silhouettes: fall back to current-frame at full weight.
-- Floating-origin rebases need explicit history invalidation.
-- `prevViewProjection` must be stored in scaled-world coordinates (the same frame the cloud march operates in).
+**Risks**: ghosting on fast yaw/pitch (D5 mitigates); disocclusion artefacts at
+silhouettes (D6 falls back); shader-compile cost grows with branching (Phase F4 pre-warm
+becomes mandatory).
 
 ---
 
 ## Phase E — Polish
 
-### E1. Shell-shadow RT
+### E1. Sun shadow map (Frostbite-style)
 
-Replace the surface shader's two-tap cloud shadow trick with a real shell-derived shadow:
+Replace the per-pixel cone light march with a precomputed sun shadow map. Once per N
+frames (sun moves slowly):
 
-- Allocate a 256×256 (or 512²) `R8` RT.
-- Render the cloud shell into it from a **sun-positioned orthographic camera** (looking at Earth's centre), accumulating transmittance into the R channel.
-- Sample this RT in `earth.ts`'s surface shader at the world-space surface point projected back into the sun-camera's UV space.
+- Allocate a 256² R16F (or R8 with `exp`-encoded extinction) RT.
+- Render a sun-positioned orthographic camera looking at planet centre, marching a
+  coarse 4–6 step density-only pass through the slab. Output `exp(-tau)` per texel.
+- In the main marcher, replace the `LIGHT_STEPS` loop with one texture sample.
 
-Cost: one extra render pass per frame, but at very low resolution and with shorter march budget (8 primary steps is plenty for shadow accuracy).
+Surface shader also samples this for ground shadows (replacing the current 2-tap
+trick in `earth.ts`).
 
-Visual win: cloud shadows on the ground match the 3D cloud shapes pixel-perfectly, including silver-lining gaps. Currently the surface shadow is a blurred copy of the 2D weather map — different shape from the volumetric cloud silhouette, which is the visible mismatch.
+256² at planet scale is ~16 km/texel. Plenty for cloud shadows (their natural blur
+covers this); 512² if penumbra needs to be sharper.
 
-### E2. Bilateral upsample (only if needed)
+**Alternative — Nubis³ voxel-based lighting**: precompute summed sun-density into a
+3D voxel grid (e.g. 256×256×32). Sample in the main march. Better quality (proper
+anisotropic transmittance, long-distance inter-cloud shadows), more memory, more compute
+in the precompute pass. Defer unless E1 proves visually insufficient — E1 is what RDR2
+ships and the visual bar is met.
 
-Phase D returns clouds to full-res. If for any reason we keep half-res (perf emergency), add a depth-aware bilateral upsample using the cloud-front t channel: the upsample weights neighbour samples by t-distance, which keeps silhouettes sharp at planet limbs and against atmospheric haze.
+### E2. Aerial perspective coupling
 
-Skip otherwise.
-
-### E3. Aerial perspective coupling
-
-Apply atmospheric Rayleigh attenuation to the cloud colour based on `tFrontCloud`:
+Apply atmospheric Rayleigh attenuation to cloud colour based on `t_front`:
 
 ```ts
-const aerialFog = computeRayleighTransmittance(roLocal, rdLocal, tFrontCloud);
+const aerialFog = computeRayleighTransmittance(roLocal, rdLocal, tFront);
 col.assign(col.mul(aerialFog).add(rayleighInscatter));
 ```
 
-Makes distant clouds blend into the atmosphere — Earth from orbit at the limb gets the realistic blue-haze cloud look. Reuses Earth surface's existing Rayleigh constants.
+This is what makes Earth-from-orbit clouds blend into the atmosphere at the limb. Reuse
+the Earth surface shader's existing Rayleigh constants.
 
-### E4. Phase function tuning
+### E3. Phase function tuning
 
-Optional dual-lobe HG: `phase = mix(HG(g_forward = 0.8), HG(g_back = -0.3), 0.5)`. The back-scatter lobe gives the "halo" effect when the sun is behind clouds. Schneider doesn't bother; we can add if visual taste calls for it.
+Optional dual-lobe HG: `phase = mix(HG(g_forward = 0.8), HG(g_back = -0.3), 0.5)`.
+The back-scatter lobe gives the "halo" effect when the sun is behind clouds. Schneider
+doesn't use it; add only if visual taste calls for it.
+
+### E4. Bilateral upsample (only if half-res is kept)
+
+Phase D returns clouds to full-res; this is unnecessary. Keep as a fallback for a
+future "low-quality" tier where half-res is forced.
 
 ---
 
-## Phase G — Full-screen ray-march migration *(complete)*
-
-> Detailed plan: `docs/CLOUD_FULLSCREEN_MIGRATION.md`.
-
-**Why.** The sphere-shell approach rasterises cloud alpha at the outer-shell
-altitude (14 km), so even though each fragment's analytic ray hit produces a
-unique cloud-front depth internally, that depth never reaches the screen —
-camera motion shifts every shell fragment by the same amount, regardless of
-which cloud body the ray actually hit. This kills 3D parallax, which
-seamless orbit-to-surface gameplay requires.
-
-**What changed.**
-- Cloud rendering moved from a `BackSide` `SphereGeometry` shell on
-  `CLOUD_LAYER` to a fullscreen `PlaneGeometry(2,2)` quad in its own
-  `cloudScene` + `OrthographicCamera`.
-- Ray reconstruction inside the fragment shader: `screenUV → NDC.xy →
-  rdView (FOV-based, no projection inversion to avoid float32 precision
-  loss at our 2 × 10⁹ far/near ratio) → rdWorld via cameraMatrixWorld →
-  rdEarth via uEarthInverseModel`.
-- The marcher (`marchCloudVolume` in `earthClouds.ts`) was extracted as a
-  pure, geometry-agnostic TSL function — same intersection math, same
-  adaptive march, same cone-traced light, same DEBUG_VIZ modes.
-- A tiny anchor mesh (empty geometry + material on `CLOUD_LAYER`) lives
-  inside Earth's rotation group purely so `mesh.matrixWorld` updates each
-  frame, feeding `uEarthInverseModel`. No camera enables `CLOUD_LAYER`, so
-  it never renders.
-- Diagnostic toggle `DEBUG_FULLSCREEN` in `cloudFullscreenPass.ts`
-  preserved (off by default) for future ray-reconstruction debugging.
-
-**Acceptance criterion met.** Camera-motion parallax — tall and short cloud
-features shift across the screen at noticeably different rates during pan,
-which the shell version fundamentally could not produce.
-
-**Unblocks.**
-- Phase D (temporal reprojection) — natural fit on top of per-pixel rays.
-- Phase E3 aerial perspective coupling — per-pixel cloud-front depth is
-  now available for atmosphere fog integration.
-- Per-planet config (old Phase F1) re-applies on top of the fullscreen
-  pass instead of a per-planet shell.
-
-**Deferred / follow-ups.**
-- *Cloud-tops look 2D-from-above* — orthogonal to G. The bulk-layer
-  flatness traces to alpha saturating before the topAlt-driven top band
-  contributes; rays plunge through the variable upper region without it
-  registering visually. To address: stronger top-band density or a
-  profile that makes tall columns dominate the integrated alpha first.
-- *Pixel-locked dither dots at close range* — same screen-space hash as
-  the shell version had. Phase D (TAA) erases this.
-- G5 planet-occlusion test (clamp `tExit` to a planet-surface intersection
-  for downward rays from low altitude) — defensive cleanup, not yet
-  needed because the slab inner radius already matches `PLANET_RADIUS_KM
-  + 1 km`. Add when the gameplay layer drops below 1 km.
-
 ## Phase F — Productionise
 
-### F1. Generalise the cloud pass — *superseded by Phase G*
+### F1. Generalise to volumetric cloud module + per-planet config
 
-> **Status:** superseded 2026-05-05 by the full-screen quad migration
-> (`docs/CLOUD_FULLSCREEN_MIGRATION.md`). The cloud pass no longer lives on a
-> sphere shell mesh — it's a fullscreen ray-march in
-> `src/components/space/cloudFullscreenPass.ts`, driven by the geometry-
-> agnostic `marchCloudVolume` in `src/components/celestial/bodies/earthClouds.ts`.
-> Per-planet generalisation (Venus, etc.) re-applies on top of that file
-> rather than the original `volumetricCloudShell.ts` extraction sketched
-> below — same config shape, different mount point.
-
-Original sketch (kept for reference when porting to other planets):
-
-Extract the shader into `src/components/celestial/shaders/volumetricCloudShell.ts` with a config:
+Extract the marcher into `src/components/celestial/shaders/cloudMarcher.ts` and the
+fullscreen-pass plumbing into `src/components/space/cloudFullscreenPass.ts`. The
+marcher takes a config:
 
 ```ts
 type VolumetricCloudConfig = {
@@ -591,7 +775,7 @@ type VolumetricCloudConfig = {
   weatherMap: THREE.Texture;             // R = coverage; later RGBA
   baseVolume: THREE.Data3DTexture;
   detailVolume: THREE.Data3DTexture;
-  curlVolume?: THREE.Data3DTexture;
+  curlVolume: THREE.Data3DTexture;
 
   baseScale: number;
   detailScale: number;
@@ -600,124 +784,196 @@ type VolumetricCloudConfig = {
   densityMul: number;
 
   phaseG: number;
-  phaseGBack?: number;                   // optional dual-lobe
-  msWeight: number;
-  powderStrength: number;
+  phaseGBack?: number;                   // dual-lobe (E3)
+  msCoef: number;
+  directCoef: number;
+  powderK: number;
 
   ambientColor: THREE.Color;
-  sunTint: THREE.Color;                  // unlit base
-  sunsetTint: THREE.Color;               // terminator
+  sunColor: THREE.Color;
+  sunsetTint: THREE.Color;
 
   cloudTypeProfile: "stratus" | "stratocumulus" | "cumulus" | "auto";
-  flowSpeed?: number;                    // curl advection rate
+  flowSpeed?: number;
 
   qualityTier: "low" | "medium" | "high";
 };
 ```
 
-Each planet provides its own config. Earth: `{ phaseG: 0.6, msWeight: 0.7, sunTint: ... }`. Venus: `{ phaseG: 0.85 (thicker scatter), msWeight: 0.9, sunTint: yellow, baseScale: smaller (broader cloud bands) }`.
+Each planet supplies its own config. Earth: `{ phaseG: 0.6, msCoef: 1.0, sunColor: ... }`.
+Venus: `{ phaseG: 0.85, msCoef: 1.5, sunColor: yellow, baseScale: smaller, ... }`.
 
-### F2. Quality tiers
+### F2. Cloud–terrain interaction (essential for landings)
 
-WebGPU shader compile cost grows with branching. Pre-compile three pipeline variants:
+For seamless orbit-to-surface flight, cloud bases that intersect terrain must clip,
+and fog should be able to flow through valleys. Without this, cumulus clouds
+over a mountain look pasted-on and fog never wraps around terrain features.
 
-- **Low**: `PRIMARY_STEPS=32`, `LIGHT_STEPS=2`, no curl, no temporal, half-res. Target older laptops.
-- **Medium**: `PRIMARY_STEPS=64`, `LIGHT_STEPS=4`, curl, no temporal, half-res. Default mobile / mid-tier.
+Implementation:
+
+- The cloud shader receives the planet's terrain heightmap (the same low-res displacement
+  map used for distance-LOD terrain rendering).
+- Before sampling cloud density at a point, sample terrain height at that lat/lon. If
+  `pointAltitude < terrainHeight`, density = 0.
+- Cost: one extra 2D texture tap per density evaluation, gated by altitude check
+  (skip when `pointAltitude > maxTerrainAltitude` globally).
+
+This is **quality-critical for the gameplay loop**, not optional polish. Schedule it
+before F3 if landings are gating the milestone.
+
+### F3. Quality tiers
+
+Pre-compile three pipeline variants. Settings menu exposes the tier; Jotai atom gates
+which material is mounted on the fullscreen quad.
+
+- **Low**: `PRIMARY_STEPS=32`, `LIGHT_STEPS=2`, no curl, no temporal, half-res. Older
+  laptops.
+- **Medium**: `PRIMARY_STEPS=64`, `LIGHT_STEPS=4`, curl, no temporal, half-res. Default
+  mid-tier.
 - **High**: `PRIMARY_STEPS=96`, `LIGHT_STEPS=6`, curl, temporal, full-res. M2 Pro target.
 
-Settings menu exposes the tier; Jotai atom gates which material is mounted on the shell.
+### F4. Pre-warm shader compile
 
-### F3. Pre-warm shader compile
+The first close approach to Earth currently triggers a one-time TSL compile hitch. Pre-
+compile the high-tier pipeline at scene-load time by rendering the cloud pass off-screen
+for one frame at boot, so first-actual-use is instant.
 
-The first close approach to Earth currently triggers a one-time TSL compile hitch. Compile the high-tier pipeline at scene-load time by rendering the cloud shell off-screen for one frame at boot, so first-actual-use is instant.
-
-### F4. Venus port (validation)
+### F5. Venus port (validation)
 
 Adapt the system to Venus to validate the config abstraction:
-- Full-coverage opaque weather map (procedural, not photo-derived)
-- Wider slab (50 km)
-- Yellow sun tint, higher scatter g
-- Lower detail erosion (Venus clouds are smoother)
 
-If Venus needs new config knobs, lift them into the type.
+- Full-coverage opaque weather map (procedural; no equirect photo asset).
+- Wider slab (50 km).
+- Yellow sun tint, higher scatter g.
+- Lower detail erosion (Venus clouds are smoother / more uniform).
+
+If Venus needs new config knobs, lift them into the config type.
 
 ---
 
-## Performance budget
+## Approximate cost map (qualitative)
 
-Target: 8.3 ms total per frame for 120 FPS. Cloud cost should stay under **2 ms** to leave headroom for the rest of the renderer.
+We are explicitly *not* committing to a per-frame budget yet — the goal is the look.
+This map exists only to show where the work goes so we know what to optimise once
+we have the quality.
 
-| Phase | Cumulative cost (M2 Pro, full-res, dense scene) | Comments |
-|---|---|---|
-| Current baseline | ~1.0–1.5 ms | half-res, 16 primary, 3 light |
-| + Phase A (volumes) | ~1.3–1.8 ms | extra 3D taps, gated |
-| + Phase B (density) | ~1.3–1.8 ms | math only |
-| + Phase C (march) | ~2.0–3.0 ms | 64–96 steps with adaptive; only inside dense regions |
-| + Phase D (temporal) | ~0.4–0.7 ms | **drops** because we march 1/16 of pixels |
-| + Phase E (polish) | ~0.6–1.0 ms | shadow RT pass + aerial perspective |
-| Final at high tier | **~1 ms** | full-res, full-quality, full Nubis feature set |
+- **Phase A** adds 1–3 extra `texture3D` taps per primary step (gated). Increases per-pixel
+  cost in cloud-covered regions, no impact on clear-sky pixels.
+- **Phase B** is math-only after A. Negligible.
+- **Phase C1 (tile classification)** turns most clear-sky pixels into ~zero-cost. *Dominant
+  perf win on average scenes.*
+- **Phase C2 (adaptive march)** raises peak cost (96 max steps) but lowers average cost
+  in mixed scenes via skip mode + early termination.
+- **Phase C3–C5 (distance scaling, cone march, curl)** small additions.
+- **Phase D** drops *per-frame* cost ~16× by skipping 15/16 marches, paid for by
+  history reproject (texture sample + matrix multiply) and variance clamp (3×3 neighbourhood
+  read).
+- **Phase E1 (shadow map)** is amortised over multiple frames; replaces the per-pixel
+  cone march with one tap.
+- **Phase F2 (terrain clip)** adds one heightmap tap per density evaluation, gated by
+  altitude.
 
-If profiling shows divergence from these estimates, the levers are: lower `PRIMARY_STEPS`, drop curl noise, lower history weight (hurts quality, raises noise floor).
+Rough comparison points for sanity:
+
+- Nubis³ on PS5: 2.2–4 ms.
+- KSP-EVE on a 3070-class card: 3–5 ms.
+- WebGPU on M2 Pro: comparable to a mid-range desktop GPU at 60–80 % efficiency.
+
+A realistic high-tier target is **3–5 ms** for the cloud pass, not 1 ms. Concrete budget
+gets set after profiling once the look lands.
 
 ---
 
 ## Risks & open questions
 
-- **TSL `Loop` count must be a compile-time constant.** Adaptive stepping is implemented as a fixed-`MAX_STEPS` loop with `Break`. Verified working in current code; should scale to 96 steps cleanly.
-- **WebGPU shader compile time** scales with branch complexity. Phase C's two-state march and Phase D's reprojection logic both add branches. Pre-warm (F3) becomes mandatory, not optional.
-- **History RT memory**: full-res RGBA HalfFloat at 1440p × 2 ping-pong = ~32 MB VRAM. Acceptable.
-- **Floating-origin invalidation**: Phase D requires explicit history clear on `worldOrigin` rebase events. Hook into the existing `worldOrigin` atom.
-- **Halton jitter and AgX tonemapping**: ensure jitter is applied to **ray origin only**, not output colour. Tonemapping happens after composite; jitter must not propagate as colour noise.
-- **Disocclusion at floating-origin recentre**: rebase invalidates the entire history RT — first frame post-rebase will show a 1-frame "low quality" render until next 16 frames repopulate.
-- **Cloud-front t in alpha channel**: half-float storage gives ~3-decimal precision over the 14 km slab, sufficient for reprojection.
-- **Variance clamp is mandatory** for D — without it, fast camera moves ghost badly. Allocate dev-time accordingly.
+- **Planet-occlusion clamping is non-negotiable from day 1.** Without ray clamp at
+  `PLANET_RADIUS_KM`, downward rays from low altitude sample cloud volume on the antipode,
+  producing the "mirrored 2D shapes between two shells" symptom. This goes into the
+  marcher contract before any other Phase A work.
+- **TSL `Loop` count must be a compile-time constant.** Adaptive stepping is a fixed
+  `MAX_STEPS` loop with `Break`. Verified working at 16; should scale to 96 cleanly.
+- **WebGPU shader compile cost** scales with branch complexity. Phase C2's two-state
+  march and Phase D's reprojection logic both add branches. F4 pre-warm is mandatory.
+- **History RT memory**: full-res RGBA HalfFloat at 1440p × 2 ping-pong = ~32 MB VRAM.
+  Acceptable.
+- **Floating-origin invalidation**: Phase D requires explicit history clear on
+  `worldOrigin` rebase events. Hook into the existing atom.
+- **STBN texture asset**: we need a 128³ R8 spatiotemporal blue noise volume for jitter.
+  Use the publicly available STBN atlas (e.g. Christoph Peters / EVE's `stbn.R8`); ship as
+  `public/textures/stbn_128.bin`.
+- **Coordinates consistency**: profile, density, lighting, reprojection, terrain clip
+  must all operate in the same space (planet-local or scaled-world). Pick one, document,
+  enforce in code review.
+- **Disocclusion at floating-origin recentre**: rebase invalidates the entire history RT;
+  first frame post-rebase shows a 1-frame "low quality" render until the next 16 frames
+  repopulate. Document.
+- **Cloud-front t precision**: half-float over 14 km slab gives ~0.5 m precision —
+  sufficient for reprojection. If push comes to shove, use the auxiliary R32F MRT slot.
+- **Variance clamp methodology under 1/16 reconstruction** is subtle; D5 commits to
+  fresh-only neighbourhoods but expect tuning iterations.
+- **Wetness channel**: encoded in the weather-map spec but not used by anything in this
+  plan. Re-evaluate during E2 (aerial perspective): wetness could scale Rayleigh inscatter
+  to make rainstorms read bluer. If unused at E2 time, drop it from the spec.
+- **Cloud–terrain integration risk**: F2 depends on the heightmap pipeline being readily
+  accessible from the cloud shader's planet-local frame. If terrain heights are stored
+  in world-space chunks, this becomes a non-trivial sampling problem. Audit before
+  scheduling F2.
 
 ---
 
 ## Implementation order
 
-**Already complete:** A1–A5, B1–B3, C1–C3, C5, G, D1, D2, D6 (and D3/D4/D7
-in approximate form). See per-phase status notes above.
+Phases roughly sequential. A↔B and E1↔E2 are parallelisable. The fullscreen-pass
+migration (`CLOUD_FULLSCREEN_MIGRATION.md`) must complete before A's new code paths
+land — A1–A6 produce the data, but the consumer is the fullscreen marcher, and the
+fullscreen marcher must include the planet-occlusion clamp from day 1.
 
-**Current target:** *Nubis-quality **static** volumetric clouds.* No
-animation, no two-pass TAA architectural rework — push the still-image
-quality first; defer animated drift and proper-D3/D7 until the static
-look is locked in.
+1. **Fullscreen migration G1–G5** (separate doc) — completes geometry foundation.
+2. **A1–A6**: noise volumes + Schneider remap + height-driven detail erosion. Visible
+   win on first close approach.
+3. **B1–B5**: cloud-type profile, type-driven detail, profile-driven lighting. *This is
+   the phase that turns the noise into clouds with anatomy.*
+4. **C1**: coverage tile classification. Free perf for the next phases.
+5. **C2–C5**: adaptive march + cone light + curl. Quality at distance and through-cloud
+   immersion.
+6. **E1**: sun shadow map. Surface coherence and lighting consistency.
+7. **F2**: cloud–terrain interaction. Required for seamless landings.
+8. **D1–D7**: temporal reconstruction. The big lift; what makes it AAA.
+9. **E2**: aerial perspective.
+10. **F1**: generalise to per-planet config.
+11. **F3, F4, F5**: tiers, pre-warm, Venus.
 
-**Remaining queue** (suggested order):
+Verify visually after each step on the live build. Required test shots:
 
-1. **E1** — shell-shadow RT. Replaces the surface shader's 2-tap shadow trick
-   with a real cloud-derived shadow. One extra render pass per frame at low
-   resolution. Visible win on the ground; biggest still-image quality jump
-   left in the queue.
-2. **E3** — aerial perspective coupling. Reuses the existing `tFront`
-   (already returned by the marcher) plus Earth's Rayleigh constants.
-   Distant clouds blend into atmospheric haze — orbital limb gets the
-   realistic blue-haze cloud look.
-3. **D — floating-origin invalidation**. Hook into the `worldOrigin` rebase
-   to clear history RT. Quick correctness fix for TAA.
-4. **F1** — generalise to `volumetricCloudShell.ts` + `VolumetricCloudConfig`.
-5. **F2–F4** — quality tiers, shader pre-warm, Venus port.
-
-**Deferred** (out of scope for "static Nubis quality"):
-
-- **C4** — curl-noise UV advection (animation). Re-enter when we want clouds
-  that visibly evolve while standing still.
-- **D — proper D3/D7** (two-pass marcher → TAA composite split). Re-enter
-  if the current outer-shell reprojection or single-pass disocclusion gate
-  proves visibly inadequate at close range.
-- **E4** — optional dual-lobe HG.
-
-Verify visually after each step on the live build (Earth close-up at
-sub-orbital altitude is the ground-truth shot; also test sub-1-km flyby and
-orbital limb view).
+- **Orbital limb** (≈ 12 000 km altitude): cloud silhouettes against deep space, atmosphere
+  tint at limb.
+- **Sub-orbital approach** (≈ 200 km altitude): cumulus columns with parallax against
+  rotating Earth surface.
+- **Deck flight** (≈ 5 km altitude): immersion through a cumulus deck, sunlit tops and
+  shadowed undersides clearly visible.
+- **Sub-1km flyby**: clouds wrap correctly around camera; below-inner-shell branch and
+  planet-occlusion clamp both engaged.
+- **Landing approach** (after F2): clouds clip realistically to mountain ridges.
 
 ---
 
 ## References
 
-- **Schneider 2015**: "The Real-time Volumetric Cloudscapes of Horizon Zero Dawn" — SIGGRAPH 2015 Advances in Real-Time Rendering. The canonical paper. Density remap, Perlin-Worley, weather map structure.
-- **Schneider 2017**: "Nubis: Authoring Real-Time Volumetric Cloudscapes with the Decima Engine" — GDC 2017. Production details, performance numbers, temporal reprojection.
-- **Schneider 2022**: "Nubis³" — SIGGRAPH 2022. Successor system in Horizon Forbidden West. New stuff: 3D weather data, fully procedural authoring.
-- **Wrenninge 2013**: "Oz: The Great and Volumetric" — multi-scatter octave hack used in our `Tsun_ms = pow(Tsun, 0.3)` term.
-- **Karis 2014**: "High Quality Temporal Supersampling" — variance clamping, history sample validation.
+- **Schneider 2015**: *"The Real-Time Volumetric Cloudscapes of Horizon Zero Dawn"* —
+  SIGGRAPH 2015 Advances in Real-Time Rendering. The canonical paper. Density value
+  erosion, Perlin-Worley, weather-map structure, height-driven detail mask.
+- **Schneider 2017**: *"Nubis: Authoring Real-Time Volumetric Cloudscapes with the
+  Decima Engine"* — GDC 2017. Production details, performance numbers, temporal
+  reprojection.
+- **Schneider 2022**: *"Nubis, Evolved"* — SIGGRAPH 2022. Profile-driven multi-scatter
+  approximation, voxel-lighting precursor.
+- **Schneider 2023**: *"Nubis³"* — SIGGRAPH 2023 (`docs/VolumetricCloudReferences/Nubis Volumetric Clouds.pdf`).
+  Voxel NVDFs, sphere-traced SDF stepping, alligator/curly-alligator noise. Out of scope
+  for this plan but the roadmap if we ever go beyond HZD-era quality.
+- **Wrenninge 2013**: *"Oz: The Great and Volumetric"* — multi-scatter octave hack
+  (used in earlier versions of our marcher; superseded by profile-driven MS in B5).
+- **Karis 2014 / Salvi 2016**: *"High Quality Temporal Supersampling"* / TAA reading —
+  variance clamping, history sample validation, YCoCg-space clamping.
+- **EVE volumetric mod** (`docs/VolumetricCloudReferences/KerbalSpaceProgramVolumetricCloudsMod/`):
+  shipped real-time 2.5D-Nubis-flavour clouds for KSP; closest reference to what we are
+  building, including STBN texture asset and per-cloud-type coverage curves.
