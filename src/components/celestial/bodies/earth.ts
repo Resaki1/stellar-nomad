@@ -283,13 +283,19 @@ function buildEarthFragmentNode(opts: {
     // Self-shadow: clouds with other clouds sunward of them get darker bases
     const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
     const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow);
-    // Crossfade with the volumetric shell: as the volumetric shell fades in
-    // (uVolumetricBlend → 1, 25–35 k km), the flat cloud overlay fades out so
-    // we don't see "double clouds" painted on the surface and overhead.
-    // The cloud-on-ground shadow tap above stays active throughout — it
-    // approximates the 3D cloud's ground shadow well enough at this scale and
-    // the proper shell-shadow RT is deferred (Tier 2 of the perf plan).
-    const flatCloudOpacity = float(1).sub(uVolumetricBlend);
+    // Flat cloud overlay always on. Previously this faded out with
+    // `uVolumetricBlend` to avoid "double clouds" (overlay painted on the
+    // planet surface while the volumetric shell also painted them above).
+    // That was the right call when the volumetric covered the *entire*
+    // visible cloud field, but the marcher can only properly track features
+    // out to ~20 km — past that, per-pixel noise dominates. The flat
+    // overlay is now the far-cloud LOD: it always paints the global 2D
+    // cloud cover on the surface, and the volumetric premultiplied
+    // composite *replaces* it where there's a real near cloud body
+    // (α > 0). Near α=0 from the volumetric (e.g. clear sky between
+    // cumulus, or distance-faded far pixels) lets the flat overlay
+    // show through.
+    const flatCloudOpacity = float(1);
     col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──

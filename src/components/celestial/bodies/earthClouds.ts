@@ -51,24 +51,34 @@ const CLOUD_OUTER_ALTITUDE_KM = 14;
 // probes; pixels through dense bodies get 4× finer sampling without paying
 // the dense-mode cost outside cloud bodies.
 const MAX_PRIMARY_STEPS = 96;
-// Skip-mode step denominator: dtSkip = slab / SKIP_STEP_DENOM. Sized so an
-// all-empty pixel reaches tExit in ~16 cheap probes (matches the previous
-// uniform 16-step march for empty regions).
-const SKIP_STEP_DENOM = 16;
-// dtDense / dtSkip ratio. 0.25 = 4× finer sampling inside cloud bodies.
-// Worst-case cumulative dense-step traversal: 64 short × ~200 m = 12.8 km
-// (≈ slab thickness), so MAX_PRIMARY_STEPS=96 covers a full traversal in
-// dense mode plus skip-mode entry/exit margin.
+// Fixed skip-mode step size in scaled units (1 scaled unit = 1000 km).
+// 0.0005 = 500 m — matches Schneider/Nubis primary-step scale.
+//
+// Earlier this was `dtSkip = slabLen / 16` (adaptive). That's the wrong
+// relationship: cumulus towers have constant world-space size (~1–3 km
+// wide), so step size must also be in world space. For horizontal chords
+// at altitude (slab traversal 80–400 km from inside), slabLen/16 grew to
+// 5–25 km between probes — the marcher stepped over distant towers
+// entirely, and they appeared only when the dithered first probe
+// happened to land inside one. Symptom: dot pattern in close range,
+// nothing beyond ~500 m.
+//
+// 500 m fixed step → 96 × 500 m ≈ 48 km of nominal skip-mode reach.
+// Beyond that, the marcher exits via `t > tExit` or step budget.
+// Horizon-distance cloud (100+ km) still won't render via this path;
+// that needs a far 2D LOD crossfade (next architectural step).
+const SKIP_STEP_SCALED = 0.0005;
+// dtDense / dtSkip ratio. 0.25 = 4× finer sampling inside cloud bodies
+// (125 m). Worst-case cumulative dense-step traversal: 96 × 125 m ≈ 12 km,
+// roughly slab thickness — enough to push through a dense column when
+// the empty-streak fallback never fires.
 const DENSE_STEP_RATIO = 0.25;
 // Consecutive dense-mode empty samples before falling back to skip mode.
-// 8 × dtDense ≈ 1.6 km of empty space tolerated inside dense mode before
+// 8 × dtDense = 1 km of empty space tolerated inside dense mode before
 // a switch — keeps cloud-body holes from triggering ping-pong, but falls
 // back fast enough not to waste short steps on truly-empty post-cloud
 // columns.
 const EMPTY_THRESHOLD = 8;
-// Minimum per-step distance in scaled units (1 unit = 1000 km). 0.0004 ≈ 400 m.
-// Caps step density for short slab paths so we don't oversample near-straight-down views.
-const MIN_STEP_SCALED = 0.0004;
 // Cone-traced light march (Nubis C3). 6 stratified samples toward the sun,
 // each perturbed by a pre-baked low-discrepancy 3D kernel, scaled by step
 // distance so the cone widens with depth. Total integration range ≈ 12 km
@@ -124,6 +134,42 @@ const HG_G = 0.6;
 //                   cloud disk means cloud-front depth is locked (i.e.
 //                   shell-painting behaviour). Empty pixels = black
 //                   (no hit, sentinel = 0).
+//
+// ── Band-isolation viz modes (use these together) ──────────────────────────
+// Each one shows a different per-pixel variable evaluated AT THE FIRST-HIT
+// POINT. To diagnose the visible band/stripe artifact: compare each mode
+// against the user's "off"-mode screenshot. If band positions match the
+// iso-colour contours in mode X, then variable X is the band cause.
+//
+//   'altAtHit'        : altitude01 (raw, unperturbed) at first-hit, as
+//                       grayscale [0=alt 1km, 1=alt 14km]. If the visible
+//                       bands match the iso-colour bands here, the bands
+//                       are iso-altitude → profile-driven.
+//   'altPerturbedAtHit': altPerturbed at first-hit. If this looks SMOOTH
+//                       (clean bands) instead of NOISY (random per-pixel),
+//                       the hash-noise perturbation isn't actually being
+//                       applied per-voxel — debugging target itself.
+//   'profileAtHit'    : profile value [0–1] at first-hit. If banded here,
+//                       the profile transitions ARE creating the bands and
+//                       the altitude perturbation isn't enough.
+//   'coverageAtHit'   : coverage (post-3tap-lerp) at first-hit. If banded
+//                       here, the bands are from the coverage lerp (smooth
+//                       gradient along ray creates visible iso-coverage
+//                       contours).
+//   'baseCloudAtHit'  : baseShape × coverage at first-hit. If banded but
+//                       altAtHit isn't, the bands are from the 3D base
+//                       shape, not from altitude.
+//   'lightingOnly'    : accumulated col / alpha (the cloud's unpremul
+//                       colour, ignoring transparency). Pixels where alpha
+//                       is non-zero show the cloud's actual shading.
+//                       Compare against 'alpha' — if stripes appear here
+//                       but NOT in 'alpha', they're in the colour/lighting
+//                       computation (cone light march, phase, etc.), not
+//                       in the alpha-buildup math. If stripes appear in
+//                       BOTH, the underlying alpha integration has them
+//                       too (density quantisation or coverage lerp kink).
+//                       Tone-mapped with Reinhard so HDR brightness fits
+//                       [0, 1] for visualisation.
 // =============================================================================
 const DEBUG_VIZ:
   | "off"
@@ -133,7 +179,13 @@ const DEBUG_VIZ:
   | "iters"
   | "slabLen"
   | "profile"
-  | "firstHit" = "off";
+  | "firstHit"
+  | "altAtHit"
+  | "altPerturbedAtHit"
+  | "profileAtHit"
+  | "coverageAtHit"
+  | "baseCloudAtHit"
+  | "lightingOnly" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, base+top decomposition).
 //
@@ -178,13 +230,25 @@ const BASE_WEIGHT = 0.5;
 const TOP_WEIGHT = 2.0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function cloudHeightProfile(alt01: any, topAlt: any): any {
-  // Single asymmetric band — no second band anywhere.
-  // Sharp bottom edge at alt01 = 0.05–0.10 (cumulus condensation base).
-  // Gradual fall from alt01 = 0.20 down to 0 at 0.55 (puffy top).
-  // topAlt is unused — we're decoupling per-column tower variation
-  // from the profile so we can isolate the gap question.
+  // Single asymmetric band with per-column top variation.
+  //   baseEdge: sharp bottom at alt01 0.05–0.10 (cumulus condensation base).
+  //   topFall:  per-column ramp down from full density at (topAlt - 0.35)
+  //             to 0 at topAlt.
+  //
+  // Narrow transitions are deliberate: a wider fade was tried and it
+  // collapsed the full-density plateau for most columns (median topAlt
+  // ≈ 0.7 with width 0.55 left no plateau at all), making clouds too
+  // transparent. The visible iso-altitude contour lines come from the
+  // base shape being pure Perlin (no internal 3D structure to break up
+  // altitude surfaces) and are the wrong thing to fix at the profile
+  // level — see Issue #2 in noiseVolumes.ts (Perlin-Worley).
+  //
+  // topAlt ∈ [0.40, 0.95] from the per-column Perlin sample upstream:
+  //   short column (topAlt = 0.40): full at 0.10, fades 0.05 → 0.40 → tops ~6.2 km
+  //   tall column  (topAlt = 0.95): full at 0.10, fades 0.60 → 0.95 → tops ~13.4 km
   const baseEdge = smoothstep(float(0.05), float(0.10), alt01);
-  const topFall = float(1).sub(smoothstep(float(0.20), float(0.55), alt01));
+  const fadeStart = topAlt.sub(float(0.35));
+  const topFall = float(1).sub(smoothstep(fadeStart, topAlt, alt01));
   return baseEdge.mul(topFall);
 }
 
@@ -217,22 +281,63 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   const uOuterRadius = uniform(outerRadiusScaled);
   // Shared drift uniform — future-proofed for sim-time animation (step 2+).
   const uCloudUvOffset = uniform(new THREE.Vector2(0, 0));
-  // Extinction × density_raw (scaled-km units). 700 compensates for
-  // baseShape's mean (~0.6) attenuation in the full Schneider remap —
-  // gives cores comparable opacity to the diagnostic-state pure-coverage
-  // model at densMul=500.
-  const uDensityMul = uniform(700);
-  // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km, so 250 ≈
-  // one tile per 4 km — close to Schneider's reference ratio (slab/tile ≈ 7).
-  // At this scale, the lowest-octave Worley cells (tile/4 = ~1 km) are below
-  // typical screen-pixel resolution at most viewing distances; the highest
-  // octave (~80 m cells) is sub-pixel everywhere. Mip filtering averages the
-  // remaining structure into smooth in-cloud detail, instead of the visible
-  // cellular grid we got with the old 22 km tile. Was 45.
-  const uBaseScale = uniform(250);
-  // Detail-volume tiling: 2× base, so ~2 km tile, ~0.4 km cells at lowest
-  // octave. Wispy edge detail at sub-cloud-feature scale. Was 90 (~11 km).
-  const uDetailScale = uniform(500);
+  // Extinction × density_raw (scaled-km units).
+  //
+  // dtDense = 125 m = 0.000125 scaled. OD per dense step = density ×
+  // densMul × dt. The right value targets SOFT alpha buildup over ~5–15
+  // dense steps inside a cloud body, NOT instant saturation.
+  //
+  // densMul = 20000 targets soft cumulus edges:
+  //   For mean post-erosion density ≈ 0.15 (typical cumulus):
+  //     OD/step = 0.15 × 20000 × 0.000125 = 0.375
+  //     → 10 dense steps (1.25 km) to saturate → soft edge over 1 km
+  //     5 km cloud chord (40 dense steps) → OD = 15, α ≈ 1.0
+  //   For dense cores (density ≈ 0.4):
+  //     OD/step = 1.0 → saturates over ~5 dense steps
+  //
+  // History of this value:
+  //   - 700: tuned against pure Perlin baseShape (low mean), gave α ≈ 0.4
+  //     in cores. Too transparent.
+  //   - 1500: still too transparent.
+  //   - 1,500,000: empirically dialled in for "opaque" but actually
+  //     produces BINARY saturation — α=1 at the first cloud voxel found.
+  //     This made the visible cloud surface = hard iso-density isosurface
+  //     in 3D, which renders as visible concentric "contour band" lines
+  //     on the cumulus body (see CLOUD_DEBUGGING_LESSONS.md follow-on).
+  //   - 20000: integrates over ~10 voxels for Schneider-style soft edges.
+  //     Bands integrate into smooth cumulus shading because no single
+  //     voxel dominates the visible alpha.
+  //
+  // Tune knob: if cumulus cores look too soft/transparent, push toward
+  // 30000-50000. If edges hard / bands return, push toward 10000-15000.
+  //
+  // 15000 with the larger cumulus features (uBaseScale = 50):
+  //   OD per dense step in core ≈ 0.5 → T per step ≈ 0.6
+  //   ~10 dense steps to reach α = 0.99 → soft saturation over 1.25 km
+  //   2 km core: α ≈ 0.85 (visibly translucent at edges, opaque core)
+  //   5 km core: α ≈ 1.0 (fully opaque)
+  //
+  // Earlier 40000 was too high: α saturated in ~0.5 km, making each
+  // iso-density surface in the cumulus body a hard visible ring. Soft
+  // buildup over 1+ km lets the iso-surfaces merge into smooth shading.
+  const uDensityMul = uniform(15000);
+  // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
+  //
+  // Was 250 → 4 km tile, 1 km cumulus cells. At orbital view distances,
+  // 1 km features are sub-pixel and produce visible noise/speckle instead
+  // of recognizable cumulus shapes. Reference engines (Nubis/HZD/RDR2)
+  // operate with cumulus *bodies* on the order of 5–30 km wide so they
+  // fill multiple screen pixels at the typical viewing distances.
+  //
+  // 50 → 20 km tile, 5 km low-freq Worley cells (cumulus puff size),
+  // 2.5 km mid-freq, 1.25 km high-freq. Cumulus bodies are now ~5–10 km
+  // wide and read as coherent cloud forms from any view distance,
+  // including orbital.
+  const uBaseScale = uniform(50);
+  // Detail-volume tiling: 2× base, so 10 km tile, 2.5 km cells at lowest
+  // octave. Detail erosion now operates at sub-cumulus scale to carve
+  // cauliflower silhouettes.
+  const uDetailScale = uniform(100);
   // Detail-erosion strength. Schneider's reference uses 0.2 because his
   // weather map provides nearly-uniform-1 coverage in cloud regions, so
   // the erosion's job is just to nibble at edges. Ours uses gradient
@@ -253,10 +358,17 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // weather-map alignment with the flat overlay during 25–35 k crossfade.
   // Column-scale tile for per-column cloud-top variation (Nubis B2). Sampled
   // from baseVolume.r (Perlin) at the column's projection onto the inner
-  // shell. The base volume's R channel is Perlin at G_LOW=4 (volume cycles
-  // every 0.25 of texture coord), so an effective "tile size" of ~5km in
-  // world units corresponds to scale 50.
-  const uColumnScale = uniform(50);
+  // shell.
+  //
+  // Was 50 → ~5 km column cells. With the previous smoothstep(0.3, 0.7)
+  // contrast on top of the column sample, adjacent columns ended up
+  // wildly different in cloud-band thickness (5.5 km Δ), and their
+  // boundaries projected as visible curved stripes on the cloud body.
+  //
+  // 20 → ~12.5 km columns. Combined with the new SMOOTH linear topAlt
+  // mapping (no contrast smoothstep), column boundaries are larger AND
+  // softer transitions — no visible stripes from the column structure.
+  const uColumnScale = uniform(20);
   // Cone-light radius — multiplier on the world-space kernel offsets in the
   // light march. 0.3 puts the outermost sample ~3 km perpendicular to the
   // primary sample (kernel norm ≈ 1, stepDist at i=5 ≈ 0.011 scaled = 11 km;
@@ -407,13 +519,11 @@ export function marchCloudVolume({
     const tExit = hitInner.select(tInnerNear, tOuterFar);
 
     const slabLen = sub(tExit, tEnter).max(0);
-    // Two step lengths for the adaptive march. dtSkip targets slab/16 (same
-    // total coverage as the old uniform march in empty regions); dtDense is
-    // 4× finer for sampling inside cloud bodies. MIN_STEP_SCALED floor
-    // protects against grazing hits with sub-meter slab paths.
-  const dtSkip = slabLen
-    .div(float(SKIP_STEP_DENOM))
-    .max(float(MIN_STEP_SCALED));
+    // Fixed-world-space step sizes. dtSkip = 500 m, dtDense = 125 m
+    // (4× finer). See the constants block above for why this is fixed
+    // rather than slab-length-adaptive — short version: tower features
+    // have constant world-space size so step size must too.
+    const dtSkip = float(SKIP_STEP_SCALED);
     const dtDense = dtSkip.mul(float(DENSE_STEP_RATIO));
 
     // Per-pixel dither: breaks up banding by jittering the ray entry point
@@ -435,7 +545,14 @@ export function marchCloudVolume({
         dot(screenCoordinate.xy, vec2(12.9898, 78.233)).add(uDitherPhase),
       ).mul(43758.5453),
     );
-    const tStart = tEnter.add(dither.mul(dtSkip));
+    // Halve dither amplitude: per-pixel start-offset variance is now
+    // 0–250 m instead of 0–500 m. At fast camera speeds (462 m/s in the
+    // observed bug) TAA's history blend can't fully integrate the
+    // 0–500 m variance across the 16-frame window — half-amplitude
+    // dither halves per-frame alpha variance, which trades a tiny bit
+    // of residual banding (still well below dtDense = 125 m) for
+    // substantially less visible speckle when TAA is degraded.
+    const tStart = tEnter.add(dither.mul(dtSkip).mul(0.5));
 
     // Henyey-Greenstein phase, constant per fragment (sun is effectively infinite
     // distance compared to cloud scale, and view dir is constant along the march).
@@ -458,25 +575,30 @@ export function marchCloudVolume({
     const invTwoPi = float(1.0).div(PI.mul(2));
     const invPi = float(1.0).div(PI);
 
-    // ── Per-pixel coverage cache (two-tap + lerp) ──
-    // Coverage is sampled at the ray's slab ENTRY and EXIT points and lerped
-    // per-step along the march. The previous single-midpoint cache failed
-    // catastrophically for camera-inside-slab views: horizontal rays have
-    // slab paths of 300+ km, so the midpoint projected to a lat/lon
-    // 100–200 km off the camera's nadir, sampling coverage at a totally
-    // unrelated location → outer gate failed → empty horizontal middle even
-    // inside a real cloud deck.
+    // ── Per-pixel coverage cache (three-tap + piecewise lerp) ──
+    // Coverage is sampled at the ray's slab ENTRY, MIDPOINT, and EXIT
+    // points and piecewise-lerped per-step along the march.
     //
-    // The two-tap+lerp scheme is correct for both regimes:
-    //   - From outside: tEnter and tExit are both inside the slab altitude
-    //     band, ~13 km apart. uvNear ≈ uvFar. Lerp degenerates to a constant.
-    //     Visually identical to the old midpoint cache.
-    //   - From inside: tEnter sits at the camera, tExit at the ray's outer-
-    //     shell or planet exit. uvNear = camera's nadir UV; uvFar = the far-
-    //     projection UV. Lerp captures the ray's actual lat/lon path.
+    // History of this scheme:
+    //   - Original single-midpoint sample failed for camera-inside-slab
+    //     horizontal views (slab path 100+ km, midpoint UV 100s of km
+    //     from camera nadir → coverage gate failed → empty middle).
+    //     See `docs/CLOUD_DEBUGGING_LESSONS.md`.
+    //   - Two-tap (near+far+lerp) fixed that case but introduced a new
+    //     one: camera ABOVE the slab looking tilted-down at a cumulus
+    //     between the ray's slab-entry and slab-exit. Both endpoints
+    //     sample weather map at lat/lons that miss the cumulus → coverage
+    //     low along entire ray → cloud barely renders. Visible as "cloud
+    //     bodies have proper opacity from below, but barely visible from
+    //     above" — same physics bug, different geometry.
+    //   - Three-tap (near+mid+far + piecewise lerp) catches all three
+    //     regimes: cumulus at ray-start (covNear), cumulus mid-chord
+    //     (covMid), cumulus at ray-end (covFar). Outer skip-gate uses the
+    //     max of all three; per-step lerp piecewise blends through the
+    //     three samples.
     //
-    // pMid is still computed — sunDotPoint and the 'topAlt' diagnostic
-    // sample at the midpoint, where they're slow-varying and accurate.
+    // pMid is reused — it's already computed for sunDotPoint and the
+    // 'topAlt' diagnostic, where it's slow-varying.
     const tMid = tEnter.add(slabLen.mul(0.5));
     const pMid = roEarth.add(rdEarth.mul(tMid));
     const rMid = length(pMid).max(0.0001);
@@ -496,7 +618,7 @@ export function marchCloudVolume({
     // density bias above.
     const topAltMid = float(0.4).add(colSharpMid.mul(0.55));
 
-    // Coverage near/far hoisted samples — see comment block above.
+    // Coverage near/mid/far hoisted samples — see comment block above.
     const pNear = roEarth.add(rdEarth.mul(tEnter));
     const pFar = roEarth.add(rdEarth.mul(tExit));
     const rNear = length(pNear).max(0.0001);
@@ -509,17 +631,22 @@ export function marchCloudVolume({
     const uFar = fract(atan(dirFar.z, dirFar.x.negate()).mul(invTwoPi));
     const vFar = acos(clamp(dirFar.y.negate(), -1, 1)).mul(invPi);
     const uvFar = vec2(uFar, vFar).add(uCloudUvOffset);
+    // Midpoint UV — reuses pMid/dirMid already computed above for sunDotPoint.
+    const uMidWeather = fract(atan(dirMid.z, dirMid.x.negate()).mul(invTwoPi));
+    const vMidWeather = acos(clamp(dirMid.y.negate(), -1, 1)).mul(invPi);
+    const uvMidWeather = vec2(uMidWeather, vMidWeather).add(uCloudUvOffset);
     // Domain warping (previously applied to the single uvMid sample) is
     // currently disabled — the warp source had Worley cells visible at
-    // close range. Keep the clean uvNear/uvFar values for now; re-enable
-    // with a Perlin-only low-frequency warp source when we revisit it.
+    // close range. Keep the clean uvNear/uvMid/uvFar values for now;
+    // re-enable with a Perlin-only low-frequency warp source when we
+    // revisit it.
     const covNear = texture(weatherMap, uvNear).r;
+    const covMid = texture(weatherMap, uvMidWeather).r;
     const covFar = texture(weatherMap, uvFar).r;
-    // Outer-gate proxy: skip the whole march only if BOTH endpoints have
-    // near-zero coverage. Using max means we don't skip rays that find
-    // cloud at one end of their slab traversal but not the other (common
-    // for from-inside views grazing the edge of a cloud deck).
-    const coverageMax = covNear.max(covFar);
+    // Outer-gate proxy: skip the whole march only if ALL THREE tap points
+    // have near-zero coverage. Catches cumulus at ray-start, mid-chord,
+    // or ray-end equally.
+    const coverageMax = covNear.max(covMid).max(covFar);
 
     // ── Smooth terminator ──
     // sunDotPoint is cos of the sun-zenith angle at the cloud point.
@@ -591,13 +718,33 @@ export function marchCloudVolume({
     // front depth for this pixel. Used by DEBUG_VIZ='firstHit' to verify
     // that adjacent pixels see clouds at different distances.
     const firstHitT = float(-1).toVar();
+    // Per-pixel "values at the first-hit point" — capture once at first hit.
+    // If the visible bands correspond to iso-X for some X, the corresponding
+    // debug viz will show iso-colour bands at the same screen positions.
+    // -1 sentinel = no hit captured (pixel never entered dense mode).
+    const altAtHit = float(-1).toVar();           // raw altitude01 at hit
+    const altPerturbedAtHit = float(-1).toVar();  // perturbed altitude at hit
+    const profileAtHit = float(-1).toVar();       // profile value at hit
+    const coverageAtHit = float(-1).toVar();      // coverage (3-tap lerp) at hit
+    const baseCloudAtHit = float(-1).toVar();     // baseShape × coverage at hit
 
-    // ── Whole-pixel empty-space skip ──
-    // If BOTH endpoints of the ray's slab traversal have near-zero coverage,
-    // the entire ray is empty: skip all primary iterations and both nested
-    // loops. Dark regions of the weather map (oceans with clear sky) cost
-    // almost nothing.
-    If(coverageMax.greaterThan(0.01), () => {
+    // ── Outer gate neutralised (trivially-true condition) ──
+    // Previously: `If(coverageMax > 0.01)` based on hoisted 3-tap samples.
+    // That gate caused the "wireframe outlines / cloud portal" artifact:
+    // pixels where all 3 hoisted taps missed the cumulus had their entire
+    // marcher skipped → wireframe outline at the iso-pass boundary.
+    //
+    // Per-step coverage (sampled inside the loop body) is now the actual
+    // gating mechanism — every voxel sees coverage at its real lat/lon.
+    //
+    // The `If(...)` STRUCTURE is preserved with a trivially-true condition
+    // because removing it entirely caused the marcher to silently produce
+    // alpha=0 everywhere (some TSL scope / variable visibility interaction
+    // I don't fully understand). Keeping the If with `coverageMax >= 0`
+    // (always true since covNear/covMid/covFar are texture samples in
+    // [0, 1]) preserves the TSL graph topology while effectively
+    // bypassing the gate.
+    If(coverageMax.greaterThanEqual(0), () => {
       // ── Two-state adaptive march (Nubis C1+C2) ──
       //
       // stepMode  0 = skip mode (cheap probe, big steps)
@@ -625,14 +772,6 @@ export function marchCloudVolume({
         });
         primaryIters.addAssign(1);
 
-        // Per-step coverage lerp: blends the camera-near and far-projection
-        // weather-map samples by how far along the slab we are. For from-
-        // outside views covNear ≈ covFar so this is essentially a constant;
-        // for from-inside views it's where the marcher learns the ray's
-        // actual lat/lon path through the cloud field.
-        const lerpT = t.sub(tEnter).div(slabLen.max(0.0001)).clamp(0, 1);
-        const coverage = mix(covNear, covFar, lerpT);
-
         const p = roEarth.add(rdEarth.mul(t));
         const r = length(p).max(0.0001);
         const altitude01 = clamp(
@@ -640,6 +779,26 @@ export function marchCloudVolume({
           0,
           1,
         );
+
+        // ── Per-step coverage sampling ──
+        // Sample the weather map at the CURRENT march position's lat/lon.
+        // Replaces the 3-tap near/mid/far + piecewise lerp, which failed
+        // for cumulus that fell in the gap between tap points (visible
+        // as "two halves of a cloud with empty middle" — same family as
+        // the original case study in CLOUD_DEBUGGING_LESSONS.md). Per-step
+        // is the only fully-general scheme: every voxel sees coverage at
+        // its actual lat/lon, no aliasing from sample density.
+        //
+        // Cost: one extra 2D texture lookup per primary loop iteration.
+        // For pixels missing cloud, the outer `coverageMax > 0.01` gate
+        // (still using the hoisted 3-tap max) early-exits the loop so
+        // they pay 0 of these per-step samples. For pixels through cloud
+        // regions, ~96 extra weather-map taps — modest cost on modern GPUs.
+        const dirP = p.div(r);
+        const uP = fract(atan(dirP.z, dirP.x.negate()).mul(invTwoPi));
+        const vP = acos(clamp(dirP.y.negate(), -1, 1)).mul(invPi);
+        const uvP = vec2(uP, vP).add(uCloudUvOffset);
+        const coverage = texture(weatherMap, uvP).r;
 
         // Per-column cloud-top altitude (Nubis B2). Project the current
         // march position to the inner shell so all steps in the same column
@@ -658,11 +817,49 @@ export function marchCloudVolume({
         // density bias).
         const pColumn = p.div(r).mul(uInnerRadius);
         const colSample = texture3D(baseVolume, pColumn.mul(uColumnScale)).r;
-        const colSharp = smoothstep(float(0.3), float(0.7), colSample);
-        const topAlt = float(0.4).add(colSharp.mul(0.55));
+        // topAlt: smooth linear mapping from Perlin sample → [0.4, 0.95].
+        //
+        // Old code used `smoothstep(0.3, 0.7)` to stretch Perlin's central
+        // cluster (~0.4–0.6) into the full output range, then mapped to
+        // [0.4, 0.95]. That produced a STRONG BIMODAL distribution: most
+        // columns ended up either short (~0.4) or tall (~0.95), with
+        // narrow transition bands at the column boundaries. Adjacent
+        // columns differing by ~5.5 km of cloud-band thickness produced
+        // visible "stripes" where the alpha integration changed abruptly
+        // across the column boundary on the cloud body.
+        //
+        // Linear remap keeps the topAlt distribution smooth — adjacent
+        // columns transition continuously through intermediate values,
+        // so there are no hard boundaries to project as stripes. Raw
+        // Perlin clusters around 0.5, giving most columns topAlt around
+        // 0.67. Tower variation is more subtle but evenly distributed.
+        const topAlt = float(0.4).add(colSample.mul(0.55));
+
+        // ── Altitude perturbation (band-breaker, outer-scope version) ──
+        //
+        // Without perturbation, `profile` is a clean function of altitude01
+        // alone → iso-altitude surfaces form 2D contour bands on the cloud
+        // body. With `densMul` set high (binary-ish saturation), the
+        // visible cloud surface is exactly where the OUTER profile gate
+        // first lets a voxel through, so the bands are determined here,
+        // not in the dense-mode density math.
+        //
+        // Hash-based 3D noise (no extra texture sample): produces ±5%
+        // slab-thickness altitude shift per voxel. Discrete per-voxel
+        // (not smooth) — that's deliberate, since smooth noise would
+        // create its own visible iso-surfaces. The cloud's macro shape
+        // is set by baseShape further down; this noise only shifts where
+        // the profile-altitude contour falls.
+        const hashSeed = p.x
+          .mul(127.1)
+          .add(p.y.mul(311.7))
+          .add(p.z.mul(74.7));
+        const altHash = fract(sin(hashSeed).mul(43758.5453));
+        const altPerturb = altHash.sub(0.5).mul(0.10); // ±5% slab
+        const altPerturbed = altitude01.add(altPerturb).clamp(0, 1);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const profile: any = cloudHeightProfile(altitude01, topAlt);
+        const profile: any = cloudHeightProfile(altPerturbed, topAlt);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const coverageProfile: any = coverage.mul(profile);
 
@@ -709,9 +906,18 @@ export function marchCloudVolume({
               t.subAssign(dtSkip.mul(0.5));
               stepMode.assign(1);
               emptyStreak.assign(0);
-              // Capture cloud-front depth on first hit (sentinel was -1).
+              // Capture cloud-front depth + co-located variables on first
+              // hit (sentinel was -1). Used by the band-debug viz modes:
+              // if the visible bands correspond to iso-X for some X, the
+              // corresponding debug viz will show iso-colour bands at the
+              // same screen positions where the user sees them.
               If(firstHitT.lessThan(0), () => {
                 firstHitT.assign(t);
+                altAtHit.assign(altitude01);
+                altPerturbedAtHit.assign(altPerturbed);
+                profileAtHit.assign(profile);
+                coverageAtHit.assign(coverage);
+                baseCloudAtHit.assign(baseCloud);
               });
             }).Else(() => {
               // ── Steady-state dense: full sample + accumulate ──
@@ -751,10 +957,6 @@ export function marchCloudVolume({
                 .clamp(0, 1);
               finalDensityNorm.assign(eroded);
 
-              // Phase B: apply the cloud-type vertical profile AFTER
-              // erosion. The eroded silhouette stays consistent across the
-              // slab; the profile shapes the density magnitude with
-              // altitude.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const density: any = finalDensityNorm.mul(profile).mul(densScale);
 
@@ -934,6 +1136,94 @@ export function marchCloudVolume({
       };
     }
 
+    // ── Band-isolation viz modes ──
+    // Each shows a per-pixel value evaluated AT the first-hit point. The
+    // visible bands in "off" mode should also be visible (as iso-colour
+    // contours) in whichever mode corresponds to the band's root cause.
+    // Pixels that never hit cloud: black (sentinel = -1 → hit = false).
+    if (
+      DEBUG_VIZ === "altAtHit" ||
+      DEBUG_VIZ === "altPerturbedAtHit" ||
+      DEBUG_VIZ === "profileAtHit" ||
+      DEBUG_VIZ === "coverageAtHit" ||
+      DEBUG_VIZ === "baseCloudAtHit"
+    ) {
+      // Which value to visualise (already in [0, 1] for all these except
+      // -1 sentinel; sentinel maps to 0 below).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let v: any;
+      switch (DEBUG_VIZ) {
+        case "altAtHit":
+          v = altAtHit;
+          break;
+        case "altPerturbedAtHit":
+          v = altPerturbedAtHit;
+          break;
+        case "profileAtHit":
+          v = profileAtHit;
+          break;
+        case "coverageAtHit":
+          v = coverageAtHit;
+          break;
+        case "baseCloudAtHit":
+          v = baseCloudAtHit;
+          break;
+      }
+      const hit = firstHitT.greaterThan(0);
+      const vClamped = v.max(0).clamp(0, 1);
+      // Jet ramp (same as firstHit) so subtle gradients are easier to read
+      // than grayscale. blue→cyan→green→yellow→red across [0, 1].
+      const r = smoothstep(float(0.5), float(0.9), vClamped);
+      const g = float(1)
+        .sub(smoothstep(float(0.7), float(1.0), vClamped))
+        .mul(smoothstep(float(0.2), float(0.5), vClamped));
+      const b = float(1).sub(smoothstep(float(0.3), float(0.6), vClamped));
+      return {
+        rgba: vec4(
+          hit.select(r, float(0)),
+          hit.select(g, float(0)),
+          hit.select(b, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    // ── lightingOnly: cloud colour without alpha modulation ──
+    // Reveals what the cloud LOOKS like (sun lighting, phase, MS, sky
+    // contribution) independent of how transparent the alpha is.
+    // - Stripes here but NOT in 'alpha' → stripes are in the colour /
+    //   lighting computation (cone light march, phase, etc.).
+    // - Stripes in 'alpha' too → alpha integration has them.
+    // - Smooth here but stripes in 'off' → composition with the underlying
+    //   scene is what makes them visible (e.g. partial alpha showing
+    //   flat-overlay artifacts through).
+    if (DEBUG_VIZ === "lightingOnly") {
+      // Unpremultiply colour by alpha. Reinhard tone map so HDR brightness
+      // (sunColor × 21 etc.) fits into [0, 1] for visualisation.
+      const unpremul = col.div(alpha.max(0.001));
+      const toneMapped = unpremul.div(unpremul.add(1));
+      const hit = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hit.select(toneMapped.x, float(0)),
+          hit.select(toneMapped.y, float(0)),
+          hit.select(toneMapped.z, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    // Far-LOD fade was here (12–20 km, then 30–50 km). Both ranges killed
+    // opacity for cloud bodies in the typical viewing-distance band.
+    // Removed for now — the volumetric marches its full ~48 km reach
+    // and the flat overlay in earth.ts shows through where the volumetric
+    // alpha is 0 (clear sky or pixels that missed the slab). Distant
+    // pixels will still produce noise; that's a separate problem for the
+    // far-LOD architecture and we'll revisit once the near-cloud
+    // appearance is fixed (Issue #2: Perlin-Worley R channel).
+    //
     // Premultiplied output — `col` is already color·α from front-to-back
     // accumulation. Blending is configured with (ONE, 1-α) to match.
     // Scale BOTH channels by the crossfade factor: since the framebuffer math

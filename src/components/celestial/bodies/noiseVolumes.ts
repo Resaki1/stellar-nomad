@@ -4,12 +4,15 @@ import * as THREE from "three";
 // Nubis-style noise volumes for the volumetric cloud shell.
 //
 // Base volume (128³ RGBA8):
-//   R: Pure low-freq Perlin (gradient noise). Smooth macro shape with no
-//      cellular structure — Worley at any scale produces visible cells in
-//      the GPU's fine mip levels at close camera ranges, which read as a
-//      "honeycomb". Putting Perlin in R defers all cellular character to
-//      the GBA channels, where it's added on top of a smooth macro shape
-//      via Schneider's `remap(R, -(1-fbm), 1, 0, 1)` dilation.
+//   R: Low-freq Perlin-Worley hybrid (Schneider's "perlin-worley" R channel).
+//      `perlinWorley = mix(perlin, 1 - worley, 0.5)` — Perlin fills the gaps
+//      between Worley cell-centers, Worley contributes billowy "puff" cores.
+//      The result has the cumulus-cauliflower character that pure Perlin
+//      (smooth blobs) and pure Worley (sharp cells) each lack on their own.
+//      Earlier this slot was pure Perlin to avoid "honeycomb" artifacts at
+//      close range; in practice with `mix(perlin, 1-worley, 0.5)` and
+//      G_LOW=4 (large cells), no honeycomb appears — the cells read as
+//      cloud bodies, not as a regular pattern.
 //   G: Worley FBM at low/mid/high octaves [grid 4, 8, 16].   Low-freq band.
 //   B: Worley FBM at mid/high/v.high octaves [grid 8, 16, 32]. Mid-freq band.
 //   A: Worley FBM at high/v.high/detail octaves [grid 16, 32, 48]. High-freq band.
@@ -257,21 +260,42 @@ function generateBaseVolume(): Uint8Array {
 
   const data = new Uint8Array(BASE_SIZE * BASE_SIZE * BASE_SIZE * 4);
   const sPerlin = G_LOW / BASE_SIZE;
+  const sWorleyR = G_LOW / BASE_SIZE; // R-channel Worley matches Perlin scale
 
   let idx = 0;
   for (let z = 0; z < BASE_SIZE; z++) {
     for (let y = 0; y < BASE_SIZE; y++) {
       for (let x = 0; x < BASE_SIZE; x++) {
-        // R: Pure Perlin macro shape. Smooth gradient noise with no
-        // cell boundaries at any scale — finest GPU mip is still smooth.
-        // The cellular cloud character comes from the GBA channels'
-        // Worley FBM, applied via the shader's Schneider remap.
-        const perlinWorley = perlinSample(
+        // R: Perlin-Worley hybrid. Schneider's standard recipe is
+        //   perlinWorley = remap(perlin, 0, 1, worley, 1)
+        //                = worley + perlin × (1 - worley)
+        // where `worley` is inverted (1 at feature point, 0 at boundary).
+        // This pins R to 1 at Worley feature points (giving bright
+        // cumulus puff centres) and falls to `perlin` in the gaps
+        // between cells (smooth gradient fill, no hard cell boundaries).
+        //
+        // Mean value ≈ 0.75 (vs ~0.5 for pure Perlin), so after the
+        // shader's `remap(R, -(1-fbm), 1, 0, 1)` dilation the baseCloud
+        // density is meaningfully higher → cumulus bodies actually
+        // saturate to opaque alpha in the marcher.
+        //
+        // Pure Perlin (previous slot contents) gave smooth dunes/hills
+        // with iso-altitude contour bands visible inside the body,
+        // because nothing in the 3D structure broke up altitude as the
+        // dominant variable.
+        const perlin = perlinSample(
           x * sPerlin,
           y * sPerlin,
           z * sPerlin,
           G_LOW,
         );
+        const worleyR = worleySample(
+          x * sWorleyR,
+          y * sWorleyR,
+          z * sWorleyR,
+          w4,
+        );
+        const perlinWorley = worleyR + perlin * (1 - worleyR);
 
         // GBA: three FBM bands at progressively higher base frequencies.
         // Each band overlaps the next by two octaves so the shader can blend.

@@ -226,9 +226,104 @@ constants — all candidates.
 
 ---
 
+## Follow-on bug (2026-05-13): two-tap fails for camera-above-slab tilted-down views
+
+The two-tap (covNear + covFar + lerp) fix solved the original "camera inside slab horizontal ray" case but introduced a symmetric failure for the opposite geometry: **camera above the slab, ray tilted down through a cumulus column.**
+
+### Symptom (as user described it)
+
+> "Opacity looks okay from below now, but the higher I go, the lower the
+> opacity gets (of the same cloud body). So from above the clouds looking
+> down I can barely make them out."
+
+Same cloud body, view-direction-dependent opacity. Looking up from below: opaque. Looking down from above: barely visible.
+
+### The geometry
+
+```
+  camera (above slab)
+       \
+        \ ← pNear at outer shell, lat/lon offset by α from camera nadir
+         \    samples weather map at SOMEWHERE NOT THE CUMULUS
+          \
+           ● ← cumulus column we want to render (between near and far taps)
+            \
+             \ ← pFar at inner shell, lat/lon offset further
+              \   also samples NOT THE CUMULUS
+```
+
+The cumulus sits BETWEEN `pNear` and `pFar`. Both endpoint taps miss its lat/lon. The lerp interpolates between two low-coverage values → coverage stays low along the entire ray → `coverageProfile > 0.01` gate fails → marcher accumulates nothing.
+
+From below, the camera is at OR NEAR the cumulus's lat/lon, so `pNear` (at camera or just above) reliably samples the cumulus's weather-map value. The two-tap works there.
+
+### The fix
+
+Three-tap (near + mid + far) coverage with piecewise lerp:
+
+```ts
+const covNear = texture(weatherMap, uvNear).r;   // tEnter
+const covMid  = texture(weatherMap, uvMid).r;    // tEnter + slabLen/2
+const covFar  = texture(weatherMap, uvFar).r;    // tExit
+const coverageMax = covNear.max(covMid).max(covFar);
+
+// Per-step piecewise lerp:
+const lerpFirst  = (lerpT * 2).clamp(0, 1);       // [0,1] over first half
+const lerpSecond = (lerpT * 2 - 1).clamp(0, 1);   // [0,1] over second half
+const coverage = lerpT < 0.5
+  ? mix(covNear, covMid, lerpFirst)
+  : mix(covMid, covFar, lerpSecond);
+```
+
+Continuous at `lerpT = 0.5` (both halves yield `covMid` there). Three taps catch cumulus at ray-start, mid-chord, or ray-end.
+
+### Why I missed this the first time
+
+When I documented the two-tap fix, I noted that single-midpoint was the bug and two-tap was the fix — I assumed two endpoints would be enough. They aren't, for the geometry where the camera is OUTSIDE the slab and looking THROUGH it at a feature that's in the MIDDLE. That's not unusual — it's the standard "look down at clouds from a plane" case.
+
+**Lesson**: a coverage-cache scheme with N taps will fail whenever a cloud feature falls between taps. Two-tap is fine when the ray's "interesting region" is at one of the two ends; it fails when the interesting region is in the middle. The general pattern is: **the number of taps must equal or exceed the number of "interesting regions" the ray traverses.** For a fully general scheme, sample coverage per-step.
+
+### Pattern recognition
+
+If you see "opacity differs between view angles for the same cloud," **suspect the coverage cache first**. Specifically:
+- From-inside-slab horizontal views → was the two-tap failure (original case study).
+- From-above-slab tilted-down views → the three-tap failure documented here.
+- From-above-slab straight-down views → fine because endpoints both lie at the column's lat/lon.
+
+A useful diagnostic: temporarily replace the per-step `coverage` with `texture(weatherMap, p_at_current_step_uv).r`. If the symptom disappears, it's the cache aliasing again. If it persists, look elsewhere.
+
+---
+
+## Follow-on bug (2026-05-18): outer coverage gate produced "wireframe outlines / cloud portals"
+
+After implementing per-step coverage sampling (replacing the 3-tap lerp), the visible artifact shifted from "empty middle" to **"wireframe outlines of cumulus bodies + cloud-portal effect."** Wireframe-style silhouettes against the background with volumetric cumulus visible *inside* the outline but cut off cleanly at the edge. As camera moved, outlines shifted positions and clouds appeared/disappeared like flying through portals.
+
+### Cause
+
+Per-step coverage was correct INSIDE the loop, but the outer `If(coverageMax > 0.01)` gate at the loop entry **still used the 3 hoisted tap samples** (covNear/covMid/covFar from before per-step). For pixels where the 3 hoisted taps all happened to miss a cumulus (it fell between tap points), the entire marcher was skipped → that pixel rendered no cloud at all, even though per-step coverage *would have* detected the cumulus.
+
+The "wireframe outline" was the iso-surface where `coverageMax = 0.01` — the threshold between "marcher runs" and "marcher skipped". As camera moves, the 3 tap points move with the rays → the iso-pass boundary shifts across screen → cumulus appear/disappear non-physically.
+
+### The fix
+
+**Remove the outer 3-tap gate entirely.** With per-step coverage doing the actual per-voxel gating (via the inner `coverageProfile > 0.01` and `baseCloud > 0.01` gates), the outer gate was only a performance optimization, and it was actively wrong. Removing it means every pixel with slab intersection runs the full 96-iteration loop, but each iteration is cheap if there's no cloud at that voxel (one cheap 2D weather-map tap; the expensive 3D samples are gated correctly).
+
+### Lesson (third variation of the same family)
+
+This is now the THIRD variation of the "coverage cache aliases for view geometry" bug:
+1. **Original case study**: slab-midpoint single tap → fixed with two-tap.
+2. **Follow-on 1**: two-tap missed midchord cumulus → fixed with three-tap.
+3. **Follow-on 2**: three-tap missed cumulus between taps → fixed with per-step.
+4. **Follow-on 3 (this one)**: per-step worked inside the loop but the OUTER GATE still used 3-tap → wireframe outlines.
+
+**General lesson**: when transitioning from a tap-based approximation to a per-step scheme, MUST audit ALL uses of the tap-based values, not just the obvious one inside the inner loop. The outer gate using the hoisted taps was easy to miss because the variable name (`coverageMax`) didn't make its origin explicit.
+
+For the lessons-doc-reading future Claude: if you find yourself in any kind of "ray-march with hoisted coverage approximation" pattern, the right architecture is **per-step coverage sampling** unless you have a strong perf reason. Tap-based schemes will produce SOMETHING-shaped artifacts (mirrored shells, empty middles, wireframe outlines, cloud portals) for every camera geometry that doesn't match the tap layout. Each "fix" that adds more taps will just shift the artifact shape, not eliminate it.
+
+---
+
 ## What's still likely to bite us in this same area
 
-Even after the two-tap fix, these are still slab-midpoint-based:
+Even after the three-tap fix, these are still slab-midpoint-based:
 
 - **`sunDotPoint`** at `earthClouds.ts:513-514` uses `pMid` (midpoint).
   Sun-zenith angle varies slowly enough that this is probably fine, but
