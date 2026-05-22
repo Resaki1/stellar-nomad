@@ -290,10 +290,14 @@ export function setupFullscreenCloudPass(
       return vec4(hit, hit, hit, float(1));
     }
 
-    // marchCloudVolume returns `{ rgba, tFront }`. tFront is kept for a
-    // future MRT-friendly per-pixel reprojection path; D6 uses outer-shell
-    // intersection instead (cheaper, doesn't need MRT plumbing).
-    const { rgba } = marchCloudVolume({
+    // marchCloudVolume returns `{ rgba, tFront }`. tFront is the t-value at
+    // which the SKIP-mode march first detected cloud along this ray
+    // (sentinel -1 = no hit). Used below as the per-pixel reprojection depth
+    // — replaces an earlier outer-shell-t approximation that was off by up
+    // to 13 km from the actual cloud surface (sub-pixel error at orbital
+    // altitudes, a few pixels at close range). tFront lands reprojection
+    // exactly on the cloud surface the pixel sampled last frame.
+    const { rgba, tFront } = marchCloudVolume({
       roEarth,
       rdEarth,
       sunDirEarth,
@@ -314,24 +318,27 @@ export function setupFullscreenCloudPass(
     });
 
     // ── Phase D6: temporal reprojection blend ──
-    // Choose a per-pixel "reprojection depth" tReproj. Sky pixels (ray
-    // misses outer shell) get a far constant — sky doesn't parallax under
-    // camera translation, so any large value is correct. Cloud-disk pixels
-    // get the outer-shell entry t — this puts the reprojection at the top
-    // of the cloud slab (off by 1–13 km from the actual cloud surface,
-    // which is sub-pixel error at all orbit altitudes and a few-pixel
-    // smear at very close range).
+    // Per-pixel reprojection depth, in order of preference:
+    //   1. tFront (true cloud-front depth) — when the marcher actually hit
+    //      cloud. This is the depth of the visible cloud surface, so
+    //      reprojection lands EXACTLY on the same surface position the
+    //      pixel sampled last frame.
+    //   2. tShell (outer-shell entry) — when the ray hit the slab but
+    //      missed cloud (covers sky-with-shell-grazing pixels).
+    //   3. far constant (1000) — pure sky, ray misses the slab. Sky
+    //      doesn't parallax under translation, so any large value is fine.
     const bShell = dot(roEarth, rdEarth);
     const cShell = dot(roEarth, roEarth)
       .sub(opts.uOuterRadius.mul(opts.uOuterRadius));
     const discShell = bShell.mul(bShell).sub(cShell);
     // Near intersection (ray entering slab from outside).
     const tShell = bShell.negate().sub(sqrt(tslMax(discShell, float(0))));
-    // Use the shell t when the discriminant is positive AND the entry is
-    // ahead of the camera; otherwise fall back to a far depth so pure-sky
-    // pixels still produce a sensible reprojection (rotation-only).
     const useShell = discShell.greaterThan(0).and(tShell.greaterThan(0));
-    const tReproj = useShell.select(tShell, float(1000));
+    // tShell-or-far for the "missed cloud" fallback.
+    const tShellOrFar = useShell.select(tShell, float(1000));
+    // True cloud-front depth when present; otherwise the slab-or-sky depth.
+    const hasCloudFront = tFront.greaterThan(0);
+    const tReproj = hasCloudFront.select(tFront, tShellOrFar);
 
     // World position the current pixel "looked at" this frame, in scaled-
     // world coordinates (the same frame uPrevViewProj operates in).
@@ -406,7 +413,6 @@ export function setupFullscreenCloudPass(
     // Premul colours mix linearly per channel (incl. alpha), so the
     // mix is correct without unpremul/premul round-tripping.
     const final = mix(rgba, historyRgba, finalBlend);
-
     return final;
   })();
 

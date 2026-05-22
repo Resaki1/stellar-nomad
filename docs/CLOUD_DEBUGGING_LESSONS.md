@@ -341,6 +341,62 @@ Even after the three-tap fix, these are still slab-midpoint-based:
 
 ---
 
+## Process lessons from the 2026-05-15 → 2026-05-18 session
+
+This session got the cloud rendering from "complete noise garbage" to "recognisable cumulus bodies". Several meta-lessons surfaced that aren't bug-specific but cost a lot of time to learn the hard way.
+
+### Reasoning failures I made (don't repeat)
+
+1. **Trusted the math over user observation.** Many times I computed "alpha should saturate in N steps, so opacity must be correct" while the user reported "I can see right through clouds." My math was based on assumed-typical density values; actual densities (after coverage modulation + erosion) were much lower than my estimates. **When math says X and observation says ¬X, the math is wrong.** Recompute from observation.
+
+2. **Wrote "should fix it" instead of "let me verify it fixed it."** Every round I'd ship a change and assert it should resolve the issue, then move on. The user repeatedly had to push back. **A fix is not a fix until empirically confirmed.** Always end a round with "test and report what you see," and don't assume the next round can build on the current one.
+
+3. **Took "no visible change" at face value.** Several rounds the user reported edits had no effect. I assumed the edits worked but tested a different parameter. Eventually figured out earlier overrides were still active. **When "no change" is reported, do a smoking-gun test first** (force the output to red / α=1 / something undeniable). Don't propose further diagnostic until verified that *any* edit is reaching the GPU.
+
+4. **Shipped tap-based fixes despite the lessons doc warning against them.** The doc literally said "for a fully general scheme, sample coverage per-step" — and I still did two-tap, then three-tap, before doing per-step. **Re-read the lessons doc before proposing fixes in the same area.** It exists exactly to prevent this.
+
+5. **Conflated "looks like progress" with "is correct."** The user called me out on this: "Don't gaslight me, I know what I am seeing." When the output had clear bugs but partially-recognisable cumulus shapes, I tried to spin it as progress instead of acknowledging the bug. **The user's perception is the ground truth.** If they describe artifacts, those artifacts are real — even if I can't reproduce them from the math.
+
+### Diagnostic techniques that worked
+
+1. **Multi-variable debug viz showing "the same bands in all of them"** was the critical clue that broke the bands diagnosis. The user tested `altAtHit`, `profileAtHit`, `coverageAtHit`, `baseCloudAtHit`, and reported all showed bands at the same screen positions. That should have told me earlier: **if multiple debug visualisations of independent variables show artifacts at identical positions, the cause is in the POSITION computation common to all of them**, not in any one variable. (In our case: the first-hit POSITION was on an iso-density surface that looked banded under all colormaps.)
+
+2. **Constant-override isolation tests.** Setting `coverage = 0.5`, then `baseCloud = 0.5`, then `density = constant`, then `topAlt = constant` in sequence narrowed down which input was producing the bands. Slower than ideal but very informative. Worth doing one at a time even if it feels redundant — false isolations from skipping steps will burn far more time.
+
+3. **The smoking-gun visibility test.** Forcing `vec4(0, 1, 0, 1)` (solid green output) wherever `primaryIters > 0` definitively answered "is the marcher reaching the screen at all" when the user reported repeated "no change" — and revealed that earlier overrides were silently still active.
+
+### Density-tuning order-of-magnitude trap
+
+The user pushed `densMul` from 700 to 1,500,000 (3 orders of magnitude) to make clouds "opaque." It worked visually but masked the real bug: binary saturation at densMul=1.5M made the visible cloud surface a hard iso-density isosurface in 3D, which rendered as visible concentric "contour band" lines on the cumulus body.
+
+**Lesson**: when density "needs to be ridiculously high" to look opaque, the real bug is usually elsewhere (coverage values lower than estimated, gate falsely failing, light path too short). Cranking density to compensate hides the actual problem. Reasonable values for our pipeline: `densMul ≈ 10k–30k` for the current coverage / noise scales.
+
+### `smoothstep` on noise distributions creates bimodal bands
+
+The old `topAlt = 0.4 + smoothstep(0.3, 0.7, perlinSample) × 0.55` produced visible curved stripes on cumulus bodies. Why: Perlin clusters around 0.5; `smoothstep(0.3, 0.7)` stretched that cluster to the full [0, 1] range, making most columns end up either very short or very tall with narrow transitions. Adjacent columns with ~5 km of cloud-band thickness difference projected as hard stripes on viewed cumulus.
+
+**General lesson**: when noise (Perlin / Worley) is being mapped to a value range, `smoothstep` on the noise distribution's central cluster produces bimodal output with sharp boundaries. Use **linear remap** or a much wider smoothstep range (e.g. 0.0 → 1.0). This applies anywhere noise drives a visible parameter.
+
+### Feature-scale must match viewing-distance
+
+`uBaseScale = 250` (1 km cumulus puffs) produced "fine speckle from orbit" because individual puffs were sub-pixel at orbital view distance. Cumulus only became recognisable shapes when we increased to `uBaseScale = 50` (5 km bodies) — even though 5 km cumulus is unrealistically large compared to real Earth's 1–3 km cumulus.
+
+**Lesson**: cumulus feature scale should be chosen for the expected viewing-distance range, not for physical realism. For an orbital-to-aerial flight game, larger cumulus bodies are necessary to remain visible at distance. Reference engines (Nubis/RDR2) often use 5–30 km cumulus for this reason.
+
+### TSL `If(...)` structure has scope side effects
+
+Removing `If(cond, () => { /* loop */ })` and replacing with a plain `{ /* loop */ }` JS block silently broke the marcher — the loop continued to execute in JS but the resulting shader produced α=0 everywhere. Putting back `If(...)` with a trivially-true condition (`coverageMax.greaterThanEqual(0)`) restored correct behaviour.
+
+**Lesson**: don't remove TSL `If(...)` wrappers without understanding the scope implications. If you need to disable a gate, neutralise it with a trivially-true condition (`x.greaterThanEqual(0)` where x is in [0,1]), don't delete it.
+
+### "Running in circles" is a real signal
+
+The user explicitly said "I think we just got something fundamentally wrong" after many rounds of micro-tweaks. That forced me to propose an architectural change (uBaseScale increase) instead of more parameter tuning, which IS what was needed.
+
+**Lesson**: when the user reports the same complaint two rounds in a row, **stop tuning and step back**. Re-evaluate architectural assumptions. The third "let me try one more thing" round is almost never the answer.
+
+---
+
 ## How to use this file
 
 - Open it whenever working on cloud rendering bugs.
@@ -351,3 +407,181 @@ Even after the three-tap fix, these are still slab-midpoint-based:
 
 The user has explicitly asked me to maintain this. Treat updates as part
 of the work, not extra effort.
+
+---
+
+## Case study #2: "moving vertical-ish stripes on cloud surfaces at close range"
+
+### Symptom (as the user described it)
+
+> "Stripes alternating between higher and lower transparency/white. They move
+> along the clouds as I fly forward, so they are not fixed to a specific
+> relative position on the cloud. The faster I fly, the faster they move.
+> Only visible close to clouds, not from orbit."
+
+Mostly vertical with curvature following the cloud surface. Visible in the
+"off" normal-rendering mode AND **in every single DEBUG_VIZ diagnostic mode
+I tried**: `alpha`, `iters`, `firstHit`, `altAtHit`, `altPerturbedAtHit`,
+`profileAtHit`, `coverageAtHit`, `baseCloudAtHit`, `lightingOnly`.
+
+### The actual cause
+
+**Automatic mipmap-level selection on 3D noise textures inside a ray-march
+loop with per-pixel dither.**
+
+The noise volumes use `LinearMipMapLinearFilter` (trilinear). The GPU
+computes the mip level per fragment from texture-coord derivatives across
+the 2×2 fragment quad — `(uv at pixel+1, +0) − (uv at pixel+0, +0)` and
+similarly for Y.
+
+For a ray-marched volume:
+
+- The 4 pixels in a quad sample the 3D texture at the same loop iteration
+  but with DIFFERENT `t` values, because per-pixel dither offsets `tStart`
+  by up to `dtSkip` per pixel.
+- Adjacent pixels' rays sample world positions that differ by
+  `dither_diff × dtSkip × ray_dir` — non-negligible.
+- The GPU's derivative computation sees this large positional difference
+  → spuriously high mip level selected → the texture sample is BLURRY at
+  that fragment.
+
+But different quads in different parts of the screen see different mip
+levels, **systematically correlated with iso-distance from the camera**
+(because step-aligned discovery happens at iso-distance contours). The
+LinearMipMapLinear interpolation between two adjacent mip levels produces
+SOFT cross-hatched ridges following those contours.
+
+The result: a fabric-like / brushed-metal band pattern on the cloud
+surface, perfectly camera-relative, present in **every** diagnostic mode
+because every computed value downstream of the texture sample inherits
+the mip-level variation.
+
+### How long it took to find
+
+About a full conversation cycle of failed hypotheses before the right
+test. The wrong paths:
+
+1. **TAA reprojection error** (outer-shell-t depth instead of true cloud-
+   front depth). Plausible — DID find the close-range reprojection-depth
+   bug — but disabling TAA showed bands still present.
+2. **Half-amplitude dither leaving step-grid gaps**. Restoring full
+   amplitude broke one discovery-ring artifact (visible in `firstHit`
+   viz) but not the main bands.
+3. **`fract(sin)` hash directional bias**. Swapped to IGN (Jimenez 2014)
+   thinking the hash was correlated in one axis. Bands still there. **IGN
+   was actually worse** — its lattice structure gave deterministic
+   phase increments between neighbours (0.555 in X, 0.310 in Y) instead
+   of random per-pixel values. Reverted.
+4. **dither itself striped**. Added `'dither'` DEBUG_VIZ mode showing the
+   per-pixel hash output directly. **Looked perfectly uniform.** Bands
+   still there in every other viz. This was the key data point — if the
+   pure dither is uniform but every downstream value is striped, the
+   striping must be introduced by something the dither feeds INTO.
+5. **dtSkip too coarse**. Halved (500→250m, MAX_STEPS 96→192). Made bands
+   WORSE — more, finer stripes. Confirmed step-count multiplier
+   relationship: bands scale with step density, not step spacing.
+6. **`Right answer:` mipmap selection in 3D texture sampling.** The 5th
+   data point — bands scale with step count — was the giveaway, but I
+   only saw it in hindsight. More steps per quad → more derivative
+   variance per quad → more mip-level disagreement → more visible
+   ridges.
+
+### The fix
+
+Force mip 0 on every `texture3D` and `texture` call inside the marcher
+loop:
+
+```ts
+texture3D(baseVolume, p.mul(uBaseScale)).level(int(0))
+texture(weatherMap, uvP).level(int(0)).r
+```
+
+Don't change the texture's `minFilter` — keep mipmaps generated for
+potential future use, just bypass auto-selection inside the marcher.
+
+Cost: zero — `.level(int(0))` is a single GPU instruction. Visual impact:
+bands eliminated. Trade-off: 3D textures will alias at extreme distances
+(no mipmap-based pre-filtering). For the volumetric near-LOD this is
+fine; the far-LOD uses a 2D overlay anyway.
+
+### The pattern to recognise
+
+**Symptom checklist for "auto-mip selection inside a marcher" bug:**
+
+- Bands move with the camera (camera-relative iso-distance contours).
+- Only visible close to clouds (at orbital distance the marcher's per-
+  quad derivatives are small → mip 0 selected anyway).
+- Visible in EVERY DEBUG_VIZ diagnostic, including `iters` (which is
+  literally just a loop counter — proof the bug is in something that
+  modifies the marcher's flow, not in any specific output value).
+- Stripe count scales with `dtSkip` step density. Halving `dtSkip`
+  doubles the stripe count instead of halving it.
+- Bands have a "fabric" / "brushed metal" appearance from soft mip
+  interpolation, NOT sharp ring transitions.
+
+If your symptom matches this list: **don't tune dither, don't tune step
+sizes, don't add cone marching. Add `.level(int(0))` and stop.**
+
+---
+
+## Other lessons from this session
+
+### "Diagnostic shows the artifact in every mode" is a HUGE signal
+
+When EVERY diagnostic shows the same artifact pattern, the artifact is
+NOT in any specific computation. It's in something COMMON to all of
+them — typically:
+
+1. A per-pixel input that drives the entire marcher (the dither in this
+   case — but the `'dither'` viz ruled it out).
+2. The HARDWARE PIPELINE around the marcher (texture sampling, mip
+   selection, derivative computation, RT setup).
+3. The fragment quad's intrinsic 2×2 organisation (mip derivatives,
+   ddx/ddy, anything that fetches "neighbour pixel" info).
+
+When the diagnostic-everywhere signal appears, **stop searching for
+artifacts in the marcher's logic** and look at the hardware-level
+contract: how does the GPU choose mip levels? Are there per-quad
+implicit derivative computations? What does the cloud RT resolution
+look like compared to the screen?
+
+### "Bands scale with step count" is the smoking gun for mip-derivative bugs
+
+If you halve `dtSkip` and the bands DOUBLE instead of going away, that's
+not step aliasing — that's something that scales with the number of
+texture taps inside the loop. Most likely candidate: mip-level
+selection varying per quad based on per-step coord derivatives.
+
+### Always test a hypothesis with the cheapest possible isolation first
+
+Before swapping IGN for sin-hash, I should have visualised the dither
+DIRECTLY (`'dither'` DEBUG_VIZ). One test, one screenshot, immediately
+told us the dither was uniform. That would have ruled out the entire
+"hash bias" hypothesis chain in 30 seconds instead of two iteration
+rounds.
+
+**Lesson**: when a "downstream value is striped" hypothesis exists, find
+a viz that shows the upstream value DIRECTLY (no marcher logic in
+between). If the upstream is clean, skip the hypothesis entirely.
+
+### Floating-origin texture precision is NOT the issue at this magnitude
+
+I briefly considered that `p × uBaseScale ≈ 320` was losing float32
+precision in the texture-coord computation. The math doesn't work out:
+float32 ULP at magnitude 320 is ~3e-5, adjacent pixels' positional
+differences are ~1e-4 to 1e-3 in texture-coord space — well above ULP.
+The hardware filter has its own quantisation but not coarse enough to
+cause visible artifacts at this scale.
+
+This was a deep-end hypothesis that would have been a big refactor for
+no win. Resist the urge to chase precision/floating-origin theories
+when the actual cause is much closer to the surface (texture API usage).
+
+### Half-res RT amplifies any per-fragment-quad artifacts
+
+The cloud RT runs at 0.5× scale. Every per-quad behavior is amplified
+because each cloud-RT pixel covers 2×2 final pixels — bilinear upsample
+spreads each quad's mip-level decision over a soft 4-pixel area. This
+makes the mip-ridge artifact MORE visible, not less. If you ever switch
+to full-res RT, the same artifact would still exist but as a sharper
+1-pixel transition (less visible to the eye).
