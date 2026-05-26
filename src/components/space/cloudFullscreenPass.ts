@@ -75,6 +75,14 @@ export type FullscreenCloudPass = {
    *   / RT pixel dim).
    * - `prevViewProj`: scaled-camera VP snapshotted at the end of the
    *   previous frame.
+   * - `originShiftScaled`: (currentOriginKm − prevOriginKm) × SCALED_UNITS_PER_KM.
+   *   The floating origin slides every frame to track the ship (see
+   *   `Spaceship.tsx`), so the same world-space cloud point has different
+   *   scaled coordinates in consecutive frames. Adding this shift to the
+   *   current-frame scaled hit point before multiplying by `uPrevViewProj`
+   *   expresses the point in the *previous* frame's coordinate space —
+   *   without it, reprojection error grows linearly with ship velocity
+   *   and history blends from the wrong screen UV (visible as smearing).
    * - `historyTexture`: the off-parity cloud RT's colour attachment. The
    *   shader reprojects to it and exponentially blends.
    * - `historyValid`: 0 = ignore history (first frame, post-rebase, after
@@ -85,6 +93,7 @@ export type FullscreenCloudPass = {
     earthMesh: THREE.Object3D,
     jitterUv: THREE.Vector2,
     prevViewProj: THREE.Matrix4,
+    originShiftScaled: THREE.Vector3,
     historyTexture: THREE.Texture,
     historyValid: number,
   ) => void;
@@ -201,6 +210,22 @@ export function setupFullscreenCloudPass(
   // 1–13 km below the outer shell; reprojection error there is sub-pixel
   // at all orbital altitudes and small-but-finite at close range).
   const uPrevViewProj = uniform(new THREE.Matrix4());
+
+  // Floating-origin shift since the previous frame, in scaled-world units.
+  // The world origin slides every render frame to keep the ship at the local
+  // origin (Spaceship.tsx). Consecutive frames therefore use *different*
+  // scaled-world coordinate systems: a fixed world point P has different
+  // scaled coords each frame. `uPrevViewProj` was built from the previous
+  // frame's view+projection matrices — valid for points expressed in the
+  // *previous* frame's scaled coords. Without correcting for the origin
+  // shift, the reprojection samples the history at the wrong UV during ship
+  // motion and history blends from the wrong screen position (smearing).
+  //
+  // The shift converts the current frame's hit point back into the previous
+  // frame's coordinate system before the matrix multiply:
+  //   P_prev_scaled = P_now_scaled + (originNow_km − originPrev_km) × S
+  // where S = SCALED_UNITS_PER_KM.
+  const uOriginShiftScaled = uniform(new THREE.Vector3());
 
   // Phase D6: history texture (the *other* ping-pong cloud RT, swapped each
   // frame by SpaceRenderer via `updateUniforms`). Bound to a 1×1 placeholder
@@ -340,10 +365,16 @@ export function setupFullscreenCloudPass(
     const hasCloudFront = tFront.greaterThan(0);
     const tReproj = hasCloudFront.select(tFront, tShellOrFar);
 
-    // World position the current pixel "looked at" this frame, in scaled-
-    // world coordinates (the same frame uPrevViewProj operates in).
+    // World position the current pixel "looked at" this frame, expressed
+    // in THIS frame's scaled-world coordinates (origin = current ship pos).
     const reprojWorldPos = uCameraScaledPos.add(rdScaled.mul(tReproj));
-    const prevClip = uPrevViewProj.mul(vec4(reprojWorldPos, 1));
+    // Shift into the PREVIOUS frame's scaled-world coords before applying
+    // uPrevViewProj. See uOriginShiftScaled comment above — without this,
+    // every ship-motion frame mis-aligns the reprojection by the per-frame
+    // origin slide (= ship displacement converted to scaled units), which
+    // accumulates as a velocity-proportional smear in the history blend.
+    const reprojPrevFramePos = reprojWorldPos.add(uOriginShiftScaled);
+    const prevClip = uPrevViewProj.mul(vec4(reprojPrevFramePos, 1));
     const prevNdcX = prevClip.x.div(prevClip.w);
     const prevNdcY = prevClip.y.div(prevClip.w);
     // NDC.y → screenUV.y flips: NDC.y=+1 is top, screenUV.y=0 is top.
@@ -427,6 +458,7 @@ export function setupFullscreenCloudPass(
     earthMesh: THREE.Object3D,
     jitterUv: THREE.Vector2,
     prevViewProj: THREE.Matrix4,
+    originShiftScaled: THREE.Vector3,
     historyTexture: THREE.Texture,
     historyValid: number,
   ) => {
@@ -439,6 +471,7 @@ export function setupFullscreenCloudPass(
     uEarthInverseModel.value.copy(earthMesh.matrixWorld).invert();
     uJitterUv.value.copy(jitterUv);
     uPrevViewProj.value.copy(prevViewProj);
+    uOriginShiftScaled.value.copy(originShiftScaled);
     // Swap the history binding to whichever ping-pong RT held the
     // previous frame. WebGPU rebinds the bind group on texture-identity
     // change; format must match (both RTs use HalfFloatType, so OK).

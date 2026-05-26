@@ -6,7 +6,11 @@ import * as THREE from "three";
 import { NodeMaterial, RenderPipeline, RenderTarget } from "three/webgpu";
 import { texture, screenUV } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
-import { LOCAL_TO_SCALED_FROM_LOCAL_UNITS } from "@/sim/units";
+import {
+  LOCAL_TO_SCALED_FROM_LOCAL_UNITS,
+  SCALED_UNITS_PER_KM,
+} from "@/sim/units";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 import { HalfFloatType, AgXToneMapping, NeutralToneMapping, NoToneMapping } from "three";
 import { useAtomValue } from "jotai/react";
 import { settingsAtom } from "@/store/store";
@@ -37,6 +41,7 @@ const tempScaledPos = new THREE.Vector3();
 const tempClearColor = new THREE.Color();
 const tempJitter = new THREE.Vector2();
 const tempViewProj = new THREE.Matrix4();
+const tempOriginShiftScaled = new THREE.Vector3();
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
 
@@ -84,6 +89,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const localCamera = useThree(
     (state) => state.camera as THREE.PerspectiveCamera
   );
+  // Floating-origin tracking. `worldOriginKm` is mutated every frame by
+  // Spaceship.tsx to follow the ship's interpolated position, so the
+  // scaled-world coordinate system slides under static objects from one
+  // frame to the next. The cloud pass's TAA reprojection must subtract
+  // this slide before sampling the history RT — see uOriginShiftScaled
+  // in cloudFullscreenPass.ts.
+  const worldOrigin = useWorldOrigin();
 
   const scaledCamera = useMemo(() => localCamera.clone(), [localCamera]);
 
@@ -215,6 +227,15 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // Phase D3: previous frame's combined view-projection matrix in scaled
   // world space, snapshotted at end of frame. Identity on the first frame.
   const prevCloudViewProj = useRef(new THREE.Matrix4());
+  // Phase D3+: previous frame's world origin (km). Used together with
+  // prevCloudViewProj to express this frame's reprojection target in the
+  // *previous* frame's scaled coordinate system. Without this, the
+  // floating origin (which slides every frame in Spaceship.tsx) introduces
+  // a velocity-proportional offset in the history sample UV.
+  // `hasPrevWorldOrigin` is false on the very first render and is also
+  // reset whenever we choose to invalidate history mid-session.
+  const prevWorldOriginKm = useRef(new THREE.Vector3());
+  const hasPrevWorldOrigin = useRef(false);
   // Phase D6: history-validity flag passed to the cloud pass each frame.
   // Starts at 0 so the first cloud render outputs only the new sample
   // (history is uninitialised). Flips to 1 after one full cycle. Reset to
@@ -223,6 +244,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const cloudHistoryValid = useRef(0);
   useEffect(() => {
     cloudHistoryValid.current = 0;
+    hasPrevWorldOrigin.current = false;
   }, [cloudRts]);
 
   useFrame(() => {
@@ -295,11 +317,24 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       // something coherent to sample. cloudHistoryValid is 0 on the first
       // post-mount frame so the shader skips the blend; flips to 1 after.
       const historyRt = cloudRts[writeIdx ^ 1];
+      // Origin shift = (currentOriginKm − prevOriginKm) × SCALED_UNITS_PER_KM.
+      // First frame after mount / resize / pass resume → no valid previous
+      // origin yet; zero the shift (history is invalid this frame anyway,
+      // gated by cloudHistoryValid).
+      if (hasPrevWorldOrigin.current) {
+        tempOriginShiftScaled
+          .copy(worldOrigin.worldOriginKm)
+          .sub(prevWorldOriginKm.current)
+          .multiplyScalar(SCALED_UNITS_PER_KM);
+      } else {
+        tempOriginShiftScaled.set(0, 0, 0);
+      }
       fullscreenPass.updateUniforms(
         scaledCamera,
         earthMesh,
         tempJitter,
         prevCloudViewProj.current,
+        tempOriginShiftScaled,
         historyRt.texture,
         cloudHistoryValid.current,
       );
@@ -317,6 +352,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       gl.autoClear = true;
       gl.clear();
       cloudHistoryValid.current = 0;
+      // Pass is dormant; the prev origin snapshot is no longer meaningful
+      // for the next active frame either. Clear so the first resumed frame
+      // takes the "no shift, history invalid" branch above.
+      hasPrevWorldOrigin.current = false;
     }
 
     gl.setClearColor(tempClearColor, savedClearAlpha);
@@ -366,6 +405,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       scaledCamera.matrixWorldInverse,
     );
     prevCloudViewProj.current.copy(tempViewProj);
+    // Snapshot the world origin alongside the VP matrix — both describe
+    // *this* frame's scaled coordinate system, and reprojection next frame
+    // needs both to be consistent. (Spaceship.tsx mutates worldOriginKm
+    // before each render frame, so the value we read here is the one the
+    // scaled scene was just rendered with.)
+    prevWorldOriginKm.current.copy(worldOrigin.worldOriginKm);
+    hasPrevWorldOrigin.current = true;
   }, 1);
 
   return (
