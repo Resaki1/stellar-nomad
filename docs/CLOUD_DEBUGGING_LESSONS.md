@@ -1023,3 +1023,122 @@ tweaks produce <10% perceptual improvement each. At that point, structural
 changes (new asset, new feature, different algorithm) are the only path
 forward. Better to ship "good enough" + plan structural work than to
 keep tweaking parameters.
+
+---
+
+## Case study #6 — Floating-origin reprojection (2026-05-27)
+
+### Symptom
+
+After Phase B landed, the user reported residual cloud smearing during fast
+camera motion. The expectation from Phase D plumbing was that TAA history
+blends would smoothly reconstruct cloud detail across frames. Instead,
+during fast translational motion the clouds smeared into directional streaks
+in the direction of camera motion, proportional to velocity.
+
+The behaviour was invisible at low speed (smear less than a pixel per frame
+went unnoticed) and dramatic at high speed (smear visible across many pixels).
+A "smeary trail" in screen-space tracking the cloud bodies, not view-aligned
+ghost trails.
+
+### Initial wrong hypothesis
+
+First instinct: TAA history blend weight too high (0.95); the long
+exponential is holding onto multiple frames of cloud sampled from very
+different viewpoints. The view-dependent radiance differences (Henyey-Greenstein
+phase, multi-scatter direction) leak into the blend.
+
+This is real, but it's not the *primary* cause. Lowering the blend weight
+would mask the symptom but not fix the root.
+
+### Diagnostic that found the real cause
+
+Re-reading `cloudFullscreenPass.ts:D3` reprojection code:
+
+```ts
+const reprojWorldPos = uCameraScaledPos.add(rdScaled.mul(tReproj));
+const prevClip = uPrevViewProj.mul(vec4(reprojWorldPos, 1));
+```
+
+Looks correct at first glance — the world-space hit point is multiplied by
+the previous-frame view-projection matrix to get the previous-frame screen UV.
+
+**The hidden assumption**: `reprojWorldPos` and `uPrevViewProj` are in the
+*same* coordinate system. If they're not, the reprojection is geometrically
+wrong even though the linear-algebra is fine.
+
+Tracing the coordinate-system assumption back to `Spaceship.tsx:398`:
+
+```ts
+worldOrigin.setWorldOriginKm(_localRel);
+```
+
+This runs **every frame**. The world origin slides every frame to follow the
+ship's interpolated position. So scaled-world coordinates are not fixed
+across frames — the same real-world point has different scaled-world coords
+at frame N vs frame N-1.
+
+The TAA-reprojection plan in `VOLUMETRIC_CLOUDS_PLAN.md` had assumed origin
+*rebases* (discrete threshold-triggered events) and specced
+`cloudHistoryValid = 0` on rebase as the invalidation mechanism. The
+prerequisite "the world origin is stable between rebases" was simply
+not true in this codebase.
+
+### Fix
+
+Snapshot the world origin alongside the previous-frame view-projection
+matrix at end-of-frame. Each frame, compute the delta between current and
+previous origin (in scaled units) and add it to the world hit point before
+the matrix multiply:
+
+```ts
+// In SpaceRenderer:
+tempOriginShiftScaled
+  .copy(worldOrigin.worldOriginKm)
+  .sub(prevWorldOriginKm.current)
+  .multiplyScalar(SCALED_UNITS_PER_KM);
+fullscreenPass.updateUniforms(..., tempOriginShiftScaled, ...);
+
+// In cloudFullscreenPass:
+const reprojPrevFramePos = reprojWorldPos.add(uOriginShiftScaled);
+const prevClip = uPrevViewProj.mul(vec4(reprojPrevFramePos, 1));
+```
+
+The math is exact: if `P_now_scaled = (P_km - O_now) × S` and
+`P_prev_scaled = (P_km - O_prev) × S`, then
+`P_prev_scaled = P_now_scaled + (O_now - O_prev) × S`. The shift is just
+that delta.
+
+### Why this is a meta-lesson, not just a bug
+
+Three patterns to learn from:
+
+1. **Plumbing assumptions need to be verified against the actual code**,
+   not against the documented intent. The plan doc said "history invalidated
+   on rebase"; the code said "origin slides every frame". The plan was wrong;
+   the code was the source of truth. Always trace assumptions back to
+   running code.
+
+2. **A bug that's invisible at low velocity and unbounded at high velocity
+   is the signature of a missing per-frame correction term.** If the
+   symptom-magnitude scales linearly with frame-to-frame state delta, you're
+   missing exactly one delta-handling term somewhere in the math.
+
+3. **Reprojection requires coordinate-system invariance between frames.**
+   Any time you use a previous-frame transform on a current-frame quantity,
+   audit whether the underlying space is the same. Floating origin,
+   billboard rotations, animation rebase events — anything that can slide
+   the frame of reference between renders is suspect.
+
+### Cost of finding this
+
+About 1.5 hours of debugging, including:
+- ~30 min trying to attribute the smear to view-dependent radiance (correct
+  but secondary)
+- ~30 min reading `cloudFullscreenPass.ts` for off-by-one matrix issues
+- ~30 min tracing the coordinate-system flow through SpaceRenderer →
+  cloudFullscreenPass → marcher → back to where origin gets set
+- 5 min implementing the fix once the cause was clear
+
+Total fix: ~30 lines of code across two files. The diagnosis was 95% of the
+work.

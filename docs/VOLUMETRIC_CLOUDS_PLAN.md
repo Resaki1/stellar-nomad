@@ -187,6 +187,16 @@ the plan.
 Half-res HalfFloatType cloud RT, premultiplied alpha, bilinear upsample
 composite, TAA reprojection via tFront, planet-occlusion clamp from day 1.
 
+**Phase D prerequisite — origin-shift reprojection (2026-05-27)** completed
+ahead of full Phase D. The world origin slides every render frame to follow
+the ship (see `Spaceship.tsx`), so consecutive frames use different
+scaled-world coordinate systems. The reprojection now adds
+`(currentOriginKm - prevOriginKm) * SCALED_UNITS_PER_KM` to the world hit
+point before multiplying by the previous-frame view-projection. Without
+this, every TAA blend was geometrically wrong by ship-displacement-per-frame
+— visible as velocity-proportional smear at high speed. See
+`CLOUD_DEBUGGING_LESSONS.md` case study #6.
+
 ### Current tuning constants (representative — see code comments for rationale)
 
 | Constant | Value | Role |
@@ -641,127 +651,289 @@ step). Phase D pulls it back hard.
 
 ## Phase D — Temporal reconstruction (the AAA layer)
 
-**Goal**: render `1/16` of pixels per frame, reuse history for the rest. The single
-biggest engineering lift, and the single biggest unlock for matching reference quality
-at sane cost.
+**Goal**: render `1/16` of pixels per frame on a deterministic sub-pixel schedule;
+reconstruct the other 15/16 via reprojection from a full-res history RT. Cuts per-frame
+cloud-march cost by ~16×, which buys the perf headroom for higher-quality marching
+(MAX_STEPS 16→64+, LIGHT_STEPS 3→6) at no net cost.
 
-**Pick one technique and stick to it.** The Nubis approach is *geometric 1/16
-reconstruction* with a deterministic Bayer 4×4 sub-pixel pattern, *not* TAA-style Halton
-jitter on every-pixel rendering. This plan commits to the geometric method. Mixing the
-two (as the previous plan did) causes one to undo the other.
+**Why now**: the current every-frame TAA blend in `cloudFullscreenPass.ts` doesn't
+reduce per-frame work and produces *velocity-proportional smear* at high speed (the
+user-reported symptom). Continuous-TAA mixing 14+ frames of view-dependent radiance
+cannot converge cleanly under fast motion. Geometric reconstruction with proper
+variance clamping is the canonical fix.
 
-### D1. History RT infrastructure
+### Cross-engine learnings folded into this plan
 
-Two RTs ping-pong (read previous, write current):
+Phase D commits to Schneider's HZD-era recipe (1/16 reconstruction, Bayer 4×4 schedule,
+per-pixel reprojection, fresh-neighbourhood variance clamp) with two grafts:
+
+- **STBN jitter from KSP-EVE (Blackrack)**: replace `fract(sin(...))` per-pixel hash
+  with samples from a 128³ R8 spatiotemporal blue noise atlas. Spatially and temporally
+  blue-noise-correlated — perceptually smoother and TAA-friendly. Asset is publicly
+  licensed and already in `docs/VolumetricCloudReferences/.../stbn.R8`.
+- **YCoCg variance clamp from RDR2**: clamp history in chroma space rather than RGB.
+  Less saturation drift on disocclusion; doesn't false-trigger on legitimate dither
+  variance the way our current `motionGate × alphaGate` heuristic does.
+
+Star Citizen's aggressive adaptive stepping and RDR2's 2D-cloud-sheets-for-far-range
+are interesting but out of Phase D scope — they're Phase C polish and Phase F1
+respectively.
+
+### Prerequisites (✅ complete)
+
+- **Camera reprojection** with sub-pixel jitter and history sampling. Done.
+- **Origin-shift correction** for floating-origin reprojection (`uOriginShiftScaled`
+  in `cloudFullscreenPass.ts`). The world origin slides every frame to follow the
+  ship, so consecutive frames use *different* scaled-world coordinate systems for the
+  same fixed world point. Without this correction, every-frame slides produce
+  velocity-proportional smear regardless of how the rest of D is built. See
+  `CLOUD_DEBUGGING_LESSONS.md` case study #6 for the full diagnosis.
+
+### D1. STBN asset + loader
+
+Source: KSP-EVE ships a **128³ R8** STBN volume as `stbn.R8` (raw bytes, 1 MiB).
+
+- Copy to `public/textures/stbn_128.bin`.
+- Build a loader in `src/components/celestial/bodies/stbnTexture.ts`:
+  ```ts
+  export async function loadStbnTexture(): Promise<THREE.Data3DTexture> {
+    const bytes = await fetch("/textures/stbn_128.bin").then(r => r.arrayBuffer());
+    const tex = new THREE.Data3DTexture(new Uint8Array(bytes), 128, 128, 128);
+    tex.format = THREE.RedFormat;
+    tex.type = THREE.UnsignedByteType;
+    tex.minFilter = tex.magFilter = THREE.NearestFilter;     // STBN is sample-as-is
+    tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  ```
+- Bind as a sampler uniform in `cloudFullscreenPass.ts` (`uStbn: texture3D`).
+- In the marcher (`earthClouds.ts`), replace every dither/jitter site (currently the
+  `tStart` jitter on line 431 and any cone-offset jitter) with:
+  ```ts
+  const stbnSample = texture3D(
+    uStbn,
+    vec3(
+      fragCoord.x.mod(128).div(128),
+      fragCoord.y.mod(128).div(128),
+      uFrameSlice,  // wraps 0..1 across 128 frames
+    ),
+  ).r;
+  ```
+  `uFrameSlice` advances by `1/128` per frame, wrapping. Per-pixel value rotates
+  through 128 distinct STBN realisations across the TAA window.
+- Verification: visually identical to today on still cameras; smoother on slow pans.
+
+### D2. Sparse marcher target + 1/16 schedule
+
+Replace half-res `cloudRts[2]` (currently `W/2 × H/2`) with sparse `sparseCloudRts[2]`
+at `W/4 × H/4` — 1/16 the pixel count.
+
+- Add the canonical Bayer4×4 schedule (best-spread ordering: any 4-frame window covers
+  4 spatially separated sub-pixels):
+  ```ts
+  // Standard Bayer 4×4 ordered-dither matrix. M[y][x] = sequence index 0..15.
+  const BAYER_4X4: ReadonlyArray<readonly [number, number]> = [
+    [0,0],[2,2],[2,0],[0,2],[1,1],[3,3],[3,1],[1,3],
+    [1,0],[3,2],[3,0],[1,2],[0,1],[2,3],[2,1],[0,3],
+  ];
+  ```
+- Each frame, `(sx, sy) = BAYER_4X4[cloudFrameIndex % 16]` picks the sub-pixel slot
+  within every 4×4 tile that's marched this frame.
+- The marcher's UV reconstruction shifts so each sparse texel samples the correct
+  sub-pixel of its full-res 4×4 tile:
+  ```ts
+  // sparseCoord is in [0, W/4) × [0, H/4).
+  // Full-res pixel coord = sparseCoord * 4 + (sx, sy).
+  const fullPixel = sparseCoord.mul(4).add(vec2(sx, sy)).add(0.5);
+  const fullUv = fullPixel.div(vec2(fullW, fullH));
+  ```
+- Output: full RGBA into sparseCloudRt. No blend, no history sampling in this pass —
+  the marcher purely renders fresh samples now. Reconstruction is its own pass (D3).
+
+### D3. Reconstruction pass (new full-res shader)
+
+A new fullscreen pass between the marcher and the existing composite (pass 3). Inputs:
+
+- `sparseCloudRt` — this frame's freshly marched 1/16-res output
+- `historyRt[N-1]` — previous frame's full-res reconstructed output
+- `uPrevViewProj`, `uOriginShiftScaled` — already plumbed, reuse
+- `uFreshSubPixel` — `(sx, sy)` ∈ [0, 3]² for this frame
+
+For each full-res pixel `(x, y)`:
 
 ```ts
-const cloudRtA = new RenderTarget(fullW, fullH, { type: HalfFloatType });
-const cloudRtB = new RenderTarget(fullW, fullH, { type: HalfFloatType });
-let frameParity = 0;
+const tile = (x >> 2, y >> 2);                   // which 4×4 tile
+const localSub = (x & 3, y & 3);                 // which sub-pixel in tile
+const isFresh = (localSub == (sx, sy));
+
+// Sparse RT samples the fresh sub-pixel of every tile.
+const freshSample = sparseCloudRt[tile];
+
+if (isFresh) {
+  output = freshSample;                          // direct copy, no blending
+} else {
+  // Stale path: reproject and clamp.
+  const worldHit = camera.position + rd * freshSample.depth;  // depth proxy from tile's fresh sample
+  const prevClip = uPrevViewProj * vec4(worldHit + uOriginShiftScaled, 1);
+  const prevUv = prevClip.xy / prevClip.w * 0.5 + 0.5;
+
+  if (prevUv outside [0,1]) {
+    output = freshSample;                        // fallback: use the tile's fresh sample
+  } else {
+    const history = historyRt[N-1].sample(prevUv);
+    const clamped = yCoCgClamp(history, sparseNeighbourhood(tile));  // D4
+    output = clamped;
+  }
+}
 ```
 
-Half-res is no longer needed (or desired) once temporal is on — D handles perf, not the
-resolution drop. Lift back to full-res at this point.
+Output: full-res RGBA into `historyRt[N]` (this frame's write target). Feeds the
+existing composite pass.
 
-The cloud RT now carries `(R, G, B, alpha, t_front)`. `t_front` is needed for
-reprojection. Pack into the alpha channel as 16-bit float (sufficient precision over
-the 14 km slab) or use a 5-channel RT (RGBA + R32F secondary).
+**Depth proxy**: each tile's fresh-sample alpha implicitly encodes whether the tile
+had cloud. For v1 we use the tile's `tFront` directly when available (still readable
+from `sparseCloudRt` since the marcher computes it per fresh pixel) or fall back to
+outer-shell-t — same as today. A separate depth pass for proper history-depth
+comparison is **deferred to v2** (MRT is TSL-blocked; see "v2 deferred" below).
 
-### D2. Geometric 1/16 schedule (Bayer 4×4)
+### D4. YCoCg variance clamp
 
-Each frame, render only one of 16 deterministic sub-pixel positions inside every 4×4
-tile. After 16 frames every sub-pixel has been written.
-
-Two implementation options:
-
-- **(A) 1/4-res buffer + scattered composite**: render the cloud march at 1/4 × 1/4 the
-  full resolution (so 1/16 the pixel count). Each frame, the 1/4-res buffer corresponds
-  to a different sub-pixel in the full-res 4×4 tile. Composite into the full-res history
-  at the correct sub-pixel slot. **This is what HZD shipped.** Slightly more pipeline
-  work but predictable convergence and cheap shading.
-- **(B) Full-res with stochastic skip**: render full-res but the fragment shader
-  early-outs unless `(frameIndex % 16) == bayer4x4(pixelX, pixelY)`. Simpler — single
-  shader — but wastes fragment-shader launches even on skipped pixels.
-
-**Plan commits to (A).** The added pipeline complexity is worth the predictable quality.
-
-### D3. Camera-motion reprojection
-
-Each frame, store the previous frame's combined view-projection matrix.
-
-In the current frame, for each pixel that wasn't marched this frame, reproject from
-history:
-
-1. Read `t_front` from the current-frame's neighbourhood (the marched sub-pixel inside
-   this 4×4 tile).
-2. Reconstruct the world-space cloud-front position: `worldFront = camPos + rd × t_front`.
-3. Project through the stored `prevViewProjection` to get `prevUV`.
-4. Sample history RT at `prevUV` (bilinear).
+Standard 3×3-neighbourhood clamp built from **fresh samples only**: sample the tile
+plus its 8 neighbours in `sparseCloudRt` (all of which are fresh this frame, just at
+different tiles).
 
 ```ts
-const prevClip = prevViewProjMat.mul(vec4(worldFront, 1));
-const prevUv   = prevClip.xy.div(prevClip.w).mul(0.5).add(0.5);
-const history  = texture(prevCloudRt, prevUv);
+// Convert each neighbour sample to YCoCg and accumulate min/max bound.
+let cMin = vec3(huge), cMax = vec3(-huge);
+for (let dy = -1; dy <= 1; dy++) {
+  for (let dx = -1; dx <= 1; dx++) {
+    const ycocg = rgbToYCoCg(sparseCloudRt[tile + vec2(dx, dy)].rgb);
+    cMin = min(cMin, ycocg);
+    cMax = max(cMax, ycocg);
+  }
+}
+// Small dilation prevents over-tight bounds.
+const pad = (cMax - cMin) * 0.1;
+cMin = cMin - pad;
+cMax = cMax + pad;
+
+const historyYCoCg = rgbToYCoCg(history.rgb);
+const clamped = yCoCgToRgb(clamp(historyYCoCg, cMin, cMax));
+
+// Alpha clamped separately as scalar (YCoCg is 3-channel).
+const alphaMin = min over 3x3 neighbourhood;
+const alphaMax = max over 3x3 neighbourhood;
+const clampedAlpha = clamp(history.a, alphaMin - 0.1*(alphaMax-alphaMin), alphaMax + 0.1*(alphaMax-alphaMin));
 ```
 
-Store `prevViewProjection` in the *same coordinate space* the marcher operates in
-(planet-local or scaled-world — pick one and keep both consistent).
-
-### D4. Disocclusion handling
-
-History sample is invalid if:
-
-- `prevUV` is outside `[0, 1]` (off-screen last frame).
-- `length(prevWorldFront - currentWorldFront) > threshold` (camera teleport).
-- Cloud silhouette change: `historyAlpha == 0 && currentAlpha > 0` or vice versa.
-- Floating-origin rebase: the entire history is invalid; clear cloud RT entirely. Detect
-  via the `worldOrigin` rebase event already plumbed in the engine.
-
-When invalid, skip the history blend; output the current-frame sample at full weight.
-Causes a transient blocky frame on disocclusion — acceptable; the next 16 frames repair.
-
-### D5. Variance clamp using fresh neighbours only
-
-The standard "clamp history to 3×3 neighbourhood mean ± k×stddev" is *broken under
-1/16 reconstruction* because 15/16 of the neighbourhood is itself stale history. Two
-working approaches:
-
-- **(A) Fresh-only neighbourhood**: build the variance bounds using *only* the freshly
-  marched pixel(s) in the current 4×4 tile. Smaller sample, larger bounds, but
-  guaranteed stale-free.
-- **(B) YCoCg chroma clamp**: clamp in YCoCg colour space rather than RGB, with looser
-  bounds. Less aggressive ghost rejection but more forgiving of sparse fresh samples.
-  Karis 2014 / Salvi 2016 style.
-
-Recommend (A) for v1; revisit if ghosting appears on fast camera motion.
-
-### D6. Reconstruction blend
+YCoCg conversion (Karis 2014 / Salvi 2016 convention):
 
 ```ts
-const isFresh = pixelMatchesFrameSchedule;
-const isHistoryValid = ... ;  // D4 checks
-
-const finalColour = isFresh.select(
-  currentSample,
-  isHistoryValid.select(historyClamped, currentSample)
-);
+function rgbToYCoCg(rgb: vec3): vec3 {
+  return vec3(
+    0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b,   // Y (luma)
+    0.5  * rgb.r              - 0.5  * rgb.b,    // Co (orange-blue)
+   -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b,   // Cg (green-magenta)
+  );
+}
+function yCoCgToRgb(ycocg: vec3): vec3 {
+  const tmp = ycocg.x - ycocg.z;
+  return vec3(tmp + ycocg.y, ycocg.x + ycocg.z, tmp - ycocg.y);
+}
 ```
 
-Fresh pixels: replace history outright with the new sample (no exponential blend).
-Stale-valid pixels: pure history (clamped). Stale-invalid: fall back to current frame's
-unconverged sample (acceptable artefact in the disocclusion frame).
+Why YCoCg over RGB: chroma channels (Co, Cg) have lower variance than RGB channels,
+so the clamping bound is tighter and rejects more ghosting; luma (Y) has wider
+tolerance which avoids killing the TAA blend on luminance variance from dither.
 
-### D7. Floating-origin invalidation hook
+### D5. History RT (full-res ping-pong)
 
-Hook into the existing `worldOrigin` rebase signal. On rebase:
+Replace the half-res `cloudRts[2]` with full-res `historyRts[2]` of format
+`RGBA16F`. The frame flow becomes:
 
-- Clear both ping-pong cloud RTs to zero alpha.
-- Reset the frame schedule index (effectively force 16-frame reconvergence).
-- One-frame artefact is unavoidable; document and ship.
+```
+Pass 2a (marcher):       sparseCloudRts[writeIdx]    ← fresh 1/16-res samples
+Pass 2b (reconstruct):   historyRts[writeIdx]        ← full-res output
+                                + historyRts[writeIdx ^ 1] (prev) for reprojection
+                                + sparseCloudRts[writeIdx] for fresh + clamp bounds
+Pass 3 (composite):       main RT                     ← existing premul-alpha blend
+                                + historyRts[writeIdx]
+```
 
-**Risks**: ghosting on fast yaw/pitch (D5 mitigates); disocclusion artefacts at
-silhouettes (D6 falls back); shader-compile cost grows with branching (Phase F4 pre-warm
-becomes mandatory).
+`historyValid` semantics unchanged; gates the blend off for the first frame after
+mount, resize, or pass-resume.
+
+### D6. Disocclusion gating (v1)
+
+Two checks only:
+
+1. **Off-screen `prevUv` → drop history**, fall back to tile's fresh sample.
+2. **YCoCg variance clamp** → implicit rejection of divergent history.
+
+The current `motionGate × alphaGate` heuristic is **removed**. The variance clamp
+covers the same intent more rigorously (it's a *bound*, not a heuristic) and doesn't
+false-trigger on dither variance (which contributes equally to fresh and history
+samples, so falls inside the bound).
+
+If post-implementation testing shows residual ghosting on close-range silhouette
+crossings, re-add explicit depth-comparison gating (v2 — requires the MRT workaround).
+
+### D7. Floating-origin handling
+
+Already done via per-frame `uOriginShiftScaled`. No history-clear required — the
+per-frame shift exactly cancels the slide so history reprojection is geometrically
+exact regardless of ship velocity.
+
+If we ever do explicit threshold-triggered rebases again (currently dead code per
+`worldOrigin.tsx`), the existing `cloudHistoryValid = 0` machinery already
+invalidates one frame to allow reconvergence.
+
+### D8. Lift marcher quality
+
+With ~16× headroom from the 1/16 schedule, lift `earthClouds.ts` constants:
+
+- `MAX_STEPS`: 16 → 64 (then iterate to 96 if perf allows)
+- `LIGHT_STEPS`: 3 → 6 cone taps
+- Remove `CLOUD_RT_SCALE = 0.5` in `SpaceRenderer.tsx` (obsolete; the new sparse RT
+  is the resolution drop)
+
+Verify per-frame cost is ≤ pre-Phase-D baseline; ideally well below it.
+
+### v2 deferred items (not blocking initial Phase D landing)
+
+- **True depth-based disocclusion**: separate second pass that outputs `tFront` to a
+  depth-only RT. ~1.1× total cost (the second pass runs skip-mode-until-first-hit
+  only, no integration). MRT is TSL-blocked per the comment in
+  `cloudFullscreenPass.ts:194-202`, so this needs to be a separate fragmentNode +
+  pass rather than an MRT output. Adds robustness on close-range silhouette
+  transitions that variance clamp alone can miss.
+- **Wind-aware reprojection**: when C5 (curl noise) lands, add `windDir × dt` to the
+  world-space reprojection point before applying `uPrevViewProj`.
+- **Hybrid 2D-far + 3D-near** (RDR2 trick): orthogonal to D; lives under Phase F1
+  if we ever need to push render distance beyond what pure 3D march can deliver.
+
+### Verification
+
+- **Orbital static camera**: no per-pixel speckle; cloud edges smooth. STBN + 16-frame
+  convergence should converge in <1s of stillness.
+- **Slow camera pan**: variance clamp keeps history; no visible ghosting.
+- **High-speed flyby (user's current failure case)**: history-off-screen branch fires
+  often; image is per-frame STBN noise but *bounded* (no accumulating smear).
+- **Cumulus silhouette crossings**: variance clamp rejects history through the edge
+  transition. Single-frame disocclusion artefact acceptable (Schneider's HZD ships
+  this).
+- **Floating-origin slides at all speeds**: handled by origin-shift; verified already
+  during the prereq fix.
+
+**Risks**:
+- Shader-compile cost grows with the new reconstruction pass branching; Phase F4
+  pre-warm becomes mandatory.
+- 1/16 convergence visible as a "wash" on disocclusion until the next 16 frames
+  refresh; acceptable but worth measuring under typical gameplay motion.
+- YCoCg clamp can over-clamp in regions with high HG-driven luma variance; if so,
+  pad the Y bound more aggressively or switch to fresh-only-with-padding (Karis
+  variant).
 
 ---
 
@@ -991,17 +1163,21 @@ fullscreen marcher must include the planet-occlusion clamp from day 1.
    - ✅ Cone light march (C4) — landed, reduced to 3 taps for perf
    - ⏸ Curl noise advection (C5)
    - ⏸ Distance-scaled step length (C3)
-6. ⏸ **E1**: sun shadow map.
-7. ⏸ **F2**: cloud–terrain interaction.
-8. ⏸ **D1–D7**: temporal reconstruction. (Partial: TAA reprojection + jitter
-   is in cloudFullscreenPass.ts, but no 1/16 reconstruction scheduling.)
-9. ⏸ **E2**: aerial perspective.
-10. ⏸ **F1**: generalise to per-planet config.
-11. ⏸ **F3, F4, F5**: tiers, pre-warm, Venus.
+6. ✅ **D prereqs**: per-pixel reprojection + sub-pixel jitter; origin-shift
+   correction for floating-origin reprojection.
+7. ⏭ **D1–D8** (next): STBN jitter, sparse 1/16 marcher target with Bayer 4×4
+   schedule, full-res reconstruction pass with YCoCg variance clamp, lift
+   marcher quality. v1 disocclusion = off-screen + variance clamp; depth-
+   based disocclusion deferred to v2.
+8. ⏸ **E1**: sun shadow map.
+9. ⏸ **F2**: cloud–terrain interaction.
+10. ⏸ **E2**: aerial perspective.
+11. ⏸ **F1**: generalise to per-planet config.
+12. ⏸ **F3, F4, F5**: tiers, pre-warm, Venus.
 
-**Recommended next**: C5 (curl noise) for visible animation/flow, or D
-(temporal accumulation) for cleaning up per-pixel variance. Both unlock
-visible quality gains beyond the diminishing-returns tuning regime.
+**Recommended next**: Phase D proper. The user's current high-speed smearing
+symptom is unfixable inside the every-frame-TAA architecture; D's 1/16
+reconstruction + variance clamp is the canonical solution.
 
 Verify visually after each step on the live build. Required test shots:
 
