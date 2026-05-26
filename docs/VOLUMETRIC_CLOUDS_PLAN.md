@@ -151,34 +151,88 @@ the plan.
 
 ## Status snapshot
 
-The previous version of this doc carried a "Built / Not built yet" list dated 2026-04-26.
-Several items have changed since (notably the in-progress fullscreen-pass migration, see
-`CLOUD_FULLSCREEN_MIGRATION.md`), and the live code may have drifted from what's listed
-here. Treat this section as historical orientation, not ground truth — the next code
-audit will produce a fresh status.
+### Current state (2026-05-26, end of Phase B implementation session)
 
-### Approximate state at last writing
+**Phase A** complete:
+- 128³ RGBA8 base volume (Perlin-Worley R + 3 Worley FBM octaves GBA)
+- 32³ RGB detail volume (Worley FBM, used for high-frequency erosion)
+- Both procedurally generated at boot from `noiseVolumes.ts` (no asset imports)
+- 64³ curl-noise volume deferred to C5
 
-Fullscreen ray-march pass under migration (was previously a sphere-shell-mounted
-back-side mesh). Half-res `HalfFloatType` cloud RT, premultiplied alpha pipeline end
-to end, bilinear upsample composite. Analytic ray-shell intersection with a "below-inner-shell"
-branch. 16-step primary march, sin-hash `tStart` dither. 64³ inverted-Worley single-channel
-3D noise volume with hand-built mips. Single domain-warped 2D weather-map tap (single
-channel R = coverage). Symmetric height curve (`hRamp × hFade`). 3-step linear sun
-march. Henyey-Greenstein g = 0.6, Wrenninge octave-hack multi-scatter at 0.7, powder
-term active. Distance crossfade with the surface shader's flat overlay (`uVolumetricBlend`).
+**Phase B** complete:
+- B1: Three-type vertical density profile (stratus/stratocumulus/cumulus) mixed
+  by cloudType
+- B2: cloudType derived procedurally from `smoothstep(0.4, 0.8, coverage)`
+- B3: Type-driven detail FBM mix (billowy vs wispy via channel reweight; full
+  curl-warped wispy deferred)
+- B4: Schneider value erosion with explicit `profile = coverage × heightProfile`
+  as first-class shader local
+- B5: Profile-driven lighting with separate sun/sky color split:
+  `L = sunColor × (direct + ms) + skyColor × ambient`
 
-### Active visible defects
+**Beyond-plan structural additions** that landed during Phase B:
+- **Procedural cumulus pattern overlay**: `coverage = coverageRaw × smoothstep(0.35, 0.65, baseVolume.g_at_km_scale)`.
+  Creates real coverage-zero gaps between cumulus bodies that linear modulation
+  could never produce.
+- **Distance-falloff detail layer** (Schneider's canonical LOD trick): detail
+  erosion threshold is multiplied by
+  `detailStrength = 1 - smoothstep(5km, 80km, t)` per dense voxel.
+  Detail features at ~60m visible at close range, fade out at orbital to
+  prevent grain aliasing.
+- **Decoupled cone-march density**: `CONE_DENSITY = 3000` hardcoded constant
+  instead of scaling with `uDensityMul`. Lets primary density be high (for
+  opacity) without making cone-march absorb everything.
 
-From `CLOUD_VISIBLE_ISSUES.md` (2026-05-06), reported as still active:
+**Fullscreen-pass migration** completed earlier in the session timeline.
+Half-res HalfFloatType cloud RT, premultiplied alpha, bilinear upsample
+composite, TAA reprojection via tFront, planet-occlusion clamp from day 1.
 
-1. Inverted terminator colour curve (orange across the day side, grey at the actual
-   terminator).
-2. Up-close volumetric reads as pixel-sized speckle field rather than cloud bodies.
-3. Cloud bodies show no internal shading variation (likely a knock-on of #2).
+### Current tuning constants (representative — see code comments for rationale)
 
-These are bugs in the current implementation, not problems with this plan. They will get
-audited and fixed alongside the plan execution.
+| Constant | Value | Role |
+|---|---|---|
+| `uDensityMul` | 140000 | Primary cumulus opacity |
+| `CONE_DENSITY` | 3000 | Cone-march absorption (decoupled from primary) |
+| `uDetailErosion` | 0.2 | Gentle silhouette nibbling (coverage threshold does main carving) |
+| `uDetailScale` | 500 | ~60m detail features (with distance falloff) |
+| `uBaseScale` | 50 | 20km base-volume period, ~km-scale macro shape |
+| `MS_COEF` | 0.5 | Sharp multi-scatter falloff for top-bright/bottom-dim contrast |
+| `HG_G` | 0.1 | Nearly isotropic phase, minimises view-direction gradient |
+| `sunColor magnitude` | 12 | Cumulus tops reach AgX 0.85 |
+| `skyColor` | (0.3, 0.5, 1.0) × 2 | Saturated cool blue for shadow undersides |
+| `skylight` | 0.15 | Low ambient floor for dramatic sunlit/shadow contrast |
+| Cone taps | 3 (was 6) | Halved for perf at indices 0/2/4 with 2× contribution |
+
+### Visible characteristics
+
+Cumulus reads as discrete 3D bodies with:
+- Visibly opaque cores (alpha > 0.99 in 3-4 dense steps)
+- Soft wispy edges (alpha < 0.7 at periphery — realistic cumulus fringes)
+- Bright sunlit tops, cool blue shadow undersides
+- Clear gaps between cumulus bodies (visible sky-blue / atmosphere through)
+- Moderate within-cloud lighting variation driven by cone-marched `ms`
+
+Not yet matching Star Citizen / Nubis reference quality. Gaps to reference
+(in priority order):
+1. **Higher noise volume resolution** would unlock per-pixel detail at close
+   range that's currently smoothed by trilinear interpolation.
+2. **Curl-noise advection (C5)** would add organic flow and twist that makes
+   cumulus look "alive".
+3. **Temporal accumulation (Phase D)** would clean up per-pixel noise variance.
+4. **More sophisticated cone-march** (full Schneider density at each tap)
+   would give more dramatic per-voxel sun absorption variation.
+
+### Active visible characteristics — not bugs, but known limits
+
+- View-direction asymmetry minimised but not zero (HG_G=0.1 gives ~2× phase
+  ratio). Acceptable; silver-lining effect lost as trade-off.
+- Within-cloud variation visible but subtle; doesn't read as "dramatic 3D
+  shading" like references. Limited by noise resolution + cone-march
+  resolution.
+
+The 2026-05-06 list of visible defects (inverted terminator, speckle, no
+internal shading) is largely resolved or no longer applicable in current
+form. See `CLOUD_VISIBLE_ISSUES.md` end-of-doc for updated status.
 
 ### Files involved
 
@@ -928,20 +982,26 @@ migration (`CLOUD_FULLSCREEN_MIGRATION.md`) must complete before A's new code pa
 land — A1–A6 produce the data, but the consumer is the fullscreen marcher, and the
 fullscreen marcher must include the planet-occlusion clamp from day 1.
 
-1. **Fullscreen migration G1–G5** (separate doc) — completes geometry foundation.
-2. **A1–A6**: noise volumes + Schneider remap + height-driven detail erosion. Visible
-   win on first close approach.
-3. **B1–B5**: cloud-type profile, type-driven detail, profile-driven lighting. *This is
-   the phase that turns the noise into clouds with anatomy.*
-4. **C1**: coverage tile classification. Free perf for the next phases.
-5. **C2–C5**: adaptive march + cone light + curl. Quality at distance and through-cloud
-   immersion.
-6. **E1**: sun shadow map. Surface coherence and lighting consistency.
-7. **F2**: cloud–terrain interaction. Required for seamless landings.
-8. **D1–D7**: temporal reconstruction. The big lift; what makes it AAA.
-9. **E2**: aerial perspective.
-10. **F1**: generalise to per-planet config.
-11. **F3, F4, F5**: tiers, pre-warm, Venus.
+1. ✅ **Fullscreen migration G1–G5** (separate doc) — completes geometry foundation.
+2. ✅ **A1–A6**: noise volumes + Schneider remap + height-driven detail erosion.
+3. ✅ **B1–B5**: cloud-type profile, type-driven detail, profile-driven lighting.
+4. ⏸ **C1**: coverage tile classification. Free perf for the next phases.
+5. ✅ partial **C2–C5**:
+   - ✅ Adaptive two-state march (C2) — landed earlier
+   - ✅ Cone light march (C4) — landed, reduced to 3 taps for perf
+   - ⏸ Curl noise advection (C5)
+   - ⏸ Distance-scaled step length (C3)
+6. ⏸ **E1**: sun shadow map.
+7. ⏸ **F2**: cloud–terrain interaction.
+8. ⏸ **D1–D7**: temporal reconstruction. (Partial: TAA reprojection + jitter
+   is in cloudFullscreenPass.ts, but no 1/16 reconstruction scheduling.)
+9. ⏸ **E2**: aerial perspective.
+10. ⏸ **F1**: generalise to per-planet config.
+11. ⏸ **F3, F4, F5**: tiers, pre-warm, Venus.
+
+**Recommended next**: C5 (curl noise) for visible animation/flow, or D
+(temporal accumulation) for cleaning up per-pixel variance. Both unlock
+visible quality gains beyond the diminishing-returns tuning regime.
 
 Verify visually after each step on the live build. Required test shots:
 

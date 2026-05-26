@@ -844,3 +844,182 @@ detailed, far = smooth" performantly.
    we had the erosion machinery, we just never wired the fade-in. Six
    debug rounds of speculation could have been replaced by one re-read
    of the section "Detail Erosion Distance Falloff."
+
+---
+
+## Case study #5: "uniform cloud bodies despite working cone-march"
+
+A long session (~30 rounds) of tuning trying to get cumulus to show
+dramatic per-cloud lighting variation like Star Citizen / Nubis references.
+The session made significant progress (cumulus became visible discrete
+bodies with cool blue shadow undersides) but hit diminishing returns
+without matching reference quality. Worth recording the journey because
+the meta-lessons are widely applicable.
+
+### Trajectory
+
+Start: continuous-deck stratocumulus with no within-cloud lighting variation
+End: discrete cumulus puffs with cool blue shadow sides, ~30% within-cloud
+brightness variation, performance recovered after some scares.
+
+Key structural improvements that landed:
+1. **Procedural cumulus pattern overlay** via `smoothstep(0.35, 0.65, baseVolume.g)`
+   on coverage — creates real coverage=0 gaps between cumulus bodies
+   (replacing earlier linear modulation that could never produce true
+   gaps).
+2. **Distance-falloff detail layer** (Schneider 2015 canon) —
+   `detailStrength = 1 - smoothstep(5km, 80km, t)` multiplied into the
+   erosion threshold. Detail features at ~60m visible at close range, fade
+   out at orbital to prevent grain aliasing.
+3. **Decoupled cone-march density** — cone-march density became a hardcoded
+   `CONE_DENSITY = 3000` constant instead of `uDensityMul × 0.3`. Without
+   this, bumping `uDensityMul` for opacity also bumped cone absorption,
+   pegging `Tsun_ms ≈ 0` everywhere and killing the multi-scatter term.
+4. **Separate sun/sky color split** — `L = sunColor × (direct + ms) + skyColor × ambient`
+   instead of `sunColor × (direct + ms + ambient)`. Lets shadow sides
+   pick up a cool blue tint instead of warm cream.
+5. **Threshold-mask cumulus** vs linear coverage modulation — the
+   structural fix that finally produced discrete cumulus bodies.
+
+Key tuning parameters and their final values:
+- `uDensityMul = 140000` (cumulus opacity)
+- `CONE_DENSITY = 3000` (cone-march decoupled from primary density)
+- `uDetailErosion = 0.2` (gentle edge nibbling, since coverage threshold
+  does the main carving)
+- `uDetailScale = 500` (60m detail features, with distance falloff)
+- `sunColor magnitude = 12` (cumulus tops reach AgX 0.85)
+- `skyColor = vec3(0.3, 0.5, 1.0) × 2` (saturated cool blue)
+- `MS_COEF = 0.5` (sharp multi-scatter falloff)
+- `HG_G = 0.1` (nearly isotropic phase to eliminate view-direction gradient)
+- `skylight = 0.15` (low ambient floor)
+
+### The meta-lesson: tuning vs structural fixes
+
+Most of the wasted iteration was tweaking single tuning parameters
+("bump uDensityMul", "reduce sunColor", "increase MS_COEF") that produced
+small visible changes. The biggest wins were always STRUCTURAL changes:
+
+- Linear coverage modulation → threshold mask
+- Cone density scaled with primary densMul → decoupled constant
+- One-color lighting → sun/sky color split
+
+**When tuning isn't producing visible progress in 2-3 rounds, the right
+move is to look for a structural change, not keep tweaking the same knob.**
+
+The diagnostic-viz workflow makes this discoverable: when `eroded`/`coneDepth`/
+`density` viz all showed correct data but `lightingOnly` was still
+uniform, that meant tweaking primary density or erosion couldn't help —
+the problem was downstream in the lighting model structure (sun/sky color
+split, ms vs direct weighting).
+
+### The "sun behind = dim, sun in front = bright" diagnostic signature
+
+User reported: "Sun behind me, clouds dim. Sun in front of me, clouds
+bright with silver lining." Initially I thought this was opposite of
+physics and indicated a sunDirEarth bug. After actually adding a `sunDir`
+viz: sunDirEarth was correct (uniform color across screen).
+
+The real cause: **HG phase function dominance**.
+
+When `direct = phase × Tsun × sunColor` is the dominant lighting term,
+the view-direction dependence of HG (forward-scatter peak at cosθ=1)
+produces a bright "looking toward sun" / dim "looking away from sun"
+asymmetry — independent of the actual sun-facing/sun-away sides of
+clouds. This LOOKS like inverted lighting from the user's perspective.
+
+Diagnosis path:
+- `tsunMs` showed `Tsun_ms ≈ 0` (cone absorption maxed) → ms was dead
+- Without ms, `direct = phase × Tsun × sunColor` is the only term that
+  varies → HG asymmetry dominates
+- Fix: decouple cone-march density from uDensityMul so cone absorption
+  doesn't blow up when primary density is bumped for opacity
+
+**Signature for future me**: if user reports "view-direction asymmetric
+lighting that doesn't match physics", suspect HG phase dominating because
+ms is dead (cone-march over-absorbed).
+
+### The "individual cloud variation" requirement
+
+User asked for per-cloud per-direction variation like Star Citizen
+references. The cone-march ms term provides exactly this — voxels at
+sun-facing positions get high Tsun_ms, sun-away positions get low.
+
+But this variation is **view-angle-dependent** in WHICH voxels are
+visible. For a top-down view of cumulus cover with sun overhead, every
+visible voxel (cumulus top) has similar Tsun_ms ≈ 1 (cone exits cloud
+immediately upward to sun). So tops all look uniformly bright — no
+within-cloud variation visible.
+
+For visible within-cloud variation:
+- Sun at angle from camera view (not overhead, not behind)
+- View geometry that shows multiple sides of cumulus
+- Cumulus large enough that cone-march sees variable absorption across it
+
+If the user expects "clouds always show bright top / dark bottom regardless
+of camera angle", that requires baked-in altitude-bias lighting, not
+physical sun-direction lighting. Not what Nubis does.
+
+### The across-FOV gradient
+
+User reported "left side of clouds brighter than right" with sun in
+upper-left. Initially I suspected `daylight` per-voxel scalar (sub-solar
+to terminator gradient). Diagnosed via `daylight` viz: uniform across
+visible clouds (we're on day side). So not daylight.
+
+Real cause: HG phase asymmetry produces ~4× direct lighting variation
+between cosθ=+1 (looking toward sun) and cosθ=-1 (away). Across an FOV
+with sun off to one side, this is a smooth left-right gradient.
+
+Fixed by reducing `HG_G` from 0.3 to 0.1 — phase nearly isotropic.
+
+Trade-off: lost silver-lining effect. The Schneider/Nubis references DO
+have silver lining via HG. We can re-add it later as a separate non-
+view-dependent term if needed, but disentangling silver-lining from
+asymmetric body brightness is non-trivial.
+
+### Performance scare
+
+Bumping `uDetailScale` 100→500 and adding per-cone-tap baseShape sampling
+made the cone-march very expensive at mid-range (~14 FPS). Fixed by:
+- Halving cone-tap count (6→3 with 2× per-tap contribution)
+- Dropping per-cone-tap weatherMap sampling (use primary's coverage)
+
+Recovered to ~60+ FPS at mid-range.
+
+**Lesson**: when adding per-cone-tap features, profile cost. 6 cone taps
+× 2 texture3D fetches each × ~5 dense voxels per pixel × 500k pixels =
+30M texture3D fetches per frame. Even modern GPUs notice this.
+
+### Where we hit diminishing returns
+
+After ~30 iterations, the cloud rendering is recognizably cumulus with
+visible 3D shading and cool blue undersides — significant progress from
+where we started. But matching Star Citizen / Nubis reference visual
+quality requires:
+
+1. **Higher-resolution noise volumes** (256³+ base, 128³+ detail). Our
+   128³/32³ volumes hit a resolution ceiling for close-range detail.
+2. **Curl-noise volume for advection** (Phase C5 deferred). Adds organic
+   flow that makes cumulus look "alive" rather than statically placed.
+3. **Temporal accumulation** (Phase D deferred). Cleans up per-pixel
+   noise variance that's currently visible at close range.
+4. **More sophisticated cone-march** — full-density samples per tap (with
+   detail erosion baked in) instead of macro-only `baseShape × coverage × profile`.
+5. **Authored weather map** with art-directed cumulus patches (per the
+   plan's stage 2 weather map work).
+
+These are all on the roadmap. None are quick tuning wins.
+
+### Meta-lesson: when to stop tuning
+
+We stopped at "decent cumulus with discrete bodies and visible shading"
+rather than "perfect reference match". The pattern that made me realize
+diminishing returns: each new change took ~2-3 reload cycles, produced
+visible-but-marginal improvement, and didn't fundamentally close the gap
+to reference quality.
+
+**Signal that you've hit diminishing returns**: 3+ consecutive parameter
+tweaks produce <10% perceptual improvement each. At that point, structural
+changes (new asset, new feature, different algorithm) are the only path
+forward. Better to ship "good enough" + plan structural work than to
+keep tweaking parameters.

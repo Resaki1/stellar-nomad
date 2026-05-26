@@ -305,35 +305,26 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // iso-density isosurfaces as hard visible rings on the cumulus body
   // (see CLOUD_DEBUGGING_LESSONS.md, follow-on to case study #1).
   //
-  // densMul tune history:
-  // - 15000 → 40000 → 70000 (current).
+  // Primary-ray density multiplier. Tuned for opaque cumulus body:
+  // cores need alpha > 0.99 in 3-4 dense steps (~500m of cloud) so stars
+  // don't bleed through. Each step contributes scatterFrac ≈ 1 - exp(
+  // -density × dtDense), so we need density × dtDense > ~1.5 per step
+  // for solid opacity.
   //
-  // The 40000 step landed cumulus bodies at alpha ≈ 0.96 per 4 dense
-  // steps — which sounds opaque on paper but is visibly translucent
-  // against bright background stars. 4% transmittance × 5 HDR star
-  // brightness = 0.2 HDR bleeding through → user sees stars through
-  // cumulus.
+  // At 140000 with typical body voxel (eroded ≈ 0.16) and dtDense =
+  // 0.000125: density × dtDense ≈ 2.8, scatterFrac ≈ 0.94 per step.
+  // Alpha reaches 0.999 in 2 dense steps — solid cumulus.
   //
-  // For TRULY opaque (no perceptible star leakage), need alpha > 0.99
-  // — < 1% transmittance. That requires scatterFrac > 0.68 per step,
-  // which means density × dtDense > 1.14.
+  // Cone-march density does NOT scale with this. It's hardcoded as
+  // CONE_DENSITY = 3000 inside the marcher to keep cone-marched
+  // opticalDepthSun in a useful range (~2-10) regardless of primary
+  // opacity tuning. See sampleConeTap.
   //
-  // At densMul = 70000:
-  //   Dense core voxel (eroded ≈ 0.20): scatterFrac ≈ 0.83/step →
-  //                                     alpha 0.998 after 3 steps. Solid.
-  //   Body voxel (eroded ≈ 0.16):       scatterFrac ≈ 0.71/step →
-  //                                     alpha 0.99 after 4 steps. Opaque.
-  //   Edge wisp (eroded ≈ 0.05):        scatterFrac ≈ 0.30/step →
-  //                                     alpha 0.76 after 4 steps. Naturally
-  //                                     translucent fade — realistic for
-  //                                     real cumulus periphery.
-  //
-  // Trade-off: alpha saturates faster → fewer voxels contribute to col
-  // integration → less smooth lighting integration across cumulus body.
-  // Mitigated by the fact that adjacent voxels have similar lighting
-  // anyway, and the per-voxel detail variation lives in the eroded/
-  // density values which control how alpha saturates, not lighting per
-  // se.
+  // Trade-off: high densMul means alpha saturates in 1-2 voxels at high-
+  // baseShape regions. The visible cloud surface lighting comes mostly
+  // from those first 1-2 voxels. Per-voxel lighting variation comes from
+  // cone-marched Tsun_ms varying across the surface, not from many-voxel
+  // col integration.
   const uDensityMul = uniform(140000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //

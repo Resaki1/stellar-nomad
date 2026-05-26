@@ -171,3 +171,80 @@ lighting. Likely auto-resolves once #3 is fixed; revisit then.
 
 After this list is closed, return to the long-term Nubis roadmap in
 `VOLUMETRIC_CLOUDS_PLAN.md` — next planned item is E1 (shell-shadow RT).
+
+---
+
+## Status update — Phase B implementation session (2026-05-26)
+
+A ~30-round implementation session of Phase B (lighting & density model)
+landed the following items from VOLUMETRIC_CLOUDS_PLAN.md:
+
+- **B1**: Cloud-type-aware vertical profiles (stratus/stratocumulus/cumulus
+  mix keyed by cloudType). Implemented.
+- **B2**: cloudType derived procedurally from coverage (`smoothstep(0.4, 0.8)`).
+  Implemented.
+- **B3**: Type-driven detail mix (billowy vs wispy). Implemented as
+  channel reweight of single detail volume; full curl-warped wispy
+  deferred to C5.
+- **B4**: Schneider value erosion with explicit profile term. Implemented.
+- **B5**: Profile-driven lighting with separate sun/sky color split.
+  Implemented.
+
+Plus Phase A items needed for Phase B:
+- 128³ Perlin-Worley base volume + 32³ Worley FBM detail volume (procedurally
+  generated, no asset import).
+
+Plus structural additions beyond the plan:
+- **Procedural cumulus pattern overlay** on coverage (threshold mask on
+  `baseVolume.g` at km-scale features). This was the structural fix that
+  finally produced discrete cumulus puffs instead of continuous stratus
+  decks.
+- **Distance-falloff detail layer** (Schneider 2015 canon: detail erosion
+  fades in within 5 km of camera, out beyond 80 km). Without this,
+  high-frequency detail at 60m scale aliases to grain at orbital view.
+- **Decoupled cone-march density** via hardcoded `CONE_DENSITY` constant
+  instead of scaling with `uDensityMul`. Lets primary density be high
+  (opacity) while cone-march density stays in a useful absorption range.
+
+### Issues from above resurfaced or recharacterised
+
+- **#1 (terminator)**: appears resolved during the session — comments
+  in `earthClouds.ts` line 605+ reflect a narrow-band symmetric terminator
+  curve. Verify if it ever reappears.
+- **#2 (2D/3D layering)**: closed as misperception per earlier note.
+  No issue remains.
+- **#3 (speckle)**: resolved by mipmap-level-0 fix earlier and by the
+  density / detail / cumulus-pattern overhauls this session. Cloud bodies
+  now read as coherent 3D shapes.
+- **#4 (no internal shading)**: partially addressed. Cumulus bodies now
+  have cool blue shadow sides and brighter sunlit tops, but the within-
+  cloud variation isn't as dramatic as Star Citizen / Nubis references.
+  Hit diminishing returns on tuning. Further improvements need
+  higher-resolution noise volumes, curl noise advection (C5), or
+  temporal accumulation (Phase D).
+
+### Active outstanding visible characteristics
+
+Not "issues" but known limitations:
+
+- **Across-FOV view-direction asymmetry kept under control**: minimised
+  by reducing `HG_G` to 0.1 (nearly isotropic phase). Trade-off: very
+  minimal silver-lining effect.
+- **Sub-pixel-scale within-cloud detail**: limited by 32³ detail volume
+  resolution (~60m features). Adjacent pixels at close range often
+  sample the same noise texel → smooth-looking cloud surface. Higher-res
+  noise volumes would help.
+- **Performance**: ~60 FPS at mid-range views on M2 Pro after the
+  cone-tap reduction. Half-res cloud RT + 3 cone taps + per-cone-tap
+  baseShape sampling is the cost profile.
+
+### Recommended next phase (per plan)
+
+- **C5 — Curl-noise UV advection** for organic cloud flow. Was deferred
+  during B; would now add visible animation/flow that makes static
+  cumulus look alive.
+- **C1 — Coverage tile classification** for performance budget recovery.
+- **D — Temporal reconstruction** for the AAA visual layer.
+- **F2 — Cloud-terrain interaction** for landing-scenario integration.
+
+The decision of which to prioritise is in the plan document.
