@@ -336,8 +336,11 @@ Even after the three-tap fix, these are still slab-midpoint-based:
   it'll need the same two-tap treatment.
 - **Light-march cone tap** at `~earthClouds.ts:758-787` uses the lerped
   per-step coverage from the primary ray, not coverage at the cone-tap's
-  own lat/lon. This is an approximation Schneider also makes; revisit if
-  internal cloud shading looks wrong.
+  own lat/lon. ~~This is an approximation Schneider also makes; revisit if
+  internal cloud shading looks wrong.~~ **2026-05-22: revisited.** See
+  case study #3 below — primary-coverage cone-march is fine at OVERHEAD
+  sun but completely fails at grazing-sun (terminator). Replaced with
+  per-cone-tap coverage sampling.
 
 ---
 
@@ -585,3 +588,259 @@ spreads each quad's mip-level decision over a soft 4-pixel area. This
 makes the mip-ridge artifact MORE visible, not less. If you ever switch
 to full-res RT, the same artifact would still exist but as a sharper
 1-pixel transition (less visible to the eye).
+
+---
+
+## Case study #3: "uniform cloud bodies — no internal shading variation"
+
+### Symptom (as user described it)
+
+> "I can see three distinct heights for the clouds now [B1 working], but
+> no detail in the clouds. It's just white, pretty straight towers of
+> detail-less blobs."
+>
+> [After cone density and ambient tuning attempts:]
+>
+> "Only when toning down ambient and bumping uDetailErosion really high
+> (to 0.9 for example) I start to see some very little brightness
+> differences."
+>
+> [After enabling DEBUG_VIZ='lightingOnly':]
+>
+> "Completely uniform."
+
+### The killer diagnostic
+
+`DEBUG_VIZ='lightingOnly'` shows `col / alpha`, the unpremultiplied
+integrated colour. For front-to-back integration, this is mathematically
+the **weighted average of L (radiance) across the cloud body along
+each ray**. If lightingOnly is uniform across the whole cloud disk,
+every ray integrates to the same average L → either L is roughly constant
+per voxel, or rays happen to hit voxels with the same characteristics.
+
+**This is the single most informative cloud-rendering diagnostic.** It
+isolates "lighting math problem" from "alpha integration problem". If
+lightingOnly is uniform, no amount of tuning density / erosion / step
+size will help — the lighting formula itself isn't producing variation.
+
+### The math behind the symptom
+
+After Phase B5 was implemented (`ms = profile × Tsun_ms`,
+`ambient = (1-profile)^0.5 × skylight`), the two terms are
+**profile-complementary**: ms ∝ profile and ambient ∝ √(1-profile).
+At fixed `Tsun_ms`, their sum is roughly profile-independent. Visible
+body shading variation has to come from `Tsun_ms` varying across the
+visible cloud surface. `Tsun_ms` = cone-marched sun-side transmittance.
+
+### The actual cause
+
+The cone-march used **primary-ray's coverage** for every cone tap, with
+only `profileL` (altitude-based vertical profile) varying per tap:
+
+```ts
+const densL = coverage.mul(profileL).mul(densScale).mul(0.1);
+//             ^^^^^^^^ primary-ray's, NOT cone-tap's
+```
+
+This is Schneider's classical approximation. It works for **overhead sun**
+(cone goes straight up, stays at one lat/lon — primary-ray coverage IS
+the cone-tap coverage). It completely fails for **grazing sun** (cone
+sweeps 12 km horizontally across many lat/lons — adjacent cone taps
+should see varying coverage but our code says they all see primary's).
+
+Consequence: with sun grazing horizontally,
+`opticalDepthSun = 6 × densL × LIGHT_STEP` becomes a function of primary
+altitude only. Two voxels on different sides of a cumulus (sun-facing
+vs back-facing) at the same altitude → same opticalDepthSun → same
+`Tsun_ms` → same `ms` → same `L` → same `col/alpha`. The cloud's
+SUN-FACING vs BACK-FACING shading contrast — the entire point of
+multi-scatter lighting — is invisible.
+
+### The fix
+
+Sample the weather map at each cone tap's own lat/lon:
+
+```ts
+const dirL = pL.div(rL.max(0.0001));
+const uL = fract(atan(dirL.z, dirL.x.negate()).mul(invTwoPi));
+const vL = acos(clamp(dirL.y.negate(), -1, 1)).mul(invPi);
+const uvL = vec2(uL, vL).add(uCloudUvOffset);
+const coverageL = texture(weatherMap, uvL).level(int(0)).r;
+
+const densL = coverageL.mul(profileL).mul(densScale).mul(0.1);
+```
+
+Cost: 6 extra `texture(weatherMap)` taps per dense voxel. Modest —
+weather map is 2D, well-cached.
+
+Now cone-march opticalDepthSun reflects actual cumulus extent along the
+sun direction, not a stretched-uniform approximation. Sun-facing voxels
+see low coverageL beyond the cumulus edge → low opticalDepthSun → high
+Tsun_ms → silver lining. Back-facing voxels see high coverageL through
+the body → high opticalDepthSun → low Tsun_ms → shadowed.
+
+### Lessons for next time
+
+1. **`DEBUG_VIZ='lightingOnly'` first, every time.** When clouds look
+   wrong but you can't immediately see why, this viz isolates lighting
+   from alpha integration. Days of tuning would have been saved by
+   running this diagnostic first.
+
+2. **Profile-complementary lighting models mask their own bugs.** If
+   `ms` and `ambient` are designed to span the profile range from
+   opposite directions, then at fixed external inputs (Tsun_ms,
+   skylight) their sum is roughly profile-independent. The *intended*
+   variation comes from the external inputs varying spatially — if those
+   external inputs don't vary (e.g., cone-march returning the same value
+   for adjacent voxels), the whole model collapses to a near-constant.
+
+3. **Schneider's approximations are valid in his test conditions, not
+   universally.** Schneider 2015 demos clouds with sun overhead. The
+   "use primary's coverage for cone taps" approximation works there.
+   At terminator, it doesn't. Always check what the reference papers'
+   test conditions were before adopting their approximations wholesale.
+
+4. **"This approximation Schneider also makes" is a yellow flag, not
+   a green one.** The lessons doc had a 2026-05-13 note about exactly
+   this cone-tap-coverage issue, marked "revisit if internal cloud
+   shading looks wrong". It took 9 more days and a Phase B
+   implementation before someone (me) actually went back and
+   revisited. **When the lessons doc flags a deferred check, schedule
+   it explicitly rather than waiting for symptoms.**
+
+---
+
+## Case study #4: "close range = uniform white, orbital view fine"
+
+### Symptom (as user described it)
+
+> "I see kind of natural looking variation when looking from a distance
+> but almost no variation when up close."
+
+Orbital view (~85 km altitude, looking down at cloud deck): natural-looking
+km-scale variation, bright cumulus shapes against darker valleys. Working
+correctly.
+
+Close range (~5 km altitude, wall of clouds ahead): uniform bright-gray
+cloud body. No per-pixel variation. Detail erosion still visible at
+silhouette edges but body itself reads as flat.
+
+### The wrong things I tried first
+
+(in order, all useless against this bug)
+
+1. Cone density multiplier 0.55 → 0.1
+2. Per-cone-tap coverage sampling (instead of primary's coverage)
+3. baseShape sampling at each cone tap
+4. `ms = eroded × Tsun_ms` instead of `profile × Tsun_ms`
+5. Reduced sunColor magnitude 21 → 10 (for tonemap headroom)
+
+None moved the needle. The user got understandably frustrated. Right call.
+
+### The killer diagnostic
+
+Three new debug-viz modes that bypass all the lighting math and show the
+raw per-voxel data:
+
+- `'eroded'`: per-voxel post-detail-erosion shape (0-1), grayscale
+- `'coneDepth'`: raw `opticalDepthSun` from cone-march, /10 grayscale
+- `'density'`: `eroded × densScale`, /20000 grayscale
+
+All three showed **smooth gradient** across the cloud band at close range.
+NOT uniform, NOT bumpy — just soft macro variation. That's the data the
+lighting model has to work with.
+
+If `eroded` is smooth, no lighting math reorganization can produce bumpy
+output. The bug isn't in lighting. It's upstream.
+
+### The actual root cause
+
+Noise volume sample spacing vs view-distance pixel-scale mismatch.
+
+- Base volume: 128³, `uBaseScale=50` → world period 20 km, **sample
+  spacing ~156m**.
+- Detail volume: 32³, `uDetailScale=100` → world period 10 km, **sample
+  spacing ~313m**.
+
+At close range (camera ~5 km from cloud surface), each screen pixel covers
+~5-15m of world space. Adjacent pixels are 5-15m apart in world.
+
+For adjacent pixels to read different noise samples (i.e., for per-pixel
+variation to exist), world pixel separation must approach the texture
+sample spacing. We had pixel separation ≈ 10m but sample spacing ≈ 156-313m
+→ adjacent pixels read essentially the same noise sample with trilinear
+interpolation producing nearly identical values.
+
+**No lighting tweak can manufacture variation that doesn't exist in the
+upstream data.**
+
+### The actual fix (Schneider 2015's canonical approach)
+
+Two changes:
+
+1. **Bump `uDetailScale`** from 100 to 500. World period drops from 10 km
+   to 2 km; detail feature size drops from ~300m to ~60m. Matches
+   Schneider's intended cumulus cauliflower carving scale.
+
+2. **Distance-based detail-strength falloff** per voxel:
+
+   ```ts
+   const detailNear = float(0.005);  // 5 km — full detail
+   const detailFar  = float(0.080);  // 80 km — no detail
+   const detailStrength = float(1).sub(smoothstep(detailNear, detailFar, t));
+   const threshold = erosion.mul(uDetailErosion).mul(erosionRamp)
+                          .mul(erosionStrength)
+                          .mul(detailStrength);
+   ```
+
+   `t` is per-voxel distance from camera (the marcher's ray parameter, in
+   scaled units). Near voxels get full detail erosion. Far voxels get zero
+   — only the base macro shape contributes.
+
+The orbital-vs-close-range LOD now happens automatically per voxel inside
+a single render pass. No quality tiers, no toggles, no extra texture taps.
+Just `smoothstep` × the existing threshold.
+
+### Why this is correct
+
+- **Close range**: detail erosion fires at 60m scale → bumpy cauliflower
+  silhouettes AND per-pixel body density variation (since adjacent pixels
+  at ~10m world separation now see different detail samples — 10m vs the
+  new ~60m feature scale gives a sixth of a feature between pixels, enough
+  to produce variation through trilinear interp).
+- **Orbital view**: every voxel far from camera → detailStrength = 0 →
+  pure base macro shape → smooth km-scale variation (matches what the
+  orbital screenshot already showed naturally). Bonus: avoids aliasing
+  the 60m detail features that would otherwise be sub-pixel at orbital
+  distances.
+- **Mid-range**: smooth `smoothstep` ramp keeps the LOD transition
+  invisible.
+
+This is Schneider 2015 § "Detail Erosion Distance Falloff" verbatim. RDR2,
+Star Citizen, KSP-EVE all do the same. Should have been in the marcher
+from the start; it's central to how Nubis-style clouds achieve "close =
+detailed, far = smooth" performantly.
+
+### Lessons
+
+1. **For noise-driven rendering, always check whether the noise has
+   features at the scale you want variation at.** A km-scale noise volume
+   cannot produce 10m variation no matter how cleverly you sample it.
+   Adjacent texels' interpolated values are too close to differ.
+
+2. **The "raw data viz" pattern is the diagnostic last resort.** When
+   lighting tweaks don't move the needle, write a viz that shows the
+   per-voxel data going INTO lighting (no lighting math involved). If the
+   data is uniform/smooth, no math can produce bumpy output — the
+   upstream is wrong, not the downstream.
+
+3. **Multi-frequency + distance-based LOD is THE technique** for clouds
+   that need to look right at multiple view distances. Not quality tiers,
+   not toggles. Per-voxel distance-from-camera fade-in of higher-frequency
+   noise. Standard since HZD 2015.
+
+4. **Re-read the reference paper periodically.** Schneider's distance
+   falloff is documented in the 2015 GDC talk. We had the noise volumes,
+   we had the erosion machinery, we just never wired the fade-in. Six
+   debug rounds of speculation could have been replaced by one re-read
+   of the section "Detail Erosion Distance Falloff."

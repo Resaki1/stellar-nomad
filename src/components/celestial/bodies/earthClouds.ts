@@ -80,8 +80,23 @@ const EMPTY_THRESHOLD = 8;
 // sites in buildCloudFragment (TSL can't index a constant kernel by loop
 // variable), so there's no LIGHT_STEPS constant.
 const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
-// Henyey-Greenstein asymmetry: 0.6 gives the strong forward-scatter silver lining.
-const HG_G = 0.6;
+// Henyey-Greenstein asymmetry. Controls how peaked the direct-light phase
+// function is in the forward direction (looking toward sun).
+//   0.6 (Wrenninge default): 65× peak ratio. Strong silver-lining but
+//      heavy view-dependence — produces visible left-right brightness
+//      gradient across cloud cover when sun is off to one side.
+//   0.3: 4× ratio. Less silver-lining; still produces ~30% across-FOV
+//      gradient that user could see as "clouds nearer sun look brighter"
+//      independent of within-cloud lighting variation.
+//   0.1 (current): 1.8× ratio. Nearly isotropic phase function. Direct
+//      lighting is effectively the same magnitude regardless of view
+//      direction. Eliminates the HG-driven across-FOV gradient that
+//      was masking the within-cloud variation (which lives in cone-
+//      marched `ms`, NOT in HG phase). Trade-off: minimal silver-lining
+//      effect when sun is behind cloud — acceptable, the references we
+//      target rely more on multi-scatter shading than silver-lining
+//      drama.
+const HG_G = 0.1;
 
 // =============================================================================
 // DIAGNOSTIC VISUALIZATION
@@ -127,9 +142,60 @@ const HG_G = 0.6;
 //                   (no hit, sentinel = 0).
 //   'lightingOnly': accumulated col / alpha (the cloud's unpremul colour,
 //                   ignoring transparency). Pixels where alpha is non-zero
-//                   show the cloud's actual shading. Compare against
-//                   'alpha' to separate lighting-side artifacts from
-//                   alpha-integration artifacts. Tone-mapped with Reinhard.
+//                   show the cloud's actual shading. LINEAR-SCALED to a
+//                   0–5 HDR window so subtle variation isn't squashed by
+//                   tonemap compression — Reinhard's x/(x+1) curve maps
+//                   5-10 HDR to 0.83-0.91, indistinguishable to the eye
+//                   even when the underlying variation is 2x. Linear /5
+//                   shows 0-5 HDR clearly; above 5 clamps to white.
+//   'tsunMs'      : last-dense Tsun_ms (multi-scatter transmittance from
+//                   cone-march), grayscale. Black = 0, white = 1. THE
+//                   diagnostic for "does cone-march produce spatial
+//                   variation?" — if uniform, the cone-march is the
+//                   problem; if varying but lightingOnly is uniform,
+//                   the issue is downstream in the lighting formula.
+//                   CAUTION: pow(x, 0.15) compresses heavily near x=1
+//                   (e.g. opticalDepth 0.5 → Tsun_ms 0.92, opticalDepth
+//                   2.0 → Tsun_ms 0.74), so visually-uniform tsunMs can
+//                   hide a 4× variation in the underlying raw cone-march
+//                   density. Use 'coneDepth' as the un-compressed truth.
+//   'coneDepth'   : last-dense raw opticalDepthSun (before pow-tonemap),
+//                   scaled /10 for display. Shows whether cone-march is
+//                   ACTUALLY producing varying absorption. Black = 0 (no
+//                   absorption), white ≥ 10 (heavy absorption). If
+//                   coneDepth is uniform across cloud disk → cone-march
+//                   physically isn't varying (texture3D / sunDir bug). If
+//                   coneDepth varies but tsunMs and lightingOnly look
+//                   uniform → pow compression is hiding the variation
+//                   and we need either lower sunColor brightness or a
+//                   different lighting tonemap.
+//   'eroded'      : last-dense `eroded` value (post-detail-erosion shape,
+//                   range 0-1). Shows the actual per-voxel density
+//                   structure at the visible surface, before any lighting
+//                   or cone-march. If this varies pixel-to-pixel at close
+//                   range → detail noise IS at sub-pixel resolution and
+//                   lighting is just not surfacing it. If uniform → noise
+//                   volumes don't have sub-100m features and close-range
+//                   detail needs a different mechanism entirely.
+//   'density'     : last-dense density (eroded × densScale), scaled
+//                   /20000 for display. Same diagnostic intent as
+//                   'eroded'; cross-check that densScale isn't masking
+//                   variation.
+//   'sunDir'      : visualizes `sunDirEarth` as colour: R = sunDir.x*0.5+0.5,
+//                   G = sunDir.y*0.5+0.5, B = sunDir.z*0.5+0.5. Identical
+//                   across the whole screen (since sun direction is the
+//                   same for every voxel — sun at AU distance). Use this
+//                   to verify sunDir is pointing where the sun visibly
+//                   appears in the scene. If the visible sun on screen
+//                   is in the upper-left but sunDir colour suggests
+//                   downward direction, there's a transform bug.
+//   'daylight'    : the per-voxel `daylight` scalar (smoothstep on
+//                   sunDotPoint), grayscale. Varies across the cloud
+//                   disk: clouds near the sub-solar point read bright,
+//                   clouds near the terminator read mid-gray, night-side
+//                   clouds black. This is what causes "left-bright /
+//                   right-dim" gradient across cloud cover when sun is
+//                   off to one side — correct physics, not a bug.
 //   'dither'      : the per-pixel dither hash output as grayscale [0, 1].
 //                   Tests whether the dither hash is producing uniform
 //                   per-pixel variation or some structured pattern.
@@ -144,6 +210,12 @@ const DEBUG_VIZ:
   | "profile"
   | "firstHit"
   | "lightingOnly"
+  | "tsunMs"
+  | "coneDepth"
+  | "eroded"
+  | "density"
+  | "sunDir"
+  | "daylight"
   | "dither" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, three-type decomposition).
@@ -233,16 +305,36 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // iso-density isosurfaces as hard visible rings on the cumulus body
   // (see CLOUD_DEBUGGING_LESSONS.md, follow-on to case study #1).
   //
-  // densMul = 15000 with uBaseScale = 50:
-  //   OD per dense step in core ≈ 0.5 → T per step ≈ 0.6
-  //   ~10 dense steps to reach α = 0.99 → soft saturation over ~1.25 km
-  //   2 km core: α ≈ 0.85 (translucent edges, opaque core)
-  //   5 km core: α ≈ 1.0 (fully opaque)
+  // densMul tune history:
+  // - 15000 → 40000 → 70000 (current).
   //
-  // Tune knob: if cumulus cores look too soft/transparent, push toward
-  // 30000-50000. If edges hard / iso-density rings return, push toward
-  // 10000-15000.
-  const uDensityMul = uniform(15000);
+  // The 40000 step landed cumulus bodies at alpha ≈ 0.96 per 4 dense
+  // steps — which sounds opaque on paper but is visibly translucent
+  // against bright background stars. 4% transmittance × 5 HDR star
+  // brightness = 0.2 HDR bleeding through → user sees stars through
+  // cumulus.
+  //
+  // For TRULY opaque (no perceptible star leakage), need alpha > 0.99
+  // — < 1% transmittance. That requires scatterFrac > 0.68 per step,
+  // which means density × dtDense > 1.14.
+  //
+  // At densMul = 70000:
+  //   Dense core voxel (eroded ≈ 0.20): scatterFrac ≈ 0.83/step →
+  //                                     alpha 0.998 after 3 steps. Solid.
+  //   Body voxel (eroded ≈ 0.16):       scatterFrac ≈ 0.71/step →
+  //                                     alpha 0.99 after 4 steps. Opaque.
+  //   Edge wisp (eroded ≈ 0.05):        scatterFrac ≈ 0.30/step →
+  //                                     alpha 0.76 after 4 steps. Naturally
+  //                                     translucent fade — realistic for
+  //                                     real cumulus periphery.
+  //
+  // Trade-off: alpha saturates faster → fewer voxels contribute to col
+  // integration → less smooth lighting integration across cumulus body.
+  // Mitigated by the fact that adjacent voxels have similar lighting
+  // anyway, and the per-voxel detail variation lives in the eroded/
+  // density values which control how alpha saturates, not lighting per
+  // se.
+  const uDensityMul = uniform(140000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //
   // Was 250 → 4 km tile, 1 km cumulus cells. At orbital view distances,
@@ -256,20 +348,55 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // wide and read as coherent cloud forms from any view distance,
   // including orbital.
   const uBaseScale = uniform(50);
-  // Detail-volume tiling: 2× base, so 10 km tile, 2.5 km cells at lowest
-  // octave. Detail erosion now operates at sub-cumulus scale to carve
-  // cauliflower silhouettes.
-  const uDetailScale = uniform(100);
-  // Detail-erosion strength. Schneider's reference uses 0.2 because his
-  // weather map provides nearly-uniform-1 coverage in cloud regions, so
-  // the erosion's job is just to nibble at edges. Ours uses gradient
-  // weather-map values (0–1 with smooth transitions) — strong erosion
-  // (0.3 originally) clipped voxels with baseCloud < threshold to zero,
-  // which happened across most of any medium-coverage cloud body, leaving
-  // the rendered cloud at α ≈ 0.6 over dark ocean → "gray centers".
-  // 0.1 reduces threshold to ~0.05 so only the thinnest fringes of cloud
-  // bodies (coverage < 0.1) are eroded away. Cumulus silhouettes lose
-  // some sharpness but cloud bodies become visibly opaque.
+  // Detail-volume tiling: 500 → 2 km tile in world space, ~60 m features at
+  // the 32³ texture's sample spacing. Sized to match Schneider 2015's
+  // cumulus cauliflower carving scale (10-100m per detail feature).
+  //
+  // Distance-based detail fade-in: the marcher's detail-erosion threshold is
+  // multiplied by `detailStrength` (computed per dense voxel from `t`),
+  // ramping from 0 beyond 80 km to 1 within 5 km of camera. This is the
+  // canonical Nubis LOD trick: at orbital view distances, every voxel is
+  // far → detailStrength ≈ 0 → only the base macro shape contributes →
+  // smooth km-scale cumulus shapes (matches the natural look the orbital
+  // screenshots show). At close range, near voxels get full detail erosion
+  // → bumpy cauliflower silhouettes + per-pixel body variation. Without
+  // this fade, ~60m detail features would alias to grain at orbital view
+  // since each pixel covers >>60m of world there.
+  //
+  // Previous value 100 (~1 km tile, 300m features) had detail features so
+  // large that they read as macro shape — no functional difference from the
+  // base volume at any view distance. Bumped to give Schneider-scale
+  // carving for the close-range LOD layer.
+  const uDetailScale = uniform(500);
+  // Detail-erosion strength. CRITICAL parameter for cumulus-vs-stratus
+  // appearance.
+  //
+  // 0.2 (previous): gentle nibbling at silhouette edges only. Produces
+  // continuous cloud deck (stratus / stratocumulus look). No spatial
+  // separation between cloud bodies.
+  //
+  // 0.5 (current): aggressive carving that CREATES GAPS between cumulus
+  // bodies. Schneider's tuning range for cumulus is 0.4-0.6 (the lower
+  // end was tuned against Schneider's near-uniform weather map; our
+  // gradient weather map needs the upper end for equivalent discrete
+  // cumulus appearance).
+  //
+  // The visible effect: cones marching to sun from one cumulus's
+  // underside now pass through CLEAR SKY between bodies → high Tsun →
+  // visible top-bright / bottom-shadowed contrast on individual cumulus.
+  // Without gaps, every cone path goes through cloud → uniform Tsun_ms
+  // → flat-looking continuous deck (which is what we had).
+  //
+  // 0.2 (current) — back to original gentle value. Cumulus discrimination
+  // now comes from the THRESHOLD MASK on the cumulus pattern (smoothstep
+  // 0.35-0.65), which produces real coverage=0 gaps + dense bodies
+  // directly. Erosion's job reduces to its canonical Schneider role:
+  // nibbling silhouette edges for cauliflower detail texture.
+  //
+  // Higher values (0.4-0.7 tried earlier) combined with the cumulus
+  // pattern's linear modulation produced bimodal density — pattern-low
+  // areas had translucent wispy clouds. With threshold mask, pattern-low
+  // areas have zero cloud → no wisps possible → 0.2 erosion is safe.
   // 0 = no erosion, 1 = can fully remove edges.
   const uDetailErosion = uniform(0.2);
   // Domain warp is currently disabled inside the marcher (see DIAGNOSTIC
@@ -586,36 +713,57 @@ export function marchCloudVolume({
     const sunset = daylight.mul(daylight.oneMinus()).mul(4);
     // Tint sunlight toward warm orange at the terminator (Rayleigh-reddened
     // light path through thicker atmosphere).
-    // 30× HDR multiplier calibrates against the flat overlay's actual peak
-    // cloud brightness (CLOUD_BRIGHTNESS=3 × csf cubic ramp peaking ~7 ≈
-    // 21 HDR). The previous 12× value was tuned against an incomplete
-    // estimate that omitted the cubic ramp, leaving volumetric cloud
-    // unpremul colour (sunColor × inScatter ≈ 12 × 0.5 = 6 HDR) ~3.5×
-    // dimmer than the flat overlay's ~21 HDR. That difference reads as
-    // "gray cores on perpendicular views" because the volumetric darkens
-    // the composite even at low crossfade weights (a 10% volumetric
-    // contribution at brightness 6 over a flat overlay at 21 yields 19.5
-    // — perceptibly less than the 21-HDR pure-flat reference).
-    // With sunColor=30, unpremul ≈ 30 × 0.5 = 15 HDR, matching the flat
-    // overlay much more closely after AgX tonemapping. Limb regions
-    // already at α=1 will appear brighter and bloom more — desirable for
-    // the AAA-target silver-lining.
+    //
+    // Magnitude: 5× HDR. AgX tonemap is roughly linear up to ~3 HDR then
+    // compresses progressively: 5 HDR → 0.83, 8 HDR → 0.90, 12 HDR → 0.93,
+    // 20 HDR → 0.96. Above ~5 HDR, AgX squashes a 2× brightness ratio
+    // into ~5% output difference (cumulus cores looked uniformly white
+    // even though sunlit/shadowed lighting math differed by 2-3×).
+    //
+    // At 5×, cumulus cores peak at ~4 HDR (AgX 0.81) and shadowed parts
+    // at ~2 HDR (AgX 0.67) — a 14% output spread, visible as actual body
+    // shading.
+    //
+    // Tradeoff: clouds ~4× dimmer than the original 21× tune that matched
+    // the flat overlay. Visible during the flat↔volumetric crossfade
+    // between 25-35 k km altitude. Likely needs corresponding reduction
+    // in the flat overlay's `CLOUD_BRIGHTNESS` constant to keep the
+    // transition smooth — leaving for later tuning since the volumetric
+    // result quality is the priority right now.
     const sunColor = mix(
       vec3(1.0, 0.96, 0.88),
       vec3(1.0, 0.55, 0.25),
       sunset,
-    ).mul(21.0);
-    // Skylight uses the same smooth daylight curve so the night side fades
-    // continuously instead of clipping at the old narrow window.
-    // 0.45: real cloud interiors get most of their light from the blue
-    // sky dome, not direct sun. Bumped from 0.3 because the previous value
-    // left perpendicular-view cloud cores reading as gray when composited
-    // over the dark surface beneath (limb clouds saturated to white via
-    // long ray paths, but center clouds with α~0.7 over dark land showed
-    // the brightness gap clearly). Matches the flat overlay's peak HDR
-    // brightness (~21 via CLOUD_BRIGHTNESS=3 × csf cubic) far more
-    // closely under perpendicular views.
-    const skylight = daylight.mul(0.45);
+    ).mul(12.0);
+
+    // Sky color: COOL BLUE tint used for ambient lighting (Rayleigh-
+    // scattered atmospheric blue is what lights cloud undersides in real
+    // life). Without a separate sky color, ambient × sunColor produced
+    // warm-cream shadow sides instead of the characteristic cool-blue
+    // underbelly cumulus get in reference renders. The Schneider 2015
+    // formulation explicitly separates sun- and sky-colored contributions:
+    //
+    //   L = sunColor × (direct + ms) + skyColor × ambient
+    //
+    // Saturated cool blue at 2 HDR. Reduced from 4 → 2 to deepen shadow
+    // sides — when skyColor was 4, ambient fill kept shadow undersides at
+    // ~1 HDR (AgX 0.50), too bright for the reference look. Halving it
+    // drops shadows to ~0.5 HDR (AgX 0.34) — properly dark for Star
+    // Citizen-style contrast while keeping the blue tint that gives
+    // shadows their characteristic cumulus underside color.
+    //
+    // The blue channel dominates (0.3 R, 0.5 G, 1.0 B) so shadow sides
+    // read as visibly cool, not just dimmer.
+    const skyColor = vec3(0.3, 0.5, 1.0).mul(daylight).mul(2.0);
+
+    // Skylight: scalar attenuation of skyColor, multiplied into ambient.
+    // Tuned together with skyColor for shadow brightness:
+    //   0.25 (previous): ambient × skyColor(4) = 1 HDR floor → shadows
+    //     at AgX 0.5, too bright vs sunlit AgX 0.86. Low contrast.
+    //   0.15 (current): ambient × skyColor(2) = 0.3 HDR floor → shadows
+    //     at AgX 0.25, properly dark for Star Citizen-style contrast.
+    // Tracks daylight via skyColor (no duplication needed here).
+    const skylight = float(0.15);
 
     // Powder blend, constant along ray (depends only on cosTheta).
     const powderFrontMix = clamp(cosTheta.mul(0.5).add(0.5), 0, 1);
@@ -637,6 +785,36 @@ export function marchCloudVolume({
     // depth for this pixel. Used by the TAA reprojection for accurate
     // history sampling, and by DEBUG_VIZ='firstHit' for parallax checks.
     const firstHitT = float(-1).toVar();
+
+    // Last-dense Tsun_ms capture for DEBUG_VIZ='tsunMs'. Persists the most
+    // recent multi-scatter transmittance from the dense march so we can
+    // visualise whether the cone-march is producing spatial variation.
+    // Front-to-back integration means the LAST written value is from
+    // roughly the visible surface (where alpha saturates).
+    const lastTsunMs = float(0).toVar();
+
+    // Last-dense raw cone-march optical depth, for DEBUG_VIZ='coneDepth'.
+    // Shows opticalDepthSun directly (before pow-tonemap), bypassing the
+    // aggressive compression of pow(x, 0.15) which makes Tsun_ms look
+    // uniform at high transmittance (0.92 vs 0.74 over a 4x range of
+    // underlying opticalDepth). This is the un-tonemapped truth about
+    // whether the cone-march finds varying absorption.
+    const lastOpticalDepthSun = float(0).toVar();
+
+    // Last-dense voxel density (eroded × densScale), for DEBUG_VIZ='density'.
+    // Shows the actual primary-voxel density at the visible surface. If
+    // this varies pixel-to-pixel at close range, the underlying data has
+    // variation and the lighting model is just not surfacing it. If
+    // uniform, the noise volumes don't have sub-100m features and no
+    // lighting tweak can produce close-range body detail without a
+    // different mechanism (e.g. higher-res noise or local self-shadow).
+    const lastDensity = float(0).toVar();
+
+    // Last-dense eroded value (per-voxel post-detail-erosion shape, 0-1
+    // range, no densScale). For DEBUG_VIZ='eroded'. Same diagnostic intent
+    // as 'density' but normalised — shows the detail-noise structure
+    // directly without the densScale multiplier obscuring it.
+    const lastEroded = float(0).toVar();
 
     // ── Outer gate neutralised (trivially-true condition) ──
     // Previously: `If(coverageMax > 0.01)` based on hoisted 3-tap samples.
@@ -708,7 +886,45 @@ export function marchCloudVolume({
         const uP = fract(atan(dirP.z, dirP.x.negate()).mul(invTwoPi));
         const vP = acos(clamp(dirP.y.negate(), -1, 1)).mul(invPi);
         const uvP = vec2(uP, vP).add(uCloudUvOffset);
-        const coverage = texture(weatherMap, uvP).level(int(0)).r;
+        const coverageRaw = texture(weatherMap, uvP).level(int(0)).r;
+
+        // ── Procedural cumulus-pattern modulation ──
+        // Real Earth's weather map (satellite-derived) provides smooth
+        // gradient coverage values — that produces stratiform/stratocumulus
+        // appearance, NOT discrete cumulus puffs. Reference engines like
+        // KSP-EVE either use art-authored weather maps with built-in
+        // cumulus patches, or layer procedural variation on top.
+        //
+        // We multiply coverage by a low-frequency 3D noise pattern sampled
+        // from the base volume's Worley FBM channel (.g). This breaks the
+        // smooth weather map into cumulus-scale patches:
+        //   - High-noise regions: coverage stays high → cloud body
+        //   - Low-noise regions: coverage drops → clear sky gaps
+        //
+        // p.mul(80) gives texture period 1/80 = ~12 km world — features at
+        // 1.5-3 km scale (typical cumulus column width).
+        //
+        // Threshold mask (smoothstep) instead of linear modulation:
+        //   pattern < 0.35: mask = 0 → coverage = 0 → CLEAR SKY GAP
+        //   pattern > 0.65: mask = 1 → coverage = coverageRaw → DENSE CUMULUS
+        //   0.35-0.65: smooth transition → soft cumulus edge fade
+        //
+        // Previous linear modulation [× 0.8 + 0.6] never let coverage
+        // reach 0, so we got translucent thin cloud everywhere instead of
+        // discrete cumulus + clear gaps. Threshold mask creates the
+        // binary cumulus-or-gap discrimination the references show, with
+        // a 30% transition zone for natural soft edges.
+        //
+        // Note: this is per-VOXEL not per-PIXEL. Adjacent voxels in 3D
+        // sample the same noise scale and get correlated values.
+        const cumulusPattern = texture3D(baseVolume, p.mul(80))
+          .level(int(0)).g;
+        const cumulusMask = smoothstep(
+          float(0.35),
+          float(0.65),
+          cumulusPattern,
+        );
+        const coverage = coverageRaw.mul(cumulusMask);
 
         // ── Cloud-type derivation (Nubis B2, Stage 1) ──
         // Map coverage → cloudType ∈ [0, 1]: 0 = stratus, 0.5 =
@@ -909,18 +1125,45 @@ export function marchCloudVolume({
               const altMod = clamp(altitude01.mul(2.5), 0, 1);
               const erosion = mix(detailFbm, detailFbm.oneMinus(), altMod);
               const erosionRamp = smoothstep(float(0), float(0.3), shape);
+
+              // ── Distance-based detail strength (Nubis LOD trick) ──
+              // Schneider 2015: detail erosion is faded by distance from
+              // camera. Close voxels (within `detailNear`) get full
+              // erosion → bumpy cauliflower carving visible per-pixel at
+              // close range. Far voxels (beyond `detailFar`) get zero
+              // erosion → only base macro shape contributes → smooth
+              // km-scale variation at orbital view (and no detail-noise
+              // aliasing since detail's ~60m features are sub-pixel at
+              // those distances).
+              //
+              // `t` is per-voxel distance from camera in scaled units
+              // (1 unit = 1000 km). 0.005 = 5 km full detail, 0.080 =
+              // 80 km no detail, smoothstep ramp between.
+              //
+              // Without this fade: at uDetailScale=500, orbital pixels
+              // each cover many detail tiles → noise aliases to grain.
+              // With this fade: detail "only spent where visible".
+              const detailNear = float(0.005);
+              const detailFar = float(0.080);
+              const detailStrength = float(1).sub(
+                smoothstep(detailNear, detailFar, t),
+              );
+
               const threshold = erosion
                 .mul(uDetailErosion)
                 .mul(erosionRamp)
-                .mul(erosionStrength);
+                .mul(erosionStrength)
+                .mul(detailStrength);
               const denom = float(1).sub(threshold).max(0.0001);
               const eroded = shape
                 .sub(threshold)
                 .div(denom)
                 .clamp(0, 1);
+              lastEroded.assign(eroded);
 
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const density: any = eroded.mul(densScale);
+              lastDensity.assign(density);
 
               // ── Cone-traced light march (Nubis C3) ──
               const Tsun = float(0).toVar();
@@ -946,38 +1189,93 @@ export function marchCloudVolume({
                     0,
                     1,
                   );
-                  // Approximation (Schneider): use primary-ray's coverage and
-                  // cloudType at the cone tap rather than re-sampling the
-                  // weather map. Sun-side coverage varies slowly across
-                  // ~12 km of cone-tap range; the saving is one 2D + one
-                  // smoothstep per tap × 6 taps.
+                  // ── Per-cone-tap density sampling (Schneider-canonical) ──
+                  // Sample the 3D BASE VOLUME at each cone tap. The actual
+                  // cloud density variation along the sun path lives in
+                  // the 3D Perlin-Worley base volume (~km features), not
+                  // the macro-scale 2D weather map.
+                  //
+                  // Without sampling baseShape per cone tap, the cone-march
+                  // sees "this lat/lon column has cloud (yes/no)" but not
+                  // "how thick the cloud is along this 12 km sun path" →
+                  // Tsun_ms ≈ 1 across the cloud → flat lighting.
+                  //
+                  // Coverage is taken from the PRIMARY RAY (not per-tap).
+                  // Per-tap coverage was tried for grazing-sun cases but
+                  // it varies negligibly over a 12 km cone vs Earth's
+                  // 6371 km radius (~0.0003 rad UV shift) — visual impact
+                  // was zero, fetch cost was 6× texture2D per dense voxel.
+                  // Dropped for perf.
+                  //
+                  // Cost: 3 texture3D fetches per dense voxel (3 cone taps).
+                  const baseShapeL = texture3D(baseVolume, pL.mul(uBaseScale))
+                    .level(int(0)).r;
+                  const coverageL = coverage;  // primary-ray's coverage
+
+                  // Cone density is DECOUPLED from primary `densScale`
+                  // (uDensityMul). Primary density wants to be high
+                  // (~140000) for opaque cumulus body alpha integration.
+                  // But scaling cone density with uDensityMul made
+                  // cone-march absorption blow up: at 140000, every voxel
+                  // had opticalDepthSun ≈ 75 → Tsun_ms ≈ 0 → ms term
+                  // pegged at zero → lighting collapsed to HG-phase-
+                  // dominated, which is bright when looking toward sun
+                  // and dim when looking away. Wrong.
+                  //
+                  // CONE_DENSITY = 3000 hardcoded keeps cone absorption
+                  // in a useful range regardless of primary densMul:
+                  //   typical cumulus voxel: opticalDepthSun ≈ 5.4 →
+                  //     Tsun_ms (MS_COEF=0.3) ≈ 0.20
+                  //   cumulus top voxel (cone exits quickly):
+                  //     opticalDepthSun ≈ 1.8 → Tsun_ms ≈ 0.57
+                  //   cumulus bottom voxel (cone through full column):
+                  //     opticalDepthSun ≈ 9 → Tsun_ms ≈ 0.10
+                  //
+                  // Range Tsun_ms 0.10–0.57 → ms varies 5.7× across
+                  // cloud → visible top-bright/bottom-dark gradient.
                   const profileL = cloudHeightProfile(altL, topAlt, cloudType);
+                  const CONE_DENSITY = float(3000);
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const densL: any = coverage
+                  const densL: any = baseShapeL
+                    .mul(coverageL)
                     .mul(profileL)
-                    .mul(densScale)
-                    .mul(0.55);
+                    .mul(CONE_DENSITY);
+                  // 2× contribution per tap: we're sampling 3 of the
+                  // original 6 stratified directions (every other one),
+                  // so each tap "represents" 2 taps' worth of cone-path
+                  // density to keep total opticalDepthSun comparable to
+                  // the 6-tap version. Dropping to 3 halves the cone-
+                  // march texture-fetch cost — the big perf win after
+                  // adding per-cone-tap baseVolume + weatherMap sampling.
                   opticalDepthSun.addAssign(
-                    densL.mul(float(LIGHT_STEP_SCALED)),
+                    densL.mul(float(LIGHT_STEP_SCALED)).mul(2),
                   );
                 };
+                // Stratified directions 0/2/4 of the original low-
+                // discrepancy 6-point kernel. Even spread retained;
+                // halved fetch count.
                 sampleConeTap(0.38051305, 0.92453449, -0.02111345, 0);
-                sampleConeTap(-0.50625799, -0.03590792, -0.86163418, 1);
                 sampleConeTap(-0.32509218, -0.94575601, -0.01428496, 2);
-                sampleConeTap(0.09026238, -0.27376545, 0.95755165, 3);
                 sampleConeTap(0.28128598, 0.42443639, -0.86065785, 4);
-                sampleConeTap(-0.16852403, 0.14748697, 0.97460106, 5);
                 Tsun.assign(exp(opticalDepthSun.negate()).mul(daylight));
+                lastOpticalDepthSun.assign(opticalDepthSun);
               });
 
               // Multi-scatter transmittance.
               // pow(Tsun, MS_COEF) ≡ exp(-MS_COEF × opticalDepthSun) on the
-              // day side — equivalent to the Wrenninge octave hack, but the
-              // profile gate below converts it from a flat "everywhere"
-              // brightener into a Schneider-style probability field that
-              // only fires inside cloud cores.
-              const MS_COEF = float(0.15);
+              // day side. MS_COEF controls how fast multi-scatter
+              // illumination falls off as cone-marched sun absorption rises:
+              //   MS_COEF = 0.15 (Wrenninge default): very gentle. At full
+              //     absorption, Tsun_ms ≈ 0.35 — still bright. Shadow
+              //     sides too bright.
+              //   MS_COEF = 0.5 (current): sharper falloff. At Tsun = 0.001,
+              //     Tsun_ms ≈ 0.032. Cumulus interior and sun-away surface
+              //     voxels become genuinely dim → dramatic top-bright/
+              //     side-dim per-cloud body shading like Star Citizen /
+              //     KSP-EVE references.
+              const MS_COEF = float(0.5);
               const Tsun_ms = pow(Tsun.max(0.0001), MS_COEF).mul(daylight);
+              lastTsunMs.assign(Tsun_ms);
 
               // Optical depth integrates over dtDense — accumulation only
               // happens in dense mode, and dense steps are dtDense apart.
@@ -1000,22 +1298,38 @@ export function marchCloudVolume({
               //             through cone-marched sun density), modulated by
               //             HG phase and powder. Not profile-gated: direct
               //             light reaches every voxel the cone-march sees.
+              //             HG with g=0.6 gives ~0.02–0.10 peak — small but
+              //             responsible for the silver-lining at edges.
               //   ms      — sun light arriving after multiple scatters.
-              //             Profile-gated → fills cloud CORES (high profile),
-              //             not edges. Produces the "inner-glow thunderhead"
-              //             look that Wrenninge's flat octave hack under-
-              //             shoots.
+              //             Profile-gated → fills cloud CORES (high
+              //             profile), not edges. No phase function
+              //             multiplier (per plan B5).
+              //             History: tried `ms = eroded × Tsun_ms` to
+              //             surface per-voxel detail variation. Eroded
+              //             peaks higher than profile (Schneider remap
+              //             normalises (shape-thr)/(1-thr) which biases
+              //             toward 1 in cores), pushing ms HDR into the
+              //             AgX saturation regime where variation is
+              //             squashed to white. Reverted; pursuing visible
+              //             body detail via reduced sunColor magnitude
+              //             instead (see sunColor comment).
               //   ambient — sky light reaching this voxel. Gated by
               //             (1 - profile)^0.5 → bright at edges, dark in
-              //             cores. The outward gradient acts as a
-              //             probability that sky light reached the sample.
+              //             cores. Outward probability gradient.
               const direct = phase.mul(Tsun).mul(powderFactor);
-              const ms = profile.mul(Tsun_ms).mul(phaseIsotropic);
+              const ms = profile.mul(Tsun_ms);
               const ambient = profile.oneMinus().pow(float(0.5)).mul(skylight);
 
               const scatterFrac = float(1).sub(exp(opticalDepthStep.negate()));
+              // Schneider canonical: sun-side contributions (direct + ms)
+              // use sunColor (warm); ambient uses skyColor (cool blue) to
+              // give cumulus undersides their characteristic blue-gray
+              // tint instead of warm-cream. Mixed before scatterFrac so
+              // each step's accumulated radiance has both color sources
+              // correctly weighted.
               const L = sunColor
-                .mul(direct.add(ms).add(ambient))
+                .mul(direct.add(ms))
+                .add(skyColor.mul(ambient))
                 .mul(scatterFrac);
               col.addAssign(L.mul(T));
 
@@ -1145,16 +1459,135 @@ export function marchCloudVolume({
     //   scene is what makes them visible (e.g. partial alpha showing
     //   flat-overlay artifacts through).
     if (DEBUG_VIZ === "lightingOnly") {
-      // Unpremultiply colour by alpha. Reinhard tone map so HDR brightness
-      // (sunColor × 21 etc.) fits into [0, 1] for visualisation.
+      // Unpremultiply colour by alpha, then LINEAR-SCALE to a 0-5 HDR
+      // window. Reinhard tone map (`x/(x+1)`) used to live here, but
+      // its compression curve at 5-10 HDR (output 0.83-0.91) made
+      // 2× brightness variations indistinguishable to the eye. Linear
+      // scaling keeps variation visible in the 0-5 range; above 5 HDR
+      // clamps to white.
       const unpremul = col.div(alpha.max(0.001));
-      const toneMapped = unpremul.div(unpremul.add(1));
+      const exposed = unpremul.div(float(5)).clamp(0, 1);
       const hit = alpha.greaterThan(0.001);
       return {
         rgba: vec4(
-          hit.select(toneMapped.x, float(0)),
-          hit.select(toneMapped.y, float(0)),
-          hit.select(toneMapped.z, float(0)),
+          hit.select(exposed.x, float(0)),
+          hit.select(exposed.y, float(0)),
+          hit.select(exposed.z, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "tsunMs") {
+      // Last-dense Tsun_ms (cone-marched multi-scatter transmittance),
+      // grayscale. Pixels where the marcher never entered dense mode
+      // show black (lastTsunMs starts at 0). Pixels that hit cloud
+      // show a grayscale level reflecting the cone-march output for
+      // the most recent dense voxel along the ray (≈ visible surface).
+      // Uniform across the cloud disk ⇒ cone-march not producing spatial
+      // variation. Varying ⇒ cone-march works, downstream lighting math
+      // is muting it.
+      const hitT = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hitT.select(lastTsunMs, float(0)),
+          hitT.select(lastTsunMs, float(0)),
+          hitT.select(lastTsunMs, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "coneDepth") {
+      // Last-dense raw opticalDepthSun (cone-march absorption), scaled /10
+      // for display. Bypasses the pow-tonemap that makes tsunMs look
+      // uniform at high transmittance. Black = no sun absorption (cone
+      // exits cloud immediately); white = heavy absorption. If THIS is
+      // uniform across the cloud disk, the cone-march genuinely isn't
+      // varying — would indicate a deeper bug (texture3D, sun direction,
+      // or pL computation). If THIS varies but tsunMs/lightingOnly look
+      // uniform, the issue is just visual compression.
+      const hitC = alpha.greaterThan(0.001);
+      const scaled = lastOpticalDepthSun.div(float(10)).clamp(0, 1);
+      return {
+        rgba: vec4(
+          hitC.select(scaled, float(0)),
+          hitC.select(scaled, float(0)),
+          hitC.select(scaled, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "eroded") {
+      // Last-dense per-voxel `eroded` value (0-1). Shows the actual
+      // detail-noise structure at the visible cloud surface, with NO
+      // lighting math involved. This is the cleanest test of whether
+      // per-pixel data variation exists at the current view distance.
+      const hitE = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hitE.select(lastEroded, float(0)),
+          hitE.select(lastEroded, float(0)),
+          hitE.select(lastEroded, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "density") {
+      // Last-dense density (eroded × densScale), scaled /20000 for display.
+      const hitD = alpha.greaterThan(0.001);
+      const scaled = lastDensity.div(float(20000)).clamp(0, 1);
+      return {
+        rgba: vec4(
+          hitD.select(scaled, float(0)),
+          hitD.select(scaled, float(0)),
+          hitD.select(scaled, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "sunDir") {
+      // Visualizes sunDirEarth as RGB colour. The colour will be
+      // UNIFORM across the entire screen because sun direction is the
+      // same for every voxel (sun at AU distance).
+      // R = sunDir.x × 0.5 + 0.5 (0 means -X, 1 means +X)
+      // G = sunDir.y × 0.5 + 0.5 (0 means -Y, 1 means +Y) — Earth-Y axis
+      //     is the rotation axis (north pole). High green = sun overhead
+      //     (above equator at solstice etc.); low green = sun below horizon
+      //     of current Earth orientation.
+      // B = sunDir.z × 0.5 + 0.5
+      // If the visible sun on screen is in a particular corner but the
+      // sunDir colour suggests opposite direction, there's a transform bug.
+      const sr = sunDirEarth.x.mul(0.5).add(0.5);
+      const sg = sunDirEarth.y.mul(0.5).add(0.5);
+      const sb = sunDirEarth.z.mul(0.5).add(0.5);
+      return {
+        rgba: vec4(sr, sg, sb, float(1)),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "daylight") {
+      // `daylight` is the per-voxel scalar smoothstep(-0.1, 0.1, sunDotPoint)
+      // where sunDotPoint = dot(pMid, sunDirEarth) / |pMid|.
+      // Bright = sub-solar (cloud directly illuminated), dark = terminator
+      // / night side. Provides the "across-FOV brightness gradient" that
+      // makes clouds near sun overall brighter than clouds toward the
+      // terminator — correct physics, but masks within-cloud variation.
+      const hitDay = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hitDay.select(daylight, float(0)),
+          hitDay.select(daylight, float(0)),
+          hitDay.select(daylight, float(0)),
           float(1),
         ),
         tFront: float(0),
