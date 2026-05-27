@@ -337,6 +337,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         tempOriginShiftScaled,
         historyRt.texture,
         cloudHistoryValid.current,
+        cloudFrameIndex.current,
       );
       renderer.setRenderTarget(writeRt);
       gl.autoClear = true;

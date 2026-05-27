@@ -31,6 +31,7 @@ import { kmToScaledUnits } from "@/sim/units";
 import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
 import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
+import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
   setupFullscreenCloudPass,
@@ -493,7 +494,8 @@ export function marchCloudVolume({
   uColumnScale,
   uLightConeRadius,
   uVolumetricBlend,
-  uDitherPhase,
+  uStbn,
+  uStbnFrameSlice,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   roEarth: any;
@@ -524,8 +526,9 @@ export function marchCloudVolume({
   uLightConeRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumetricBlend: any;
+  uStbn: THREE.Data3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uDitherPhase: any;
+  uStbnFrameSlice: any;
 }) {
     const b = dot(roEarth, rdEarth);
     const d2 = dot(roEarth, roEarth);
@@ -571,22 +574,30 @@ export function marchCloudVolume({
     // the same dtSkip-spaced grid — without this, step-aliasing produces
     // visible concentric "miss-rings" at iso-distance from the camera.
     //
-    // Classic `fract(sin(dot(xy, vec2(12.9898, 78.233))) * 43758.5453)`
-    // hash. Adjacent pixels have UNCORRELATED dither values, which is
-    // what's needed to break per-pixel step aliasing. Don't replace with
-    // IGN or similar low-discrepancy sequence — those have structured
-    // lattice spacing between neighbours which DOESN'T break aliasing.
-    // See `docs/CLOUD_DEBUGGING_LESSONS.md`.
+    // Phase D1: spatiotemporal blue noise (STBN). Sampled at
+    //   uv = (screenCoordinate.xy mod STBN_PERIOD_XY, uStbnFrameSlice)
+    // → 128² spatial tile (RepeatWrapping handles the mod), 64 temporal
+    // slices selected per frame from `uStbnFrameSlice`.
     //
-    // uDitherPhase (set per-frame by cloudFullscreenPass from the Halton
-    // jitter sequence) shifts the sin argument each frame so per-pixel
-    // values cycle through different buckets across the 16-frame TAA
-    // window. Without that, TAA can't integrate the dither variance.
-    const dither = fract(
-      sin(
-        dot(screenCoordinate.xy, vec2(12.9898, 78.233)).add(uDitherPhase),
-      ).mul(43758.5453),
+    // Properties this gives us that the old `fract(sin(...))` hash
+    // didn't:
+    //   - Adjacent pixels have decorrelated *but* blue-noise-distributed
+    //     values, so per-pixel step aliasing breaks AND the spatial
+    //     pattern is perceptually smooth (no high-frequency hash speckle).
+    //   - Consecutive frames at one pixel are designed to be blue-noise-
+    //     distant in time, so TAA integration converges to a clean
+    //     supersampled image rather than just averaging hash noise.
+    //
+    // Until the async loader (`stbnTexture.ts`) resolves, the texture
+    // returns 0; the marcher renders with no jitter for a few frames
+    // (mild banding) and then jitter smoothly fades in once the bytes
+    // arrive — no flash, no recompile.
+    const stbnUv = vec3(
+      screenCoordinate.x.div(float(STBN_PERIOD_XY)),
+      screenCoordinate.y.div(float(STBN_PERIOD_XY)),
+      uStbnFrameSlice,
     );
+    const dither = texture3D(uStbn, stbnUv).r;
     // Full-amplitude: per-pixel start-offset variance covers the entire
     // dtSkip step [0, dtSkip), so every world-space t-value within a
     // step interval has some pixel sampling near it. Any smaller

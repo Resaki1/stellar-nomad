@@ -18,6 +18,10 @@ import {
   max as tslMax,
 } from "three/tsl";
 import { marchCloudVolume } from "@/components/celestial/bodies/earthClouds";
+import {
+  getStbnTexture,
+  STBN_PERIOD_Z,
+} from "@/components/celestial/bodies/stbnTexture";
 
 // =============================================================================
 // FULLSCREEN-PASS DIAGNOSTICS
@@ -66,8 +70,9 @@ export type FullscreenCloudPass = {
   cloudCamera: THREE.OrthographicCamera;
   /**
    * Recompute the per-frame uniforms (camera matrices + Earth world inverse
-   * + sub-pixel jitter + previous-frame view-projection + history texture).
-   * Call once per frame, before `gl.render(cloudScene, cloudCamera)`.
+   * + sub-pixel jitter + previous-frame view-projection + history texture +
+   * STBN frame slice). Call once per frame, before `gl.render(cloudScene,
+   * cloudCamera)`.
    *
    * - `earthMesh`: Object3D parented to Earth's rotation group; supplies
    *   the world transform that drives `uEarthInverseModel`.
@@ -87,6 +92,9 @@ export type FullscreenCloudPass = {
    *   shader reprojects to it and exponentially blends.
    * - `historyValid`: 0 = ignore history (first frame, post-rebase, after
    *   resize); 1 = blend at full weight.
+   * - `frameIndex`: monotonic integer frame counter. Drives the STBN
+   *   slice index (`frameIndex mod 128 / 128`) so every frame samples a
+   *   different blue-noise realisation at each pixel.
    */
   updateUniforms: (
     scaledCamera: THREE.PerspectiveCamera,
@@ -96,6 +104,7 @@ export type FullscreenCloudPass = {
     originShiftScaled: THREE.Vector3,
     historyTexture: THREE.Texture,
     historyValid: number,
+    frameIndex: number,
   ) => void;
   dispose: () => void;
 };
@@ -242,13 +251,22 @@ export function setupFullscreenCloudPass(
   placeholderHistory.needsUpdate = true;
   const uHistoryTextureNode = texture(placeholderHistory);
   const uHistoryValid = uniform(0);
-  // Phase D6 dither animation: drives a per-frame phase shift in the
-  // marcher's screen-space hash. Without this, each pixel gets a fixed
-  // dither offset, producing a static dot pattern that TAA's spatial
-  // jitter can't smooth (the pattern is between pixels, not within them).
-  // Set per frame by the caller from a low-discrepancy sequence; any
-  // monotonic float that wraps quickly works.
-  const uDitherPhase = uniform(0);
+
+  // Phase D1: spatiotemporal blue noise atlas (128³ R8) for cloud-marcher
+  // jitter. Replaces the `fract(sin(...))` hash that produced uncorrelated
+  // per-pixel dither — STBN is blue-noise-distributed both spatially (within
+  // a slice) and temporally (across slices), which TAA averages cleanly.
+  // The loader returns a placeholder-zero texture immediately and fills it
+  // when the network fetch resolves; the shader binds to the same texture
+  // object throughout (so no bind-group recompile mid-frame). The marcher
+  // wraps it in `texture3D(...)` itself, matching baseVolume/detailVolume.
+  const stbnTexture = getStbnTexture();
+  // Per-frame slice index into the STBN volume, normalised to [0, 1). Used
+  // as the .z coordinate in the marcher's `texture3D(stbn, vec3(xy, slice))`
+  // sample, so each frame reads a different blue-noise realisation at the
+  // same screen pixel. Advanced by `1/STBN_PERIOD_Z` per frame (wraps after
+  // 64 frames). Replaces the old `uDitherPhase` hash argument.
+  const uStbnFrameSlice = uniform(0);
 
   mat.fragmentNode = Fn(() => {
     // Apply sub-pixel jitter to the UV before NDC reconstruction. screenUV
@@ -339,7 +357,8 @@ export function setupFullscreenCloudPass(
       uColumnScale: opts.uColumnScale,
       uLightConeRadius: opts.uLightConeRadius,
       uVolumetricBlend: opts.uVolumetricBlend,
-      uDitherPhase,
+      uStbn: stbnTexture,
+      uStbnFrameSlice,
     });
 
     // ── Phase D6: temporal reprojection blend ──
@@ -461,6 +480,7 @@ export function setupFullscreenCloudPass(
     originShiftScaled: THREE.Vector3,
     historyTexture: THREE.Texture,
     historyValid: number,
+    frameIndex: number,
   ) => {
     uCameraMatrixWorld.value.copy(scaledCamera.matrixWorld);
     uCameraScaledPos.value.copy(scaledCamera.position);
@@ -477,12 +497,15 @@ export function setupFullscreenCloudPass(
     // change; format must match (both RTs use HalfFloatType, so OK).
     uHistoryTextureNode.value = historyTexture;
     uHistoryValid.value = historyValid;
-    // Phase D6: derive a per-frame dither phase from the same Halton
-    // sequence that drives `jitterUv`. The jitter is sub-pixel UV
-    // (~1e-4); scaling by 1e4 gives a phase of order 1, enough to shift
-    // the sin's hash argument into a different bucket each frame so per-
-    // pixel dither cycles through 16 distinct values across the TAA window.
-    uDitherPhase.value = (jitterUv.x + jitterUv.y) * 1e4;
+    // Phase D1: STBN slice index. Each frame, advance by 1/STBN_PERIOD_Z so
+    // 64 consecutive frames sweep through all 64 temporal slices. At any one
+    // screen pixel, consecutive frames sample 64 distinct blue-noise values
+    // (designed to be perceptually decorrelated). TAA integration across N
+    // frames converges to a clean estimate; the current continuous-TAA
+    // blends ~14 frames, so the first 14 of 64 slices dominate per frame
+    // and the full atlas refreshes over the next ~50.
+    uStbnFrameSlice.value =
+      (frameIndex % STBN_PERIOD_Z) / STBN_PERIOD_Z;
   };
 
   const dispose = () => {
