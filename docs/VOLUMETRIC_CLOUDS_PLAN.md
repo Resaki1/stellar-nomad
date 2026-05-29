@@ -14,6 +14,16 @@ sphere-traced SDFs, and pre-baked voxel-based lighting. Different architecture, 
 tooling, much more memory. HZD-era 2.5D is photoreal and shipped, and is the right target
 for a browser engine.
 
+> **⚠ Note on the repo PDF.** `docs/VolumetricCloudReferences/Nubis Volumetric Clouds.pdf`
+> is the **Nubis³ (SIGGRAPH 2023, Burning Shores)** deck — the *successor* architecture we
+> are NOT targeting. Our actual spec is the **2015 HZD** algorithm (GPU Pro 7 / SIGGRAPH
+> 2015 "Advances in Real-Time Rendering" course notes), which is **not** in the repo. When
+> this doc says "Nubis" or "Schneider 2015," it means that 2015 recipe — do not cross-check
+> formulas against the 2023 PDF (its NVDF/SDF/light-grid math is a different system). The
+> closest *shipped* reference on disk is the KSP-EVE mod
+> (`docs/VolumetricCloudReferences/KerbalSpaceProgramVolumetricCloudsMod/`), itself a
+> 2015-flavour live-march implementation.
+
 **Order of priorities (per user direction):** quality first. Performance is a follow-up
 phase once the look is right. The cost map at the end is qualitative, not a budget.
 
@@ -252,7 +262,11 @@ this, every TAA blend was geometrically wrong by ship-displacement-per-frame
 — visible as velocity-proportional smear at high speed. See
 `CLOUD_DEBUGGING_LESSONS.md` case study #6.
 
-### Current tuning constants (representative — see code comments for rationale)
+### Current marcher tuning constants (representative — see code comments for rationale)
+
+> These are the *marcher / lighting* constants in `earthClouds.ts`. The Phase D
+> *reconstruction* constants (FRESH_ALPHA, Bayer schedule, etc.) are in the "Phase D
+> shipped tuning constants" table above, not here.
 
 | Constant | Value | Role |
 |---|---|---|
@@ -266,7 +280,7 @@ this, every TAA blend was geometrically wrong by ship-displacement-per-frame
 | `sunColor magnitude` | 12 | Cumulus tops reach AgX 0.85 |
 | `skyColor` | (0.3, 0.5, 1.0) × 2 | Saturated cool blue for shadow undersides |
 | `skylight` | 0.15 | Low ambient floor for dramatic sunlit/shadow contrast |
-| Cone taps | 3 (was 6) | Halved for perf at indices 0/2/4 with 2× contribution |
+| Cone taps | 6 | Full stratified kernel (restored from 3 in D8; 1/16 reconstruction funds the cost) |
 
 ### Visible characteristics
 
@@ -301,14 +315,19 @@ form. See `CLOUD_VISIBLE_ISSUES.md` end-of-doc for updated status.
 
 ### Files involved
 
+> Refreshed 2026-05-29 — the fullscreen-pass migration and Phase D are done, so
+> the "planned/migrating" notes below are now historical.
+
 | File | Purpose |
 |------|---------|
-| `src/components/celestial/bodies/earthClouds.ts` | Marcher source / shell-era plumbing. Migrating to fullscreen pass. |
-| `src/components/celestial/bodies/earth.ts` | Surface shader; owns `uVolumetricBlend`; surface flat overlay. |
-| `src/components/celestial/bodies/cloudNoise.ts` | 64³ Worley generator + mip chain. Will become `noiseVolumes.ts`. |
-| `src/components/space/cloudFullscreenPass.ts` (planned) | New fullscreen quad scene + per-frame uniform updates. |
-| `src/components/space/SpaceRenderer.tsx` | Multi-pass orchestration: cloud RT, composite, postFX. |
-| `src/components/space/renderLayers.ts` | `CLOUD_LAYER` enum (will be removed post-migration). |
+| `src/components/celestial/bodies/earthClouds.ts` | Cloud marcher core (`marchCloudVolume`) + Earth cloud setup. Fullscreen migration complete. |
+| `src/components/celestial/bodies/earth.ts` | Surface shader; owns `uVolumetricBlend`; surface flat overlay + cloud-shadow tap. |
+| `src/components/celestial/bodies/noiseVolumes.ts` | 128³ base + 32³ detail volume generators + mip chains (replaced `cloudNoise.ts`). |
+| `src/components/celestial/bodies/stbnTexture.ts` | STBN 128×128×64 R8 atlas loader (async, singleton). |
+| `src/components/space/cloudFullscreenPass.ts` | 3-pass pipeline setup: sparse color, sparse depth, reconstruction. Per-frame uniforms. |
+| `src/components/space/cloudReconstructionPass.ts` | Full-res reconstruction (1/16 fill + YCoCg variance clamp + reprojection). |
+| `src/components/space/SpaceRenderer.tsx` | Multi-pass orchestration: sparse RTs, history ping-pong, Bayer schedule, composite, postFX. |
+| `src/components/space/renderLayers.ts` | `CLOUD_LAYER` enum (anchor-mesh layer; no camera enables it, so it never renders). |
 
 ---
 
@@ -356,31 +375,40 @@ The fullscreen pass marcher must, in this order:
 
 ## Gap analysis — current vs Schneider 2015
 
-| Subsystem | Schneider 2015 | Current (approx.) | Gap |
-|---|---|---|---|
-| Base volume | 128³ RGBA: Perlin-Worley + 3 Worley FBM octaves | 64³ R: single Worley | **Big** |
-| Detail volume | 32³ RGB: 3 Worley FBM octaves at high freq | none | **Big** |
-| Curl volume | 64³ RGB curl noise for advection | none | Medium |
-| Weather map | RGBA: coverage, type, height bias, wetness | R only (coverage) | Medium |
-| Profile | `coverage × heightProfile(alt, type)` as first-class | implicit, conflated with noise | **Big** |
-| Density | Schneider value erosion with height-driven detail mask | `shape × cov × heightCurve − densityMaskedDetail` (density-driven) | **Big** |
-| Type-driven detail blend | mix(billowy, wispy, type) per sample | single detail noise | **Big** |
-| Phase | HG (optional dual-lobe / Mie LUT for limb halo) | HG g=0.6 | Tiny |
-| Powder | `1 - exp(-density · 2k)` on direct only, before phase | active, formula not pinned | Small |
-| Multi-scatter | profile-driven probability field (Nubis 2018+) or N-octave HG | Wrenninge octave hack | Small–Medium |
-| Ambient | `pow(1 - profile, 0.5) × skyColor` | flat ambient | Small |
-| Light march | 6 cone samples, multi-octave, blue-noise jitter | 3 linear samples | Medium |
-| Primary march | 64–128 adaptive | 16 fixed | **Big** |
-| Tile classification | coarse 2D pre-pass marks empty/edge/dense tiles | per-fragment guard only | Medium |
-| Animation | Curl-warped UVs + UV scroll | static | Medium |
-| **Temporal** | Bayer 4×4 1/16 reconstruction + history reproject | None | **Huge** |
-| Upsample | Depth-aware bilateral (or 1:1 post-temporal) | Bilinear | Small post-D |
-| Surface shadows | Sun-projected shadow RT | 2-tap surface trick | Small |
-| Atmosphere coupling | Aerial perspective fog into clouds | None | Small |
-| Cloud-terrain interaction | density clipped to terrain height | None | **Big** for landings |
+> **⚠ Refreshed 2026-05-29 — code-verified.** Phases A, B, and D have all landed
+> since this table was first written. The rows below reflect the *actual* state of
+> the code (verified by reading `noiseVolumes.ts`, `earthClouds.ts`,
+> `cloudReconstructionPass.ts`, `cloudFullscreenPass.ts`, `SpaceRenderer.tsx`), not
+> the pre-Phase-A baseline. Gap column: ✅ = done; otherwise the remaining work + phase.
 
-Big/Huge gaps are what's keeping us short of the reference shots. Items in **Big** map
-roughly 1:1 to phases A–C below; **Huge** is Phase D.
+| Subsystem | Schneider 2015 | Current (code-verified) | Gap |
+|---|---|---|---|
+| Base volume | 128³ RGBA: Perlin-Worley + 3 Worley FBM octaves | 128³ RGBA8: R = Perlin-Worley, GBA = 3 Worley-FBM bands | ✅ |
+| Detail volume | 32³ RGB: 3 Worley FBM octaves at high freq | 32³ RGBA8: RGB = 3 Worley octaves (A unused) | ✅ |
+| Curl volume | 64³ RGB curl noise for advection | none | **Medium — A3/C5 not done** |
+| Weather map | RGBA: coverage, type, height bias, wetness | R only (coverage); cloudType derived procedurally | Medium — B2 Stage 2 (RGBA re-author) deferred |
+| Profile | `coverage × heightProfile(alt, type)` as first-class | first-class `profile = coverage × heightProfile`, shared by density + lighting | ✅ |
+| Density | Schneider value erosion with height-driven detail mask | value erosion `remap(shape, thr, 1, 0, 1)`, altitude-modulated detail mask | ✅ |
+| Type-driven detail blend | mix(billowy, wispy, type) per sample | `mix(wispy, billowy, cloudType)` via channel reweight | ✅ — curl-warped wispy variant still deferred (C5) |
+| Phase | HG (optional dual-lobe / Mie LUT for limb halo) | HG g=0.1 (intentionally near-isotropic) | Tiny — dual-lobe is optional (E3) |
+| Powder | `1 - exp(-density · 2k)` on direct only, before phase | `1 - exp(-2·OD)` on direct, pre-phase (POWDER_K=2) | ✅ |
+| Multi-scatter | profile-driven probability field (Nubis 2018+) or N-octave HG | `ms = profile × pow(Tsun, 0.5)` (profile-driven) | ✅ |
+| Ambient | `pow(1 - profile, 0.5) × skyColor` | `(1-profile)^0.5 × skyColor` | ✅ |
+| Light march | 6 cone samples, multi-octave, blue-noise jitter | 6 stratified cone taps, STBN jitter | ✅ |
+| Primary march | 64–128 adaptive | 96-step adaptive two-state (skip 500m / dense 125m) | ✅ |
+| Tile classification | coarse 2D pre-pass marks empty/edge/dense tiles | per-fragment guard only (outer gate neutralized) | **Medium — C1 not done** |
+| Animation | Curl-warped UVs + UV scroll | static (`uCloudUvOffset = 0`, never advanced) | **Medium — C5 not done; clouds are frozen** |
+| **Temporal** | Bayer 4×4 1/16 reconstruction + history reproject | 1/16 Bayer sparse marcher + full-res reconstruction + YCoCg clamp + origin-shift | ✅ |
+| Upsample | Depth-aware bilateral (or 1:1 post-temporal) | full-res reconstruction (no upsample needed) | ✅ |
+| Surface shadows | Sun-projected shadow RT | 2-tap surface trick in `earth.ts` | Small — E1 not done |
+| Atmosphere coupling | Aerial perspective fog into clouds | none | Small — E2 not done |
+| Cloud-terrain interaction | density clipped to terrain height | none | **Big for landings — F2 not done** |
+
+The Phase A/B/D "Big/Huge" items that originally kept us short of the reference shots
+are now **all closed**. The remaining gaps to reference quality are: **curl noise +
+animation** (C5 — clouds are currently static, the single biggest "looks alive" lever),
+**tile classification** (C1 — recovers perf headroom for richer marching), and the polish
+phases (E1 surface shadows, E2 aerial perspective, F2 terrain clip for landings).
 
 ---
 

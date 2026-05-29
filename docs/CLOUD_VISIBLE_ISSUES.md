@@ -1,5 +1,19 @@
 # Cloud rendering — visible issues (2026-05-06)
 
+> **⚠ HISTORICAL — superseded 2026-05-29.** This doc predates Phase D and describes
+> the old **half-res** architecture (`CLOUD_RT_SCALE = 0.5`), which no longer exists —
+> clouds now render via 1/16 sparse marcher + full-res reconstruction. The
+> authoritative current status lives in `VOLUMETRIC_CLOUDS_PLAN.md` ("Status snapshot")
+> and `CLOUD_DEBUGGING_LESSONS.md`. Quick disposition of the issues below:
+> - **#1 terminator inversion** — fixed (narrow symmetric `smoothstep(-0.1, 0.1)`).
+> - **#2 2D/3D layering** — closed as misperception.
+> - **#3 dot/speckle** — largely resolved (full-res reconstruction, density/detail/
+>   cumulus-pattern overhaul, STBN). Residual thin-cloud/edge noise under motion still
+>   tracked in the plan + lessons doc.
+> - **#4 internal shading** — partially addressed; further gains need C5 curl + higher-res
+>   noise.
+> The "recommended next" lists at the bottom are stale (they predate Phase D landing).
+
 Catalogue of the visible-quality problems with the current volumetric +
 flat-overlay system, in priority order. Every issue here is a *visible*
 defect — separate from the long-term Nubis roadmap in
