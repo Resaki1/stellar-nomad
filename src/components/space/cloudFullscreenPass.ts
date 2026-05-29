@@ -4,6 +4,7 @@ import {
   Fn,
   uniform,
   screenUV,
+  screenCoordinate,
   vec2,
   vec3,
   vec4,
@@ -11,51 +12,71 @@ import {
   normalize,
   dot,
   length,
-  mix,
-  texture,
-  sqrt,
-  smoothstep,
-  max as tslMax,
 } from "three/tsl";
 import { marchCloudVolume } from "@/components/celestial/bodies/earthClouds";
 import {
   getStbnTexture,
-  STBN_PERIOD_Z,
 } from "@/components/celestial/bodies/stbnTexture";
 
-// =============================================================================
-// FULLSCREEN-PASS DIAGNOSTICS
+// STBN slice modulus. Deliberately set to 63 (coprime with the 16-frame
+// Bayer cycle) rather than the texture's actual 64 slices. The Bayer
+// schedule makes each pixel "fresh" exactly once per 16 frames, so the
+// effective number of distinct STBN slices a pixel sees across cycles
+// is `STBN_FRAME_MODULUS / gcd(STBN_FRAME_MODULUS, 16)`:
 //
-// Set DEBUG_FULLSCREEN to anything other than 'off' to short-circuit the
-// fragment shader before marchCloudVolume. Each mode forces α=1 (output
-// REPLACES Earth in the composite) so the diagnostic is unambiguous.
+//   modulus = 64 → gcd = 16 → 4 distinct slices per pixel
+//   modulus = 63 → gcd = 1  → 63 distinct slices per pixel
 //
-//   'off'         : normal volumetric march
-//   'solid'       : every pixel = red, half-alpha. Confirms quad renders at
-//                   all and the composite blends correctly. If you see no
-//                   red tint over Earth, the quad isn't being drawn into
-//                   cloudRt — pass-2 plumbing or scene/camera setup issue.
-//   'screenUV'    : (R, G, 0, 1) = (screenUV.x, screenUV.y_flipped, 0, 1).
-//                   Should be black at top-left, red at top-right, green at
-//                   bottom-left, yellow at bottom-right. Confirms screenUV
-//                   semantics + y-flip orientation.
-//   'rdEarth'     : visualises Earth-local view direction as colour
-//                   ((rdEarth+1)*0.5 → R/G/B). For a camera looking roughly
-//                   towards Earth, the centre pixels point at Earth → all
-//                   three channels mid-grey, gradients out to the corners.
-//                   If you see a constant flat colour, ray reconstruction
-//                   is broken (likely uInvViewProj or camera matrix).
-//   'slabHit'     : white where the ray analytically intersects the cloud
-//                   slab outer shell, black otherwise. Should match the
-//                   visible Earth disk silhouette + a small atmosphere halo.
-//                   If black everywhere → ray geometry is wrong; if pure
-//                   white everywhere → roEarth is at origin (uEarthInverseModel
-//                   broken).
-//   'roEarthAlt'  : roEarth length normalised over 10 scaled units (10 000 km).
-//                   For a camera at LEO altitude ≈ 6.4 scaled units, this
-//                   should be ~0.64 grey across the full quad. If 0 (black)
-//                   the camera-position uniform is zero.
+// The 16× increase in distinct samples translates to ≈ 4× more variance
+// reduction in the per-pixel temporal mean (sampling stddev = σ/√N).
+// Using 63 means we skip slice 63 of the texture occasionally; the
+// asymmetry is invisible because adjacent slice indices have similar
+// blue-noise statistics.
+const STBN_FRAME_MODULUS = 63;
+import {
+  setupCloudReconstructionPass,
+  type CloudReconstructionPass,
+} from "./cloudReconstructionPass";
+
 // =============================================================================
+// Phase D — Cloud pipeline (three-pass architecture)
+//
+// Pass 2a: SPARSE COLOR marcher.    Output W/4 × H/4 RGBA16F. Each sparse
+//          texel corresponds to one 4×4 full-res tile, marched at the
+//          current Bayer sub-pixel slot.
+// Pass 2b: SPARSE DEPTH marcher.    Output W/4 × H/4 R16F. Same march, but
+//          the fragment shader returns vec4(tFront, 0, 0, 1) so the
+//          R-channel of the depth RT carries the cloud-front depth for
+//          each tile. Identical ray (same Bayer offset, same STBN slice)
+//          → tFront is for the SAME sample as the color RT's RGBA.
+//          Burns 1× of marcher work (we run the full marcher twice and
+//          throw away one output), but at 1/16 of the screen pixels this
+//          is still well under what continuous-TAA at half-res cost.
+// Pass 2c: FULL-RES RECONSTRUCTION  (cloudReconstructionPass.ts). Reads
+//          both sparse RTs + previous frame's history. Fresh sub-pixels
+//          copy the sparse sample directly; stale sub-pixels reproject
+//          history through the tile's tFront with origin-shift correction,
+//          then YCoCg variance-clamp against the 3×3 fresh neighbourhood.
+//
+// Composite (pass 3 in SpaceRenderer) reads the reconstruction RT and
+// premul-alpha blends it onto the main scene RT.
+//
+// The pipeline replaces the previous single-pass continuous-TAA design.
+// Motivation: continuous TAA blends ~14 frames of view-dependent radiance
+// regardless of motion, producing velocity-proportional smear at high
+// speed. Geometric reconstruction with variance clamp converges to a
+// supersampled image on still cameras (16-frame cycle through the Bayer
+// schedule) and degrades to per-pixel STBN noise (not smear) under
+// extreme motion — bounded, single-frame, recoverable.
+//
+// Reference: Schneider 2015 (HZD Nubis), Karis 2014 (YCoCg clamp).
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// DEBUG: short-circuit modes for the color pass. Visible inside the marched
+// 1/16 fresh sub-pixels only; reconstruction will clamp the other pixels
+// against the debug bounds.
+// -----------------------------------------------------------------------------
 type FullscreenDebug =
   | "off"
   | "solid"
@@ -65,59 +86,50 @@ type FullscreenDebug =
   | "roEarthAlt";
 const DEBUG_FULLSCREEN: FullscreenDebug = "off";
 
-export type FullscreenCloudPass = {
-  cloudScene: THREE.Scene;
-  cloudCamera: THREE.OrthographicCamera;
+// -----------------------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------------------
+export type CloudPipeline = {
+  // Pass 2a: writes sparseCloudRt
+  colorScene: THREE.Scene;
+  colorCamera: THREE.OrthographicCamera;
+
+  // Pass 2b: writes sparseDepthRt
+  depthScene: THREE.Scene;
+  depthCamera: THREE.OrthographicCamera;
+
+  // Pass 2c: writes historyRt[current]
+  reconstructionScene: THREE.Scene;
+  reconstructionCamera: THREE.OrthographicCamera;
+
   /**
-   * Recompute the per-frame uniforms (camera matrices + Earth world inverse
-   * + sub-pixel jitter + previous-frame view-projection + history texture +
-   * STBN frame slice). Call once per frame, before `gl.render(cloudScene,
-   * cloudCamera)`.
-   *
-   * - `earthMesh`: Object3D parented to Earth's rotation group; supplies
-   *   the world transform that drives `uEarthInverseModel`.
-   * - `jitterUv`: Halton(2,3) sub-pixel offset in UV space (pixel-fraction
-   *   / RT pixel dim).
-   * - `prevViewProj`: scaled-camera VP snapshotted at the end of the
-   *   previous frame.
-   * - `originShiftScaled`: (currentOriginKm − prevOriginKm) × SCALED_UNITS_PER_KM.
-   *   The floating origin slides every frame to track the ship (see
-   *   `Spaceship.tsx`), so the same world-space cloud point has different
-   *   scaled coordinates in consecutive frames. Adding this shift to the
-   *   current-frame scaled hit point before multiplying by `uPrevViewProj`
-   *   expresses the point in the *previous* frame's coordinate space —
-   *   without it, reprojection error grows linearly with ship velocity
-   *   and history blends from the wrong screen UV (visible as smearing).
-   * - `historyTexture`: the off-parity cloud RT's colour attachment. The
-   *   shader reprojects to it and exponentially blends.
-   * - `historyValid`: 0 = ignore history (first frame, post-rebase, after
-   *   resize); 1 = blend at full weight.
-   * - `frameIndex`: monotonic integer frame counter. Drives the STBN
-   *   slice index (`frameIndex mod 128 / 128`) so every frame samples a
-   *   different blue-noise realisation at each pixel.
+   * One updateUniforms call refreshes uniforms for all three passes. Call
+   * once per frame, before rendering any of the three scenes.
    */
-  updateUniforms: (
-    scaledCamera: THREE.PerspectiveCamera,
-    earthMesh: THREE.Object3D,
-    jitterUv: THREE.Vector2,
-    prevViewProj: THREE.Matrix4,
-    originShiftScaled: THREE.Vector3,
-    historyTexture: THREE.Texture,
-    historyValid: number,
-    frameIndex: number,
-  ) => void;
+  updateUniforms: (params: {
+    scaledCamera: THREE.PerspectiveCamera;
+    earthMesh: THREE.Object3D;
+    bayerSubPixel: THREE.Vector2;   // (0..3, 0..3) — Bayer schedule pick this frame
+    prevViewProj: THREE.Matrix4;
+    originShiftScaled: THREE.Vector3;
+    sparseColorTexture: THREE.Texture; // input to reconstruction
+    sparseDepthTexture: THREE.Texture; // input to reconstruction
+    historyTexture: THREE.Texture;     // input to reconstruction (prev frame)
+    historyValid: number;              // 0 / 1
+    frameIndex: number;                // for STBN slice
+    fullSize: THREE.Vector2;           // full-res screen pixels (DPR-adjusted)
+    sparseSize: THREE.Vector2;         // sparse RT pixels (= fullSize / 4)
+  }) => void;
+
   dispose: () => void;
 };
 
-// Module singletons. The cloud system is Earth-only for now; one active pass
-// is sufficient. SpaceRenderer reads these via getActiveFullscreenCloudPass()
-// each frame.
-let activePass: FullscreenCloudPass | null = null;
+let activePipeline: CloudPipeline | null = null;
 let earthMatrixWorldRef: THREE.Object3D | null = null;
 
-export function getActiveFullscreenCloudPass(): FullscreenCloudPass | null {
-  if (!activePass || !earthMatrixWorldRef) return null;
-  return activePass;
+export function getActiveCloudPipeline(): CloudPipeline | null {
+  if (!activePipeline || !earthMatrixWorldRef) return null;
+  return activePipeline;
 }
 
 export function getEarthMatrixWorldRef(): THREE.Object3D | null {
@@ -128,7 +140,7 @@ export function setEarthMatrixWorldSource(mesh: THREE.Object3D | null) {
   earthMatrixWorldRef = mesh;
 }
 
-export type SetupFullscreenCloudPassOpts = {
+export type SetupCloudPipelineOpts = {
   weatherMap: THREE.Texture;
   baseVolume: THREE.Data3DTexture;
   detailVolume: THREE.Data3DTexture;
@@ -152,164 +164,112 @@ export type SetupFullscreenCloudPassOpts = {
   uLightConeRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumetricBlend: any;
-  // Sun direction in scaled-world frame (Vec3 uniform). Transformed to
-  // Earth-local via uEarthInverseModel inside the fragment shader, matching
-  // the shell wrapper's modelWorldMatrixInverse·uSunRel logic.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
 };
 
-export function setupFullscreenCloudPass(
-  opts: SetupFullscreenCloudPassOpts,
-): FullscreenCloudPass {
-  if (activePass) activePass.dispose();
+// -----------------------------------------------------------------------------
+// Shared uniforms — created once, referenced by all three pass materials.
+// Mutating .value on one updates everywhere.
+// -----------------------------------------------------------------------------
+type SharedUniforms = ReturnType<typeof createSharedUniforms>;
 
-  const cloudScene = new THREE.Scene();
-  // Z range [0, 1] matches WebGPU NDC; the fullscreen plane sits at z = 0
-  // (between the ortho near=0 and far=1 planes) and is never frustum-culled.
-  const cloudCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+function createSharedUniforms() {
+  return {
+    uCameraMatrixWorld: uniform(new THREE.Matrix4()),
+    uCameraScaledPos: uniform(new THREE.Vector3()),
+    uTanHalfFov: uniform(0),
+    uAspect: uniform(1),
+    uEarthInverseModel: uniform(new THREE.Matrix4()),
+    // Bayer schedule: which sub-pixel slot (0..3, 0..3) is fresh this frame.
+    uBayerSubPixel: uniform(new THREE.Vector2(0, 0)),
+    // STBN slice for per-frame jitter (color + depth use the SAME slice so
+    // their ray-origin offsets agree — depth.tFront and color.rgba thus
+    // describe the same sample).
+    uStbnFrameSlice: uniform(0),
+    // Full-res screen pixel dimensions. Color & depth passes derive the
+    // full-res UV for their fresh sub-pixel; reconstruction also needs
+    // this to convert sparse-RT coords back to screen coords.
+    uFullSize: uniform(new THREE.Vector2(1, 1)),
+  };
+}
 
+// -----------------------------------------------------------------------------
+// Helpers for the color/depth pass marcher entry: compute the full-res
+// ray for THIS sparse pixel given the current Bayer offset.
+// -----------------------------------------------------------------------------
+function buildMarchRay(shared: SharedUniforms) {
+  // We're rendering to a SPARSE RT of size W/4 × H/4. screenCoordinate gives
+  // pixel coords in that sparse RT (range [0.5, sparseW-0.5] × [0.5, sparseH-0.5]).
+  // To compute the full-res pixel each sparse texel represents this frame:
+  //   sparseTileIndex = floor(screenCoordinate.xy)   (integer 0..sparseW-1)
+  //   fullPixel = sparseTileIndex * 4 + bayerSubPixel + 0.5
+  //   fullUv = fullPixel / fullSize
+  const sparseTileX = screenCoordinate.x.floor();
+  const sparseTileY = screenCoordinate.y.floor();
+  const fullPixelX = sparseTileX.mul(float(4))
+    .add(shared.uBayerSubPixel.x)
+    .add(float(0.5));
+  const fullPixelY = sparseTileY.mul(float(4))
+    .add(shared.uBayerSubPixel.y)
+    .add(float(0.5));
+  const fullUvX = fullPixelX.div(shared.uFullSize.x);
+  const fullUvY = fullPixelY.div(shared.uFullSize.y);
+
+  // NDC from full-res UV. ndc.y = 1 - 2·uv.y because WebGPU RT origin
+  // is at top-left (matches our screenUV convention everywhere else).
+  const ndcX = fullUvX.mul(2).sub(1);
+  const ndcY = float(1).sub(fullUvY.mul(2));
+
+  // View-space ray direction (FOV-based, no projection inverse).
+  const rdView = vec3(
+    ndcX.mul(shared.uAspect).mul(shared.uTanHalfFov),
+    ndcY.mul(shared.uTanHalfFov),
+    float(-1),
+  );
+  const rdScaled = normalize(
+    shared.uCameraMatrixWorld.mul(vec4(rdView, 0)).xyz,
+  );
+  const roEarth = shared.uEarthInverseModel
+    .mul(vec4(shared.uCameraScaledPos, 1)).xyz;
+  const rdEarth = normalize(
+    shared.uEarthInverseModel.mul(vec4(rdScaled, 0)).xyz,
+  );
+
+  return { roEarth, rdEarth, rdScaled };
+}
+
+// -----------------------------------------------------------------------------
+// Pass 2a: SPARSE COLOR marcher
+// -----------------------------------------------------------------------------
+function createColorPass(
+  opts: SetupCloudPipelineOpts,
+  shared: SharedUniforms,
+  stbnTexture: THREE.Data3DTexture,
+) {
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const geo = new THREE.PlaneGeometry(2, 2);
   const mat = new NodeMaterial();
 
-  // Premul-alpha output, identical pipeline to the shell version — bilinear
-  // upsample on the cloudRt during the composite pass interpolates colour
-  // and alpha together, no fringing at transparency edges.
-  mat.transparent = true;
+  // Replace contents of sparseCloudRt; reconstruction pass owns the blend.
+  mat.transparent = false;
   mat.depthTest = false;
   mat.depthWrite = false;
-  mat.blending = THREE.CustomBlending;
-  mat.blendSrc = THREE.OneFactor;
-  mat.blendDst = THREE.OneMinusSrcAlphaFactor;
-  mat.blendSrcAlpha = THREE.OneFactor;
-  mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-
-  // Per-frame uniforms.
-  //
-  // FOV-based ray reconstruction (avoids projectionMatrix.invert(), which
-  // loses precision in float32 with our extreme far/near ratio of ~2 × 10⁹):
-  //   ndcXY → rdView = vec3(ndcXY.x · aspect · tanHalfFov,
-  //                         ndcXY.y · tanHalfFov,
-  //                         −1)
-  //   rdWorld = normalize((cameraMatrixWorld · vec4(rdView, 0)).xyz)
-  // No matrix inversion involved → numerically stable.
-  const uCameraMatrixWorld = uniform(new THREE.Matrix4());
-  const uCameraScaledPos = uniform(new THREE.Vector3());
-  const uTanHalfFov = uniform(0);
-  const uAspect = uniform(1);
-  const uEarthInverseModel = uniform(new THREE.Matrix4());
-  // Phase D2: sub-pixel ray-origin jitter in UV space (Halton(2,3) offset
-  // divided by RT pixel dims, advanced once per frame by the caller). Alone
-  // this only adds per-frame shimmer at cloud edges; the value is to seed a
-  // different sample location each frame so the D6 history blend converges
-  // on a supersampled image.
-  const uJitterUv = uniform(new THREE.Vector2());
-  // Phase D3: previous-frame combined view-projection matrix (scaled-world
-  // space). D6 uses it to project this frame's outer-shell intersection
-  // into the previous frame's screen space and sample the history RT.
-  //
-  // Note: an earlier attempt at per-pixel reprojection planned a 2nd MRT
-  // attachment for true cloud-front depth, but three.js NodeMaterial
-  // requires fragmentNode to be a direct OutputStructNode for MRT, which is
-  // incompatible with `Fn(() => ...)()` (Fn wraps the return in a
-  // FunctionCallNode, losing the OutputStructNode marker). Loop/If need
-  // Fn's stack scope, so we can't drop the wrapper. D6 falls back to outer-
-  // shell intersection for the reprojection depth — exact for sky pixels,
-  // good enough for cloud-disk pixels (the visible cloud surface sits
-  // 1–13 km below the outer shell; reprojection error there is sub-pixel
-  // at all orbital altitudes and small-but-finite at close range).
-  const uPrevViewProj = uniform(new THREE.Matrix4());
-
-  // Floating-origin shift since the previous frame, in scaled-world units.
-  // The world origin slides every render frame to keep the ship at the local
-  // origin (Spaceship.tsx). Consecutive frames therefore use *different*
-  // scaled-world coordinate systems: a fixed world point P has different
-  // scaled coords each frame. `uPrevViewProj` was built from the previous
-  // frame's view+projection matrices — valid for points expressed in the
-  // *previous* frame's scaled coords. Without correcting for the origin
-  // shift, the reprojection samples the history at the wrong UV during ship
-  // motion and history blends from the wrong screen position (smearing).
-  //
-  // The shift converts the current frame's hit point back into the previous
-  // frame's coordinate system before the matrix multiply:
-  //   P_prev_scaled = P_now_scaled + (originNow_km − originPrev_km) × S
-  // where S = SCALED_UNITS_PER_KM.
-  const uOriginShiftScaled = uniform(new THREE.Vector3());
-
-  // Phase D6: history texture (the *other* ping-pong cloud RT, swapped each
-  // frame by SpaceRenderer via `updateUniforms`). Bound to a 1×1 placeholder
-  // at material setup so the TextureNode can be constructed before any
-  // history exists; the placeholder is overwritten on every frame the cloud
-  // pass renders. uHistoryValid gates the blend off on the first frame and
-  // any time SpaceRenderer detects a discontinuity (resize, floating-origin
-  // rebase, etc.).
-  const placeholderHistory = new THREE.DataTexture(
-    new Uint8Array([0, 0, 0, 0]),
-    1,
-    1,
-  );
-  placeholderHistory.needsUpdate = true;
-  const uHistoryTextureNode = texture(placeholderHistory);
-  const uHistoryValid = uniform(0);
-
-  // Phase D1: spatiotemporal blue noise atlas (128³ R8) for cloud-marcher
-  // jitter. Replaces the `fract(sin(...))` hash that produced uncorrelated
-  // per-pixel dither — STBN is blue-noise-distributed both spatially (within
-  // a slice) and temporally (across slices), which TAA averages cleanly.
-  // The loader returns a placeholder-zero texture immediately and fills it
-  // when the network fetch resolves; the shader binds to the same texture
-  // object throughout (so no bind-group recompile mid-frame). The marcher
-  // wraps it in `texture3D(...)` itself, matching baseVolume/detailVolume.
-  const stbnTexture = getStbnTexture();
-  // Per-frame slice index into the STBN volume, normalised to [0, 1). Used
-  // as the .z coordinate in the marcher's `texture3D(stbn, vec3(xy, slice))`
-  // sample, so each frame reads a different blue-noise realisation at the
-  // same screen pixel. Advanced by `1/STBN_PERIOD_Z` per frame (wraps after
-  // 64 frames). Replaces the old `uDitherPhase` hash argument.
-  const uStbnFrameSlice = uniform(0);
+  mat.blending = THREE.NoBlending;
 
   mat.fragmentNode = Fn(() => {
-    // Apply sub-pixel jitter to the UV before NDC reconstruction. screenUV
-    // is in [0, 1]; uJitterUv is already in UV space (pixel-fraction /
-    // pixel-dim) so no further scaling needed.
-    const jitteredUvX = screenUV.x.add(uJitterUv.x);
-    const jitteredUvY = screenUV.y.add(uJitterUv.y);
-
-    // NDC.xy from screenUV. screenUV.y=0 sits at the TOP of the screen
-    // (matches WebGPU RT origin), NDC.y=+1 is the TOP → y is flipped:
-    // ndc.y = 1 - 2·screenUV.y.  x maps directly.
-    const ndcX = jitteredUvX.mul(2).sub(1);
-    const ndcY = float(1).sub(jitteredUvY.mul(2));
-
+    // ── DEBUG short-circuits ──
     if (DEBUG_FULLSCREEN === "solid") {
-      // Premul-correct opaque red: composite REPLACES Earth fully.
       return vec4(1, 0, 0, 1);
     }
     if (DEBUG_FULLSCREEN === "screenUV") {
-      return vec4(
-        screenUV.x,
-        float(1).sub(screenUV.y),
-        float(0),
-        float(1),
-      );
+      return vec4(screenUV.x, float(1).sub(screenUV.y), float(0), float(1));
     }
 
-    // View-space ray direction: at the far plane, the eye looks down -Z by
-    // convention. `tan(fov/2)` gives the half-height at unit depth; multiply
-    // by aspect for the half-width.
-    const rdView = vec3(
-      ndcX.mul(uAspect).mul(uTanHalfFov),
-      ndcY.mul(uTanHalfFov),
-      float(-1),
-    );
-    const rdScaled = normalize(uCameraMatrixWorld.mul(vec4(rdView, 0)).xyz);
-
-    // Transform ray + sun into Earth-local frame. Direction vectors use w=0
-    // (no translation); positions use w=1.
-    const roEarth = uEarthInverseModel.mul(vec4(uCameraScaledPos, 1)).xyz;
-    const rdEarth = normalize(uEarthInverseModel.mul(vec4(rdScaled, 0)).xyz);
+    const { roEarth, rdEarth } = buildMarchRay(shared);
     const sunDirEarth = normalize(
-      uEarthInverseModel.mul(vec4(opts.uSunRel, 0)).xyz,
+      shared.uEarthInverseModel.mul(vec4(opts.uSunRel, 0)).xyz,
     );
 
     if (DEBUG_FULLSCREEN === "rdEarth") {
@@ -333,14 +293,7 @@ export function setupFullscreenCloudPass(
       return vec4(hit, hit, hit, float(1));
     }
 
-    // marchCloudVolume returns `{ rgba, tFront }`. tFront is the t-value at
-    // which the SKIP-mode march first detected cloud along this ray
-    // (sentinel -1 = no hit). Used below as the per-pixel reprojection depth
-    // — replaces an earlier outer-shell-t approximation that was off by up
-    // to 13 km from the actual cloud surface (sub-pixel error at orbital
-    // altitudes, a few pixels at close range). tFront lands reprojection
-    // exactly on the cloud surface the pixel sampled last frame.
-    const { rgba, tFront } = marchCloudVolume({
+    const { rgba } = marchCloudVolume({
       roEarth,
       rdEarth,
       sunDirEarth,
@@ -358,170 +311,167 @@ export function setupFullscreenCloudPass(
       uLightConeRadius: opts.uLightConeRadius,
       uVolumetricBlend: opts.uVolumetricBlend,
       uStbn: stbnTexture,
-      uStbnFrameSlice,
+      uStbnFrameSlice: shared.uStbnFrameSlice,
     });
-
-    // ── Phase D6: temporal reprojection blend ──
-    // Per-pixel reprojection depth, in order of preference:
-    //   1. tFront (true cloud-front depth) — when the marcher actually hit
-    //      cloud. This is the depth of the visible cloud surface, so
-    //      reprojection lands EXACTLY on the same surface position the
-    //      pixel sampled last frame.
-    //   2. tShell (outer-shell entry) — when the ray hit the slab but
-    //      missed cloud (covers sky-with-shell-grazing pixels).
-    //   3. far constant (1000) — pure sky, ray misses the slab. Sky
-    //      doesn't parallax under translation, so any large value is fine.
-    const bShell = dot(roEarth, rdEarth);
-    const cShell = dot(roEarth, roEarth)
-      .sub(opts.uOuterRadius.mul(opts.uOuterRadius));
-    const discShell = bShell.mul(bShell).sub(cShell);
-    // Near intersection (ray entering slab from outside).
-    const tShell = bShell.negate().sub(sqrt(tslMax(discShell, float(0))));
-    const useShell = discShell.greaterThan(0).and(tShell.greaterThan(0));
-    // tShell-or-far for the "missed cloud" fallback.
-    const tShellOrFar = useShell.select(tShell, float(1000));
-    // True cloud-front depth when present; otherwise the slab-or-sky depth.
-    const hasCloudFront = tFront.greaterThan(0);
-    const tReproj = hasCloudFront.select(tFront, tShellOrFar);
-
-    // World position the current pixel "looked at" this frame, expressed
-    // in THIS frame's scaled-world coordinates (origin = current ship pos).
-    const reprojWorldPos = uCameraScaledPos.add(rdScaled.mul(tReproj));
-    // Shift into the PREVIOUS frame's scaled-world coords before applying
-    // uPrevViewProj. See uOriginShiftScaled comment above — without this,
-    // every ship-motion frame mis-aligns the reprojection by the per-frame
-    // origin slide (= ship displacement converted to scaled units), which
-    // accumulates as a velocity-proportional smear in the history blend.
-    const reprojPrevFramePos = reprojWorldPos.add(uOriginShiftScaled);
-    const prevClip = uPrevViewProj.mul(vec4(reprojPrevFramePos, 1));
-    const prevNdcX = prevClip.x.div(prevClip.w);
-    const prevNdcY = prevClip.y.div(prevClip.w);
-    // NDC.y → screenUV.y flips: NDC.y=+1 is top, screenUV.y=0 is top.
-    const prevUv = vec2(
-      prevNdcX.mul(0.5).add(0.5),
-      float(0.5).sub(prevNdcY.mul(0.5)),
-    );
-
-    // Disocclusion bound check: drop history if the previous-frame UV is
-    // off-screen. (D4 will add a fuller validity model — for now this is
-    // the cheap baseline.)
-    const inBounds = prevUv.x.greaterThan(0).and(prevUv.x.lessThan(1))
-      .and(prevUv.y.greaterThan(0)).and(prevUv.y.lessThan(1));
-    const blendWeight = uHistoryValid.mul(inBounds.select(float(1), float(0)));
-
-    // Per-frame pixel-space motion: comparing prev UV to THIS frame's
-    // jittered UV (not raw screenUV) — the jitter offset is the same on
-    // both sides for a stationary camera, so motionMag is exactly zero
-    // when nothing moved. Used by D7 below to gate the alpha disocclusion
-    // test: when stationary, no disocclusion is possible, so we trust TAA
-    // fully even if per-frame alpha jitter is large (which it is — the
-    // marcher's animated dither produces alpha variance in [0, ~0.5]
-    // even on a static cloud body, and that variance is exactly what TAA
-    // is supposed to integrate).
-    const jitteredUv = vec2(jitteredUvX, jitteredUvY);
-    const motionMag = length(prevUv.sub(jitteredUv));
-
-    // Sample history at the reprojected UV. The placeholder texture binds
-    // a 1×1 black at material setup; updateUniforms swaps in the actual
-    // history each frame, so by the time the shader runs uHistoryTextureNode
-    // is bound to the off-parity cloud RT.
-    const historyRgba = texture(uHistoryTextureNode, prevUv);
-
-    // ── Phase D7: anti-ghost mitigation ──
-    // Proper variance clamping needs a 3×3 neighbourhood of the CURRENT
-    // frame's colour buffer, which we don't have inside this single pass
-    // (the marcher only computes one ray per fragment). Splitting into a
-    // marcher-pass + TAA-composite-pass would expose neighbours but adds
-    // an RT and a fragment shader; deferred until ghosting becomes worse.
-    //
-    // Cheaper single-pass mitigation: gate disocclusion on BOTH motion
-    // AND alpha-mismatch. Either alone is unreliable —
-    //   - Alpha alone false-triggers on normal per-frame dither variance
-    //     (the cloud sample's alpha legitimately varies as dither shifts
-    //     the march start), collapsing the blend to near-zero when TAA
-    //     should be integrating freely.
-    //   - Motion alone over-blocks: any orbital pan would dump history
-    //     across cloud bodies where reprojection IS correct.
-    //   - The product fires only when motion is significant AND the
-    //     reprojected history's alpha disagrees sharply with the new
-    //     sample. That's the signature of a real silhouette transition
-    //     (cloud moved off this pixel) — the case that produces visible
-    //     ghost trails. Static-camera dot integration runs at full TAA
-    //     weight, so the dancing dots converge to a smooth average.
-    //
-    // Threshold rationale: motionGate engages around half a pixel UV
-    // motion (well past the jitter floor); alphaGate triggers only at
-    // near-total alpha change (inside-cloud dither variance never gets
-    // there).
-    const motionGate = smoothstep(float(0.001), float(0.02), motionMag);
-    const alphaDiff = historyRgba.a.sub(rgba.a).abs();
-    const alphaGate = smoothstep(float(0.4), float(0.8), alphaDiff);
-    const disocclusion = motionGate.mul(alphaGate);
-    const similarity = float(1).sub(disocclusion);
-    const finalBlend = blendWeight.mul(0.95).mul(similarity);
-
-    // Premul colours mix linearly per channel (incl. alpha), so the
-    // mix is correct without unpremul/premul round-tripping.
-    const final = mix(rgba, historyRgba, finalBlend);
-    return final;
+    return rgba;
   })();
 
   const mesh = new THREE.Mesh(geo, mat);
-  // Ortho clip volume at z∈[0,1] should never cull a centred plane, but be
-  // explicit — the fullscreen quad must paint every frame.
   mesh.frustumCulled = false;
-  cloudScene.add(mesh);
+  scene.add(mesh);
 
-  const updateUniforms = (
-    scaledCamera: THREE.PerspectiveCamera,
-    earthMesh: THREE.Object3D,
-    jitterUv: THREE.Vector2,
-    prevViewProj: THREE.Matrix4,
-    originShiftScaled: THREE.Vector3,
-    historyTexture: THREE.Texture,
-    historyValid: number,
-    frameIndex: number,
-  ) => {
-    uCameraMatrixWorld.value.copy(scaledCamera.matrixWorld);
-    uCameraScaledPos.value.copy(scaledCamera.position);
-    // FOV is stored in degrees on the camera; tan needs radians.
-    uTanHalfFov.value = Math.tan((scaledCamera.fov * Math.PI) / 180 / 2);
-    uAspect.value = scaledCamera.aspect;
-    earthMesh.updateWorldMatrix(true, false);
-    uEarthInverseModel.value.copy(earthMesh.matrixWorld).invert();
-    uJitterUv.value.copy(jitterUv);
-    uPrevViewProj.value.copy(prevViewProj);
-    uOriginShiftScaled.value.copy(originShiftScaled);
-    // Swap the history binding to whichever ping-pong RT held the
-    // previous frame. WebGPU rebinds the bind group on texture-identity
-    // change; format must match (both RTs use HalfFloatType, so OK).
-    uHistoryTextureNode.value = historyTexture;
-    uHistoryValid.value = historyValid;
-    // Phase D1: STBN slice index. Each frame, advance by 1/STBN_PERIOD_Z so
-    // 64 consecutive frames sweep through all 64 temporal slices. At any one
-    // screen pixel, consecutive frames sample 64 distinct blue-noise values
-    // (designed to be perceptually decorrelated). TAA integration across N
-    // frames converges to a clean estimate; the current continuous-TAA
-    // blends ~14 frames, so the first 14 of 64 slices dominate per frame
-    // and the full atlas refreshes over the next ~50.
-    uStbnFrameSlice.value =
-      (frameIndex % STBN_PERIOD_Z) / STBN_PERIOD_Z;
+  return { scene, camera, mat, geo, mesh };
+}
+
+// -----------------------------------------------------------------------------
+// Pass 2b: SPARSE DEPTH marcher
+// Runs the same marcher to extract `tFront` only. RGBA output is throw-away;
+// only .r is consumed by the R16F depth RT.
+//
+// NOTE: this duplicates marcher work (color and depth both run a full
+// marchCloudVolume). The TSL `Fn(...)()` wrapping that Loop/If requires is
+// incompatible with MRT output (which would let one pass write both
+// rgba and tFront), so we accept the 2× cost for now. At 1/16 screen pixels
+// per pass, total marcher work = 2 × (1/16) = 1/8 of full-res continuous,
+// still well below the pre-Phase-D cost.
+// -----------------------------------------------------------------------------
+function createDepthPass(
+  opts: SetupCloudPipelineOpts,
+  shared: SharedUniforms,
+  stbnTexture: THREE.Data3DTexture,
+) {
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const geo = new THREE.PlaneGeometry(2, 2);
+  const mat = new NodeMaterial();
+
+  mat.transparent = false;
+  mat.depthTest = false;
+  mat.depthWrite = false;
+  mat.blending = THREE.NoBlending;
+
+  mat.fragmentNode = Fn(() => {
+    const { roEarth, rdEarth } = buildMarchRay(shared);
+    const sunDirEarth = normalize(
+      shared.uEarthInverseModel.mul(vec4(opts.uSunRel, 0)).xyz,
+    );
+
+    const { tFront } = marchCloudVolume({
+      roEarth,
+      rdEarth,
+      sunDirEarth,
+      weatherMap: opts.weatherMap,
+      baseVolume: opts.baseVolume,
+      detailVolume: opts.detailVolume,
+      uInnerRadius: opts.uInnerRadius,
+      uOuterRadius: opts.uOuterRadius,
+      uCloudUvOffset: opts.uCloudUvOffset,
+      uDensityMul: opts.uDensityMul,
+      uBaseScale: opts.uBaseScale,
+      uDetailScale: opts.uDetailScale,
+      uDetailErosion: opts.uDetailErosion,
+      uColumnScale: opts.uColumnScale,
+      uLightConeRadius: opts.uLightConeRadius,
+      uVolumetricBlend: opts.uVolumetricBlend,
+      uStbn: stbnTexture,
+      uStbnFrameSlice: shared.uStbnFrameSlice,
+    });
+    return vec4(tFront, float(0), float(0), float(1));
+  })();
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+
+  return { scene, camera, mat, geo, mesh };
+}
+
+// -----------------------------------------------------------------------------
+// Pipeline setup — builds color, depth, and reconstruction passes;
+// returns the orchestrator with a single updateUniforms entry point.
+// -----------------------------------------------------------------------------
+export function setupCloudPipeline(
+  opts: SetupCloudPipelineOpts,
+): CloudPipeline {
+  if (activePipeline) activePipeline.dispose();
+
+  const shared = createSharedUniforms();
+  const stbnTexture = getStbnTexture();
+
+  const color = createColorPass(opts, shared, stbnTexture);
+  const depth = createDepthPass(opts, shared, stbnTexture);
+  const reconstruction = setupCloudReconstructionPass({
+    uOuterRadius: opts.uOuterRadius,
+  });
+
+  // The reconstruction pass has its OWN copies of camera/earth uniforms
+  // (it can't share `shared` directly because it lives in a different
+  // module / TSL graph). updateUniforms below pushes the same values to
+  // both. This duplication is intentional — keeps the two passes
+  // independently testable and respects TSL's bind-group ownership.
+
+  const updateUniforms: CloudPipeline["updateUniforms"] = (params) => {
+    // Shared (color + depth)
+    shared.uCameraMatrixWorld.value.copy(params.scaledCamera.matrixWorld);
+    shared.uCameraScaledPos.value.copy(params.scaledCamera.position);
+    shared.uTanHalfFov.value =
+      Math.tan((params.scaledCamera.fov * Math.PI) / 180 / 2);
+    shared.uAspect.value = params.scaledCamera.aspect;
+    params.earthMesh.updateWorldMatrix(true, false);
+    shared.uEarthInverseModel.value
+      .copy(params.earthMesh.matrixWorld).invert();
+    shared.uBayerSubPixel.value.copy(params.bayerSubPixel);
+    // STBN slice = (frame % 63) / 63 — 63 chosen because gcd(63, 16) = 1
+    // gives each pixel 63 distinct slices instead of just 4 (which the
+    // naive `% 64` would give with the 16-frame Bayer cycle). See
+    // STBN_FRAME_MODULUS comment at top of file.
+    shared.uStbnFrameSlice.value =
+      (params.frameIndex % STBN_FRAME_MODULUS) / STBN_FRAME_MODULUS;
+    shared.uFullSize.value.copy(params.fullSize);
+
+    // Reconstruction (everything the color/depth passes don't need)
+    reconstruction.updateUniforms(
+      params.scaledCamera,
+      params.earthMesh,
+      params.bayerSubPixel,
+      params.prevViewProj,
+      params.originShiftScaled,
+      params.sparseColorTexture,
+      params.sparseDepthTexture,
+      params.historyTexture,
+      params.historyValid,
+      params.sparseSize,
+    );
   };
 
   const dispose = () => {
-    cloudScene.remove(mesh);
-    mat.dispose();
-    geo.dispose();
-    placeholderHistory.dispose();
-    if (activePass === handle) activePass = null;
+    color.scene.remove(color.mesh);
+    color.mat.dispose();
+    color.geo.dispose();
+    depth.scene.remove(depth.mesh);
+    depth.mat.dispose();
+    depth.geo.dispose();
+    reconstruction.dispose();
+    if (activePipeline === handle) activePipeline = null;
   };
 
-  const handle: FullscreenCloudPass = {
-    cloudScene,
-    cloudCamera,
+  const handle: CloudPipeline = {
+    colorScene: color.scene,
+    colorCamera: color.camera,
+    depthScene: depth.scene,
+    depthCamera: depth.camera,
+    reconstructionScene: reconstruction.scene,
+    reconstructionCamera: reconstruction.camera,
     updateUniforms,
     dispose,
   };
-  activePass = handle;
+  activePipeline = handle;
   return handle;
 }
+
+// -----------------------------------------------------------------------------
+// Backwards-compat re-exports — let other modules keep importing the old
+// names while we migrate consumers in a follow-up. Drop these in a cleanup
+// pass once SpaceRenderer and earthClouds are updated.
+// -----------------------------------------------------------------------------
+export { CloudReconstructionPass };

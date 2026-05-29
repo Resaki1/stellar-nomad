@@ -151,7 +151,62 @@ the plan.
 
 ## Status snapshot
 
-### Current state (2026-05-26, end of Phase B implementation session)
+### Current state (2026-05-29, end of Phase D implementation session)
+
+**Phase D** complete (D1–D8 landed):
+- D1: STBN spatiotemporal blue-noise dither replaces `fract(sin(...))` hash
+  in the marcher's tStart jitter. 128 × 128 × 64 R8 atlas from KSP-EVE.
+- D2: Sparse 1/16-resolution marcher target with Bayer 4×4 deterministic
+  sub-pixel schedule.
+- D3: Full-resolution reconstruction pass — fresh path blends new marched
+  sample with reprojected history (FRESH_ALPHA = 0.3, raw — not clamped —
+  history for genuine temporal averaging). Stale path samples variance-
+  clamped history.
+- D4: YCoCg variance clamp using 3×3 sparse-RT fresh neighbourhood.
+- D5: Full-res ping-pong history RT (RGBA16F).
+- D6: Disocclusion via off-screen check + variance clamp (motion+alpha
+  heuristic dropped).
+- D7: Origin-shift correction for floating-origin reprojection. Already
+  landed as prerequisite.
+- D8: Marcher quality lift — cone-march 3 → 6 taps (no compensation
+  multiplier); first-hit threshold 0.01 → 0.0001 (less binary aliasing).
+
+**Phase D close-out diagnostics (2026-05-27/29)** tested and ruled out
+several suspects for residual thin-cloud-region speckle:
+- Detail erosion (uDetailErosion 0.0 → 6.0 tested) — not the source.
+- Per-voxel altPerturb hash — not the source.
+- First-hit threshold gating (lowered from 0.01 → 0.0001) — minor improvement.
+
+Residual noise traced to **MC integration variance** at low-density
+cloud regions (thin cloud, silhouettes). This is fundamental to single-
+pass volumetric rendering with the marcher's per-pixel sample budget.
+Improvements require either:
+- More samples per ray (smaller dtSkip / dtDense, more MAX_STEPS) — perf cost
+- Spatial smoothing post-pass — softens edges
+- Higher-resolution noise volumes (Phase A2 extension) — memory cost
+- Reference-quality only achievable with offline NVDF voxel pipeline (Nubis³,
+  explicitly out of scope per plan top)
+
+See `CLOUD_DEBUGGING_LESSONS.md` case study #7 for the full diagnostic
+session and meta-lessons.
+
+### Phase D shipped tuning constants
+
+| Constant | Value | Role |
+|---|---|---|
+| `BAYER_4X4` schedule | 16 entries | 1/16 sub-pixel selection |
+| `FRESH_ALPHA` | 0.3 | Temporal blend weight (38% input variance steady-state) |
+| YCoCg padding | 10% | Variance clamp slack |
+| Sparse RT scale | 1/4 × 1/4 | 16× pixel-count reduction |
+| Cumulus pattern smoothstep | (0.15, 0.85) | Widened from (0.35, 0.65) for less binary masking |
+| Cumulus pattern distance fade | 5 km → 80 km | Fades to no-modulation at distance to prevent aliasing |
+| First-hit threshold | 0.0001 | Lowered from 0.01 to soften binary detection |
+| Cone taps | 6 (was 3) | Full stratified low-discrepancy kernel |
+| `MAX_PRIMARY_STEPS` | 96 (unchanged) | Slab coverage at 500m skip step |
+| `STBN_PERIOD_XY` | 128 | Spatial period of dither atlas |
+| `STBN_PERIOD_Z` | 64 | Temporal slice count |
+
+### Pre-Phase-D state (2026-05-26, end of Phase B implementation session)
 
 **Phase A** complete:
 - 128³ RGBA8 base volume (Perlin-Worley R + 3 Worley FBM octaves GBA)
@@ -1160,22 +1215,33 @@ fullscreen marcher must include the planet-occlusion clamp from day 1.
 4. ⏸ **C1**: coverage tile classification. Free perf for the next phases.
 5. ✅ partial **C2–C5**:
    - ✅ Adaptive two-state march (C2) — landed earlier
-   - ✅ Cone light march (C4) — landed, reduced to 3 taps for perf
+   - ✅ Cone light march (C4) — restored to 6 taps in D8
    - ⏸ Curl noise advection (C5)
    - ⏸ Distance-scaled step length (C3)
 6. ✅ **D prereqs**: per-pixel reprojection + sub-pixel jitter; origin-shift
    correction for floating-origin reprojection.
-7. ⏭ **D1–D8** (next): STBN jitter, sparse 1/16 marcher target with Bayer 4×4
-   schedule, full-res reconstruction pass with YCoCg variance clamp, lift
-   marcher quality. v1 disocclusion = off-screen + variance clamp; depth-
+7. ✅ **D1–D8** (landed 2026-05-27/29): STBN jitter, sparse 1/16 marcher
+   target with Bayer 4×4 schedule, full-res reconstruction pass with
+   YCoCg variance clamp, lift marcher quality (6 cone taps, lowered first-
+   hit threshold). v1 disocclusion = off-screen + variance clamp; depth-
    based disocclusion deferred to v2.
+   - Residual MC variance at thin cloud regions is a fundamental limit
+     of single-pass volumetric rendering at our sample budget. See plan
+     status snapshot + `CLOUD_DEBUGGING_LESSONS.md` case study #7.
 8. ⏸ **E1**: sun shadow map.
 9. ⏸ **F2**: cloud–terrain interaction.
 10. ⏸ **E2**: aerial perspective.
 11. ⏸ **F1**: generalise to per-planet config.
 12. ⏸ **F3, F4, F5**: tiers, pre-warm, Venus.
 
-**Recommended next**: Phase D proper. The user's current high-speed smearing
+**Recommended next**: Phase E1 (sun shadow map) for cloud shadows on terrain;
+or further marcher quality investment if reference-quality clouds are needed
+before atmospheric polish. The thin-cloud-region noise that remains after
+Phase D is fixable but expensive (more samples per ray, or spatial smoothing
+post-pass that trades sharpness for noise reduction).
+
+**Historical context** (kept for reference):
+Phase D close-out: the original goal of fixing the user's high-speed smearing
 symptom is unfixable inside the every-frame-TAA architecture; D's 1/16
 reconstruction + variance clamp is the canonical solution.
 

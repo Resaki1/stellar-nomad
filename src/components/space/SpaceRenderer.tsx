@@ -11,11 +11,17 @@ import {
   SCALED_UNITS_PER_KM,
 } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { HalfFloatType, AgXToneMapping, NeutralToneMapping, NoToneMapping } from "three";
+import {
+  HalfFloatType,
+  RedFormat,
+  AgXToneMapping,
+  NeutralToneMapping,
+  NoToneMapping,
+} from "three";
 import { useAtomValue } from "jotai/react";
 import { settingsAtom } from "@/store/store";
 import {
-  getActiveFullscreenCloudPass,
+  getActiveCloudPipeline,
   getEarthMatrixWorldRef,
 } from "./cloudFullscreenPass";
 
@@ -30,45 +36,40 @@ const LOCAL_CAMERA_FAR = 20_000 * 1000;
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
 
-// Half-res cloud pass: render the cloud shell at 0.5× each axis (= ¼ pixels).
-// Cloud detail is inherently low-frequency; bilinear upsample in the composite
-// pass is visually indistinguishable for cloud interiors, and the silhouette
-// against the planet limb stays sharp because it's the planet pass (full res)
-// that defines that edge. The cloud shell does NOT bound the silhouette.
-const CLOUD_RT_SCALE = 0.5;
+// Phase D: 1/16 reconstruction. The marcher writes a SPARSE RT (1/4 × 1/4
+// of screen = 1/16 of full pixels). Each sparse texel = one 4×4 full-res
+// tile, marched at the current Bayer sub-pixel slot. A full-res
+// reconstruction pass fills the other 15/16 pixels from reprojected history
+// with YCoCg variance clamping. See cloudFullscreenPass.ts and
+// cloudReconstructionPass.ts.
+const SPARSE_DIVISOR = 4;
+
+// Canonical Bayer 4×4 ordered-dither matrix, value → (x, y). Each frame
+// picks index `frameIndex mod 16`; after 16 frames every sub-pixel of every
+// 4×4 tile has been marched exactly once. Short windows still cover
+// well-spread sub-positions (any 4 consecutive frames hit 4 spatially
+// separated slots — the property of the Bayer ordering).
+const BAYER_4X4: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [2, 2], [2, 0], [0, 2],
+  [1, 1], [3, 3], [3, 1], [1, 3],
+  [1, 0], [3, 2], [3, 0], [1, 2],
+  [0, 1], [2, 3], [2, 1], [0, 3],
+];
 
 const tempScaledPos = new THREE.Vector3();
 const tempClearColor = new THREE.Color();
-const tempJitter = new THREE.Vector2();
+const tempBayerSub = new THREE.Vector2();
 const tempViewProj = new THREE.Matrix4();
 const tempOriginShiftScaled = new THREE.Vector3();
+const tempFullSize = new THREE.Vector2();
+const tempSparseSize = new THREE.Vector2();
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
 
-// Phase D2: 16-entry Halton(2,3) low-discrepancy sequence, centred so each
-// entry is in [-0.5, 0.5]. Each frame we pick the next entry, divide by RT
-// pixel dims, and feed it as a sub-pixel jitter for the cloud ray-march.
-// Halton beats random and Bayer for spatial-coverage convergence within a
-// short cycle (16 frames here = 4×4 effective stratification).
-const HALTON_LEN = 16;
-const HALTON_JITTER: ReadonlyArray<readonly [number, number]> = (() => {
-  const halton = (index: number, base: number): number => {
-    let f = 1;
-    let r = 0;
-    let i = index;
-    while (i > 0) {
-      f /= base;
-      r += f * (i % base);
-      i = Math.floor(i / base);
-    }
-    return r;
-  };
-  const out: [number, number][] = [];
-  for (let i = 1; i <= HALTON_LEN; i++) {
-    out.push([halton(i, 2) - 0.5, halton(i, 3) - 0.5]);
-  }
-  return out;
-})();
+// Halton(2,3) sub-pixel jitter is obsolete in the 1/16 reconstruction
+// architecture — replaced by the deterministic BAYER_4X4 schedule above.
+// The Bayer slot index is `frameIndex % 16` and the sub-pixel offset is
+// applied integer-pixel-wise inside the marcher (not as a fractional jitter).
 
 // Full-screen quad for the cloud composite pass. One per SpaceRenderer
 // lifetime — the cloud-texture node inside the material is rebuilt when the
@@ -112,34 +113,86 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rt.dispose(); }, [rt]);
 
-  // Phase D ping-pong cloud RTs. Each frame writes one and (once D6
-  // lands) reads the other as history. Half-res for now; D5 lifts to full
-  // res alongside the 1/16 stochastic schedule that pays the perf cost back.
-  // (An MRT layout for a 2nd "tFront" attachment was attempted but three's
-  // NodeMaterial only honours MRT when fragmentNode is a direct
-  // OutputStructNode, which is incompatible with the Fn(()=>...)() wrapping
-  // the marcher needs for Loop/If stack scope. D6 falls back to camera-only
-  // reprojection — accurate at orbit altitudes; close-range parallax is the
-  // tradeoff.)
-  const cloudRts = useMemo(() => {
+  // Phase D RT layout — three pairs:
+  //
+  //   sparseCloudRts: W/4 × H/4 RGBA16F. The marcher (pass 2a) writes one
+  //     fresh sample per 4×4 full-res tile here. Ping-pong only because
+  //     the reconstruction pass reads it the same frame; the OTHER
+  //     parity isn't used as history (reconstruction reads its own
+  //     history RT, not the sparse RT). Single RT would work too, but
+  //     ping-ponging keeps WebGPU happy if it complains about
+  //     concurrent read/write of the same texture in adjacent passes.
+  //
+  //   sparseDepthRts: W/4 × H/4 R16F (RedFormat + HalfFloatType). Pass 2b
+  //     writes `tFront` (scaled-world depth of the cloud front along the
+  //     ray, sentinel −1 = no hit). Used by the reconstruction pass for
+  //     per-tile reprojection depth.
+  //
+  //   historyRts: full-res RGBA16F. Pass 2c (reconstruction) writes the
+  //     final per-pixel cloud colour here; the off-parity is read back
+  //     next frame as the previous-frame history. Composite (pass 3)
+  //     reads from this RT, premul-alpha blending onto the main scene RT.
+  //
+  // Total VRAM at 1080p × DPR=2: sparse color 2×(960×540×8) = 8 MiB,
+  // sparse depth 2×(960×540×2) = 2 MiB, history 2×(1920×1080×8) = 33 MiB.
+  // ≈ 43 MiB cloud working set. Acceptable.
+  const sparseCloudRts = useMemo(() => {
     const dpr = gl.getPixelRatio();
-    const w = Math.max(1, Math.floor(size.width * dpr * CLOUD_RT_SCALE));
-    const h = Math.max(1, Math.floor(size.height * dpr * CLOUD_RT_SCALE));
+    const w = Math.max(1, Math.floor(size.width * dpr / SPARSE_DIVISOR));
+    const h = Math.max(1, Math.floor(size.height * dpr / SPARSE_DIVISOR));
     return [
-      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: true }),
-      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: true }),
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
+    ] as const;
+  }, [gl, size.width, size.height]);
+
+  const sparseDepthRts = useMemo(() => {
+    const dpr = gl.getPixelRatio();
+    const w = Math.max(1, Math.floor(size.width * dpr / SPARSE_DIVISOR));
+    const h = Math.max(1, Math.floor(size.height * dpr / SPARSE_DIVISOR));
+    return [
+      new RenderTarget(w, h, {
+        type: HalfFloatType,
+        format: RedFormat,
+        depthBuffer: false,
+      }),
+      new RenderTarget(w, h, {
+        type: HalfFloatType,
+        format: RedFormat,
+        depthBuffer: false,
+      }),
+    ] as const;
+  }, [gl, size.width, size.height]);
+
+  const historyRts = useMemo(() => {
+    const dpr = gl.getPixelRatio();
+    const w = Math.max(1, Math.floor(size.width * dpr));
+    const h = Math.max(1, Math.floor(size.height * dpr));
+    return [
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
+      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
     ] as const;
   }, [gl, size.width, size.height]);
 
   useEffect(() => () => {
-    cloudRts[0].dispose();
-    cloudRts[1].dispose();
-  }, [cloudRts]);
+    sparseCloudRts[0].dispose();
+    sparseCloudRts[1].dispose();
+  }, [sparseCloudRts]);
+  useEffect(() => () => {
+    sparseDepthRts[0].dispose();
+    sparseDepthRts[1].dispose();
+  }, [sparseDepthRts]);
+  useEffect(() => () => {
+    historyRts[0].dispose();
+    historyRts[1].dispose();
+  }, [historyRts]);
 
-  // One composite mesh per cloud RT. Pre-built so swapping which one is in
-  // compositeScene each frame is a parent/child mutation, not a TSL
-  // recompile. (Reassigning a TextureNode's `.value` mid-frame is not
-  // reliably honoured by the WebGPU backend's bind-group caching.)
+  // Composite meshes: read from the full-res historyRts (the reconstruction
+  // output) and premul-alpha blend onto the main scene RT. No bilinear
+  // upsample needed — reconstruction is already at full resolution.
+  // Pre-built pair so the per-frame parity swap is just a parent/child
+  // mutation (avoids TextureNode `.value` reassignment, which the WebGPU
+  // backend's bind-group cache doesn't always honour mid-frame).
   const compositeMeshes = useMemo(() => {
     const make = (rt: RenderTarget) => {
       const mat = new NodeMaterial();
@@ -151,14 +204,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       mat.blendDst = THREE.OneMinusSrcAlphaFactor;
       mat.blendSrcAlpha = THREE.OneFactor;
       mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-      // Use screenUV (not the plane's geometry uv) — WebGPU RTs have origin
-      // at top-left, matching screenUV.y=0 at top. Geometry uv has origin at
-      // bottom-left, which flips the composite vertically.
       mat.fragmentNode = texture(rt.texture, screenUV);
       return new THREE.Mesh(compositeGeometry, mat);
     };
-    return [make(cloudRts[0]), make(cloudRts[1])] as const;
-  }, [cloudRts]);
+    return [make(historyRts[0]), make(historyRts[1])] as const;
+  }, [historyRts]);
 
   useEffect(() => () => {
     for (const mesh of compositeMeshes) {
@@ -221,8 +271,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // writes the other. compositeScene gets the matching mesh swapped in.
   const frameParity = useRef(0);
   const mountedCompositeMesh = useRef<THREE.Mesh | null>(null);
-  // Phase D2: monotonic frame counter (mod HALTON_LEN) drives sub-pixel
-  // jitter selection. Distinct from frameParity (which is just 2-state).
+  // Phase D2: monotonic frame counter (mod 16) drives the Bayer 4×4
+  // schedule lookup. Distinct from frameParity (which is just 2-state).
+  // Also drives the STBN frame-slice uniform in the cloud pipeline
+  // (advanced by 1/STBN_PERIOD_Z per frame inside setupCloudPipeline).
   const cloudFrameIndex = useRef(0);
   // Phase D3: previous frame's combined view-projection matrix in scaled
   // world space, snapshotted at end of frame. Identity on the first frame.
@@ -245,7 +297,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   useEffect(() => {
     cloudHistoryValid.current = 0;
     hasPrevWorldOrigin.current = false;
-  }, [cloudRts]);
+  }, [historyRts, sparseCloudRts, sparseDepthRts]);
 
   useFrame(() => {
     // Skip until WebGPU backend is ready (init is async).
@@ -290,37 +342,40 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     gl.autoClear = true;
     gl.render(scaledScene, scaledCamera);
 
-    // Pass 2: per-pixel cloud ray-march into the half-res cloudRt. Premul-
-    // alpha clear (0,0,0,0) is critical — non-zero clear alpha would bleed
-    // the clear colour into cloud fringes on composite. Each fragment shoots
-    // its own ray into the slab, so cloud-front depth varies per pixel and
-    // camera motion produces real 3D parallax (Phase G).
+    // ── Phase D cloud pipeline: pass 2a (sparse color) → 2b (sparse depth)
+    // → 2c (full-res reconstruction) → pass 3 (composite onto main RT). ──
+    //
+    // Premul-alpha clear (0,0,0,0) on the sparse color RT: non-zero clear
+    // alpha would bleed the clear colour into cloud fringes during the
+    // reconstruction's variance-clamp neighbourhood read.
     gl.getClearColor(tempClearColor);
     const savedClearAlpha = gl.getClearAlpha();
     gl.setClearColor(0x000000, 0);
 
     const writeIdx = frameParity.current;
-    const writeRt = cloudRts[writeIdx];
+    const sparseColorRt = sparseCloudRts[writeIdx];
+    const sparseDepthRt = sparseDepthRts[writeIdx];
+    const historyWriteRt = historyRts[writeIdx];
+    const historyReadRt = historyRts[writeIdx ^ 1];
     const writeCompositeMesh = compositeMeshes[writeIdx];
 
-    const fullscreenPass = getActiveFullscreenCloudPass();
-    const earthMesh = fullscreenPass ? getEarthMatrixWorldRef() : null;
+    const pipelineHandle = getActiveCloudPipeline();
+    const earthMesh = pipelineHandle ? getEarthMatrixWorldRef() : null;
 
-    if (fullscreenPass && earthMesh) {
-      // Phase D2: pick this frame's Halton offset and convert pixel-space
-      // jitter to UV space using the actual cloud RT dims.
-      const haltonIdx = cloudFrameIndex.current % HALTON_LEN;
-      const [hx, hy] = HALTON_JITTER[haltonIdx];
-      tempJitter.set(hx / writeRt.width, hy / writeRt.height);
-      // Phase D6: feed the *off-parity* RT in as history. Its content was
-      // written one frame ago by the same shader, so reprojection has
-      // something coherent to sample. cloudHistoryValid is 0 on the first
-      // post-mount frame so the shader skips the blend; flips to 1 after.
-      const historyRt = cloudRts[writeIdx ^ 1];
+    if (pipelineHandle && earthMesh) {
+      // Bayer 4×4 schedule pick for this frame. Sub-pixel slot (0..3, 0..3)
+      // marks which full-res pixel within every 4×4 tile is fresh this frame.
+      const bayerIdx = cloudFrameIndex.current % BAYER_4X4.length;
+      const [bx, by] = BAYER_4X4[bayerIdx];
+      tempBayerSub.set(bx, by);
+
+      // Full-res / sparse RT dims for the reconstruction pass's UV math.
+      tempFullSize.set(historyWriteRt.width, historyWriteRt.height);
+      tempSparseSize.set(sparseColorRt.width, sparseColorRt.height);
+
       // Origin shift = (currentOriginKm − prevOriginKm) × SCALED_UNITS_PER_KM.
-      // First frame after mount / resize / pass resume → no valid previous
-      // origin yet; zero the shift (history is invalid this frame anyway,
-      // gated by cloudHistoryValid).
+      // First frame after mount / resize → no prev origin; zero the shift
+      // (history is invalid this frame anyway via cloudHistoryValid).
       if (hasPrevWorldOrigin.current) {
         tempOriginShiftScaled
           .copy(worldOrigin.worldOriginKm)
@@ -329,42 +384,64 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       } else {
         tempOriginShiftScaled.set(0, 0, 0);
       }
-      fullscreenPass.updateUniforms(
+
+      // One uniform-update call distributes state to all three pass
+      // materials (color, depth, reconstruction).
+      pipelineHandle.updateUniforms({
         scaledCamera,
         earthMesh,
-        tempJitter,
-        prevCloudViewProj.current,
-        tempOriginShiftScaled,
-        historyRt.texture,
-        cloudHistoryValid.current,
-        cloudFrameIndex.current,
-      );
-      renderer.setRenderTarget(writeRt);
+        bayerSubPixel: tempBayerSub,
+        prevViewProj: prevCloudViewProj.current,
+        originShiftScaled: tempOriginShiftScaled,
+        sparseColorTexture: sparseColorRt.texture,
+        sparseDepthTexture: sparseDepthRt.texture,
+        historyTexture: historyReadRt.texture,
+        historyValid: cloudHistoryValid.current,
+        frameIndex: cloudFrameIndex.current,
+        fullSize: tempFullSize,
+        sparseSize: tempSparseSize,
+      });
+
+      // Pass 2a: sparse color marcher (W/4 × H/4 RGBA16F).
+      renderer.setRenderTarget(sparseColorRt);
       gl.autoClear = true;
-      gl.render(fullscreenPass.cloudScene, fullscreenPass.cloudCamera);
+      gl.render(pipelineHandle.colorScene, pipelineHandle.colorCamera);
+
+      // Pass 2b: sparse depth marcher (W/4 × H/4 R16F, tFront in .r).
+      renderer.setRenderTarget(sparseDepthRt);
+      gl.autoClear = true;
+      gl.render(pipelineHandle.depthScene, pipelineHandle.depthCamera);
+
+      // Pass 2c: full-res reconstruction. Reads sparseColor + sparseDepth +
+      // historyReadRt, writes historyWriteRt (full-res RGBA16F).
+      renderer.setRenderTarget(historyWriteRt);
+      gl.autoClear = true;
+      gl.render(
+        pipelineHandle.reconstructionScene,
+        pipelineHandle.reconstructionCamera,
+      );
+
       cloudHistoryValid.current = 1;
     } else {
-      // No active pass (Earth not yet mounted, or player out of near range).
-      // Clear cloudRt to fully transparent so the composite contributes
-      // nothing this frame. Also invalidate history — when the pass
-      // resumes, the off-parity RT may have just been cleared here, and
-      // blending against (0,0,0,0) would briefly erase the cloud.
-      renderer.setRenderTarget(writeRt);
+      // No active pipeline (Earth not yet mounted, or player out of near
+      // range). Clear the full-res history RT to fully transparent so the
+      // composite contributes nothing this frame. Also invalidate history
+      // for next time the pipeline resumes — its off-parity RT may have
+      // been cleared here, and blending against (0,0,0,0) would briefly
+      // erase the cloud.
+      renderer.setRenderTarget(historyWriteRt);
       gl.autoClear = true;
       gl.clear();
       cloudHistoryValid.current = 0;
-      // Pass is dormant; the prev origin snapshot is no longer meaningful
-      // for the next active frame either. Clear so the first resumed frame
-      // takes the "no shift, history invalid" branch above.
       hasPrevWorldOrigin.current = false;
     }
 
     gl.setClearColor(tempClearColor, savedClearAlpha);
 
-    // Pass 3: composite the just-written cloud RT → main rt with premul-
-    // alpha blend. Swap which mesh sits in compositeScene to match the RT
-    // we just wrote (each mesh has its TextureNode bound to one specific RT
-    // at compile time).
+    // Pass 3: composite the just-reconstructed full-res cloud RT → main rt
+    // with premul-alpha blend. Swap which mesh sits in compositeScene to
+    // match the historyRt we just wrote (each mesh's TextureNode is bound
+    // to one specific RT at compile time).
     if (mountedCompositeMesh.current !== writeCompositeMesh) {
       if (mountedCompositeMesh.current) {
         compositeScene.remove(mountedCompositeMesh.current);
@@ -391,10 +468,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();
 
-    // Advance the ping-pong parity so next frame writes the *other* RT
-    // (and, once D6 lands, reads this one as history).
+    // Advance the ping-pong parity so next frame writes the *other* history
+    // RT (and reads this one back as history input).
     frameParity.current ^= 1;
-    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % HALTON_LEN;
+    // Bayer 4×4 schedule wraps every 16 frames — after 16 frames every
+    // sub-pixel of every 4×4 tile has been marched exactly once.
+    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % BAYER_4X4.length;
 
     // Phase D3: snapshot this frame's combined view-projection in scaled
     // space. Next frame this becomes `uPrevViewProj` and lets the shader

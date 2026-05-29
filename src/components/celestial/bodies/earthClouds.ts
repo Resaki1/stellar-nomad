@@ -34,7 +34,7 @@ import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
-  setupFullscreenCloudPass,
+  setupCloudPipeline,
   setEarthMatrixWorldSource,
 } from "@/components/space/cloudFullscreenPass";
 
@@ -390,6 +390,17 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // areas had translucent wispy clouds. With threshold mask, pattern-low
   // areas have zero cloud → no wisps possible → 0.2 erosion is safe.
   // 0 = no erosion, 1 = can fully remove edges.
+  // 0.2 — moderate Schneider value-erosion strength.
+  //
+  // Phase D close-out diagnostic (2026-05-27) tested whether per-tile
+  // alpha speckle was driven by detail erosion's sub-tile features
+  // aliasing under 1/16 reconstruction. Disabling (0.0) and aggressively
+  // boosting (3.0+) showed no visible difference in speckle pattern —
+  // confirming detail erosion is NOT the noise source at our current
+  // tuning. The residual speckle at thin cloud regions is from MC
+  // integration variance of low-density volumetric integrals (not
+  // fixable in single-pass without more samples per ray or a spatial
+  // smoothing post-pass). See CLOUD_DEBUGGING_LESSONS.md case study #7.
   const uDetailErosion = uniform(0.2);
   // Domain warp is currently disabled inside the marcher (see DIAGNOSTIC
   // note where uvWarped = uvMid). When re-introducing with a smoother
@@ -424,7 +435,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // pass ramps in from 0 alpha as the player closes, hiding the tier swap.
   const uVolumetricBlend = ctx.uniforms.uVolumetricBlend;
 
-  setupFullscreenCloudPass({
+  setupCloudPipeline({
     weatherMap,
     baseVolume,
     detailVolume,
@@ -598,11 +609,13 @@ export function marchCloudVolume({
       uStbnFrameSlice,
     );
     const dither = texture3D(uStbn, stbnUv).r;
-    // Full-amplitude: per-pixel start-offset variance covers the entire
-    // dtSkip step [0, dtSkip), so every world-space t-value within a
-    // step interval has some pixel sampling near it. Any smaller
-    // amplitude leaves a fraction of each step uncovered by ALL pixels,
-    // creating concentric "miss-rings" at iso-distance from the camera.
+    // Full-amplitude dither. Reducing to 0.25× was tried (2026-05-27)
+    // to address spatial speckle but reintroduced concentric step-
+    // aliasing rings — visible even with STBN's spatial decorrelation,
+    // because at low amplitude the t-coverage per pixel is too narrow
+    // to break correlated isodensity features at iso-distance from the
+    // camera. The speckle has a different root cause (see Phase D
+    // reconstruction-noise investigation).
     const tStart = tEnter.add(dither.mul(dtSkip));
 
     // Henyey-Greenstein phase, constant per fragment (sun is effectively infinite
@@ -906,27 +919,82 @@ export function marchCloudVolume({
         // p.mul(80) gives texture period 1/80 = ~12 km world — features at
         // 1.5-3 km scale (typical cumulus column width).
         //
-        // Threshold mask (smoothstep) instead of linear modulation:
-        //   pattern < 0.35: mask = 0 → coverage = 0 → CLEAR SKY GAP
-        //   pattern > 0.65: mask = 1 → coverage = coverageRaw → DENSE CUMULUS
-        //   0.35-0.65: smooth transition → soft cumulus edge fade
+        // Threshold mask (smoothstep) instead of linear modulation. Range
+        // widened from (0.35, 0.65) to (0.15, 0.85) — 70% transition zone:
+        //   pattern < 0.15: mask = 0 → coverage = 0 → CLEAR SKY GAP
+        //   pattern > 0.85: mask = 1 → coverage = coverageRaw → DENSE CUMULUS
+        //   0.15-0.85: gradient transition → soft cumulus edges
         //
-        // Previous linear modulation [× 0.8 + 0.6] never let coverage
-        // reach 0, so we got translucent thin cloud everywhere instead of
-        // discrete cumulus + clear gaps. Threshold mask creates the
-        // binary cumulus-or-gap discrimination the references show, with
-        // a 30% transition zone for natural soft edges.
+        // Why the wider range: the original (0.35, 0.65) was near-binary —
+        // half the noise values produced mask=0, half produced mask=1, with
+        // only a 30% transition. Under Phase D's 1/16 reconstruction, the
+        // marcher samples this noise once per 4×4 tile. Adjacent tiles
+        // landing at different noise points produced binary hit/miss
+        // results, which the user's `sparseAlpha`/`tFront` diagnostics
+        // confirmed: black tiles inside what should be solid cloud
+        // bodies, with the binary pattern shifting every frame as
+        // different Bayer sub-pixels sample different noise points. The
+        // 70% transition softens this into a gradient — adjacent tiles
+        // get gradient mask differences instead of binary on/off, and
+        // the per-pixel temporal accumulation has continuous values to
+        // average across rather than {0, 1}.
+        //
+        // Tradeoff: cumulus look slightly less "discrete" than Phase B
+        // intended — more like dense stratocumulus with partial puff
+        // articulation. Acceptable for noise reduction; the macro shape
+        // is still driven by the same noise, just with softer falloffs.
         //
         // Note: this is per-VOXEL not per-PIXEL. Adjacent voxels in 3D
         // sample the same noise scale and get correlated values.
         const cumulusPattern = texture3D(baseVolume, p.mul(80))
           .level(int(0)).g;
         const cumulusMask = smoothstep(
-          float(0.35),
-          float(0.65),
+          float(0.15),
+          float(0.85),
           cumulusPattern,
         );
-        const coverage = coverageRaw.mul(cumulusMask);
+
+        // ── Distance-based pattern falloff (Nubis LOD trick, applied to
+        // the cumulus pattern — mirrors the per-voxel `detailStrength`
+        // falloff applied to detail erosion further below) ──
+        //
+        // The cumulus pattern features are ~1.5–3 km in world space.
+        // For close camera positions, those features comfortably exceed
+        // tile-projected size, and the procedural cumulus puffs read
+        // correctly. At distance, two things go wrong:
+        //   (a) Pattern features become sub-tile in screen space →
+        //       adjacent tiles sample different points in the noise →
+        //       binary on/off mask values → user-visible alpha speckle
+        //       inside what should be solid cloud bodies (the
+        //       `sparseAlpha` diagnostic confirmed this — black tiles
+        //       inside cloud interiors).
+        //   (b) Grazing rays traverse hundreds of km through the slab
+        //       with only ~96 skip samples, so per pattern feature
+        //       there's < 1 sample. Pattern-in features get missed
+        //       entirely → first-hit detection fails → black tiles.
+        //
+        // Fix: fade the pattern's modulation strength to 0 by `patternFar`
+        // (≈ 80 km), restoring smooth `coverageRaw` density. Distant
+        // cloud cover reads as continuous stratiform rather than
+        // aliased-cumulus. Close-range cumulus character preserved
+        // verbatim from Phase B (puffs visible within ~20 km).
+        //
+        // Range constants reuse the detail-layer's (0.005, 0.080) so
+        // the LOD transition is consistent between pattern and detail.
+        const patternNear = float(0.005); // 5 km — full pattern
+        const patternFar = float(0.080);  // 80 km — no pattern
+        const patternStrength = float(1).sub(
+          smoothstep(patternNear, patternFar, t),
+        );
+        // mix(1, cumulusMask, strength): strength=1 → mask;
+        //                                 strength=0 → 1 (no modulation,
+        //                                 smooth coverageRaw passes through).
+        const cumulusMaskLod = mix(
+          float(1),
+          cumulusMask,
+          patternStrength,
+        );
+        const coverage = coverageRaw.mul(cumulusMaskLod);
 
         // ── Cloud-type derivation (Nubis B2, Stage 1) ──
         // Map coverage → cloudType ∈ [0, 1]: 0 = stratus, 0.5 =
@@ -1000,6 +1068,11 @@ export function marchCloudVolume({
         // create its own visible iso-surfaces. The cloud's macro shape
         // is set by baseShape further down; this noise only shifts where
         // the profile-altitude contour falls.
+        //
+        // Phase D close-out diagnostic (2026-05-27): tested whether the
+        // hash drove per-tile alpha speckle by setting altPerturbed =
+        // altitude01. No visible change — the hash is NOT the noise
+        // source under 1/16 reconstruction. Retained for anti-banding.
         const hashSeed = p.x
           .mul(127.1)
           .add(p.y.mul(311.7))
@@ -1052,7 +1125,31 @@ export function marchCloudVolume({
             .clamp(0, 1);
           const baseCloud = baseShape.mul(coverage);
 
-          If(baseCloud.greaterThan(0.01), () => {
+          // DIAGNOSTIC (2026-05-27): threshold lowered from 0.01 → 0.0001.
+          //
+          // The hard `baseCloud > 0.01` gate was a binary on/off threshold:
+          // voxels just below contributed NOTHING, voxels just above
+          // entered dense mode and accumulated full density. Under Phase
+          // D's 1/16 reconstruction, adjacent sub-pixels (within a 4×4
+          // tile) sample baseVolume at slightly different positions; if
+          // their `baseCloud` values straddle 0.01 (some at 0.005, some
+          // at 0.015), they produce binary alpha → tile-blocky speckle
+          // even where the underlying cloud is solid.
+          //
+          // Lowering to 0.0001 effectively disables the gate (any non-
+          // zero baseCloud will pass), turning it from a binary
+          // discriminator into a near-zero-overhead inclusion. Voxels
+          // with tiny density now produce tiny alpha contributions
+          // instead of zero — adjacent sub-pixels with neighbouring
+          // baseCloud values produce gradient alpha differences instead
+          // of binary on/off.
+          //
+          // Perf impact: dense mode will run for more voxels (where
+          // before it was gated off). EMPTY_THRESHOLD = 8 still falls
+          // back to skip mode after 8 consecutive low-density steps, so
+          // we don't pay forever. With Phase D's 1/16 cost reduction
+          // there's plenty of headroom.
+          If(baseCloud.greaterThan(0.0001), () => {
             hitThisStep.assign(1);
 
             If(stepMode.lessThan(0.5), () => {
@@ -1242,23 +1339,35 @@ export function marchCloudVolume({
                     .mul(coverageL)
                     .mul(profileL)
                     .mul(CONE_DENSITY);
-                  // 2× contribution per tap: we're sampling 3 of the
-                  // original 6 stratified directions (every other one),
-                  // so each tap "represents" 2 taps' worth of cone-path
-                  // density to keep total opticalDepthSun comparable to
-                  // the 6-tap version. Dropping to 3 halves the cone-
-                  // march texture-fetch cost — the big perf win after
-                  // adding per-cone-tap baseVolume + weatherMap sampling.
+                  // Phase D8 lift: 6 cone taps (was 3 with 2× compensation
+                  // during Phase B's perf-reduction). With Phase D's 1/16
+                  // reconstruction savings we now have the budget to march
+                  // all 6 taps per fresh pixel. Each tap contributes 1×
+                  // (no compensation multiplier).
+                  //
+                  // Why 6 taps reduces noise: each pixel's cone-marched
+                  // Tsun is the average of N taps' transmittance integrals.
+                  // Var(mean) = σ² / N. Going from 3 → 6 taps gives √2 ≈ 1.4×
+                  // less per-pixel transmittance variance, → smoother
+                  // Tsun_ms → less lighting noise across adjacent pixels.
+                  // Compounds well with the 1/16 temporal accumulation:
+                  // each pixel ends up averaging 6 lighting integrals per
+                  // cycle, then accumulating across cycles.
                   opticalDepthSun.addAssign(
-                    densL.mul(float(LIGHT_STEP_SCALED)).mul(2),
+                    densL.mul(float(LIGHT_STEP_SCALED)),
                   );
                 };
-                // Stratified directions 0/2/4 of the original low-
-                // discrepancy 6-point kernel. Even spread retained;
-                // halved fetch count.
+                // Full 6-point low-discrepancy kernel stratified across
+                // the unit sphere. Directions 0/2/4 were the ones kept
+                // during Phase B's 3-tap reduction; 1/3/5 are the
+                // complementary set generated to fill the gaps (octants
+                // that 0/2/4 didn't cover).
                 sampleConeTap(0.38051305, 0.92453449, -0.02111345, 0);
+                sampleConeTap(-0.92453449, 0.38051305, -0.02111345, 1);
                 sampleConeTap(-0.32509218, -0.94575601, -0.01428496, 2);
+                sampleConeTap(0.94575601, -0.32509218, 0.01428496, 3);
                 sampleConeTap(0.28128598, 0.42443639, -0.86065785, 4);
+                sampleConeTap(-0.42443639, 0.28128598, 0.86065785, 5);
                 Tsun.assign(exp(opticalDepthSun.negate()).mul(daylight));
                 lastOpticalDepthSun.assign(opticalDepthSun);
               });

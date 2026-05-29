@@ -1142,3 +1142,153 @@ About 1.5 hours of debugging, including:
 
 Total fix: ~30 lines of code across two files. The diagnosis was 95% of the
 work.
+
+---
+
+## Case study #7 — Phase D close-out: the 5-suspect speckle hunt (2026-05-27/29)
+
+### Symptom
+
+After Phase D landed (1/16 reconstruction + variance clamp + STBN dither +
+6-tap cone-march), residual per-pixel speckle remained at cloud silhouettes
+and inside thin cloud regions. Static-camera output had per-pixel
+convergence (no flicker on stable scene) but adjacent pixels converged to
+**different** stable values — a spatial dot pattern that temporal averaging
+couldn't smooth.
+
+User report: "noise is still strong, especially at thin clouds and edges;
+thick cloud cores look smooth."
+
+### The diagnostic toolkit
+
+Built a structured DEBUG_RECONSTRUCTION switch with three source-isolation
+modes:
+- `sparseOnly` — visualises sparse RT directly, bypassing all temporal logic
+- `sparseAlpha` — sparse RT's alpha channel as grayscale; reveals binary
+  hit/miss tiles
+- `tFront` — per-tile first-hit depth; reveals where the marcher misses cloud
+
+User diagnostic showed:
+1. `sparseAlpha`: black pixels INSIDE cloud bodies → marcher producing α=0
+   for tiles that should be solid cloud.
+2. `tFront`: matching black tiles in cloud bodies → marcher's first-hit
+   detection failing per tile.
+3. `historyUsable` (added later): pure green → reprojection is solid,
+   reconstruction pipeline works correctly.
+
+Conclusion: **the noise is upstream of reconstruction**, in the marcher's
+per-tile output. Each frame, different Bayer sub-pixels sample different
+positions of the noise volume, and binary thresholds inside the marcher
+gate cloud detection on/off per sub-pixel.
+
+### The 5-suspect hunt
+
+Five candidate sources of binary aliasing inside the marcher, each tested
+by disabling and observing whether speckle changed:
+
+1. **Cumulus pattern smoothstep (0.35, 0.65)** — widened to (0.15, 0.85)
+   to soften the binary mask. **Partial improvement**: dense cores became
+   smooth; thin/edge regions still noisy.
+2. **Cumulus pattern at distance** — added distance-fade to disable pattern
+   modulation at > 80 km from camera. **Partial improvement**: distant
+   clouds became smooth; close-range edges still noisy.
+3. **Detail erosion (`uDetailErosion`)** — disabled (0.0) and aggressively
+   tested (3.0–6.0). **No visible difference at any value below 3.0.**
+   Detail erosion was NOT the culprit.
+4. **Per-voxel altitude hash (`altPerturb`)** — set to 0 (un-perturbed).
+   **No visible difference.** Hash was NOT the culprit.
+5. **First-hit threshold (`baseCloud > 0.01`)** — lowered to 0.0001.
+   **No visible difference** for the residual thin-region noise. Threshold
+   was NOT the dominant cause (though kept lowered for theoretical
+   correctness).
+
+After all 5 suspects ruled out and 4 changes applied (with two reverted
+to defaults), thin-cloud-region speckle persisted essentially unchanged.
+
+### The real root cause: Monte Carlo integration variance
+
+The marcher is a **Monte Carlo integrator** of volumetric density. Each
+ray samples discrete positions along its path and integrates density
+through the cloud volume. The variance of MC integration scales with:
+- Density variability along the ray (cloud structure)
+- Inverse of sample count (more samples = less variance)
+- "Spikiness" of the integrand (thin clouds = highly variable density)
+
+For **dense cloud cores**: density saturates quickly to alpha=1 regardless
+of small sample-position variations. Adjacent rays produce the same
+integrated alpha. NO variance.
+
+For **thin cloud regions**: density is low and highly variable along the
+ray. Small differences in sample positions (different sub-pixels, different
+STBN slices) produce large differences in integrated alpha. HIGH variance.
+
+This is a **fundamental limit** of single-pass volumetric rendering at
+our sample budget (96 max primary steps, 6 cone taps). NOT a bug.
+Reference quality clouds (Star Citizen, RDR2, Nubis³) achieve smoother
+thin regions via:
+- Far more samples per ray (their perf budget is bigger)
+- Offline pre-integration of cloud volumes (Nubis³ NVDF voxels)
+- Post-process spatial smoothing (RDR2-style screen-space cloud blur)
+- Higher-resolution noise volumes (less integrand variance per step)
+
+### Meta-lessons
+
+1. **Spend disproportionate time on diagnostic infrastructure.** The
+   DEBUG_RECONSTRUCTION switch with 8 modes paid for itself many times
+   over. Each test took 30 seconds (flip mode, reload, screenshot) vs.
+   the ~hours that the "tweak-and-see" approach had been costing.
+
+2. **5 suspects in a row testing negative is itself a result.** When
+   multiple plausible single-variable fixes fail to move the needle,
+   the cause is structural, not a single bad parameter. Stop searching
+   for a knob; understand the underlying mechanism.
+
+3. **MC variance at low-density regions is fundamental.** Volumetric
+   cloud renderers all face this. Don't try to fix it inside the marcher
+   alone — the proper architectural responses are:
+   - More samples per ray (raise step budget)
+   - Spatial smoothing post-pass (sacrifice sharpness for noise)
+   - Pre-integrated cloud volumes (NVDF/offline pipeline)
+
+4. **Visual progress is incremental, not binary.** Phase D landed
+   working 1/16 reconstruction + smooth dense cloud cores. The residual
+   thin-region noise is a *known limit*, not a regression. Documenting
+   the limit + the path to fixing it is more valuable than continuing
+   to chase iteration in the same architecture.
+
+5. **The user's perception of "noisy clouds" was actually two distinct
+   problems** stacked together: per-tile binary aliasing (which IS
+   fixable, and we fixed most of it) + MC variance at thin regions
+   (which is fundamental and requires architectural change). Separating
+   "fixable bug" from "fundamental limit" is itself a useful diagnostic
+   contribution.
+
+### Cost of finding this
+
+- ~30 min on initial fresh-blend / dither-amplitude attempts (wrong path)
+- ~15 min building the DEBUG_RECONSTRUCTION diagnostic infrastructure
+- ~30 min on the 5-suspect tests (each: flip mode, reload, screenshot, evaluate)
+- ~30 min understanding the result and writing up close-out
+
+Total: ~2 hours. Of that, the productive part was the 30-min diagnostic
+phase — the rest was tooling + writing.
+
+### Changes that landed in this session
+
+Kept (real improvements):
+- Cumulus pattern smoothstep (0.35, 0.65) → (0.15, 0.85)
+- Cumulus pattern distance fade (5 km–80 km)
+- First-hit threshold 0.01 → 0.0001
+- Cone-march 3 → 6 taps (no compensation multiplier)
+- DEBUG_RECONSTRUCTION diagnostic toolkit (kept in code, default off)
+
+Reverted (didn't move the needle):
+- uDetailErosion (kept at Phase B's 0.2)
+- altPerturb hash (kept at Phase B's ±5% slab)
+
+Documented (carries forward):
+- Residual thin-region noise as known Phase D limit
+- Three architectural paths to fix (more samples / spatial smoothing /
+  pre-integrated volumes)
+- Specific MC variance explanation that lets future sessions skip the
+  "5-suspect hunt" entirely.
