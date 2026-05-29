@@ -570,7 +570,30 @@ export function marchCloudVolume({
     const hitInner = discInner
       .greaterThan(0)
       .and(tInnerNear.greaterThan(tEnter));
-    const tExit = hitInner.select(tInnerNear, tOuterFar);
+    const tExitSlab = hitInner.select(tInnerNear, tOuterFar);
+
+    // ── Planet-surface occlusion clamp ──
+    // The slab bounds above only test the cloud shells (inner = PLANET_RADIUS
+    // + 1 km). That floors the march correctly when the camera is ABOVE the
+    // slab (tExitSlab = tInnerNear = slab bottom). But when the camera is
+    // BELOW the inner shell (altitude < 1 km), the insideInner branch sets
+    // tEnter = tInnerFar — which for a DOWNWARD ray is the inner sphere's far
+    // side, on the ANTIPODE. With no surface test the marcher then samples the
+    // cloud slab on the far side of the planet, i.e. renders clouds "through"
+    // the ground (visible as the whole planetary cloud cover appearing below
+    // you the moment you drop under the deck). Clamp tExit at the near planet-
+    // surface intersection so downward rays are occluded by the ground; rays
+    // aimed above the horizon never hit the surface forward and march the slab
+    // as normal. Also kills the wasted antipodal march that tanked perf below
+    // the deck. (Plan: "planet-occlusion clamp is non-negotiable from day 1.")
+    const surfaceRadius = uInnerRadius.sub(
+      kmToScaledUnits(CLOUD_INNER_ALTITUDE_KM),
+    );
+    const cSurf = d2.sub(surfaceRadius.mul(surfaceRadius));
+    const discSurf = b.mul(b).sub(cSurf);
+    const tSurfNear = b.negate().sub(discSurf.max(0).sqrt());
+    const hitsSurface = discSurf.greaterThan(0).and(tSurfNear.greaterThan(0));
+    const tExit = hitsSurface.select(tExitSlab.min(tSurfNear), tExitSlab);
 
     const slabLen = sub(tExit, tEnter).max(0);
     // Fixed-world-space step sizes. dtSkip = 500 m, dtDense = 125 m

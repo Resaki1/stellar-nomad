@@ -46,6 +46,18 @@ export { PLANET_POSITION_KM };
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
 const CLOUD_BRIGHTNESS = 3;
 
+// Flat 2D cloud overlay (painted on the surface as the far-cloud LOD) fade band.
+// The overlay must vanish once the camera is at/below the volumetric cloud top:
+// it lives at ground level, so under the deck it would paint a ghost copy of the
+// cloud cover flat on the terrain beneath a camera whose real clouds (volumetric)
+// are above it — the "2D-clouds-on-the-ground" double-layer bug. Above the deck it
+// fades back in to fill the globe past the marcher's limited reach.
+//   altitude ≤ CLOUD_TOP_ALTITUDE_KM     → overlay off (0)
+//   altitude ≥ FLAT_OVERLAY_FULL_ALT_KM  → overlay full (1)
+// CLOUD_TOP matches CLOUD_OUTER_ALTITUDE_KM in earthClouds.ts.
+const CLOUD_TOP_ALTITUDE_KM = 14;
+const FLAT_OVERLAY_FULL_ALT_KM = 50;
+
 // ── Scratch vectors for onFrame ──
 const _moonScaled = new THREE.Vector3();
 const _earthRelKm = new THREE.Vector3();
@@ -128,10 +140,13 @@ function buildEarthFragmentNode(opts: {
   uSunRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumetricBlend: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uFlatCloudOpacity: any;
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
     uSunRel, uMoonPos, uMoonRadius, uSunRadius, uVolumetricBlend,
+    uFlatCloudOpacity,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -283,19 +298,22 @@ function buildEarthFragmentNode(opts: {
     // Self-shadow: clouds with other clouds sunward of them get darker bases
     const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
     const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow);
-    // Flat cloud overlay always on. Previously this faded out with
-    // `uVolumetricBlend` to avoid "double clouds" (overlay painted on the
-    // planet surface while the volumetric shell also painted them above).
-    // That was the right call when the volumetric covered the *entire*
-    // visible cloud field, but the marcher can only properly track features
-    // out to ~20 km — past that, per-pixel noise dominates. The flat
-    // overlay is now the far-cloud LOD: it always paints the global 2D
-    // cloud cover on the surface, and the volumetric premultiplied
-    // composite *replaces* it where there's a real near cloud body
-    // (α > 0). Near α=0 from the volumetric (e.g. clear sky between
-    // cumulus, or distance-faded far pixels) lets the flat overlay
-    // show through.
-    const flatCloudOpacity = float(1);
+    // Flat 2D cloud overlay — the far-cloud LOD. It paints the global cloud
+    // texture on the planet surface to fill cloud cover beyond the volumetric
+    // marcher's limited reach; the volumetric premultiplied composite renders
+    // on top and *replaces* it wherever there's a near cloud body (α > 0).
+    //
+    // CRITICAL: this must fade out once the camera is at/below the cloud-top
+    // altitude. The overlay lives at ground level (radius = planet surface),
+    // so when the camera is *under* the deck looking down, the real clouds are
+    // the volumetric ones around/above the camera while this would paint a
+    // ghost copy of the cloud cover flat on the terrain below — the
+    // "double-layer / 2D-clouds-on-the-ground" bug (visible when flying under
+    // the cumulus deck). `uFlatCloudOpacity` is driven from camera altitude in
+    // onFrame: 1 above ~50 km, 0 at/below the 14 km cloud top. It is NOT gated
+    // by uVolumetricBlend, which can't distinguish "above the deck at 1000 km"
+    // from "under the deck at 5 km" — both clamp to 1.
+    const flatCloudOpacity = float(uFlatCloudOpacity);
     col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
@@ -409,6 +427,10 @@ export const earthConfig: CelestialBodyConfig = {
     // 0 = far (flat overlay only), 1 = close (volumetric shell only).
     // Driven from distKm in onFrame; ramps linearly across 35 k → 25 k.
     uVolumetricBlend: uniform(0),
+    // Flat 2D cloud-overlay opacity. Driven from camera altitude in onFrame:
+    // 1 above ~50 km, 0 at/below the 14 km cloud top — altitude- (not
+    // distance-) gated. See the flat-overlay block in buildEarthFragmentNode.
+    uFlatCloudOpacity: uniform(1),
   }),
 
   onFrame: ({ uniforms, worldOrigin, distKm }) => {
@@ -429,6 +451,19 @@ export const earthConfig: CelestialBodyConfig = {
       0,
       1,
     );
+
+    // Flat 2D cloud overlay fade. distKm is ship-to-planet-centre, so altitude
+    // above the surface = distKm − PLANET_RADIUS_KM. Fade the surface-painted
+    // cloud overlay out as the camera drops to/below the cloud top — otherwise
+    // it draws ghost clouds on the ground beneath a camera that's inside/under
+    // the deck (see buildEarthFragmentNode).
+    const altKm = distKm - PLANET_RADIUS_KM;
+    uniforms.uFlatCloudOpacity.value = THREE.MathUtils.clamp(
+      (altKm - CLOUD_TOP_ALTITUDE_KM) /
+        (FLAT_OVERLAY_FULL_ALT_KM - CLOUD_TOP_ALTITUDE_KM),
+      0,
+      1,
+    );
   },
 
   buildFragmentNode: ({ textures, uSunRel, uniforms, tier }) => {
@@ -443,6 +478,7 @@ export const earthConfig: CelestialBodyConfig = {
       uMoonRadius: uniforms.uMoonRadius,
       uSunRadius: uniforms.uSunRadius,
       uVolumetricBlend: uniforms.uVolumetricBlend,
+      uFlatCloudOpacity: uniforms.uFlatCloudOpacity,
     });
   },
 };
