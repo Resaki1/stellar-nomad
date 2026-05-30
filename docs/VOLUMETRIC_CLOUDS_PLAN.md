@@ -477,6 +477,84 @@ Deferred housekeeping: **distance-fade** the macro carve (LOD / anti-alias far),
 
 ---
 
+## ▶ NEXT SESSION — recommended step: lighting contrast & highlights
+
+**Recommended next step (2026-05-30), after the shape-relief win.** Contained and
+lower-risk than the tower work, and it *amplifies* the surface relief we just added
+— highest-confidence next visible improvement. Towers (Step 3 above) is the bigger
+shape upgrade but a riskier grind; do it after this.
+
+### Goal
+Make the (now-present) surface form read dramatically: stronger sunlit-crest vs
+shadowed-crevice contrast + forward-scatter **silver-lining highlights** toward the
+sun. Directly addresses the user's "not much visual highlights" complaint (untouched).
+
+### Why it works now — the lighting chain (post shape-fix)
+Per dense voxel, the marcher (`earthClouds.ts`, dense branch) computes:
+```
+Tsun     = exp(-opticalDepthSun) * daylight     // surface self-shadow — NOW VARIES (case study #8)
+Tsun_ms  = pow(Tsun, MS_COEF=0.5) * daylight
+direct   = phase(HG_G) * Tsun * powderFactor    // phase≈0.08 at HG_G=0.1 → TINY
+ms       = profile * Tsun_ms                     // profile-gated → LOW at the visible surface
+ambient  = (1-profile)^0.5 * skylight(0.15)      // flat floor
+L        = sunColor*(direct+ms) + skyColor*ambient
+```
+The surface self-shadow (`Tsun`) now varies, but it reaches the colour mostly via
+`direct`, which is **tiny** (near-isotropic phase). So contrast is muted. Boosting
+the phase makes `direct` a meaningful, Tsun-carrying term → the relief's self-shadow
+shows as real brightness contrast, AND adds the directional silver-lining.
+
+### Approach (iterate empirically with diagnostics — don't guess)
+1. Raise `HG_G` 0.1 → ~0.5–0.7, **or better** a dual-lobe HG:
+   `phase = mix(HG(g_back≈-0.3), HG(g_fwd≈0.8), ~0.6)` (forward peak + gentle back-scatter).
+2. If shadows aren't dark enough, lower the ambient floor (`skylight` 0.15 → ~0.05–0.1)
+   and/or reduce `skyColor` magnitude.
+3. Re-check brightness: `sunColor ≈ 12` HDR; a strong forward phase can blow out the
+   sun-side under AgX → reduce `sunColor` magnitude if it clips to white.
+
+### Pitfalls — DO NOT repeat
+- **`HG_G` was set to 0.1 ON PURPOSE** to kill an "across-FOV brightness gradient" the
+  user disliked (clouds nearer the sun brighter). A forward phase brings some back.
+  Mitigate with a **dual-lobe** (not a single high g), and **judge fresh** — with
+  surface relief now present it may read as natural silver-lining on lump edges, not a
+  flat wash. Let the user eyeball it; don't pre-emptively neuter back to isotropic.
+- **Do NOT touch shape/carve to "fix flatness."** Shape is solved (case study #8). This
+  step is purely the lighting combine. If still flat after boosting `direct`, check
+  `firstConeDepth`: if it varies but `off` doesn't, the combine balance is wrong
+  (direct too small / ambient too big), NOT the shape.
+- **`coneDepth` (last voxel) ≠ what you see** — colour is the *first* voxel; reason with
+  `firstConeDepth`.
+
+### Diagnostics & viewing
+`DEBUG_VIZ='off'` (look), `'lightingOnly'` (shading w/o alpha), `'firstConeDepth'`
+(surface self-shadow). View from **low sun, across the deck** (not top-down).
+
+### Code locations (grep — line numbers drift)
+`const HG_G` + the `phase`/`phaseDenom` computation near the top of `marchCloudVolume`;
+the `const direct`/`ms`/`ambient`/`L` block in the dense branch; `sunColor`/`skyColor`/
+`skylight` (same function, above the loop), all in `earthClouds.ts`.
+
+### Definition of done
+Silver-lining toward the sun + clearly stronger lit-crest/shadowed-crevice contrast on
+the relief, with an acceptable across-FOV gradient (dual-lobe if needed). Verify low-sun
+across-deck.
+
+### Current working baseline (don't rediscover)
+- **Shape:** `BILLOW_CARVE=0.99`, `CARVE_SCALE=80` (macro carve, **detail-volume**
+  single-octave Worley source); the cone-march reconstructs the same dilated+carved
+  shape (Step 2, with `(shape−thr)/(1−thr)` normalization). `CONE_DENSITY=1000`.
+  `uDensityMul=140000` — opaque; **do NOT lower it** to fix form (confirmed it doesn't).
+- All `DEBUG_*` flags = `"off"`. `DEBUG_VIZ='firstConeDepth'` is the key new diagnostic.
+- **Visual now:** lumpy "cotton-ball" stratocumulus with form (was a flat blanket).
+- **Bugs fixed this session — do NOT reintroduce:** (1) the 2D flat-overlay showing
+  through *below* the deck → `earth.ts` `uFlatCloudOpacity`, altitude-gated (off ≤14 km,
+  on ≥50 km). (2) clouds rendered *through the planet* below 6372 km → `earthClouds.ts`
+  planet-surface occlusion clamp (`tExit = min(tExitSlab, tSurfNear)`).
+- **Quality gate:** `pnpm lint` is broken on this repo; use `npx tsc --noEmit` and ignore
+  pre-existing TS2339 `.r/.g/.b/.a`-on-`Node` errors in `earthClouds.ts`. Don't build (sandbox).
+
+---
+
 ## Phase A — Noise volumes
 
 **Goal**: replace the single 64³ Worley with the full Nubis noise pipeline. Closes ~40 %

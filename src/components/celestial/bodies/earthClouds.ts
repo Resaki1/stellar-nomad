@@ -81,23 +81,35 @@ const EMPTY_THRESHOLD = 8;
 // sites in buildCloudFragment (TSL can't index a constant kernel by loop
 // variable), so there's no LIGHT_STEPS constant.
 const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
-// Henyey-Greenstein asymmetry. Controls how peaked the direct-light phase
-// function is in the forward direction (looking toward sun).
-//   0.6 (Wrenninge default): 65× peak ratio. Strong silver-lining but
-//      heavy view-dependence — produces visible left-right brightness
-//      gradient across cloud cover when sun is off to one side.
-//   0.3: 4× ratio. Less silver-lining; still produces ~30% across-FOV
-//      gradient that user could see as "clouds nearer sun look brighter"
-//      independent of within-cloud lighting variation.
-//   0.1 (current): 1.8× ratio. Nearly isotropic phase function. Direct
-//      lighting is effectively the same magnitude regardless of view
-//      direction. Eliminates the HG-driven across-FOV gradient that
-//      was masking the within-cloud variation (which lives in cone-
-//      marched `ms`, NOT in HG phase). Trade-off: minimal silver-lining
-//      effect when sun is behind cloud — acceptable, the references we
-//      target rely more on multi-scatter shading than silver-lining
-//      drama.
-const HG_G = 0.1;
+// Henyey-Greenstein DUAL-LOBE phase. Real clouds are strongly forward-
+// scattering (the silver lining you see looking toward the sun) yet still
+// scatter sideways and back — a single HG lobe can't do both. We blend a
+// sharp forward lobe with a gentle back lobe (the Hillaire/Schneider cloud
+// phase):
+//   phase(θ) = mix( HG(g_fwd, θ), HG(g_back, θ), blend )   // blend = back weight
+//
+// Why dual-lobe and not a single g (the journey, so we don't loop back):
+//   - Single g=0.6: strong silver lining but the phase swings ~65× with view
+//     angle → a harsh left-right brightness ramp across the WHOLE deck. Back
+//     when the deck was a flat blanket that ramp was the only variation, so it
+//     read as a cheap screen-space gradient. The user disliked it.
+//   - Single g=0.1 (previous): killed the ramp but ALSO killed the silver
+//     lining and all directional body shading → the washed-out flat look in
+//     the reference-comparison screenshots. The within-cloud self-shadow
+//     (cone-marched Tsun) then reached colour only through the sqrt-
+//     compressed, profile-gated `ms` term → smooth, "same colour all over".
+//   - Dual-lobe (current): now that the deck has real relief (macro carve)
+//     plus per-voxel self-shadow, a forward lobe modulates REAL geometry → it
+//     reads as physical top-bright/side-dark shading + a silver rim, NOT a
+//     flat ramp. The back lobe keeps the away-from-sun side from collapsing to
+//     near-zero, which is what made the single-lobe ramp so harsh.
+//
+// Dial guide: lower HG_BLEND → more forward drama (brighter, narrower silver
+// lining); raise it → softer/more isotropic (less gradient). Raise HG_FORWARD
+// for a tighter, brighter rim; lower it for a broader sheen.
+const HG_FORWARD = 0.8; // sharp forward lobe — silver lining toward the sun
+const HG_BACK = -0.3; // gentle back lobe — lifts the away-from-sun side
+const HG_BLEND = 0.5; // weight of the back lobe (0 = pure forward, 1 = pure back)
 
 // ── Macro-scale billowy carving (shape-relief; landed 2026-05-30) ──
 // The dilated base macro shape is a smooth, flat-topped dome. Carve it with a
@@ -677,16 +689,21 @@ export function marchCloudVolume({
     // reconstruction-noise investigation).
     const tStart = tEnter.add(dither.mul(dtSkip));
 
-    // Henyey-Greenstein phase, constant per fragment (sun is effectively infinite
-    // distance compared to cloud scale, and view dir is constant along the march).
+    // Dual-lobe Henyey-Greenstein phase, constant per fragment (sun is
+    // effectively at infinity vs cloud scale, and the view dir is constant
+    // along the march). See HG_FORWARD/HG_BACK/HG_BLEND for the rationale.
     const cosTheta = dot(rdEarth, sunDirEarth);
-    const g = float(HG_G);
-    const gg = g.mul(g);
-    const phaseDenom = pow(
-      float(1).add(gg).sub(g.mul(2).mul(cosTheta)).max(0.0001),
-      float(1.5),
-    );
-    const phase = float(1).sub(gg).div(float(4).mul(PI).mul(phaseDenom));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hgLobe = (gVal: number): any => {
+      const gC = float(gVal);
+      const ggC = gC.mul(gC);
+      const denomC = pow(
+        float(1).add(ggC).sub(gC.mul(2).mul(cosTheta)).max(0.0001),
+        float(1.5),
+      );
+      return float(1).sub(ggC).div(float(4).mul(PI).mul(denomC));
+    };
+    const phase = mix(hgLobe(HG_FORWARD), hgLobe(HG_BACK), float(HG_BLEND));
 
     // Sun colour is computed per-fragment below from the local sun-elevation
     // because we tint sunlight toward orange at the terminator.
@@ -834,10 +851,17 @@ export function marchCloudVolume({
     // Tuned together with skyColor for shadow brightness:
     //   0.25 (previous): ambient × skyColor(4) = 1 HDR floor → shadows
     //     at AgX 0.5, too bright vs sunlit AgX 0.86. Low contrast.
-    //   0.15 (current): ambient × skyColor(2) = 0.3 HDR floor → shadows
-    //     at AgX 0.25, properly dark for Star Citizen-style contrast.
+    //   0.15: ambient × skyColor(2) = 0.3 HDR floor → shadows at AgX 0.25.
+    //     Still kept crevices/undersides too lit to read as a deck of
+    //     discrete puffs from above — they washed into a uniform tan sheet.
+    //   0.07 (current): ambient × skyColor(2) = 0.14 HDR floor → shadows at
+    //     AgX ~0.13. Crevices between cells and cloud undersides go genuinely
+    //     dark so the cellular structure separates from above (the deep
+    //     valley shadows the Star Citizen / KSP-EVE refs rely on). Only the
+    //     shadow fill is affected — sunlit tops (sun-dominated) are unchanged,
+    //     so this raises contrast without dimming the deck overall.
     // Tracks daylight via skyColor (no duplication needed here).
-    const skylight = float(0.15);
+    const skylight = float(0.07);
 
     // Powder blend, constant along ray (depends only on cosTheta).
     const powderFrontMix = clamp(cosTheta.mul(0.5).add(0.5), 0, 1);
@@ -1452,7 +1476,18 @@ export function marchCloudVolume({
                   // where the self-shadow shows as real brightness variation.
                   // Tune against 'off'/'lightingOnly': too dark/flat → lower
                   // more; washed-out bright → raise.
-                  const CONE_DENSITY = float(500);
+                  //
+                  // 1000 (ceiling-test): with the deepened ambient floor
+                  // (skylight 0.07) and dual-lobe direct term, 500 left the
+                  // self-shadow contrast soft. Doubling cone absorption pushes
+                  // OD into ~1-4 (Tsun ~0.37-0.018) so occluded crevices/
+                  // undersides go genuinely dark — amplifies the existing
+                  // self-shadow variation exponentially (exp(-OD)). Watch for
+                  // the documented failure mode: if too much of the deck goes
+                  // uniformly dark (cone always through neighbours), back off —
+                  // that means the SHAPE is too uniform to self-shadow and the
+                  // next lever is shape detail, not more cone density.
+                  const CONE_DENSITY = float(1000);
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const densL: any = baseShapeL
                     .mul(coverageL)
@@ -1501,12 +1536,26 @@ export function marchCloudVolume({
               //   MS_COEF = 0.15 (Wrenninge default): very gentle. At full
               //     absorption, Tsun_ms ≈ 0.35 — still bright. Shadow
               //     sides too bright.
-              //   MS_COEF = 0.5 (current): sharper falloff. At Tsun = 0.001,
-              //     Tsun_ms ≈ 0.032. Cumulus interior and sun-away surface
-              //     voxels become genuinely dim → dramatic top-bright/
-              //     side-dim per-cloud body shading like Star Citizen /
-              //     KSP-EVE references.
-              const MS_COEF = float(0.5);
+              //   MS_COEF = 0.5: Tsun_ms = √Tsun — sqrt LIFTS the shadow
+              //     end (0.14 → 0.37) so the self-shadow contrast in the
+              //     dominant `ms` term gets compressed → bodies read as one
+              //     flat colour even though Tsun varies. This was a primary
+              //     cause of the "same colour all over" look.
+              //   MS_COEF = 0.75 (current): Tsun_ms = Tsun^0.75 — keeps far
+              //     more of the RAW cone-march self-shadow (shadow end
+              //     0.14 → 0.23 vs 0.37) and pushes shadowed undersides
+              //     genuinely darker → dramatic top-bright / underside-dark
+              //     per-body shading like the Star Citizen / KSP-EVE refs.
+              //     Pairs with the dual-lobe phase (direct term): `ms` does
+              //     the within-body contrast, `direct` adds the silver rim.
+              //     Higher (→1.0) deepens shadows further but dims overall;
+              //     lower brightens but flattens. Dial against 'lightingOnly'.
+              //   0.9 (current): in the FINAL 'off' image the white cloud
+              //     albedo + ms fill were lifting shadowed valleys to mid-grey
+              //     (form present but soft). 0.9 drops the fill in shadow
+              //     (Tsun^0.9) so valleys read darker → more dramatic body
+              //     shading, while sunlit crowns (Tsun≈1) stay bright/white.
+              const MS_COEF = float(0.9);
               const Tsun_ms = pow(Tsun.max(0.0001), MS_COEF).mul(daylight);
               lastTsunMs.assign(Tsun_ms);
 
@@ -1529,10 +1578,14 @@ export function marchCloudVolume({
               // the dimensional profile (= coverage × heightProfile):
               //   direct  — sun reaching this voxel directly (Beer-Lambert
               //             through cone-marched sun density), modulated by
-              //             HG phase and powder. Not profile-gated: direct
-              //             light reaches every voxel the cone-march sees.
-              //             HG with g=0.6 gives ~0.02–0.10 peak — small but
-              //             responsible for the silver-lining at edges.
+              //             the dual-lobe HG phase and powder. Not profile-
+              //             gated: direct light reaches every voxel the cone-
+              //             march sees. The dual-lobe phase peaks ~1.8 toward
+              //             the sun (silver lining / rim) and falls to ~0.04
+              //             on the sides — so `direct` carries BOTH the silver
+              //             lining and, via raw Tsun, the directional self-
+              //             shadow. (Single g=0.1 gave a flat ~0.08 peak →
+              //             no rim, no directional shading.)
               //   ms      — sun light arriving after multiple scatters.
               //             Profile-gated → fills cloud CORES (high
               //             profile), not edges. No phase function
