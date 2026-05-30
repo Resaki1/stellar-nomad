@@ -405,10 +405,75 @@ The fullscreen pass marcher must, in this order:
 | Cloud-terrain interaction | density clipped to terrain height | none | **Big for landings — F2 not done** |
 
 The Phase A/B/D "Big/Huge" items that originally kept us short of the reference shots
-are now **all closed**. The remaining gaps to reference quality are: **curl noise +
-animation** (C5 — clouds are currently static, the single biggest "looks alive" lever),
-**tile classification** (C1 — recovers perf headroom for richer marching), and the polish
+are now **all closed**. The remaining gaps to reference quality are: **cloud-shape relief**
+(detailed below — the biggest *look* gap), **curl noise + animation** (C5 — clouds are
+currently static), **tile classification** (C1 — recovers perf headroom), and the polish
 phases (E1 surface shadows, E2 aerial perspective, F2 terrain clip for landings).
+
+---
+
+## Shape relief — active plan (2026-05-29)
+
+Phase A/B are marked "done", but a diagnostic session (see `CLOUD_DEBUGGING_LESSONS.md`)
+established that the **cloud shape is too smooth** to read as reference-grade cumulus —
+the "lava-lamp / sea of blobs" look. The lighting model is sound: the cone light-march
+self-shadows correctly (confirmed via `DEBUG_VIZ='coneDepth'`, which shows clear
+variation). But the visible *surface* is uniformly lit because it has **no relief for the
+self-shadow to bite into** — the form-creating variation (`coneDepth`) lives in the cloud
+interior, hidden one opaque voxel behind a smooth skin.
+
+### Scale analysis — the missing scale
+
+Cloud relief lives at three scales; ours has two and is missing the one that matters most:
+
+| Scale | Source in our pipeline | Status |
+|---|---|---|
+| Macro (~5 km) | base vol **R** (Perlin-Worley), dilated by base FBM | present, but **smooth domes** (dilation puffs, doesn't carve) |
+| **Mid (~1–2.5 km)** | base vol **G/B** Worley FBM — **only used to dilate, never to carve** | ❌ **missing as relief** |
+| Fine (~60 m) | 32³ detail erosion (`uDetailErosion=0.2`) | present but gentle, and **too fine for the 2 km cone to self-shadow** |
+
+The mid scale is the cauliflower scale: large enough to read at distance and survive 1/16
+reconstruction, and the scale the 2 km cone-march can actually self-shadow. We already
+sample the base G/B Worley every voxel — we just never use it to **carve** billows (only
+to puff the shape up).
+
+### Steps (each independently verifiable via `DEBUG_VIZ`)
+
+> **Status 2026-05-30:** Steps 1+2 landed (with empirical corrections — below). Clouds now
+> show form (a lumpy "cotton-ball" stratocumulus) instead of a flat blanket. Steps 3+4
+> remain. Full debugging story: `CLOUD_DEBUGGING_LESSONS.md` case study #8.
+
+1. ✅ **Macro billowy carving** *(corrected from the original plan)*. Carve the dilated
+   `baseShape` via Schneider value-erosion so the **boundary** undulates into lumps. Two
+   corrections found empirically: **(a) SOURCE** must be the *detail* volume's single-octave
+   Worley, not the base G/B (which is FBM = too smooth → just scales body size); **(b) SCALE**
+   must be **macro** (~1.5–3 km, `CARVE_SCALE≈80`), not fine — fine carving makes internal
+   texture but leaves the top boundary flat. Verify: `DEBUG_VIZ='eroded'`.
+2. ✅ **Cone self-shadows the lumps.** Cone-march reconstructs the same dilated+carved shape
+   at each sun-tap (with `(shape−thr)/(1−thr)` normalization). **Key finding:** the visible
+   colour is dominated by the *first* (surface) voxel, so the **surface** self-shadow is what
+   matters — diagnosed with the new `DEBUG_VIZ='firstConeDepth'` (first-voxel sun OD). It was
+   black on a flat boundary and only varied where the cloud had vertical relief, so the macro
+   carve (Step 1) is what makes it vary everywhere. `off` tracks `firstConeDepth` exactly.
+3. ⏸ **Taller / more-varied towers** *(macro vertical form)*. Strengthen the height profile so
+   cumulus regions build distinct towers, not a lumpy deck. Would let us back off the very
+   aggressive carve (`BILLOW_CARVE=0.99`) for fuller bodies → "cotton balls" → towering cumulus.
+4. ⏸ **Fine detail self-shadow** *(close-up polish)*. Finer cone near-taps + cone samples the
+   32³ detail for cauliflower micro-texture at close range.
+
+Deferred housekeeping: **distance-fade** the macro carve (LOD / anti-alias far), restore
+**forward-scatter phase** (silver-lining highlights — still isotropic at `HG_G=0.1`), recover
+**cone perf** (Step 2 added 2× cone texture fetches → Bucket-3 depth-pass fix).
+
+### Notes / risks
+- **Opacity stays 140000** — with real surface relief the *surface* varies, so we don't need
+  to lower opacity (keeps no-see-through). Confirmed empirically: lowering it did NOT help.
+- **Carve SOURCE + SCALE both matter** (Step 1). Smooth FBM can't carve lumps; relief must be
+  at the boundary (macro) to be visible from a top-down view of an opaque deck.
+- **Main tuning knob**: `BILLOW_CARVE` (higher = lumpier / more-broken deck). 0.99 is
+  aggressive (sparse cell-centre puffs); Step 3 towers would let us reduce it.
+- **Perf**: Step 2's cone now does 2× texture fetches; recover via the Bucket-3 depth-pass
+  optimization (the depth pass re-runs the full lighting march just to read `tFront`).
 
 ---
 

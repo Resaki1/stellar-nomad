@@ -1292,3 +1292,79 @@ Documented (carries forward):
   pre-integrated volumes)
 - Specific MC variance explanation that lets future sessions skip the
   "5-suspect hunt" entirely.
+
+---
+
+## Case study #8 — "flat-shaded clouds: lava-lamp blobs, no form" (2026-05-30)
+
+**Symptom.** Clouds read as flat — uniform-coloured "lava lamp / sea of blobs,"
+no sunlit-top/shadowed-side form like the KSP/Nubis reference. Persisted across
+sun angles and view distances.
+
+**The long version (~15 rounds), so future-me can skip the dead ends.**
+
+This is the *same* "uniform cloud bodies" family as case studies #3/#4/#5, but
+this session finally found the true root by building one decisive diagnostic
+instead of tuning. The earlier sessions (and the first half of this one) kept
+adjusting *lighting* knobs (phase, MS coef, sunColor, opacity, cone density)
+and never converged — because **it was never a lighting problem.**
+
+**Dead ends ruled out (do not re-try these in isolation):**
+- *Cone-march sees detail erosion, smooth source.* Carving/eroding the shape
+  with the **base volume's G/B Worley** does almost nothing — those channels
+  are **FBM (averaged octaves), too smooth** to carve distinct lumps; cranking
+  the strength just uniformly **shrinks body size**. (Use the DETAIL volume's
+  **single-octave** Worley as the carve source — crisp cells, real valleys.)
+- *Lower opacity to reveal the interior gradient.* `densMul` 140000→35000 did
+  not surface form. The colour is dominated by the first opaque voxel; thinning
+  it just averages more uniform skin.
+- *Lower CONE_DENSITY (thought OD was saturating Tsun≈0).* No effect even at
+  500. Ruled out optical-depth saturation as the cause.
+- *Fine-scale carve.* `CARVE_SCALE 350` (~0.4 km) adds internal texture but
+  leaves the **top boundary flat** — so it doesn't help the visible surface.
+
+**The decisive diagnostic (`firstConeDepth`).** `coneDepth` shows the *last*
+(deepest) marched voxel's sun optical depth — it varied nicely, which kept
+misleading us into thinking the self-shadow "worked." But the visible colour is
+dominated by the **first** (surface) voxel. So I added `DEBUG_VIZ='firstConeDepth'`
+= the *first* dense voxel's sun optical depth. Result: **mostly black** on the
+deck, varying only on the rare clouds with real vertical buildup — and `off`
+tracked `firstConeDepth` *exactly* (flat where black, varied where it varied).
+
+**Root cause.** The cloud presents a **smooth, flat top boundary** to the
+camera. With the sun near the horizon, the sun-cone from a flat-top surface
+voxel **escapes upward immediately** → zero surface self-shadow → uniform
+colour. The self-shadow variation that `coneDepth` showed lives *deeper inside*
+the cloud, hidden behind the opaque surface. It was never the lighting model,
+the phase, the opacity, or the optical-depth range — it was that **the visible
+surface had no relief to cast shadows on itself.**
+
+**Fix.** A **macro-scale** value-erosion carve (`CARVE_SCALE≈80`, ~1.5–3 km)
+using the crisp single-octave detail Worley, at high strength (`BILLOW_CARVE`
+~0.95–0.99). This undulates the *boundary* into lumps/towers, so the surface
+cone hits neighbouring buildup and self-shadows everywhere. `firstConeDepth`
+then varies across the whole deck and `off` shows form. (See the marcher's
+carve-constants comment block for the shipped values + rationale.)
+
+**Result.** From a flat smooth blanket to a lumpy "cotton-ball" stratocumulus
+with real form. Not yet towering cumulus (that's Step 3 — height-profile towers
+would let us back off the very aggressive carve), but the core "why is it flat"
+question is answered and fixed.
+
+**Meta-lessons:**
+1. **`coneDepth` (last voxel) ≠ what you see.** With high opacity the colour is
+   the *first* voxel. When a self-shadow diagnostic "varies" but the image is
+   flat, check the **first/surface** voxel specifically — that's the decisive
+   split between "lighting bug" and "surface has no relief."
+2. **Flat lighting on opaque clouds is usually a SHAPE/boundary problem, not a
+   lighting one.** Years of lighting tuning here never converged because the
+   surface had nothing to shadow. Build the surface-self-shadow diagnostic
+   *first* next time.
+3. **Carve SOURCE and SCALE both matter.** Smooth FBM noise can't carve lumps
+   (only scales size); you need crisp single-octave Worley. And relief must be
+   at the **boundary** (macro scale) to be seen — internal/fine carving is
+   invisible to a top-down view of an opaque deck.
+4. **The user's intuition ("geometry's there, colour's uniform") was right** and
+   cut through my premature "flat deck" conclusion. Build the diagnostic that
+   tests the user's hypothesis directly rather than arguing from the existing
+   (insufficient) diagnostics.

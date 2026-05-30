@@ -99,6 +99,36 @@ const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
 //      drama.
 const HG_G = 0.1;
 
+// ── Macro-scale billowy carving (shape-relief; landed 2026-05-30) ──
+// The dilated base macro shape is a smooth, flat-topped dome. Carve it with a
+// crisp Worley field so the cloud BOUNDARY undulates into ~1.5-3 km lumps with
+// valleys between them. This is the key to non-flat cloud lighting: without
+// boundary relief the surface is a flat slab top, the sun cone escapes upward,
+// and there is no surface self-shadow → uniform colour. Proven via
+// DEBUG_VIZ='firstConeDepth' (the visible surface's sun optical depth), which
+// read black on the flat deck and only varied where the cloud had real
+// vertical buildup; 'off' tracked it exactly. The macro carve gives the whole
+// deck that vertical relief, so the surface self-shadows everywhere.
+//
+// Two things were essential (both found empirically — see CLOUD_DEBUGGING_LESSONS):
+//  1. SOURCE: the base volume's G/B Worley is FBM (averaged → too smooth);
+//     carving with it merely scaled body size. We sample the DETAIL volume's
+//     single-octave Worley (crisp cells, distinct valleys) at CARVE_SCALE.
+//  2. SCALE: must be MACRO (~1.5-3 km). Fine carving (CARVE_SCALE 350) makes
+//     internal texture but leaves the top boundary flat → cone still escapes.
+//
+// Schneider value-erosion form: remap(baseShape, (1-carveWorley)*BILLOW_CARVE, 1, 0, 1).
+// Strength: higher = deeper valleys → lumpier / more-broken deck. 0.99 reduces
+// the deck to sparse cell-centre puffs — a "cotton-ball" stratocumulus. It is
+// deliberately high because the carve is currently the ONLY source of boundary
+// relief; proper height-profile towers (Step 3) would let us back it off for
+// fuller bodies. Tune against DEBUG_VIZ='eroded' / 'firstConeDepth'.
+const BILLOW_CARVE = 0.99;
+// Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
+// tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
+// (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
+const CARVE_SCALE = 80;
+
 // =============================================================================
 // DIAGNOSTIC VISUALIZATION
 //
@@ -203,6 +233,7 @@ const HG_G = 0.1;
 // =============================================================================
 const DEBUG_VIZ:
   | "off"
+  | "firstConeDepth"
   | "alpha"
   | "topAlt"
   | "insideInner"
@@ -321,11 +352,16 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // opticalDepthSun in a useful range (~2-10) regardless of primary
   // opacity tuning. See sampleConeTap.
   //
-  // Trade-off: high densMul means alpha saturates in 1-2 voxels at high-
-  // baseShape regions. The visible cloud surface lighting comes mostly
-  // from those first 1-2 voxels. Per-voxel lighting variation comes from
-  // cone-marched Tsun_ms varying across the surface, not from many-voxel
-  // col integration.
+  // Tuned for opaque cumulus body: cores need alpha > 0.99 in a few dense
+  // steps so stars/horizon don't bleed through thick bodies.
+  //
+  // NOTE (2026-05-29): lowering this to 35000 to integrate the self-shadow
+  // gradient over more voxels did NOT surface form — the visible *surface*
+  // is uniformly lit regardless of how many voxels we integrate (the
+  // variation `coneDepth` shows lives in the cloud interior/valleys, not on
+  // the lit outer skin). The flatness is a cloud-SHAPE problem (smooth
+  // blobs, no macro relief to self-shadow), not an opacity one — so opacity
+  // restored to its no-see-through value. See CLOUD_DEBUGGING_LESSONS.
   const uDensityMul = uniform(140000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //
@@ -838,6 +874,14 @@ export function marchCloudVolume({
     // underlying opticalDepth). This is the un-tonemapped truth about
     // whether the cone-march finds varying absorption.
     const lastOpticalDepthSun = float(0).toVar();
+    // FIRST-dense-voxel cone optical depth (vs lastOpticalDepthSun = last).
+    // For DEBUG_VIZ='firstConeDepth'. The visible surface is dominated by the
+    // first dense voxel (high opacity saturates there), so this is the self-
+    // shadow of what we actually SEE. Comparing to 'coneDepth' (last voxel)
+    // answers: surface uniformly lit (first uniform, last varies → need
+    // boundary/tower relief) or surface itself varies (first varies → lighting
+    // combine is flattening it). Sentinel −1 = ray never entered dense mode.
+    const firstOpticalDepthSun = float(-1).toVar();
 
     // Last-dense voxel density (eroded × densScale), for DEBUG_VIZ='density'.
     // Shows the actual primary-voxel density at the visible surface. If
@@ -1146,7 +1190,21 @@ export function marchCloudVolume({
             .add(oneMinusFbm)
             .div(float(2).sub(baseFbm).max(0.0001))
             .clamp(0, 1);
-          const baseCloud = baseShape.mul(coverage);
+          // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
+          // Carve valleys (low carve-Worley) deeper than lump centres so the
+          // smooth dilated dome becomes ~1-2 km cauliflower. The carve source
+          // is the DETAIL volume's single-octave Worley (crisp cells) at
+          // CARVE_SCALE — the base B channel (smoothed FBM) was too soft and
+          // just scaled body size. Schneider value-erosion form.
+          const carveSrc = texture3D(detailVolume, p.mul(float(CARVE_SCALE)))
+            .level(int(0));
+          const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+          const carveThresh = float(1).sub(carveWorley).mul(float(BILLOW_CARVE));
+          const baseShapeCarved = baseShape
+            .sub(carveThresh)
+            .div(float(1).sub(carveThresh).max(0.0001))
+            .clamp(0, 1);
+          const baseCloud = baseShapeCarved.mul(coverage);
 
           // DIAGNOSTIC (2026-05-27): threshold lowered from 0.01 → 0.0001.
           //
@@ -1330,8 +1388,37 @@ export function marchCloudVolume({
                   // Dropped for perf.
                   //
                   // Cost: 3 texture3D fetches per dense voxel (3 cone taps).
-                  const baseShapeL = texture3D(baseVolume, pL.mul(uBaseScale))
-                    .level(int(0)).r;
+                  // ── Step 2: cone sees the SAME carved shape as the primary ──
+                  // Previously sampled only baseVolume.r (raw, smooth) so the
+                  // sun-march couldn't shadow the Step-1 cauliflower lumps →
+                  // uniform Tsun → flat. Now reconstruct the primary's dilated
+                  // + billow-carved shape at each cone tap so lumps self-shadow:
+                  // a voxel beneath a lump finds more cloud toward the sun than
+                  // one on a sunlit crest → bright crests / dark crevices.
+                  const baseSampleL = texture3D(baseVolume, pL.mul(uBaseScale))
+                    .level(int(0));
+                  const baseFbmL = baseSampleL.g
+                    .mul(0.625)
+                    .add(baseSampleL.b.mul(0.25))
+                    .add(baseSampleL.a.mul(0.125));
+                  const baseShapeDilatedL = baseSampleL.r
+                    .add(float(1).sub(baseFbmL))
+                    .div(float(2).sub(baseFbmL).max(0.0001))
+                    .clamp(0, 1);
+                  const carveSrcL = texture3D(
+                    detailVolume,
+                    pL.mul(float(CARVE_SCALE)),
+                  ).level(int(0));
+                  const carveWorleyL = carveSrcL.r
+                    .mul(0.6)
+                    .add(carveSrcL.g.mul(0.4));
+                  const carveThreshL = float(1)
+                    .sub(carveWorleyL)
+                    .mul(float(BILLOW_CARVE));
+                  const baseShapeL = baseShapeDilatedL
+                    .sub(carveThreshL)
+                    .div(float(1).sub(carveThreshL).max(0.0001))
+                    .clamp(0, 1);
                   const coverageL = coverage;  // primary-ray's coverage
 
                   // Cone density is DECOUPLED from primary `densScale`
@@ -1356,7 +1443,16 @@ export function marchCloudVolume({
                   // Range Tsun_ms 0.10–0.57 → ms varies 5.7× across
                   // cloud → visible top-bright/bottom-dark gradient.
                   const profileL = cloudHeightProfile(altL, topAlt, cloudType);
-                  const CONE_DENSITY = float(3000);
+                  // Lowered 3000 → 1000: once the cone sees the dilated+carved
+                  // shape (Step 2), 3000 pushed cone optical depth into the
+                  // ~3-6 range → Tsun = exp(-OD) ≈ 0 everywhere → the lit terms
+                  // collapsed and the self-shadow variation (clear in
+                  // DEBUG_VIZ='coneDepth') never reached the colour (flat
+                  // lightingOnly). 1000 brings OD into ~0.5-2 (Tsun 0.6-0.14)
+                  // where the self-shadow shows as real brightness variation.
+                  // Tune against 'off'/'lightingOnly': too dark/flat → lower
+                  // more; washed-out bright → raise.
+                  const CONE_DENSITY = float(500);
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const densL: any = baseShapeL
                     .mul(coverageL)
@@ -1393,6 +1489,9 @@ export function marchCloudVolume({
                 sampleConeTap(-0.42443639, 0.28128598, 0.86065785, 5);
                 Tsun.assign(exp(opticalDepthSun.negate()).mul(daylight));
                 lastOpticalDepthSun.assign(opticalDepthSun);
+                If(firstOpticalDepthSun.lessThan(0), () => {
+                  firstOpticalDepthSun.assign(opticalDepthSun);
+                });
               });
 
               // Multi-scatter transmittance.
@@ -1650,6 +1749,26 @@ export function marchCloudVolume({
           hitC.select(scaled, float(0)),
           hitC.select(scaled, float(0)),
           hitC.select(scaled, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "firstConeDepth") {
+      // FIRST-dense-voxel sun optical depth (the VISIBLE surface's self-
+      // shadow), scaled /10. Compare against 'coneDepth' (last/deepest voxel):
+      //   first UNIFORM + last varies → surface uniformly lit; the variation
+      //     is buried inside the cloud → we need boundary/tower relief.
+      //   first VARIES (like last) → the surface self-shadow IS there and the
+      //     lighting combine is flattening it → fix the lighting, not the shape.
+      const hitF = alpha.greaterThan(0.001);
+      const scaledF = firstOpticalDepthSun.max(0).div(float(10)).clamp(0, 1);
+      return {
+        rgba: vec4(
+          hitF.select(scaledF, float(0)),
+          hitF.select(scaledF, float(0)),
+          hitF.select(scaledF, float(0)),
           float(1),
         ),
         tFront: float(0),
