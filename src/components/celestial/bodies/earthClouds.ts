@@ -71,6 +71,25 @@ const DENSE_STEP_RATIO = 0.25;
 // back fast enough not to waste short steps on truly-empty post-cloud
 // columns.
 const EMPTY_THRESHOLD = 8;
+// ── Distance-adaptive step LOD (Step 1, 2026-05-30) ──
+// Step size grows with camera distance `t` (scaled units, 1 = 1000 km) so the
+// fixed MAX_PRIMARY_STEPS budget spans the whole visible range instead of dying
+// at ~48 km (96 × 500 m). Near the camera lodScale ≈ 1 → fine ~500 m steps
+// (cumulus detail); far away it grows → coarse steps (distant clouds present,
+// blurry, cheap). CAPPED per-ray (lodCap) so the growth can never over-step a
+// thin slab — orbit looking straight down at the 14 km shell still gets at
+// least LOD_MIN_SAMPLES samples through it.
+//   lodScale = min(1 + t · LOD_STEP_GROWTH,  slabLen / (dtSkip · LOD_MIN_SAMPLES))
+// Tune with DEBUG_VIZ = 'lod' (step-size ramp) + 'iters' (budget usage).
+// 40 → 120 (2026-05-30): at 40 the steps stayed fine too far out, so grazing
+// rays at cloud level (long path through sparse, non-opaque cloud) exhausted
+// the 96-step budget before the horizon — visible as RED in DEBUG_VIZ='whyStop'
+// creeping in from the horizon as you descend into the layer. 120 coarsens far
+// steps ~3× faster → the budget reaches the horizon. Distant clouds get
+// blurrier (under-sampled), which is the intended LOD tradeoff. The per-ray cap
+// (lodCap) still protects orbit/thin-slab views regardless of this value.
+const LOD_STEP_GROWTH = 400;
+const LOD_MIN_SAMPLES = 20;
 // Cone-traced light march (Nubis C3). 6 stratified samples toward the sun,
 // each perturbed by a pre-baked low-discrepancy 3D kernel, scaled by step
 // distance so the cone widens with depth. Total integration range ≈ 12 km
@@ -130,12 +149,14 @@ const HG_BLEND = 0.5; // weight of the back lobe (0 = pure forward, 1 = pure bac
 //     internal texture but leaves the top boundary flat → cone still escapes.
 //
 // Schneider value-erosion form: remap(baseShape, (1-carveWorley)*BILLOW_CARVE, 1, 0, 1).
-// Strength: higher = deeper valleys → lumpier / more-broken deck. 0.99 reduces
-// the deck to sparse cell-centre puffs — a "cotton-ball" stratocumulus. It is
-// deliberately high because the carve is currently the ONLY source of boundary
-// relief; proper height-profile towers (Step 3) would let us back it off for
-// fuller bodies. Tune against DEBUG_VIZ='eroded' / 'firstConeDepth'.
-const BILLOW_CARVE = 0.99;
+// Strength: higher = deeper valleys → lumpier / more-broken deck. 0.99 reduced
+// the deck to sparse cell-centre puffs; at 0.99 with the new cumulus towers it
+// over-eroded them into DISCONNECTED floating blobs (no connected base).
+// 2026-05-30: 0.99 → 0.75 now that height-profile towers (Step 3) provide the
+// macro form — back off the carve for fuller, CONNECTED bodies. If the lower
+// deck flattens too much, make the carve altitude-dependent (solid base, eroded
+// top) instead of a single constant. Tune against DEBUG_VIZ='eroded'.
+const BILLOW_CARVE = 0.75;
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
@@ -260,7 +281,9 @@ const DEBUG_VIZ:
   | "density"
   | "sunDir"
   | "daylight"
-  | "dither" = "off";
+  | "dither"
+  | "lod"
+  | "whyStop" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, three-type decomposition).
 //
@@ -465,10 +488,15 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // wildly different in cloud-band thickness (5.5 km Δ), and their
   // boundaries projected as visible curved stripes on the cloud body.
   //
-  // 20 → ~12.5 km columns. Combined with the new SMOOTH linear topAlt
-  // mapping (no contrast smoothstep), column boundaries are larger AND
-  // softer transitions — no visible stripes from the column structure.
-  const uColumnScale = uniform(20);
+  // 20 → ~12.5 km columns. Combined with the SMOOTH linear topAlt mapping,
+  // column boundaries were larger AND softer — no visible stripes.
+  //
+  // 2026-05-30: 20 → 8 (~31 km regions). At 12.5 km the per-column tower-
+  // height variation was too fine to read as a skyline from ORBIT (averaged
+  // to uniform grey at distance). Coarser regions make the height variation
+  // visible from far AND give the re-introduced topAlt smoothstep spread
+  // wide, soft region boundaries instead of stripes.
+  const uColumnScale = uniform(8);
   // Cone-light radius — multiplier on the world-space kernel offsets in the
   // light march. 0.3 puts the outermost sample ~3 km perpendicular to the
   // primary sample (kernel norm ≈ 1, stepDist at i=5 ≈ 0.011 scaled = 11 km;
@@ -650,6 +678,12 @@ export function marchCloudVolume({
     // have constant world-space size so step size must too.
     const dtSkip = float(SKIP_STEP_SCALED);
     const dtDense = dtSkip.mul(float(DENSE_STEP_RATIO));
+    // Per-ray cap for the distance-adaptive step (see LOD_STEP_GROWTH):
+    // lodScale ≤ slabLen / (dtSkip · LOD_MIN_SAMPLES) guarantees at least
+    // LOD_MIN_SAMPLES steps across THIS ray's slab path, so the growth can't
+    // over-step a thin slab (orbit looking down). Loop-invariant; .max(1) keeps
+    // the cap from ever forcing steps finer than the base.
+    const lodCap = slabLen.div(dtSkip.mul(float(LOD_MIN_SAMPLES))).max(1);
 
     // Per-pixel dither: jitters the ray entry point by [0, dtSkip) per
     // fragment so adjacent pixels' discovery samples don't all align to
@@ -752,12 +786,10 @@ export function marchCloudVolume({
     const colSampleMid = texture3D(baseVolume, pMidColumn.mul(uColumnScale))
       .level(int(0)).r;
     const colSharpMid = smoothstep(float(0.3), float(0.7), colSampleMid);
-    // topAlt range widened from [0.55, 0.95] to [0.4, 0.95] — 7.2 km vs
-    // 5.2 km vertical span between short and tall columns. Wider span
-    // makes the difference between cumulus and stratocumulus dramatic
-    // enough to be obviously visible from above, given the new top-heavy
-    // density bias above.
-    const topAltMid = float(0.4).add(colSharpMid.mul(0.55));
+    // Mirrors the per-step topAlt mapping exactly (smoothstep spread,
+    // range [0.45, 0.95]) so the 'topAlt' diagnostic reflects reality.
+    // (Previously the diagnostic used a slightly different range than the march.)
+    const topAltMid = float(0.45).add(colSharpMid.mul(0.5));
 
     // Coverage near/mid/far hoisted samples — see comment block above.
     const pNear = roEarth.add(rdEarth.mul(tEnter));
@@ -878,6 +910,11 @@ export function marchCloudVolume({
     // these stay 0, which correctly reads as "march never engaged".
     const primaryIters = float(0).toVar();
     const denseIters = float(0).toVar();
+    // Why the march ended (DEBUG_VIZ='whyStop'): 0 = ran out of the 96-step
+    // budget (cutoff), 1 = exited the slab (saw the whole path), 2 = went
+    // opaque (blocked by cloud — correct). Default 0 = budget. Function-scope
+    // so the post-loop diagnostic branch can read it.
+    const exitReason = float(0).toVar();
     // Sentinel = -1 (no hit). Captured the first time skip-mode finds
     // cloud along the ray; the t-value at that point is the cloud-front
     // depth for this pixel. Used by the TAA reprojection for accurate
@@ -962,9 +999,18 @@ export function marchCloudVolume({
 
       Loop(MAX_PRIMARY_STEPS, () => {
         If(t.greaterThan(tExit), () => {
+          exitReason.assign(1);
           Break();
         });
         primaryIters.addAssign(1);
+
+        // Distance-adaptive step size (see LOD_STEP_GROWTH). Grows with `t`,
+        // capped per-ray by lodCap. Used by the advance, the skip→dense rewind,
+        // AND the density integration (a longer step covers more cloud, so it
+        // must integrate proportionally more optical depth).
+        const lodScale = float(1).add(t.mul(float(LOD_STEP_GROWTH))).min(lodCap);
+        const dtSkipL = dtSkip.mul(lodScale);
+        const dtDenseL = dtDense.mul(lodScale);
 
         const p = roEarth.add(rdEarth.mul(t));
         const r = length(p).max(0.0001);
@@ -1035,9 +1081,19 @@ export function marchCloudVolume({
         // articulation. Acceptable for noise reduction; the macro shape
         // is still driven by the same noise, just with softer falloffs.
         //
-        // Note: this is per-VOXEL not per-PIXEL. Adjacent voxels in 3D
-        // sample the same noise scale and get correlated values.
-        const cumulusPattern = texture3D(baseVolume, p.mul(80))
+        // 2026-05-30: sample the pattern at the COLUMN projection (project to
+        // the inner shell via dirP) instead of the full 3D position `p`. The
+        // 3D sample varied over ~12 km VERTICALLY too — inside a ~14 km slab
+        // that punched the pattern on/off UP a single column, so cloud existed
+        // at some altitudes and not others = the DISCONNECTED FLOATING BLOBS,
+        // and it dominated the shape (which is why BILLOW_CARVE had ~no visible
+        // effect: the 3D mask had already carved the holes). Projecting to the
+        // shell makes the "is there a cloud body here" decision per-column →
+        // vertically COHERENT, connected bodies. Vertical shape comes from the
+        // height profile; 3D billow/erosion comes from baseShape + detail
+        // erosion nibbling the surface.
+        const pCol = dirP.mul(uInnerRadius);
+        const cumulusPattern = texture3D(baseVolume, pCol.mul(80))
           .level(int(0)).g;
         const cumulusMask = smoothstep(
           float(0.15),
@@ -1085,17 +1141,38 @@ export function marchCloudVolume({
           cumulusMask,
           patternStrength,
         );
-        const coverage = coverageRaw.mul(cumulusMaskLod);
+        // 2026-05-30: BYPASS the cumulus-pattern gate. With the Nubis Remap
+        // composition (below), discrete bodies emerge from the smooth coverage
+        // map + the 3D base noise — the separate `cumulusMask` gate is both
+        // redundant AND harmful: it carved coverage into ~3 km cells (the
+        // spikes/blobs) and multiplied coverage DOWN (so the Remap then
+        // thresholded away the whole deck). Real Nubis has no such gate.
+        // coverage = the smooth weather map directly. (The dead cumulusMask
+        // block above is TSL dead-code-eliminated; delete once confirmed.)
+        //
+        // ...and raise it with a gamma (pow < 1) so the deck returns: the Nubis
+        // Remap below thresholds away coverage below ~1 - baseShape (≈0.33), so
+        // the raw low/mid-coverage deck got deleted (too sparse). pow(0.6) lifts
+        // low/mid coverage while keeping 0 → 0 (true clear sky stays clear).
+        // Density/coverage knob #1 — raise the exponent toward 1 for less
+        // cloud, lower (→0.4) for more.
+        const coverage = coverageRaw.pow(float(0.6));
 
         // ── Cloud-type derivation (Nubis B2, Stage 1) ──
         // Map coverage → cloudType ∈ [0, 1]: 0 = stratus, 0.5 =
-        // stratocumulus, 1 = cumulus. smoothstep(0.4, 0.8) gives:
-        //   coverage ≤ 0.4  → cloudType 0   (stratus regions)
-        //   coverage = 0.6  → cloudType 0.5 (stratocumulus)
-        //   coverage ≥ 0.8  → cloudType 1   (cumulus pockets)
+        // stratocumulus, 1 = cumulus. smoothstep(0.3, 0.6) gives:
+        //   coverage ≤ 0.3  → cloudType 0   (stratus regions)
+        //   coverage = 0.45 → cloudType 0.5 (stratocumulus)
+        //   coverage ≥ 0.6  → cloudType 1   (cumulus pockets)
+        // 2026-05-30: lowered from (0.4, 0.8). The dense "tower" pockets were
+        // landing at stratocumulus, whose top is hardcoded to fade at alt
+        // 0.45–0.65 IGNORING topAlt → every tower capped at the SAME ~0.55
+        // height (the flat-ceiling, straight-walled blocks). Pulling the
+        // cumulus threshold down to 0.6 makes those pockets true cumulus, so
+        // height follows the per-column topAlt (varied) and tops taper.
         // Stage 2 (deferred): re-author weather map with explicit cloudType
         // channel for art-directable transitions instead of coverage-derived.
-        const cloudType = smoothstep(float(0.4), float(0.8), coverage);
+        const cloudType = smoothstep(float(0.3), float(0.6), coverage);
 
         // Per-column cloud-top altitude (Nubis B2). Project the current
         // march position to the inner shell so all steps in the same column
@@ -1126,7 +1203,12 @@ export function marchCloudVolume({
         // eliminates the per-quad mip variance entirely.
         const colSample = texture3D(baseVolume, pColumn.mul(uColumnScale))
           .level(int(0)).r;
-        // topAlt: smooth linear mapping from Perlin sample → [0.4, 0.95].
+        // topAlt: per-column cumulus-top height in [0.45, 0.95], via a
+        // smoothstep(0.3, 0.7) spread of the (clustered) Perlin sample.
+        // 2026-05-30: re-introduced the spread (was linear) so cumulus towers
+        // reach VARIED heights (a skyline) instead of all topping out at the
+        // Perlin-cluster ~0.67 (flat ceiling). The stripe history below is now
+        // mitigated by the coarser uColumnScale=8 + the macro carve.
         //
         // Old code used `smoothstep(0.3, 0.7)` to stretch Perlin's central
         // cluster (~0.4–0.6) into the full output range, then mapped to
@@ -1137,12 +1219,11 @@ export function marchCloudVolume({
         // visible "stripes" where the alpha integration changed abruptly
         // across the column boundary on the cloud body.
         //
-        // Linear remap keeps the topAlt distribution smooth — adjacent
-        // columns transition continuously through intermediate values,
-        // so there are no hard boundaries to project as stripes. Raw
-        // Perlin clusters around 0.5, giving most columns topAlt around
-        // 0.67. Tower variation is more subtle but evenly distributed.
-        const topAlt = float(0.4).add(colSample.mul(0.55));
+        // WATCH for stripes after this change; if they return, lower
+        // uColumnScale further or narrow the smoothstep range.
+        const topAlt = float(0.45).add(
+          smoothstep(float(0.3), float(0.7), colSample).mul(0.5),
+        );
 
         // ── Altitude perturbation (band-breaker, outer-scope version) ──
         //
@@ -1267,7 +1348,7 @@ export function marchCloudVolume({
               // short-step resolution. No accumulation in this iteration —
               // the cheap-probe sample is discarded; the next dense step
               // will redo the full computation.
-              t.subAssign(dtSkip.mul(0.5));
+              t.subAssign(dtSkipL.mul(0.5));
               stepMode.assign(1);
               emptyStreak.assign(0);
               // Capture cloud-front depth on first hit (sentinel was -1).
@@ -1291,16 +1372,29 @@ export function marchCloudVolume({
               );
               const erosionStrength = float(0.35).add(edgeness.mul(0.65));
 
-              // ── Schneider value erosion against profile-modulated shape ──
-              // (Nubis B3 + B4) Profile is `coverage × heightProfile` from
-              // outside this scope; `shape = baseShape × profile` is the
-              // pre-erosion density-like quantity. Eroding shape (rather
-              // than just `baseShape × coverage` followed by a separate
-              // profile multiply) means altitude affects erosion: near a
-              // cumulus top where heightProfile drops, the erosion
-              // threshold takes a larger BITE out of the shape, naturally
-              // producing wispier tops than cores.
-              const shape = baseCloud.mul(heightProfile);
+              // ── Nubis base-shape composition: REMAP, not multiply ──
+              // THE key shape step (2026-05-30). `dimProfile = coverage ×
+              // heightProfile` is the 3D "how much cloud should be here"
+              // envelope (horizontal × vertical). Schneider/Nubis THRESHOLDS
+              // the base noise by it:
+              //   shape = Remap(baseShape, 1 - dimProfile, 1, 0, 1)
+              //         = (baseShape - (1 - dimProfile)) / dimProfile, clamped
+              // Why threshold, not multiply: multiply SCALES the noise
+              // amplitude → the shape collapses to the (coverage × profile)
+              // envelope extruded, so the 3D noise stops sculpting and bodies
+              // read as the coverage mask extruded vertically (blobs / spikes /
+              // walls). Remap THRESHOLDS: in cores (dimProfile high) the
+              // threshold is low → noise mostly passes → solid; at tops
+              // (heightProfile fades) and edges (coverage fades) the threshold
+              // rises → only noise PEAKS survive → cauliflower tapering tops +
+              // wispy edges. The organic form IS the 3D noise, carved by the
+              // profile. (`baseCloud` above is kept only as the skip/dense
+              // gate.)
+              const dimProfile = coverage.mul(heightProfile);
+              const shape = baseShapeCarved
+                .sub(float(1).sub(dimProfile))
+                .div(dimProfile.max(0.0001))
+                .clamp(0, 1);
 
               // Type-driven detail FBM remix (Nubis B3). Same texture sample,
               // different channel weights:
@@ -1561,7 +1655,7 @@ export function marchCloudVolume({
 
               // Optical depth integrates over dtDense — accumulation only
               // happens in dense mode, and dense steps are dtDense apart.
-              const opticalDepthStep = density.mul(dtDense);
+              const opticalDepthStep = density.mul(dtDenseL);
 
               // Powder approximation — back-lit edges read brighter.
               // Applied to direct light only (pre-phase), per Schneider.
@@ -1640,10 +1734,11 @@ export function marchCloudVolume({
 
         // Step forward at the (possibly just-updated) mode's rate.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const dtThis: any = stepMode.lessThan(0.5).select(dtSkip, dtDense);
+        const dtThis: any = stepMode.lessThan(0.5).select(dtSkipL, dtDenseL);
         t.addAssign(dtThis);
 
         If(T.lessThan(0.01), () => {
+          exitReason.assign(2);
           Break();
         });
       });
@@ -1664,7 +1759,7 @@ export function marchCloudVolume({
       // coverage-derived cloudType at the midpoint UV. Lets us see
       // type-driven anatomy: stratus regions read green-only (mass at 0.5);
       // stratocumulus shows red+green; cumulus shows green+blue.
-      const cloudTypeMid = smoothstep(float(0.4), float(0.8), covMid);
+      const cloudTypeMid = smoothstep(float(0.3), float(0.6), covMid);
       const p25 = cloudHeightProfile(float(0.25), topAltMid, cloudTypeMid);
       const p50 = cloudHeightProfile(float(0.50), topAltMid, cloudTypeMid);
       const p75 = cloudHeightProfile(float(0.75), topAltMid, cloudTypeMid);
@@ -1704,6 +1799,37 @@ export function marchCloudVolume({
       const slabNorm = slabLen.div(float(0.013)).clamp(0, 1);
       return {
         rgba: vec4(slabNorm, slabNorm, slabNorm, float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "lod") {
+      // Distance-adaptive step-size ramp (Step 1). Shows lodScale at the slab
+      // midpoint = how many × bigger each step is vs the 500 m base. Grayscale:
+      // black ≈ 1× (fine, near) → white = 20× (coarse, far). RED tint where the
+      // per-ray cap (lodCap) is limiting the growth — i.e. a thin slab forcing
+      // finer steps so it isn't over-stepped (near-vertical / orbit down-views).
+      // Lets us see the LOD field AND where the cap bites.
+      const lodGrow = float(1).add(tMid.mul(float(LOD_STEP_GROWTH)));
+      const lodMid = lodGrow.min(lodCap);
+      const g = lodMid.div(float(20)).clamp(0, 1);
+      const capped = lodGrow.greaterThan(lodCap).select(float(1), float(0));
+      return {
+        rgba: vec4(g.max(capped), g, g, float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "whyStop") {
+      // Why each ray's march ended. RED = ran out of the 96-step budget
+      // (cutoff — what we're chasing); GREEN = exited the slab (saw the whole
+      // path); BLUE = went opaque (blocked by cloud, physically correct).
+      const isBudget = exitReason.lessThan(0.5).select(float(1), float(0));
+      const isSlab = exitReason
+        .greaterThan(0.5)
+        .and(exitReason.lessThan(1.5))
+        .select(float(1), float(0));
+      const isOpaque = exitReason.greaterThan(1.5).select(float(1), float(0));
+      return {
+        rgba: vec4(isBudget, isSlab, isOpaque, float(1)),
         tFront: float(0),
       };
     }

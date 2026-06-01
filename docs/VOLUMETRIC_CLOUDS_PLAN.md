@@ -461,9 +461,9 @@ to puff the shape up).
 4. ⏸ **Fine detail self-shadow** *(close-up polish)*. Finer cone near-taps + cone samples the
    32³ detail for cauliflower micro-texture at close range.
 
-Deferred housekeeping: **distance-fade** the macro carve (LOD / anti-alias far), restore
-**forward-scatter phase** (silver-lining highlights — still isotropic at `HG_G=0.1`), recover
-**cone perf** (Step 2 added 2× cone texture fetches → Bucket-3 depth-pass fix).
+Deferred housekeeping: **distance-fade** the macro carve (LOD / anti-alias far), recover
+**cone perf** (Step 2 added 2× cone texture fetches → Bucket-3 depth-pass fix). *(Forward-
+scatter phase — DONE 2026-05-30: dual-lobe HG; see "✅ Lighting contrast pass" section below.)*
 
 ### Notes / risks
 - **Opacity stays 140000** — with real surface relief the *surface* varies, so we don't need
@@ -477,7 +477,126 @@ Deferred housekeeping: **distance-fade** the macro carve (LOD / anti-alias far),
 
 ---
 
-## ▶ NEXT SESSION — recommended step: lighting contrast & highlights
+## ✅ Lighting contrast pass — DONE (2026-05-30)
+
+Went from a flat, washed-out tan deck to **neutral white volumetric clouds with real 3-D
+self-shadowed form** (distinct cells, brighter crowns, shadowed valleys) at ~46 FPS. Full
+story: `CLOUD_DEBUGGING_LESSONS.md` case study #9.
+
+### Locked lighting baseline (what shipped, `earthClouds.ts` — grep, lines drift)
+- **Dual-lobe HG phase** replaced the near-isotropic single lobe (`HG_G=0.1`):
+  `HG_FORWARD=0.8`, `HG_BACK=-0.3`, `HG_BLEND=0.5` (blend = back-lobe weight). Forward lobe
+  peaks ~1.8 toward the sun -> silver-lining + directional shading; back lobe lifts the away
+  side so it is NOT the harsh across-FOV ramp the user disliked at the old single `g=0.6`.
+- **`MS_COEF` 0.5 -> 0.9**: `Tsun_ms = Tsun^0.9` (was `sqrt(Tsun)`). The sqrt was lifting the
+  shadow end and compressing the self-shadow -> "same colour all over"; 0.9 keeps the raw
+  cone-march self-shadow -> deeper undersides, bright crowns.
+- **`skylight` 0.15 -> 0.07**: halved the blue ambient floor so crevices/undersides go
+  genuinely dark. Only the shadow fill is affected; sunlit tops are sun-dominated (no overall
+  dimming).
+- **`CONE_DENSITY` 500 -> 1000**: doubles sun-absorption in the light march -> occluded
+  regions darken (amplifies the self-shadow exponentially). Verified it does NOT collapse to
+  uniform dark on the current shape.
+- Unchanged: `uDensityMul=140000` (opaque), `sunColor`~12 HDR warm-white with a `sunset`
+  orange tint near the terminator, `skyColor` blue x2, and the carve (`BILLOW_CARVE=0.99`,
+  `CARVE_SCALE=80`).
+
+### Two findings — do NOT re-chase
+1. **The "brown/tan" was the SUNSET TINT, not a bug.** Low sun near the terminator ->
+   `sunColor` blends orange by design. Proven because `lightingOnly` was *also* brown (it is
+   the light, not the planet bleeding through). At a HIGH/day-side sun the clouds render
+   neutral white. **=> Always evaluate cloud lighting at a HIGH sun angle.** Judging near the
+   terminator wasted earlier rounds.
+2. **Lighting now renders form; the remaining flatness is SHAPE-limited.** With deep shadows +
+   good sun, both `lightingOnly` and `off` show real lumpy 3-D form. Further contrast tweaks
+   (`MS_COEF` 0.75->0.9) are **invisible in the final image** — they only bite in deep-shadow
+   crevices that the *soft, uniform-height* deck does not produce. The gap to KSP/SC is crisp
+   high-freq detail + tall/short towers = **shape (Steps 3 & 4)**, not light.
+
+### Deferred to AFTER shape
+Final lighting tuning (shadow depth, a touch of blue back into shadows, taming the forward
+glow) waits until Steps 3 & 4 — the right values differ once real geometry exists, and the
+lighting we built will render that detail dramatically the moment shape provides it.
+
+### Diagnostics
+`DEBUG_VIZ='off'` (final), `'lightingOnly'` (shading w/o albedo), `'firstConeDepth'` (surface
+self-shadow). **View at a HIGH sun angle** (the old "low sun across the deck" advice below is
+WRONG — it bakes in the sunset confound).
+
+---
+
+## ✅ Shape (Nubis Remap) + distance-LOD overhaul — DONE (2026-05-30)
+
+Two architectural fixes after the lighting pass. Debugging story: `CLOUD_DEBUGGING_LESSONS.md`
+case study #10.
+
+### Shape: composition is now the Nubis REMAP, not a multiply
+Shape read as an extruded 2D-mask (blobs / spikes / walls) because we DILATED the base noise and
+MULTIPLIED it by coverage × heightProfile — multiply scales the noise amplitude instead of
+thresholding it, so the 3D noise stopped sculpting. Fixes (`earthClouds.ts`):
+- **Remap (THE fix):** `shape = Remap(baseShapeCarved, 1 − coverage·heightProfile, 1, 0, 1)`
+  instead of `baseCloud·heightProfile`. Noise now sculpts: solid cores, tapering tops, wispy edges.
+- **Bypassed the `cumulusPattern` gate** (`coverage = coverageRaw`): redundant with the Remap and
+  the source of the spikes/blobs; also cut coverage. (Dead block left in, TSL-DCE'd — delete when
+  convenient.)
+- **`coverage = coverageRaw.pow(0.6)`** — gamma to restore the deck (Remap thresholds low coverage
+  away). Density knob: ↑exp = less cloud, ↓ = more.
+- Supporting: cumulus threshold `smoothstep(0.3, 0.6)` (towers become topAlt-driven cumulus, not
+  fixed-height stratocumulus); `topAlt` smoothstep spread + `uColumnScale=8` (skyline visible from
+  orbit); `BILLOW_CARVE=0.75` (was 0.99 — fuller, connected bodies).
+- Result: organic coverage-driven field. Small scattered round clouds = realistic fair-weather
+  cumulus (NOT a bug). Big cauliflower cumulonimbus towers are still a further effort (see pending).
+
+### LOD: distance-adaptive march (fixes reach + perf)
+Marcher used FIXED 500 m steps × 96-step budget → only ~48 km reach along any ray → distant clouds
+cut off (worst at cloud level / grazing rays) + bad perf at orbit. Fix:
+- **`lodScale = min(1 + t·LOD_STEP_GROWTH, lodCap)`** scales the step (skip, dense, rewind, AND the
+  density integration) with camera distance `t`. Near = fine (cumulus detail), far = coarse (reach +
+  cheap + blurry = intended LOD).
+- **`lodCap = slabLen/(dtSkip·LOD_MIN_SAMPLES)`** (=20) — per-ray cap so growth never over-steps a
+  thin slab (orbit down-view). This is what makes a large global growth safe everywhere.
+- **`LOD_STEP_GROWTH = 800`** (empirically tuned with `whyStop`). High because dense mode is 4×
+  finer (eats budget on grazing-through-cloud), grazing paths are 500–1500 km, and the cap removes
+  the downside — see the const comment.
+- **New diagnostics:** `DEBUG_VIZ='lod'` (step ramp; red = cap biting) + `'whyStop'` (RED=budget
+  cutoff, GREEN=exited slab, BLUE=opaque). `whyStop` was decisive — proved the cutoff was budget,
+  not the overlay/opacity.
+- Result: clouds reach the horizon at all altitudes; orbit perf improved.
+
+### Still pending (post-compaction, in order)
+1. **▶ NEXT: "frosted-glass noise" at cloud height** — see the dedicated section below.
+2. Retire / seamlessly blend the 2D flat overlay (`earth.ts` `uFlatCloudOpacity`) now that the
+   volumetric reaches far — user wants coverage from volumetric only.
+3. Reference-grade towers: bigger body scale (`uBaseScale`), tall anvil cumulus height profile,
+   cauliflower fine detail.
+
+## ▶ NEXT SESSION — "frosted-glass noise" at cloud height
+**Symptom (user):** flying AT/inside the cloud layer (close range), cloud EDGES sparkle/shimmer
+like frosted glass — fine high-frequency noise on thin/edge regions. **Close-range only**, not a
+distance artifact.
+
+**Approach: empirical isolation, one suspect at a time (à la case study #7) — do NOT guess-tune.**
+Suspects:
+- **Phase D 1/16 temporal reconstruction** — MC integration variance on thin/low-density voxels
+  (the residual-speckle source from case study #7). Edges are thin at cloud height → high variance
+  → 1/16 + history may not converge, esp. while moving. Test via `DEBUG_RECONSTRUCTION` /
+  `DEBUG_FULLSCREEN`, or render full-res temporarily.
+- **Detail erosion at full strength** (`detailStrength`→1 within ~5 km; `uDetailErosion`) — ~60 m
+  features go near-pixel-scale up close → alias. Test: `uDetailErosion=0` / fade detail near camera.
+- **Per-pixel dither** (the `dtSkip` ray-entry jitter) — large relative to features up close. Test:
+  zero the dither.
+- **Cone-march transmittance variance** (6 taps) on thin edges.
+Likely a combination. Files: `earthClouds.ts` (dither/detail/cone), `cloudReconstructionPass.ts`,
+`cloudFullscreenPass.ts`, `stbnTexture.ts`. Quality gate: `npx tsc --noEmit` (lint broken; ignore
+`.r/.g/.b/.a`-on-`Node` TS2339). Don't build (sandbox).
+
+---
+
+> ⚠️ **HISTORICAL — pre-implementation playbook below.** Kept for the reasoning trail. Any
+> values in it (`MS_COEF=0.5`, `skylight=0.15`, `HG_G=0.1`) are the BEFORE state; the shipped
+> baseline is the list above. The "low sun" viewing advice in it was found to be WRONG.
+
+## ▶ (historical) recommended step: lighting contrast & highlights
 
 **Recommended next step (2026-05-30), after the shape-relief win.** Contained and
 lower-risk than the tower work, and it *amplifies* the surface relief we just added

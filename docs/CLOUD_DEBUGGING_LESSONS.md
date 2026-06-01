@@ -1368,3 +1368,130 @@ question is answered and fixed.
    cut through my premature "flat deck" conclusion. Build the diagnostic that
    tests the user's hypothesis directly rather than arguing from the existing
    (insufficient) diagnostics.
+
+## Case study #9 — lighting contrast pass: confounds vs the real limiter (2026-05-30)
+
+**Context.** Sequel to #8. After the macro-carve gave the deck real *shape*, the clouds
+still read flat, low-contrast, and **tan**, with no highlights — far from the KSP/Star
+Citizen refs. This session restored the forward-scatter lighting that an earlier session had
+stripped, and — more importantly — sorted out *which* part of the remaining flatness was
+lighting vs viewing-confound vs shape.
+
+**What changed (lighting levers, all in `earthClouds.ts`):**
+- **Dual-lobe HG phase** (`HG_FORWARD=0.8`, `HG_BACK=-0.3`, `HG_BLEND=0.5`) replaced the
+  near-isotropic single lobe (`HG_G=0.1`). Phase peak toward the sun went ~0.08 -> ~1.8, so
+  the `direct` term finally carries the silver-lining + the raw self-shadow.
+- **`MS_COEF` 0.5 -> 0.9** (`Tsun_ms = Tsun^0.9`, was `sqrt`): stop compressing the
+  self-shadow inside the dominant `ms` term.
+- **`skylight` 0.15 -> 0.07**: deepen the ambient floor so crevices/undersides go dark.
+- **`CONE_DENSITY` 500 -> 1000**: deepen the actual sun-absorption in the light march.
+
+**Decisive diagnostic sequence (why it converged this time):**
+1. *Lowered `skylight`* -> cells visibly separated from above => lighting still had headroom
+   (not yet purely shape-bottlenecked).
+2. *`lightingOnly` at a HIGH/day-side sun* (a different spot) -> the field rendered **neutral
+   grey** with clear lumpy 3-D form. Two facts at once: the brown was a *viewing confound*,
+   and `CONE_DENSITY=1000` produces real variation, NOT the uniform-dark failure mode.
+3. *`off` at the same day-side spot* -> the form **survives into the final coloured image**
+   (white clouds, shadowed valleys, blue ocean in the gaps). Loop closed.
+
+**Finding 1 — the "tan" was the SUNSET TINT, not a bug.** Near the terminator the sun is low
+-> `sunColor` blends toward orange *by design*. The tell: `lightingOnly` was *also* brown, so
+it is the light, not the planet bleeding through a semi-transparent cloud. At a high sun the
+clouds are neutral white. **Lesson: always evaluate cloud lighting at a high sun angle.** We
+burned several rounds judging "flat tan" at the terminator, where the orange monochrome hides
+all contrast.
+
+**Finding 2 — lighting now renders form; the remaining flatness is SHAPE-limited.** Once
+shadows were deep and the sun was high, `MS_COEF 0.75 -> 0.9` was **invisible in the final
+image** — it only bites at low `Tsun` (deep-shadow crevices), which a *soft, uniform-height*
+deck does not produce. That invisibility *is* the signal: we are back at the #8 conclusion
+from the other side — the next unit of drama comes from crisp high-frequency detail +
+tall/short towers (shape Steps 3 & 4), not the lighting combine. Deferred final lighting
+tuning until the shape exists.
+
+**Meta-lessons:**
+1. **Rule out viewing confounds before tuning.** A low-sun/terminator view turned every
+   render brown and masked the very contrast we were judging. One `lightingOnly` shot at a
+   high sun would have saved rounds. When "everything looks the same colour," check whether a
+   global factor (sun angle, exposure, a tint term) is flattening the signal *before* blaming
+   the model.
+2. **The "ceiling test."** When unsure whether to keep tuning a lever or pivot, push it to its
+   useful max (here `CONE_DENSITY` 500 -> 1000) and look: a clear jump means keep going; a
+   marginal/invisible change means you have hit that lever's ceiling on the current inputs.
+3. **Do not tune lighting against placeholder geometry.** Contrast knobs that are invisible
+   today will matter once real detail exists — and the correct values will differ. Lock a good
+   baseline and move on; re-tune against the real shape.
+4. **#8 and #9 are the same lesson from both sides:** flat opaque clouds = a shape/boundary
+   problem. #8 fixed the macro boundary; #9 confirmed that, with good lighting, the *next*
+   unit of drama also comes from shape (fine detail + height), not more light.
+
+## Case study #10 — shape architecture (multiply vs Remap) + the distance-LOD reach bug (2026-05-30)
+
+Two related structural fixes in one session, both reached by reading the pipeline rather than
+tuning, and the LOD one cracked by building a decisive diagnostic.
+
+### Part A — "blobs / spikes / walls" was a COMPOSITION bug (multiply, not Remap)
+**Symptom.** Towers read as disconnected floating blobs, then (after a column-coherence tweak)
+uniform vertical spikes — never organic cumulus. `BILLOW_CARVE` 0.99 vs 0.01 made *no difference*.
+
+**Root cause.** The density composition MULTIPLIED a (dilated) 3D base noise by
+coverage × heightProfile. Multiply SCALES the noise's amplitude → the shape collapses to "the
+2D coverage mask extruded by the vertical profile," so the 3D noise stops sculpting form. The
+carve having zero visible effect was the tell: the mask/profile already determined the shape
+before the carve ran.
+
+**Fix.** The Nubis composition is a **Remap (threshold), not a multiply**:
+`shape = Remap(baseNoise, 1 − dimProfile, 1, 0, 1)` where `dimProfile = coverage·heightProfile`.
+Threshold means the noise's organic lumps ARE the shape, *carved down* by the profile: solid
+cores (low threshold), tapering tops + wispy edges (high threshold where the profile fades). Also
+removed a redundant `cumulusPattern` gate (it was creating the spikes/blobs by punching the
+coverage on/off in 3D) and added a `pow(0.6)` coverage gamma to restore the deck the Remap
+thresholds away.
+
+**Meta-lesson.** When clouds look like an *extruded mask*, suspect **multiply where the reference
+uses Remap**. Multiply = "scale how much noise"; Remap = "threshold which noise survives." Only
+the latter lets 3D noise define organic shape. (A separate procedural "pattern" multiplied onto
+coverage is a hack that fights this — Nubis gets discrete cumulus from coverage + noise + Remap.)
+
+### Part B — clouds cut off / vanished beyond a shrinking radius = fixed-step march budget
+**Symptom.** From orbit, clouds to the horizon; descending, a hard "barrier" where all but the
+nearest clouds vanished, the radius shrinking with altitude. Also: too-crisp distant clouds and
+terrible orbit FPS. Suspected the 2D overlay (the barrier sat at the overlay's cutoff altitude).
+
+**Why I didn't guess — built `whyStop`.** I was uncertain whether the cutoff was the 2D overlay,
+opacity, or the march. Rather than tune, I added `DEBUG_VIZ='whyStop'` colouring each ray by why
+its march ended: RED = ran out of the 96-step budget, GREEN = exited the slab, BLUE = went opaque.
+It was decisive: below the barrier the horizon went RED → **budget exhaustion**, not the overlay
+(the user explicitly saw volumetric clouds vanish) and not opacity.
+
+**Root cause.** The marcher used FIXED 500 m world-space steps × a fixed 96-step `Loop` → it could
+only see ~48 km of cloud along any ray. Vertical/orbit rays cross the thin shell cheaply (fine),
+but grazing rays at cloud level traverse a long path through sparse, non-opaque cloud → exhaust the
+budget before the horizon. No distance LOD also meant distant clouds were over-sampled (crisp +
+slow).
+
+**Fix — distance-adaptive step.** `lodScale = min(1 + t·GROWTH, lodCap)` scales the step (skip,
+dense, rewind, AND the density integration) with camera distance `t`. Near = fine, far = coarse →
+a fixed budget spans the whole visible range. Two subtleties that mattered:
+- **A prior attempt (`dtSkip = slabLen/16`) was reverted as "wrong"** — but that was *slab-relative*
+  (coarse even near the camera on grazing rays). *Distance-relative* (`∝ t`) is different and
+  correct: near stays fine for all rays. Don't let a reverted-but-different idea block the right one.
+- **A per-ray cap is essential AND it's what lets the growth rate be large.** Pure `∝ t` over-steps
+  the thin shell from orbit (one giant step skips it). `lodCap = slabLen/(dtSkip·MIN_SAMPLES)`
+  guarantees ≥N samples across *any* slab. Because the cap clamps everywhere the growth would do
+  harm, the global `GROWTH` can be set huge with no downside but distant blur — so the right value
+  is just "whatever reaches the worst-case grazing path."
+- **`GROWTH` had to be ~800, not the ~120 I estimated.** The skip-mode reach estimate under-counts
+  (1) dense mode being 4× finer (it eats the budget on grazing-through-cloud), and (2) grazing paths
+  being 500–1500 km from altitude/limb, not ~250 km.
+
+**Meta-lessons.**
+1. **A fixed step count + fixed world-space step = a hard max render distance.** For a shell/slab
+   ray-marcher, make the step grow with distance (Nubis/SC/RDR2 all do) so a fixed budget reaches
+   the horizon; cap it per-ray so it can't over-step thin slabs.
+2. **When unsure WHY a march stops, colour the exit reason.** `whyStop` (budget/slab/opaque) turned
+   a multi-hypothesis guess (overlay? opacity? budget?) into a one-look answer.
+3. **A per-ray safety clamp can convert a knife-edge parameter into a free one.** Once `lodCap`
+   guaranteed min-samples-per-slab, the growth rate stopped being dangerous and became "crank until
+   it reaches" — the cap removed the downside that made me estimate conservatively.
