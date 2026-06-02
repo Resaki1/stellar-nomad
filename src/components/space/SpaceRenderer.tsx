@@ -4,7 +4,7 @@ import { ReactNode, useEffect, useMemo, useRef } from "react";
 import { createPortal, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { NodeMaterial, RenderPipeline, RenderTarget } from "three/webgpu";
-import { texture, screenUV } from "three/tsl";
+import { texture, screenUV, vec2, float } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import {
   LOCAL_TO_SCALED_FROM_LOCAL_UNITS,
@@ -24,6 +24,7 @@ import {
   getActiveCloudPipeline,
   getEarthMatrixWorldRef,
 } from "./cloudFullscreenPass";
+import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
@@ -36,24 +37,21 @@ const LOCAL_CAMERA_FAR = 20_000 * 1000;
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
 
-// Phase D: 1/16 reconstruction. The marcher writes a SPARSE RT (1/4 × 1/4
-// of screen = 1/16 of full pixels). Each sparse texel = one 4×4 full-res
-// tile, marched at the current Bayer sub-pixel slot. A full-res
-// reconstruction pass fills the other 15/16 pixels from reprojected history
-// with YCoCg variance clamping. See cloudFullscreenPass.ts and
-// cloudReconstructionPass.ts.
-const SPARSE_DIVISOR = 4;
+// Phase D reconstruction. The marcher writes a SPARSE RT (1/SPARSE_DIVISOR²
+// of full pixels); a full-res reconstruction pass fills the rest from
+// reprojected history with YCoCg variance clamping, over a SPARSE_DIVISOR²-
+// frame Bayer cycle. SPARSE_DIVISOR is the single source (cloudReconstructionPass);
+// the BAYER pattern below must cover all SPARSE_DIVISOR² sub-positions.
+// See cloudFullscreenPass.ts and cloudReconstructionPass.ts.
 
-// Canonical Bayer 4×4 ordered-dither matrix, value → (x, y). Each frame
-// picks index `frameIndex mod 16`; after 16 frames every sub-pixel of every
-// 4×4 tile has been marched exactly once. Short windows still cover
-// well-spread sub-positions (any 4 consecutive frames hit 4 spatially
-// separated slots — the property of the Bayer ordering).
-const BAYER_4X4: ReadonlyArray<readonly [number, number]> = [
-  [0, 0], [2, 2], [2, 0], [0, 2],
-  [1, 1], [3, 3], [3, 1], [1, 3],
-  [1, 0], [3, 2], [3, 0], [1, 2],
-  [0, 1], [2, 3], [2, 1], [0, 3],
+// Bayer ordered-dither schedule, value → (x, y) sub-pixel slot. Each frame
+// picks index `frameIndex mod BAYER.length`; after one full cycle every
+// sub-pixel of every SPARSE_DIVISOR×SPARSE_DIVISOR tile has been marched once.
+// MUST match SPARSE_DIVISOR: exactly SPARSE_DIVISOR² entries covering all
+// sub-positions. This is the 2×2 pattern (N=2 → 4-frame cycle); for N=4 swap in
+// the 16-entry 4×4 Bayer matrix.
+const BAYER: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [1, 1], [1, 0], [0, 1],
 ];
 
 const tempScaledPos = new THREE.Vector3();
@@ -67,7 +65,7 @@ const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
 
 // Halton(2,3) sub-pixel jitter is obsolete in the 1/16 reconstruction
-// architecture — replaced by the deterministic BAYER_4X4 schedule above.
+// architecture — replaced by the deterministic BAYER schedule above.
 // The Bayer slot index is `frameIndex % 16` and the sub-pixel offset is
 // applied integer-pixel-wise inside the marcher (not as a fractional jitter).
 
@@ -77,6 +75,73 @@ const localScene = new THREE.Scene();
 const compositeScene = new THREE.Scene();
 const compositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const compositeGeometry = new THREE.PlaneGeometry(2, 2);
+
+// ── Cloud spatial denoise (Step 1) ──────────────────────────────────────────
+// The 1/16 reconstruction holds 16 INDEPENDENT single-sample marcher
+// realisations side-by-side in every 4×4 tile: each pixel is refreshed once
+// per 16 frames (Bayer schedule), then held. Temporal accumulation smooths
+// each pixel's *time* series but does nothing for the *spatial* variance
+// between neighbours — so the marcher's high single-sample variance shows up
+// directly as salt-and-pepper, worst on thin/edge regions where the marcher's
+// hit/miss is bistable. This is the noise that persists with a stationary
+// camera (confirmed: `sparseOnly` flickers hard when still; `freshNoBlend`
+// barely changes anything → the temporal blend isn't the lever).
+//
+// The references all pair temporal reprojection with a SPATIAL filter that our
+// reconstruction lacks: Nubis renders at quarter-res + bilinear upsample (a
+// 2×2 low-pass); Star Citizen and RDR2 run an explicit bilateral blur on the
+// cloud buffer. We fold a small Gaussian gather into the composite fetch —
+// cheap (no new pass/RT), and it blurs only the screen-facing copy, leaving
+// the feedback-history RT clean so the blur can't compound across frames.
+//
+// Premultiplied-alpha values (the marcher returns vec4(col, alpha) premul)
+// filter linearly, so a plain weighted average is halo-free at silhouettes:
+// averaging toward transparent yields the soft cloud edge we want anyway.
+//
+//   0 = off (raw single fetch — the A/B baseline)
+//   1 = 3×3 Gaussian   (default; +8 taps/pixel)
+//   2 = 5×5 Gaussian   (+24 taps/pixel — use if 3×3 leaves residual grain)
+const CLOUD_DENOISE_RADIUS = 2;
+
+// Build the composite pass's fragment node for one history RT: either a raw
+// single fetch (denoise off) or a normalised binomial-Gaussian gather over the
+// premultiplied RGBA. Built once per RT (rebuilt on resize, when historyRts is
+// recreated), so the JS-side weight loop runs at graph-build time — the shader
+// just does 2r+1 squared texture fetches and a weighted sum per pixel.
+function buildCompositeFetch(rt: RenderTarget) {
+  if (CLOUD_DENOISE_RADIUS <= 0) {
+    return texture(rt.texture, screenUV);
+  }
+  const r = CLOUD_DENOISE_RADIUS;
+  const tx = 1 / Math.max(1, rt.width);
+  const ty = 1 / Math.max(1, rt.height);
+  // 1D binomial weights (Pascal row 2r) approximate a Gaussian; the 2D kernel
+  // is their separable outer product. e.g. r=1 → [1,2,1], 2D sum = 16.
+  const n = 2 * r;
+  const w1d: number[] = [];
+  for (let k = 0; k <= n; k++) {
+    let coeff = 1;
+    for (let i = 0; i < k; i++) coeff = (coeff * (n - i)) / (i + 1);
+    w1d.push(coeff);
+  }
+  const taps: Array<[number, number, number]> = [];
+  let wSum = 0;
+  for (let oy = -r; oy <= r; oy++) {
+    for (let ox = -r; ox <= r; ox++) {
+      const w = w1d[ox + r] * w1d[oy + r];
+      wSum += w;
+      taps.push([ox, oy, w]);
+    }
+  }
+  const sample = ([ox, oy, w]: [number, number, number]) =>
+    texture(
+      rt.texture,
+      vec2(screenUV.x.add(float(ox * tx)), screenUV.y.add(float(oy * ty))),
+    ).mul(float(w));
+  let acc = sample(taps[0]);
+  for (let i = 1; i < taps.length; i++) acc = acc.add(sample(taps[i]));
+  return acc.div(float(wSum));
+}
 
 export type SpaceRendererProps = {
   scaled: ReactNode;
@@ -188,8 +253,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   }, [historyRts]);
 
   // Composite meshes: read from the full-res historyRts (the reconstruction
-  // output) and premul-alpha blend onto the main scene RT. No bilinear
-  // upsample needed — reconstruction is already at full resolution.
+  // output) and premul-alpha blend onto the main scene RT. The fetch is a
+  // small binomial-Gaussian gather (CLOUD_DENOISE_RADIUS) — a spatial denoise
+  // that removes the per-pixel salt-and-pepper the 1/16 reconstruction leaves
+  // behind. See buildCompositeFetch + its header for the why.
   // Pre-built pair so the per-frame parity swap is just a parent/child
   // mutation (avoids TextureNode `.value` reassignment, which the WebGPU
   // backend's bind-group cache doesn't always honour mid-frame).
@@ -204,7 +271,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       mat.blendDst = THREE.OneMinusSrcAlphaFactor;
       mat.blendSrcAlpha = THREE.OneFactor;
       mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-      mat.fragmentNode = texture(rt.texture, screenUV);
+      mat.fragmentNode = buildCompositeFetch(rt);
       return new THREE.Mesh(compositeGeometry, mat);
     };
     return [make(historyRts[0]), make(historyRts[1])] as const;
@@ -271,7 +338,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // writes the other. compositeScene gets the matching mesh swapped in.
   const frameParity = useRef(0);
   const mountedCompositeMesh = useRef<THREE.Mesh | null>(null);
-  // Phase D2: monotonic frame counter (mod 16) drives the Bayer 4×4
+  // Phase D2: monotonic frame counter (mod BAYER.length) drives the Bayer
   // schedule lookup. Distinct from frameParity (which is just 2-state).
   // Also drives the STBN frame-slice uniform in the cloud pipeline
   // (advanced by 1/STBN_PERIOD_Z per frame inside setupCloudPipeline).
@@ -363,10 +430,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     const earthMesh = pipelineHandle ? getEarthMatrixWorldRef() : null;
 
     if (pipelineHandle && earthMesh) {
-      // Bayer 4×4 schedule pick for this frame. Sub-pixel slot (0..3, 0..3)
-      // marks which full-res pixel within every 4×4 tile is fresh this frame.
-      const bayerIdx = cloudFrameIndex.current % BAYER_4X4.length;
-      const [bx, by] = BAYER_4X4[bayerIdx];
+      // Bayer schedule pick for this frame. Sub-pixel slot (0..N-1, 0..N-1)
+      // marks which full-res pixel within every N×N tile is fresh this frame.
+      const bayerIdx = cloudFrameIndex.current % BAYER.length;
+      const [bx, by] = BAYER[bayerIdx];
       tempBayerSub.set(bx, by);
 
       // Full-res / sparse RT dims for the reconstruction pass's UV math.
@@ -471,9 +538,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Advance the ping-pong parity so next frame writes the *other* history
     // RT (and reads this one back as history input).
     frameParity.current ^= 1;
-    // Bayer 4×4 schedule wraps every 16 frames — after 16 frames every
-    // sub-pixel of every 4×4 tile has been marched exactly once.
-    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % BAYER_4X4.length;
+    // Bayer schedule wraps every BAYER.length frames — after one cycle every
+    // sub-pixel of every N×N tile has been marched exactly once.
+    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % BAYER.length;
 
     // Phase D3: snapshot this frame's combined view-projection in scaled
     // space. Next frame this becomes `uPrevViewProj` and lets the shader

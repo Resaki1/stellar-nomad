@@ -54,16 +54,29 @@ const CLOUD_OUTER_ALTITUDE_KM = 14;
 // the dense-mode cost outside cloud bodies.
 const MAX_PRIMARY_STEPS = 96;
 // Fixed skip-mode step size in scaled units (1 scaled unit = 1000 km).
-// 0.0005 = 500 m — matches Schneider/Nubis primary-step scale.
 //
 // Earlier this was `dtSkip = slabLen / 16` (adaptive). That's the wrong
 // relationship: cumulus towers have constant world-space size (~1–3 km
 // wide), so step size must also be in world space.
-const SKIP_STEP_SCALED = 0.0005;
-// dtDense / dtSkip ratio. 0.25 = 4× finer sampling inside cloud bodies
-// (125 m). Worst-case cumulative dense-step traversal: 96 × 125 m ≈ 12 km,
-// roughly slab thickness — enough to push through a dense column when
-// the empty-streak fallback never fires.
+//
+// NOTE (2026-06-01): tried 0.0001 (100 m) to refine thin-feature detection —
+// REFUTED. It did NOT reduce the flicker (sparseOnly flickers identically at
+// any skip size), and the finer near-steps exhausted the 96-step budget before
+// reaching the horizon (close-only clouds + skip-grid stripes). So the skip
+// step governs REACH, not the flicker. 0.001 (1 km) gives horizon reach at all
+// camera heights with no stripes. The flicker source is elsewhere — the
+// per-voxel altitude hash (see altPerturb below).
+const SKIP_STEP_SCALED = 0.001;
+// dtDense / dtSkip ratio. 0.25 = 4× finer sampling inside cloud bodies than
+// the skip step. Worst-case cumulative dense-step traversal: 96 × dtDense,
+// roughly slab thickness — enough to push through a dense column when the
+// empty-streak fallback never fires.
+//
+// NOTE (2026-06-01): tested finer (0.0625, 0.00125) during edge-noise
+// debugging — NO help on the flicker, and it shrinks clouds (96 ultra-fine
+// steps cover almost no distance → budget exhausted before exiting the cloud).
+// Proved the variance is in DETECTION (skip), not integration (dense). Kept at
+// 0.25.
 const DENSE_STEP_RATIO = 0.25;
 // Consecutive dense-mode empty samples before falling back to skip mode.
 // 8 × dtDense = 1 km of empty space tolerated inside dense mode before
@@ -81,15 +94,41 @@ const EMPTY_THRESHOLD = 8;
 // least LOD_MIN_SAMPLES samples through it.
 //   lodScale = min(1 + t · LOD_STEP_GROWTH,  slabLen / (dtSkip · LOD_MIN_SAMPLES))
 // Tune with DEBUG_VIZ = 'lod' (step-size ramp) + 'iters' (budget usage).
-// 40 → 120 (2026-05-30): at 40 the steps stayed fine too far out, so grazing
-// rays at cloud level (long path through sparse, non-opaque cloud) exhausted
-// the 96-step budget before the horizon — visible as RED in DEBUG_VIZ='whyStop'
-// creeping in from the horizon as you descend into the layer. 120 coarsens far
-// steps ~3× faster → the budget reaches the horizon. Distant clouds get
-// blurrier (under-sampled), which is the intended LOD tradeoff. The per-ray cap
-// (lodCap) still protects orbit/thin-slab views regardless of this value.
-const LOD_STEP_GROWTH = 400;
+// 2026-05-30: tuned empirically to 800 (DEBUG_VIZ='whyStop' showed RED =
+// budget-cutoff creeping in from the horizon as you descend into the layer;
+// 800 pushes it past the horizon). Why so high — three reasons the naive
+// skip-mode reach estimate (~120) missed:
+//   1. Dense mode is 4× finer (dtDense = 0.25·dtSkip). The budget-eating
+//      segment of a grazing ray is the stretch THROUGH cloud bodies = dense,
+//      so the effective reach-per-step there is ~4× smaller → needs ~4× more k.
+//   2. Grazing paths to the horizon are 500–1500 km from altitude / the limb,
+//      not the ~250 km a mid-altitude estimate assumes.
+//   3. The per-ray cap (lodCap) makes a large global k nearly free: it only
+//      FIRES on long grazing paths (where huge steps are wanted) and is clamped
+//      everywhere else, so the right value is just "whatever reaches the
+//      worst-case grazing path." Only downside is distant blur (intended LOD).
+const LOD_STEP_GROWTH = 800;
 const LOD_MIN_SAMPLES = 20;
+// Per-pixel dither amplitude, as a FRACTION of one skip step (dtSkip). The
+// dither jitters each ray's march start to decorrelate the skip-grid across
+// pixels — without it, skip-mode sampling produces concentric iso-distance
+// "miss-rings". Historically full-amplitude (1.0): lower values reintroduced
+// those rings. BUT that full ~500 m jitter is ALSO what scatters the
+// silhouette detection (pixel-to-pixel AND frame-to-frame): the near-binary
+// alpha cliff at a cloud edge gets sampled at a randomly-shifted position each
+// time, producing the "spray of speckle into the sky" the edge screenshots
+// show. (Confirmed not detail-erosion — disabling it left the spray intact.)
+//
+// EMPIRICAL (2026-06-01): below ~0.125 the skip-grid stripes return; above
+// ~0.125 the edge *flicker* is insensitive to this value (that was the hash).
+// But the mid/far iso-distance BANDS are a different artifact — the march grid
+// (skip detection + dense integration) quantized at the per-distance step
+// spacing. Breaking them needs the start-jitter to span a FULL local step, so
+// combined with the lodScaleEntry scaling at tStart, 1.0 = full grid
+// decorrelation at every distance. (0.2 only smeared the grid ~20% → bands
+// survived.) If 1.0 reintroduces near-edge noise, we'll scale the fraction up
+// with distance instead of applying it flat.
+const DITHER_FRACTION = 0.2;
 // Cone-traced light march (Nubis C3). 6 stratified samples toward the sun,
 // each perturbed by a pre-baked low-discrepancy 3D kernel, scaled by step
 // distance so the cone widens with depth. Total integration range ≈ 12 km
@@ -397,7 +436,26 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // the lit outer skin). The flatness is a cloud-SHAPE problem (smooth
   // blobs, no macro relief to self-shadow), not an opacity one — so opacity
   // restored to its no-see-through value. See CLOUD_DEBUGGING_LESSONS.
-  const uDensityMul = uniform(140000);
+  // SOFT-EDGE FIX (2026-06-01): lowered 140000 → 10000. At 140000 the optical
+  // depth of a SINGLE close-range dense step (eroded × 140000 × 125 m ≈ 17) is
+  // so large that alpha slams to opaque the instant a ray touches cloud — the
+  // silhouette becomes a hard in/out cliff, so grazing edge rays go binary and
+  // produce the edge salt-and-pepper. (Confirmed by elimination: not detail
+  // erosion, not dither — both ruled out empirically.) Moderate extinction lets
+  // alpha build over several steps (Beer's law), so grazing edges get a smooth
+  // partial-alpha gradient the spatial+temporal filters CAN resolve → soft
+  // edges, like the references.
+  //
+  // Cores stay opaque (multi-km path = many steps → T→0 regardless), and the
+  // LOD step-growth (dtDenseL) raises per-step optical depth with distance, so
+  // DISTANT clouds stay crisp/opaque — only CLOSE silhouettes soften, which is
+  // exactly where the speckle lived. Lighting is decoupled (CONE_DENSITY=3000),
+  // so shading/colour is unchanged; only view-ray opacity buildup softens.
+  //
+  // Sweep 5000 (softest / most translucent) → 40000 (crisper / harder edges)
+  // to taste. Watch thin wisps (translucency) and iso-altitude banding at the
+  // low end.
+  const uDensityMul = uniform(5000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //
   // Was 250 → 4 km tile, 1 km cumulus cells. At orbital view distances,
@@ -714,6 +772,23 @@ export function marchCloudVolume({
       uStbnFrameSlice,
     );
     const dither = texture3D(uStbn, stbnUv).r;
+    // Blue-noise altitude dither (anti-banding) — the reference-correct
+    // replacement for the old white-noise hash. Per-FRAGMENT (screen-space)
+    // STBN: it does NOT depend on the sample position `p`, so the per-frame
+    // march dither that shifts `p` can't decorrelate it (that position
+    // dependence is exactly what made the white hash flicker). It varies across
+    // frames only via the STBN slice (the designed temporal axis → clean
+    // accumulation) and across the screen as blue noise (→ the spatial filter
+    // resolves it). The screen offset decorrelates it from the march-start
+    // dither above. Consumed at `altPerturbed` inside the march loop.
+    const altDither = texture3D(
+      uStbn,
+      vec3(
+        screenCoordinate.x.add(37).div(float(STBN_PERIOD_XY)),
+        screenCoordinate.y.add(89).div(float(STBN_PERIOD_XY)),
+        uStbnFrameSlice,
+      ),
+    ).r;
     // Full-amplitude dither. Reducing to 0.25× was tried (2026-05-27)
     // to address spatial speckle but reintroduced concentric step-
     // aliasing rings — visible even with STBN's spatial decorrelation,
@@ -721,7 +796,23 @@ export function marchCloudVolume({
     // to break correlated isodensity features at iso-distance from the
     // camera. The speckle has a different root cause (see Phase D
     // reconstruction-noise investigation).
-    const tStart = tEnter.add(dither.mul(dtSkip));
+    // Scale the start-jitter by the LOD step growth at the slab-entry
+    // distance. The march steps grow with distance (lodScale), so a
+    // fixed-size jitter becomes negligible vs. the grown step at range → the
+    // sample count through a distant cloud lands on a near-fixed grid →
+    // integer-jump "sample-count" bands at iso-distances (independent of the
+    // altitude dither, which is why altDither's amplitude doesn't touch them).
+    // Jittering by a constant FRACTION of the LOCAL skip step keeps the
+    // decorrelation effective at every distance. Self-bounding: max jitter =
+    // dtSkip·lodCap·FRACTION = slabLen/LOD_MIN_SAMPLES·FRACTION ≈ slabLen/100,
+    // so it never overshoots the slab. Near-camera lodScale≈1 → edges (now
+    // clean) are unaffected.
+    const lodScaleEntry = float(1)
+      .add(tEnter.mul(float(LOD_STEP_GROWTH)))
+      .min(lodCap);
+    const tStart = tEnter.add(
+      dither.mul(dtSkip).mul(lodScaleEntry).mul(DITHER_FRACTION),
+    );
 
     // Dual-lobe Henyey-Greenstein phase, constant per fragment (sun is
     // effectively at infinity vs cloud scale, and the view dir is constant
@@ -920,6 +1011,20 @@ export function marchCloudVolume({
     // depth for this pixel. Used by the TAA reprojection for accurate
     // history sampling, and by DEBUG_VIZ='firstHit' for parallax checks.
     const firstHitT = float(-1).toVar();
+
+    // Opacity-weighted depth accumulators — the transmittance-weighted
+    // "apparent" depth used for TAA reprojection. firstHitT (the FIRST sample
+    // above the gate) is meaningless for diffuse/low-density cloud — the first
+    // faint speck is essentially random — so reprojecting history through it
+    // lands at the wrong parallax → the swimming "ghost-cloud" dots (confirmed:
+    // sparseOnly, which skips reprojection, shows no swimming). Instead we
+    // accumulate Σ(t·w) / Σ(w) with w = scatterFrac·T = each step's opacity
+    // contribution that actually reaches the camera. Opaque cloud → weight
+    // piles at the front → ≈ firstHitT (no change to what works); diffuse cloud
+    // → a STABLE centre-of-mass depth instead of garbage. (Schneider/Hillaire
+    // canonical cloud-reprojection depth.)
+    const weightedDepthSum = float(0).toVar();
+    const depthWeightSum = float(0).toVar();
 
     // Last-dense Tsun_ms capture for DEBUG_VIZ='tsunMs'. Persists the most
     // recent multi-scatter transmittance from the dense march so we can
@@ -1245,13 +1350,18 @@ export function marchCloudVolume({
         // hash drove per-tile alpha speckle by setting altPerturbed =
         // altitude01. No visible change — the hash is NOT the noise
         // source under 1/16 reconstruction. Retained for anti-banding.
-        const hashSeed = p.x
-          .mul(127.1)
-          .add(p.y.mul(311.7))
-          .add(p.z.mul(74.7));
-        const altHash = fract(sin(hashSeed).mul(43758.5453));
-        const altPerturb = altHash.sub(0.5).mul(0.10); // ±5% slab
-        const altPerturbed = altitude01.add(altPerturb).clamp(0, 1);
+        // Anti-banding: dither the altitude contour with BLUE noise. The old
+        // white-noise hash (fract(sin(dot(p,…)))) did this per-voxel, but it
+        // fully decorrelated whenever the march dither shifted `p` → per-frame
+        // grain (confirmed: disabling it removed the residual nearby flicker).
+        // The per-fragment STBN `altDither` (computed once above) breaks the
+        // iso-altitude bands the same way, but is position-independent so it
+        // can't flicker, and is blue + temporally-decorrelated so the spatial
+        // and temporal filters resolve it cleanly. ±5% slab; lower the 0.10 if
+        // surfaces look fuzzy, raise it if banding still shows through.
+        const altPerturbed = altitude01
+          .add(altDither.sub(0.5).mul(0.01))
+          .clamp(0, 1);
 
         // ── Dimensional profile (Nubis B4) ──
         // profile = coverage × heightProfile(alt, cloudType). First-class
@@ -1713,6 +1823,12 @@ export function marchCloudVolume({
                 .mul(scatterFrac);
               col.addAssign(L.mul(T));
 
+              // Opacity-weighted depth (see weightedDepthSum decl): this step's
+              // weight = its camera-reaching opacity = scatterFrac · T(pre-step).
+              const depthWeight = scatterFrac.mul(T);
+              weightedDepthSum.addAssign(t.mul(depthWeight));
+              depthWeightSum.addAssign(depthWeight);
+
               T.mulAssign(exp(opticalDepthStep.negate()));
             });
           });
@@ -2055,8 +2171,14 @@ export function marchCloudVolume({
     // is `out = src + (1-src.a)*dst`, multiplying (col, alpha) by k uniformly
     // scales the cloud's contribution toward fully transparent without
     // changing the unpremultiplied colour.
+    // Opacity-weighted apparent depth for TAA reprojection (falls back to
+    // firstHitT — including the −1 no-hit sentinel — when nothing scattered).
+    const apparentDepth = depthWeightSum.greaterThan(float(0.0001)).select(
+      weightedDepthSum.div(depthWeightSum.max(float(0.0001))),
+      firstHitT,
+    );
     return {
       rgba: vec4(col, alpha).mul(uVolumetricBlend),
-      tFront: firstHitT,
+      tFront: apparentDepth,
     };
 }

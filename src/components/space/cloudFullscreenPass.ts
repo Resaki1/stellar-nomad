@@ -18,23 +18,18 @@ import {
   getStbnTexture,
 } from "@/components/celestial/bodies/stbnTexture";
 
-// STBN slice modulus. Deliberately set to 63 (coprime with the 16-frame
-// Bayer cycle) rather than the texture's actual 64 slices. The Bayer
-// schedule makes each pixel "fresh" exactly once per 16 frames, so the
-// effective number of distinct STBN slices a pixel sees across cycles
-// is `STBN_FRAME_MODULUS / gcd(STBN_FRAME_MODULUS, 16)`:
-//
-//   modulus = 64 → gcd = 16 → 4 distinct slices per pixel
-//   modulus = 63 → gcd = 1  → 63 distinct slices per pixel
-//
-// The 16× increase in distinct samples translates to ≈ 4× more variance
-// reduction in the per-pixel temporal mean (sampling stddev = σ/√N).
-// Using 63 means we skip slice 63 of the texture occasionally; the
-// asymmetry is invisible because adjacent slice indices have similar
-// blue-noise statistics.
+// STBN slice modulus. Deliberately 63 (coprime with the Bayer cycle length,
+// SPARSE_DIVISOR²) rather than the texture's actual 64 slices. The Bayer
+// schedule makes each pixel "fresh" once per cycle, so the number of distinct
+// STBN slices a pixel sees over time is
+// `STBN_FRAME_MODULUS / gcd(STBN_FRAME_MODULUS, cycleLen)`. 63 is coprime with
+// both 16 (N=4) and 4 (N=2), so a pixel sees all 63 slices → maximal temporal
+// variance reduction. Skipping slice 63 occasionally is invisible (adjacent
+// slices have similar blue-noise statistics).
 const STBN_FRAME_MODULUS = 63;
 import {
   setupCloudReconstructionPass,
+  SPARSE_DIVISOR,
   type CloudReconstructionPass,
 } from "./cloudReconstructionPass";
 
@@ -199,18 +194,18 @@ function createSharedUniforms() {
 // ray for THIS sparse pixel given the current Bayer offset.
 // -----------------------------------------------------------------------------
 function buildMarchRay(shared: SharedUniforms) {
-  // We're rendering to a SPARSE RT of size W/4 × H/4. screenCoordinate gives
-  // pixel coords in that sparse RT (range [0.5, sparseW-0.5] × [0.5, sparseH-0.5]).
-  // To compute the full-res pixel each sparse texel represents this frame:
+  // We're rendering to a SPARSE RT of size W/N × H/N (N = SPARSE_DIVISOR).
+  // screenCoordinate gives pixel coords in that sparse RT. To compute the
+  // full-res pixel each sparse texel represents this frame:
   //   sparseTileIndex = floor(screenCoordinate.xy)   (integer 0..sparseW-1)
-  //   fullPixel = sparseTileIndex * 4 + bayerSubPixel + 0.5
+  //   fullPixel = sparseTileIndex * N + bayerSubPixel + 0.5
   //   fullUv = fullPixel / fullSize
   const sparseTileX = screenCoordinate.x.floor();
   const sparseTileY = screenCoordinate.y.floor();
-  const fullPixelX = sparseTileX.mul(float(4))
+  const fullPixelX = sparseTileX.mul(float(SPARSE_DIVISOR))
     .add(shared.uBayerSubPixel.x)
     .add(float(0.5));
-  const fullPixelY = sparseTileY.mul(float(4))
+  const fullPixelY = sparseTileY.mul(float(SPARSE_DIVISOR))
     .add(shared.uBayerSubPixel.y)
     .add(float(0.5));
   const fullUvX = fullPixelX.div(shared.uFullSize.x);

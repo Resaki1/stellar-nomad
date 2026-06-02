@@ -62,6 +62,22 @@ import {
 // Supersampling" (YCoCg clamp formulation).
 // =============================================================================
 
+// Checkerboard divisor — the marcher renders 1/SPARSE_DIVISOR² of the screen
+// each frame (a sparse RT of W/N × H/N), and the reconstruction fills the rest
+// from reprojected history over an N²-frame Bayer cycle. SINGLE SOURCE for the
+// divisor; the marcher (cloudFullscreenPass) and the Bayer schedule
+// (SpaceRenderer) import it.
+//
+//   N=4 → 1/16 of pixels/frame, 16-frame window. Cheapest, but a 16-frame-stale
+//         history can't track fast/close clouds → motion noise.
+//   N=2 → 1/4 of pixels/frame, 4-frame window. ~4× the marcher cost, but
+//         history is only ~4 frames stale → tracks motion like the Nubis/SC
+//         quarter-res designs. (Chosen 2026-06-01 to fix close/fast-cloud noise.)
+//
+// Changing N requires regenerating the Bayer pattern in SpaceRenderer to cover
+// all N² sub-positions.
+export const SPARSE_DIVISOR = 2;
+
 export type CloudReconstructionPass = {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
@@ -171,6 +187,26 @@ type ReconstructionDebug =
   | "sparseRgb";
 const DEBUG_RECONSTRUCTION: ReconstructionDebug = "off";
 
+// Fresh-path soft ghost-reject thresholds — relative luma divergence of the
+// reprojected history from the fresh marched sample. Below LO → keep RAW
+// history (motion-tolerant cross-slice temporal averaging). Above HI → fall
+// back to the variance-clamped value (kills disocclusion ghost trails). Between
+// → lerp. Relative (scale-invariant) so it behaves across the HDR range.
+// Raising LO/HI keeps more history (smoother, more ghost-prone); lowering them
+// rejects more (less ghosting, noisier under motion).
+const GHOST_REJECT_LO = 0.3;
+const GHOST_REJECT_HI = 0.9;
+
+// Motion gate for the ghost reject (screen-space velocity, UV/frame). The
+// reject above is needed ONLY under motion (disocclusion ghosts). On a static
+// or slow camera it back-fires: `fresh` is a noisy single sample, so the
+// converged history legitimately differs from it → reject fires → re-injects
+// the marcher noise instead of averaging it away (the harsh stationary edge
+// noise). So we scale the reject by |prevUv − screenUV|: ≈0 when static (full
+// history trust → temporal averaging converges → clean), ramping to full reject
+// by this much motion. ~0.005 ≈ 5 px at 1080p.
+const MOTION_GATE_UV = 0.005;
+
 export function setupCloudReconstructionPass(
   opts: SetupCloudReconstructionOpts,
 ): CloudReconstructionPass {
@@ -242,13 +278,17 @@ export function setupCloudReconstructionPass(
     const px = screenCoordinate.x.floor();
     const py = screenCoordinate.y.floor();
 
-    // localSub = pixel coord mod 4 (0..3 within the 4×4 tile).
-    const localSubX = px.sub(px.div(float(4)).floor().mul(float(4)));
-    const localSubY = py.sub(py.div(float(4)).floor().mul(float(4)));
+    // localSub = pixel coord mod N (0..N-1 within the N×N tile).
+    const localSubX = px.sub(
+      px.div(float(SPARSE_DIVISOR)).floor().mul(float(SPARSE_DIVISOR)),
+    );
+    const localSubY = py.sub(
+      py.div(float(SPARSE_DIVISOR)).floor().mul(float(SPARSE_DIVISOR)),
+    );
 
-    // Tile index = pixel coord >> 2 (one tile per 4×4 block).
-    const tileX = px.div(float(4)).floor();
-    const tileY = py.div(float(4)).floor();
+    // Tile index = pixel coord / N (one tile per N×N block).
+    const tileX = px.div(float(SPARSE_DIVISOR)).floor();
+    const tileY = py.div(float(SPARSE_DIVISOR)).floor();
 
     // Sparse-RT UV for this tile (texel-center of the tile in the sparse RT).
     const sparseUv = vec2(
@@ -467,21 +507,20 @@ export function setupCloudReconstructionPass(
     //   Convergence time at α = 0.3: 50% in ~3 cycles (≈ 0.8 s at 60 FPS),
     //   95% in ~10 cycles (≈ 2.7 s).
     //
-    //   IMPORTANT: we blend against `historyRgba`, NOT `clampedHistory`.
-    //   The clamp's bounds are derived from the CURRENT frame's 3×3 fresh
-    //   neighbourhood — those neighbours all share this frame's dither
-    //   realisation, so the clamp keeps history close to current-frame
-    //   dither values. Blending against clamped history would average
-    //   two samples from the same dither distribution → ~zero temporal
-    //   smoothing. Blending against the *raw* reprojected history pulls
-    //   in samples from past frames' different STBN slices → genuine
-    //   variance reduction across realisations.
-    //
-    //   Ghost protection on the fresh path comes from the fresh sample
-    //   dominating any ghost via the α weight: a ghost's contribution
-    //   is multiplied by (1 − α) = 0.7 per cycle, halving every ~2 cycles.
-    //   For silhouette transitions, the stale path still uses the strict
-    //   variance clamp, so ghosts there are rejected hard.
+    //   SOFT ghost reject (revised 2026-06-01). Three approaches were tried:
+    //   (a) raw history → DISOCCLUSION GHOSTS stream: a pixel the cloud just
+    //       uncovered reprojects onto where the cloud WAS, grabs a bright
+    //       opaque value, and the α weight only halves it every ~2 cycles, so
+    //       it lingers ~32 frames and trails opposite to motion (white dots).
+    //   (b) hard-clamp every fresh pixel → kills temporal averaging under
+    //       motion: near a cloud everything has high screen velocity, so
+    //       reprojected history diverges from the current frame EVERYWHERE and
+    //       the clamp rejects it everywhere → ALL edges go noisy near a cloud.
+    //   (c) [used] keep RAW history when it agrees with the fresh sample
+    //       (motion-tolerant, preserves cross-slice STBN averaging), and fade
+    //       toward the clamped value only when history DIVERGES grossly from
+    //       fresh (a ghost). That splits the two failure modes — see
+    //       ghostReject below.
     //
     // Stale sub-pixel with valid history: variance-clamped reprojected
     //   history (strict ghost rejection at silhouettes).
@@ -495,7 +534,32 @@ export function setupCloudReconstructionPass(
     // marched sample, no temporal averaging).
     const FRESH_ALPHA =
       DEBUG_RECONSTRUCTION === "freshNoBlend" ? float(1.0) : float(0.3);
-    const freshBlended = mix(freshRgba, historyRgba, float(1).sub(FRESH_ALPHA));
+    // Soft ghost reject: relative luma divergence of reprojected history from
+    // the fresh sample. ≈0 in cloud under motion (history agrees) → keep raw
+    // history; ≈0.8 for a bright ghost on faint/sky (history disagrees) → use
+    // the clamped value. Relative form → scale-invariant across the HDR range.
+    const histY = rgbToY(historyRgba.r, historyRgba.g, historyRgba.b);
+    const freshY = rgbToY(freshRgba.r, freshRgba.g, freshRgba.b);
+    const relDiff = histY.sub(freshY).abs()
+      .div(histY.add(freshY).add(float(0.01)));
+    const ghostReject = relDiff
+      .sub(float(GHOST_REJECT_LO))
+      .div(float(GHOST_REJECT_HI - GHOST_REJECT_LO))
+      .clamp(0, 1);
+    // Motion-gate the reject (see MOTION_GATE_UV): disocclusion ghosts only
+    // appear under motion, so a static/slow camera fully trusts history and
+    // converges (the un-gated reject re-noised static high-variance regions —
+    // there `fresh` is a noisy single sample, so the converged history diverges
+    // from it and the reject fired, re-injecting noise instead of averaging).
+    const motionVec = prevUv.sub(screenUV);
+    const screenVel = sqrt(dot(motionVec, motionVec));
+    const motionGate = screenVel.div(float(MOTION_GATE_UV)).clamp(0, 1);
+    const freshHistory = mix(
+      historyRgba,
+      clampedHistory,
+      ghostReject.mul(motionGate),
+    );
+    const freshBlended = mix(freshRgba, freshHistory, float(1).sub(FRESH_ALPHA));
     const freshOutput = historyUsable.select(freshBlended, freshRgba);
     const staleOutput = historyUsable.select(clampedHistory, freshRgba);
     const finalRgba = isFresh.select(freshOutput, staleOutput);
