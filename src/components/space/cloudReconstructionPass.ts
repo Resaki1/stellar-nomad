@@ -187,25 +187,13 @@ type ReconstructionDebug =
   | "sparseRgb";
 const DEBUG_RECONSTRUCTION: ReconstructionDebug = "off";
 
-// Fresh-path soft ghost-reject thresholds — relative luma divergence of the
-// reprojected history from the fresh marched sample. Below LO → keep RAW
-// history (motion-tolerant cross-slice temporal averaging). Above HI → fall
-// back to the variance-clamped value (kills disocclusion ghost trails). Between
-// → lerp. Relative (scale-invariant) so it behaves across the HDR range.
-// Raising LO/HI keeps more history (smoother, more ghost-prone); lowering them
-// rejects more (less ghosting, noisier under motion).
-const GHOST_REJECT_LO = 0.3;
-const GHOST_REJECT_HI = 0.9;
-
-// Motion gate for the ghost reject (screen-space velocity, UV/frame). The
-// reject above is needed ONLY under motion (disocclusion ghosts). On a static
-// or slow camera it back-fires: `fresh` is a noisy single sample, so the
-// converged history legitimately differs from it → reject fires → re-injects
-// the marcher noise instead of averaging it away (the harsh stationary edge
-// noise). So we scale the reject by |prevUv − screenUV|: ≈0 when static (full
-// history trust → temporal averaging converges → clean), ramping to full reject
-// by this much motion. ~0.005 ≈ 5 px at 1080p.
-const MOTION_GATE_UV = 0.005;
+// Temporal integration blend factor (Frostbite §5.5.3). Every frame, every
+// pixel's value is an exponential moving average of the reprojected previous
+// frame and the current marcher estimate:  out = lerp(history, current,
+// EMA_ALPHA). Small → heavy history → smoother + better supersampling (the
+// marcher's per-frame jitter averages over ~1/EMA_ALPHA frames), but leans
+// harder on reprojection to stay sharp under motion. 0.1 ≈ a 10-frame window.
+const EMA_ALPHA = 0.1;
 
 export function setupCloudReconstructionPass(
   opts: SetupCloudReconstructionOpts,
@@ -444,10 +432,12 @@ export function setupCloudReconstructionPass(
       }
     }
 
-    // 10% padding on each bound to avoid over-tight clamps eating fine
-    // luma variance (especially the dither variance STBN intentionally
-    // produces frame-to-frame).
-    const pad = float(0.1);
+    // Generous padding on each bound. With the EMA temporal pass the clamp is
+    // the SOLE ghost handler, so it must reject only GROSS disoccluded history
+    // (bright cloud reprojected onto sky) — never bite legitimate accumulation
+    // in stable/high-variance regions (which would re-noise). 50% pad keeps it
+    // loose enough that only far-outside-the-neighbourhood history is pulled in.
+    const pad = float(0.125);
     const yPadV = yMax.sub(yMin).mul(pad);
     const coPadV = coMax.sub(coMin).mul(pad);
     const cgPadV = cgMax.sub(cgMin).mul(pad);
@@ -490,79 +480,29 @@ export function setupCloudReconstructionPass(
       );
     }
 
-    // ── Final blend selection ──
+    // ── Frostbite-style temporal integration (§5.5.3) ──
+    // Every pixel EMA-blends the current marcher estimate with the REPROJECTED
+    // previous frame, every frame (1-frame latency, ~1/EMA_ALPHA-frame window).
+    // This REPLACES the Bayer fresh/stale checkerboard, where each pixel was
+    // refreshed only once per N² frames → a long stale window that couldn't
+    // track motion and needed the clamp + soft-reject + motion-gate machinery
+    // to paper over it. Frostbite marches the half-res cloud buffer every frame
+    // and EMA-blends the reprojected history; we match that, using a bilinear
+    // upsample of our half-res sparse marcher as `currentSample`.
     //
-    // Fresh sub-pixel: blend the new marched sample (FRESH_ALPHA weight)
-    //   with the *unclamped* reprojected history (1 − FRESH_ALPHA weight).
-    //   This is the temporal-averaging step — each cycle through the
-    //   Bayer 4×4 schedule injects 1 new dither realisation per pixel
-    //   and averages it with the accumulated value from past cycles.
+    //   out = lerp( rectifiedHistory, currentSample, EMA_ALPHA )
     //
-    //   Steady-state variance reduction (geometric series):
-    //       V = α / (2 − α) × σ_marcher²
-    //   - α = 0.5 → 33% of input variance (≈ 0.58× stddev) — Schneider's HZD
-    //   - α = 0.3 → 18% of input variance (≈ 0.42× stddev) — what we use
-    //   - α = 0.1 → 5% of input variance (≈ 0.23× stddev) — very laggy
-    //
-    //   Convergence time at α = 0.3: 50% in ~3 cycles (≈ 0.8 s at 60 FPS),
-    //   95% in ~10 cycles (≈ 2.7 s).
-    //
-    //   SOFT ghost reject (revised 2026-06-01). Three approaches were tried:
-    //   (a) raw history → DISOCCLUSION GHOSTS stream: a pixel the cloud just
-    //       uncovered reprojects onto where the cloud WAS, grabs a bright
-    //       opaque value, and the α weight only halves it every ~2 cycles, so
-    //       it lingers ~32 frames and trails opposite to motion (white dots).
-    //   (b) hard-clamp every fresh pixel → kills temporal averaging under
-    //       motion: near a cloud everything has high screen velocity, so
-    //       reprojected history diverges from the current frame EVERYWHERE and
-    //       the clamp rejects it everywhere → ALL edges go noisy near a cloud.
-    //   (c) [used] keep RAW history when it agrees with the fresh sample
-    //       (motion-tolerant, preserves cross-slice STBN averaging), and fade
-    //       toward the clamped value only when history DIVERGES grossly from
-    //       fresh (a ghost). That splits the two failure modes — see
-    //       ghostReject below.
-    //
-    // Stale sub-pixel with valid history: variance-clamped reprojected
-    //   history (strict ghost rejection at silhouettes).
-    // Either path with invalid history: fall back to the marched fresh
-    //   sample for this tile — produces one-frame tile-blocky output
-    //   that recovers as the next 16 frames sweep the Bayer schedule.
-    // freshNoBlend debug: skip the fresh-blend (FRESH_ALPHA = 1.0).
-    // Fresh pixels write raw marched value; stale pixels still use
-    // clamped history. Diagnoses whether the fresh-blend is helping
-    // or whether it's a wash (each pixel's converged value is its own
-    // marched sample, no temporal averaging).
-    const FRESH_ALPHA =
-      DEBUG_RECONSTRUCTION === "freshNoBlend" ? float(1.0) : float(0.3);
-    // Soft ghost reject: relative luma divergence of reprojected history from
-    // the fresh sample. ≈0 in cloud under motion (history agrees) → keep raw
-    // history; ≈0.8 for a bright ghost on faint/sky (history disagrees) → use
-    // the clamped value. Relative form → scale-invariant across the HDR range.
-    const histY = rgbToY(historyRgba.r, historyRgba.g, historyRgba.b);
-    const freshY = rgbToY(freshRgba.r, freshRgba.g, freshRgba.b);
-    const relDiff = histY.sub(freshY).abs()
-      .div(histY.add(freshY).add(float(0.01)));
-    const ghostReject = relDiff
-      .sub(float(GHOST_REJECT_LO))
-      .div(float(GHOST_REJECT_HI - GHOST_REJECT_LO))
-      .clamp(0, 1);
-    // Motion-gate the reject (see MOTION_GATE_UV): disocclusion ghosts only
-    // appear under motion, so a static/slow camera fully trusts history and
-    // converges (the un-gated reject re-noised static high-variance regions —
-    // there `fresh` is a noisy single sample, so the converged history diverges
-    // from it and the reject fired, re-injecting noise instead of averaging).
-    const motionVec = prevUv.sub(screenUV);
-    const screenVel = sqrt(dot(motionVec, motionVec));
-    const motionGate = screenVel.div(float(MOTION_GATE_UV)).clamp(0, 1);
-    const freshHistory = mix(
-      historyRgba,
-      clampedHistory,
-      ghostReject.mul(motionGate),
-    );
-    const freshBlended = mix(freshRgba, freshHistory, float(1).sub(FRESH_ALPHA));
-    const freshOutput = historyUsable.select(freshBlended, freshRgba);
-    const staleOutput = historyUsable.select(clampedHistory, freshRgba);
-    const finalRgba = isFresh.select(freshOutput, staleOutput);
+    // - currentSample: the half-res sparse marcher sampled at the full-res UV
+    //   (linear filtering → bilinear upsample) = this frame's estimate here.
+    // - rectifiedHistory: previous frame's result at the reprojected UV,
+    //   YCoCg-clamped to the local neighbourhood. The clamp is now the SOLE
+    //   ghost handler — disoccluded history (far outside the neighbourhood) is
+    //   pulled back, while in stable regions history sits inside the generously
+    //   padded bound and passes through → clean accumulation. Off-screen /
+    //   first-frame history → fall back to the current sample.
+    const currentSample = texture(uSparseColorNode, screenUV);
+    const rectifiedHistory = historyUsable.select(clampedHistory, currentSample);
+    const finalRgba = mix(rectifiedHistory, currentSample, float(EMA_ALPHA));
 
     if (DEBUG_RECONSTRUCTION === "alpha") {
       // Show reconstruction output's alpha channel as greyscale. Black

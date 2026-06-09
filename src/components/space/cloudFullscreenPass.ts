@@ -26,7 +26,7 @@ import {
 // both 16 (N=4) and 4 (N=2), so a pixel sees all 63 slices → maximal temporal
 // variance reduction. Skipping slice 63 occasionally is invisible (adjacent
 // slices have similar blue-noise statistics).
-const STBN_FRAME_MODULUS = 63;
+export const STBN_FRAME_MODULUS = 63;
 import {
   setupCloudReconstructionPass,
   SPARSE_DIVISOR,

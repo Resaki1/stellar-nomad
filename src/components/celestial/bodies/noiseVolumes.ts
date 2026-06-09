@@ -353,16 +353,20 @@ function generateDetailVolume(): Uint8Array {
 // =============================================================================
 // Mip chain — per-channel box average. Three.js doesn't auto-mip Data3DTexture.
 //
-// NOTE: the cloud marcher (`earthClouds.ts`) currently samples ALL noise
-// volumes at mip 0 explicitly via `.level(int(0))`. Auto-mip selection from
-// per-quad texture-coord derivatives causes visible band artifacts inside a
-// ray-march loop (per-pixel dither variance spikes the derivative, GPU picks
-// inconsistent mip levels at iso-distance contours from the camera → soft
-// cross-hatched ridges; see `docs/CLOUD_DEBUGGING_LESSONS.md` case study #2).
-// The chain is still generated here in case a future LOD scheme uses it
-// (e.g. analytic camera-distance-based mip selection for the far-LOD), but
-// nothing reads it today. The startup cost is ~10ms and the GPU memory
-// overhead is +33% of the base volume.
+// NOTE: the cloud marcher samples ALL noise volumes at mip 0 (`.level(int(0))`).
+// Auto mip selection (GPU computing mip from per-quad texture-coord derivatives)
+// cross-hatches inside the ray-march loop (per-pixel dither spikes the
+// derivative → inconsistent mip at iso-distance contours; see
+// `docs/CLOUD_DEBUGGING_LESSONS.md` case study #2), so it's forced to mip 0.
+//
+// An EXPLICIT distance/step mip LOD using this chain was tried (2026-06-03) to
+// band-limit distant clouds. WebGPU samples the chain fine, but mipping the
+// SHAPE-defining noise lowered its variance → fewer values cleared the
+// Schneider threshold → cloud COVERAGE dropped, and a distance-varying mip
+// MORPHED clouds as the camera moved (+ the coverage loss killed early-out, so
+// orbit perf tanked). Reverted. Chain kept for a future scheme that band-limits
+// WITHOUT changing coverage (coverage-compensated mip) or a far-field impostor.
+// Startup ~10 ms; GPU memory +33% of the base volume.
 // =============================================================================
 
 function downsample3DRGBA(src: Uint8Array, srcSize: number): Uint8Array {

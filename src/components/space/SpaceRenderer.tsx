@@ -23,6 +23,7 @@ import { settingsAtom } from "@/store/store";
 import {
   getActiveCloudPipeline,
   getEarthMatrixWorldRef,
+  STBN_FRAME_MODULUS,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 
@@ -538,9 +539,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Advance the ping-pong parity so next frame writes the *other* history
     // RT (and reads this one back as history input).
     frameParity.current ^= 1;
-    // Bayer schedule wraps every BAYER.length frames — after one cycle every
-    // sub-pixel of every N×N tile has been marched exactly once.
-    cloudFrameIndex.current = (cloudFrameIndex.current + 1) % BAYER.length;
+    // Free-running frame counter. It drives TWO independent cycles, each via
+    // its own modulo at the use site:
+    //   • Bayer sub-pixel:  cloudFrameIndex % BAYER.length   (4)
+    //   • STBN time slice:  cloudFrameIndex % STBN_FRAME_MODULUS (63)
+    // Wrap at lcm = BAYER.length × STBN_FRAME_MODULUS so BOTH stay periodic and
+    // every (sub-pixel, slice) pair is visited. CRITICAL: previously this wrapped
+    // at BAYER.length (4), which starved the STBN slice to 4 of 63 values → near-
+    // zero temporal decorrelation → the marcher's per-sample jitter never
+    // averaged out → static sampling-shell bands. (Regression from BAYER 16→4.)
+    cloudFrameIndex.current =
+      (cloudFrameIndex.current + 1) % (BAYER.length * STBN_FRAME_MODULUS);
 
     // Phase D3: snapshot this frame's combined view-projection in scaled
     // space. Next frame this becomes `uPrevViewProj` and lets the shader
