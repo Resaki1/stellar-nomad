@@ -33,6 +33,10 @@ import {
   SPARSE_DIVISOR,
   type CloudReconstructionPass,
 } from "./cloudReconstructionPass";
+import {
+  createCloudLightVolume,
+  type CloudLightVolume,
+} from "./cloudLightVolume";
 
 // =============================================================================
 // Phase D — Cloud pipeline (two-pass architecture, MRT marcher)
@@ -82,6 +86,15 @@ type FullscreenDebug =
   | "roEarthAlt";
 const DEBUG_FULLSCREEN: FullscreenDebug = "off";
 
+// Build-time opt-in for the 3D cloud light volume (sun-transmittance froxel).
+// DEFAULT false → the proven 6-tap cone Tsun path (the game never breaks).
+// Flip to true to bake a per-voxel sun-transmittance volume once per frame (a
+// WebGPU compute pass) and have the marcher read it with ONE trilinear lookup
+// instead of cone-marching per fresh pixel. Mirrors DEBUG_FULLSCREEN / DEBUG_VIZ:
+// a JS const resolved at TSL graph-build time, so toggle=off emits the exact
+// current shader (no runtime cost, no dead uniforms, no texture allocation).
+export const USE_LIGHT_VOLUME = true;
+
 // -----------------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------------
@@ -113,6 +126,14 @@ export type CloudPipeline = {
     fullSize: THREE.Vector2;           // full-res screen pixels (DPR-adjusted)
     sparseSize: THREE.Vector2;         // sparse RT pixels (= fullSize / 4)
   }) => void;
+
+  /**
+   * Bake the per-voxel sun-transmittance light volume (a compute pass). MUST be
+   * called once per frame BEFORE the colour pass (2a) renders. No-op when
+   * USE_LIGHT_VOLUME is false.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  computeLightVolume: (renderer: any) => void;
 
   dispose: () => void;
 };
@@ -239,6 +260,7 @@ function createColorPass(
   opts: SetupCloudPipelineOpts,
   shared: SharedUniforms,
   stbnTexture: THREE.Data3DTexture,
+  lightVolume: CloudLightVolume | null,
 ) {
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -338,6 +360,16 @@ function createColorPass(
       uVolumetricBlend: opts.uVolumetricBlend,
       uStbn: stbnTexture,
       uStbnFrameSlice: shared.uStbnFrameSlice,
+      // Light-volume lookup (undefined when toggle off → cone path). The box is
+      // parameterized by CENTRE (uBoxCenter) + half-extent — the marcher's
+      // uLightVolMin param receives the CENTRE (see earthClouds earthToUVW).
+      uLightVol: lightVolume?.lightVolTex,
+      uLightVolMin: lightVolume?.uBoxCenter,
+      uLightVolHalfExtent: lightVolume?.uBoxHalfExtent,
+      uLightVolAxisX: lightVolume?.uBoxAxisX,
+      uLightVolAxisY: lightVolume?.uBoxAxisY,
+      uLightVolAxisZ: lightVolume?.uBoxAxisZ,
+      uVolumeWeight: lightVolume?.uVolumeWeight,
     });
     rgbaOut.assign(rgba);
     tFrontOut.assign(tFront);
@@ -369,7 +401,25 @@ export function setupCloudPipeline(
   const shared = createSharedUniforms();
   const stbnTexture = getStbnTexture();
 
-  const color = createColorPass(opts, shared, stbnTexture);
+  // 3D sun-transmittance light volume (only when the toggle is on — otherwise
+  // no texture is allocated and no compute node is built). Shares the same
+  // uEarthInverseModel uniform object as the marcher so the box + baked sun
+  // direction stay in sync with the per-frame update below.
+  const lightVolume = USE_LIGHT_VOLUME
+    ? createCloudLightVolume({
+        baseVolume: opts.baseVolume,
+        weatherMap: opts.weatherMap,
+        uInnerRadius: opts.uInnerRadius,
+        uOuterRadius: opts.uOuterRadius,
+        uBaseScale: opts.uBaseScale,
+        uColumnScale: opts.uColumnScale,
+        uCloudUvOffset: opts.uCloudUvOffset,
+        uSunRel: opts.uSunRel,
+        uEarthInverseModel: shared.uEarthInverseModel,
+      })
+    : null;
+
+  const color = createColorPass(opts, shared, stbnTexture, lightVolume);
   const reconstruction = setupCloudReconstructionPass({
     uOuterRadius: opts.uOuterRadius,
   });
@@ -399,6 +449,11 @@ export function setupCloudPipeline(
       (params.frameIndex % STBN_FRAME_MODULUS) / STBN_FRAME_MODULUS;
     shared.uFullSize.value.copy(params.fullSize);
 
+    // Light-volume box — MUST run AFTER uEarthInverseModel is re-inverted above
+    // (updateBox applies it to the camera position). The baked sun direction is
+    // read inside the kernel from the same shared uEarthInverseModel × uSunRel.
+    lightVolume?.updateBox(params.scaledCamera.position);
+
     // Reconstruction (everything the color MRT pass doesn't need)
     reconstruction.updateUniforms(
       params.scaledCamera,
@@ -419,6 +474,7 @@ export function setupCloudPipeline(
     color.mat.dispose();
     color.geo.dispose();
     reconstruction.dispose();
+    lightVolume?.dispose();
     if (activePipeline === handle) activePipeline = null;
   };
 
@@ -428,6 +484,8 @@ export function setupCloudPipeline(
     reconstructionScene: reconstruction.scene,
     reconstructionCamera: reconstruction.camera,
     updateUniforms,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    computeLightVolume: (renderer: any) => lightVolume?.compute(renderer),
     dispose,
   };
   activePipeline = handle;

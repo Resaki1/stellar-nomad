@@ -36,6 +36,7 @@ import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
   setupCloudPipeline,
   setEarthMatrixWorldSource,
+  USE_LIGHT_VOLUME,
 } from "@/components/space/cloudFullscreenPass";
 
 // Troposphere-ish slab. Photoreal-leaning, not exaggerated.
@@ -242,6 +243,13 @@ const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
 // lump self-shadow at 2× cone fetch cost. (Macro density along the sun path is
 // still integrated; only the high-freq carve is dropped.)
 const CONE_SAMPLE_CARVE = true;
+// Soft fade width for the 3D light-volume box edge (USE_LIGHT_VOLUME), as a
+// fraction of the box half-extent. The volume only covers a finite box around
+// the camera; without a soft edge the inside (self-shadowed) → outside (fully
+// lit) boundary reads as a hard lighting line sweeping across clouds as you
+// fly. Fading the volume → lit over the outer LIGHT_VOL_EDGE_FRAC of the box
+// turns that line into a soft gradient. Larger = softer/wider transition.
+const LIGHT_VOL_EDGE_FRAC = 0.25;
 // Henyey-Greenstein DUAL-LOBE phase. Real clouds are strongly forward-
 // scattering (the silver lining you see looking toward the sun) yet still
 // scatter sideways and back — a single HG lobe can't do both. We blend a
@@ -425,7 +433,8 @@ const DEBUG_VIZ:
   | "daylight"
   | "dither"
   | "lod"
-  | "whyStop" = "off";
+  | "whyStop"
+  | "lightVol" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, three-type decomposition).
 //
@@ -761,6 +770,13 @@ export function marchCloudVolume({
   uVolumetricBlend,
   uStbn,
   uStbnFrameSlice,
+  uLightVol,
+  uLightVolMin,
+  uLightVolHalfExtent,
+  uLightVolAxisX,
+  uLightVolAxisY,
+  uLightVolAxisZ,
+  uVolumeWeight,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   roEarth: any;
@@ -794,6 +810,21 @@ export function marchCloudVolume({
   uStbn: THREE.Data3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uStbnFrameSlice: any;
+  // ── 3D light-volume lookup (optional; only bound when USE_LIGHT_VOLUME) ──
+  uLightVol?: THREE.Texture;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolMin?: any; // box CENTRE (earth space, scaled)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolHalfExtent?: any; // box half-extent (scaled)
+  // ── Local-up box basis (earth space) — orients the thin box to the shell ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisX?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisY?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisZ?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uVolumeWeight?: any; // orbit fade (1 near → 0 orbit)
 }) {
     const b = dot(roEarth, rdEarth);
     const d2 = dot(roEarth, roEarth);
@@ -1175,6 +1206,7 @@ export function marchCloudVolume({
     // Front-to-back integration means the LAST written value is from
     // roughly the visible surface (where alpha saturates).
     const lastTsunMs = float(0).toVar();
+    const lastTsun = float(0).toVar(); // DEBUG_VIZ='lightVol' / cone parity
 
     // Last-dense raw cone-march optical depth, for DEBUG_VIZ='coneDepth'.
     // Shows opticalDepthSun directly (before pow-tonemap), bypassing the
@@ -1783,8 +1815,43 @@ export function marchCloudVolume({
               const density: any = eroded.mul(densScale);
               lastDensity.assign(density);
 
-              // ── Cone-traced light march (Nubis C3) ──
+              // ── Sun transmittance: 3D light-volume lookup (toggle) OR the
+              //    6-tap cone march (default). USE_LIGHT_VOLUME is a build-time
+              //    JS const, so toggle=off emits the exact cone shader below. ──
               const Tsun = float(0).toVar();
+              if (USE_LIGHT_VOLUME && uLightVol) {
+                // earthToUVW (oriented box: centre + local-up basis), inverse
+                //   of voxelToEarth. Project (p - centre) onto each box axis,
+                //   normalise by the half-extent, then [-1,1] → [0,1].
+                const dV = p.sub(uLightVolMin);
+                const localV = vec3(
+                  dot(dV, uLightVolAxisX).div(uLightVolHalfExtent.x),
+                  dot(dV, uLightVolAxisY).div(uLightVolHalfExtent.y),
+                  dot(dV, uLightVolAxisZ).div(uLightVolHalfExtent.z),
+                );
+                const uvwV = localV.mul(0.5).add(0.5);
+                // Soft box edge: distance to the nearest face in uvw space
+                // (≤ 0 outside the box). Fade the volume → fully-lit (1) over the
+                // outer LIGHT_VOL_EDGE_FRAC of the box so the moving box boundary
+                // is a soft gradient, not a hard lighting line sweeping clouds.
+                const edgeDist = uvwV.x.min(float(1).sub(uvwV.x))
+                  .min(uvwV.y.min(float(1).sub(uvwV.y)))
+                  .min(uvwV.z.min(float(1).sub(uvwV.z)));
+                const edgeFade = smoothstep(
+                  float(0),
+                  float(LIGHT_VOL_EDGE_FRAC),
+                  edgeDist,
+                );
+                // One trilinear fetch replaces the whole 6-tap cone. .r = exp(-tau).
+                // Clamp-to-edge wrap handles out-of-box uvw; edgeFade → 0 there
+                // anyway so the value is blended out to "lit".
+                const TsunVol = texture3D(uLightVol, uvwV).level(int(0)).r;
+                // weight = edge fade × orbit fade (uVolumeWeight, 1 near → 0 orbit).
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const wVol: any = edgeFade.mul(uVolumeWeight);
+                Tsun.assign(mix(float(1), TsunVol, wVol).mul(daylight));
+                lastTsun.assign(Tsun);
+              } else {
               If(daylight.greaterThan(0.001), () => {
                 const opticalDepthSun = float(0).toVar();
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1946,11 +2013,13 @@ export function marchCloudVolume({
                 sampleConeTap(0.28128598, 0.42443639, -0.86065785, 4);
                 sampleConeTap(-0.42443639, 0.28128598, 0.86065785, 5);
                 Tsun.assign(exp(opticalDepthSun.negate()).mul(daylight));
+                lastTsun.assign(Tsun);
                 lastOpticalDepthSun.assign(opticalDepthSun);
                 If(firstOpticalDepthSun.lessThan(0), () => {
                   firstOpticalDepthSun.assign(opticalDepthSun);
                 });
               });
+              }
 
               // Multi-scatter transmittance.
               // pow(Tsun, MS_COEF) ≡ exp(-MS_COEF × opticalDepthSun) on the
@@ -2220,6 +2289,24 @@ export function marchCloudVolume({
           hit.select(exposed.x, float(0)),
           hit.select(exposed.y, float(0)),
           hit.select(exposed.z, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "lightVol") {
+      // Greyscale baked sun-transmittance at the visible-surface voxel (the
+      // 3D light-volume lookup result). White = clear sun path (Tsun≈1), black
+      // = occluded. With USE_LIGHT_VOLUME on, the spatial pattern should match
+      // DEBUG_VIZ='tsunMs' captured on the cone path (toggle off). Flat grey
+      // everywhere ⇒ volume not written (compute didn't run / box wrong).
+      const hitV = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hitV.select(lastTsun, float(0)),
+          hitV.select(lastTsun, float(0)),
+          hitV.select(lastTsun, float(0)),
           float(1),
         ),
         tFront: float(0),

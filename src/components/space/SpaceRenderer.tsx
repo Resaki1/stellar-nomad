@@ -23,6 +23,7 @@ import {
   getActiveCloudPipeline,
   getEarthMatrixWorldRef,
   STBN_FRAME_MODULUS,
+  USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 
@@ -471,6 +472,15 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         fullSize: tempFullSize,
         sparseSize: tempSparseSize,
       });
+
+      // Pass 2-pre: bake the per-voxel sun-transmittance light volume (a
+      // compute pass over an earth-local box). MUST precede pass 2a so the
+      // colour marcher reads a fully-written volume — renderer.compute() submits
+      // its work to the GPU queue ahead of pass 2a's draw, so the same-frame
+      // read is ordered. No-op when USE_LIGHT_VOLUME is false.
+      if (USE_LIGHT_VOLUME) {
+        pipelineHandle.computeLightVolume(renderer);
+      }
 
       // Pass 2a: sparse color+depth marcher (MRT, ¼-res). One march writes
       // both attachments — textures[0] = colour, textures[1].r = tFront.
