@@ -22,18 +22,22 @@ import {
 // =============================================================================
 // Phase D — Cloud reconstruction pass (D3 + D4 + D5)
 //
-// The marcher (cloudFullscreenPass.ts) now writes a *sparse* RT at 1/16 the
-// full-res pixel count: each sparse texel corresponds to one 4×4 tile of
-// full-res pixels, with the marched sample taken at one specific sub-pixel
-// of that tile (the Bayer schedule rotates which sub-pixel through 16
-// consecutive frames).
+// The marcher (cloudFullscreenPass.ts) writes a *sparse* MRT RT at
+// 1/SPARSE_DIVISOR² the full-res pixel count (SPARSE_DIVISOR=2 → ¼-res):
+// attachment 0 = cloud colour, attachment 1 = tFront. Each sparse texel
+// corresponds to one SPARSE_DIVISOR×SPARSE_DIVISOR tile of full-res pixels,
+// with the marched sample taken at one sub-pixel of that tile (the Bayer
+// schedule rotates which sub-pixel through SPARSE_DIVISOR² consecutive frames).
 //
-// This pass runs at FULL-resolution and fills in the other 15/16 pixels by
-// reprojecting them from the previous frame's reconstructed history. For
-// each full-res pixel:
+// This pass runs at FULL-resolution and, for every pixel, EMA-blends a
+// bilinear upsample of the sparse marcher with the reprojected previous-frame
+// history (the fresh/stale Bayer sub-pixel split below is retained for the
+// variance-clamp neighbourhood + diagnostics, but the final blend is EMA over
+// all pixels — see the §5.5.3 block near the bottom). For each full-res pixel
+// (N = SPARSE_DIVISOR):
 //
-//   tile    = (x >> 2, y >> 2)        — which 4×4 tile this pixel is in
-//   localSub= (x & 3,  y & 3)         — which sub-pixel within the tile
+//   tile    = (x / N, y / N)          — which N×N tile this pixel is in
+//   localSub= (x mod N, y mod N)      — which sub-pixel within the tile
 //   freshSub= uBayerSubPixel          — which sub-pixel was marched this frame
 //
 //   if localSub == freshSub:

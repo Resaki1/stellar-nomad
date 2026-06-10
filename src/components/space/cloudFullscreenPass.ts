@@ -2,10 +2,11 @@ import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
   Fn,
+  outputStruct,
+  property,
   uniform,
   screenUV,
   screenCoordinate,
-  vec2,
   vec3,
   vec4,
   float,
@@ -34,35 +35,35 @@ import {
 } from "./cloudReconstructionPass";
 
 // =============================================================================
-// Phase D — Cloud pipeline (three-pass architecture)
+// Phase D — Cloud pipeline (two-pass architecture, MRT marcher)
 //
-// Pass 2a: SPARSE COLOR marcher.    Output W/4 × H/4 RGBA16F. Each sparse
-//          texel corresponds to one 4×4 full-res tile, marched at the
-//          current Bayer sub-pixel slot.
-// Pass 2b: SPARSE DEPTH marcher.    Output W/4 × H/4 R16F. Same march, but
-//          the fragment shader returns vec4(tFront, 0, 0, 1) so the
-//          R-channel of the depth RT carries the cloud-front depth for
-//          each tile. Identical ray (same Bayer offset, same STBN slice)
-//          → tFront is for the SAME sample as the color RT's RGBA.
-//          Burns 1× of marcher work (we run the full marcher twice and
-//          throw away one output), but at 1/16 of the screen pixels this
-//          is still well under what continuous-TAA at half-res cost.
-// Pass 2c: FULL-RES RECONSTRUCTION  (cloudReconstructionPass.ts). Reads
-//          both sparse RTs + previous frame's history. Fresh sub-pixels
-//          copy the sparse sample directly; stale sub-pixels reproject
+// Pass 2a: SPARSE COLOR+DEPTH marcher (MRT). Output = one render target with
+//          TWO color attachments, each W/SPARSE_DIVISOR × H/SPARSE_DIVISOR
+//          (SPARSE_DIVISOR=2 → ¼-res). The fragment marches the volume ONCE
+//          and emits `outputStruct(rgba, vec4(tFront,…))`:
+//            attachment 0 = premultiplied cloud colour (RGBA16F)
+//            attachment 1 = tFront cloud-front depth in .r (<0 = miss)
+//          Each sparse texel corresponds to one SPARSE_DIVISOR² full-res tile,
+//          marched at the current Bayer sub-pixel slot. Previously this was
+//          TWO passes (a separate depth marcher re-ran the whole volume just
+//          to extract tFront) — folding it into an MRT struct output removes a
+//          full duplicate march per frame (~2× the marcher cost) with byte-
+//          identical output (same ray, same STBN slice, same accumulation).
+// Pass 2c: FULL-RES RECONSTRUCTION  (cloudReconstructionPass.ts). Reads the
+//          two sparse attachments + previous frame's history. Reprojects
 //          history through the tile's tFront with origin-shift correction,
-//          then YCoCg variance-clamp against the 3×3 fresh neighbourhood.
+//          then YCoCg variance-clamps against the 3×3 fresh neighbourhood and
+//          EMA-blends.
 //
 // Composite (pass 3 in SpaceRenderer) reads the reconstruction RT and
 // premul-alpha blends it onto the main scene RT.
 //
 // The pipeline replaces the previous single-pass continuous-TAA design.
 // Motivation: continuous TAA blends ~14 frames of view-dependent radiance
-// regardless of motion, producing velocity-proportional smear at high
-// speed. Geometric reconstruction with variance clamp converges to a
-// supersampled image on still cameras (16-frame cycle through the Bayer
-// schedule) and degrades to per-pixel STBN noise (not smear) under
-// extreme motion — bounded, single-frame, recoverable.
+// regardless of motion, producing velocity-proportional smear at high speed.
+// Geometric reconstruction with variance clamp converges to a supersampled
+// image on still cameras and degrades to per-pixel STBN noise (not smear)
+// under extreme motion — bounded, single-frame, recoverable.
 //
 // Reference: Schneider 2015 (HZD Nubis), Karis 2014 (YCoCg clamp).
 // =============================================================================
@@ -85,13 +86,10 @@ const DEBUG_FULLSCREEN: FullscreenDebug = "off";
 // Public API
 // -----------------------------------------------------------------------------
 export type CloudPipeline = {
-  // Pass 2a: writes sparseCloudRt
+  // Pass 2a: marches ONCE, writes BOTH attachments of the sparse MRT RT
+  // (texture[0] = color RGBA16F, texture[1] = tFront R16F).
   colorScene: THREE.Scene;
   colorCamera: THREE.OrthographicCamera;
-
-  // Pass 2b: writes sparseDepthRt
-  depthScene: THREE.Scene;
-  depthCamera: THREE.OrthographicCamera;
 
   // Pass 2c: writes historyRt[current]
   reconstructionScene: THREE.Scene;
@@ -253,13 +251,38 @@ function createColorPass(
   mat.depthWrite = false;
   mat.blending = THREE.NoBlending;
 
-  mat.fragmentNode = Fn(() => {
+  // MRT output: attachment 0 = colour RGBA16F, attachment 1 = tFront (in .r).
+  // The marcher computes BOTH in ONE pass, replacing the old separate depth
+  // marcher (see setupCloudPipeline note).
+  //
+  // Pattern (canonical three.js MRT — cf. examples/jsm/tsl/display/
+  // DepthOfFieldNode): the marcher runs via `colorNode` and writes its two
+  // outputs into top-level `property()` vars; `material.outputNode =
+  // outputStruct(...)` maps those vars positionally to the RT's two colour
+  // attachments. Two pitfalls this avoids:
+  //   1. `material.outputNode` is honoured ONLY when `fragmentNode` is null
+  //      (NodeMaterial.js), so the compute goes through `colorNode`.
+  //   2. Wrapping `outputStruct(...)` inside the Fn and returning it does NOT
+  //      work — the OutputType struct fails to register (WGSL "struct member
+  //      m0 not found"). The struct must be a top-level node.
+  // The colorNode's own return value is discarded (the custom outputNode
+  // replaces it); only its side-effect assigns to the property vars matter.
+  const rgbaOut = property("vec4");
+  const tFrontOut = property("float");
+
+  mat.colorNode = Fn(() => {
     // ── DEBUG short-circuits ──
     if (DEBUG_FULLSCREEN === "solid") {
-      return vec4(1, 0, 0, 1);
+      rgbaOut.assign(vec4(1, 0, 0, 1));
+      tFrontOut.assign(float(0));
+      return vec4(0);
     }
     if (DEBUG_FULLSCREEN === "screenUV") {
-      return vec4(screenUV.x, float(1).sub(screenUV.y), float(0), float(1));
+      rgbaOut.assign(
+        vec4(screenUV.x, float(1).sub(screenUV.y), float(0), float(1)),
+      );
+      tFrontOut.assign(float(0));
+      return vec4(0);
     }
 
     const { roEarth, rdEarth } = buildMarchRay(shared);
@@ -268,16 +291,22 @@ function createColorPass(
     );
 
     if (DEBUG_FULLSCREEN === "rdEarth") {
-      return vec4(
-        rdEarth.x.mul(0.5).add(0.5),
-        rdEarth.y.mul(0.5).add(0.5),
-        rdEarth.z.mul(0.5).add(0.5),
-        float(1),
+      rgbaOut.assign(
+        vec4(
+          rdEarth.x.mul(0.5).add(0.5),
+          rdEarth.y.mul(0.5).add(0.5),
+          rdEarth.z.mul(0.5).add(0.5),
+          float(1),
+        ),
       );
+      tFrontOut.assign(float(0));
+      return vec4(0);
     }
     if (DEBUG_FULLSCREEN === "roEarthAlt") {
       const len = length(roEarth).div(10).clamp(0, 1);
-      return vec4(len, len, len, float(1));
+      rgbaOut.assign(vec4(len, len, len, float(1)));
+      tFrontOut.assign(float(0));
+      return vec4(0);
     }
     if (DEBUG_FULLSCREEN === "slabHit") {
       const b = dot(roEarth, rdEarth);
@@ -285,10 +314,12 @@ function createColorPass(
       const cOuter = d2.sub(opts.uOuterRadius.mul(opts.uOuterRadius));
       const discOuter = b.mul(b).sub(cOuter);
       const hit = discOuter.greaterThan(0).select(float(1), float(0));
-      return vec4(hit, hit, hit, float(1));
+      rgbaOut.assign(vec4(hit, hit, hit, float(1)));
+      tFrontOut.assign(float(0));
+      return vec4(0);
     }
 
-    const { rgba } = marchCloudVolume({
+    const { rgba, tFront } = marchCloudVolume({
       roEarth,
       rdEarth,
       sunDirEarth,
@@ -308,71 +339,16 @@ function createColorPass(
       uStbn: stbnTexture,
       uStbnFrameSlice: shared.uStbnFrameSlice,
     });
+    rgbaOut.assign(rgba);
+    tFrontOut.assign(tFront);
     return rgba;
   })();
 
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-
-  return { scene, camera, mat, geo, mesh };
-}
-
-// -----------------------------------------------------------------------------
-// Pass 2b: SPARSE DEPTH marcher
-// Runs the same marcher to extract `tFront` only. RGBA output is throw-away;
-// only .r is consumed by the R16F depth RT.
-//
-// NOTE: this duplicates marcher work (color and depth both run a full
-// marchCloudVolume). The TSL `Fn(...)()` wrapping that Loop/If requires is
-// incompatible with MRT output (which would let one pass write both
-// rgba and tFront), so we accept the 2× cost for now. At 1/16 screen pixels
-// per pass, total marcher work = 2 × (1/16) = 1/8 of full-res continuous,
-// still well below the pre-Phase-D cost.
-// -----------------------------------------------------------------------------
-function createDepthPass(
-  opts: SetupCloudPipelineOpts,
-  shared: SharedUniforms,
-  stbnTexture: THREE.Data3DTexture,
-) {
-  const scene = new THREE.Scene();
-  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const geo = new THREE.PlaneGeometry(2, 2);
-  const mat = new NodeMaterial();
-
-  mat.transparent = false;
-  mat.depthTest = false;
-  mat.depthWrite = false;
-  mat.blending = THREE.NoBlending;
-
-  mat.fragmentNode = Fn(() => {
-    const { roEarth, rdEarth } = buildMarchRay(shared);
-    const sunDirEarth = normalize(
-      shared.uEarthInverseModel.mul(vec4(opts.uSunRel, 0)).xyz,
-    );
-
-    const { tFront } = marchCloudVolume({
-      roEarth,
-      rdEarth,
-      sunDirEarth,
-      weatherMap: opts.weatherMap,
-      baseVolume: opts.baseVolume,
-      detailVolume: opts.detailVolume,
-      uInnerRadius: opts.uInnerRadius,
-      uOuterRadius: opts.uOuterRadius,
-      uCloudUvOffset: opts.uCloudUvOffset,
-      uDensityMul: opts.uDensityMul,
-      uBaseScale: opts.uBaseScale,
-      uDetailScale: opts.uDetailScale,
-      uDetailErosion: opts.uDetailErosion,
-      uColumnScale: opts.uColumnScale,
-      uLightConeRadius: opts.uLightConeRadius,
-      uVolumetricBlend: opts.uVolumetricBlend,
-      uStbn: stbnTexture,
-      uStbnFrameSlice: shared.uStbnFrameSlice,
-    });
-    return vec4(tFront, float(0), float(0), float(1));
-  })();
+  // m0 = premultiplied colour, m1.r = tFront (cloud-front depth; <0 = miss).
+  mat.outputNode = outputStruct(
+    rgbaOut,
+    vec4(tFrontOut, float(0), float(0), float(1)),
+  );
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
@@ -382,7 +358,7 @@ function createDepthPass(
 }
 
 // -----------------------------------------------------------------------------
-// Pipeline setup — builds color, depth, and reconstruction passes;
+// Pipeline setup — builds the color (MRT) + reconstruction passes;
 // returns the orchestrator with a single updateUniforms entry point.
 // -----------------------------------------------------------------------------
 export function setupCloudPipeline(
@@ -394,7 +370,6 @@ export function setupCloudPipeline(
   const stbnTexture = getStbnTexture();
 
   const color = createColorPass(opts, shared, stbnTexture);
-  const depth = createDepthPass(opts, shared, stbnTexture);
   const reconstruction = setupCloudReconstructionPass({
     uOuterRadius: opts.uOuterRadius,
   });
@@ -406,7 +381,7 @@ export function setupCloudPipeline(
   // independently testable and respects TSL's bind-group ownership.
 
   const updateUniforms: CloudPipeline["updateUniforms"] = (params) => {
-    // Shared (color + depth)
+    // Shared (color MRT pass)
     shared.uCameraMatrixWorld.value.copy(params.scaledCamera.matrixWorld);
     shared.uCameraScaledPos.value.copy(params.scaledCamera.position);
     shared.uTanHalfFov.value =
@@ -424,7 +399,7 @@ export function setupCloudPipeline(
       (params.frameIndex % STBN_FRAME_MODULUS) / STBN_FRAME_MODULUS;
     shared.uFullSize.value.copy(params.fullSize);
 
-    // Reconstruction (everything the color/depth passes don't need)
+    // Reconstruction (everything the color MRT pass doesn't need)
     reconstruction.updateUniforms(
       params.scaledCamera,
       params.earthMesh,
@@ -443,9 +418,6 @@ export function setupCloudPipeline(
     color.scene.remove(color.mesh);
     color.mat.dispose();
     color.geo.dispose();
-    depth.scene.remove(depth.mesh);
-    depth.mat.dispose();
-    depth.geo.dispose();
     reconstruction.dispose();
     if (activePipeline === handle) activePipeline = null;
   };
@@ -453,8 +425,6 @@ export function setupCloudPipeline(
   const handle: CloudPipeline = {
     colorScene: color.scene,
     colorCamera: color.camera,
-    depthScene: depth.scene,
-    depthCamera: depth.camera,
     reconstructionScene: reconstruction.scene,
     reconstructionCamera: reconstruction.camera,
     updateUniforms,

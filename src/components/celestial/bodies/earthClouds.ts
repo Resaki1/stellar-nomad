@@ -229,6 +229,19 @@ const LOD_DITHER = 0.0;
 // sites in buildCloudFragment (TSL can't index a constant kernel by loop
 // variable), so there's no LIGHT_STEPS constant.
 const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
+// ── Cheaper cone (perf, 2026-06-10) ──
+// Each cone tap reconstructs the primary's dilated + billow-carved shape so
+// cumulus lumps self-shadow — but that costs a SECOND texture3D (detailVolume
+// carve) per tap, i.e. 12 texture3D per dense voxel for the 6-tap cone, ~70% of
+// a dense voxel's texture cost. With CONE_SAMPLE_CARVE = false the cone samples
+// only the dilated BASE shape (1 texture3D/tap → 6 per voxel), halving cone
+// fetch cost. Tradeoff: the sun-march no longer sees the ~km billow valleys, so
+// within-body self-shadow detail on lumps is softer (the macro top-bright /
+// underside-dark gradient is unaffected — that comes from the base shape +
+// coverage + profile, which the cone still sees). Set true to restore the crisp
+// lump self-shadow at 2× cone fetch cost. (Macro density along the sun path is
+// still integrated; only the high-freq carve is dropped.)
+const CONE_SAMPLE_CARVE = true;
 // Henyey-Greenstein DUAL-LOBE phase. Real clouds are strongly forward-
 // scattering (the silver lining you see looking toward the sun) yet still
 // scatter sideways and back — a single HG lobe can't do both. We blend a
@@ -1813,13 +1826,13 @@ export function marchCloudVolume({
                   // Dropped for perf.
                   //
                   // Cost: 3 texture3D fetches per dense voxel (3 cone taps).
-                  // ── Step 2: cone sees the SAME carved shape as the primary ──
-                  // Previously sampled only baseVolume.r (raw, smooth) so the
-                  // sun-march couldn't shadow the Step-1 cauliflower lumps →
-                  // uniform Tsun → flat. Now reconstruct the primary's dilated
-                  // + billow-carved shape at each cone tap so lumps self-shadow:
-                  // a voxel beneath a lump finds more cloud toward the sun than
-                  // one on a sunlit crest → bright crests / dark crevices.
+                  // ── Step 2: cone sees the dilated (optionally carved) shape ──
+                  // Reconstruct the primary's dilated base shape at each cone tap
+                  // so lumps self-shadow: a voxel beneath a lump finds more cloud
+                  // toward the sun than one on a sunlit crest → bright crests /
+                  // dark crevices. The optional billow-carve (CONE_SAMPLE_CARVE)
+                  // adds the ~km valley detail at a 2nd texture3D/tap; default off
+                  // for perf (see the constant's note).
                   const baseSampleL = texture3D(baseVolume, pL.mul(uBaseScale))
                     .level(int(0));
                   const baseFbmL = baseSampleL.g
@@ -1830,20 +1843,24 @@ export function marchCloudVolume({
                     .add(float(1).sub(baseFbmL))
                     .div(float(2).sub(baseFbmL).max(0.0001))
                     .clamp(0, 1);
-                  const carveSrcL = texture3D(
-                    detailVolume,
-                    pL.mul(float(CARVE_SCALE)),
-                  ).level(int(0));
-                  const carveWorleyL = carveSrcL.r
-                    .mul(0.6)
-                    .add(carveSrcL.g.mul(0.4));
-                  const carveThreshL = float(1)
-                    .sub(carveWorleyL)
-                    .mul(float(BILLOW_CARVE));
-                  const baseShapeL = baseShapeDilatedL
-                    .sub(carveThreshL)
-                    .div(float(1).sub(carveThreshL).max(0.0001))
-                    .clamp(0, 1);
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  let baseShapeL: any = baseShapeDilatedL;
+                  if (CONE_SAMPLE_CARVE) {
+                    const carveSrcL = texture3D(
+                      detailVolume,
+                      pL.mul(float(CARVE_SCALE)),
+                    ).level(int(0));
+                    const carveWorleyL = carveSrcL.r
+                      .mul(0.6)
+                      .add(carveSrcL.g.mul(0.4));
+                    const carveThreshL = float(1)
+                      .sub(carveWorleyL)
+                      .mul(float(BILLOW_CARVE));
+                    baseShapeL = baseShapeDilatedL
+                      .sub(carveThreshL)
+                      .div(float(1).sub(carveThreshL).max(0.0001))
+                      .clamp(0, 1);
+                  }
                   const coverageL = coverage;  // primary-ray's coverage
 
                   // Cone density is DECOUPLED from primary `densScale`

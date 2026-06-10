@@ -1,5 +1,17 @@
 # Volumetric Clouds — Performance Optimization Plan
 
+> **STATUS NOTE (2026-06-10):** Sections 1 and 5's *numbers* are obsolete — they
+> describe an earlier 16/96-step, single half-res-pass marcher. The live code
+> (after the band fix in `CLOUD_DEBUGGING_LESSONS.md`) is **256 primary steps**
+> (`MAX_PRIMARY_STEPS`), `SKIP_STEP_SCALED=0.0001`, `LOD_MIN_SAMPLES=60`, marched
+> at **¼-res** (`SPARSE_DIVISOR=2`) + full-res EMA reconstruction. The marcher was
+> running **twice/frame** (separate color + depth passes) until the MRT merge
+> (2026-06-10) folded depth into the color pass via `outputStruct` — removing a
+> full duplicate march. Current measured perf before that fix: **~15 fps at cloud
+> level, 2–3 fps at orbit on an M2 Pro** (GPU-bound). The §2 AAA-playbook framing
+> and the *tier rationale* remain valid and are the basis of the ongoing perf work;
+> treat the per-step cost tables as historical.
+
 Companion to `VOLUMETRIC_CLOUDS_PLAN.md`. This doc covers how we get from the current **20 FPS at 9k km** state to a stable 100+ FPS without visibly dropping fidelity. Written after the initial implementation and the first hoisting pass (slab-midpoint weather-map cache).
 
 ---

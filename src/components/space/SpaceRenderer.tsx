@@ -13,7 +13,6 @@ import {
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
   HalfFloatType,
-  RedFormat,
   AgXToneMapping,
   NeutralToneMapping,
   NoToneMapping,
@@ -37,6 +36,21 @@ const LOCAL_CAMERA_FAR = 20_000 * 1000;
 // (Don't use logarithmicDepthBuffer — it breaks depth for custom vertexNode.)
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
+
+// ── Cloud-only resolution clamp ──────────────────────────────────────────────
+// The whole scene renders at gl.getPixelRatio() (DPR, clamped to [0.5, 1.5] in
+// Scene.tsx → 1.5 on a Retina M-series). The volumetric cloud pipeline (the
+// sparse ray-marcher AND the full-res reconstruction) is the dominant GPU cost
+// and scales with pixel count, so we render ONLY the clouds at
+// min(DPR, CLOUD_MAX_DPR) and let the composite (pass 3) bilinearly upsample to
+// the full-DPR scene RT. Result: clouds soften slightly; the planet, ship, and
+// UI stay full-res. On a 1.5-DPR Retina, CLOUD_MAX_DPR=1.0 cuts cloud fragment
+// count ~2.25× (both the marcher and the reconstruction). The marcher's sparse
+// RT and the reconstruction/history RTs MUST share this DPR so the Bayer tile
+// mapping (sparse = cloud-full / SPARSE_DIVISOR) stays exact. Raise toward the
+// device DPR (e.g. 1.5) for sharper clouds at higher cost; set high (e.g. 4) to
+// disable the clamp entirely.
+const CLOUD_MAX_DPR = 1.0;
 
 // Phase D reconstruction. The marcher writes a SPARSE RT (1/SPARSE_DIVISOR²
 // of full pixels); a full-res reconstruction pass fills the rest from
@@ -179,59 +193,50 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rt.dispose(); }, [rt]);
 
-  // Phase D RT layout — three pairs:
+  // Phase D RT layout — two pairs:
   //
-  //   sparseCloudRts: W/4 × H/4 RGBA16F. The marcher (pass 2a) writes one
-  //     fresh sample per 4×4 full-res tile here. Ping-pong only because
-  //     the reconstruction pass reads it the same frame; the OTHER
-  //     parity isn't used as history (reconstruction reads its own
-  //     history RT, not the sparse RT). Single RT would work too, but
-  //     ping-ponging keeps WebGPU happy if it complains about
-  //     concurrent read/write of the same texture in adjacent passes.
+  //   sparseCloudRts: MRT pair, each W/SPARSE_DIVISOR × H/SPARSE_DIVISOR with
+  //     TWO color attachments (count: 2):
+  //       textures[0] = cloud colour RGBA16F (premultiplied)
+  //       textures[1] = tFront cloud-front depth (scaled-world units in .r,
+  //                     sentinel < 0 = no hit)
+  //     The marcher (pass 2a) marches the volume ONCE and writes both via
+  //     `outputStruct(rgba, vec4(tFront,…))`. This replaced a separate depth
+  //     pass that re-ran the marcher for tFront only (that pass was cheap —
+  //     the compiler dead-code-eliminated the lighting/cone-march that only
+  //     feeds colour — so the merge saved ~25-30%, not 2×).
+  //     Ping-pong only because the reconstruction pass reads it the same frame.
   //
-  //   sparseDepthRts: W/4 × H/4 R16F (RedFormat + HalfFloatType). Pass 2b
-  //     writes `tFront` (scaled-world depth of the cloud front along the
-  //     ray, sentinel −1 = no hit). Used by the reconstruction pass for
-  //     per-tile reprojection depth.
+  //   historyRts: cloud-DPR RGBA16F (= sparse × SPARSE_DIVISOR). Pass 2c
+  //     (reconstruction) writes the final per-pixel cloud colour here; the
+  //     off-parity is read back next frame as previous-frame history. Composite
+  //     (pass 3) reads this RT and bilinearly upsamples it to the full-DPR scene
+  //     RT (premul-alpha blend). Both this and the sparse RT use CLOUD_MAX_DPR.
   //
-  //   historyRts: full-res RGBA16F. Pass 2c (reconstruction) writes the
-  //     final per-pixel cloud colour here; the off-parity is read back
-  //     next frame as the previous-frame history. Composite (pass 3)
-  //     reads from this RT, premul-alpha blending onto the main scene RT.
-  //
-  // Total VRAM at 1080p × DPR=2: sparse color 2×(960×540×8) = 8 MiB,
-  // sparse depth 2×(960×540×2) = 2 MiB, history 2×(1920×1080×8) = 33 MiB.
-  // ≈ 43 MiB cloud working set. Acceptable.
+  // Both attachments default to RGBA16F (HalfFloatType); textures[1] only uses
+  // .r but the extra channels at sparse res are negligible VRAM.
   const sparseCloudRts = useMemo(() => {
-    const dpr = gl.getPixelRatio();
+    const dpr = Math.min(gl.getPixelRatio(), CLOUD_MAX_DPR);
     const w = Math.max(1, Math.floor(size.width * dpr / SPARSE_DIVISOR));
     const h = Math.max(1, Math.floor(size.height * dpr / SPARSE_DIVISOR));
-    return [
-      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
-      new RenderTarget(w, h, { type: HalfFloatType, depthBuffer: false }),
-    ] as const;
-  }, [gl, size.width, size.height]);
-
-  const sparseDepthRts = useMemo(() => {
-    const dpr = gl.getPixelRatio();
-    const w = Math.max(1, Math.floor(size.width * dpr / SPARSE_DIVISOR));
-    const h = Math.max(1, Math.floor(size.height * dpr / SPARSE_DIVISOR));
-    return [
-      new RenderTarget(w, h, {
+    const make = () => {
+      const rt = new RenderTarget(w, h, {
         type: HalfFloatType,
-        format: RedFormat,
         depthBuffer: false,
-      }),
-      new RenderTarget(w, h, {
-        type: HalfFloatType,
-        format: RedFormat,
-        depthBuffer: false,
-      }),
-    ] as const;
+        count: 2,
+      });
+      rt.textures[0].name = "cloudColor";
+      rt.textures[1].name = "cloudDepth";
+      return rt;
+    };
+    return [make(), make()] as const;
   }, [gl, size.width, size.height]);
 
   const historyRts = useMemo(() => {
-    const dpr = gl.getPixelRatio();
+    // Cloud reconstruction runs at the clamped cloud DPR (must match the sparse
+    // RT's DPR for the Bayer tile mapping). The composite upsamples this to the
+    // full-DPR scene RT.
+    const dpr = Math.min(gl.getPixelRatio(), CLOUD_MAX_DPR);
     const w = Math.max(1, Math.floor(size.width * dpr));
     const h = Math.max(1, Math.floor(size.height * dpr));
     return [
@@ -245,19 +250,16 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     sparseCloudRts[1].dispose();
   }, [sparseCloudRts]);
   useEffect(() => () => {
-    sparseDepthRts[0].dispose();
-    sparseDepthRts[1].dispose();
-  }, [sparseDepthRts]);
-  useEffect(() => () => {
     historyRts[0].dispose();
     historyRts[1].dispose();
   }, [historyRts]);
 
-  // Composite meshes: read from the full-res historyRts (the reconstruction
-  // output) and premul-alpha blend onto the main scene RT. The fetch is a
-  // small binomial-Gaussian gather (CLOUD_DENOISE_RADIUS) — a spatial denoise
-  // that removes the per-pixel salt-and-pepper the 1/16 reconstruction leaves
-  // behind. See buildCompositeFetch + its header for the why.
+  // Composite meshes: read from the cloud-DPR historyRts (the reconstruction
+  // output) and premul-alpha blend onto the full-DPR main scene RT (bilinear
+  // upsample when CLOUD_MAX_DPR < device DPR). The fetch is a small binomial-
+  // Gaussian gather (CLOUD_DENOISE_RADIUS) — a spatial denoise that removes the
+  // per-pixel salt-and-pepper the reconstruction leaves behind. See
+  // buildCompositeFetch + its header for the why.
   // Pre-built pair so the per-frame parity swap is just a parent/child
   // mutation (avoids TextureNode `.value` reassignment, which the WebGPU
   // backend's bind-group cache doesn't always honour mid-frame).
@@ -365,7 +367,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   useEffect(() => {
     cloudHistoryValid.current = 0;
     hasPrevWorldOrigin.current = false;
-  }, [historyRts, sparseCloudRts, sparseDepthRts]);
+  }, [historyRts, sparseCloudRts]);
 
   useFrame(() => {
     // Skip until WebGPU backend is ready (init is async).
@@ -422,7 +424,6 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
     const writeIdx = frameParity.current;
     const sparseColorRt = sparseCloudRts[writeIdx];
-    const sparseDepthRt = sparseDepthRts[writeIdx];
     const historyWriteRt = historyRts[writeIdx];
     const historyReadRt = historyRts[writeIdx ^ 1];
     const writeCompositeMesh = compositeMeshes[writeIdx];
@@ -453,16 +454,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         tempOriginShiftScaled.set(0, 0, 0);
       }
 
-      // One uniform-update call distributes state to all three pass
-      // materials (color, depth, reconstruction).
+      // One uniform-update call distributes state to both pass materials
+      // (color MRT marcher, reconstruction). The two sparse inputs to
+      // reconstruction are the two color attachments of the single MRT RT.
       pipelineHandle.updateUniforms({
         scaledCamera,
         earthMesh,
         bayerSubPixel: tempBayerSub,
         prevViewProj: prevCloudViewProj.current,
         originShiftScaled: tempOriginShiftScaled,
-        sparseColorTexture: sparseColorRt.texture,
-        sparseDepthTexture: sparseDepthRt.texture,
+        sparseColorTexture: sparseColorRt.textures[0],
+        sparseDepthTexture: sparseColorRt.textures[1],
         historyTexture: historyReadRt.texture,
         historyValid: cloudHistoryValid.current,
         frameIndex: cloudFrameIndex.current,
@@ -470,17 +472,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         sparseSize: tempSparseSize,
       });
 
-      // Pass 2a: sparse color marcher (W/4 × H/4 RGBA16F).
+      // Pass 2a: sparse color+depth marcher (MRT, ¼-res). One march writes
+      // both attachments — textures[0] = colour, textures[1].r = tFront.
       renderer.setRenderTarget(sparseColorRt);
       gl.autoClear = true;
       gl.render(pipelineHandle.colorScene, pipelineHandle.colorCamera);
 
-      // Pass 2b: sparse depth marcher (W/4 × H/4 R16F, tFront in .r).
-      renderer.setRenderTarget(sparseDepthRt);
-      gl.autoClear = true;
-      gl.render(pipelineHandle.depthScene, pipelineHandle.depthCamera);
-
-      // Pass 2c: full-res reconstruction. Reads sparseColor + sparseDepth +
+      // Pass 2c: full-res reconstruction. Reads both sparse attachments +
       // historyReadRt, writes historyWriteRt (full-res RGBA16F).
       renderer.setRenderTarget(historyWriteRt);
       gl.autoClear = true;
