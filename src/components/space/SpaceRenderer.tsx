@@ -432,7 +432,18 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     const pipelineHandle = getActiveCloudPipeline();
     const earthMesh = pipelineHandle ? getEarthMatrixWorldRef() : null;
 
-    if (pipelineHandle && earthMesh) {
+    // Skip the ENTIRE cloud pipeline (light-volume bake + sparse marcher +
+    // reconstruction) while the volumetric crossfade sits at 0 — above the
+    // blend-in altitude the flat 2D overlay carries the whole cloud cover and
+    // the marcher's output would be multiplied to nothing anyway. This is the
+    // main orbit-perf lever: the near-tier shell mounts at 35 k km distance,
+    // but the volumetric only becomes visually meaningful far lower (see the
+    // altitude-based crossfade in earth.ts onFrame); previously the full-cost
+    // march ran across that whole range for an invisible result.
+    const cloudsVisible =
+      !!pipelineHandle && pipelineHandle.getVolumetricBlend() > 0.001;
+
+    if (pipelineHandle && earthMesh && cloudsVisible) {
       // Bayer schedule pick for this frame. Sub-pixel slot (0..N-1, 0..N-1)
       // marks which full-res pixel within every N×N tile is fresh this frame.
       const bayerIdx = cloudFrameIndex.current % BAYER.length;
@@ -499,8 +510,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
       cloudHistoryValid.current = 1;
     } else {
-      // No active pipeline (Earth not yet mounted, or player out of near
-      // range). Clear the full-res history RT to fully transparent so the
+      // No active pipeline (Earth not yet mounted, player out of near range,
+      // or volumetric blend at 0 — camera too high for volumetric clouds).
+      // Clear the full-res history RT to fully transparent so the
       // composite contributes nothing this frame. Also invalidate history
       // for next time the pipeline resumes — its off-parity RT may have
       // been cleared here, and blending against (0,0,0,0) would briefly

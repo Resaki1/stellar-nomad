@@ -33,5 +33,10 @@
     "eslint-config-next": "15.4.6",
     "sass": "^1.97.0",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "three@0.183.2": "patches/three@0.183.2.patch"
+    }
   }
 }

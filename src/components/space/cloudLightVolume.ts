@@ -29,10 +29,12 @@ import {
 // =============================================================================
 // 3D cloud light volume — per-voxel sun transmittance (exp(-tau_sun)).
 //
-// A camera-centred, EARTH-MODEL-SPACE axis-aligned box of voxels. Each voxel
-// runs a short straight sun-march (the marcher's cone inner loop, with the cone
-// kernel removed) reusing the EXACT cheap macro density the cone uses: dilated
-// base shape × coverage × height profile. The result exp(-tau) is stored in .r.
+// A snap-stabilised, LOCAL-UP-ORIENTED box of voxels in earth model space,
+// centred on the slab mid-shell under the camera (constant extent — see
+// BOX_HALF). Each voxel runs a short straight sun-march (the marcher's cone
+// inner loop, with the cone kernel removed) reusing the same cheap macro
+// density the marcher uses: dilated base shape × coverage × height profile
+// (anti-tiling warp included). The result exp(-tau) is stored in .r.
 //
 // The per-pixel marcher (earthClouds.ts, behind USE_LIGHT_VOLUME) then replaces
 // its 6-tap cone with ONE trilinear texture3D fetch of this volume — turning a
@@ -55,12 +57,12 @@ import {
 // =============================================================================
 
 // ── Volume dimensions (constants baked into the dispatch count) ──
-// 96×96 horizontal ≈ one voxel per cloud cell in the near box; 16 vertical
-// across the ~13 km slab ≈ 0.8 km/voxel (resolves the height-profile envelope).
+// 256×256 horizontal over the constant 1200 km box ≈ 4.7 km/voxel; 32 vertical
+// over the ~74 km box height ≈ 2.3 km/voxel (the 13 km slab spans ~6 voxels).
 // A sun-transmittance field is smoother than density (an integral along the sun
-// dir), so it tolerates coarse sampling. Cheap tier: 64×64×12. Hero: 128×128×24.
+// dir), so it tolerates coarse sampling. rgba16f → 16.8 MB.
 const NX = 256;
-const NY = 24;
+const NY = 32;
 const NZ = 256;
 const VOXEL_COUNT = NX * NY * NZ;
 
@@ -70,11 +72,37 @@ const SUN_STEPS = 7; // 7 × 2 km ≈ 14 km ≈ one slab crossing
 const CONE_DENSITY = 1000; // decoupled from uDensityMul — matches the cone
 
 // ── Box parameterization (scaled units; 1 unit = 1000 km) ──
-const BOX_NEAR_HALF = 0.5; // 100 km — tight box when low (boundary further out)
-const BOX_HALF_PER_ALT = 2.5; // footprint grows ~linearly with altitude
-const BOX_MAX_HALF = 0.7; // 1.000 km cap — beyond this the cone takes over
+// CONSTANT half-extent (2026-06-10). The box previously GREW with altitude
+// (0.5 + alt × 2.5, capped 0.7), which made the voxel size — and therefore the
+// position-snap grid derived from it — change CONTINUOUSLY while the camera
+// climbed or descended. Every frame of vertical motion re-discretised the
+// whole field → the "shadows constantly change while I fly" swimming (stable
+// only with a perfectly still camera, exactly the reported symptom). With a
+// constant extent the voxel grid is a fixed angular lattice on the shell: the
+// box only ever moves in whole-voxel snaps (absorbed by the temporal EMA) and
+// a pure vertical descent doesn't move it at all.
+const BOX_HALF = 0.6; // 600 km half-width — covers the near field; the soft
+//                       edge fade + per-pixel orbit fade handle everything
+//                       beyond (unshadowed macro = correct at that distance).
 const VOL_FADE_ALT_LO = 0.15; // ~150 km — box still covers near clouds
-const VOL_FADE_ALT_HI = 0.4; //  ~400 km — fully on the cone (orbit)
+const VOL_FADE_ALT_HI = 0.4; //  ~400 km — volume fully faded out (orbit)
+// Re-bake threshold for the sun direction (earth space). The transmittance
+// field is STATIC in earth space for a fixed sun — the bake only needs to
+// re-run when the box snaps to a new lattice cell or the sun has rotated
+// (earth spin) by more than ~half the sun's angular diameter.
+const SUN_REBAKE_COS = Math.cos((0.25 * Math.PI) / 180);
+// Bake base-volume taps MUST sample LEVEL 0: three r183's WebGPU backend
+// never uploads Data3DTexture.mipmaps (level 0 only) while allocating the
+// full mip count — levels 1+ are zero-initialized, so the brief
+// BAKE_BASE_LOD = 2/3 experiment (2026-06-11) baked shadows against a
+// near-CONSTANT phantom density ((0+1)/(2−0) = 0.5). See the level-0 warning
+// in earthClouds.ts + CLOUD_DEBUGGING_LESSONS case study #16.
+const BAKE_BASE_LOD = 0;
+// Inline mirror of earthClouds.ts WARP_AMPLITUDE (anti-tiling domain warp for
+// the base-volume sample). Kept inline like cloudHeightProfileInline to avoid
+// extending the earthClouds ↔ cloudFullscreenPass import cycle — keep in
+// lockstep with the marcher or shadows drift off their clouds.
+const WARP_AMPLITUDE_MIRROR = 0.01;
 
 export type CloudLightVolumeDeps = {
   baseVolume: THREE.Data3DTexture;
@@ -168,17 +196,18 @@ export function createCloudLightVolume(
   const sunDirEarth = normalize(uEarthInverseModel.mul(vec4(uSunRel, 0)).xyz);
 
   // ── Cheap macro density at an arbitrary earth-space point q ──
-  // Faithful to marchCloudVolume's primary chain + cone tap, with the fine
-  // detail carve OFF (the volume is a low-freq field; keeps it 1 texture3D/step).
+  // Faithful to marchCloudVolume's primary chain, with the fine detail carve
+  // OFF (the volume is a low-freq field). MUST track the marcher's density
+  // composition — including the anti-tiling domain warp — or the baked
+  // shadows land beside the clouds that should cast them.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const densityAt = (q: any) => {
     const r = length(q).max(0.0001);
     const alt01 = clamp(r.sub(uInnerRadius).mul(invSlabThickness), 0, 1);
     const dir = q.div(r);
 
-    // Coverage from the weather map at the column lat/lon — matches the CONE's
-    // coverage (pow(0.6)); NOT the primary's extra cumulus mask (which fades to
-    // 1 far away anyway). Keeps the volume equivalent to what it replaces.
+    // Coverage from the weather map at the column lat/lon — same pow(0.6)
+    // shaping as the marcher.
     const u = fract(atan(dir.z, dir.x.negate()).mul(invTwoPi));
     const v = acos(clamp(dir.y.negate(), -1, 1)).mul(invPi);
     const uv = vec2(u, v).add(uCloudUvOffset);
@@ -186,18 +215,26 @@ export function createCloudLightVolume(
     const coverage = coverageRaw.pow(float(0.6));
     const cloudType = smoothstep(float(0.3), float(0.6), coverage);
 
-    // Per-column top altitude (matches the primary).
+    // Per-column top altitude + anti-tiling warp (matches the primary: the
+    // tap's g/b/a channels become the 125 km-scale base-sample offset).
     const pColumn = dir.mul(uInnerRadius);
-    const colSample = texture3D(baseVolume, pColumn.mul(uColumnScale))
-      .level(int(0)).r;
+    const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale))
+      .level(int(0));
     const topAlt = float(0.45).add(
-      smoothstep(float(0.3), float(0.7), colSample).mul(0.5),
+      smoothstep(float(0.3), float(0.7), colTap.r).mul(0.5),
     );
+    const warpVec = vec3(
+      colTap.g.sub(0.5),
+      colTap.b.sub(0.5),
+      colTap.a.sub(0.5),
+    ).mul(float(WARP_AMPLITUDE_MIRROR));
 
     const profile = cloudHeightProfileInline(alt01, topAlt, cloudType);
 
-    // Dilated base shape (matches the cone tap). CARVE intentionally OFF.
-    const bs = texture3D(baseVolume, q.mul(uBaseScale)).level(int(0));
+    // Dilated base shape (matches the marcher's dilation, warped, sampled at
+    // the bake mip — see BAKE_BASE_LOD). CARVE intentionally OFF.
+    const bs = texture3D(baseVolume, q.add(warpVec).mul(uBaseScale))
+      .level(int(BAKE_BASE_LOD));
     const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
     const baseShapeDilated = bs.r
       .add(float(1).sub(fbm))
@@ -256,6 +293,12 @@ export function createCloudLightVolume(
   const tmpRef = new THREE.Vector3();
   const tmpAxX = new THREE.Vector3();
   const tmpAxZ = new THREE.Vector3();
+  const tmpSunEarth = new THREE.Vector3();
+  // Bake-dirty tracking: the field is static in earth space for a fixed box +
+  // sun, so `compute` re-bakes ONLY when one of these changed since the last
+  // bake. lastBakedUp doubles as the "ever baked" flag (0-length = never).
+  const lastBakedUp = new THREE.Vector3();
+  const lastBakedSun = new THREE.Vector3();
   const updateBox: CloudLightVolume["updateBox"] = (cameraScaledPos) => {
     // Earth-space camera position = uEarthInverseModel · cameraScaledPos (the
     // same product the marcher builds as roEarth — origin-slide invariant).
@@ -266,23 +309,26 @@ export function createCloudLightVolume(
     const rMid = 0.5 * (rIn + rOut);
 
     const alt = rC - rIn; // scaled altitude
-    const hxz = Math.min(
-      Math.max(BOX_NEAR_HALF + alt * BOX_HALF_PER_ALT, BOX_NEAR_HALF),
-      BOX_MAX_HALF,
-    );
+
+    // CONSTANT extents (see BOX_HALF) — the per-frame altitude-driven growth
+    // was the swimming-shadows root cause (continuously changing voxel size =
+    // continuous re-discretisation of the field under camera motion).
+    const hxz = BOX_HALF;
     const sag = (hxz * hxz) / (2 * rIn); // shell drop over the footprint
     const hy = 0.5 * (rOut - rIn) + sag + 0.002; // slab half + sag + ~2 km pad
     uBoxHalfExtent.value.set(hxz, hy, hxz);
 
-    // ── Stabilise against motion shimmer (re-added after the orient switch) ──
+    // ── Stabilise against motion shimmer ──
     // The box's voxel grid would otherwise slide continuously with the camera,
     // so a static cloud point samples a continuously-shifting discretisation of
     // the (static) transmittance field → flickering shadows under the EMA
     // (worst in dark shadow, where exp(−τ) amplifies small changes). Snap the
     // camera's earth-space DIRECTION to a voxel-sized grid (double precision
     // here; the snapped centre stored as a float32 uniform is stable between
-    // jumps) so the box steps in whole-voxel increments — the residual is a tiny
-    // periodic jump the EMA absorbs, not continuous wobble.
+    // jumps) so the box steps in whole-voxel increments — the residual is a
+    // small periodic jump the EMA absorbs, not continuous wobble. With the
+    // constant extent the snap lattice itself is now fixed, so vertical
+    // motion doesn't move the box at all.
     const voxelXZ = (2 * hxz) / NX;
     const sx = Math.round(tmpEarthCam.x / voxelXZ) * voxelXZ;
     const sy = Math.round(tmpEarthCam.y / voxelXZ) * voxelXZ;
@@ -297,6 +343,8 @@ export function createCloudLightVolume(
     // the tangent plane. (Axis-aligning a thin box only contains the spherical
     // slab near the earth-frame pole and slices it into a stripe elsewhere.)
     // Build a stable tangent frame from a reference axis not parallel to up.
+    // Everything below derives from the SNAPPED up, so the axes are piecewise
+    // constant too.
     if (Math.abs(tmpUp.y) < 0.99) tmpRef.set(0, 1, 0);
     else tmpRef.set(1, 0, 0);
     tmpAxX.crossVectors(tmpRef, tmpUp).normalize();
@@ -316,7 +364,27 @@ export function createCloudLightVolume(
   const compute: CloudLightVolume["compute"] = (renderer: any) => {
     // Guard the first frame(s) before the WebGPU device is initialized.
     if (!renderer?.backend?.device) return;
+    // Nothing reads the volume while it's fully faded out (the marcher mixes
+    // toward "lit" with weight 0) — skip the bake entirely above the fade-out
+    // altitude. The dirty tracking below re-bakes on the way back down.
+    if (uVolumeWeight.value <= 0) return;
+    // ── Bake amortisation ──
+    // The baked field only depends on the (snapped) box and the earth-space
+    // sun direction; both are piecewise constant. Re-bake only when the box
+    // jumped to a new lattice cell or the sun rotated > ~0.25° (earth spin) —
+    // a hovering camera pays ZERO bake cost, a moving one only pays on snap
+    // boundaries.
+    tmpSunEarth
+      .copy(uSunRel.value)
+      .transformDirection(uEarthInverseModel.value);
+    const upUnchanged = lastBakedUp.equals(uBoxAxisY.value);
+    const sunUnchanged =
+      lastBakedSun.lengthSq() > 0 &&
+      lastBakedSun.dot(tmpSunEarth) > SUN_REBAKE_COS;
+    if (upUnchanged && sunUnchanged) return;
     renderer.compute(populateNode); // SYNCHRONOUS; submits its own command buffer
+    lastBakedUp.copy(uBoxAxisY.value);
+    lastBakedSun.copy(tmpSunEarth);
   };
 
   const dispose = () => {

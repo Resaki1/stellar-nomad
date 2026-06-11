@@ -1,0 +1,117 @@
+diff --git a/build/three.webgpu.js b/build/three.webgpu.js
+index ff56ac4034083c2c625ca0cec4e77c2f9fa34d7b..ac32e5328a497124200ace6b022e8d88a9a66c5d 100644
+--- a/build/three.webgpu.js
++++ b/build/three.webgpu.js
+@@ -72157,9 +72157,32 @@ class WebGPUTextureUtils {
+ 
+ 		} else if ( texture.isArrayTexture || texture.isDataArrayTexture || texture.isData3DTexture ) {
+ 
+-			for ( let i = 0; i < options.image.depth; i ++ ) {
++			if ( texture.isData3DTexture && mipmaps.length > 0 ) {
+ 
+-				this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++				// Manually authored 3D mip chain (mipmaps[ 0 ] is the base level),
++				// mirroring the isDataTexture path above. Mip level i of a 3D
++				// texture has max( 1, depth >> i ) slices, uploaded one at a time.
++
++				for ( let i = 0, il = mipmaps.length; i < il; i ++ ) {
++
++					const mipmap = mipmaps[ i ];
++					const mipDepth = mipmap.depth !== undefined ? mipmap.depth : Math.max( 1, options.image.depth >> i );
++
++					for ( let j = 0; j < mipDepth; j ++ ) {
++
++						this._copyBufferToTexture( mipmap, textureData.texture, textureDescriptorGPU, j, texture.flipY, j, i );
++
++					}
++
++				}
++
++			} else {
++
++				for ( let i = 0; i < options.image.depth; i ++ ) {
++
++					this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++
++				}
+ 
+ 			}
+ 
+diff --git a/build/three.webgpu.nodes.js b/build/three.webgpu.nodes.js
+index 58195f291fa1fc18f4df85a5e072dde97c4ca675..3e42b3ef7b902e9b2200a9f978d4f6360ca41813 100644
+--- a/build/three.webgpu.nodes.js
++++ b/build/three.webgpu.nodes.js
+@@ -72157,9 +72157,32 @@ class WebGPUTextureUtils {
+ 
+ 		} else if ( texture.isArrayTexture || texture.isDataArrayTexture || texture.isData3DTexture ) {
+ 
+-			for ( let i = 0; i < options.image.depth; i ++ ) {
++			if ( texture.isData3DTexture && mipmaps.length > 0 ) {
+ 
+-				this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++				// Manually authored 3D mip chain (mipmaps[ 0 ] is the base level),
++				// mirroring the isDataTexture path above. Mip level i of a 3D
++				// texture has max( 1, depth >> i ) slices, uploaded one at a time.
++
++				for ( let i = 0, il = mipmaps.length; i < il; i ++ ) {
++
++					const mipmap = mipmaps[ i ];
++					const mipDepth = mipmap.depth !== undefined ? mipmap.depth : Math.max( 1, options.image.depth >> i );
++
++					for ( let j = 0; j < mipDepth; j ++ ) {
++
++						this._copyBufferToTexture( mipmap, textureData.texture, textureDescriptorGPU, j, texture.flipY, j, i );
++
++					}
++
++				}
++
++			} else {
++
++				for ( let i = 0; i < options.image.depth; i ++ ) {
++
++					this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++
++				}
+ 
+ 			}
+ 
+diff --git a/src/renderers/webgpu/utils/WebGPUTextureUtils.js b/src/renderers/webgpu/utils/WebGPUTextureUtils.js
+index 6aff79ec827e5ff416901177aa9016db8cb18fcc..6cca0f6420284b82f837d8178e7d7ad0d80b24a4 100644
+--- a/src/renderers/webgpu/utils/WebGPUTextureUtils.js
++++ b/src/renderers/webgpu/utils/WebGPUTextureUtils.js
+@@ -538,9 +538,32 @@ class WebGPUTextureUtils {
+ 
+ 		} else if ( texture.isArrayTexture || texture.isDataArrayTexture || texture.isData3DTexture ) {
+ 
+-			for ( let i = 0; i < options.image.depth; i ++ ) {
++			if ( texture.isData3DTexture && mipmaps.length > 0 ) {
+ 
+-				this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++				// Manually authored 3D mip chain (mipmaps[ 0 ] is the base level),
++				// mirroring the isDataTexture path above. Mip level i of a 3D
++				// texture has max( 1, depth >> i ) slices, uploaded one at a time.
++
++				for ( let i = 0, il = mipmaps.length; i < il; i ++ ) {
++
++					const mipmap = mipmaps[ i ];
++					const mipDepth = mipmap.depth !== undefined ? mipmap.depth : Math.max( 1, options.image.depth >> i );
++
++					for ( let j = 0; j < mipDepth; j ++ ) {
++
++						this._copyBufferToTexture( mipmap, textureData.texture, textureDescriptorGPU, j, texture.flipY, j, i );
++
++					}
++
++				}
++
++			} else {
++
++				for ( let i = 0; i < options.image.depth; i ++ ) {
++
++					this._copyBufferToTexture( options.image, textureData.texture, textureDescriptorGPU, i, texture.flipY, i );
++
++				}
+ 
+ 			}
+ 

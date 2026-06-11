@@ -88,12 +88,12 @@ const EMPTY_THRESHOLD = 4;
 // ── Distance-adaptive step LOD (Step 1, 2026-05-30) ──
 // Step size grows with camera distance `t` (scaled units, 1 = 1000 km) so the
 // fixed MAX_PRIMARY_STEPS budget spans the whole visible range instead of dying
-// at ~48 km (96 × 500 m). Near the camera lodScale ≈ 1 → fine ~500 m steps
+// at ~26 km (256 × 100 m). Near the camera lodScale ≈ 1 → fine ~100 m steps
 // (cumulus detail); far away it grows → coarse steps (distant clouds present,
 // blurry, cheap). CAPPED per-ray (lodCap) so the growth can never over-step a
 // thin slab — orbit looking straight down at the 14 km shell still gets at
-// least LOD_MIN_SAMPLES samples through it.
-//   lodScale = min(1 + t · LOD_STEP_GROWTH,  slabLen / (dtSkip · LOD_MIN_SAMPLES))
+// least uLodMinSamples samples through it.
+//   lodScale = min(1 + t · LOD_STEP_GROWTH,  slabLen / (dtSkip · uLodMinSamples))
 // Tune with DEBUG_VIZ = 'lod' (step-size ramp) + 'iters' (budget usage).
 // 2026-05-30: tuned empirically to 800 (DEBUG_VIZ='whyStop' showed RED =
 // budget-cutoff creeping in from the horizon as you descend into the layer;
@@ -109,88 +109,102 @@ const EMPTY_THRESHOLD = 4;
 //      everywhere else, so the right value is just "whatever reaches the
 //      worst-case grazing path." Only downside is distant blur (intended LOD).
 const LOD_STEP_GROWTH = 400;
-const LOD_MIN_SAMPLES = 60;
-// ── FIX: cap the in-cloud (dense) step so it never goes coarse ──
-// CONFIRMED root cause of the horizontal bands (2026-06-03, by isolation):
-// a COARSE step sampling a cloud BODY aliases the body's vertical density
-// profile into iso-altitude shells. Proof chain: a pure uniform FINE march
-// (skip disabled, no fallback) has ZERO bands; the original distance-grown
-// dense step bands; bands vanish at LOD_STEP_GROWTH=0 and slide with camera
-// altitude (grid phase).
+// Minimum samples forced through any slab crossing (the lodCap denominator) is
+// now the `uLodMinSamples` UNIFORM, lerped per frame between these two values
+// by camera altitude above the cloud tops (see cloudFullscreenPass.ts):
+//   near/inside the deck (alt < MIN_SAMPLES_NEAR_ALT_KM) → LOD_MIN_SAMPLES_NEAR
+//   high above            (alt > MIN_SAMPLES_FAR_ALT_KM) → LOD_MIN_SAMPLES_FAR
+// Rationale: 60 forced samples are needed near the deck where the vertical
+// profile carries visible structure; from hundreds of km up, the carve and
+// detail layers are distance-faded out anyway and the (variance-preserved)
+// distance mip band-limits the base noise to the pixel footprint, so ~24
+// samples resolve everything that's left — at ~2.5× less march cost exactly
+// where the planet disk fills the whole screen.
+export const LOD_MIN_SAMPLES_NEAR = 60;
+export const LOD_MIN_SAMPLES_FAR = 24;
+export const MIN_SAMPLES_NEAR_ALT_KM = 50;
+export const MIN_SAMPLES_FAR_ALT_KM = 800;
+// ── In-cloud step growth (budget-death fix, 2026-06-10/11) ──
+// Flying INTO a large cloud used to kill every cloud behind it: dense mode
+// steps ~25 m near the camera, so 256 steps cover only ~6 km before the budget
+// dies (DEBUG_VIZ='whyStop' → RED) — all further clouds vanish until the
+// camera exits the body, exactly the "other clouds disappear when I fly close
+// to a cloud" symptom. Fix: scale the dense step by TWO terms,
+//   dtDenseEff = dtDenseL × (1 + (1−T)·DENSE_OPACITY_GROWTH
+//                              + denseIters·DENSE_ITER_GROWTH)
+// 1. Accumulated opacity (1−T): once the pixel is mostly covered, the
+//    remaining samples only modulate the last few % of alpha, so coarsening
+//    them is invisible. This alone FAILED for WISPY bodies (2026-06-11 user
+//    report: mid-distance clouds still vanished while touching a cloud) —
+//    low density keeps T high, the step stays fine, the budget still dies.
+// 2. Dense-iteration count: prolonged dense marching coarsens regardless of
+//    opacity — a deep-march LOD. Fresh cloud fronts (low denseIters) keep
+//    full resolution; by 64 dense steps (~1.6 km in) the step has doubled.
+//    Worst-case all-dense reach: 25 m × Σ(1+n/32) ≈ 32 km (was 6.4 km),
+//    after which the empty-streak fallback + grown skip steps take over.
+// Banding risk from coarse in-body steps is confined to deep/wispy interiors
+// where accumulated alpha + the EMA hide it; surfaces stay finely sampled.
+const DENSE_OPACITY_GROWTH = 3;
+const DENSE_ITER_GROWTH = 1 / 32;
+// ── Coverage-adaptive detection / integration caps (2026-06-11) ──
+// THE "small clouds fade in at close range" fix. Where the per-ray lodCap
+// stops binding (DEBUG_VIZ='lod': the red→gray boundary — which the user
+// observed aligns exactly with where small clouds fade out), the step jumps
+// to the raw 1 + t·LOD_STEP_GROWTH: skip steps grow past small cloud bodies
+// (detection becomes a per-frame coin flip → EMA ghosts that "fade in" as
+// you approach) and dense steps grow to multiple km (a detected 2 km body
+// gets ≤1 sample → faint noise). Large bodies survive — they exceed the
+// step — which produced the "big clouds at the horizon, small ones only
+// near" signature.
 //
-// dtDenseL = dtDense · min(lodScale, DENSE_LOD_CAP). The SKIP step still grows
-// with lodScale (cheap reach through EMPTY space → distant clouds are still
-// found exactly as before), but once a body is entered the dense step is capped
-// fine so the body is never under-sampled → no bands, at any distance.
+// Fix: world-space caps that bind ONLY where clouds can exist, so empty
+// space keeps the full grown stride (horizon reach, the reason the growth
+// exists at all):
+//   • dtSkipInBand = min(grown, SKIP_DETECT_CAP) — the skip ADVANCE uses
+//     this wherever profile > 0.01 (per-step coverage × height envelope says
+//     cloud is possible here); outside the band the advance stays uncapped.
+//     1.5 km ≈ the smallest macro feature the far field renders (the carve
+//     lump scale; finer detail is distance-faded anyway).
+//   • dtDenseL = min(grown, DENSE_INTEG_CAP) — a DETECTED body is never
+//     integrated coarser than 750 m, so a small body gets a stable handful
+//     of jittered samples instead of one noisy one. 750 m is the
+//     historically-validated "always looked clean" dense step (the old
+//     DENSE_LOD_CAP=3 note).
 //
-// 3 ≈ the close-range step that always looked clean (≤ ~750 m): it removes the
-// distance bands WITHOUT revealing the detail-noise speckle that a too-fine
-// step (=1) does (=1 resolves the ~250 m detail octave as per-voxel fizz).
-// Tune: lower toward 1 if bands still show (finer, but more cost + speckle);
-// raise toward LOD_MIN_SAMPLES if perf/speckle demands it (bands return).
-const DENSE_LOD_CAP = 3;
-// ── FIX: cap the SKIP (empty-space probe) step too ──
-// The skip step DETECTS the cloud front. Ungrown it reaches ~41 km at distance
-// (lodScale ≈ 41), which is far too coarse: (1) the jittered detection point
-// scatters by ±one step → ±41 km of front noise → distant bodies fizz/band and
-// tips disappear; (2) the skip→dense rewind (0.5·dtSkipL ≈ 20 km) then re-marches
-// at the fine 750 m dense step → ~27 empty steps → trips the empty-streak
-// fallback → a second giant skip jump sails PAST the cloud → far clouds break
-// up / vanish. Capping the skip step bounds the front error to ≤ SKIP_LOD_CAP ×
-// 1 km and keeps the rewind crawl short (no jump-past). 12 ≈ ≤12 km skip steps:
-// front error 41→12 km (~3.5× cleaner) while still reaching ~horizon within the
-// 96-step budget. Tune: lower (→6–8) for cleaner distant fronts at the cost of
-// reach (clouds cut off closer); raise for more reach but coarser far fronts.
-// NOTE: a per-pixel march genuinely cannot do CLEAN clouds all the way to a
-// ~500 km horizon in 96 steps — beyond the reach the right answer is a flat
-// distant-cloud layer / impostor, not a bigger skip step.
-const SKIP_LOD_CAP = 12;
-// NOTE (2026-06-03): an explicit distance/step MIP LOD on the noise volumes was
-// tried here to band-limit distant clouds (sample a coarser mip as the step
-// grows). It works mechanically (WebGPU does sample the manual 3D mip chain),
-// but mipping the SHAPE-defining base noise lowers its variance → fewer values
-// clear the Schneider threshold → cloud COVERAGE drops, and a distance-varying
-// mip MORPHS clouds as the camera moves. Lower coverage also kills early-out →
-// orbit perf tanked. Reverted. A correct distance-LOD must band-limit WITHOUT
-// changing coverage (coverage-compensated mip) or use a flat-layer/impostor for
-// the far field — see the path notes in the conversation / debugging doc.
-// ── Profile band-limit (the iso-altitude-band fix that DOESN'T touch coverage) ──
-// Near clouds are clean because full detail-erosion breaks up / hides the smooth
-// vertical density envelope; far clouds have detail faded out (detailStrength),
-// exposing the bare envelope to the coarse step → iso-altitude bands. Fix: as
-// the band-hiding detail fades with distance, WIDEN the height-profile's
-// smoothstep transitions by the same schedule, so there's no sharp envelope left
-// to alias. Softens edges only (core unchanged) → coverage-preserving, unlike
-// the noise mip. PROFILE_BLUR_K = max transition half-widening (alt01 units) at
-// full distance; ramped 0→K over the detail-fade range (5–80 km). 0 = off.
-// Tune up if far towers still band, down if distant cloud tops look too soft.
-// DISABLED (2026-06-03): tested at 0.08 — did NOT soften the far bands, so the
-// bands are NOT the profile envelope (refuted). Kept at 0 (no-op) pending the
-// temporal-reconstruction investigation; remove the threading if abandoned.
-const PROFILE_BLUR_K = 0.0;
-// ── Altitude dither (the iso-altitude-band breaker for grazing rays) ──
-// The march jitter is ALONG the ray, so the altitude it perturbs is
-// jitter·dt·rd.y — which vanishes for near-horizontal rays (rd.y→0), i.e. the
-// thick band at the camera's own altitude, and is weak for shallow-angle views
-// (the thin stable bands). This dithers the profile-lookup altitude DIRECTLY
-// (ray-direction-independent) so the per-frame STBN (`altDither`) can finally
-// decorrelate those shells → the temporal EMA averages them smooth. Faded IN
-// with distance (zero ≤5 km so near clouds stay crisp; full ≥80 km) and given
-// in fractions of slab thickness (alt01). Only became effective once the STBN
-// frame slice was unstarved (the 63-slice fix). Tune up if grazing/camera-
-// altitude bands persist; down if distant cloud tops/bottoms get too soft.
-// DISABLED (2026-06-03): no effect at any value → the bands are NOT the
-// profile-altitude lookup. Kept at 0 pending localization.
-const ALT_DITHER_K = 0.0;
-// ── Grid-start jitter (moves the march CELL WALLS per pixel/frame) ──
-// The bands are the cell grid (tStart + k·dt) quantizing the surface; the
-// per-sample jitter only moves samples WITHIN cells, so it can't touch them.
-// Offsetting tStart per-pixel/frame by START_JITTER_FRAC × one entry-LOD-step
-// moves the whole grid so the EMA can average the quantization. 1 = full step.
-// Caveat: a single offset shifts the whole ray uniformly (≈one cell near, a
-// fraction of a km-scale cell far) → helps near/mid most, may flicker far or
-// soften near. Lower toward 0 if so. 0 = off (original deterministic grid).
-const START_JITTER_FRAC = 0.0;
+// History: absolute step caps were tried 2026-06-03 (SKIP_LOD_CAP /
+// DENSE_LOD_CAP) and reverted for "motion-dependent cut-in-half gaps" —
+// that variant capped dense at 75 m with NO budget protection, so the march
+// died inside bodies (cut-in-half = budget death mid-body). This variant
+// caps 10× coarser, applies the skip cap only in-band, and sits on top of
+// the opacity/iteration growth terms + the T early-exit, which bound the
+// dense spend. Worst case (continuous in-band haze to the horizon) the
+// in-band reach is ~256 × 1.5 km ≈ 380 km before budget cutoff — beyond
+// the practical visible range of km-scale features; the far field there is
+// carried by the thin-coverage 2D overlay.
+const SKIP_DETECT_CAP_SCALED = 0.0015; // 1.5 km
+const DENSE_INTEG_CAP_SCALED = 0.00075; // 750 m
+// ── Data3DTexture mips on the GPU: FIXED by patches/three@0.183.2.patch ──
+// Stock three (≤ r184) allocates mipLevelCount = texture.mipmaps.length but
+// its Data3DTexture upload path writes ONLY level 0 (slice by slice;
+// texture.mipmaps is never transferred) — WebGPU zero-initializes the rest,
+// so any .level(>0) sample blended toward ZERO. A footprint-matched mip lod
+// lived here 2026-06-10/11 and was the root cause of "small clouds fade in
+// at close range / only big decks at the horizon"; the SAME zero-mips also
+// explain the 2026-06-03 "mips drop coverage / clouds morph" revert
+// (misdiagnosed then as box-filter variance loss — noiseVolumes.ts carries
+// the variance-renormalized chain). Diagnosed via the maxProfile (band
+// sampled everywhere) vs maxProbeShape (field empty at range) DEBUG_VIZ
+// pair. See CLOUD_DEBUGGING_LESSONS case study #16.
+// As of 2026-06-11 the pnpm patch uploads the full mipmaps[] chain
+// (verified via the /dev/mip3d-test readback page), so .level(>0) is SAFE —
+// all taps remain at level 0 until the footprint-matched mip scheme is
+// deliberately re-enabled and re-tuned.
+//
+// Dead-end notes for four removed zero-valued knobs (PROFILE_BLUR_K,
+// ALT_DITHER_K, START_JITTER_FRAC, LOD_DITHER — all empirically refuted as
+// band fixes, see git history 2026-06-01..03): profile-envelope blur did not
+// soften far bands; altitude dither had no effect; start-grid jitter traded
+// bands for flicker; LOD-growth dither only added body noise.
 // Per-pixel dither amplitude, as a FRACTION of one skip step (dtSkip). The
 // dither jitters each ray's march start to decorrelate the skip-grid across
 // pixels — without it, skip-mode sampling produces concentric iso-distance
@@ -210,16 +224,34 @@ const START_JITTER_FRAC = 0.0;
 // old coherent offset — so 1.0 no longer means "noisy". Lower it only if edges
 // still get noisy; raise toward 1.0 if bands reappear.
 const DITHER_FRACTION = 1.0;
-// Per-pixel LOD-growth dither amount (anti-banding for the distance LOD). The
-// LOD step growth quantizes the dense sample count → iso-distance bands;
-// scaling the growth rate by 1 ± LOD_DITHER/2 per pixel (frame-invariant blue
-// noise) scatters each band into blue-noise speckle the spatial filter + EMA
-// smooth out. 0 = off (sharp bands return); ~0.5 = ±25% growth-rate scatter.
-// Raise if bands persist; lower if it adds visible distance speckle.
-// DISABLED (2026-06-01): dithering the LOD grid did NOT break the bands (even
-// at 10× it only added body noise) — proof the bands are NOT step-size/count
-// quantization. Left at 0 pending localization of the real source.
-const LOD_DITHER = 0.0;
+// ── Anti-tiling domain warp (2026-06-10) ──
+// The base volume tiles every 1000/uBaseScale km (= 20 km at 50) with only 4
+// low-frequency Worley cells per tile — from a few hundred km up the SAME
+// 4-cell pattern visibly repeats in rows across the planet (the user's orbit
+// screenshot). Fix: offset the base-volume sample position by a vector built
+// from the column tap's UNUSED g/b/a channels (the per-column tap at
+// uColumnScale = 8 → 125 km period is already fetched every step for topAlt,
+// so the warp is FREE — no extra fetch). A ±WARP_AMPLITUDE offset that varies
+// at 125 km scale means neighbouring base tiles no longer line up → the 20 km
+// periodicity is destroyed while local shapes are untouched (the warp is
+// near-constant across any single cloud body). Static field in earth space →
+// no morphing under camera motion. Amplitude in scaled units; 0.01 = 10 km =
+// half a base tile, enough to fully decorrelate adjacent tiles.
+const WARP_AMPLITUDE = 0.01;
+// ── Local lump self-shadow for the light-volume path (2026-06-10) ──
+// The 3D light volume stores MACRO sun transmittance at 3-6 km voxels —
+// switching to it from the 6-tap cone lost the per-lump (~1-3 km carve-scale)
+// self-shadow that gave cumulus their crisp sunlit-crest / dark-crevice
+// shading. Restore it with ONE short directional probe: sample the carved base
+// shape a few hundred metres toward the sun and treat it as local occluding
+// density,
+//   Tsun *= exp(−carvedShape(p + sunDir·DIST) × coverage × profile × DENS × DIST)
+// Costs 2 texture3D per dense voxel (base + carve at the offset point) and is
+// gated to the carve-active range (t < 40 km) — beyond that the carve is faded
+// and the macro volume alone is correct. The macro top-bright/under-dark
+// gradient still comes from the volume; this only adds the high-freq relief.
+const LOCAL_SHADOW_DIST = 0.0008; // 800 m toward the sun
+const LOCAL_SHADOW_DENSITY = 2000; // od ≈ 0..1.6 over typical carved densities
 // Cone-traced light march (Nubis C3). 6 stratified samples toward the sun,
 // each perturbed by a pre-baked low-discrepancy 3D kernel, scaled by step
 // distance so the cone widens with depth. Total integration range ≈ 12 km
@@ -434,7 +466,9 @@ const DEBUG_VIZ:
   | "dither"
   | "lod"
   | "whyStop"
-  | "lightVol" = "off";
+  | "lightVol"
+  | "maxProfile"
+  | "maxProbeShape" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, three-type decomposition).
 //
@@ -464,39 +498,25 @@ const DEBUG_VIZ:
 // every region read as "the same cloud, taller or shorter". The mix below
 // is what gives stratus, stratocumulus, and cumulus visually distinct
 // silhouettes that match the reference shots.
+// (A `blur` envelope-widening parameter was threaded through here 2026-06-03
+// as an iso-altitude-band fix; empirically refuted and removed. The inline
+// copy in cloudLightVolume.ts mirrors this exact shape — keep in lockstep.)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-// `blur` (alt01 units, ≥0) widens every ALTITUDE transition symmetrically
-// (edge0−blur, edge1+blur) so the vertical density envelope is band-limited to
-// the march's vertical sample spacing — softening the iso-altitude bands a
-// coarse far step would otherwise alias. It softens edges only (core unchanged)
-// so coverage is preserved, unlike mipping the shape noise. blur=0 → original.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cloudHeightProfile(
-  alt01: any,
-  topAlt: any,
-  cloudType: any,
-  blur: any,
-): any {
+function cloudHeightProfile(alt01: any, topAlt: any, cloudType: any): any {
   // Stratus: thin flat sheet.
-  const stratusBase = smoothstep(float(0.0).sub(blur), float(0.10).add(blur), alt01);
-  const stratusTop = float(1).sub(
-    smoothstep(float(0.15).sub(blur), float(0.25).add(blur), alt01),
-  );
+  const stratusBase = smoothstep(float(0.0), float(0.10), alt01);
+  const stratusTop = float(1).sub(smoothstep(float(0.15), float(0.25), alt01));
   const stratus = stratusBase.mul(stratusTop);
 
   // Stratocumulus: moderate broken slab.
-  const scBase = smoothstep(float(0.0).sub(blur), float(0.25).add(blur), alt01);
-  const scTop = float(1).sub(
-    smoothstep(float(0.45).sub(blur), float(0.65).add(blur), alt01),
-  );
+  const scBase = smoothstep(float(0.0), float(0.25), alt01);
+  const scTop = float(1).sub(smoothstep(float(0.45), float(0.65), alt01));
   const stratocumulus = scBase.mul(scTop);
 
   // Cumulus: tall column whose top fade is keyed by per-column topAlt.
-  const cumBase = smoothstep(float(0.0).sub(blur), float(0.40).add(blur), alt01);
+  const cumBase = smoothstep(float(0.0), float(0.40), alt01);
   const fadeStart = topAlt.sub(float(0.35));
-  const cumTop = float(1).sub(
-    smoothstep(fadeStart.sub(blur), topAlt.add(blur), alt01),
-  );
+  const cumTop = float(1).sub(smoothstep(fadeStart, topAlt, alt01));
   const cumulus = cumBase.mul(cumTop);
 
   const lowerMix = mix(stratus, stratocumulus, smoothstep(float(0.0), float(0.5), cloudType));
@@ -693,9 +713,10 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   const uLightConeRadius = uniform(0.3);
 
   // Shared crossfade uniform owned by earth.ts (`createUniforms`). 0 → flat
-  // overlay only (above 35 k km), 1 → volumetric only (below 25 k km). The
-  // anchor mesh registers at the lod.near boundary (35 k); the fullscreen
-  // pass ramps in from 0 alpha as the player closes, hiding the tier swap.
+  // overlay only (above ~3000 km ALTITUDE), 1 → volumetric (below ~1500 km).
+  // SpaceRenderer skips the cloud passes entirely while this is 0, so the
+  // anchor mesh registering at the lod.near boundary (35 k km distance) costs
+  // nothing until the camera actually descends toward the volumetric range.
   const uVolumetricBlend = ctx.uniforms.uVolumetricBlend;
 
   setupCloudPipeline({
@@ -770,6 +791,7 @@ export function marchCloudVolume({
   uVolumetricBlend,
   uStbn,
   uStbnFrameSlice,
+  uLodMinSamples,
   uLightVol,
   uLightVolMin,
   uLightVolHalfExtent,
@@ -810,6 +832,10 @@ export function marchCloudVolume({
   uStbn: THREE.Data3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uStbnFrameSlice: any;
+  // Altitude-adaptive minimum samples per slab crossing (see the
+  // LOD_MIN_SAMPLES_NEAR/FAR constants; CPU-lerped in cloudFullscreenPass).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLodMinSamples: any;
   // ── 3D light-volume lookup (optional; only bound when USE_LIGHT_VOLUME) ──
   uLightVol?: THREE.Texture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -881,18 +907,20 @@ export function marchCloudVolume({
     const tExit = hitsSurface.select(tExitSlab.min(tSurfNear), tExitSlab);
 
     const slabLen = sub(tExit, tEnter).max(0);
-    // Fixed-world-space step sizes. dtSkip = 500 m, dtDense = 125 m
+    // Fixed-world-space step sizes. dtSkip = 100 m, dtDense = 25 m
     // (4× finer). See the constants block above for why this is fixed
     // rather than slab-length-adaptive — short version: tower features
     // have constant world-space size so step size must too.
     const dtSkip = float(SKIP_STEP_SCALED);
     const dtDense = dtSkip.mul(float(DENSE_STEP_RATIO));
     // Per-ray cap for the distance-adaptive step (see LOD_STEP_GROWTH):
-    // lodScale ≤ slabLen / (dtSkip · LOD_MIN_SAMPLES) guarantees at least
-    // LOD_MIN_SAMPLES steps across THIS ray's slab path, so the growth can't
+    // lodScale ≤ slabLen / (dtSkip · uLodMinSamples) guarantees at least
+    // uLodMinSamples steps across THIS ray's slab path, so the growth can't
     // over-step a thin slab (orbit looking down). Loop-invariant; .max(1) keeps
-    // the cap from ever forcing steps finer than the base.
-    const lodCap = slabLen.div(dtSkip.mul(float(LOD_MIN_SAMPLES))).max(1);
+    // the cap from ever forcing steps finer than the base. uLodMinSamples is
+    // altitude-adaptive (60 near the deck → 24 high above; see constants).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const lodCap: any = slabLen.div(dtSkip.mul(uLodMinSamples)).max(1);
 
     // Per-pixel dither: jitters the ray entry point by [0, dtSkip) per
     // fragment so adjacent pixels' discovery samples don't all align to
@@ -923,70 +951,14 @@ export function marchCloudVolume({
       uStbnFrameSlice,
     );
     const dither = texture3D(uStbn, stbnUv).r;
-    // Blue-noise altitude dither (anti-banding) — the reference-correct
-    // replacement for the old white-noise hash. Per-FRAGMENT (screen-space)
-    // STBN: it does NOT depend on the sample position `p`, so the per-frame
-    // march dither that shifts `p` can't decorrelate it (that position
-    // dependence is exactly what made the white hash flicker). It varies across
-    // frames only via the STBN slice (the designed temporal axis → clean
-    // accumulation) and across the screen as blue noise (→ the spatial filter
-    // resolves it). The screen offset decorrelates it from the march-start
-    // dither above. Consumed at `altPerturbed` inside the march loop.
-    const altDither = texture3D(
-      uStbn,
-      vec3(
-        screenCoordinate.x.add(37).div(float(STBN_PERIOD_XY)),
-        screenCoordinate.y.add(89).div(float(STBN_PERIOD_XY)),
-        uStbnFrameSlice,
-      ),
-    ).r;
-    // Per-pixel LOD dither (anti-banding for the distance LOD). The LOD step
-    // grows with distance, so the integer # of dense steps through a cloud jumps
-    // at iso-distances → coherent horizontal "sample-count" bands (confirmed:
-    // they vanish at LOD_STEP_GROWTH=0; they're the grid, not the content). The
-    // jumps are invariant to WHERE we sample (uniform body), so the only cure is
-    // to vary the step GRID — but doing it per-FRAME shimmers under motion.
-    // Instead, scale the growth RATE by a PER-PIXEL blue-noise factor: the jump
-    // distances scatter across neighbouring pixels → the band becomes blue-noise
-    // speckle the spatial filter + EMA blend to smooth, not a sharp line.
-    // Sampled at a FIXED slice (frame-invariant) so a screen pixel's LOD is
-    // stable over time; the EMA's reprojection then averages the residual as
-    // features cross pixels under motion. Offset coords decorrelate it from the
-    // other two STBN taps.
-    const lodPixelDither = texture3D(
-      uStbn,
-      vec3(
-        screenCoordinate.x.add(53).div(float(STBN_PERIOD_XY)),
-        screenCoordinate.y.add(17).div(float(STBN_PERIOD_XY)),
-        float(0),
-      ),
-    ).r;
-    // 1 ± LOD_DITHER/2 multiplier on the LOD growth rate, per pixel. (Weakest
-    // near camera where t·growth is tiny → no banding there anyway; strongest at
-    // range where the bands live.)
-    const lodPixelFactor = float(1).add(
-      lodPixelDither.sub(0.5).mul(float(LOD_DITHER)),
-    );
-    // Full-amplitude dither. Reducing to 0.25× was tried (2026-05-27)
-    // to address spatial speckle but reintroduced concentric step-
-    // aliasing rings — visible even with STBN's spatial decorrelation,
-    // because at low amplitude the t-coverage per pixel is too narrow
-    // to break correlated isodensity features at iso-distance from the
-    // camera. The speckle has a different root cause (see Phase D
-    // reconstruction-noise investigation).
-    // March start = slab entry, JITTERED per-pixel/frame (see START_JITTER_FRAC)
-    // to move the cell walls so the EMA can average the grid quantization. NOTE:
-    // this was previously removed in favour of the per-sample stratified jitter
-    // (`stratJitter`) on the theory that per-sample jitter breaks the sample-
-    // count bands — but per-sample jitter moves samples WITHIN cells and never
-    // moves the walls, so it can't (confirmed empirically). Scaled by the entry
-    // LOD step so the offset is ~one cell at the near end.
-    const lodScaleEntry = float(1)
-      .add(tEnter.mul(float(LOD_STEP_GROWTH)))
-      .min(lodCap);
-    const tStart = tEnter.add(
-      dither.mul(dtSkip).mul(lodScaleEntry).mul(float(START_JITTER_FRAC)),
-    );
+    // (Two further STBN taps — an altitude dither and a per-pixel LOD-growth
+    // dither — lived here as band-fix attempts; both empirically refuted and
+    // removed 2026-06-10. The per-sample stratified jitter in the loop is
+    // what actually broke the bands.)
+    // March start = slab entry. A START_JITTER_FRAC whole-grid jitter was
+    // tried here (moves the march cell walls per pixel/frame) — traded bands
+    // for flicker, refuted, removed.
+    const tStart = tEnter;
 
     // Dual-lobe Henyey-Greenstein phase, constant per fragment (sun is
     // effectively at infinity vs cloud scale, and the view dir is constant
@@ -1239,6 +1211,20 @@ export function marchCloudVolume({
     // directly without the densScale multiplier obscuring it.
     const lastEroded = float(0).toVar();
 
+    // ── Field-vs-sampling discriminators (DEBUG_VIZ 'maxProfile' /
+    // 'maxProbeShape', added 2026-06-11 during the far-small-cloud hunt) ──
+    // maxProfile  = max coverage×heightProfile seen along the ray. BLACK at
+    //   a distance where clouds are missing ⇒ the march never SAMPLED the
+    //   cloud altitude band there (geometry/stepping problem).
+    // maxProbeShape = max remapped probe shape seen along the ray. maxProfile
+    //   GRAY but maxProbeShape BLACK ⇒ the band was sampled but the FIELD
+    //   passes nothing through the Remap threshold there (density-model
+    //   problem — thresholds/noise distribution, not stepping).
+    // Together they split every "clouds missing at distance" hypothesis into
+    // sampling vs field in one screenshot each.
+    const maxProfile = float(0).toVar();
+    const maxProbeShape = float(0).toVar();
+
     // ── Outer gate neutralised (trivially-true condition) ──
     // Previously: `If(coverageMax > 0.01)` based on hoisted 3-tap samples.
     // That gate caused the "wireframe outlines / cloud portal" artifact:
@@ -1289,16 +1275,31 @@ export function marchCloudVolume({
         // AND the density integration (a longer step covers more cloud, so it
         // must integrate proportionally more optical depth).
         const lodScale = float(1)
-          .add(t.mul(float(LOD_STEP_GROWTH)).mul(lodPixelFactor))
+          .add(t.mul(float(LOD_STEP_GROWTH)))
           .min(lodCap);
-        // REVERTED (2026-06-03) to the original adaptive step (no caps) to test
-        // whether this session's DENSE_LOD_CAP / SKIP_LOD_CAP introduced the
-        // motion-dependent "cut-in-half" gaps + darker bands. Original far
-        // behaviour: steps grow coarse with distance → lots of opacity per step
-        // → blurry but SOLID far clouds (no under-accumulation gaps). Caps still
-        // defined above but unused while we confirm the regression.
-        const dtSkipL = dtSkip.mul(lodScale);
-        const dtDenseL = dtDense.mul(lodScale);
+        const dtSkipGrown = dtSkip.mul(lodScale);
+        // Detection cap for the IN-BAND skip step (see SKIP_DETECT_CAP_SCALED
+        // — the "small clouds fade in close" fix). The empty-space advance
+        // further below still uses the uncapped dtSkipGrown for reach.
+        const dtSkipInBand = dtSkipGrown.min(float(SKIP_DETECT_CAP_SCALED));
+        // Integration cap for the dense step (see DENSE_INTEG_CAP_SCALED):
+        // a DETECTED body is never sampled coarser than this, so small bodies
+        // get a stable handful of samples instead of one noisy one.
+        const dtDenseL = dtDense
+          .mul(lodScale)
+          .min(float(DENSE_INTEG_CAP_SCALED));
+        // Budget-death fix (see DENSE_OPACITY_GROWTH / DENSE_ITER_GROWTH):
+        // dense step grows with accumulated opacity (covered pixels stop
+        // burning fine steps on cloud they can barely see) AND with the
+        // dense-iteration count (wispy bodies keep T high, so depth into the
+        // march is the only signal that the budget is being eaten). These
+        // multipliers apply ON TOP of the integration cap — they exist to
+        // protect the budget, which the cap alone would otherwise spend.
+        const dtDenseEff = dtDenseL.mul(
+          float(1)
+            .add(float(1).sub(T).mul(float(DENSE_OPACITY_GROWTH)))
+            .add(denseIters.mul(float(DENSE_ITER_GROWTH))),
+        );
 
         // Per-sample stratified jitter (Frostbite §5.5.3): offset this sample
         // within its LOCAL step using a per-step low-discrepancy value — a
@@ -1317,10 +1318,18 @@ export function marchCloudVolume({
         // weak to dither the detection grid — which is why the bands survived
         // every previous attempt. Dense mode keeps the fine dtDenseL scale
         // (stratify the integration without over-jittering it).
+        //
+        // Jitter uses the IN-BAND (capped) skip step, not the empty-space
+        // grown one: the jitter's job is breaking the DETECTION grid, which
+        // only exists where clouds can (the capped regime). Jittering across
+        // a full multi-km empty-space step would also smear tFront by ± that
+        // step for no benefit.
         const stratJitter = fract(
           dither.add(primaryIters.mul(float(0.61803398875))),
         );
-        const jitterScale = stepMode.lessThan(0.5).select(dtSkipL, dtDenseL);
+        const jitterScale = stepMode
+          .lessThan(0.5)
+          .select(dtSkipInBand, dtDenseEff);
         const tSample = t.add(stratJitter.mul(jitterScale).mul(DITHER_FRACTION));
         const p = roEarth.add(rdEarth.mul(tSample));
         const r = length(p).max(0.0001);
@@ -1350,122 +1359,18 @@ export function marchCloudVolume({
         const uvP = vec2(uP, vP).add(uCloudUvOffset);
         const coverageRaw = texture(weatherMap, uvP).level(int(0)).r;
 
-        // ── Procedural cumulus-pattern modulation ──
-        // Real Earth's weather map (satellite-derived) provides smooth
-        // gradient coverage values — that produces stratiform/stratocumulus
-        // appearance, NOT discrete cumulus puffs. Reference engines like
-        // KSP-EVE either use art-authored weather maps with built-in
-        // cumulus patches, or layer procedural variation on top.
+        // Coverage = the smooth weather map directly, lifted with a gamma
+        // (pow < 1): the Nubis Remap below thresholds away coverage under
+        // ~1 - baseShape (≈0.33), so the raw low/mid-coverage deck would get
+        // deleted (too sparse). pow(0.6) lifts low/mid coverage while keeping
+        // 0 → 0 (true clear sky stays clear). Density/coverage knob #1 —
+        // raise the exponent toward 1 for less cloud, lower (→0.4) for more.
         //
-        // We multiply coverage by a low-frequency 3D noise pattern sampled
-        // from the base volume's Worley FBM channel (.g). This breaks the
-        // smooth weather map into cumulus-scale patches:
-        //   - High-noise regions: coverage stays high → cloud body
-        //   - Low-noise regions: coverage drops → clear sky gaps
-        //
-        // p.mul(80) gives texture period 1/80 = ~12 km world — features at
-        // 1.5-3 km scale (typical cumulus column width).
-        //
-        // Threshold mask (smoothstep) instead of linear modulation. Range
-        // widened from (0.35, 0.65) to (0.15, 0.85) — 70% transition zone:
-        //   pattern < 0.15: mask = 0 → coverage = 0 → CLEAR SKY GAP
-        //   pattern > 0.85: mask = 1 → coverage = coverageRaw → DENSE CUMULUS
-        //   0.15-0.85: gradient transition → soft cumulus edges
-        //
-        // Why the wider range: the original (0.35, 0.65) was near-binary —
-        // half the noise values produced mask=0, half produced mask=1, with
-        // only a 30% transition. Under Phase D's 1/16 reconstruction, the
-        // marcher samples this noise once per 4×4 tile. Adjacent tiles
-        // landing at different noise points produced binary hit/miss
-        // results, which the user's `sparseAlpha`/`tFront` diagnostics
-        // confirmed: black tiles inside what should be solid cloud
-        // bodies, with the binary pattern shifting every frame as
-        // different Bayer sub-pixels sample different noise points. The
-        // 70% transition softens this into a gradient — adjacent tiles
-        // get gradient mask differences instead of binary on/off, and
-        // the per-pixel temporal accumulation has continuous values to
-        // average across rather than {0, 1}.
-        //
-        // Tradeoff: cumulus look slightly less "discrete" than Phase B
-        // intended — more like dense stratocumulus with partial puff
-        // articulation. Acceptable for noise reduction; the macro shape
-        // is still driven by the same noise, just with softer falloffs.
-        //
-        // 2026-05-30: sample the pattern at the COLUMN projection (project to
-        // the inner shell via dirP) instead of the full 3D position `p`. The
-        // 3D sample varied over ~12 km VERTICALLY too — inside a ~14 km slab
-        // that punched the pattern on/off UP a single column, so cloud existed
-        // at some altitudes and not others = the DISCONNECTED FLOATING BLOBS,
-        // and it dominated the shape (which is why BILLOW_CARVE had ~no visible
-        // effect: the 3D mask had already carved the holes). Projecting to the
-        // shell makes the "is there a cloud body here" decision per-column →
-        // vertically COHERENT, connected bodies. Vertical shape comes from the
-        // height profile; 3D billow/erosion comes from baseShape + detail
-        // erosion nibbling the surface.
-        const pCol = dirP.mul(uInnerRadius);
-        const cumulusPattern = texture3D(baseVolume, pCol.mul(80))
-          .level(int(0)).g;
-        const cumulusMask = smoothstep(
-          float(0.15),
-          float(0.85),
-          cumulusPattern,
-        );
-
-        // ── Distance-based pattern falloff (Nubis LOD trick, applied to
-        // the cumulus pattern — mirrors the per-voxel `detailStrength`
-        // falloff applied to detail erosion further below) ──
-        //
-        // The cumulus pattern features are ~1.5–3 km in world space.
-        // For close camera positions, those features comfortably exceed
-        // tile-projected size, and the procedural cumulus puffs read
-        // correctly. At distance, two things go wrong:
-        //   (a) Pattern features become sub-tile in screen space →
-        //       adjacent tiles sample different points in the noise →
-        //       binary on/off mask values → user-visible alpha speckle
-        //       inside what should be solid cloud bodies (the
-        //       `sparseAlpha` diagnostic confirmed this — black tiles
-        //       inside cloud interiors).
-        //   (b) Grazing rays traverse hundreds of km through the slab
-        //       with only ~96 skip samples, so per pattern feature
-        //       there's < 1 sample. Pattern-in features get missed
-        //       entirely → first-hit detection fails → black tiles.
-        //
-        // Fix: fade the pattern's modulation strength to 0 by `patternFar`
-        // (≈ 80 km), restoring smooth `coverageRaw` density. Distant
-        // cloud cover reads as continuous stratiform rather than
-        // aliased-cumulus. Close-range cumulus character preserved
-        // verbatim from Phase B (puffs visible within ~20 km).
-        //
-        // Range constants reuse the detail-layer's (0.005, 0.080) so
-        // the LOD transition is consistent between pattern and detail.
-        const patternNear = float(0.005); // 5 km — full pattern
-        const patternFar = float(0.080);  // 80 km — no pattern
-        const patternStrength = float(1).sub(
-          smoothstep(patternNear, patternFar, t),
-        );
-        // mix(1, cumulusMask, strength): strength=1 → mask;
-        //                                 strength=0 → 1 (no modulation,
-        //                                 smooth coverageRaw passes through).
-        const cumulusMaskLod = mix(
-          float(1),
-          cumulusMask,
-          patternStrength,
-        );
-        // 2026-05-30: BYPASS the cumulus-pattern gate. With the Nubis Remap
-        // composition (below), discrete bodies emerge from the smooth coverage
-        // map + the 3D base noise — the separate `cumulusMask` gate is both
-        // redundant AND harmful: it carved coverage into ~3 km cells (the
-        // spikes/blobs) and multiplied coverage DOWN (so the Remap then
-        // thresholded away the whole deck). Real Nubis has no such gate.
-        // coverage = the smooth weather map directly. (The dead cumulusMask
-        // block above is TSL dead-code-eliminated; delete once confirmed.)
-        //
-        // ...and raise it with a gamma (pow < 1) so the deck returns: the Nubis
-        // Remap below thresholds away coverage below ~1 - baseShape (≈0.33), so
-        // the raw low/mid-coverage deck got deleted (too sparse). pow(0.6) lifts
-        // low/mid coverage while keeping 0 → 0 (true clear sky stays clear).
-        // Density/coverage knob #1 — raise the exponent toward 1 for less
-        // cloud, lower (→0.4) for more.
+        // (A procedural "cumulus pattern" threshold mask on coverage lived
+        // here through Phase B–D; it was bypassed 2026-05-30 — with the Remap
+        // composition discrete bodies emerge from coverage + 3D noise, and
+        // the extra gate carved coverage into cells and thresholded the deck
+        // away. Removed entirely 2026-06-10; see git history.)
         const coverage = coverageRaw.pow(float(0.6));
 
         // ── Cloud-type derivation (Nubis B2, Stage 1) ──
@@ -1500,14 +1405,24 @@ export function marchCloudVolume({
         // tall-vs-short visual separation paired with the top-heavy
         // density bias).
         const pColumn = p.div(r).mul(uInnerRadius);
-        // Force mip 0: auto mip-from-derivatives cross-hatches under the
-        // per-pixel dither (adjacent quad pixels at very different t → spiky
-        // derivative → inconsistent mip at iso-distance contours). An explicit
-        // distance/step mip LOD was tried (2026-06-03) to band-limit distant
-        // clouds, but mipping the shape-defining noise dropped coverage and
-        // morphed clouds with distance — reverted (see CLOUD_DEBUGGING notes).
-        const colSample = texture3D(baseVolume, pColumn.mul(uColumnScale))
-          .level(int(0)).r;
+        // Explicit mip 0 (NEVER implicit: auto mip-from-derivatives
+        // cross-hatches under the per-pixel dither — adjacent quad pixels at
+        // very different t → spiky derivative → inconsistent mip at
+        // iso-distance contours; CLOUD_DEBUGGING_LESSONS case study #2).
+        // This 125 km-period tap stays at level 0 — its texels are ~1 km in
+        // world space, comfortably above any pixel footprint we march at.
+        const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale))
+          .level(int(0));
+        const colSample = colTap.r;
+        // ── Anti-tiling domain warp (see WARP_AMPLITUDE) ──
+        // The column tap's g/b/a channels (Worley FBM bands, unused for
+        // topAlt) are FREE here — turn them into a 125 km-scale offset vector
+        // for the base-volume sample so the 20 km base tiles never line up.
+        const warpVec = vec3(
+          colTap.g.sub(0.5),
+          colTap.b.sub(0.5),
+          colTap.a.sub(0.5),
+        ).mul(float(WARP_AMPLITUDE));
         // topAlt: per-column cumulus-top height in [0.45, 0.95], via a
         // smoothstep(0.3, 0.7) spread of the (clustered) Perlin sample.
         // 2026-05-30: re-introduced the spread (was linear) so cumulus towers
@@ -1530,54 +1445,10 @@ export function marchCloudVolume({
           smoothstep(float(0.3), float(0.7), colSample).mul(0.5),
         );
 
-        // ── Altitude perturbation (band-breaker, outer-scope version) ──
-        //
-        // Without perturbation, `profile` is a clean function of altitude01
-        // alone → iso-altitude surfaces form 2D contour bands on the cloud
-        // body. With `densMul` set high (binary-ish saturation), the
-        // visible cloud surface is exactly where the OUTER profile gate
-        // first lets a voxel through, so the bands are determined here,
-        // not in the dense-mode density math.
-        //
-        // Hash-based 3D noise (no extra texture sample): produces ±5%
-        // slab-thickness altitude shift per voxel. Discrete per-voxel
-        // (not smooth) — that's deliberate, since smooth noise would
-        // create its own visible iso-surfaces. The cloud's macro shape
-        // is set by baseShape further down; this noise only shifts where
-        // the profile-altitude contour falls.
-        //
-        // Phase D close-out diagnostic (2026-05-27): tested whether the
-        // hash drove per-tile alpha speckle by setting altPerturbed =
-        // altitude01. No visible change — the hash is NOT the noise
-        // source under 1/16 reconstruction. Retained for anti-banding.
-        // Anti-banding: dither the altitude contour with BLUE noise. The old
-        // white-noise hash (fract(sin(dot(p,…)))) did this per-voxel, but it
-        // fully decorrelated whenever the march dither shifted `p` → per-frame
-        // grain (confirmed: disabling it removed the residual nearby flicker).
-        // The per-fragment STBN `altDither` (computed once above) breaks the
-        // iso-altitude bands the same way, but is position-independent so it
-        // can't flicker, and is blue + temporally-decorrelated so the spatial
-        // and temporal filters resolve it cleanly. ±5% slab; lower the 0.10 if
-        // surfaces look fuzzy, raise it if banding still shows through.
-        // Amplitude faded IN with distance (see ALT_DITHER_K): 0 near (≤5 km,
-        // fine steps already → crisp), full far (≥80 km). The per-frame STBN
-        // `altDither` then dithers the profile altitude across the shell spacing
-        // so the temporal EMA averages the iso-altitude bands smooth — including
-        // the camera-altitude (rd.y≈0) band the along-ray jitter can't touch.
-        const altDitherAmp = float(ALT_DITHER_K).mul(
-          smoothstep(float(0.005), float(0.080), t),
-        );
-        const altPerturbed = altitude01
-          .add(altDither.sub(0.5).mul(altDitherAmp))
-          .clamp(0, 1);
-
-        // Profile band-limit (see PROFILE_BLUR_K): ramp the envelope-softening
-        // 0→K over the detail-fade range (5–80 km), mirroring detailStrength so
-        // the profile softens exactly as the band-hiding detail erosion fades.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const profileBlur: any = float(PROFILE_BLUR_K).mul(
-          smoothstep(float(0.005), float(0.080), t),
-        );
+        // (An altitude-perturbation hash and a profile-blur band-limit lived
+        // here as iso-altitude-band fixes; both empirically refuted — removed
+        // 2026-06-10. The band fix that stuck is the footprint-matched base
+        // mip below.)
 
         // ── Dimensional profile (Nubis B4) ──
         // profile = coverage × heightProfile(alt, cloudType). First-class
@@ -1588,13 +1459,13 @@ export function marchCloudVolume({
         // depends on.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const heightProfile: any = cloudHeightProfile(
-          altPerturbed,
+          altitude01,
           topAlt,
           cloudType,
-          profileBlur,
         );
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const profile: any = coverage.mul(heightProfile);
+        maxProfile.assign(maxProfile.max(profile));
 
         // Tracks whether this iteration found cloud (drives empty-streak
         // bookkeeping below). Zero by default; set to 1 inside the cloud
@@ -1608,10 +1479,29 @@ export function marchCloudVolume({
           // ── Cheap probe: Schneider macro shape (no detail erosion) ──
           // Used by both modes. In skip mode it's the only volume sample
           // taken; in dense mode it feeds into the detail-erosion pipeline.
-          // R = pure Perlin, GBA = three octaves of Worley FBM. The remap
-          // `(R + 1 - fbm) / (2 - fbm)` dilates the Perlin macro shape
-          // proportionally to FBM strength.
-          const baseSample = texture3D(baseVolume, p.mul(uBaseScale))
+          // R = pure Perlin-Worley, GBA = three octaves of Worley FBM. The
+          // remap `(R + 1 - fbm) / (2 - fbm)` dilates the macro shape
+          // proportionally to FBM strength. Sampled at the WARPED position
+          // (anti-tiling, see warpVec above).
+          //
+          // EXPLICIT LEVEL 0 — a footprint-matched mip lod lived here briefly
+          // (2026-06-10/11) and was the root cause of "small clouds fade in
+          // at close range / only big decks at the horizon": three r183's
+          // WebGPU backend allocates mipLevelCount = texture.mipmaps.length
+          // for a Data3DTexture but its upload path NEVER writes the mipmaps
+          // array (level 0 only, slice by slice) — so levels 1+ are
+          // WebGPU-zero-initialized and any .level(>0) sample blends toward
+          // ZERO. The dilated base then collapses to (0+1)/(2−0) = 0.5 and
+          // the carved shape to exactly 0 with distance, deleting everything
+          // the Remap threshold doesn't favour. This was ALSO the real cause
+          // of the 2026-06-03 "mips drop coverage" revert (misdiagnosed then
+          // as box-filter variance loss). See CLOUD_DEBUGGING_LESSONS case
+          // study #16. patches/three@0.183.2.patch (2026-06-11) makes the
+          // backend upload the mipmaps[] chain, so .level(>0) is now safe —
+          // taps stay at level 0 until the footprint-matched mip scheme is
+          // deliberately re-enabled.
+          const pWarped = p.add(warpVec);
+          const baseSample = texture3D(baseVolume, pWarped.mul(uBaseScale))
             .level(int(0));
           const baseFbm = baseSample.g
             .mul(0.625)
@@ -1628,59 +1518,68 @@ export function marchCloudVolume({
           // is the DETAIL volume's single-octave Worley (crisp cells) at
           // CARVE_SCALE — the base B channel (smoothed FBM) was too soft and
           // just scaled body size. Schneider value-erosion form.
-          const carveSrc = texture3D(detailVolume, p.mul(float(CARVE_SCALE)))
-            .level(int(0));
-          const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
-          // Distance band-limit (LOD): fade the carve out with distance so far
-          // clouds converge to the smooth dilated base shape. The carve's crisp
-          // ~km Worley valleys are HIGH-FREQUENCY relative to the LOD step at
-          // range (dtDenseL grows past 1 km by ~10 km out), so without this they
-          // alias under the coarse step → the iso-distance "sample-count" bands
-          // (confirmed: bands vanish at LOD_STEP_GROWTH=0). Fading the sharpest
-          // content the coarse step can't resolve removes the bands at the
-          // SOURCE — no extra samples, no motion-noise tradeoff — exactly how
-          // production renderers keep distant clouds clean (they're low-freq).
-          // This mirrors detailStrength (which already fades the fine detail).
-          // Near clouds keep the full cauliflower carve. Widen the 0.040 (40 km)
-          // far point if mid-distance carve still bands; narrow it if clouds go
-          // smooth too close.
-          const carveStrength = float(1).sub(
-            smoothstep(float(0.005), float(0.040), t),
-          );
-          const carveThresh = float(1).sub(carveWorley)
-            .mul(float(BILLOW_CARVE))
-            .mul(carveStrength);
-          const baseShapeCarved = baseShape
-            .sub(carveThresh)
-            .div(float(1).sub(carveThresh).max(0.0001))
-            .clamp(0, 1);
-          const baseCloud = baseShapeCarved.mul(coverage);
-
-          // DIAGNOSTIC (2026-05-27): threshold lowered from 0.01 → 0.0001.
           //
-          // The hard `baseCloud > 0.01` gate was a binary on/off threshold:
-          // voxels just below contributed NOTHING, voxels just above
-          // entered dense mode and accumulated full density. Under Phase
-          // D's 1/16 reconstruction, adjacent sub-pixels (within a 4×4
-          // tile) sample baseVolume at slightly different positions; if
-          // their `baseCloud` values straddle 0.01 (some at 0.005, some
-          // at 0.015), they produce binary alpha → tile-blocky speckle
-          // even where the underlying cloud is solid.
+          // ACTIVE AT ALL DISTANCES (2026-06-11). The carve used to fade out
+          // over 5→40 km — but the carve is what CREATES the small/discrete
+          // clouds: in low-coverage regions only the carved lump centres pass
+          // the Remap threshold, so fading the carve also faded every small
+          // cloud out of existence beyond ~40 km, while large high-coverage
+          // decks survived on the 5 km base noise alone.
           //
-          // Lowering to 0.0001 effectively disables the gate (any non-
-          // zero baseCloud will pass), turning it from a binary
-          // discriminator into a near-zero-overhead inclusion. Voxels
-          // with tiny density now produce tiny alpha contributions
-          // instead of zero — adjacent sub-pixels with neighbouring
-          // baseCloud values produce gradient alpha differences instead
-          // of binary on/off.
+          // NECESSARY-CONDITION GATE (perf): carving only ever LOWERS the
+          // shape, so if the UNCARVED base already fails the Remap threshold
+          // the carved value fails too — skip the carve fetch entirely. Most
+          // in-band samples are empty space, so this recovers most of the
+          // cost of running the carve at all distances. baseShapeCarved
+          // defaults to 0 = "fails the gate", which is exactly what the
+          // skipped case means.
+          const remapThreshold = float(1).sub(profile);
+          const baseShapeCarved = float(0).toVar();
+          If(baseShape.greaterThan(remapThreshold), () => {
+            const carveSrc = texture3D(
+              detailVolume,
+              pWarped.mul(float(CARVE_SCALE)),
+            ).level(int(0));
+            const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+            const carveThresh = float(1)
+              .sub(carveWorley)
+              .mul(float(BILLOW_CARVE));
+            baseShapeCarved.assign(
+              baseShape
+                .sub(carveThresh)
+                .div(float(1).sub(carveThresh).max(0.0001))
+                .clamp(0, 1),
+            );
+          });
+          // ── Dense-mode gate: the REMAPPED shape, not the macro product ──
+          // (2026-06-11) This gate used to be `baseShapeCarved × coverage >
+          // 0.0001`. With the Nubis Remap composition that product is nonzero
+          // across the ENTIRE coverage footprint — including everywhere the
+          // remapped density is exactly 0 (low dimProfile → only base-noise
+          // peaks survive the threshold). Consequence: in low/mid-coverage
+          // regions the march dense-locked the moment it entered the altitude
+          // band and never left (hitThisStep fired every step, so the
+          // empty-streak fallback couldn't trigger), crawling 50–300 km of
+          // in-band path at fine dense steps until the 256-step budget died
+          // mid-field. User-visible: a ring of volumetric near the camera +
+          // volumetric at the horizon (grazing rays enter the slab at large t
+          // where even dense steps are km-scale, so they survive) + a
+          // 2D-overlay-only GAP in between, keyed to coverage.
           //
-          // Perf impact: dense mode will run for more voxels (where
-          // before it was gated off). EMPTY_THRESHOLD = 8 still falls
-          // back to skip mode after 8 consecutive low-density steps, so
-          // we don't pay forever. With Phase D's 1/16 cost reduction
-          // there's plenty of headroom.
-          If(baseCloud.greaterThan(0.0001), () => {
+          // Gate instead on the SAME remapped shape the dense branch
+          // integrates — `profile` here ≡ the dense branch's `dimProfile`,
+          // so this is pure ALU on already-fetched values, no extra taps.
+          // Zero-density voxels now stay in skip mode at full skip-step
+          // reach; dense mode engages only inside real cloud bodies, where
+          // alpha accumulation (or the streak fallback at carved valleys)
+          // bounds the dense run. The tiny epsilon keeps the gate an
+          // inclusion test, not a binary density cliff (the 2026-05-27
+          // tile-speckle lesson — see git history for the full note).
+          const probeShape = baseShapeCarved
+            .sub(float(1).sub(profile))
+            .div(profile.max(0.0001));
+          maxProbeShape.assign(maxProbeShape.max(probeShape));
+          If(probeShape.greaterThan(0.0001), () => {
             hitThisStep.assign(1);
 
             If(stepMode.lessThan(0.5), () => {
@@ -1693,7 +1592,10 @@ export function marchCloudVolume({
               // short-step resolution. No accumulation in this iteration —
               // the cheap-probe sample is discarded; the next dense step
               // will redo the full computation.
-              t.subAssign(dtSkipL.mul(0.5));
+              // (Rewind by the IN-BAND skip step — detection only ever
+              // happens in the capped regime, so the rewind matches the
+              // stride that found the cloud.)
+              t.subAssign(dtSkipInBand.mul(0.5));
               stepMode.assign(1);
               emptyStreak.assign(0);
               // Capture cloud-front depth on first hit (sentinel was -1).
@@ -1740,41 +1642,13 @@ export function marchCloudVolume({
               // (heightProfile fades) and edges (coverage fades) the threshold
               // rises → only noise PEAKS survive → cauliflower tapering tops +
               // wispy edges. The organic form IS the 3D noise, carved by the
-              // profile. (`baseCloud` above is kept only as the skip/dense
-              // gate.)
+              // profile. (The skip/dense gate above — `probeShape` — is this
+              // exact remap, so dense mode and nonzero density coincide.)
               const dimProfile = coverage.mul(heightProfile);
               const shape = baseShapeCarved
                 .sub(float(1).sub(dimProfile))
                 .div(dimProfile.max(0.0001))
                 .clamp(0, 1);
-
-              // Type-driven detail FBM remix (Nubis B3). Same texture sample,
-              // different channel weights:
-              //   billowy (cumulus, cloudType=1): low-freq dominant (rounded
-              //     bumps) — R weighted 0.625, G 0.25, B 0.125.
-              //   wispy (stratus,  cloudType=0): high-freq dominant (fine
-              //     hair-like detail) — R 0.125, G 0.25, B 0.625.
-              // Curl-warped wispy is the canonical Schneider variant; we
-              // approximate here with a channel reweight to avoid binding a
-              // curl volume (deferred to C5).
-              const detailSample = texture3D(detailVolume, p.mul(uDetailScale))
-                .level(int(0));
-              const billowyFbm = detailSample.r
-                .mul(0.625)
-                .add(detailSample.g.mul(0.25))
-                .add(detailSample.b.mul(0.125));
-              const wispyFbm = detailSample.r
-                .mul(0.125)
-                .add(detailSample.g.mul(0.25))
-                .add(detailSample.b.mul(0.625));
-              const detailFbm = mix(wispyFbm, billowyFbm, cloudType);
-              // Altitude-modulated erosion: at low altitudes erode with raw
-              // FBM (carves billowing undersides); at higher altitudes
-              // invert (1-fbm) so the surviving wisps poke up like puffy
-              // tops.
-              const altMod = clamp(altitude01.mul(2.5), 0, 1);
-              const erosion = mix(detailFbm, detailFbm.oneMinus(), altMod);
-              const erosionRamp = smoothstep(float(0), float(0.3), shape);
 
               // ── Distance-based detail strength (Nubis LOD trick) ──
               // Schneider 2015: detail erosion is faded by distance from
@@ -1789,26 +1663,57 @@ export function marchCloudVolume({
               // `t` is per-voxel distance from camera in scaled units
               // (1 unit = 1000 km). 0.005 = 5 km full detail, 0.080 =
               // 80 km no detail, smoothstep ramp between.
-              //
-              // Without this fade: at uDetailScale=500, orbital pixels
-              // each cover many detail tiles → noise aliases to grain.
-              // With this fade: detail "only spent where visible".
               const detailNear = float(0.005);
               const detailFar = float(0.080);
               const detailStrength = float(1).sub(
                 smoothstep(detailNear, detailFar, t),
               );
 
-              const threshold = erosion
-                .mul(uDetailErosion)
-                .mul(erosionRamp)
-                .mul(erosionStrength)
-                .mul(detailStrength);
-              const denom = float(1).sub(threshold).max(0.0001);
-              const eroded = shape
-                .sub(threshold)
-                .div(denom)
-                .clamp(0, 1);
+              // Type-driven detail FBM remix (Nubis B3). Same texture sample,
+              // different channel weights:
+              //   billowy (cumulus, cloudType=1): low-freq dominant (rounded
+              //     bumps) — R weighted 0.625, G 0.25, B 0.125.
+              //   wispy (stratus,  cloudType=0): high-freq dominant (fine
+              //     hair-like detail) — R 0.125, G 0.25, B 0.625.
+              // Curl-warped wispy is the canonical Schneider variant; we
+              // approximate here with a channel reweight to avoid binding a
+              // curl volume (deferred to C5).
+              //
+              // The detail fetch is GATED on detailStrength > 0 (2026-06-10):
+              // beyond 80 km the erosion threshold was exactly 0 but the
+              // texture3D still ran for every dense voxel. Inside the gate
+              // the result is bit-identical (threshold → 0 ⇒ eroded = shape).
+              const eroded = shape.toVar();
+              If(detailStrength.greaterThan(0.002), () => {
+                const detailSample = texture3D(
+                  detailVolume,
+                  p.mul(uDetailScale),
+                ).level(int(0));
+                const billowyFbm = detailSample.r
+                  .mul(0.625)
+                  .add(detailSample.g.mul(0.25))
+                  .add(detailSample.b.mul(0.125));
+                const wispyFbm = detailSample.r
+                  .mul(0.125)
+                  .add(detailSample.g.mul(0.25))
+                  .add(detailSample.b.mul(0.625));
+                const detailFbm = mix(wispyFbm, billowyFbm, cloudType);
+                // Altitude-modulated erosion: at low altitudes erode with raw
+                // FBM (carves billowing undersides); at higher altitudes
+                // invert (1-fbm) so the surviving wisps poke up like puffy
+                // tops.
+                const altMod = clamp(altitude01.mul(2.5), 0, 1);
+                const erosion = mix(detailFbm, detailFbm.oneMinus(), altMod);
+                const erosionRamp = smoothstep(float(0), float(0.3), shape);
+
+                const threshold = erosion
+                  .mul(uDetailErosion)
+                  .mul(erosionRamp)
+                  .mul(erosionStrength)
+                  .mul(detailStrength);
+                const denom = float(1).sub(threshold).max(0.0001);
+                eroded.assign(shape.sub(threshold).div(denom).clamp(0, 1));
+              });
               lastEroded.assign(eroded);
 
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1849,7 +1754,77 @@ export function marchCloudVolume({
                 // weight = edge fade × orbit fade (uVolumeWeight, 1 near → 0 orbit).
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const wVol: any = edgeFade.mul(uVolumeWeight);
-                Tsun.assign(mix(float(1), TsunVol, wVol).mul(daylight));
+                // ── Local lump self-shadow (see LOCAL_SHADOW_* constants) ──
+                // The volume's 3-6 km voxels can't resolve the ~1-3 km carve
+                // lumps, so on its own it shades the deck like a soft macro
+                // blanket (flat vs the cone it replaced). One short probe
+                // toward the sun re-adds the high-freq crest/crevice shading:
+                // sample the carved base shape 800 m sunward, absorb by it.
+                // Distance-gated to t < ~40 km purely for COST (2 texture3D
+                // per dense voxel when it runs) — beyond that the lump-scale
+                // shading is sub-pixel anyway. (The carve itself no longer
+                // fades with distance; this gate is the shadow probe's own.)
+                const localShadowOn = float(1).sub(
+                  smoothstep(float(0.005), float(0.040), t),
+                );
+                const TsunLocal = float(1).toVar();
+                If(
+                  localShadowOn.greaterThan(0.002)
+                    .and(daylight.greaterThan(0.001))
+                    .and(uVolumeWeight.greaterThan(0.001)),
+                  () => {
+                    const pLs = p.add(
+                      sunDirEarth.mul(float(LOCAL_SHADOW_DIST)),
+                    );
+                    const pLsWarped = pLs.add(warpVec);
+                    const rLs = length(pLs).max(0.0001);
+                    const altLs = clamp(
+                      sub(rLs, uInnerRadius).mul(invSlabThickness),
+                      0,
+                      1,
+                    );
+                    const baseLs = texture3D(
+                      baseVolume,
+                      pLsWarped.mul(uBaseScale),
+                    ).level(int(0));
+                    const fbmLs = baseLs.g
+                      .mul(0.625)
+                      .add(baseLs.b.mul(0.25))
+                      .add(baseLs.a.mul(0.125));
+                    const dilatedLs = baseLs.r
+                      .add(float(1).sub(fbmLs))
+                      .div(float(2).sub(fbmLs).max(0.0001))
+                      .clamp(0, 1);
+                    const carveLsSrc = texture3D(
+                      detailVolume,
+                      pLsWarped.mul(float(CARVE_SCALE)),
+                    ).level(int(0));
+                    const carveLsWorley = carveLsSrc.r
+                      .mul(0.6)
+                      .add(carveLsSrc.g.mul(0.4));
+                    const carveLsThresh = float(1)
+                      .sub(carveLsWorley)
+                      .mul(float(BILLOW_CARVE));
+                    const carvedLs = dilatedLs
+                      .sub(carveLsThresh)
+                      .div(float(1).sub(carveLsThresh).max(0.0001))
+                      .clamp(0, 1);
+                    const profileLs = cloudHeightProfile(
+                      altLs,
+                      topAlt,
+                      cloudType,
+                    );
+                    const odLocal = carvedLs
+                      .mul(coverage)
+                      .mul(profileLs)
+                      .mul(float(LOCAL_SHADOW_DENSITY))
+                      .mul(float(LOCAL_SHADOW_DIST));
+                    TsunLocal.assign(exp(odLocal.negate()));
+                  },
+                );
+                Tsun.assign(
+                  mix(float(1), TsunVol.mul(TsunLocal), wVol).mul(daylight),
+                );
                 lastTsun.assign(Tsun);
               } else {
               If(daylight.greaterThan(0.001), () => {
@@ -1951,12 +1926,7 @@ export function marchCloudVolume({
                   //
                   // Range Tsun_ms 0.10–0.57 → ms varies 5.7× across
                   // cloud → visible top-bright/bottom-dark gradient.
-                  const profileL = cloudHeightProfile(
-                    altL,
-                    topAlt,
-                    cloudType,
-                    profileBlur,
-                  );
+                  const profileL = cloudHeightProfile(altL, topAlt, cloudType);
                   // Lowered 3000 → 1000: once the cone sees the dilated+carved
                   // shape (Step 2), 3000 pushed cone optical depth into the
                   // ~3-6 range → Tsun = exp(-OD) ≈ 0 everywhere → the lit terms
@@ -2053,7 +2023,7 @@ export function marchCloudVolume({
 
               // Optical depth integrates over dtDense — accumulation only
               // happens in dense mode, and dense steps are dtDense apart.
-              const opticalDepthStep = density.mul(dtDenseL);
+              const opticalDepthStep = density.mul(dtDenseEff);
 
               // Powder approximation — back-lit edges read brighter.
               // Applied to direct light only (pre-phase), per Schneider.
@@ -2138,7 +2108,17 @@ export function marchCloudVolume({
 
         // Step forward at the (possibly just-updated) mode's rate.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const dtThis: any = stepMode.lessThan(0.5).select(dtSkipL, dtDenseL);
+        // Skip advance is COVERAGE-ADAPTIVE (the detection-cap design, see
+        // SKIP_DETECT_CAP_SCALED): inside the potential-cloud band
+        // (profile > 0.01 at this sample) advance at the capped detection
+        // stride; through empty space (no coverage / outside the altitude
+        // envelope) advance at the full grown stride for horizon reach.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const dtSkipEff: any = profile
+          .greaterThan(0.01)
+          .select(dtSkipInBand, dtSkipGrown);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const dtThis: any = stepMode.lessThan(0.5).select(dtSkipEff, dtDenseEff);
         t.addAssign(dtThis);
 
         If(T.lessThan(0.01), () => {
@@ -2157,6 +2137,21 @@ export function marchCloudVolume({
     if (DEBUG_VIZ === "alpha") {
       return { rgba: vec4(alpha, alpha, alpha, float(1)), tFront: float(0) };
     }
+    if (DEBUG_VIZ === "maxProfile") {
+      // Max coverage×heightProfile sampled along the ray (see the toVar's
+      // comment block). BLACK where clouds are missing ⇒ stepping/geometry
+      // never sampled the band; GRAY/WHITE ⇒ band sampled, look at
+      // 'maxProbeShape' next.
+      const m = maxProfile.clamp(0, 1);
+      return { rgba: vec4(m, m, m, float(1)), tFront: float(0) };
+    }
+    if (DEBUG_VIZ === "maxProbeShape") {
+      // Max remapped probe shape along the ray. With 'maxProfile' gray but
+      // THIS black, the field passes nothing through the Remap threshold
+      // there — density-model problem, not sampling.
+      const m = maxProbeShape.clamp(0, 1);
+      return { rgba: vec4(m, m, m, float(1)), tFront: float(0) };
+    }
     if (DEBUG_VIZ === "profile") {
       // Profile shape at three altitudes (R = 0.25, G = 0.50, B = 0.75),
       // sampled with the per-fragment slab-midpoint topAlt and the
@@ -2164,9 +2159,9 @@ export function marchCloudVolume({
       // type-driven anatomy: stratus regions read green-only (mass at 0.5);
       // stratocumulus shows red+green; cumulus shows green+blue.
       const cloudTypeMid = smoothstep(float(0.3), float(0.6), covMid);
-      const p25 = cloudHeightProfile(float(0.25), topAltMid, cloudTypeMid, float(0));
-      const p50 = cloudHeightProfile(float(0.50), topAltMid, cloudTypeMid, float(0));
-      const p75 = cloudHeightProfile(float(0.75), topAltMid, cloudTypeMid, float(0));
+      const p25 = cloudHeightProfile(float(0.25), topAltMid, cloudTypeMid);
+      const p50 = cloudHeightProfile(float(0.50), topAltMid, cloudTypeMid);
+      const p75 = cloudHeightProfile(float(0.75), topAltMid, cloudTypeMid);
       return { rgba: vec4(p25, p50, p75, float(1)), tFront: float(0) };
     }
     if (DEBUG_VIZ === "topAlt") {

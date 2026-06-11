@@ -1,13 +1,36 @@
 # Volumetric Clouds — Performance Optimization Plan
 
+> **STATUS NOTE (2026-06-11):** A perf+quality overhaul landed (pending
+> on-device verification). The big levers, in expected-impact order:
+> 1. **Cloud passes fully skipped while `uVolumetricBlend == 0`**
+>    (SpaceRenderer gate + earth.ts crossfade now ALTITUDE-based, 3000→1500 km
+>    instead of 35k→25k km *distance*). Orbit views above 3000 km pay ~zero
+>    cloud cost — the flat 2D overlay carries them, which also hides the noise
+>    tiling that was visible from orbit.
+> 2. **Footprint-matched explicit mip on the base volume** with
+>    **variance-renormalized mip levels** (noiseVolumes.ts) so the Schneider
+>    Remap passes the same coverage at every level (the 2026-06-03 mip revert
+>    is resolved). Restores 3D-texture cache locality at altitude — previously
+>    every base fetch at orbital view distances was a cache miss.
+> 3. **Distance-gated carve/detail fetches** (their strength was already 0
+>    beyond 40/80 km but the texture3D taps still ran), and an
+>    **altitude-adaptive `uLodMinSamples`** (60 near deck → 24 high above).
+> 4. **Light-volume bake amortised** (re-bakes only on box snap / >0.25° sun
+>    rotation; skipped entirely while its weight is 0) and box extent made
+>    CONSTANT — also the swimming-shadows fix (`CLOUD_DEBUGGING_LESSONS.md`
+>    case study #11).
+> 5. **Opacity-driven dense step growth** (`DENSE_OPACITY_GROWTH`) — fixes the
+>    march-budget death that made all clouds behind a near cloud vanish, and
+>    cuts in-cloud march cost.
+>
 > **STATUS NOTE (2026-06-10):** Sections 1 and 5's *numbers* are obsolete — they
 > describe an earlier 16/96-step, single half-res-pass marcher. The live code
 > (after the band fix in `CLOUD_DEBUGGING_LESSONS.md`) is **256 primary steps**
-> (`MAX_PRIMARY_STEPS`), `SKIP_STEP_SCALED=0.0001`, `LOD_MIN_SAMPLES=60`, marched
+> (`MAX_PRIMARY_STEPS`), `SKIP_STEP_SCALED=0.0001`, marched
 > at **¼-res** (`SPARSE_DIVISOR=2`) + full-res EMA reconstruction. The marcher was
 > running **twice/frame** (separate color + depth passes) until the MRT merge
 > (2026-06-10) folded depth into the color pass via `outputStruct` — removing a
-> full duplicate march. Current measured perf before that fix: **~15 fps at cloud
+> full duplicate march. Measured perf before these fixes: **~15 fps at cloud
 > level, 2–3 fps at orbit on an M2 Pro** (GPU-bound). The §2 AAA-playbook framing
 > and the *tier rationale* remain valid and are the basis of the ongoing perf work;
 > treat the per-step cost tables as historical.

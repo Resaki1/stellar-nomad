@@ -5,14 +5,16 @@ import * as THREE from "three";
 //
 // Base volume (128³ RGBA8):
 //   R: Low-freq Perlin-Worley hybrid (Schneider's "perlin-worley" R channel).
-//      `perlinWorley = mix(perlin, 1 - worley, 0.5)` — Perlin fills the gaps
-//      between Worley cell-centers, Worley contributes billowy "puff" cores.
-//      The result has the cumulus-cauliflower character that pure Perlin
-//      (smooth blobs) and pure Worley (sharp cells) each lack on their own.
+//      `perlinWorley = worley + perlin × (1 - worley)` — i.e. Schneider's
+//      remap(perlin, 0, 1, worley, 1): pinned to 1 at Worley feature points
+//      (billowy "puff" cores), falling to `perlin` in the gaps (smooth
+//      gradient fill, no hard cell boundaries). The result has the
+//      cumulus-cauliflower character that pure Perlin (smooth blobs) and
+//      pure Worley (sharp cells) each lack on their own.
 //      Earlier this slot was pure Perlin to avoid "honeycomb" artifacts at
-//      close range; in practice with `mix(perlin, 1-worley, 0.5)` and
-//      G_LOW=4 (large cells), no honeycomb appears — the cells read as
-//      cloud bodies, not as a regular pattern.
+//      close range; in practice with this hybrid and G_LOW=4 (large cells),
+//      no honeycomb appears — the cells read as cloud bodies, not as a
+//      regular pattern.
 //   G: Worley FBM at low/mid/high octaves [grid 4, 8, 16].   Low-freq band.
 //   B: Worley FBM at mid/high/v.high octaves [grid 8, 16, 32]. Mid-freq band.
 //   A: Worley FBM at high/v.high/detail octaves [grid 16, 32, 48]. High-freq band.
@@ -21,9 +23,14 @@ import * as THREE from "three";
 // is fed into Schneider's `remap` to dilate/erode the Perlin-Worley R channel.
 // See `earthClouds.ts`.
 //
-// Detail volume (32³ RGBA8 — A unused, padded to 1.0):
+// Detail volume (64³ RGBA8 — A unused, padded to 1.0):
 //   R/G/B: Three Worley octaves at progressively higher freq [grid 4, 8, 16],
-//          sampled separately for shader-side FBM. Used to erode cloud edges.
+//          sampled separately for shader-side FBM. Used to erode cloud edges
+//          and (R/G at CARVE_SCALE) as the macro billow-carve source.
+//          64³ (was 32³): at 32³ the grid-16 octave had only 2 voxels per
+//          Worley cell — aliased mush instead of crisp cells. 64³ gives
+//          16/8/4 voxels per cell — every octave resolves, which is what the
+//          close-range cauliflower carving needs. Memory: 1 MB (was 128 KB).
 //
 // Both volumes are tileable via wrap-around feature-point lookup. WebGPU does
 // not support `RGBFormat`, so the detail volume is RGBA with a constant alpha;
@@ -34,7 +41,7 @@ import * as THREE from "three";
 // =============================================================================
 
 const BASE_SIZE = 128;
-const DETAIL_SIZE = 32;
+const DETAIL_SIZE = 64;
 
 // Base-volume Worley grids. Each "grid" is the number of feature-point cells
 // per axis. 128 / grid = cell size in voxels. Smaller grid = bigger puffs.
@@ -351,21 +358,34 @@ function generateDetailVolume(): Uint8Array {
 }
 
 // =============================================================================
-// Mip chain — per-channel box average. Three.js doesn't auto-mip Data3DTexture.
+// Mip chain — per-channel box average + VARIANCE RENORMALIZATION.
+// Three.js doesn't auto-mip Data3DTexture.
 //
-// NOTE: the cloud marcher samples ALL noise volumes at mip 0 (`.level(int(0))`).
-// Auto mip selection (GPU computing mip from per-quad texture-coord derivatives)
-// cross-hatches inside the ray-march loop (per-pixel dither spikes the
-// derivative → inconsistent mip at iso-distance contours; see
-// `docs/CLOUD_DEBUGGING_LESSONS.md` case study #2), so it's forced to mip 0.
+// ✅ UPLOADED since 2026-06-11 via patches/three@0.183.2.patch: stock three
+// (≤ r184 incl. upstream dev) writes ONLY level 0 for a Data3DTexture and
+// never transfers `texture.mipmaps`, while still allocating
+// mipLevelCount = mipmaps.length — GPU mip levels 1+ were ZERO, so any
+// `.level(>0)` sample blended toward zero. This silently broke the
+// 2026-06-03 explicit-mip experiment ("coverage drops with distance",
+// misdiagnosed as box-filter variance loss) and the 2026-06-10/11
+// footprint-mip scheme ("small clouds fade in close") — see
+// CLOUD_DEBUGGING_LESSONS case study #16. The pnpm patch uploads each
+// mipmaps[] entry slice-by-slice to its mip level; verified by the readback
+// test at /dev/mip3d-test (re-run it after any three upgrade, and check
+// whether upstream has gained the upload before rebasing the patch).
+// Consumers still sample `.level(int(0))` until the footprint-matched mip
+// scheme is deliberately re-enabled.
 //
-// An EXPLICIT distance/step mip LOD using this chain was tried (2026-06-03) to
-// band-limit distant clouds. WebGPU samples the chain fine, but mipping the
-// SHAPE-defining noise lowered its variance → fewer values cleared the
-// Schneider threshold → cloud COVERAGE dropped, and a distance-varying mip
-// MORPHED clouds as the camera moved (+ the coverage loss killed early-out, so
-// orbit perf tanked). Reverted. Chain kept for a future scheme that band-limits
-// WITHOUT changing coverage (coverage-compensated mip) or a far-field impostor.
+// NOTE: AUTO mip selection (GPU computing mip from per-quad texture-coord
+// derivatives) cross-hatches inside the ray-march loop (per-pixel dither spikes
+// the derivative → inconsistent mip at iso-distance contours; see
+// `docs/CLOUD_DEBUGGING_LESSONS.md` case study #2), so the marcher never uses
+// implicit LOD — it passes an EXPLICIT `.level(...)` everywhere.
+//
+// The renormalization (`renormalizeToMoments`): each level carries mip-0's
+// per-channel mean/std, so a band-limited level passes the Schneider Remap
+// threshold at roughly the same expected rate as mip 0 — required for any
+// future distance-mip scheme to avoid coverage shifts.
 // Startup ~10 ms; GPU memory +33% of the base volume.
 // =============================================================================
 
@@ -405,12 +425,59 @@ function downsample3DRGBA(src: Uint8Array, srcSize: number): Uint8Array {
   return dst;
 }
 
+// Per-channel mean + std over an RGBA8 volume.
+function channelMoments(data: Uint8Array): { mean: number[]; std: number[] } {
+  const n = data.length / 4;
+  const sum = [0, 0, 0, 0];
+  const sumSq = [0, 0, 0, 0];
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 4; c++) {
+      const v = data[i + c];
+      sum[c] += v;
+      sumSq[c] += v * v;
+    }
+  }
+  const mean = sum.map((s) => s / n);
+  const std = sumSq.map((s, c) => {
+    const variance = s / n - mean[c] * mean[c];
+    return Math.sqrt(Math.max(variance, 0));
+  });
+  return { mean, std };
+}
+
+// Remap a mip level's channels to match mip-0's mean/std (see the header note
+// above — this is the coverage-compensation that makes distance-mip sampling
+// safe against the shader's Remap threshold). In-place.
+function renormalizeToMoments(
+  data: Uint8Array,
+  ref: { mean: number[]; std: number[] },
+): void {
+  const { mean, std } = channelMoments(data);
+  // Gain clamped to [1, 4]: ≥1 because box filtering only ever SHRINKS std
+  // (a measured gain < 1 is sample noise on tiny mips); ≤4 so the deepest
+  // levels (8³ and below, where std is statistically meaningless) can't
+  // explode values to the 0/255 rails. The marcher clamps its explicit lod
+  // to ≤4 anyway, so levels past 8³ are never sampled.
+  const gain = [0, 1, 2, 3].map((c) => {
+    if (std[c] <= 1e-3) return 1;
+    const g = ref.std[c] / std[c];
+    return g < 1 ? 1 : g > 4 ? 4 : g;
+  });
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 4; c++) {
+      const v = ref.mean[c] + (data[i + c] - mean[c]) * gain[c];
+      data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v | 0;
+    }
+  }
+}
+
 function buildMippedTexture(
   baseData: Uint8Array,
   size: number,
   label: string,
 ): THREE.Data3DTexture {
   const tStart = performance.now();
+  const refMoments = channelMoments(baseData);
   const mipmaps: {
     data: Uint8Array;
     width: number;
@@ -428,6 +495,12 @@ function buildMippedTexture(
   while (mipSize > 1) {
     mipData = downsample3DRGBA(mipData, mipSize);
     mipSize = mipSize >> 1;
+    // Variance-preserving: every mip carries mip-0's per-channel moments so
+    // explicit distance-mip sampling in the marcher doesn't shift coverage.
+    // NOTE: renormalize in-place BEFORE the next downsample reads this level —
+    // the chain therefore band-limits the renormalized signal, which keeps
+    // the moment correction stable down the chain.
+    renormalizeToMoments(mipData, refMoments);
     mipmaps.push({
       data: mipData,
       width: mipSize,

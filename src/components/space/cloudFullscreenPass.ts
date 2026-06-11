@@ -14,7 +14,14 @@ import {
   dot,
   length,
 } from "three/tsl";
-import { marchCloudVolume } from "@/components/celestial/bodies/earthClouds";
+import {
+  marchCloudVolume,
+  LOD_MIN_SAMPLES_NEAR,
+  LOD_MIN_SAMPLES_FAR,
+  MIN_SAMPLES_NEAR_ALT_KM,
+  MIN_SAMPLES_FAR_ALT_KM,
+} from "@/components/celestial/bodies/earthClouds";
+import { kmToScaledUnits } from "@/sim/units";
 import {
   getStbnTexture,
 } from "@/components/celestial/bodies/stbnTexture";
@@ -135,11 +142,22 @@ export type CloudPipeline = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   computeLightVolume: (renderer: any) => void;
 
+  /**
+   * Current volumetric crossfade value (earth.ts uVolumetricBlend, 0 = flat
+   * 2D overlay only / 1 = volumetric). SpaceRenderer skips the whole cloud
+   * pipeline (marcher + reconstruction + light-volume bake) when this is ~0 —
+   * the single biggest orbit-perf lever, since the flat overlay carries the
+   * orbital view entirely.
+   */
+  getVolumetricBlend: () => number;
+
   dispose: () => void;
 };
 
 let activePipeline: CloudPipeline | null = null;
 let earthMatrixWorldRef: THREE.Object3D | null = null;
+// Scratch for the per-frame altitude computation (no per-frame allocation).
+const tmpEarthCam = new THREE.Vector3();
 
 export function getActiveCloudPipeline(): CloudPipeline | null {
   if (!activePipeline || !earthMatrixWorldRef) return null;
@@ -205,6 +223,10 @@ function createSharedUniforms() {
     // full-res UV for their fresh sub-pixel; reconstruction also needs
     // this to convert sparse-RT coords back to screen coords.
     uFullSize: uniform(new THREE.Vector2(1, 1)),
+    // Altitude-adaptive minimum samples per slab crossing (the marcher's
+    // lodCap denominator). Lerped 60 → 24 between MIN_SAMPLES_NEAR_ALT_KM
+    // and MIN_SAMPLES_FAR_ALT_KM of camera altitude above the cloud tops.
+    uLodMinSamples: uniform(LOD_MIN_SAMPLES_NEAR),
   };
 }
 
@@ -360,6 +382,7 @@ function createColorPass(
       uVolumetricBlend: opts.uVolumetricBlend,
       uStbn: stbnTexture,
       uStbnFrameSlice: shared.uStbnFrameSlice,
+      uLodMinSamples: shared.uLodMinSamples,
       // Light-volume lookup (undefined when toggle off → cone path). The box is
       // parameterized by CENTRE (uBoxCenter) + half-extent — the marcher's
       // uLightVolMin param receives the CENTRE (see earthClouds earthToUVW).
@@ -448,6 +471,25 @@ export function setupCloudPipeline(
     shared.uStbnFrameSlice.value =
       (params.frameIndex % STBN_FRAME_MODULUS) / STBN_FRAME_MODULUS;
     shared.uFullSize.value.copy(params.fullSize);
+    // Altitude-adaptive minimum slab samples (60 near deck → 24 high above).
+    // Earth-space camera radius via the just-refreshed inverse model matrix;
+    // altitude measured above the cloud-top (outer) shell.
+    tmpEarthCam
+      .copy(params.scaledCamera.position)
+      .applyMatrix4(shared.uEarthInverseModel.value);
+    const altScaled = tmpEarthCam.length() - opts.uOuterRadius.value;
+    const altT = THREE.MathUtils.clamp(
+      (altScaled - kmToScaledUnits(MIN_SAMPLES_NEAR_ALT_KM)) /
+        (kmToScaledUnits(MIN_SAMPLES_FAR_ALT_KM) -
+          kmToScaledUnits(MIN_SAMPLES_NEAR_ALT_KM)),
+      0,
+      1,
+    );
+    shared.uLodMinSamples.value = THREE.MathUtils.lerp(
+      LOD_MIN_SAMPLES_NEAR,
+      LOD_MIN_SAMPLES_FAR,
+      altT,
+    );
 
     // Light-volume box — MUST run AFTER uEarthInverseModel is re-inverted above
     // (updateBox applies it to the camera position). The baked sun direction is
@@ -486,6 +528,7 @@ export function setupCloudPipeline(
     updateUniforms,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     computeLightVolume: (renderer: any) => lightVolume?.compute(renderer),
+    getVolumetricBlend: () => opts.uVolumetricBlend.value as number,
     dispose,
   };
   activePipeline = handle;

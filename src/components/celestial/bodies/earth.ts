@@ -58,6 +58,40 @@ const CLOUD_BRIGHTNESS = 3;
 const CLOUD_TOP_ALTITUDE_KM = 14;
 const FLAT_OVERLAY_FULL_ALT_KM = 50;
 
+// Per-pixel COVERAGE gate for the flat overlay while the volumetric is active
+// (see the overlay block in buildEarthFragmentNode). History: a view-INCIDENCE
+// gate was tried here first (overlay on at grazing angles, off at steep) on
+// the theory that the march is only reliable on steep slab crossings — WRONG:
+// since the distance-LOD step growth landed, the march reaches the horizon at
+// every altitude, so the incidence gate painted a 2D ring at mid view angles
+// UNDER perfectly good volumetric clouds (the user-reported "overlay creeping
+// in from the horizon" + "gap between near and far volumetric filled with
+// 2D"). The correct split is by COVERAGE, not geometry:
+//   dense regions (coverage ≥ HI)  → overlay OFF everywhere — the volumetric
+//     is the authority from camera to horizon; the ground-painted copy only
+//     ever shows through carved gaps as a parallax ghost.
+//   thin regions  (coverage ≤ LO)  → overlay stays ON — the volumetric
+//     renders little there (the Remap thresholds away low coverage) and a
+//     flat translucent haze IS the right far-field look; with no crisp
+//     volumetric features above it there's nothing to ghost against.
+// This also smooths the 2D↔3D crossfade band: thin cloud never pops out of
+// existence at the blend boundary. Tune LO/HI together: raise both if thin
+// 2D haze visibly doubles under volumetric wisps up close; lower both if
+// mid-coverage regions lose too much cloud after the crossfade.
+const FLAT_OVERLAY_COVERAGE_LO = 0.05; // coverage ≤ → overlay fully kept
+const FLAT_OVERLAY_COVERAGE_HI = 0.25; // coverage ≥ → overlay fully removed
+
+// Volumetric crossfade altitudes (drives uVolumetricBlend in onFrame).
+// ALTITUDE-based (2026-06-10; was distance-based 35k→25k km, i.e. blend = 1
+// from ~28,600 km altitude down — the volumetric marcher then ran at FULL
+// cost across that entire range while its 5–10 km features were sub-pixel,
+// which is what made orbit views 10–20 fps; SpaceRenderer now skips the cloud
+// passes entirely while blend = 0). At 3000 km a 5 km cumulus cell subtends
+// ~2 px — below that the volumetric becomes visually meaningful, so ramp it
+// in across 3000 → 1500 km and let the flat overlay carry everything higher.
+const VOLUMETRIC_BLEND_START_ALT_KM = 3000;
+const VOLUMETRIC_BLEND_FULL_ALT_KM = 1500;
+
 // ── Scratch vectors for onFrame ──
 const _moonScaled = new THREE.Vector3();
 const _earthRelKm = new THREE.Vector3();
@@ -313,7 +347,28 @@ function buildEarthFragmentNode(opts: {
     // onFrame: 1 above ~50 km, 0 at/below the 14 km cloud top. It is NOT gated
     // by uVolumetricBlend, which can't distinguish "above the deck at 1000 km"
     // from "under the deck at 5 km" — both clamp to 1.
-    const flatCloudOpacity = float(uFlatCloudOpacity);
+    //
+    // ── Per-pixel coverage gate (2026-06-11) ──
+    // Where the volumetric renders REAL cloud bodies (dense coverage) the
+    // overlay must be off per-pixel: it's painted at ground level, 1–14 km
+    // BELOW the volumetric clouds, so it showed through carved gaps with
+    // parallax offset — the "I can still see the 2D texture where only
+    // volumetric should show" bug. Where coverage is THIN the volumetric
+    // renders little (the Remap thresholds away low coverage) and the flat
+    // haze is the desired far-field fill, so it stays. See the
+    // FLAT_OVERLAY_COVERAGE_* constants for the full rationale + the
+    // incidence-gate dead end. Scaled by uVolumetricBlend so at high altitude
+    // (blend → 0, volumetric pass skipped) the overlay covers everything.
+    const thinKeep = float(1).sub(
+      smoothstep(
+        float(FLAT_OVERLAY_COVERAGE_LO),
+        float(FLAT_OVERLAY_COVERAGE_HI),
+        cloudMask,
+      ),
+    );
+    const flatCloudOpacity = float(uFlatCloudOpacity).mul(
+      mix(float(1), thinKeep, uVolumetricBlend),
+    );
     col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
 
     // ── Rayleigh scattering (in-scatter + extinction) ──
@@ -425,7 +480,8 @@ export const earthConfig: CelestialBodyConfig = {
     uMoonRadius: uniform(kmToScaledUnits(LUNA_RADIUS_KM)),
     uSunRadius: uniform(kmToScaledUnits(STAR_RADIUS_KM)),
     // 0 = far (flat overlay only), 1 = close (volumetric shell only).
-    // Driven from distKm in onFrame; ramps linearly across 35 k → 25 k.
+    // Driven from camera ALTITUDE in onFrame; ramps linearly across
+    // VOLUMETRIC_BLEND_START_ALT_KM → VOLUMETRIC_BLEND_FULL_ALT_KM.
     uVolumetricBlend: uniform(0),
     // Flat 2D cloud-overlay opacity. Driven from camera altitude in onFrame:
     // 1 above ~50 km, 0 at/below the 14 km cloud top — altitude- (not
@@ -441,23 +497,24 @@ export const earthConfig: CelestialBodyConfig = {
     toScaledUnitsKm(_earthRelKm, _moonScaled);
     uniforms.uMoonPos.value.copy(_moonScaled);
 
-    // Volumetric/flat cloud crossfade. 1.0 below 25 k km (volumetric only),
-    // 0.0 above 35 k km (flat overlay only — also matches mid tier where the
-    // shell isn't mounted at all). The shell mounts at the lod.near boundary
-    // (35 k) and ramps in from 0 alpha, hiding both the tier swap and the
-    // shell-mount discontinuity.
+    // Volumetric/flat cloud crossfade — ALTITUDE-based (see the
+    // VOLUMETRIC_BLEND_*_ALT_KM constants for rationale + history). 0 above
+    // 3000 km altitude (flat overlay only; SpaceRenderer skips the cloud
+    // passes entirely), 1 below 1500 km (volumetric over the near field, flat
+    // overlay only beyond per-pixel reach). The near-tier shell mounts at
+    // 35 k km distance with blend = 0, so there's no mount discontinuity.
+    const altKm = distKm - PLANET_RADIUS_KM;
     uniforms.uVolumetricBlend.value = THREE.MathUtils.clamp(
-      (35_000 - distKm) / 10_000,
+      (VOLUMETRIC_BLEND_START_ALT_KM - altKm) /
+        (VOLUMETRIC_BLEND_START_ALT_KM - VOLUMETRIC_BLEND_FULL_ALT_KM),
       0,
       1,
     );
 
-    // Flat 2D cloud overlay fade. distKm is ship-to-planet-centre, so altitude
-    // above the surface = distKm − PLANET_RADIUS_KM. Fade the surface-painted
-    // cloud overlay out as the camera drops to/below the cloud top — otherwise
-    // it draws ghost clouds on the ground beneath a camera that's inside/under
-    // the deck (see buildEarthFragmentNode).
-    const altKm = distKm - PLANET_RADIUS_KM;
+    // Flat 2D cloud overlay fade. Fade the surface-painted cloud overlay out
+    // as the camera drops to/below the cloud top — otherwise it draws ghost
+    // clouds on the ground beneath a camera that's inside/under the deck
+    // (see buildEarthFragmentNode).
     uniforms.uFlatCloudOpacity.value = THREE.MathUtils.clamp(
       (altKm - CLOUD_TOP_ALTITUDE_KM) /
         (FLAT_OVERLAY_FULL_ALT_KM - CLOUD_TOP_ALTITUDE_KM),

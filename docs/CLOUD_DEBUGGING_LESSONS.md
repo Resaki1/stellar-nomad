@@ -1495,3 +1495,316 @@ a fixed budget spans the whole visible range. Two subtleties that mattered:
 3. **A per-ray safety clamp can convert a knife-edge parameter into a free one.** Once `lodCap`
    guaranteed min-samples-per-slab, the growth rate stopped being dangerous and became "crank until
    it reaches" — the cap removed the downside that made me estimate conservatively.
+
+## Case study #11 — swimming light-volume shadows (2026-06-11)
+
+**Symptom (user report).** With the new 3D light volume (`cloudLightVolume.ts`)
+driving cloud self-shadow: "shadows constantly change as I fly the camera —
+they are only stable when the camera is not moving."
+
+**Root cause: continuous re-discretisation, not reprojection.** The volume's
+box half-extent grew with altitude (`0.5 + alt × 2.5`, capped). The voxel size
+— and therefore the position-snap grid derived from it (`voxelXZ = 2·hxz/NX`)
+— changed CONTINUOUSLY whenever the camera moved vertically. Every frame of
+motion produced a slightly different discretisation of the (static)
+transmittance field, so every cloud's shadow re-sampled differently → global
+shimmer. The existing direction-snap couldn't help because the snap lattice
+itself was a function of the continuously-varying extent.
+
+**Fix.** (a) CONSTANT box extent (`BOX_HALF`) → fixed angular voxel lattice on
+the shell; the box now only moves in whole-voxel snaps (EMA absorbs them) and
+pure vertical motion doesn't move it at all. (b) Free bonus: with the box and
+sun piecewise-constant, the bake is AMORTISED — re-run only on a snap jump or
+>0.25° earth-space sun rotation, skipped entirely while the volume's orbit
+fade has it at weight 0.
+
+**Pattern to recognise.** *Any* camera-following cached volume whose voxel
+size depends on a continuous camera quantity (altitude, speed, distance) will
+swim under motion no matter how carefully you snap its origin — the snap grid
+must be derived ONLY from piecewise-constant parameters. Quantise the extent
+(or fix it) before tuning anything else.
+
+## Case study #12 — "all other clouds disappear when I fly close to one" (2026-06-11)
+
+**Symptom (user report).** Flying very close to / into a cloud made most OTHER
+clouds vanish; they reappeared on exiting the cloud.
+
+**Root cause: march-budget death, diagnosed from the constants.** Near the
+camera `lodScale ≈ 1`, so dense mode steps `dtDense = 25 m`. A big semi-opaque
+cloud around the camera doesn't trip the `T < 0.01` early-out (it's wispy),
+and the empty-streak fallback never fires inside a connected body — so the ray
+burns its entire 256-step budget within ~6 km and dies (`whyStop` = RED)
+before ever reaching the clouds behind. Everything beyond the near body
+disappears, exactly while the camera is inside it.
+
+**Fix: opacity-driven dense step growth** (`DENSE_OPACITY_GROWTH`):
+`dtDenseEff = dtDenseL × (1 + (1−T)·G)`. Fresh cloud fronts (T≈1) keep full
+resolution; once a pixel is mostly covered the remaining samples only shape
+the last few % of alpha, so coarsening them is invisible — but reach through
+dense bodies grows ~(1+G)×. This also cuts the in-cloud (worst-case) frame
+cost since deep dense marches take ~4× fewer steps.
+
+**Follow-up (same day): opacity growth alone FAILED for wispy bodies.** User
+re-test: mid-distance clouds still vanished while "touching" a cloud. Low
+density keeps T high → the opacity term never engages → the budget still dies
+inside the body. Added a second term keyed to the DENSE-ITERATION count
+(`DENSE_ITER_GROWTH = 1/32`): prolonged dense marching coarsens regardless of
+opacity (the step doubles after ~64 dense steps), bounding worst-case
+all-dense reach at ~32 km instead of ~6 km. Depth into the march is the only
+signal that works when the medium is thin.
+
+**Pattern.** "Things behind X disappear while the camera is in/near X" in a
+budgeted marcher = the budget is being spent inside X. Check `whyStop` first;
+the fix is adaptive step growth — and it needs a term that engages even when
+opacity DOESN'T accumulate (wispy media): iteration count, not just (1−T).
+
+## Resolution of the 2026-06-03 mip dead-end: variance-preserving mips (2026-06-11)
+
+The explicit distance-mip on the base volume — reverted 2026-06-03 because it
+collapsed coverage and morphed clouds — is now LIVE and correct. The missing
+piece was never the sampling; it was the mip CONTENT: box-filtered mips pull
+values toward the channel mean, so the Schneider Remap threshold
+(`1 − coverage·profile`) passed less noise at higher mips → coverage fell with
+distance. `noiseVolumes.ts` now renormalises every mip level to mip-0's
+per-channel mean/std at generation time (`renormalizeToMoments`), making the
+Remap's expected pass-rate mip-invariant. With that, the marcher samples the
+base volume at a footprint-matched explicit lod (`baseLod`), which both
+band-limits far content (the durable fix for the far shimmer/band family) and
+restores 3D-texture cache locality at altitude — the dominant orbit-view cost.
+
+**Caveat found on first device test (2026-06-11): moments aren't enough at
+deep mips.** With the lod clamped to 4, the 2D→3D crossfade visibly LOST all
+low/mid-coverage cloud — at mips 3-4 the box filter gaussianises the noise
+distribution (renormalising mean/std doesn't restore its shape/skew), and the
+Remap pass-rate drops anyway. Clamped to `BASE_LOD_MAX = 2.5`: keeps the
+pass-rate close to mip 0 while retaining most of the cache + band-limit win
+(~2-3 texels between adjacent far rays instead of ~10+). The light-volume
+bake's `BAKE_BASE_LOD` follows at 2 so baked shadows track the same field.
+
+**Lesson.** When "sample a coarser mip" breaks a THRESHOLD-based consumer, the
+fix lives in the texture generator, not the sampler: preserve the moments the
+threshold depends on. (General principle — same reason normal maps need
+Toksvig/LEAN-style mip correction for specular.) And second-order: moment
+renormalisation degrades at deep mips (distribution SHAPE changes, not just
+its moments) — clamp the consumer's max lod where the threshold response
+visibly drifts.
+
+## Case study #13 — "2D-only gap between near ring and horizon clouds" = dense-lock from macro gating (2026-06-11)
+
+**Symptom (user report, after #12's fixes).** At ~40 km altitude: volumetric
+clouds in a circle below the camera, volumetric clouds at the horizon, and a
+GAP between them showing only the 2D overlay; flying toward the gap made
+volumetric clouds "keep fading in" at close range. User's own key observation:
+**coverage-dependent** — high-coverage regions rendered all the way to the
+horizon, low-coverage regions only rendered close.
+
+**Root cause: the skip/dense gate used the MACRO product, not the remapped
+density.** Dense mode engaged on `baseShapeCarved × coverage > 0.0001` — with
+the Nubis Remap composition that product is nonzero across the ENTIRE coverage
+footprint, even where the remapped density is exactly 0 (low dimProfile passes
+only base-noise peaks). So in low/mid-coverage regions the march dense-locked
+on entering the altitude band and never left (the gate fired every step → the
+empty-streak fallback could not trigger), crawling 50–300 km of in-band path
+at fine dense steps until the 256-step budget died mid-field. The three
+regimes fall out exactly: steep near rays (short in-band path) complete;
+grazing horizon rays enter the slab at large t where even dense steps are
+km-scale and complete; mid-angle rays die → the gap. High coverage was immune
+because real density saturates alpha → the T-early-exit bounds the dense run.
+
+**Why the prior fixes didn't touch it:** #12's step-growth terms extend reach
+*inside real bodies*; here the budget was burned in ZERO-density phantom
+"cloud" that only the gate considered cloud. (The iteration-growth term even
+made the rendered part fainter — coarser samples across the thin band.)
+
+**Fix.** Gate skip→dense on the SAME remapped shape the dense branch
+integrates: `probeShape = (carved − (1−profile)) / profile` — `profile` in
+the probe ≡ `dimProfile` in the dense branch, so this is pure ALU on
+already-fetched values. Zero-density voxels stay in skip mode at full skip
+reach; dense mode and nonzero density now coincide by construction.
+
+**Meta-lessons.**
+1. **A two-rate marcher's mode gate must test the quantity the expensive mode
+   actually integrates.** Any cheaper proxy that is a SUPERSET of "density >
+   0" dense-locks the march across phantom regions, and the budget death is
+   invisible until a long-path geometry exposes it.
+2. **"Renders near AND at the horizon but not between" is a budget signature,
+   not a coverage/LOD one.** Near = short path; horizon = giant steps; the
+   mid-field is where fine steps × long paths collide with the budget.
+3. **When the user hands you the correlation ("it's tied to coverage"), chase
+   THAT variable through the marcher's control flow** — the gate was the only
+   coverage-dependent branch decision, and the bug fell out in one read.
+
+## Case study #14 — the gap's REAL cause: uncapped step growth past feature size (2026-06-11)
+
+**#13's budget-death theory was REFUTED by the user's diagnostics** (recorded
+here per the falsification rule): `whyStop` showed GREEN everywhere — the
+march completed its slab path on every gap ray; nothing ran out of budget.
+(The probeShape gate from #13 remains correct hygiene — dense mode and
+nonzero density should coincide — it just wasn't the gap's cause.)
+
+**The decisive observation (user's):** the fade appeared identically in EVERY
+data viz (`alpha`/`iters`/`firstHit`/`eroded`/`density`/...) — so the marcher
+never DETECTS those clouds — and `DEBUG_VIZ='lod'` showed its red→gray
+boundary (where the per-ray lodCap stops binding) aligned exactly with where
+small clouds fade out. Beyond that radius the step jumps to the raw
+`1 + t·LOD_STEP_GROWTH` growth: skip steps exceed small-body size (detection
+becomes a per-frame coin flip → faint EMA ghosts that "fade in" on approach)
+and dense steps reach multiple km (a detected 2 km body integrates ≤1
+sample). Large decks survive — they're bigger than the step — hence "big
+clouds visible at the horizon, small ones only near".
+
+**Fix: coverage-adaptive world-space step caps** (`SKIP_DETECT_CAP_SCALED` =
+1.5 km, `DENSE_INTEG_CAP_SCALED` = 750 m). The skip ADVANCE is capped only
+where the per-step profile says cloud is possible (in-band); empty space
+keeps the full grown stride, so horizon reach — the reason the growth exists
+— is preserved. Dense integration is capped unconditionally (it only runs in
+detected cloud). The 2026-06-03 cap attempt failed ("cut-in-half clouds")
+because it capped dense at 75 m with no budget protection — budget death
+mid-body; this variant caps 10× coarser and sits on top of the
+opacity/iteration growth terms that bound the dense spend.
+
+**Meta-lessons.**
+1. **A distance-growing march has a hard feature-size floor at every
+   distance: features smaller than the local step are statistically
+   invisible.** Reach and detection are separate budgets — solve reach with
+   big steps where the medium CANNOT be (coverage/envelope says so), never
+   where it can.
+2. **"Fades in every data viz including iters/firstHit" = detection, not
+   integration or lighting.** Combined with green `whyStop`, the only
+   remaining suspect class is step size vs feature size.
+3. **The user's lod-boundary observation localized the bug in one sentence.**
+   When a debug viz boundary coincides with a symptom boundary, the quantity
+   that viz shows IS the mechanism — stop theorizing and read the code that
+   computes it.
+
+## Case study #15 — the fade-in's actual cause: the carve fade WAS the small clouds (2026-06-11)
+
+**#14's step caps were ALSO refuted** (recorded per the falsification rule):
+the user lowered both caps with no effect — step size was never the limiter.
+
+**The reframe that cracked it.** "Small clouds fade in as I approach" was
+read three times as a sampling/budget failure (rounds 2–4). The correct
+reading: the small clouds ARE the macro carve. In low-coverage regions the
+Remap threshold is high, and only the carved lump CENTRES poke above it —
+the carve doesn't decorate small clouds, it CREATES them. And `carveStrength`
+faded the carve to zero over 5→40 km (a 2026-05-30 band fix). So beyond
+~40 km the small clouds don't exist IN THE FIELD; what remains is a smooth
+low-density sheet (or nothing where the threshold wins) that reads as the 2D
+overlay. The "fade-in at close range" is literally the carve's own 40→5 km
+fade ramp. Large high-coverage decks survive at distance because they're
+driven by the 5 km base noise + tall cumulus profile, no carve needed —
+hence the coverage-keyed symptom. This also explains why every fix that
+touched SAMPLING (budget growth, probeShape gate, step caps) changed
+nothing: the structure was absent from the data being sampled.
+
+**Fix.** The carve is now active at ALL distances; its alias protection
+(the original reason for the fade) is a footprint-matched explicit mip on
+the variance-renormalized detail volume (`carveLod`, clamped like
+`BASE_LOD_MAX`) plus the dense integration cap from #14. At range the carve
+gets progressively SOFTER (lumps blur), never absent. The light-volume local
+self-shadow probe keeps its own 40 km gate (cost only).
+
+**New permanent diagnostics** (added because three blind fix rounds is two
+too many): `DEBUG_VIZ='maxProfile'` (max coverage×heightProfile along the
+ray — black ⇒ the band was never SAMPLED) and `'maxProbeShape'` (max
+remapped shape — gray maxProfile + black maxProbeShape ⇒ the FIELD passes
+nothing through the threshold). One screenshot each now splits every
+"clouds missing at distance" hypothesis into sampling vs field.
+
+**Meta-lessons.**
+1. **Distance fades on STRUCTURE-CREATING terms are LOD deletions, not LOD
+   simplifications.** Before fading any density-chain term by distance, ask:
+   does any cloud exist ONLY because of this term? If yes, fading it deletes
+   those clouds at range. Band-limit such terms by mip, never by amplitude.
+2. **"Feature appears only near the camera" should prompt an inventory of
+   every `smoothstep(near, far, t)` in the density chain FIRST** — it's the
+   only mechanism that can make the field itself distance-dependent. Sampling
+   theories require the field to be there; check the field's own distance
+   terms before theorizing about how it's sampled.
+3. **Three refuted fixes in a row means the bug is in a different LAYER.**
+   Budget → gate → step size were all the "how it's marched" layer; the bug
+   was in "what the field contains". When fixes within one layer keep
+   failing, enumerate the layers and move.
+
+## Case study #16 — THE ROOT CAUSE: Data3DTexture mips are zero on the GPU (2026-06-11)
+
+**The maxProfile/maxProbeShape pair did its job on first use.** User report:
+`maxProfile` gray all the way to the horizon (the cloud band is SAMPLED
+everywhere), `maxProbeShape` black beyond close range (the FIELD passes
+nothing through the Remap threshold at distance). With #15's carve change in,
+the ONLY distance-dependent inputs left in the probe were the two explicit
+mip lods — yet the computed lod at the affected distances was only ~0–1.5,
+far too shallow to collapse a (variance-renormalized) field. That
+contradiction forced a source read of three.js itself.
+
+**The bug (three r183).** `Textures.getMipLevels()` allocates the GPU texture
+with `mipLevelCount = texture.mipmaps.length` — but the WebGPU backend's
+`updateTexture()` branch for `isData3DTexture` uploads ONLY level 0, slice by
+slice; `texture.mipmaps` is never transferred (the `isDataTexture` 2D branch
+DOES upload it). WebGPU zero-initializes texture memory → **GPU mips 1+ of
+both noise volumes were all zeros.** Every `.level(>0)` sample blends toward
+zero: the dilated base collapses toward (0+1)/(2−0) = 0.5 and the carved
+shape to exactly 0 as lod rises → only high-profile (large/dense) decks
+survive the Remap at distance; small clouds "fade in" precisely as lod → 0
+near the camera. The light-volume bake (BAKE_BASE_LOD=2) was meanwhile
+baking shadows against a constant phantom density of 0.5.
+
+**This one bug retroactively explains:**
+- the 2026-06-03 "explicit mips drop coverage / clouds morph" revert
+  (misdiagnosed as box-filter variance loss — the renormalization work in
+  noiseVolumes.ts was built on that misdiagnosis; the mips were just EMPTY);
+- the entire #13–#15 hunt (budget, gate, step caps, carve fade — all
+  refuted because the field itself was being scaled toward zero at range);
+- why BASE_LOD_MAX changes "did nothing" (damage starts at lod ≈ 0.3, far
+  below any clamp).
+
+**Fix.** Every Data3DTexture tap back to `.level(int(0))` (marcher + local
+shadow probe + light-volume bake). The carve stays active at all distances
+(#15's reasoning holds) with a new necessary-condition gate to recover the
+fetch cost: carving only lowers the shape, so when the UNCARVED base already
+fails the Remap threshold the carve fetch is skipped. The mip chain +
+renormalization stay in noiseVolumes.ts for when the backend uploads 3D mips
+(or we patch it) — the cache-locality and band-limiting wins are real, the
+delivery mechanism just doesn't exist in r183.
+
+**Meta-lessons.**
+1. **When a shader effect varies with a parameter that feeds ONLY a texture
+   lod, validate the mip CONTENT before theorizing about distributions.**
+   A `.level(N)` debug viz (force lod = N, look at the raw value) would have
+   caught this in one screenshot: mip 1 reads half-bright, mip 2+ reads
+   near-black.
+2. **"Allocated but never uploaded" is a silent-zero failure mode unique to
+   WebGPU's zero-init guarantee** — nothing errors, nothing NaNs; values are
+   just scaled down by the trilinear blend. GL would have shown garbage.
+3. **Engine-version assumptions about niche paths (3D texture mips) must be
+   verified in the installed source**, not inferred from API symmetry with
+   2D textures. The 2D path uploads mipmaps; the 3D path doesn't; both
+   accept the same fields.
+
+**Resolution (2026-06-11): `patches/three@0.183.2.patch`.** The gap is NOT
+fixed upstream (checked r184 and the dev branch — the branch only gained
+`layerUpdates` handling; `texture.mipmaps` is still ignored for
+Data3DTexture), so the backend is patched via `pnpm patch`. The patch makes
+`WebGPUTextureUtils.updateTexture()`'s Data3DTexture branch mirror the
+`isDataTexture` path: when `texture.mipmaps.length > 0` it uploads every
+`mipmaps[ i ]` entry slice-by-slice to mip level `i` (3D level `i` has
+`max( 1, depth >> i )` slices; `_copyBufferToTexture`'s `depth` param is the
+source-slice offset, `originDepth` the destination z, `mipLevel` the level).
+Patched in three places because three ships both source trees:
+`src/renderers/webgpu/utils/WebGPUTextureUtils.js` plus the bundles
+`build/three.webgpu.js` and `build/three.webgpu.nodes.js` — the project's
+`three/webgpu` import resolves to `build/three.webgpu.js` via the exports
+map, so patching `src/` alone would be a silent no-op.
+
+Verified with `/dev/mip3d-test` (`src/app/dev/mip3d-test/page.tsx`): an 8³
+Data3DTexture whose 4 mip levels hold distinct constant values
+(40/120/200/255), each sampled with explicit `.level(int(N))` and read back
+through a 1×1 render target. With the patch all four levels read their
+authored values on the WebGPU backend; unpatched, levels 1+ read 0.
+**Re-run that page after any three upgrade** — if upstream gains the upload,
+drop the patch; otherwise rebase it (`pnpm patch three`).
+
+The marcher still samples `.level(int(0))` everywhere: the patch only makes
+`.level(>0)` *safe*; re-enabling the footprint-matched mip scheme is a
+separate, deliberate change (re-tune against the case-#16 DEBUG_VIZ pair —
+mip 1 should read half-bright, mip 2+ structured, never near-black).
