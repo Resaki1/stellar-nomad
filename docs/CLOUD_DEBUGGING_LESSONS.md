@@ -1871,3 +1871,83 @@ piecewise per region, with region changes rare and hysteretic. Snapping the
 normalise/cross re-discretises. Check: "if I re-bake after moving one cell,
 does every surviving voxel sample the EXACT same world point as before?" If
 no, the field will visibly change on every re-bake no matter how cheap it is.
+
+## Case study #18 — shadow round 2: four symptoms, four causes, all read off the report (2026-06-12)
+
+After #17's world-anchored lattice fixed the per-snap reshuffle, the user
+reported four residual shadow/lighting artifacts. Each symptom's *shape*
+named its cause before any debug viz was needed — worth keeping as a
+signature table:
+
+**(a) "Shadows suddenly change a few times, only at high speed (50–100 km/s)"**
+→ the one remaining DISCRETE event: region re-anchor every `REANCHOR_ANGLE`
+≈ 96 km (1/s at 100 km/s — matches "a few times" per descent). Frequency
+scaling with speed = distance-keyed discrete event; "from one frame to
+another" = re-discretisation, not drift. Fix: dual-volume crossfade —
+ping-pong two volumes, bake the new region frame into the inactive side,
+ramp `uMixA` 0.06/frame (~0.2 s); the marcher If-gates the second fetch so
+steady state stays at one tap. Sun-rebake steps (0.25°) ride the same path,
+so earth-spin lighting updates are also pop-free now. This is the missing
+half of the clipmap discipline: scrolling hides *translation*, crossfade
+hides *re-discretisation* (rotation/re-anchor) — references either never
+rotate (Nubis3 world-fixed grid) or blend updates over time (RTXGI).
+
+**(b) "Distinct horizontal brightness zones — straight borders at the same
+height on ALL clouds"** → borders shared across all bodies at constant
+altitude = the LATTICE is showing, not the data. The tilt-padded box was
+~97 km tall for a 13 km slab — only ~4 of 32 vertical voxels intersected the
+clouds, and trilinear filtering between km-thick layers is piecewise-linear
+→ gradient kinks at layer boundaries (Mach banding turns kinks into
+perceived hard lines). Fix: SHELL-Y — the volume's vertical axis is now
+ALTITUDE (radius), not box-local Y. Voxel columns: gnomonic tangent-lattice
+projected through `normalize`; voxel radius: `rMid + ly·(slab/2 + 1 km)`.
+0.47 km vertical voxels (28 across the slab), exact containment at any
+anchor tilt (altitude is tilt-invariant — the entire sag/tilt-pad
+derivation from #17 is DELETED, not just retuned), and the altitude lattice
+is globally fixed so re-anchors only re-discretise XZ. The marcher's
+inverse is exact: `cp = p·(rMid/dot(p,axisY))` reconstructs the bake's
+column point algebraically (both sides of the projection cancel).
+
+**(c) "Clouds darken at a fixed distance from the camera — constant, with a
+visible border that flies along"** → anything keyed to CAMERA DISTANCE
+paints a camera-locked sphere; the only distance-gated lighting term was
+the local lump self-shadow probe (`localShadowOn = 1 − smoothstep(5, 40 km,
+t)`). The gate's justification ("lump detail is sub-pixel beyond 40 km")
+missed that the probe's MEAN is < 1: it darkens everything by the average
+lump absorption, so fading it steps the deck's DC brightness at a constant
+range. Fix: probe active at ALL distances (Nubis3's split: near sun samples
+live everywhere; the baked volume is only the far tail). Lesson: **before
+distance-gating any multiplicative term, check its mean — fading a biased
+term IS a visible spatial boundary**, even when its variation is sub-pixel.
+
+**(d) "Near the terminator, a curved line through the clouds where the
+horizon is — clouds look translucent"** → `daylight` (and sunset/sun/sky
+colors) were computed ONCE PER RAY at the slab-chord midpoint `pMid`. At
+the limb the chord length is discontinuous (surface-clamped vs extending to
+the far shell behind the planet), so pMid jumps hundreds of km between
+neighbouring pixels and the lighting jumped with it — a hard curve exactly
+along the horizon, worst near the terminator where daylight's gradient is
+steep. Fix: per-sample `daylightS/sunColorS/skyColorS` in the dense branch
+(pure ALU on already-available p/r). This is the THIRD appearance of the
+slab-midpoint anti-pattern (cf. #2): **any per-ray quantity derived from
+the chord midpoint breaks at the limb and inside the band — assume
+"varies slowly across the slab" is false until proven.**
+
+**Verification round (same day).** Three adversarial review passes (shell
+math, state machine, lighting/integration) all upheld the fixes — the
+marcher's gnomonic inverse was proven algebraically exact against the bake
+(`cp = p·(rMid/dot(p,axisY))` reconstructs the bake's column point;
+sub-metre f32 residual vs 4.7 km voxels) — and surfaced two real hardening
+items, both applied: (1) a crossfade started while `uVolumeWeight = 0`
+(re-anchor at orbit) could still be in flight when the volume fades back in,
+briefly blending a stale or NEVER-BAKED side (zero-init storage reads T = 0
+= full shadow) — fixed by snapping `mixA` to target while weight ≤ 0;
+(2) side B's compute pipeline would otherwise compile lazily at the FIRST
+crossfade — the exact pop the fade exists to hide (known WebGPU
+compile-stutter) — fixed by warming the inactive side's pipeline alongside
+the first real bake. Known residuals, deliberate: probe cost on horizon /
+150-400 km views needs on-device profiling (fallback documented in the
+LOCAL_SHADOW comment: fade toward MEAN absorption, never toward 1); a
+~2e-5 rad antipode fold-back in the gnomonic inverse is unreachable today
+(flagged in code); sun drift < 0.25° folds un-crossfaded into window-step
+re-bakes (~60 m shadow shift, sub-voxel, invisible).

@@ -383,15 +383,22 @@ function createColorPass(
       uStbn: stbnTexture,
       uStbnFrameSlice: shared.uStbnFrameSlice,
       uLodMinSamples: shared.uLodMinSamples,
-      // Light-volume lookup (undefined when toggle off → cone path). The box is
-      // parameterized by CENTRE (uBoxCenter) + half-extent — the marcher's
-      // uLightVolMin param receives the CENTRE (see earthClouds earthToUVW).
-      uLightVol: lightVolume?.lightVolTex,
-      uLightVolMin: lightVolume?.uBoxCenter,
+      // Light-volume lookup (undefined when toggle off → cone path).
+      // Dual-volume crossfade pair: per-side window CENTRE + tangent frame,
+      // shared half-extent, blended by uMixA (see earthClouds shell
+      // addressing / cloudLightVolume.ts crossfade).
+      uLightVol: lightVolume?.lightVolTexA,
+      uLightVolB: lightVolume?.lightVolTexB,
+      uLightVolCenter: lightVolume?.uBoxCenterA,
+      uLightVolCenterB: lightVolume?.uBoxCenterB,
       uLightVolHalfExtent: lightVolume?.uBoxHalfExtent,
-      uLightVolAxisX: lightVolume?.uBoxAxisX,
-      uLightVolAxisY: lightVolume?.uBoxAxisY,
-      uLightVolAxisZ: lightVolume?.uBoxAxisZ,
+      uLightVolAxisX: lightVolume?.uBoxAxisXA,
+      uLightVolAxisY: lightVolume?.uBoxAxisYA,
+      uLightVolAxisZ: lightVolume?.uBoxAxisZA,
+      uLightVolAxisXB: lightVolume?.uBoxAxisXB,
+      uLightVolAxisYB: lightVolume?.uBoxAxisYB,
+      uLightVolAxisZB: lightVolume?.uBoxAxisZB,
+      uLightVolMixA: lightVolume?.uMixA,
       uVolumeWeight: lightVolume?.uVolumeWeight,
     });
     rgbaOut.assign(rgba);

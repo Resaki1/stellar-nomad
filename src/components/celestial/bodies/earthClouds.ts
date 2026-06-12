@@ -239,17 +239,20 @@ const DITHER_FRACTION = 1.0;
 // half a base tile, enough to fully decorrelate adjacent tiles.
 const WARP_AMPLITUDE = 0.01;
 // ── Local lump self-shadow for the light-volume path (2026-06-10) ──
-// The 3D light volume stores MACRO sun transmittance at 3-6 km voxels —
-// switching to it from the 6-tap cone lost the per-lump (~1-3 km carve-scale)
-// self-shadow that gave cumulus their crisp sunlit-crest / dark-crevice
-// shading. Restore it with ONE short directional probe: sample the carved base
+// The 3D light volume stores MACRO sun transmittance at 4.7 km (tangent) ×
+// ~0.5 km (altitude) voxels — switching to it from the 6-tap cone lost the
+// per-lump (~1-3 km carve-scale) self-shadow that gave cumulus their crisp
+// sunlit-crest / dark-crevice shading. Restore it with ONE short directional probe: sample the carved base
 // shape a few hundred metres toward the sun and treat it as local occluding
 // density,
 //   Tsun *= exp(−carvedShape(p + sunDir·DIST) × coverage × profile × DENS × DIST)
-// Costs 2 texture3D per dense voxel (base + carve at the offset point) and is
-// gated to the carve-active range (t < 40 km) — beyond that the carve is faded
-// and the macro volume alone is correct. The macro top-bright/under-dark
-// gradient still comes from the volume; this only adds the high-freq relief.
+// Costs 2 texture3D per dense voxel (base + carve at the offset point).
+// ACTIVE AT ALL DISTANCES (2026-06-12) — a 5→40 km distance gate lived here
+// and produced a camera-locked brightness border (the probe's MEAN darkening
+// is nonzero, so fading it by camera distance steps the deck's brightness at
+// a constant range). Nubis³ equivalent: near sun samples live everywhere,
+// baked volume = far tail only. The macro top-bright/under-dark gradient
+// still comes from the volume; this only adds the high-freq relief + DC.
 const LOCAL_SHADOW_DIST = 0.0008; // 800 m toward the sun
 const LOCAL_SHADOW_DENSITY = 2000; // od ≈ 0..1.6 over typical carved densities
 // Cone-traced light march (Nubis C3). 6 stratified samples toward the sun,
@@ -275,12 +278,14 @@ const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
 // lump self-shadow at 2× cone fetch cost. (Macro density along the sun path is
 // still integrated; only the high-freq carve is dropped.)
 const CONE_SAMPLE_CARVE = true;
-// Soft fade width for the 3D light-volume box edge (USE_LIGHT_VOLUME), as a
-// fraction of the box half-extent. The volume only covers a finite box around
-// the camera; without a soft edge the inside (self-shadowed) → outside (fully
-// lit) boundary reads as a hard lighting line sweeping across clouds as you
-// fly. Fading the volume → lit over the outer LIGHT_VOL_EDGE_FRAC of the box
-// turns that line into a soft gradient. Larger = softer/wider transition.
+// Soft fade width for the 3D light-volume window edge (USE_LIGHT_VOLUME), as
+// a fraction of the XZ half-extent. The volume only covers a finite tangent
+// window around the camera; without a soft edge the inside (self-shadowed) →
+// outside (fully lit) boundary reads as a hard lighting line sweeping across
+// clouds as you fly. Fading the volume → lit over the outer
+// LIGHT_VOL_EDGE_FRAC of the window turns that line into a soft gradient.
+// XZ-ONLY since shell-Y (2026-06-12): the slab fills the altitude span by
+// design, so a Y fade would wrongly fade everything everywhere.
 const LIGHT_VOL_EDGE_FRAC = 0.25;
 // Henyey-Greenstein DUAL-LOBE phase. Real clouds are strongly forward-
 // scattering (the silver lining you see looking toward the sun) yet still
@@ -435,13 +440,14 @@ const CARVE_SCALE = 80;
 //                   appears in the scene. If the visible sun on screen
 //                   is in the upper-left but sunDir colour suggests
 //                   downward direction, there's a transform bug.
-//   'daylight'    : the per-voxel `daylight` scalar (smoothstep on
-//                   sunDotPoint), grayscale. Varies across the cloud
-//                   disk: clouds near the sub-solar point read bright,
-//                   clouds near the terminator read mid-gray, night-side
-//                   clouds black. This is what causes "left-bright /
-//                   right-dim" gradient across cloud cover when sun is
-//                   off to one side — correct physics, not a bug.
+//   'daylight'    : the PER-RAY daylight scalar at the slab-chord midpoint
+//                   pMid (the actual lighting uses per-sample `daylightS`
+//                   since 2026-06-12 — expect this viz to disagree with the
+//                   render along the limb, where pMid jumps). Varies across
+//                   the cloud disk: clouds near the sub-solar point read
+//                   bright, terminator mid-gray, night side black. The
+//                   "left-bright / right-dim" gradient when the sun is off
+//                   to one side is correct physics, not a bug.
 //   'dither'      : the per-pixel dither hash output as grayscale [0, 1].
 //                   Tests whether the dither hash is producing uniform
 //                   per-pixel variation or some structured pattern.
@@ -793,11 +799,17 @@ export function marchCloudVolume({
   uStbnFrameSlice,
   uLodMinSamples,
   uLightVol,
-  uLightVolMin,
+  uLightVolB,
+  uLightVolCenter,
+  uLightVolCenterB,
   uLightVolHalfExtent,
   uLightVolAxisX,
   uLightVolAxisY,
   uLightVolAxisZ,
+  uLightVolAxisXB,
+  uLightVolAxisYB,
+  uLightVolAxisZB,
+  uLightVolMixA,
   uVolumeWeight,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -837,18 +849,32 @@ export function marchCloudVolume({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLodMinSamples: any;
   // ── 3D light-volume lookup (optional; only bound when USE_LIGHT_VOLUME) ──
+  // Dual-volume crossfade pair (see cloudLightVolume.ts): A is sampled at
+  // uLightVolMixA weight, B at (1 − mixA). Steady state sits at exactly 0 or
+  // 1 so only one side is fetched outside transitions.
   uLightVol?: THREE.Texture;
+  uLightVolB?: THREE.Texture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uLightVolMin?: any; // box CENTRE (earth space, scaled)
+  uLightVolCenter?: any; // side-A window CENTRE (earth space, scaled)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uLightVolHalfExtent?: any; // box half-extent (scaled)
-  // ── Local-up box basis (earth space) — orients the thin box to the shell ──
+  uLightVolCenterB?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolHalfExtent?: any; // shared: (x,z) tangent half-width; (y) altitude half-span
+  // ── Per-side region tangent frames (earth space) — see shell addressing ──
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLightVolAxisX?: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLightVolAxisY?: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLightVolAxisZ?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisXB?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisYB?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolAxisZB?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uLightVolMixA?: any; // crossfade weight of side A (1 = pure A)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumeWeight?: any; // orbit fade (1 near → 0 orbit)
 }) {
@@ -1058,63 +1084,22 @@ export function marchCloudVolume({
     // or ray-end equally.
     const coverageMax = covNear.max(covMid).max(covFar);
 
-    // ── Smooth terminator ──
-    // sunDotPoint is cos of the sun-zenith angle at the cloud point.
-    //   1 → sun overhead, 0 → sun on horizon, < 0 → below horizon.
-    // Narrow symmetric band centred on sunDotPoint = 0. Sunset (`4·d·(1-d)`)
-    // peaks at daylight = 0.5, which now lands exactly at the geometric
-    // horizon — peak orange tint reads as a thin band right at the
-    // terminator instead of bleeding across the entire day side. Beyond
-    // ±0.15 (≈ 8.6° sun elevation) the curve saturates: daylight = 1 →
-    // pure white sunlit clouds; daylight = 0 → black night side.
+    // ── Terminator daylight is PER-SAMPLE, not per-ray ──
+    // It used to be computed once per ray at the slab-chord midpoint pMid
+    // ("varies slowly across the slab"). At the LIMB that assumption breaks
+    // discontinuously: rays that hit earth have their chord clamped at the
+    // surface, while rays a pixel higher march on to the far shell behind
+    // the planet — pMid jumps hundreds of km between neighbouring pixels,
+    // so daylight/sunset jumped with it, drawing a hard curved lighting
+    // line through the clouds exactly along the horizon (worst near the
+    // terminator where daylight's gradient is steep). The same slab-
+    // midpoint anti-pattern as CLOUD_DEBUGGING_LESSONS case study #2 —
+    // daylightS/sunColorS/skyColorS now live in the dense branch, evaluated
+    // at each sample p. This ray-level value survives ONLY for the
+    // DEBUG_VIZ 'daylight' view.
     const pDotS_Mid = dot(pMid, sunDirEarth);
     const sunDotPoint = pDotS_Mid.div(rMid);
     const daylight = smoothstep(float(-0.1), float(0.1), sunDotPoint);
-    const sunset = daylight.mul(daylight.oneMinus()).mul(4);
-    // Tint sunlight toward warm orange at the terminator (Rayleigh-reddened
-    // light path through thicker atmosphere).
-    //
-    // Magnitude: 5× HDR. AgX tonemap is roughly linear up to ~3 HDR then
-    // compresses progressively: 5 HDR → 0.83, 8 HDR → 0.90, 12 HDR → 0.93,
-    // 20 HDR → 0.96. Above ~5 HDR, AgX squashes a 2× brightness ratio
-    // into ~5% output difference (cumulus cores looked uniformly white
-    // even though sunlit/shadowed lighting math differed by 2-3×).
-    //
-    // At 5×, cumulus cores peak at ~4 HDR (AgX 0.81) and shadowed parts
-    // at ~2 HDR (AgX 0.67) — a 14% output spread, visible as actual body
-    // shading.
-    //
-    // Tradeoff: clouds ~4× dimmer than the original 21× tune that matched
-    // the flat overlay. Visible during the flat↔volumetric crossfade
-    // between 25-35 k km altitude. Likely needs corresponding reduction
-    // in the flat overlay's `CLOUD_BRIGHTNESS` constant to keep the
-    // transition smooth — leaving for later tuning since the volumetric
-    // result quality is the priority right now.
-    const sunColor = mix(
-      vec3(1.0, 0.96, 0.88),
-      vec3(1.0, 0.55, 0.25),
-      sunset,
-    ).mul(12.0);
-
-    // Sky color: COOL BLUE tint used for ambient lighting (Rayleigh-
-    // scattered atmospheric blue is what lights cloud undersides in real
-    // life). Without a separate sky color, ambient × sunColor produced
-    // warm-cream shadow sides instead of the characteristic cool-blue
-    // underbelly cumulus get in reference renders. The Schneider 2015
-    // formulation explicitly separates sun- and sky-colored contributions:
-    //
-    //   L = sunColor × (direct + ms) + skyColor × ambient
-    //
-    // Saturated cool blue at 2 HDR. Reduced from 4 → 2 to deepen shadow
-    // sides — when skyColor was 4, ambient fill kept shadow undersides at
-    // ~1 HDR (AgX 0.50), too bright for the reference look. Halving it
-    // drops shadows to ~0.5 HDR (AgX 0.34) — properly dark for Star
-    // Citizen-style contrast while keeping the blue tint that gives
-    // shadows their characteristic cumulus underside color.
-    //
-    // The blue channel dominates (0.3 R, 0.5 G, 1.0 B) so shadow sides
-    // read as visibly cool, not just dimmer.
-    const skyColor = vec3(0.3, 0.5, 1.0).mul(daylight).mul(2.0);
 
     // Skylight: scalar attenuation of skyColor, multiplied into ambient.
     // Tuned together with skyColor for shadow brightness:
@@ -1720,57 +1705,159 @@ export function marchCloudVolume({
               const density: any = eroded.mul(densScale);
               lastDensity.assign(density);
 
+              // ── Per-sample terminator daylight (2026-06-12) ──
+              // Evaluated at THIS sample's position p (cos of the sun-zenith
+              // angle: 1 → sun overhead, 0 → horizon, < 0 → night). The old
+              // per-ray value at the slab-chord midpoint drew a hard lighting
+              // line along the limb — see the ray-level `daylight` comment.
+              // Pure ALU on already-available p/r — no extra taps.
+              const daylightS = smoothstep(
+                float(-0.1),
+                float(0.1),
+                dot(p, sunDirEarth).div(r),
+              );
+              // Sunset 4·d·(1−d) peaks at daylight 0.5 = the geometric
+              // terminator → thin warm band there, not bleeding across the
+              // day side.
+              const sunsetS = daylightS.mul(daylightS.oneMinus()).mul(4);
+              // Sun tint: warm white → Rayleigh-reddened orange at the
+              // terminator. Magnitude 12 HDR — see the AgX-compression tuning
+              // history in git (5× kept body shading visible; raised again
+              // for the current look, tuned against 'lightingOnly').
+              const sunColorS = mix(
+                vec3(1.0, 0.96, 0.88),
+                vec3(1.0, 0.55, 0.25),
+                sunsetS,
+              ).mul(12.0);
+              // Sky color: COOL BLUE ambient tint (Rayleigh blue lights cloud
+              // undersides). Schneider 2015 separates the contributions:
+              //   L = sunColor × (direct + ms) + skyColor × ambient
+              // 2 HDR with a dominant blue channel so shadow sides read as
+              // visibly cool, not just dimmer (see git for the 4 → 2 tuning).
+              const skyColorS = vec3(0.3, 0.5, 1.0).mul(daylightS).mul(2.0);
+
               // ── Sun transmittance: 3D light-volume lookup (toggle) OR the
               //    6-tap cone march (default). USE_LIGHT_VOLUME is a build-time
               //    JS const, so toggle=off emits the exact cone shader below. ──
               const Tsun = float(0).toVar();
-              if (USE_LIGHT_VOLUME && uLightVol) {
-                // earthToUVW (oriented box: centre + local-up basis), inverse
-                //   of voxelToEarth. Project (p - centre) onto each box axis,
-                //   normalise by the half-extent, then [-1,1] → [0,1].
-                const dV = p.sub(uLightVolMin);
-                const localV = vec3(
-                  dot(dV, uLightVolAxisX).div(uLightVolHalfExtent.x),
-                  dot(dV, uLightVolAxisY).div(uLightVolHalfExtent.y),
-                  dot(dV, uLightVolAxisZ).div(uLightVolHalfExtent.z),
-                );
-                const uvwV = localV.mul(0.5).add(0.5);
-                // Soft box edge: distance to the nearest face in uvw space
-                // (≤ 0 outside the box). Fade the volume → fully-lit (1) over the
-                // outer LIGHT_VOL_EDGE_FRAC of the box so the moving box boundary
-                // is a soft gradient, not a hard lighting line sweeping clouds.
-                const edgeDist = uvwV.x.min(float(1).sub(uvwV.x))
-                  .min(uvwV.y.min(float(1).sub(uvwV.y)))
-                  .min(uvwV.z.min(float(1).sub(uvwV.z)));
-                const edgeFade = smoothstep(
-                  float(0),
-                  float(LIGHT_VOL_EDGE_FRAC),
-                  edgeDist,
-                );
-                // One trilinear fetch replaces the whole 6-tap cone. .r = exp(-tau).
-                // Clamp-to-edge wrap handles out-of-box uvw; edgeFade → 0 there
-                // anyway so the value is blended out to "lit".
-                const TsunVol = texture3D(uLightVol, uvwV).level(int(0)).r;
-                // weight = edge fade × orbit fade (uVolumeWeight, 1 near → 0 orbit).
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const wVol: any = edgeFade.mul(uVolumeWeight);
+              if (USE_LIGHT_VOLUME && uLightVol && uLightVolB && uLightVolMixA) {
+                // ── Shell addressing (inverse of the bake's voxelToEarth) ──
+                // Y is ALTITUDE: (r − rMid)/halfSpan — a globally fixed
+                // lattice shared by both sides (shell-Y, 2026-06-12: replaced
+                // box-linear Y, whose ~3 km voxels over a 97 km tilt-padded
+                // box left the 13 km slab spanning only ~4 voxels — the
+                // piecewise-trilinear vertical gradient read as hard "shadow
+                // zone" bands at the same altitude on every cloud).
+                // XZ: gnomonic column projection — scale p onto the side's
+                // tangent plane (⊥ axisY through the window centre, which
+                // sits at radius rMid along axisY, so dot(centre,axisY) =
+                // rMid), then project onto the side's tangent axes.
+                const rMidShell = uInnerRadius.add(uOuterRadius).mul(0.5);
+                const altY = r
+                  .sub(rMidShell)
+                  .div(uLightVolHalfExtent.y)
+                  .mul(0.5)
+                  .add(0.5);
+                // Per-side shadow factor: the volume sample faded to fully-
+                // lit (1) over the outer LIGHT_VOL_EDGE_FRAC of the XZ window
+                // so the window border is a soft gradient, not a hard
+                // lighting line. Y does NOT participate in the edge fade —
+                // the slab fills the altitude span by design and clamp-to-
+                // edge there is benign. (dY ≤ 0 = far side of the planet →
+                // uvw lands far outside [0,1] → edgeFade 0 → fully lit.
+                // Latent trap: in a ~2e-5 rad cone around the exact ANTIPODE
+                // the clamped projection folds back INSIDE the window at
+                // full edge fade — unreachable today because the surface-
+                // occlusion clamp bounds samples to ≲25° from camera-up, but
+                // know it's here before marching far-side chords.)
+                const sideShadow = (
+                  vol: THREE.Texture,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  center: any,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  axX: any,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  axY: any,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  axZ: any,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                ): any => {
+                  const dY = dot(p, axY).max(0.0001);
+                  const cp = p.mul(rMidShell.div(dY));
+                  const dV = cp.sub(center);
+                  const uvwS = vec3(
+                    dot(dV, axX).div(uLightVolHalfExtent.x).mul(0.5).add(0.5),
+                    altY,
+                    dot(dV, axZ).div(uLightVolHalfExtent.z).mul(0.5).add(0.5),
+                  );
+                  const edgeDist = uvwS.x
+                    .min(float(1).sub(uvwS.x))
+                    .min(uvwS.z.min(float(1).sub(uvwS.z)));
+                  const edgeFade = smoothstep(
+                    float(0),
+                    float(LIGHT_VOL_EDGE_FRAC),
+                    edgeDist,
+                  );
+                  // One trilinear fetch replaces the whole 6-tap cone.
+                  // .r = exp(-tau).
+                  const Tv = texture3D(vol, uvwS).level(int(0)).r;
+                  return mix(float(1), Tv, edgeFade);
+                };
+                // ── Dual-volume crossfade (see cloudLightVolume.ts) ──
+                // uLightVolMixA sits at exactly 0 or 1 outside transitions,
+                // so the If-gates keep this at ONE fetch in steady state and
+                // two only while a re-anchor/sun-step fade is in flight.
+                const shadowA = float(1).toVar();
+                const shadowB = float(1).toVar();
+                If(uLightVolMixA.greaterThan(0.0001), () => {
+                  shadowA.assign(
+                    sideShadow(
+                      uLightVol,
+                      uLightVolCenter,
+                      uLightVolAxisX,
+                      uLightVolAxisY,
+                      uLightVolAxisZ,
+                    ),
+                  );
+                });
+                If(uLightVolMixA.lessThan(0.9999), () => {
+                  shadowB.assign(
+                    sideShadow(
+                      uLightVolB,
+                      uLightVolCenterB,
+                      uLightVolAxisXB,
+                      uLightVolAxisYB,
+                      uLightVolAxisZB,
+                    ),
+                  );
+                });
+                const TsunVol = mix(shadowB, shadowA, uLightVolMixA);
                 // ── Local lump self-shadow (see LOCAL_SHADOW_* constants) ──
-                // The volume's 3-6 km voxels can't resolve the ~1-3 km carve
-                // lumps, so on its own it shades the deck like a soft macro
-                // blanket (flat vs the cone it replaced). One short probe
-                // toward the sun re-adds the high-freq crest/crevice shading:
-                // sample the carved base shape 800 m sunward, absorb by it.
-                // Distance-gated to t < ~40 km purely for COST (2 texture3D
-                // per dense voxel when it runs) — beyond that the lump-scale
-                // shading is sub-pixel anyway. (The carve itself no longer
-                // fades with distance; this gate is the shadow probe's own.)
-                const localShadowOn = float(1).sub(
-                  smoothstep(float(0.005), float(0.040), t),
-                );
+                // The volume's km-scale voxels can't resolve the ~1-3 km
+                // carve lumps, so on its own it shades the deck like a soft
+                // macro blanket (flat vs the cone it replaced). One short
+                // probe toward the sun re-adds the high-freq crest/crevice
+                // shading: sample the carved base shape 800 m sunward,
+                // absorb by it.
+                // ACTIVE AT ALL DISTANCES (2026-06-12). The probe used to
+                // fade out over 5→40 km "because lump-scale shading is sub-
+                // pixel beyond that" — but its MEAN is not 1: it darkens
+                // everything it touches by the average lump absorption, so
+                // the fade created a camera-locked brightness border at a
+                // constant ~40 km ("clouds near me are darker, with a clear
+                // boundary that flies along"). Distant lump VARIATION is
+                // sub-pixel; the DC shift is not. This is also the Nubis³
+                // split: near sun samples LIVE at every distance, the baked
+                // volume only supplies the smooth far-field tail. Cost: 2
+                // texture3D per day-side dense voxel. NOT cheap on horizon /
+                // 150-400 km nadir views: most dense voxels there sit beyond
+                // the old 40 km gate (far dense fetches go ~3-4 → ~5-6).
+                // PROFILE at the ~240 km regime; if too hot, fade TsunLocal
+                // toward its MEAN absorption with distance (keeps the DC,
+                // drops the fetches) — never back toward 1.
                 const TsunLocal = float(1).toVar();
                 If(
-                  localShadowOn.greaterThan(0.002)
-                    .and(daylight.greaterThan(0.001))
+                  daylightS.greaterThan(0.001)
                     .and(uVolumeWeight.greaterThan(0.001)),
                   () => {
                     const pLs = p.add(
@@ -1822,12 +1909,19 @@ export function marchCloudVolume({
                     TsunLocal.assign(exp(odLocal.negate()));
                   },
                 );
+                // Orbit fade applies to BOTH the baked volume and the local
+                // probe (the whole volumetric shadow system hands off to the
+                // 2D overlay at orbit). The per-side edge fades are already
+                // folded into TsunVol, so the box border never gates the
+                // local probe — no spatial boundary in either component.
                 Tsun.assign(
-                  mix(float(1), TsunVol.mul(TsunLocal), wVol).mul(daylight),
+                  mix(float(1), TsunVol.mul(TsunLocal), uVolumeWeight).mul(
+                    daylightS,
+                  ),
                 );
                 lastTsun.assign(Tsun);
               } else {
-              If(daylight.greaterThan(0.001), () => {
+              If(daylightS.greaterThan(0.001), () => {
                 const opticalDepthSun = float(0).toVar();
                  
                 const sampleConeTap = (
@@ -1982,7 +2076,7 @@ export function marchCloudVolume({
                 sampleConeTap(0.94575601, -0.32509218, 0.01428496, 3);
                 sampleConeTap(0.28128598, 0.42443639, -0.86065785, 4);
                 sampleConeTap(-0.42443639, 0.28128598, 0.86065785, 5);
-                Tsun.assign(exp(opticalDepthSun.negate()).mul(daylight));
+                Tsun.assign(exp(opticalDepthSun.negate()).mul(daylightS));
                 lastTsun.assign(Tsun);
                 lastOpticalDepthSun.assign(opticalDepthSun);
                 If(firstOpticalDepthSun.lessThan(0), () => {
@@ -2018,7 +2112,7 @@ export function marchCloudVolume({
               //     (Tsun^0.9) so valleys read darker → more dramatic body
               //     shading, while sunlit crowns (Tsun≈1) stay bright/white.
               const MS_COEF = float(0.9);
-              const Tsun_ms = pow(Tsun.max(0.0001), MS_COEF).mul(daylight);
+              const Tsun_ms = pow(Tsun.max(0.0001), MS_COEF).mul(daylightS);
               lastTsunMs.assign(Tsun_ms);
 
               // Optical depth integrates over dtDense — accumulation only
@@ -2075,9 +2169,9 @@ export function marchCloudVolume({
               // tint instead of warm-cream. Mixed before scatterFrac so
               // each step's accumulated radiance has both color sources
               // correctly weighted.
-              const L = sunColor
+              const L = sunColorS
                 .mul(direct.add(ms))
-                .add(skyColor.mul(ambient))
+                .add(skyColorS.mul(ambient))
                 .mul(scatterFrac);
               col.addAssign(L.mul(T));
 
@@ -2425,8 +2519,10 @@ export function marchCloudVolume({
     }
 
     if (DEBUG_VIZ === "daylight") {
-      // `daylight` is the per-voxel scalar smoothstep(-0.1, 0.1, sunDotPoint)
-      // where sunDotPoint = dot(pMid, sunDirEarth) / |pMid|.
+      // RAY-LEVEL daylight at the slab-chord midpoint pMid (the actual
+      // lighting uses the per-sample `daylightS` since 2026-06-12 — this viz
+      // keeps the cheap per-ray approximation; expect it to disagree with
+      // the render exactly along the limb, where pMid jumps).
       // Bright = sub-solar (cloud directly illuminated), dark = terminator
       // / night side. Provides the "across-FOV brightness gradient" that
       // makes clouds near sun overall brighter than clouds toward the

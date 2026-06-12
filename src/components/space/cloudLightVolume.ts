@@ -29,24 +29,43 @@ import {
 // =============================================================================
 // 3D cloud light volume — per-voxel sun transmittance (exp(-tau_sun)).
 //
-// A LOCAL-UP-ORIENTED window of voxels on a WORLD-ANCHORED lattice in earth
-// model space (constant extent — see BOX_HALF; anchoring — see
-// REANCHOR_ANGLE): the window follows the slab mid-shell under the camera in
-// whole-voxel steps along a per-region fixed tangent frame, so re-bakes
+// A SHELL-ALIGNED window of voxels on a WORLD-ANCHORED lattice in earth model
+// space: voxel columns live on a per-region fixed tangent lattice (gnomonic
+// projection through the region anchor frame — see REANCHOR_ANGLE) and the
+// vertical axis is ALTITUDE (radius), not box-linear Y. Shell-Y (2026-06-12)
+// means:
+//  - every vertical voxel covers the actual cloud slab (~0.5 km/voxel over
+//    the 13 km slab + pad) instead of a curvature/tilt-padded ~3 km — this
+//    removed the visible piecewise-trilinear "shadow zone" banding (hard
+//    horizontal borders at the same height on every cloud);
+//  - the altitude lattice is GLOBALLY fixed (rMid/hy are runtime constants),
+//    immune to anchor tilt, so containment is exact by construction — no
+//    curvature sag or tilt pad;
+//  - re-anchors only re-discretise the tangent (XZ) lattice.
+// Window moves are whole-voxel steps along the region frame, so re-bakes
 // reproduce identical values in the overlap (clipmap-style stability).
-// Each voxel runs a short straight sun-march (the marcher's cone
-// inner loop, with the cone kernel removed) reusing the same cheap macro
-// density the marcher uses: dilated base shape × coverage × height profile
-// (anti-tiling warp included). The result exp(-tau) is stored in .r.
 //
-// The per-pixel marcher (earthClouds.ts, behind USE_LIGHT_VOLUME) then replaces
-// its 6-tap cone with ONE trilinear texture3D fetch of this volume — turning a
-// per-(pixel × dense-voxel) sun-march into a per-(volume-voxel) one baked once
-// per frame and sampled with a single tap. Modern reference: Nubis³ light voxel
-// grid / KSP-EVE Light Volume.
+// Each voxel runs a short straight sun-march (the marcher's cone inner loop,
+// with the cone kernel removed) reusing the same cheap macro density the
+// marcher uses: dilated base shape × coverage × height profile (anti-tiling
+// warp included). The result exp(-tau) is stored in .r.
+//
+// DUAL-VOLUME CROSSFADE (2026-06-12): re-anchoring (and sun rotation) still
+// re-discretises the field — a discrete, globally visible pop, once per
+// ~96 km of flight ("shadows suddenly change a few times" at 50-100 km/s).
+// Fix: ping-pong between TWO volumes. A transition bakes the new
+// frame/lighting into the INACTIVE side and ramps uMixA over ~XFADE frames
+// while the old side stays frozen; the marcher samples both sides only while
+// the fade is in flight. Modern reference: Nubis³ light voxel grid (world-
+// fixed lattice, amortised update) / RTXGI scrolling volumes.
+//
+// The per-pixel marcher (earthClouds.ts, behind USE_LIGHT_VOLUME) replaces
+// its 6-tap cone with ONE trilinear texture3D fetch of this volume (two
+// during a crossfade) — turning a per-(pixel × dense-voxel) sun-march into a
+// per-(volume-voxel) one baked once per change and sampled with a single tap.
 //
 // Toggle-gated upstream: this module is only constructed when USE_LIGHT_VOLUME
-// is true, so toggle=off never allocates the texture or builds the compute node.
+// is true, so toggle=off never allocates the textures or builds compute nodes.
 //
 // API notes (verified against three r183):
 //  - Storage3DTexture must be rgba16float (RGBAFormat + HalfFloatType): the only
@@ -61,12 +80,11 @@ import {
 
 // ── Volume dimensions (constants baked into the dispatch count) ──
 // 256×256 horizontal over the constant 1200 km box ≈ 4.7 km/voxel; 32 vertical
-// over the ~97 km box height ≈ 3.0 km/voxel (the 13 km slab spans ~4.3
-// voxels — the anchor-tilt pad in updateBox bought stability at the cost of
-// ~23% vertical resolution; the local self-shadow probe in earthClouds.ts
-// carries the high-freq shading). A sun-transmittance field is smoother than
-// density (an integral along the sun dir), so it tolerates coarse sampling.
-// rgba16f → 16.8 MB.
+// over the ~15 km altitude span (slab + ALT_PAD) ≈ 0.47 km/voxel — the slab
+// spans ~28 voxels (was ~4.3 under the box-linear scheme; the coarse vertical
+// trilinear was the "shadow zones" banding). A sun-transmittance field is
+// smoother than density (an integral along the sun dir), so it tolerates the
+// coarse HORIZONTAL sampling. rgba16f → 16.8 MB per side, ×2 sides.
 const NX = 256;
 const NY = 32;
 const NZ = 256;
@@ -90,12 +108,18 @@ const CONE_DENSITY = 1000; // decoupled from uDensityMul — matches the cone
 const BOX_HALF = 0.6; // 600 km half-width — covers the near field; the soft
 //                       edge fade + per-pixel orbit fade handle everything
 //                       beyond (unshadowed macro = correct at that distance).
+// Altitude pad above/below the slab (shell-Y vertical half-extent =
+// slab half-thickness + ALT_PAD). 1 km ≈ 2 voxels — keeps the trilinear
+// footprint of in-slab samples off the clamp border. No tilt/sag terms: the
+// altitude axis is exact regardless of anchor tilt.
+const ALT_PAD = 0.001;
 const VOL_FADE_ALT_LO = 0.15; // ~150 km — box still covers near clouds
 const VOL_FADE_ALT_HI = 0.4; //  ~400 km — volume fully faded out (orbit)
 // Re-bake threshold for the sun direction (earth space). The transmittance
 // field is STATIC in earth space for a fixed sun — the bake only needs to
 // re-run when the box snaps to a new lattice cell or the sun has rotated
-// (earth spin) by more than ~half the sun's angular diameter.
+// (earth spin) by more than ~half the sun's angular diameter. Sun rebakes go
+// through the crossfade path, so the 0.25° step never pops.
 const SUN_REBAKE_COS = Math.cos((0.25 * Math.PI) / 180);
 // ── Region anchoring (the per-snap shadow-pop fix, 2026-06-12) ──
 // The voxel lattice must be a deterministic function of EARTH space, not of
@@ -106,18 +130,23 @@ const SUN_REBAKE_COS = Math.cos((0.25 * Math.PI) / 180);
 // sampled the (static) field at new world points → the whole shadow pattern
 // visibly reshuffled once per voxel crossed ("shadows change ~1×/s at
 // 4.7 km/s"). Fix: hold a persistent tangent frame (the region anchor) and
-// snap the box centre to WHOLE VOXELS ALONG THAT FRAME, phase-anchored at the
-// earth centre. Within a region the box only ever translates by integer voxel
-// counts on a fixed lattice, so every re-bake reproduces identical
-// transmittance in the overlap (up to ~1 f32 ulp ≈ 0.5 m of sample-point
+// snap the window centre to WHOLE VOXELS ALONG THAT FRAME, phase-anchored at
+// the earth centre. Within a region the window only ever translates by
+// integer voxel counts on a fixed lattice, so every re-bake reproduces
+// identical values in the overlap (up to ~1 f32 ulp ≈ 0.5 m of sample-point
 // re-rounding — nil vs km-scale voxels) and the window move is invisible.
 // The anchor is re-seeded only once the camera direction drifts >
-// REANCHOR_ANGLE from it (~96 km of flight); that single re-discretisation
-// pop per region is smeared by the screen-space EMA. Larger angle = rarer
-// pops but a thicker tilt pad in hy (coarser vertical voxels — see the
-// containment derivation in updateBox); tune the two together.
+// REANCHOR_ANGLE from it (~96 km of flight); that re-discretisation is
+// hidden by the dual-volume crossfade (see XFADE_STEP).
 const REANCHOR_ANGLE = 0.015; // rad ≈ 0.86° ≈ 96 km of surface travel
 const REANCHOR_COS = Math.cos(REANCHOR_ANGLE);
+// Per-frame advance of the crossfade mix: full fade in ~17 frames
+// (≈ 0.14 s at 120 fps / 0.28 s at 60). Short enough that back-to-back
+// re-anchors (≥ 96 km apart, ≈ 1 s even at 100 km/s) never overlap; long
+// enough that the lattice re-discretisation reads as a soft lighting morph,
+// not a pop. If two transitions DO collide the in-flight fade is snapped
+// (small residual pop, rare by construction).
+const XFADE_STEP = 0.06;
 // Bake base-volume taps MUST sample LEVEL 0: three r183's WebGPU backend
 // never uploads Data3DTexture.mipmaps (level 0 only) while allocating the
 // full mip count — levels 1+ are zero-initialized, so the brief
@@ -153,24 +182,36 @@ export type CloudLightVolumeDeps = {
 };
 
 export type CloudLightVolume = {
-  lightVolTex: Storage3DTexture;
+  // Ping-pong crossfade pair. The marcher blends A→B by uMixA (1 = pure A).
+  lightVolTexA: Storage3DTexture;
+  lightVolTexB: Storage3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uBoxCenter: any; // uniform(Vector3) — box centre, earth model space, scaled
+  uBoxCenterA: any; // uniform(Vector3) — side-A window centre, earth space
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uBoxHalfExtent: any; // uniform(Vector3) — box half-extents (x,z tangent; y up)
-  // ── Local-up box basis (earth space). The slab is a thin spherical shell, so
-  // the thin box axis MUST follow local up (radial); X/Z span the tangent plane.
+  uBoxCenterB: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uBoxAxisX: any; // uniform(Vector3) — tangent
+  uBoxHalfExtent: any; // shared: (x,z) tangent half-width; (y) altitude half-span
+  // ── Per-side tangent frames (earth space). Y = the side's anchor up
+  // (radial); X/Z span its tangent plane. Frozen per region.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uBoxAxisY: any; // uniform(Vector3) — local up (radial)
+  uBoxAxisXA: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uBoxAxisZ: any; // uniform(Vector3) — tangent
+  uBoxAxisYA: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uBoxAxisZA: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uBoxAxisXB: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uBoxAxisYB: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uBoxAxisZB: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uMixA: any; // uniform(float) — crossfade weight of side A (1 = pure A)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumeWeight: any; // uniform(float) — orbit fade (1 near → 0 orbit)
-  /** Recompute box uniforms from the current camera (scaled-world position). */
+  /** Recompute window/frame uniforms + crossfade from the current camera. */
   updateBox: (cameraScaledPos: THREE.Vector3) => void;
-  /** Dispatch the bake. SYNCHRONOUS; call before pass 2a renders. */
+  /** Dispatch any pending bake. SYNCHRONOUS; call before pass 2a renders. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   compute: (renderer: any) => void;
   dispose: () => void;
@@ -191,33 +232,42 @@ export function createCloudLightVolume(
     uEarthInverseModel,
   } = deps;
 
-  // ── Storage3DTexture: rgba16float, trilinear, clamp-to-edge ──
-  const lightVolTex = new Storage3DTexture(NX, NY, NZ);
-  lightVolTex.format = THREE.RGBAFormat; // REQUIRED — drives getFormat()
-  lightVolTex.type = THREE.HalfFloatType; // RGBAFormat + HalfFloat ⇒ rgba16float
-  lightVolTex.minFilter = THREE.LinearFilter;
-  lightVolTex.magFilter = THREE.LinearFilter;
-  lightVolTex.wrapS = THREE.ClampToEdgeWrapping;
-  lightVolTex.wrapT = THREE.ClampToEdgeWrapping;
-  lightVolTex.wrapR = THREE.ClampToEdgeWrapping;
-  lightVolTex.generateMipmaps = false; // storage textures are single-mip
+  // ── Storage3DTextures: rgba16float, trilinear, clamp-to-edge ──
+  const makeVolTex = () => {
+    const tex = new Storage3DTexture(NX, NY, NZ);
+    tex.format = THREE.RGBAFormat; // REQUIRED — drives getFormat()
+    tex.type = THREE.HalfFloatType; // RGBAFormat + HalfFloat ⇒ rgba16float
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.wrapR = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = false; // storage textures are single-mip
+    return tex;
+  };
+  const lightVolTexA = makeVolTex();
+  const lightVolTexB = makeVolTex();
 
-  // ── Box uniforms (CPU-updated each frame in updateBox) ──
-  const uBoxCenter = uniform(new THREE.Vector3());
-  const uBoxHalfExtent = uniform(new THREE.Vector3());
-  // Local-up box basis (earth space): Y = radial up; X,Z = tangent plane. An
-  // axis-aligned box would only contain the thin slab near the earth-frame pole
-  // and cut it into a stripe elsewhere — so the box is oriented to local up.
-  const uBoxAxisX = uniform(new THREE.Vector3(1, 0, 0));
-  const uBoxAxisY = uniform(new THREE.Vector3(0, 1, 0));
-  const uBoxAxisZ = uniform(new THREE.Vector3(0, 0, 1));
+  // ── Uniforms (CPU-updated in updateBox) ──
+  const uBoxHalfExtent = uniform(new THREE.Vector3()); // shared by both sides
+  const uMixA = uniform(1); // 1 = pure side A
   const uVolumeWeight = uniform(0); // consumed marcher-side
+  const uBoxCenterA = uniform(new THREE.Vector3());
+  const uBoxCenterB = uniform(new THREE.Vector3());
+  const uBoxAxisXA = uniform(new THREE.Vector3(1, 0, 0));
+  const uBoxAxisYA = uniform(new THREE.Vector3(0, 1, 0));
+  const uBoxAxisZA = uniform(new THREE.Vector3(0, 0, 1));
+  const uBoxAxisXB = uniform(new THREE.Vector3(1, 0, 0));
+  const uBoxAxisYB = uniform(new THREE.Vector3(0, 1, 0));
+  const uBoxAxisZB = uniform(new THREE.Vector3(0, 0, 1));
 
   const Wc = uint(NX);
   const Hc = uint(NY);
   const invSlabThickness = float(1).div(uOuterRadius.sub(uInnerRadius));
   const invTwoPi = float(1).div(PI.mul(2));
   const invPi = float(1).div(PI);
+  // Mid-shell radius — the altitude lattice's centre (runtime-constant).
+  const rMidShell = uInnerRadius.add(uOuterRadius).mul(0.5);
 
   // Sun direction in EARTH MODEL space (same derivation as the marcher).
   const sunDirEarth = normalize(uEarthInverseModel.mul(vec4(uSunRel, 0)).xyz);
@@ -271,48 +321,113 @@ export function createCloudLightVolume(
     return baseShapeDilated.mul(coverage).mul(profile).mul(float(CONE_DENSITY));
   };
 
-  // ── Bake compute kernel: 1 invocation per voxel ──
-  const populate = Fn(() => {
-    const i = instanceIndex; // uint linear index over the W*H*D dispatch
-    const x = i.mod(Wc); // x = i % NX
-    const y = i.div(Wc).mod(Hc); // y = (i / NX) % NY
-    const z = i.div(Wc.mul(Hc)); // z = i / (NX*NY)
-    // Storage write coords MUST be uvec3 (unsigned). uvec3's TS typing only
-    // declares a 1-arg conversion overload, but the 3-component form is valid
-    // TSL at runtime (cf. the 2D uvec2(x,y) storage example) — cast past it.
+  // ── Bake compute kernel factory: 1 invocation per voxel, per side ──
+  // Two structurally identical kernels, each bound to its side's texture +
+  // frame uniforms (textures/uniforms can't be swapped on a built node
+  // without a pipeline rebuild — the project's known compile-stutter).
+  const buildPopulateNode = (
+    tex: Storage3DTexture,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const coord = (uvec3 as any)(x, y, z);
+    uCenter: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    uAxX: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    uAxZ: any,
+  ) => {
+    const populate = Fn(() => {
+      const i = instanceIndex; // uint linear index over the W*H*D dispatch
+      const x = i.mod(Wc); // x = i % NX
+      const y = i.div(Wc).mod(Hc); // y = (i / NX) % NY
+      const z = i.div(Wc.mul(Hc)); // z = i / (NX*NY)
+      // Storage write coords MUST be uvec3 (unsigned). uvec3's TS typing only
+      // declares a 1-arg conversion overload, but the 3-component form is valid
+      // TSL at runtime (cf. the 2D uvec2(x,y) storage example) — cast past it.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const coord = (uvec3 as any)(x, y, z);
 
-    // voxel-centre normalized [0,1] → local [-1,1] → oriented box → earth space.
-    const uvw = vec3(
-      float(x).add(0.5).div(float(NX)),
-      float(y).add(0.5).div(float(NY)),
-      float(z).add(0.5).div(float(NZ)),
-    );
-    const local = uvw.mul(2).sub(1);
-    const earthPos = uBoxCenter
-      .add(uBoxAxisX.mul(local.x.mul(uBoxHalfExtent.x)))
-      .add(uBoxAxisY.mul(local.y.mul(uBoxHalfExtent.y)))
-      .add(uBoxAxisZ.mul(local.z.mul(uBoxHalfExtent.z)));
+      // voxel-centre normalized [0,1] → local [-1,1] → SHELL coordinates.
+      const uvw = vec3(
+        float(x).add(0.5).div(float(NX)),
+        float(y).add(0.5).div(float(NY)),
+        float(z).add(0.5).div(float(NZ)),
+      );
+      const local = uvw.mul(2).sub(1);
+      // ── Shell-Y voxel → earth space ──
+      // Column: a point on the region's tangent-plane lattice (at radius
+      // rMid along the anchor up — dot(centre, up) = rMid by construction),
+      // projected onto the sphere through normalize. Altitude: rMid +
+      // local.y · halfSpan — a GLOBALLY fixed altitude lattice (rMid and
+      // halfExtent.y are runtime constants), exact containment, no tilt pad.
+      // The marcher's inline inverse (sideShadow in earthClouds.ts) is exact:
+      // cp = p·(rMid/dot(p, axisY)) reconstructs this column point
+      // algebraically (verified 2026-06-12).
+      const cp = uCenter
+        .add(uAxX.mul(local.x.mul(uBoxHalfExtent.x)))
+        .add(uAxZ.mul(local.z.mul(uBoxHalfExtent.z)));
+      const dCol = normalize(cp);
+      const rPos = rMidShell.add(local.y.mul(uBoxHalfExtent.y));
+      const earthPos = dCol.mul(rPos);
 
-    // Straight sun-march (cone with kernel perturbation removed). Density taken
-    // at qs = earthPos + sunDir*(s+0.5)*step — first sample half a step toward
-    // the sun (matches the cone's offset → no self-occlusion bias at the voxel).
-    const tau = float(0).toVar();
-    for (let s = 0; s < SUN_STEPS; s++) {
-      const stepDist = float(LIGHT_STEP_SCALED).mul(float(s + 0.5));
-      const qs = earthPos.add(sunDirEarth.mul(stepDist));
-      tau.addAssign(densityAt(qs).mul(float(LIGHT_STEP_SCALED)));
-    }
-    const T = exp(tau.negate()); // pure geometric transmittance; NO daylight
+      // Straight sun-march (cone with kernel perturbation removed). Density taken
+      // at qs = earthPos + sunDir*(s+0.5)*step — first sample half a step toward
+      // the sun (matches the cone's offset → no self-occlusion bias at the voxel).
+      const tau = float(0).toVar();
+      for (let s = 0; s < SUN_STEPS; s++) {
+        const stepDist = float(LIGHT_STEP_SCALED).mul(float(s + 0.5));
+        const qs = earthPos.add(sunDirEarth.mul(stepDist));
+        tau.addAssign(densityAt(qs).mul(float(LIGHT_STEP_SCALED)));
+      }
+      const T = exp(tau.negate()); // pure geometric transmittance; NO daylight
 
-    textureStore(lightVolTex, coord, vec4(T, T, T, float(1))).toWriteOnly();
-  });
+      textureStore(tex, coord, vec4(T, T, T, float(1))).toWriteOnly();
+    });
+    // Build the compute node ONCE — rebuilding each frame recompiles the
+    // pipeline. Per-frame inputs flow through the uniform() nodes, mutated
+    // CPU-side in updateBox.
+    return populate().compute(VOXEL_COUNT);
+  };
 
-  // Build the compute node ONCE — rebuilding each frame recompiles the pipeline
-  // (the project's known WebGPU shader-compile stutter). Per-frame inputs flow
-  // through the uniform() nodes above, mutated CPU-side in updateBox.
-  const populateNode = populate().compute(VOXEL_COUNT);
+  // ── Per-side CPU state ──
+  type Side = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    node: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    center: any; // uniform(Vector3)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    axX: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    axY: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    axZ: any;
+    lastBakedCenter: THREE.Vector3;
+    lastBakedSun: THREE.Vector3;
+    bakeQueued: boolean;
+  };
+  const sides: [Side, Side] = [
+    {
+      node: buildPopulateNode(lightVolTexA, uBoxCenterA, uBoxAxisXA, uBoxAxisZA),
+      center: uBoxCenterA,
+      axX: uBoxAxisXA,
+      axY: uBoxAxisYA,
+      axZ: uBoxAxisZA,
+      lastBakedCenter: new THREE.Vector3(),
+      lastBakedSun: new THREE.Vector3(),
+      bakeQueued: true, // first-ever bake (deferred until uVolumeWeight > 0)
+    },
+    {
+      node: buildPopulateNode(lightVolTexB, uBoxCenterB, uBoxAxisXB, uBoxAxisZB),
+      center: uBoxCenterB,
+      axX: uBoxAxisXB,
+      axY: uBoxAxisYB,
+      axZ: uBoxAxisZB,
+      lastBakedCenter: new THREE.Vector3(),
+      lastBakedSun: new THREE.Vector3(),
+      bakeQueued: false,
+    },
+  ];
+  let activeSide = 0; // index into `sides`; the side new bakes target
+  let mixA = 1; // CPU shadow of uMixA
+  let warmedInactive = false; // inactive-side pipeline pre-compile (see compute)
 
   // ── Per-frame box update (CPU) ──
   const tmpEarthCam = new THREE.Vector3();
@@ -326,12 +441,20 @@ export function createCloudLightVolume(
   const anchorUp = new THREE.Vector3();
   const anchorAxX = new THREE.Vector3();
   const anchorAxZ = new THREE.Vector3();
-  // Bake-dirty tracking: the field is static in earth space for a fixed box +
-  // sun, so `compute` re-bakes ONLY when one of these changed since the last
-  // bake. lastBakedUp doubles as the "ever baked" flag (0-length = never).
-  const lastBakedUp = new THREE.Vector3();
-  const lastBakedCenter = new THREE.Vector3();
-  const lastBakedSun = new THREE.Vector3();
+
+  // Begin a crossfade: finish any in-flight fade instantly (rare collision),
+  // flip the active side, stamp the current anchor frame into it and queue
+  // its bake. The old side keeps its frozen frame + content as fade source.
+  const startTransition = () => {
+    mixA = activeSide === 0 ? 1 : 0;
+    activeSide = 1 - activeSide;
+    const s = sides[activeSide];
+    s.axX.value.copy(anchorAxX);
+    s.axY.value.copy(anchorUp);
+    s.axZ.value.copy(anchorAxZ);
+    s.bakeQueued = true;
+  };
+
   const updateBox: CloudLightVolume["updateBox"] = (cameraScaledPos) => {
     // Earth-space camera position = uEarthInverseModel · cameraScaledPos (the
     // same product the marcher builds as roEarth — origin-slide invariant).
@@ -343,67 +466,105 @@ export function createCloudLightVolume(
 
     const alt = rC - rIn; // scaled altitude
 
-    // CONSTANT extents (see BOX_HALF) — voxel size must never change at
-    // runtime or the world lattice below stops being a lattice (rIn/rOut are
-    // static; everything here is runtime-constant).
-    // Containment: the camera column can sit up to drift = rMid·REANCHOR_ANGLE
-    // (anchor drift) + voxelXZ/2 (snap) from the box centre in tangent coords,
-    // so the far footprint edge lies hxz + drift from the ANCHOR column and
-    // the shell drops ≈ (hxz+drift)²/(2·rIn) below the centre plane there.
-    // (Do NOT decompose this as sag + hxz·sin(angle): the 2·hxz·drift
-    // cross-term ≈ 1 km is part of the worst case — 2026-06-12 verification.)
-    // hy = slab half + that drop + 4 km pad (vertical snap error voxelY/2
-    // ≈ 1.5 km + centre cos-drop ≈ 0.7 km + slack ≈ 1.8 km).
+    // CONSTANT extents — voxel size must never change at runtime or the
+    // world lattice below stops being a lattice (rIn/rOut are static).
+    // Shell-Y: y half-extent = slab half-thickness + ALT_PAD, exact
+    // containment at any anchor tilt (altitude is tilt-independent).
     const hxz = BOX_HALF;
     const voxelXZ = (2 * hxz) / NX;
-    const drift = rMid * REANCHOR_ANGLE + voxelXZ / 2;
-    const drop = ((hxz + drift) * (hxz + drift)) / (2 * rIn);
-    const hy = 0.5 * (rOut - rIn) + drop + 0.004;
+    const hy = 0.5 * (rOut - rIn) + ALT_PAD;
     uBoxHalfExtent.value.set(hxz, hy, hxz);
 
+    // Orbit fade: 1 while the box meaningfully covers near clouds → 0 at
+    // orbit. Computed BEFORE the transition logic — sun-rebake transitions
+    // are suppressed while nothing reads the volume.
+    const tFade =
+      (alt - VOL_FADE_ALT_LO) / (VOL_FADE_ALT_HI - VOL_FADE_ALT_LO);
+    const sc = Math.min(Math.max(tFade, 0), 1);
+    uVolumeWeight.value = 1 - sc * sc * (3 - 2 * sc); // 1 - smoothstep
+
     // ── Region anchor (see REANCHOR_ANGLE) ──
-    // The box must be oriented to LOCAL UP (radial) — an earth-axis-aligned
-    // box would only contain the thin shell near the poles. But local up
-    // changes continuously with the camera, so the frame is held FIXED per
-    // region and re-seeded from the exact camera direction only after
-    // REANCHOR_ANGLE of drift. Re-seeding is self-hysteretic: after a seed
-    // the drift is zero, so the next one needs the full angle again.
+    // The window must be oriented to LOCAL UP (radial) — its tangent lattice
+    // degenerates far from the anchor column. Local up changes continuously
+    // with the camera, so the frame is held FIXED per region and re-seeded
+    // from the exact camera direction only after REANCHOR_ANGLE of drift.
+    // Re-seeding is self-hysteretic: after a seed the drift is zero, so the
+    // next one needs the full angle again.
     tmpUp.copy(tmpEarthCam).divideScalar(rC); // exact local up (radial)
-    if (anchorUp.lengthSq() === 0 || anchorUp.dot(tmpUp) < REANCHOR_COS) {
+    const seeded = anchorUp.lengthSq() > 0;
+    if (!seeded || anchorUp.dot(tmpUp) < REANCHOR_COS) {
       anchorUp.copy(tmpUp);
       if (Math.abs(anchorUp.y) < 0.99) tmpRef.set(0, 1, 0);
       else tmpRef.set(1, 0, 0);
       anchorAxX.crossVectors(tmpRef, anchorUp).normalize();
       anchorAxZ.crossVectors(anchorUp, anchorAxX).normalize();
+      if (!seeded) {
+        // First seed: no fade source exists — stamp the active side directly.
+        const s = sides[activeSide];
+        s.axX.value.copy(anchorAxX);
+        s.axY.value.copy(anchorUp);
+        s.axZ.value.copy(anchorAxZ);
+        s.bakeQueued = true;
+      } else {
+        startTransition(); // re-anchor → crossfaded re-discretisation
+      }
+    } else if (uVolumeWeight.value > 0) {
+      // Sun rotated past the rebake threshold (earth spin, ~1 min of real
+      // time per 0.25°)? Same frame, new lighting — crossfade it too.
+      // Only while the volume is visible: at weight 0 the check would loop
+      // (compute() skips, lastBakedSun never refreshes).
+      tmpSunEarth
+        .copy(uSunRel.value)
+        .transformDirection(uEarthInverseModel.value);
+      const sAct = sides[activeSide];
+      if (
+        !sAct.bakeQueued &&
+        sAct.lastBakedSun.lengthSq() > 0 &&
+        sAct.lastBakedSun.dot(tmpSunEarth) < SUN_REBAKE_COS
+      ) {
+        startTransition();
+      }
     }
-    uBoxAxisX.value.copy(anchorAxX);
-    uBoxAxisY.value.copy(anchorUp);
-    uBoxAxisZ.value.copy(anchorAxZ);
 
-    // ── World-anchored lattice snap ──
-    // Window target = slab mid-shell under the camera. Snap each of its
-    // coordinates ALONG THE ANCHOR AXES to whole voxels, with phase anchored
-    // at the earth centre (coordinate 0). All voxel world positions are then
-    // centre + integer·voxel·axis ⇒ points of one fixed earth-space lattice,
-    // regardless of how the window has moved — so re-bakes reproduce
-    // identical values in the overlap (f64 snap here; the kernel's f32
-    // centre+offset sum re-rounds by ≤ ~1 ulp ≈ 0.5 m — nil vs km voxels).
-    const voxelY = (2 * hy) / NY;
+    // ── World-anchored lattice snap (active side only; the inactive side
+    // is a frozen crossfade source) ──
+    // Window target = mid-shell under the camera. Snap its tangent
+    // coordinates ALONG THE ANCHOR AXES to whole voxels, phase anchored at
+    // the earth centre (coordinate 0); the radial coordinate is EXACTLY
+    // rMid (runtime-constant — no vertical snap exists in shell-Y). All
+    // voxel world positions are then deterministic functions of the region
+    // frame + integer lattice indices ⇒ points of one fixed earth-space
+    // lattice, regardless of how the window has moved — so re-bakes
+    // reproduce identical values in the overlap (f64 snap here; the
+    // kernel's f32 sum re-rounds by ≤ ~1 ulp ≈ 0.5 m — nil vs km voxels).
+    // "Identical" is exact for POSITIONS; values additionally absorb the
+    // sub-threshold sun drift (< 0.25°) accumulated since the last bake —
+    // ≤ ~60 m of shadow shift over the 14 km sun march, sub-voxel.
     tmpMid.copy(tmpUp).multiplyScalar(rMid);
     const cx = Math.round(tmpMid.dot(anchorAxX) / voxelXZ) * voxelXZ;
-    const cy = Math.round(tmpMid.dot(anchorUp) / voxelY) * voxelY;
     const cz = Math.round(tmpMid.dot(anchorAxZ) / voxelXZ) * voxelXZ;
-    uBoxCenter.value
-      .copy(anchorAxX)
-      .multiplyScalar(cx)
-      .addScaledVector(anchorUp, cy)
+    const sAct = sides[activeSide];
+    sAct.center.value
+      .set(0, 0, 0)
+      .addScaledVector(anchorAxX, cx)
+      .addScaledVector(anchorUp, rMid)
       .addScaledVector(anchorAxZ, cz);
 
-    // Orbit fade: 1 while the box meaningfully covers near clouds → 0 at orbit.
-    const tFade =
-      (alt - VOL_FADE_ALT_LO) / (VOL_FADE_ALT_HI - VOL_FADE_ALT_LO);
-    const sc = Math.min(Math.max(tFade, 0), 1);
-    uVolumeWeight.value = 1 - sc * sc * (3 - 2 * sc); // 1 - smoothstep
+    // ── Crossfade ramp toward the active side ──
+    // At weight 0 nothing reads the volume — SNAP instead of ramping, so a
+    // fade can never still be in flight when the volume fades back in. (A
+    // re-anchor at orbit would otherwise leave the frozen side — stale, or
+    // never baked at all (zero-init storage reads T = 0 = full shadow) — at
+    // up to ~0.94 mix weight during a fast descent across the fade-in
+    // boundary. 2026-06-12 adversarial-verification finding.)
+    const target = activeSide === 0 ? 1 : 0;
+    if (uVolumeWeight.value <= 0) {
+      mixA = target;
+    } else {
+      const d = target - mixA;
+      mixA += Math.max(-XFADE_STEP, Math.min(XFADE_STEP, d));
+    }
+    uMixA.value = mixA;
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -412,42 +573,54 @@ export function createCloudLightVolume(
     if (!renderer?.backend?.device) return;
     // Nothing reads the volume while it's fully faded out (the marcher mixes
     // toward "lit" with weight 0) — skip the bake entirely above the fade-out
-    // altitude. The dirty tracking below re-bakes on the way back down.
+    // altitude. bakeQueued / centre-dirty tracking re-bakes on the way down.
     if (uVolumeWeight.value <= 0) return;
     // ── Bake amortisation ──
-    // The baked field only depends on the anchor frame, the lattice-snapped
-    // centre and the earth-space sun direction; all are piecewise constant.
-    // Re-bake only when the window stepped to a new lattice cell, the region
-    // re-anchored, or the sun rotated > ~0.25° (earth spin) — a hovering
-    // camera pays ZERO bake cost. Within a region a re-bake reproduces
-    // identical values in the overlap (world-anchored lattice), so the
-    // step itself is invisible.
-    tmpSunEarth
+    // Only the ACTIVE side ever re-bakes (the inactive side is a frozen
+    // crossfade source). Re-bake when a transition queued one (re-anchor /
+    // sun step / first-ever) or the window stepped to a new lattice cell —
+    // a hovering camera pays ZERO bake cost. Within a region a re-bake
+    // reproduces identical values in the overlap (world-anchored lattice),
+    // so the step itself is invisible.
+    const s = sides[activeSide];
+    const dirty = s.bakeQueued || !s.lastBakedCenter.equals(s.center.value);
+    if (!dirty) return;
+    renderer.compute(s.node); // SYNCHRONOUS; submits its own command buffer
+    s.bakeQueued = false;
+    s.lastBakedCenter.copy(s.center.value);
+    s.lastBakedSun
       .copy(uSunRel.value)
       .transformDirection(uEarthInverseModel.value);
-    const upUnchanged = lastBakedUp.equals(uBoxAxisY.value);
-    const centerUnchanged = lastBakedCenter.equals(uBoxCenter.value);
-    const sunUnchanged =
-      lastBakedSun.lengthSq() > 0 &&
-      lastBakedSun.dot(tmpSunEarth) > SUN_REBAKE_COS;
-    if (upUnchanged && centerUnchanged && sunUnchanged) return;
-    renderer.compute(populateNode); // SYNCHRONOUS; submits its own command buffer
-    lastBakedUp.copy(uBoxAxisY.value);
-    lastBakedCenter.copy(uBoxCenter.value);
-    lastBakedSun.copy(tmpSunEarth);
+    if (!warmedInactive) {
+      // Pre-compile the OTHER side's pipeline alongside the first real bake.
+      // WebGPU creates a compute pipeline at the first dispatch of a node —
+      // deferring side B's to the first crossfade would pay the project's
+      // known shader-compile stutter at exactly the pop the fade exists to
+      // hide. Content is garbage (default uniforms) but unread at steady
+      // mix; the side is re-baked when a transition flips it in.
+      warmedInactive = true;
+      renderer.compute(sides[1 - activeSide].node);
+    }
   };
 
   const dispose = () => {
-    lightVolTex.dispose();
+    lightVolTexA.dispose();
+    lightVolTexB.dispose();
   };
 
   return {
-    lightVolTex,
-    uBoxCenter,
+    lightVolTexA,
+    lightVolTexB,
+    uBoxCenterA,
+    uBoxCenterB,
     uBoxHalfExtent,
-    uBoxAxisX,
-    uBoxAxisY,
-    uBoxAxisZ,
+    uBoxAxisXA,
+    uBoxAxisYA,
+    uBoxAxisZA,
+    uBoxAxisXB,
+    uBoxAxisYB,
+    uBoxAxisZB,
+    uMixA,
     uVolumeWeight,
     updateBox,
     compute,
