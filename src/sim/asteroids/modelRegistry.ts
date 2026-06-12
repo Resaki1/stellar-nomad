@@ -77,7 +77,7 @@ function buildAsset(
   const mesh = findMesh(gltf.scene, meshName);
 
   if (!mesh) {
-    // eslint-disable-next-line no-console
+     
     console.warn(`[Asteroids] Could not find a Mesh in GLB: ${def.src}`);
     return null;
   }

@@ -6,4 +6,6 @@ import { ganymedeConfig } from "../celestial/bodies/ganymede";
 
 export { GANYMEDE_POSITION_KM, GANYMEDE_RADIUS_KM } from "../celestial/bodies/ganymede";
 
-export default memo(() => <CelestialBody config={ganymedeConfig} />);
+const Ganymede = memo(() => <CelestialBody config={ganymedeConfig} />);
+Ganymede.displayName = "Ganymede";
+export default Ganymede;

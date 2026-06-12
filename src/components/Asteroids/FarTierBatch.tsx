@@ -4,6 +4,7 @@ import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import { NodeMaterial } from "three/webgpu";
+import type { WebGPURenderer } from "three/webgpu";
 import {
   Fn,
   uv,
@@ -99,7 +100,9 @@ const FarModelBatch = memo(function FarModelBatch({
 
     // Read per-instance data from compute output via named attribute.
     // Compute writes vec4(pos.xyz, radius) per visible instance.
-    const aFarData: any = attribute("aFarData", "vec4");
+    // attribute()'s generic widens "vec4" to string, dropping the swizzle-typed
+    // node interface; assert the concrete vec4 node type so .xyz/.w resolve.
+    const aFarData = attribute("aFarData", "vec4") as ReturnType<typeof vec4>;
     const aCenter = aFarData.xyz;
     const aScale = aFarData.w.mul(float(0.4)); // visual scale factor
 
@@ -170,7 +173,7 @@ const FarModelBatch = memo(function FarModelBatch({
     m.count = MAX_FAR_VISIBLE;
     m.frustumCulled = false;
     return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [material, outputAttr, indirectAttr]);
 
   // Set stable uniforms once.
@@ -210,7 +213,8 @@ const FarModelBatch = memo(function FarModelBatch({
     _sunDir.normalize();
     uSunDir.value.copy(_sunDir);
 
-    (gl as any).compute([resetNode, computeNode]);
+    // R3F types gl as WebGLRenderer; this scene runs on WebGPU, which exposes compute().
+    (gl as unknown as WebGPURenderer).compute([resetNode, computeNode]);
   });
 
   return <primitive object={mesh} />;

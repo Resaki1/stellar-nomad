@@ -53,10 +53,10 @@ function collectTransferables(chunk: AsteroidChunkData): Transferable[] {
   for (const modelId of Object.keys(byModel)) {
     const inst = byModel[modelId];
 
-    const positionsM = (inst as any).positionsM as Float32Array | undefined;
-    const quaternions = (inst as any).quaternions as Float32Array | undefined;
-    const radiiM = (inst as any).radiiM as Float32Array | undefined;
-    const instanceIds = (inst as any).instanceIds as Uint32Array | undefined;
+    const positionsM = inst.positionsM as Float32Array | undefined;
+    const quaternions = inst.quaternions as Float32Array | undefined;
+    const radiiM = inst.radiiM as Float32Array | undefined;
+    const instanceIds = inst.instanceIds as Uint32Array | undefined;
 
     if (positionsM?.buffer) t.push(positionsM.buffer);
     if (quaternions?.buffer) t.push(quaternions.buffer);
@@ -109,7 +109,7 @@ function pump(state: FieldState) {
       };
 
       const transferables = collectTransferables(chunk);
-      (self as any).postMessage(msg, transferables);
+      (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg, transferables);
       processed++;
     }
   } catch (e) {
@@ -119,7 +119,7 @@ function pump(state: FieldState) {
       message: err?.message ?? String(e),
       stack: err?.stack,
     };
-    (self as any).postMessage(msg);
+    (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg);
   } finally {
     state.busy = false;
   }

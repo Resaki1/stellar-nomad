@@ -6,4 +6,6 @@ import { venusConfig } from "../celestial/bodies/venus";
 
 export { VENUS_POSITION_KM, VENUS_RADIUS_KM } from "../celestial/bodies/venus";
 
-export default memo(() => <CelestialBody config={venusConfig} />);
+const Venus = memo(() => <CelestialBody config={venusConfig} />);
+Venus.displayName = "Venus";
+export default Venus;

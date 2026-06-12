@@ -6,4 +6,6 @@ import { earthConfig } from "../celestial/bodies/earth";
 
 export { PLANET_POSITION_KM } from "../celestial/bodies/earth";
 
-export default memo(() => <CelestialBody config={earthConfig} />);
+const Earth = memo(() => <CelestialBody config={earthConfig} />);
+Earth.displayName = "Earth";
+export default Earth;

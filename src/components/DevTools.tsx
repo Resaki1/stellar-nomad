@@ -94,11 +94,11 @@ export default function DevTools() {
       },
     };
 
-    (window as any).__dev = devApi;
+    (window as Window & { __dev?: typeof devApi }).__dev = devApi;
     console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
 
     return () => {
-      delete (window as any).__dev;
+      delete (window as Window & { __dev?: typeof devApi }).__dev;
     };
   }, [store]);
 

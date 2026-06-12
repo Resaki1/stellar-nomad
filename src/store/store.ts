@@ -1,7 +1,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 
-export type SetAtom<Args extends any[], Result> = (...args: Args) => Result;
+export type SetAtom<Args extends unknown[], Result> = (...args: Args) => Result;
 
 export type Movement = {
   yaw: number;

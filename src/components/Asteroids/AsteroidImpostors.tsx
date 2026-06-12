@@ -177,7 +177,7 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
     })();
 
     return mat;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [uSunDir, uFadeStart, uFadeEnd]);
 
   // Track generation to know when to rebuild buffer.

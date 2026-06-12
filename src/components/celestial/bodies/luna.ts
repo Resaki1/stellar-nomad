@@ -77,15 +77,14 @@ function buildLunaFragmentNode(
       .mul(float(bumpStrength));
 
     // Tangent-space perturbed normal
-    // @ts-ignore -- TSL MathNode inference limitation
     const tsNormal = normalize(vec3(gradU.negate(), gradV.negate(), float(1.0)));
 
-    // TBN matrix -- requires geometry with computed tangents
-    // @ts-ignore -- TSL node type inference limitation
-    const T: any = normalize(tangentWorld); // eslint-disable-line @typescript-eslint/no-explicit-any
-    // @ts-ignore -- TSL node type inference limitation
-    const B: any = normalize(bitangentWorld); // eslint-disable-line @typescript-eslint/no-explicit-any
-    const N_geom: any = normalize(normalWorld); // eslint-disable-line @typescript-eslint/no-explicit-any
+    // TBN matrix -- requires geometry with computed tangents.
+    // three/tsl's normalize() overloads don't accept the tangent/bitangent
+    // attribute node types, though they are valid vec3 nodes at runtime.
+    const T = normalize(tangentWorld as unknown as typeof normalWorld);
+    const B = normalize(bitangentWorld as unknown as typeof normalWorld);
+    const N_geom = normalize(normalWorld);
     const N = normalize(
       T.mul(tsNormal.x).add(B.mul(tsNormal.y)).add(N_geom.mul(tsNormal.z)),
     );

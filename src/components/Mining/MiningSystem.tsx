@@ -281,8 +281,8 @@ function computeShipNoseLocal(root: THREE.Object3D, out: THREE.Vector3): boolean
   let hadAnyMesh = false;
 
   root.traverse((obj) => {
-    const mesh = obj as any;
-    if (!mesh?.isMesh) return;
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
     const geom = mesh.geometry as THREE.BufferGeometry | undefined;
     if (!geom) return;
 
@@ -493,7 +493,7 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
 
       {Array.from({ length: BEAM_PULSE_COUNT }).map((_, i) => (
         <sprite
-          // eslint-disable-next-line react/no-array-index-key
+           
           key={i}
           ref={(el) => {
             pulseRefs.current[i] = el;

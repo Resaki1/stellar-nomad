@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { useThree } from "@react-three/fiber";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import type { Texture } from "three";
+import type { WebGPURenderer } from "three/webgpu";
 
 // ── Shared loader + texture cache ────────────────────────────────────
 
@@ -22,7 +23,7 @@ function getSharedLoader(gl: unknown, basisPath: string): KTX2Loader {
   if (!_loader || _loaderRenderer !== gl) {
     _loader?.dispose();
     _loader = new KTX2Loader();
-    (_loader as any).detectSupport(gl);
+    _loader.detectSupport(gl as WebGPURenderer);
     _loader.setTranscoderPath(basisPath);
     _loaderRenderer = gl;
   }

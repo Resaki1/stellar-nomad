@@ -6,4 +6,6 @@ import { ioConfig } from "../celestial/bodies/io";
 
 export { IO_POSITION_KM, IO_RADIUS_KM } from "../celestial/bodies/io";
 
-export default memo(() => <CelestialBody config={ioConfig} />);
+const Io = memo(() => <CelestialBody config={ioConfig} />);
+Io.displayName = "Io";
+export default Io;

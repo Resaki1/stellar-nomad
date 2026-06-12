@@ -41,7 +41,9 @@ export default function Hotbar() {
   const miningState = useAtomValue(miningStateAtom);
   const shipHealth = useAtomValue(shipHealthAtom);
   const shipConfig = useAtomValue(effectiveShipConfigAtom);
-  const useConsumable = useSetAtom(useConsumableAtom);
+  // Plain action dispatcher, not a hook — named without the `use` prefix so
+  // rules-of-hooks doesn't flag calls from inside callbacks.
+  const consumeItem = useSetAtom(useConsumableAtom);
   const setShipHealth = useSetAtom(shipHealthAtom);
   const addTimedEffect = useSetAtom(addTimedEffectAtom);
   const addToast = useSetAtom(addToastAtom);
@@ -117,14 +119,14 @@ export default function Hotbar() {
 
       // Information consumables — stub: show toast, consume item
       if (isInfoConsumable(def)) {
-        const ok = useConsumable(itemId);
+        const ok = consumeItem(itemId);
         if (ok) {
           addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 3000 });
         }
         return;
       }
 
-      const ok = useConsumable(itemId);
+      const ok = consumeItem(itemId);
       if (ok) {
         // Timed consumables: add to timed effects system
         if (isTimedConsumable(def) && def.useEffects) {
@@ -159,7 +161,7 @@ export default function Hotbar() {
         addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
       }
     },
-    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, useConsumable, setShipHealth, addTimedEffect, addToast],
+    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast],
   );
 
   // Handle key presses 0-9 for hotbar

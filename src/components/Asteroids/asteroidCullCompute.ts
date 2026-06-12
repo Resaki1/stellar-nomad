@@ -115,17 +115,21 @@ export function createCullComputeNode(
     const inRange = float(1.0).sub(step(uNearRadiusM, dist));
 
     // Frustum test
-    let inFrustum: any = float(1.0);
+    let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
       const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
-    const visible: any = alive.mul(inRange).mul(inFrustum);
+    const visible = alive.mul(inRange).mul(inFrustum);
 
     If(visible.greaterThan(0.5), () => {
-      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
+      // atomicAdd returns AtomicFunctionNode, which lacks the swizzle/math node
+      // interface; assert the uint node type it represents (the prior counter value).
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as unknown as ReturnType<
+        typeof uint
+      >;
 
       // Output buffer overflow guard.
       If(outIdx.lessThan(maxOut), () => {
@@ -243,17 +247,21 @@ export function createMidCullComputeNode(
     const inRange = beyondMin.mul(withinMax);
 
     // Frustum test
-    let inFrustum: any = float(1.0);
+    let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
       const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
-    const visible: any = alive.mul(inRange).mul(inFrustum);
+    const visible = alive.mul(inRange).mul(inFrustum);
 
     If(visible.greaterThan(0.5), () => {
-      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
+      // atomicAdd returns AtomicFunctionNode, which lacks the swizzle/math node
+      // interface; assert the uint node type it represents (the prior counter value).
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as unknown as ReturnType<
+        typeof uint
+      >;
 
       If(outIdx.lessThan(maxOut), () => {
         const s = radius.mul(uInvBaseRadius).mul(uBaseScale);
@@ -346,17 +354,21 @@ export function createFarCullComputeNode(
     const inRange = beyondNear.mul(withinFar);
 
     // Frustum test
-    let inFrustum: any = float(1.0);
+    let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
       const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
-    const visible: any = alive.mul(inRange).mul(inFrustum);
+    const visible = alive.mul(inRange).mul(inFrustum);
 
     If(visible.greaterThan(0.5), () => {
-      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as any;
+      // atomicAdd returns AtomicFunctionNode, which lacks the swizzle/math node
+      // interface; assert the uint node type it represents (the prior counter value).
+      const outIdx = atomicAdd(indirectNode.element(1), uint(1)) as unknown as ReturnType<
+        typeof uint
+      >;
 
       If(outIdx.lessThan(maxOut), () => {
         outputNode.element(outIdx).assign(

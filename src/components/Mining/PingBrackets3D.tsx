@@ -151,7 +151,7 @@ const PingBrackets3D = memo(function PingBrackets3D() {
     })();
 
     return mat;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [uTime]);
 
   // Fade state map — persists across frames, not in React state

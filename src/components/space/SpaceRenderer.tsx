@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useMemo, useRef } from "react";
 import { createPortal, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { NodeMaterial, RenderPipeline, RenderTarget } from "three/webgpu";
+import type { WebGPURenderer } from "three/webgpu";
 import { texture, screenUV, vec2, float } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import {
@@ -289,7 +290,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   // RenderPipeline (replaces the old EffectComposer)
   const pipeline = useMemo(
-    () => new RenderPipeline(gl as any),
+    () => new RenderPipeline(gl as unknown as WebGPURenderer),
     [gl]
   );
   const pipelineRef = useRef(pipeline);
@@ -299,7 +300,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   useEffect(() => {
     const sceneTexture = texture(rt.texture);
 
-    let outputNode: any = sceneTexture;
+    let outputNode: typeof pipeline.outputNode = sceneTexture;
     if (settings.bloom) {
       const bloomPass = bloom(sceneTexture, 0.02, 0, 1);
       outputNode = sceneTexture.add(bloomPass);
@@ -309,7 +310,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     pipeline.needsUpdate = true;
 
     // Tone mapping applied by RenderPipeline's renderOutput() wrapper
-    const renderer = gl as any;
+    const renderer = gl as unknown as WebGPURenderer;
     renderer.toneMapping = settings.toneMapping
       ? AgXToneMapping
       : NeutralToneMapping;
@@ -372,7 +373,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useFrame(() => {
     // Skip until WebGPU backend is ready (init is async).
-    if (!(gl as any).initialized) return;
+    if (!(gl as unknown as WebGPURenderer).initialized) return;
 
     if (!firstFrameLogged.current) {
       firstFrameLogged.current = true;
@@ -386,8 +387,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Advance the node frame so BloomNode's updateBefore runs each frame.
     // Normally the renderer's internal animation loop does this, but we
     // stopped it because R3F owns the frame loop (Scene.tsx: _animation.stop()).
-    const renderer = gl as any;
-    renderer._nodes.nodeFrame.update();
+    const renderer = gl as unknown as WebGPURenderer;
+    // _nodes is a private renderer field; the public animation loop (which
+    // normally advances nodeFrame) is stopped because R3F owns the frame loop.
+    (
+      renderer as unknown as { _nodes: { nodeFrame: { update: () => void } } }
+    )._nodes.nodeFrame.update();
 
     // Sync scaled camera with local camera
     tempScaledPos

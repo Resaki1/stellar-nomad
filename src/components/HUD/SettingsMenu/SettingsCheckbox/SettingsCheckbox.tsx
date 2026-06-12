@@ -4,7 +4,7 @@ import "./SettingsCheckbox.scss";
 
 type SettingsCheckboxProps = {
   active: boolean;
-  onChange: SetAtom<[SetStateAction<any>], void>;
+  onChange: SetAtom<[SetStateAction<unknown>], void>;
   label: string;
 };
 

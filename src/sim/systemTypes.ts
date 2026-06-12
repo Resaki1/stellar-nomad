@@ -319,7 +319,7 @@ export function getSystemAsteroidModelDefs(
   const defs = system.assets?.asteroidModels ?? [];
   if (defs.length > 0) return defs;
 
-  // eslint-disable-next-line no-console
+   
   console.warn(
     "[systemTypes] system.assets.asteroidModels is empty/missing — using fallback.",
     { hasAssets: !!system.assets, assets: system.assets }

@@ -6,4 +6,6 @@ import { lunaConfig } from "../celestial/bodies/luna";
 
 export { LUNA_POSITION_KM, LUNA_RADIUS_KM } from "../celestial/bodies/luna";
 
-export default memo(() => <CelestialBody config={lunaConfig} />);
+const Luna = memo(() => <CelestialBody config={lunaConfig} />);
+Luna.displayName = "Luna";
+export default Luna;

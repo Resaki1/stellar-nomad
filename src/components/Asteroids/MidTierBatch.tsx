@@ -3,6 +3,7 @@
 import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
+import type { WebGPURenderer } from "three/webgpu";
 import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "./GpuSlotAllocator";
 import {
@@ -80,7 +81,7 @@ const MidModelBatch = memo(function MidModelBatch({
     m.count = MAX_MID_INSTANCES;
     m.frustumCulled = false;
     return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [asset.geometry, asset.material, outputAttr, indirectAttr]);
 
   // Set stable model uniforms once.
@@ -112,7 +113,8 @@ const MidModelBatch = memo(function MidModelBatch({
 
     extractFrustumPlanes(state.camera, mesh.matrixWorld, uniforms.uFrustum);
 
-    (gl as any).compute([resetNode, computeNode]);
+    // R3F types gl as WebGLRenderer; this scene runs on WebGPU, which exposes compute().
+    (gl as unknown as WebGPURenderer).compute([resetNode, computeNode]);
   });
 
   return <primitive object={mesh} />;

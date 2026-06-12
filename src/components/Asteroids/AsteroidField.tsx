@@ -262,7 +262,7 @@ const FieldLayer = memo(function FieldLayer({
       const msg = ev.data;
 
       if (msg.type === "error") {
-        // eslint-disable-next-line no-console
+         
         console.error("[AsteroidChunkWorker]", msg.message, msg.stack);
         return;
       }
@@ -291,12 +291,12 @@ const FieldLayer = memo(function FieldLayer({
     };
 
     const onError = (ev: ErrorEvent) => {
-      // eslint-disable-next-line no-console
+       
       console.error("[AsteroidChunkWorker] error event", ev.message);
     };
 
     const onMessageError = () => {
-      // eslint-disable-next-line no-console
+       
       console.error("[AsteroidChunkWorker] messageerror");
     };
 
@@ -325,7 +325,7 @@ const FieldLayer = memo(function FieldLayer({
       tickFrameRef.current = 0;
       fieldRuntime.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [
     field,
     field.id,

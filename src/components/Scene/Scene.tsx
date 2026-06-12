@@ -37,13 +37,23 @@ import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
 import WreckCollector from "../WreckCollector";
 
+/**
+ * three.js renderer internals we touch directly (not in the public typings).
+ * The scene runs on a WebGPURenderer; R3F types `gl` as the base renderer.
+ */
+type RendererInternals = {
+  _initialized?: boolean;
+  _animation?: { stop: () => void };
+  __initPromise?: Promise<void>;
+};
+
 /** Renders children only after the WebGPU renderer has finished async init(). */
 function WebGPUGate({ children }: { children: ReactNode }) {
   const gl = useThree((s) => s.gl);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const p = (gl as any).__initPromise as Promise<void> | undefined;
+    const p = (gl as unknown as RendererInternals).__initPromise;
     if (!p) return;
     p.then(() => {
       performance.mark("webgpu-gate-open");
@@ -124,21 +134,25 @@ const Scene = () => {
           });
 
           const origRender = renderer.render.bind(renderer);
-          renderer.render = function (scene: any, camera: any) {
-            if (!(this as any)._initialized) return;
+          renderer.render = function (
+            this: THREE.WebGPURenderer,
+            scene: THREE.Object3D,
+            camera: THREE.Camera,
+          ) {
+            if (!(this as unknown as RendererInternals)._initialized) return;
             return origRender(scene, camera);
           };
 
           performance.mark("webgpu-init-start");
           const initPromise = renderer.init().then(() => {
-            (renderer as any)._animation?.stop();
+            (renderer as unknown as RendererInternals)._animation?.stop();
             performance.mark("webgpu-init-end");
             console.log(
               "[perf] WebGPU renderer.init() done",
               performance.measure("webgpu-init", "webgpu-init-start", "webgpu-init-end").duration.toFixed(0) + "ms",
             );
           });
-          (renderer as any).__initPromise = initPromise;
+          (renderer as unknown as RendererInternals).__initPromise = initPromise;
           return renderer;
         }}
     >

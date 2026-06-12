@@ -227,10 +227,11 @@ function buildEarthFragmentNode(opts: {
     if (detailed && texNormal) {
       // Normal mapping via TBN
       const tN = texture(texNormal, uvCoord).xyz.mul(2).sub(1);
-      // @ts-ignore -- TSL node type inference limitation
-      const tW = normalize(tangentWorld) as any;
-      // @ts-ignore -- TSL node type inference limitation
-      const bW = normalize(bitangentWorld) as any;
+      // three/tsl's normalize() overloads don't accept the tangent/bitangent
+      // attribute node types, though they are valid vec3 nodes at runtime.
+      // Cast the input to the same node type normalWorld uses (accepted above).
+      const tW = normalize(tangentWorld as unknown as typeof normalWorld);
+      const bW = normalize(bitangentWorld as unknown as typeof normalWorld);
       nMapped = normalize(
         tW.mul(tN.x).add(bW.mul(tN.y)).add(nGeom.mul(tN.z))
       );

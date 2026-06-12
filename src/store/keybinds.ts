@@ -92,7 +92,7 @@ export const keybindsAtom = atom(
     const result = { ...raw };
     for (const key of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
       if (!(key in result)) {
-        (result as any)[key] = DEFAULT_KEYBINDS[key];
+        result[key] = DEFAULT_KEYBINDS[key];
         patched = true;
       }
     }

@@ -3,6 +3,7 @@
 import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
+import type { WebGPURenderer } from "three/webgpu";
 import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "./GpuSlotAllocator";
 import {
@@ -83,7 +84,7 @@ const ModelBatch = memo(function ModelBatch({
     m.count = MAX_NEAR_INSTANCES; // Needed for three.js internals; actual count comes from indirect
     m.frustumCulled = false;
     return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [asset.geometry, asset.material, outputAttr, indirectAttr]);
 
   // Set stable model uniforms once.
@@ -120,7 +121,7 @@ const ModelBatch = memo(function ModelBatch({
 
     // Dispatch compute: reset atomic counter on GPU, then cull + compact.
     // Both run on GPU — no CPU→GPU race from needsUpdate.
-    (gl as any).compute([resetNode, computeNode]);
+    (gl as unknown as WebGPURenderer).compute([resetNode, computeNode]);
   });
 
   return <primitive object={mesh} />;

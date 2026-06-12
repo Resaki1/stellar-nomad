@@ -6,4 +6,6 @@ import { neptuneConfig } from "../celestial/bodies/neptune";
 
 export { NEPTUNE_POSITION_KM, NEPTUNE_RADIUS_KM } from "../celestial/bodies/neptune";
 
-export default memo(() => <CelestialBody config={neptuneConfig} />);
+const Neptune = memo(() => <CelestialBody config={neptuneConfig} />);
+Neptune.displayName = "Neptune";
+export default Neptune;

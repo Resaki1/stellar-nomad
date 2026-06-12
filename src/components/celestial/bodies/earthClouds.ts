@@ -1829,7 +1829,7 @@ export function marchCloudVolume({
               } else {
               If(daylight.greaterThan(0.001), () => {
                 const opticalDepthSun = float(0).toVar();
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                 
                 const sampleConeTap = (
                   kx: number,
                   ky: number,
@@ -2107,7 +2107,7 @@ export function marchCloudVolume({
         });
 
         // Step forward at the (possibly just-updated) mode's rate.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         // Skip advance is COVERAGE-ADAPTIVE (the detection-cap design, see
         // SKIP_DETECT_CAP_SCALED): inside the potential-cloud band
         // (profile > 0.01 at this sample) advance at the capped detection

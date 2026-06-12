@@ -6,4 +6,6 @@ import { marsConfig } from "../celestial/bodies/mars";
 
 export { MARS_POSITION_KM, MARS_RADIUS_KM } from "../celestial/bodies/mars";
 
-export default memo(() => <CelestialBody config={marsConfig} />);
+const Mars = memo(() => <CelestialBody config={marsConfig} />);
+Mars.displayName = "Mars";
+export default Mars;

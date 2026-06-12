@@ -548,7 +548,7 @@ export class AsteroidFieldRuntime {
           if (prev !== undefined && prev !== packed) {
             this.collisionCount++;
             if (this.collisionCount <= 5) {
-              // eslint-disable-next-line no-console
+               
               console.warn("[AsteroidRuntime] instanceId collision detected", {
                 fieldId: this.fieldId,
                 instanceId: id,
@@ -557,7 +557,7 @@ export class AsteroidFieldRuntime {
                 totalCollisions: this.collisionCount,
               });
             } else if (this.collisionCount === 6) {
-              // eslint-disable-next-line no-console
+               
               console.warn("[AsteroidRuntime] Suppressing further collision warnings.");
             }
           }

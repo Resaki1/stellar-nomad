@@ -96,7 +96,7 @@ export class AsteroidDeltaStore {
       }
     } catch {
       // Corrupted data — ignore silently and start fresh.
-      // eslint-disable-next-line no-console
+       
       console.warn("[AsteroidDeltaStore] Failed to load persisted deltas; starting fresh.");
     }
   }
@@ -145,7 +145,7 @@ export class AsteroidDeltaStore {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
     } catch {
       // Storage full or unavailable — non-fatal.
-      // eslint-disable-next-line no-console
+       
       console.warn("[AsteroidDeltaStore] Failed to persist deltas to localStorage.");
     }
   }

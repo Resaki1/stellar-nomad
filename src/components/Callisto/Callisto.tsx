@@ -6,4 +6,6 @@ import { callistoConfig } from "../celestial/bodies/callisto";
 
 export { CALLISTO_POSITION_KM, CALLISTO_RADIUS_KM } from "../celestial/bodies/callisto";
 
-export default memo(() => <CelestialBody config={callistoConfig} />);
+const Callisto = memo(() => <CelestialBody config={callistoConfig} />);
+Callisto.displayName = "Callisto";
+export default Callisto;
