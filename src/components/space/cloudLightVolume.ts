@@ -29,9 +29,12 @@ import {
 // =============================================================================
 // 3D cloud light volume — per-voxel sun transmittance (exp(-tau_sun)).
 //
-// A snap-stabilised, LOCAL-UP-ORIENTED box of voxels in earth model space,
-// centred on the slab mid-shell under the camera (constant extent — see
-// BOX_HALF). Each voxel runs a short straight sun-march (the marcher's cone
+// A LOCAL-UP-ORIENTED window of voxels on a WORLD-ANCHORED lattice in earth
+// model space (constant extent — see BOX_HALF; anchoring — see
+// REANCHOR_ANGLE): the window follows the slab mid-shell under the camera in
+// whole-voxel steps along a per-region fixed tangent frame, so re-bakes
+// reproduce identical values in the overlap (clipmap-style stability).
+// Each voxel runs a short straight sun-march (the marcher's cone
 // inner loop, with the cone kernel removed) reusing the same cheap macro
 // density the marcher uses: dilated base shape × coverage × height profile
 // (anti-tiling warp included). The result exp(-tau) is stored in .r.
@@ -58,9 +61,12 @@ import {
 
 // ── Volume dimensions (constants baked into the dispatch count) ──
 // 256×256 horizontal over the constant 1200 km box ≈ 4.7 km/voxel; 32 vertical
-// over the ~74 km box height ≈ 2.3 km/voxel (the 13 km slab spans ~6 voxels).
-// A sun-transmittance field is smoother than density (an integral along the sun
-// dir), so it tolerates coarse sampling. rgba16f → 16.8 MB.
+// over the ~97 km box height ≈ 3.0 km/voxel (the 13 km slab spans ~4.3
+// voxels — the anchor-tilt pad in updateBox bought stability at the cost of
+// ~23% vertical resolution; the local self-shadow probe in earthClouds.ts
+// carries the high-freq shading). A sun-transmittance field is smoother than
+// density (an integral along the sun dir), so it tolerates coarse sampling.
+// rgba16f → 16.8 MB.
 const NX = 256;
 const NY = 32;
 const NZ = 256;
@@ -91,6 +97,27 @@ const VOL_FADE_ALT_HI = 0.4; //  ~400 km — volume fully faded out (orbit)
 // re-run when the box snaps to a new lattice cell or the sun has rotated
 // (earth spin) by more than ~half the sun's angular diameter.
 const SUN_REBAKE_COS = Math.cos((0.25 * Math.PI) / 180);
+// ── Region anchoring (the per-snap shadow-pop fix, 2026-06-12) ──
+// The voxel lattice must be a deterministic function of EARTH space, not of
+// the camera. The previous scheme snapped the camera POSITION to a voxel grid
+// but then normalised it into a direction and re-derived the box centre AND
+// the tangent axes from it — so every ~4.7 km snap slightly ROTATED the
+// lattice and shifted it by a non-integer voxel amount. Each re-bake then
+// sampled the (static) field at new world points → the whole shadow pattern
+// visibly reshuffled once per voxel crossed ("shadows change ~1×/s at
+// 4.7 km/s"). Fix: hold a persistent tangent frame (the region anchor) and
+// snap the box centre to WHOLE VOXELS ALONG THAT FRAME, phase-anchored at the
+// earth centre. Within a region the box only ever translates by integer voxel
+// counts on a fixed lattice, so every re-bake reproduces identical
+// transmittance in the overlap (up to ~1 f32 ulp ≈ 0.5 m of sample-point
+// re-rounding — nil vs km-scale voxels) and the window move is invisible.
+// The anchor is re-seeded only once the camera direction drifts >
+// REANCHOR_ANGLE from it (~96 km of flight); that single re-discretisation
+// pop per region is smeared by the screen-space EMA. Larger angle = rarer
+// pops but a thicker tilt pad in hy (coarser vertical voxels — see the
+// containment derivation in updateBox); tune the two together.
+const REANCHOR_ANGLE = 0.015; // rad ≈ 0.86° ≈ 96 km of surface travel
+const REANCHOR_COS = Math.cos(REANCHOR_ANGLE);
 // Bake base-volume taps MUST sample LEVEL 0: three r183's WebGPU backend
 // never uploads Data3DTexture.mipmaps (level 0 only) while allocating the
 // full mip count — levels 1+ are zero-initialized, so the brief
@@ -291,13 +318,19 @@ export function createCloudLightVolume(
   const tmpEarthCam = new THREE.Vector3();
   const tmpUp = new THREE.Vector3();
   const tmpRef = new THREE.Vector3();
-  const tmpAxX = new THREE.Vector3();
-  const tmpAxZ = new THREE.Vector3();
+  const tmpMid = new THREE.Vector3();
   const tmpSunEarth = new THREE.Vector3();
+  // Region anchor: a persistent tangent frame, re-seeded only after the
+  // camera direction drifts > REANCHOR_ANGLE (see the constant's comment).
+  // anchorUp.lengthSq() === 0 ⇒ not yet seeded.
+  const anchorUp = new THREE.Vector3();
+  const anchorAxX = new THREE.Vector3();
+  const anchorAxZ = new THREE.Vector3();
   // Bake-dirty tracking: the field is static in earth space for a fixed box +
   // sun, so `compute` re-bakes ONLY when one of these changed since the last
   // bake. lastBakedUp doubles as the "ever baked" flag (0-length = never).
   const lastBakedUp = new THREE.Vector3();
+  const lastBakedCenter = new THREE.Vector3();
   const lastBakedSun = new THREE.Vector3();
   const updateBox: CloudLightVolume["updateBox"] = (cameraScaledPos) => {
     // Earth-space camera position = uEarthInverseModel · cameraScaledPos (the
@@ -310,48 +343,61 @@ export function createCloudLightVolume(
 
     const alt = rC - rIn; // scaled altitude
 
-    // CONSTANT extents (see BOX_HALF) — the per-frame altitude-driven growth
-    // was the swimming-shadows root cause (continuously changing voxel size =
-    // continuous re-discretisation of the field under camera motion).
+    // CONSTANT extents (see BOX_HALF) — voxel size must never change at
+    // runtime or the world lattice below stops being a lattice (rIn/rOut are
+    // static; everything here is runtime-constant).
+    // Containment: the camera column can sit up to drift = rMid·REANCHOR_ANGLE
+    // (anchor drift) + voxelXZ/2 (snap) from the box centre in tangent coords,
+    // so the far footprint edge lies hxz + drift from the ANCHOR column and
+    // the shell drops ≈ (hxz+drift)²/(2·rIn) below the centre plane there.
+    // (Do NOT decompose this as sag + hxz·sin(angle): the 2·hxz·drift
+    // cross-term ≈ 1 km is part of the worst case — 2026-06-12 verification.)
+    // hy = slab half + that drop + 4 km pad (vertical snap error voxelY/2
+    // ≈ 1.5 km + centre cos-drop ≈ 0.7 km + slack ≈ 1.8 km).
     const hxz = BOX_HALF;
-    const sag = (hxz * hxz) / (2 * rIn); // shell drop over the footprint
-    const hy = 0.5 * (rOut - rIn) + sag + 0.002; // slab half + sag + ~2 km pad
+    const voxelXZ = (2 * hxz) / NX;
+    const drift = rMid * REANCHOR_ANGLE + voxelXZ / 2;
+    const drop = ((hxz + drift) * (hxz + drift)) / (2 * rIn);
+    const hy = 0.5 * (rOut - rIn) + drop + 0.004;
     uBoxHalfExtent.value.set(hxz, hy, hxz);
 
-    // ── Stabilise against motion shimmer ──
-    // The box's voxel grid would otherwise slide continuously with the camera,
-    // so a static cloud point samples a continuously-shifting discretisation of
-    // the (static) transmittance field → flickering shadows under the EMA
-    // (worst in dark shadow, where exp(−τ) amplifies small changes). Snap the
-    // camera's earth-space DIRECTION to a voxel-sized grid (double precision
-    // here; the snapped centre stored as a float32 uniform is stable between
-    // jumps) so the box steps in whole-voxel increments — the residual is a
-    // small periodic jump the EMA absorbs, not continuous wobble. With the
-    // constant extent the snap lattice itself is now fixed, so vertical
-    // motion doesn't move the box at all.
-    const voxelXZ = (2 * hxz) / NX;
-    const sx = Math.round(tmpEarthCam.x / voxelXZ) * voxelXZ;
-    const sy = Math.round(tmpEarthCam.y / voxelXZ) * voxelXZ;
-    const sz = Math.round(tmpEarthCam.z / voxelXZ) * voxelXZ;
-    const sLen = Math.hypot(sx, sy, sz) || 1;
-    tmpUp.set(sx / sLen, sy / sLen, sz / sLen); // snapped local up (radial)
+    // ── Region anchor (see REANCHOR_ANGLE) ──
+    // The box must be oriented to LOCAL UP (radial) — an earth-axis-aligned
+    // box would only contain the thin shell near the poles. But local up
+    // changes continuously with the camera, so the frame is held FIXED per
+    // region and re-seeded from the exact camera direction only after
+    // REANCHOR_ANGLE of drift. Re-seeding is self-hysteretic: after a seed
+    // the drift is zero, so the next one needs the full angle again.
+    tmpUp.copy(tmpEarthCam).divideScalar(rC); // exact local up (radial)
+    if (anchorUp.lengthSq() === 0 || anchorUp.dot(tmpUp) < REANCHOR_COS) {
+      anchorUp.copy(tmpUp);
+      if (Math.abs(anchorUp.y) < 0.99) tmpRef.set(0, 1, 0);
+      else tmpRef.set(1, 0, 0);
+      anchorAxX.crossVectors(tmpRef, anchorUp).normalize();
+      anchorAxZ.crossVectors(anchorUp, anchorAxX).normalize();
+    }
+    uBoxAxisX.value.copy(anchorAxX);
+    uBoxAxisY.value.copy(anchorUp);
+    uBoxAxisZ.value.copy(anchorAxZ);
 
-    // Centre on the slab mid-shell under the (snapped) camera direction.
-    uBoxCenter.value.copy(tmpUp).multiplyScalar(rMid);
-
-    // Orient the box to LOCAL UP (radial), NOT the earth axes: Y = up, X/Z span
-    // the tangent plane. (Axis-aligning a thin box only contains the spherical
-    // slab near the earth-frame pole and slices it into a stripe elsewhere.)
-    // Build a stable tangent frame from a reference axis not parallel to up.
-    // Everything below derives from the SNAPPED up, so the axes are piecewise
-    // constant too.
-    if (Math.abs(tmpUp.y) < 0.99) tmpRef.set(0, 1, 0);
-    else tmpRef.set(1, 0, 0);
-    tmpAxX.crossVectors(tmpRef, tmpUp).normalize();
-    tmpAxZ.crossVectors(tmpUp, tmpAxX).normalize();
-    uBoxAxisX.value.copy(tmpAxX);
-    uBoxAxisY.value.copy(tmpUp);
-    uBoxAxisZ.value.copy(tmpAxZ);
+    // ── World-anchored lattice snap ──
+    // Window target = slab mid-shell under the camera. Snap each of its
+    // coordinates ALONG THE ANCHOR AXES to whole voxels, with phase anchored
+    // at the earth centre (coordinate 0). All voxel world positions are then
+    // centre + integer·voxel·axis ⇒ points of one fixed earth-space lattice,
+    // regardless of how the window has moved — so re-bakes reproduce
+    // identical values in the overlap (f64 snap here; the kernel's f32
+    // centre+offset sum re-rounds by ≤ ~1 ulp ≈ 0.5 m — nil vs km voxels).
+    const voxelY = (2 * hy) / NY;
+    tmpMid.copy(tmpUp).multiplyScalar(rMid);
+    const cx = Math.round(tmpMid.dot(anchorAxX) / voxelXZ) * voxelXZ;
+    const cy = Math.round(tmpMid.dot(anchorUp) / voxelY) * voxelY;
+    const cz = Math.round(tmpMid.dot(anchorAxZ) / voxelXZ) * voxelXZ;
+    uBoxCenter.value
+      .copy(anchorAxX)
+      .multiplyScalar(cx)
+      .addScaledVector(anchorUp, cy)
+      .addScaledVector(anchorAxZ, cz);
 
     // Orbit fade: 1 while the box meaningfully covers near clouds → 0 at orbit.
     const tFade =
@@ -369,21 +415,25 @@ export function createCloudLightVolume(
     // altitude. The dirty tracking below re-bakes on the way back down.
     if (uVolumeWeight.value <= 0) return;
     // ── Bake amortisation ──
-    // The baked field only depends on the (snapped) box and the earth-space
-    // sun direction; both are piecewise constant. Re-bake only when the box
-    // jumped to a new lattice cell or the sun rotated > ~0.25° (earth spin) —
-    // a hovering camera pays ZERO bake cost, a moving one only pays on snap
-    // boundaries.
+    // The baked field only depends on the anchor frame, the lattice-snapped
+    // centre and the earth-space sun direction; all are piecewise constant.
+    // Re-bake only when the window stepped to a new lattice cell, the region
+    // re-anchored, or the sun rotated > ~0.25° (earth spin) — a hovering
+    // camera pays ZERO bake cost. Within a region a re-bake reproduces
+    // identical values in the overlap (world-anchored lattice), so the
+    // step itself is invisible.
     tmpSunEarth
       .copy(uSunRel.value)
       .transformDirection(uEarthInverseModel.value);
     const upUnchanged = lastBakedUp.equals(uBoxAxisY.value);
+    const centerUnchanged = lastBakedCenter.equals(uBoxCenter.value);
     const sunUnchanged =
       lastBakedSun.lengthSq() > 0 &&
       lastBakedSun.dot(tmpSunEarth) > SUN_REBAKE_COS;
-    if (upUnchanged && sunUnchanged) return;
+    if (upUnchanged && centerUnchanged && sunUnchanged) return;
     renderer.compute(populateNode); // SYNCHRONOUS; submits its own command buffer
     lastBakedUp.copy(uBoxAxisY.value);
+    lastBakedCenter.copy(uBoxCenter.value);
     lastBakedSun.copy(tmpSunEarth);
   };
 

@@ -1518,6 +1518,13 @@ sun piecewise-constant, the bake is AMORTISED — re-run only on a snap jump or
 >0.25° earth-space sun rotation, skipped entirely while the volume's orbit
 fade has it at weight 0.
 
+**⚠ Superseded (2026-06-12).** The direction-snap described above killed the
+CONTINUOUS shimmer but left a discrete pop on every snap — the snap quantised
+the camera *position* and then normalised it into a direction, which rotated
+the box axes and shifted the lattice by non-integer voxel amounts on every
+~4.7 km step. See case study #17 for the actual lattice fix (region-anchored
+world lattice).
+
 **Pattern to recognise.** *Any* camera-following cached volume whose voxel
 size depends on a continuous camera quantity (altitude, speed, distance) will
 swim under motion no matter how carefully you snap its origin — the snap grid
@@ -1808,3 +1815,59 @@ The marcher still samples `.level(int(0))` everywhere: the patch only makes
 `.level(>0)` *safe*; re-enabling the footprint-matched mip scheme is a
 separate, deliberate change (re-tune against the case-#16 DEBUG_VIZ pair —
 mip 1 should read half-bright, mip 2+ structured, never near-black).
+
+## Case study #17 — per-snap shadow pops: the lattice must live in WORLD space (2026-06-12)
+
+**Symptom (user report).** After case #11's constant-extent fix: "shadows in
+the clouds keep changing when I change the camera's position. Stable when the
+camera doesn't move (rotation doesn't affect them). At 4.7 km/s they change
+roughly once per second — not a perfectly stable interval; flying faster makes
+it faster."
+
+**The report contained the diagnosis.** `voxelXZ = 2·BOX_HALF/NX =`
+**4.6875 km** — one change per ~4.7 km travelled IS one change per snap-lattice
+cell. "Not a stable interval" = the flight path crosses the axis-aligned
+earth-frame snap planes at varying obliquity. Position-only sensitivity rules
+out everything view-dependent (reprojection, EMA, jitter); what's left is the
+one thing keyed to position: the bake box.
+
+**Root cause: camera-anchored discretisation.** `updateBox` snapped the
+camera *position* to a voxel grid — but then **normalised it into a
+direction** and re-derived the box centre (`dir·rMid`) *and all three box
+axes* (tangent frame from `cross`) from it. So each snap slightly ROTATED the
+whole lattice (~0.04°) and translated it by a non-integer voxel amount.
+Every re-bake therefore sampled the (static\!) transmittance field at *new
+world points*: different trilinear reconstruction + different sun-march
+sample positions → a globally reshuffled shadow pattern, once per snap. The
+amortisation built in #11 made this *cheap*, not *invisible*.
+
+**Fix: region-anchored world lattice (clipmap discipline).**
+(a) Hold a persistent tangent frame (`anchorUp/anchorAxX/anchorAxZ`),
+re-seeded only after the camera direction drifts > `REANCHOR_ANGLE`
+(0.015 rad ≈ 96 km of flight). (b) Snap the window centre to whole voxels
+ALONG THOSE FIXED AXES, phase-anchored at the earth centre — every voxel of
+every bake then lies on one fixed earth-space lattice, so re-bakes reproduce
+identical values in the overlap (verified ≤ ~1 f32 ulp ≈ 0.5 m of sample
+re-rounding) and window steps are invisible. (c) Containment under anchor
+tilt needs the FULL worst case `(hxz + drift)²/(2·rIn)` with
+`drift = rMid·REANCHOR_ANGLE + voxelXZ/2` — decomposing as sag + tilt drops a
+~1 km cross-term. (d) Dirty tracking must now watch centre AND axes (they
+change independently; before, centre was a function of up).
+
+**Why this matches the references.** No shipped system bakes cloud lighting
+in a camera-derived rotating box. Nubis3 (Forbidden West) bakes its
+256×256×32 summed-density light grid on a WORLD-FIXED lattice whose axes
+never change (wind moves the *sample position*, never the grid), and takes
+the first 1–2 sun samples live so the cache only supplies the smooth far
+field (our local self-shadow probe plays that role). RTXGI's "infinite
+scrolling volumes" and geometry clipmaps document the same artifact for
+naively camera-moved grids and the same fix: world lattice, whole-cell window
+steps, fixed axes.
+
+**Pattern to recognise.** A camera-following cached volume is only stable if
+voxel WORLD positions are a deterministic function of world space alone —
+piecewise per region, with region changes rare and hysteretic. Snapping the
+*input* to the box derivation is not enough; anything downstream of a
+normalise/cross re-discretises. Check: "if I re-bake after moving one cell,
+does every surviving voxel sample the EXACT same world point as before?" If
+no, the field will visibly change on every re-bake no matter how cheap it is.
