@@ -25,6 +25,7 @@ import {
   fract,
   sin,
   pow,
+  log2,
   PI,
 } from "three/tsl";
 import { kmToScaledUnits } from "@/sim/units";
@@ -196,9 +197,34 @@ const DENSE_INTEG_CAP_SCALED = 0.00075; // 750 m
 // sampled everywhere) vs maxProbeShape (field empty at range) DEBUG_VIZ
 // pair. See CLOUD_DEBUGGING_LESSONS case study #16.
 // As of 2026-06-11 the pnpm patch uploads the full mipmaps[] chain
-// (verified via the /dev/mip3d-test readback page), so .level(>0) is SAFE —
-// all taps remain at level 0 until the footprint-matched mip scheme is
-// deliberately re-enabled and re-tuned.
+// (verified via the /dev/mip3d-test readback page), so .level(>0) is SAFE.
+//
+// ── Footprint-matched detail mip LOD (Phase A.0, 2026-06-14) ──
+// RE-ENABLED for the detail-erosion tap ONLY (the aliasing-critical one).
+// base / carve / column / cone / light-volume taps stay at level 0 for now:
+// base is macro and doesn't alias, the column tap drives topAlt + the
+// anti-tiling warp and must stay bit-stable, and the lighting taps are lower
+// priority. This is the prerequisite for Phase A — it band-limits the ~31 m
+// detail features BY MIP instead of by amplitude, so Phase A can raise erosion
+// strength and stop suppressing detail at silhouettes without re-introducing
+// the salt-and-pepper aliasing that forced that suppression.
+//
+// LOD from the screen footprint, à la Nubis (mip rises with ray distance):
+//   detailLod = clamp( log2(max(1, t · DETAIL_MIP_DIST_K)), 0, DETAIL_MIP_MAX )
+// Detail tile = 1000/uDetailScale = 2 km over DETAIL_SIZE = 64 texels → one
+// texel ≈ 31 m. A 1/4-res (SPARSE_DIVISOR = 2) sparse pixel subtends roughly
+// t · 1.7e-3 in scaled units at the nominal fov/res, so the texel == pixel-
+// footprint crossover sits at t ≈ 1/DETAIL_MIP_DIST_K. K = 54 → crossover
+// ≈ 18 km, which lands INSIDE the 5–80 km detail band: the near field stays
+// mip 0 (crisp), and the field is band-limited from ~18 km out to the 80 km
+// fade-off (lod ≈ 2 there). Uses log2(max(1, ·)) NOT log2(1 + ·) so the near
+// field is EXACTLY mip 0 — we want full crisp cauliflower up close (Phase A).
+// Inspect with DEBUG_VIZ = 'detailLod'. Tune K by eye: raise if near detail
+// looks blurred, lower if distant detail sparkles. The variance-renormalized
+// mip chain (noiseVolumes.ts) keeps coverage stable across levels, and the
+// clamp ≤ 4 matches that chain's valid range.
+const DETAIL_MIP_DIST_K = 54;
+const DETAIL_MIP_MAX = 4;
 //
 // Dead-end notes for four removed zero-valued knobs (PROFILE_BLUR_K,
 // ALT_DITHER_K, START_JITTER_FRAC, LOD_DITHER — all empirically refuted as
@@ -471,6 +497,7 @@ const DEBUG_VIZ:
   | "daylight"
   | "dither"
   | "lod"
+  | "detailLod"
   | "whyStop"
   | "lightVol"
   | "maxProfile"
@@ -1670,10 +1697,18 @@ export function marchCloudVolume({
               // the result is bit-identical (threshold → 0 ⇒ eroded = shape).
               const eroded = shape.toVar();
               If(detailStrength.greaterThan(0.002), () => {
+                // Footprint-matched mip LOD (Phase A.0). Band-limits the
+                // ~31 m detail features by ray distance so detail can be
+                // cranked in Phase A without aliasing. log2(max(1, t·K)) is
+                // exactly mip 0 in the near field (crisp), rising past the
+                // ~18 km crossover. See the DETAIL_MIP_DIST_K note above.
+                const detailLod = log2(
+                  t.mul(float(DETAIL_MIP_DIST_K)).max(float(1)),
+                ).clamp(float(0), float(DETAIL_MIP_MAX));
                 const detailSample = texture3D(
                   detailVolume,
                   p.mul(uDetailScale),
-                ).level(int(0));
+                ).level(detailLod);
                 const billowyFbm = detailSample.r
                   .mul(0.625)
                   .add(detailSample.g.mul(0.25))
@@ -2308,6 +2343,21 @@ export function marchCloudVolume({
       const capped = lodGrow.greaterThan(lodCap).select(float(1), float(0));
       return {
         rgba: vec4(g.max(capped), g, g, float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "detailLod") {
+      // Footprint-matched detail mip LOD at the slab midpoint (Phase A.0
+      // regression gate). Grayscale: black = mip 0 (crisp / near) → white =
+      // DETAIL_MIP_MAX. The 0 → rising crossover should sit ~18 km out; the
+      // near field must read solid black (else near detail is being blurred).
+      const dl = log2(tMid.mul(float(DETAIL_MIP_DIST_K)).max(float(1))).clamp(
+        float(0),
+        float(DETAIL_MIP_MAX),
+      );
+      const g = dl.div(float(DETAIL_MIP_MAX)).clamp(0, 1);
+      return {
+        rgba: vec4(g, g, g, float(1)),
         tFront: float(0),
       };
     }
