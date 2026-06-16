@@ -32,6 +32,7 @@ import { kmToScaledUnits } from "@/sim/units";
 import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
 import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
+import { detileBlend, USE_DETILE } from "./cloudDetile";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
@@ -263,7 +264,7 @@ const DITHER_FRACTION = 1.0;
 // near-constant across any single cloud body). Static field in earth space →
 // no morphing under camera motion. Amplitude in scaled units; 0.01 = 10 km =
 // half a base tile, enough to fully decorrelate adjacent tiles.
-const WARP_AMPLITUDE = 0.01;
+const WARP_AMPLITUDE = 0;
 // ── Local lump self-shadow for the light-volume path (2026-06-10) ──
 // The 3D light volume stores MACRO sun transmittance at 4.7 km (tangent) ×
 // ~0.5 km (altitude) voxels — switching to it from the 6-tap cone lost the
@@ -369,11 +370,11 @@ const HG_BLEND = 0.5; // weight of the back lobe (0 = pure forward, 1 = pure bac
 // macro form — back off the carve for fuller, CONNECTED bodies. If the lower
 // deck flattens too much, make the carve altitude-dependent (solid base, eroded
 // top) instead of a single constant. Tune against DEBUG_VIZ='eroded'.
-const BILLOW_CARVE = 0.75;
+const BILLOW_CARVE = 0.45;
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
-const CARVE_SCALE = 80;
+const CARVE_SCALE = 180;
 
 // =============================================================================
 // DIAGNOSTIC VISUALIZATION
@@ -1152,6 +1153,34 @@ export function marchCloudVolume({
     const phaseIsotropic = float(0.07957747); // 1 / (4π)
     const densScale = uDensityMul;
 
+    // ── Tile-&-offset shape samplers (anti-tiling; see cloudDetile.ts) ──
+    // Dilated, and dilated+carved, base shape at an arbitrary Earth-space
+    // scaled position — mirrors the inline composition at the primary/probe
+    // sites so detileBlend() can blend them across rigidly-offset tiles. Used
+    // only on the USE_DETILE path; the OFF path keeps the original inline warp.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dilatedShapeAt = (pos: any) => {
+      const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(int(0));
+      const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
+      return bs.r
+        .add(float(1).sub(fbm))
+        .div(float(2).sub(fbm).max(0.0001))
+        .clamp(0, 1);
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const carvedShapeAt = (pos: any) => {
+      const dil = dilatedShapeAt(pos);
+      const cs = texture3D(detailVolume, pos.mul(float(CARVE_SCALE))).level(
+        int(0),
+      );
+      const cw = cs.r.mul(0.6).add(cs.g.mul(0.4));
+      const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
+      return dil
+        .sub(ct)
+        .div(float(1).sub(ct).max(0.0001))
+        .clamp(0, 1);
+    };
+
     // Diagnostic counters hoisted to fragment scope so the debug return at
     // the bottom of the shader can read them. Always declared (zero cost
     // when DEBUG_VIZ === 'off' since the GPU's dead-store elimination
@@ -1512,57 +1541,57 @@ export function marchCloudVolume({
           // backend upload the mipmaps[] chain, so .level(>0) is now safe —
           // taps stay at level 0 until the footprint-matched mip scheme is
           // deliberately re-enabled.
-          const pWarped = p.add(warpVec);
-          const baseSample = texture3D(baseVolume, pWarped.mul(uBaseScale))
-            .level(int(0));
-          const baseFbm = baseSample.g
-            .mul(0.625)
-            .add(baseSample.b.mul(0.25))
-            .add(baseSample.a.mul(0.125));
-          const oneMinusFbm = float(1).sub(baseFbm);
-          const baseShape = baseSample.r
-            .add(oneMinusFbm)
-            .div(float(2).sub(baseFbm).max(0.0001))
-            .clamp(0, 1);
-          // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
-          // Carve valleys (low carve-Worley) deeper than lump centres so the
-          // smooth dilated dome becomes ~1-2 km cauliflower. The carve source
-          // is the DETAIL volume's single-octave Worley (crisp cells) at
-          // CARVE_SCALE — the base B channel (smoothed FBM) was too soft and
-          // just scaled body size. Schneider value-erosion form.
-          //
-          // ACTIVE AT ALL DISTANCES (2026-06-11). The carve used to fade out
-          // over 5→40 km — but the carve is what CREATES the small/discrete
-          // clouds: in low-coverage regions only the carved lump centres pass
-          // the Remap threshold, so fading the carve also faded every small
-          // cloud out of existence beyond ~40 km, while large high-coverage
-          // decks survived on the 5 km base noise alone.
-          //
-          // NECESSARY-CONDITION GATE (perf): carving only ever LOWERS the
-          // shape, so if the UNCARVED base already fails the Remap threshold
-          // the carved value fails too — skip the carve fetch entirely. Most
-          // in-band samples are empty space, so this recovers most of the
-          // cost of running the carve at all distances. baseShapeCarved
-          // defaults to 0 = "fails the gate", which is exactly what the
-          // skipped case means.
-          const remapThreshold = float(1).sub(profile);
           const baseShapeCarved = float(0).toVar();
-          If(baseShape.greaterThan(remapThreshold), () => {
-            const carveSrc = texture3D(
-              detailVolume,
-              pWarped.mul(float(CARVE_SCALE)),
-            ).level(int(0));
-            const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
-            const carveThresh = float(1)
-              .sub(carveWorley)
-              .mul(float(BILLOW_CARVE));
-            baseShapeCarved.assign(
-              baseShape
-                .sub(carveThresh)
-                .div(float(1).sub(carveThresh).max(0.0001))
-                .clamp(0, 1),
-            );
-          });
+          if (USE_DETILE) {
+            // ── Tile-&-offset anti-tiling (cloudDetile.ts) ──
+            // Blend the dilated+carved base shape across 4 rigidly-offset
+            // tiles → no warp, no shear (the warp's km-scale shear was the
+            // "stringy" cause; see CLOUD_DEBUGGING_LESSONS #19). NOTE: the
+            // original's "skip carve when the uncarved base fails the Remap
+            // threshold" perf gate is dropped here — the 4-tap blend carves at
+            // every contributing tile. Profile; if the hot loop is too slow,
+            // lower DETILE_BLEND for a single-tap interior + seam-only blend.
+            baseShapeCarved.assign(detileBlend(p, carvedShapeAt));
+          } else {
+            // ── ORIGINAL single-tap domain-warp path (anti-tiling via warp) ──
+            const pWarped = p.add(warpVec);
+            const baseSample = texture3D(baseVolume, pWarped.mul(uBaseScale))
+              .level(int(0));
+            const baseFbm = baseSample.g
+              .mul(0.625)
+              .add(baseSample.b.mul(0.25))
+              .add(baseSample.a.mul(0.125));
+            const oneMinusFbm = float(1).sub(baseFbm);
+            const baseShape = baseSample.r
+              .add(oneMinusFbm)
+              .div(float(2).sub(baseFbm).max(0.0001))
+              .clamp(0, 1);
+            // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
+            // Carve valleys (low carve-Worley) deeper than lump centres so the
+            // smooth dilated dome becomes ~1-2 km cauliflower. Schneider
+            // value-erosion form.
+            //
+            // NECESSARY-CONDITION GATE (perf): carving only ever LOWERS the
+            // shape, so if the UNCARVED base already fails the Remap threshold
+            // the carved value fails too — skip the carve fetch entirely.
+            const remapThreshold = float(1).sub(profile);
+            If(baseShape.greaterThan(remapThreshold), () => {
+              const carveSrc = texture3D(
+                detailVolume,
+                pWarped.mul(float(CARVE_SCALE)),
+              ).level(int(0));
+              const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+              const carveThresh = float(1)
+                .sub(carveWorley)
+                .mul(float(BILLOW_CARVE));
+              baseShapeCarved.assign(
+                baseShape
+                  .sub(carveThresh)
+                  .div(float(1).sub(carveThresh).max(0.0001))
+                  .clamp(0, 1),
+              );
+            });
+          }
           // ── Dense-mode gate: the REMAPPED shape, not the macro product ──
           // (2026-06-11) This gate used to be `baseShapeCarved × coverage >
           // 0.0001`. With the Nubis Remap composition that product is nonzero
@@ -1629,10 +1658,19 @@ export function marchCloudVolume({
               // under-sampled silhouette ALIASES → residual edge noise the EMA
               // can't remove (it's spatial, not temporal). Band-limit it: keep
               // detail modest at edges so the silhouette stays a low-frequency
-              // alpha gradient the coarse march samples consistently (the clean
-              // soft-edge look the references have). Raise the 0.15 boost back
-              // toward 0.65 for crisper carving at the cost of edge noise; lower
-              // it (or coarsen uDetailScale) for smoother, cleaner edges.
+              // alpha gradient the coarse march samples consistently.
+              //
+              // NOTE (Phase A4, 2026-06-14 — REVERTED): tried removing this
+              // edge damping + raising erosion, betting A.0's mip would
+              // band-limit the speckle. But detail erosion only modulates
+              // OPACITY, not lighting (the cone + 800 m self-shadow probe
+              // sample base+carve, NOT the detail erosion), so cranking it
+              // produced "cotton balls in transparent jelly" — unlit dense
+              // lumps — not shaded cauliflower; and where `shape` saturates to
+              // 1 (thick cores) the value-erosion remap is a no-op so thick
+              // bodies stayed smooth regardless. Lesson: visible form must come
+              // from the LIT carve layer, not detail-erosion strength. See
+              // VOLUMETRIC_CLOUDS_SHAPE_PLAN.md §Phase A findings.
               const edgeness = float(1).sub(
                 smoothstep(float(0.5), float(0.9), coverage),
               );
@@ -1681,15 +1719,8 @@ export function marchCloudVolume({
                 smoothstep(detailNear, detailFar, t),
               );
 
-              // Type-driven detail FBM remix (Nubis B3). Same texture sample,
-              // different channel weights:
-              //   billowy (cumulus, cloudType=1): low-freq dominant (rounded
-              //     bumps) — R weighted 0.625, G 0.25, B 0.125.
-              //   wispy (stratus,  cloudType=0): high-freq dominant (fine
-              //     hair-like detail) — R 0.125, G 0.25, B 0.625.
-              // Curl-warped wispy is the canonical Schneider variant; we
-              // approximate here with a channel reweight to avoid binding a
-              // curl volume (deferred to C5).
+              // Type-driven, FREQUENCY-GRADED detail composite (Phase A1,
+              // Nubis slides 100-116). See the const block inside the gate.
               //
               // The detail fetch is GATED on detailStrength > 0 (2026-06-10):
               // beyond 80 km the erosion threshold was exactly 0 but the
@@ -1709,14 +1740,31 @@ export function marchCloudVolume({
                   detailVolume,
                   p.mul(uDetailScale),
                 ).level(detailLod);
-                const billowyFbm = detailSample.r
-                  .mul(0.625)
-                  .add(detailSample.g.mul(0.25))
-                  .add(detailSample.b.mul(0.125));
-                const wispyFbm = detailSample.r
-                  .mul(0.125)
-                  .add(detailSample.g.mul(0.25))
-                  .add(detailSample.b.mul(0.625));
+                // ── Frequency-graded detail composite (Phase A1) ──
+                // Detail channels are three Worley octaves: R = grid-4 (low),
+                // G = grid-8 (mid), B = grid-16 (high). Instead of a fixed FBM
+                // weighting, grade the detail FREQUENCY over the 3D `shape`
+                // gradient (0 at the noise-carved boundary → 1 in the
+                // interior): low frequency at the silhouette → higher frequency
+                // inward. This is the Nubis trick that reads as STRUCTURED
+                // billows (rounded silhouette + finer detail toward the
+                // surface) rather than smooth blobs (no high-freq) or uniform
+                // speckle (flat high-freq).
+                //   billowy (cumulus): coarser octaves R→G, biased high via
+                //     pow(shape,0.25) so only the very edge stays low-freq →
+                //     rounded, chunky lumps.
+                //   wispy   (stratus): finer octaves G→B, linear over shape.
+                // Type blends the two. Mean ≈ unchanged vs the old weighted
+                // sum (both are weighted averages of inverted-Worley octaves,
+                // ~0.35), so density is preserved — A1 is a pure SHAPE change.
+                // (True curl/alligator wisp+billow families + the finest
+                // octave for cumulus surfaces arrive in A3/A5; this grades the
+                // Worley octaves we already have.)
+                const dr = detailSample.r;
+                const dg = detailSample.g;
+                const db = detailSample.b;
+                const billowyFbm = mix(dr, dg, pow(shape, float(0.25)));
+                const wispyFbm = mix(dg, db, shape);
                 const detailFbm = mix(wispyFbm, billowyFbm, cloudType);
                 // Altitude-modulated erosion: at low altitudes erode with raw
                 // FBM (carves billowing undersides); at higher altitudes
@@ -1898,39 +1946,48 @@ export function marchCloudVolume({
                     const pLs = p.add(
                       sunDirEarth.mul(float(LOCAL_SHADOW_DIST)),
                     );
-                    const pLsWarped = pLs.add(warpVec);
                     const rLs = length(pLs).max(0.0001);
                     const altLs = clamp(
                       sub(rLs, uInnerRadius).mul(invSlabThickness),
                       0,
                       1,
                     );
-                    const baseLs = texture3D(
-                      baseVolume,
-                      pLsWarped.mul(uBaseScale),
-                    ).level(int(0));
-                    const fbmLs = baseLs.g
-                      .mul(0.625)
-                      .add(baseLs.b.mul(0.25))
-                      .add(baseLs.a.mul(0.125));
-                    const dilatedLs = baseLs.r
-                      .add(float(1).sub(fbmLs))
-                      .div(float(2).sub(fbmLs).max(0.0001))
-                      .clamp(0, 1);
-                    const carveLsSrc = texture3D(
-                      detailVolume,
-                      pLsWarped.mul(float(CARVE_SCALE)),
-                    ).level(int(0));
-                    const carveLsWorley = carveLsSrc.r
-                      .mul(0.6)
-                      .add(carveLsSrc.g.mul(0.4));
-                    const carveLsThresh = float(1)
-                      .sub(carveLsWorley)
-                      .mul(float(BILLOW_CARVE));
-                    const carvedLs = dilatedLs
-                      .sub(carveLsThresh)
-                      .div(float(1).sub(carveLsThresh).max(0.0001))
-                      .clamp(0, 1);
+                    // ── Carved base shape at the 800 m self-shadow probe ──
+                    // Must use the SAME anti-tiling as the primary or the near
+                    // self-shadow won't register with the rendered cloud.
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    let carvedLs: any;
+                    if (USE_DETILE) {
+                      carvedLs = detileBlend(pLs, carvedShapeAt);
+                    } else {
+                      const pLsWarped = pLs.add(warpVec);
+                      const baseLs = texture3D(
+                        baseVolume,
+                        pLsWarped.mul(uBaseScale),
+                      ).level(int(0));
+                      const fbmLs = baseLs.g
+                        .mul(0.625)
+                        .add(baseLs.b.mul(0.25))
+                        .add(baseLs.a.mul(0.125));
+                      const dilatedLs = baseLs.r
+                        .add(float(1).sub(fbmLs))
+                        .div(float(2).sub(fbmLs).max(0.0001))
+                        .clamp(0, 1);
+                      const carveLsSrc = texture3D(
+                        detailVolume,
+                        pLsWarped.mul(float(CARVE_SCALE)),
+                      ).level(int(0));
+                      const carveLsWorley = carveLsSrc.r
+                        .mul(0.6)
+                        .add(carveLsSrc.g.mul(0.4));
+                      const carveLsThresh = float(1)
+                        .sub(carveLsWorley)
+                        .mul(float(BILLOW_CARVE));
+                      carvedLs = dilatedLs
+                        .sub(carveLsThresh)
+                        .div(float(1).sub(carveLsThresh).max(0.0001))
+                        .clamp(0, 1);
+                    }
                     const profileLs = cloudHeightProfile(
                       altLs,
                       topAlt,
@@ -2004,6 +2061,13 @@ export function marchCloudVolume({
                   // dark crevices. The optional billow-carve (CONE_SAMPLE_CARVE)
                   // adds the ~km valley detail at a 2nd texture3D/tap; default off
                   // for perf (see the constant's note).
+                  //
+                  // TODO(detile): this cone path is DEAD while USE_LIGHT_VOLUME
+                  // is true (the baked volume + 800 m probe replace it). It is
+                  // NOT tile-&-offset detiled — if USE_LIGHT_VOLUME is ever set
+                  // false, wrap this in detileBlend(pL, dilatedShapeAt) (and
+                  // carvedShapeAt under CONE_SAMPLE_CARVE) so its self-shadow
+                  // matches the detiled render. See cloudDetile.ts.
                   const baseSampleL = texture3D(baseVolume, pL.mul(uBaseScale))
                     .level(int(0));
                   const baseFbmL = baseSampleL.g

@@ -67,6 +67,43 @@ const SALT_DW4 = 11;
 const SALT_DW8 = 12;
 const SALT_DW16 = 13;
 
+// =============================================================================
+// EXPERIMENT (2026-06-15): crease-preserving combine — "Alligator direction" test.
+//
+// Hypothesis (per VOLUMETRIC_CLOUDS_SHAPE_PLAN §Phase B findings + Nubis³ p.98):
+// our "elongated/stringy" billows are the isosurface of ADDITIVE inverted-Worley
+// FBM. Inverted Worley has BROAD smooth saddles between feature points; summing
+// octaves fills them further. Thresholding that field where blobs touch keeps the
+// broad saddles as long NECKS → strings. Real cauliflower = round bumps separated
+// by NARROW DEEP creases. Schneider hit this exact wall ("packed spheres") and
+// fixed it by switching the noise generator (inverted Worley → Houdini Alligator).
+//
+// This is the CHEAP falsification test before committing to a full Alligator port:
+// deepen the creases of our existing Worley with a single exponent and see whether
+// billows round out / crevices sharpen.
+//   crease(v) = pow(v, k) · (k+1)/2      (mean-preserving for v~U[0,1]; k=1 ⇒ no-op)
+// pow(v,k>1) pushes saddle (low) values down hard while caps clamp to 1 → round
+// caps + deep narrow creases. The (k+1)/2 gain keeps the mean ≈ unchanged so
+// coverage/density barely shift and SHAPE is the isolated variable (mean of v^k
+// over U[0,1] is 1/(k+1); ×(k+1)/2 restores it to 1/2). Applied to the billow
+// Worley everywhere it feeds the LIT shape: base R Worley, base FBM bands (G/B/A),
+// and the detail channels (R/G/B) that drive the macro carve.
+//
+// k = 1.0 is an EXACT identity (committing this is visually neutral). Try k≈2–3
+// live: REQUIRES A PAGE RELOAD (the volume is baked once at startup, not a shader
+// constant). If billows round out → confirms the saddle hypothesis → build real
+// Alligator noise. If still stringy → necking is deeper than crease depth; stop
+// and re-diagnose before any rewrite.
+// =============================================================================
+const BILLOW_CREASE_POWER = 3.0;
+
+function crease(v: number): number {
+  const k = BILLOW_CREASE_POWER;
+  if (k === 1) return v; // exact identity — zero-cost default
+  const c = Math.pow(v < 0 ? 0 : v, k) * ((k + 1) * 0.5);
+  return c < 0 ? 0 : c > 1 ? 1 : c;
+}
+
 // PRNG — same Mulberry32 the previous Worley generator used.
 function seededRandom(seed: number): number {
   let s = (seed | 0) + 0x6d2b79f5;
@@ -296,19 +333,16 @@ function generateBaseVolume(): Uint8Array {
           z * sPerlin,
           G_LOW,
         );
-        const worleyR = worleySample(
-          x * sWorleyR,
-          y * sWorleyR,
-          z * sWorleyR,
-          w4,
+        const worleyR = crease(
+          worleySample(x * sWorleyR, y * sWorleyR, z * sWorleyR, w4),
         );
         const perlinWorley = worleyR + perlin * (1 - worleyR);
 
         // GBA: three FBM bands at progressively higher base frequencies.
         // Each band overlaps the next by two octaves so the shader can blend.
-        const fbmG = worleyFbm(x, y, z, BASE_SIZE, w4, w8, w16);
-        const fbmB = worleyFbm(x, y, z, BASE_SIZE, w8, w16, w32);
-        const fbmA = worleyFbm(x, y, z, BASE_SIZE, w16, w32, w48);
+        const fbmG = crease(worleyFbm(x, y, z, BASE_SIZE, w4, w8, w16));
+        const fbmB = crease(worleyFbm(x, y, z, BASE_SIZE, w8, w16, w32));
+        const fbmA = crease(worleyFbm(x, y, z, BASE_SIZE, w16, w32, w48));
 
         // Quantize 0..1 → 0..255 with clamp (overflow paranoia for the FBM
         // sums, which can exceed 1 if a sample hits exactly at a feature
@@ -344,9 +378,9 @@ function generateDetailVolume(): Uint8Array {
       for (let x = 0; x < DETAIL_SIZE; x++) {
         // RGB = three independent Worley octaves. Shader assembles its own FBM
         // at runtime so each channel can be tweaked independently if needed.
-        const r = worleySample(x * sR, y * sR, z * sR, w4);
-        const g = worleySample(x * sG, y * sG, z * sG, w8);
-        const b = worleySample(x * sB, y * sB, z * sB, w16);
+        const r = crease(worleySample(x * sR, y * sR, z * sR, w4));
+        const g = crease(worleySample(x * sG, y * sG, z * sG, w8));
+        const b = crease(worleySample(x * sB, y * sB, z * sB, w16));
         data[idx++] = (r * 255) | 0;
         data[idx++] = (g * 255) | 0;
         data[idx++] = (b * 255) | 0;

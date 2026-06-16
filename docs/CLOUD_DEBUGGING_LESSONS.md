@@ -1951,3 +1951,61 @@ LOCAL_SHADOW comment: fade toward MEAN absorption, never toward 1); a
 ~2e-5 rad antipode fold-back in the gnomonic inverse is unreachable today
 (flagged in code); sun drift < 0.25° folds un-crossfaded into window-step
 re-bakes (~60 m shadow shift, sub-voxel, invisible).
+
+## Case study #19 — "stringy/elongated billows" was the DOMAIN WARP, not the noise (2026-06-15)
+
+### Symptom
+Clouds showed curved, swirly, elongated *filaments* instead of round cauliflower
+billows — worse the harder we carved (`CARVE_SCALE` 80→250). Visible from the side
+AND straight down (nadir).
+
+### The multi-day wrong turn
+A whole investigation (see VOLUMETRIC_CLOUDS_SHAPE_PLAN §Phase A/B) concluded the
+base noise generator (threshold of inverted-Worley FBM) "structurally can't make
+round billows" and that we needed an **Alligator-noise rewrite** (Nubis³). Two
+things propped this up, both wrong:
+- A **crease test** (`BILLOW_CREASE_POWER`, mean-preserving `pow(v,k)·(k+1)/2` on the
+  billow Worley) was tried to sharpen saddles → still stringy at k=3. Refuted, but it
+  reinforced "the noise is the problem."
+- The domain warp was **"ruled out by analysis"**: it's a per-column displacement at
+  the column tap's 125 km tile *period*, amplitude ±5 km → reasoned as ~6% shear,
+  "can't smear within one cloud."
+
+### The real root cause (found empirically, not analytically)
+Built a standalone 2D slice viewer (`/dev/cloud-slice`) that samples the SAME volumes
++ composition math but with no march/lighting/temporal/warp/sphere. Flipping the warp
+toggle was decisive: **warp ON → curved strings; warp OFF → round blobs.** Confirmed
+in-game (`WARP_AMPLITUDE=0` → strings gone).
+
+The analysis was wrong about the warp's *frequency*: the warp source is the base
+volume's **Worley-FBM g/b/a channels** (earthClouds.ts:1433, sampled at
+`uColumnScale=8`). The 125 km figure is the tile *period*; the FBM *content* inside
+runs down to ~2.6 km features. So the displacement field has a km-scale gradient with
+a ±5 km amplitude → it **shears** the noise sideways. The curved swirly filaments are
+the textbook signature of fBm domain warping.
+
+### Meta-lessons
+- **An empirical one-line toggle beats a paragraph of geometry.** "Ruled out by
+  analysis" is not ruled out (cf. feedback_debugging). The cheapest falsification
+  (turn the suspect OFF) was never run for ~a day.
+- **A confound can frame an entire investigation.** Every "the base noise is
+  fundamentally stringy" observation was the warp shearing round noise. When a fix
+  (crease) "doesn't help," suspect a confound upstream, not just "wrong layer."
+- **Build the decoupled instrument early.** The slice viewer (no march/lighting/
+  temporal/warp) localised in minutes what days of in-context tuning couldn't,
+  because it removed every confound at once. When you can't tell which stage owns an
+  artifact, render each stage in isolation.
+
+### The remaining real problem (not the warp itself)
+The warp existed for **anti-tiling** (base tiles every 20 km = 4 Worley cells →
+visible repetition from orbit). Domain warp is the WRONG tool: anti-tiling wants the
+displacement to differ between adjacent 20 km tiles (≈ tile-period frequency), which
+is exactly the frequency that shears. References (2026-06-15): Nubis side-steps it
+(authored voxel hero-clouds + bounded arena); Frostbite uses **incommensurate
+multi-scale layering** (the low-freq base noise "breaks down the repeatability of the
+weather texture", §5.4) — not warp; EVE/Blackrack (closest analog — planet-scale
+procedural) has a dedicated **"noise detiling"** feature, *"performance intensive,
+enabled by default"* (multi-sample → tile-&-offset family) plus non-harmonic per-layer
+tiling values. Academic: "Non-periodic Tiling of Procedural Noise Functions"
+(ACM 10.1145/3233306). Fix direction: incommensurate scales (free, partial) +
+Quilez-style tile-&-offset (the real one, gate behind a quality tier).

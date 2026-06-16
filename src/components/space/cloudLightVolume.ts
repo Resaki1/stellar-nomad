@@ -25,6 +25,10 @@ import {
   normalize,
   PI,
 } from "three/tsl";
+import {
+  detileBlend,
+  USE_DETILE,
+} from "@/components/celestial/bodies/cloudDetile";
 
 // =============================================================================
 // 3D cloud light volume — per-voxel sun transmittance (exp(-tau_sun)).
@@ -300,23 +304,45 @@ export function createCloudLightVolume(
     const topAlt = float(0.45).add(
       smoothstep(float(0.3), float(0.7), colTap.r).mul(0.5),
     );
-    const warpVec = vec3(
-      colTap.g.sub(0.5),
-      colTap.b.sub(0.5),
-      colTap.a.sub(0.5),
-    ).mul(float(WARP_AMPLITUDE_MIRROR));
-
     const profile = cloudHeightProfileInline(alt01, topAlt, cloudType);
 
-    // Dilated base shape (matches the marcher's dilation, warped, sampled at
-    // the bake mip — see BAKE_BASE_LOD). CARVE intentionally OFF.
-    const bs = texture3D(baseVolume, q.add(warpVec).mul(uBaseScale))
-      .level(int(BAKE_BASE_LOD));
-    const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
-    const baseShapeDilated = bs.r
-      .add(float(1).sub(fbm))
-      .div(float(2).sub(fbm).max(0.0001))
-      .clamp(0, 1);
+    // Dilated base shape — MUST match the marcher's anti-tiling (detile or
+    // warp) AND dilation, or the baked shadows land beside the clouds that
+    // cast them. Sampled at the bake mip (BAKE_BASE_LOD); CARVE intentionally
+    // OFF (this volume is a low-freq field).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let baseShapeDilated: any;
+    if (USE_DETILE) {
+      // Tile-&-offset — SAME offsets as earthClouds.ts (shared cloudDetile.ts),
+      // keyed on the same Earth-space scaled position, so shadows register.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dilatedAt = (pos: any) => {
+        const b = texture3D(baseVolume, pos.mul(uBaseScale)).level(
+          int(BAKE_BASE_LOD),
+        );
+        const f = b.g.mul(0.625).add(b.b.mul(0.25)).add(b.a.mul(0.125));
+        return b.r
+          .add(float(1).sub(f))
+          .div(float(2).sub(f).max(0.0001))
+          .clamp(0, 1);
+      };
+      baseShapeDilated = detileBlend(q, dilatedAt);
+    } else {
+      // Original anti-tiling domain warp.
+      const warpVec = vec3(
+        colTap.g.sub(0.5),
+        colTap.b.sub(0.5),
+        colTap.a.sub(0.5),
+      ).mul(float(WARP_AMPLITUDE_MIRROR));
+      const bs = texture3D(baseVolume, q.add(warpVec).mul(uBaseScale)).level(
+        int(BAKE_BASE_LOD),
+      );
+      const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
+      baseShapeDilated = bs.r
+        .add(float(1).sub(fbm))
+        .div(float(2).sub(fbm).max(0.0001))
+        .clamp(0, 1);
+    }
 
     return baseShapeDilated.mul(coverage).mul(profile).mul(float(CONE_DENSITY));
   };
