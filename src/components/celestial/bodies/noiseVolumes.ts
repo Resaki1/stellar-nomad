@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { BASE_ERODE } from "./cloudDetile";
 
 // =============================================================================
 // Nubis-style noise volumes for the volumetric cloud shell.
@@ -359,7 +360,56 @@ function generateBaseVolume(): Uint8Array {
       }
     }
   }
+  logBaseDistribution(data);
   return data;
+}
+
+// DEBUG (2026-06-16, floater / smooth-blob root-cause probe): histogram the
+// base-shape value distribution from the QUANTIZED texture (what the shader
+// actually samples). Logs the raw Perlin-Worley channel (R) AND the dilated
+// base `(R + (1-fbm))/(2-fbm)` the value-erosion sees. A saturated base reads
+// as a high mean + a large "%>=0.95" + a histogram piled at the top bin → the
+// erosion has nothing to carve and pinned-to-1 peaks become floaters. After a
+// de-saturation pass the histogram should spread toward a centred distribution.
+function logBaseDistribution(data: Uint8Array): void {
+  const N = data.length / 4;
+  const histR = new Array(10).fill(0);
+  const histD = new Array(10).fill(0);
+  let sumR = 0;
+  let sumD = 0;
+  let satR = 0;
+  let satD = 0;
+  let minD = 1;
+  let maxD = 0;
+  for (let i = 0; i < N; i++) {
+    const R = data[i * 4] / 255;
+    const g = data[i * 4 + 1] / 255;
+    const b = data[i * 4 + 2] / 255;
+    const a = data[i * 4 + 3] / 255;
+    const fbm = g * 0.625 + b * 0.25 + a * 0.125;
+    // Mirror of cloudDetile.ts baseDilate: erosion form saturate(R - fbm*K).
+    const dil = Math.max(0, Math.min(1, R - fbm * BASE_ERODE));
+    sumR += R;
+    sumD += dil;
+    if (R >= 0.95) satR++;
+    if (dil >= 0.95) satD++;
+    if (dil < minD) minD = dil;
+    if (dil > maxD) maxD = dil;
+    histR[Math.min(9, (R * 10) | 0)]++;
+    histD[Math.min(9, (dil * 10) | 0)]++;
+  }
+  const pct = (x: number): string => ((100 * x) / N).toFixed(1);
+  const bars = (h: number[]): string =>
+    h.map((c) => pct(c).padStart(5)).join(" ");
+  console.log(
+    `[cloud base dist] N=${N}  bins = value 0.0..1.0 in 10% steps (% of voxels)\n` +
+      `  perlinWorley(R): mean=${(sumR / N).toFixed(3)}  >=0.95: ${pct(satR)}%\n` +
+      `    ${bars(histR)}\n` +
+      `  dilated base:    mean=${(sumD / N).toFixed(3)}  min=${minD.toFixed(
+        3,
+      )} max=${maxD.toFixed(3)}  >=0.95: ${pct(satD)}%\n` +
+      `    ${bars(histD)}`,
+  );
 }
 
 function generateDetailVolume(): Uint8Array {

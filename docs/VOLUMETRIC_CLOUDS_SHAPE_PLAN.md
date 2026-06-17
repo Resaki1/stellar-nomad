@@ -1,17 +1,45 @@
 # Volumetric Clouds — Shape & Form Improvement Plan
 
-**Status (2026-06-15): ROOT CAUSE FOUND — the elongation is the DOMAIN WARP, not
-the noise.** The `/dev/cloud-slice` instrument showed: warp OFF → round blobs; warp
-ON → curved stringy filaments. The 2026-06-14 "warp ruled out by analysis" was wrong
-(the warp source is high-frequency Worley FBM, not the 125 km tile period). **The
-"need an Alligator noise rewrite" conclusion is retracted** — base noise makes round
-blobs. New problem = anti-tiling without shear (the warp's job, done badly). **FIX
-IMPLEMENTED (2026-06-15): tile-&-offset** (shared `cloudDetile.ts`, behind compile-time
-`USE_DETILE`) at primary + self-shadow probe + light-volume bake; validated in
-`/dev/cloud-slice` (tile 20 km, blend 0.5). Pending in-WebGPU verification + perf
-profile (4× taps in the hot loop). Rollback = `USE_DETILE=false`. Crease test (`BILLOW_CREASE_POWER`) refuted at k=3 (irrelevant
-now). Baseline = original + **A.0** + **A1**. Full detail in the dated **2026-06-15**
-block under §Phase A findings.
+**Status (2026-06-16 pt.2): DENSITY MODEL rewritten → floaters/smooth-blobs SOLVED;
+deck now coheres. NEXT = cauliflower + wisps on a solid foundation.** After the
+elongation fix (below), a long empirical hunt (see CLOUD_DEBUGGING_LESSONS §Case study
+#20) found the real shape root cause in TWO layers:
+1. **Dilation was a FILL, not an erosion.** `(R + (1-fbm))/(2-fbm)` lifted the base to
+   a 0.45 floor (histogram: min 0.453, piled at top) → no gaps to carve (smooth blobs)
+   + saturated peaks (floaters). Fixed by `baseDilate(r,fbm) = saturate(r - fbm·BASE_ERODE)`
+   (shared `cloudDetile.ts`; histogram mirror in `noiseVolumes.ts`). Raw R was always
+   healthy (mean 0.6); the dilation was destroying it.
+2. **The density MODEL made noise the presence.** `shape = base + profile − 1` ⇒ at full
+   coverage `shape = base`, so Worley cell-gaps were permanent holes (deck never closed)
+   and any base peak survived at low profile (floaters). Replaced with the reference
+   envelope-erosion form: `shape = saturate(profile − (1 − base)·BASE_EROSION_K)` — the
+   coverage×height envelope IS the presence; noise only ERODES it. `shape ≤ profile` ⇒
+   **floaters impossible by construction**; `K<1` ⇒ high coverage fills gaps → solid
+   deck, low coverage → broken cumulus.
+
+**Current baseline knobs:** `USE_DETILE=false`, `WARP_AMPLITUDE/MIRROR=0` (warp-off,
+single tap, accept 20 km altitude tiling — unchanged decision below); `BASE_ERODE≈0`
+(macro lumpiness; raw R); `BASE_EROSION_K≈0.25` (envelope carve — deck character);
+`uDensityMul≈5000` (opacity). Debug: `DEBUG_VIZ='baseColumn'/'baseShape'/'floaterProbe'`
++ the `[cloud base dist]` histogram are LEFT IN for the detail phase.
+**NEXT (this is now unblocked on a coherent deck): (1) fine CAULIFLOWER** (detail-erosion
+relief + the lit carve so lumps self-shadow — Phase A/B below), **then (2) fine WISPS**
+(high-freq feathery edges), **then (3) lit shading contrast** (the orbit self-shadow fade
+was fixed; bring back bright-crest/dark-crevice). Minor parked: faint 20 km hexagonal
+base-tiling visible in solid decks.
+
+---
+
+**Prior status (2026-06-16 pt.1): elongation SOLVED + anti-tiling SHELVED.** Root cause
+of the "stringy" billows was the DOMAIN WARP (high-freq Worley-FBM source → km-scale
+shear), not the noise generator — proven with `/dev/cloud-slice` (warp OFF → round
+blobs). The "need an Alligator rewrite" conclusion is **retracted**. Tile-&-offset
+anti-tiling was built + validated (shared `cloudDetile.ts`, `USE_DETILE`) but cost
+60→15 fps in near-orbit and the volumetric→overlay crossfade is too high (1500–3000 km)
+for any bakeable volume to hide tiling there. **DECISION: run the cheap warp-off path**
+and **accept the 20 km tiling at altitude**. Detile is parked behind `USE_DETILE`.
+Crease test (`BILLOW_CREASE_POWER`) refuted at k=3. Full history in the dated blocks
+under §Phase A findings.
 **Created:** 2026-06-14
 **Scope:** Earth clouds (generalises to other planets later — see §9).
 
@@ -386,7 +414,9 @@ the repeat period that matters):
   CHEAPEST, fixes tiling + perf together; (2) keep it high + a cheaper 2-tap technique-3
   detiler as a quality tier (perf still hurts at altitude); (3) accept high-altitude
   tiling, revert to the fast warp-off round-blob path, focus close-range quality.
-  Pending user art-direction call on (1) vs (2) vs (3).
+  **DECIDED (2026-06-16): option (3)** — `USE_DETILE=false`, both warp amplitudes 0.
+  60 fps, round blobs, 20 km tiling accepted at altitude. Detile parked behind the flag
+  for if/when the crossfade is lowered (then option 1+2 become cheap and worthwhile).
 
 ### Phase B — Lit carve relief (billows / cauliflower) — NOW THE PRIORITY (per Phase A findings)
 **Goal:** put cauliflower-scale relief into the LIT shape so it self-shadows
@@ -408,6 +438,29 @@ shape), so relief added here gets self-shadowed automatically — unlike detail.
 
 ### Phase C — Cloud types, height profiles, weather map (variety + anatomy)
 **Goal:** "different cloud types at different levels," natural height variation, realistic.
+
+#### Anatomy: flat condensation base (2026-06-16, IN PROGRESS)
+Diagnosis (workflow + verified in code): the warp-off clouds read as a "lava lamp" —
+uniform round blobs floating at varied heights, no flat bottoms — because (a) cumulus
+`cumBase = smoothstep(0, 0.40, alt01)` ramped density gradually over the bottom ~5 km
+and (b) the value-erosion Remap (`shape = (baseShapeCarved − (1−dimProfile))/dimProfile`,
+[earthClouds.ts:1698](../src/components/celestial/bodies/earthClouds.ts)) ERASED that low
+end (low heightProfile → threshold ≈ 1 → noise can't pass), so the visible bottom landed
+wherever coverage×noise happened to cross → varied → floating; per-column `topAlt`
+(0.45–0.95) compounds it. **CHANGE: sharpen the cumulus base to a defined low
+condensation base** `smoothstep(0.04, 0.16, alt01)` — survives the Remap → clouds sit on
+a common deck (flat bottoms, varied billowing tops). Applied in BOTH the marcher and the
+light-volume bake's inline copy (lockstep). Tunable via the HI bound. Watch: density may
+read thicker (more full-density volume) → rebalance `uDensityMul` if too opaque; watch
+for base-altitude banding if pushed too sharp. NEXT anatomy step if still uniform: size
+variation (clouds are all the same size — drive size from coverage/weather scale).
+
+**Dark-top lighting (2026-06-16, PENDING):** isolated blobs with dark tops are most
+likely CORRECT physics for a low sun (top faces away → less direct light); `daylightS`
+is a day/night terminator term (uniform across a blob), NOT a per-normal term, so it's
+not the cause. Confirm sun elevation with `DEBUG_VIZ='sunDir'` before any lighting change
+— only a bug if the sun is high. If high: the ambient `(1−profile)^0.5` under-lights
+solid (high-profile) blob tops; fade the lighting profile near the top.
 1. **Synthesised multi-channel weather map** (`R=coverage, G=type, B=density`) from domain-warped FBM + existing coverage. Procedural (per §2). Generalises to other planets.
 2. **Per-type freeform coverage curves** replacing the 3 smoothstep profiles ([earthClouds.ts:511](../src/components/celestial/bodies/earthClouds.ts)). Add realistic types with Earth-accurate altitude bands:
    - Stratus / stratocumulus — flat sheets, low.

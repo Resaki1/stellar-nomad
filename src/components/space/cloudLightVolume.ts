@@ -28,6 +28,7 @@ import {
 import {
   detileBlend,
   USE_DETILE,
+  baseDilate,
 } from "@/components/celestial/bodies/cloudDetile";
 
 // =============================================================================
@@ -162,7 +163,9 @@ const BAKE_BASE_LOD = 0;
 // the base-volume sample). Kept inline like cloudHeightProfileInline to avoid
 // extending the earthClouds ↔ cloudFullscreenPass import cycle — keep in
 // lockstep with the marcher or shadows drift off their clouds.
-const WARP_AMPLITUDE_MIRROR = 0.01;
+// 2026-06-16: 0 to match WARP_AMPLITUDE=0 (warp-off path; see cloudDetile.ts
+// USE_DETILE note). MUST equal earthClouds.ts WARP_AMPLITUDE.
+const WARP_AMPLITUDE_MIRROR = 0;
 
 export type CloudLightVolumeDeps = {
   baseVolume: THREE.Data3DTexture;
@@ -301,8 +304,10 @@ export function createCloudLightVolume(
     const pColumn = dir.mul(uInnerRadius);
     const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale))
       .level(int(0));
+    // Couple tower span to coverage — LOCKSTEP with earthClouds.ts topAlt.
+    const covSpan = smoothstep(float(0.35), float(0.7), coverage);
     const topAlt = float(0.45).add(
-      smoothstep(float(0.3), float(0.7), colTap.r).mul(0.5),
+      smoothstep(float(0.3), float(0.7), colTap.r).mul(0.5).mul(covSpan),
     );
     const profile = cloudHeightProfileInline(alt01, topAlt, cloudType);
 
@@ -321,10 +326,7 @@ export function createCloudLightVolume(
           int(BAKE_BASE_LOD),
         );
         const f = b.g.mul(0.625).add(b.b.mul(0.25)).add(b.a.mul(0.125));
-        return b.r
-          .add(float(1).sub(f))
-          .div(float(2).sub(f).max(0.0001))
-          .clamp(0, 1);
+        return baseDilate(b.r, f);
       };
       baseShapeDilated = detileBlend(q, dilatedAt);
     } else {
@@ -338,10 +340,8 @@ export function createCloudLightVolume(
         int(BAKE_BASE_LOD),
       );
       const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
-      baseShapeDilated = bs.r
-        .add(float(1).sub(fbm))
-        .div(float(2).sub(fbm).max(0.0001))
-        .clamp(0, 1);
+      // Dilated base — LOCKSTEP with the marcher (shared baseDilate).
+      baseShapeDilated = baseDilate(bs.r, fbm);
     }
 
     return baseShapeDilated.mul(coverage).mul(profile).mul(float(CONE_DENSITY));
@@ -668,9 +668,17 @@ function cloudHeightProfileInline(alt01: any, topAlt: any, cloudType: any): any 
   const scTop = float(1).sub(smoothstep(float(0.45), float(0.65), alt01));
   const stratocumulus = scBase.mul(scTop);
 
-  const cumBase = smoothstep(float(0.0), float(0.4), alt01);
+  // Flat condensation base (anatomy 2026-06-16) — MUST match earthClouds.ts
+  // cloudHeightProfile cumBase or the baked shadows detach from the clouds.
+  const cumBase = smoothstep(float(0.04), float(0.16), alt01);
   const fadeStart = topAlt.sub(float(0.35));
-  const cumTop = float(1).sub(smoothstep(fadeStart, topAlt, alt01));
+  // Parabolic billow top-fade — LOCKSTEP with earthClouds.ts cloudHeightProfile.
+  const fadeX = clamp(
+    alt01.sub(fadeStart).div(topAlt.sub(fadeStart).max(0.0001)),
+    0,
+    1,
+  );
+  const cumTop = float(1).sub(fadeX.mul(fadeX));
   const cumulus = cumBase.mul(cumTop);
 
   const lowerMix = mix(

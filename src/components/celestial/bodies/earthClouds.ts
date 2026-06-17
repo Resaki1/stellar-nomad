@@ -32,7 +32,7 @@ import { kmToScaledUnits } from "@/sim/units";
 import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
 import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
-import { detileBlend, USE_DETILE } from "./cloudDetile";
+import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
@@ -371,6 +371,23 @@ const HG_BLEND = 0.5; // weight of the back lobe (0 = pure forward, 1 = pure bac
 // deck flattens too much, make the carve altitude-dependent (solid base, eroded
 // top) instead of a single constant. Tune against DEBUG_VIZ='eroded'.
 const BILLOW_CARVE = 0.45;
+// Coverage-envelope erosion strength (2026-06-16 — the density MODEL fix).
+// Density = the coverage×height envelope (`profile`) ERODED by the base noise:
+//   shape = saturate( profile − (1 − base) × BASE_EROSION_K )
+// This is the reference (Nubis/Frostbite) relationship: the 2D coverage×height
+// envelope is the cloud PRESENCE, and the 3D noise SUBTRACTS from it. Two
+// consequences fall out for free:
+//   • shape ≤ profile ALWAYS → nothing survives above the envelope → no
+//     floaters by construction (a base peak at low profile is still ≤ profile).
+//   • K < 1 lets HIGH coverage FILL the base's cellular gaps → a solid deck,
+//     while LOW coverage leaves them eroded → broken cumulus. (The old
+//     `base + profile − 1` form was K = 1 exactly: at full coverage shape =
+//     base, so the Perlin-Worley cell gaps showed as permanent holes and the
+//     deck could never close — the "disconnected round clouds at full
+//     coverage" bug.)
+// K=1 = base fully carves (gappy even at full coverage); K=0 = pure smooth
+// envelope (no noise structure). Tune live against the real render + 'density'.
+const BASE_EROSION_K = 0.25;
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
@@ -502,7 +519,10 @@ const DEBUG_VIZ:
   | "whyStop"
   | "lightVol"
   | "maxProfile"
-  | "maxProbeShape" = "off";
+  | "maxProbeShape"
+  | "baseShape"
+  | "floaterProbe"
+  | "baseColumn" = "off";
 
 // Cloud-type vertical density profile (Nubis B1, three-type decomposition).
 //
@@ -548,9 +568,27 @@ function cloudHeightProfile(alt01: any, topAlt: any, cloudType: any): any {
   const stratocumulus = scBase.mul(scTop);
 
   // Cumulus: tall column whose top fade is keyed by per-column topAlt.
-  const cumBase = smoothstep(float(0.0), float(0.40), alt01);
+  // Base: a sharper, LOW condensation base (anatomy 2026-06-16). Was
+  // smoothstep(0, 0.40) — a gradual ~5 km ramp whose low end the value-erosion
+  // Remap erased, so cumulus had no flat bottom and floated at varied heights
+  // ("lava-lamp" blobs). A defined low base survives the Remap → clouds sit on
+  // a common deck (flat bottoms, varied billowing tops). Tunable: lower the HI
+  // bound for a flatter/sharper base. MUST stay in lockstep with the inline
+  // copy in cloudLightVolume.ts (cloudHeightProfileInline) or shadows detach.
+  const cumBase = smoothstep(float(0.04), float(0.16), alt01);
   const fadeStart = topAlt.sub(float(0.35));
-  const cumTop = float(1).sub(smoothstep(fadeStart, topAlt, alt01));
+  // Parabolic billow top-fade (2026-06-16). A plain smoothstep(fadeStart,
+  // topAlt) is an ISO-ALTITUDE fade → the value-erosion Remap threshold rises
+  // monotonically with altitude and intersects the smooth base on a near-
+  // horizontal plane = the CLEANLY SLICED FLAT TOP. Bending the fade to 1 − x²
+  // makes the surviving isosurface meet the base on a CURVED locus = an organic
+  // rounded dome. MUST match cloudLightVolume.ts cloudHeightProfileInline.
+  const fadeX = clamp(
+    alt01.sub(fadeStart).div(topAlt.sub(fadeStart).max(0.0001)),
+    0,
+    1,
+  );
+  const cumTop = float(1).sub(fadeX.mul(fadeX));
   const cumulus = cumBase.mul(cumTop);
 
   const lowerMix = mix(stratus, stratocumulus, smoothstep(float(0.0), float(0.5), cloudType));
@@ -713,7 +751,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // integration variance of low-density volumetric integrals (not
   // fixable in single-pass without more samples per ray or a spatial
   // smoothing post-pass). See CLOUD_DEBUGGING_LESSONS.md case study #7.
-  const uDetailErosion = uniform(0.2);
+  const uDetailErosion = uniform(0.45);
   // Domain warp is currently disabled inside the marcher (see DIAGNOSTIC
   // note where uvWarped = uvMid). When re-introducing with a smoother
   // (Perlin-only) warp source, recreate a `uWarpAmount = uniform(0.002)`
@@ -1162,10 +1200,7 @@ export function marchCloudVolume({
     const dilatedShapeAt = (pos: any) => {
       const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(int(0));
       const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
-      return bs.r
-        .add(float(1).sub(fbm))
-        .div(float(2).sub(fbm).max(0.0001))
-        .clamp(0, 1);
+      return baseDilate(bs.r, fbm);
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const carvedShapeAt = (pos: any) => {
@@ -1265,6 +1300,10 @@ export function marchCloudVolume({
     // sampling vs field in one screenshot each.
     const maxProfile = float(0).toVar();
     const maxProbeShape = float(0).toVar();
+    // DEBUG ONLY: max raw dilated+carved base shape along the ray (drives the
+    // 'baseShape' / 'floaterProbe' DEBUG_VIZ). Dead-store eliminated when
+    // DEBUG_VIZ === 'off'.
+    const maxBaseShape = float(0).toVar();
 
     // ── Outer gate neutralised (trivially-true condition) ──
     // Previously: `If(coverageMax > 0.01)` based on hoisted 3-tap samples.
@@ -1482,8 +1521,18 @@ export function marchCloudVolume({
         //
         // WATCH for stripes after this change; if they return, lower
         // uColumnScale further or narrow the smoothstep range.
+        // Couple the tower SPAN to coverage (2026-06-16). topAlt was driven
+        // ONLY by the Perlin column tap, fully decoupled from coverage, so a
+        // barely-cumulus column (coverage ~0.32) could still draw topAlt=0.95;
+        // the value-erosion Remap then let one ISOLATED high-altitude base-
+        // noise peak survive with NO deck beneath it → the "lava-lamp"
+        // floaters. Gating the span on coverage keeps sparse columns short
+        // (top ~0.45) so only genuinely dense columns build tall towers. MUST
+        // mirror in cloudLightVolume.ts densityAt or baked shadows assume a
+        // tower the marcher no longer draws. Tune the 0.35/0.7 range live.
+        const covSpan = smoothstep(float(0.35), float(0.7), coverage);
         const topAlt = float(0.45).add(
-          smoothstep(float(0.3), float(0.7), colSample).mul(0.5),
+          smoothstep(float(0.3), float(0.7), colSample).mul(0.5).mul(covSpan),
         );
 
         // (An altitude-perturbation hash and a profile-blur band-limit lived
@@ -1561,11 +1610,8 @@ export function marchCloudVolume({
               .mul(0.625)
               .add(baseSample.b.mul(0.25))
               .add(baseSample.a.mul(0.125));
-            const oneMinusFbm = float(1).sub(baseFbm);
-            const baseShape = baseSample.r
-              .add(oneMinusFbm)
-              .div(float(2).sub(baseFbm).max(0.0001))
-              .clamp(0, 1);
+            // Dilated base shape — erosion form (see cloudDetile.ts baseDilate).
+            const baseShape = baseDilate(baseSample.r, baseFbm);
             // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
             // Carve valleys (low carve-Worley) deeper than lump centres so the
             // smooth dilated dome becomes ~1-2 km cauliflower. Schneider
@@ -1616,10 +1662,13 @@ export function marchCloudVolume({
           // bounds the dense run. The tiny epsilon keeps the gate an
           // inclusion test, not a binary density cliff (the 2026-05-27
           // tile-speckle lesson — see git history for the full note).
-          const probeShape = baseShapeCarved
-            .sub(float(1).sub(profile))
-            .div(profile.max(0.0001));
+          // Same coverage-envelope erosion as the dense branch (BASE_EROSION_K),
+          // so the gate engages exactly where density can be > 0.
+          const probeShape = profile.sub(
+            float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K)),
+          );
           maxProbeShape.assign(maxProbeShape.max(probeShape));
+          maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
           If(probeShape.greaterThan(0.0001), () => {
             hitThisStep.assign(1);
 
@@ -1695,9 +1744,11 @@ export function marchCloudVolume({
               // profile. (The skip/dense gate above — `probeShape` — is this
               // exact remap, so dense mode and nonzero density coincide.)
               const dimProfile = coverage.mul(heightProfile);
-              const shape = baseShapeCarved
-                .sub(float(1).sub(dimProfile))
-                .div(dimProfile.max(0.0001))
+              // Coverage envelope eroded by the base noise (see BASE_EROSION_K):
+              // shape = saturate(profile − (1 − base) × K). shape ≤ profile, so
+              // no floaters; K<1 fills base gaps at high coverage → solid deck.
+              const shape = dimProfile
+                .sub(float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K)))
                 .clamp(0, 1);
 
               // ── Distance-based detail strength (Nubis LOD trick) ──
@@ -1711,10 +1762,22 @@ export function marchCloudVolume({
               // those distances).
               //
               // `t` is per-voxel distance from camera in scaled units
-              // (1 unit = 1000 km). 0.005 = 5 km full detail, 0.080 =
-              // 80 km no detail, smoothstep ramp between.
+              // (1 unit = 1000 km). 0.005 = 5 km full detail, 0.50 =
+              // 500 km no detail, smoothstep ramp between.
+              //
+              // 2026-06-16: detailFar 0.080 → 0.50. At cloud height the deck
+              // fills the view out to the ~357 km horizon, but detail erosion
+              // stopped at 80 km → ~80% of the visible deck was pure smooth
+              // base shape (the "no cauliflower / smooth balls" complaint).
+              // The footprint-matched mip LOD below (detailLod, clamped to
+              // DETAIL_MIP_MAX) band-limits the ~31 m features by distance, so
+              // extending the reach adds cauliflower across the deck WITHOUT
+              // re-introducing aliasing. The smoothstep stays gradual (5→500
+              // km) so there is no sharp "detail border" that flies with the
+              // camera. uDetailErosion (default 0.2) is the STRENGTH knob —
+              // crank it live if the revealed detail is too subtle.
               const detailNear = float(0.005);
-              const detailFar = float(0.080);
+              const detailFar = float(0.5);
               const detailStrength = float(1).sub(
                 smoothstep(detailNear, detailFar, t),
               );
@@ -1772,7 +1835,21 @@ export function marchCloudVolume({
                 // tops.
                 const altMod = clamp(altitude01.mul(2.5), 0, 1);
                 const erosion = mix(detailFbm, detailFbm.oneMinus(), altMod);
-                const erosionRamp = smoothstep(float(0), float(0.3), shape);
+                // erosionRamp gates detail erosion by the value-erosion `shape`
+                // so the silhouette isn't eaten to nothing. BUT a pure
+                // smoothstep(0,0.3,shape) goes to ZERO at the crown (shape only
+                // just cleared the Remap threshold there) — which is exactly
+                // where the height profile's iso-altitude top-fade produces the
+                // CLEANLY SLICED FLAT TOP. With erosion gated off at the crown,
+                // detailFar's extra reach still can't break that slice. Floor
+                // the ramp to 0.4 so detail noise carves the crown into ragged,
+                // organic cauliflower instead of a horizontal cut, rising to
+                // 1.0 in the interior. Opacity-only; `eroded` is clamped so
+                // edges can't go negative (they just get wispier). Lower the
+                // 0.4 floor if crowns get too eaten. (2026-06-16)
+                const erosionRamp = float(0.4).add(
+                  smoothstep(float(0), float(0.3), shape).mul(0.6),
+                );
 
                 const threshold = erosion
                   .mul(uDetailErosion)
@@ -1939,9 +2016,15 @@ export function marchCloudVolume({
                 // toward its MEAN absorption with distance (keeps the DC,
                 // drops the fetches) — never back toward 1.
                 const TsunLocal = float(1).toVar();
+                // NOTE (2026-06-16): the local probe is NO LONGER gated by
+                // uVolumeWeight — it stays live at EVERY altitude the
+                // volumetric pass renders (up to ~3000 km, where
+                // uVolumetricBlend fades the whole pass). uVolumeWeight faded
+                // to 0 by just 400 km, but volumetric clouds keep rendering to
+                // 3000 km → a 400–3000 km band of flat-white, unshaded cloud.
+                // See the Tsun composition below.
                 If(
-                  daylightS.greaterThan(0.001)
-                    .and(uVolumeWeight.greaterThan(0.001)),
+                  daylightS.greaterThan(0.001),
                   () => {
                     const pLs = p.add(
                       sunDirEarth.mul(float(LOCAL_SHADOW_DIST)),
@@ -1969,10 +2052,7 @@ export function marchCloudVolume({
                         .mul(0.625)
                         .add(baseLs.b.mul(0.25))
                         .add(baseLs.a.mul(0.125));
-                      const dilatedLs = baseLs.r
-                        .add(float(1).sub(fbmLs))
-                        .div(float(2).sub(fbmLs).max(0.0001))
-                        .clamp(0, 1);
+                      const dilatedLs = baseDilate(baseLs.r, fbmLs);
                       const carveLsSrc = texture3D(
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
@@ -2001,13 +2081,19 @@ export function marchCloudVolume({
                     TsunLocal.assign(exp(odLocal.negate()));
                   },
                 );
-                // Orbit fade applies to BOTH the baked volume and the local
-                // probe (the whole volumetric shadow system hands off to the
-                // 2D overlay at orbit). The per-side edge fades are already
-                // folded into TsunVol, so the box border never gates the
-                // local probe — no spatial boundary in either component.
+                // Orbit fade applies ONLY to the BAKED far-field volume
+                // (TsunVol): its window goes stale / stops covering the visible
+                // deck as the camera climbs, so it hands off over 150→400 km.
+                // The LOCAL 800 m probe stays live at every altitude the
+                // volumetric pass renders — it is always geometrically valid
+                // and carries the crisp crest/crevice self-shadow. Previously
+                // uVolumeWeight faded BOTH terms out by 400 km, leaving a
+                // 400–3000 km band of unshaded (flat-white) volumetric cloud —
+                // the dominant cause of the "smooth white balls" look. This is
+                // the Nubis³ split: near sun samples live always, the baked
+                // volume supplies only the smooth far-field tail.
                 Tsun.assign(
-                  mix(float(1), TsunVol.mul(TsunLocal), uVolumeWeight).mul(
+                  TsunLocal.mul(mix(float(1), TsunVol, uVolumeWeight)).mul(
                     daylightS,
                   ),
                 );
@@ -2344,6 +2430,67 @@ export function marchCloudVolume({
       // there — density-model problem, not sampling.
       const m = maxProbeShape.clamp(0, 1);
       return { rgba: vec4(m, m, m, float(1)), tFront: float(0) };
+    }
+    if (DEBUG_VIZ === "baseShape") {
+      // DEBUG (2026-06-16, floater hunt): max RAW dilated+carved base shape
+      // along the ray, BEFORE the value-erosion Remap and coverage. Grayscale.
+      // The dilation floors at ~0.5 wherever the FBM bands are low, so the deck
+      // reads mid-gray; ISOLATED NEAR-WHITE spots = base-noise PEAKS (bs.r puff
+      // cores, baseShapeCarved→1). If the floaters are bright isolated spots
+      // here, they are base-noise peaks (the stash/detile test predicts this).
+      const m = maxBaseShape.clamp(0, 1);
+      return { rgba: vec4(m, m, m, float(1)), tFront: float(0) };
+    }
+    if (DEBUG_VIZ === "floaterProbe") {
+      // DEBUG (2026-06-16, floater hunt): THE decisive image. Per pixel,
+      //   R = maxProbeShape (what actually SURVIVES the value-erosion Remap)
+      //   G = maxProfile    (coverage × heightProfile AVAILABLE there)
+      // Read-out:
+      //   RED floater (R high, G low)  = density survives where there is almost
+      //     no coverage×height ⇒ an ISOLATED BASE-NOISE PEAK with no deck to
+      //     belong to. This is the floater hypothesis — if floaters are red,
+      //     it's CONFIRMED, and the fix belongs in the base shape, not coverage.
+      //   YELLOW (R high, G high)      = legitimate cloud (deck) — both present.
+      //   GREEN (R low, G high)        = profile present but nothing survives
+      //     (a clear gap between bodies).
+      //   BLACK                        = nothing in the band.
+      const r = maxProbeShape.clamp(0, 1);
+      const g = maxProfile.clamp(0, 1);
+      return { rgba: vec4(r, g, float(0), float(1)), tFront: float(0) };
+    }
+    if (DEBUG_VIZ === "baseColumn") {
+      // DEBUG (2026-06-16, floater ROOT-CAUSE probe): the dilated+contrast base
+      // shape sampled at THREE altitudes in the FIRST-HIT column →
+      //   R = low (alt 0.20), G = mid (alt 0.50), B = high (alt 0.85).
+      // This makes VERTICAL COHERENCE of the base field directly visible:
+      //   white            = base present at all heights → a CONNECTED column
+      //   red / red+green  = base only low/mid → normal grounded deck
+      //   MAGENTA (R+B, no G) = a vertical GAP in the middle → stacked bodies
+      //   BLUE (B, ~no R)  = a HIGH core with NO base below it = a FLOATER
+      // i.e. blue/magenta pixels ARE the floaters' signature (a core detached
+      // from the deck by a gap in the 3D noise — the root cause). The fix
+      // (vertical coherence) should collapse blue/magenta toward white/red.
+      // Built from the FIRST-HIT position's column (the lat/lon of whatever
+      // cloud the pixel actually sees), NOT the ray direction — so it works
+      // from ANY viewpoint, including inside the slab. (The old dirMid version
+      // degenerated to flat iridescent planes for near-horizontal rays.)
+      const pHit = roEarth.add(rdEarth.mul(firstHitT.max(0.0)));
+      const dirHit = pHit.div(length(pHit).max(0.0001));
+      const baseAtAlt = (a01: number) => {
+        const pos = dirHit.mul(mix(uInnerRadius, uOuterRadius, float(a01)));
+        const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(int(0));
+        const f = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
+        return baseDilate(bs.r, f);
+      };
+      // No hit along this ray → black (empty sky, not a cloud).
+      const colBC = vec3(baseAtAlt(0.2), baseAtAlt(0.5), baseAtAlt(0.85));
+      return {
+        rgba: vec4(
+          firstHitT.greaterThan(0.0).select(colBC, vec3(0, 0, 0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
     }
     if (DEBUG_VIZ === "profile") {
       // Profile shape at three altitudes (R = 0.25, G = 0.50, B = 0.75),

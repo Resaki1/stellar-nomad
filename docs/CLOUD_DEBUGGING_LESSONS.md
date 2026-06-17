@@ -2009,3 +2009,88 @@ enabled by default"* (multi-sample → tile-&-offset family) plus non-harmonic p
 tiling values. Academic: "Non-periodic Tiling of Procedural Noise Functions"
 (ACM 10.1145/3233306). Fix direction: incommensurate scales (free, partial) +
 Quilez-style tile-&-offset (the real one, gate behind a quality tier).
+
+## Case study #20 — "floaters / smooth blobs / can't reach a solid deck" was the DENSITY MODEL, not the noise (2026-06-16)
+
+### Symptoms (three, all one root)
+1. **Floaters**: disconnected round cloud balls hanging in clear air above the deck.
+2. **Smooth blobs**: clouds read as smooth white balls with no cauliflower.
+3. **No solid deck**: even at FULL weather-map coverage the volumetric clouds were
+   disconnected round puffs — the deck could never close.
+
+### The wrong turns — and the instruments that refuted each
+This was cracked entirely with **purpose-built DEBUG_VIZ probes + a distribution
+histogram**, NOT analysis. Every confident hypothesis below was killed by a viz:
+
+- **"Floaters are base-noise cores detached by a vertical GAP below them"** →
+  built `DEBUG_VIZ='baseColumn'` (samples the dilated base at 3 altitudes of the
+  *first-hit* column → R/G/B). REFUTED: floater columns read the SAME pale colour
+  as the deck = base present at ALL altitudes. No vertical gap.
+- **"De-saturate the base with a contrast lift (`BASE_SHAPE_LIFT`)"** → user swept
+  it to 0.9; floaters untouched, only deck *bottoms* eroded. REFUTED: the floaters
+  sit at base = exactly 1 (clamp ceiling); a remap can't pull a hard 1 down.
+- **"Couple `topAlt` to coverage so sparse columns stay short"** → no visible
+  change. REFUTED: with base ≈ 1 the value-erosion gives `shape ≈ 1` at ANY
+  `profile > 0`, so floaters survive regardless of tower height.
+- **"Self-shadow / lighting is the deficit"** (earlier) → real but secondary; the
+  shape problems dominated once the orbit self-shadow fade was fixed.
+
+### The real root cause (found with a histogram, in two layers)
+Added a **distribution histogram** in `noiseVolumes.ts` (logs the quantised
+perlinWorley R *and* the dilated base — what the value-erosion actually sees):
+- `perlinWorley R`: mean 0.605, healthy spread 0.2..1.0, 28% < 0.5. **R was fine.**
+- `dilated base`: mean 0.79, **min 0.453**, piled `…16 40 32 10` in the top bins.
+
+So **layer 1 — the dilation**: `(R + (1-fbm))/(2-fbm)` adds `(1-fbm)` (~0.65, since
+the Worley-FBM mean is low) as a FILL term → lifts the whole field to a 0.45 floor,
+crushing a good distribution into [0.45, 1]. No low tail ⇒ the value-erosion has no
+gaps to carve (smooth blobs) and the high pile survives at any profile (floaters).
+Fix: erode instead of fill — `baseDilate(r,fbm) = saturate(r - fbm·BASE_ERODE)`
+(shared in cloudDetile.ts; mirrored in the histogram). Histogram re-centred → 0%
+saturated. Smooth blobs gone, shapes natural — **but full coverage still wouldn't
+close.**
+
+**Layer 2 — the density MODEL.** With `BASE_ERODE=0` the histogram showed dilated =
+raw R (cellular Worley puffs with gaps). The old value-erosion `shape = base +
+profile − 1` (Schneider Remap WITHOUT the `×coverage` multiply) makes the *noise*
+the presence: at full coverage `shape = base`, so the Worley cell gaps are permanent
+holes — coverage can never fill them. References (Nubis/Frostbite) invert this: the
+**coverage×height envelope IS the presence; the noise only ERODES it**. Fix:
+```
+shape = saturate( profile − (1 − base) × BASE_EROSION_K )    // earthClouds.ts
+```
+`shape ≤ profile` ⇒ floaters impossible by construction; `K<1` lets high coverage
+FILL the base gaps → solid deck, low coverage → broken cumulus. This is the fix that
+made full coverage close into a deck.
+
+### Meta-lessons
+- **Two instrument types cracked it: a per-pixel DISCRIMINATOR viz and a value
+  HISTOGRAM.** `floaterProbe` (R = what survives the Remap, G = coverage×height
+  available) showed floaters survive where the envelope is ~0; the histogram showed
+  WHY (saturated dilation). Build both when a field "looks wrong" — spatial + statistical.
+- **A bug can span layers; fixing one reveals the next.** Noise-gen distribution →
+  dilation formula → density model. The histogram was the through-line that kept us
+  honest across all three. Don't declare victory at the first layer.
+- **"We didn't have this before" = a masking layer was removed.** The floaters were
+  latent the whole time; the anti-tiling (detile's 4-tap average / the old warp's
+  shear) was smearing the saturated peaks below threshold. Turning USE_DETILE off
+  (the stash test) exposed a pre-existing bug. When something "newly appears" after a
+  change that shouldn't cause it, suspect an unmasking, not a new defect.
+- **Port the reference ARCHITECTURE, not just its formula.** Our value-erosion
+  copied Schneider's Remap but dropped the `×coverage` and inverted the presence
+  relationship (noise-creates vs noise-erodes). The single-formula fix
+  `profile − (1−base)·K` restores the intended architecture.
+- Reinforces #19 + feedback_debugging: every "ruled out by analysis" / confident
+  hypothesis here was wrong; the cheap measurement was right every time.
+
+### Debug instrumentation left in place (for the detail phase)
+`DEBUG_VIZ` modes `baseColumn`, `baseShape`, `floaterProbe` (earthClouds.ts) and the
+`[cloud base dist]` histogram (noiseVolumes.ts, logs each base-volume regen). Keep
+for the cauliflower/wisp work; they're dead-store-eliminated when DEBUG_VIZ='off'.
+
+### Current knobs (post-fix baseline)
+- `BASE_ERODE` (cloudDetile.ts) — base de-saturation / macro lumpiness. 0 = raw R.
+- `BASE_EROSION_K` (earthClouds.ts) — how hard the noise erodes the coverage
+  envelope. 0 = smooth solid envelope, 1 = fully carved (gappy even at full
+  coverage). ~0.25 chosen for a coherent deck that breaks into cumulus at low coverage.
+- `uDensityMul` — opacity. The old saturated base hid the need to tune this.

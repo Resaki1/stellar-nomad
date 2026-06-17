@@ -35,11 +35,73 @@ import {
   dot,
   smoothstep,
   mix,
+  clamp,
 } from "three/tsl";
+
+// =============================================================================
+// Base-shape DILATION (2026-06-16 — floater / smooth-blob / sliced-top
+// root-cause fix; CONFIRMED with the noiseVolumes.ts histogram).
+//
+// ROOT CAUSE (measured): the raw Perlin-Worley channel R is a HEALTHY
+// distribution (mean 0.605, spread 0.2..1.0, 28% of voxels < 0.5). But the old
+// Schneider dilation `(R + (1-fbm)) / (2-fbm)` adds `(1-fbm)` (~0.65, since the
+// Worley-FBM mean is low) as a FILL term — it lifted the whole field to a hard
+// 0.45 floor and crushed it into [0.45, 1.0] (histogram piled 40%/32%/10% in
+// the top three bins, NOTHING below 0.45). With no low tail, the value-erosion
+// had no gaps to carve → smooth envelope blobs; and the huge high pile survived
+// at any profile>0 → floaters / sliced tops.
+//
+// THE FIX — `baseDilate`: erode R with the Worley-FBM instead of filling with
+// it. `saturate(R - fbm * BASE_ERODE)` carves gaps (restores the low tail →
+// real cloud separation) AND stamps Worley billow structure into the macro
+// shape. BASE_ERODE is the carve strength: 0 = raw R (mean 0.6, min 0.2),
+// higher = deeper gaps / lower mean. Tune it LIVE against the noiseVolumes
+// histogram (target: a centred distribution with a real low tail) and
+// DEBUG_VIZ='baseColumn' (structure, not uniform pale).
+//
+// ⚠️ LOCKSTEP: baseDilate MUST be used identically in the marcher (earthClouds
+// primary + local self-shadow probe + the baseColumn viz) AND the shadow bake
+// (cloudLightVolume densityAt), AND the noiseVolumes histogram must mirror the
+// formula, or shadows/readouts drift from the rendered clouds.
+// =============================================================================
+
+// Carve strength for baseDilate. Also consumed (as a plain number) by the
+// noiseVolumes.ts distribution histogram so the readout matches the shader.
+export const BASE_ERODE = 0.0;
+
+// Dilated base shape from the Perlin-Worley core `r` and the Worley-FBM `fbm`,
+// both in [0,1]. Erosion form (see the block comment). Single source of truth.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function baseDilate(r: any, fbm: any): any {
+  return clamp(r.sub(fbm.mul(float(BASE_ERODE))), 0, 1);
+}
+
+// Optional extra contrast on a [0,1] shape: remap [LIFT,1]→[0,1]. Kept as a
+// secondary knob; BASE_SHAPE_LIFT = 0 is the identity (no-op).
+export const BASE_SHAPE_LIFT = 0.0;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function baseContrast(s: any): any {
+  return clamp(
+    s.sub(float(BASE_SHAPE_LIFT)).div(float(1 - BASE_SHAPE_LIFT)),
+    0,
+    1,
+  );
+}
 
 // Compile-time toggle. true = tile-&-offset; false = the original warp path
 // (each call site keeps its original code under `else`).
-export const USE_DETILE = true;
+//
+// 2026-06-16: set FALSE — tile-&-offset was validated (round billows, no
+// tiling) but cost 60→15 fps in near-orbit (4× base/carve taps on long ray
+// chords) and showed square-grid edges in low coverage. Decision: ACCEPT the
+// high-altitude tiling and run the cheap warp-off path (this flag false +
+// WARP_AMPLITUDE/WARP_AMPLITUDE_MIRROR = 0 → single tap, round blobs, no
+// shear). The detile scaffolding is kept behind this flag because it becomes
+// viable if the volumetric→overlay crossfade is ever lowered (small footprint
+// → affordable). See VOLUMETRIC_CLOUDS_SHAPE_PLAN.md "Anti-tiling reality
+// check (2026-06-16)".
+export const USE_DETILE = false;
 
 // Tile size in SCALED units (1 unit = 1000 km). 0.02 = 20 km ≈ the base
 // volume's tile period (1000/uBaseScale at uBaseScale=50). Empirical sweet
