@@ -444,11 +444,23 @@ const BILLOW_CARVE = 0.45;
 //     coverage" bug.)
 // K=1 = base fully carves (gappy even at full coverage); K=0 = pure smooth
 // envelope (no noise structure). Tune live against the real render + 'density'.
-const BASE_EROSION_K = 0.25;
+//
+// 2026-06-18 (#2 mid-scale billowing): 0.25 → 0.45. K is the noise's INFLUENCE
+// on the silhouette: shape = saturate(cov·prof − (1−base)·K), so the base 3D
+// noise modulates the shape by only ±K. At 0.25 the coverage×height ENVELOPE
+// dominated 4:1 → cumulus towers were the envelope extruded with straight
+// vertical walls (only the fine detail nibbled them). 0.45 lets the now
+// mid-rich base (BASE_FBM_BILLOW folds the Worley-FBM octaves in) actually
+// billow the WALLS. TRADEOFF: this is exactly the lever the floater fix lowered
+// — higher K = more billow but risks gappy decks / isolated floaters. The
+// Alligator noise (round caps), covSpan gating, and solidity gamma should keep
+// it solid now; if floaters/gaps return, lower K. Marcher-only (the bake uses a
+// plain baseDilate·cov·prof, no K). Tune live with BASE_FBM_BILLOW.
+const BASE_EROSION_K = 1.2;
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
-const CARVE_SCALE = 180;
+const CARVE_SCALE = 360;
 
 // ── Fine cauliflower carve (2026-06-18 — the SHARED-density cauliflower fix) ──
 // The macro BILLOW_CARVE (~5.5 km) gives km-scale lumps. Cauliflower lives at
@@ -470,7 +482,7 @@ const CARVE_SCALE = 180;
 // this experiment). If it lands, propagate to cloudLightVolume.ts (lockstep).
 const FINE_CARVE = true;
 const FINE_CARVE_SCALE = 350;
-const FINE_CARVE_STRENGTH = 0.8;
+const FINE_CARVE_STRENGTH = 0.2;
 // Fine-octave BIAS (2026-06-18 — the "half-lumps" fix; reference-grounded).
 // Nubis/Frostbite build the silhouette from a MULTI-OCTAVE base field (noiseL),
 // so lumps bulge OUT; their erosion (noiseH) is a separate finest-edge refine.
@@ -492,6 +504,33 @@ const FINE_MAX_BULGE =
   FINE_CARVE && FINE_CARVE_BIAS < 1
     ? FINE_CARVE_STRENGTH * (1 - FINE_CARVE_BIAS)
     : 0;
+// Fine-octave FREQUENCY GRADING (2026-06-18 — thin-cloud/edge pockmark fix;
+// Nubis p.109). Nubis: "we want the edges to have more rounded structure than
+// the core — otherwise we will just get high frequency noise everywhere on the
+// edges, so we blend from low frequency to high frequency over the dimensional
+// profile." Our single-octave fine carve was exactly "high-freq everywhere on
+// the edges" → pockmarks on thin clouds + blobby edges. Fix: blend the fine
+// noise from a LOW-freq octave (detail R, rounded) at the edges to a HIGH-freq
+// octave (detail B) in the dense core, graded by `profile` (coverage×height —
+// our smooth dimensional-profile analog, low at thin/edge). GRADE_POW: HIGHER =
+// edges stay low-freq longer (rounder, fewer pockmarks); LOWER → high-freq
+// reaches closer to the edge. 0 → all high-freq (the bug).
+const FINE_CARVE_GRADE_POW = 2.0;
+
+// ── HHF up-close detail (2026-06-18; Nubis p.117 "twice-folded noise") ──
+// Up close there is a "dramatic lack of detail" — the fine octave's hundreds-of-
+// metres cells read as blobs. Nubis reuses an existing high-freq channel folded
+// TWICE over zero — abs(abs(n·2−1)·2−1) — to synthesize ~4× higher frequency for
+// FREE (no extra 3D sample), blended in only NEAR camera so far clouds don't
+// alias. We fold the fine high-freq channel (B), pow it for rounded billow caps,
+// and blend it into the fine carve noise over HHF_FAR→HHF_NEAR. Pure shader ALU,
+// no re-bake. HHF_STRENGTH = 0 disables.
+//   HHF_STRENGTH: blend weight at the closest range (0..1).
+//   HHF_NEAR/FAR: scaled-unit distances (1 = 1000 km) — full HHF nearer than
+//     NEAR, none beyond FAR. ~80 m..600 m. Tune to where "blobby up close" sits.
+const HHF_STRENGTH = 0.2;
+const HHF_NEAR = 0.0008;
+const HHF_FAR = 0.012;
 
 // ── Solidity gamma (2026-06-18; Nubis low-density sharpen, talk p.123) ──
 // Nubis applies pow(density, lerp(0.3,0.6,...)) to "sharpen low-density areas
@@ -1830,7 +1869,34 @@ export function marchCloudVolume({
                   detailVolume,
                   pWarped.mul(float(FINE_CARVE_SCALE)),
                 ).level(int(0));
-                const fineDelta = fineSrc.r
+                // Frequency-grade by the smooth profile (Nubis p.109): LOW-freq
+                // rounded octave (R) at thin/edge, HIGH-freq (B) in the core —
+                // so edges don't get "high frequency noise everywhere".
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                let fineNoise: any = mix(
+                  fineSrc.r,
+                  fineSrc.b,
+                  pow(profile.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
+                );
+                // HHF: twice-folded high-freq channel blended in near camera
+                // (Nubis p.117) for crisp up-close detail without a new sample.
+                if (HHF_STRENGTH > 0) {
+                  const folded = fineSrc.b
+                    .mul(2)
+                    .sub(1)
+                    .abs()
+                    .mul(2)
+                    .sub(1)
+                    .abs();
+                  const hhf = pow(folded, float(2));
+                  const hhfBlend = smoothstep(
+                    float(HHF_FAR),
+                    float(HHF_NEAR),
+                    t,
+                  ).mul(float(HHF_STRENGTH));
+                  fineNoise = mix(fineNoise, hhf, hhfBlend);
+                }
+                const fineDelta = fineNoise
                   .sub(float(FINE_CARVE_BIAS))
                   .mul(float(FINE_CARVE_STRENGTH));
                 baseShapeCarved.assign(baseShapeCarved.add(fineDelta).clamp(0, 1));
@@ -2364,11 +2430,34 @@ export function marchCloudVolume({
                         detailVolume,
                         pNear.add(warpVec).mul(float(FINE_CARVE_SCALE)),
                       ).level(float(DETAIL_SS_MIP));
-                      // Match the opacity's CENTERED fine octave (FINE_CARVE_BIAS)
-                      // so the shadow stays correlated with the bumps the view
-                      // ray carves. carvedLs is the macro shape; add the same
-                      // centered delta to get the fine density toward the sun.
-                      const fineDelta = fineSrc.r
+                      // Match the opacity's CENTERED, FREQUENCY-GRADED fine
+                      // octave (FINE_CARVE_BIAS / GRADE_POW) so the shadow stays
+                      // correlated with the bumps the view ray carves. carvedLs
+                      // is the macro shape; add the same centered, graded delta.
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      let fineNoise: any = mix(
+                        fineSrc.r,
+                        fineSrc.b,
+                        pow(profileLs.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
+                      );
+                      // HHF near-camera detail (match the opacity path).
+                      if (HHF_STRENGTH > 0) {
+                        const folded = fineSrc.b
+                          .mul(2)
+                          .sub(1)
+                          .abs()
+                          .mul(2)
+                          .sub(1)
+                          .abs();
+                        const hhf = pow(folded, float(2));
+                        const hhfBlend = smoothstep(
+                          float(HHF_FAR),
+                          float(HHF_NEAR),
+                          t,
+                        ).mul(float(HHF_STRENGTH));
+                        fineNoise = mix(fineNoise, hhf, hhfBlend);
+                      }
+                      const fineDelta = fineNoise
                         .sub(float(FINE_CARVE_BIAS))
                         .mul(float(FINE_CARVE_STRENGTH));
                       const fineCarvedNear = carvedLs

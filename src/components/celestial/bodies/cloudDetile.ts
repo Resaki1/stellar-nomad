@@ -69,11 +69,36 @@ import {
 // noiseVolumes.ts distribution histogram so the readout matches the shader.
 export const BASE_ERODE = 0.0;
 
+// ── Mid-scale billow (2026-06-18 — #2; Schneider 2015 base-shape dilation) ──
+// Schneider/Frostbite build the base SHAPE by dilating the Perlin-Worley core
+// (`r`) with the Worley-FBM octaves (`fbm`) — that dilation IS the medium-scale
+// cauliflower billowing (the base G/B/A bands span ~0.4-5 km at uBaseScale=50).
+// We had this OFF (BASE_ERODE=0 → baseDilate = r only), so cumulus towers were
+// just the coverage envelope extruded → straight vertical walls. Re-enable it
+// as a CENTERED fold (mean-preserving) instead of Schneider's original additive
+// dilation, which saturated the whole field and caused the "floater" /
+// can't-separate bug (see CLOUD_DEBUGGING_LESSONS). Centered → the FBM bulges
+// the shape where high and creases it where low, at the FBM (mid) scales, so
+// tower walls billow without re-saturating. Shared → marcher + bake + histogram
+// stay in lockstep. BASE_FBM_BILLOW = 0 restores the r-only behaviour.
+//   BASE_FBM_BILLOW: mid-billow amplitude. Higher = more medium billowing
+//     (pairs with a higher BASE_EROSION_K so it reaches the silhouette).
+//   BASE_FBM_BIAS:   pivot ≈ the (Alligator) FBM mean → coverage-neutral.
+export const BASE_FBM_BILLOW = 1.2;
+export const BASE_FBM_BIAS = 0.4;
+
 // Dilated base shape from the Perlin-Worley core `r` and the Worley-FBM `fbm`,
-// both in [0,1]. Erosion form (see the block comment). Single source of truth.
+// both in [0,1]. Legacy erode term (BASE_ERODE, usually 0) + the centered
+// mid-scale FBM billow (BASE_FBM_BILLOW). Single source of truth.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function baseDilate(r: any, fbm: any): any {
-  return clamp(r.sub(fbm.mul(float(BASE_ERODE))), 0, 1);
+  return clamp(
+    r
+      .sub(fbm.mul(float(BASE_ERODE)))
+      .add(fbm.sub(float(BASE_FBM_BIAS)).mul(float(BASE_FBM_BILLOW))),
+    0,
+    1,
+  );
 }
 
 // Optional extra contrast on a [0,1] shape: remap [LIFT,1]→[0,1]. Kept as a

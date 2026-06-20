@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BASE_ERODE } from "./cloudDetile";
+import { BASE_ERODE, BASE_FBM_BILLOW, BASE_FBM_BIAS } from "./cloudDetile";
 
 // =============================================================================
 // Nubis-style noise volumes for the volumetric cloud shell.
@@ -413,8 +413,11 @@ function logBaseDistribution(data: Uint8Array): void {
     const b = data[i * 4 + 2] / 255;
     const a = data[i * 4 + 3] / 255;
     const fbm = g * 0.625 + b * 0.25 + a * 0.125;
-    // Mirror of cloudDetile.ts baseDilate: erosion form saturate(R - fbm*K).
-    const dil = Math.max(0, Math.min(1, R - fbm * BASE_ERODE));
+    // Mirror of cloudDetile.ts baseDilate: erode term + centered mid FBM billow.
+    const dil = Math.max(
+      0,
+      Math.min(1, R - fbm * BASE_ERODE + (fbm - BASE_FBM_BIAS) * BASE_FBM_BILLOW),
+    );
     sumR += R;
     sumD += dil;
     if (R >= 0.95) satR++;
