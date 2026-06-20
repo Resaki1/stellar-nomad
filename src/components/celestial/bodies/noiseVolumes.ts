@@ -96,7 +96,7 @@ const SALT_DW16 = 13;
 // Alligator noise. If still stringy → necking is deeper than crease depth; stop
 // and re-diagnose before any rewrite.
 // =============================================================================
-const BILLOW_CREASE_POWER = 3.0;
+const BILLOW_CREASE_POWER = 1.0;
 
 function crease(v: number): number {
   const k = BILLOW_CREASE_POWER;
@@ -147,9 +147,25 @@ function seedWorleyGrid(grid: number, salt: number): WorleyGrid {
   return { fx, fy, fz, grid };
 }
 
-// Sample inverted Worley at (px,py,pz) given in cell-space (i.e. caller has
+// ── Alligator-style noise (2026-06-18 — the "packed spheres" fix) ──
+// Inverted Worley uses a LINEAR falloff from the nearest feature point → cones
+// with BROAD saddles between cells → round balls with WIDE gaps ("packed
+// spheres", the wall Schneider documents). Houdini Alligator noise (round caps,
+// NARROW creases) is proprietary, but its CHARACTER is reproduced by a
+// metaball: the MAX over feature points of a smooth round cap. Round-topped
+// caps that just overlap meet at thin valleys → narrow creases; near a point
+// the cap is flat (round bump). USE_ALLIGATOR swaps worleySample's mapping from
+// inverted-cone to metaball-max. Re-bake (reload) to apply.
+//   ALLIGATOR_RADIUS: cap radius in CELL units. Points sit ~1 cell apart, so
+//     < ~0.7 leaves flat-zero gaps (wide creases again); > ~1.2 merges caps
+//     (no creases). ~0.9 → caps that just overlap → round bumps, narrow creases.
+const USE_ALLIGATOR = true;
+const ALLIGATOR_RADIUS = 0.9;
+
+// Sample Worley at (px,py,pz) given in cell-space (i.e. caller has
 // pre-multiplied by `grid / volSize`). Returns ~[0, 1] where 1 = at feature
-// point and 0 = halfway between cells.
+// point. USE_ALLIGATOR=false → classic inverted Worley (cone, broad saddle);
+// true → metaball max-of-caps (round bump, narrow crease).
 function worleySample(
   px: number,
   py: number,
@@ -161,6 +177,7 @@ function worleySample(
   const cy = Math.floor(py);
   const cz = Math.floor(pz);
   let minD2 = 1e9;
+  let maxCap = 0;
   for (let dz = -1; dz <= 1; dz++) {
     const nz = cz + dz;
     // Cheap one-shot wrap (|dz| ≤ 1 means we never need full modulo).
@@ -180,9 +197,18 @@ function worleySample(
         const ddz = pz - (w.fz[fIdx] + offZ);
         const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
         if (d2 < minD2) minD2 = d2;
+        if (USE_ALLIGATOR) {
+          // Smooth round cap (smoothstep): 1 at the point → 0 at the radius.
+          const t = Math.sqrt(d2) / ALLIGATOR_RADIUS;
+          if (t < 1) {
+            const cap = 1 - (3 * t * t - 2 * t * t * t);
+            if (cap > maxCap) maxCap = cap;
+          }
+        }
       }
     }
   }
+  if (USE_ALLIGATOR) return maxCap;
   // Half cell-diagonal as the "max" for normalization. Empirical Worley
   // distributions clamp well below 1 so we'll rarely hit the floor.
   const v = 1 - Math.sqrt(minD2) / (Math.sqrt(3) * 0.5);
@@ -438,7 +464,68 @@ function generateDetailVolume(): Uint8Array {
       }
     }
   }
+  logDetailDistribution(data);
   return data;
+}
+
+// DEBUG (2026-06-17, cauliflower / "edge speckle" probe): histogram the detail
+// volume's three Worley octaves and the composites the shader builds from them.
+// The detail noise is the EROSION source that should carve rounded cauliflower
+// billows. If a channel has a high mean + narrow spread (low contrast), erosion
+// can only nibble shallow → mushy edges; if the HIGH octave (B, grid-16 ≈ the
+// finest, sub-march-step features) carries most of the energy, erosion reads as
+// fine grain / TV static rather than coherent lumps. `crease` (BILLOW_CREASE_
+// POWER) is meant to push saddles down (deeper, narrower creases → rounder
+// caps): a healthy creased channel skews LOW (mean well under 0.5) with a real
+// high tail. Two composites are logged: the carve mix (0.6·R+0.4·G) that feeds
+// the LIT macro carve, and the Schneider FBM (0.625·R+0.25·G+0.125·B) as a
+// reference weighting. Pair with DEBUG_VIZ 'detailField' (structure at the
+// surface) and 'detailCut' (how it acts on the body).
+function logDetailDistribution(data: Uint8Array): void {
+  const N = data.length / 4;
+  const mk = (): {
+    hist: number[];
+    sum: number;
+    min: number;
+    max: number;
+  } => ({ hist: new Array(10).fill(0), sum: 0, min: 1, max: 0 });
+  const acc = (s: ReturnType<typeof mk>, v: number): void => {
+    s.sum += v;
+    if (v < s.min) s.min = v;
+    if (v > s.max) s.max = v;
+    s.hist[Math.min(9, Math.max(0, (v * 10) | 0))]++;
+  };
+  const chR = mk();
+  const chG = mk();
+  const chB = mk();
+  const carve = mk(); // 0.6·R + 0.4·G — feeds the LIT macro billow carve
+  const fbm = mk(); // 0.625·R + 0.25·G + 0.125·B — Schneider reference FBM
+  for (let i = 0; i < N; i++) {
+    const r = data[i * 4] / 255;
+    const g = data[i * 4 + 1] / 255;
+    const b = data[i * 4 + 2] / 255;
+    acc(chR, r);
+    acc(chG, g);
+    acc(chB, b);
+    acc(carve, r * 0.6 + g * 0.4);
+    acc(fbm, r * 0.625 + g * 0.25 + b * 0.125);
+  }
+  const pct = (x: number): string => ((100 * x) / N).toFixed(1);
+  const bars = (h: number[]): string =>
+    h.map((c) => pct(c).padStart(5)).join(" ");
+  const line = (name: string, s: ReturnType<typeof mk>): string =>
+    `  ${name.padEnd(16)} mean=${(s.sum / N).toFixed(3)} min=${s.min.toFixed(
+      3,
+    )} max=${s.max.toFixed(3)}\n    ${bars(s.hist)}`;
+  console.log(
+    `[cloud detail dist] N=${N}  crease k=${BILLOW_CREASE_POWER}  ` +
+      `bins = value 0.0..1.0 in 10% steps (% of voxels)\n` +
+      `${line("R (grid 4, lo)", chR)}\n` +
+      `${line("G (grid 8, mid)", chG)}\n` +
+      `${line("B (grid 16, hi)", chB)}\n` +
+      `${line("carve 0.6R+0.4G", carve)}\n` +
+      `${line("fbm .625/.25/.125", fbm)}`,
+  );
 }
 
 // =============================================================================
