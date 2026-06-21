@@ -101,19 +101,6 @@ export function baseDilate(r: any, fbm: any): any {
   );
 }
 
-// Optional extra contrast on a [0,1] shape: remap [LIFT,1]→[0,1]. Kept as a
-// secondary knob; BASE_SHAPE_LIFT = 0 is the identity (no-op).
-export const BASE_SHAPE_LIFT = 0.0;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function baseContrast(s: any): any {
-  return clamp(
-    s.sub(float(BASE_SHAPE_LIFT)).div(float(1 - BASE_SHAPE_LIFT)),
-    0,
-    1,
-  );
-}
-
 // Compile-time toggle. true = tile-&-offset; false = the original warp path
 // (each call site keeps its original code under `else`).
 //

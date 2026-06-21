@@ -1,6 +1,40 @@
 # Volumetric Clouds — Shape & Form Improvement Plan
 
-**Status (2026-06-16 pt.2): DENSITY MODEL rewritten → floaters/smooth-blobs SOLVED;
+**Status (2026-06-18): CAULIFLOWER + WISPS LANDED.** The detail arc is essentially
+done; remaining work is lighting/shading polish. Full journey + reference
+comparison in CLOUD_DEBUGGING_LESSONS §Case study #21. Current detail pipeline
+(marcher `earthClouds.ts`, noise `noiseVolumes.ts`, shared `cloudDetile.ts`):
+
+1. **Alligator noise** (`USE_ALLIGATOR`, `worleySample`): max-of-smooth-radial-caps
+   → round caps + narrow creases (killed "packed spheres"). `BILLOW_CREASE_POWER=1`.
+2. **baseDilate** folds base G/B/A Worley-FBM as a CENTERED mid billow
+   (`BASE_FBM_BILLOW=1.2`) → tower-wall billowing (Schneider PW×Worley dilation).
+3. **`shape = saturate(cov·prof − (1−base)·K)`**, `BASE_EROSION_K=1.2` (noise reaches
+   the silhouette → billowy walls; floater-risk lever).
+4. **FINE_CARVE** (centered fold, opacity + near probe): frequency-graded by `profile`
+   (`FINE_CARVE_GRADE_POW=2`, Nubis p.109 pockmark fix) + **WISP** blend at edges
+   (`WISP_AMOUNT=0.7`, detail A-channel = curl-distorted inverted-Alligator
+   "Curly-Alligator") + **HHF** twice-folded near-camera detail (Nubis p.117).
+5. **Near detail self-shadow probe** (`DETAIL_SELFSHADOW`, `DETAIL_SS_DIST≈detail
+   scale`): samples the SAME fine carve sunward → self-shadowed cauliflower (the
+   800 m macro probe was too coarse). `Tsun = exp(−(odMacro+odNear))`.
+6. **DENSITY_GAMMA=0.8** (Nubis sharpen); **uColumnScale=30** (per-cloud height);
+   `uDensityMul=15000`, `CARVE_SCALE=360`.
+
+**⚠️ Flagged cleanup:** the OLD opacity-only detail erosion (`eroded`/`uDetailErosion=0.45`)
+is still active and likely redundant with FINE_CARVE (re-adds un-self-shadowed
+speckle) — test `uDetailErosion=0` in polish.
+**NEXT: lighting/shading polish.** Debug kept: `DEBUG_VIZ` eroded/litShape/
+detailShadow + `[cloud detail dist]` histogram (incl. A=wisp). (Removed
+2026-06-18: the old opacity-only detail erosion `eroded`/`uDetailErosion` +
+its `detailField`/`detailCut`/`detailLod` vizes + `uDetailScale` — superseded by
+FINE_CARVE; setting `uDetailErosion=0` had visibly cleaned up edge speckle.)
+
+---
+
+<details><summary>Prior status (2026-06-16 pt.2): density-model rewrite (floaters/smooth-blobs)</summary>
+
+**DENSITY MODEL rewritten → floaters/smooth-blobs SOLVED;
 deck now coheres. NEXT = cauliflower + wisps on a solid foundation.** After the
 elongation fix (below), a long empirical hunt (see CLOUD_DEBUGGING_LESSONS §Case study
 #20) found the real shape root cause in TWO layers:
@@ -27,6 +61,8 @@ relief + the lit carve so lumps self-shadow — Phase A/B below), **then (2) fin
 (high-freq feathery edges), **then (3) lit shading contrast** (the orbit self-shadow fade
 was fixed; bring back bright-crest/dark-crevice). Minor parked: faint 20 km hexagonal
 base-tiling visible in solid decks.
+
+</details>
 
 ---
 

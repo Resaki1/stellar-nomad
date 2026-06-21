@@ -25,7 +25,6 @@ import {
   fract,
   sin,
   pow,
-  log2,
   PI,
 } from "three/tsl";
 import { kmToScaledUnits } from "@/sim/units";
@@ -200,32 +199,9 @@ const DENSE_INTEG_CAP_SCALED = 0.00075; // 750 m
 // As of 2026-06-11 the pnpm patch uploads the full mipmaps[] chain
 // (verified via the /dev/mip3d-test readback page), so .level(>0) is SAFE.
 //
-// ── Footprint-matched detail mip LOD (Phase A.0, 2026-06-14) ──
-// RE-ENABLED for the detail-erosion tap ONLY (the aliasing-critical one).
-// base / carve / column / cone / light-volume taps stay at level 0 for now:
-// base is macro and doesn't alias, the column tap drives topAlt + the
-// anti-tiling warp and must stay bit-stable, and the lighting taps are lower
-// priority. This is the prerequisite for Phase A — it band-limits the ~31 m
-// detail features BY MIP instead of by amplitude, so Phase A can raise erosion
-// strength and stop suppressing detail at silhouettes without re-introducing
-// the salt-and-pepper aliasing that forced that suppression.
-//
-// LOD from the screen footprint, à la Nubis (mip rises with ray distance):
-//   detailLod = clamp( log2(max(1, t · DETAIL_MIP_DIST_K)), 0, DETAIL_MIP_MAX )
-// Detail tile = 1000/uDetailScale = 2 km over DETAIL_SIZE = 64 texels → one
-// texel ≈ 31 m. A 1/4-res (SPARSE_DIVISOR = 2) sparse pixel subtends roughly
-// t · 1.7e-3 in scaled units at the nominal fov/res, so the texel == pixel-
-// footprint crossover sits at t ≈ 1/DETAIL_MIP_DIST_K. K = 54 → crossover
-// ≈ 18 km, which lands INSIDE the 5–80 km detail band: the near field stays
-// mip 0 (crisp), and the field is band-limited from ~18 km out to the 80 km
-// fade-off (lod ≈ 2 there). Uses log2(max(1, ·)) NOT log2(1 + ·) so the near
-// field is EXACTLY mip 0 — we want full crisp cauliflower up close (Phase A).
-// Inspect with DEBUG_VIZ = 'detailLod'. Tune K by eye: raise if near detail
-// looks blurred, lower if distant detail sparkles. The variance-renormalized
-// mip chain (noiseVolumes.ts) keeps coverage stable across levels, and the
-// clamp ≤ 4 matches that chain's valid range.
-const DETAIL_MIP_DIST_K = 54;
-const DETAIL_MIP_MAX = 4;
+// (The footprint-matched detail mip LOD — DETAIL_MIP_DIST_K/MAX, `detailLod` —
+// was removed 2026-06-18 with the old opacity-only detail-erosion tap it served.
+// The current detail comes from baseShapeCarved's FINE_CARVE at level 0.)
 //
 // Dead-end notes for four removed zero-valued knobs (PROFILE_BLUR_K,
 // ALT_DITHER_K, START_JITTER_FRAC, LOD_DITHER — all empirically refuted as
@@ -306,30 +282,6 @@ const LIGHT_STEP_SCALED = 0.002; // ~2 km step; 6 steps ≈ 12 km into the slab.
 // still integrated; only the high-freq carve is dropped.)
 const CONE_SAMPLE_CARVE = true;
 
-// ── MEASUREMENT EXPERIMENT (2026-06-17, cauliflower root-cause probe) ──
-// DEFAULT FALSE — flipping this true is the decisive A/B test for the
-// "speckle, not cauliflower" diagnosis. The fine detail erosion that sculpts
-// the cumulus silhouette currently modulates VIEW-RAY OPACITY ONLY: the cone
-// march, the baked light volume, and the 800 m local self-shadow probe all
-// sample base + the MACRO BILLOW_CARVE (CARVE_SCALE=180 → ~5.5 km tile → km-
-// scale lumps), NEVER the per-voxel detail composite. References (Nubis³
-// `mFull`, Frostbite, EVE) erode the SAME density the light march reads, so
-// their cauliflower lobes SELF-SHADOW (bright crest / dark crevice). Ours
-// can't — unlit grainy alpha reads as disconnected 3D noise.
-//
-// When true, the 800 m local probe applies the SAME detail erosion the primary
-// march uses (mirrored at the probe site) before computing its sun absorption.
-// Flip it and look at the day side: if cauliflower SELF-SHADOWING appears
-// (lobed light/dark relief, not just noisy edges) → suspect A confirmed, the
-// fix is to unify detail into the lit density. If nothing changes → A is
-// insufficient and the speckle is the detail SOURCE / thin-shell carving
-// (suspects B/C — use DEBUG_VIZ 'detailField' / 'detailCut'). This is a
-// MEASUREMENT toggle, not a fix: gated build-time so OFF is byte-for-byte the
-// current shader. Costs +1 texture3D per day-side dense voxel when on.
-// REQUIRES USE_LIGHT_VOLUME=true (the default): the probe it modifies lives in
-// the light-volume path, so on the cone path (USE_LIGHT_VOLUME=false) this
-// toggle is a no-op.
-const DETAIL_IN_LIGHTING = false;
 
 // ── Near-surface detail self-shadow (2026-06-18 — the cauliflower fix) ──
 // Nubis³ ("256 m / 10-sample" old light march; new = 2 live near-surface taps
@@ -338,8 +290,9 @@ const DETAIL_IN_LIGHTING = false;
 // cloud self-shadow from a SHORT sun march at the DETAIL scale. Our existing
 // 800 m probe self-shadows the km-scale macro lumps but is blind to the
 // ~tens-of-metres cauliflower: at 800 m the detail is decorrelated from the
-// surface lump → no relief (confirmed empirically by the DETAIL_IN_LIGHTING
-// A/B). This adds a SECOND, SHORT probe tap at the detail scale — sample the
+// surface lump → no relief (confirmed empirically: putting detail into the
+// 800 m probe changed nothing). This adds a SECOND, SHORT probe tap at the
+// detail scale — sample the
 // detail-eroded density ~DETAIL_SS_DIST toward the sun, accrue a short optical
 // depth, and layer it onto the macro probe: Tsun = exp(-(odMacro + odNear)).
 // Because the near tap sits at the lump scale, a sunlit crest finds clear air
@@ -532,6 +485,23 @@ const HHF_STRENGTH = 0.2;
 const HHF_NEAR = 0.0008;
 const HHF_FAR = 0.012;
 
+// ── Wispy detail (2026-06-18; Nubis "Curly-Alligator") ──
+// The detail volume's A channel is now a curl-distorted inverted-Alligator web =
+// feathery wisps (see noiseVolumes.ts). Blend billowy (RGB) ↔ wispy (A) by
+// EDGE/density: wisps where density is DECREASING (low profile = edges/thin),
+// billows in the dense core — Nubis "Decreasing Density = Curly Layered Wisps."
+// This gives the feathery edges instead of rounded blobs. (The full cloud-type
+// system, when built, would drive a richer wispiness signal — e.g. cirrus
+// regions fully wispy.) WISP_AMOUNT = 0 disables; needs a noise re-bake to take
+// effect (the A channel is baked).
+//   WISP_AMOUNT: max wispy blend at the thin edge (0..1).
+//   WISP_PROFILE_LO/HI: profile band — fully wispy below LO, fully billowy above
+//     HI (profile = coverage×height, low at edges/tops).
+const WISP_DETAIL = true;
+const WISP_AMOUNT = 0.7;
+const WISP_PROFILE_LO = 0.0;
+const WISP_PROFILE_HI = 0.5;
+
 // ── Solidity gamma (2026-06-18; Nubis low-density sharpen, talk p.123) ──
 // Nubis applies pow(density, lerp(0.3,0.6,...)) to "sharpen low-density areas
 // and bring out cauliflower definition." With an exponent < 1 it RAISES mid
@@ -644,39 +614,21 @@ const DENSITY_GAMMA = 0.8;
 //                   Tests whether the dither hash is producing uniform
 //                   per-pixel variation or some structured pattern.
 //
-// ── Cauliflower-detail measurement set (2026-06-17) ──
-// These three split the "speckle, not cauliflower" complaint into its
-// candidate causes. Read them together, day side, camera close to a deck.
-//   'detailField' : the detail-noise COMPOSITE (`detailFbm`) at the visible
-//                   surface, grayscale. This is the cauliflower SOURCE before
-//                   it touches the shape. Should read as ROUNDED LUMPS at a
-//                   coherent scale (cauliflower). If it reads as fine even
-//                   grain / TV static → the octave mix is too high-freq for
-//                   the view distance (suspect C — the source itself, not its
-//                   application). Cross-check with the [cloud detail dist]
-//                   console histogram (contrast / low tail).
-//   'detailCut'   : how detail erosion acts on the body at the surface:
-//                   R = shape BEFORE detail erosion (body thickness available)
-//                   G = `eroded` (what survived)
-//                   B = the erosion threshold subtracted there.
-//                   Healthy cauliflower = thick red with a SMOOTH green
-//                   gradient (carving the surface of a solid body). Speckle =
-//                   thin/dark red where green DROPS OUT in isolated holes and
-//                   blue (threshold) locally exceeds red — detail punching
-//                   through a thin shell with no body behind it (suspect B).
-//   'litShape'    : the [0,1] shape the 800 m self-shadow probe actually
-//                   absorbs by (the LIT base shape), grayscale, day side only.
+// ── Cauliflower-detail measurement set ──
+//   'eroded'      : the final [0,1] density shape at the visible surface
+//                   (grayscale) — shows the carved cauliflower/wisp structure.
+//   'litShape'    : the [0,1] LIT base shape the 800 m self-shadow probe
+//                   absorbs by (base+macro-carve), grayscale, day side only.
 //                   Requires USE_LIGHT_VOLUME=true (the default); reads black
-//                   on the cone path. With DETAIL_IN_LIGHTING=false this is
-//                   base+macro-carve — compare to 'eroded' (the fine opacity
-//                   detail): if 'eroded' shows crisp cauliflower but 'litShape'
-//                   is smooth/km-scale, the lighting can't see the detail →
-//                   suspect A/D, the decoupling. With DETAIL_IN_LIGHTING=true
-//                   it gains fine detail relief — but it will NOT pixel-match
-//                   'eroded' (litShape is the pre-coverage/profile base; eroded
-//                   is the post-profile view body). Judge the TOGGLE by whether
-//                   lobed self-shadow RELIEF appears on the lit deck, not by a
-//                   litShape==eroded match.
+//                   on the cone path. Compare to 'eroded': if 'eroded' shows
+//                   crisp detail but 'litShape' is smooth/km-scale, the macro
+//                   probe can't see the detail — the NEAR self-shadow probe
+//                   (DETAIL_SELFSHADOW) is what carries it.
+//   'detailShadow': the near detail self-shadow term in isolation (exp(-odNear)),
+//                   day side only — lobed light/dark = working cauliflower
+//                   self-shadow; flat = no relief.
+// (The old 'detailField'/'detailCut'/'detailLod' modes were removed 2026-06-18
+// with the opacity-only detail-erosion pass they measured.)
 // =============================================================================
 const DEBUG_VIZ:
   | "off"
@@ -697,7 +649,6 @@ const DEBUG_VIZ:
   | "daylight"
   | "dither"
   | "lod"
-  | "detailLod"
   | "whyStop"
   | "lightVol"
   | "maxProfile"
@@ -705,8 +656,6 @@ const DEBUG_VIZ:
   | "baseShape"
   | "floaterProbe"
   | "baseColumn"
-  | "detailField"
-  | "detailCut"
   | "litShape"
   | "detailShadow" = "off";
 
@@ -876,68 +825,9 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // wide and read as coherent cloud forms from any view distance,
   // including orbital.
   const uBaseScale = uniform(50);
-  // Detail-volume tiling: 500 → 2 km tile in world space, ~60 m features at
-  // the 32³ texture's sample spacing. Sized to match Schneider 2015's
-  // cumulus cauliflower carving scale (10-100m per detail feature).
-  //
-  // Distance-based detail fade-in: the marcher's detail-erosion threshold is
-  // multiplied by `detailStrength` (computed per dense voxel from `t`),
-  // ramping from 0 beyond 80 km to 1 within 5 km of camera. This is the
-  // canonical Nubis LOD trick: at orbital view distances, every voxel is
-  // far → detailStrength ≈ 0 → only the base macro shape contributes →
-  // smooth km-scale cumulus shapes (matches the natural look the orbital
-  // screenshots show). At close range, near voxels get full detail erosion
-  // → bumpy cauliflower silhouettes + per-pixel body variation. Without
-  // this fade, ~60m detail features would alias to grain at orbital view
-  // since each pixel covers >>60m of world there.
-  //
-  // Previous value 100 (~1 km tile, 300m features) had detail features so
-  // large that they read as macro shape — no functional difference from the
-  // base volume at any view distance. Bumped to give Schneider-scale
-  // carving for the close-range LOD layer.
-  const uDetailScale = uniform(500);
-  // Detail-erosion strength. CRITICAL parameter for cumulus-vs-stratus
-  // appearance.
-  //
-  // 0.2 (previous): gentle nibbling at silhouette edges only. Produces
-  // continuous cloud deck (stratus / stratocumulus look). No spatial
-  // separation between cloud bodies.
-  //
-  // 0.5 (current): aggressive carving that CREATES GAPS between cumulus
-  // bodies. Schneider's tuning range for cumulus is 0.4-0.6 (the lower
-  // end was tuned against Schneider's near-uniform weather map; our
-  // gradient weather map needs the upper end for equivalent discrete
-  // cumulus appearance).
-  //
-  // The visible effect: cones marching to sun from one cumulus's
-  // underside now pass through CLEAR SKY between bodies → high Tsun →
-  // visible top-bright / bottom-shadowed contrast on individual cumulus.
-  // Without gaps, every cone path goes through cloud → uniform Tsun_ms
-  // → flat-looking continuous deck (which is what we had).
-  //
-  // 0.2 (current) — back to original gentle value. Cumulus discrimination
-  // now comes from the THRESHOLD MASK on the cumulus pattern (smoothstep
-  // 0.35-0.65), which produces real coverage=0 gaps + dense bodies
-  // directly. Erosion's job reduces to its canonical Schneider role:
-  // nibbling silhouette edges for cauliflower detail texture.
-  //
-  // Higher values (0.4-0.7 tried earlier) combined with the cumulus
-  // pattern's linear modulation produced bimodal density — pattern-low
-  // areas had translucent wispy clouds. With threshold mask, pattern-low
-  // areas have zero cloud → no wisps possible → 0.2 erosion is safe.
-  // 0 = no erosion, 1 = can fully remove edges.
-  // 0.2 — moderate Schneider value-erosion strength.
-  //
-  // Phase D close-out diagnostic (2026-05-27) tested whether per-tile
-  // alpha speckle was driven by detail erosion's sub-tile features
-  // aliasing under 1/16 reconstruction. Disabling (0.0) and aggressively
-  // boosting (3.0+) showed no visible difference in speckle pattern —
-  // confirming detail erosion is NOT the noise source at our current
-  // tuning. The residual speckle at thin cloud regions is from MC
-  // integration variance of low-density volumetric integrals (not
-  // fixable in single-pass without more samples per ray or a spatial
-  // smoothing post-pass). See CLOUD_DEBUGGING_LESSONS.md case study #7.
-  const uDetailErosion = uniform(0.45);
+  // (uDetailScale + uDetailErosion REMOVED 2026-06-18 with the old opacity-only
+  // detail-erosion pass they fed. Detail now comes from baseShapeCarved's
+  // FINE_CARVE/WISP at FINE_CARVE_SCALE — see cloudDetile.ts + the dense branch.)
   // Domain warp is currently disabled inside the marcher (see DIAGNOSTIC
   // note where uvWarped = uvMid). When re-introducing with a smoother
   // (Perlin-only) warp source, recreate a `uWarpAmount = uniform(0.002)`
@@ -998,8 +888,6 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     uCloudUvOffset,
     uDensityMul,
     uBaseScale,
-    uDetailScale,
-    uDetailErosion,
     uColumnScale,
     uLightConeRadius,
     uVolumetricBlend,
@@ -1054,8 +942,6 @@ export function marchCloudVolume({
   uCloudUvOffset,
   uDensityMul,
   uBaseScale,
-  uDetailScale,
-  uDetailErosion,
   uColumnScale,
   uLightConeRadius,
   uVolumetricBlend,
@@ -1095,10 +981,6 @@ export function marchCloudVolume({
   uDensityMul: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uBaseScale: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uDetailScale: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uDetailErosion: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uColumnScale: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1485,19 +1367,11 @@ export function marchCloudVolume({
     // directly without the densScale multiplier obscuring it.
     const lastEroded = float(0).toVar();
 
-    // ── Cauliflower-detail measurement captures (2026-06-17) ──
-    // All dead-store-eliminated when DEBUG_VIZ is 'off'. Captured at the last
-    // dense voxel (≈ the visible surface after front-to-back saturation).
-    //   lastShapePreErode = `shape` BEFORE detail erosion (body thickness).
-    //   lastDetailFbm     = the detail-noise composite `detailFbm` (the
-    //                       cauliflower source, before it touches the shape).
-    //   lastThreshold     = the erosion threshold subtracted at this voxel.
-    //   lastLitShape      = the [0,1] shape the 800 m self-shadow probe absorbs
-    //                       by (base+macro-carve, or detail-eroded under
-    //                       DETAIL_IN_LIGHTING). Day side only; 0 at night.
-    const lastShapePreErode = float(0).toVar();
-    const lastDetailFbm = float(0).toVar();
-    const lastThreshold = float(0).toVar();
+    // ── Cauliflower-detail measurement captures ──
+    // Dead-store-eliminated when DEBUG_VIZ is 'off'. Captured at the last dense
+    // voxel (≈ the visible surface after front-to-back saturation).
+    //   lastLitShape = the [0,1] LIT base shape the 800 m self-shadow probe
+    //                  absorbs by (base+macro-carve). Day side only; 0 at night.
     const lastLitShape = float(0).toVar();
     // exp(-odNear) — the NEAR detail self-shadow term in isolation (DEBUG_VIZ
     // 'detailShadow'). 1 = no near occlusion; <1 = detail occluded the sun.
@@ -1878,6 +1752,20 @@ export function marchCloudVolume({
                   fineSrc.b,
                   pow(profile.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
                 );
+                // Blend billowy → WISPY (A channel) toward the thin edge, so
+                // edges read as feathery curl strands, not rounded blobs.
+                if (WISP_DETAIL) {
+                  const wispiness = float(1)
+                    .sub(
+                      smoothstep(
+                        float(WISP_PROFILE_LO),
+                        float(WISP_PROFILE_HI),
+                        profile.clamp(0, 1),
+                      ),
+                    )
+                    .mul(float(WISP_AMOUNT));
+                  fineNoise = mix(fineNoise, fineSrc.a, wispiness);
+                }
                 // HHF: twice-folded high-freq channel blended in near camera
                 // (Nubis p.117) for crisp up-close detail without a new sample.
                 if (HHF_STRENGTH > 0) {
@@ -1964,32 +1852,6 @@ export function marchCloudVolume({
               emptyStreak.assign(0);
               denseIters.addAssign(1);
 
-              // ── Detail erosion strength (band-limited at the silhouette) ──
-              // Schneider/Nubis carve cauliflower with high-frequency detail.
-              // We previously ramped erosion to 1.0 at edges (edgeness→1) for
-              // crisp cauliflower — but our ~60 m detail features are far finer
-              // than the march step (250 m+), so cranking detail exactly at the
-              // under-sampled silhouette ALIASES → residual edge noise the EMA
-              // can't remove (it's spatial, not temporal). Band-limit it: keep
-              // detail modest at edges so the silhouette stays a low-frequency
-              // alpha gradient the coarse march samples consistently.
-              //
-              // NOTE (Phase A4, 2026-06-14 — REVERTED): tried removing this
-              // edge damping + raising erosion, betting A.0's mip would
-              // band-limit the speckle. But detail erosion only modulates
-              // OPACITY, not lighting (the cone + 800 m self-shadow probe
-              // sample base+carve, NOT the detail erosion), so cranking it
-              // produced "cotton balls in transparent jelly" — unlit dense
-              // lumps — not shaded cauliflower; and where `shape` saturates to
-              // 1 (thick cores) the value-erosion remap is a no-op so thick
-              // bodies stayed smooth regardless. Lesson: visible form must come
-              // from the LIT carve layer, not detail-erosion strength. See
-              // VOLUMETRIC_CLOUDS_SHAPE_PLAN.md §Phase A findings.
-              const edgeness = float(1).sub(
-                smoothstep(float(0.5), float(0.9), coverage),
-              );
-              const erosionStrength = float(0.35).add(edgeness.mul(0.15));
-
               // ── Nubis base-shape composition: REMAP, not multiply ──
               // THE key shape step (2026-05-30). `dimProfile = coverage ×
               // heightProfile` is the 3D "how much cloud should be here"
@@ -2015,134 +1877,23 @@ export function marchCloudVolume({
               const shape = dimProfile
                 .sub(float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K)))
                 .clamp(0, 1);
-              // MEASUREMENT: body thickness before detail erosion (DEBUG_VIZ
-              // 'detailCut' R channel). Dead-store-eliminated when viz off.
-              lastShapePreErode.assign(shape);
 
-              // ── Distance-based detail strength (Nubis LOD trick) ──
-              // Schneider 2015: detail erosion is faded by distance from
-              // camera. Close voxels (within `detailNear`) get full
-              // erosion → bumpy cauliflower carving visible per-pixel at
-              // close range. Far voxels (beyond `detailFar`) get zero
-              // erosion → only base macro shape contributes → smooth
-              // km-scale variation at orbital view (and no detail-noise
-              // aliasing since detail's ~60m features are sub-pixel at
-              // those distances).
-              //
-              // `t` is per-voxel distance from camera in scaled units
-              // (1 unit = 1000 km). 0.005 = 5 km full detail, 0.50 =
-              // 500 km no detail, smoothstep ramp between.
-              //
-              // 2026-06-16: detailFar 0.080 → 0.50. At cloud height the deck
-              // fills the view out to the ~357 km horizon, but detail erosion
-              // stopped at 80 km → ~80% of the visible deck was pure smooth
-              // base shape (the "no cauliflower / smooth balls" complaint).
-              // The footprint-matched mip LOD below (detailLod, clamped to
-              // DETAIL_MIP_MAX) band-limits the ~31 m features by distance, so
-              // extending the reach adds cauliflower across the deck WITHOUT
-              // re-introducing aliasing. The smoothstep stays gradual (5→500
-              // km) so there is no sharp "detail border" that flies with the
-              // camera. uDetailErosion (default 0.2) is the STRENGTH knob —
-              // crank it live if the revealed detail is too subtle.
-              const detailNear = float(0.005);
-              const detailFar = float(0.5);
-              const detailStrength = float(1).sub(
-                smoothstep(detailNear, detailFar, t),
-              );
-
-              // Type-driven, FREQUENCY-GRADED detail composite (Phase A1,
-              // Nubis slides 100-116). See the const block inside the gate.
-              //
-              // The detail fetch is GATED on detailStrength > 0 (2026-06-10):
-              // beyond 80 km the erosion threshold was exactly 0 but the
-              // texture3D still ran for every dense voxel. Inside the gate
-              // the result is bit-identical (threshold → 0 ⇒ eroded = shape).
-              const eroded = shape.toVar();
-              If(detailStrength.greaterThan(0.002), () => {
-                // Footprint-matched mip LOD (Phase A.0). Band-limits the
-                // ~31 m detail features by ray distance so detail can be
-                // cranked in Phase A without aliasing. log2(max(1, t·K)) is
-                // exactly mip 0 in the near field (crisp), rising past the
-                // ~18 km crossover. See the DETAIL_MIP_DIST_K note above.
-                const detailLod = log2(
-                  t.mul(float(DETAIL_MIP_DIST_K)).max(float(1)),
-                ).clamp(float(0), float(DETAIL_MIP_MAX));
-                const detailSample = texture3D(
-                  detailVolume,
-                  p.mul(uDetailScale),
-                ).level(detailLod);
-                // ── Frequency-graded detail composite (Phase A1) ──
-                // Detail channels are three Worley octaves: R = grid-4 (low),
-                // G = grid-8 (mid), B = grid-16 (high). Instead of a fixed FBM
-                // weighting, grade the detail FREQUENCY over the 3D `shape`
-                // gradient (0 at the noise-carved boundary → 1 in the
-                // interior): low frequency at the silhouette → higher frequency
-                // inward. This is the Nubis trick that reads as STRUCTURED
-                // billows (rounded silhouette + finer detail toward the
-                // surface) rather than smooth blobs (no high-freq) or uniform
-                // speckle (flat high-freq).
-                //   billowy (cumulus): coarser octaves R→G, biased high via
-                //     pow(shape,0.25) so only the very edge stays low-freq →
-                //     rounded, chunky lumps.
-                //   wispy   (stratus): finer octaves G→B, linear over shape.
-                // Type blends the two. Mean ≈ unchanged vs the old weighted
-                // sum (both are weighted averages of inverted-Worley octaves,
-                // ~0.35), so density is preserved — A1 is a pure SHAPE change.
-                // (True curl/alligator wisp+billow families + the finest
-                // octave for cumulus surfaces arrive in A3/A5; this grades the
-                // Worley octaves we already have.)
-                const dr = detailSample.r;
-                const dg = detailSample.g;
-                const db = detailSample.b;
-                const billowyFbm = mix(dr, dg, pow(shape, float(0.25)));
-                const wispyFbm = mix(dg, db, shape);
-                const detailFbm = mix(wispyFbm, billowyFbm, cloudType);
-                // Altitude-modulated erosion: at low altitudes erode with raw
-                // FBM (carves billowing undersides); at higher altitudes
-                // invert (1-fbm) so the surviving wisps poke up like puffy
-                // tops.
-                const altMod = clamp(altitude01.mul(2.5), 0, 1);
-                const erosion = mix(detailFbm, detailFbm.oneMinus(), altMod);
-                // erosionRamp gates detail erosion by the value-erosion `shape`
-                // so the silhouette isn't eaten to nothing. BUT a pure
-                // smoothstep(0,0.3,shape) goes to ZERO at the crown (shape only
-                // just cleared the Remap threshold there) — which is exactly
-                // where the height profile's iso-altitude top-fade produces the
-                // CLEANLY SLICED FLAT TOP. With erosion gated off at the crown,
-                // detailFar's extra reach still can't break that slice. Floor
-                // the ramp to 0.4 so detail noise carves the crown into ragged,
-                // organic cauliflower instead of a horizontal cut, rising to
-                // 1.0 in the interior. Opacity-only; `eroded` is clamped so
-                // edges can't go negative (they just get wispier). Lower the
-                // 0.4 floor if crowns get too eaten. (2026-06-16)
-                const erosionRamp = float(0.4).add(
-                  smoothstep(float(0), float(0.3), shape).mul(0.6),
-                );
-
-                const threshold = erosion
-                  .mul(uDetailErosion)
-                  .mul(erosionRamp)
-                  .mul(erosionStrength)
-                  .mul(detailStrength);
-                const denom = float(1).sub(threshold).max(0.0001);
-                eroded.assign(shape.sub(threshold).div(denom).clamp(0, 1));
-                // MEASUREMENT: the cauliflower SOURCE (composite noise) and the
-                // amount carved here (DEBUG_VIZ 'detailField' / 'detailCut').
-                // Inside the gate so they stay 0 where detailStrength≈0 (far
-                // field), which correctly reads as "no detail acting here".
-                lastDetailFbm.assign(detailFbm);
-                lastThreshold.assign(threshold);
-              });
-              lastEroded.assign(eroded);
+              // NOTE: the old opacity-only detail erosion (the original
+              // Schneider remap: eroded = Remap(shape, detailFBM·strength,...))
+              // was REMOVED 2026-06-18. It was superseded by the shared
+              // FINE_CARVE (centered, frequency-graded, wisp + HHF) which is in
+              // the LIT density and self-shadowed; the old pass re-applied
+              // un-self-shadowed high-freq on top → disconnected edge speckle.
+              // `shape` already carries all detail via baseShapeCarved.
+              lastEroded.assign(shape);
 
               // Solidity gamma (Nubis low-density sharpen; see DENSITY_GAMMA):
               // raise mid densities so the carved body reads SOLID, not balls in
               // transparent. JS-const gated → off path is byte-identical.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const erodedSolid: any =
-                DENSITY_GAMMA === 1 ? eroded : pow(eroded, float(DENSITY_GAMMA));
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const density: any = erodedSolid.mul(densScale);
+              const density: any = (
+                DENSITY_GAMMA === 1 ? shape : pow(shape, float(DENSITY_GAMMA))
+              ).mul(densScale);
               lastDensity.assign(density);
 
               // ── Per-sample terminator daylight (2026-06-12) ──
@@ -2353,56 +2104,14 @@ export function marchCloudVolume({
                       topAlt,
                       cloudType,
                     );
-                    // ── Detail-eroded shape at an arbitrary probe position ──
-                    // Mirrors the primary view march's detail composite
-                    // (frequency-graded billowy/wispy, altMod, erosionRamp), but
-                    // sampling at `pos` and driven by a supplied macro `shape` so
-                    // the probe self-shadows the SAME cauliflower the view ray
-                    // carves. Detail mip 0 (probe taps are near the surface).
-                    // Shared by the DETAIL_IN_LIGHTING experiment (at 800 m) and
-                    // the near detail self-shadow tap (at DETAIL_SS_DIST).
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const detailErodeAt = (pos: any, mShape: any, alt: any) => {
-                      const det = texture3D(
-                        detailVolume,
-                        pos.add(warpVec).mul(uDetailScale),
-                      ).level(int(0));
-                      const billowy = mix(det.r, det.g, pow(mShape, float(0.25)));
-                      const wispy = mix(det.g, det.b, mShape);
-                      const dFbm = mix(wispy, billowy, cloudType);
-                      const altM = clamp(alt.mul(2.5), 0, 1);
-                      const erosion = mix(dFbm, dFbm.oneMinus(), altM);
-                      const edgeN = float(1).sub(
-                        smoothstep(float(0.5), float(0.9), coverage),
-                      );
-                      const erStr = float(0.35).add(edgeN.mul(0.15));
-                      const erRamp = float(0.4).add(
-                        smoothstep(float(0), float(0.3), mShape).mul(0.6),
-                      );
-                      const thr = erosion
-                        .mul(uDetailErosion)
-                        .mul(erRamp)
-                        .mul(erStr);
-                      return mShape
-                        .sub(thr)
-                        .div(float(1).sub(thr).max(0.0001))
-                        .clamp(0, 1);
-                    };
-
-                    // ── EXPERIMENT (DETAIL_IN_LIGHTING): detail in the 800 m
-                    // macro probe. Proven NOT to produce relief (800 m
-                    // decorrelates the detail); kept as an A/B reference. OFF →
-                    // litShapeLs == carvedLs (byte-identical to the original). ──
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    let litShapeLs: any = carvedLs;
-                    if (DETAIL_IN_LIGHTING) {
-                      litShapeLs = detailErodeAt(pLs, carvedLs, altLs);
-                    }
-                    // MEASUREMENT: the shape the macro probe absorbs by
-                    // (DEBUG_VIZ 'litShape'). Compare to 'eroded'.
-                    lastLitShape.assign(litShapeLs);
+                    // MEASUREMENT: the LIT macro shape the 800 m probe absorbs
+                    // by (DEBUG_VIZ 'litShape'). Compare to 'eroded'. (The
+                    // DETAIL_IN_LIGHTING experiment — detail at 800 m — was
+                    // removed 2026-06-18: 800 m decorrelates the detail, so it
+                    // produced no relief; the near probe below carries detail.)
+                    lastLitShape.assign(carvedLs);
                     // ── Macro self-shadow (existing 800 m probe) ──
-                    const odMacro = litShapeLs
+                    const odMacro = carvedLs
                       .mul(coverage)
                       .mul(profileLs)
                       .mul(float(LOCAL_SHADOW_DENSITY))
@@ -2440,6 +2149,20 @@ export function marchCloudVolume({
                         fineSrc.b,
                         pow(profileLs.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
                       );
+                      // WISP blend (match the opacity path) so the shadow
+                      // tracks the feathery edges.
+                      if (WISP_DETAIL) {
+                        const wispiness = float(1)
+                          .sub(
+                            smoothstep(
+                              float(WISP_PROFILE_LO),
+                              float(WISP_PROFILE_HI),
+                              profileLs.clamp(0, 1),
+                            ),
+                          )
+                          .mul(float(WISP_AMOUNT));
+                        fineNoise = mix(fineNoise, fineSrc.a, wispiness);
+                      }
                       // HHF near-camera detail (match the opacity path).
                       if (HHF_STRENGTH > 0) {
                         const folded = fineSrc.b
@@ -2954,21 +2677,6 @@ export function marchCloudVolume({
         tFront: float(0),
       };
     }
-    if (DEBUG_VIZ === "detailLod") {
-      // Footprint-matched detail mip LOD at the slab midpoint (Phase A.0
-      // regression gate). Grayscale: black = mip 0 (crisp / near) → white =
-      // DETAIL_MIP_MAX. The 0 → rising crossover should sit ~18 km out; the
-      // near field must read solid black (else near detail is being blurred).
-      const dl = log2(tMid.mul(float(DETAIL_MIP_DIST_K)).max(float(1))).clamp(
-        float(0),
-        float(DETAIL_MIP_MAX),
-      );
-      const g = dl.div(float(DETAIL_MIP_MAX)).clamp(0, 1);
-      return {
-        rgba: vec4(g, g, g, float(1)),
-        tFront: float(0),
-      };
-    }
     if (DEBUG_VIZ === "whyStop") {
       // Why each ray's march ended. RED = ran out of the 96-step budget
       // (cutoff — what we're chasing); GREEN = exited the slab (saw the whole
@@ -3155,61 +2863,14 @@ export function marchCloudVolume({
       };
     }
 
-    if (DEBUG_VIZ === "detailField") {
-      // The detail-noise COMPOSITE (`detailFbm`) at the visible surface — the
-      // cauliflower SOURCE before it touches the shape. Should read as ROUNDED
-      // LUMPS at a coherent scale. Fine even grain / TV static ⇒ octave mix too
-      // high-freq for this view distance (suspect C). Cross-check the
-      // [cloud detail dist] console histogram. Black where no detail acted
-      // (far field / detailStrength≈0) AND where the composite is genuinely ~0
-      // — distinguish by spatial pattern (uniform far band vs sparse near
-      // specks); read this CLOSE so the gate is open. (2026-06-17)
-      const hitDF = alpha.greaterThan(0.001);
-      return {
-        rgba: vec4(
-          hitDF.select(lastDetailFbm, float(0)),
-          hitDF.select(lastDetailFbm, float(0)),
-          hitDF.select(lastDetailFbm, float(0)),
-          float(1),
-        ),
-        tFront: float(0),
-      };
-    }
-
-    if (DEBUG_VIZ === "detailCut") {
-      // How detail erosion acts on the body at the surface (2026-06-17):
-      //   R = shape BEFORE detail erosion (body thickness available)
-      //   G = `eroded` (what survived)
-      //   B = the erosion threshold subtracted there.
-      // Healthy cauliflower = thick RED with a smooth GREEN gradient (carving
-      // the surface of a solid body). Speckle = thin/dark red where green DROPS
-      // OUT in isolated holes and blue (threshold) locally rivals/exceeds red —
-      // detail punching through a thin shell with no body behind it (suspect B).
-      // R/G (per-voxel) and B (gated) are the SAME voxel only when the gate is
-      // open, so read this CLOSE (near field); far-field B is a stale value.
-      const hitDC = alpha.greaterThan(0.001);
-      return {
-        rgba: vec4(
-          hitDC.select(lastShapePreErode.clamp(0, 1), float(0)),
-          hitDC.select(lastEroded.clamp(0, 1), float(0)),
-          hitDC.select(lastThreshold.clamp(0, 1), float(0)),
-          float(1),
-        ),
-        tFront: float(0),
-      };
-    }
-
     if (DEBUG_VIZ === "litShape") {
-      // The [0,1] LIT base shape the 800 m self-shadow probe absorbs by (day
-      // side only; black at night and on the cone path — REQUIRES
-      // USE_LIGHT_VOLUME=true, the default). With DETAIL_IN_LIGHTING=false this
-      // is base+macro-carve: compare to 'eroded'. If 'eroded' shows crisp
-      // cauliflower but THIS is smooth / km-scale, the lighting can't see the
-      // detail ⇒ suspect A/D (the decoupling). With DETAIL_IN_LIGHTING=true it
-      // gains fine detail relief — but it will NOT pixel-match 'eroded'
-      // (litShape is the pre-coverage/profile base, no detailStrength/mip;
-      // eroded is the post-profile view body). Judge the toggle by whether
-      // lobed self-shadow RELIEF appears on the lit deck, not by a match.
+      // The [0,1] LIT base shape the 800 m MACRO self-shadow probe absorbs by
+      // (base+macro-carve), grayscale, day side only (black at night and on the
+      // cone path — REQUIRES USE_LIGHT_VOLUME=true, the default). Compare to
+      // 'eroded': it's smooth/km-scale while 'eroded' has fine detail — the
+      // macro probe only shadows macro lumps; the fine cauliflower is
+      // self-shadowed by the separate NEAR probe (DETAIL_SELFSHADOW, see
+      // 'detailShadow').
       const hitLS = alpha.greaterThan(0.001);
       return {
         rgba: vec4(

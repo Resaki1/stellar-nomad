@@ -2094,3 +2094,79 @@ for the cauliflower/wisp work; they're dead-store-eliminated when DEBUG_VIZ='off
   envelope. 0 = smooth solid envelope, 1 = fully carved (gappy even at full
   coverage). ~0.25 chosen for a coherent deck that breaks into cumulus at low coverage.
 - `uDensityMul` — opacity. The old saturated base hid the need to tune this.
+
+## Case study #21 — cauliflower + wisps: the detail must be in the LIT density, at the right SCALE, and the noise must be the right TYPE (2026-06-18)
+
+On the coherent deck from #20, the clouds still read as "smooth white balls with
+fine noise at the edges," not cumulus cauliflower. A long empirical arc (DEBUG_VIZ
++ a live A/B toggle each step, never theorising past one change) untangled FIVE
+stacked causes. Each was confirmed before the next was touched.
+
+1. **Detail self-shadow needs the detail in the LIT density — at the detail SCALE.**
+   The fine detail only modulated VIEW opacity; the cone/baked-vol/800 m probe saw
+   base+macro-carve only → unlit grainy edges = "speckle." But the decisive finding
+   was subtler: routing detail into the existing 800 m probe (the `DETAIL_IN_LIGHTING`
+   A/B) changed NOTHING. **The probe DISTANCE sets the feature scale that can
+   self-shadow** — 800 m is correlated with the ~km macro carve (so big lumps shade)
+   but DECORRELATED from ~tens-of-m detail (so it just adds DC noise). Fix: a SECOND
+   short probe tap at the detail scale (`DETAIL_SELFSHADOW`, ~detail-lump distance)
+   sampling the SAME fine carve along the sun ray → real lobed relief. Nubis uses its
+   `mFull` (eroded) density for the near light samples for exactly this.
+2. **"White balls in transparent" = packed-spheres = inverted Worley.** Schneider's
+   documented wall. Inverted Worley has BROAD saddles → round balls with WIDE gaps.
+   Fixed with **Alligator-style noise** (`USE_ALLIGATOR`): max-of-smooth-radial-caps
+   → round caps + NARROW creases. (Houdini Alligator is proprietary; the metaball-max
+   reconstruction reproduces its character.)
+3. **"Half-lumps / visible macro outline" = subtractive carve on a single-octave base.**
+   Our base shape was effectively ONE macro octave, so every lump was added by a
+   SUBTRACTIVE fine carve → could only bite INWARD → lumps clipped at the macro
+   silhouette. References (Frostbite noiseL, Nubis composite) build the silhouette
+   from a MULTI-OCTAVE field, so lumps bulge OUT. Fix: (a) re-enable the Schneider
+   Perlin-Worley × Worley-FBM dilation as a CENTERED mid-octave (`BASE_FBM_BILLOW`);
+   (b) make the fine carve CENTERED (`FINE_CARVE_BIAS`) so it bulges and creases;
+   (c) raise `BASE_EROSION_K` so the noise actually reaches the silhouette
+   (the #20 deck-solidity lever, traded back up now that Alligator keeps it solid).
+   NOTE: references do NOT do an explicit "bidirectional carve" — they just put the
+   octave in the base FIELD; centered-carve is the same thing in our staged pipeline.
+4. **"Pockmarks on thin clouds / edges" = high-freq noise everywhere on the edges.**
+   Verbatim Nubis p.109: "we want the edges to have more rounded structure than the
+   core — otherwise we will just get high frequency noise everywhere on the edges, so
+   we blend from low frequency to high frequency over the dimensional profile." Our
+   single-octave fine carve was exactly that. Fix: frequency-grade the fine carve by
+   `profile` (`FINE_CARVE_GRADE_POW`) — LF-rounded at edges → HF in the core.
+5. **"Blobby up close + no feathery wisps" = missing the WISP family + up-close detail.**
+   We had only BILLOWY (Alligator) detail. Nubis has TWO families blended by type:
+   billowy = Alligator, **wispy = inverted Alligator distorted by CURL noise
+   ("Curly-Alligator", web-like)**. Added: (a) `HHF` twice-folded near-camera detail
+   (Nubis p.117, reuses a channel, no new sample) for up-close crispness; (b) a
+   curl-distorted inverted-Alligator wisp baked into the detail volume's free **A
+   channel** (proper ∇×ψ curl of 3 Perlin potentials), blended billowy↔wispy toward
+   the thin edges (Nubis "decreasing density = curly wisps"). Frostbite has NOTHING on
+   this — they collapsed to a single-channel Worley erosion; wisps/curl is Nubis-only.
+
+### Meta-lessons
+- **Probe/sample DISTANCE = the feature scale that can self-shadow.** One tap distance
+  shadows one scale. Macro and detail need separate near/far taps.
+- **The silhouette must come from a MULTI-OCTAVE field, not a subtractive carve on a
+  single octave** — else lumps clip at the base outline ("half-lumps").
+- **Edges want LOW-freq/rounded (billows) or curl-distorted (wisps), never raw
+  high-freq** — raw HF at edges = pockmarks/speckle.
+- **Match the reference noise GENERATOR, not just the formula** — inverted Worley
+  can't make cauliflower (packed spheres) or wisps (needs curl); Alligator + curl can.
+- **A/B every change with a toggle + DEBUG_VIZ; a null result (the 800 m probe test)
+  is as informative as a positive one** — it's what revealed the distance-scale law.
+
+### Current knobs (post-fix baseline, 2026-06-18)
+Alligator: `USE_ALLIGATOR=true`, `ALLIGATOR_RADIUS=0.9`, `BILLOW_CREASE_POWER=1`.
+Shape: `BASE_FBM_BILLOW=1.2`, `BASE_EROSION_K=1.2`, `CARVE_SCALE=360`, `uDensityMul=15000`.
+Fine: `FINE_CARVE_STRENGTH=0.2`, `FINE_CARVE_BIAS=0.4`, `FINE_CARVE_GRADE_POW=2`,
+`DENSITY_GAMMA=0.8`. Wisp: `WISP_AMOUNT=0.7`, `WISP_GRID=16`, `CURL_GRID=8`, `CURL_AMP=1.4`.
+HHF: `HHF_STRENGTH=0.2`. Self-shadow: `DETAIL_SELFSHADOW=true`, `DETAIL_SS_DIST=0.0002`,
+`DETAIL_SS_DENSITY=20000`. Height: `uColumnScale=30`.
+UPDATE 2026-06-18: the OLD opacity-only detail erosion (`eroded`/`uDetailErosion` +
+`uDetailScale` + `detailStrength` + `DETAIL_MIP_*` + the `detailField`/`detailCut`/
+`detailLod` vizes) was REMOVED — it was redundant with FINE_CARVE and re-added
+un-self-shadowed edge speckle; `uDetailErosion=0` visibly fixed it, so `shape` now
+feeds density directly. A 6th lesson: when a new mechanism supersedes an old one,
+DELETE the old path — leaving it running silently re-introduced the exact artifact
+(edge speckle) the new path was built to fix.

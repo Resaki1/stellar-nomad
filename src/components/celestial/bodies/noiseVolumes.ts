@@ -250,11 +250,17 @@ function fade(t: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-function gradHash(x: number, y: number, z: number, grid: number): number {
+function gradHash(
+  x: number,
+  y: number,
+  z: number,
+  grid: number,
+  salt: number = SALT_PERLIN,
+): number {
   const wx = x < 0 ? x + grid : x >= grid ? x - grid : x;
   const wy = y < 0 ? y + grid : y >= grid ? y - grid : y;
   const wz = z < 0 ? z + grid : z >= grid ? z - grid : z;
-  return Math.floor(hash3(wx, wy, wz, SALT_PERLIN) * 12) % 12;
+  return Math.floor(hash3(wx, wy, wz, salt) * 12) % 12;
 }
 
 function dotGrad(g: number, dx: number, dy: number, dz: number): number {
@@ -268,6 +274,7 @@ function perlinSample(
   py: number,
   pz: number,
   grid: number,
+  salt: number = SALT_PERLIN,
 ): number {
   const cx = Math.floor(px);
   const cy = Math.floor(py);
@@ -279,30 +286,30 @@ function perlinSample(
   const fy = fade(dy);
   const fz = fade(dz);
 
-  const g000 = dotGrad(gradHash(cx, cy, cz, grid), dx, dy, dz);
-  const g100 = dotGrad(gradHash(cx + 1, cy, cz, grid), dx - 1, dy, dz);
-  const g010 = dotGrad(gradHash(cx, cy + 1, cz, grid), dx, dy - 1, dz);
+  const g000 = dotGrad(gradHash(cx, cy, cz, grid, salt), dx, dy, dz);
+  const g100 = dotGrad(gradHash(cx + 1, cy, cz, grid, salt), dx - 1, dy, dz);
+  const g010 = dotGrad(gradHash(cx, cy + 1, cz, grid, salt), dx, dy - 1, dz);
   const g110 = dotGrad(
-    gradHash(cx + 1, cy + 1, cz, grid),
+    gradHash(cx + 1, cy + 1, cz, grid, salt),
     dx - 1,
     dy - 1,
     dz,
   );
-  const g001 = dotGrad(gradHash(cx, cy, cz + 1, grid), dx, dy, dz - 1);
+  const g001 = dotGrad(gradHash(cx, cy, cz + 1, grid, salt), dx, dy, dz - 1);
   const g101 = dotGrad(
-    gradHash(cx + 1, cy, cz + 1, grid),
+    gradHash(cx + 1, cy, cz + 1, grid, salt),
     dx - 1,
     dy,
     dz - 1,
   );
   const g011 = dotGrad(
-    gradHash(cx, cy + 1, cz + 1, grid),
+    gradHash(cx, cy + 1, cz + 1, grid, salt),
     dx,
     dy - 1,
     dz - 1,
   );
   const g111 = dotGrad(
-    gradHash(cx + 1, cy + 1, cz + 1, grid),
+    gradHash(cx + 1, cy + 1, cz + 1, grid, salt),
     dx - 1,
     dy - 1,
     dz - 1,
@@ -316,6 +323,53 @@ function perlinSample(
   const ly1 = lx01 + fy * (lx11 - lx01);
   const v = ly0 + fz * (ly1 - ly0);
   return v * 0.5 + 0.5;
+}
+
+// =============================================================================
+// Curl-noise distortion for WISPY detail (Nubis "Curly-Alligator", 2026-06-18).
+//
+// Nubis builds wisps from INVERTED Alligator noise (web-like shapes) DISTORTED
+// BY CURL NOISE → swept, curly strands. The curl of a 3-component Perlin vector
+// potential is divergence-free, so it warps the web without clumping/tearing
+// (Bridson 2007). We bake this into the detail volume's previously-unused A
+// channel; the shader blends billowy↔wispy by edge/density (wisps where density
+// decreases = edges, per Nubis "Decreasing Density = Curly Layered Wisps").
+// =============================================================================
+const WISP_GRID = 8; // inverted-Alligator base freq for the wisp web
+const CURL_GRID = 8; // Perlin potential freq (lower = broader swirls)
+const CURL_AMP = 2.1; // curl distortion strength (wisp-cell units)
+const SALT_WISP = 41;
+const SALT_CURL_A = 42;
+const SALT_CURL_B = 43;
+const SALT_CURL_C = 44;
+
+// Curl ∇×ψ of a Perlin vector potential ψ=(A,B,C), evaluated in WISP-cell space
+// (px,py,pz already in WISP_GRID cells). The potential is sampled at the lower
+// CURL_GRID freq so the swirls are broad relative to the wisp web. Central
+// finite differences (step h in wisp-cell units). Returns an offset vector.
+function curlNoise(
+  px: number,
+  py: number,
+  pz: number,
+): { x: number; y: number; z: number } {
+  const r = CURL_GRID / WISP_GRID; // wisp-cell → curl-cell space
+  const h = 0.5;
+  const inv = 1 / (2 * h);
+  const psi = (a: number, b: number, c: number, salt: number): number =>
+    perlinSample(a * r, b * r, c * r, CURL_GRID, salt);
+  const dCdy =
+    (psi(px, py + h, pz, SALT_CURL_C) - psi(px, py - h, pz, SALT_CURL_C)) * inv;
+  const dBdz =
+    (psi(px, py, pz + h, SALT_CURL_B) - psi(px, py, pz - h, SALT_CURL_B)) * inv;
+  const dAdz =
+    (psi(px, py, pz + h, SALT_CURL_A) - psi(px, py, pz - h, SALT_CURL_A)) * inv;
+  const dCdx =
+    (psi(px + h, py, pz, SALT_CURL_C) - psi(px - h, py, pz, SALT_CURL_C)) * inv;
+  const dBdx =
+    (psi(px + h, py, pz, SALT_CURL_B) - psi(px - h, py, pz, SALT_CURL_B)) * inv;
+  const dAdy =
+    (psi(px, py + h, pz, SALT_CURL_A) - psi(px, py - h, pz, SALT_CURL_A)) * inv;
+  return { x: dCdy - dBdz, y: dAdz - dCdx, z: dBdx - dAdy };
 }
 
 // =============================================================================
@@ -445,25 +499,44 @@ function generateDetailVolume(): Uint8Array {
   const w4 = seedWorleyGrid(DG_LOW, SALT_DW4);
   const w8 = seedWorleyGrid(DG_MID, SALT_DW8);
   const w16 = seedWorleyGrid(DG_HIGH, SALT_DW16);
+  // Wisp octave: a separate Alligator grid, INVERTED (web-like) + curl-distorted.
+  const wWisp = seedWorleyGrid(WISP_GRID, SALT_WISP);
 
   const data = new Uint8Array(DETAIL_SIZE * DETAIL_SIZE * DETAIL_SIZE * 4);
   const sR = DG_LOW / DETAIL_SIZE;
   const sG = DG_MID / DETAIL_SIZE;
   const sB = DG_HIGH / DETAIL_SIZE;
+  const sWisp = WISP_GRID / DETAIL_SIZE;
 
   let idx = 0;
   for (let z = 0; z < DETAIL_SIZE; z++) {
     for (let y = 0; y < DETAIL_SIZE; y++) {
       for (let x = 0; x < DETAIL_SIZE; x++) {
-        // RGB = three independent Worley octaves. Shader assembles its own FBM
-        // at runtime so each channel can be tweaked independently if needed.
+        // RGB = three independent Worley(→Alligator) octaves = BILLOWS. Shader
+        // assembles its own FBM at runtime so each channel can be tweaked.
         const r = crease(worleySample(x * sR, y * sR, z * sR, w4));
         const g = crease(worleySample(x * sG, y * sG, z * sG, w8));
         const b = crease(worleySample(x * sB, y * sB, z * sB, w16));
+        // A = WISP: inverted Alligator (web) sampled at a curl-distorted
+        // position → swept curly strands. NOT creased (creasing thins the web
+        // into fragments; the wisp wants a connected web). Decorrelated from the
+        // billow channels via SALT_WISP.
+        const wcx = x * sWisp;
+        const wcy = y * sWisp;
+        const wcz = z * sWisp;
+        const c = curlNoise(wcx, wcy, wcz);
+        const wisp =
+          1 -
+          worleySample(
+            wcx + c.x * CURL_AMP,
+            wcy + c.y * CURL_AMP,
+            wcz + c.z * CURL_AMP,
+            wWisp,
+          );
         data[idx++] = (r * 255) | 0;
         data[idx++] = (g * 255) | 0;
         data[idx++] = (b * 255) | 0;
-        data[idx++] = 255; // A unused — RGBA8 because WebGPU drops RGBFormat.
+        data[idx++] = wisp < 0 ? 0 : wisp > 1 ? 255 : (wisp * 255) | 0;
       }
     }
   }
@@ -482,8 +555,8 @@ function generateDetailVolume(): Uint8Array {
 // caps): a healthy creased channel skews LOW (mean well under 0.5) with a real
 // high tail. Two composites are logged: the carve mix (0.6·R+0.4·G) that feeds
 // the LIT macro carve, and the Schneider FBM (0.625·R+0.25·G+0.125·B) as a
-// reference weighting. Pair with DEBUG_VIZ 'detailField' (structure at the
-// surface) and 'detailCut' (how it acts on the body).
+// reference weighting. Pair with DEBUG_VIZ 'eroded' (the carved shape at the
+// surface) and 'detailShadow' (the near self-shadow relief).
 function logDetailDistribution(data: Uint8Array): void {
   const N = data.length / 4;
   const mk = (): {
@@ -503,13 +576,16 @@ function logDetailDistribution(data: Uint8Array): void {
   const chB = mk();
   const carve = mk(); // 0.6·R + 0.4·G — feeds the LIT macro billow carve
   const fbm = mk(); // 0.625·R + 0.25·G + 0.125·B — Schneider reference FBM
+  const chA = mk(); // A = curl-distorted inverted-Alligator WISP (thin web)
   for (let i = 0; i < N; i++) {
     const r = data[i * 4] / 255;
     const g = data[i * 4 + 1] / 255;
     const b = data[i * 4 + 2] / 255;
+    const a = data[i * 4 + 3] / 255;
     acc(chR, r);
     acc(chG, g);
     acc(chB, b);
+    acc(chA, a);
     acc(carve, r * 0.6 + g * 0.4);
     acc(fbm, r * 0.625 + g * 0.25 + b * 0.125);
   }
@@ -526,6 +602,7 @@ function logDetailDistribution(data: Uint8Array): void {
       `${line("R (grid 4, lo)", chR)}\n` +
       `${line("G (grid 8, mid)", chG)}\n` +
       `${line("B (grid 16, hi)", chB)}\n` +
+      `${line("A (wisp/curl)", chA)}\n` +
       `${line("carve 0.6R+0.4G", carve)}\n` +
       `${line("fbm .625/.25/.125", fbm)}`,
   );

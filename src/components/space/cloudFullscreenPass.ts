@@ -187,10 +187,6 @@ export type SetupCloudPipelineOpts = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uBaseScale: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uDetailScale: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uDetailErosion: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uColumnScale: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uLightConeRadius: any;
@@ -375,8 +371,6 @@ function createColorPass(
       uCloudUvOffset: opts.uCloudUvOffset,
       uDensityMul: opts.uDensityMul,
       uBaseScale: opts.uBaseScale,
-      uDetailScale: opts.uDetailScale,
-      uDetailErosion: opts.uDetailErosion,
       uColumnScale: opts.uColumnScale,
       uLightConeRadius: opts.uLightConeRadius,
       uVolumetricBlend: opts.uVolumetricBlend,
