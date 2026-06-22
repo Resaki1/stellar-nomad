@@ -811,7 +811,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // Sweep 5000 (softest / most translucent) → 40000 (crisper / harder edges)
   // to taste. Watch thin wisps (translucency) and iso-altitude banding at the
   // low end.
-  const uDensityMul = uniform(15000);
+  const uDensityMul = uniform(3000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //
   // Was 250 → 4 km tile, 1 km cumulus cells. At orbital view distances,
@@ -1896,36 +1896,66 @@ export function marchCloudVolume({
               ).mul(densScale);
               lastDensity.assign(density);
 
-              // ── Per-sample terminator daylight (2026-06-12) ──
-              // Evaluated at THIS sample's position p (cos of the sun-zenith
-              // angle: 1 → sun overhead, 0 → horizon, < 0 → night). The old
-              // per-ray value at the slab-chord midpoint drew a hard lighting
-              // line along the limb — see the ray-level `daylight` comment.
-              // Pure ALU on already-available p/r — no extra taps.
+              // ── Terminator tuning (altitude-aware sun visibility +
+              //    low-sun reddening). Build-time JS consts — tune freely. ──
+              const surfaceRScaled = kmToScaledUnits(PLANET_RADIUS_KM); // ground radius = the solid-Earth sun occluder
+              const TERMINATOR_SOFT = 0.08; // smoothstep half-width around μ_set (soft terminator band)
+              const REDDEN_START_MU = 0.25; // sun-zenith cos where warming begins (~14° sun elevation)
+              const REDDEN_POW = 1.5; // >1 keeps reddening subtle until the sun is genuinely low
+              const ALPENGLOW_AMOUNT = 0.5; // how far the cool ambient warms toward rose at low sun
+
+              // ── Per-sample terminator daylight (altitude-aware, 2026-06-22) ──
+              // μ = cos(sun-zenith) at this sample = sin(sun elevation). The
+              // sun stays geometrically visible at altitude until it drops
+              // below the DEPRESSED horizon:
+              //   μ_set = −√(1 − (R/r)²),  R = planet surface radius.
+              // So cloud TOPS (larger r) stay lit after the ground — and after
+              // lower cloud bases — go dark: the real "tops glow after sunset"
+              // look. The old fixed smoothstep(−0.1, 0.1, μ) used the GROUND
+              // horizon (μ=0) at every altitude, so clouds darkened ~5° BEFORE
+              // the sun actually set. Pure ALU on p/r — no extra taps. MUST
+              // stay per-sample (not slab-midpoint) or the limb gets a hard
+              // line — see the ray-level `daylight` comment.
+              const mu = dot(p, sunDirEarth).div(r);
+              const muHorizon = float(1)
+                .sub(float(surfaceRScaled * surfaceRScaled).div(r.mul(r)))
+                .max(0)
+                .sqrt()
+                .negate();
               const daylightS = smoothstep(
-                float(-0.1),
-                float(0.1),
-                dot(p, sunDirEarth).div(r),
+                muHorizon.sub(float(TERMINATOR_SOFT)),
+                muHorizon.add(float(TERMINATOR_SOFT)),
+                mu,
               );
-              // Sunset 4·d·(1−d) peaks at daylight 0.5 = the geometric
-              // terminator → thin warm band there, not bleeding across the
-              // day side.
-              const sunsetS = daylightS.mul(daylightS.oneMinus()).mul(4);
-              // Sun tint: warm white → Rayleigh-reddened orange at the
-              // terminator. Magnitude 12 HDR — see the AgX-compression tuning
-              // history in git (5× kept body shading visible; raised again
-              // for the current look, tuned against 'lightingOnly').
+              // Reddening ramps up MONOTONICALLY as the sun lowers (the long
+              // atmospheric slant path Rayleigh-strips blue → warm light) and
+              // STAYS warm through the terminator — vs the old symmetric
+              // 4·d·(1−d) that brightened then vanished again at night.
+              const redden = smoothstep(
+                float(REDDEN_START_MU),
+                muHorizon,
+                mu,
+              ).pow(float(REDDEN_POW));
+              // Sun tint: warm white (day) → Rayleigh-reddened orange (low
+              // sun). Magnitude 12 HDR — see the AgX-compression tuning
+              // history in git (tuned against 'lightingOnly').
               const sunColorS = mix(
                 vec3(1.0, 0.96, 0.88),
                 vec3(1.0, 0.55, 0.25),
-                sunsetS,
+                redden,
               ).mul(12.0);
-              // Sky color: COOL BLUE ambient tint (Rayleigh blue lights cloud
-              // undersides). Schneider 2015 separates the contributions:
+              // Sky color: COOL BLUE ambient by day (Rayleigh blue lights
+              // cloud undersides), warmed toward a dim rose at low sun
+              // (alpenglow underlighting). Schneider 2015 splits the terms:
               //   L = sunColor × (direct + ms) + skyColor × ambient
-              // 2 HDR with a dominant blue channel so shadow sides read as
-              // visibly cool, not just dimmer (see git for the 4 → 2 tuning).
-              const skyColorS = vec3(0.3, 0.5, 1.0).mul(daylightS).mul(2.0);
+              // 2 HDR with a dominant blue channel so shadow sides read cool.
+              const skyColorS = mix(
+                vec3(0.3, 0.5, 1.0),
+                vec3(0.8, 0.5, 0.45),
+                redden.mul(float(ALPENGLOW_AMOUNT)),
+              )
+                .mul(daylightS)
+                .mul(2.0);
 
               // ── Sun transmittance: 3D light-volume lookup (toggle) OR the
               //    6-tap cone march (default). USE_LIGHT_VOLUME is a build-time
