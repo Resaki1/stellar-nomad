@@ -3063,8 +3063,30 @@ export function marchCloudVolume({
       weightedDepthSum.div(depthWeightSum.max(float(0.0001))),
       firstHitT,
     );
+
+    // ── Opacity saturation (2026-06-22, "horizon bleeds through dark cloud") ──
+    // A ray that exits the slab before T<0.01 lands at α≈0.9–0.99, not 1. That
+    // residual (1−α) transmittance is invisible against the dim star background
+    // but GLARING against the very bright HDR atmosphere limb — so dark cloud in
+    // front of the limb reads see-through while the same cloud over space looks
+    // opaque (confirmed: stars occluded, only the bright horizon edge leaks; it
+    // took ~100× density to brute-force closed — the additive-vs-multiplicative
+    // tell). Earth + stars are BOTH in the pre-cloud scaled scene with a correct
+    // premul-over composite, so this is NOT a blend/bloom/order bug — the cloud
+    // just isn't quite opaque. Push substantially-opaque clouds to fully opaque
+    // (closing the leak) while leaving genuinely thin edges (α < LO) translucent,
+    // which they SHOULD be. Curve only — decoupled from density, so the lit look
+    // / cauliflower tuning is unchanged. `col` is premul at the old α; for the
+    // affected high-α band α≈col-premul-α already, so no col rescale needed.
+    const ALPHA_SHARP_LO = 0.7; // below this, leave translucent (thin edges)
+    const ALPHA_SHARP_HI = 0.95; // at/above this, force fully opaque
+    const alphaSharp = alpha.add(
+      float(1)
+        .sub(alpha)
+        .mul(smoothstep(float(ALPHA_SHARP_LO), float(ALPHA_SHARP_HI), alpha)),
+    );
     return {
-      rgba: vec4(col, alpha).mul(uVolumetricBlend),
+      rgba: vec4(col, alphaSharp).mul(uVolumetricBlend),
       tFront: apparentDepth,
     };
 }
