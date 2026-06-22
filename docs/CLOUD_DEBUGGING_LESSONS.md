@@ -2170,3 +2170,80 @@ un-self-shadowed edge speckle; `uDetailErosion=0` visibly fixed it, so `shape` n
 feeds density directly. A 6th lesson: when a new mechanism supersedes an old one,
 DELETE the old path — leaving it running silently re-introduced the exact artifact
 (edge speckle) the new path was built to fix.
+
+## Case study #22 — five reported bugs: terminator, horizon pop-in, flicker, orbit perf (2026-06-22)
+
+A pass over five user-reported issues. Two were real debugging journeys; the rest
+were clean once the right quantity was measured. Recorded for the wrong turns.
+
+1. **Terminator "too dark too early" = the sun gate used the GROUND horizon at every
+   altitude.** `daylightS = smoothstep(-0.1, 0.1, dot(p,sunDir)/r)` crosses 0 at the
+   *ground* horizon, so a 14 km cloud was cut at the same sun angle as the dirt below
+   it — it darkened ~5° before the sun actually set. Fix: center the terminator on the
+   **depressed horizon** `μ_set = -√(1-(R/r)²)` (R = planet surface radius), per-sample.
+   Higher samples → more-negative `μ_set` → cloud TOPS stay lit after bases/ground go
+   dark, for free (the real "lit tops after sunset" look). Plus monotonic low-sun
+   reddening (replacing the symmetric `4·d·(1-d)` that vanished at night) + warm
+   alpenglow ambient. Pure ALU on p/r. **Lesson: any horizon/terminator test at
+   altitude must use the depressed horizon, not the ground (μ=0).**
+2. **Horizon clouds invisible from in/just-below the deck, popping in at an EXACT
+   altitude — and the first fix was WRONG.** Plausible theory: the skip stride jumps
+   over thin far clouds (chicken-and-egg with the `profile>0.01` cap), so I gated the
+   cap on the smooth 2D `coverage` instead. **It changed nothing.** `DEBUG_VIZ='maxProfile'`
+   went BLACK exactly where clouds were missing = the band was **never marched there**,
+   not strided. The real cause (from the user's own "fixed distance inside the band,
+   unlimited once fully below it"): `tExitSlab = hitInner.select(tInnerNear, tOuterFar)`
+   **truncated the march at the deck FLOOR** whenever a downward ray clipped the inner
+   shell — so the far band segment (where the ray dips under the deck and re-enters it
+   toward the horizon) was never reached. Fix: `tExitSlab = tOuterFar` always; the
+   planet-surface clamp still occludes ground-hitting rays. **Lesson: do NOT ship a fix
+   whose mechanism you haven't confirmed moves the measured symptom — the coverage-gate
+   was reverted; `maxProfile` (marched-vs-not) named the real cause in one look.**
+3. **Distant flicker = full-amplitude sub-pixel detail (no footprint LOD).** FINE_CARVE/
+   WISP/HHF applied at full strength at all distances; one point-sample per step + per-
+   frame STBN jitter flips on sub-pixel features → scintillation. Fix (Nubis p.115):
+   fade the whole `fineDelta` AMPLITUDE to 0 over `DETAIL_FADE_NEAR→FAR` (20→100 km),
+   leaving only the macro billow form far away. NOT a noise mip (the file forces
+   `.level(0)` everywhere — auto-mip + dither banded, case #2). Killed the flicker;
+   close detail untouched.
+4. **Orbit-down perf valley = volumetrically marching the whole visible deck, lodCap-
+   bound.** Worst ~200–250 km up (full-screen broken deck, shallow grazing rays, NO
+   early-out since broken → T never saturates). `iters` mostly RED, low green = the
+   cost is SKIP steps, not dense. Levers, in order of what the data allowed:
+   (a) decouple the dense INTEGRATION step from `lodCap` (it exists for detection/reach,
+   not integration) → dense grows to footprint at orbit, bounded by the skip stride;
+   (b) lower the `uLodMinSamples` ramp (FAR_ALT 800→200, FAR floor 24→8) → fewer skip
+   steps. **The clean diagnostic: raising `LOD_STEP_GROWTH` 400→4000 changed FPS by
+   ZERO, while `uLodMinSamples` moved it — proving the rays are `lodCap`-bound (lodScale
+   pinned to lodCap, growth term irrelevant), so skip count = uLodMinSamples and can
+   only drop by lowering that floor.** Got 25→87 fps (meets the 60 target). `iters`
+   stays red = the residual is fundamental: every pixel marches the broken deck. The
+   ONLY way to a smooth 120 is to STOP marching the far deck — the industry near-
+   volumetric / far-flat (impostor) hand-off by DISTANCE (cap the march, distance-gate
+   the existing flat overlay to carry the far field). **Deferred** as a rendering-
+   architecture change; flagged for sign-off. (Note: Fix #2's `tExit=tOuterFar` also
+   *extends* orbit shallow rays through the far band — correct, but it's part of why the
+   far-flat hand-off is the real fix.)
+5. **Medium-distance shadow drift — not reproducible** after the above (likely the
+   detail fade + dense-step changes smoothed the distance-dependent input). Left as-is.
+
+### Meta-lessons
+- **A null result IS the measurement.** `LOD_STEP_GROWTH` doing nothing proved
+  lodCap-bound (cf. #21's 800 m probe doing nothing proving the distance-scale law).
+- **Confirm the fix moves the measured symptom before believing it.** The coverage-gate
+  (issue 2) was a plausible, well-reasoned fix for the WRONG cause; `maxProfile`
+  (marched-vs-not, BLACK = never sampled) is the decisive skip/geometry discriminator.
+- **Footprint LOD: render cost should track SCREEN coverage, not world volume.** Fade
+  detail amplitude + coarsen integration with distance; the per-ray sample floor
+  (`uLodMinSamples`) is the hard limit once `lodCap`-bound.
+- **Volumetric clouds from orbit don't scale** — every pixel marching the whole deck is
+  fundamental. The standard answer is volumetric-near / 2D-or-impostor-far, handed off
+  by distance, not just altitude (our flat overlay is altitude-gated at 1500–3000 km;
+  the low-orbit valley sits below that, fully volumetric).
+
+### Current knobs (post-fix baseline, 2026-06-22)
+Terminator: `TERMINATOR_SOFT=0.08`, `REDDEN_START_MU=0.25`, `REDDEN_POW=1.5`,
+`ALPENGLOW_AMOUNT=0.5`. Detail fade: `DETAIL_FADE_NEAR=0.02` (20 km), `DETAIL_FADE_FAR=0.1`
+(100 km). LOD: `LOD_MIN_SAMPLES_NEAR=60`, `LOD_MIN_SAMPLES_FAR=8`, `MIN_SAMPLES_NEAR_ALT_KM=50`,
+`MIN_SAMPLES_FAR_ALT_KM=200`, `LOD_STEP_GROWTH=400`. Geometry: `tExitSlab=tOuterFar`
+(dense step decoupled from lodCap, bounded by `dtSkipInBand` + `DENSE_INTEG_CAP`).

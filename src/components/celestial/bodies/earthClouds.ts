@@ -116,15 +116,20 @@ const LOD_STEP_GROWTH = 400;
 //   near/inside the deck (alt < MIN_SAMPLES_NEAR_ALT_KM) → LOD_MIN_SAMPLES_NEAR
 //   high above            (alt > MIN_SAMPLES_FAR_ALT_KM) → LOD_MIN_SAMPLES_FAR
 // Rationale: 60 forced samples are needed near the deck where the vertical
-// profile carries visible structure; from hundreds of km up, the carve and
-// detail layers are distance-faded out anyway and the (variance-preserved)
-// distance mip band-limits the base noise to the pixel footprint, so ~24
-// samples resolve everything that's left — at ~2.5× less march cost exactly
-// where the planet disk fills the whole screen.
+// profile carries visible structure; from a couple hundred km up the carve /
+// WISP / HHF detail is distance-faded out (see DETAIL_FADE_*), so only the
+// macro billow form is left and a handful of samples resolve it — at far less
+// march cost exactly where the planet disk fills the whole screen.
+// Tuned 2026-06-22 (Issue ③, orbit-perf valley ~200–250 km up: full-screen
+// broken deck, shallow grazing rays, no early-out, lodCap-bound — confirmed by
+// LOD_STEP_GROWTH having zero FPS effect there, uLodMinSamples being the only
+// lever). FAR_ALT 800 → 200 so the floor is reached across the valley; FAR
+// floor 24 → 8 (sweet spot by eye: no visible cloud loss, ~69 → ~87 fps). NEAR
+// stays 60 for detection (Issue ④). Going below 8 risks thin-cloud detection.
 export const LOD_MIN_SAMPLES_NEAR = 60;
-export const LOD_MIN_SAMPLES_FAR = 24;
+export const LOD_MIN_SAMPLES_FAR = 8;
 export const MIN_SAMPLES_NEAR_ALT_KM = 50;
-export const MIN_SAMPLES_FAR_ALT_KM = 800;
+export const MIN_SAMPLES_FAR_ALT_KM = 200;
 // ── In-cloud step growth (budget-death fix, 2026-06-10/11) ──
 // Flying INTO a large cloud used to kill every cloud behind it: dense mode
 // steps ~25 m near the camera, so 256 steps cover only ~6 km before the budget
@@ -1478,11 +1483,22 @@ export function marchCloudVolume({
         // — the "small clouds fade in close" fix). The empty-space advance
         // further below still uses the uncapped dtSkipGrown for reach.
         const dtSkipInBand = dtSkipGrown.min(float(SKIP_DETECT_CAP_SCALED));
-        // Integration cap for the dense step (see DENSE_INTEG_CAP_SCALED):
-        // a DETECTED body is never sampled coarser than this, so small bodies
-        // get a stable handful of samples instead of one noisy one.
+        // Dense INTEGRATION step: footprint-matched distance growth, DECOUPLED
+        // from lodCap (2026-06-22, Issue ③). lodCap guarantees uLodMinSamples
+        // across the slab for DETECTION/reach (the skip stride) — but on a THIN
+        // orbit-down slab it clamps lodScale to ~2.7, pinning the dense step to
+        // ~67 m and burning ~200 dense iterations per ray grinding through the
+        // broken deck. Integration doesn't need that fineness: a far, small-on-
+        // screen puff integrates fine at the footprint scale. So grow the dense
+        // step with distance via lodScaleDense (the SAME 1+t·GROWTH, but without
+        // the lodCap clamp), bounded by (a) dtSkipInBand — never coarser than
+        // the stride that DETECTED the body — and (b) the validated-clean
+        // DENSE_INTEG_CAP. At orbit dense ≈ skip ≈ footprint → ~4× fewer dense
+        // steps; up close (small t) it stays at the fine dtDense floor.
+        const lodScaleDense = float(1).add(t.mul(float(LOD_STEP_GROWTH)));
         const dtDenseL = dtDense
-          .mul(lodScale)
+          .mul(lodScaleDense)
+          .min(dtSkipInBand)
           .min(float(DENSE_INTEG_CAP_SCALED));
         // Budget-death fix (see DENSE_OPACITY_GROWTH / DENSE_ITER_GROWTH):
         // dense step grows with accumulated opacity (covered pixels stop
