@@ -1034,11 +1034,12 @@ export function marchCloudVolume({
     const tOuterNear = b.negate().sub(sqrtOuter);
     const tOuterFar = b.negate().add(sqrtOuter);
 
-    // Inner shell clamps slab at the planet surface.
+    // Inner shell: the upward FAR-side crossing (tInnerFar) is where a
+    // below-deck camera enters the slab (tEnter, insideInner branch). The near
+    // crossing is no longer used now that tExitSlab always reaches tOuterFar.
     const cInner = d2.sub(uInnerRadius.mul(uInnerRadius));
     const discInner = b.mul(b).sub(cInner);
     const sqrtInner = discInner.max(0).sqrt();
-    const tInnerNear = b.negate().sub(sqrtInner);
     const tInnerFar = b.negate().add(sqrtInner);
 
     // When the camera is below the inner shell (altitude < 1 km — flying low
@@ -1050,25 +1051,32 @@ export function marchCloudVolume({
     const insideInner = cInner.lessThan(0);
     const tEnterDefault = tOuterNear.max(0);
     const tEnter = insideInner.select(tInnerFar.max(0), tEnterDefault);
-    const hitInner = discInner
-      .greaterThan(0)
-      .and(tInnerNear.greaterThan(tEnter));
-    const tExitSlab = hitInner.select(tInnerNear, tOuterFar);
+    // March to the FAR outer-shell exit, NOT the first inner-shell crossing.
+    // tExitSlab used to clamp to tInnerNear (the band BOTTOM) whenever a
+    // downward ray hit the inner shell — truncating the march at the deck
+    // floor. That's wrong for near-horizontal views from INSIDE the band: the
+    // ray dips below the deck into the clear gap and RE-ENTERS the band far
+    // away (the distant horizon clouds you see under a broken deck), but that
+    // far segment was never marched → clouds cut off at a fixed distance, until
+    // the camera dropped fully below the deck (insideInner) where tExitSlab was
+    // already tOuterFar. Confirmed 2026-06-22 ("fixed distance inside the band,
+    // unlimited below it"). The planet-surface clamp below floors downward rays
+    // that actually hit the ground; the sub-deck gap (heightProfile = 0) is
+    // skipped cheaply by the empty-space stride.
+    const tExitSlab = tOuterFar;
 
     // ── Planet-surface occlusion clamp ──
-    // The slab bounds above only test the cloud shells (inner = PLANET_RADIUS
-    // + 1 km). That floors the march correctly when the camera is ABOVE the
-    // slab (tExitSlab = tInnerNear = slab bottom). But when the camera is
-    // BELOW the inner shell (altitude < 1 km), the insideInner branch sets
-    // tEnter = tInnerFar — which for a DOWNWARD ray is the inner sphere's far
-    // side, on the ANTIPODE. With no surface test the marcher then samples the
-    // cloud slab on the far side of the planet, i.e. renders clouds "through"
-    // the ground (visible as the whole planetary cloud cover appearing below
-    // you the moment you drop under the deck). Clamp tExit at the near planet-
-    // surface intersection so downward rays are occluded by the ground; rays
-    // aimed above the horizon never hit the surface forward and march the slab
-    // as normal. Also kills the wasted antipodal march that tanked perf below
-    // the deck. (Plan: "planet-occlusion clamp is non-negotiable from day 1.")
+    // tExitSlab now always reaches the far outer-shell exit (tOuterFar), so
+    // this surface clamp is the SOLE mechanism flooring downward rays. It stops
+    // the march at the near planet-surface intersection so a ray aimed at/below
+    // the horizon is occluded by the ground instead of marching through the
+    // planet into the cloud band on the far side (which renders clouds "through"
+    // the ground — the whole planetary deck appearing below you, the original
+    // antipodal-march bug). Rays aimed above the horizon never hit the surface
+    // forward, so they march the full slab (near band + sub-deck gap + far
+    // band) — that far band is the distant horizon clouds, now restored from
+    // INSIDE the band too. Also kills the wasted antipodal march that tanked
+    // perf below the deck. (Plan: "planet-occlusion clamp non-negotiable.")
     const surfaceRadius = uInnerRadius.sub(
       kmToScaledUnits(CLOUD_INNER_ALTITUDE_KM),
     );
