@@ -502,6 +502,24 @@ const WISP_AMOUNT = 0.7;
 const WISP_PROFILE_LO = 0.0;
 const WISP_PROFILE_HI = 0.5;
 
+// ── Detail distance fade (footprint LOD; 2026-06-22) ──
+// FINE_CARVE / WISP / HHF are sub-km-to-few-km features. Past a few tens of km
+// they fall below the per-pixel ray footprint: the single point-sample per step
+// lands on a random side of a feature and the per-frame STBN jitter flips it →
+// "distant clouds flicker, worse the further away" (Issue ①). Nubis (p.115)
+// fades the high-frequency detail AMPLITUDE to 0 with distance — no sub-pixel
+// detail left to alias (an amplitude fade, NOT a noise mip: the file forces
+// .level(0) everywhere because auto-mip + dither banded, see case study #2). We
+// fade the whole `fineDelta` (the R/B carve + WISP + HHF together) over
+// DETAIL_FADE_NEAR→FAR by march distance `t`, leaving the macro billow form
+// (dilation + BILLOW_CARVE) intact far away — all the footprint can resolve.
+// Pure ALU, no extra taps; marcher-only so no bake-lockstep concern.
+//   NEAR/FAR: scaled-unit march distances (1 = 1000 km). Full detail < NEAR,
+//   smooth macro-only > FAR. Lower FAR = kill flicker sooner but smooth closer
+//   clouds; raise = keep detail further but more flicker.
+const DETAIL_FADE_NEAR = 0.02; // 20 km — full detail nearer than this
+const DETAIL_FADE_FAR = 0.1; // 100 km — macro-only beyond this
+
 // ── Solidity gamma (2026-06-18; Nubis low-density sharpen, talk p.123) ──
 // Nubis applies pow(density, lerp(0.3,0.6,...)) to "sharpen low-density areas
 // and bring out cauliflower definition." With an exponent < 1 it RAISES mid
@@ -1792,9 +1810,21 @@ export function marchCloudVolume({
                   ).mul(float(HHF_STRENGTH));
                   fineNoise = mix(fineNoise, hhf, hhfBlend);
                 }
+                // Footprint LOD (DETAIL_FADE_*): fade the whole fine
+                // perturbation toward 0 with march distance so sub-pixel detail
+                // far away can't alias (flicker) — only the macro billow form
+                // survives at range, which is all the footprint resolves.
+                const detailFade = float(1).sub(
+                  smoothstep(
+                    float(DETAIL_FADE_NEAR),
+                    float(DETAIL_FADE_FAR),
+                    t,
+                  ),
+                );
                 const fineDelta = fineNoise
                   .sub(float(FINE_CARVE_BIAS))
-                  .mul(float(FINE_CARVE_STRENGTH));
+                  .mul(float(FINE_CARVE_STRENGTH))
+                  .mul(detailFade);
                 baseShapeCarved.assign(baseShapeCarved.add(fineDelta).clamp(0, 1));
               }
             });
