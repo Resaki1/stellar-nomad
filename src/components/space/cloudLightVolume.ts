@@ -168,7 +168,7 @@ const BAKE_BASE_LOD = 0;
 const WARP_AMPLITUDE_MIRROR = 0;
 
 export type CloudLightVolumeDeps = {
-  baseVolume: THREE.Data3DTexture;
+  baseVolume: THREE.Texture; // GPU-baked Storage3DTexture or CPU Data3DTexture
   weatherMap: THREE.Texture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uInnerRadius: any;

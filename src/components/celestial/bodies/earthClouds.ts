@@ -30,7 +30,8 @@ import {
 import { kmToScaledUnits } from "@/sim/units";
 import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
-import { getCloudBaseVolume, getCloudDetailVolume } from "./noiseVolumes";
+import { getCloudDetailVolume } from "./noiseVolumes";
+import { getGpuCloudBaseVolume } from "./cloudVolumeCompute";
 import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
@@ -775,7 +776,9 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     PLANET_RADIUS_KM + CLOUD_OUTER_ALTITUDE_KM,
   );
 
-  const baseVolume = getCloudBaseVolume();
+  // Base volume is GPU-baked (Storage3DTexture) — allocated empty here, baked
+  // once from the render loop (flushCloudBakes). Detail stays CPU for now.
+  const baseVolume = getGpuCloudBaseVolume();
   const detailVolume = getCloudDetailVolume();
 
   const uInnerRadius = uniform(innerRadiusScaled);
@@ -992,7 +995,9 @@ export function marchCloudVolume({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sunDirEarth: any;
   weatherMap: THREE.Texture;
-  baseVolume: THREE.Data3DTexture;
+  // Base is GPU-baked (Storage3DTexture); detail is still a CPU Data3DTexture.
+  // THREE.Texture is the common base — texture3D() samples either.
+  baseVolume: THREE.Texture;
   detailVolume: THREE.Data3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uInnerRadius: any;

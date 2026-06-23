@@ -27,6 +27,7 @@ import {
   USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
+import { flushCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
@@ -488,6 +489,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         fullSize: tempFullSize,
         sparseSize: tempSparseSize,
       });
+
+      // Pass 2-pre0: one-shot GPU bake of the base cloud noise volume. MUST
+      // precede BOTH the light-volume bake (which samples the base) and the
+      // marcher draw, so the storage texture is fully written before any read.
+      // No-op once baked / until the device is ready.
+      flushCloudBakes(renderer);
 
       // Pass 2-pre: bake the per-voxel sun-transmittance light volume (a
       // compute pass over an earth-local box). MUST precede pass 2a so the

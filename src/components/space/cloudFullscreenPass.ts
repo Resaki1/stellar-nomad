@@ -174,7 +174,7 @@ export function setEarthMatrixWorldSource(mesh: THREE.Object3D | null) {
 
 export type SetupCloudPipelineOpts = {
   weatherMap: THREE.Texture;
-  baseVolume: THREE.Data3DTexture;
+  baseVolume: THREE.Texture; // GPU-baked Storage3DTexture or CPU Data3DTexture
   detailVolume: THREE.Data3DTexture;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uInnerRadius: any;
