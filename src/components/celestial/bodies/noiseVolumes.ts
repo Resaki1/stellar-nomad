@@ -161,6 +161,10 @@ function seedWorleyGrid(grid: number, salt: number): WorleyGrid {
 //     (no creases). ~0.9 → caps that just overlap → round bumps, narrow creases.
 const USE_ALLIGATOR = true;
 const ALLIGATOR_RADIUS = 0.9;
+// Squared cap radius — lets worleySample gate the per-cell sqrt on d2 < R²
+// (exactly equivalent to the post-sqrt `t < 1` test) so the ~23 of 27 cells
+// outside the cap skip the sqrt, the dominant per-sample cost.
+const ALLIGATOR_R2 = ALLIGATOR_RADIUS * ALLIGATOR_RADIUS;
 
 // Sample Worley at (px,py,pz) given in cell-space (i.e. caller has
 // pre-multiplied by `grid / volSize`). Returns ~[0, 1] where 1 = at feature
@@ -196,14 +200,18 @@ function worleySample(
         const ddy = py - (w.fy[fIdx] + offY);
         const ddz = pz - (w.fz[fIdx] + offZ);
         const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
-        if (d2 < minD2) minD2 = d2;
         if (USE_ALLIGATOR) {
           // Smooth round cap (smoothstep): 1 at the point → 0 at the radius.
-          const t = Math.sqrt(d2) / ALLIGATOR_RADIUS;
-          if (t < 1) {
+          // Gate the sqrt on d2 < R² (≡ the old post-sqrt `t < 1` check) so
+          // cells outside the cap radius never pay the sqrt. Byte-identical.
+          if (d2 < ALLIGATOR_R2) {
+            const t = Math.sqrt(d2) / ALLIGATOR_RADIUS;
             const cap = 1 - (3 * t * t - 2 * t * t * t);
             if (cap > maxCap) maxCap = cap;
           }
+        } else if (d2 < minD2) {
+          // minD2 only feeds the classic inverted-Worley return below.
+          minD2 = d2;
         }
       }
     }
@@ -215,26 +223,10 @@ function worleySample(
   return v < 0 ? 0 : v;
 }
 
-// 3-octave Worley FBM with Schneider weighting (0.625, 0.25, 0.125).
-// Each grid is sampled at its own scale relative to the volume size.
-function worleyFbm(
-  px: number,
-  py: number,
-  pz: number,
-  volSize: number,
-  o0: WorleyGrid,
-  o1: WorleyGrid,
-  o2: WorleyGrid,
-): number {
-  const s0 = o0.grid / volSize;
-  const s1 = o1.grid / volSize;
-  const s2 = o2.grid / volSize;
-  return (
-    worleySample(px * s0, py * s0, pz * s0, o0) * 0.625 +
-    worleySample(px * s1, py * s1, pz * s1, o1) * 0.25 +
-    worleySample(px * s2, py * s2, pz * s2, o2) * 0.125
-  );
-}
+// NOTE: 3-octave Worley FBM (Schneider weighting 0.625/0.25/0.125) is now
+// assembled inline in generateBaseVolume from the shared per-grid samples —
+// each grid is sampled once at its natural scale (grid/volume) and reused
+// across the bands it appears in. See the sw4..sw48 block there.
 
 // =============================================================================
 // Perlin (tileable, gradient noise)
@@ -385,7 +377,14 @@ function generateBaseVolume(): Uint8Array {
 
   const data = new Uint8Array(BASE_SIZE * BASE_SIZE * BASE_SIZE * 4);
   const sPerlin = G_LOW / BASE_SIZE;
-  const sWorleyR = G_LOW / BASE_SIZE; // R-channel Worley matches Perlin scale
+  // Per-grid Worley sample scales (grid / volume). Each grid is sampled at
+  // exactly ONE scale regardless of which band uses it, so a single sample per
+  // grid feeds both the R channel and every FBM band that includes it.
+  const s4 = G_LOW / BASE_SIZE; // == sPerlin: R-channel Worley matches Perlin scale
+  const s8 = G_MID / BASE_SIZE;
+  const s16 = G_HIGH / BASE_SIZE;
+  const s32 = G_VHIGH / BASE_SIZE;
+  const s48 = G_FINE / BASE_SIZE;
 
   let idx = 0;
   for (let z = 0; z < BASE_SIZE; z++) {
@@ -414,16 +413,26 @@ function generateBaseVolume(): Uint8Array {
           z * sPerlin,
           G_LOW,
         );
-        const worleyR = crease(
-          worleySample(x * sWorleyR, y * sWorleyR, z * sWorleyR, w4),
-        );
+
+        // Sample each Worley grid ONCE at its natural scale, then reuse: w4
+        // feeds R + band-G; w8 feeds G + B; w16 feeds G + B + A; w32 feeds
+        // B + A. This is the same set of taps the previous per-band
+        // worleyFbm() calls made (10 samples → 5), byte-identical.
+        const sw4 = worleySample(x * s4, y * s4, z * s4, w4);
+        const sw8 = worleySample(x * s8, y * s8, z * s8, w8);
+        const sw16 = worleySample(x * s16, y * s16, z * s16, w16);
+        const sw32 = worleySample(x * s32, y * s32, z * s32, w32);
+        const sw48 = worleySample(x * s48, y * s48, z * s48, w48);
+
+        const worleyR = crease(sw4);
         const perlinWorley = worleyR + perlin * (1 - worleyR);
 
-        // GBA: three FBM bands at progressively higher base frequencies.
-        // Each band overlaps the next by two octaves so the shader can blend.
-        const fbmG = crease(worleyFbm(x, y, z, BASE_SIZE, w4, w8, w16));
-        const fbmB = crease(worleyFbm(x, y, z, BASE_SIZE, w8, w16, w32));
-        const fbmA = crease(worleyFbm(x, y, z, BASE_SIZE, w16, w32, w48));
+        // GBA: three Schneider-weighted (0.625, 0.25, 0.125) FBM bands at
+        // progressively higher base frequencies. Each band overlaps the next
+        // by two octaves so the shader can blend.
+        const fbmG = crease(sw4 * 0.625 + sw8 * 0.25 + sw16 * 0.125);
+        const fbmB = crease(sw8 * 0.625 + sw16 * 0.25 + sw32 * 0.125);
+        const fbmA = crease(sw16 * 0.625 + sw32 * 0.25 + sw48 * 0.125);
 
         // Quantize 0..1 → 0..255 with clamp (overflow paranoia for the FBM
         // sums, which can exceed 1 if a sample hits exactly at a feature
