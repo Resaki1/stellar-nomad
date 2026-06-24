@@ -27,6 +27,7 @@ import {
   USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
+import { setupAtmospherePass } from "./atmospherePass";
 import {
   flushCloudBakes,
   warmCloudBakes,
@@ -42,6 +43,18 @@ const LOCAL_CAMERA_FAR = 20_000 * 1000;
 // (Don't use logarithmicDepthBuffer — it breaks depth for custom vertexNode.)
 const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
+
+// ── Atmosphere pass (docs/ATMOSPHERE_PLAN.md) ────────────────────────────────
+// A fullscreen post-pass inserted right after the scaled scene renders. PHASE 0:
+// a PASSTHROUGH copy (rt → rtB) that lands and verifies the rtB routing the
+// Phase-1 scattering shader will use — the on-screen result is pixel-identical
+// to the pre-atmosphere path. When disabled, the renderer keeps targeting `rt`
+// directly (zero cost, zero extra VRAM). While enabled it costs one extra
+// full-res RGBA16F+depth target plus one fullscreen copy per frame — negligible
+// next to the cloud pipeline, and *replaced* (not added to) by the Phase-1
+// march. Phase 1 also adds nearest-atmosphere-body gating so it's free in deep
+// space.
+const ATMOSPHERE_PASS_ENABLED = true;
 
 // ── Cloud-only resolution clamp ──────────────────────────────────────────────
 // The whole scene renders at gl.getPixelRatio() (DPR, clamped to [0.5, 1.5] in
@@ -199,6 +212,32 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rt.dispose(); }, [rt]);
 
+  // Phase-1.5 atmosphere target — see ATMOSPHERE_PASS_ENABLED. Same format as
+  // `rt` (HDR + depth, full DPR). The atmosphere pass reads `rt` and writes
+  // here; the cloud composite + local scene + post pipeline then target `rtB`.
+  // Null when the pass is disabled → the renderer keeps targeting `rt`.
+  const rtB = useMemo(() => {
+    if (!ATMOSPHERE_PASS_ENABLED) return null;
+    const dpr = gl.getPixelRatio();
+    return new RenderTarget(
+      Math.floor(size.width * dpr),
+      Math.floor(size.height * dpr),
+      { type: HalfFloatType, depthBuffer: true }
+    );
+  }, [gl, size.width, size.height]);
+
+  useEffect(() => () => { rtB?.dispose(); }, [rtB]);
+
+  // Passthrough atmosphere pass bound to the current `rt.texture`. Rebuilt (and
+  // the old one disposed) when `rt` is recreated on resize, mirroring the
+  // composite-mesh pattern — the TextureNode is bound at build time, never
+  // reassigned (the WebGPU bind-group cache doesn't reliably honour that).
+  const atmospherePass = useMemo(
+    () => (ATMOSPHERE_PASS_ENABLED ? setupAtmospherePass(rt.texture) : null),
+    [rt]
+  );
+  useEffect(() => () => { atmospherePass?.dispose(); }, [atmospherePass]);
+
   // Phase D RT layout — two pairs:
   //
   //   sparseCloudRts: MRT pair, each W/SPARSE_DIVISOR × H/SPARSE_DIVISOR with
@@ -302,7 +341,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   // Rebuild the node graph when bloom / toneMapping / RT changes
   useEffect(() => {
-    const sceneTexture = texture(rt.texture);
+    // Post pipeline reads the final composited target: `rtB` when the
+    // atmosphere pass routes through it, otherwise `rt`.
+    const sceneRt = rtB ?? rt;
+    const sceneTexture = texture(sceneRt.texture);
 
     let outputNode: typeof pipeline.outputNode = sceneTexture;
     if (settings.bloom) {
@@ -322,7 +364,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     return () => {
       pipeline.needsUpdate = true;
     };
-  }, [settings.bloom, settings.toneMapping, pipeline, rt, gl]);
+  }, [settings.bloom, settings.toneMapping, pipeline, rt, rtB, gl]);
 
   // Camera setup
   useEffect(() => {
@@ -426,6 +468,19 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     renderer.setRenderTarget(rt);
     gl.autoClear = true;
     gl.render(scaledScene, scaledCamera);
+
+    // Pass 1.5: atmosphere (Phase 0 — passthrough copy rt → rtB). Establishes
+    // the rtB routing the Phase-1 scattering shader will use; the result is
+    // pixel-identical to the pre-atmosphere path. Skipped when disabled, in
+    // which case `finalTarget` stays `rt`.
+    if (atmospherePass && rtB) {
+      renderer.setRenderTarget(rtB);
+      gl.autoClear = true;
+      gl.render(atmospherePass.scene, atmospherePass.camera);
+    }
+    // Target for all subsequent compositing (cloud composite, local scene) and
+    // the post pipeline's input.
+    const finalTarget = rtB ?? rt;
 
     // ── Phase D cloud pipeline: pass 2a (sparse color) → 2b (sparse depth)
     // → 2c (full-res reconstruction) → pass 3 (composite onto main RT). ──
@@ -557,7 +612,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       compositeScene.add(writeCompositeMesh);
       mountedCompositeMesh.current = writeCompositeMesh;
     }
-    renderer.setRenderTarget(rt);
+    renderer.setRenderTarget(finalTarget);
     gl.autoClear = false;
     gl.render(compositeScene, compositeCamera);
 

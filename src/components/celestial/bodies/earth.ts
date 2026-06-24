@@ -40,6 +40,7 @@ import {
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
+import { EARTH_ATMOSPHERE } from "./atmosphereData";
 
 export { PLANET_POSITION_KM };
 
@@ -437,6 +438,7 @@ export const earthConfig: CelestialBodyConfig = {
   positionKm: PLANET_POSITION_KM,
   radiusKm: PLANET_RADIUS_KM,
   rotation: EARTH_ROTATION,
+  atmosphere: EARTH_ATMOSPHERE,
 
   lod: { near: 35_000, far: 1_500_000 },
   near: {

@@ -3,6 +3,28 @@ import type { WorldOriginContextValue } from "@/sim/worldOrigin";
 
 export type Vec3Tuple = [number, number, number];
 
+// Physically-based atmosphere parameters (see docs/ATMOSPHERE_PLAN.md §3).
+// Per-RGB scattering/absorption coefficients in m^-1; density via exponential
+// scale heights (Rayleigh, Mie) + a tent layer (ozone). Presets + procedural
+// derivation live in bodies/atmosphereData.ts. Optional on CelestialBodyConfig:
+// bodies without it render airless (no atmosphere pass contribution).
+export type AtmosphereParams = {
+  groundRadiusKm: number;
+  atmosphereHeightKm: number;
+  rayleighScattering: Vec3Tuple;
+  rayleighScaleHeightKm: number;
+  mieScattering: number;
+  mieAbsorption: number;
+  mieScaleHeightKm: number;
+  mieG: number;
+  ozoneAbsorption: Vec3Tuple;
+  ozoneCenterKm: number;
+  ozoneWidthKm: number;
+  groundAlbedo: Vec3Tuple;
+  /** Top-of-atmosphere sun illuminance in the unified luminance scale. */
+  sunIlluminance: Vec3Tuple;
+};
+
 export type LODTier = {
   textures: Record<string, string>;
   segments: number;
@@ -71,6 +93,11 @@ export type CelestialBodyConfig = {
   sunPositionKm?: Vec3Tuple;
   radiusKm: number;
   rotation?: THREE.Euler;
+
+  // Physically-based atmosphere (docs/ATMOSPHERE_PLAN.md). Optional — bodies
+  // without it are airless. Not yet read in Phase 0 (atmosphere pass is a
+  // passthrough); Phase 1 consumes it for the scattering raymarch.
+  atmosphere?: AtmosphereParams;
 
   lod: { near?: number; far: number };
   near?: LODTier;
