@@ -3,13 +3,16 @@ import {
   Fn,
   instanceIndex,
   uint,
+  int,
   float,
   uvec3,
+  vec3,
   vec4,
   floor,
   sqrt,
   select,
   Loop,
+  texture3D,
   textureStore,
   storage,
 } from "three/tsl";
@@ -124,11 +127,18 @@ const tslHash3 = (x: Node, y: Node, z: Node, salt: number): Node => {
 //
 // x,y,z are the UINT voxel coords (0..N-1). The sample scale is grid/N.
 // =============================================================================
-const tslWorley = (x: Node, y: Node, z: Node, grid: number, salt: number): Node => {
+const tslWorley = (
+  x: Node,
+  y: Node,
+  z: Node,
+  grid: number,
+  salt: number,
+  n: number = BASE_SIZE,
+): Node => {
   const Gu = uint(grid);
-  const Nu = uint(BASE_SIZE);
+  const Nu = uint(n);
   const Gm1 = uint(grid - 1);
-  const scale = grid / BASE_SIZE; // exact in f32 (N = 128 = 2^7)
+  const scale = grid / n; // exact in f32 when n is a power of 2 (128 / 64)
 
   // Base cell = floor(voxel*grid/N), computed as exact uint integer division.
   const cxu = x.mul(Gu).div(Nu);
@@ -221,30 +231,27 @@ const tslPerlin = (x: Node, y: Node, z: Node, grid: number, salt: number): Node 
   const v = tslFade(dy);
   const wF = tslFade(dz);
 
-  // Corner lattice coords (wrapped). cxu ∈ [0,grid) needs no wrap; +1 wraps.
-  const cx1 = cxu.add(uint(1)).mod(Gu);
-  const cy1 = cyu.add(uint(1)).mod(Gu);
-  const cz1 = czu.add(uint(1)).mod(Gu);
-  const dx1 = dx.sub(1);
-  const dy1 = dy.sub(1);
-  const dz1 = dz.sub(1);
-
-  const g000 = tslGradDot(cxu, cyu, czu, dx, dy, dz, salt);
-  const g100 = tslGradDot(cx1, cyu, czu, dx1, dy, dz, salt);
-  const g010 = tslGradDot(cxu, cy1, czu, dx, dy1, dz, salt);
-  const g110 = tslGradDot(cx1, cy1, czu, dx1, dy1, dz, salt);
-  const g001 = tslGradDot(cxu, cyu, cz1, dx, dy, dz1, salt);
-  const g101 = tslGradDot(cx1, cyu, cz1, dx1, dy, dz1, salt);
-  const g011 = tslGradDot(cxu, cy1, cz1, dx, dy1, dz1, salt);
-  const g111 = tslGradDot(cx1, cy1, cz1, dx1, dy1, dz1, salt);
-
-  const lx00 = g000.add(u.mul(g100.sub(g000)));
-  const lx10 = g010.add(u.mul(g110.sub(g010)));
-  const lx01 = g001.add(u.mul(g101.sub(g001)));
-  const lx11 = g011.add(u.mul(g111.sub(g011)));
-  const ly0 = lx00.add(v.mul(lx10.sub(lx00)));
-  const ly1 = lx01.add(v.mul(lx11.sub(lx01)));
-  const val = ly0.add(wF.mul(ly1.sub(ly0)));
+  // 8-corner trilinear as a weighted SUM in a Loop (built ONCE → ~8× fewer TSL
+  // nodes than unrolling; equals the nested-lerp form). Corner i's bits select
+  // the cell offset (+0/+1, wrapped) and the per-axis weight (fade or 1-fade).
+  const val = float(0).toVar();
+  Loop({ start: uint(0), end: uint(8), type: "uint", condition: "<" }, ({ i }: { i: Node }) => {
+    const bx = i.mod(uint(2));
+    const by = i.div(uint(2)).mod(uint(2));
+    const bz = i.div(uint(4));
+    const cxC = cxu.add(bx).mod(Gu);
+    const cyC = cyu.add(by).mod(Gu);
+    const czC = czu.add(bz).mod(Gu);
+    const g = tslGradDot(
+      cxC, cyC, czC,
+      dx.sub(float(bx)), dy.sub(float(by)), dz.sub(float(bz)),
+      salt,
+    );
+    const wx = select(bx.lessThan(uint(1)), float(1).sub(u), u);
+    const wy = select(by.lessThan(uint(1)), float(1).sub(v), v);
+    const wz = select(bz.lessThan(uint(1)), float(1).sub(wF), wF);
+    val.addAssign(g.mul(wx).mul(wy).mul(wz));
+  });
   return val.mul(0.5).add(0.5);
 };
 
@@ -254,6 +261,138 @@ const tslCrease = (val: Node): Node => {
   const k = BILLOW_CREASE_POWER;
   if (k === 1) return val;
   return val.max(0).pow(k).mul((k + 1) * 0.5).clamp(0, 1);
+};
+
+// =============================================================================
+// DETAIL-volume noise — float-POSITION variants (the wisp/curl path samples at
+// curl-distorted, NON-voxel-aligned positions, so the integer-division cell
+// trick used above does not apply). These convert floor(position)→uint, which
+// the base path deliberately avoided; the conversion of a value already reduced
+// to [0,grid) is forced to materialise as u32 via .toVar(). Validate detail
+// numerically before relying on it (see /dev/cloud-volume-gpu).
+//
+// Lockstep mirror of noiseVolumes.ts detail constants — KEEP IN SYNC.
+// =============================================================================
+const DETAIL_SIZE = 64;
+const DG_LOW = 4;
+const DG_MID = 8;
+const DG_HIGH = 16;
+const SALT_DW4 = 11;
+const SALT_DW8 = 12;
+const SALT_DW16 = 13;
+const WISP_GRID = 8;
+const CURL_GRID = 8;
+const CURL_AMP = 2.1;
+const SALT_WISP = 41;
+const SALT_CURL_A = 42;
+const SALT_CURL_B = 43;
+const SALT_CURL_C = 44;
+
+// Wrap a (possibly negative) integer-valued float cell coord to [0,grid) and
+// convert to u32. The subtraction reduces it to [0,grid) (non-negative) BEFORE
+// the uint() cast; .toVar() forces the result to materialise as a u32 variable
+// (a bare uint(floatExpr) reused downstream can stay f32 — the base-path bug).
+const wrapToUint = (ncF: Node, grid: number): Node =>
+  uint(ncF.sub(floor(ncF.div(grid)).mul(grid))).toVar();
+
+// Worley (Alligator) sampled at an ARBITRARY float position (cell-space). Same
+// math as tslWorley but the base cell comes from floor(position) and the wrap
+// is a true modulo (handles negative positions from the curl distortion).
+const tslWorleyAt = (
+  pxf: Node,
+  pyf: Node,
+  pzf: Node,
+  grid: number,
+  salt: number,
+): Node => {
+  const cxF = floor(pxf);
+  const cyF = floor(pyf);
+  const czF = floor(pzf);
+  const maxCap = float(0).toVar();
+  Loop({ start: uint(0), end: uint(27), type: "uint", condition: "<" }, ({ i }: { i: Node }) => {
+    const dxp = i.mod(uint(3));
+    const dyp = i.div(uint(3)).mod(uint(3));
+    const dzp = i.div(uint(9));
+    const nxF = cxF.add(float(dxp)).sub(1); // unwrapped neighbour cell (float, may be < 0)
+    const nyF = cyF.add(float(dyp)).sub(1);
+    const nzF = czF.add(float(dzp)).sub(1);
+    const wx = wrapToUint(nxF, grid);
+    const wy = wrapToUint(nyF, grid);
+    const wz = wrapToUint(nzF, grid);
+    const fx = nxF.add(tslHash3(wx, wy, wz, salt));
+    const fy = nyF.add(tslHash3(wx.add(uint(1)), wy.add(uint(3)), wz.add(uint(7)), salt));
+    const fz = nzF.add(tslHash3(wx.add(uint(2)), wy.add(uint(5)), wz.add(uint(11)), salt));
+    const ddx = pxf.sub(fx);
+    const ddy = pyf.sub(fy);
+    const ddz = pzf.sub(fz);
+    const d2 = ddx.mul(ddx).add(ddy.mul(ddy)).add(ddz.mul(ddz));
+    const t = sqrt(d2).div(ALLIGATOR_RADIUS);
+    const tt = t.mul(t);
+    const cap = float(1).sub(tt.mul(3).sub(tt.mul(t).mul(2)));
+    maxCap.assign(maxCap.max(select(d2.lessThan(ALLIGATOR_R2), cap, float(0))));
+  });
+  return maxCap;
+};
+
+// Perlin sampled at an ARBITRARY float position (cell-space). Mirrors tslPerlin
+// but cells come from floor(position) with a true-modulo wrap.
+const tslPerlinAt = (
+  pxf: Node,
+  pyf: Node,
+  pzf: Node,
+  grid: number,
+  salt: number,
+): Node => {
+  const cxF = floor(pxf);
+  const cyF = floor(pyf);
+  const czF = floor(pzf);
+  const dx = pxf.sub(cxF);
+  const dy = pyf.sub(cyF);
+  const dz = pzf.sub(czF);
+  const u = tslFade(dx);
+  const v = tslFade(dy);
+  const wf = tslFade(dz);
+
+  // 8-corner trilinear weighted SUM in a Loop — built once. This is the big
+  // startup win: the curl calls this 12×, so unrolling the 8 corners here was
+  // ~96 gradDot blocks in the detail kernel's TSL node graph.
+  const val = float(0).toVar();
+  Loop({ start: uint(0), end: uint(8), type: "uint", condition: "<" }, ({ i }: { i: Node }) => {
+    const bx = i.mod(uint(2));
+    const by = i.div(uint(2)).mod(uint(2));
+    const bz = i.div(uint(4));
+    const cxC = wrapToUint(cxF.add(float(bx)), grid);
+    const cyC = wrapToUint(cyF.add(float(by)), grid);
+    const czC = wrapToUint(czF.add(float(bz)), grid);
+    const g = tslGradDot(
+      cxC, cyC, czC,
+      dx.sub(float(bx)), dy.sub(float(by)), dz.sub(float(bz)),
+      salt,
+    );
+    const wx = select(bx.lessThan(uint(1)), float(1).sub(u), u);
+    const wy = select(by.lessThan(uint(1)), float(1).sub(v), v);
+    const wz = select(bz.lessThan(uint(1)), float(1).sub(wf), wf);
+    val.addAssign(g.mul(wx).mul(wy).mul(wz));
+  });
+  return val.mul(0.5).add(0.5);
+};
+
+// Curl ∇×ψ of a Perlin vector potential (px,py,pz in WISP cells). Mirrors
+// noiseVolumes.ts curlNoise: central finite differences (step h) of a 3-channel
+// Perlin potential sampled at CURL_GRID. Returns the offset as a vec3.
+const tslCurl = (pxf: Node, pyf: Node, pzf: Node): Node => {
+  const r = CURL_GRID / WISP_GRID; // wisp-cell → curl-cell space
+  const h = 0.5;
+  const inv = 1 / (2 * h);
+  const psi = (a: Node, b: Node, c: Node, salt: number): Node =>
+    tslPerlinAt(a.mul(r), b.mul(r), c.mul(r), CURL_GRID, salt);
+  const dCdy = psi(pxf, pyf.add(h), pzf, SALT_CURL_C).sub(psi(pxf, pyf.sub(h), pzf, SALT_CURL_C)).mul(inv);
+  const dBdz = psi(pxf, pyf, pzf.add(h), SALT_CURL_B).sub(psi(pxf, pyf, pzf.sub(h), SALT_CURL_B)).mul(inv);
+  const dAdz = psi(pxf, pyf, pzf.add(h), SALT_CURL_A).sub(psi(pxf, pyf, pzf.sub(h), SALT_CURL_A)).mul(inv);
+  const dCdx = psi(pxf.add(h), pyf, pzf, SALT_CURL_C).sub(psi(pxf.sub(h), pyf, pzf, SALT_CURL_C)).mul(inv);
+  const dBdx = psi(pxf.add(h), pyf, pzf, SALT_CURL_B).sub(psi(pxf.sub(h), pyf, pzf, SALT_CURL_B)).mul(inv);
+  const dAdy = psi(pxf, pyf.add(h), pzf, SALT_CURL_A).sub(psi(pxf, pyf.sub(h), pzf, SALT_CURL_A)).mul(inv);
+  return vec3(dCdy.sub(dBdz), dAdz.sub(dCdx), dBdx.sub(dAdy));
 };
 
 // =============================================================================
@@ -344,6 +483,192 @@ export function createCloudBaseVolumeCompute(
   };
 }
 
+/**
+ * Build the DETAIL-volume storage texture (64³) + its populate compute node.
+ * RGB = three creased Worley(→Alligator) octaves (voxel-indexed, integer cell
+ * math); A = curl-distorted inverted Alligator "wisp" (float-position path).
+ * Mirrors generateDetailVolume() in noiseVolumes.ts.
+ *
+ * NOTE: single-mip. The marcher samples the detail at level 0 AND level 1
+ * (DETAIL_SS_MIP). Level-1 handling is an INTEGRATION concern (a second 32³
+ * box-downsample, or keep the CPU mip) — out of scope for the bake itself,
+ * which this validates at level 0.
+ */
+export function createCloudDetailVolumeCompute(
+  withReadbackBuffer = false,
+): CloudBaseVolumeCompute {
+  const N = DETAIL_SIZE;
+  const voxels = N * N * N;
+
+  const tex = new THREE.Storage3DTexture(N, N, N);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.wrapR = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.generateMipmaps = false;
+
+  const readbackAttr = withReadbackBuffer
+    ? new StorageInstancedBufferAttribute(voxels, 4)
+    : null;
+  const readbackNode = readbackAttr
+    ? storage(readbackAttr, "vec4", voxels)
+    : null;
+
+  const Nu = uint(N);
+  const NuHW = uint(N * N);
+  const sWisp = WISP_GRID / DETAIL_SIZE;
+
+  const populate = Fn(() => {
+    const i = instanceIndex;
+    const x = i.mod(Nu);
+    const y = i.div(Nu).mod(Nu);
+    const z = i.div(NuHW);
+
+    // RGB: three creased Worley octaves at voxel positions (integer cell math).
+    const rC = tslCrease(tslWorley(x, y, z, DG_LOW, SALT_DW4, N));
+    const gC = tslCrease(tslWorley(x, y, z, DG_MID, SALT_DW8, N));
+    const bC = tslCrease(tslWorley(x, y, z, DG_HIGH, SALT_DW16, N));
+
+    // A: curl-distorted inverted Alligator wisp (float-position path). NOT creased.
+    const wcx = float(x).mul(sWisp);
+    const wcy = float(y).mul(sWisp);
+    const wcz = float(z).mul(sWisp);
+    const c = tslCurl(wcx, wcy, wcz);
+    const wisp = float(1).sub(
+      tslWorleyAt(
+        wcx.add(c.x.mul(CURL_AMP)),
+        wcy.add(c.y.mul(CURL_AMP)),
+        wcz.add(c.z.mul(CURL_AMP)),
+        WISP_GRID,
+        SALT_WISP,
+      ),
+    );
+
+    const rgba = vec4(
+      rC.clamp(0, 1),
+      gC.clamp(0, 1),
+      bC.clamp(0, 1),
+      wisp.clamp(0, 1),
+    );
+    const coord = (uvec3 as any)(x, y, z);
+    textureStore(tex, coord, rgba).toWriteOnly();
+    if (readbackNode) readbackNode.element(i).assign(rgba);
+  });
+
+  const computeNode = populate().compute(voxels);
+
+  return {
+    tex,
+    computeNode,
+    readbackAttr,
+    dispose: () => tex.dispose(),
+  };
+}
+
+/**
+ * Per-channel variance-renorm params for the detail level-1 mip. Mirrors
+ * noiseVolumes.ts renormalizeToMoments: v' = refMean + (v - l1Mean) * gain,
+ * where ref = level-0 moments, l1 = raw (pre-renorm) box-downsampled moments,
+ * gain = clamp(refStd/l1Std, 1, 4). The detail noise is deterministic, so these
+ * are effectively constants (≈seed-invariant for the noise type) — measured
+ * from the CPU reference (see /dev/cloud-volume-gpu) and passed in as kernel
+ * constants rather than computed via a runtime GPU reduction.
+ */
+export type DetailMip1Renorm = {
+  refMean: [number, number, number, number];
+  l1Mean: [number, number, number, number];
+  gain: [number, number, number, number];
+};
+
+/**
+ * Build the detail LEVEL-1 (32³) box-downsample + renorm of an existing detail
+ * level-0 storage texture. Reads the 8 covered level-0 texels via texture3D at
+ * their CENTRES ((2i+0.5)/64 → exact texel under LinearFilter), averages, and
+ * applies the renorm. A SEPARATE 32³ storage texture (avoids the unverified 3D
+ * mip-write); the marcher samples it at level 0 in place of detailVolume.level(1).
+ */
+export function createDetailMip1Compute(
+  level0Tex: THREE.Storage3DTexture,
+  renorm: DetailMip1Renorm,
+  withReadbackBuffer = false,
+): CloudBaseVolumeCompute {
+  const N0 = DETAIL_SIZE; // 64
+  const N1 = DETAIL_SIZE >> 1; // 32
+  const voxels = N1 * N1 * N1;
+  const inv0 = 1 / N0;
+
+  const tex = new THREE.Storage3DTexture(N1, N1, N1);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.wrapR = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.generateMipmaps = false;
+
+  const readbackAttr = withReadbackBuffer
+    ? new StorageInstancedBufferAttribute(voxels, 4)
+    : null;
+  const readbackNode = readbackAttr
+    ? storage(readbackAttr, "vec4", voxels)
+    : null;
+
+  const N1u = uint(N1);
+  const N1HW = uint(N1 * N1);
+  const refMean = vec4(...renorm.refMean);
+  const l1Mean = vec4(...renorm.l1Mean);
+  const gain = vec4(...renorm.gain);
+
+  const populate = Fn(() => {
+    const i = instanceIndex;
+    const x = i.mod(N1u);
+    const y = i.div(N1u).mod(N1u);
+    const z = i.div(N1HW);
+
+    // Box-average the 8 level-0 texels covering this level-1 voxel. Recover the
+    // exact stored BYTE from each sample (round) and average-then-truncate, to
+    // mirror downsample3DRGBA's (Σbyte/8)|0 exactly (a plain float average would
+    // diverge by up to ~gain LSB after the renorm).
+    const acc = vec4(0).toVar();
+    for (let dz = 0; dz < 2; dz++) {
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          const sx = x.mul(2).add(dx);
+          const sy = y.mul(2).add(dy);
+          const sz = z.mul(2).add(dz);
+          const uvw = vec3(
+            float(sx).add(0.5).mul(inv0),
+            float(sy).add(0.5).mul(inv0),
+            float(sz).add(0.5).mul(inv0),
+          );
+          const s = texture3D(level0Tex, uvw).level(int(0));
+          acc.addAssign(floor(s.mul(255).add(0.5))); // recovered byte [0,255]
+        }
+      }
+    }
+    const avg = floor(acc.mul(0.125)).mul(1 / 255); // floor(Σbyte/8) → [0,1]
+    const out = refMean.add(avg.sub(l1Mean).mul(gain)).clamp(0, 1);
+    const coord = (uvec3 as any)(x, y, z);
+    textureStore(tex, coord, out).toWriteOnly();
+    if (readbackNode) readbackNode.element(i).assign(out);
+  });
+
+  const computeNode = populate().compute(voxels);
+
+  return {
+    tex,
+    computeNode,
+    readbackAttr,
+    dispose: () => tex.dispose(),
+  };
+}
+
 // =============================================================================
 // Game integration — lazy singleton + render-loop dispatch.
 //
@@ -372,6 +697,47 @@ export function getGpuCloudBaseVolume(): THREE.Storage3DTexture {
   return cachedBaseGpu.tex;
 }
 
+// Detail level-1 renorm constants, measured from the CPU reference at
+// /dev/cloud-volume-gpu (validated: GPU mip1 matches CPU mipmaps[1] up to the
+// rgba8 round-vs-truncate ~0.5-LSB offset). ≈seed-invariant for the noise type,
+// so reused for any planet.
+const DETAIL_MIP1_RENORM: DetailMip1Renorm = {
+  refMean: [0.4051184, 0.3954044, 0.3976031, 0.5985577],
+  l1Mean: [0.40342, 0.3936896, 0.395891, 0.5968456],
+  gain: [1.0161949, 1.06026, 1.2440437, 1.3615878],
+};
+
+let cachedDetailGpu: { l0: CloudBaseVolumeCompute; mip1: CloudBaseVolumeCompute } | null = null;
+
+function ensureDetailGpu(): NonNullable<typeof cachedDetailGpu> {
+  if (!cachedDetailGpu) {
+    const l0 = createCloudDetailVolumeCompute(false);
+    // mip1 READS l0's texture → it MUST be queued AFTER l0 so the dispatch
+    // order populates l0 before mip1 samples it.
+    const mip1 = createDetailMip1Compute(l0.tex, DETAIL_MIP1_RENORM, false);
+    pendingBakes.push(l0, mip1);
+    cachedDetailGpu = { l0, mip1 };
+  }
+  return cachedDetailGpu;
+}
+
+/**
+ * The detail cloud noise volume (64³ level-0) as a GPU-baked storage texture.
+ * Drop-in for getCloudDetailVolume(). The matching box-filtered level-1 (for
+ * the DETAIL_SS_MIP self-shadow tap) is getGpuCloudDetailMip1().
+ */
+export function getGpuCloudDetailVolume(): THREE.Storage3DTexture {
+  return ensureDetailGpu().l0.tex;
+}
+
+/**
+ * The detail LEVEL-1 (32³, box-downsampled + variance-renormed) storage texture
+ * — sample it at level 0 in place of detailVolume.level(DETAIL_SS_MIP).
+ */
+export function getGpuCloudDetailMip1(): THREE.Storage3DTexture {
+  return ensureDetailGpu().mip1.tex;
+}
+
 /**
  * Dispatch any pending one-shot cloud-volume bakes. Call ONCE per frame from the
  * render loop BEFORE anything samples the volume (the marcher draw and the light
@@ -383,10 +749,33 @@ export function getGpuCloudBaseVolume(): THREE.Storage3DTexture {
  * (computeAsync at load, behind the loading screen) is the follow-up that
  * removes even that. See project_cloud_noise_startup.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function flushCloudBakes(renderer: any): void {
   if (pendingBakes.length === 0) return;
   if (!renderer?.backend?.device) return; // device not ready yet — stay queued
   for (const bake of pendingBakes) renderer.compute(bake.computeNode);
+  pendingBakes.length = 0;
+}
+
+let warmed = false;
+
+/**
+ * Warm-up: at app start (player still far from Earth), eagerly allocate + bake
+ * the static cloud volumes via computeAsync — the compute-pipeline compile
+ * (~150 ms) and the bake run OFF the main thread, so by the time Earth reaches
+ * the near tier the volumes are long ready and flushCloudBakes() there is a
+ * no-op with zero gameplay hitch. Idempotent; retries until the device exists.
+ * Call once per frame from the render loop. (flushCloudBakes remains the
+ * synchronous safety net for the rare case the near tier is reached before the
+ * async warm finished — e.g. spawning at Earth.)
+ */
+export function warmCloudBakes(renderer: any): void {
+  if (warmed) return;
+  if (!renderer?.backend?.device) return; // device not ready — try next frame
+  warmed = true;
+  getGpuCloudBaseVolume(); // ensure base allocated + queued
+  getGpuCloudDetailVolume(); // ensure detail level-0 + mip1 allocated + queued
+  // Dispatch in queue order (base, detail L0, detail mip1) — mip1 reads detail
+  // L0, which precedes it in pendingBakes, so the GPU populates L0 first.
+  for (const bake of pendingBakes) renderer.computeAsync?.(bake.computeNode);
   pendingBakes.length = 0;
 }

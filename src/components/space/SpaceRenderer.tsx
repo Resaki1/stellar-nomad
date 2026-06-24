@@ -27,7 +27,10 @@ import {
   USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
-import { flushCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
+import {
+  flushCloudBakes,
+  warmCloudBakes,
+} from "@/components/celestial/bodies/cloudVolumeCompute";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
@@ -389,6 +392,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Normally the renderer's internal animation loop does this, but we
     // stopped it because R3F owns the frame loop (Scene.tsx: _animation.stop()).
     const renderer = gl as unknown as WebGPURenderer;
+    // Warm the static cloud-noise bake at startup (off the near-tier crossing):
+    // the ~150 ms compute-pipeline compile + bake run async, off the main
+    // thread, so flying into the near tier never hitches. Idempotent no-op once
+    // warmed. (flushCloudBakes below is the sync safety net.)
+    warmCloudBakes(renderer);
     // _nodes is a private renderer field; the public animation loop (which
     // normally advances nodeFrame) is stopped because R3F owns the frame loop.
     (

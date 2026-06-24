@@ -30,8 +30,11 @@ import {
 import { kmToScaledUnits } from "@/sim/units";
 import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
-import { getCloudDetailVolume } from "./noiseVolumes";
-import { getGpuCloudBaseVolume } from "./cloudVolumeCompute";
+import {
+  getGpuCloudBaseVolume,
+  getGpuCloudDetailVolume,
+  getGpuCloudDetailMip1,
+} from "./cloudVolumeCompute";
 import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
@@ -316,11 +319,10 @@ const CONE_SAMPLE_CARVE = true;
 const DETAIL_SELFSHADOW = true;
 const DETAIL_SS_DIST = 0.0002; // toward the sun; ~ the FINE_CARVE lump scale
 const DETAIL_SS_DENSITY = 20000; // self-shadow strength (od scale); tune live
-// Mip level for the fine-carve Worley tap in the near probe. The fine carve
-// (FINE_CARVE_SCALE) can be high-freq; a higher mip box-filters it into smooth
-// ~hundreds-of-metres lobes. 0 = crisp, 1-2 = smoother (raise DETAIL_SS_DENSITY
-// to compensate for the lower contrast). Tune against DEBUG_VIZ 'detailShadow'.
-const DETAIL_SS_MIP = 1.0;
+// The fine-carve Worley self-shadow tap samples the box-downsampled level-1 of
+// the detail volume (getGpuCloudDetailMip1 — a dedicated 32³ storage texture)
+// for smooth ~hundreds-of-metres lobes. Previously this was detailVolume.level(
+// 1.0); the GPU detail volume is single-mip, so level-1 is its own texture.
 // Soft fade width for the 3D light-volume window edge (USE_LIGHT_VOLUME), as
 // a fraction of the XZ half-extent. The volume only covers a finite tangent
 // window around the camera; without a soft edge the inside (self-shadowed) →
@@ -776,10 +778,12 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     PLANET_RADIUS_KM + CLOUD_OUTER_ALTITUDE_KM,
   );
 
-  // Base volume is GPU-baked (Storage3DTexture) — allocated empty here, baked
-  // once from the render loop (flushCloudBakes). Detail stays CPU for now.
+  // Base + detail volumes are GPU-baked (Storage3DTextures) — allocated empty
+  // here, baked once from the render loop (flushCloudBakes / warmCloudBakes).
+  // detailVolumeMip1 is the box-downsampled level-1 for the self-shadow tap.
   const baseVolume = getGpuCloudBaseVolume();
-  const detailVolume = getCloudDetailVolume();
+  const detailVolume = getGpuCloudDetailVolume();
+  const detailVolumeMip1 = getGpuCloudDetailMip1();
 
   const uInnerRadius = uniform(innerRadiusScaled);
   const uOuterRadius = uniform(outerRadiusScaled);
@@ -909,6 +913,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     weatherMap,
     baseVolume,
     detailVolume,
+    detailVolumeMip1,
     uInnerRadius,
     uOuterRadius,
     uCloudUvOffset,
@@ -963,6 +968,7 @@ export function marchCloudVolume({
   weatherMap,
   baseVolume,
   detailVolume,
+  detailVolumeMip1,
   uInnerRadius,
   uOuterRadius,
   uCloudUvOffset,
@@ -998,7 +1004,8 @@ export function marchCloudVolume({
   // Base is GPU-baked (Storage3DTexture); detail is still a CPU Data3DTexture.
   // THREE.Texture is the common base — texture3D() samples either.
   baseVolume: THREE.Texture;
-  detailVolume: THREE.Data3DTexture;
+  detailVolume: THREE.Texture; // GPU-baked Storage3DTexture (64³ level-0)
+  detailVolumeMip1: THREE.Texture; // box-downsampled level-1 (32³) for the SS tap
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uInnerRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2224,10 +2231,13 @@ export function marchCloudVolume({
                       // crests (bright) — correlated relief, not painted noise.
                       // DETAIL_SS_MIP box-filters the fine Worley for smooth
                       // lobes. +1 texture3D.
+                      // Sample the box-downsampled level-1 (separate 32³ tex)
+                      // at LOD 0 — the GPU storage texture is single-mip, so the
+                      // old .level(DETAIL_SS_MIP) is realised as a dedicated tex.
                       const fineSrc = texture3D(
-                        detailVolume,
+                        detailVolumeMip1,
                         pNear.add(warpVec).mul(float(FINE_CARVE_SCALE)),
-                      ).level(float(DETAIL_SS_MIP));
+                      ).level(int(0));
                       // Match the opacity's CENTERED, FREQUENCY-GRADED fine
                       // octave (FINE_CARVE_BIAS / GRADE_POW) so the shadow stays
                       // correlated with the bumps the view ray carves. carvedLs

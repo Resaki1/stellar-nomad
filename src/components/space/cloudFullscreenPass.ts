@@ -175,7 +175,8 @@ export function setEarthMatrixWorldSource(mesh: THREE.Object3D | null) {
 export type SetupCloudPipelineOpts = {
   weatherMap: THREE.Texture;
   baseVolume: THREE.Texture; // GPU-baked Storage3DTexture or CPU Data3DTexture
-  detailVolume: THREE.Data3DTexture;
+  detailVolume: THREE.Texture; // GPU-baked Storage3DTexture (64³ level-0)
+  detailVolumeMip1: THREE.Texture; // GPU-baked box-downsampled level-1 (32³) for the SS tap
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uInnerRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -366,6 +367,7 @@ function createColorPass(
       weatherMap: opts.weatherMap,
       baseVolume: opts.baseVolume,
       detailVolume: opts.detailVolume,
+      detailVolumeMip1: opts.detailVolumeMip1,
       uInnerRadius: opts.uInnerRadius,
       uOuterRadius: opts.uOuterRadius,
       uCloudUvOffset: opts.uCloudUvOffset,
