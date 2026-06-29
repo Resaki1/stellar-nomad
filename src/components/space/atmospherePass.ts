@@ -145,6 +145,200 @@ export function getDominantAtmosphereBody(): AtmosphereBodyRecord | null {
 }
 
 // =============================================================================
+// CPU-side lighting coupling (Phase 2 — docs/ATMOSPHERE_PLAN.md §5.4).
+//
+// The atmosphere pass fogs the scaled-scene BACKGROUND (planets/skybox/stars,
+// incl. the sun disk). But the LOCAL scene (ship/asteroids; composited later by
+// SpaceRenderer) is lit by ordinary three.js lights and is never touched by the
+// pass. To make the ship pick up sunset reddening, planet-shadow darkening, and
+// blue sky fill, we compute — once per frame, on the CPU — the sun transmittance
+// reaching the camera and a cheap sky-ambient term, and stash them for
+// `SunLight` and the sky-ambient hemisphere light to read.
+//
+// CPU (not a GPU LUT read-back): a 40-step optical-depth march in JS is ~free
+// once per frame, and avoids a stalling async GPU read. The math mirrors the
+// shader's `sampleMedium` + ray-sphere exactly (same m^-1 → km^-1 ×1000).
+//
+// NOTE: the SUN DISK is intentionally NOT tinted here. It lives in the scaled
+// scene and is already reddened by the main pass's view-ray throughput; tinting
+// it again would double-count. The sky-ambient term is a deliberately simple
+// analytic stand-in for a proper hemispherical irradiance (LUT-based; Phase 4).
+// =============================================================================
+
+// Tuning (all in SunLight's intensity scale / cosine-of-zenith units).
+const SUN_T_STEPS = 64; // optical-depth march steps toward the sun
+// Soft "emergence" band (cosine), applied JUST ABOVE the geometric horizon, to
+// ramp the sun in over roughly its angular size as it clears the planet limb.
+// Below the horizon the sun is hard-occluded (T=0); the band sits entirely in
+// the clear region so the two meet continuously at the horizon — without this
+// (or with a centred band + partial-path march) shadow exit flashes orange.
+const SUN_EMERGE_BAND = 0.04;
+const SKY_AMBIENT_MAX_INTENSITY = 2.5; // hemisphere fill at full day on the ground
+const SKY_TINT_SATURATION = 0.7; // 0 = white sky fill, 1 = pure Rayleigh blue
+const SKY_DAY_BAND_LO = 0.25; // wide twilight band so the fill lingers past sunset
+const SKY_DAY_BAND_HI = 0.1;
+
+export type AtmosphereLighting = {
+  /** True when a dominant atmosphere body is driving the lighting. */
+  active: boolean;
+  /** Per-channel sun transmittance reaching the camera (∈[0,1]); white when inactive. */
+  sunTransmittance: THREE.Color;
+  /** Hemisphere sky-fill colour (sky side). */
+  skyColor: THREE.Color;
+  /** Hemisphere ground-bounce colour (down side). */
+  groundColor: THREE.Color;
+  /** Sky-fill intensity in SunLight's scale (0 when inactive / in space). */
+  skyIntensity: number;
+  /** Planet-local up at the camera (world axes) — orients the hemisphere light. */
+  upDir: THREE.Vector3;
+};
+
+const _lighting: AtmosphereLighting = {
+  active: false,
+  sunTransmittance: new THREE.Color(1, 1, 1),
+  skyColor: new THREE.Color(1, 1, 1),
+  groundColor: new THREE.Color(1, 1, 1),
+  skyIntensity: 0,
+  upDir: new THREE.Vector3(0, 1, 0),
+};
+
+/** Current per-frame atmosphere lighting (mutated in place; do not retain). */
+export function getAtmosphereLighting(): AtmosphereLighting {
+  return _lighting;
+}
+
+/** Reset to "no atmosphere" — white sun, no sky fill (deep space / no body). */
+export function clearAtmosphereLighting(): void {
+  _lighting.active = false;
+  _lighting.sunTransmittance.setRGB(1, 1, 1);
+  _lighting.skyIntensity = 0;
+}
+
+const smoothstepScalar = (e0: number, e1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - e0) / Math.max(1e-6, e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+// Extinction (km^-1, per-RGB) at planet-centred radius rKm — JS twin of the
+// shader's sampleMedium().extinction (Rayleigh scattering + Mie extinction +
+// ozone absorption). Coefficients in `params` are m^-1 → ×1000.
+const sampleExtinctionKm = (
+  rKm: number,
+  p: AtmosphereParams,
+  Rg: number,
+  out: THREE.Vector3,
+): void => {
+  const h = Math.max(0, rKm - Rg);
+  const dR = Math.exp(-h / p.rayleighScaleHeightKm);
+  const dM = Math.exp(-h / p.mieScaleHeightKm);
+  const halfW = p.ozoneWidthKm * 0.5;
+  const dO = halfW > 0 ? Math.max(0, 1 - Math.abs(h - p.ozoneCenterKm) / halfW) : 0;
+  const mieExt = (p.mieScattering + p.mieAbsorption) * 1000 * dM;
+  out.set(
+    p.rayleighScattering[0] * 1000 * dR + mieExt + p.ozoneAbsorption[0] * 1000 * dO,
+    p.rayleighScattering[1] * 1000 * dR + mieExt + p.ozoneAbsorption[1] * 1000 * dO,
+    p.rayleighScattering[2] * 1000 * dR + mieExt + p.ozoneAbsorption[2] * 1000 * dO,
+  );
+};
+
+const _camPlanetKmL = new THREE.Vector3();
+const _Psun = new THREE.Vector3();
+const _od = new THREE.Vector3();
+const _ext = new THREE.Vector3();
+
+/**
+ * Compute + stash this frame's atmosphere lighting from the camera position
+ * (planet-centred km), the planet→sun direction (normalised), and the body's
+ * params. Read back via getAtmosphereLighting() in SunLight / the sky light.
+ */
+export function computeAtmosphereLighting(
+  camPlanetKm: THREE.Vector3,
+  sunDir: THREE.Vector3,
+  params: AtmosphereParams,
+): void {
+  const Rg = params.groundRadiusKm;
+  const Rt = params.groundRadiusKm + params.atmosphereHeightKm;
+  _camPlanetKmL.copy(camPlanetKm);
+  const r = _camPlanetKmL.length();
+
+  // Planet-local up at the camera.
+  if (r > 1e-6) _lighting.upDir.copy(_camPlanetKmL).multiplyScalar(1 / r);
+  else _lighting.upDir.set(0, 1, 0);
+
+  // Sun elevation vs the altitude-depressed geometric horizon (same gate the
+  // shader uses for the multi-scatter night fade): cosHorizon = -√(1-(Rg/r)²).
+  const cosSunUp = _lighting.upDir.dot(sunDir);
+  const cosHorizon = -Math.sqrt(Math.max(0, 1 - (Rg * Rg) / (r * r)));
+
+  // ── Sun transmittance camera→sun ──
+  // The sunlight reaching the camera is exp(-optical depth) along the ray toward
+  // the sun — UNLESS that ray hits the planet first, in which case the sun is
+  // geometrically occluded and no direct light arrives (hard 0). A soft
+  // "emergence" band sitting ENTIRELY above the horizon ramps the sun in over
+  // its angular size and meets the occluded side continuously at the horizon.
+  // (A ground-CLAMPED march of the partial chord — what we tried first — leaves
+  // a non-zero partial-path transmittance just below the horizon → an orange
+  // flash on shadow exit. Occlude-to-zero is the correct model for sun visibility.)
+  const b = _camPlanetKmL.dot(sunDir);
+  const dg = b * b - (r * r - Rg * Rg); // ground (Rg) intersection discriminant
+  const tGround = dg >= 0 ? -b - Math.sqrt(dg) : -1; // nearest forward ground hit
+  const discRt = b * b - (r * r - Rt * Rt); // atmosphere shell (Rt)
+  const tFar = discRt < 0 ? -1 : -b + Math.sqrt(discRt);
+  if (tGround > 1e-4) {
+    // Ray toward the sun hits the planet → sun below the horizon → no direct light.
+    _lighting.sunTransmittance.setRGB(0, 0, 0);
+  } else {
+    // Emergence ramp: 0 at the geometric horizon, 1 once the disc has cleared.
+    const emerge = smoothstepScalar(cosHorizon, cosHorizon + SUN_EMERGE_BAND, cosSunUp);
+    if (tFar <= 0) {
+      // No shell on the path (camera in space, sun well clear) → unattenuated.
+      _lighting.sunTransmittance.setRGB(emerge, emerge, emerge);
+    } else {
+      // Clear chord through the shell (the ray does not enter the planet here).
+      const tStart = Math.max(0, -b - Math.sqrt(discRt));
+      const dt = (tFar - tStart) / SUN_T_STEPS;
+      _od.set(0, 0, 0);
+      for (let i = 0; i < SUN_T_STEPS; i++) {
+        const t = tStart + (i + 0.5) * dt;
+        _Psun.copy(sunDir).multiplyScalar(t).add(_camPlanetKmL);
+        sampleExtinctionKm(_Psun.length(), params, Rg, _ext);
+        _od.addScaledVector(_ext, dt);
+      }
+      _lighting.sunTransmittance.setRGB(
+        Math.exp(-_od.x) * emerge,
+        Math.exp(-_od.y) * emerge,
+        Math.exp(-_od.z) * emerge,
+      );
+    }
+  }
+
+  // ── Sky ambient (cheap analytic; LUT irradiance is Phase 4) ──
+  // Fades with air density at the camera (≈0 in space) and with sun elevation
+  // (a wider twilight band than the sun term, so the fill lingers after sunset).
+  const densityAtCam = Math.exp(-Math.max(0, r - Rg) / params.rayleighScaleHeightKm);
+  const dayFactor = smoothstepScalar(
+    cosHorizon - SKY_DAY_BAND_LO,
+    cosHorizon + SKY_DAY_BAND_HI,
+    cosSunUp,
+  );
+  _lighting.skyIntensity = SKY_AMBIENT_MAX_INTENSITY * densityAtCam * dayFactor;
+
+  // Sky tint: Rayleigh-blue, desaturated toward white by SKY_TINT_SATURATION.
+  const rs = params.rayleighScattering;
+  const maxRs = Math.max(rs[0], rs[1], rs[2], 1e-12);
+  _lighting.skyColor.setRGB(
+    1 + (rs[0] / maxRs - 1) * SKY_TINT_SATURATION,
+    1 + (rs[1] / maxRs - 1) * SKY_TINT_SATURATION,
+    1 + (rs[2] / maxRs - 1) * SKY_TINT_SATURATION,
+  );
+  // Ground-bounce tint (down side of the hemisphere).
+  const ga = params.groundAlbedo;
+  _lighting.groundColor.setRGB(ga[0], ga[1], ga[2]);
+
+  _lighting.active = true;
+}
+
+// =============================================================================
 // The pass
 // =============================================================================
 

@@ -26,6 +26,7 @@ import Io from "../Io/Io";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
+import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import MiningSystem from "../Mining/MiningSystem";
 import PingBrackets3D from "../Mining/PingBrackets3D";
@@ -104,6 +105,7 @@ const Scene = () => {
       <>
         <ambientLight intensity={0.5} />
         <SunLight />
+        <AtmosphereSkyLight />
         <SpaceShip />
         <AsteroidField />
         <MiningSystem />

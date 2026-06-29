@@ -30,6 +30,8 @@ import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
+  computeAtmosphereLighting,
+  clearAtmosphereLighting,
   TRANSMITTANCE_LUT_W,
   TRANSMITTANCE_LUT_H,
   MULTISCATTER_LUT_SIZE,
@@ -99,6 +101,9 @@ const tempViewProj = new THREE.Matrix4();
 const tempOriginShiftScaled = new THREE.Vector3();
 const tempFullSize = new THREE.Vector2();
 const tempSparseSize = new THREE.Vector2();
+// Camera position relative to the dominant atmosphere body, in km — feeds the
+// per-frame CPU lighting coupling (SunLight tint + sky-ambient fill).
+const tempCamPlanetKm = new THREE.Vector3();
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
 
@@ -518,8 +523,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // bearing body; set its (static) coefficients; bake the two LUTs once per
     // atmosphere; push per-frame camera/sun uniforms; then march. With no body
     // in range the pass runs as a passthrough copy (uActive=0).
+    const dominant = atmospherePass ? getDominantAtmosphereBody() : null;
     if (atmospherePass && rtB) {
-      const dominant = getDominantAtmosphereBody();
       if (dominant) {
         // setAtmosphere is cheap (uniform writes) and MUST run every frame: on a
         // window resize the pass is rebuilt (keyed on `rt`) with fresh zero-
@@ -539,6 +544,22 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       renderer.setRenderTarget(rtB);
       gl.autoClear = true;
       gl.render(atmospherePass.scene, atmospherePass.camera);
+    }
+
+    // Phase 2 light coupling: compute the sun transmittance + sky-ambient fill
+    // for the LOCAL scene (ship/asteroids) from the camera's position relative
+    // to the dominant body. Read next frame by SunLight + AtmosphereSkyLight
+    // (priority-0 useFrames run before this priority-1 one — a 1-frame lag that
+    // is imperceptible for slowly-varying lighting). The sun DISK is not tinted
+    // here: the main pass already reddens it via the view-ray throughput.
+    if (dominant) {
+      tempCamPlanetKm
+        .copy(scaledCamera.position)
+        .sub(dominant.centerScaled)
+        .multiplyScalar(1 / SCALED_UNITS_PER_KM);
+      computeAtmosphereLighting(tempCamPlanetKm, dominant.sunDir, dominant.params);
+    } else {
+      clearAtmosphereLighting();
     }
     // Target for all subsequent compositing (cloud composite, local scene) and
     // the post pipeline's input.
