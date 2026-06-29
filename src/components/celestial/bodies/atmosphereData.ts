@@ -50,9 +50,11 @@ export const EARTH_ATMOSPHERE: AtmosphereParams = {
   // Uniform diffuse ground sphere used by the multi-scatter + ground-bounce term.
   groundAlbedo: [0.3, 0.3, 0.3],
 
-  // Top-of-atmosphere sun illuminance in the unified scale. Placeholder identity
-  // (white) — calibrated in Phase 1 alongside EXPOSURE and the bloom threshold.
-  sunIlluminance: [1.0, 1.0, 1.0],
+  // Top-of-atmosphere sun illuminance in the unified scale. This is THE Phase-1
+  // brightness knob: the surface shader outputs ~[0,1] radiance, so a value of
+  // ~O(10) puts the in-scattered sky in a believable range relative to it.
+  // Tuned by eye against a noon Earth view; white (color comes from scattering).
+  sunIlluminance: [20.0, 20.0, 20.0],
 };
 
 // Mars — thin, dusty, reddish, no ozone. Starting point only; art-directed

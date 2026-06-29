@@ -373,24 +373,13 @@ function buildEarthFragmentNode(opts: {
     );
     col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
 
-    // ── Rayleigh scattering (in-scatter + extinction) ──
-    const viewDotN = viewDotNRaw.max(0.08);
-    const opticalDepth = clamp(float(1.0).div(viewDotN), 1, 12);
-    const scatter01 = clamp(opticalDepth.sub(1).div(11), 0, 1);
-
-    const hazeDayMask = clamp(hemiAmount.mul(2.0), 0, 1);
-
-    // Extinction: desaturate as optical depth increases
-    const luminance = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    const desatAmount = scatter01.mul(0.4).add(0.1).mul(hazeDayMask);
-    col.assign(mix(col, vec3(luminance, luminance, luminance), desatAmount));
-
-    // In-scatter: blue Rayleigh light
-    const rayleighColor = vec3(0.3, 0.5, 0.9);
-    const inScatterBase = float(0.08);
-    const inScatterLimb = pow(scatter01, float(1.2)).mul(0.75);
-    const inScatter = inScatterBase.add(inScatterLimb).mul(hazeDayMask);
-    col.assign(mix(col, rayleighColor, inScatter));
+    // NOTE: the old fake Rayleigh in-scatter/extinction (view-angle desaturation
+    // + blue limb glow) lived here. It is now handled physically by the
+    // atmosphere pass (atmospherePass.ts), which fogs this surface color with
+    // real transmittance + in-scattering. The surface shader outputs ground
+    // radiance only; all atmospheric effects are applied downstream.
+    // (`hemiAmount` is retained for the eclipse term; the terminator warm tint
+    // above is superseded by the atmosphere's sunset reddening in Phase 2.)
 
     return vec4(col, 1.0);
   })();

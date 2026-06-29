@@ -234,6 +234,13 @@ Each phase is independently shippable and has an explicit on-device check.
   *Target: 120 fps at ground & orbit on M2 Pro.*
 - **Phase 5 — Generalize.** Mars/Venus/giants presets + `proceduralAtmosphere`; multi-body
   handling (today: one dominant body).
+  - **Derive `AtmosphereParams` from high-level/already-known inputs** (so procedurally
+    generated star systems get atmospheres for free): star distance + luminance → top-of-
+    atmosphere `sunIlluminance`; planet radius/gravity → scale heights + atmosphere height;
+    surface pressure/density → overall scattering magnitude; dominant-gas composition →
+    Rayleigh tint + whether to include an ozone-like absorber; aerosol/dustiness → Mie. Extend
+    the existing `proceduralAtmosphere(knobs)` to take these physical inputs rather than raw
+    coefficients. (User-requested 2026-06-24.)
 - **Phase 6 — Polish (optional).** Volumetric light shafts (terrain/cloud shadows
   in-scatter via raymarch + reproject); auto-exposure; eclipse / ring-shadow interplay.
 

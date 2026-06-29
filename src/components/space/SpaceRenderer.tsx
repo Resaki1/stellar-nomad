@@ -27,7 +27,13 @@ import {
   USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
-import { setupAtmospherePass } from "./atmospherePass";
+import {
+  setupAtmospherePass,
+  getDominantAtmosphereBody,
+  TRANSMITTANCE_LUT_W,
+  TRANSMITTANCE_LUT_H,
+  MULTISCATTER_LUT_SIZE,
+} from "./atmospherePass";
 import {
   flushCloudBakes,
   warmCloudBakes,
@@ -45,15 +51,13 @@ const SCALED_CAMERA_NEAR = 0.001;
 const SCALED_CAMERA_FAR = 2_000_000;
 
 // ── Atmosphere pass (docs/ATMOSPHERE_PLAN.md) ────────────────────────────────
-// A fullscreen post-pass inserted right after the scaled scene renders. PHASE 0:
-// a PASSTHROUGH copy (rt → rtB) that lands and verifies the rtB routing the
-// Phase-1 scattering shader will use — the on-screen result is pixel-identical
-// to the pre-atmosphere path. When disabled, the renderer keeps targeting `rt`
-// directly (zero cost, zero extra VRAM). While enabled it costs one extra
-// full-res RGBA16F+depth target plus one fullscreen copy per frame — negligible
-// next to the cloud pipeline, and *replaced* (not added to) by the Phase-1
-// march. Phase 1 also adds nearest-atmosphere-body gating so it's free in deep
-// space.
+// A physically-based scattering post-pass (Hillaire 2020) inserted right after
+// the scaled scene renders: it fogs the background (planets/skybox/stars in
+// `rt`) with transmittance + in-scattering and writes `rtB`; clouds, the local
+// scene, and the post pipeline then target `rtB`. Two static LUTs (transmittance
+// 256×64, multiple-scattering 32×32) are baked once per atmosphere. When no
+// atmosphere-bearing body is in range the pass runs as a cheap passthrough copy
+// (uActive=0). When disabled entirely the renderer keeps targeting `rt`.
 const ATMOSPHERE_PASS_ENABLED = true;
 
 // ── Cloud-only resolution clamp ──────────────────────────────────────────────
@@ -228,15 +232,56 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rtB?.dispose(); }, [rtB]);
 
-  // Passthrough atmosphere pass bound to the current `rt.texture`. Rebuilt (and
-  // the old one disposed) when `rt` is recreated on resize, mirroring the
-  // composite-mesh pattern — the TextureNode is bound at build time, never
-  // reassigned (the WebGPU bind-group cache doesn't reliably honour that).
+  // Static atmosphere LUTs (transmittance, multiple-scattering). Fixed size,
+  // renderer-agnostic until baked; allocated once. RenderTarget textures default
+  // to LinearFilter + ClampToEdge + no mipmaps, which is exactly what the LUT
+  // samplers need.
+  const atmosphereLUTs = useMemo(() => {
+    if (!ATMOSPHERE_PASS_ENABLED) return null;
+    const transmittance = new RenderTarget(
+      TRANSMITTANCE_LUT_W,
+      TRANSMITTANCE_LUT_H,
+      { type: HalfFloatType, depthBuffer: false },
+    );
+    const multiScatter = new RenderTarget(
+      MULTISCATTER_LUT_SIZE,
+      MULTISCATTER_LUT_SIZE,
+      { type: HalfFloatType, depthBuffer: false },
+    );
+    return { transmittance, multiScatter };
+  }, []);
+
+  useEffect(() => () => {
+    atmosphereLUTs?.transmittance.dispose();
+    atmosphereLUTs?.multiScatter.dispose();
+  }, [atmosphereLUTs]);
+
+  // The scattering pass, bound to the current `rt.texture` (background) + the LUT
+  // RTs. Rebuilt (old one disposed) when `rt` is recreated on resize, mirroring
+  // the composite-mesh pattern — textures are bound at build time, never
+  // reassigned (the WebGPU bind-group cache doesn't reliably honour that). The
+  // LUT RTs persist across resize, so their baked content stays valid.
   const atmospherePass = useMemo(
-    () => (ATMOSPHERE_PASS_ENABLED ? setupAtmospherePass(rt.texture) : null),
-    [rt]
+    () =>
+      ATMOSPHERE_PASS_ENABLED && atmosphereLUTs
+        ? setupAtmospherePass(
+            rt.texture,
+            atmosphereLUTs.transmittance,
+            atmosphereLUTs.multiScatter,
+          )
+        : null,
+    [rt, atmosphereLUTs]
   );
   useEffect(() => () => { atmospherePass?.dispose(); }, [atmospherePass]);
+
+  // Identity of the atmosphere the LUTs were last baked for. Reset whenever the
+  // pass or LUTs are rebuilt so a one-shot rebake re-runs (idempotent).
+  const bakedAtmosphereId = useRef<string | null>(null);
+  // Reset only when the LUT RTs are recreated (their GPU content is lost) — NOT
+  // on a pass rebuild from resize, which keeps the baked LUTs valid.
+  useEffect(() => {
+    bakedAtmosphereId.current = null;
+  }, [atmosphereLUTs]);
 
   // Phase D RT layout — two pairs:
   //
@@ -469,11 +514,28 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     gl.autoClear = true;
     gl.render(scaledScene, scaledCamera);
 
-    // Pass 1.5: atmosphere (Phase 0 — passthrough copy rt → rtB). Establishes
-    // the rtB routing the Phase-1 scattering shader will use; the result is
-    // pixel-identical to the pre-atmosphere path. Skipped when disabled, in
-    // which case `finalTarget` stays `rt`.
+    // Pass 1.5: atmospheric scattering (rt → rtB). Pick the nearest atmosphere-
+    // bearing body; set its (static) coefficients; bake the two LUTs once per
+    // atmosphere; push per-frame camera/sun uniforms; then march. With no body
+    // in range the pass runs as a passthrough copy (uActive=0).
     if (atmospherePass && rtB) {
+      const dominant = getDominantAtmosphereBody();
+      if (dominant) {
+        // setAtmosphere is cheap (uniform writes) and MUST run every frame: on a
+        // window resize the pass is rebuilt (keyed on `rt`) with fresh zero-
+        // valued uniforms, and the bake-id gate below would otherwise skip
+        // re-supplying its coefficients → invisible atmosphere until reload. The
+        // expensive LUT bake stays gated to actual atmosphere changes (the LUT
+        // RTs persist across resize, so they need no rebake).
+        atmospherePass.setAtmosphere(dominant.params);
+        // Device is ready here (useFrame early-returns until initialized, and
+        // Pass 1 already rendered this frame).
+        if (bakedAtmosphereId.current !== dominant.id) {
+          atmospherePass.bakeLUTs(renderer);
+          bakedAtmosphereId.current = dominant.id;
+        }
+      }
+      atmospherePass.updateUniforms({ scaledCamera, dominant });
       renderer.setRenderTarget(rtB);
       gl.autoClear = true;
       gl.render(atmospherePass.scene, atmospherePass.camera);

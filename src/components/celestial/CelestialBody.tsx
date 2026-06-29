@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
@@ -12,6 +12,10 @@ import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { STAR_POSITION_KM } from "@/sim/celestialConstants";
 import { useFarLOD } from "./useFarLOD";
+import {
+  setAtmosphereBody,
+  clearAtmosphereBody,
+} from "../space/atmospherePass";
 import type { CelestialBodyConfig, ExtraMeshDef } from "./types";
 
 // ── Shared scratch vectors (safe: useFrame is sequential) ──
@@ -226,6 +230,9 @@ function CelestialBody({ config }: CelestialBodyProps) {
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
+  // Clear this body's atmosphere registration on unmount.
+  useEffect(() => () => clearAtmosphereBody(config.id), [config.id]);
+
   // ── Standard uniforms ──
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
   const uSpR = useMemo(() => uniform(0), []);
@@ -319,6 +326,23 @@ function CelestialBody({ config }: CelestialBodyProps) {
     }
     for (const m of extraMidRefs.current) {
       if (m) m.visible = showMid;
+    }
+
+    // Register this body's atmosphere (if any) for the global atmosphere pass
+    // while its sphere LOD is visible. Cleared when it falls back to the
+    // billboard tier (the billboard carries its own rim glow) or unmounts.
+    if (config.atmosphere) {
+      if (showNear || showMid) {
+        setAtmosphereBody(
+          config.id,
+          _bodyScaled,
+          _sunRelative,
+          distKm,
+          config.atmosphere,
+        );
+      } else {
+        clearAtmosphereBody(config.id);
+      }
     }
 
     // ── Billboard sun projection ──
