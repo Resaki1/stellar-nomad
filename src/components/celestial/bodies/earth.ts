@@ -29,6 +29,7 @@ import {
   PI,
   smoothstep,
   Discard,
+  int,
 } from "three/tsl";
 import {
   PLANET_POSITION_KM,
@@ -41,11 +42,31 @@ import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
+import {
+  getAtmosphereLUTs,
+  transmittanceLutUv,
+} from "@/components/space/atmospherePass";
 
 export { PLANET_POSITION_KM };
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
 const CLOUD_BRIGHTNESS = 3;
+
+// ── Atmosphere↔surface lighting coupling (Phase 3b, docs/ATMOSPHERE_PLAN.md §5.4) ──
+// When ON, the day-lit surface (+ ocean sun-glint + flat cloud overlay) is tinted
+// by the PHYSICAL sun transmittance from the shared LUT — sampled at ground
+// radius + sun-zenith cos, so the slant path reddens the terminator correctly —
+// NORMALISED by the zenith transmittance so noon brightness is unchanged (only
+// the angular reddening shows). This REPLACES the fake `warmTint` terminator
+// tint and the cloud warm-mix (which double-counted with the atmosphere pass).
+// Build-time JS const → the OFF path keeps those hand-tuned tints (A/B + revert).
+const USE_ATMOSPHERE_SURFACE_LIGHTING = true;
+const SURFACE_SUN_SCALE = 1.0; // overall multiplier on the (zenith-normalised) tint
+// Representative altitude (km) for tinting the FLAT 2D cloud overlay: it stands
+// in for the cloud DECK, so it must redden like the VOLUMETRIC clouds (whose
+// transmittance is sampled at cloud altitude → mild) — NOT like the ground
+// (full slant path → dramatic), or the flat clouds stick out too orange.
+const CLOUD_OVERLAY_ALTITUDE_KM = 10;
 
 // Flat 2D cloud overlay (painted on the surface as the far-cloud LOD) fade band.
 // The overlay must vanish once the camera is at/below the volumetric cloud top:
@@ -177,11 +198,15 @@ function buildEarthFragmentNode(opts: {
   uVolumetricBlend: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uFlatCloudOpacity: any;
+  // Atmosphere transmittance LUT (Phase 3b surface coupling). Bound at graph-
+  // build time; sampled per-pixel for physical sun colour. Optional: when absent
+  // (toggle off) the surface keeps its hand-tuned terminator tint.
+  transmittanceLUT?: THREE.Texture;
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
     uSunRel, uMoonPos, uMoonRadius, uSunRadius, uVolumetricBlend,
-    uFlatCloudOpacity,
+    uFlatCloudOpacity, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -195,6 +220,49 @@ function buildEarthFragmentNode(opts: {
     // Geometric normal in world space
     const nGeom = normalize(normalWorld);
     const cosSunToGeomNormal = dot(nGeom, sunDir);
+
+    // ── Atmosphere-coupled sun colour (Phase 3b) ──
+    // Physical sunlight reaching the surface, from the SAME transmittance LUT the
+    // sky/clouds/ship use, NORMALISED by the zenith transmittance at that
+    // altitude (so noon brightness is unchanged; only the angular sunset
+    // reddening shows) and clamped ≤ 1 (the sun is never less-attenuated than at
+    // zenith). This replaces the fake `warmTint` + cloud warm-mix. Two altitudes:
+    //   sunT      — GROUND (terrain + ocean glint): full slant path → DRAMATIC
+    //               terminator reddening.
+    //   sunTCloud — CLOUD deck (the flat 2D overlay): sampled at cloud altitude
+    //               so it reddens MILDLY, matching the volumetric marcher (which
+    //               samples cloud-altitude transmittance per-voxel) instead of
+    //               the much-redder ground — otherwise the flat clouds stick out.
+    // Below-horizon μ clamps the UV harmlessly (night is gated by dayAmount). Off
+    // → white (no change).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sunT: any = vec3(1, 1, 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sunTCloud: any = vec3(1, 1, 1);
+    if (USE_ATMOSPHERE_SURFACE_LIGHTING && transmittanceLUT) {
+      const rgKm = EARTH_ATMOSPHERE.groundRadiusKm;
+      const rtKm = rgKm + EARTH_ATMOSPHERE.atmosphereHeightKm;
+      const hKm = Math.sqrt(Math.max(0, rtKm * rtKm - rgKm * rgKm));
+      // Normalised sun transmittance at radius rKm: T(rKm, μ) / T(rKm, zenith),
+      // clamped ≤ 1, × SURFACE_SUN_SCALE. (μ=1 → xMu=0, so the zenith tap is the
+      // xR row for that altitude: UV (0,0) at the ground, (0, xR) at altitude.)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sunTAt = (rKm: number): any => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tA: any = texture(
+          transmittanceLUT,
+          transmittanceLutUv(float(rKm), cosSunToGeomNormal, float(rgKm), float(rtKm), float(hKm)),
+        ).level(int(0));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tZen: any = texture(
+          transmittanceLUT,
+          transmittanceLutUv(float(rKm), float(1), float(rgKm), float(rtKm), float(hKm)),
+        ).level(int(0));
+        return tA.rgb.div(tZen.rgb.max(float(1e-4))).clamp(0, 1).mul(float(SURFACE_SUN_SCALE));
+      };
+      sunT = sunTAt(rgKm);
+      sunTCloud = sunTAt(rgKm + CLOUD_OVERLAY_ALTITUDE_KM);
+    }
 
     // ── Day/night transition ──
     const dayAmount = float(1.0)
@@ -274,12 +342,18 @@ function buildEarthFragmentNode(opts: {
 
     // Night mask (sharper city-light cutoff)
     const nightMask = smoothstep(float(0.15), float(0), dayAmount);
-    const col = mix(nightCol.mul(nightMask), dayCol, dayAmount).toVar();
+    // Sun-lit day albedo is tinted by the atmospheric transmittance (Phase 3b);
+    // the night-light emission (city lights) is NOT — it's not sunlit.
+    const col = mix(nightCol.mul(nightMask), dayCol.mul(sunT), dayAmount).toVar();
 
     // Apply terminator warmth -- reduced for mid LOD where the smooth geometric
-    // normal makes the band bleed across the entire day side.
-    const terminatorStrength = float(detailed ? 0.25 : 0.06);
-    col.assign(mix(col, col.mul(warmTint), terminatorBand.mul(terminatorStrength)));
+    // normal makes the band bleed across the entire day side. Phase 3b: skipped
+    // when the surface is physically transmittance-lit (sunT already reddens the
+    // terminator); kept on the OFF path so the A/B baseline is unchanged.
+    if (!USE_ATMOSPHERE_SURFACE_LIGHTING) {
+      const terminatorStrength = float(detailed ? 0.25 : 0.06);
+      col.assign(mix(col, col.mul(warmTint), terminatorBand.mul(terminatorStrength)));
+    }
 
     // ── Ocean specular ──
     const viewDir = normalize(cameraPosition.sub(surfacePosW));
@@ -291,7 +365,10 @@ function buildEarthFragmentNode(opts: {
       const specAngle = dot(refl, viewDir).max(0);
       const specHighlight = pow(specAngle, float(40.0)).mul(0.8).mul(specMask);
       const specBroad = pow(specAngle, float(8.0)).mul(0.15).mul(specMask);
-      col.addAssign(dayAmount.mul(specHighlight.add(specBroad)));
+      // Sun glint is reflected sunlight → tint by the same transmittance (Phase
+      // 3b); reddens the glint at sunset. (The fresnel sky-reflection below is
+      // skylight, not sun, so it is left as the fixed sky-blue.)
+      col.addAssign(dayAmount.mul(sunT).mul(specHighlight.add(specBroad)));
 
       // ── Fresnel ocean reflection + land limb darkening ──
       const vDotN = clamp(viewDotNRaw, 0, 1);
@@ -321,11 +398,15 @@ function buildEarthFragmentNode(opts: {
       .mul(cloudSunFactor)
       .mul(float(8.0).sub(cloudSunFactor));
 
-    // Cloud color: white in full sunlight, warm at the terminator.
+    // Cloud color: white in full sunlight, warm at the terminator. Phase 3b:
+    // the warm-mix is the OFF-path baseline — when ON, the flat clouds are plain
+    // white albedo and the physical transmittance (sunT) reddens them instead.
     const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
     const cloudWhite = vec3(1, 1, 1).mul(CLOUD_BRIGHTNESS);
     const cloudWarm = vec3(1.0, 0.8, 0.7);
-    const cloudBaseCol = mix(cloudWarm, cloudWhite, cloudSunBlend);
+    const cloudBaseCol = USE_ATMOSPHERE_SURFACE_LIGHTING
+      ? cloudWhite
+      : mix(cloudWarm, cloudWhite, cloudSunBlend);
     // Clouds at ~10 km altitude catch sunlight slightly past the surface
     // terminator. Offset ≈ sqrt(2h/R) in cos-space for h=10 km, R=6371 km.
     const cloudHemi = float(1.0).div(
@@ -333,7 +414,14 @@ function buildEarthFragmentNode(opts: {
     );
     // Self-shadow: clouds with other clouds sunward of them get darker bases
     const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
-    const cloudLit = cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow);
+    // Flat clouds are sunlit → tint by the CLOUD-ALTITUDE transmittance (Phase
+    // 3b) so they redden mildly like the volumetric clouds, not like the ground
+    // (OFF: sunTCloud = white, no change).
+    const cloudLit = cloudBaseCol
+      .mul(csf)
+      .mul(cloudHemi)
+      .mul(cloudSelfShadow)
+      .mul(sunTCloud);
     // Flat 2D cloud overlay — the far-cloud LOD. It paints the global cloud
     // texture on the planet surface to fill cloud cover beyond the volumetric
     // marcher's limited reach; the volumetric premultiplied composite renders
@@ -528,6 +616,11 @@ export const earthConfig: CelestialBodyConfig = {
       uSunRadius: uniforms.uSunRadius,
       uVolumetricBlend: uniforms.uVolumetricBlend,
       uFlatCloudOpacity: uniforms.uFlatCloudOpacity,
+      // Phase 3b: bind the shared transmittance LUT (baked by SpaceRenderer's
+      // atmosphere pass) so the surface shader reads per-pixel sun colour.
+      transmittanceLUT: USE_ATMOSPHERE_SURFACE_LIGHTING
+        ? getAtmosphereLUTs().transmittance.texture
+        : undefined,
     });
   },
 };

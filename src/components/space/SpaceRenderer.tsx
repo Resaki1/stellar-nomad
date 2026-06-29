@@ -500,6 +500,24 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     renderer.toneMapping = NoToneMapping;
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
+    // Pre-pass: pick the nearest atmosphere-bearing body and BAKE its static
+    // LUTs BEFORE Pass 1. The planet-surface shader (Pass 1) now samples the
+    // transmittance LUT for physical sun colour (Phase 3b), and the cloud
+    // marcher samples it too, so it MUST be baked first. The bake is a one-shot
+    // into separate LUT RTs (gated by bakedAtmosphereId); setAtmosphere runs
+    // every frame (a window resize rebuilds the pass with zero-valued uniforms,
+    // and the bake-id gate would otherwise skip re-supplying its coefficients →
+    // invisible atmosphere until reload; the LUT RTs persist so no rebake). The
+    // atmosphere MARCH still runs in Pass 1.5 (it reads `rt`).
+    const dominant = atmospherePass ? getDominantAtmosphereBody() : null;
+    if (atmospherePass && dominant) {
+      atmospherePass.setAtmosphere(dominant.params);
+      if (bakedAtmosphereId.current !== dominant.id) {
+        atmospherePass.bakeLUTs(renderer);
+        bakedAtmosphereId.current = dominant.id;
+      }
+    }
+
     // Pass 1: scaled scene — planets, skybox, stars. Layer 0 only; the cloud
     // anchor mesh sits on CLOUD_LAYER (which no camera enables) and never
     // renders. It exists only as a matrixWorld provider for the fullscreen
@@ -509,27 +527,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     gl.autoClear = true;
     gl.render(scaledScene, scaledCamera);
 
-    // Pass 1.5: atmospheric scattering (rt → rtB). Pick the nearest atmosphere-
-    // bearing body; set its (static) coefficients; bake the two LUTs once per
-    // atmosphere; push per-frame camera/sun uniforms; then march. With no body
-    // in range the pass runs as a passthrough copy (uActive=0).
-    const dominant = atmospherePass ? getDominantAtmosphereBody() : null;
+    // Pass 1.5: atmospheric scattering march (rt → rtB). With no body in range
+    // the pass runs as a passthrough copy (uActive=0).
     if (atmospherePass && rtB) {
-      if (dominant) {
-        // setAtmosphere is cheap (uniform writes) and MUST run every frame: on a
-        // window resize the pass is rebuilt (keyed on `rt`) with fresh zero-
-        // valued uniforms, and the bake-id gate below would otherwise skip
-        // re-supplying its coefficients → invisible atmosphere until reload. The
-        // expensive LUT bake stays gated to actual atmosphere changes (the LUT
-        // RTs persist across resize, so they need no rebake).
-        atmospherePass.setAtmosphere(dominant.params);
-        // Device is ready here (useFrame early-returns until initialized, and
-        // Pass 1 already rendered this frame).
-        if (bakedAtmosphereId.current !== dominant.id) {
-          atmospherePass.bakeLUTs(renderer);
-          bakedAtmosphereId.current = dominant.id;
-        }
-      }
       atmospherePass.updateUniforms({ scaledCamera, dominant });
       renderer.setRenderTarget(rtB);
       gl.autoClear = true;
