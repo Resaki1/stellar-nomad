@@ -30,11 +30,10 @@ import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
+  getAtmosphereLUTs,
+  getAtmosphereLighting,
   computeAtmosphereLighting,
   clearAtmosphereLighting,
-  TRANSMITTANCE_LUT_W,
-  TRANSMITTANCE_LUT_H,
-  MULTISCATTER_LUT_SIZE,
 } from "./atmospherePass";
 import {
   flushCloudBakes,
@@ -104,6 +103,9 @@ const tempSparseSize = new THREE.Vector2();
 // Camera position relative to the dominant atmosphere body, in km — feeds the
 // per-frame CPU lighting coupling (SunLight tint + sky-ambient fill).
 const tempCamPlanetKm = new THREE.Vector3();
+// Scratch for the dominant body's sun illuminance handed to the cloud marcher
+// (Phase 3 cloud↔atmosphere coupling) — avoids a per-frame allocation.
+const tempAtmoSunIll = new THREE.Vector3();
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
 
@@ -237,29 +239,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   useEffect(() => () => { rtB?.dispose(); }, [rtB]);
 
-  // Static atmosphere LUTs (transmittance, multiple-scattering). Fixed size,
-  // renderer-agnostic until baked; allocated once. RenderTarget textures default
-  // to LinearFilter + ClampToEdge + no mipmaps, which is exactly what the LUT
-  // samplers need.
-  const atmosphereLUTs = useMemo(() => {
-    if (!ATMOSPHERE_PASS_ENABLED) return null;
-    const transmittance = new RenderTarget(
-      TRANSMITTANCE_LUT_W,
-      TRANSMITTANCE_LUT_H,
-      { type: HalfFloatType, depthBuffer: false },
-    );
-    const multiScatter = new RenderTarget(
-      MULTISCATTER_LUT_SIZE,
-      MULTISCATTER_LUT_SIZE,
-      { type: HalfFloatType, depthBuffer: false },
-    );
-    return { transmittance, multiScatter };
-  }, []);
-
-  useEffect(() => () => {
-    atmosphereLUTs?.transmittance.dispose();
-    atmosphereLUTs?.multiScatter.dispose();
-  }, [atmosphereLUTs]);
+  // Static atmosphere LUTs (transmittance, multiple-scattering). These are now a
+  // PROCESS-LIFETIME SINGLETON (getAtmosphereLUTs) shared with the cloud marcher,
+  // which binds the transmittance LUT for per-sample sun colour (Phase 3). No
+  // dispose: the singleton outlives SpaceRenderer remounts (the cloud pipeline
+  // holds the same texture), and the LUTs stay baked across a remount. Fixed
+  // size; LinearFilter + ClampToEdge + no mipmaps (RenderTarget defaults) is
+  // exactly what the LUT samplers need.
+  const atmosphereLUTs = useMemo(
+    () => (ATMOSPHERE_PASS_ENABLED ? getAtmosphereLUTs() : null),
+    [],
+  );
 
   // The scattering pass, bound to the current `rt.texture` (background) + the LUT
   // RTs. Rebuilt (old one disposed) when `rt` is recreated on resize, mirroring
@@ -618,6 +608,28 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         tempOriginShiftScaled.set(0, 0, 0);
       }
 
+      // Phase 3 cloud↔atmosphere coupling: feed the dominant body's geometry
+      // (scaled units, matching the marcher's earth-space r), unified sun
+      // illuminance, and sky tint so the marcher lights clouds with the SAME
+      // transmittance LUT the sky + ship use. dominant is Earth whenever clouds
+      // are visible (they only render near an atmosphere body); guarded anyway.
+      let atmoBottomRadiusScaled: number | undefined;
+      let atmoTopRadiusScaled: number | undefined;
+      let atmoHScaled: number | undefined;
+      let atmoSunIlluminance: THREE.Vector3 | undefined;
+      let atmoSkyColor: THREE.Color | undefined;
+      if (dominant) {
+        const rg = dominant.params.groundRadiusKm;
+        const rt = rg + dominant.params.atmosphereHeightKm;
+        atmoBottomRadiusScaled = rg * SCALED_UNITS_PER_KM;
+        atmoTopRadiusScaled = rt * SCALED_UNITS_PER_KM;
+        atmoHScaled =
+          Math.sqrt(Math.max(0, rt * rt - rg * rg)) * SCALED_UNITS_PER_KM;
+        const si = dominant.params.sunIlluminance;
+        atmoSunIlluminance = tempAtmoSunIll.set(si[0], si[1], si[2]);
+        atmoSkyColor = getAtmosphereLighting().skyColor;
+      }
+
       // One uniform-update call distributes state to both pass materials
       // (color MRT marcher, reconstruction). The two sparse inputs to
       // reconstruction are the two color attachments of the single MRT RT.
@@ -634,6 +646,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         frameIndex: cloudFrameIndex.current,
         fullSize: tempFullSize,
         sparseSize: tempSparseSize,
+        atmoBottomRadiusScaled,
+        atmoTopRadiusScaled,
+        atmoHScaled,
+        atmoSunIlluminance,
+        atmoSkyColor,
       });
 
       // Pass 2-pre0: one-shot GPU bake of the base cloud noise volume. MUST

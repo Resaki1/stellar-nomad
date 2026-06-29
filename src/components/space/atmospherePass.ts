@@ -86,6 +86,60 @@ type AtmoDebug =
   | "lutMS"; // blit the multiple-scattering LUT
 const DEBUG_ATMOSPHERE: AtmoDebug = "off";
 
+/**
+ * Map (radius, sun-zenith-cosine) → transmittance-LUT UV (Bruneton param).
+ * Pure TSL; UNIT-AGNOSTIC — r, bottomRadius, topRadius, H must share one unit
+ * (the result is built from length RATIOS, so it is scale-invariant). The
+ * atmosphere pass calls it in km; the cloud marcher calls it in scaled-world
+ * units. Single source of truth so both map into the LUT identically.
+ */
+export const transmittanceLutUv = (
+  r: Node,
+  mu: Node,
+  bottomRadius: Node,
+  topRadius: Node,
+  H: Node,
+): Node => {
+  const rho = sqrt(max(0, r.mul(r).sub(bottomRadius.mul(bottomRadius))));
+  const disc = r.mul(r).mul(mu.mul(mu).sub(1)).add(topRadius.mul(topRadius));
+  const d = max(0, r.mul(mu).negate().add(sqrt(max(0, disc))));
+  const dMin = topRadius.sub(r);
+  const dMax = rho.add(H);
+  const xMu = d.sub(dMin).div(dMax.sub(dMin).max(1e-6));
+  const xR = rho.div(H.max(1e-6));
+  return vec2(xMu, xR);
+};
+
+// Shared static LUT render targets (transmittance, multiple-scattering). A
+// process-lifetime singleton (like the cloud noise volumes) so BOTH the
+// atmosphere pass and the cloud marcher can bind the SAME stable textures at
+// graph-build time — the WebGPU bind-group cache wants textures bound once and
+// never reassigned. SpaceRenderer's atmosphere pass BAKES them; the cloud
+// marcher only READS (sampling the transmittance LUT for per-sample sun colour).
+let _sharedLUTs: {
+  transmittance: RenderTarget;
+  multiScatter: RenderTarget;
+} | null = null;
+
+export function getAtmosphereLUTs(): {
+  transmittance: RenderTarget;
+  multiScatter: RenderTarget;
+} {
+  if (!_sharedLUTs) {
+    _sharedLUTs = {
+      transmittance: new RenderTarget(TRANSMITTANCE_LUT_W, TRANSMITTANCE_LUT_H, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+      }),
+      multiScatter: new RenderTarget(MULTISCATTER_LUT_SIZE, MULTISCATTER_LUT_SIZE, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+      }),
+    };
+  }
+  return _sharedLUTs;
+}
+
 // =============================================================================
 // Atmosphere-body registry. Each CelestialBody with config.atmosphere pushes its
 // scaled center + sun direction + distance here each frame (while its sphere LOD
@@ -455,17 +509,10 @@ export function setupAtmospherePass(
     return k.mul(float(1).add(cosT.mul(cosT))).div(denom);
   };
 
-  // Transmittance LUT: params → uv (Bruneton). r clamped to [Rground, Rtop].
-  const transmittanceParamsToUv = (r: Node, mu: Node) => {
-    const rho = sqrt(max(0, r.mul(r).sub(uBottomRadius.mul(uBottomRadius))));
-    const disc = r.mul(r).mul(mu.mul(mu).sub(1)).add(uTopRadius.mul(uTopRadius));
-    const d = max(0, r.mul(mu).negate().add(sqrt(max(0, disc))));
-    const dMin = uTopRadius.sub(r);
-    const dMax = rho.add(uH);
-    const xMu = d.sub(dMin).div(dMax.sub(dMin).max(1e-6));
-    const xR = rho.div(uH.max(1e-6));
-    return vec2(xMu, xR);
-  };
+  // Transmittance LUT: params → uv (Bruneton). Delegates to the exported
+  // transmittanceLutUv (in km here) so the cloud marcher maps identically.
+  const transmittanceParamsToUv = (r: Node, mu: Node) =>
+    transmittanceLutUv(r, mu, uBottomRadius, uTopRadius, uH);
 
   // Transmittance from P toward the sun (samples the transmittance LUT).
   const getSunTransmittance = (P: Node, sunDir: Node) => {

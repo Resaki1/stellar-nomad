@@ -132,6 +132,14 @@ export type CloudPipeline = {
     frameIndex: number;                // for STBN slice
     fullSize: THREE.Vector2;           // full-res screen pixels (DPR-adjusted)
     sparseSize: THREE.Vector2;         // sparse RT pixels (= fullSize / 4)
+    // Atmosphere coupling (Phase 3) — from the dominant atmosphere body. Radii
+    // in SCALED-world units (match the marcher's earth-space r). Optional: when
+    // omitted the cloud uniforms keep their last/default values.
+    atmoBottomRadiusScaled?: number;
+    atmoTopRadiusScaled?: number;
+    atmoHScaled?: number;
+    atmoSunIlluminance?: THREE.Vector3;
+    atmoSkyColor?: THREE.Color;
   }) => void;
 
   /**
@@ -195,6 +203,12 @@ export type SetupCloudPipelineOpts = {
   uVolumetricBlend: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
+  // Atmosphere transmittance LUT (Phase 3 cloud↔atmosphere coupling). Bound at
+  // graph-build time; the marcher samples it per dense voxel for physical sun
+  // colour. Supplied by earthClouds via getAtmosphereLUTs().transmittance.
+  // Optional: when absent (toggle off / atmosphere disabled) the marcher keeps
+  // its hand-tuned sun/sky colours.
+  transmittanceLUT?: THREE.Texture;
 };
 
 // -----------------------------------------------------------------------------
@@ -224,6 +238,19 @@ function createSharedUniforms() {
     // lodCap denominator). Lerped 60 → 24 between MIN_SAMPLES_NEAR_ALT_KM
     // and MIN_SAMPLES_FAR_ALT_KM of camera altitude above the cloud tops.
     uLodMinSamples: uniform(LOD_MIN_SAMPLES_NEAR),
+    // ── Atmosphere coupling (Phase 3) ──
+    // Static atmosphere geometry in SCALED-world units (matching the marcher's
+    // earth-space `r`) for the transmittance-LUT param map, plus the unified sun
+    // illuminance and the sky-ambient tint. Driven per frame from the dominant
+    // atmosphere body in SpaceRenderer; defaults are Earth so the marcher is
+    // correct even before the first push (or if the push never comes). MUST stay
+    // consistent with the params the transmittance LUT was BAKED from — they
+    // come from the same dominant body, so they do.
+    uAtmoBottomRadius: uniform(kmToScaledUnits(6371)),
+    uAtmoTopRadius: uniform(kmToScaledUnits(6471)),
+    uAtmoH: uniform(kmToScaledUnits(Math.sqrt(6471 * 6471 - 6371 * 6371))),
+    uAtmoSunIlluminance: uniform(new THREE.Vector3(20, 20, 20)),
+    uAtmoSkyColor: uniform(new THREE.Vector3(0.4, 0.6, 1.0)),
   };
 }
 
@@ -396,6 +423,14 @@ function createColorPass(
       uLightVolAxisZB: lightVolume?.uBoxAxisZB,
       uLightVolMixA: lightVolume?.uMixA,
       uVolumeWeight: lightVolume?.uVolumeWeight,
+      // ── Atmosphere coupling (Phase 3) ── transmittance LUT + atmosphere
+      // geometry/illuminance/sky tint for per-sample physical cloud lighting.
+      uTransmittanceLUT: opts.transmittanceLUT,
+      uAtmoBottomRadius: shared.uAtmoBottomRadius,
+      uAtmoTopRadius: shared.uAtmoTopRadius,
+      uAtmoH: shared.uAtmoH,
+      uAtmoSunIlluminance: shared.uAtmoSunIlluminance,
+      uAtmoSkyColor: shared.uAtmoSkyColor,
     });
     rgbaOut.assign(rgba);
     tFrontOut.assign(tFront);
@@ -493,6 +528,24 @@ export function setupCloudPipeline(
       LOD_MIN_SAMPLES_FAR,
       altT,
     );
+
+    // Atmosphere coupling (Phase 3): push the dominant body's static geometry +
+    // unified illuminance + sky tint. Static terms are cheap to re-copy; skyColor
+    // varies per frame. Guarded so a frame with no dominant body keeps defaults.
+    if (params.atmoBottomRadiusScaled !== undefined)
+      shared.uAtmoBottomRadius.value = params.atmoBottomRadiusScaled;
+    if (params.atmoTopRadiusScaled !== undefined)
+      shared.uAtmoTopRadius.value = params.atmoTopRadiusScaled;
+    if (params.atmoHScaled !== undefined)
+      shared.uAtmoH.value = params.atmoHScaled;
+    if (params.atmoSunIlluminance)
+      shared.uAtmoSunIlluminance.value.copy(params.atmoSunIlluminance);
+    if (params.atmoSkyColor)
+      shared.uAtmoSkyColor.value.set(
+        params.atmoSkyColor.r,
+        params.atmoSkyColor.g,
+        params.atmoSkyColor.b,
+      );
 
     // Light-volume box — MUST run AFTER uEarthInverseModel is re-inverted above
     // (updateBox applies it to the camera position). The baked sun direction is

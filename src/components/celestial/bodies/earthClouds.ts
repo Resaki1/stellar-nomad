@@ -43,6 +43,10 @@ import {
   setEarthMatrixWorldSource,
   USE_LIGHT_VOLUME,
 } from "@/components/space/cloudFullscreenPass";
+import {
+  getAtmosphereLUTs,
+  transmittanceLutUv,
+} from "@/components/space/atmospherePass";
 
 // Troposphere-ish slab. Photoreal-leaning, not exaggerated.
 const CLOUD_INNER_ALTITUDE_KM = 1;
@@ -923,6 +927,12 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     uLightConeRadius,
     uVolumetricBlend,
     uSunRel: ctx.uSunRel,
+    // Phase 3: bind the (shared, process-lifetime) transmittance LUT so the
+    // marcher can read per-sample sun transmittance. Baked by SpaceRenderer's
+    // atmosphere pass; null when the coupling toggle is off.
+    transmittanceLUT: USE_ATMOSPHERE_CLOUD_LIGHTING
+      ? getAtmosphereLUTs().transmittance.texture
+      : undefined,
   });
 
   // Anchor mesh: empty geometry + material, parented to Earth's rotation
@@ -961,6 +971,21 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
  * DEBUG_VIZ branches force α = 1 to bypass the volumetric crossfade and
  * return `tFront = 0` (reprojection is meaningless under diagnostic modes).
  */
+// ── Atmosphere↔cloud lighting coupling (Phase 3, docs/ATMOSPHERE_PLAN.md §5.4) ──
+// When ON, the marcher replaces its hand-tuned day→sunset sun/sky colours with
+// PHYSICAL ones: per-sample sun colour = sunIlluminance × transmittance(LUT;
+// cloud altitude, sun-zenith) — the SAME transmittance the sky + ship use, so
+// clouds redden at sunset and darken in the planet's shadow consistently — and
+// the ambient = the atmosphere sky tint. Build-time JS const → the off path is
+// byte-identical to the pre-Phase-3 shader. The sacred per-sample `daylightS`
+// terminator gate and `Tsun` self-shadow are UNTOUCHED; only the colour inputs
+// change. CLOUD_SUN_SCALE / CLOUD_SKY_SCALE re-anchor the physical magnitudes to
+// the marcher's existing tuned brightness (sunColor≈12, skyColor≈2) so Phase 3
+// shifts COLOUR, not overall exposure (full unification is the §6 exposure pass).
+const USE_ATMOSPHERE_CLOUD_LIGHTING = true;
+const CLOUD_SUN_SCALE = 0.6; // × sunIlluminance(20) × T(≈1 at altitude) ≈ 12 (old day)
+const CLOUD_SKY_SCALE = 2.0; // × atmosphere sky tint → ~2 HDR ambient (old)
+
 export function marchCloudVolume({
   roEarth,
   rdEarth,
@@ -993,6 +1018,12 @@ export function marchCloudVolume({
   uLightVolAxisZB,
   uLightVolMixA,
   uVolumeWeight,
+  uTransmittanceLUT,
+  uAtmoBottomRadius,
+  uAtmoTopRadius,
+  uAtmoH,
+  uAtmoSunIlluminance,
+  uAtmoSkyColor,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   roEarth: any;
@@ -1058,6 +1089,18 @@ export function marchCloudVolume({
   uLightVolMixA?: any; // crossfade weight of side A (1 = pure A)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uVolumeWeight?: any; // orbit fade (1 near → 0 orbit)
+  // ── Atmosphere coupling (Phase 3) — see USE_ATMOSPHERE_CLOUD_LIGHTING ──
+  uTransmittanceLUT?: THREE.Texture; // transmittance LUT (bound at build time)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uAtmoBottomRadius?: any; // ground radius (scaled units)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uAtmoTopRadius?: any; // atmosphere top radius (scaled units)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uAtmoH?: any; // √(Rt²−Rg²) (scaled units)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uAtmoSunIlluminance?: any; // top-of-atmosphere sun illuminance (vec3)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uAtmoSkyColor?: any; // sky-ambient tint (vec3)
 }) {
     const b = dot(roEarth, rdEarth);
     const d2 = dot(roEarth, roEarth);
@@ -2002,26 +2045,56 @@ export function marchCloudVolume({
                 muHorizon,
                 mu,
               ).pow(float(REDDEN_POW));
-              // Sun tint: warm white (day) → Rayleigh-reddened orange (low
-              // sun). Magnitude 12 HDR — see the AgX-compression tuning
-              // history in git (tuned against 'lightingOnly').
-              const sunColorS = mix(
-                vec3(1.0, 0.96, 0.88),
-                vec3(1.0, 0.55, 0.25),
-                redden,
-              ).mul(12.0);
-              // Sky color: COOL BLUE ambient by day (Rayleigh blue lights
-              // cloud undersides), warmed toward a dim rose at low sun
-              // (alpenglow underlighting). Schneider 2015 splits the terms:
-              //   L = sunColor × (direct + ms) + skyColor × ambient
-              // 2 HDR with a dominant blue channel so shadow sides read cool.
-              const skyColorS = mix(
-                vec3(0.3, 0.5, 1.0),
-                vec3(0.8, 0.5, 0.45),
-                redden.mul(float(ALPENGLOW_AMOUNT)),
-              )
-                .mul(daylightS)
-                .mul(2.0);
+              // ── Sun / sky colour ──
+              // Phase 3 (USE_ATMOSPHERE_CLOUD_LIGHTING): PHYSICAL coupling. The
+              // per-sample sun colour is sunIlluminance × transmittance from the
+              // shared LUT, sampled with THIS voxel's altitude r + sun-zenith μ
+              // (the very params daylightS already uses). Identical LUT to the
+              // sky + ship, so the cloud's sunset reddening / planet-shadow
+              // darkening match the rest of the scene — and it stays per-sample,
+              // honouring the slab-midpoint rule. Ambient = the atmosphere sky
+              // tint; daylightS still gates night per-sample. CLOUD_SUN/SKY_SCALE
+              // re-anchor magnitudes to the marcher's tuned brightness.
+              // Off path: the original hand-tuned day→sunset ramp (byte-identical).
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              let sunColorS: any;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              let skyColorS: any;
+              if (USE_ATMOSPHERE_CLOUD_LIGHTING && uTransmittanceLUT) {
+                const sunUv = transmittanceLutUv(
+                  r,
+                  mu,
+                  uAtmoBottomRadius,
+                  uAtmoTopRadius,
+                  uAtmoH,
+                );
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const sunT: any = texture(uTransmittanceLUT, sunUv).level(int(0));
+                sunColorS = uAtmoSunIlluminance
+                  .mul(sunT.rgb)
+                  .mul(float(CLOUD_SUN_SCALE));
+                skyColorS = uAtmoSkyColor
+                  .mul(daylightS)
+                  .mul(float(CLOUD_SKY_SCALE));
+              } else {
+                // Sun tint: warm white (day) → Rayleigh-reddened orange (low
+                // sun). Magnitude 12 HDR (tuned against 'lightingOnly').
+                sunColorS = mix(
+                  vec3(1.0, 0.96, 0.88),
+                  vec3(1.0, 0.55, 0.25),
+                  redden,
+                ).mul(12.0);
+                // Sky color: COOL BLUE ambient by day, warmed toward a dim rose
+                // at low sun (alpenglow). Schneider split: L = sun×(direct+ms) +
+                // sky×ambient. 2 HDR, blue-dominant so shadow sides read cool.
+                skyColorS = mix(
+                  vec3(0.3, 0.5, 1.0),
+                  vec3(0.8, 0.5, 0.45),
+                  redden.mul(float(ALPENGLOW_AMOUNT)),
+                )
+                  .mul(daylightS)
+                  .mul(2.0);
+              }
 
               // ── Sun transmittance: 3D light-volume lookup (toggle) OR the
               //    6-tap cone march (default). USE_LIGHT_VOLUME is a build-time
