@@ -5,7 +5,14 @@ import { createPortal, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { NodeMaterial, RenderPipeline, RenderTarget } from "three/webgpu";
 import type { WebGPURenderer } from "three/webgpu";
-import { texture, screenUV, vec2, float } from "three/tsl";
+import {
+  texture,
+  screenUV,
+  vec2,
+  float,
+  screenCoordinate,
+  hash,
+} from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import {
   LOCAL_TO_SCALED_FROM_LOCAL_UNITS,
@@ -34,6 +41,10 @@ import {
   getAtmosphereLighting,
   computeAtmosphereLighting,
   clearAtmosphereLighting,
+  FROXEL_ENABLED,
+  SKYVIEW_ENABLED,
+  SKYVIEW_BAKE_MAX_ALT_KM,
+  applyCloudAerialPerspective,
 } from "./atmospherePass";
 import {
   flushCloudBakes,
@@ -61,6 +72,12 @@ const SCALED_CAMERA_FAR = 2_000_000;
 // (uActive=0). When disabled entirely the renderer keeps targeting `rt`.
 const ATMOSPHERE_PASS_ENABLED = true;
 
+// Skip the AP froxel bake above this altitude (km). The froxel's only consumer
+// is the cloud aerial perspective, and the volumetric clouds only render below
+// ~3000 km (earth.ts VOLUMETRIC_BLEND_START_ALT_KM); above that the bake is
+// wasted. Set a touch higher so the froxel is ready before clouds fade in.
+const FROXEL_BAKE_MAX_ALT_KM = 4000;
+
 // ── Cloud-only resolution clamp ──────────────────────────────────────────────
 // The whole scene renders at gl.getPixelRatio() (DPR, clamped to [0.5, 1.5] in
 // Scene.tsx → 1.5 on a Retina M-series). The volumetric cloud pipeline (the
@@ -75,6 +92,14 @@ const ATMOSPHERE_PASS_ENABLED = true;
 // device DPR (e.g. 1.5) for sharper clouds at higher cost; set high (e.g. 4) to
 // disable the clamp entirely.
 const CLOUD_MAX_DPR = 1.0;
+
+// Output dither amplitude, in 8-bit LSB (applied post-tonemap, pre-sRGB). Breaks
+// the 8-bit quantization banding that shows on smooth gradients — chiefly the
+// atmosphere sky, which bands at the final quantization regardless of whether it
+// came from the Sky-View LUT or the raymarch (this is why raising LUT resolution
+// / lowering the crossfade couldn't fully fix it). The Unreal/Frostbite trick.
+// ~1 LSB pre-sRGB ≈ 1–2 LSB in the dark sky (sRGB expands near black). 0 = off.
+const OUTPUT_DITHER_LSB = 1.0;
 
 // Phase D reconstruction. The marcher writes a SPARSE RT (1/SPARSE_DIVISOR²
 // of full pixels); a full-res reconstruction pass fills the rest from
@@ -153,9 +178,25 @@ const CLOUD_DENOISE_RADIUS = 2;
 // premultiplied RGBA. Built once per RT (rebuilt on resize, when historyRts is
 // recreated), so the JS-side weight loop runs at graph-build time — the shader
 // just does 2r+1 squared texture fetches and a weighted sum per pixel.
-function buildCompositeFetch(rt: RenderTarget) {
+function buildCompositeFetch(
+  rt: RenderTarget,
+  sparseRt: RenderTarget | null,
+) {
+  // Phase 4 step 2: fog the gathered cloud by the aerial-perspective froxel at
+  // the cloud-front depth (sparseRt.textures[1] = tFront) so distant clouds fade
+  // into the atmospheric haze. The fog samples that depth through a sentinel-
+  // rejecting gather (needs the sparse RT's texel size). No-op (returns the raw
+  // cloud) when the froxel is disabled or no sparse RT is bound.
+  const sparseDepthTex = sparseRt ? sparseRt.textures[1] : null;
+  const sTx = sparseRt ? 1 / Math.max(1, sparseRt.width) : 0;
+  const sTy = sparseRt ? 1 / Math.max(1, sparseRt.height) : 0;
+  const fog = (cloud: Parameters<typeof applyCloudAerialPerspective>[0]) =>
+    FROXEL_ENABLED && sparseDepthTex
+      ? applyCloudAerialPerspective(cloud, screenUV, sparseDepthTex, sTx, sTy)
+      : cloud;
+
   if (CLOUD_DENOISE_RADIUS <= 0) {
-    return texture(rt.texture, screenUV);
+    return fog(texture(rt.texture, screenUV));
   }
   const r = CLOUD_DENOISE_RADIUS;
   const tx = 1 / Math.max(1, rt.width);
@@ -185,7 +226,7 @@ function buildCompositeFetch(rt: RenderTarget) {
     ).mul(float(w));
   let acc = sample(taps[0]);
   for (let i = 1; i < taps.length; i++) acc = acc.add(sample(taps[i]));
-  return acc.div(float(wSum));
+  return fog(acc.div(float(wSum)));
 }
 
 export type SpaceRendererProps = {
@@ -349,7 +390,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // mutation (avoids TextureNode `.value` reassignment, which the WebGPU
   // backend's bind-group cache doesn't always honour mid-frame).
   const compositeMeshes = useMemo(() => {
-    const make = (rt: RenderTarget) => {
+    const make = (rt: RenderTarget, sparseRt: RenderTarget) => {
       const mat = new NodeMaterial();
       mat.transparent = true;
       mat.depthTest = false;
@@ -359,11 +400,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       mat.blendDst = THREE.OneMinusSrcAlphaFactor;
       mat.blendSrcAlpha = THREE.OneFactor;
       mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
-      mat.fragmentNode = buildCompositeFetch(rt);
+      // Pair each history RT with its frame's sparse RT (its textures[1] = tFront,
+      // its dims = the AP fog-depth gather step) so the AP fog samples the froxel
+      // at the cloud-front depth (Phase 4 step 2).
+      mat.fragmentNode = buildCompositeFetch(rt, sparseRt);
       return new THREE.Mesh(compositeGeometry, mat);
     };
-    return [make(historyRts[0]), make(historyRts[1])] as const;
-  }, [historyRts]);
+    return [
+      make(historyRts[0], sparseCloudRts[0]),
+      make(historyRts[1], sparseCloudRts[1]),
+    ] as const;
+  }, [historyRts, sparseCloudRts]);
 
   useEffect(() => () => {
     for (const mesh of compositeMeshes) {
@@ -386,20 +433,31 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     const sceneRt = rtB ?? rt;
     const sceneTexture = texture(sceneRt.texture);
 
-    let outputNode: typeof pipeline.outputNode = sceneTexture;
+    // Bloom is added in linear HDR (pre-tonemap), as before.
+    let hdr: typeof pipeline.outputNode = sceneTexture;
     if (settings.bloom) {
-      const bloomPass = bloom(sceneTexture, 0.02, 0, 1);
-      outputNode = sceneTexture.add(bloomPass);
+      hdr = sceneTexture.add(bloom(sceneTexture, 0.02, 0, 1));
     }
 
-    pipeline.outputNode = outputNode;
+    // Tone-map IN-GRAPH (the SAME call renderOutput() would make), then add an
+    // output DITHER before the pipeline's sRGB encode + 8-bit write. This is the
+    // Unreal/Frostbite fix for 8-bit banding on smooth gradients (the atmosphere
+    // sky) — which the Sky-View LUT resolution work alone can't remove because the
+    // raymarch sky bands at quantization too. TPDF (difference of two per-pixel
+    // hashes) is flat, distortion-free dither; scaled to ~OUTPUT_DITHER_LSB.
+    const toneMode = settings.toneMapping ? AgXToneMapping : NeutralToneMapping;
+    const mapped = hdr.toneMapping(toneMode);
+    const px = screenCoordinate;
+    const dither = hash(px.x.add(px.y.mul(1000)))
+      .sub(hash(px.y.add(px.x.mul(1000))))
+      .mul(OUTPUT_DITHER_LSB / 255);
+    pipeline.outputNode = OUTPUT_DITHER_LSB > 0 ? mapped.add(dither) : mapped;
     pipeline.needsUpdate = true;
 
-    // Tone mapping applied by RenderPipeline's renderOutput() wrapper
+    // Tonemapping is now done in-graph → the pipeline's renderOutput() must NOT
+    // re-apply it (it still does the sRGB colour-space encode + 8-bit write).
     const renderer = gl as unknown as WebGPURenderer;
-    renderer.toneMapping = settings.toneMapping
-      ? AgXToneMapping
-      : NeutralToneMapping;
+    renderer.toneMapping = NoToneMapping;
 
     return () => {
       pipeline.needsUpdate = true;
@@ -531,6 +589,32 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // the pass runs as a passthrough copy (uActive=0).
     if (atmospherePass && rtB) {
       atmospherePass.updateUniforms({ scaledCamera, dominant });
+      // Phase 4: bake the aerial-perspective froxel for this frame (needs the
+      // camera/sun uniforms just set + the LUTs baked in the pre-pass). Cheap
+      // 32³ compute. FROXEL_ENABLED gates the dispatch out entirely unless a
+      // consumer exists (the 'froxel' debug viz, or the cloud AP). Also gated to
+      // low altitude — the froxel's consumer is the volumetric clouds, which
+      // only render below ~3000 km, so baking it at orbit is wasted.
+      if (
+        dominant &&
+        FROXEL_ENABLED &&
+        dominant.distanceKm - dominant.params.groundRadiusKm <
+          FROXEL_BAKE_MAX_ALT_KM
+      ) {
+        atmospherePass.bakeFroxel(renderer);
+      }
+      // Phase 4: bake the Sky-View LUT for this frame (same prerequisites). The
+      // main pass samples it for sky rays below the crossfade altitude; above
+      // SKYVIEW_BAKE_MAX_ALT_KM the crossfade is fully in march mode (blend=1),
+      // so skip the bake there. Gated by SKYVIEW_ENABLED → zero cost when off.
+      if (
+        dominant &&
+        SKYVIEW_ENABLED &&
+        dominant.distanceKm - dominant.params.groundRadiusKm <
+          SKYVIEW_BAKE_MAX_ALT_KM
+      ) {
+        atmospherePass.bakeSkyView(renderer);
+      }
       renderer.setRenderTarget(rtB);
       gl.autoClear = true;
       gl.render(atmospherePass.scene, atmospherePass.camera);
