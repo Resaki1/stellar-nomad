@@ -119,6 +119,11 @@ coefficients from a small knob set (surface density/pressure, radius, atmosphere
 dominant-gas tint, Mie/haze amount + g, optional ozone-like absorber). Earth's
 `earthConfig` gets `atmosphere: EARTH_ATMOSPHERE`.
 
+> **Phase 5 update (2026-07-02):** all presets are now DERIVED — bodies carry a physical
+> description in `sol.json` and `deriveAtmosphere()` produces the params (Earth reproduces
+> the table above to <0.2%). `AtmosphereParams` gained per-channel Mie and `gasAbsorption`
+> (well-mixed absorber on the Rayleigh profile, e.g. CH4). See §7 Phase 5.
+
 ---
 
 ## 4. The four LUTs (Hillaire 2020, Table 2)
@@ -232,15 +237,20 @@ Each phase is independently shippable and has an explicit on-device check.
 - **Phase 4 — Perf.** Sky-View + AP froxel LUTs; temporal reuse via existing STBN/Bayer/
   reconstruction infra; quality tiers wired to the settings menu.
   *Target: 120 fps at ground & orbit on M2 Pro.*
-- **Phase 5 — Generalize.** Mars/Venus/giants presets + `proceduralAtmosphere`; multi-body
-  handling (today: one dominant body).
-  - **Derive `AtmosphereParams` from high-level/already-known inputs** (so procedurally
-    generated star systems get atmospheres for free): star distance + luminance → top-of-
-    atmosphere `sunIlluminance`; planet radius/gravity → scale heights + atmosphere height;
-    surface pressure/density → overall scattering magnitude; dominant-gas composition →
-    Rayleigh tint + whether to include an ozone-like absorber; aerosol/dustiness → Mie. Extend
-    the existing `proceduralAtmosphere(knobs)` to take these physical inputs rather than raw
-    coefficients. (User-requested 2026-06-24.)
+- **Phase 5 — Generalize.** ✅ DONE (2026-07-02). Physical descriptions live in `sol.json`
+  (`massKg` + `atmosphere: { surfacePressureBar, surfaceTemperatureK, composition, haze* }`,
+  star `luminositySun`); `deriveAtmosphere()` in `atmosphereData.ts` turns them into
+  `AtmosphereParams` (replaces the `proceduralAtmosphere(knobs)` stub). Anchored so Earth's
+  description reproduces Hillaire Table 1 to <0.2% (verified). Wired: Venus, Mars, Jupiter,
+  Saturn, Uranus, Neptune (moons/Mercury airless). Additions: per-channel Mie
+  (Mars' blue-absorbing dust) and a `gasAbsorption` channel — well-mixed molecular absorber
+  on the Rayleigh profile (Frostbite fallback) for CH4's red absorption (teal/blue ice
+  giants). Mars/Venus sphere-shader fake limb hazes removed (double-count); billboard tiers
+  keep theirs (pass only runs at sphere LODs). Multi-body: registry + nearest-dominant +
+  LUT re-bake on body switch were already in place (Phase 1); per-frame uniforms cover the
+  rest. Remaining niceties (deferred): Sky-View/froxel altitude gates are Earth-tuned fixed
+  km (could scale with the body's scale height); giants' shader band-haze may double-count
+  subtly — re-tune by eye if it shows.
 - **Phase 6 — Polish (optional).** Volumetric light shafts (terrain/cloud shadows
   in-scatter via raymarch + reproject); auto-exposure; eclipse / ring-shadow interplay.
 

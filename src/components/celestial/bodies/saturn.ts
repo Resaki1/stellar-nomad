@@ -26,6 +26,7 @@ import {
   SATURN_POSITION_KM,
   SATURN_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { SATURN_ATMOSPHERE } from "./atmosphereData";
 import { kmToScaledUnits } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 
@@ -205,6 +206,8 @@ function saturnBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.C
 
 export const saturnConfig: CelestialBodyConfig = {
   id: "saturn",
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: SATURN_ATMOSPHERE,
   positionKm: SATURN_POSITION_KM,
   radiusKm: SATURN_RADIUS_KM,
 

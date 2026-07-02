@@ -77,23 +77,32 @@ const DEFAULTS = {
 
 const FIELD_NAMES = ["R (perlin-worley)", "baseShape", "carveWorley", "baseShapeCarved"];
 
+// typeof on a concrete instance — `ReturnType<typeof uniform>` erases the
+// generic to UniformNode<unknown>, which no TSL operator overload accepts
+// (same dodge as asteroidCullCompute.ts).
+const _uNum = uniform(0);
+type UniformNum = typeof _uNum;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Node = any;
+
 type Uniforms = {
-  field: ReturnType<typeof uniform>;
-  axis: ReturnType<typeof uniform>;
-  spanMm: ReturnType<typeof uniform>;
-  slicePosMm: ReturnType<typeof uniform>;
-  baseScale: ReturnType<typeof uniform>;
-  carveScale: ReturnType<typeof uniform>;
-  billowCarve: ReturnType<typeof uniform>;
-  threshold: ReturnType<typeof uniform>;
-  binary: ReturnType<typeof uniform>;
-  warp: ReturnType<typeof uniform>;
-  warpAmp: ReturnType<typeof uniform>;
-  columnScale: ReturnType<typeof uniform>;
-  detile: ReturnType<typeof uniform>;
-  tileSize: ReturnType<typeof uniform>;
-  blendWidth: ReturnType<typeof uniform>;
-  offsetRange: ReturnType<typeof uniform>;
+  field: UniformNum;
+  axis: UniformNum;
+  spanMm: UniformNum;
+  slicePosMm: UniformNum;
+  baseScale: UniformNum;
+  carveScale: UniformNum;
+  billowCarve: UniformNum;
+  threshold: UniformNum;
+  binary: UniformNum;
+  warp: UniformNum;
+  warpAmp: UniformNum;
+  columnScale: UniformNum;
+  detile: UniformNum;
+  tileSize: UniformNum;
+  blendWidth: UniformNum;
+  offsetRange: UniformNum;
 };
 
 function buildColorNode(
@@ -112,7 +121,9 @@ function buildColorNode(
 
   // ── Anti-tiling domain warp (earthClouds.ts:1429-1437) ──
   // Game warp source is the column tap (base volume @ columnScale) g/b/a.
-  const colTap = texture3D(baseVol, pMm.mul(u.columnScale)).level(int(0));
+  const colTap = texture3D(baseVol, pMm.mul(u.columnScale)).level(
+    int(0),
+  ) as Node;
   const warpVec = vec3(
     colTap.g.sub(0.5),
     colTap.b.sub(0.5),
@@ -125,7 +136,9 @@ function buildColorNode(
   // Compose the selected pipeline field at a given sample position (mirrors
   // earthClouds.ts:1516-1564). Called once normally, or 4× for tile-&-offset.
   const composeAt = (pos: ReturnType<typeof vec3>) => {
-    const baseSample = texture3D(baseVol, pos.mul(u.baseScale)).level(int(0));
+    const baseSample = texture3D(baseVol, pos.mul(u.baseScale)).level(
+      int(0),
+    ) as Node;
     const baseFbm = baseSample.g
       .mul(0.625)
       .add(baseSample.b.mul(0.25))
@@ -134,7 +147,9 @@ function buildColorNode(
       .add(float(1).sub(baseFbm))
       .div(float(2).sub(baseFbm).max(0.0001))
       .clamp(0, 1);
-    const carveSrc = texture3D(detailVol, pos.mul(u.carveScale)).level(int(0));
+    const carveSrc = texture3D(detailVol, pos.mul(u.carveScale)).level(
+      int(0),
+    ) as Node;
     const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
     const carveThresh = float(1).sub(carveWorley).mul(u.billowCarve);
     const carved = baseShape

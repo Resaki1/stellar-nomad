@@ -30,7 +30,8 @@
       "name": "Sol",
       "type": "star",
       "positionKm": [0, 0, 0],
-      "radiusKm": 696340
+      "radiusKm": 696340,
+      "luminositySun": 1.0
     },
     {
       "id": "mercury",
@@ -46,6 +47,18 @@
       "type": "planet",
       "positionKm": [108060000, 0, 0],
       "radiusKm": 6052,
+      "massKg": 4.8675e24,
+      "atmosphere": {
+        "surfacePressureBar": 92,
+        "surfaceTemperatureK": 737,
+        "composition": { "co2": 0.965, "n2": 0.035 },
+        "haze": 20,
+        "hazeTint": [0.98, 0.95, 0.86],
+        "hazeAbsorptionTint": [0.12, 0.14, 0.22],
+        "hazeScaleHeightKm": 14,
+        "mieG": 0.75,
+        "groundAlbedo": [0.55, 0.5, 0.4]
+      },
       "marker": { "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -54,6 +67,12 @@
       "type": "planet",
       "positionKm": [-129995000, 0, -65015000],
       "radiusKm": 6371,
+      "massKg": 5.9722e24,
+      "atmosphere": {
+        "surfacePressureBar": 1.01325,
+        "surfaceTemperatureK": 288,
+        "composition": { "n2": 0.781, "o2": 0.209, "ar": 0.0093, "co2": 0.0004 }
+      },
       "marker": { "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -71,6 +90,18 @@
       "type": "planet",
       "positionKm": [-197500000, 0, -114000000],
       "radiusKm": 3390,
+      "massKg": 6.4171e23,
+      "atmosphere": {
+        "surfacePressureBar": 0.00636,
+        "surfaceTemperatureK": 210,
+        "composition": { "co2": 0.95, "n2": 0.028, "ar": 0.021 },
+        "haze": 1.6,
+        "hazeTint": [1.0, 0.63, 0.36],
+        "hazeAbsorptionTint": [0.9, 1.5, 2.4],
+        "hazeScaleHeightKm": 10,
+        "mieG": 0.75,
+        "groundAlbedo": [0.25, 0.16, 0.1]
+      },
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -79,6 +110,15 @@
       "type": "planet",
       "positionKm": [2870000000, 0, 0],
       "radiusKm": 25559,
+      "massKg": 8.681e25,
+      "atmosphere": {
+        "surfacePressureBar": 1,
+        "surfaceTemperatureK": 76,
+        "composition": { "h2": 0.825, "he": 0.152, "ch4": 0.023 },
+        "haze": 0.08,
+        "mieG": 0.7,
+        "groundAlbedo": [0.35, 0.48, 0.5]
+      },
       "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -87,6 +127,15 @@
       "type": "planet",
       "positionKm": [4500000000, 0, 0],
       "radiusKm": 24622,
+      "massKg": 1.02413e26,
+      "atmosphere": {
+        "surfacePressureBar": 1,
+        "surfaceTemperatureK": 72,
+        "composition": { "h2": 0.8, "he": 0.19, "ch4": 0.02 },
+        "haze": 0.1,
+        "mieG": 0.7,
+        "groundAlbedo": [0.25, 0.35, 0.55]
+      },
       "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -95,6 +144,17 @@
       "type": "planet",
       "positionKm": [1430000000, 0, 0],
       "radiusKm": 58232,
+      "massKg": 5.6834e26,
+      "atmosphere": {
+        "surfacePressureBar": 1,
+        "surfaceTemperatureK": 134,
+        "composition": { "h2": 0.963, "he": 0.0325, "ch4": 0.0045 },
+        "haze": 0.5,
+        "hazeTint": [0.95, 0.88, 0.68],
+        "hazeScaleHeightKm": 25,
+        "mieG": 0.7,
+        "groundAlbedo": [0.57, 0.52, 0.42]
+      },
       "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -103,6 +163,17 @@
       "type": "planet",
       "positionKm": [90000000, 0, -779000000],
       "radiusKm": 69911,
+      "massKg": 1.8982e27,
+      "atmosphere": {
+        "surfacePressureBar": 1,
+        "surfaceTemperatureK": 165,
+        "composition": { "h2": 0.898, "he": 0.099, "ch4": 0.003 },
+        "haze": 0.4,
+        "hazeTint": [0.95, 0.87, 0.72],
+        "hazeScaleHeightKm": 15,
+        "mieG": 0.7,
+        "groundAlbedo": [0.52, 0.47, 0.41]
+      },
       "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {

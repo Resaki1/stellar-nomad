@@ -4,17 +4,12 @@ import {
   texture,
   uv,
   normalWorld,
-  positionWorld,
-  cameraPosition,
   vec3,
   vec4,
   float,
   dot,
   normalize,
   clamp,
-  pow,
-  sub,
-  mix,
   length,
   smoothstep,
   Discard,
@@ -23,6 +18,7 @@ import {
   VENUS_POSITION_KM,
   VENUS_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { VENUS_ATMOSPHERE } from "./atmosphereData";
 import type { CelestialBodyConfig } from "../types";
 
 export { VENUS_POSITION_KM, VENUS_RADIUS_KM };
@@ -34,9 +30,11 @@ const VENUS_ALBEDO = new THREE.Color(0.70, 0.52, 0.28);
 // - Visible "surface" is opaque cloud tops -- no terrain visible
 // - Very high albedo (~0.77) -- brightest planet
 // - Thick atmosphere -> very soft terminator with deep light-wrap
-// - Pronounced limb brightening from forward-scattered sunlight
-//   through the cloud deck (opposite of rocky planet limb darkening)
 // - Warm yellowish-white palette from sulfuric acid clouds
+// - Limb brightening/haze comes from the REAL atmosphere pass (Phase 5:
+//   venusConfig.atmosphere) — the old shader fake was removed to avoid
+//   double-counting. The billboard tier keeps its own look (the pass only
+//   runs while the sphere LOD is visible).
 // ─────────────────────────────────────────────────────────────────────
 
 function buildVenusFragmentNode(
@@ -56,24 +54,7 @@ function buildVenusFragmentNode(
     // Venus's thick clouds scatter light well past the terminator.
     const diffuse = clamp(NdotL.mul(0.75).add(0.25), 0, 1);
 
-    // Limb brightening: thick clouds forward-scatter sunlight at the limb,
-    // making edges appear brighter on the lit side (opposite of airless bodies).
-    const viewDir = normalize(sub(cameraPosition, positionWorld));
-    const viewDotN = dot(viewDir, N).max(0.05);
-    const limb = clamp(float(1.0).sub(viewDotN).mul(2.0), 0, 1);
-    const limbPow = pow(limb, float(2.5));
-    const limbDayMask = clamp(NdotL.mul(2.0).add(0.5), 0, 1);
-    const limbBright = limbPow.mul(limbDayMask).mul(0.15);
-
-    // Slight desaturation at limb (atmospheric scattering washes out color)
-    const col = albedo.mul(diffuse).toVar();
-    col.addAssign(vec3(0.72, 0.65, 0.50).mul(limbBright));
-
-    const lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    const desatAmount = limbPow.mul(0.15).mul(limbDayMask);
-    col.assign(mix(col, vec3(lum, lum, lum), desatAmount));
-
-    return vec4(col, 1.0);
+    return vec4(albedo.mul(diffuse), 1.0);
   })();
 }
 
@@ -109,6 +90,9 @@ export const venusConfig: CelestialBodyConfig = {
   id: "venus",
   positionKm: VENUS_POSITION_KM,
   radiusKm: VENUS_RADIUS_KM,
+
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: VENUS_ATMOSPHERE,
 
   lod: { near: 50_000, far: 350_000 },
   near: { textures: { color: "/textures/venus/4k_venus.ktx2" }, segments: 128 },

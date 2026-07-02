@@ -13,13 +13,27 @@ export type AtmosphereParams = {
   atmosphereHeightKm: number;
   rayleighScattering: Vec3Tuple;
   rayleighScaleHeightKm: number;
-  mieScattering: number;
-  mieAbsorption: number;
+  // Per-RGB Mie (Phase 5): coloured aerosols — e.g. Mars dust absorbs blue
+  // (butterscotch sky, blue sunset). Earth's aerosol is spectrally flat.
+  mieScattering: Vec3Tuple;
+  mieAbsorption: Vec3Tuple;
   mieScaleHeightKm: number;
-  mieG: number;
+  /**
+   * Per-RGB phase anisotropy. Wavelength-dependent forward peaking is the
+   * physical mechanism behind Mars' BLUE sunset glow: ~1.5 µm dust diffracts
+   * blue into a tighter forward lobe (g_blue > g_red), so blue concentrates
+   * around the sun while the rest of the sky stays butterscotch.
+   */
+  mieG: Vec3Tuple;
   ozoneAbsorption: Vec3Tuple;
   ozoneCenterKm: number;
   ozoneWidthKm: number;
+  /**
+   * Well-mixed molecular absorption on the RAYLEIGH density profile (m^-1,
+   * per-RGB) — Frostbite's "absorber on the Rayleigh exp profile" channel.
+   * CH4's red absorption (teal/blue ice giants) lands here; [0,0,0] = none.
+   */
+  gasAbsorption: Vec3Tuple;
   groundAlbedo: Vec3Tuple;
   /** Top-of-atmosphere sun illuminance in the unified luminance scale. */
   sunIlluminance: Vec3Tuple;

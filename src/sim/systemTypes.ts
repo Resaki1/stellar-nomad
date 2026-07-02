@@ -181,6 +181,58 @@ export type POIMarkerConfig = {
   maxDistanceKm?: number;
 };
 
+/**
+ * Gas species understood by the atmosphere derivation
+ * (src/components/celestial/bodies/atmosphereData.ts — per-gas Rayleigh
+ * cross-sections, molar masses, and molecular absorption live there).
+ */
+export type AtmosphereGasId =
+  | "n2"
+  | "o2"
+  | "co2"
+  | "ar"
+  | "ch4"
+  | "h2"
+  | "he"
+  | "h2o"
+  | "so2";
+
+/**
+ * High-level physical description of a body's atmosphere. Everything the
+ * renderer needs (Rayleigh/Mie coefficients, scale heights, ozone, sun
+ * illuminance) is DERIVED from this + the body's mass/radius + the star —
+ * see deriveAtmosphere() in atmosphereData.ts. Only aerosol properties
+ * (haze*) are art-directed knobs: dust/cloud load isn't derivable from
+ * bulk physics.
+ *
+ * For gas giants there is no surface; by convention `radiusKm` is the 1-bar
+ * level, so use surfacePressureBar: 1 with the temperature at that level.
+ */
+export type AtmosphereDef = {
+  /** Pressure at the reference surface (bar). Earth ≈ 1.013, Mars ≈ 0.006, Venus ≈ 92. */
+  surfacePressureBar: number;
+  /** Temperature at the reference surface (K). Sets the density scale height. */
+  surfaceTemperatureK: number;
+  /** Mole fractions per gas (need not sum to 1 — normalised on read). */
+  composition: Partial<Record<AtmosphereGasId, number>>;
+  /** Aerosol load relative to Earth's clear-sky baseline (1 = Earth haze). Default 1. */
+  haze?: number;
+  /** Aerosol single-scatter tint (RGB on Mie scattering). Default white. */
+  hazeTint?: [number, number, number];
+  /** Aerosol absorption tint (RGB on Mie absorption) — e.g. Mars dust absorbs blue. Default white. */
+  hazeAbsorptionTint?: [number, number, number];
+  /** Aerosol density scale height (km). Default 0.15 × Rayleigh scale height (Earth → 1.2). */
+  hazeScaleHeightKm?: number;
+  /**
+   * Mie phase anisotropy — scalar, or per-RGB for wavelength-dependent forward
+   * peaking (Mars dust: g_blue > g_red → the blue sunset glow around the sun).
+   * Default 0.8.
+   */
+  mieG?: number | [number, number, number];
+  /** Mean surface albedo for multi-scatter ground bounce. Default [0.3, 0.3, 0.3]. */
+  groundAlbedo?: [number, number, number];
+};
+
 export type CelestialBodyDef = {
   id: string;
   name: string;
@@ -192,6 +244,12 @@ export type CelestialBodyDef = {
   /** Optional parent body ID (e.g. moon orbiting a planet). */
   parent?: string;
   marker?: POIMarkerConfig;
+  /** Body mass (kg) — surface gravity, scale heights. Required for `atmosphere`. */
+  massKg?: number;
+  /** Star luminosity in solar units (stars only) — drives planet sun illuminance. */
+  luminositySun?: number;
+  /** Physical atmosphere description; omit for airless bodies. */
+  atmosphere?: AtmosphereDef;
 };
 
 export type AsteroidFieldDef = {

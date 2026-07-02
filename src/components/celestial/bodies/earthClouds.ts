@@ -48,6 +48,9 @@ import {
   transmittanceLutUv,
 } from "@/components/space/atmospherePass";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Node = any;
+
 // Troposphere-ish slab. Photoreal-leaning, not exaggerated.
 const CLOUD_INNER_ALTITUDE_KM = 1;
 const CLOUD_OUTER_ALTITUDE_KM = 14;
@@ -1278,8 +1281,9 @@ export function marchCloudVolume({
     // computes per-step). Always evaluated so JS-side debug branching at
     // build time can use it without restructuring the shader graph.
     const pMidColumn = dirMid.mul(uInnerRadius);
-    const colSampleMid = texture3D(baseVolume, pMidColumn.mul(uColumnScale))
-      .level(int(0)).r;
+    const colSampleMid = (
+      texture3D(baseVolume, pMidColumn.mul(uColumnScale)).level(int(0)) as Node
+    ).r;
     const colSharpMid = smoothstep(float(0.3), float(0.7), colSampleMid);
     // Mirrors the per-step topAlt mapping exactly (smoothstep spread,
     // range [0.45, 0.95]) so the 'topAlt' diagnostic reflects reality.
@@ -1308,9 +1312,11 @@ export function marchCloudVolume({
     // close range. Keep the clean uvNear/uvMid/uvFar values for now;
     // re-enable with a Perlin-only low-frequency warp source when we
     // revisit it.
-    const covNear = texture(weatherMap, uvNear).level(int(0)).r;
-    const covMid = texture(weatherMap, uvMidWeather).level(int(0)).r;
-    const covFar = texture(weatherMap, uvFar).level(int(0)).r;
+    const covNear = (texture(weatherMap, uvNear).level(int(0)) as Node).r;
+    const covMid = (
+      texture(weatherMap, uvMidWeather).level(int(0)) as Node
+    ).r;
+    const covFar = (texture(weatherMap, uvFar).level(int(0)) as Node).r;
     // Outer-gate proxy: skip the whole march only if ALL THREE tap points
     // have near-zero coverage. Catches cumulus at ray-start, mid-chord,
     // or ray-end equally.
@@ -1364,7 +1370,9 @@ export function marchCloudVolume({
     // only on the USE_DETILE path; the OFF path keeps the original inline warp.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dilatedShapeAt = (pos: any) => {
-      const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(int(0));
+      const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(
+        int(0),
+      ) as Node;
       const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
       return baseDilate(bs.r, fbm);
     };
@@ -1373,7 +1381,7 @@ export function marchCloudVolume({
       const dil = dilatedShapeAt(pos);
       const cs = texture3D(detailVolume, pos.mul(float(CARVE_SCALE))).level(
         int(0),
-      );
+      ) as Node;
       const cw = cs.r.mul(0.6).add(cs.g.mul(0.4));
       const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
       return dil
@@ -1624,7 +1632,7 @@ export function marchCloudVolume({
         const uP = fract(atan(dirP.z, dirP.x.negate()).mul(invTwoPi));
         const vP = acos(clamp(dirP.y.negate(), -1, 1)).mul(invPi);
         const uvP = vec2(uP, vP).add(uCloudUvOffset);
-        const coverageRaw = texture(weatherMap, uvP).level(int(0)).r;
+        const coverageRaw = (texture(weatherMap, uvP).level(int(0)) as Node).r;
 
         // Coverage = the smooth weather map directly, lifted with a gamma
         // (pow < 1): the Nubis Remap below thresholds away coverage under
@@ -1678,8 +1686,9 @@ export function marchCloudVolume({
         // iso-distance contours; CLOUD_DEBUGGING_LESSONS case study #2).
         // This 125 km-period tap stays at level 0 — its texels are ~1 km in
         // world space, comfortably above any pixel footprint we march at.
-        const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale))
-          .level(int(0));
+        const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
+          int(0),
+        ) as Node;
         const colSample = colTap.r;
         // ── Anti-tiling domain warp (see WARP_AMPLITUDE) ──
         // The column tap's g/b/a channels (Worley FBM bands, unused for
@@ -1791,8 +1800,10 @@ export function marchCloudVolume({
           } else {
             // ── ORIGINAL single-tap domain-warp path (anti-tiling via warp) ──
             const pWarped = p.add(warpVec);
-            const baseSample = texture3D(baseVolume, pWarped.mul(uBaseScale))
-              .level(int(0));
+            const baseSample = texture3D(
+              baseVolume,
+              pWarped.mul(uBaseScale),
+            ).level(int(0)) as Node;
             const baseFbm = baseSample.g
               .mul(0.625)
               .add(baseSample.b.mul(0.25))
@@ -1815,7 +1826,7 @@ export function marchCloudVolume({
               const carveSrc = texture3D(
                 detailVolume,
                 pWarped.mul(float(CARVE_SCALE)),
-              ).level(int(0));
+              ).level(int(0)) as Node;
               const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
               const carveThresh = float(1)
                 .sub(carveWorley)
@@ -1839,7 +1850,7 @@ export function marchCloudVolume({
                 const fineSrc = texture3D(
                   detailVolume,
                   pWarped.mul(float(FINE_CARVE_SCALE)),
-                ).level(int(0));
+                ).level(int(0)) as Node;
                 // Frequency-grade by the smooth profile (Nubis p.109): LOW-freq
                 // rounded octave (R) at thin/edge, HIGH-freq (B) in the core —
                 // so edges don't get "high frequency noise everywhere".
@@ -2001,7 +2012,11 @@ export function marchCloudVolume({
               // transparent. JS-const gated → off path is byte-identical.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const density: any = (
-                DENSITY_GAMMA === 1 ? shape : pow(shape, float(DENSITY_GAMMA))
+                // `as number` defeats TS's module-scope const narrowing (same
+                // dodge as FROXEL_ENABLED in atmospherePass.ts).
+                (DENSITY_GAMMA as number) === 1
+                  ? shape
+                  : pow(shape, float(DENSITY_GAMMA))
               ).mul(densScale);
               lastDensity.assign(density);
 
@@ -2160,7 +2175,7 @@ export function marchCloudVolume({
                   );
                   // One trilinear fetch replaces the whole 6-tap cone.
                   // .r = exp(-tau).
-                  const Tv = texture3D(vol, uvwS).level(int(0)).r;
+                  const Tv = (texture3D(vol, uvwS).level(int(0)) as Node).r;
                   return mix(float(1), Tv, edgeFade);
                 };
                 // ── Dual-volume crossfade (see cloudLightVolume.ts) ──
@@ -2247,7 +2262,7 @@ export function marchCloudVolume({
                       const baseLs = texture3D(
                         baseVolume,
                         pLsWarped.mul(uBaseScale),
-                      ).level(int(0));
+                      ).level(int(0)) as Node;
                       const fbmLs = baseLs.g
                         .mul(0.625)
                         .add(baseLs.b.mul(0.25))
@@ -2256,7 +2271,7 @@ export function marchCloudVolume({
                       const carveLsSrc = texture3D(
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
-                      ).level(int(0));
+                      ).level(int(0)) as Node;
                       const carveLsWorley = carveLsSrc.r
                         .mul(0.6)
                         .add(carveLsSrc.g.mul(0.4));
@@ -2310,7 +2325,7 @@ export function marchCloudVolume({
                       const fineSrc = texture3D(
                         detailVolumeMip1,
                         pNear.add(warpVec).mul(float(FINE_CARVE_SCALE)),
-                      ).level(int(0));
+                      ).level(int(0)) as Node;
                       // Match the opacity's CENTERED, FREQUENCY-GRADED fine
                       // octave (FINE_CARVE_BIAS / GRADE_POW) so the shadow stays
                       // correlated with the bumps the view ray carves. carvedLs
@@ -2446,8 +2461,10 @@ export function marchCloudVolume({
                   // false, wrap this in detileBlend(pL, dilatedShapeAt) (and
                   // carvedShapeAt under CONE_SAMPLE_CARVE) so its self-shadow
                   // matches the detiled render. See cloudDetile.ts.
-                  const baseSampleL = texture3D(baseVolume, pL.mul(uBaseScale))
-                    .level(int(0));
+                  const baseSampleL = texture3D(
+                    baseVolume,
+                    pL.mul(uBaseScale),
+                  ).level(int(0)) as Node;
                   const baseFbmL = baseSampleL.g
                     .mul(0.625)
                     .add(baseSampleL.b.mul(0.25))
@@ -2462,7 +2479,7 @@ export function marchCloudVolume({
                     const carveSrcL = texture3D(
                       detailVolume,
                       pL.mul(float(CARVE_SCALE)),
-                    ).level(int(0));
+                    ).level(int(0)) as Node;
                     const carveWorleyL = carveSrcL.r
                       .mul(0.6)
                       .add(carveSrcL.g.mul(0.4));
@@ -2770,7 +2787,9 @@ export function marchCloudVolume({
       const dirHit = pHit.div(length(pHit).max(0.0001));
       const baseAtAlt = (a01: number) => {
         const pos = dirHit.mul(mix(uInnerRadius, uOuterRadius, float(a01)));
-        const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(int(0));
+        const bs = texture3D(baseVolume, pos.mul(uBaseScale)).level(
+          int(0),
+        ) as Node;
         const f = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
         return baseDilate(bs.r, f);
       };

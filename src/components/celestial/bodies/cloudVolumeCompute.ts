@@ -647,7 +647,7 @@ export function createDetailMip1Compute(
             float(sy).add(0.5).mul(inv0),
             float(sz).add(0.5).mul(inv0),
           );
-          const s = texture3D(level0Tex, uvw).level(int(0));
+          const s = texture3D(level0Tex, uvw).level(int(0)) as Node;
           acc.addAssign(floor(s.mul(255).add(0.5))); // recovered byte [0,255]
         }
       }

@@ -89,7 +89,7 @@ const FROXEL_MARCH_STEPS = 24; // per-voxel march steps from the camera to its d
 // Far plane of the froxel (km). Depth is distributed QUADRATICALLY (w² · max),
 // so near slices are dense where aerial perspective varies fastest. Beyond this
 // the consumer clamps to the last slice (AP is near-saturated there anyway).
-const FROXEL_MAX_DEPTH_KM = 300;
+const FROXEL_MAX_DEPTH_KM = 600;
 
 // ── GPU debug viz (off by default) ──
 // Build-const → only the selected path compiles, so 'off' costs nothing. Each
@@ -589,7 +589,8 @@ const smoothstepScalar = (e0: number, e1: number, x: number): number => {
 
 // Extinction (km^-1, per-RGB) at planet-centred radius rKm — JS twin of the
 // shader's sampleMedium().extinction (Rayleigh scattering + Mie extinction +
-// ozone absorption). Coefficients in `params` are m^-1 → ×1000.
+// ozone absorption + well-mixed gas absorption on the Rayleigh profile).
+// Coefficients in `params` are m^-1 → ×1000.
 const sampleExtinctionKm = (
   rKm: number,
   p: AtmosphereParams,
@@ -601,11 +602,22 @@ const sampleExtinctionKm = (
   const dM = Math.exp(-h / p.mieScaleHeightKm);
   const halfW = p.ozoneWidthKm * 0.5;
   const dO = halfW > 0 ? Math.max(0, 1 - Math.abs(h - p.ozoneCenterKm) / halfW) : 0;
-  const mieExt = (p.mieScattering + p.mieAbsorption) * 1000 * dM;
   out.set(
-    p.rayleighScattering[0] * 1000 * dR + mieExt + p.ozoneAbsorption[0] * 1000 * dO,
-    p.rayleighScattering[1] * 1000 * dR + mieExt + p.ozoneAbsorption[1] * 1000 * dO,
-    p.rayleighScattering[2] * 1000 * dR + mieExt + p.ozoneAbsorption[2] * 1000 * dO,
+    (p.rayleighScattering[0] * dR +
+      (p.mieScattering[0] + p.mieAbsorption[0]) * dM +
+      p.ozoneAbsorption[0] * dO +
+      p.gasAbsorption[0] * dR) *
+      1000,
+    (p.rayleighScattering[1] * dR +
+      (p.mieScattering[1] + p.mieAbsorption[1]) * dM +
+      p.ozoneAbsorption[1] * dO +
+      p.gasAbsorption[1] * dR) *
+      1000,
+    (p.rayleighScattering[2] * dR +
+      (p.mieScattering[2] + p.mieAbsorption[2]) * dM +
+      p.ozoneAbsorption[2] * dO +
+      p.gasAbsorption[2] * dR) *
+      1000,
   );
 };
 
@@ -756,10 +768,14 @@ export function setupAtmospherePass(
   const uMieScattering = uniform(new THREE.Vector3());
   const uMieExtinction = uniform(new THREE.Vector3());
   const uMieExpScale = uniform(-0.8333);
-  const uMieG = uniform(0.8);
+  // Per-RGB anisotropy (vec3): wavelength-dependent forward peaking — see
+  // AtmosphereParams.mieG. hgPhase broadcasts over it, yielding a vec3 phase.
+  const uMieG = uniform(new THREE.Vector3(0.8, 0.8, 0.8));
   const uOzoneAbsorption = uniform(new THREE.Vector3());
   const uOzoneCenterKm = uniform(25);
   const uOzoneHalfWidthKm = uniform(15);
+  // Well-mixed molecular absorber on the Rayleigh profile (km^-1) — CH4 etc.
+  const uGasAbsorption = uniform(new THREE.Vector3());
   const uGroundAlbedo = uniform(new THREE.Vector3(0.3, 0.3, 0.3));
   const uSunIlluminance = uniform(new THREE.Vector3(1, 1, 1));
   // Dynamic (per-frame).
@@ -819,7 +835,10 @@ export function setupAtmospherePass(
     const scatteringMie = uMieScattering.mul(dM);
     const extinctionMie = uMieExtinction.mul(dM);
     const scattering = scatteringRay.add(scatteringMie);
-    const extinction = scatteringRay.add(extinctionMie).add(uOzoneAbsorption.mul(dO));
+    const extinction = scatteringRay
+      .add(extinctionMie)
+      .add(uOzoneAbsorption.mul(dO))
+      .add(uGasAbsorption.mul(dR)); // well-mixed absorber rides the Rayleigh profile
     return { scatteringRay, scatteringMie, scattering, extinction };
   };
 
@@ -1448,10 +1467,18 @@ export function setupAtmospherePass(
       p.rayleighScattering[2] * 1000,
     );
     uRayleighExpScale.value = -1 / p.rayleighScaleHeightKm;
-    uMieScattering.value.setScalar(p.mieScattering * 1000);
-    uMieExtinction.value.setScalar((p.mieScattering + p.mieAbsorption) * 1000);
+    uMieScattering.value.set(
+      p.mieScattering[0] * 1000,
+      p.mieScattering[1] * 1000,
+      p.mieScattering[2] * 1000,
+    );
+    uMieExtinction.value.set(
+      (p.mieScattering[0] + p.mieAbsorption[0]) * 1000,
+      (p.mieScattering[1] + p.mieAbsorption[1]) * 1000,
+      (p.mieScattering[2] + p.mieAbsorption[2]) * 1000,
+    );
     uMieExpScale.value = -1 / p.mieScaleHeightKm;
-    uMieG.value = p.mieG;
+    uMieG.value.set(p.mieG[0], p.mieG[1], p.mieG[2]);
     uOzoneAbsorption.value.set(
       p.ozoneAbsorption[0] * 1000,
       p.ozoneAbsorption[1] * 1000,
@@ -1459,6 +1486,11 @@ export function setupAtmospherePass(
     );
     uOzoneCenterKm.value = p.ozoneCenterKm;
     uOzoneHalfWidthKm.value = p.ozoneWidthKm * 0.5;
+    uGasAbsorption.value.set(
+      p.gasAbsorption[0] * 1000,
+      p.gasAbsorption[1] * 1000,
+      p.gasAbsorption[2] * 1000,
+    );
     uGroundAlbedo.value.set(p.groundAlbedo[0], p.groundAlbedo[1], p.groundAlbedo[2]);
     uSunIlluminance.value.set(p.sunIlluminance[0], p.sunIlluminance[1], p.sunIlluminance[2]);
   };

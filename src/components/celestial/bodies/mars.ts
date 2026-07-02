@@ -23,6 +23,7 @@ import {
   MARS_POSITION_KM,
   MARS_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { MARS_ATMOSPHERE } from "./atmosphereData";
 import type { CelestialBodyConfig } from "../types";
 
 export { MARS_POSITION_KM, MARS_RADIUS_KM };
@@ -35,11 +36,13 @@ const MARS_ALBEDO = new THREE.Color(0.6, 0.3, 0.15);
 //
 // Physical considerations:
 // - No oceans -> no specular water highlights
-// - Extremely thin atmosphere (~1% of Earth) -> minimal Rayleigh scattering
-// - Iron oxide dust gives warm reddish atmospheric haze at the limb
 // - No night lights, no significant cloud layer
 // - Subtle opposition surge (slight brightening at low phase angles)
 // - Oren-Nayar-like diffuse for dusty rough surfaces
+// - Dusty limb haze comes from the REAL atmosphere pass (Phase 5:
+//   marsConfig.atmosphere — thin CO2 Rayleigh + blue-absorbing dust Mie);
+//   the old additive shader haze was removed to avoid double-counting. The
+//   billboard tier keeps its rim (the pass only runs at sphere LODs).
 // ─────────────────────────────────────────────────────────────────────
 
 function buildMarsFragmentNode(
@@ -64,15 +67,8 @@ function buildMarsFragmentNode(
       .mul(smoothstep(float(0.5), float(0.15), NdotL));
     const warmTint = vec3(1.0, 0.7, 0.45);
 
-    // Atmospheric limb haze (warm dusty)
-    const viewDir = normalize(sub(cameraPosition, positionWorld));
-    const viewDotN = dot(viewDir, N).max(0.05);
-    const limb = clamp(float(1.0).sub(viewDotN).mul(2.0), 0, 1);
-    const limbPow = pow(limb, float(2.5));
-    const hazeColor = vec3(0.75, 0.4, 0.2);
-    const hazeDayMask = clamp(NdotL.mul(2.0).add(0.3), 0, 1);
-
     // Opposition surge
+    const viewDir = normalize(sub(cameraPosition, positionWorld));
     const halfVec = normalize(sunDir.add(viewDir));
     const NdotH = dot(N, halfVec).max(0);
     const surge = pow(NdotH, float(4.0)).mul(0.08).mul(diffuse);
@@ -82,14 +78,6 @@ function buildMarsFragmentNode(
 
     // Terminator warmth
     col.assign(mix(col, col.mul(warmTint), terminatorMask.mul(0.2)));
-
-    // Atmospheric limb haze (additive on lit side)
-    col.addAssign(hazeColor.mul(limbPow).mul(hazeDayMask).mul(0.08));
-
-    // Slight desaturation at extreme limb (dust extinction)
-    const lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    const desatAmount = limbPow.mul(0.15).mul(hazeDayMask);
-    col.assign(mix(col, vec3(lum, lum, lum), desatAmount));
 
     return vec4(col, 1.0);
   })();
@@ -132,6 +120,9 @@ export const marsConfig: CelestialBodyConfig = {
   positionKm: MARS_POSITION_KM,
   radiusKm: MARS_RADIUS_KM,
   rotation: MARS_ROTATION,
+
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: MARS_ATMOSPHERE,
 
   lod: { near: 36_000, far: 800_000 },
   near: { textures: { color: "/textures/mars/8k_mars.ktx2" }, segments: 128 },

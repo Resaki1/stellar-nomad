@@ -23,6 +23,7 @@ import {
   URANUS_POSITION_KM,
   URANUS_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { URANUS_ATMOSPHERE } from "./atmosphereData";
 import type { CelestialBodyConfig } from "../types";
 
 export { URANUS_POSITION_KM, URANUS_RADIUS_KM };
@@ -105,6 +106,8 @@ function uranusBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.C
 
 export const uranusConfig: CelestialBodyConfig = {
   id: "uranus",
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: URANUS_ATMOSPHERE,
   positionKm: URANUS_POSITION_KM,
   radiusKm: URANUS_RADIUS_KM,
 

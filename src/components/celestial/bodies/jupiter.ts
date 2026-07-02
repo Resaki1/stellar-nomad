@@ -23,6 +23,7 @@ import {
   JUPITER_POSITION_KM,
   JUPITER_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { JUPITER_ATMOSPHERE } from "./atmosphereData";
 import type { CelestialBodyConfig } from "../types";
 
 export { JUPITER_POSITION_KM, JUPITER_RADIUS_KM };
@@ -116,6 +117,8 @@ function jupiterBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.
 
 export const jupiterConfig: CelestialBodyConfig = {
   id: "jupiter",
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: JUPITER_ATMOSPHERE,
   positionKm: JUPITER_POSITION_KM,
   radiusKm: JUPITER_RADIUS_KM,
   rotation: JUPITER_ROTATION,

@@ -23,6 +23,7 @@ import {
   NEPTUNE_POSITION_KM,
   NEPTUNE_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { NEPTUNE_ATMOSPHERE } from "./atmosphereData";
 import type { CelestialBodyConfig } from "../types";
 
 export { NEPTUNE_POSITION_KM, NEPTUNE_RADIUS_KM };
@@ -105,6 +106,8 @@ function neptuneBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.
 
 export const neptuneConfig: CelestialBodyConfig = {
   id: "neptune",
+  // Derived from the physical description in sol.json (Phase 5).
+  atmosphere: NEPTUNE_ATMOSPHERE,
   positionKm: NEPTUNE_POSITION_KM,
   radiusKm: NEPTUNE_RADIUS_KM,
 

@@ -31,6 +31,9 @@ import {
   baseDilate,
 } from "@/components/celestial/bodies/cloudDetile";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Node = any;
+
 // =============================================================================
 // 3D cloud light volume — per-voxel sun transmittance (exp(-tau_sun)).
 //
@@ -295,15 +298,16 @@ export function createCloudLightVolume(
     const u = fract(atan(dir.z, dir.x.negate()).mul(invTwoPi));
     const v = acos(clamp(dir.y.negate(), -1, 1)).mul(invPi);
     const uv = vec2(u, v).add(uCloudUvOffset);
-    const coverageRaw = texture(weatherMap, uv).level(int(0)).r;
+    const coverageRaw = (texture(weatherMap, uv).level(int(0)) as Node).r;
     const coverage = coverageRaw.pow(float(0.6));
     const cloudType = smoothstep(float(0.3), float(0.6), coverage);
 
     // Per-column top altitude + anti-tiling warp (matches the primary: the
     // tap's g/b/a channels become the 125 km-scale base-sample offset).
     const pColumn = dir.mul(uInnerRadius);
-    const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale))
-      .level(int(0));
+    const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
+      int(0),
+    ) as Node;
     // Couple tower span to coverage — LOCKSTEP with earthClouds.ts topAlt.
     const covSpan = smoothstep(float(0.35), float(0.7), coverage);
     const topAlt = float(0.45).add(
@@ -324,7 +328,7 @@ export function createCloudLightVolume(
       const dilatedAt = (pos: any) => {
         const b = texture3D(baseVolume, pos.mul(uBaseScale)).level(
           int(BAKE_BASE_LOD),
-        );
+        ) as Node;
         const f = b.g.mul(0.625).add(b.b.mul(0.25)).add(b.a.mul(0.125));
         return baseDilate(b.r, f);
       };
@@ -338,7 +342,7 @@ export function createCloudLightVolume(
       ).mul(float(WARP_AMPLITUDE_MIRROR));
       const bs = texture3D(baseVolume, q.add(warpVec).mul(uBaseScale)).level(
         int(BAKE_BASE_LOD),
-      );
+      ) as Node;
       const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
       // Dilated base — LOCKSTEP with the marcher (shared baseDilate).
       baseShapeDilated = baseDilate(bs.r, fbm);
