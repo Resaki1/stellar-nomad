@@ -461,6 +461,20 @@ export const applyCloudAerialPerspective = (
 // pipeline's global-singleton handoff (getActiveCloudPipeline).
 // =============================================================================
 
+/**
+ * Analytic ring annulus registered alongside a body's atmosphere (Phase 5 ring
+ * coupling). Plane passes through the planet centre; `normal` is in scaled-
+ * world axes (the same frame as sunDir, and — directionally — the planet-
+ * centred km frame the shader marches in).
+ */
+export type AtmosphereRingRecord = {
+  normal: THREE.Vector3;
+  innerRadiusKm: number;
+  outerRadiusKm: number;
+  /** Mean ring opacity (fog clamp weight + sun-shadow strength). */
+  opacity: number;
+};
+
 export type AtmosphereBodyRecord = {
   id: string;
   /** Planet centre in scaled-world units (origin-relative — same frame as the scaled camera). */
@@ -470,6 +484,7 @@ export type AtmosphereBodyRecord = {
   /** Camera→centre distance in km (dominance + gating). */
   distanceKm: number;
   params: AtmosphereParams;
+  rings: AtmosphereRingRecord | null;
 };
 
 const atmosphereBodies = new Map<string, AtmosphereBodyRecord>();
@@ -481,6 +496,7 @@ export function setAtmosphereBody(
   sunDir: THREE.Vector3,
   distanceKm: number,
   params: AtmosphereParams,
+  rings: AtmosphereRingRecord | null = null,
 ): void {
   let rec = atmosphereBodies.get(id);
   if (!rec) {
@@ -490,6 +506,7 @@ export function setAtmosphereBody(
       sunDir: new THREE.Vector3(),
       distanceKm: 0,
       params,
+      rings: null,
     };
     atmosphereBodies.set(id, rec);
   }
@@ -497,6 +514,22 @@ export function setAtmosphereBody(
   rec.sunDir.copy(sunDir).normalize();
   rec.distanceKm = distanceKm;
   rec.params = params;
+  if (rings) {
+    if (!rec.rings) {
+      rec.rings = {
+        normal: new THREE.Vector3(),
+        innerRadiusKm: 0,
+        outerRadiusKm: 0,
+        opacity: 0,
+      };
+    }
+    rec.rings.normal.copy(rings.normal).normalize();
+    rec.rings.innerRadiusKm = rings.innerRadiusKm;
+    rec.rings.outerRadiusKm = rings.outerRadiusKm;
+    rec.rings.opacity = rings.opacity;
+  } else {
+    rec.rings = null;
+  }
 }
 
 export function clearAtmosphereBody(id: string): void {
@@ -587,6 +620,17 @@ const smoothstepScalar = (e0: number, e1: number, x: number): number => {
   return t * t * (3 - 2 * t);
 };
 
+// Radial ring density at a normalised radius u∈[0,1] across [inner,outer] —
+// EXACT JS twin of the shader's `ringDensityProfile` (keep the two in sync).
+// Used by the CPU sun-transmittance march so the ship's ring shadow matches
+// the GPU atmosphere shadow (incl. the Cassini gap).
+const ringDensityProfileScalar = (u: number): number => {
+  const c = 0.3 * smoothstepScalar(0.09, 0.13, u) * (1 - smoothstepScalar(0.33, 0.36, u));
+  const b = 0.92 * smoothstepScalar(0.34, 0.38, u) * (1 - smoothstepScalar(0.67, 0.7, u));
+  const a = 0.58 * smoothstepScalar(0.75, 0.78, u) * (1 - smoothstepScalar(0.93, 0.96, u));
+  return Math.min(1, Math.max(0, Math.max(c, b, a)));
+};
+
 // Extinction (km^-1, per-RGB) at planet-centred radius rKm — JS twin of the
 // shader's sampleMedium().extinction (Rayleigh scattering + Mie extinction +
 // ozone absorption + well-mixed gas absorption on the Rayleigh profile).
@@ -635,6 +679,7 @@ export function computeAtmosphereLighting(
   camPlanetKm: THREE.Vector3,
   sunDir: THREE.Vector3,
   params: AtmosphereParams,
+  rings: AtmosphereRingRecord | null = null,
 ): void {
   const Rg = params.groundRadiusKm;
   const Rt = params.groundRadiusKm + params.atmosphereHeightKm;
@@ -689,6 +734,28 @@ export function computeAtmosphereLighting(
         Math.exp(-_od.y) * emerge,
         Math.exp(-_od.z) * emerge,
       );
+    }
+  }
+
+  // ── Ring shadow on the direct sun (ship under/behind the rings) ──
+  // Same analytic annulus the GPU march uses (plane through the planet centre,
+  // normal in scaled-world axes — directionally identical to this km frame).
+  if (rings) {
+    const denom = sunDir.dot(rings.normal);
+    if (Math.abs(denom) > 1e-6) {
+      const t = -camPlanetKm.dot(rings.normal) / denom;
+      if (t > 0) {
+        _Psun.copy(sunDir).multiplyScalar(t).add(camPlanetKm);
+        const rHit = _Psun.length();
+        if (rHit >= rings.innerRadiusKm && rHit <= rings.outerRadiusKm) {
+          // Per-radius opacity (matches the GPU shadow): gaps let sun through.
+          const u =
+            (rHit - rings.innerRadiusKm) /
+            Math.max(1e-3, rings.outerRadiusKm - rings.innerRadiusKm);
+          const occ = rings.opacity * ringDensityProfileScalar(u);
+          _lighting.sunTransmittance.multiplyScalar(1 - occ);
+        }
+      }
     }
   }
 
@@ -776,6 +843,13 @@ export function setupAtmospherePass(
   const uOzoneHalfWidthKm = uniform(15);
   // Well-mixed molecular absorber on the Rayleigh profile (km^-1) — CH4 etc.
   const uGasAbsorption = uniform(new THREE.Vector3());
+  // Ring annulus (Phase 5 ring coupling): plane through the planet centre,
+  // radii in km. Zeroed (outer = 0, opacity = 0) for ringless bodies, which
+  // makes every ring term a no-op. Set per frame from the dominant record.
+  const uRingNormal = uniform(new THREE.Vector3(0, 1, 0));
+  const uRingInnerKm = uniform(0);
+  const uRingOuterKm = uniform(0);
+  const uRingOpacity = uniform(0);
   const uGroundAlbedo = uniform(new THREE.Vector3(0.3, 0.3, 0.3));
   const uSunIlluminance = uniform(new THREE.Vector3(1, 1, 1));
   // Dynamic (per-frame).
@@ -823,6 +897,80 @@ export function setupAtmospherePass(
   // Component-wise exp for a vec3 (three/tsl types the scalar exp() narrowly,
   // so do it per channel — runtime-identical, fully typed).
   const expVec3 = (v: Node): Node => vec3(exp(v.x), exp(v.y), exp(v.z));
+
+  // Ray ∩ ring annulus (planet-centred km; the ring plane passes through the
+  // origin). Returns {t, hitF, rHit}: t = distance to the plane along rd, hitF
+  // = 1 when the hit is forward and inside [inner, outer], rHit = radius of the
+  // hit (feeds the radial density profile). Near-parallel rays: dSafe keeps t
+  // finite-but-huge → the radius test rejects, no branch needed.
+  const rayRingHit = (ro: Node, rd: Node) => {
+    const denom = dot(rd, uRingNormal);
+    const dSafe = select(
+      denom.greaterThanEqual(0),
+      denom.max(1e-6),
+      denom.min(-1e-6),
+    );
+    const t = dot(ro, uRingNormal).negate().div(dSafe);
+    const rHit = length(ro.add(rd.mul(t)));
+    const hit = t
+      .greaterThan(0)
+      .and(rHit.greaterThanEqual(uRingInnerKm))
+      .and(rHit.lessThanEqual(uRingOuterKm));
+    return { t, hitF: select(hit, float(1), float(0)), rHit };
+  };
+
+  // Ring OPACITY at a hit radius = uRingOpacity (overall strength) × the radial
+  // density profile. Constant opacity produced a spurious bright band on the
+  // disc wherever the annulus crossed a view ray — even through the near-empty
+  // gaps — because the fog-clamp weight ignored how VISIBLE the ring actually
+  // is at that radius. `ringDensityProfile` (shared JS twin
+  // `ringDensityProfileScalar` below → identical curve on the CPU shadow path)
+  // is ~Saturn's structure over the normalised span [inner,outer]: faint C
+  // ring, dense B ring, the Cassini gap, medium A ring, fading at both edges.
+  // Three overlapping bands combined by max(); the gap between B and A falls
+  // out naturally. This is a plausibility profile, not the artistic ring
+  // texture — good enough for a soft shadow + fog clamp, and it means gaps get
+  // ~zero weight (the fix).
+  const ringDensityProfile = (rHit: Node): Node => {
+    const u = clamp(
+      rHit.sub(uRingInnerKm).div(uRingOuterKm.sub(uRingInnerKm).max(1e-3)),
+      0,
+      1,
+    );
+    const c = float(0.3)
+      .mul(smoothstep(0.09, 0.13, u))
+      .mul(float(1).sub(smoothstep(0.33, 0.36, u)));
+    const b = float(0.92)
+      .mul(smoothstep(0.34, 0.38, u))
+      .mul(float(1).sub(smoothstep(0.67, 0.7, u)));
+    const a = float(0.58)
+      .mul(smoothstep(0.75, 0.78, u))
+      .mul(float(1).sub(smoothstep(0.93, 0.96, u)));
+    return clamp(max(max(c, b), a), 0, 1);
+  };
+  const ringOpacityAt = (rHit: Node): Node =>
+    uRingOpacity.mul(ringDensityProfile(rHit));
+
+  // Direct-sun occlusion at sample P: the planet's hard shadow (nudged off the
+  // surface along the local normal to avoid terminator self-intersection) ×
+  // the ring shadow (annulus hit toward the sun attenuates by the ring opacity
+  // AT the hit radius — so the Cassini gap shows through as a bright line).
+  // Shared by the main march, the froxel bake and the sky-view bake — the ring
+  // term is what paints the rings' shadow band into the atmosphere. The
+  // multi-scatter term stays un-ring-shadowed (it is a soft angular average).
+  const directSunOcclusion = (P: Node): Node => {
+    const earthShadow = select(
+      raySphereNearest(
+        P.add(normalize(P).mul(SURFACE_OFFSET_KM)),
+        uSunDir,
+        uBottomRadius,
+      ).greaterThan(0),
+      float(0),
+      float(1),
+    );
+    const ring = rayRingHit(P, uSunDir);
+    return earthShadow.mul(float(1).sub(ringOpacityAt(ring.rHit).mul(ring.hitF)));
+  };
 
   // Medium scattering/extinction (km^-1) at position P (planet-centred km).
   const sampleMedium = (P: Node) => {
@@ -1152,6 +1300,25 @@ export function setupAtmospherePass(
           .toVar();
         const tEnd = select(groundHit, tGround, atmo.tFar);
         const tMax = tEnd.sub(tStart);
+        // ── Ring occlusion of the atmosphere in-scatter (Phase 5) ──
+        // Rings render into the scaled scene transparent + depthWrite:false, so
+        // the pass can't depth-test them and would paint the atmosphere GLOW
+        // "in front of" a near-side ring. The rings sit OUTSIDE the (thin)
+        // atmosphere shell, so along any view ray there is no in-scatter between
+        // the camera and the ring — the ENTIRE glow L is behind the ring. So we
+        // attenuate L by the ring's coverage at the crossing, weighted by the
+        // radial density (transparent gaps → ~0 → glow shows through). We do NOT
+        // shorten the march: the earlier length-clamp collapsed tMax→0 for body
+        // rays (the ring is crossed before the atmosphere entry, so the clamp
+        // target went negative), erasing the body's extinction-darkening on the
+        // ring-plane side and flipping when the camera crossed the plane. Keeping
+        // the full march preserves that darkening; only the ADDED glow is
+        // occluded. Ringless bodies: hitF/opacity 0 → cover 0 → L unchanged.
+        const ringView = rayRingHit(ro, rd);
+        const ringInFrontCover: Node = ringView.hitF
+          .mul(ringOpacityAt(ringView.rHit))
+          .mul(select(ringView.t.lessThan(tEnd), float(1), float(0)));
+        const ringGlowKeep = float(1).sub(clamp(ringInFrontCover, 0, 1));
 
         // Per-pixel raymarch (default = unfogged scene when skipped or tMax≤0).
         // GROUND rays always march (fine-grained surface aerial perspective); SKY
@@ -1183,17 +1350,7 @@ export function setupAtmospherePass(
             const sampleT = expVec3(m.extinction.mul(dt).negate());
 
             const Tsun = getSunTransmittance(P, uSunDir);
-            // Nudge off the surface (local normal) to avoid self-intersection
-            // false-shadowing near the terminator.
-            const earthShadow = select(
-              raySphereNearest(
-                P.add(normalize(P).mul(SURFACE_OFFSET_KM)),
-                uSunDir,
-                uBottomRadius,
-              ).greaterThan(0),
-              float(0),
-              float(1),
-            );
+            const earthShadow = directSunOcclusion(P);
             const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
             // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
             // is broadly uniform and (unlike single scattering) is not shadowed,
@@ -1223,9 +1380,14 @@ export function setupAtmospherePass(
             throughput.mulAssign(sampleT);
           });
 
+          // Occlude the glow behind a near-side ring (ringGlowKeep=1 when none).
+          // Background (sceneColor) already has the ring composited in Pass 1
+          // and stays attenuated by the full-path throughput — only the ADDED
+          // in-scatter is ring-occluded.
+          const Lvis = L.mul(ringGlowKeep);
           if ((DEBUG_ATMOSPHERE as string) === "inscatter")
-            marched.assign(vec4(L, 1));
-          else marched.assign(vec4(sceneColor.mul(throughput).add(L), 1));
+            marched.assign(vec4(Lvis, 1));
+          else marched.assign(vec4(sceneColor.mul(throughput).add(Lvis), 1));
         };
 
         if ((DEBUG_ATMOSPHERE as string) === "off") {
@@ -1306,15 +1468,7 @@ export function setupAtmospherePass(
         const m = sampleMedium(P);
         const sampleT = expVec3(m.extinction.mul(dt).negate());
         const Tsun = getSunTransmittance(P, uSunDir);
-        const earthShadow = select(
-          raySphereNearest(
-            P.add(normalize(P).mul(SURFACE_OFFSET_KM)),
-            uSunDir,
-            uBottomRadius,
-          ).greaterThan(0),
-          float(0),
-          float(1),
-        );
+        const earthShadow = directSunOcclusion(P);
         const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
         const rP = length(P);
         const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
@@ -1398,15 +1552,7 @@ export function setupAtmospherePass(
           const m = sampleMedium(P);
           const sampleT = expVec3(m.extinction.mul(dt).negate());
           const Tsun = getSunTransmittance(P, uSunDir);
-          const earthShadow = select(
-            raySphereNearest(
-              P.add(normalize(P).mul(SURFACE_OFFSET_KM)),
-              uSunDir,
-              uBottomRadius,
-            ).greaterThan(0),
-            float(0),
-            float(1),
-          );
+          const earthShadow = directSunOcclusion(P);
           const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
           const rP = length(P);
           const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
@@ -1529,6 +1675,18 @@ export function setupAtmospherePass(
     uSkyViewBlend.value = SKYVIEW_ENABLED
       ? smoothstepScalar(SKYVIEW_FULL_ALT_KM, SKYVIEW_MARCH_ALT_KM, altKm)
       : 1;
+
+    // Ring annulus (fog clamp + shadow). Zeroed when the body has none —
+    // outer = 0 makes every ring term a no-op.
+    if (dominant.rings) {
+      uRingNormal.value.copy(dominant.rings.normal);
+      uRingInnerKm.value = dominant.rings.innerRadiusKm;
+      uRingOuterKm.value = dominant.rings.outerRadiusKm;
+      uRingOpacity.value = dominant.rings.opacity;
+    } else {
+      uRingOuterKm.value = 0;
+      uRingOpacity.value = 0;
+    }
   };
 
   const bakeLUTs = (renderer: WebGPURenderer) => {

@@ -251,6 +251,14 @@ Each phase is independently shippable and has an explicit on-device check.
   rest. Remaining niceties (deferred): Sky-View/froxel altitude gates are Earth-tuned fixed
   km (could scale with the body's scale height); giants' shader band-haze may double-count
   subtly — re-tune by eye if it shows.
+  - **Ring coupling (2026-07-02):** analytic ring annulus registered per body
+    (`CelestialBodyConfig.rings`, Saturn) → the pass (a) clamps the view-ray fog at the
+    ring hit weighted by mean ring opacity (rings render transparent + no depth write, so
+    the march can't depth-test them — near-side ring pixels previously got full-chord fog),
+    and (b) shadows the DIRECT in-scatter under the rings (ray∩annulus toward the sun in
+    all three marches — main/froxel/sky-view — via the shared `directSunOcclusion`; the
+    CPU lighting twin shadows the ship). Constant mean opacity for now; a radial
+    alpha-profile LUT (Cassini-division detail) can slot in later.
 - **Phase 6 — Polish (optional).** Volumetric light shafts (terrain/cloud shadows
   in-scatter via raymarch + reproject); auto-exposure; eclipse / ring-shadow interplay.
 

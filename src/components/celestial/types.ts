@@ -101,6 +101,21 @@ export type ExtraMeshContext = {
   tier: "near" | "mid";
 };
 
+/**
+ * Analytic ring annulus for the atmosphere pass (Phase 5 ring coupling). The
+ * plane passes through the planet centre, lies in the body's local XZ (i.e.
+ * normal = local +Y, rotated by config.rotation), matching the ring mesh in
+ * extraMeshes. `opacity` is the ring's MEAN opacity — used both to clamp the
+ * atmosphere fog on near-side ring pixels and to shadow the atmosphere's
+ * in-scatter under the rings. (A radial alpha-profile LUT can replace the
+ * constant later for gap detail like the Cassini division.)
+ */
+export type AtmosphereRingsDef = {
+  innerRadiusKm: number;
+  outerRadiusKm: number;
+  opacity: number;
+};
+
 export type CelestialBodyConfig = {
   id: string;
   positionKm: Vec3Tuple;
@@ -112,6 +127,9 @@ export type CelestialBodyConfig = {
   // without it are airless. Not yet read in Phase 0 (atmosphere pass is a
   // passthrough); Phase 1 consumes it for the scattering raymarch.
   atmosphere?: AtmosphereParams;
+  // Ring annulus coupled into the atmosphere pass (fog clamp + sun shadow).
+  // Only meaningful alongside `atmosphere` on a ringed body (Saturn).
+  rings?: AtmosphereRingsDef;
 
   lod: { near?: number; far: number };
   near?: LODTier;

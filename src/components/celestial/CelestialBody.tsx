@@ -233,6 +233,21 @@ function CelestialBody({ config }: CelestialBodyProps) {
   // Clear this body's atmosphere registration on unmount.
   useEffect(() => () => clearAtmosphereBody(config.id), [config.id]);
 
+  // Ring annulus for the atmosphere pass (fog clamp + shadow). The ring mesh
+  // lies in the body's local XZ plane, so its normal is local +Y rotated by
+  // config.rotation — static per config, computed once.
+  const atmosphereRings = useMemo(() => {
+    if (!config.rings) return null;
+    const normal = new THREE.Vector3(0, 1, 0);
+    if (config.rotation) normal.applyEuler(config.rotation);
+    return {
+      normal,
+      innerRadiusKm: config.rings.innerRadiusKm,
+      outerRadiusKm: config.rings.outerRadiusKm,
+      opacity: config.rings.opacity,
+    };
+  }, [config]);
+
   // ── Standard uniforms ──
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
   const uSpR = useMemo(() => uniform(0), []);
@@ -339,6 +354,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
           _sunRelative,
           distKm,
           config.atmosphere,
+          atmosphereRings,
         );
       } else {
         clearAtmosphereBody(config.id);

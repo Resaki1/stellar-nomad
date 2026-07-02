@@ -631,7 +631,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         .copy(scaledCamera.position)
         .sub(dominant.centerScaled)
         .multiplyScalar(1 / SCALED_UNITS_PER_KM);
-      computeAtmosphereLighting(tempCamPlanetKm, dominant.sunDir, dominant.params);
+      computeAtmosphereLighting(
+        tempCamPlanetKm,
+        dominant.sunDir,
+        dominant.params,
+        dominant.rings,
+      );
     } else {
       clearAtmosphereLighting();
     }

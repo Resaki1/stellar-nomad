@@ -206,8 +206,25 @@ function saturnBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.C
 
 export const saturnConfig: CelestialBodyConfig = {
   id: "saturn",
+  // Axial tilt (Saturn's real 26.7°). Tilts the planet + rings together (both
+  // live under CelestialBody's <group rotation={config.rotation}>), and the
+  // atmosphere-pass ring normal is derived from the same Euler — so the sun
+  // strikes the ring plane at an angle instead of edge-on, casting a visible
+  // ring shadow band across the atmosphere/disc.
+  rotation: new THREE.Euler(0, 0, (26.7 * Math.PI) / 180),
   // Derived from the physical description in sol.json (Phase 5).
   atmosphere: SATURN_ATMOSPHERE,
+  // Analytic ring annulus for the atmosphere pass: clamps the fog on near-side
+  // ring pixels (rings write no depth, so the march can't depth-test them) and
+  // casts the rings' shadow into the atmosphere's in-scatter. `opacity` is an
+  // overall strength scale (1 = full); the per-radius density profile in
+  // atmospherePass (`ringDensityProfile`) shapes it into C/B/Cassini/A bands so
+  // gaps neither over-fog the disc nor cast shadow.
+  rings: {
+    innerRadiusKm: RING_INNER_RADIUS_KM,
+    outerRadiusKm: RING_OUTER_RADIUS_KM,
+    opacity: 1.0,
+  },
   positionKm: SATURN_POSITION_KM,
   radiusKm: SATURN_RADIUS_KM,
 
