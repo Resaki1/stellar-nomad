@@ -510,9 +510,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // 0 whenever the RT pair is recreated (resize) — the new RT may share
   // memory with a torn-down one but its content is undefined.
   const cloudHistoryValid = useRef(0);
+  // How many history RTs have been cleared since the cloud pipeline went
+  // inactive (blend = 0). Both ping-pong RTs must be cleared (two frames)
+  // before the per-frame clear AND the composite pass can be skipped — the
+  // orbit path otherwise pays a full-DPR fullscreen gather every frame to
+  // blend zeros. Reset when the pipeline resumes or the RTs are recreated
+  // (fresh RT content is undefined and must be cleared before skipping).
+  const clearedHistoryCount = useRef(0);
   useEffect(() => {
     cloudHistoryValid.current = 0;
     hasPrevWorldOrigin.current = false;
+    clearedHistoryCount.current = 0;
   }, [historyRts, sparseCloudRts]);
 
   useFrame(() => {
@@ -675,6 +683,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       !!pipelineHandle && pipelineHandle.getVolumetricBlend() > 0.001;
 
     if (pipelineHandle && earthMesh && cloudsVisible) {
+      clearedHistoryCount.current = 0;
       // Bayer schedule pick for this frame. Sub-pixel slot (0..N-1, 0..N-1)
       // marks which full-res pixel within every N×N tile is fresh this frame.
       const bayerIdx = cloudFrameIndex.current % BAYER.length;
@@ -777,13 +786,18 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       // No active pipeline (Earth not yet mounted, player out of near range,
       // or volumetric blend at 0 — camera too high for volumetric clouds).
       // Clear the full-res history RT to fully transparent so the
-      // composite contributes nothing this frame. Also invalidate history
-      // for next time the pipeline resumes — its off-parity RT may have
-      // been cleared here, and blending against (0,0,0,0) would briefly
-      // erase the cloud.
-      renderer.setRenderTarget(historyWriteRt);
-      gl.autoClear = true;
-      gl.clear();
+      // composite contributes nothing. Also invalidate history for next
+      // time the pipeline resumes — its off-parity RT may have been
+      // cleared here, and blending against (0,0,0,0) would briefly erase
+      // the cloud. Each ping-pong RT only needs clearing ONCE (two
+      // consecutive frames); after that both the clear and the composite
+      // pass are skipped until the pipeline resumes.
+      if (clearedHistoryCount.current < 2) {
+        renderer.setRenderTarget(historyWriteRt);
+        gl.autoClear = true;
+        gl.clear();
+        clearedHistoryCount.current += 1;
+      }
       cloudHistoryValid.current = 0;
       hasPrevWorldOrigin.current = false;
     }
@@ -793,17 +807,23 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Pass 3: composite the just-reconstructed full-res cloud RT → main rt
     // with premul-alpha blend. Swap which mesh sits in compositeScene to
     // match the historyRt we just wrote (each mesh's TextureNode is bound
-    // to one specific RT at compile time).
-    if (mountedCompositeMesh.current !== writeCompositeMesh) {
-      if (mountedCompositeMesh.current) {
-        compositeScene.remove(mountedCompositeMesh.current);
-      }
-      compositeScene.add(writeCompositeMesh);
-      mountedCompositeMesh.current = writeCompositeMesh;
-    }
+    // to one specific RT at compile time). Skipped once the pipeline is
+    // inactive AND both history RTs are cleared — the pass would blend
+    // all-zero pixels at full-DPR gather cost (25 denoise + 9 AP-depth taps
+    // per pixel) for no visible result. Pass 4 below still needs the target
+    // + autoClear state, so those are set unconditionally.
     renderer.setRenderTarget(finalTarget);
     gl.autoClear = false;
-    gl.render(compositeScene, compositeCamera);
+    if (cloudsVisible || clearedHistoryCount.current < 2) {
+      if (mountedCompositeMesh.current !== writeCompositeMesh) {
+        if (mountedCompositeMesh.current) {
+          compositeScene.remove(mountedCompositeMesh.current);
+        }
+        compositeScene.add(writeCompositeMesh);
+        mountedCompositeMesh.current = writeCompositeMesh;
+      }
+      gl.render(compositeScene, compositeCamera);
+    }
 
     // Pass 4: local scene (ship, asteroids, beam, lights) — clear depth only,
     // draw on top. This naturally composites local content over the scaled

@@ -229,8 +229,8 @@ export function setupCloudReconstructionPass(
   const uHistoryValid = uniform(0);
 
   // ── Bayer schedule: which sub-pixel was marched this frame.
-  // Stored as a vec2 in [0, 3] integer space; the shader floors localSub
-  // from the fragment coord and compares with int equality.
+  // Stored as a vec2 in [0, SPARSE_DIVISOR-1] integer space; the shader
+  // floors localSub from the fragment coord and compares with int equality.
   const uBayerSubPixel = uniform(new THREE.Vector2(0, 0));
 
   // ── Sparse RT dimensions (one texel per 4×4 full-res tile). Used to
@@ -333,14 +333,15 @@ export function setupCloudReconstructionPass(
     //   the tile).
     //
     // CRITICAL: derive NDC from `screenUV` (auto-tracks the actual render
-    // target size) rather than computing fullW = sparseSize × 4. Those two
-    // disagree by up to ~3 pixels when size.width × DPR isn't divisible by
-    // 4 (e.g. 1921 px wide screen, sparseSize.x = 480, but historyRt.width
-    // = 1921). The earlier version of this code used `sparseSize × 4` and
-    // produced a per-pixel NDC offset that scaled with screen X — visible
-    // as cloud edges "streaming" from right to left, faster on the right
-    // side of the screen. Using screenUV directly avoids the issue entirely
-    // because it's WebGPU-builtin and normalises against the actual RT.
+    // target size) rather than computing fullW = sparseSize × SPARSE_DIVISOR.
+    // Those two disagree by up to SPARSE_DIVISOR−1 pixels when
+    // size.width × DPR isn't divisible by SPARSE_DIVISOR (e.g. a 1921 px
+    // wide RT vs sparseSize.x × N = 1920). An earlier version used
+    // `sparseSize × N` and produced a per-pixel NDC offset that scaled with
+    // screen X — visible as cloud edges "streaming" from right to left,
+    // faster on the right side of the screen. Using screenUV directly
+    // avoids the issue entirely because it's WebGPU-builtin and normalises
+    // against the actual RT.
     const ndcX = screenUV.x.mul(2).sub(1);
     const ndcY = float(1).sub(screenUV.y.mul(2));
 
@@ -436,11 +437,12 @@ export function setupCloudReconstructionPass(
       }
     }
 
-    // Generous padding on each bound. With the EMA temporal pass the clamp is
-    // the SOLE ghost handler, so it must reject only GROSS disoccluded history
-    // (bright cloud reprojected onto sky) — never bite legitimate accumulation
-    // in stable/high-variance regions (which would re-noise). 50% pad keeps it
-    // loose enough that only far-outside-the-neighbourhood history is pulled in.
+    // Padding on each bound. With the EMA temporal pass the clamp is the SOLE
+    // ghost handler, so it must reject only GROSS disoccluded history (bright
+    // cloud reprojected onto sky) — never bite legitimate accumulation in
+    // stable/high-variance regions (which would re-noise). 12.5% of the
+    // neighbourhood range keeps it loose enough that only far-outside-the-
+    // neighbourhood history is pulled in.
     const pad = float(0.125);
     const yPadV = yMax.sub(yMin).mul(pad);
     const coPadV = coMax.sub(coMin).mul(pad);
