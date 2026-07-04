@@ -43,6 +43,11 @@ import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import {
+  farCloudLit,
+  coverageToOpacity,
+  CLOUD_SKY_AMBIENT,
+} from "./cloudCommon";
+import {
   getAtmosphereLUTs,
   transmittanceLutUv,
 } from "@/components/space/atmospherePass";
@@ -51,6 +56,13 @@ export { PLANET_POSITION_KM };
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
 const CLOUD_BRIGHTNESS = 3;
+
+// Light the flat 2D cloud overlay with the SHARED far-cloud model (cloudCommon)
+// instead of the ad-hoc white×CLOUD_BRIGHTNESS×csf curve, so its brightness/
+// colour + apparent coverage match the volumetric marcher at the 2D↔3D
+// crossfade (docs/CLOUD_REVIEW_2026-07.md ISSUE 2, Phase 1). Flip false to A/B
+// against the old hand-tuned overlay.
+const USE_SHARED_CLOUD_FARFIELD = true;
 
 // ── Atmosphere↔surface lighting coupling (Phase 3b, docs/ATMOSPHERE_PLAN.md §5.4) ──
 // When ON, the day-lit surface (+ ocean sun-glint + flat cloud overlay) is tinted
@@ -417,11 +429,30 @@ function buildEarthFragmentNode(opts: {
     // Flat clouds are sunlit → tint by the CLOUD-ALTITUDE transmittance (Phase
     // 3b) so they redden mildly like the volumetric clouds, not like the ground
     // (OFF: sunTCloud = white, no change).
-    const cloudLit = cloudBaseCol
-      .mul(csf)
-      .mul(cloudHemi)
-      .mul(cloudSelfShadow)
-      .mul(sunTCloud);
+    //
+    // SHARED far-field lighting (ISSUE 2, Phase 1): the physical model the
+    // volumetric marcher uses (sunIlluminance × cloud-alt transmittance ×
+    // CLOUD_SUN_SCALE + sky ambient), so the overlay and the volumetric agree in
+    // brightness/colour at the crossfade. `cloudHemi` is the cloud-horizon
+    // daylight gate; `sunTCloud` already reddens at sunset via the LUT. OFF path
+    // keeps the old hand-tuned white×CLOUD_BRIGHTNESS×csf overlay for A/B.
+    const cloudLit = USE_SHARED_CLOUD_FARFIELD
+      ? farCloudLit({
+          sunIlluminance: vec3(
+            EARTH_ATMOSPHERE.sunIlluminance[0],
+            EARTH_ATMOSPHERE.sunIlluminance[1],
+            EARTH_ATMOSPHERE.sunIlluminance[2],
+          ),
+          sunT: sunTCloud,
+          skyColor: vec3(
+            CLOUD_SKY_AMBIENT[0],
+            CLOUD_SKY_AMBIENT[1],
+            CLOUD_SKY_AMBIENT[2],
+          ),
+          daylight: cloudHemi,
+          selfShadow: cloudSelfShadow,
+        })
+      : cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow).mul(sunTCloud);
     // Flat 2D cloud overlay — the far-cloud LOD. It paints the global cloud
     // texture on the planet surface to fill cloud cover beyond the volumetric
     // marcher's limited reach; the volumetric premultiplied composite renders
@@ -459,7 +490,16 @@ function buildEarthFragmentNode(opts: {
     const flatCloudOpacity = float(uFlatCloudOpacity).mul(
       mix(float(1), thinKeep, uVolumetricBlend),
     );
-    col.assign(mix(col, cloudLit, clamp(cloudMask.mul(flatCloudOpacity), 0, 1)));
+    // Apparent coverage via the SHARED coverage→opacity curve (ISSUE 2, Phase 1)
+    // so the overlay renders the same cloud AREA the volumetric does. Default is
+    // gentle (keeps the orbit coverage); tune cloudCommon COVERAGE_OPACITY_* to
+    // tighten the match. OFF path uses raw coverage (the old behaviour).
+    const overlayCoverage = USE_SHARED_CLOUD_FARFIELD
+      ? coverageToOpacity(cloudMask)
+      : cloudMask;
+    col.assign(
+      mix(col, cloudLit, clamp(overlayCoverage.mul(flatCloudOpacity), 0, 1)),
+    );
 
     // NOTE: the old fake Rayleigh in-scatter/extinction (view-angle desaturation
     // + blue limb glow) lived here. It is now handled physically by the

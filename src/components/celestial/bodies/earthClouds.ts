@@ -36,6 +36,7 @@ import {
   getGpuCloudDetailMip1,
 } from "./cloudVolumeCompute";
 import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
+import { CLOUD_SUN_SCALE, CLOUD_SKY_SCALE } from "./cloudCommon";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
@@ -986,8 +987,9 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
 // the marcher's existing tuned brightness (sunColor≈12, skyColor≈2) so Phase 3
 // shifts COLOUR, not overall exposure (full unification is the §6 exposure pass).
 const USE_ATMOSPHERE_CLOUD_LIGHTING = true;
-const CLOUD_SUN_SCALE = 0.6; // × sunIlluminance(20) × T(≈1 at altitude) ≈ 12 (old day)
-const CLOUD_SKY_SCALE = 2.0; // × atmosphere sky tint → ~2 HDR ambient (old)
+// CLOUD_SUN_SCALE / CLOUD_SKY_SCALE now live in cloudCommon.ts (SHARED with the
+// far-field overlay/shell so near↔far brightness matches — see ISSUE 2). Values
+// unchanged (0.6 / 2.0).
 
 export function marchCloudVolume({
   roEarth,
@@ -2653,7 +2655,27 @@ export function marchCloudVolume({
               //             (1 - profile)^0.5 → bright at edges, dark in
               //             cores. Outward probability gradient.
               const direct = phase.mul(Tsun).mul(powderFactor);
-              const ms = profile.mul(Tsun_ms);
+              // ── Multiple-scatter body brightness (ISSUE 2, "pull volumetric
+              // toward the overlay") ──
+              // MEASURED 2026-07-03: from orbit `alpha` reads white (clouds are
+              // opaque) but `lightingOnly` reads ~2.5× darker than the flat NASA
+              // overlay — the volumetric body is UNDER-LIT, not translucent. The
+              // lit body is dominated by `ms` (the `direct` term is crushed to
+              // ~0.04 by the HG phase except toward the sun), and `ms = profile ×
+              // Tsun_ms` peaks well below the overlay's albedo×sunlight. Real
+              // thick clouds are bright precisely BECAUSE of heavy multiple
+              // scattering, so lifting this is physically-honest, not a fudge.
+              // MS_GAIN scales the diffuse term to bring sunlit tops up to the
+              // overlay peak; the `direct` silver-lining term is left untouched
+              // so looking toward the sun doesn't blow out, and shadowed cores
+              // keep low Tsun_ms → they stay relatively dark (crevice contrast
+              // preserved for the near view). Tune against DEBUG_VIZ
+              // 'lightingOnly' vs the overlay: raise if still grey from orbit,
+              // lower if cores/near clouds wash out. (If brightening the far
+              // view over-brightens the NEAR clouds, the next step is to
+              // distance-gate this gain like DETAIL_FADE.)
+              const MS_GAIN = float(5);
+              const ms = profile.mul(Tsun_ms).mul(MS_GAIN);
               const ambient = profile.oneMinus().pow(float(0.5)).mul(skylight);
 
               const scatterFrac = float(1).sub(exp(opticalDepthStep.negate()));

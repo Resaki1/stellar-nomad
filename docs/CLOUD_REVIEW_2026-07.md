@@ -43,6 +43,31 @@ sloppy code:
 
 ## DONE (landed 2026-07-03)
 
+- **ISSUE 1 — froxel AP flicker FIXED.** Root cause (revised after measurement,
+  see the issue section): the AP was sampled at the marcher's per-frame,
+  never-temporally-filtered cloud-front depth, whose jitter grows with distance →
+  far/edge clouds flickered dark. `FROXEL_MARCH_STEPS` 24→48 did nothing (null
+  result → not a bake problem); `constSlice` removed it (→ depth-path problem).
+  Fix: apply the froxel AP INSIDE the sparse marcher (pre-reconstruction) so the
+  temporal EMA averages the depth-jitter-driven colour variance out —
+  `applyCloudAerialPerspectiveDirect` + `CLOUD_AP_IN_MARCHER` (atmospherePass),
+  called from `createColorPass` (cloudFullscreenPass), composite fog gated off
+  in production (SpaceRenderer). Also a small perf win (¼-res tap replaces a
+  full-res 9-tap gather). User confirmed clean; then raised `FROXEL_MAX_DEPTH_KM`
+  600→1800 for a smoother far transition (safe now the jitter is EMA'd — only
+  watch faint near-field slice stepping, since 1800 km tripled near-slice
+  spacing; an altitude-adaptive far plane would restore near precision if needed).
+- **ISSUE 2 Phase 1 — shared far-cloud lighting + coverage→opacity.** New
+  `cloudCommon.ts` (planet-agnostic): `farCloudLit` (physical far-cloud lighting
+  matching the marcher's magnitudes) + `coverageToOpacity` (lifted-coverage curve
+  matching the marcher's apparent footprint) + shared `CLOUD_SUN_SCALE`/
+  `CLOUD_SKY_SCALE` (moved out of earthClouds). Wired into the Earth overlay
+  (`USE_SHARED_CLOUD_FARFIELD`, earth.ts). Closes the brightness/colour half of
+  the seam; `COVERAGE_OPACITY_LO/HI` is the area-match knob (defaults gentle to
+  preserve the orbit look). **Decisions:** phased approach; Phase 2 = a
+  DEDICATED CLOUD SHELL (sphere at cloud-top radius) for the far field, planet-
+  agnostic, reusing these functions. Reference-look assumption (unconfirmed):
+  pull the volumetric TOWARD the overlay (bright/full), not vice-versa.
 - **Skip cloud composite + repeated history clears at orbit.**
   `SpaceRenderer.tsx` — when `cloudsVisible` is false (blend = 0, above
   ~3000 km) the full-DPR composite pass (25 denoise taps + 9 AP-depth taps +
