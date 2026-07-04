@@ -89,7 +89,7 @@ const FROXEL_MARCH_STEPS = 24; // per-voxel march steps from the camera to its d
 // Far plane of the froxel (km). Depth is distributed QUADRATICALLY (w² · max),
 // so near slices are dense where aerial perspective varies fastest. Beyond this
 // the consumer clamps to the last slice (AP is near-saturated there anyway).
-const FROXEL_MAX_DEPTH_KM = 600;
+const FROXEL_MAX_DEPTH_KM = 1800;
 
 // ── GPU debug viz (off by default) ──
 // Build-const → only the selected path compiles, so 'off' costs nothing. Each
@@ -452,6 +452,66 @@ export const applyCloudAerialPerspective = (
     .and(abs(ap.b).lessThan(float(1e20)))
     .and(abs(ap.a).lessThan(float(1e20)));
   return select(finite, normal, viz(vec3(1, 0, 1)));
+};
+
+// ── Cloud AP: apply INSIDE the marcher (pre-reconstruction) vs composite ─────
+// See docs/CLOUD_REVIEW_2026-07.md ISSUE 1. The composite path
+// (applyCloudAerialPerspective above) fogs each cloud pixel at the marcher's
+// per-frame cloud-front depth — which is NEVER temporally filtered. The depth
+// jitters ±a skip-step per frame (earthClouds §stratJitter) and that step GROWS
+// with distance (LOD_STEP_GROWTH), so far/edge clouds get a large per-frame
+// depth wobble → the froxel slice (hence in-scatter/transmittance) wobbles →
+// the "dark blocks flickering on/off" the user sees, worst far away. The prior
+// spatial gather (CLOUD_DEPTH_GATHER_RADIUS) damped the no-hit bleed but a
+// SPATIAL average can't fix a TEMPORAL instability (all 9 taps share the
+// frame's jitter bias). Fix: apply the AP inside the sparse marcher, BEFORE the
+// reconstruction pass's temporal EMA — so the depth-jitter-driven colour
+// variance is averaged out by the same accumulation that already stabilises the
+// cloud colour. (Frostbite reconstructs the cloud AP together with the cloud at
+// half-res for exactly this reason; RDR2/Nubis integrate scattering along the
+// march.) Net perf is also POSITIVE: a ¼-res single froxel tap replaces a
+// full-res 9-tap depth gather + froxel tap at composite.
+//
+// Flip AP_IN_MARCHER=false to A/B against the old composite-time path. Any
+// AP_DEBUG mode forces the composite path (the debug viz lives there).
+const AP_IN_MARCHER = true;
+export const CLOUD_AP_IN_MARCHER: boolean =
+  FROXEL_ENABLED && AP_IN_MARCHER && (AP_DEBUG as string) === "off";
+
+/**
+ * Direct cloud aerial-perspective for the sparse marcher: fog a premultiplied
+ * cloud RGBA by the froxel at a KNOWN depth (no sparse gather, no reprojection —
+ * the marcher has the per-pixel depth in hand). `screenUvNode` is the full-res
+ * screen UV of this sample (same convention as the froxel bake / composite),
+ * `depthScaled` is the cloud-front depth in scaled-world units (marcher tFront;
+ * ≤0 = no hit → passthrough). Same premultiplied AP + baked/hit gating as
+ * applyCloudAerialPerspective, minus the debug branches.
+ */
+export const applyCloudAerialPerspectiveDirect = (
+  cloudPremul: Node,
+  screenUvNode: Node,
+  depthScaled: Node,
+): Node => {
+  const depthKm = depthScaled.div(SCALED_UNITS_PER_KM);
+  const depth01 = clamp(depthKm.div(FROXEL_MAX_DEPTH_KM), 0, 1);
+  const wSlice = sqrt(depth01);
+  const ap = texture3D(
+    getAtmosphereFroxel(),
+    vec3(screenUvNode.x, screenUvNode.y, wSlice),
+  ).level(int(0)) as Node;
+  const fogged = vec4(
+    cloudPremul.rgb.mul(ap.a).add(ap.rgb.mul(cloudPremul.a)),
+    cloudPremul.a,
+  );
+  // Guard the never-baked all-zero froxel (would BLACK the cloud) and no-hit
+  // pixels (depth sentinel ≤0).
+  const baked = ap.a.add(ap.r).add(ap.g).add(ap.b).greaterThan(float(1e-4));
+  const hasDepth = depthScaled.greaterThan(float(0));
+  return select(
+    baked.and(hasDepth),
+    mix(cloudPremul, fogged, float(CLOUD_AP_STRENGTH)),
+    cloudPremul,
+  );
 };
 
 // =============================================================================

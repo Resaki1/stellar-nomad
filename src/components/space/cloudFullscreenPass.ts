@@ -7,6 +7,7 @@ import {
   uniform,
   screenUV,
   screenCoordinate,
+  vec2,
   vec3,
   vec4,
   float,
@@ -14,6 +15,10 @@ import {
   dot,
   length,
 } from "three/tsl";
+import {
+  applyCloudAerialPerspectiveDirect,
+  CLOUD_AP_IN_MARCHER,
+} from "./atmospherePass";
 import {
   marchCloudVolume,
   LOD_MIN_SAMPLES_NEAR,
@@ -296,7 +301,12 @@ function buildMarchRay(shared: SharedUniforms) {
     shared.uEarthInverseModel.mul(vec4(rdScaled, 0)).xyz,
   );
 
-  return { roEarth, rdEarth, rdScaled };
+  // Full-res screen UV of this sample (same [0,1] y-down convention as the
+  // froxel bake / composite screenUV) — used to apply the aerial-perspective
+  // froxel to the marcher output pre-reconstruction (see CLOUD_AP_IN_MARCHER).
+  const fullUv = vec2(fullUvX, fullUvY);
+
+  return { roEarth, rdEarth, rdScaled, fullUv };
 }
 
 // -----------------------------------------------------------------------------
@@ -353,7 +363,7 @@ function createColorPass(
       return vec4(0);
     }
 
-    const { roEarth, rdEarth } = buildMarchRay(shared);
+    const { roEarth, rdEarth, fullUv } = buildMarchRay(shared);
     const sunDirEarth = normalize(
       shared.uEarthInverseModel.mul(vec4(opts.uSunRel, 0)).xyz,
     );
@@ -432,7 +442,16 @@ function createColorPass(
       uAtmoSunIlluminance: shared.uAtmoSunIlluminance,
       uAtmoSkyColor: shared.uAtmoSkyColor,
     });
-    rgbaOut.assign(rgba);
+    // Aerial-perspective fog applied HERE (pre-reconstruction) so its depth-
+    // driven colour variance is averaged by the temporal EMA rather than
+    // flickering per-frame at composite time (see CLOUD_AP_IN_MARCHER). Uses
+    // this sample's own cloud-front depth (tFront) + full-res UV — no gather /
+    // reprojection needed. When off (A/B or a debug mode) the composite fogs.
+    if (CLOUD_AP_IN_MARCHER) {
+      rgbaOut.assign(applyCloudAerialPerspectiveDirect(rgba, fullUv, tFront));
+    } else {
+      rgbaOut.assign(rgba);
+    }
     tFrontOut.assign(tFront);
     return rgba;
   })();

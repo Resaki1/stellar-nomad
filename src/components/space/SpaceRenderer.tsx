@@ -45,6 +45,7 @@ import {
   SKYVIEW_ENABLED,
   SKYVIEW_BAKE_MAX_ALT_KM,
   applyCloudAerialPerspective,
+  CLOUD_AP_IN_MARCHER,
 } from "./atmospherePass";
 import {
   flushCloudBakes,
@@ -190,8 +191,11 @@ function buildCompositeFetch(
   const sparseDepthTex = sparseRt ? sparseRt.textures[1] : null;
   const sTx = sparseRt ? 1 / Math.max(1, sparseRt.width) : 0;
   const sTy = sparseRt ? 1 / Math.max(1, sparseRt.height) : 0;
+  // AP is normally applied inside the marcher (pre-reconstruction, temporally
+  // stable — see CLOUD_AP_IN_MARCHER). Only fog at composite when that path is
+  // off (A/B toggle or an AP_DEBUG viz, which lives on this path).
   const fog = (cloud: Parameters<typeof applyCloudAerialPerspective>[0]) =>
-    FROXEL_ENABLED && sparseDepthTex
+    FROXEL_ENABLED && !CLOUD_AP_IN_MARCHER && sparseDepthTex
       ? applyCloudAerialPerspective(cloud, screenUV, sparseDepthTex, sTx, sTy)
       : cloud;
 
