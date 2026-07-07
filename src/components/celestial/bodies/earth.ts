@@ -43,11 +43,6 @@ import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import {
-  farCloudLit,
-  coverageToOpacity,
-  CLOUD_SKY_AMBIENT,
-} from "./cloudCommon";
-import {
   getAtmosphereLUTs,
   transmittanceLutUv,
 } from "@/components/space/atmospherePass";
@@ -55,14 +50,6 @@ import {
 export { PLANET_POSITION_KM };
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
-const CLOUD_BRIGHTNESS = 3;
-
-// Light the flat 2D cloud overlay with the SHARED far-cloud model (cloudCommon)
-// instead of the ad-hoc white×CLOUD_BRIGHTNESS×csf curve, so its brightness/
-// colour + apparent coverage match the volumetric marcher at the 2D↔3D
-// crossfade (docs/CLOUD_REVIEW_2026-07.md ISSUE 2, Phase 1). Flip false to A/B
-// against the old hand-tuned overlay.
-const USE_SHARED_CLOUD_FARFIELD = true;
 
 // ── Atmosphere↔surface lighting coupling (Phase 3b, docs/ATMOSPHERE_PLAN.md §5.4) ──
 // When ON, the day-lit surface (+ ocean sun-glint + flat cloud overlay) is tinted
@@ -74,46 +61,20 @@ const USE_SHARED_CLOUD_FARFIELD = true;
 // Build-time JS const → the OFF path keeps those hand-tuned tints (A/B + revert).
 const USE_ATMOSPHERE_SURFACE_LIGHTING = true;
 const SURFACE_SUN_SCALE = 1.0; // overall multiplier on the (zenith-normalised) tint
-// Representative altitude (km) for tinting the FLAT 2D cloud overlay: it stands
-// in for the cloud DECK, so it must redden like the VOLUMETRIC clouds (whose
-// transmittance is sampled at cloud altitude → mild) — NOT like the ground
-// (full slant path → dramatic), or the flat clouds stick out too orange.
-const CLOUD_OVERLAY_ALTITUDE_KM = 10;
 
-// Flat 2D cloud overlay (painted on the surface as the far-cloud LOD) fade band.
-// The overlay must vanish once the camera is at/below the volumetric cloud top:
-// it lives at ground level, so under the deck it would paint a ghost copy of the
-// cloud cover flat on the terrain beneath a camera whose real clouds (volumetric)
-// are above it — the "2D-clouds-on-the-ground" double-layer bug. Above the deck it
-// fades back in to fill the globe past the marcher's limited reach.
-//   altitude ≤ CLOUD_TOP_ALTITUDE_KM     → overlay off (0)
-//   altitude ≥ FLAT_OVERLAY_FULL_ALT_KM  → overlay full (1)
-// CLOUD_TOP matches CLOUD_OUTER_ALTITUDE_KM in earthClouds.ts.
+// Cloud DECK top altitude (km) — the reference for the shell fade below and
+// matches CLOUD_OUTER_ALTITUDE_KM in earthClouds.ts.
 const CLOUD_TOP_ALTITUDE_KM = 14;
-const FLAT_OVERLAY_FULL_ALT_KM = 50;
 
-// Per-pixel COVERAGE gate for the flat overlay while the volumetric is active
-// (see the overlay block in buildEarthFragmentNode). History: a view-INCIDENCE
-// gate was tried here first (overlay on at grazing angles, off at steep) on
-// the theory that the march is only reliable on steep slab crossings — WRONG:
-// since the distance-LOD step growth landed, the march reaches the horizon at
-// every altitude, so the incidence gate painted a 2D ring at mid view angles
-// UNDER perfectly good volumetric clouds (the user-reported "overlay creeping
-// in from the horizon" + "gap between near and far volumetric filled with
-// 2D"). The correct split is by COVERAGE, not geometry:
-//   dense regions (coverage ≥ HI)  → overlay OFF everywhere — the volumetric
-//     is the authority from camera to horizon; the ground-painted copy only
-//     ever shows through carved gaps as a parallax ghost.
-//   thin regions  (coverage ≤ LO)  → overlay stays ON — the volumetric
-//     renders little there (the Remap thresholds away low coverage) and a
-//     flat translucent haze IS the right far-field look; with no crisp
-//     volumetric features above it there's nothing to ghost against.
-// This also smooths the 2D↔3D crossfade band: thin cloud never pops out of
-// existence at the blend boundary. Tune LO/HI together: raise both if thin
-// 2D haze visibly doubles under volumetric wisps up close; lower both if
-// mid-coverage regions lose too much cloud after the crossfade.
-const FLAT_OVERLAY_COVERAGE_LO = 0.05; // coverage ≤ → overlay fully kept
-const FLAT_OVERLAY_COVERAGE_HI = 0.25; // coverage ≥ → overlay fully removed
+// Far-field cloud SHELL fade band (ISSUE 2 Phase 2), driving uShellOpacity in
+// onFrame. The shell (sphere at cloud-top radius) is full above the deck and
+// off at/below it. FrontSide already culls it from inside the sphere; this fade
+// smooths the deck-top crossing and removes it just before the camera enters
+// the deck. Widen the gap / raise FULL if the deck-top crossing pops; lower
+// FULL toward the deck to reduce the shell filling volumetric gaps up close
+// (trade-off: less far-field coverage at low altitude).
+const SHELL_FADE_OFF_ALT_KM = CLOUD_TOP_ALTITUDE_KM; // 14 — off at/below the deck top
+const SHELL_FADE_FULL_ALT_KM = 28; // full above this altitude
 
 // Volumetric crossfade altitudes (drives uVolumetricBlend in onFrame).
 // ALTITUDE-based (2026-06-10; was distance-based 35k→25k km, i.e. blend = 1
@@ -206,10 +167,6 @@ function buildEarthFragmentNode(opts: {
   uMoonRadius: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRadius: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uVolumetricBlend: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uFlatCloudOpacity: any;
   // Atmosphere transmittance LUT (Phase 3b surface coupling). Bound at graph-
   // build time; sampled per-pixel for physical sun colour. Optional: when absent
   // (toggle off) the surface keeps its hand-tuned terminator tint.
@@ -217,8 +174,7 @@ function buildEarthFragmentNode(opts: {
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
-    uSunRel, uMoonPos, uMoonRadius, uSunRadius, uVolumetricBlend,
-    uFlatCloudOpacity, transmittanceLUT,
+    uSunRel, uMoonPos, uMoonRadius, uSunRadius, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -249,8 +205,6 @@ function buildEarthFragmentNode(opts: {
     // → white (no change).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sunT: any = vec3(1, 1, 1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let sunTCloud: any = vec3(1, 1, 1);
     if (USE_ATMOSPHERE_SURFACE_LIGHTING && transmittanceLUT) {
       const rgKm = EARTH_ATMOSPHERE.groundRadiusKm;
       const rtKm = rgKm + EARTH_ATMOSPHERE.atmosphereHeightKm;
@@ -273,7 +227,6 @@ function buildEarthFragmentNode(opts: {
         return tA.rgb.div(tZen.rgb.max(float(1e-4))).clamp(0, 1).mul(float(SURFACE_SUN_SCALE));
       };
       sunT = sunTAt(rgKm);
-      sunTCloud = sunTAt(rgKm + CLOUD_OVERLAY_ALTITUDE_KM);
     }
 
     // ── Day/night transition ──
@@ -348,9 +301,9 @@ function buildEarthFragmentNode(opts: {
       .mul(smoothstep(float(1), float(0.5), dayAmount));
     const warmTint = vec3(1.0, 0.6, 0.3);
 
-    // ── Clouds ──
-    const cloudMask = texture(texClouds, uvCoord).r
-      .toVar();
+    // (The flat cloud overlay that sampled texClouds here was removed in ISSUE 2
+    // Phase 2 — the cloud shell carries the far field now. texClouds is still
+    // sampled above for the ground cloud-shadow (cloudShadowVal).)
 
     // Night mask (sharper city-light cutoff)
     const nightMask = smoothstep(float(0.15), float(0), dayAmount);
@@ -400,106 +353,15 @@ function buildEarthFragmentNode(opts: {
       col.mulAssign(float(1.0).sub(landMask.mul(float(1.0).sub(limbDarken))));
     }
 
-    // ── Cloud overlay ──
-    const cloudSunFactor = clamp(
-      cosSunToGeomNormal.mul(4.0).add(0.9),
-      0,
-      1
-    );
-    const csf = cloudSunFactor
-      .mul(cloudSunFactor)
-      .mul(float(8.0).sub(cloudSunFactor));
-
-    // Cloud color: white in full sunlight, warm at the terminator. Phase 3b:
-    // the warm-mix is the OFF-path baseline — when ON, the flat clouds are plain
-    // white albedo and the physical transmittance (sunT) reddens them instead.
-    const cloudSunBlend = clamp(cosSunToGeomNormal.mul(3.0), 0, 1);
-    const cloudWhite = vec3(1, 1, 1).mul(CLOUD_BRIGHTNESS);
-    const cloudWarm = vec3(1.0, 0.8, 0.7);
-    const cloudBaseCol = USE_ATMOSPHERE_SURFACE_LIGHTING
-      ? cloudWhite
-      : mix(cloudWarm, cloudWhite, cloudSunBlend);
-    // Clouds at ~10 km altitude catch sunlight slightly past the surface
-    // terminator. Offset ≈ sqrt(2h/R) in cos-space for h=10 km, R=6371 km.
-    const cloudHemi = float(1.0).div(
-      float(1.0).add(exp(float(-40).mul(cosSunToGeomNormal.add(0.025))))
-    );
-    // Self-shadow: clouds with other clouds sunward of them get darker bases
-    const cloudSelfShadow = float(1.0).sub(float(0.5).mul(cloudShadowVal));
-    // Flat clouds are sunlit → tint by the CLOUD-ALTITUDE transmittance (Phase
-    // 3b) so they redden mildly like the volumetric clouds, not like the ground
-    // (OFF: sunTCloud = white, no change).
-    //
-    // SHARED far-field lighting (ISSUE 2, Phase 1): the physical model the
-    // volumetric marcher uses (sunIlluminance × cloud-alt transmittance ×
-    // CLOUD_SUN_SCALE + sky ambient), so the overlay and the volumetric agree in
-    // brightness/colour at the crossfade. `cloudHemi` is the cloud-horizon
-    // daylight gate; `sunTCloud` already reddens at sunset via the LUT. OFF path
-    // keeps the old hand-tuned white×CLOUD_BRIGHTNESS×csf overlay for A/B.
-    const cloudLit = USE_SHARED_CLOUD_FARFIELD
-      ? farCloudLit({
-          sunIlluminance: vec3(
-            EARTH_ATMOSPHERE.sunIlluminance[0],
-            EARTH_ATMOSPHERE.sunIlluminance[1],
-            EARTH_ATMOSPHERE.sunIlluminance[2],
-          ),
-          sunT: sunTCloud,
-          skyColor: vec3(
-            CLOUD_SKY_AMBIENT[0],
-            CLOUD_SKY_AMBIENT[1],
-            CLOUD_SKY_AMBIENT[2],
-          ),
-          daylight: cloudHemi,
-          selfShadow: cloudSelfShadow,
-        })
-      : cloudBaseCol.mul(csf).mul(cloudHemi).mul(cloudSelfShadow).mul(sunTCloud);
-    // Flat 2D cloud overlay — the far-cloud LOD. It paints the global cloud
-    // texture on the planet surface to fill cloud cover beyond the volumetric
-    // marcher's limited reach; the volumetric premultiplied composite renders
-    // on top and *replaces* it wherever there's a near cloud body (α > 0).
-    //
-    // CRITICAL: this must fade out once the camera is at/below the cloud-top
-    // altitude. The overlay lives at ground level (radius = planet surface),
-    // so when the camera is *under* the deck looking down, the real clouds are
-    // the volumetric ones around/above the camera while this would paint a
-    // ghost copy of the cloud cover flat on the terrain below — the
-    // "double-layer / 2D-clouds-on-the-ground" bug (visible when flying under
-    // the cumulus deck). `uFlatCloudOpacity` is driven from camera altitude in
-    // onFrame: 1 above ~50 km, 0 at/below the 14 km cloud top. It is NOT gated
-    // by uVolumetricBlend, which can't distinguish "above the deck at 1000 km"
-    // from "under the deck at 5 km" — both clamp to 1.
-    //
-    // ── Per-pixel coverage gate (2026-06-11) ──
-    // Where the volumetric renders REAL cloud bodies (dense coverage) the
-    // overlay must be off per-pixel: it's painted at ground level, 1–14 km
-    // BELOW the volumetric clouds, so it showed through carved gaps with
-    // parallax offset — the "I can still see the 2D texture where only
-    // volumetric should show" bug. Where coverage is THIN the volumetric
-    // renders little (the Remap thresholds away low coverage) and the flat
-    // haze is the desired far-field fill, so it stays. See the
-    // FLAT_OVERLAY_COVERAGE_* constants for the full rationale + the
-    // incidence-gate dead end. Scaled by uVolumetricBlend so at high altitude
-    // (blend → 0, volumetric pass skipped) the overlay covers everything.
-    const thinKeep = float(1).sub(
-      smoothstep(
-        float(FLAT_OVERLAY_COVERAGE_LO),
-        float(FLAT_OVERLAY_COVERAGE_HI),
-        cloudMask,
-      ),
-    );
-    const flatCloudOpacity = float(uFlatCloudOpacity).mul(
-      mix(float(1), thinKeep, uVolumetricBlend),
-    );
-    // Apparent coverage via the SHARED coverage→opacity curve (ISSUE 2, Phase 1)
-    // so the overlay renders the same cloud AREA the volumetric does. Default is
-    // gentle (keeps the orbit coverage); tune cloudCommon COVERAGE_OPACITY_* to
-    // tighten the match. OFF path uses raw coverage (the old behaviour).
-    const overlayCoverage = USE_SHARED_CLOUD_FARFIELD
-      ? coverageToOpacity(cloudMask)
-      : cloudMask;
-    col.assign(
-      mix(col, cloudLit, clamp(overlayCoverage.mul(flatCloudOpacity), 0, 1)),
-    );
+    // ── Cloud overlay REMOVED (ISSUE 2 Phase 2) ──
+    // The sky-facing flat cloud overlay used to be composited into the surface
+    // colour here (white × transmittance, gated by uFlatCloudOpacity + a
+    // coverage thinKeep). It is replaced by the dedicated CLOUD SHELL — a sphere
+    // at cloud-top radius (earthClouds.ts buildCloudShellMesh) that samples the
+    // SAME coverage field + farCloudLit, at the correct altitude (no ground
+    // parallax) and decoupled from the surface shader (so any planet gets it).
+    // Ground cloud-SHADOWS stay in this shader (cloudShadowVal above darkens the
+    // terrain) — the shell neither casts nor receives them.
 
     // NOTE: the old fake Rayleigh in-scatter/extinction (view-angle desaturation
     // + blue limb glow) lived here. It is now handled physically by the
@@ -599,14 +461,14 @@ export const earthConfig: CelestialBodyConfig = {
     uMoonPos: uniform(new THREE.Vector3(1e9, 0, 0)),
     uMoonRadius: uniform(kmToScaledUnits(LUNA_RADIUS_KM)),
     uSunRadius: uniform(kmToScaledUnits(STAR_RADIUS_KM)),
-    // 0 = far (flat overlay only), 1 = close (volumetric shell only).
-    // Driven from camera ALTITUDE in onFrame; ramps linearly across
-    // VOLUMETRIC_BLEND_START_ALT_KM → VOLUMETRIC_BLEND_FULL_ALT_KM.
+    // Volumetric crossfade (0 = far / shell only, 1 = volumetric near field).
+    // Driven from camera ALTITUDE in onFrame; gates the whole marcher pipeline
+    // in SpaceRenderer (read via ctx.uniforms.uVolumetricBlend + getVolumetricBlend).
     uVolumetricBlend: uniform(0),
-    // Flat 2D cloud-overlay opacity. Driven from camera altitude in onFrame:
-    // 1 above ~50 km, 0 at/below the 14 km cloud top — altitude- (not
-    // distance-) gated. See the flat-overlay block in buildEarthFragmentNode.
-    uFlatCloudOpacity: uniform(1),
+    // Far-field cloud SHELL opacity (ISSUE 2 Phase 2). Shared across near+mid
+    // tiers (read by buildCloudShellMesh via ctx.uniforms). Value 1 for now;
+    // step 5 drives it from altitude to fade the shell out below the deck.
+    uShellOpacity: uniform(1),
   }),
 
   onFrame: ({ uniforms, worldOrigin, distKm }) => {
@@ -631,13 +493,17 @@ export const earthConfig: CelestialBodyConfig = {
       1,
     );
 
-    // Flat 2D cloud overlay fade. Fade the surface-painted cloud overlay out
-    // as the camera drops to/below the cloud top — otherwise it draws ghost
-    // clouds on the ground beneath a camera that's inside/under the deck
-    // (see buildEarthFragmentNode).
-    uniforms.uFlatCloudOpacity.value = THREE.MathUtils.clamp(
-      (altKm - CLOUD_TOP_ALTITUDE_KM) /
-        (FLAT_OVERLAY_FULL_ALT_KM - CLOUD_TOP_ALTITUDE_KM),
+    // Far-field cloud SHELL fade (ISSUE 2 Phase 2). Full above the deck (carries
+    // the far field / horizon), off at/below the deck top. FrontSide already
+    // culls the shell from inside the sphere, so this mainly smooths the
+    // deck-top crossing and removes the shell just before the camera enters the
+    // deck (where the volumetric takes over the whole view). Replaces
+    // uFlatCloudOpacity's below-deck role — but the shell can stay full LOWER
+    // than the ground overlay could (it has no ground ghost), so its band sits
+    // right at the deck.
+    uniforms.uShellOpacity.value = THREE.MathUtils.clamp(
+      (altKm - SHELL_FADE_OFF_ALT_KM) /
+        (SHELL_FADE_FULL_ALT_KM - SHELL_FADE_OFF_ALT_KM),
       0,
       1,
     );
@@ -654,8 +520,6 @@ export const earthConfig: CelestialBodyConfig = {
       uMoonPos: uniforms.uMoonPos,
       uMoonRadius: uniforms.uMoonRadius,
       uSunRadius: uniforms.uSunRadius,
-      uVolumetricBlend: uniforms.uVolumetricBlend,
-      uFlatCloudOpacity: uniforms.uFlatCloudOpacity,
       // Phase 3b: bind the shared transmittance LUT (baked by SpaceRenderer's
       // atmosphere pass) so the surface shader reads per-pixel sun colour.
       transmittanceLUT: USE_ATMOSPHERE_SURFACE_LIGHTING

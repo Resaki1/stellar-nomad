@@ -549,6 +549,14 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // thread, so flying into the near tier never hitches. Idempotent no-op once
     // warmed. (flushCloudBakes below is the sync safety net.)
     warmCloudBakes(renderer);
+    // Drain any pending cloud bakes EVERY frame, unconditionally (not just when
+    // clouds are visible). The shell's expected-opacity LUT is queued lazily
+    // when Earth enters its tier — long before the volumetric-cloud pipeline
+    // becomes visible — so the gated flushCloudBakes deeper in the frame would
+    // leave the LUT undispatched (zero-filled → invisible shell) until near the
+    // surface. This unconditional drain dispatches it from orbit. No-op once the
+    // queue is empty; the tiny 256×1 LUT compile is negligible.
+    flushCloudBakes(renderer);
     // _nodes is a private renderer field; the public animation loop (which
     // normally advances nodeFrame) is stopped because R3F owns the frame loop.
     (

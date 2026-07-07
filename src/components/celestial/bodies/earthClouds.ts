@@ -1,18 +1,28 @@
 import * as THREE from "three";
-import { NodeMaterial } from "three/webgpu";
+import { NodeMaterial, StorageTexture } from "three/webgpu";
 import {
+  Fn,
   If,
   Loop,
   Break,
   uniform,
   texture,
   texture3D,
+  textureStore,
   screenCoordinate,
+  positionLocal,
+  positionWorld,
+  cameraPosition,
+  normalWorld,
+  normalize,
   vec2,
   vec3,
   vec4,
   float,
   int,
+  uint,
+  uvec2,
+  instanceIndex,
   dot,
   sub,
   clamp,
@@ -20,8 +30,6 @@ import {
   mix,
   smoothstep,
   exp,
-  atan,
-  acos,
   fract,
   sin,
   pow,
@@ -34,9 +42,20 @@ import {
   getGpuCloudBaseVolume,
   getGpuCloudDetailVolume,
   getGpuCloudDetailMip1,
+  queueCloudBake,
+  tslHash3,
 } from "./cloudVolumeCompute";
 import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
-import { CLOUD_SUN_SCALE, CLOUD_SKY_SCALE } from "./cloudCommon";
+import {
+  CLOUD_SUN_SCALE,
+  CLOUD_SKY_SCALE,
+  CLOUD_SKY_AMBIENT,
+  COVERAGE_GAMMA,
+  equirectDirToUv,
+  makeEquirectTextureField,
+  farCloudLit,
+} from "./cloudCommon";
+import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import { STBN_PERIOD_XY } from "./stbnTexture";
 import { CLOUD_LAYER } from "@/components/space/renderLayers";
 import {
@@ -55,6 +74,127 @@ type Node = any;
 // Troposphere-ish slab. Photoreal-leaning, not exaggerated.
 const CLOUD_INNER_ALTITUDE_KM = 1;
 const CLOUD_OUTER_ALTITUDE_KM = 14;
+
+// Base / per-column noise scales (1 scaled unit = 1000 km). SHARED by the
+// marcher's uBaseScale/uColumnScale uniforms AND the far-shell's macro-coverage
+// model (columnMacroCoverage), so both sample the noise identically → the
+// shell's coverage matches the volumetric footprint by construction.
+const BASE_SCALE = 50;
+const COLUMN_SCALE = 30;
+
+// Altitude (km) of the far-field cloud SHELL sphere (ISSUE 2 Phase 2). Defaults
+// to the cloud-top (CLOUD_OUTER_ALTITUDE_KM) so the shell's clouds sit at the
+// same altitude as the volumetric cloud tops → correct parallax + a seamless
+// hand-off. DIAGNOSTIC: because the shell is 14 km above the ground, it shows
+// real parallax vs the surface under motion (the old ground-painted overlay had
+// none). To check whether the "stutter" the shell shows on fast approach is that
+// parallax vs a genuine bug, temporarily set this to ~1: if the differential
+// motion / stutter drops roughly 14×, it's parallax (expected); if unchanged,
+// it's a real transform/render issue and needs a different fix.
+const SHELL_ALTITUDE_KM = CLOUD_OUTER_ALTITUDE_KM;
+
+// ── Distance-based near/far hand-off (ISSUE 2 step 7) ────────────────────────
+// The shell is the FAR representation; the volumetric owns the NEAR field. Fade
+// the shell IN by camera-to-fragment distance so it vanishes close to the camera
+// (where the volumetric renders — incl. its over-eroded gaps, so no flat-vs-3D
+// backfill) and only carries the far HORIZON the volumetric can't reach. This is
+// the Star-Citizen near-volumetric / far-flat split (case #22 deferred). Because
+// the shell is a sphere, the sub-camera point is near (faded) while the limb is
+// far (full), so the hand-off tracks altitude for free: from orbit the whole
+// shell is far (full); descending, the below-camera field hands to the volumetric
+// while the horizon stays shell. Tune so FAR ≈ where the volumetric becomes the
+// reliable near-field authority (~the volumetric-blend-full altitude) and NEAR ≈
+// the volumetric's confident dense reach. In km (camera→fragment distance).
+const SHELL_HANDOFF_NEAR_KM = 1000; // ≤ this from camera → shell fully OFF (volumetric owns)
+const SHELL_HANDOFF_FAR_KM = 2500; // ≥ this → shell FULL (far horizon)
+
+// ── Shell analytic envelope + expected-opacity transfer (2026-07-06/07) ──────
+// The measured (SHELL_DEBUG_VIZ) diagnosis of the two shell bugs:
+//   • FLICKER: the shell's per-pixel mip-0 3D noise taps (base/carve/column)
+//     are sub-pixel at every distance the shell renders (carve cells 0.5–1.5 km
+//     vs ≥0.6 km/px footprint) — frizz + moiré rings, confirmed by the tap
+//     ladder ('carve' worst) and by 'noiseFree' killing it.
+//   • LOW-COVERAGE ABSENCE: what the marcher shows from orbit in low-coverage
+//     regions is sparse NEAR-OPAQUE puffs covering a FRACTION of the area (it
+//     Beer-Lambert-saturates the eroded density, and samples the low altitude
+//     band the shell's old {0.3,0.55,0.8} ladder missed). Point-sampling the
+//     noise cannot represent an area fraction.
+// FIX (the "analytic now, bake later" decision — see docs/CLOUD_REVIEW_2026-07):
+// the shell samples NO 3D noise per frame. Its alpha is the STATISTICAL
+// EXPECTATION of the marcher's rendered opacity over the pixel footprint, as a
+// function of the smooth dimensional profile `dimProfile = coverage·height`:
+//   alpha(dimProfile) = E_noise[ 1 − exp(−eroded·OPTICAL_PATH) ],
+//   eroded = saturate(dimProfile − (1−carved)·K_EFF)
+// Monte-Carlo'd from the REAL noise volumes into a 256×1 LUT at load
+// (getShellOpacityLUT). This is the KEY fix over the 2026-07-06 survival-CCDF:
+// the CCDF counted P(eroded>0) so it over-weighted invisibly-thin density (low
+// coverage read gray, and no single exponent could pull the low end down while
+// keeping the high end opaque — the measured N=1 vs 0.08 dilemma). Weighting by
+// Beer-Lambert opacity makes thin→transparent and thick→opaque BY CONSTRUCTION.
+// Any noise/erosion rework re-derives the curve automatically at next load.
+//
+// Sample altitudes for the height profile (pure ALU — no noise taps): the low
+// band 0.1 is REQUIRED (stratus/low-sc live at alt01 0.0–0.25; its absence was
+// half the low-coverage bug — validated via 'profileMaxLow').
+const SHELL_ALT_SAMPLES = [0.1, 0.3, 0.55, 0.8] as const;
+// topAlt column tap replacement: the hybrid baseVolume.r's ~p50 (measured
+// 0.48/0.71/0.89 p10/p50/p90 — see TOPALT_LINEAR). A constant mid value, NOT a
+// noise tap ('colSample' frizzes from orbit); only sways the cumulus top fade.
+// 0.65 is the value the user validated visually via the 'noiseFree' test.
+const SHELL_COL_SAMPLE = 0.65;
+// Effective optical path (× eroded density) baked into the opacity LUT — the
+// ONE calibration knob (replaced the failed SHELL_SURVIVAL_LAYERS exponent).
+// Sets how quickly eroded density saturates to opaque: alpha per sample =
+// 1−exp(−pow(eroded, DENSITY_GAMMA)·OPTICAL_PATH), meaned over the noise. RAISE
+// → fuller/harder-edged far field, LOWER → softer/thinner. Because it lives
+// inside the exp(), it shapes low vs high coverage correctly at ALL values, not
+// as a global multiply. EMPIRICAL (2026-07-07): 1 gives the seamless
+// orbit→surface transition — the marcher's apparent orbital opacity is quite
+// translucent, so the shell must be too. (Started at 18 ≈ opaque; that made the
+// far field far denser than the volumetric it hands to.) Tune ~1–5.
+const SHELL_OPTICAL_PATH = 1;
+
+// ── SHELL debug visualisation ────────────────────────────────────────────────
+// Replaces the shell's output with a false-colour scalar (alpha=1, no lighting,
+// no distFade/uShellOpacity — visible at ANY camera distance) so each stage of
+// columnMacroCoverage can be inspected in isolation. These drove the 2026-07-06
+// diagnosis (results in docs/CLOUD_REVIEW_2026-07.md) and stay as regression
+// diagnostics. (The old 'noiseFree' test mode IS the normal path now.)
+//
+//   'off'         : normal shell rendering.
+//   'rawCoverage' : the weathermap tap (auto-mip), pre-gamma. Expected smooth +
+//                   stable at every distance (14-mip KTX2) — measured ✓.
+//   'profileMax'  : max cloudHeightProfile over SHELL_ALT_SAMPLES (real
+//                   cloudType, const topAlt; NO coverage multiply). Should be
+//                   nonzero everywhere (the 0.1 tap carries every type:
+//                   stratus=1, sc≈0.35, cum≈0.5) — measured ✓ ("light-gray
+//                   everywhere").
+//   'maxDim'      : coverage × profileMax — the dimensional-profile input to
+//                   the opacity transfer (the LUT's index axis).
+//   'opacity'     : the LUT output = E_noise[1−exp(−eroded·OPTICAL_PATH)] at
+//                   maxDim (the shell's final coverage before lighting/fades).
+//                   All-black despite nonzero maxDim → the LUT bake never
+//                   dispatched (texture still zero-filled — the timing bug the
+//                   unconditional flushCloudBakes fixed).
+//   'colSample' / 'baseMacro' / 'carve' :
+//                   the three RETIRED per-pixel 3D noise taps (column tap /
+//                   dilated base / carve-Worley mix at slab-mid alt). Kept as
+//                   the aliasing ladder: all three frizz + moiré-ring from
+//                   orbit (measured 2026-07-06, carve worst — its 0.5–1.5 km
+//                   cells are sub-pixel at every shell distance), which is WHY
+//                   the normal path samples NO 3D noise anymore.
+//
+// The volumetric marcher still composites OVER these visualisations. View near
+// nadir; the atmosphere pass tints the limb.
+const SHELL_DEBUG_VIZ:
+  | "off"
+  | "rawCoverage"
+  | "profileMax"
+  | "maxDim"
+  | "opacity"
+  | "colSample"
+  | "baseMacro"
+  | "carve" = "off";
 
 // Ray-march config. MUST be constants — TSL Loop count is baked into the shader.
 //
@@ -425,7 +565,62 @@ const BILLOW_CARVE = 0.45;
 // Alligator noise (round caps), covSpan gating, and solidity gamma should keep
 // it solid now; if floaters/gaps return, lower K. Marcher-only (the bake uses a
 // plain baseDilate·cov·prof, no K). Tune live with BASE_FBM_BILLOW.
-const BASE_EROSION_K = 1.2;
+const BASE_EROSION_K = 0.6;
+
+// ── Phase F falsification toggles (docs/CLOUD_TYPES_PLAN.md §3.6 — TEST-ONLY,
+// all default OFF; flip one at a time, reload, screenshot, flip back) ──────
+//
+// Step 3 — Nubis-form value erosion. Algebraically the Nubis 2017 relationship
+// saturate(carved − (1−profile)) IS this pipeline's erosion at K = 1 exactly:
+//   profile − (1−carved)·1 = carved − (1−profile).
+// K=1 keeps noise authority at ALL coverages (~7% holes at profile 1.0 with
+// our noise, Monte-Carlo in docs/CloudTypesResearch/cloud_shape_anatomy.md)
+// instead of K=0.6's mathematically hole-free floor above raw coverage 0.427.
+// This const feeds the dense-branch erosion, the probeShape skip-gate (MUST
+// move together — case #13 gate law), and the far shell's columnMacroCoverage
+// (coherent near/far A/B). The light-volume bake has NO K erosion
+// (multiplicative density) — nothing to mirror there.
+// EXPECTED if H1 holds: discrete bodies at every coverage; dense decks still
+// ~93% closed but with real crevice structure instead of the uniform floor.
+// Judge against the 2026-07-06 K=0.6 vs 1.2 screenshots: target is "as closed
+// as 0.6, structured like a real deck" (plan §4.2 acceptance criterion).
+const EROSION_NUBIS_FORM = true;
+const BASE_EROSION_K_EFF = EROSION_NUBIS_FORM ? 1.0 : BASE_EROSION_K;
+//
+// Step 4 — LINEAR topAlt spread. The smoothstep(0.3, 0.7, colSample) spread
+// was written for pure Perlin clustered at 0.5, but baseVolume.r has been the
+// Perlin-Worley HYBRID (measured p10/p50/p90 ≈ 0.48/0.71/0.89, mean ≈ 0.70)
+// since the R-channel rework → the smoothstep SATURATES for most columns →
+// topAlt piles at the 0.95 ceiling (69% of dense columns > 0.90) → one slab
+// at one height, no tower skyline (§3.6 H4; also the third recurrence of the
+// smoothstep-on-noise bimodal trap — CLOUD_DEBUGGING_LESSONS). The linear
+// remap matches the hybrid's actual range. Applied via topAltSpread() in the
+// marcher, the shell's deriveTopAlt, the 'topAlt' diagnostic, AND mirrored in
+// cloudLightVolume.ts (TOPALT_LINEAR_MIRROR — keep in lockstep or shadows
+// detach during the test).
+// EXPECTED if H4 holds: DEBUG_VIZ='topAlt' goes from near-uniform white over
+// dense regions to a varied field; the render grows a real tower skyline.
+const TOPALT_LINEAR = true;
+//
+// Step 5 — synthetic mesoscale organization mask. Multiplies RAW coverage by
+// a 10-40 km cellular field with TRUE ZEROS in the lanes, previewing the
+// weather-map v2 bake's mesoscale octave (§3.6 H3: nothing exists today
+// between the 8.3 km column cells and the smooth weather map). One extra
+// baseVolume tap per in-band step at MESO_SCALE (tile 1000/8 = 125 km,
+// grid-4 Alligator cells ≈ 31 km — inside the real Sc-cell band). TEST-ONLY
+// caveats: marcher-only (the far shell beyond ~300 km and the light-volume
+// bake do NOT see the mask — expect a visible handoff seam and slightly
+// off tower-wall lighting near lanes during the test).
+// EXPECTED if H3 holds: instant closed/open-cell deck organization with
+// clear-sky lanes at the 10-40 km scale.
+const MESOSCALE_TEST = true;
+const MESO_SCALE = 8; // baseVolume tile 125 km → ~31 km cells
+const MESO_LANE_LO = 0.45; // below → lane (true zero); tune vs p10 ≈ 0.48
+const MESO_LANE_HI = 0.7; // above → cell interior (mask 1)
+//
+// Step 6 needs no new code: A/B the existing DETAIL_FADE_FAR 0.1 → 0.25.
+// ───────────────────────────────────────────────────────────────────────────
+
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
@@ -773,24 +968,491 @@ function cloudHeightProfile(alt01: any, topAlt: any, cloudType: any): any {
  * `uEarthInverseModel` uniform. Mesh is on CLOUD_LAYER (which no camera
  * enables), so it never renders.
  */
-export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
-  if (ctx.tier !== "near") return [];
+// ── Shared macro cloud-density model (ISSUE 2 Q2; revised 2026-07-06) ────────
+// The far-field SHELL derives its coverage from THESE functions — the same
+// coverage→type→profile relationship the volumetric marcher uses — so the
+// shell's footprint tracks the volumetric BY CONSTRUCTION. The NOISE half of
+// the model enters the shell STATISTICALLY (the erosion-survival LUT below),
+// not per-position: point-sampling the mip-less 3D noise from orbit was
+// measured to alias (frizz + moiré) and to zero out low-coverage columns —
+// see docs/CLOUD_REVIEW_2026-07.md "MEASURED (2026-07-06)". "Macro" = the
+// dilated + billow-carved base shape; the marcher layers FINE_CARVE/WISP/HHF
+// on top for the NEAR view, which the far shell doesn't need.
+//
+// NOTE: the marcher still computes these inline (its dense branch is gated for
+// perf); the formulas here MUST match it. Unifying the marcher to call these is
+// a clean follow-up (Q2b) — deferred to keep the working marcher untouched.
+// Known marcher-only divergence: MESOSCALE_TEST masks the marcher's raw
+// coverage (Phase F step 5, test-only) — the shell will read fuller than the
+// meso-broken decks until the mask graduates into the weather map / the bake.
 
+// coverage (already COVERAGE_GAMMA-lifted) → Nubis cloudType ∈ [0,1].
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deriveCloudType(coverage: any): any {
+  return smoothstep(float(0.3), float(0.6), coverage);
+}
+
+// Column-sample → topAlt spread. ONE definition for the marcher, the shell's
+// deriveTopAlt, and the 'topAlt' diagnostic (mirrored numerically in
+// cloudLightVolume.ts — keep in lockstep). TOPALT_LINEAR (Phase F step 4)
+// swaps the Perlin-era smoothstep for a linear remap matched to the
+// Perlin-Worley hybrid's measured range — see the toggle's comment block.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function topAltSpread(colSample: any): any {
+  return TOPALT_LINEAR
+    ? colSample.sub(float(0.48)).div(float(0.42)).clamp(0, 1)
+    : smoothstep(float(0.3), float(0.7), colSample);
+}
+
+// Per-column cumulus-top altitude, coverage-gated (covSpan). `colSample` = the
+// per-column Perlin tap (baseVolume.r at COLUMN_SCALE). Mirrors the marcher.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function deriveTopAlt(coverage: any, colSample: any): any {
+  const covSpan = smoothstep(float(0.35), float(0.7), coverage);
+  return float(0.45).add(topAltSpread(colSample).mul(0.5).mul(covSpan));
+}
+
+// Dilated macro base shape at an earth-space position (baseVolume + baseDilate).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function macroDilatedShapeAt(pos: any, baseVolume: THREE.Texture): any {
+  const bs = texture3D(baseVolume, pos.mul(float(BASE_SCALE))).level(
+    int(0),
+  ) as Node;
+  const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
+  return baseDilate(bs.r, fbm);
+}
+
+// (applyBillowCarve — the shared per-position billow-carve — was removed
+// 2026-07-06: the shell no longer point-samples the carve (measured sub-pixel
+// aliasing, Bug B); its statistics live in the survival LUT below, whose kernel
+// mirrors the marcher's dense-branch carve: cw = detail.r·0.6 + detail.g·0.4,
+// remap by (1−cw)·BILLOW_CARVE. Keep the LUT kernel in lockstep with the
+// MARCHER if the carve form changes.)
+
+// ── Shell opacity LUT (the shell's noise term, statistically) ────────────────
+// 256×1 table: texel i = E_noise[ 1 − exp(−pow(eroded, DENSITY_GAMMA)·PATH) ]
+// for dimProfile d_i = i/255, where eroded = saturate(d_i − (1−carved)·K_EFF).
+// Monte-Carlo'd on the GPU from the REAL baked noise volumes at load (one tiny
+// one-shot compute riding the cloudVolumeCompute bake queue). The shell reads
+// LUT(maxDim) as its coverage. This is the EXPECTED RENDERED OPACITY the
+// marcher would integrate for a column of dimensional-profile d — the correct
+// far-field average, not a point sample:
+//   • The exp() Beer-Lambert weighting is the fix over the 2026-07-06 CCDF: the
+//     CCDF counted P(eroded>0), over-weighting invisibly-thin density (low
+//     coverage read gray). Opacity weighting makes thin→~0, thick→~1, monotone
+//     in d with a physical S-shape → high & low coverage BOTH correct with no
+//     tone knob.
+//   • Positions: `carved` is a stationary tiled field, so uniform random
+//     texture-space coords reproduce the marcher's sampling statistics; base &
+//     detail decorrelate via their very different world scales (50 vs 360), so
+//     independent uniforms are the correct joint. (The marcher's domain warp
+//     doesn't change the marginal — stationarity.)
+//   • Same sample stream (keyed on the loop index) across all d-threads → LUT
+//     monotone by construction, no bin jitter.
+//   • d=0 → eroded=0 → opacity 0 → clear sky stays perfectly clear.
+// Any rework of the noise volumes / dilate / carve / K re-derives the curve at
+// next load — no hand-tuned transfer to desync (the Q2 goal, robust against the
+// cloud-types rework). LOCKSTEP: the kernel mirrors the marcher dense branch
+// (dilate + billow carve + K erosion + DENSITY_GAMMA); keep in sync if those
+// change. OPTICAL_PATH is the one free knob (see SHELL_OPTICAL_PATH).
+const SHELL_OPACITY_LUT_SIZE = 256;
+const SHELL_OPACITY_LUT_SAMPLES = 8192; // stderr ≈ 0.55% per bin
+
+let cachedOpacityLUT: THREE.Texture | null = null;
+function getShellOpacityLUT(
+  baseVolume: THREE.Texture,
+  detailVolume: THREE.Texture,
+): THREE.Texture {
+  if (cachedOpacityLUT) return cachedOpacityLUT;
+  const tex = new StorageTexture(SHELL_OPACITY_LUT_SIZE, 1);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType; // rgba8unorm — 1/255 alpha quantisation is fine
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.generateMipmaps = false;
+
+  const kernel = Fn(() => {
+    // This bin's dimensional-profile value (LUT index → d ∈ [0,1]).
+    const dimProfile = float(instanceIndex).div(SHELL_OPACITY_LUT_SIZE - 1);
+    const sum = float(0).toVar();
+    Loop(
+      {
+        start: uint(0),
+        end: uint(SHELL_OPACITY_LUT_SAMPLES),
+        type: "uint",
+        condition: "<",
+      },
+      ({ i }: { i: Node }) => {
+        // Sample stream keyed ONLY on the loop index (identical across all
+        // d-threads → monotone LUT). Salts pick independent hash streams.
+        const pb = vec3(
+          tslHash3(i, uint(0), uint(0), 101),
+          tslHash3(i, uint(1), uint(0), 102),
+          tslHash3(i, uint(2), uint(0), 103),
+        );
+        const pc = vec3(
+          tslHash3(i, uint(3), uint(0), 104),
+          tslHash3(i, uint(4), uint(0), 105),
+          tslHash3(i, uint(5), uint(0), 106),
+        );
+        // Pointwise mirror of the marcher's macro shape: macroDilatedShapeAt's
+        // dilate + the dense-branch billow carve (keep in lockstep — same fbm
+        // weights, carve channel mix, BILLOW_CARVE remap).
+        const bs = texture3D(baseVolume, pb).level(int(0)) as Node;
+        const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
+        const dilated = baseDilate(bs.r, fbm);
+        const cs = texture3D(detailVolume, pc).level(int(0)) as Node;
+        const cw = cs.r.mul(0.6).add(cs.g.mul(0.4));
+        const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
+        const carved = dilated
+          .sub(ct)
+          .div(float(1).sub(ct).max(0.0001))
+          .clamp(0, 1);
+        // Marcher erosion + solidity gamma → Beer-Lambert opacity for this
+        // sample's density (see BASE_EROSION_K, DENSITY_GAMMA, uDensityMul).
+        const eroded = dimProfile
+          .sub(float(1).sub(carved).mul(float(BASE_EROSION_K_EFF)))
+          .clamp(0, 1);
+        const dens =
+          (DENSITY_GAMMA as number) === 1
+            ? eroded
+            : pow(eroded, float(DENSITY_GAMMA));
+        sum.addAssign(
+          float(1).sub(exp(dens.mul(float(-SHELL_OPTICAL_PATH)))),
+        );
+      },
+    );
+    const opacity = sum.div(float(SHELL_OPACITY_LUT_SAMPLES));
+    textureStore(
+      tex,
+      (uvec2 as Node)(instanceIndex, uint(0)),
+      vec4(opacity, opacity, opacity, 1),
+    ).toWriteOnly();
+  });
+
+  // Queued AFTER the volumes (getShellOpacityLUT is called with the already-
+  // requested singletons) so the in-order bake dispatch populates its inputs
+  // first — same ordering contract as detail mip1.
+  queueCloudBake({ computeNode: kernel().compute(SHELL_OPACITY_LUT_SIZE) });
+  cachedOpacityLUT = tex;
+  return tex;
+}
+
+// Far-shell per-column coverage → ALPHA. The analytic macro envelope: mipped
+// raw coverage (CloudFieldProvider seam) × the shared coverage→type→profile
+// model over SHELL_ALT_SAMPLES, pushed through the expected-opacity transfer
+// (see the LUT above). NO 3D noise taps in the normal path — the noise enters
+// only as its statistical mean via the LUT, so nothing sub-pixel can flicker
+// (the measured Bug B) and low-coverage columns keep their honest fractional
+// alpha instead of a point-sampled zero (the measured Bug A).
+function columnMacroCoverage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dir: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  coverageAt: (d: any) => any,
+  opts: {
+    baseVolume: THREE.Texture;
+    detailVolume: THREE.Texture;
+    opacityLUT: THREE.Texture;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    innerRadiusScaled: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    outerRadiusScaled: any;
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  const {
+    baseVolume,
+    detailVolume,
+    opacityLUT,
+    innerRadiusScaled,
+    outerRadiusScaled,
+  } = opts;
+  if (SHELL_DEBUG_VIZ === "rawCoverage") return coverageAt(dir);
+  // DEBUG-ONLY 3D taps (the retired aliasing ladder — see SHELL_DEBUG_VIZ).
+  // baseVolume/detailVolume are otherwise UNUSED here (the LUT replaced them).
+  if (SHELL_DEBUG_VIZ === "colSample") {
+    return (
+      texture3D(
+        baseVolume,
+        dir.mul(innerRadiusScaled).mul(float(COLUMN_SCALE)),
+      ).level(int(0)) as Node
+    ).r;
+  }
+  if (SHELL_DEBUG_VIZ === "baseMacro" || SHELL_DEBUG_VIZ === "carve") {
+    const pos = dir.mul(mix(innerRadiusScaled, outerRadiusScaled, float(0.55)));
+    if (SHELL_DEBUG_VIZ === "baseMacro")
+      return macroDilatedShapeAt(pos, baseVolume);
+    // Raw carve field (the cs tap the carve remap consumes), not the remap.
+    const cs = texture3D(detailVolume, pos.mul(float(CARVE_SCALE))).level(
+      int(0),
+    ) as Node;
+    return cs.r.mul(0.6).add(cs.g.mul(0.4));
+  }
+  const coverage = coverageAt(dir).pow(float(COVERAGE_GAMMA));
+  const cloudType = deriveCloudType(coverage);
+  const topAlt = deriveTopAlt(coverage, float(SHELL_COL_SAMPLE));
+  // Profile peak over the slab (pure ALU). Coverage is per-column constant, so
+  // max(coverage×profile) = coverage × max(profile).
+  const maxProfile = float(0).toVar();
+  for (const a of SHELL_ALT_SAMPLES) {
+    maxProfile.assign(
+      maxProfile.max(cloudHeightProfile(float(a), topAlt, cloudType)),
+    );
+  }
+  if (SHELL_DEBUG_VIZ === "profileMax") return maxProfile;
+  const maxDim = coverage.mul(maxProfile).clamp(0, 1);
+  if (SHELL_DEBUG_VIZ === "maxDim") return maxDim;
+  // Expected-opacity transfer: LUT indexed by dimProfile (maxDim). Texel
+  // centres: u = d·(N−1)/N + 0.5/N.
+  const lutU = maxDim
+    .mul((SHELL_OPACITY_LUT_SIZE - 1) / SHELL_OPACITY_LUT_SIZE)
+    .add(0.5 / SHELL_OPACITY_LUT_SIZE);
+  const opacity = (
+    texture(opacityLUT, vec2(lutU, 0.5)).level(int(0)) as Node
+  ).r;
+  // 'opacity' viz falls through here (final shell coverage before lighting).
+  return opacity;
+}
+
+// ── Far-field cloud shell (ISSUE 2 Phase 2) ──────────────────────────────────
+// A sphere at cloud-top radius, parented (via ExtraMeshDef) to the planet's
+// rotation group so its OBJECT space == the marcher's "earth space". Its
+// fragment samples the SAME coverage field (cloudCommon provider + shared
+// equirect projection) so its clouds register pixel-for-pixel with the
+// volumetric marcher and the (soon-removed) surface overlay. Renders on layer 0
+// (unlike the marcher anchor on CLOUD_LAYER) so Pass 1 draws it into the scaled
+// scene → the atmosphere pass fogs it for free and the volumetric composites
+// over it. FrontSide: the near hemisphere shows over the planet from outside
+// (orbit); from inside/below the deck the back faces are culled → no ghost
+// ceiling. Replaces the surface-shader overlay (removed in step 6); renders in
+// BOTH near and mid tiers so orbit keeps cloud cover.
+//
+// STEP 4: lit with the SHARED far-cloud model (cloudCommon.farCloudLit), matching
+// the overlay + marcher (sunIlluminance × cloud-altitude transmittance from the
+// shared LUT + sky ambient), so the shell agrees in brightness/colour and
+// reddens at the terminator in lockstep. selfShadow is a cheap coverage proxy
+// for now (no 2-tap shadow projection — see ISSUE 2 risks).
+function buildCloudShellMesh({
+  tier,
+  weatherMap,
+  baseVolume,
+  detailVolume,
+  opacityLUT,
+  innerRadiusScaled,
+  outerRadiusScaled,
+  shellRadiusScaled,
+  uSunRel,
+  uShellOpacity,
+}: {
+  tier: "near" | "mid";
+  weatherMap: THREE.Texture;
+  baseVolume: THREE.Texture;
+  detailVolume: THREE.Texture;
+  opacityLUT: THREE.Texture;
+  innerRadiusScaled: number;
+  outerRadiusScaled: number;
+  shellRadiusScaled: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunRel: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uShellOpacity: any;
+}): ExtraMeshDef {
+  // Drift uniform: static 0 today (cloud drift unused). Local to the shell for
+  // now — when drift is animated, consolidate with the marcher's uCloudUvOffset
+  // into ONE shared per-planet uniform (they must match or the shell/marcher
+  // clouds would slide apart).
+  const uCloudUvOffset = uniform(new THREE.Vector2(0, 0));
+  // Raw-coverage source (the CloudFieldProvider seam — texture for Earth,
+  // procedural later); columnMacroCoverage applies the shared erosion model.
+  const field = makeEquirectTextureField(weatherMap, uCloudUvOffset);
+
+  // Shared transmittance LUT for physical sun colour (guarded like the marcher).
+  const transmittanceLUT = USE_ATMOSPHERE_CLOUD_LIGHTING
+    ? getAtmosphereLUTs().transmittance.texture
+    : undefined;
+
+  const segments = tier === "near" ? 96 : 64;
+  const geometry = new THREE.SphereGeometry(
+    shellRadiusScaled,
+    segments,
+    segments,
+  );
+
+  const mat = new NodeMaterial();
+  mat.transparent = true;
+  mat.depthWrite = false;
+  mat.depthTest = true;
+  mat.side = THREE.FrontSide;
+  // Premultiplied-alpha — matches the rest of the cloud pipeline.
+  mat.blending = THREE.CustomBlending;
+  mat.blendSrc = THREE.OneFactor;
+  mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+  mat.blendSrcAlpha = THREE.OneFactor;
+  mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+
+  mat.fragmentNode = Fn(() => {
+    // COVERAGE uses the LOCAL (earth-space) direction — the texture is fixed to
+    // the rotating planet (validated by step 3's alignment). LIGHTING uses the
+    // WORLD-space normal — the sun (uSunRel) is in world space, and the planet
+    // rotates under it. Mixing the two spaces (local normal · world sun) rotated
+    // the terminator by the planet's rotation; splitting them mirrors the surface
+    // shader (texClouds in mesh UV / local, sun dot in normalWorld / world).
+    const dir = normalize(positionLocal);
+    // Coverage = the volumetric's eroded MACRO footprint via the SHARED density
+    // model (columnMacroCoverage) — matches the marcher by construction, no
+    // hand-tuned curve. `field.coverageAt` is the raw-coverage source.
+    const coverage = columnMacroCoverage(dir, field.coverageAt, {
+      baseVolume,
+      detailVolume,
+      opacityLUT,
+      innerRadiusScaled,
+      outerRadiusScaled,
+    });
+    // Scalar debug modes: raw false-colour, alpha=1, no lighting, no fades —
+    // inspectable at any distance.
+    if (SHELL_DEBUG_VIZ !== "off") {
+      return vec4(coverage, coverage, coverage, 1);
+    }
+    // Distance-based near/far hand-off (see SHELL_HANDOFF_*): fade the shell IN
+    // with camera→fragment distance so the volumetric owns the near field
+    // (including its over-eroded gaps → no flat backfill) and the shell only
+    // carries the far horizon. The sub-camera point is near (faded) while the
+    // limb is far (full), so this tracks altitude for free.
+    const fragDist = length(positionWorld.sub(cameraPosition));
+    const distFade = smoothstep(
+      float(kmToScaledUnits(SHELL_HANDOFF_NEAR_KM)),
+      float(kmToScaledUnits(SHELL_HANDOFF_FAR_KM)),
+      fragDist,
+    );
+    const alpha = coverage.mul(uShellOpacity).mul(distFade);
+
+    const nWorld = normalize(normalWorld);
+    const sunDir = normalize(uSunRel);
+    const cosSun = dot(nWorld, sunDir);
+    // Cloud-horizon daylight gate — clouds catch sun slightly past the ground
+    // terminator (mirrors earth.ts overlay's cloudHemi).
+    const daylight = float(1).div(
+      float(1).add(exp(float(-40).mul(cosSun.add(0.025)))),
+    );
+
+    // Physical sun transmittance at cloud altitude, normalised by the zenith tap
+    // (noon unchanged; only angular sunset reddening shows), from the SHARED LUT
+    // the marcher + surface sample — so the shell reddens at the terminator in
+    // lockstep. Off / no LUT → white (no tint).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sunT: any = vec3(1, 1, 1);
+    if (transmittanceLUT) {
+      const rgKm = EARTH_ATMOSPHERE.groundRadiusKm;
+      const rtKm = rgKm + EARTH_ATMOSPHERE.atmosphereHeightKm;
+      const hKm = Math.sqrt(Math.max(0, rtKm * rtKm - rgKm * rgKm));
+      const rCloudKm = rgKm + CLOUD_OUTER_ALTITUDE_KM;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tA: any = texture(
+        transmittanceLUT,
+        transmittanceLutUv(
+          float(rCloudKm),
+          cosSun,
+          float(rgKm),
+          float(rtKm),
+          float(hKm),
+        ),
+      ).level(int(0));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tZen: any = texture(
+        transmittanceLUT,
+        transmittanceLutUv(
+          float(rCloudKm),
+          float(1),
+          float(rgKm),
+          float(rtKm),
+          float(hKm),
+        ),
+      ).level(int(0));
+      sunT = tA.rgb.div(tZen.rgb.max(float(1e-4))).clamp(0, 1);
+    }
+
+    // Cheap self-shadow proxy: denser coverage → darker base. (No 2-tap shadow
+    // projection like the overlay had — port it in if the base reads too flat.)
+    const selfShadow = float(1).sub(coverage.mul(0.5));
+
+    const lit = farCloudLit({
+      sunIlluminance: vec3(
+        EARTH_ATMOSPHERE.sunIlluminance[0],
+        EARTH_ATMOSPHERE.sunIlluminance[1],
+        EARTH_ATMOSPHERE.sunIlluminance[2],
+      ),
+      sunT,
+      skyColor: vec3(
+        CLOUD_SKY_AMBIENT[0],
+        CLOUD_SKY_AMBIENT[1],
+        CLOUD_SKY_AMBIENT[2],
+      ),
+      daylight,
+      selfShadow,
+    });
+    // Premultiplied output (rgb × alpha, alpha).
+    return vec4(lit.mul(alpha), alpha);
+  })();
+
+  return {
+    key: `earth-cloud-shell-${tier}`,
+    geometry,
+    material: mat,
+    tier,
+    // No renderLayer → layer 0 → rendered by the scaled camera in Pass 1.
+  };
+}
+
+export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   const weatherMap = ctx.textures.clouds;
   if (!weatherMap) return [];
 
-  const innerRadiusScaled = kmToScaledUnits(
-    PLANET_RADIUS_KM + CLOUD_INNER_ALTITUDE_KM,
-  );
   const outerRadiusScaled = kmToScaledUnits(
     PLANET_RADIUS_KM + CLOUD_OUTER_ALTITUDE_KM,
   );
+  const innerRadiusScaled = kmToScaledUnits(
+    PLANET_RADIUS_KM + CLOUD_INNER_ALTITUDE_KM,
+  );
 
-  // Base + detail volumes are GPU-baked (Storage3DTextures) — allocated empty
-  // here, baked once from the render loop (flushCloudBakes / warmCloudBakes).
-  // detailVolumeMip1 is the box-downsampled level-1 for the self-shadow tap.
+  // Base + detail noise volumes (GPU-baked singletons). Needed by BOTH the near
+  // marcher AND the shell's shared macro-coverage model (near+mid), so fetch
+  // them before the tier branch. (getGpuCloud* return process-lifetime
+  // singletons — safe to request from any tier.)
   const baseVolume = getGpuCloudBaseVolume();
   const detailVolume = getGpuCloudDetailVolume();
+  // Expected-opacity LUT for the shell's transfer — MUST be requested after the
+  // volumes (its bake reads them; queue order = dispatch order).
+  const opacityLUT = getShellOpacityLUT(baseVolume, detailVolume);
+
+  // Far-field cloud shell — built for the current tier (near AND mid). Its
+  // coverage uses the SHARED macro-density model (columnMacroCoverage) so it
+  // matches the volumetric's eroded footprint by construction.
+  const shellDef = buildCloudShellMesh({
+    tier: ctx.tier,
+    weatherMap,
+    baseVolume,
+    detailVolume,
+    opacityLUT,
+    innerRadiusScaled,
+    outerRadiusScaled,
+    // Shell at SHELL_ALTITUDE_KM (default = cloud-top). Separate from the
+    // marcher's outerRadiusScaled so it can be tuned for the parallax diagnostic.
+    shellRadiusScaled: kmToScaledUnits(PLANET_RADIUS_KM + SHELL_ALTITUDE_KM),
+    uSunRel: ctx.uSunRel,
+    uShellOpacity: ctx.uniforms.uShellOpacity,
+  });
+
+  // Mid (and any non-near) tier: ONLY the shell. The volumetric marcher + its
+  // transform anchor are near-only (the marcher never runs at mid range), so
+  // don't set the pipeline up again for mid.
+  if (ctx.tier !== "near") return [shellDef];
+
+  // detailVolumeMip1 is the box-downsampled level-1 for the self-shadow tap
+  // (marcher-only).
   const detailVolumeMip1 = getGpuCloudDetailMip1();
 
   const uInnerRadius = uniform(innerRadiusScaled);
@@ -862,7 +1524,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // 2.5 km mid-freq, 1.25 km high-freq. Cumulus bodies are now ~5–10 km
   // wide and read as coherent cloud forms from any view distance,
   // including orbital.
-  const uBaseScale = uniform(50);
+  const uBaseScale = uniform(BASE_SCALE);
   // (uDetailScale + uDetailErosion REMOVED 2026-06-18 with the old opacity-only
   // detail-erosion pass they fed. Detail now comes from baseShapeCarved's
   // FINE_CARVE/WISP at FINE_CARVE_SCALE — see cloudDetile.ts + the dense branch.)
@@ -901,7 +1563,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // billowing (#2), which shapes the top via the density field, not this scalar.
   // Shared uniform → the bake (cloudLightVolume.ts) stays in lockstep. Tune
   // live; lower toward ~12-16 if stripes/averaging appear, raise for finer.
-  const uColumnScale = uniform(30);
+  const uColumnScale = uniform(COLUMN_SCALE);
   // Cone-light radius — multiplier on the world-space kernel offsets in the
   // light march. 0.3 puts the outermost sample ~3 km perpendicular to the
   // primary sample (kernel norm ≈ 1, stepDist at i=5 ≈ 0.011 scaled = 11 km;
@@ -955,6 +1617,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
       renderLayer: CLOUD_LAYER,
       onMount: (mesh) => setEarthMatrixWorldSource(mesh),
     },
+    shellDef,
   ];
 }
 
@@ -1167,7 +1830,16 @@ export function marchCloudVolume({
     const discSurf = b.mul(b).sub(cSurf);
     const tSurfNear = b.negate().sub(discSurf.max(0).sqrt());
     const hitsSurface = discSurf.greaterThan(0).and(tSurfNear.greaterThan(0));
-    const tExit = hitsSurface.select(tExitSlab.min(tSurfNear), tExitSlab);
+    const tExitSurf = hitsSurface.select(tExitSlab.min(tSurfNear), tExitSlab);
+    // ── Q1 near/far hand-off: cap the march where the shell takes over ──
+    // Don't march past SHELL_HANDOFF_FAR_KM — beyond it the far shell (full
+    // there, distance-faded in) carries the clouds. This is the case-#22 fix:
+    // it stops the expensive far-deck/horizon marching (the orbit-perf valley).
+    // Shares the shell's hand-off constant so the two stay coupled by
+    // construction; slabLen (below) shrinks with it, so lodCap adapts for free.
+    const tExit = tExitSurf.min(
+      float(kmToScaledUnits(SHELL_HANDOFF_FAR_KM)),
+    );
 
     const slabLen = sub(tExit, tEnter).max(0);
     // Fixed-world-space step sizes. dtSkip = 100 m, dtDense = 25 m
@@ -1246,8 +1918,6 @@ export function marchCloudVolume({
     const T = float(1.0).toVar();
     const col = vec3(0, 0, 0).toVar();
     const invSlabThickness = float(1.0).div(sub(uOuterRadius, uInnerRadius));
-    const invTwoPi = float(1.0).div(PI.mul(2));
-    const invPi = float(1.0).div(PI);
 
     // ── Per-pixel coverage cache (three-tap + piecewise lerp) ──
     // Coverage is sampled at the ray's slab ENTRY, MIDPOINT, and EXIT
@@ -1286,9 +1956,10 @@ export function marchCloudVolume({
     const colSampleMid = (
       texture3D(baseVolume, pMidColumn.mul(uColumnScale)).level(int(0)) as Node
     ).r;
-    const colSharpMid = smoothstep(float(0.3), float(0.7), colSampleMid);
-    // Mirrors the per-step topAlt mapping exactly (smoothstep spread,
-    // range [0.45, 0.95]) so the 'topAlt' diagnostic reflects reality.
+    const colSharpMid = topAltSpread(colSampleMid);
+    // Mirrors the per-step topAlt mapping exactly (shared topAltSpread,
+    // range [0.45, 0.95]) so the 'topAlt' diagnostic reflects reality —
+    // including the TOPALT_LINEAR Phase-F toggle.
     // (Previously the diagnostic used a slightly different range than the march.)
     const topAltMid = float(0.45).add(colSharpMid.mul(0.5));
 
@@ -1299,16 +1970,12 @@ export function marchCloudVolume({
     const rFar = length(pFar).max(0.0001);
     const dirNear = pNear.div(rNear);
     const dirFar = pFar.div(rFar);
-    const uNear = fract(atan(dirNear.z, dirNear.x.negate()).mul(invTwoPi));
-    const vNear = acos(clamp(dirNear.y.negate(), -1, 1)).mul(invPi);
-    const uvNear = vec2(uNear, vNear).add(uCloudUvOffset);
-    const uFar = fract(atan(dirFar.z, dirFar.x.negate()).mul(invTwoPi));
-    const vFar = acos(clamp(dirFar.y.negate(), -1, 1)).mul(invPi);
-    const uvFar = vec2(uFar, vFar).add(uCloudUvOffset);
+    // Shared equirect projection (cloudCommon.equirectDirToUv) — one definition
+    // for marcher + overlay + shell so their cloud features register.
+    const uvNear = equirectDirToUv(dirNear, uCloudUvOffset);
+    const uvFar = equirectDirToUv(dirFar, uCloudUvOffset);
     // Midpoint UV — reuses pMid/dirMid already computed above for sunDotPoint.
-    const uMidWeather = fract(atan(dirMid.z, dirMid.x.negate()).mul(invTwoPi));
-    const vMidWeather = acos(clamp(dirMid.y.negate(), -1, 1)).mul(invPi);
-    const uvMidWeather = vec2(uMidWeather, vMidWeather).add(uCloudUvOffset);
+    const uvMidWeather = equirectDirToUv(dirMid, uCloudUvOffset);
     // Domain warping (previously applied to the single uvMid sample) is
     // currently disabled — the warp source had Worley cells visible at
     // close range. Keep the clean uvNear/uvMid/uvFar values for now;
@@ -1631,10 +2298,25 @@ export function marchCloudVolume({
         // they pay 0 of these per-step samples. For pixels through cloud
         // regions, ~96 extra weather-map taps — modest cost on modern GPUs.
         const dirP = p.div(r);
-        const uP = fract(atan(dirP.z, dirP.x.negate()).mul(invTwoPi));
-        const vP = acos(clamp(dirP.y.negate(), -1, 1)).mul(invPi);
-        const uvP = vec2(uP, vP).add(uCloudUvOffset);
-        const coverageRaw = (texture(weatherMap, uvP).level(int(0)) as Node).r;
+        const uvP = equirectDirToUv(dirP, uCloudUvOffset);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let coverageRaw: any = (texture(weatherMap, uvP).level(int(0)) as Node)
+          .r;
+        if (MESOSCALE_TEST) {
+          // Phase F step 5 (§3.6 H3): preview the weather-map-v2 mesoscale
+          // octave by masking RAW coverage with a ~31 km cellular field
+          // (TRUE ZEROS in the lanes — zeros survive the pow lift). One extra
+          // texture3D per in-band step, test-only. World-anchored like the
+          // column tap (projected to the inner shell so the mask is a 2D
+          // pattern on the sphere, not volume noise).
+          const mesoTap = texture3D(
+            baseVolume,
+            dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
+          ).level(int(0)) as Node;
+          coverageRaw = coverageRaw.mul(
+            smoothstep(float(MESO_LANE_LO), float(MESO_LANE_HI), mesoTap.r),
+          );
+        }
 
         // Coverage = the smooth weather map directly, lifted with a gamma
         // (pow < 1): the Nubis Remap below thresholds away coverage under
@@ -1730,7 +2412,7 @@ export function marchCloudVolume({
         // tower the marcher no longer draws. Tune the 0.35/0.7 range live.
         const covSpan = smoothstep(float(0.35), float(0.7), coverage);
         const topAlt = float(0.45).add(
-          smoothstep(float(0.3), float(0.7), colSample).mul(0.5).mul(covSpan),
+          topAltSpread(colSample).mul(0.5).mul(covSpan),
         );
 
         // (An altitude-perturbation hash and a profile-blur band-limit lived
@@ -1940,7 +2622,7 @@ export function marchCloudVolume({
           // Same coverage-envelope erosion as the dense branch (BASE_EROSION_K),
           // so the gate engages exactly where density can be > 0.
           const probeShape = profile.sub(
-            float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K)),
+            float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K_EFF)),
           );
           maxProbeShape.assign(maxProbeShape.max(probeShape));
           maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
@@ -1997,7 +2679,9 @@ export function marchCloudVolume({
               // shape = saturate(profile − (1 − base) × K). shape ≤ profile, so
               // no floaters; K<1 fills base gaps at high coverage → solid deck.
               const shape = dimProfile
-                .sub(float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K)))
+                .sub(
+                  float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K_EFF)),
+                )
                 .clamp(0, 1);
 
               // NOTE: the old opacity-only detail erosion (the original
@@ -3214,8 +3898,22 @@ export function marchCloudVolume({
         .sub(alpha)
         .mul(smoothstep(float(ALPHA_SHARP_LO), float(ALPHA_SHARP_HI), alpha)),
     );
+    // ── Q1 near/far crossfade (complement of the shell's distance fade-IN) ──
+    // Fade the volumetric OUT over SHELL_HANDOFF_NEAR→FAR (by the cloud-front
+    // distance) as the shell fades IN over the same band, so the hand-off is a
+    // smooth crossfade rather than a hard edge at the march cap. Near clouds →
+    // full volumetric; approaching FAR → volumetric fades, shell takes over.
+    // (apparentDepth is camera distance in scaled units; −1 sentinel → no hit →
+    // alpha already 0, so the fade value is irrelevant there.)
+    const farFade = float(1).sub(
+      smoothstep(
+        float(kmToScaledUnits(SHELL_HANDOFF_NEAR_KM)),
+        float(kmToScaledUnits(SHELL_HANDOFF_FAR_KM)),
+        apparentDepth,
+      ),
+    );
     return {
-      rgba: vec4(col, alphaSharp).mul(uVolumetricBlend),
+      rgba: vec4(col, alphaSharp).mul(uVolumetricBlend).mul(farFade),
       tFront: apparentDepth,
     };
 }

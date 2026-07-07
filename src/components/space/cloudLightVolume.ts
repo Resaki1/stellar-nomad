@@ -169,6 +169,12 @@ const BAKE_BASE_LOD = 0;
 // 2026-06-16: 0 to match WARP_AMPLITUDE=0 (warp-off path; see cloudDetile.ts
 // USE_DETILE note). MUST equal earthClouds.ts WARP_AMPLITUDE.
 const WARP_AMPLITUDE_MIRROR = 0;
+// Inline mirror of earthClouds.ts TOPALT_LINEAR (Phase F falsification step 4,
+// docs/CLOUD_TYPES_PLAN.md §3.6 — TEST-ONLY, default false). Same lockstep
+// rule as WARP_AMPLITUDE_MIRROR: MUST equal earthClouds.ts TOPALT_LINEAR or
+// the bake assumes tower tops the marcher no longer draws (shadows detach).
+// Linear remap constants mirror earthClouds.ts topAltSpread (0.48 / 0.42).
+const TOPALT_LINEAR_MIRROR = true;
 
 export type CloudLightVolumeDeps = {
   baseVolume: THREE.Texture; // GPU-baked Storage3DTexture or CPU Data3DTexture
@@ -308,11 +314,13 @@ export function createCloudLightVolume(
     const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
       int(0),
     ) as Node;
-    // Couple tower span to coverage — LOCKSTEP with earthClouds.ts topAlt.
+    // Couple tower span to coverage — LOCKSTEP with earthClouds.ts topAlt
+    // (topAltSpread incl. the TOPALT_LINEAR Phase-F toggle).
     const covSpan = smoothstep(float(0.35), float(0.7), coverage);
-    const topAlt = float(0.45).add(
-      smoothstep(float(0.3), float(0.7), colTap.r).mul(0.5).mul(covSpan),
-    );
+    const colSpread = TOPALT_LINEAR_MIRROR
+      ? colTap.r.sub(float(0.48)).div(float(0.42)).clamp(0, 1)
+      : smoothstep(float(0.3), float(0.7), colTap.r);
+    const topAlt = float(0.45).add(colSpread.mul(0.5).mul(covSpan));
     const profile = cloudHeightProfileInline(alt01, topAlt, cloudType);
 
     // Dilated base shape — MUST match the marcher's anti-tiling (detile or

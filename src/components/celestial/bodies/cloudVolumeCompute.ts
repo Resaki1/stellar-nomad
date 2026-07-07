@@ -109,7 +109,7 @@ const tslSeededRandom = (seed: Node): Node => {
 
 // hash3(x,y,z,salt). x/y/z are small non-negative uints. The salt term is
 // precomputed mod 2^32 in JS (salt is a compile-time constant).
-const tslHash3 = (x: Node, y: Node, z: Node, salt: number): Node => {
+export const tslHash3 = (x: Node, y: Node, z: Node, salt: number): Node => {
   const m = x
     .mul(uint(73856093))
     .bitXor(y.mul(uint(19349663)))
@@ -681,7 +681,22 @@ export function createDetailMip1Compute(
 // =============================================================================
 
 let cachedBaseGpu: CloudBaseVolumeCompute | null = null;
-const pendingBakes: CloudBaseVolumeCompute[] = [];
+/** Anything with a one-shot computeNode can ride the bake queue. */
+type QueuedCloudBake = Pick<CloudBaseVolumeCompute, "computeNode">;
+const pendingBakes: QueuedCloudBake[] = [];
+
+/**
+ * Queue an external one-shot cloud-related compute for dispatch by
+ * flushCloudBakes/warmCloudBakes. Used by earthClouds' shell opacity LUT
+ * (which READS the base+detail volumes — queue it AFTER getGpuCloud*Volume()
+ * so the in-order dispatch populates its inputs first, like detail mip1).
+ * NOTE: bakes queued after warm-up are drained by flushCloudBakes, which
+ * SpaceRenderer now calls unconditionally each frame (not only when clouds are
+ * visible) so a late-queued LUT dispatches from orbit, not just near-surface.
+ */
+export function queueCloudBake(bake: QueuedCloudBake): void {
+  pendingBakes.push(bake);
+}
 
 /**
  * The base cloud noise volume as a GPU-baked storage texture. Allocated (empty)
