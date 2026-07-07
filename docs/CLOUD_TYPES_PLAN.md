@@ -874,7 +874,39 @@ method before/after each phase.
   Outputs: the chosen erosion semantics (K value / form / per-type), the
   measured topHeight-variance requirement, and visual proof of the mesoscale
   octave's value — all BEFORE any refactor locks them in. Measure-first.
-- **Phase 0 — cloudShared.ts consolidation (pure refactor).**
+- **Phase 0 — cloudShared.ts consolidation (pure refactor). ✅ LANDED
+  2026-07-06 (derivation chain; pending user visual parity confirmation).**
+  Created `src/components/celestial/bodies/cloudShared.ts` (TSL-only, the
+  cloudDetile.ts pattern) exporting `TOPALT_LINEAR`, `topAltSpread`,
+  `deriveCloudType`, `deriveTopAlt`, `cloudHeightProfile`. Consumed by
+  earthClouds.ts (marcher dense branch — Q2b done: inline `cloudType`/
+  `covSpan`+`topAlt` now call the shared helpers; + shell + `topAlt`
+  diagnostic) and cloudLightVolume.ts (deleted `cloudHeightProfileInline` +
+  the inline type/topAlt derivation + the `TOPALT_LINEAR_MIRROR` constant →
+  mirror lockstep hazard #1 eliminated structurally). Provable parity:
+  every replaced site builds the identical node graph, and the consolidated
+  `TOPALT_LINEAR` equals the old earthClouds `TOPALT_LINEAR` ==
+  cloudLightVolume `TOPALT_LINEAR_MIRROR` (both were `true`), so behavior is
+  unchanged. Lint clean (0 errors; no new warnings in the 3 files).
+  **Phase 0b ✅ LANDED 2026-07-06 (pending user visual parity):** two
+  marcher-local shared kernels added to earthClouds.ts —
+  `billowCarveKernel(dilated, carveSrc)` (the Schneider value-erosion carve;
+  1 def + 5 call sites: the detile `carvedShapeAt`, primary non-detile,
+  800 m self-shadow probe, dead cone, AND the shell opacity-LUT builder —
+  the last removes another "keep in lockstep with the marcher" note) and
+  `fineCarveDelta(fineSrc, profileInput, tDist, detailFade)` (the full
+  grade→wisp→HHF→centered-bias·strength·fade composition; 1 def + 2 call
+  sites: opacity path + near self-shadow probe). The fineCarveDelta share is
+  the case-#21 precondition for Phase 3 per-type detail: WISP_AMOUNT /
+  FINE_CARVE_STRENGTH / HHF etc. now have ONE home that both the view ray and
+  its self-shadow read, so a per-convectivity ramp can't desync them. Kept
+  marcher-local (not cloudShared) because the light-volume bake is macro-only
+  and the shell uses the statistical LUT. Provable parity (identical node
+  graphs; the probe's `.mul(float(1))` fade is a numeric no-op). Lint clean.
+  USER VERIFY: pixel-parity at the 3 canonical camera positions + full
+  DEBUG_VIZ sweep unchanged (esp. 'profile', 'topAlt', 'eroded', 'litShape',
+  'detailShadow', shadow attachment); look closely at NEAR-camera cauliflower
+  detail + self-shadowing (fineCarveDelta feeds both). Original scope note:
   Move into one shared module consumed by earthClouds + cloudLightVolume +
   the shell helpers: cloudHeightProfile (+ inline copy), the coverage-lift/
   type/topAlt derivation (now THREE copies — marcher inline, cloudLightVolume
@@ -1071,3 +1103,18 @@ Space Engine dev blog; NMS Worlds Part II notes. Full URLs inside
   Nubis-form K=1 baseline. Results + interim toggle disposition in §3.6.
   NEXT: **Phase 0** (cloudShared.ts consolidation) — the design is fully
   validated; implementation can start.
+- 2026-07-06 (later): **Phase 0 LANDED** (derivation chain). cloudShared.ts
+  created; marcher (Q2b), shell, and light-volume bake all consume it;
+  cloudHeightProfileInline + TOPALT_LINEAR_MIRROR deleted (mirror hazard #1
+  gone). Provable-parity refactor, lint clean. Phase 0b (macro-carve +
+  fine-detail composition consolidation) deferred as the riskier half.
+  NEXT: user confirms visual parity → Phase 0b or straight to Phase 1
+  (weather-map v2 plumbing with a synthetic genus test chart).
+- 2026-07-06 (later still): Phase 0 verified identical by user →
+  **Phase 0b LANDED.** billowCarveKernel (1 def + 5 sites) + fineCarveDelta
+  (1 def + 2 sites) extracted in earthClouds.ts; the fineCarveDelta share is
+  the case-#21 Phase-3 precondition (view ray + self-shadow read one
+  composition). Provable-parity refactor of the LIVE marcher hot path, lint
+  clean. NEXT: user confirms Phase 0b parity (esp. near-camera cauliflower +
+  self-shadow) → **Phase 1** (weather-map v2 plumbing + synthetic genus test
+  chart). Phase 0 (both a+b) fully done.

@@ -20,8 +20,6 @@ import {
   atan,
   acos,
   fract,
-  smoothstep,
-  mix,
   normalize,
   PI,
 } from "three/tsl";
@@ -30,6 +28,11 @@ import {
   USE_DETILE,
   baseDilate,
 } from "@/components/celestial/bodies/cloudDetile";
+import {
+  cloudHeightProfile,
+  deriveCloudType,
+  deriveTopAlt,
+} from "@/components/celestial/bodies/cloudShared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -169,12 +172,10 @@ const BAKE_BASE_LOD = 0;
 // 2026-06-16: 0 to match WARP_AMPLITUDE=0 (warp-off path; see cloudDetile.ts
 // USE_DETILE note). MUST equal earthClouds.ts WARP_AMPLITUDE.
 const WARP_AMPLITUDE_MIRROR = 0;
-// Inline mirror of earthClouds.ts TOPALT_LINEAR (Phase F falsification step 4,
-// docs/CLOUD_TYPES_PLAN.md §3.6 — TEST-ONLY, default false). Same lockstep
-// rule as WARP_AMPLITUDE_MIRROR: MUST equal earthClouds.ts TOPALT_LINEAR or
-// the bake assumes tower tops the marcher no longer draws (shadows detach).
-// Linear remap constants mirror earthClouds.ts topAltSpread (0.48 / 0.42).
-const TOPALT_LINEAR_MIRROR = true;
+// (TOPALT_LINEAR_MIRROR removed in Phase 0 — the topAlt spread now comes from
+// the shared cloudShared.topAltSpread/deriveTopAlt, so there is nothing to
+// hand-mirror. cloudHeightProfileInline likewise replaced by the shared
+// cloudHeightProfile.)
 
 export type CloudLightVolumeDeps = {
   baseVolume: THREE.Texture; // GPU-baked Storage3DTexture or CPU Data3DTexture
@@ -306,7 +307,7 @@ export function createCloudLightVolume(
     const uv = vec2(u, v).add(uCloudUvOffset);
     const coverageRaw = (texture(weatherMap, uv).level(int(0)) as Node).r;
     const coverage = coverageRaw.pow(float(0.6));
-    const cloudType = smoothstep(float(0.3), float(0.6), coverage);
+    const cloudType = deriveCloudType(coverage);
 
     // Per-column top altitude + anti-tiling warp (matches the primary: the
     // tap's g/b/a channels become the 125 km-scale base-sample offset).
@@ -314,14 +315,10 @@ export function createCloudLightVolume(
     const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
       int(0),
     ) as Node;
-    // Couple tower span to coverage — LOCKSTEP with earthClouds.ts topAlt
-    // (topAltSpread incl. the TOPALT_LINEAR Phase-F toggle).
-    const covSpan = smoothstep(float(0.35), float(0.7), coverage);
-    const colSpread = TOPALT_LINEAR_MIRROR
-      ? colTap.r.sub(float(0.48)).div(float(0.42)).clamp(0, 1)
-      : smoothstep(float(0.3), float(0.7), colTap.r);
-    const topAlt = float(0.45).add(colSpread.mul(0.5).mul(covSpan));
-    const profile = cloudHeightProfileInline(alt01, topAlt, cloudType);
+    // Tower top altitude — shared derivation (coverage-gated spread of the
+    // column sample), identical to the marcher + shell by construction.
+    const topAlt = deriveTopAlt(coverage, colTap.r);
+    const profile = cloudHeightProfile(alt01, topAlt, cloudType);
 
     // Dilated base shape — MUST match the marcher's anti-tiling (detile or
     // warp) AND dilation, or the baked shadows land beside the clouds that
@@ -666,37 +663,6 @@ export function createCloudLightVolume(
   };
 }
 
-// Inlined mirror of earthClouds.ts `cloudHeightProfile` with blur fixed to 0
-// (the prebake doesn't band-limit the envelope). Kept inline to avoid extending
-// the earthClouds ↔ cloudFullscreenPass import cycle. If the original profile
-// changes, update this in lockstep.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cloudHeightProfileInline(alt01: any, topAlt: any, cloudType: any): any {
-  const stratusBase = smoothstep(float(0.0), float(0.1), alt01);
-  const stratusTop = float(1).sub(smoothstep(float(0.15), float(0.25), alt01));
-  const stratus = stratusBase.mul(stratusTop);
-
-  const scBase = smoothstep(float(0.0), float(0.25), alt01);
-  const scTop = float(1).sub(smoothstep(float(0.45), float(0.65), alt01));
-  const stratocumulus = scBase.mul(scTop);
-
-  // Flat condensation base (anatomy 2026-06-16) — MUST match earthClouds.ts
-  // cloudHeightProfile cumBase or the baked shadows detach from the clouds.
-  const cumBase = smoothstep(float(0.04), float(0.16), alt01);
-  const fadeStart = topAlt.sub(float(0.35));
-  // Parabolic billow top-fade — LOCKSTEP with earthClouds.ts cloudHeightProfile.
-  const fadeX = clamp(
-    alt01.sub(fadeStart).div(topAlt.sub(fadeStart).max(0.0001)),
-    0,
-    1,
-  );
-  const cumTop = float(1).sub(fadeX.mul(fadeX));
-  const cumulus = cumBase.mul(cumTop);
-
-  const lowerMix = mix(
-    stratus,
-    stratocumulus,
-    smoothstep(float(0.0), float(0.5), cloudType),
-  );
-  return mix(lowerMix, cumulus, smoothstep(float(0.5), float(1.0), cloudType));
-}
+// cloudHeightProfileInline removed in Phase 0 — replaced by the shared
+// cloudShared.cloudHeightProfile (imported above), the single source of truth
+// for marcher + shell + this bake.

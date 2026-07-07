@@ -47,6 +47,12 @@ import {
 } from "./cloudVolumeCompute";
 import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
 import {
+  cloudHeightProfile,
+  deriveCloudType,
+  deriveTopAlt,
+  topAltSpread,
+} from "./cloudShared";
+import {
   CLOUD_SUN_SCALE,
   CLOUD_SKY_SCALE,
   CLOUD_SKY_AMBIENT,
@@ -567,8 +573,11 @@ const BILLOW_CARVE = 0.45;
 // plain baseDilate·cov·prof, no K). Tune live with BASE_FBM_BILLOW.
 const BASE_EROSION_K = 0.6;
 
-// ── Phase F falsification toggles (docs/CLOUD_TYPES_PLAN.md §3.6 — TEST-ONLY,
-// all default OFF; flip one at a time, reload, screenshot, flip back) ──────
+// ── Phase F falsification toggles (docs/CLOUD_TYPES_PLAN.md §3.6) ──────────
+// Phase F is COMPLETE (2026-07-06): all three dominant porridge causes
+// confirmed in-app and their fixes validated. The toggles survive as A/B
+// levers until Phase 1 delivers the real system via the weather map; the
+// values below are the ADOPTED settings, not "default OFF".
 //
 // Step 3 — Nubis-form value erosion. Algebraically the Nubis 2017 relationship
 // saturate(carved − (1−profile)) IS this pipeline's erosion at K = 1 exactly:
@@ -578,29 +587,15 @@ const BASE_EROSION_K = 0.6;
 // instead of K=0.6's mathematically hole-free floor above raw coverage 0.427.
 // This const feeds the dense-branch erosion, the probeShape skip-gate (MUST
 // move together — case #13 gate law), and the far shell's columnMacroCoverage
-// (coherent near/far A/B). The light-volume bake has NO K erosion
-// (multiplicative density) — nothing to mirror there.
-// EXPECTED if H1 holds: discrete bodies at every coverage; dense decks still
-// ~93% closed but with real crevice structure instead of the uniform floor.
-// Judge against the 2026-07-06 K=0.6 vs 1.2 screenshots: target is "as closed
-// as 0.6, structured like a real deck" (plan §4.2 acceptance criterion).
+// (coherent near/far). The light-volume bake has NO K erosion (multiplicative
+// density) — nothing to mirror there. VALIDATED: closed-but-structured deck,
+// true black restored in the 'eroded' viz (§3.6 step 3).
 const EROSION_NUBIS_FORM = true;
 const BASE_EROSION_K_EFF = EROSION_NUBIS_FORM ? 1.0 : BASE_EROSION_K;
 //
-// Step 4 — LINEAR topAlt spread. The smoothstep(0.3, 0.7, colSample) spread
-// was written for pure Perlin clustered at 0.5, but baseVolume.r has been the
-// Perlin-Worley HYBRID (measured p10/p50/p90 ≈ 0.48/0.71/0.89, mean ≈ 0.70)
-// since the R-channel rework → the smoothstep SATURATES for most columns →
-// topAlt piles at the 0.95 ceiling (69% of dense columns > 0.90) → one slab
-// at one height, no tower skyline (§3.6 H4; also the third recurrence of the
-// smoothstep-on-noise bimodal trap — CLOUD_DEBUGGING_LESSONS). The linear
-// remap matches the hybrid's actual range. Applied via topAltSpread() in the
-// marcher, the shell's deriveTopAlt, the 'topAlt' diagnostic, AND mirrored in
-// cloudLightVolume.ts (TOPALT_LINEAR_MIRROR — keep in lockstep or shadows
-// detach during the test).
-// EXPECTED if H4 holds: DEBUG_VIZ='topAlt' goes from near-uniform white over
-// dense regions to a varied field; the render grows a real tower skyline.
-const TOPALT_LINEAR = true;
+// Step 4 — LINEAR topAlt spread now lives in cloudShared.ts (TOPALT_LINEAR +
+// topAltSpread), the single source of truth for the marcher, the shell, the
+// light-volume bake, and the 'topAlt' diagnostic. VALIDATED (§3.6 step 4).
 //
 // Step 5 — synthetic mesoscale organization mask. Multiplies RAW coverage by
 // a 10-40 km cellular field with TRUE ZEROS in the lanes, previewing the
@@ -888,76 +883,8 @@ const DEBUG_VIZ:
   | "litShape"
   | "detailShadow" = "off";
 
-// Cloud-type vertical density profile (Nubis B1, three-type decomposition).
-//
-// Three analytic vertical density curves mixed by `cloudType ∈ [0, 1]`,
-// taken straight from Schneider 2015. Each curve is the product of a bottom
-// ramp (condensation base) and a top falloff (cloud-top):
-//
-//   stratus       — thin flat sheet,    0.0–0.1 ramp up,  0.15–0.25 ramp down
-//   stratocumulus — moderate broken slab, 0.0–0.25 ramp up,  0.45–0.65 ramp down
-//   cumulus       — tall column, 0.0–0.4 ramp up, top fades over topAlt
-//
-// Cumulus uses the per-column `topAlt` from the upstream Perlin sample to
-// vary tower height between regions. Stratus and stratocumulus heights are
-// fixed by type (real stratus decks have remarkably consistent altitude;
-// the regional variation is in their cloudType, not their top).
-//
-// Mix shape (per Schneider):
-//   cloudType ∈ [0,    0.5] → stratus → stratocumulus
-//   cloudType ∈ [0.5,  1.0] → stratocumulus → cumulus
-//
-// topAlt ∈ [0.40, 0.95] from the per-column Perlin sample upstream:
-//   short cumulus (topAlt = 0.40): fades 0.05 → 0.40 → tops ~6.2 km
-//   tall  cumulus (topAlt = 0.95): fades 0.60 → 0.95 → tops ~13.4 km
-//
-// History note: prior version was a single asymmetric band keyed only by
-// topAlt. That gave per-column tower variation but no type-driven anatomy —
-// every region read as "the same cloud, taller or shorter". The mix below
-// is what gives stratus, stratocumulus, and cumulus visually distinct
-// silhouettes that match the reference shots.
-// (A `blur` envelope-widening parameter was threaded through here 2026-06-03
-// as an iso-altitude-band fix; empirically refuted and removed. The inline
-// copy in cloudLightVolume.ts mirrors this exact shape — keep in lockstep.)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cloudHeightProfile(alt01: any, topAlt: any, cloudType: any): any {
-  // Stratus: thin flat sheet.
-  const stratusBase = smoothstep(float(0.0), float(0.10), alt01);
-  const stratusTop = float(1).sub(smoothstep(float(0.15), float(0.25), alt01));
-  const stratus = stratusBase.mul(stratusTop);
-
-  // Stratocumulus: moderate broken slab.
-  const scBase = smoothstep(float(0.0), float(0.25), alt01);
-  const scTop = float(1).sub(smoothstep(float(0.45), float(0.65), alt01));
-  const stratocumulus = scBase.mul(scTop);
-
-  // Cumulus: tall column whose top fade is keyed by per-column topAlt.
-  // Base: a sharper, LOW condensation base (anatomy 2026-06-16). Was
-  // smoothstep(0, 0.40) — a gradual ~5 km ramp whose low end the value-erosion
-  // Remap erased, so cumulus had no flat bottom and floated at varied heights
-  // ("lava-lamp" blobs). A defined low base survives the Remap → clouds sit on
-  // a common deck (flat bottoms, varied billowing tops). Tunable: lower the HI
-  // bound for a flatter/sharper base. MUST stay in lockstep with the inline
-  // copy in cloudLightVolume.ts (cloudHeightProfileInline) or shadows detach.
-  const cumBase = smoothstep(float(0.04), float(0.16), alt01);
-  const fadeStart = topAlt.sub(float(0.35));
-  // Parabolic billow top-fade (2026-06-16). A plain smoothstep(fadeStart,
-  // topAlt) is an ISO-ALTITUDE fade → the value-erosion Remap threshold rises
-  // monotonically with altitude and intersects the smooth base on a near-
-  // horizontal plane = the CLEANLY SLICED FLAT TOP. Bending the fade to 1 − x²
-  // makes the surviving isosurface meet the base on a CURVED locus = an organic
-  // rounded dome. MUST match cloudLightVolume.ts cloudHeightProfileInline.
-  const fadeX = clamp(
-    alt01.sub(fadeStart).div(topAlt.sub(fadeStart).max(0.0001)),
-    0,
-    1,
-  );
-  const cumTop = float(1).sub(fadeX.mul(fadeX));
-  const cumulus = cumBase.mul(cumTop);
-
-  const lowerMix = mix(stratus, stratocumulus, smoothstep(float(0.0), float(0.5), cloudType));
-  return mix(lowerMix, cumulus, smoothstep(float(0.5), float(1.0), cloudType));
-}
+// cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
+// truth for the marcher, the far shell, and the light-volume bake.
 
 /**
  * Earth cloud system: registers a fullscreen-quad ray-march pass that
@@ -986,31 +913,8 @@ function cloudHeightProfile(alt01: any, topAlt: any, cloudType: any): any {
 // coverage (Phase F step 5, test-only) — the shell will read fuller than the
 // meso-broken decks until the mask graduates into the weather map / the bake.
 
-// coverage (already COVERAGE_GAMMA-lifted) → Nubis cloudType ∈ [0,1].
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deriveCloudType(coverage: any): any {
-  return smoothstep(float(0.3), float(0.6), coverage);
-}
-
-// Column-sample → topAlt spread. ONE definition for the marcher, the shell's
-// deriveTopAlt, and the 'topAlt' diagnostic (mirrored numerically in
-// cloudLightVolume.ts — keep in lockstep). TOPALT_LINEAR (Phase F step 4)
-// swaps the Perlin-era smoothstep for a linear remap matched to the
-// Perlin-Worley hybrid's measured range — see the toggle's comment block.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function topAltSpread(colSample: any): any {
-  return TOPALT_LINEAR
-    ? colSample.sub(float(0.48)).div(float(0.42)).clamp(0, 1)
-    : smoothstep(float(0.3), float(0.7), colSample);
-}
-
-// Per-column cumulus-top altitude, coverage-gated (covSpan). `colSample` = the
-// per-column Perlin tap (baseVolume.r at COLUMN_SCALE). Mirrors the marcher.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function deriveTopAlt(coverage: any, colSample: any): any {
-  const covSpan = smoothstep(float(0.35), float(0.7), coverage);
-  return float(0.45).add(topAltSpread(colSample).mul(0.5).mul(covSpan));
-}
+// deriveCloudType / topAltSpread / deriveTopAlt moved to cloudShared.ts
+// (Phase 0). The far shell + the marcher dense branch both import them.
 
 // Dilated macro base shape at an earth-space position (baseVolume + baseDilate).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1028,6 +932,78 @@ function macroDilatedShapeAt(pos: any, baseVolume: THREE.Texture): any {
 // mirrors the marcher's dense-branch carve: cw = detail.r·0.6 + detail.g·0.4,
 // remap by (1−cw)·BILLOW_CARVE. Keep the LUT kernel in lockstep with the
 // MARCHER if the carve form changes.)
+
+// ── Shared marcher composition kernels (Phase 0b) ────────────────────────────
+// One definition each for the two compositions the dense march repeated
+// verbatim across its primary/probe/detile/cone paths. These are MARCHER-LOCAL
+// (the light-volume bake is macro-only — no carve/fine; the shell uses the
+// statistical LUT above), so they live here rather than in cloudShared.ts.
+
+// Schneider value-erosion "billow carve": remap the dilated macro shape by the
+// carve-Worley threshold (1−cw)·BILLOW_CARVE. `carveSrc` = the detailVolume tap
+// at CARVE_SCALE, sampled by the caller (texture/position differ per site:
+// primary pWarped, 800 m probe pLsWarped, cone pL). Used by carvedShapeAt (the
+// detile path), the primary non-detile carve, the 800 m self-shadow probe, and
+// the dead cone path — so a carve-form change lands everywhere at once.
+function billowCarveKernel(dilated: Node, carveSrc: Node): Node {
+  const cw = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+  const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
+  return dilated.sub(ct).div(float(1).sub(ct).max(0.0001)).clamp(0, 1);
+}
+
+// Fine-octave delta (grade → wisp → HHF → centered bias·strength·fade).
+// The full FINE_CARVE/WISP/HHF composition, ONE definition shared by the
+// opacity path AND the near self-shadow probe (case #21: the probe MUST carve
+// with the SAME fine octave the view ray does, or the relief self-shadows
+// inverted). Caller supplies the already-sampled `fineSrc` (opacity taps
+// detailVolume @ pWarped; probe taps detailVolumeMip1 @ pNear), the smooth
+// `profileInput` (profile vs profileLs), the march distance `tDist` (HHF
+// range), and `detailFade` (footprint LOD on the opacity path; float(1) on the
+// probe — the shadow is never distance-faded). Returns the centered delta to
+// ADD to the macro shape. This is the per-type-detail knob surface for
+// CLOUD_TYPES_PLAN Phase 3 — one place for WISP_AMOUNT / FINE_CARVE_STRENGTH
+// etc. to become functions of convectivity.
+function fineCarveDelta(
+  fineSrc: Node,
+  profileInput: Node,
+  tDist: Node,
+  detailFade: Node,
+): Node {
+  // Frequency-grade by the smooth profile (Nubis p.109): LOW-freq rounded
+  // octave (R) at thin/edge, HIGH-freq (B) in the core.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let fineNoise: any = mix(
+    fineSrc.r,
+    fineSrc.b,
+    pow(profileInput.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
+  );
+  // Billowy → WISPY (A channel) toward the thin edge (feathery curl strands).
+  if (WISP_DETAIL) {
+    const wispiness = float(1)
+      .sub(
+        smoothstep(
+          float(WISP_PROFILE_LO),
+          float(WISP_PROFILE_HI),
+          profileInput.clamp(0, 1),
+        ),
+      )
+      .mul(float(WISP_AMOUNT));
+    fineNoise = mix(fineNoise, fineSrc.a, wispiness);
+  }
+  // HHF: twice-folded high-freq channel blended in near camera (Nubis p.117).
+  if (HHF_STRENGTH > 0) {
+    const folded = fineSrc.b.mul(2).sub(1).abs().mul(2).sub(1).abs();
+    const hhf = pow(folded, float(2));
+    const hhfBlend = smoothstep(float(HHF_FAR), float(HHF_NEAR), tDist).mul(
+      float(HHF_STRENGTH),
+    );
+    fineNoise = mix(fineNoise, hhf, hhfBlend);
+  }
+  return fineNoise
+    .sub(float(FINE_CARVE_BIAS))
+    .mul(float(FINE_CARVE_STRENGTH))
+    .mul(detailFade);
+}
 
 // ── Shell opacity LUT (the shell's noise term, statistically) ────────────────
 // 256×1 table: texel i = E_noise[ 1 − exp(−pow(eroded, DENSITY_GAMMA)·PATH) ]
@@ -1098,19 +1074,13 @@ function getShellOpacityLUT(
           tslHash3(i, uint(4), uint(0), 105),
           tslHash3(i, uint(5), uint(0), 106),
         );
-        // Pointwise mirror of the marcher's macro shape: macroDilatedShapeAt's
-        // dilate + the dense-branch billow carve (keep in lockstep — same fbm
-        // weights, carve channel mix, BILLOW_CARVE remap).
+        // Pointwise mirror of the marcher's macro shape: dilate + the shared
+        // dense-branch billow carve (billowCarveKernel — one definition).
         const bs = texture3D(baseVolume, pb).level(int(0)) as Node;
         const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
         const dilated = baseDilate(bs.r, fbm);
         const cs = texture3D(detailVolume, pc).level(int(0)) as Node;
-        const cw = cs.r.mul(0.6).add(cs.g.mul(0.4));
-        const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
-        const carved = dilated
-          .sub(ct)
-          .div(float(1).sub(ct).max(0.0001))
-          .clamp(0, 1);
+        const carved = billowCarveKernel(dilated, cs);
         // Marcher erosion + solidity gamma → Beer-Lambert opacity for this
         // sample's density (see BASE_EROSION_K, DENSITY_GAMMA, uDensityMul).
         const eroded = dimProfile
@@ -2051,12 +2021,7 @@ export function marchCloudVolume({
       const cs = texture3D(detailVolume, pos.mul(float(CARVE_SCALE))).level(
         int(0),
       ) as Node;
-      const cw = cs.r.mul(0.6).add(cs.g.mul(0.4));
-      const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
-      return dil
-        .sub(ct)
-        .div(float(1).sub(ct).max(0.0001))
-        .clamp(0, 1);
+      return billowCarveKernel(dil, cs);
     };
 
     // Diagnostic counters hoisted to fragment scope so the debug return at
@@ -2333,20 +2298,10 @@ export function marchCloudVolume({
         const coverage = coverageRaw.pow(float(0.6));
 
         // ── Cloud-type derivation (Nubis B2, Stage 1) ──
-        // Map coverage → cloudType ∈ [0, 1]: 0 = stratus, 0.5 =
-        // stratocumulus, 1 = cumulus. smoothstep(0.3, 0.6) gives:
-        //   coverage ≤ 0.3  → cloudType 0   (stratus regions)
-        //   coverage = 0.45 → cloudType 0.5 (stratocumulus)
-        //   coverage ≥ 0.6  → cloudType 1   (cumulus pockets)
-        // 2026-05-30: lowered from (0.4, 0.8). The dense "tower" pockets were
-        // landing at stratocumulus, whose top is hardcoded to fade at alt
-        // 0.45–0.65 IGNORING topAlt → every tower capped at the SAME ~0.55
-        // height (the flat-ceiling, straight-walled blocks). Pulling the
-        // cumulus threshold down to 0.6 makes those pockets true cumulus, so
-        // height follows the per-column topAlt (varied) and tops taper.
-        // Stage 2 (deferred): re-author weather map with explicit cloudType
-        // channel for art-directable transitions instead of coverage-derived.
-        const cloudType = smoothstep(float(0.3), float(0.6), coverage);
+        // coverage → cloudType ∈ [0,1] (0 stratus / 0.5 strato-cu / 1 cumulus).
+        // Canonical mapping + history in cloudShared.deriveCloudType. Stage 2
+        // (CLOUD_TYPES_PLAN Phase 1): replace with an explicit weather channel.
+        const cloudType = deriveCloudType(coverage);
 
         // Per-column cloud-top altitude (Nubis B2). Project the current
         // march position to the inner shell so all steps in the same column
@@ -2383,37 +2338,13 @@ export function marchCloudVolume({
           colTap.b.sub(0.5),
           colTap.a.sub(0.5),
         ).mul(float(WARP_AMPLITUDE));
-        // topAlt: per-column cumulus-top height in [0.45, 0.95], via a
-        // smoothstep(0.3, 0.7) spread of the (clustered) Perlin sample.
-        // 2026-05-30: re-introduced the spread (was linear) so cumulus towers
-        // reach VARIED heights (a skyline) instead of all topping out at the
-        // Perlin-cluster ~0.67 (flat ceiling). The stripe history below is now
-        // mitigated by the coarser uColumnScale=8 + the macro carve.
-        //
-        // Old code used `smoothstep(0.3, 0.7)` to stretch Perlin's central
-        // cluster (~0.4–0.6) into the full output range, then mapped to
-        // [0.4, 0.95]. That produced a STRONG BIMODAL distribution: most
-        // columns ended up either short (~0.4) or tall (~0.95), with
-        // narrow transition bands at the column boundaries. Adjacent
-        // columns differing by ~5.5 km of cloud-band thickness produced
-        // visible "stripes" where the alpha integration changed abruptly
-        // across the column boundary on the cloud body.
-        //
-        // WATCH for stripes after this change; if they return, lower
-        // uColumnScale further or narrow the smoothstep range.
-        // Couple the tower SPAN to coverage (2026-06-16). topAlt was driven
-        // ONLY by the Perlin column tap, fully decoupled from coverage, so a
-        // barely-cumulus column (coverage ~0.32) could still draw topAlt=0.95;
-        // the value-erosion Remap then let one ISOLATED high-altitude base-
-        // noise peak survive with NO deck beneath it → the "lava-lamp"
-        // floaters. Gating the span on coverage keeps sparse columns short
-        // (top ~0.45) so only genuinely dense columns build tall towers. MUST
-        // mirror in cloudLightVolume.ts densityAt or baked shadows assume a
-        // tower the marcher no longer draws. Tune the 0.35/0.7 range live.
-        const covSpan = smoothstep(float(0.35), float(0.7), coverage);
-        const topAlt = float(0.45).add(
-          topAltSpread(colSample).mul(0.5).mul(covSpan),
-        );
+        // topAlt: per-column cumulus-top height in [0.45, 0.95] = a
+        // coverage-gated (covSpan) spread of the Perlin-Worley column sample.
+        // Canonical formula + the "lava-lamp floater" / bimodal-stripe history
+        // live in cloudShared.deriveTopAlt / topAltSpread (shared with the
+        // shell and the light-volume bake — one definition, no drift).
+        // WATCH for stripes: if they return, lower uColumnScale.
+        const topAlt = deriveTopAlt(coverage, colSample);
 
         // (An altitude-perturbation hash and a profile-blur band-limit lived
         // here as iso-altitude-band fixes; both empirically refuted — removed
@@ -2511,16 +2442,7 @@ export function marchCloudVolume({
                 detailVolume,
                 pWarped.mul(float(CARVE_SCALE)),
               ).level(int(0)) as Node;
-              const carveWorley = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
-              const carveThresh = float(1)
-                .sub(carveWorley)
-                .mul(float(BILLOW_CARVE));
-              baseShapeCarved.assign(
-                baseShape
-                  .sub(carveThresh)
-                  .div(float(1).sub(carveThresh).max(0.0001))
-                  .clamp(0, 1),
-              );
+              baseShapeCarved.assign(billowCarveKernel(baseShape, carveSrc));
               // ── Fine octave folded into the base field (see FINE_CARVE_BIAS) ──
               // CENTERED perturbation, not a one-sided erosion: raises the field
               // where the fine noise is high (lump bulges OUT past the macro
@@ -2535,47 +2457,6 @@ export function marchCloudVolume({
                   detailVolume,
                   pWarped.mul(float(FINE_CARVE_SCALE)),
                 ).level(int(0)) as Node;
-                // Frequency-grade by the smooth profile (Nubis p.109): LOW-freq
-                // rounded octave (R) at thin/edge, HIGH-freq (B) in the core —
-                // so edges don't get "high frequency noise everywhere".
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                let fineNoise: any = mix(
-                  fineSrc.r,
-                  fineSrc.b,
-                  pow(profile.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
-                );
-                // Blend billowy → WISPY (A channel) toward the thin edge, so
-                // edges read as feathery curl strands, not rounded blobs.
-                if (WISP_DETAIL) {
-                  const wispiness = float(1)
-                    .sub(
-                      smoothstep(
-                        float(WISP_PROFILE_LO),
-                        float(WISP_PROFILE_HI),
-                        profile.clamp(0, 1),
-                      ),
-                    )
-                    .mul(float(WISP_AMOUNT));
-                  fineNoise = mix(fineNoise, fineSrc.a, wispiness);
-                }
-                // HHF: twice-folded high-freq channel blended in near camera
-                // (Nubis p.117) for crisp up-close detail without a new sample.
-                if (HHF_STRENGTH > 0) {
-                  const folded = fineSrc.b
-                    .mul(2)
-                    .sub(1)
-                    .abs()
-                    .mul(2)
-                    .sub(1)
-                    .abs();
-                  const hhf = pow(folded, float(2));
-                  const hhfBlend = smoothstep(
-                    float(HHF_FAR),
-                    float(HHF_NEAR),
-                    t,
-                  ).mul(float(HHF_STRENGTH));
-                  fineNoise = mix(fineNoise, hhf, hhfBlend);
-                }
                 // Footprint LOD (DETAIL_FADE_*): fade the whole fine
                 // perturbation toward 0 with march distance so sub-pixel detail
                 // far away can't alias (flicker) — only the macro billow form
@@ -2587,10 +2468,9 @@ export function marchCloudVolume({
                     t,
                   ),
                 );
-                const fineDelta = fineNoise
-                  .sub(float(FINE_CARVE_BIAS))
-                  .mul(float(FINE_CARVE_STRENGTH))
-                  .mul(detailFade);
+                // Grade → wisp → HHF → centered bias·strength·fade (shared with
+                // the near self-shadow probe — see fineCarveDelta).
+                const fineDelta = fineCarveDelta(fineSrc, profile, t, detailFade);
                 baseShapeCarved.assign(baseShapeCarved.add(fineDelta).clamp(0, 1));
               }
             });
@@ -2958,16 +2838,7 @@ export function marchCloudVolume({
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
                       ).level(int(0)) as Node;
-                      const carveLsWorley = carveLsSrc.r
-                        .mul(0.6)
-                        .add(carveLsSrc.g.mul(0.4));
-                      const carveLsThresh = float(1)
-                        .sub(carveLsWorley)
-                        .mul(float(BILLOW_CARVE));
-                      carvedLs = dilatedLs
-                        .sub(carveLsThresh)
-                        .div(float(1).sub(carveLsThresh).max(0.0001))
-                        .clamp(0, 1);
+                      carvedLs = billowCarveKernel(dilatedLs, carveLsSrc);
                     }
                     const profileLs = cloudHeightProfile(
                       altLs,
@@ -3013,49 +2884,15 @@ export function marchCloudVolume({
                         pNear.add(warpVec).mul(float(FINE_CARVE_SCALE)),
                       ).level(int(0)) as Node;
                       // Match the opacity's CENTERED, FREQUENCY-GRADED fine
-                      // octave (FINE_CARVE_BIAS / GRADE_POW) so the shadow stays
-                      // correlated with the bumps the view ray carves. carvedLs
-                      // is the macro shape; add the same centered, graded delta.
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      let fineNoise: any = mix(
-                        fineSrc.r,
-                        fineSrc.b,
-                        pow(profileLs.clamp(0, 1), float(FINE_CARVE_GRADE_POW)),
+                      // octave via the SHARED fineCarveDelta (case #21: same
+                      // octave the view ray carves → correlated self-shadow).
+                      // No detailFade — the shadow is never distance-faded.
+                      const fineDelta = fineCarveDelta(
+                        fineSrc,
+                        profileLs,
+                        t,
+                        float(1),
                       );
-                      // WISP blend (match the opacity path) so the shadow
-                      // tracks the feathery edges.
-                      if (WISP_DETAIL) {
-                        const wispiness = float(1)
-                          .sub(
-                            smoothstep(
-                              float(WISP_PROFILE_LO),
-                              float(WISP_PROFILE_HI),
-                              profileLs.clamp(0, 1),
-                            ),
-                          )
-                          .mul(float(WISP_AMOUNT));
-                        fineNoise = mix(fineNoise, fineSrc.a, wispiness);
-                      }
-                      // HHF near-camera detail (match the opacity path).
-                      if (HHF_STRENGTH > 0) {
-                        const folded = fineSrc.b
-                          .mul(2)
-                          .sub(1)
-                          .abs()
-                          .mul(2)
-                          .sub(1)
-                          .abs();
-                        const hhf = pow(folded, float(2));
-                        const hhfBlend = smoothstep(
-                          float(HHF_FAR),
-                          float(HHF_NEAR),
-                          t,
-                        ).mul(float(HHF_STRENGTH));
-                        fineNoise = mix(fineNoise, hhf, hhfBlend);
-                      }
-                      const fineDelta = fineNoise
-                        .sub(float(FINE_CARVE_BIAS))
-                        .mul(float(FINE_CARVE_STRENGTH));
                       const fineCarvedNear = carvedLs
                         .add(fineDelta)
                         .clamp(0, 1);
@@ -3166,16 +3003,7 @@ export function marchCloudVolume({
                       detailVolume,
                       pL.mul(float(CARVE_SCALE)),
                     ).level(int(0)) as Node;
-                    const carveWorleyL = carveSrcL.r
-                      .mul(0.6)
-                      .add(carveSrcL.g.mul(0.4));
-                    const carveThreshL = float(1)
-                      .sub(carveWorleyL)
-                      .mul(float(BILLOW_CARVE));
-                    baseShapeL = baseShapeDilatedL
-                      .sub(carveThreshL)
-                      .div(float(1).sub(carveThreshL).max(0.0001))
-                      .clamp(0, 1);
+                    baseShapeL = billowCarveKernel(baseShapeDilatedL, carveSrcL);
                   }
                   const coverageL = coverage;  // primary-ray's coverage
 
