@@ -32,6 +32,8 @@ import {
   cloudHeightProfile,
   deriveCloudType,
   deriveTopAlt,
+  topHeightToTopAlt,
+  WEATHER_V2,
 } from "@/components/celestial/bodies/cloudShared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -305,19 +307,24 @@ export function createCloudLightVolume(
     const u = fract(atan(dir.z, dir.x.negate()).mul(invTwoPi));
     const v = acos(clamp(dir.y.negate(), -1, 1)).mul(invPi);
     const uv = vec2(u, v).add(uCloudUvOffset);
-    const coverageRaw = (texture(weatherMap, uv).level(int(0)) as Node).r;
-    const coverage = coverageRaw.pow(float(0.6));
-    const cloudType = deriveCloudType(coverage);
+    // ONE weather tap, swizzled. v2: coverage/convectivity/topHeight from the
+    // map (LINEAR coverage) — MUST match the marcher's channels or baked
+    // shadows detach from the drawn clouds. Legacy: pow-lifted + coverage-derived.
+    const wTap = texture(weatherMap, uv).level(int(0)) as Node;
+    const coverage = WEATHER_V2 ? wTap.r : wTap.r.pow(float(0.6));
+    const cloudType = WEATHER_V2 ? wTap.g : deriveCloudType(coverage);
 
-    // Per-column top altitude + anti-tiling warp (matches the primary: the
-    // tap's g/b/a channels become the 125 km-scale base-sample offset).
+    // Column tap: still sampled for the (zero) anti-tiling warp — the tap's
+    // g/b/a channels become the 125 km-scale base-sample offset. In v2 topAlt
+    // comes from the map's B channel (not colTap.r); legacy uses the shared
+    // coverage-gated spread, identical to the marcher + shell by construction.
     const pColumn = dir.mul(uInnerRadius);
     const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
       int(0),
     ) as Node;
-    // Tower top altitude — shared derivation (coverage-gated spread of the
-    // column sample), identical to the marcher + shell by construction.
-    const topAlt = deriveTopAlt(coverage, colTap.r);
+    const topAlt = WEATHER_V2
+      ? topHeightToTopAlt(wTap.b)
+      : deriveTopAlt(coverage, colTap.r);
     const profile = cloudHeightProfile(alt01, topAlt, cloudType);
 
     // Dilated base shape — MUST match the marcher's anti-tiling (detile or

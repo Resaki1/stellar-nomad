@@ -22,6 +22,27 @@ type Node = any;
 // whole point of this consolidation.
 // =============================================================================
 
+// ── Weather Map v2 master toggle (CLOUD_TYPES_PLAN.md Phase 1) ───────────────
+// Build const — flip + reload (no runtime re-bake needed: a page reload rebuilds
+// the node graph and re-runs the light-volume bake fresh). OFF = legacy
+// coverage-derived cloudType + colSample-derived topAlt (unchanged). ON = drive
+// cloudType from the map's G (convectivity), topAlt from B (topHeight), consume
+// LINEAR coverage (drop the pow(0.6) lift — it existed only for the old K<1
+// erosion; the adopted Nubis-form K=1 doesn't need it, §3.6 H2), and DELETE the
+// per-step 3D column tap (topHeight now comes from the map → −1 texture3D/step).
+// ALL consumers branch on this in lockstep (marcher dense branch + far shell +
+// light-volume bake) or near/far/shadow topAlt diverge. Input = the synthetic
+// getSyntheticWeatherMapV2() (weatherMapV2.ts); the real ERA5 bake is Phase 4.
+export const WEATHER_V2 = true;
+
+// Map the v2 topHeight channel (0-1 over ~0-18 km) into the existing topAlt
+// PARAMETER range [0.45, 0.95] that cloudHeightProfile expects. LINEAR (never a
+// smoothstep — the anti-bimodal rule, §3.6 H4). Phase 2's km-anchored profile
+// LUT replaces this ad-hoc remap with a physical km mapping.
+export function topHeightToTopAlt(topHeight01: Node): Node {
+  return mix(float(0.45), float(0.95), clamp(topHeight01, 0, 1));
+}
+
 // ── Phase F step 4 toggle: LINEAR topAlt spread (docs/CLOUD_TYPES_PLAN.md §3.6)
 // The smoothstep(0.3, 0.7, colSample) spread was authored for pure Perlin
 // clustered at 0.5, but baseVolume.r is the Perlin-Worley HYBRID (measured

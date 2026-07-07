@@ -51,7 +51,10 @@ import {
   deriveCloudType,
   deriveTopAlt,
   topAltSpread,
+  topHeightToTopAlt,
+  WEATHER_V2,
 } from "./cloudShared";
+import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
   CLOUD_SUN_SCALE,
   CLOUD_SKY_SCALE,
@@ -60,6 +63,7 @@ import {
   equirectDirToUv,
   makeEquirectTextureField,
   farCloudLit,
+  type CloudFieldProvider,
 } from "./cloudCommon";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import { STBN_PERIOD_XY } from "./stbnTexture";
@@ -1121,8 +1125,7 @@ function getShellOpacityLUT(
 function columnMacroCoverage(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dir: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  coverageAt: (d: any) => any,
+  field: CloudFieldProvider,
   opts: {
     baseVolume: THREE.Texture;
     detailVolume: THREE.Texture;
@@ -1141,7 +1144,7 @@ function columnMacroCoverage(
     innerRadiusScaled,
     outerRadiusScaled,
   } = opts;
-  if (SHELL_DEBUG_VIZ === "rawCoverage") return coverageAt(dir);
+  if (SHELL_DEBUG_VIZ === "rawCoverage") return field.coverageAt(dir);
   // DEBUG-ONLY 3D taps (the retired aliasing ladder — see SHELL_DEBUG_VIZ).
   // baseVolume/detailVolume are otherwise UNUSED here (the LUT replaced them).
   if (SHELL_DEBUG_VIZ === "colSample") {
@@ -1162,9 +1165,26 @@ function columnMacroCoverage(
     ) as Node;
     return cs.r.mul(0.6).add(cs.g.mul(0.4));
   }
-  const coverage = coverageAt(dir).pow(float(COVERAGE_GAMMA));
-  const cloudType = deriveCloudType(coverage);
-  const topAlt = deriveTopAlt(coverage, float(SHELL_COL_SAMPLE));
+  // v2: coverage/convectivity/topHeight straight from the map (ONE swizzled
+  // sample) → the far shell reads the SAME channels as the marcher (fixes Bug A:
+  // stratus no longer missing from fixed alt samples) and needs NO SHELL_COL_SAMPLE.
+  // LEGACY: coverage-derived type + a fixed column sample.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let coverage: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cloudType: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let topAlt: any;
+  if (WEATHER_V2) {
+    const w = field.weatherAt(dir);
+    coverage = w.coverage;
+    cloudType = w.convectivity;
+    topAlt = topHeightToTopAlt(w.topHeight);
+  } else {
+    coverage = field.coverageAt(dir).pow(float(COVERAGE_GAMMA));
+    cloudType = deriveCloudType(coverage);
+    topAlt = deriveTopAlt(coverage, float(SHELL_COL_SAMPLE));
+  }
   // Profile peak over the slab (pure ALU). Coverage is per-column constant, so
   // max(coverage×profile) = coverage × max(profile).
   const maxProfile = float(0).toVar();
@@ -1275,7 +1295,7 @@ function buildCloudShellMesh({
     // Coverage = the volumetric's eroded MACRO footprint via the SHARED density
     // model (columnMacroCoverage) — matches the marcher by construction, no
     // hand-tuned curve. `field.coverageAt` is the raw-coverage source.
-    const coverage = columnMacroCoverage(dir, field.coverageAt, {
+    const coverage = columnMacroCoverage(dir, field, {
       baseVolume,
       detailVolume,
       opacityLUT,
@@ -1378,7 +1398,14 @@ function buildCloudShellMesh({
 }
 
 export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
-  const weatherMap = ctx.textures.clouds;
+  // WEATHER_V2: swap the Blue Marble coverage KTX2 for the synthetic v2 control
+  // stack (R=coverage / G=convectivity / B=topHeight / A=cirrus). Chosen ONCE
+  // at graph-build time (build const → page reload), so no WebGPU bind-group
+  // reassignment. Flows to the marcher, shell, AND light-volume bake (all take
+  // this same `weatherMap`), keeping them coherent by construction.
+  const weatherMap = WEATHER_V2
+    ? getSyntheticWeatherMapV2()
+    : ctx.textures.clouds;
   if (!weatherMap) return [];
 
   const outerRadiusScaled = kmToScaledUnits(
@@ -1922,16 +1949,30 @@ export function marchCloudVolume({
     // (one extra texture3D tap; same column-scale value the loop already
     // computes per-step). Always evaluated so JS-side debug branching at
     // build time can use it without restructuring the shader graph.
-    const pMidColumn = dirMid.mul(uInnerRadius);
-    const colSampleMid = (
-      texture3D(baseVolume, pMidColumn.mul(uColumnScale)).level(int(0)) as Node
-    ).r;
-    const colSharpMid = topAltSpread(colSampleMid);
-    // Mirrors the per-step topAlt mapping exactly (shared topAltSpread,
-    // range [0.45, 0.95]) so the 'topAlt' diagnostic reflects reality —
-    // including the TOPALT_LINEAR Phase-F toggle.
-    // (Previously the diagnostic used a slightly different range than the march.)
-    const topAltMid = float(0.45).add(colSharpMid.mul(0.5));
+    // v2: the 'topAlt'/'profile' diagnostics read the map's B/G at the mid
+    // direction (so they stay truthful under WEATHER_V2). Legacy: colSample-
+    // derived, mirroring the per-step topAlt mapping (shared topAltSpread,
+    // range [0.45, 0.95], incl. the TOPALT_LINEAR toggle).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let topAltMid: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let cloudTypeMidV2: any = null;
+    if (WEATHER_V2) {
+      const wMid = texture(
+        weatherMap,
+        equirectDirToUv(dirMid, uCloudUvOffset),
+      ).level(int(0)) as Node;
+      topAltMid = topHeightToTopAlt(wMid.b);
+      cloudTypeMidV2 = wMid.g;
+    } else {
+      const pMidColumn = dirMid.mul(uInnerRadius);
+      const colSampleMid = (
+        texture3D(baseVolume, pMidColumn.mul(uColumnScale)).level(
+          int(0),
+        ) as Node
+      ).r;
+      topAltMid = float(0.45).add(topAltSpread(colSampleMid).mul(0.5));
+    }
 
     // Coverage near/mid/far hoisted samples — see comment block above.
     const pNear = roEarth.add(rdEarth.mul(tEnter));
@@ -2264,16 +2305,22 @@ export function marchCloudVolume({
         // regions, ~96 extra weather-map taps — modest cost on modern GPUs.
         const dirP = p.div(r);
         const uvP = equirectDirToUv(dirP, uCloudUvOffset);
+        // ONE weather tap, swizzled (never re-sampled). Forced mip 0 (the
+        // marcher's per-quad derivatives break auto-mip — case #2). v2 reads
+        // RGBA = coverage/convectivity/topHeight/cirrus; legacy uses only .r.
+        const wTap = texture(weatherMap, uvP).level(int(0)) as Node;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let coverageRaw: any = (texture(weatherMap, uvP).level(int(0)) as Node)
-          .r;
-        if (MESOSCALE_TEST) {
-          // Phase F step 5 (§3.6 H3): preview the weather-map-v2 mesoscale
-          // octave by masking RAW coverage with a ~31 km cellular field
-          // (TRUE ZEROS in the lanes — zeros survive the pow lift). One extra
-          // texture3D per in-band step, test-only. World-anchored like the
-          // column tap (projected to the inner shell so the mask is a 2D
-          // pattern on the sphere, not volume noise).
+        let coverageRaw: any = wTap.r;
+        if (WEATHER_V2 || MESOSCALE_TEST) {
+          // MARCHER-SPACE mesoscale octave (§3.6 H3): mask coverage with a
+          // ~31 km cellular field (true zeros in the lanes) sampled from the 3D
+          // base noise — resolution-FREE, so it supplies the 10-40 km local
+          // organization a 2D equirect map at 2048px physically cannot carry
+          // (the Phase-1a RESOLUTION FORK, resolved toward option b). In v2 this
+          // is the STANDING mechanism (layered under the map's coarse hundreds-
+          // of-km cells → hierarchical, like real Sc); in legacy it's the
+          // Phase-F MESOSCALE_TEST preview. World-anchored (projected to the
+          // inner shell → a 2D pattern on the sphere, not volume noise).
           const mesoTap = texture3D(
             baseVolume,
             dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
@@ -2283,68 +2330,49 @@ export function marchCloudVolume({
           );
         }
 
-        // Coverage = the smooth weather map directly, lifted with a gamma
-        // (pow < 1): the Nubis Remap below thresholds away coverage under
-        // ~1 - baseShape (≈0.33), so the raw low/mid-coverage deck would get
-        // deleted (too sparse). pow(0.6) lifts low/mid coverage while keeping
-        // 0 → 0 (true clear sky stays clear). Density/coverage knob #1 —
-        // raise the exponent toward 1 for less cloud, lower (→0.4) for more.
-        //
-        // (A procedural "cumulus pattern" threshold mask on coverage lived
-        // here through Phase B–D; it was bypassed 2026-05-30 — with the Remap
-        // composition discrete bodies emerge from coverage + 3D noise, and
-        // the extra gate carved coverage into cells and thresholded the deck
-        // away. Removed entirely 2026-06-10; see git history.)
-        const coverage = coverageRaw.pow(float(0.6));
+        // Coverage. LEGACY lifts with pow(0.6) (the Nubis Remap thresholds away
+        // coverage under ~1−baseShape, so the raw low/mid deck would be deleted;
+        // the lift kept 0→0). v2 consumes LINEAR coverage — the lift existed
+        // only for the old K<1 erosion; the adopted Nubis-form K=1 (§3.6 H2)
+        // makes it unnecessary and the baker owns the histogram.
+        const coverage = WEATHER_V2 ? coverageRaw : coverageRaw.pow(float(0.6));
 
-        // ── Cloud-type derivation (Nubis B2, Stage 1) ──
-        // coverage → cloudType ∈ [0,1] (0 stratus / 0.5 strato-cu / 1 cumulus).
-        // Canonical mapping + history in cloudShared.deriveCloudType. Stage 2
-        // (CLOUD_TYPES_PLAN Phase 1): replace with an explicit weather channel.
-        const cloudType = deriveCloudType(coverage);
+        // ── Cloud type ──
+        // v2: the map's G channel (convectivity) — an INDEPENDENT type axis, so
+        // type no longer collapses to a function of coverage (the binary-border
+        // fix). LEGACY: coverage-derived (cloudShared.deriveCloudType).
+        const cloudType = WEATHER_V2 ? wTap.g : deriveCloudType(coverage);
 
-        // Per-column cloud-top altitude (Nubis B2). Project the current
-        // march position to the inner shell so all steps in the same column
-        // sample the same value, and read baseVolume.r (Perlin) at low
-        // frequency.
-        //
-        // Raw Perlin clusters around 0.5 (Gaussian-like distribution), so
-        // a direct mapping to topAlt produces values mostly in [0.7, 0.85]
-        // — only ~1.3 km of column-top variation across the FOV, too
-        // subtle to read as 3D cumulus towers. The smoothstep(0.3, 0.7)
-        // contrast curve stretches the typical Perlin range to fill
-        // [0, 1], pushing values away from the middle toward the extremes,
-        // so topAlt actually spans most of [0.4, 0.95] (7.2 km of column-
-        // top variation; widened from [0.55, 0.95] for more dramatic
-        // tall-vs-short visual separation paired with the top-heavy
-        // density bias).
-        const pColumn = p.div(r).mul(uInnerRadius);
-        // Explicit mip 0 (NEVER implicit: auto mip-from-derivatives
-        // cross-hatches under the per-pixel dither — adjacent quad pixels at
-        // very different t → spiky derivative → inconsistent mip at
-        // iso-distance contours; CLOUD_DEBUGGING_LESSONS case study #2).
-        // This 125 km-period tap stays at level 0 — its texels are ~1 km in
-        // world space, comfortably above any pixel footprint we march at.
-        const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
-          int(0),
-        ) as Node;
-        const colSample = colTap.r;
-        // ── Anti-tiling domain warp (see WARP_AMPLITUDE) ──
-        // The column tap's g/b/a channels (Worley FBM bands, unused for
-        // topAlt) are FREE here — turn them into a 125 km-scale offset vector
-        // for the base-volume sample so the 20 km base tiles never line up.
-        const warpVec = vec3(
-          colTap.g.sub(0.5),
-          colTap.b.sub(0.5),
-          colTap.a.sub(0.5),
-        ).mul(float(WARP_AMPLITUDE));
-        // topAlt: per-column cumulus-top height in [0.45, 0.95] = a
-        // coverage-gated (covSpan) spread of the Perlin-Worley column sample.
-        // Canonical formula + the "lava-lamp floater" / bimodal-stripe history
-        // live in cloudShared.deriveTopAlt / topAltSpread (shared with the
-        // shell and the light-volume bake — one definition, no drift).
-        // WATCH for stripes: if they return, lower uColumnScale.
-        const topAlt = deriveTopAlt(coverage, colSample);
+        // ── Per-column top altitude + anti-tiling warp ──
+        // v2: topAlt from the map's B channel (topHeight) → the per-step 3D
+        // COLUMN TAP is DELETED (−1 texture3D/step, the plan's perf win); warp
+        // is a zero vector (WARP_AMPLITUDE=0) so v2 skips it outright. LEGACY:
+        // colSample→deriveTopAlt + the g/b/a warp vector (case #19 — warp off).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let topAlt: any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let warpVec: any;
+        if (WEATHER_V2) {
+          topAlt = topHeightToTopAlt(wTap.b);
+          warpVec = vec3(0, 0, 0);
+        } else {
+          const pColumn = p.div(r).mul(uInnerRadius);
+          // Explicit mip 0 (case #2, as above).
+          const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
+            int(0),
+          ) as Node;
+          const colSample = colTap.r;
+          warpVec = vec3(
+            colTap.g.sub(0.5),
+            colTap.b.sub(0.5),
+            colTap.a.sub(0.5),
+          ).mul(float(WARP_AMPLITUDE));
+          // Coverage-gated spread of the Perlin-Worley column sample; the
+          // "lava-lamp floater" / bimodal history lives in cloudShared. v2 moves
+          // the floater-avoidance coupling into the BAKER (§4.2). WATCH for
+          // stripes: if they return, lower uColumnScale.
+          topAlt = deriveTopAlt(coverage, colSample);
+        }
 
         // (An altitude-perturbation hash and a profile-blur band-limit lived
         // here as iso-altitude-band fixes; both empirically refuted — removed
@@ -3343,7 +3371,9 @@ export function marchCloudVolume({
       // coverage-derived cloudType at the midpoint UV. Lets us see
       // type-driven anatomy: stratus regions read green-only (mass at 0.5);
       // stratocumulus shows red+green; cumulus shows green+blue.
-      const cloudTypeMid = smoothstep(float(0.3), float(0.6), covMid);
+      const cloudTypeMid = WEATHER_V2
+        ? cloudTypeMidV2
+        : smoothstep(float(0.3), float(0.6), covMid);
       const p25 = cloudHeightProfile(float(0.25), topAltMid, cloudTypeMid);
       const p50 = cloudHeightProfile(float(0.50), topAltMid, cloudTypeMid);
       const p75 = cloudHeightProfile(float(0.75), topAltMid, cloudTypeMid);

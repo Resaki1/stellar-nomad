@@ -927,6 +927,54 @@ method before/after each phase.
   content — 10-40 km mesoscale organization with true zeros in coverage,
   linear tower-height variance in B (dense-region p10-p90 ≥ 4 km) — so the
   porridge fix is validated in THIS phase, not deferred to the data bake.**
+
+  **Phase 1a ✅ LANDED 2026-07-06 (generator + inspector; awaiting user
+  browser check).** `src/components/celestial/bodies/weatherMapV2.ts` —
+  `getSyntheticWeatherMapV2()` DataTexture singleton (2048×1024 RGBA8,
+  NoColorSpace/linear, RepeatWrapping-S, mipped): R=coverage (air-mass FBM ×
+  mesoscale cell mask with TRUE-ZERO lanes), G=convectivity (independent
+  FBM), B=topHeight (independent, LINEAR — anti-bimodal), A=cirrus; plus the
+  genus test-chart band (convectivity× × topHeight↑ atlas at fixed coverage).
+  Cylinder-periodic value noise → seamless anti-meridian. Inspector at
+  `/dev/weather-map` (channel selector + genus false-colour). Fully isolated
+  — nothing consumes it yet, zero render risk. Lint clean.
+  **⚠ RESOLUTION FORK surfaced (feeds Phase 4 / §4.7 step 6 + §6 Q new):**
+  a 2D equirect map at 2048px ≈ 20 km/texel, so it CANNOT carry true 10-40 km
+  Sc cells — the mesoscale octave baked into the map is inherently coarse
+  (needs ≥4096px for the ~20-40 km end). The Phase-F `MESOSCALE_TEST` got
+  31 km cells only because it sampled 3D noise in MARCHER-space
+  (resolution-free). So Phase 4 must decide: (a) bake mesoscale into the map
+  at ≥4096px, or (b) map carries only LOW-freq organization (fronts, air
+  masses) + a "cellularity" hint channel, and the 10-40 km cells are
+  synthesized in marcher-space from that hint (like MESOSCALE_TEST). (b) is
+  likely better (resolution-free, cheaper texture) — RESOLVE IN PHASE 4.
+  Phase 1a's map uses coarse (~hundreds-of-km) cells purely to prove the
+  channel + true-zero-lane plumbing.
+  **Phase 1b ✅ LANDED 2026-07-06 (behind WEATHER_V2, default OFF; awaiting
+  user A/B).** `WEATHER_V2` build const + `topHeightToTopAlt` in cloudShared;
+  `weatherAt` struct ({coverage,convectivity,topHeight,cirrus}, ONE swizzled
+  sample) added to cloudCommon's `CloudFieldProvider` + makeEquirectTextureField.
+  buildEarthClouds swaps `weatherMap` → getSyntheticWeatherMapV2() when v2
+  (flows to marcher + shell + light-volume bake — coherent by construction).
+  ALL THREE consumers branch on WEATHER_V2 in lockstep: marcher (cloudType←G,
+  topAlt←topHeightToTopAlt(B), LINEAR coverage, **column tap DELETED** →
+  −1 texture3D/step, warp=0), shell columnMacroCoverage (reads weatherAt →
+  fixes Bug A: stratus no longer missing), light-volume densityAt (same
+  channels → shadows track the clouds). 'topAlt'/'profile' diagnostics made
+  v2-aware. Generator got the physical coverage→topHeight coupling (§4.2
+  floater-avoidance in the baker, not the shader). PROVABLE v2-OFF parity:
+  every legacy branch is byte-identical to the committed code; WEATHER_V2 is a
+  build const so daily play is untouched. Lint clean (0 errors). No runtime
+  re-bake machinery needed (build const → page reload = fresh bake).
+  Known v2-test caveat: earth.ts ground cloud-shadow still samples Blue Marble
+  (not swapped) → faint surface-shadow/cloud mismatch in v2 (cosmetic).
+  USER A/B: set `WEATHER_V2 = true` (cloudShared.ts), reload; expect type
+  variation INDEPENDENT of coverage (binary border gone), a real height
+  skyline, cells with clear lanes, shadows attached; DEBUG_VIZ 'topAlt'/
+  'profile' reflect the map; fps ≥ neutral (−1 tex3D/step). The whole Earth
+  will look like the synthetic chart (expected — real data is Phase 4).
+  (superseded 1b scope note follows:)
+  NEXT (Phase 1b): the marcher/shell/light-volume `weatherAt` consumption —
   Extend provider to `weatherAt` struct (ONE materialized fetch, §4.1;
   per-step sampling stays; keep the load-bearing hoisted-If; audit ALL
   consumers of the old hoists — light volume, ground shadow, shell). G
@@ -1118,3 +1166,50 @@ Space Engine dev blog; NMS Worlds Part II notes. Full URLs inside
   clean. NEXT: user confirms Phase 0b parity (esp. near-camera cauliflower +
   self-shadow) → **Phase 1** (weather-map v2 plumbing + synthetic genus test
   chart). Phase 0 (both a+b) fully done.
+- 2026-07-06 (Phase 1 begins): **Phase 1a LANDED** — synthetic weather-map v2
+  generator (weatherMapV2.ts, getSyntheticWeatherMapV2 DataTexture) +
+  inspector page /dev/weather-map. Isolated, zero render risk, lint clean.
+  Surfaced the RESOLUTION FORK (mesoscale baked in-map @4096 vs
+  marcher-space-synthesized from a hint) for Phase 4.
+- 2026-07-06 (later): user validated /dev/weather-map (channels correct;
+  fixed 2 quality issues — coverage grain → cleaner 2-octave cells,
+  topHeight contrast stretch). **Phase 1b LANDED** — WEATHER_V2 build const +
+  weatherAt provider struct; marcher + shell + light-volume all consume the
+  v2 map channels in lockstep behind the flag (cloudType←G, topAlt←B, linear
+  coverage, column tap deleted, coverage→topHeight coupling baked into the
+  generator). Provable v2-OFF parity, lint clean. NEXT: user A/B — set
+  WEATHER_V2=true, reload, judge (binary border gone / skyline / cells /
+  shadows attached). Then Phase 2 (profile LUT) — or iterate the synthetic
+  map / erosion first if the v2 look needs tuning.
+- 2026-07-06 (v2 A/B regression + fix): first WEATHER_V2=true reload showed
+  broken v2 — sparse streaky coverage + straight-line (flat) cloud tops; dev
+  page R nearly gone, B nearly black. ROOT CAUSES (both in my two generator
+  "quality fixes", diagnosed + fixed): (1) the topHeight×coverage-gate coupling
+  → when coverage collapsed, topHeight→0 → uniform topAlt=0.45 → flat sliced
+  ceilings + black B. REMOVED it (B is a pure independent field; Nubis-K=1
+  already suppresses low-coverage floaters). (2) the 3→2 octave "less grain"
+  change dropped the un-normalized fbm mean below the fixed lane threshold →
+  coverage ×≈0. Fixed by NORMALIZING the cell field (÷0.75) + retuning lanes
+  (LO/HI 0.30/0.60, airMass (x−0.28)·2.6) for ~24% clear + dense cells ~0.8 —
+  VERIFIED numerically (Monte-Carlo port of the generator) before re-testing:
+  coverage mean 0.29 / p90 0.69, topHeight mean 0.41 / p10-p90 0.09-0.72 (real
+  skyline), 6% near-zero. WATCH (deferred, measure-first): the cylinder noise
+  is mildly anisotropic (cells ~π× taller N-S) — masked at freq 90, may show
+  as faint N-S elongation at freq 45; fix with ×π latitudinal coord + wider
+  seed spacing IF it reads as streaks after this fix. NEXT: user re-A/B.
+- 2026-07-06 (v2 A/B round 2 — "melon" + flat close-up): CONFIRMED the
+  anisotropy (measured glon/glat 3.30 ≈ π → the pole-converging melon) and
+  FIXED it: fbmCyl latitudinal coord ×π (→ ratio 1.05, isotropic), channel
+  seeds widened to 0/1000/2000/3000/4000 (> max z-reach f·π so channels stay
+  decorrelated — verified cross-corr 0.01-0.08). ALSO resolved the Phase-1a
+  RESOLUTION FORK toward **option (b)**: re-enabled the MARCHER-SPACE mesoscale
+  mask in v2 (was gated OFF) — resolution-free 10-40 km cells layered under the
+  map's coarse cells, since a 2048px 2D map can't carry them; this addresses
+  the "no local variance close-up". STRATEGIC (told user): the synthetic map
+  validates PLUMBING, not final looks — the melon was a noise-projection
+  artifact real ERA5 data won't have (Phase 4 fixes global look); local anatomy
+  is Phases 2-3 (LUT + per-type detail); procedural planets generate the SAME
+  4 channels from climate rules + isotropic spherical noise (the ×π fix is the
+  R4 foundation, not throwaway). NEXT: user re-A/B — judge PLUMBING (does cloud
+  TYPE/height change region-to-region? fly the genus test-chart band; binary
+  border gone?), not final beauty.

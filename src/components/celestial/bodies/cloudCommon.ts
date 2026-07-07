@@ -55,6 +55,17 @@ export function equirectDirToUv(dirLocal: Node, uvOffset: Node): Node {
 // planet. See docs/CLOUD_REVIEW_2026-07.md ISSUE 2 Phase 2.
 export type CloudFieldProvider = {
   coverageAt: (dirLocal: Node) => Node;
+  // Weather Map v2 (CLOUD_TYPES_PLAN Phase 1): the full RGBA control stack from
+  // ONE texture sample, swizzled (never re-sampled). coverage/convectivity/
+  // topHeight/cirrus = R/G/B/A. Auto-mipped like coverageAt (shell/far use).
+  weatherAt: (dirLocal: Node) => WeatherSample;
+};
+
+export type WeatherSample = {
+  coverage: Node; // R — low+mid cloud coverage 0-1 (raw; caller may lift)
+  convectivity: Node; // G — type axis 0 layered … 1 convective
+  topHeight: Node; // B — cloud-top altitude, normalized 0-1 over ~0-18 km
+  cirrus: Node; // A — high-layer (Ci/Cs) coverage 0-1
 };
 
 /**
@@ -77,6 +88,13 @@ export function makeEquirectTextureField(
     // analytic-derivative sampling only if visible.
     coverageAt: (dirLocal: Node) =>
       (texture(weatherMap, equirectDirToUv(dirLocal, uvOffset)) as Node).r,
+    // ONE sample, swizzled 4 ways — separate texture() calls per channel would
+    // compile to 4 samples (§4.1). Legacy (Blue Marble) maps only carry
+    // meaningful .r; convectivity/topHeight/cirrus are only real in the v2 map.
+    weatherAt: (dirLocal: Node) => {
+      const t = texture(weatherMap, equirectDirToUv(dirLocal, uvOffset)) as Node;
+      return { coverage: t.r, convectivity: t.g, topHeight: t.b, cirrus: t.a };
+    },
   };
 }
 
