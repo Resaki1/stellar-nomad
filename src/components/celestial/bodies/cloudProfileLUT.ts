@@ -72,13 +72,23 @@ type RowParams = {
   fadeStart: number; // altNorm where the cloud-top fade begins
   domeExp: number; //   exponent of the top fade 1 − x^exp (2 = parabolic dome)
   plateau: number; //   peak density in the mid-band
+  waist: number; //     mid-column pinch depth (T2/§4.11, Blackrack Cb
+  //                    silhouette: narrow waist + re-widened glaciated top).
+  //                    Multiplicative ≤1 → boundary-zero invariant unaffected.
 };
 
 const ANCHORS: { c: number; p: RowParams }[] = [
-  { c: 0.0, p: { baseRampW: 0.2, fadeStart: 0.72, domeExp: 3.0, plateau: 0.92 } }, // St
-  { c: 0.4, p: { baseRampW: 0.14, fadeStart: 0.6, domeExp: 2.4, plateau: 0.96 } }, // Sc
-  { c: 0.7, p: { baseRampW: 0.08, fadeStart: 0.48, domeExp: 2.0, plateau: 1.0 } }, // Cu
-  { c: 1.0, p: { baseRampW: 0.05, fadeStart: 0.62, domeExp: 2.6, plateau: 1.0 } }, // Cb
+  // prettier-ignore
+  { c: 0.0, p: { baseRampW: 0.2, fadeStart: 0.72, domeExp: 3.0, plateau: 0.92, waist: 0 } }, // St
+  // prettier-ignore
+  { c: 0.4, p: { baseRampW: 0.14, fadeStart: 0.6, domeExp: 2.4, plateau: 0.96, waist: 0 } }, // Sc
+  // prettier-ignore
+  { c: 0.7, p: { baseRampW: 0.08, fadeStart: 0.48, domeExp: 2.0, plateau: 1.0, waist: 0 } }, // Cu
+  // Cb (T2): fadeStart raised 0.62→0.70 (top RE-WIDEN — density holds fuller
+  // toward the glaciated shield before the dome fade) + a mild mid waist →
+  // the classic anvil silhouette even before the coverage-pow spread.
+  // prettier-ignore
+  { c: 1.0, p: { baseRampW: 0.05, fadeStart: 0.7, domeExp: 2.6, plateau: 1.0, waist: 0.25 } }, // Cb
 ];
 
 function lerp(a: number, b: number, t: number): number {
@@ -116,6 +126,7 @@ function paramsAt(convectivity: number): RowParams {
     fadeStart: lerp(lo.p.fadeStart, hi.p.fadeStart, t),
     domeExp: lerp(lo.p.domeExp, hi.p.domeExp, t),
     plateau: lerp(lo.p.plateau, hi.p.plateau, t),
+    waist: lerp(lo.p.waist, hi.p.waist, t),
   };
 }
 
@@ -126,11 +137,19 @@ function paramsAt(convectivity: number): RowParams {
  */
 export function profileLUTValue(altNorm: number, convectivity: number): number {
   const a = clamp01(altNorm);
-  const { baseRampW, fadeStart, domeExp, plateau } = paramsAt(convectivity);
+  const { baseRampW, fadeStart, domeExp, plateau, waist } =
+    paramsAt(convectivity);
   const rise = smootherstep01(a / Math.max(baseRampW, 1e-4));
   const fadeX = clamp01((a - fadeStart) / Math.max(1 - fadeStart, 1e-4));
   const top = 1 - Math.pow(fadeX, domeExp);
-  return plateau * rise * top;
+  // Mid-column waist (Cb silhouette, T2): a smooth pinch bump centered at
+  // altNorm 0.45, ±0.3 wide. Multiplicative ≤1 → boundary-zero + interior-peak
+  // invariants hold for any waist ∈ [0,1).
+  const pinch =
+    waist > 0
+      ? 1 - waist * smootherstep01(1 - Math.abs(a - 0.45) / 0.3)
+      : 1;
+  return plateau * rise * top * pinch;
 }
 
 let cached: THREE.DataTexture | null = null;

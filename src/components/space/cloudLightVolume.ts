@@ -32,10 +32,11 @@ import {
   cloudHeightProfile,
   deriveCloudType,
   deriveTopAlt,
-  topHeightToTopAlt,
   WEATHER_V2,
   MESO_SCALE,
-  jitterTopAlt,
+  deriveColumnV2,
+  convectiveCoverage,
+  anvilProfileConv,
 } from "@/components/celestial/bodies/cloudShared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -107,7 +108,7 @@ const VOXEL_COUNT = NX * NY * NZ;
 
 // ── Sun-march config (mirrors the cone in earthClouds.ts) ──
 const LIGHT_STEP_SCALED = 0.002; // 2 km — MUST match earthClouds.ts LIGHT_STEP_SCALED
-const SUN_STEPS = 7; // 7 × 2 km ≈ 14 km ≈ one slab crossing
+const SUN_STEPS = 8; // 8 × 2 km ≈ 16 km ≈ one slab crossing (T2 slab raise)
 const CONE_DENSITY = 1000; // decoupled from uDensityMul — matches the cone
 
 // ── Box parameterization (scaled units; 1 unit = 1000 km) ──
@@ -313,7 +314,8 @@ export function createCloudLightVolume(
     // map (LINEAR coverage) — MUST match the marcher's channels or baked
     // shadows detach from the drawn clouds. Legacy: pow-lifted + coverage-derived.
     const wTap = texture(weatherMap, uv).level(int(0)) as Node;
-    const coverage = WEATHER_V2 ? wTap.r : wTap.r.pow(float(0.6));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let coverage: any = WEATHER_V2 ? wTap.r : wTap.r.pow(float(0.6));
     const cloudType = WEATHER_V2 ? wTap.g : deriveCloudType(coverage);
 
     // Column tap: still sampled for the (zero) anti-tiling warp — the tap's
@@ -325,22 +327,30 @@ export function createCloudLightVolume(
       int(0),
     ) as Node;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let topAlt: any = WEATHER_V2
-      ? topHeightToTopAlt(wTap.b)
-      : deriveTopAlt(coverage, colTap.r);
+    let topAlt: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let profileConv: any = cloudType;
     if (WEATHER_V2) {
-      // Per-cell tower-height jitter — the IDENTICAL field + helper the
-      // marcher applies to its per-step topAlt (cloudShared.jitterTopAlt,
-      // mesoTap.g at MESO_SCALE projected to the inner shell). Without this
-      // mirror the baked shadows keep the smooth ceiling while the rendered
-      // towers vary → self-shadow detaches from the tower tops.
+      // The SHARED column derivation (jitter + turret/anvil rise + knee) on
+      // the IDENTICAL field the marcher reads (mesoTap.g at MESO_SCALE
+      // projected to the inner shell) — without this mirror the baked
+      // shadows keep the smooth ceiling while the rendered towers/shields
+      // vary → self-shadow detaches. Coverage mirror: turret-core fullness +
+      // anvil-shield substance (the shield must CAST its shadow — a shield
+      // with no shadow floats). profileConv mirror: the sheet columns'
+      // profile morph (the bake has no K/detail stages → nothing else).
       const mesoTap = texture3D(
         baseVolume,
         pColumn.mul(float(MESO_SCALE)),
       ).level(int(0)) as Node;
-      topAlt = jitterTopAlt(topAlt, mesoTap.g, cloudType);
+      const col = deriveColumnV2(wTap.b, mesoTap.g, cloudType);
+      topAlt = col.topAlt;
+      coverage = convectiveCoverage(coverage, col.turretT, col.shield);
+      profileConv = anvilProfileConv(cloudType, col.sheet);
+    } else {
+      topAlt = deriveTopAlt(coverage, colTap.r);
     }
-    const profile = cloudHeightProfile(alt01, topAlt, cloudType);
+    const profile = cloudHeightProfile(alt01, topAlt, profileConv);
 
     // Dilated base shape — MUST match the marcher's anti-tiling (detile or
     // warp) AND dilation, or the baked shadows land beside the clouds that

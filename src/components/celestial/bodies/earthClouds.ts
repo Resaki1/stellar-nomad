@@ -56,7 +56,15 @@ import {
   PROFILE_LUT,
   profileLUTRowSample,
   MESO_SCALE,
-  jitterTopAlt,
+  TURRETS,
+  turretErosionScale,
+  anvilBandMask,
+  anvilDetailConv,
+  deriveColumnV2,
+  convectiveCoverage,
+  anvilProfileConv,
+  CLOUD_INNER_ALTITUDE_KM,
+  CLOUD_OUTER_ALTITUDE_KM,
 } from "./cloudShared";
 import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
@@ -85,9 +93,9 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
 
-// Troposphere-ish slab. Photoreal-leaning, not exaggerated.
-const CLOUD_INNER_ALTITUDE_KM = 1;
-const CLOUD_OUTER_ALTITUDE_KM = 14;
+// Troposphere-ish slab (CLOUD_INNER/OUTER_ALTITUDE_KM) now lives in
+// cloudShared (T2 slab raise 14→16 km; earth.ts imports the same constant —
+// the hand-mirrored copy is gone).
 
 // Base / per-column noise scales (1 scaled unit = 1000 km). SHARED by the
 // marcher's uBaseScale/uColumnScale uniforms AND the far-shell's macro-coverage
@@ -694,12 +702,12 @@ const BILLOW_CARVE_CU = 0.85;
 // convective end is CAPPED at 1.0 (K=1.2 read as unrealistically patchy in the
 // 2026-07-06 A/B). case #13: BOTH the probeShape skip-gate and the opacity
 // erosion read erosionKForType — never inline a second copy.
-const EROSION_K_ST = 0.6;
-const EROSION_K_CU = 2.0;
+const EROSION_K_ST = 0.5;
+const EROSION_K_CU = 0.7;
 // Solidity gamma ramp (§4.3): soft translucent stratiform sheets (γ=1, no
 // sharpen) → solid convective cores (γ=0.7 raises mids).
-const DENSITY_GAMMA_ST = 1.0;
-const DENSITY_GAMMA_CU = 0.7;
+const DENSITY_GAMMA_ST = 4.0;
+const DENSITY_GAMMA_CU = 0.1;
 // Fine-octave BIAS (2026-06-18 — the "half-lumps" fix; reference-grounded).
 // Nubis/Frostbite build the silhouette from a MULTI-OCTAVE base field (noiseL),
 // so lumps bulge OUT; their erosion (noiseH) is a separate finest-edge refine.
@@ -2132,15 +2140,15 @@ export function marchCloudVolume({
         weatherMap,
         equirectDirToUv(dirMid, uCloudUvOffset),
       ).level(int(0)) as Node;
-      topAltMid = topHeightToTopAlt(wMid.b);
-      // Same per-cell tower jitter as the per-step topAlt, so the 'topAlt'
-      // viz shows the RENDERED skyline (viz-only cost: this whole block is
+      // The SAME shared column derivation as the marcher + bake, so the
+      // 'topAlt'/'weatherRaw' vizzes show the RENDERED skyline incl. jitter,
+      // turrets and anvil shields (viz-only cost: this whole block is
       // dead-store-eliminated when DEBUG_VIZ === 'off').
       const mesoMid = texture3D(
         baseVolume,
         dirMid.mul(uInnerRadius).mul(float(MESO_SCALE)),
       ).level(int(0)) as Node;
-      topAltMid = jitterTopAlt(topAltMid, mesoMid.g, wMid.g);
+      topAltMid = deriveColumnV2(wMid.b, mesoMid.g, wMid.g).topAlt;
       cloudTypeMidV2 = wMid.g;
     } else {
       const pMidColumn = dirMid.mul(uInnerRadius);
@@ -2523,7 +2531,8 @@ export function marchCloudVolume({
         // the lift kept 0→0). v2 consumes LINEAR coverage — the lift existed
         // only for the old K<1 erosion; the adopted Nubis-form K=1 (§3.6 H2)
         // makes it unnecessary and the baker owns the histogram.
-        const coverage = WEATHER_V2 ? coverageRaw : coverageRaw.pow(float(0.6));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let coverage: any = WEATHER_V2 ? coverageRaw : coverageRaw.pow(float(0.6));
 
         // ── Cloud type ──
         // v2: the map's G channel (convectivity) — an INDEPENDENT type axis, so
@@ -2531,24 +2540,46 @@ export function marchCloudVolume({
         // fix). LEGACY: coverage-derived (cloudShared.deriveCloudType).
         const cloudType = WEATHER_V2 ? wTap.g : deriveCloudType(coverage);
 
-        // ── Per-column top altitude + anti-tiling warp ──
-        // v2: topAlt from the map's B channel (topHeight) → the per-step 3D
-        // COLUMN TAP is DELETED (−1 texture3D/step, the plan's perf win); warp
-        // is a zero vector (WARP_AMPLITUDE=0) so v2 skips it outright. LEGACY:
+        // ── T1+T2 unified column derivation (v2) + anti-tiling warp ──
+        // v2: the WHOLE topAlt chain (map B → jitter → turret/anvil rise →
+        // soft ceiling knee) + the convective masks come from the SHARED
+        // cloudShared.deriveColumnV2 — one definition with the light-volume
+        // bake and the topAlt diagnostics (the chain was previously
+        // hand-repeated at all three). The per-step 3D COLUMN TAP stays
+        // DELETED (−1 texture3D/step); warp is a zero vector. LEGACY:
         // colSample→deriveTopAlt + the g/b/a warp vector (case #19 — warp off).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let turretT: any = null;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let topAlt: any;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let warpVec: any;
+        // profileConv = the convectivity the PROFILE + erosion K + density
+        // gamma read: cloudType everywhere except anvil SHEET columns, where
+        // it morphs to stratiform (the km-anchored thin sheet at the raised
+        // top = the shield overhang; K follows so the region's convective K
+        // doesn't moth-eat the glaciated sheet).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let profileConv: any = cloudType;
+        // detailConv = the convectivity the DETAIL stages read (wisp/fine/
+        // billow): cloudType except in the glaciated shield band (smooth ice
+        // sheet — Blackrack zeroes detail there).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let detailConv: any = cloudType;
         if (WEATHER_V2) {
-          topAlt = topHeightToTopAlt(wTap.b);
-          // Per-cell tower-height jitter (§3.6 H4): break the map's smooth
-          // topHeight into a varied skyline in convective regions (stratiform
-          // stays inversion-flat). Reuses the meso tap's G channel — zero new
-          // fetches. LOCKSTEP: the light-volume bake applies the identical
-          // helper to its topAlt (cloudShared.jitterTopAlt) or baked shadows
-          // detach from the tower tops.
-          if (mesoTap) topAlt = jitterTopAlt(topAlt, mesoTap.g, cloudType);
+          const col = deriveColumnV2(wTap.b, mesoTap.g, cloudType);
+          topAlt = col.topAlt;
+          turretT = col.turretT;
+          // Turret-core fullness + anvil-shield substance, BEFORE the profile
+          // so the erosion cannot hollow either (probes inherit these step
+          // locals → view ray and self-shadow stay coherent automatically).
+          coverage = convectiveCoverage(coverage, col.turretT, col.shield);
+          profileConv = anvilProfileConv(cloudType, col.sheet);
+          detailConv = anvilDetailConv(
+            cloudType,
+            col.shield,
+            anvilBandMask(altitude01, topAlt),
+          );
           warpVec = vec3(0, 0, 0);
         } else {
           const pColumn = p.div(r).mul(uInnerRadius);
@@ -2568,6 +2599,14 @@ export function marchCloudVolume({
           // stripes: if they return, lower uColumnScale.
           topAlt = deriveTopAlt(coverage, colSample);
         }
+        // Per-step erosion K: per-type from profileConv (sheet columns erode
+        // like the stratiform sheet they are), × turret core softening. ONE
+        // value read by BOTH the probeShape skip-gate and the opacity
+        // erosion — case #13 (gate law) by construction.
+        const stepEroK =
+          WEATHER_V2 && TURRETS
+            ? erosionKForType(profileConv).mul(turretErosionScale(turretT))
+            : erosionKForType(cloudType);
 
         // (An altitude-perturbation hash and a profile-blur band-limit lived
         // here as iso-altitude-band fixes; both empirically refuted — removed
@@ -2575,7 +2614,7 @@ export function marchCloudVolume({
         // mip below.)
 
         // ── Dimensional profile (Nubis B4) ──
-        // profile = coverage × heightProfile(alt, cloudType). First-class
+        // profile = coverage × heightProfile(alt, profileConv). First-class
         // shader local that drives BOTH density (via Schneider value
         // erosion below) and lighting (ambient + multi-scatter probability
         // fields in B5). Combining them at this layer keeps the "smooth
@@ -2585,7 +2624,7 @@ export function marchCloudVolume({
         const heightProfile: any = cloudHeightProfile(
           altitude01,
           topAlt,
-          cloudType,
+          profileConv,
         );
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const profile: any = coverage.mul(heightProfile);
@@ -2669,7 +2708,9 @@ export function marchCloudVolume({
                 billowCarveKernel(
                   baseShape,
                   carveSrc,
-                  billowCarveAmtForType(cloudType),
+                  // detailConv = cloudType outside the anvil shield; pulled
+                  // to stratiform inside it (T2 glaciated smoothing).
+                  billowCarveAmtForType(detailConv),
                 ),
               );
               // ── Fine octave folded into the base field (see FINE_CARVE_BIAS) ──
@@ -2704,7 +2745,7 @@ export function marchCloudVolume({
                   profile,
                   t,
                   detailFade,
-                  cloudType,
+                  detailConv,
                 );
                 baseShapeCarved.assign(baseShapeCarved.add(fineDelta).clamp(0, 1));
               }
@@ -2735,11 +2776,11 @@ export function marchCloudVolume({
           // inclusion test, not a binary density cliff (the 2026-05-27
           // tile-speckle lesson — see git history for the full note).
           // Same coverage-envelope erosion as the dense branch (BASE_EROSION_K),
-          // so the gate engages exactly where density can be > 0. Per-type K
-          // (Phase 3b) via erosionKForType — the SAME helper + SAME cloudType
-          // as the dense-branch `shape` below (case #13 gate law).
+          // so the gate engages exactly where density can be > 0. stepEroK =
+          // per-type K × turret core softening, computed ONCE per step — the
+          // SAME node as the dense-branch `shape` below (case #13 gate law).
           const probeShape = profile.sub(
-            float(1).sub(baseShapeCarved).mul(erosionKForType(cloudType)),
+            float(1).sub(baseShapeCarved).mul(stepEroK),
           );
           maxProbeShape.assign(maxProbeShape.max(probeShape));
           maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
@@ -2795,13 +2836,11 @@ export function marchCloudVolume({
               // Coverage envelope eroded by the base noise (see BASE_EROSION_K):
               // shape = saturate(profile − (1 − base) × K). shape ≤ profile, so
               // no floaters; K<1 fills base gaps at high coverage → solid deck.
-              // Per-type K (Phase 3b, §4.2): stratiform K=0.8 (smooth filled
-              // sheets), convective K=1.0 (fully Nubis-carved). MUST stay the
-              // same helper + cloudType as the probeShape gate (case #13).
+              // stepEroK = per-type K (Phase 3b, §4.2: stratiform smooth →
+              // convective fully carved) × turret core softening (T1, §4.11).
+              // MUST stay the same node as the probeShape gate (case #13).
               const shape = dimProfile
-                .sub(
-                  float(1).sub(baseShapeCarved).mul(erosionKForType(cloudType)),
-                )
+                .sub(float(1).sub(baseShapeCarved).mul(stepEroK))
                 .clamp(0, 1);
 
               // NOTE: the old opacity-only detail erosion (the original
@@ -2822,7 +2861,9 @@ export function marchCloudVolume({
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const density: any = (
                 PER_TYPE_DETAIL
-                  ? pow(shape, densityGammaForType(cloudType))
+                  ? // profileConv (not cloudType): anvil sheet columns take
+                    // the soft stratiform gamma like the sheets they are.
+                    pow(shape, densityGammaForType(profileConv))
                   : // `as number` defeats TS's module-scope const narrowing
                     // (same dodge as FROXEL_ENABLED in atmospherePass.ts).
                     (DENSITY_GAMMA as number) === 1
@@ -3084,18 +3125,22 @@ export function marchCloudVolume({
                         pLsWarped.mul(float(CARVE_SCALE)),
                       ).level(int(0)) as Node;
                       // SAME per-type carve depth as the primary (same
-                      // cloudType local) — case #21: a depth mismatch here
-                      // inverts the crest/crevice self-shadow.
+                      // detailConv local, incl. the T2 anvil smoothing) —
+                      // case #21: a depth mismatch here inverts the
+                      // crest/crevice self-shadow.
                       carvedLs = billowCarveKernel(
                         dilatedLs,
                         carveLsSrc,
-                        billowCarveAmtForType(cloudType),
+                        billowCarveAmtForType(detailConv),
                       );
                     }
+                    // profileConv (not cloudType): the anvil sheet's
+                    // self-shadow must read the SAME morphed profile as the
+                    // view ray or the shield shadows as a phantom tower.
                     const profileLs = cloudHeightProfile(
                       altLs,
                       topAlt,
-                      cloudType,
+                      profileConv,
                     );
                     // MEASUREMENT: the LIT macro shape the 800 m probe absorbs
                     // by (DEBUG_VIZ 'litShape'). Compare to 'eroded'. (The
@@ -3144,7 +3189,7 @@ export function marchCloudVolume({
                         profileLs,
                         t,
                         float(1),
-                        cloudType,
+                        detailConv,
                       );
                       const fineCarvedNear = carvedLs
                         .add(fineDelta)
@@ -3259,7 +3304,7 @@ export function marchCloudVolume({
                     baseShapeL = billowCarveKernel(
                       baseShapeDilatedL,
                       carveSrcL,
-                      billowCarveAmtForType(cloudType),
+                      billowCarveAmtForType(detailConv),
                     );
                   }
                   const coverageL = coverage;  // primary-ray's coverage
@@ -3285,7 +3330,7 @@ export function marchCloudVolume({
                   //
                   // Range Tsun_ms 0.10–0.57 → ms varies 5.7× across
                   // cloud → visible top-bright/bottom-dark gradient.
-                  const profileL = cloudHeightProfile(altL, topAlt, cloudType);
+                  const profileL = cloudHeightProfile(altL, topAlt, profileConv);
                   // Lowered 3000 → 1000: once the cone sees the dilated+carved
                   // shape (Step 2), 3000 pushed cone optical depth into the
                   // ~3-6 range → Tsun = exp(-OD) ≈ 0 everywhere → the lit terms

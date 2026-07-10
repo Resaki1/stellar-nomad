@@ -36,17 +36,35 @@ type Node = any;
 // getSyntheticWeatherMapV2() (weatherMapV2.ts); the real ERA5 bake is Phase 4.
 export const WEATHER_V2 = true;
 
-// Map the v2 topHeight channel into the cloud-TOP altitude parameter topN
-// (alt01 units over the 1–14 km slab). LINEAR (never a smoothstep — the
-// anti-bimodal rule, §3.6 H4). Range widened 2026-07-08 to [0.10, 0.95]
-// (was [0.45, 0.95]): the 0.45 floor made the LOWEST possible cloud top ~7 km
-// and every base ≥4 km → NO low stratus/cumulus. 0.10 → topHeight 0 puts the
-// top at ~2.3 km (low cloud). NOTE: the LEGACY analytic cloudHeightProfile
-// (PROFILE_LUT off) was authored for topAlt∈[0.45,0.95]; with this wider range
-// its cumulus fade goes off-spec — the LUT path (default) is unaffected (it
-// uses topN as the span top and clamps baseN below).
+// ── Cloud slab (T2/§4.4: raised 14→16 km so Cb turrets + anvils have
+// headroom ABOVE the ordinary deck ceiling; ~+15% in-band march cost, §4.10
+// budgeted). SINGLE SOURCE: earthClouds (marcher + shell sphere + uniforms)
+// and earth.ts (shell fade) import these — the old hand-mirrored
+// CLOUD_TOP_ALTITUDE_KM copy is gone structurally. The light-volume bake gets
+// the slab via the marcher's radius uniforms (nothing to mirror).
+export const CLOUD_INNER_ALTITUDE_KM = 1;
+export const CLOUD_OUTER_ALTITUDE_KM = 16;
+const SLAB_SPAN_KM = CLOUD_OUTER_ALTITUDE_KM - CLOUD_INNER_ALTITUDE_KM; // 15
+
+// Map the v2 topHeight channel into the cloud-TOP altitude parameter topN.
+// KM-ANCHORED (T2): ordinary columns span the same PHYSICAL 2.3–13.35 km
+// they had in the 14 km slab — the 2 km raise is reserved as turret/anvil
+// headroom (TOPALT_CEIL 0.95 = 15.25 km, ~1.9 km above the ordinary
+// ceiling), NOT a stretch of every deck. LINEAR (anti-bimodal rule, §3.6 H4).
+// NOTE: the LEGACY analytic cloudHeightProfile (PROFILE_LUT off) was authored
+// for topAlt∈[0.45,0.95] — off-spec below that; the LUT path is unaffected.
+const TOP_KM_MIN = 2.3;
+const TOP_KM_MAX = 13.35;
+const TOPALT_FLOOR = (TOP_KM_MIN - CLOUD_INNER_ALTITUDE_KM) / SLAB_SPAN_KM; // ≈0.087
+const TOPALT_ORDINARY_CEIL =
+  (TOP_KM_MAX - CLOUD_INNER_ALTITUDE_KM) / SLAB_SPAN_KM; // ≈0.823
+const TOPALT_CEIL = 0.95; // 15.25 km — turret/anvil headroom only
 export function topHeightToTopAlt(topHeight01: Node): Node {
-  return mix(float(0.1), float(0.95), clamp(topHeight01, 0, 1));
+  return mix(
+    float(TOPALT_FLOOR),
+    float(TOPALT_ORDINARY_CEIL),
+    clamp(topHeight01, 0, 1),
+  );
 }
 
 // ── Per-cell tower-height jitter (§3.6 H4, second half) ─────────────────────
@@ -99,7 +117,245 @@ export function jitterTopAlt(
         .mul(float(TOPALT_JITTER_AMOUNT))
         .mul(clamp(convectivity, 0, 1)),
     )
-    .clamp(0.1, 0.95); // same floor/ceiling as topHeightToTopAlt
+    .clamp(TOPALT_FLOOR, TOPALT_CEIL); // strong upward jitter may enter headroom
+}
+
+// ── T1 Convective turret field (§4.11) ──────────────────────────────────────
+// Sparse, narrow, FULL columns rising above the convective deck — the tower
+// skyline of the KSP/Blackrack + Star Citizen references. A turret is the
+// extreme tail of the SAME updraft field (mesoTap.g) that drives the topAlt
+// jitter: jitter = per-cell life-cycle variance, turret = the strongest
+// updrafts. Three coupled effects, one mask:
+//   rise      — topAlt += T·TURRET_RISE (a tower is taller than its field)
+//   fullness  — coverage = max(coverage, T·0.9). THE load-bearing part
+//               (Nubis 2015: Cb is FORCED at ≥70% coverage; Blackrack: Cb core
+//               density 2.5-6× boost): without it, raising topAlt just makes a
+//               taller broken blob. With it the erosion cannot hollow the core
+//               → a filled column whose silhouette is the profile envelope.
+//   solid core — erosion K × (1 − T·0.4): boiling solid core, fully-carved
+//               cauliflower flanks where T fades (case #13: gate + opacity
+//               erosion must BOTH read the softened K).
+// Footprint = the peak of the updraft cell above TURRET_LO ≈ 2-4 km wide vs
+// 5-11 km tall → taller than wide (congestus/Cb proportions, τ 50-300 ≈ the
+// opaque core). DELIBERATE sparse mask (a skyline IS a positive tail) — not
+// the accidental §3.6-H4 bimodality trap. LOCKSTEP: marcher and light-volume
+// bake apply the same helpers (probes inherit the step locals); far shell =
+// accepted sub-texel divergence (turrets are ~3% of cells).
+export const TURRETS = true;
+// Thresholds MEASURED against the baked G-channel distribution (Monte-Carlo
+// N=200k, 2026-07-08: mean 0.473, p90 0.634, P(G>0.60)=15.7%, P(G>0.70)=3.1%):
+// cells enter turret in the top ~16% of the updraft field, FULL turret in the
+// top ~3%. (The §4.11 draft guessed 0.72/0.9 — measured: 2% / never. Guessing
+// thresholds on an unmeasured noise distribution strikes again.)
+const TURRET_LO = 0.6;
+const TURRET_HI = 0.9;
+// Convectivity gate: turrets only in genuinely convective regions.
+const TURRET_CONV_LO = 0.55;
+const TURRET_CONV_HI = 0.8;
+const TURRET_RISE = 0.3; // alt01 (+~4 km at full T); ceiling-clamped until §4.4 slab raise
+const TURRET_COVERAGE = 0.9;
+const TURRET_K_SOFTEN = 0.3;
+
+export function turretMask(mesoG: Node, convectivity: Node): Node {
+  return smoothstep(float(TURRET_LO), float(TURRET_HI), mesoG).mul(
+    smoothstep(
+      float(TURRET_CONV_LO),
+      float(TURRET_CONV_HI),
+      clamp(convectivity, 0, 1),
+    ),
+  );
+}
+export function turretErosionScale(turretT: Node): Node {
+  return float(1).sub(turretT.mul(float(TURRET_K_SOFTEN)));
+}
+
+// ── Soft ceiling knee (mesa fix, 2026-07-09) ────────────────────────────────
+// Jitter + turret rise pushed MANY adjacent cells onto the hard TOPALT_CEIL
+// clamp → they all shared exactly one top = flat mesa plateaus (the §3.6-H4
+// ceiling pile re-created at 0.95; user screenshot). Instead of clamping,
+// COMPRESS the headroom: above the ordinary ceiling the slope drops to
+// TOPALT_KNEE_SLOPE, so a pile spanning [0.823, 1.25] spreads into distinct
+// tops over [0.823, ~0.95] — varied summits, the hard clamp almost never
+// exactly hit. Applied ONCE at the end of the topAlt chain (deriveColumnV2).
+const TOPALT_KNEE_SLOPE = 0.3;
+function finalizeTopAlt(topAlt: Node): Node {
+  const excess = topAlt.sub(float(TOPALT_ORDINARY_CEIL)).max(0);
+  return topAlt
+    .min(float(TOPALT_ORDINARY_CEIL))
+    .add(excess.mul(float(TOPALT_KNEE_SLOPE)))
+    .clamp(TOPALT_FLOOR, TOPALT_CEIL);
+}
+
+// ── T2 Anvil (§4.4/§4.11): skirt-as-stratiform-sheet (REDESIGNED 2026-07-09) ─
+// A mature Cb glaciates and spreads at its top — the flat overhanging shield
+// of the KSP/Blackrack + Star Citizen references.
+//
+// WHY THE FIRST MECHANISM (Nubis 2017 coverage-pow) FAILED HERE — two causes,
+// both user-diagnosed in-app ("no anvil shapes anywhere"):
+//  1. GATE COLLAPSE (measured): bias = T × ss(0.75,1,conv) × topWindow. The
+//     synthetic map's convectivity p90 ≈ 0.71 → the middle gate ≈ 0 nearly
+//     everywhere; with TURRET_HI=0.9 T itself rarely tops 0.3 → bias ≤ ~0.1
+//     → pow(coverage, ~0.95) — invisible at any tuning.
+//  2. STRUCTURAL: pow(coverage, e) only acts where heightProfile > 0 — INSIDE
+//     columns whose own topAlt reaches the shield band. Neighbouring columns
+//     top out km lower; NO coverage exponent can create cloud ABOVE a
+//     column's own top. Nubis's anvil worked because their type-profile holds
+//     top density across the whole anvil footprint; in our per-column
+//     km-anchored model the pow can only fatten the 2-4 km core itself.
+//
+// THE FIX — build the shield out of the NEIGHBOURING COLUMNS: a wide SKIRT
+// mask around the same updraft peak RAISES the skirt columns' tops to the
+// core's level, while their PROFILE convectivity is pulled to stratiform →
+// km-anchoring (baseN = topN − thickness at conv→0) turns each skirt column
+// into a thin sheet hugging the raised top: mass ONLY near the shield level,
+// CLEAR AIR below = the overhang. Tower = core column (full from base);
+// shield = skirt columns (sheet at top). One continuous morph, no seam:
+//   skirt A   — smoothstep(SKIRT_LO, SKIRT_HI, G): wider footprint of the
+//               same cell peak the turret core sits in (2-3× core width).
+//   gate      — smoothstep(conv) × smoothstep(topKm on the PRE-RISE top):
+//               only deep convection with genuinely high tops anvils out.
+//               (Pre-rise top: the raised top would be circular.)
+//   rise      — riseMask = mix(T, max(T, A), gate): outside anvil regions
+//               the rise stays on the narrow core (plain turret); inside, the
+//               whole skirt rises to a SHARED level = the flat shield top.
+//   sheet     — gate·A·(1−T): skirt-not-core → profileConv → stratiform.
+//   coverage  — max(coverage, shield·ANVIL_COVERAGE): the sheet has substance.
+//   smoothing — anvilDetailConv (glaciated shield: detail pulled stratiform).
+//   erosion   — callers derive K from profileConv (NOT cloudType): the sheet
+//               erodes like the smooth stratiform sheet it is, else the
+//               region's convective K (user-tuned up to 2.0) moth-eats it.
+// LOCKSTEP: everything lives in deriveColumnV2 below — marcher, light-volume
+// bake, and the topAlt diagnostics call the SAME function. Far shell =
+// accepted divergence (its LUT peak scan is span-independent; anvil regions
+// are rare).
+export const ANVIL = true;
+// Region gates — MEASURED-reachable (map conv p90 ≈ 0.71; the failed draft's
+// ss(0.75, 1.0) was ≈ 0 over virtually the whole planet).
+const ANVIL_CONV_LO = 0.6;
+const ANVIL_CONV_HI = 0.85;
+// Cloud-top altitude window (km) on the PRE-RISE (ordinary) column top:
+// anvils appear as tops pass ~8 km, fully developed by ~11 km.
+const ANVIL_TOP_KM_LO = 8;
+const ANVIL_TOP_KM_HI = 11;
+// Skirt thresholds on the SAME G channel as the turret (measured: P(G>0.50)
+// ≈ 45% partial, P(G>0.62) ≈ 12% full) → shield ~2-3× the core footprint.
+const ANVIL_SKIRT_LO = 0.5;
+const ANVIL_SKIRT_HI = 0.62;
+// The sheet's profile convectivity (stratiform row → thin top-hugging sheet).
+const ANVIL_SHEET_CONV = 0.06;
+// Shield coverage floor (the sheet must be substantial or the erosion —
+// even at stratiform K — shreds the overhang).
+const ANVIL_COVERAGE = 0.8;
+// The glaciated band: the top ANVIL_BAND_N below the column top, where the
+// DETAIL character is pulled toward stratiform (ice, not boiling droplets).
+const ANVIL_BAND_N = 0.15;
+const ANVIL_DETAIL_SMOOTH = 0.85;
+
+function anvilRegionGate(convectivity: Node, topAltPreRise: Node): Node {
+  const topKmLoN =
+    (ANVIL_TOP_KM_LO - CLOUD_INNER_ALTITUDE_KM) / SLAB_SPAN_KM; // ≈0.467
+  const topKmHiN =
+    (ANVIL_TOP_KM_HI - CLOUD_INNER_ALTITUDE_KM) / SLAB_SPAN_KM; // ≈0.667
+  return smoothstep(
+    float(ANVIL_CONV_LO),
+    float(ANVIL_CONV_HI),
+    clamp(convectivity, 0, 1),
+  ).mul(smoothstep(float(topKmLoN), float(topKmHiN), topAltPreRise));
+}
+// 0 below the glaciated band → 1 at the column top (keyed on alt01 relative
+// to topAlt — altNorm would be circular here, §4.4).
+export function anvilBandMask(alt01: Node, topAlt: Node): Node {
+  return clamp(
+    alt01.sub(topAlt.sub(float(ANVIL_BAND_N))).div(float(ANVIL_BAND_N)),
+    0,
+    1,
+  );
+}
+export function anvilDetailConv(
+  cloudType: Node,
+  shield: Node,
+  bandMask: Node,
+): Node {
+  return mix(
+    clamp(cloudType, 0, 1),
+    float(0.08),
+    shield.mul(bandMask).mul(float(ANVIL_DETAIL_SMOOTH)),
+  );
+}
+
+// ── The unified v2 column derivation (T1+T2) ────────────────────────────────
+// ONE definition of the whole topAlt chain + convective masks, called by the
+// marcher dense branch, the light-volume bake, AND the topAlt/weatherRaw
+// diagnostics — the chain was previously hand-repeated at all three (the
+// exact wiring-drift class Phase 0 was built to kill). Returns:
+//   topAlt  — jittered + turret/anvil-risen + knee-compressed column top
+//   turretT — the narrow core mask (drives fullness + K softening)
+//   shield  — gate·skirt (drives shield coverage + glaciated detail)
+//   sheet   — shield·(1−T) (drives the profileConv stratiform morph)
+export function deriveColumnV2(
+  topHeight01: Node,
+  mesoG: Node,
+  convectivity: Node,
+): {
+  topAlt: Node;
+  turretT: Node;
+  shield: Node;
+  sheet: Node;
+} {
+  const conv = clamp(convectivity, 0, 1);
+  let topAlt = topHeightToTopAlt(topHeight01);
+  topAlt = jitterTopAlt(topAlt, mesoG, conv);
+  let turretT: Node = float(0);
+  let shield: Node = float(0);
+  let sheet: Node = float(0);
+  if (TURRETS) {
+    turretT = turretMask(mesoG, conv);
+    let riseMask: Node = turretT;
+    if (ANVIL) {
+      const gate = anvilRegionGate(conv, topAlt); // PRE-RISE top (see above)
+      const skirt = smoothstep(
+        float(ANVIL_SKIRT_LO),
+        float(ANVIL_SKIRT_HI),
+        mesoG,
+      );
+      shield = gate.mul(skirt);
+      riseMask = mix(turretT, skirt.max(turretT), gate);
+      // Core exclusion from G DIRECTLY (not 1−turretT: T's peak depends on
+      // the TURRET_HI tuning — with the user's 0.9 it tops at ~0.5, and a
+      // 1−T sheet would morph the CORE half-stratiform too → the tower's
+      // base lifts to ~7 km and the whole anvil floats, verified in the
+      // 2026-07-09 numeric trace). ss(TURRET_LO, +0.1) → the sheet morph
+      // dies exactly where the core column begins; the tower keeps its
+      // ground-rooted base under the shield.
+      const coreness = smoothstep(
+        float(TURRET_LO),
+        float(TURRET_LO + 0.1),
+        mesoG,
+      );
+      sheet = shield.mul(float(1).sub(coreness));
+    }
+    topAlt = topAlt.add(riseMask.mul(float(TURRET_RISE)));
+  }
+  return { topAlt: finalizeTopAlt(topAlt), turretT, shield, sheet };
+}
+
+// Convective coverage floor: turret core fullness (T1) + anvil shield
+// substance (T2). Replaces the plain turretCoverage.
+export function convectiveCoverage(
+  coverage: Node,
+  turretT: Node,
+  shield: Node,
+): Node {
+  return coverage
+    .max(turretT.mul(float(TURRET_COVERAGE)))
+    .max(shield.mul(float(ANVIL_COVERAGE)));
+}
+
+// The convectivity the PROFILE (and erosion K / density gamma) should read:
+// cloudType everywhere except sheet columns, where it morphs to stratiform —
+// the km-anchoring then places a thin sheet at the raised top (the shield).
+export function anvilProfileConv(cloudType: Node, sheet: Node): Node {
+  return mix(clamp(cloudType, 0, 1), float(ANVIL_SHEET_CONV), sheet);
 }
 
 // ── Phase 2 (§4.2): vertical-profile LUT master toggle ───────────────────────
@@ -114,17 +370,21 @@ export function jitterTopAlt(
 // structurally, not by hand-kept parity.
 export const PROFILE_LUT = true;
 
-// km-anchoring span constants (alt01 units over the 1–14 km slab). The LUT row is
+// km-anchoring span constants. KM-DEFINED (T2) and converted to alt01 so slab
+// raises don't silently thicken every sheet / lift every base. The LUT row is
 // normalized to each column's OWN [baseN, topN] span, so the SAME genus shape
 // fills a thin high sheet OR a deep tower depending on where the span sits:
-//   • CONVECTIVE_BASE_N — deep convective columns sit on a shared low LCL-like
-//     deck (matches the ported cumulus base, smoothstep 0.04–0.16 → base ≈ 0.05).
-//   • STRATIFORM_THICKNESS_N — layered columns HUG their top: baseN = topN −
-//     thickness (a thin sheet just below the cloud top). ≈ 1.5 km / 13 km slab.
+//   • CONVECTIVE_BASE_KM — deep convective columns sit on a shared low
+//     LCL-like deck (the ported cumulus base ≈ 1.65 km).
+//   • STRATIFORM_THICKNESS_KM — layered columns HUG their top: baseN = topN −
+//     thickness (a thin ~1.6 km sheet just below the cloud top).
 // topAlt (from the topHeight channel) sets topN → preserves region-to-region
 // height variation; convectivity slides the base between these two regimes.
-const CONVECTIVE_BASE_N = 0.05;
-const STRATIFORM_THICKNESS_N = 0.12;
+const CONVECTIVE_BASE_KM = 1.65;
+const STRATIFORM_THICKNESS_KM = 1.6;
+const CONVECTIVE_BASE_N =
+  (CONVECTIVE_BASE_KM - CLOUD_INNER_ALTITUDE_KM) / SLAB_SPAN_KM; // ≈0.043
+const STRATIFORM_THICKNESS_N = STRATIFORM_THICKNESS_KM / SLAB_SPAN_KM; // ≈0.107
 
 // Raw LUT row fetch at (altNorm, convectivity), L0 (the LUT is mip-less; its UV
 // is non-spatial so a mip level would be meaningless). Used by cloudHeightProfile

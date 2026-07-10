@@ -41,6 +41,7 @@ import {
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
+import { CLOUD_OUTER_ALTITUDE_KM } from "./cloudShared";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import {
   getAtmosphereLUTs,
@@ -62,9 +63,10 @@ const EARTH_ROTATION = new THREE.Euler(0.0, 0.15 * Math.PI, 0.8 * Math.PI);
 const USE_ATMOSPHERE_SURFACE_LIGHTING = true;
 const SURFACE_SUN_SCALE = 1.0; // overall multiplier on the (zenith-normalised) tint
 
-// Cloud DECK top altitude (km) — the reference for the shell fade below and
-// matches CLOUD_OUTER_ALTITUDE_KM in earthClouds.ts.
-const CLOUD_TOP_ALTITUDE_KM = 14;
+// Cloud DECK top altitude (km) — the reference for the shell fade below.
+// Imported from cloudShared (T2): the old hand-mirrored copy of earthClouds'
+// constant is gone — a slab change now propagates here automatically.
+const CLOUD_TOP_ALTITUDE_KM = CLOUD_OUTER_ALTITUDE_KM;
 
 // Far-field cloud SHELL fade band (ISSUE 2 Phase 2), driving uShellOpacity in
 // onFrame. The shell (sphere at cloud-top radius) is full above the deck and

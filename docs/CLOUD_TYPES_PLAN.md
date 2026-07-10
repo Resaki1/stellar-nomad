@@ -864,6 +864,193 @@ shared formulas). Everything behind build consts; measure at the three
 canonical camera positions (in-cloud / high / orbit) per the review doc's
 method before/after each phase.
 
+### 4.11 Convective towers — turret field + anvil (designed 2026-07-08)
+
+**Goal:** the reference look (KSP/Blackrack + Star Citizen screenshots,
+user-provided): a cumulus field with sparse, TALLER-THAN-WIDE towers rising
+above the deck, the biggest wearing flat spreading anvils. Physically: towers
+are strong updrafts — narrow (2–10 km), FULL (Cb core τ 50–300 ≈ opaque),
+rising from a locally-uniform base plane to well above the surrounding tops
+(congestus 3–6+ km extent; Cb to the tropopause), anvil spreading 50–300 km
+downwind where the updraft hits the cap. Cb implies a downwind cirrus plume
+(co-occurrence rule — Phase 5 hook).
+
+**Three sources, one convergent recipe (all verified):**
+- Nubis 2015/2017: Cb is FORCED at ≥70% coverage (fullness is load-bearing);
+  anvil = pow(coverage, remap(h, 0.7, 0.8, 1, lerp(1, 0.5, anvil_bias)))
+  (§4.4, incl. our remap-CLAMP red-team fix); superstorms = authored stamps.
+- Nubis 2022: per-column Min/Max Height + top/bottom type split is
+  Guerrilla's stated answer to towering forms in a heightfield model.
+- Blackrack EVE Volumetrics (agent-verified from the open release-5 source +
+  configs, 2026-07-08): vertical shape = per-type (coverage, density) curves
+  baked into a 128² (type × height) LUT — OUR architecture; the ANVIL IS LUT
+  CONTENT (Cb curve: full base 0.98 → trunk waist 0.47 at h≈0.67 → RE-WIDENS
+  to 0.97 at h≈0.94 → hard chop at 1.0 — high profile near the top IS the
+  horizontal spread, via the same coverage-intersection remap we use); Cb
+  core density boost 2.5–6×; anvil noise ~8× coarser tiling + detail→0
+  (SMOOTHNESS sells the shield); a zero-density "anvil-shield-only" ghost
+  type between cumulus and Cb makes storm EDGES show high thin debris before
+  the core fills (great transition-state idea for our conv-axis path); base
+  noise scrolls UPWARD 5–11 m/s (boiling motion).
+
+**Design — three falsifiable stages, all lockstep-shared via cloudShared:**
+
+**T1 — Turret field (the skyline).** Zero new fetches; pure ALU.
+- Updraft field U = mesoTap.g — the SAME per-~8 km-cell channel that drives
+  the topAlt jitter: turrets are the extreme tail of the same physical field
+  (jitter = life-cycle variance; turret = strongest updrafts). One fetch,
+  three consumers.
+- `T = smoothstep(TURRET_LO, TURRET_HI, U) ·
+  smoothstep(0.55, 0.8, convectivity)` — sparse by construction (convective
+  regions only). DELIBERATE sparse mask (a skyline is a positive tail), not
+  the accidental §3.6-H4 bimodality trap — document.
+  **Thresholds MEASURED at T1 implementation (2026-07-08, Monte-Carlo N=200k
+  on the baked G distribution: mean 0.473, p90 0.634): LO=0.60, HI=0.70 →
+  cells enter at the top ~16% of the updraft field, FULL turret in the top
+  ~3%. The draft's guessed 0.72/0.9 measured to 2% / NEVER — thresholds on an
+  unmeasured noise distribution strike again (third recurrence).**
+- Rise: `topAlt += T · TURRET_RISE (≈0.3 ≈ +4 km)`, clamped (0.95 ceiling
+  until the T2 slab raise). Footprint = the PEAK of U above TURRET_LO within
+  its ~8 km cell → core ~2–4 km wide × 5–11 km tall = taller than wide. ✓
+- Fullness (the Nubis 70% rule + Blackrack density boost, in our currency):
+  `coverageEff = max(coverage, T · 0.9)` BEFORE profile — the erosion can't
+  hollow the core; and erosion softening in the core:
+  `K_eff = erosionKForType(conv) · (1 − T · 0.4)` — solid boiling core,
+  fully-carved flanks (matches "hard cauliflower flanks in growth stage").
+  Both via ONE shared turret helper; case #13: the probeShape gate reads the
+  same K modulation; the coverageEff must feed gate + shape + probes + bake.
+- LOCKSTEP surfaces: marcher dense branch (compute T once per step),
+  800 m + near probes (same step locals — automatic), light-volume densityAt
+  (has mesoTap since the jitter — mirror the helper), far shell (turrets are
+  sub-texel statistics; accepted divergence, note it), weatherRaw/topAlt
+  diagnostics (optional truthfulness).
+**T1 ✅ LANDED 2026-07-08 (behind TURRETS in cloudShared, default ON;
+awaiting user A/B).** Helpers turretMask/turretTopAlt/turretCoverage/
+turretErosionScale in cloudShared (measured thresholds above). Marcher dense
+branch: ONE turretT per step (after cloudType, from the existing mesoTap) →
+coverage boost BEFORE profile, topAlt rise AFTER jitter, and `stepEroK` =
+erosionKForType(cloudType) × turretErosionScale(turretT) computed ONCE and
+read by BOTH the probeShape skip-gate and the opacity erosion (case #13 by
+construction — the two former inline erosionKForType calls now share one
+node). Probes inherit the boosted step locals (automatic coherence).
+Light-volume densityAt mirrors mask/rise/coverage on its existing mesoTap
+(no K in the bake → nothing else). topAltMid diagnostic mirrored ('topAlt'
+viz shows turret dots). Far shell: accepted sub-texel divergence (~3% of
+cells). Legacy + TURRETS=false byte-identical. Lint clean. NOTE for tuning:
+with the user's K_CU=2.0, a full-T core still carves ~10-15% micro-holes
+(K_eff≈1.1) — if cores read broken, raise TURRET_K_SOFTEN (0.4) or
+TURRET_COVERAGE (0.9).
+
+**T2 ✅ LANDED 2026-07-09 (behind ANVIL in cloudShared, default ON; awaiting
+user A/B).**
+- SLAB RAISED 14→16 km: CLOUD_INNER/OUTER_ALTITUDE_KM moved to cloudShared —
+  earthClouds AND earth.ts import them (the hand-mirrored CLOUD_TOP_ALTITUDE_KM
+  copy is gone structurally). Bake extent already uniform-derived; SUN_STEPS
+  7→8 (16 km crossing). ~+15% in-band cost (§4.10 budgeted) — measure.
+- KM-ANCHORED topHeightToTopAlt: ordinary columns keep their PHYSICAL
+  2.3–13.35 km range (TOPALT_FLOOR/ORDINARY_CEIL derived from km); the raise
+  is reserved as turret/jitter headroom (TOPALT_CEIL 0.95 = 15.25 km, ~1.9 km
+  above the ordinary ceiling). STRATIFORM_THICKNESS/CONVECTIVE_BASE now
+  km-defined too (1.6 / 1.65 km) so slab changes never silently reshape decks.
+- ANVIL (§4.4 mechanism, red-team corrections honored): anvilBiasFor = T ×
+  smoothstep(0.75,1,conv) × smoothstep(topKm 9→12); anvilBandMask = top 0.15
+  of slab below the column top (~2.3 km shield); anvilCoverage = pow(coverage,
+  1→0.5) — exponent CLAMPED by construction (band+bias ∈[0,1], the unclamped-
+  remap footgun cannot occur); anvilDetailConv pulls the DETAIL convectivity
+  toward stratiform in the shield (glaciated smoothing — detail ramps only;
+  erosion K + gamma stay on cloudType so the core stays solid). Marcher:
+  coverage+detailConv computed per step after topAlt; BOTH fineCarveDelta
+  sites + ALL billowCarveAmtForType sites read detailConv (case #21 coherent).
+  Bake mirrors bias+spread (the shield CASTS its shadow); bake has no detail
+  stages → no smoothing mirror. Wind-shear skew NOT included (optional,
+  deferred).
+- Cb LUT silhouette (Blackrack): fadeStart 0.62→0.70 (top re-widen) + waist
+  0.25 @ altNorm 0.45. VERIFIED: boundary-zero exact, row continuity 0.042
+  < 0.05, Cb curve = full base → 0.75 waist → 0.99 shield → dome.
+- TUNING NOTE: with the user's TURRET_HI=0.9 (G rarely exceeds ~0.85), full-T
+  turrets are rare → anvils will be SUBTLE/rare by construction. If shields
+  should be more common: lower TURRET_HI, or widen ANVIL_TOP_KM window, or
+  raise ANVIL_EXP spread. Verify: tall towers in deep-convective regions
+  flatten + spread at the top into a smooth shield; /dev/cloud-profile shows
+  the new Cb curve; ordinary decks unchanged (km-anchoring); shadows under
+  shields; fps in-band (+15% budget).
+**T2 ANVIL REDESIGNED 2026-07-09 (user A/B: "no anvil shapes anywhere" +
+flat mesa tops — both root-caused and fixed):**
+- FAILURE 1, gate collapse (measured): anvilBiasFor = T × ss(0.75,1,conv) ×
+  topWindow. Map conv p90 ≈ 0.71 → middle gate ≈ 0 planet-wide; with
+  TURRET_HI=0.9, T tops at ~0.5 → bias ≤ ~0.1 → pow(coverage, ~0.95) =
+  invisible at ANY tuning (three stacked multiplicative gates).
+- FAILURE 2, STRUCTURAL: pow(coverage, e) only acts where heightProfile > 0 —
+  INSIDE columns whose own topAlt reaches the shield band. Neighbour columns
+  top out km lower → NO coverage exponent can create cloud ABOVE a column's
+  own top → the "spread" could only fatten the 2-4 km core itself. Nubis's
+  anvil works because their type-profile holds top density across the whole
+  anvil footprint; our per-column km-anchored model cannot express it that
+  way. LESSON: §4.4's mechanism translation was wrong — audit reference
+  mechanisms against OUR column semantics before porting.
+- FAILURE 3, flat mesas: jitter + turret rise piled adjacent cells onto the
+  hard TOPALT_CEIL clamp → shared plateau tops (H4 ceiling pile at 0.95).
+- REDESIGN (skirt-as-stratiform-sheet): the shield is built from the
+  NEIGHBOURING columns. anvilRegionGate = ss(0.6,0.85,conv) ×
+  ss(topKm 8→11 on the PRE-RISE top) [measured-reachable]; skirt A =
+  ss(0.50,0.62,G) [2-3× core footprint]; riseMask = mix(T, max(T,A), gate)
+  → the whole skirt rises to a shared level; sheet = gate·A·(1−coreness)
+  with coreness = ss(TURRET_LO, +0.1, G) — core exclusion from G DIRECTLY
+  (1−turretT depends on TURRET_HI tuning: with 0.9 the sheet morphed the
+  CORE too and the tower base lifted to ~7 km = floating lens, caught in the
+  numeric trace); profileConv = mix(cloudType, 0.06, sheet) → km-anchoring
+  renders skirt columns as thin sheets hugging the raised top = the OVERHANG
+  (clear air below); coverage floor shield·0.8; erosion K + density gamma
+  now read profileConv (NOT cloudType — the region's convective K, user-
+  tuned to 2.0, would moth-eat the glaciated sheet); detail smoothing keyed
+  shield·band. anvilBiasFor/anvilCoverage DELETED.
+- MESA FIX: finalizeTopAlt soft knee — above TOPALT_ORDINARY_CEIL (0.823)
+  slope drops to 0.3, clamp at 0.95 almost never exactly hit → the pile
+  spreads into varied summits.
+- CONSOLIDATION: deriveColumnV2(topHeight01, mesoG, conv) in cloudShared =
+  the WHOLE v2 topAlt chain + masks, called by the marcher, the light-volume
+  bake, AND the topAlt/weatherRaw diagnostics (chain was hand-repeated at
+  all three). Marcher/bake pass profileConv to cloudHeightProfile (main +
+  800 m probe + cone + bake — the sheet's self-shadow must read the morphed
+  profile or the shield shadows as a phantom tower); stepEroK =
+  erosionKForType(profileConv) × turretErosionScale(T), one node for gate +
+  opacity (case #13). NUMERIC TRACE (conv 0.8, topH 0.55): outside
+  2.5–7.4 km deck | skirt sheet 4.1–12.6 km (overhang) | core tower
+  3.7–13.8 km ground-rooted. Lint clean. Verify in-app: deep-convective
+  regions → towers with flat spreading shields around them; mesas gone
+  (varied summits); shadows under shields; stratiform regions unchanged.
+  (original spec follows:)
+  Requires the §4.4 slab raise 14→16 km first (2 lockstep
+  constants, ~+15% in-band cost) so Cb tops + shields have headroom.
+- Runtime spread: the §4.4 coverage-pow, gated
+  `anvilBias = T · smoothstep(0.75, 1, conv) · smoothstep(9, 12, topKm)` —
+  formula + remap-CLAMP footgun already red-teamed in §4.4.
+- LUT content (Blackrack finding): give the conv→1 end of the profile LUT a
+  mild waist + top re-widen (anchor param tweak in cloudProfileLUT.ts) for
+  the classic silhouette even before the pow modifier.
+- Anvil SMOOTHING: where anvilBias is high, fade the per-type detail ramps
+  back down (wisp/fine/billow toward stratiform values) — glaciated smooth
+  shield (Blackrack: detail 0, 8× coarser noise). Slots into the existing
+  §4.3 ramp helpers as an anvilBias override.
+- Wind-shear skew (§4.4: p += windDir·shearKm·alt01², geometry-only) —
+  optional in T2, drama win.
+**T3 — Polish (each optional, measure first):**
+- Upward noise scroll in turret cores (T-gated, 5–11 m/s equivalent) —
+  boiling motion; check TAA/anti-flicker interaction (case #22) first.
+- Ghost transition state: mid-conv "shield-only" debris row in the LUT
+  generator (Blackrack's trick) so storm edges read as high thin outflow.
+- Overshooting dome: tiny extra rise at T≈1.
+- Supercell/squall-line STAMPS into the map channels (§4.4, Guerrilla
+  pattern) for art-directed monsters + the M.D.R.-style vortex later.
+- Vertical noise anisotropy in turrets ONLY if cores still read blobby
+  (radial-frame stretch = expensive/complex; likely unnecessary given
+  fullness makes the silhouette profile-driven).
+
+**Perf:** T1 ≈ free (ALU on existing fetches, marcher + bake). T2 = the slab
+raise (+15% in-band, §4.10 already budgets it) + ALU. Measure at the three
+canonical camera positions per phase.
+
+
 ---
 
 ## 5. Migration plan (each phase shippable + falsifiable, R7)
