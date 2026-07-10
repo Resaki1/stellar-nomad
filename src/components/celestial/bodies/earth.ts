@@ -49,7 +49,7 @@ import {
 
 export { PLANET_POSITION_KM };
 
-const EARTH_ROTATION = new THREE.Euler(0.0, 0.5 * Math.PI, 0.8 * Math.PI);
+const EARTH_ROTATION = new THREE.Euler(0.0, 0.15 * Math.PI, 0.8 * Math.PI);
 
 // ── Atmosphere↔surface lighting coupling (Phase 3b, docs/ATMOSPHERE_PLAN.md §5.4) ──
 // When ON, the day-lit surface (+ ocean sun-glint + flat cloud overlay) is tinted

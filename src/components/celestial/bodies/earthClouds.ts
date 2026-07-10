@@ -53,6 +53,10 @@ import {
   topAltSpread,
   topHeightToTopAlt,
   WEATHER_V2,
+  PROFILE_LUT,
+  profileLUTRowSample,
+  MESO_SCALE,
+  jitterTopAlt,
 } from "./cloudShared";
 import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
@@ -147,6 +151,11 @@ const SHELL_HANDOFF_FAR_KM = 2500; // ≥ this → shell FULL (far horizon)
 // band 0.1 is REQUIRED (stratus/low-sc live at alt01 0.0–0.25; its absence was
 // half the low-coverage bug — validated via 'profileMaxLow').
 const SHELL_ALT_SAMPLES = [0.1, 0.3, 0.55, 0.8] as const;
+// PROFILE_LUT far-shell peak scan: fixed altNorm points ACROSS the LUT row's
+// plateau (span-independent), so the shell's per-column profile peak is caught
+// wherever km-anchoring places the [baseN, topN] span (Bug A: fixed alt01 slab
+// samples would miss the relocated stratiform sheet). See profileLUTRowSample.
+const PROFILE_LUT_PEAK_SAMPLES = [0.2, 0.35, 0.5] as const;
 // topAlt column tap replacement: the hybrid baseVolume.r's ~p50 (measured
 // 0.48/0.71/0.89 p10/p50/p90 — see TOPALT_LINEAR). A constant mid value, NOT a
 // noise tap ('colSample' frizzes from orbit); only sways the cumulus top fade.
@@ -613,7 +622,8 @@ const BASE_EROSION_K_EFF = EROSION_NUBIS_FORM ? 1.0 : BASE_EROSION_K;
 // EXPECTED if H3 holds: instant closed/open-cell deck organization with
 // clear-sky lanes at the 10-40 km scale.
 const MESOSCALE_TEST = true;
-const MESO_SCALE = 8; // baseVolume tile 125 km → ~31 km cells
+// MESO_SCALE moved to cloudShared (the light-volume bake samples the SAME
+// field for the topAlt tower jitter — one shared constant, no hand-mirror).
 const MESO_LANE_LO = 0.45; // below → lane (true zero); tune vs p10 ≈ 0.48
 const MESO_LANE_HI = 0.7; // above → cell interior (mask 1)
 //
@@ -646,6 +656,50 @@ const CARVE_SCALE = 360;
 const FINE_CARVE = true;
 const FINE_CARVE_SCALE = 350;
 const FINE_CARVE_STRENGTH = 0.2;
+
+// ── CLOUD_TYPES_PLAN Phase 3 (§4.3): per-type detail character ──────────────
+// Build const — flip + reload. Drives the detail knobs from the map's
+// convectivity axis (cloudType = wTap.g under WEATHER_V2) so genus differs in
+// SURFACE character, not just height: stratiform reads SMOOTH + WISPY-edged,
+// convective reads SHARP + more detailed. Phase 3a ramps ONLY the two knobs
+// inside the shared fineCarveDelta helper (WISP_AMOUNT, FINE_CARVE_STRENGTH) —
+// they touch NEITHER the far-shell opacity LUT NOR the light-volume bake, and
+// the view ray + near self-shadow probe both route through fineCarveDelta, so
+// per-type edge character stays coherent for free (case #21) with NO re-bake
+// and NO near/far seam. The shell-coupled knobs (BILLOW_CARVE, DENSITY_GAMMA,
+// per-type erosion K) are Phase 3b — they need a 2D convectivity×profile shell
+// LUT + a forced light-volume re-bake (case #13 for K), so they are deferred.
+// OFF = byte-identical legacy: the ramp endpoints are chosen so the conv≈0.5
+// MIDPOINT equals today's constant, so daily play at average convectivity is
+// continuous with the legacy look.
+const PER_TYPE_DETAIL = true;
+// FINE_CARVE_STRENGTH ramp: soft St edges → hard sharp Cu edges.
+// mix(0.12, 0.28, 0.5) = 0.20 = the legacy FINE_CARVE_STRENGTH (continuous).
+const FINE_CARVE_STRENGTH_ST = 0.12;
+const FINE_CARVE_STRENGTH_CU = 0.20;
+// WISP_AMOUNT ramp (applied inside fineCarveDelta): wispy stratiform edges →
+// solid convective edges.
+const WISP_AMOUNT_ST = 1.0;
+const WISP_AMOUNT_CU = 0.35;
+// ── Phase 3b: the shell-coupled per-type knobs (macro character) ─────────────
+// These three also feed the far-shell opacity LUT, so the LUT gains a
+// convectivity axis (see SHELL_OPACITY_LUT_CONV_ROWS) — a marcher-only ramp
+// would open a near/far seam at the 300-600 km handoff.
+// BILLOW_CARVE ramp: shallow carve → fuller connected stratiform sheets;
+// deep carve → lumpier convective cauliflower. mix(0.35,0.55,0.5)=0.45=legacy.
+const BILLOW_CARVE_ST = 0.05;
+const BILLOW_CARVE_CU = 0.85;
+// Value-erosion K ramp (§4.2): stratiform smooth/filled (K<1 restores a mild
+// density floor — DESIRED for sheets), convective fully Nubis-carved. The
+// convective end is CAPPED at 1.0 (K=1.2 read as unrealistically patchy in the
+// 2026-07-06 A/B). case #13: BOTH the probeShape skip-gate and the opacity
+// erosion read erosionKForType — never inline a second copy.
+const EROSION_K_ST = 0.6;
+const EROSION_K_CU = 2.0;
+// Solidity gamma ramp (§4.3): soft translucent stratiform sheets (γ=1, no
+// sharpen) → solid convective cores (γ=0.7 raises mids).
+const DENSITY_GAMMA_ST = 1.0;
+const DENSITY_GAMMA_CU = 0.7;
 // Fine-octave BIAS (2026-06-18 — the "half-lumps" fix; reference-grounded).
 // Nubis/Frostbite build the silhouette from a MULTI-OCTAVE base field (noiseL),
 // so lumps bulge OUT; their erosion (noiseH) is a separate finest-edge refine.
@@ -665,7 +719,13 @@ const FINE_CARVE_BIAS = 0.4;
 // 0 when FINE_CARVE off or bias=1 (pure subtractive) → original gate / perf.
 const FINE_MAX_BULGE =
   FINE_CARVE && FINE_CARVE_BIAS < 1
-    ? FINE_CARVE_STRENGTH * (1 - FINE_CARVE_BIAS)
+    ? // Use the MAX possible strength so the carve gate stays a conservative
+      // necessary condition: with PER_TYPE_DETAIL, convective columns reach
+      // FINE_CARVE_STRENGTH_CU (0.28) — gating on the legacy 0.2 would clip
+      // convective bulges (the "half-lumps" regression) exactly where they
+      // should be most pronounced.
+      (PER_TYPE_DETAIL ? FINE_CARVE_STRENGTH_CU : FINE_CARVE_STRENGTH) *
+      (1 - FINE_CARVE_BIAS)
     : 0;
 // Fine-octave FREQUENCY GRADING (2026-06-18 — thin-cloud/edge pockmark fix;
 // Nubis p.109). Nubis: "we want the edges to have more rounded structure than
@@ -885,7 +945,9 @@ const DEBUG_VIZ:
   | "floaterProbe"
   | "baseColumn"
   | "litShape"
-  | "detailShadow" = "off";
+  | "detailShadow"
+  | "weatherRaw"
+  | "convType" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
 // truth for the marcher, the far shell, and the light-volume bake.
@@ -949,10 +1011,41 @@ function macroDilatedShapeAt(pos: any, baseVolume: THREE.Texture): any {
 // primary pWarped, 800 m probe pLsWarped, cone pL). Used by carvedShapeAt (the
 // detile path), the primary non-detile carve, the 800 m self-shadow probe, and
 // the dead cone path — so a carve-form change lands everywhere at once.
-function billowCarveKernel(dilated: Node, carveSrc: Node): Node {
+// `carveAmt` = the carve DEPTH (Phase 3b: per-type via billowCarveAmtForType;
+// legacy float(BILLOW_CARVE)). Explicit at every site — no default — so a new
+// call site must consciously pick ramped vs fixed. Only the depth ramps; the
+// 0.6/0.4 octave mix and CARVE_SCALE stay fixed (they define the carve FIELD,
+// which the shell LUT bakes at the same scale).
+function billowCarveKernel(dilated: Node, carveSrc: Node, carveAmt: Node): Node {
   const cw = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
-  const ct = float(1).sub(cw).mul(float(BILLOW_CARVE));
+  const ct = float(1).sub(cw).mul(carveAmt);
   return dilated.sub(ct).div(float(1).sub(ct).max(0.0001)).clamp(0, 1);
+}
+
+// ── Phase 3b per-type macro knobs (§4.3) ─────────────────────────────────────
+// ONE definition each, consumed by the marcher dense branch AND the shell
+// opacity-LUT kernel (with the LUT's per-row convectivity) so near and far
+// stay statistically matched. All collapse to the legacy constants when
+// PER_TYPE_DETAIL is off (byte-identical A/B baseline).
+function billowCarveAmtForType(convectivity: Node): Node {
+  return PER_TYPE_DETAIL
+    ? mix(float(BILLOW_CARVE_ST), float(BILLOW_CARVE_CU), convectivity.clamp(0, 1))
+    : float(BILLOW_CARVE);
+}
+// case #13 gate law: the probeShape skip-gate AND the opacity erosion MUST both
+// read THIS helper with the SAME cloudType — if they drift, dense mode engages
+// where integrated density is 0 (or skips real cloud): the tile-speckle class.
+function erosionKForType(convectivity: Node): Node {
+  return PER_TYPE_DETAIL
+    ? mix(float(EROSION_K_ST), float(EROSION_K_CU), convectivity.clamp(0, 1))
+    : float(BASE_EROSION_K_EFF);
+}
+function densityGammaForType(convectivity: Node): Node {
+  return mix(
+    float(DENSITY_GAMMA_ST),
+    float(DENSITY_GAMMA_CU),
+    convectivity.clamp(0, 1),
+  );
 }
 
 // Fine-octave delta (grade → wisp → HHF → centered bias·strength·fade).
@@ -972,6 +1065,7 @@ function fineCarveDelta(
   profileInput: Node,
   tDist: Node,
   detailFade: Node,
+  convectivity: Node,
 ): Node {
   // Frequency-grade by the smooth profile (Nubis p.109): LOW-freq rounded
   // octave (R) at thin/edge, HIGH-freq (B) in the core.
@@ -983,6 +1077,13 @@ function fineCarveDelta(
   );
   // Billowy → WISPY (A channel) toward the thin edge (feathery curl strands).
   if (WISP_DETAIL) {
+    // §4.3: per-type wisp AMOUNT — stratiform edges very wispy, convective
+    // solid. Ramps only the WEIGHT; the mix operand `fineNoise` is still the
+    // frequency-graded R↔B branch, so the grade power is never bypassed
+    // (case #21 — no HF pockmarks at edges).
+    const wispAmt = PER_TYPE_DETAIL
+      ? mix(float(WISP_AMOUNT_ST), float(WISP_AMOUNT_CU), convectivity.clamp(0, 1))
+      : float(WISP_AMOUNT);
     const wispiness = float(1)
       .sub(
         smoothstep(
@@ -991,7 +1092,7 @@ function fineCarveDelta(
           profileInput.clamp(0, 1),
         ),
       )
-      .mul(float(WISP_AMOUNT));
+      .mul(wispAmt);
     fineNoise = mix(fineNoise, fineSrc.a, wispiness);
   }
   // HHF: twice-folded high-freq channel blended in near camera (Nubis p.117).
@@ -1003,14 +1104,26 @@ function fineCarveDelta(
     );
     fineNoise = mix(fineNoise, hhf, hhfBlend);
   }
+  // §4.3: per-type carve STRENGTH — soft St edges vs hard sharp Cu edges.
+  // Applied AFTER the grade/wisp/HHF composite and BEFORE detailFade, so it
+  // stays inside the DETAIL_FADE amplitude fade (case #21) and never bypasses
+  // FINE_CARVE_GRADE_POW.
+  const fineStrength = PER_TYPE_DETAIL
+    ? mix(
+        float(FINE_CARVE_STRENGTH_ST),
+        float(FINE_CARVE_STRENGTH_CU),
+        convectivity.clamp(0, 1),
+      )
+    : float(FINE_CARVE_STRENGTH);
   return fineNoise
     .sub(float(FINE_CARVE_BIAS))
-    .mul(float(FINE_CARVE_STRENGTH))
+    .mul(fineStrength)
     .mul(detailFade);
 }
 
 // ── Shell opacity LUT (the shell's noise term, statistically) ────────────────
-// 256×1 table: texel i = E_noise[ 1 − exp(−pow(eroded, DENSITY_GAMMA)·PATH) ]
+// 256×CONV_ROWS table: texel (i,j) = E_noise[ 1 − exp(−pow(eroded, γ)·PATH) ]
+// at dimProfile i with row j's per-type carve/K/γ (Phase 3b; 256×1 legacy)
 // for dimProfile d_i = i/255, where eroded = saturate(d_i − (1−carved)·K_EFF).
 // Monte-Carlo'd on the GPU from the REAL baked noise volumes at load (one tiny
 // one-shot compute riding the cloudVolumeCompute bake queue). The shell reads
@@ -1037,6 +1150,14 @@ function fineCarveDelta(
 // change. OPTICAL_PATH is the one free knob (see SHELL_OPTICAL_PATH).
 const SHELL_OPACITY_LUT_SIZE = 256;
 const SHELL_OPACITY_LUT_SAMPLES = 8192; // stderr ≈ 0.55% per bin
+// Phase 3b: the LUT gains a CONVECTIVITY axis (v) so the far shell tracks the
+// per-type BILLOW_CARVE / erosion-K / DENSITY_GAMMA ramps — a marcher-only ramp
+// would desync near/far opacity at the 300-600 km handoff (the crossfade-seam
+// class). 8 rows suffice: the ramps are LINEAR in convectivity, so bilinear
+// filtering between rows is exact interpolation of near-identical statistics
+// (the profile-LUT parameter-interpolation argument). 1 row when the per-type
+// path is off → byte-identical legacy LUT.
+const SHELL_OPACITY_LUT_CONV_ROWS = PER_TYPE_DETAIL ? 8 : 1;
 
 let cachedOpacityLUT: THREE.Texture | null = null;
 function getShellOpacityLUT(
@@ -1044,7 +1165,10 @@ function getShellOpacityLUT(
   detailVolume: THREE.Texture,
 ): THREE.Texture {
   if (cachedOpacityLUT) return cachedOpacityLUT;
-  const tex = new StorageTexture(SHELL_OPACITY_LUT_SIZE, 1);
+  const tex = new StorageTexture(
+    SHELL_OPACITY_LUT_SIZE,
+    SHELL_OPACITY_LUT_CONV_ROWS,
+  );
   tex.format = THREE.RGBAFormat;
   tex.type = THREE.UnsignedByteType; // rgba8unorm — 1/255 alpha quantisation is fine
   tex.minFilter = THREE.LinearFilter;
@@ -1055,8 +1179,18 @@ function getShellOpacityLUT(
   tex.generateMipmaps = false;
 
   const kernel = Fn(() => {
-    // This bin's dimensional-profile value (LUT index → d ∈ [0,1]).
-    const dimProfile = float(instanceIndex).div(SHELL_OPACITY_LUT_SIZE - 1);
+    // 2D bin from the flat dispatch index: x = dimProfile bin, y = convectivity
+    // row. Float math is exact here (indices ≤ 2047 ≪ 2^24).
+    const idx = float(instanceIndex);
+    const rowF = idx.div(SHELL_OPACITY_LUT_SIZE).floor();
+    const colF = idx.sub(rowF.mul(SHELL_OPACITY_LUT_SIZE));
+    // This bin's dimensional-profile value (LUT u → d ∈ [0,1]).
+    const dimProfile = colF.div(SHELL_OPACITY_LUT_SIZE - 1);
+    // This row's convectivity (LUT v). Single-row (legacy) LUTs never read it.
+    const convRow =
+      SHELL_OPACITY_LUT_CONV_ROWS > 1
+        ? rowF.div(SHELL_OPACITY_LUT_CONV_ROWS - 1)
+        : float(0.5);
     const sum = float(0).toVar();
     Loop(
       {
@@ -1084,14 +1218,22 @@ function getShellOpacityLUT(
         const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
         const dilated = baseDilate(bs.r, fbm);
         const cs = texture3D(detailVolume, pc).level(int(0)) as Node;
-        const carved = billowCarveKernel(dilated, cs);
+        // Per-type carve/K/gamma from THIS ROW's convectivity — the same
+        // helpers the marcher dense branch reads with its per-step cloudType,
+        // so near and far stay statistically matched (Phase 3b lockstep).
+        const carved = billowCarveKernel(
+          dilated,
+          cs,
+          billowCarveAmtForType(convRow),
+        );
         // Marcher erosion + solidity gamma → Beer-Lambert opacity for this
         // sample's density (see BASE_EROSION_K, DENSITY_GAMMA, uDensityMul).
         const eroded = dimProfile
-          .sub(float(1).sub(carved).mul(float(BASE_EROSION_K_EFF)))
+          .sub(float(1).sub(carved).mul(erosionKForType(convRow)))
           .clamp(0, 1);
-        const dens =
-          (DENSITY_GAMMA as number) === 1
+        const dens = PER_TYPE_DETAIL
+          ? pow(eroded, densityGammaForType(convRow))
+          : (DENSITY_GAMMA as number) === 1
             ? eroded
             : pow(eroded, float(DENSITY_GAMMA));
         sum.addAssign(
@@ -1102,7 +1244,7 @@ function getShellOpacityLUT(
     const opacity = sum.div(float(SHELL_OPACITY_LUT_SAMPLES));
     textureStore(
       tex,
-      (uvec2 as Node)(instanceIndex, uint(0)),
+      (uvec2 as Node)(uint(colF), uint(rowF)),
       vec4(opacity, opacity, opacity, 1),
     ).toWriteOnly();
   });
@@ -1110,7 +1252,11 @@ function getShellOpacityLUT(
   // Queued AFTER the volumes (getShellOpacityLUT is called with the already-
   // requested singletons) so the in-order bake dispatch populates its inputs
   // first — same ordering contract as detail mip1.
-  queueCloudBake({ computeNode: kernel().compute(SHELL_OPACITY_LUT_SIZE) });
+  queueCloudBake({
+    computeNode: kernel().compute(
+      SHELL_OPACITY_LUT_SIZE * SHELL_OPACITY_LUT_CONV_ROWS,
+    ),
+  });
   cachedOpacityLUT = tex;
   return tex;
 }
@@ -1185,24 +1331,48 @@ function columnMacroCoverage(
     cloudType = deriveCloudType(coverage);
     topAlt = deriveTopAlt(coverage, float(SHELL_COL_SAMPLE));
   }
-  // Profile peak over the slab (pure ALU). Coverage is per-column constant, so
+  // Profile peak over the slab. Coverage is per-column constant, so
   // max(coverage×profile) = coverage × max(profile).
   const maxProfile = float(0).toVar();
-  for (const a of SHELL_ALT_SAMPLES) {
-    maxProfile.assign(
-      maxProfile.max(cloudHeightProfile(float(a), topAlt, cloudType)),
-    );
+  if (PROFILE_LUT) {
+    // Sample the LUT ROW directly at fixed altNorm (NOT the km-anchored alt01):
+    // km-anchoring relocates stratiform mass up near the cloud top, so scanning
+    // fixed alt01 slab heights would MISS a thin high sheet (Bug A). The row
+    // plateau is span-independent → a few altNorm taps give the column's profile
+    // peak regardless of where the span sits (cloudType = convectivity in v2).
+    for (const an of PROFILE_LUT_PEAK_SAMPLES) {
+      maxProfile.assign(
+        maxProfile.max(profileLUTRowSample(float(an), cloudType)),
+      );
+    }
+  } else {
+    for (const a of SHELL_ALT_SAMPLES) {
+      maxProfile.assign(
+        maxProfile.max(cloudHeightProfile(float(a), topAlt, cloudType)),
+      );
+    }
   }
   if (SHELL_DEBUG_VIZ === "profileMax") return maxProfile;
   const maxDim = coverage.mul(maxProfile).clamp(0, 1);
   if (SHELL_DEBUG_VIZ === "maxDim") return maxDim;
-  // Expected-opacity transfer: LUT indexed by dimProfile (maxDim). Texel
-  // centres: u = d·(N−1)/N + 0.5/N.
+  // Expected-opacity transfer: LUT indexed by (dimProfile, convectivity).
+  // Texel centres: u = d·(N−1)/N + 0.5/N (same for v over the conv rows).
   const lutU = maxDim
     .mul((SHELL_OPACITY_LUT_SIZE - 1) / SHELL_OPACITY_LUT_SIZE)
     .add(0.5 / SHELL_OPACITY_LUT_SIZE);
+  // Phase 3b: v = this column's convectivity → the shell reads the SAME
+  // per-type carve/K/gamma statistics the marcher renders (no handoff seam).
+  const lutV =
+    SHELL_OPACITY_LUT_CONV_ROWS > 1
+      ? cloudType
+          .clamp(0, 1)
+          .mul(
+            (SHELL_OPACITY_LUT_CONV_ROWS - 1) / SHELL_OPACITY_LUT_CONV_ROWS,
+          )
+          .add(0.5 / SHELL_OPACITY_LUT_CONV_ROWS)
+      : float(0.5);
   const opacity = (
-    texture(opacityLUT, vec2(lutU, 0.5)).level(int(0)) as Node
+    texture(opacityLUT, vec2(lutU, lutV)).level(int(0)) as Node
   ).r;
   // 'opacity' viz falls through here (final shell coverage before lighting).
   return opacity;
@@ -1963,6 +2133,14 @@ export function marchCloudVolume({
         equirectDirToUv(dirMid, uCloudUvOffset),
       ).level(int(0)) as Node;
       topAltMid = topHeightToTopAlt(wMid.b);
+      // Same per-cell tower jitter as the per-step topAlt, so the 'topAlt'
+      // viz shows the RENDERED skyline (viz-only cost: this whole block is
+      // dead-store-eliminated when DEBUG_VIZ === 'off').
+      const mesoMid = texture3D(
+        baseVolume,
+        dirMid.mul(uInnerRadius).mul(float(MESO_SCALE)),
+      ).level(int(0)) as Node;
+      topAltMid = jitterTopAlt(topAltMid, mesoMid.g, wMid.g);
       cloudTypeMidV2 = wMid.g;
     } else {
       const pMidColumn = dirMid.mul(uInnerRadius);
@@ -2062,7 +2240,13 @@ export function marchCloudVolume({
       const cs = texture3D(detailVolume, pos.mul(float(CARVE_SCALE))).level(
         int(0),
       ) as Node;
-      return billowCarveKernel(dil, cs);
+      // DETILE PATH (dead: USE_DETILE=false) stays at the FIXED legacy carve
+      // depth: this closure is defined ONCE at fragment scope, so capturing the
+      // per-step cloudType here would read the LAST step's value (the
+      // documented TSL var-aliasing footgun — see feedback_tsl_var_aliasing).
+      // If USE_DETILE is re-enabled under PER_TYPE_DETAIL, thread carveAmt as
+      // an explicit parameter through detileBlend instead.
+      return billowCarveKernel(dil, cs, float(BILLOW_CARVE));
     };
 
     // Diagnostic counters hoisted to fragment scope so the debug return at
@@ -2311,6 +2495,8 @@ export function marchCloudVolume({
         const wTap = texture(weatherMap, uvP).level(int(0)) as Node;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let coverageRaw: any = wTap.r;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let mesoTap: any = null;
         if (WEATHER_V2 || MESOSCALE_TEST) {
           // MARCHER-SPACE mesoscale octave (§3.6 H3): mask coverage with a
           // ~31 km cellular field (true zeros in the lanes) sampled from the 3D
@@ -2321,7 +2507,9 @@ export function marchCloudVolume({
           // of-km cells → hierarchical, like real Sc); in legacy it's the
           // Phase-F MESOSCALE_TEST preview. World-anchored (projected to the
           // inner shell → a 2D pattern on the sphere, not volume noise).
-          const mesoTap = texture3D(
+          // The SAME tap's G channel drives the per-cell topAlt tower jitter
+          // below (cloudShared.jitterTopAlt) — one fetch, two consumers.
+          mesoTap = texture3D(
             baseVolume,
             dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
           ).level(int(0)) as Node;
@@ -2354,6 +2542,13 @@ export function marchCloudVolume({
         let warpVec: any;
         if (WEATHER_V2) {
           topAlt = topHeightToTopAlt(wTap.b);
+          // Per-cell tower-height jitter (§3.6 H4): break the map's smooth
+          // topHeight into a varied skyline in convective regions (stratiform
+          // stays inversion-flat). Reuses the meso tap's G channel — zero new
+          // fetches. LOCKSTEP: the light-volume bake applies the identical
+          // helper to its topAlt (cloudShared.jitterTopAlt) or baked shadows
+          // detach from the tower tops.
+          if (mesoTap) topAlt = jitterTopAlt(topAlt, mesoTap.g, cloudType);
           warpVec = vec3(0, 0, 0);
         } else {
           const pColumn = p.div(r).mul(uInnerRadius);
@@ -2470,7 +2665,13 @@ export function marchCloudVolume({
                 detailVolume,
                 pWarped.mul(float(CARVE_SCALE)),
               ).level(int(0)) as Node;
-              baseShapeCarved.assign(billowCarveKernel(baseShape, carveSrc));
+              baseShapeCarved.assign(
+                billowCarveKernel(
+                  baseShape,
+                  carveSrc,
+                  billowCarveAmtForType(cloudType),
+                ),
+              );
               // ── Fine octave folded into the base field (see FINE_CARVE_BIAS) ──
               // CENTERED perturbation, not a one-sided erosion: raises the field
               // where the fine noise is high (lump bulges OUT past the macro
@@ -2498,7 +2699,13 @@ export function marchCloudVolume({
                 );
                 // Grade → wisp → HHF → centered bias·strength·fade (shared with
                 // the near self-shadow probe — see fineCarveDelta).
-                const fineDelta = fineCarveDelta(fineSrc, profile, t, detailFade);
+                const fineDelta = fineCarveDelta(
+                  fineSrc,
+                  profile,
+                  t,
+                  detailFade,
+                  cloudType,
+                );
                 baseShapeCarved.assign(baseShapeCarved.add(fineDelta).clamp(0, 1));
               }
             });
@@ -2528,9 +2735,11 @@ export function marchCloudVolume({
           // inclusion test, not a binary density cliff (the 2026-05-27
           // tile-speckle lesson — see git history for the full note).
           // Same coverage-envelope erosion as the dense branch (BASE_EROSION_K),
-          // so the gate engages exactly where density can be > 0.
+          // so the gate engages exactly where density can be > 0. Per-type K
+          // (Phase 3b) via erosionKForType — the SAME helper + SAME cloudType
+          // as the dense-branch `shape` below (case #13 gate law).
           const probeShape = profile.sub(
-            float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K_EFF)),
+            float(1).sub(baseShapeCarved).mul(erosionKForType(cloudType)),
           );
           maxProbeShape.assign(maxProbeShape.max(probeShape));
           maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
@@ -2586,9 +2795,12 @@ export function marchCloudVolume({
               // Coverage envelope eroded by the base noise (see BASE_EROSION_K):
               // shape = saturate(profile − (1 − base) × K). shape ≤ profile, so
               // no floaters; K<1 fills base gaps at high coverage → solid deck.
+              // Per-type K (Phase 3b, §4.2): stratiform K=0.8 (smooth filled
+              // sheets), convective K=1.0 (fully Nubis-carved). MUST stay the
+              // same helper + cloudType as the probeShape gate (case #13).
               const shape = dimProfile
                 .sub(
-                  float(1).sub(baseShapeCarved).mul(float(BASE_EROSION_K_EFF)),
+                  float(1).sub(baseShapeCarved).mul(erosionKForType(cloudType)),
                 )
                 .clamp(0, 1);
 
@@ -2603,14 +2815,19 @@ export function marchCloudVolume({
 
               // Solidity gamma (Nubis low-density sharpen; see DENSITY_GAMMA):
               // raise mid densities so the carved body reads SOLID, not balls in
-              // transparent. JS-const gated → off path is byte-identical.
+              // transparent. Phase 3b: per-type γ (soft translucent stratiform
+              // → solid convective cores). The JS `===1` fast-path only lives
+              // on the OFF branch (a runtime γ Node defeats it) so OFF stays
+              // byte-identical.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const density: any = (
-                // `as number` defeats TS's module-scope const narrowing (same
-                // dodge as FROXEL_ENABLED in atmospherePass.ts).
-                (DENSITY_GAMMA as number) === 1
-                  ? shape
-                  : pow(shape, float(DENSITY_GAMMA))
+                PER_TYPE_DETAIL
+                  ? pow(shape, densityGammaForType(cloudType))
+                  : // `as number` defeats TS's module-scope const narrowing
+                    // (same dodge as FROXEL_ENABLED in atmospherePass.ts).
+                    (DENSITY_GAMMA as number) === 1
+                    ? shape
+                    : pow(shape, float(DENSITY_GAMMA))
               ).mul(densScale);
               lastDensity.assign(density);
 
@@ -2866,7 +3083,14 @@ export function marchCloudVolume({
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
                       ).level(int(0)) as Node;
-                      carvedLs = billowCarveKernel(dilatedLs, carveLsSrc);
+                      // SAME per-type carve depth as the primary (same
+                      // cloudType local) — case #21: a depth mismatch here
+                      // inverts the crest/crevice self-shadow.
+                      carvedLs = billowCarveKernel(
+                        dilatedLs,
+                        carveLsSrc,
+                        billowCarveAmtForType(cloudType),
+                      );
                     }
                     const profileLs = cloudHeightProfile(
                       altLs,
@@ -2920,6 +3144,7 @@ export function marchCloudVolume({
                         profileLs,
                         t,
                         float(1),
+                        cloudType,
                       );
                       const fineCarvedNear = carvedLs
                         .add(fineDelta)
@@ -3031,7 +3256,11 @@ export function marchCloudVolume({
                       detailVolume,
                       pL.mul(float(CARVE_SCALE)),
                     ).level(int(0)) as Node;
-                    baseShapeL = billowCarveKernel(baseShapeDilatedL, carveSrcL);
+                    baseShapeL = billowCarveKernel(
+                      baseShapeDilatedL,
+                      carveSrcL,
+                      billowCarveAmtForType(cloudType),
+                    );
                   }
                   const coverageL = coverage;  // primary-ray's coverage
 
@@ -3362,6 +3591,35 @@ export function marchCloudVolume({
           firstHitT.greaterThan(0.0).select(colBC, vec3(0, 0, 0)),
           float(1),
         ),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "weatherRaw") {
+      // GROUND TRUTH: the raw weather channels the marcher reads at the visible
+      // surface (slab midpoint), BEFORE the profile/erosion/mesoscale pipeline.
+      //   R = coverage   G = convectivity   B = topHeight
+      // Splits "the type/height SIGNAL isn't varying" (flat G/B here) from
+      // "signal fine, genus just hard to see from above" (G/B vary here but the
+      // normal render looks uniform). Along the genus strip expect: R constant,
+      // GREEN ramping left→right (convectivity 0→1), B constant per band.
+      const convRaw = WEATHER_V2
+        ? cloudTypeMidV2
+        : smoothstep(float(0.3), float(0.6), covMid);
+      const topRaw = topAltMid.sub(float(0.45)).div(float(0.5)).clamp(0, 1);
+      return {
+        rgba: vec4(covMid, convRaw, topRaw, float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "convType") {
+      // Convectivity alone as grayscale (black = stratiform, white = deep
+      // convective) — the clearest read of whether the TYPE axis varies across
+      // the planet / along the strip, isolated from coverage and height.
+      const convRaw = WEATHER_V2
+        ? cloudTypeMidV2
+        : smoothstep(float(0.3), float(0.6), covMid);
+      return {
+        rgba: vec4(convRaw, convRaw, convRaw, float(1)),
         tFront: float(0),
       };
     }

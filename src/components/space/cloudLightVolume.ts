@@ -34,6 +34,8 @@ import {
   deriveTopAlt,
   topHeightToTopAlt,
   WEATHER_V2,
+  MESO_SCALE,
+  jitterTopAlt,
 } from "@/components/celestial/bodies/cloudShared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -322,9 +324,22 @@ export function createCloudLightVolume(
     const colTap = texture3D(baseVolume, pColumn.mul(uColumnScale)).level(
       int(0),
     ) as Node;
-    const topAlt = WEATHER_V2
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let topAlt: any = WEATHER_V2
       ? topHeightToTopAlt(wTap.b)
       : deriveTopAlt(coverage, colTap.r);
+    if (WEATHER_V2) {
+      // Per-cell tower-height jitter — the IDENTICAL field + helper the
+      // marcher applies to its per-step topAlt (cloudShared.jitterTopAlt,
+      // mesoTap.g at MESO_SCALE projected to the inner shell). Without this
+      // mirror the baked shadows keep the smooth ceiling while the rendered
+      // towers vary → self-shadow detaches from the tower tops.
+      const mesoTap = texture3D(
+        baseVolume,
+        pColumn.mul(float(MESO_SCALE)),
+      ).level(int(0)) as Node;
+      topAlt = jitterTopAlt(topAlt, mesoTap.g, cloudType);
+    }
     const profile = cloudHeightProfile(alt01, topAlt, cloudType);
 
     // Dilated base shape — MUST match the marcher's anti-tiling (detile or

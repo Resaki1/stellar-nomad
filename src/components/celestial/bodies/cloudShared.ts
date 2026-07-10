@@ -1,4 +1,5 @@
-import { float, smoothstep, mix, clamp } from "three/tsl";
+import { float, smoothstep, mix, clamp, texture, vec2, int } from "three/tsl";
+import { getCloudProfileLUT } from "./cloudProfileLUT";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -35,12 +36,109 @@ type Node = any;
 // getSyntheticWeatherMapV2() (weatherMapV2.ts); the real ERA5 bake is Phase 4.
 export const WEATHER_V2 = true;
 
-// Map the v2 topHeight channel (0-1 over ~0-18 km) into the existing topAlt
-// PARAMETER range [0.45, 0.95] that cloudHeightProfile expects. LINEAR (never a
-// smoothstep — the anti-bimodal rule, §3.6 H4). Phase 2's km-anchored profile
-// LUT replaces this ad-hoc remap with a physical km mapping.
+// Map the v2 topHeight channel into the cloud-TOP altitude parameter topN
+// (alt01 units over the 1–14 km slab). LINEAR (never a smoothstep — the
+// anti-bimodal rule, §3.6 H4). Range widened 2026-07-08 to [0.10, 0.95]
+// (was [0.45, 0.95]): the 0.45 floor made the LOWEST possible cloud top ~7 km
+// and every base ≥4 km → NO low stratus/cumulus. 0.10 → topHeight 0 puts the
+// top at ~2.3 km (low cloud). NOTE: the LEGACY analytic cloudHeightProfile
+// (PROFILE_LUT off) was authored for topAlt∈[0.45,0.95]; with this wider range
+// its cumulus fade goes off-spec — the LUT path (default) is unaffected (it
+// uses topN as the span top and clamps baseN below).
 export function topHeightToTopAlt(topHeight01: Node): Node {
-  return mix(float(0.45), float(0.95), clamp(topHeight01, 0, 1));
+  return mix(float(0.1), float(0.95), clamp(topHeight01, 0, 1));
+}
+
+// ── Per-cell tower-height jitter (§3.6 H4, second half) ─────────────────────
+// The map's topHeight is a SMOOTH hundreds-of-km field with zero local
+// variance → two visible artifacts (user-confirmed 2026-07-08): every cloud in
+// a region tops out at ONE altitude (wrong for convective fields — real
+// cumulus neighbours differ by km, each cell at its own life-cycle stage), and
+// where the field gradients the deck roof follows it as a smooth unnatural
+// RAMP (real transitions STEP between levels). Real ERA5 data does NOT fix
+// this — closed-deck tops are flat at 28 km/px too ("injected variance is
+// mandatory", §4.2 acceptance test: dense-region p10-p90 top spread ≥ 4 km).
+//
+// Fix: perturb topAlt per ~16 km cell with the mesoscale noise tap the marcher
+// ALREADY samples for the coverage lanes (mesoTap.g — the first Worley-FBM
+// octave at MESO_SCALE; zero new fetches in the hot path), LINEAR remap
+// (anti-bimodal rule), gated by CONVECTIVITY: stratiform stays inversion-flat
+// (physically correct), convective gets a varied tower skyline; ramps become
+// stepped lines of towers. LOCKSTEP: the marcher and the light-volume bake
+// BOTH apply this helper to their topAlt (same field, same formula) or baked
+// shadows detach from the tower tops. The far shell is unaffected (its LUT
+// peak scan is span-independent).
+export const TOPALT_JITTER = true;
+// baseVolume tile at this scale = 62.5 km → ~16 km R-channel cells (the
+// coverage lanes) and ~8 km G-channel cells (the tower jitter). NOTE this one
+// constant sets BOTH: user-tuned 8→16 (2026-07-08) for per-cloud-body jitter;
+// the lanes halved with it (31→16 km) as a side effect. Shared so the
+// marcher's mask/jitter and the bake's jitter sample the IDENTICAL field.
+export const MESO_SCALE = 16;
+// ±AMOUNT/2 × gate in alt01 units at the G channel's extremes (user-tuned
+// 0.5→0.8): up to ±4-5 km cell-to-cell in fully convective regions, ×FLOOR of
+// that in pure stratiform.
+const TOPALT_JITTER_AMOUNT = 0.8;
+// (A round-2 "stratiform floor + topAlt terracing" attempt at the smooth-ramp
+// artifact was REVERTED 2026-07-08: quantizing topAlt gave flat decks hard
+// unnatural edges everywhere — worse than the ramp it fixed. The ramp only
+// appears where the SYNTHETIC map has unnaturally steep topHeight transitions;
+// real ERA5 gradients (Phase 4) shouldn't produce it. Re-check after the real
+// bake; if it persists there, revisit with a gentler mechanism.)
+
+export function jitterTopAlt(
+  topAlt: Node,
+  mesoG: Node,
+  convectivity: Node,
+): Node {
+  if (!TOPALT_JITTER) return topAlt;
+  return topAlt
+    .add(
+      mesoG
+        .sub(0.5)
+        .mul(float(TOPALT_JITTER_AMOUNT))
+        .mul(clamp(convectivity, 0, 1)),
+    )
+    .clamp(0.1, 0.95); // same floor/ceiling as topHeightToTopAlt
+}
+
+// ── Phase 2 (§4.2): vertical-profile LUT master toggle ───────────────────────
+// Build const — flip + reload (a page reload rebuilds the node graph AND re-runs
+// the light-volume bake fresh, so no runtime re-bake plumbing is needed). OFF =
+// the legacy 3 analytic curves in cloudHeightProfile below (byte-identical). ON =
+// sample the 64×64 genus LUT (cloudProfileLUT.ts): a CONTINUOUS family of genus
+// anatomies indexed by convectivity, which kills the "two looks" + binary-border
+// symptom of the 3-curve mix (one 0.5 pivot → only three shapes). Marcher, far
+// shell, AND light-volume bake all route through cloudHeightProfile → they sample
+// the SAME texture → lockstep hazard #1 (shadows detaching from clouds) is gone
+// structurally, not by hand-kept parity.
+export const PROFILE_LUT = true;
+
+// km-anchoring span constants (alt01 units over the 1–14 km slab). The LUT row is
+// normalized to each column's OWN [baseN, topN] span, so the SAME genus shape
+// fills a thin high sheet OR a deep tower depending on where the span sits:
+//   • CONVECTIVE_BASE_N — deep convective columns sit on a shared low LCL-like
+//     deck (matches the ported cumulus base, smoothstep 0.04–0.16 → base ≈ 0.05).
+//   • STRATIFORM_THICKNESS_N — layered columns HUG their top: baseN = topN −
+//     thickness (a thin sheet just below the cloud top). ≈ 1.5 km / 13 km slab.
+// topAlt (from the topHeight channel) sets topN → preserves region-to-region
+// height variation; convectivity slides the base between these two regimes.
+const CONVECTIVE_BASE_N = 0.05;
+const STRATIFORM_THICKNESS_N = 0.12;
+
+// Raw LUT row fetch at (altNorm, convectivity), L0 (the LUT is mip-less; its UV
+// is non-spatial so a mip level would be meaningless). Used by cloudHeightProfile
+// AND directly by the far shell's profile-peak scan — the shell samples the ROW
+// at fixed altNorm (not km-anchored alt01) to catch stratiform mass wherever the
+// span puts it (Bug A: km-anchoring RELOCATES the stratiform nonzero band away
+// from the shell's fixed slab samples, so scanning alt01 would miss thin sheets).
+export function profileLUTRowSample(altNorm: Node, convectivity: Node): Node {
+  return (
+    texture(
+      getCloudProfileLUT(),
+      vec2(clamp(altNorm, 0, 1), clamp(convectivity, 0, 1)),
+    ).level(int(0)) as Node
+  ).r;
 }
 
 // ── Phase F step 4 toggle: LINEAR topAlt spread (docs/CLOUD_TYPES_PLAN.md §3.6)
@@ -114,6 +212,29 @@ export function cloudHeightProfile(
   topAlt: Node,
   cloudType: Node,
 ): Node {
+  if (PROFILE_LUT) {
+    // §4.2 km-anchoring: place + size the column's [baseN, topN] span, then read
+    // the genus row at the normalized altitude. altNorm saturates to 0 below
+    // baseN and 1 above topN, and the LUT row is 0 at both boundaries → a flat
+    // base and a clean top with NO ceiling/floor extrusion. cloudType IS the
+    // convectivity axis under WEATHER_V2 (map G); under legacy it is the
+    // coverage-derived type — both live in [0,1], so the LUT reads either.
+    const topN = clamp(topAlt, 0, 1);
+    const convectivity = clamp(cloudType, 0, 1);
+    // Clamp baseN ≥ 0: a low stratiform column (topN < STRATIFORM_THICKNESS_N,
+    // now reachable since the topN floor dropped to 0.10) would otherwise place
+    // its base below the slab floor → the sheet sits ON the floor instead.
+    const baseN = mix(
+      topN.sub(float(STRATIFORM_THICKNESS_N)),
+      float(CONVECTIVE_BASE_N),
+      convectivity,
+    ).max(float(0));
+    const span = topN.sub(baseN).max(float(0.001));
+    const altNorm = alt01.sub(baseN).div(span);
+    return profileLUTRowSample(altNorm, convectivity);
+  }
+
+  // ── Legacy analytic 3-curve profile (PROFILE_LUT off) ──
   // Stratus: thin flat sheet.
   const stratusBase = smoothstep(float(0.0), float(0.1), alt01);
   const stratusTop = float(1).sub(smoothstep(float(0.15), float(0.25), alt01));

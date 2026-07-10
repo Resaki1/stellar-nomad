@@ -147,23 +147,33 @@ export function getSyntheticWeatherMapV2(): THREE.DataTexture {
       coverage *= laneMask;
 
       // Convectivity: INDEPENDENT low-freq field (different seed) → the type
-      // axis is decoupled from coverage.
+      // axis is decoupled from coverage. Contrast-stretched to span the FULL
+      // [0,1] range (LINEAR — the anti-bimodal rule, §3.6 H4). Tuned 2026-07-08
+      // to a natural mix (~27% thin-stratiform / ~35% mid / ~19% deep-convective,
+      // verified): the earlier (x−0.3)·1.8 piled convectivity at mean 0.26 → the
+      // planet was ~95% mid-level stratiform slabs, so the Phase-2 genus decode
+      // was CORRECT but had almost no range to show (only 5.5% deep-convective,
+      // and from above the base/thickness genus signal is hidden anyway).
       let convectivity = fbmCyl(u, v, 5, 3, 2000.0);
-      convectivity = Math.min(1, Math.max(0, (convectivity - 0.3) * 1.8));
+      convectivity = Math.min(1, Math.max(0, (convectivity - 0.3) * 2.4));
 
-      // topHeight: independent field, LINEAR map (a symmetric CONTRAST STRETCH,
-      // never a smoothstep — the anti-bimodal rule). Raw FBM clusters near 0.5;
-      // stretch ×2.1 about 0.5 so the field spans a real low→high range → a
-      // genuine tower skyline (H4 wants variance, not a mid-gray plateau).
+      // topHeight: own independent field, contrast-stretched to REACH 0 so LOW
+      // clouds exist (the [0,1]→[0.10,0.95] topHeightToTopAlt maps topHeight 0 →
+      // ~1.6 km base — real low stratus/cumulus, absent when the floor was 0.45).
+      // Then a MILD positive correlation with convectivity (+0.30·conv): deep
+      // convection has higher tops (Earth-like) AND the towers poke up where
+      // they read from above. Kept mild (0.75 independent / 0.30 conv) so the
+      // axes stay largely decoupled — no binary border. LINEAR throughout.
+      // (NOTE: distinct from the REMOVED coverage→topHeight coupling of
+      // 2026-07-06 — that conflated topHeight with a channel that can COLLAPSE
+      // to zero; convectivity is a stable input field that never collapses, so
+      // coupling to it is safe.)
       const topRaw = fbmCyl(u, v, 4, 3, 3000.0);
-      let topHeight = Math.min(1, Math.max(0, (topRaw - 0.5) * 2.1 + 0.5));
-      // (A coverage→topHeight coupling was tried here 2026-07-06 for §4.2
-      // floater-avoidance and REMOVED: multiplying topHeight by a coverage gate
-      // conflated the channel and, when coverage collapsed, zeroed topHeight
-      // globally (→ uniform topAlt=0.45 → flat sliced ceilings). B stays a PURE
-      // independent field; Nubis-form K=1 erosion already deletes low-coverage
-      // high peaks (profile=coverage·height is small there), so floaters are a
-      // non-issue. Revisit a GENTLE clamp only if high floaters actually show.)
+      const topIndep = Math.min(1, Math.max(0, (topRaw - 0.3) * 2.6));
+      let topHeight = Math.min(
+        1,
+        Math.max(0, topIndep * 0.75 + convectivity * 0.3),
+      );
 
       // Cirrus: independent high-cloud coverage (broad, wispy).
       let cirrus = fbmCyl(u, v, 3, 3, 4000.0);
