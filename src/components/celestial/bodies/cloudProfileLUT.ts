@@ -166,7 +166,12 @@ let cached: THREE.DataTexture | null = null;
 export function getCloudProfileLUT(): THREE.DataTexture {
   if (cached) return cached;
 
-  const data = new Uint8Array(SIZE * SIZE); // R8, one byte per texel
+  // R16F (was R8, 2026-07-12): 8-bit VALUE quantization of the smooth
+  // profile curves was one of the two LUT defects behind the "damascus"
+  // orbit rings (the other is C0 bilinear filtering — see the C1 sampling
+  // in cloudShared.profileLUTRowSample). Half-float is core-WebGPU
+  // filterable; 64×64×2 bytes = 8 KB.
+  const data = new Uint16Array(SIZE * SIZE);
   for (let j = 0; j < SIZE; j++) {
     const convectivity = j / (SIZE - 1); // v: 0 stratiform → 1 convective
     for (let i = 0; i < SIZE; i++) {
@@ -176,7 +181,7 @@ export function getCloudProfileLUT(): THREE.DataTexture {
       // (belt-and-suspenders over the structural guarantee — a rounding error
       // at u=1 would extrude the whole column to the slab ceiling).
       if (i === 0 || i === SIZE - 1) val = 0;
-      data[j * SIZE + i] = Math.round(clamp01(val) * 255);
+      data[j * SIZE + i] = THREE.DataUtils.toHalfFloat(clamp01(val));
     }
   }
 
@@ -197,7 +202,7 @@ export function getCloudProfileLUT(): THREE.DataTexture {
     SIZE,
     SIZE,
     THREE.RedFormat,
-    THREE.UnsignedByteType,
+    THREE.HalfFloatType,
   );
   tex.colorSpace = THREE.NoColorSpace; // data, not colour
   tex.wrapS = THREE.ClampToEdgeWrapping; // altNorm clamps → boundary-zero saturation

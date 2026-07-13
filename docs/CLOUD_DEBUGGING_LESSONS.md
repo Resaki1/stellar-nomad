@@ -2247,3 +2247,316 @@ Terminator: `TERMINATOR_SOFT=0.08`, `REDDEN_START_MU=0.25`, `REDDEN_POW=1.5`,
 (100 km). LOD: `LOD_MIN_SAMPLES_NEAR=60`, `LOD_MIN_SAMPLES_FAR=8`, `MIN_SAMPLES_NEAR_ALT_KM=50`,
 `MIN_SAMPLES_FAR_ALT_KM=200`, `LOD_STEP_GROWTH=400`. Geometry: `tExitSlab=tOuterFar`
 (dense step decoupled from lodCap, bounded by `dtSkipInBand` + `DENSE_INTEG_CAP`).
+
+---
+
+## Case study #23 — "damascus steel" contour bands at low orbit = 8-BIT TERRACES in the smooth weather channels (2026-07-12)
+
+### Symptom
+Nested, flowing, terrace-like bands ("damascus steel") on cloud fields, ~15–25 px
+apart on screen. Fixed geographic locations (following specific weather systems,
+only in some areas). Distance-gated: invisible beyond ~3000 km altitude, fades in
+across the 3000→1500 km volumetric blend, strongest around ~230 km altitude, then
+"flashes/moves" 230→130 km and is completely gone below. Appeared with the Phase-4
+REAL weather map (never with the synthetic v2 map).
+
+### Diagnosis path (what worked)
+1. **Regime mapping first**: converting every user-reported center distance to
+   altitude and matching against code constants pinned the artifact to the
+   volumetric marcher's orbit regime — visible exactly where `uVolumetricBlend > 0`
+   and the light volume is faded out (`VOL_FADE_ALT_LO/HI = 150/400 km`; the
+   "flash and gone below 6500 km center" = 130 km alt = the light volume taking
+   over lighting). The far shell alone (>3000 km alt) is clean.
+2. **Offline falsification of the texture pipeline** (before touching the renderer):
+   extracted actual mips from the shipped KTX2 (`ktx extract --transcode rgba8
+   --level N`) and compared against float box-downsamples of the source PNG —
+   lanczos-mip ringing and UASTC channel mangling both RULED OUT (near-lossless,
+   p99 ≈ 0.02–0.03, no ring structures).
+3. **The everything-viz signal** (cf. case #2's checklist): user reported the bands
+   in `alpha`, `lightingOnly`, `detailShadow`, `litShape`, `baseColumn`, AND
+   `firstHit`. All these are downstream of the per-column weather taps
+   (`wTap.g`/`wTap.b`) — but unlike case #2 the bands were PLANET-FIXED, not
+   camera-relative, so the common cause had to be in the DATA those taps read,
+   not the mip/derivative hardware path (`.level(int(0))` was verified still
+   forced on the marcher's weather tap).
+4. **Decisive offline test**: rendered terrace-edge maps of the quantized G/B
+   channels (edge = any ≥1-level change between neighbouring texels) over
+   Southern-Ocean frontal systems. The edge maps were a visual dead ringer for
+   the in-game damascus — same nested flowing curves, measured terrace widths
+   p50 5–15 km / p90 up to 44 km, matching the observed band spacing.
+
+### Root cause
+The ERA5-derived channels (G convectivity, B topHeight, A cirrus) are ultra-smooth
+wide gradients (721×1440 upsampled ~6×). Stored 8-bit, every 1/255 level becomes a
+5–40 km-wide flat terrace whose edges run along weather-system isolines. At low
+orbit the map texels are MAGNIFIED on screen (4.89 km/texel vs ~0.1–1 km/px), so
+bilinear sampling renders the terraces coherently — and the marcher's steep/binary
+gates (probeShape skip→dense detection, `deriveColumnV2` smoothsteps, profile
+evaluation) flip along the quantized isolines, amplifying a 1/255 data step into a
+detection/surface discontinuity. Nested contour lines at every quantization level.
+- The far shell doesn't show it: auto-mip minification AVERAGES texels, which
+  reconstructs sub-1/255 precision (mip filtering is a free de-quantizer).
+- Near ground it disappears: light-volume lighting replaces the banded fallback
+  (150–400 km fade — the user's "flash"), and fine-carve/wisp detail (inside
+  DETAIL_FADE ≤100 km) breaks the macro surface up.
+- The synthetic map never banded because its channels were NOISY — no shallow
+  coherent gradients to terrace. Real smooth data exposed the latent quantization.
+
+### The fix
+TPDF dither at bake time (`bake_weather_map.py`): add ±1 LSB triangular noise
+(`rng.random(shape) − rng.random(shape)`, deterministic seed) to `rgba*255` before
+round/clip to uint8. Terrace edges shatter into per-texel incoherent grain the
+gates can't organize into rings; ±1 LSB is invisible in the values themselves
+(51 m in topAlt, 0.004 in convectivity). Verified offline with the same
+terrace-edge detector: coherent contour lines → uniform grain. Zero runtime cost.
+Escalation path if residual structure survives in-game: blue-noise (instead of
+white TPDF) dither, or 2-LSB amplitude on G/B only.
+
+### Lessons
+- **8-bit is not enough for SMOOTH control fields consumed by steep gates.**
+  Any near-flat gradient stored 8-bit + any threshold/steep remap downstream =
+  contour banding. Either dither at the write, widen the gates, or store 16-bit.
+  This is invisible until the data is actually smooth — noisy procedural sources
+  mask it, so swapping synthetic → real data is exactly when it surfaces.
+- **Planet-fixed vs camera-relative banding is the first fork in the road.**
+  Camera-relative iso-distance bands → sampling/derivative/mip machinery (case
+  #2). Planet-fixed bands following data isolines → the DATA or per-column
+  derivation. The everything-viz signal appears in BOTH cases; anchor frame
+  disambiguates.
+- **Match user-reported distances against regime constants before theorising.**
+  Three reported distances (8400/6600/6500 km center) mapped exactly onto
+  `VOLUMETRIC_BLEND_START_ALT_KM` and `VOL_FADE_ALT_LO/HI` — that pinned which
+  subsystem could even be responsible and ruled out the shell in one step.
+- **Mip extraction beats speculation for texture-pipeline suspects.**
+  `ktx extract` + float box-reference comparison killed two plausible hypotheses
+  (filter ringing, UASTC) in minutes, offline, without touching the renderer.
+
+### CONTINUATION (same day): the terrace theory was REFUTED — the real cause is sub-Nyquist march sampling of the billow carve
+
+The TPDF dither changed nothing. The user then ran the FULL viz ladder — the
+decisive dataset:
+
+- **Banded**: off, alpha, firstHit, lightingOnly, tsunMs, eroded, density,
+  daylight, lightVol, maxProfile, maxProbeShape, baseShape, floaterProbe,
+  baseColumn, litShape, detailShadow.
+- **Clean**: firstConeDepth, topAlt, insideInner, iters, slabLen, coneDepth,
+  sunDir, dither, lod, whyStop, weatherRaw, convType.
+
+The split: everything COLUMN-LEVEL (weatherRaw, convType, topAlt — the 2D map
+and its derivation) and all march BOOKKEEPING (iters, lod, whyStop, slabLen)
+is clean — the 8-bit terrace theory dies here (and the map was never the
+problem; the dither is kept as good practice, not as the fix). Everything
+sampling the 3D NOISE VOLUMES or evaluated AT MARCHED SAMPLE POSITIONS bands.
+Viz modes that display smooth fields (daylight, baseColumn) band too because
+they are evaluated at the first dense HIT, and the hit SURFACE itself is
+banded — the case-#2 meta-lesson ("artifact in every viz ⇒ the cause is in
+something common"), but with the planet-FIXED anchor pointing at the density
+field, not the mip machinery.
+
+Root cause by Nyquist arithmetic: beyond ~72 km camera distance the dense
+integration step rides DENSE_INTEG_CAP (750 m) and the skip stride rides
+SKIP_DETECT_CAP (1.5 km). The billow-carve Worley (CARVE_SCALE 360 → ~2.8 km
+tile, ~1.4 km cells) then gets <2 dense samples per cell and ~1 detection
+probe per cell — sub-Nyquist along the RAY at every orbit distance (the caps
+are constant; near the ground lodCap pins steps to ~25–67 m and everything
+resolves). Undersampled quasi-periodic Worley + per-frame stratified jitter +
+temporal EMA = a STATIONARY interference pattern (the jitter phases average
+into fixed fringes, they do not dither away). On the real map's smooth
+2000-km decks the fringes organize along the macro field's gradients as
+nested contour bands = damascus. The synthetic map's noisy coverage broke
+them up — which is why the artifact "appeared" with Phase 4.
+
+The shell's 2026-07-06 diagnosis had already measured this disease in its own
+taps ("all three frizz+RING, carve worst — sub-pixel at every shell
+distance") and fixed it by never sampling 3D noise (statistical LUT). The
+marcher kept point-sampling.
+
+### The fix (BILLOW_VAR_FADE)
+Fade the carve field's VARIANCE to zero with march distance, keeping its
+MEAN: `cw = mix(cw_raw, CARVE_CW_MEAN, smoothstep(100km, 300km, t))` inside
+`billowCarveKernel` (new explicit `cwVarFade` param at all 5 sites — marched
+sites share ONE per-step node, case #21; the shell LUT bake passes 0 and
+keeps full variance, it integrates the true ensemble). CARVE_CW_MEAN = 0.4012
+MEASURED from the CPU noise volumes (`getCloudDetailVolume` under tsx —
+E[0.6·r + 0.4·g]; assuming 0.5 would have shifted far-field erosion and
+created a camera-locked fullness border). DC-preserved ⇒ average erosion and
+far-field area unchanged; only the unresolvable wiggle goes.
+
+### Additional lessons
+- **A fix that changes nothing is a measurement.** The dither null result +
+  the clean weatherRaw/convType viz killed the terrace theory in one round.
+- **Sort the viz matrix by DEPENDENCY, not by name.** Column-level vs
+  at-marched-sample vs bookkeeping — the banded/clean split mapped exactly
+  onto "samples 3D volumes at marched positions" and nothing else.
+- **Check Nyquist along the RAY, not just the screen.** Screen-footprint
+  arithmetic said the carve cells were resolved at 230 km altitude; the
+  march-step caps said <2 samples/cell at ALL orbit distances. The march is
+  a sampling grid too.
+- **Jitter + EMA does not fix sub-Nyquist content.** It converts aliasing
+  into a stationary interference pattern instead of noise. If banding
+  survives temporal averaging while the camera is still, suspect content
+  beyond the sampling rate, and fade its variance out (mean-preserving) at
+  the distance where sampling can no longer resolve it.
+
+### SECOND CONTINUATION: the carve fade was ALSO a null result — the source is the BASE volume, and the mechanism is the SPHERE-LATTICE BEAT (proven offline)
+
+BILLOW_VAR_FADE on/off changed nothing at 7616 km — with the carve pinned to
+a constant, the bands cannot be carve-borne. The remaining noise input was
+the base volume (consistent: `maxProbeShape` — dilated base only — banded).
+
+**Offline proof (sphere_beat_sim.py)**: dumped the CPU base volume
+(`getCloudDetailVolume`/`getCloudBaseVolume` via tsx), then column-integrated
+`baseDilate(r, fbm)` over the REAL spherical slab (alt 1–16 km, 0.75 km
+steps, marcher-exact dilate, tile 20 km, no warp — WARP_AMPLITUDE=0, no
+detile — USE_DETILE=false) over a 1024 km patch. Result: large coherent
+fingerprint-like arcs at 20–40 km wavelength. A FLAT-slab control with the
+same integration shows only the regular 20 km tile grid — no arcs. So the
+banding is INHERENT TO THE FIELD: a moiré/beat between the periodic
+Cartesian noise lattice and the sphere. The slab is only ~3 base cells
+thick, so each column's vertical noise integral swings with the earth-fixed
+lattice↔sphere phase — no march quantization, screen sampling, or EMA
+required. Erosion/Beer-Lambert saturation then contrast-amplifies the soft
+swings into ridges.
+
+Why each earlier observation fits:
+- Planet-fixed: lattice and sphere are both earth-fixed.
+- Regional: beat wavelength/orientation varies with position relative to the
+  three lattice plane families; bands show where the wavelength lands in the
+  visible 20–40 km window AND a smooth thick deck (real map) gives a canvas.
+- Gone below ~150 km: 20–40 km arcs = hundreds of px up close — imperceptible
+  undulation, not "bands" (a SCALE phenomenon; plus light-volume lighting).
+- Shell clean: the LUT is phase-free statistics — it never integrates a
+  specific lattice phase.
+- Synthetic map never showed it: noisy coverage broke the arcs' coherence.
+
+### The fix (BASE_VAR_FADE) + measurement discipline
+Pin the DILATED base to its measured mean with the same t-fade:
+`baseShape = mix(baseDilate(r, fbm), DILATED_BASE_MEAN=0.672, noiseVarFade)`.
+Fade the RESULT, not the inputs: baseDilate(E[r], E[fbm]) ≈ 0.81 ≠
+E[baseDilate] = 0.672 (nonlinear dilate) — fading inputs would raise far
+density ~20% as a camera-locked fullness border. Applied at the primary tap
+(one node covers the probeShape gate + dense pipeline — case #13), the 800 m
+probe, and the cone (case #21). Shell LUT / light-volume bake / debug taps
+keep full variance. ROOT-cause alternative (break the lattice periodicity:
+detile or a smooth radial phase decorrelation, mirrored into the light-volume
+bake) is the follow-up if the orbit texture loss reads badly.
+
+### Lessons (in addition to the first continuation's)
+- **A thin spherical shell through periodic Cartesian noise BEATS.** If the
+  slab holds only a few noise cells vertically, the per-column integral is a
+  strong function of the earth-fixed lattice phase → planet-fixed contour
+  arcs at the sphere-vs-lattice crossing wavelength. Anti-tiling (warp/
+  detile) would ALSO have broken this — both were OFF.
+- **Simulate the field offline before re-touching the renderer.** The CPU
+  noise volumes + 40 lines of numpy reproduced the artifact with zero
+  renderer involvement and a flat-slab control falsified the alternative in
+  one shot — after two in-game null results, this was the round-trip that
+  actually discriminated.
+- **A null result on a sibling input narrows the search fast**: carve
+  pinned + bands unchanged ⇒ the only other 3D input (base) — worth one
+  cheap toggle even when you believe the first theory.
+
+### ⚠️ DEFINITIVE RESOLUTION (2026-07-13) — everything above in case #23 after the first symptom was a WRONG THEORY; read this section, distrust the rest
+
+The three "fixes" documented above (map TPDF dither, BILLOW_VAR_FADE carve,
+BASE_VAR_FADE sphere-lattice-beat) were **all in-game null results**. Each had
+a plausible offline story (terrace-edge maps, sphere_beat_sim arcs) that did
+NOT correspond to what the renderer actually did. The offline sims reproduced
+*a* banding mechanism, but not *the* one on screen. Kept as a cautionary tale:
+an offline simulation that "reproduces the artifact" proves the mechanism is
+POSSIBLE, never that it is ACTUAL — only an in-engine bisection does that.
+
+**The actual damascus cause**, found by an in-engine constant-override ladder
+(`ISOLATE`, since removed — see "the method" below):
+- `analyticAlpha` (replace the marcher's accumulated color/alpha/depth with the
+  ring-free shell's SMOOTH analytic column) → **rings gone** ⇒ the artifact is
+  in the march *accumulation*, not any input, LUT, or the map.
+- `flatColor` (real alpha+depth, flat-white color) → **rings gone**;
+  `smoothDepth` (real color+alpha, smooth geometric depth) → **rings stay** ⇒
+  it is the **lit COLOR**, not alpha and not the depth→aerial-perspective path.
+- `FORCE_MIN_SAMPLES_TEST=96` (force a high slab-sample floor) → **rings
+  dissolve** ⇒ CONFIRMED: the lit color is sampled at a **first-hit position
+  quantized by the coarse orbit front-detection**. At >200 km altitude
+  `uLodMinSamples` floors at 8 → ~8 samples across the 15 km slab → as smooth
+  topAlt sweeps, *where* the color reads the lit field jumps in steps → iso-
+  topAlt color contour rings. Alpha stays smooth (Beer-Lambert saturates);
+  jitter+EMA turns pure sample-count noise into grain, but the COLOR's
+  dependence on the quantized first-hit is coherent, not grain.
+
+**The fix that shipped**: not a per-pixel refinement — a **hand-off retune**.
+The volumetric and the analytic shell are DIFFERENT representations; the
+crossover (`SHELL_HANDOFF_NEAR/FAR_KM`) was set absurdly far (1000/2500 km), so
+the volumetric stayed dominant across the whole 200–2500 km band where its
+sampling had already collapsed. Pulled it down to **250/700 km** (+ matching
+`VOLUMETRIC_BLEND` 700/250 km altitude so the marcher pass is skipped above
+700 km — a perf win — and `LOD_MIN_SAMPLES_FAR` 8→16 for the crossover band).
+Now the clean analytic shell carries the far field; the volumetric only renders
+where it is finely sampled. `BILLOW/BASE_VAR_FADE` were RE-TUNED to the same
+250/700 band as the legit transition detail-fade (volumetric noise → smooth as
+it crossfades to the detail-less shell); `MESO_VAR_FADE`, the map decode-dither,
+and the 2048 smooth-map split were all removed as dead weight from the wrong
+theories. This is the industry near-volumetric / far-analytic split (KSP-EVE,
+NMS): the reference games either LOD one representation or lean on heavy
+temporal reprojection — they do NOT per-frame raymarch procedural noise across
+the full orbit→ground range and bridge to a *different* far model, which is the
+structural reason our transitions fought us.
+
+### THE METHOD that finally worked (use this first next time, not offline sims)
+A `const ISOLATE` build-switch (JS constant → the untaken TSL branches are
+dead-code-eliminated at graph build, so it is ZERO runtime cost when "off").
+Each rung replaces exactly ONE stage of the pipeline with a trivial/smooth
+stand-in and you reload once per rung. It bisected "is it the map / a channel /
+the noise / the march accumulation / color vs alpha vs depth / sampling rate"
+in a handful of reloads after weeks of offline theorising got nowhere. The
+DEBUG_VIZ modes (read-only) tell you WHERE a value looks wrong; ISOLATE
+(pipeline-override) tells you WHICH STAGE PRODUCES it — that's the difference
+that mattered. Removed after the hunt, but re-add it (git history) for the next
+"artifact in everything" cloud bug.
+
+### Sub-hunt: the coverage-channel "straight seams" (same session, separate bug)
+After the rings, hard straight-line seams remained in the far field ("one side
+completely different"). Localised with ZERO guessing:
+- `DEBUG_VIZ='weatherRaw'` paints R/G/B as red/green/blue → the seam was
+  **full red** = the **coverage (R) channel** alone. (Added shell twins
+  `SHELL_DEBUG_VIZ='rawConv'/'rawTop'` so the pure-shell orbit view can isolate
+  a channel too — kept.)
+- Cropping the baked R at the reported location (Gulf of Mexico — the map date
+  2005-08-28 is Hurricane Katrina) vs the source Terra/Aqua jpgs showed it
+  plainly: **MODIS swath-gap wedges** (each satellite has a different black
+  orbital gap) + **sun-glint** (smooth bright ocean smudges that the min-RGB
+  cloud extraction reads as coverage). The bake fills each satellite's gap with
+  the other + procedural; the Terra/Aqua-fill/glint boundaries are the seams.
+- ROOT: same-day true-color reflectance is the wrong SOURCE for a clean
+  coverage channel. Terra & Aqua are ~3 h apart (clouds move → gap-fills don't
+  match), and glint is intrinsic. Blue Marble looks clean because it is a
+  months-long, cloud-cleared, glint-free COMPOSITE.
+- FIX (user chose it): coverage R ← the project's clean Blue Marble cloud
+  composite (`--coverage-texture public/textures/earth_clouds_8k.webp`, new
+  bake path); ERA5 still supplies convectivity/topHeight/cirrus. Seam/glint-free
+  by construction; trade-off = coverage is an idealised field, not the real day
+  (the physics channels still are). Same-day MODIS remains available via
+  `--cloud-image` for an authentic-weather bake.
+- Bonus: the topHeight (B) channel ALSO had hard plateau seams from
+  `fill_from_neighbours` (nearest-dilation → Voronoi fronts); fixed with a
+  σ≈130 km smooth (topHeight is a synoptic macro field). A red herring for the
+  R seams the user was pointing at, but a real latent artifact now gone.
+
+### Meta-lessons (the expensive ones from this whole multi-round hunt)
+- **Offline "I reproduced it" ≠ found it.** Three offline reproductions were
+  each a real mechanism that wasn't the on-screen one. In-engine bisection is
+  the only ground truth for a renderer artifact. Reach for the ISOLATE ladder
+  BEFORE the numpy sim next time.
+- **A fix that changes NOTHING is high-value data** — it eliminates a whole
+  branch. Three consecutive null results is what finally forced the shift from
+  "which input" to "the march accumulation itself."
+- **Sort the symptom by what viz/rung it survives.** Read-only viz (colour of
+  the value) + pipeline-override (which stage) together localise fast; either
+  alone kept me guessing.
+- **Distinguish the bug from the source.** The rings were a rendering/
+  architecture bug (fixable in code); the coverage seams were a DATA-SOURCE
+  limitation (fixable only by changing the source). Conflating "artifact in the
+  far field" cost several rounds.
+- **When you've stacked speculative fixes for wrong theories, REVERT to a clean
+  baseline before continuing.** The 2048 split + three variance fades + decode
+  dither were compounding into new artifacts; pulling them once the true cause
+  (hand-off) was known made the remaining issues legible.

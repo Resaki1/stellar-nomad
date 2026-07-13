@@ -115,8 +115,10 @@ convert_one() {
   echo "Convert: $input → $output $([ "$use_linear" = true ] && echo '[linear]' || echo '[sRGB]')"
   toktx "${args[@]}" "$output" "$src"
 
-  # Clean up temp file
-  [[ -n "$tmpfile" ]] && rm -f "$tmpfile"
+  # Clean up temp file. NOTE: the guard must not be the function's last
+  # statement via `&&` — a false condition would make the function (and,
+  # under `set -e`, the whole script) fail AFTER a successful conversion.
+  if [[ -n "$tmpfile" ]]; then rm -f "$tmpfile"; fi
 }
 
 # ── Batch mode: find all textures ──

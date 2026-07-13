@@ -1,4 +1,14 @@
-import { float, smoothstep, mix, clamp, texture, vec2, int } from "three/tsl";
+import {
+  float,
+  smoothstep,
+  mix,
+  clamp,
+  texture,
+  vec2,
+  int,
+  floor,
+  fract,
+} from "three/tsl";
 import { getCloudProfileLUT } from "./cloudProfileLUT";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,6 +45,18 @@ type Node = any;
 // light-volume bake) or near/far/shadow topAlt diverge. Input = the synthetic
 // getSyntheticWeatherMapV2() (weatherMapV2.ts); the real ERA5 bake is Phase 4.
 export const WEATHER_V2 = true;
+
+// ── Phase 4 (§4.7): real ERA5 weather map ────────────────────────────────────
+// Build const — flip + reload once the bake exists (scripts/bake_weather_map.py
+// → convert-to-ktx2.sh --linear → this path). Lives HERE (the leaf module) so
+// earthClouds (loader swap), earth.ts (tier records), and fractionPlacement
+// below can all read it without an import cycle. The REAL map's R channel
+// carries BAKED placement (the baker thresholds the ERA5 area fraction by a
+// synthesized ~8-16 km Worley field at 8192×4096 ≈ 5 km/texel — the Blue
+// Marble regime, so the far shell + orbit view get real mippable structure);
+// the SYNTHETIC map's R is a smooth fraction and gets placement at RUNTIME.
+export const REAL_WEATHER_MAP = true;
+export const REAL_WEATHER_MAP_PATH = "/textures/weather/era5_2005082818.ktx2";
 
 // ── Cloud slab (T2/§4.4: raised 14→16 km so Cb turrets + anvils have
 // headroom ABOVE the ordinary deck ceiling; ~+15% in-band march cost, §4.10
@@ -93,6 +115,55 @@ export const TOPALT_JITTER = true;
 // the lanes halved with it (31→16 km) as a side effect. Shared so the
 // marcher's mask/jitter and the bake's jitter sample the IDENTICAL field.
 export const MESO_SCALE = 16;
+
+// ── Fraction→placement (Phase 4 follow-up, 2026-07-11) ──────────────────────
+// ERA5 gives cloud AREA FRACTION per ~28 km cell, not cloud PLACEMENT: a cell
+// of scattered cumulus arrives as a uniform 0.55 and rendered directly it
+// becomes a translucent smeared deck (the user's "washed out, big chunks"
+// verdict on the first real bake; the old Blue Marble looked right because a
+// PHOTO carries real placement). Standard fix: use the fraction as the
+// THRESHOLD of a placement noise — the same mesoTap.g updraft field that
+// drives jitter/turrets (one fetch, four consumers; physically coherent:
+// strong updraft = cloud present AND taller AND turret candidate). Cells with
+// G above the threshold become REAL clouds with REAL gaps; the local area
+// mean matches the map fraction because the threshold line is calibrated to
+// G's MEASURED quantiles (Monte-Carlo 2026-07-08: p10 0.316, p50 0.472,
+// p90 0.634 — near-linear: Q(p) ≈ 0.475 + 0.4·(p − 0.5)):
+//   thr(cov) = 0.675 − 0.4·cov   →   P(G > thr) ≈ cov            [area ✓]
+// This ALSO dissolves the bilinear grid blockiness: cloud edges become
+// iso-contours of the smooth 3D noise instead of texel edges. LOCKSTEP: the
+// light-volume bake applies the identical helper (else shadows land on the
+// un-placed fraction soup). The far shell keeps RAW fraction — placement is
+// mean-preserving, and its ~8 km cells are sub-pixel at shell distances.
+// The v2 synthetic map keeps its own lane mask semantics OFF this path
+// (placement replaces the lane multiply under WEATHER_V2).
+export const FRACTION_PLACEMENT = true;
+// Soft edge half-width of the placement threshold (bigger = fluffier cloud
+// edges, smaller = harder binary placement).
+const PLACEMENT_EDGE = 0.1;
+// Kill-switch below tiny fractions: thr(0) = 0.675 still leaves ~4% of G
+// above it — without this, clear-sky regions would grow ghost clouds.
+const PLACEMENT_MIN_COV_LO = 0.03;
+const PLACEMENT_MIN_COV_HI = 0.12;
+
+export function fractionPlacement(mapCov: Node, mesoG: Node): Node {
+  // The REAL map carries BAKED placement (the baker applies this same
+  // calibrated threshold at 8k against a synthesized placement field — see
+  // scripts/bake_weather_map.py, kept in lockstep with these constants);
+  // re-thresholding placed coverage would double-erode every cloud edge.
+  // Runtime placement exists for the SYNTHETIC map, whose R is a smooth
+  // fraction field.
+  if (!FRACTION_PLACEMENT || REAL_WEATHER_MAP) return mapCov;
+  const cov = clamp(mapCov, 0, 1);
+  const thr = float(0.675).sub(cov.mul(0.4));
+  return smoothstep(
+    thr.sub(float(PLACEMENT_EDGE)),
+    thr.add(float(PLACEMENT_EDGE)),
+    mesoG,
+  ).mul(
+    smoothstep(float(PLACEMENT_MIN_COV_LO), float(PLACEMENT_MIN_COV_HI), cov),
+  );
+}
 // ±AMOUNT/2 × gate in alt01 units at the G channel's extremes (user-tuned
 // 0.5→0.8): up to ±4-5 km cell-to-cell in fully convective regions, ×FLOOR of
 // that in pure stratiform.
@@ -392,11 +463,32 @@ const STRATIFORM_THICKNESS_N = STRATIFORM_THICKNESS_KM / SLAB_SPAN_KM; // ≈0.1
 // at fixed altNorm (not km-anchored alt01) to catch stratiform mass wherever the
 // span puts it (Bug A: km-anchoring RELOCATES the stratiform nonzero band away
 // from the shell's fixed slab samples, so scanning alt01 would miss thin sheets).
+//
+// C1 SAMPLING (2026-07-12, the "damascus" orbit-ring fix — ladder-proven:
+// PROFILE_LUT=false killed the rings). Hardware bilinear over 64 bins is only
+// C0: a derivative kink at every texel boundary. The visible cloud surface's
+// altNorm varies smoothly with the topAlt dome, so those kinks land along
+// altNorm isolines — 64 potential Mach bands per dome, ~20 km apart at
+// typical ERA5 top slopes: the nested rings. Fix: Hermite-ease the fract
+// within each texel (smoothstep-weighted bilinear) → C1-continuous
+// interpolation from the SAME single hardware fetch. Boundary behaviour is
+// preserved (inputs 0/1 map exactly to the edge, where ClampToEdge + the
+// boundary-zero texels saturate the profile to 0). The companion defect —
+// 8-bit VALUE quantization of the profile — is fixed in cloudProfileLUT.ts
+// (R8 → R16F).
 export function profileLUTRowSample(altNorm: Node, convectivity: Node): Node {
+  const N = float(64); // SIZE — LUT is 64×64 (cloudProfileLUT.ts)
+  const c1Coord = (x01: Node): Node => {
+    const x = clamp(x01, 0, 1).mul(N).sub(0.5); // texel-center space
+    const i = floor(x);
+    const f = fract(x);
+    const fSmooth = f.mul(f).mul(float(3).sub(f.mul(2))); // Hermite ease
+    return i.add(0.5).add(fSmooth).div(N);
+  };
   return (
     texture(
       getCloudProfileLUT(),
-      vec2(clamp(altNorm, 0, 1), clamp(convectivity, 0, 1)),
+      vec2(c1Coord(altNorm), c1Coord(convectivity)),
     ).level(int(0)) as Node
   ).r;
 }

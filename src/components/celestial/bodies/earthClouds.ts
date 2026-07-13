@@ -56,6 +56,8 @@ import {
   PROFILE_LUT,
   profileLUTRowSample,
   MESO_SCALE,
+  fractionPlacement,
+  REAL_WEATHER_MAP,
   TURRETS,
   turretErosionScale,
   anvilBandMask,
@@ -127,8 +129,22 @@ const SHELL_ALTITUDE_KM = CLOUD_OUTER_ALTITUDE_KM;
 // while the horizon stays shell. Tune so FAR ≈ where the volumetric becomes the
 // reliable near-field authority (~the volumetric-blend-full altitude) and NEAR ≈
 // the volumetric's confident dense reach. In km (camera→fragment distance).
-const SHELL_HANDOFF_NEAR_KM = 1000; // ≤ this from camera → shell fully OFF (volumetric owns)
-const SHELL_HANDOFF_FAR_KM = 2500; // ≥ this → shell FULL (far horizon)
+// 2026-07-12 (the "damascus rings" resolution — ISSUE closed): lowered from
+// 1000/2500. The rings were the volumetric's LIT COLOR read at a first-hit
+// position quantized by the coarse orbit front-detection (uLodMinSamples
+// floors at 8 by ~200 km altitude → ~8 samples across the 15 km slab). The
+// old crossover kept the volumetric DOMINANT across the entire 200–2500 km
+// band where its sampling is already coarse. Bring the hand-off down to where
+// the volumetric is still finely sampled and let the CLEAN analytic shell
+// (columnMacroCoverage + farCloudLit — no march quantization) carry the far
+// field. Trade-off: the shell now carries 250–700 km+, so its analytic look
+// (not per-cloud volumetric detail) is what you see from there up — which is
+// correct for the far field (features are near-sub-pixel there anyway) and is
+// the industry near-volumetric / far-analytic split. Tuning knob: raise both
+// to push the volumetric further out (crisper mid-field, but rings return
+// where sampling can't keep up + more march cost); lower to hand off sooner.
+const SHELL_HANDOFF_NEAR_KM = 250; // ≤ this from camera → shell fully OFF (volumetric owns)
+const SHELL_HANDOFF_FAR_KM = 700; // ≥ this → shell FULL (far horizon)
 
 // ── Shell analytic envelope + expected-opacity transfer (2026-07-06/07) ──────
 // The measured (SHELL_DEBUG_VIZ) diagnosis of the two shell bugs:
@@ -215,7 +231,9 @@ const SHELL_OPTICAL_PATH = 1;
 // nadir; the atmosphere pass tints the limb.
 const SHELL_DEBUG_VIZ:
   | "off"
-  | "rawCoverage"
+  | "rawCoverage" // R channel (grayscale, raw map, no rendering)
+  | "rawConv" // G channel — convectivity
+  | "rawTop" // B channel — topHeight
   | "profileMax"
   | "maxDim"
   | "opacity"
@@ -306,7 +324,14 @@ const LOD_STEP_GROWTH = 400;
 // floor 24 → 8 (sweet spot by eye: no visible cloud loss, ~69 → ~87 fps). NEAR
 // stays 60 for detection (Issue ④). Going below 8 risks thin-cloud detection.
 export const LOD_MIN_SAMPLES_NEAR = 60;
-export const LOD_MIN_SAMPLES_FAR = 8;
+// 8 → 16 (2026-07-12, damascus-rings transition-band insurance): with the
+// shell hand-off now at 250–700 km (SHELL_HANDOFF_*), the volumetric is only
+// partially visible in that band, but 8 samples/slab there still let its lit
+// colour ring faintly. 16 keeps the fading volumetric clean across the
+// crossover; above 700 km the pass is skipped so this floor costs nothing
+// there. Drop back toward 8 (and lean harder on an earlier hand-off) if the
+// 250–700 km band costs too much fps.
+export const LOD_MIN_SAMPLES_FAR = 16;
 export const MIN_SAMPLES_NEAR_ALT_KM = 50;
 export const MIN_SAMPLES_FAR_ALT_KM = 200;
 // ── In-cloud step growth (budget-death fix, 2026-06-10/11) ──
@@ -797,6 +822,37 @@ const WISP_PROFILE_HI = 0.5;
 //   clouds; raise = keep detail further but more flicker.
 const DETAIL_FADE_NEAR = 0.02; // 20 km — full detail nearer than this
 const DETAIL_FADE_FAR = 0.1; // 100 km — macro-only beyond this
+// ── Volumetric detail fade → shell hand-off (2026-07-12) ──
+// The near-field volumetric and the far-field analytic shell are DIFFERENT
+// representations: the volumetric raymarches 3D noise (cauliflower/billow
+// macro shape); the shell is a smooth analytic column (columnMacroCoverage +
+// opacityLUT, no noise). A hard crossfade between them at the SHELL_HANDOFF
+// band would show a seam — a detailed look dissolving into a smooth one. Fix
+// (the "one representation, LOD'd" trick the reference games use): fade the
+// volumetric's 3D-noise VARIANCE to its mean across the SAME hand-off band,
+// so by the far end the volumetric IS the smooth macro envelope the shell
+// draws → they converge and the crossfade is seamless. Mean-preserving (fade
+// the RESULT to its measured mean, not the inputs — baseDilate is non-linear,
+// so feeding it channel means gives 0.81 ≠ E[baseDilate]=0.672, a ~20% far-
+// density shift = a camera-locked fullness border; the DETAIL_FADE DC lesson).
+// ONE fade node (noiseVarFade, in the march loop) drives BOTH the base shape
+// and the billow carve, covering the probeShape skip-gate AND the dense
+// pipeline from one value (case #13 gate law) and the view-ray + self-shadow
+// together (case #21). Aligned to SHELL_HANDOFF_{NEAR,FAR}_KM (250/700 km):
+// full noise detail where the volumetric is the sole rep (< 250 km), smooth
+// by where the shell fully takes over (700 km). (Turret/anvil meso structure
+// is NOT faded here — the shell has none to match and turrets are convective-
+// only + near-sub-pixel in this band; revisit if turret pop shows at the
+// crossover.) History: this machinery was first mis-tuned to 100/300 km as a
+// (failed) damascus-ring fix; the rings were actually the coarse-sampled
+// volumetric COLOR, fixed by the hand-off retune — see the SHELL_HANDOFF note
+// and CLOUD_DEBUGGING_LESSONS case #23. Left as the transition-smoothing tool.
+const BILLOW_VAR_FADE = true;
+const BILLOW_VAR_FADE_NEAR = 0.25; // 250 km — full noise detail nearer (= SHELL_HANDOFF_NEAR)
+const BILLOW_VAR_FADE_FAR = 0.7; // 700 km — noise pinned to its mean beyond (= SHELL_HANDOFF_FAR)
+const CARVE_CW_MEAN = 0.4012; // measured E[0.6·detail.r + 0.4·detail.g] (CPU volumes, 2026-07-12)
+const BASE_VAR_FADE = true;
+const DILATED_BASE_MEAN = 0.672; // measured E[baseDilate(r, fbm)] (CPU volumes, 2026-07-12)
 
 // ── Solidity gamma (2026-06-18; Nubis low-density sharpen, talk p.123) ──
 // Nubis applies pow(density, lerp(0.3,0.6,...)) to "sharpen low-density areas
@@ -926,6 +982,7 @@ const DENSITY_GAMMA = 0.8;
 // (The old 'detailField'/'detailCut'/'detailLod' modes were removed 2026-06-18
 // with the opacity-only detail-erosion pass they measured.)
 // =============================================================================
+
 const DEBUG_VIZ:
   | "off"
   | "firstConeDepth"
@@ -1024,8 +1081,22 @@ function macroDilatedShapeAt(pos: any, baseVolume: THREE.Texture): any {
 // call site must consciously pick ramped vs fixed. Only the depth ramps; the
 // 0.6/0.4 octave mix and CARVE_SCALE stay fixed (they define the carve FIELD,
 // which the shell LUT bakes at the same scale).
-function billowCarveKernel(dilated: Node, carveSrc: Node, carveAmt: Node): Node {
-  const cw = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+// `cwVarFade` = the BILLOW_VAR_FADE weight (0 = full carve variance, 1 = carve
+// pinned to CARVE_CW_MEAN). Explicit at every site: marched sites pass the
+// shared per-step fade (case #21 — view ray and self-shadow must fade
+// identically); statistical/static sites (shell LUT bake) pass float(0).
+function billowCarveKernel(
+  dilated: Node,
+  carveSrc: Node,
+  carveAmt: Node,
+  cwVarFade: Node,
+): Node {
+  const cwRaw = carveSrc.r.mul(0.6).add(carveSrc.g.mul(0.4));
+  // `as Node`: TSL's mix() typings mis-infer vec3 from untyped operands,
+  // which poisons downstream float math in the strictly-typed LUT builder.
+  const cw = BILLOW_VAR_FADE
+    ? (mix(cwRaw, float(CARVE_CW_MEAN), cwVarFade) as Node)
+    : cwRaw;
   const ct = float(1).sub(cw).mul(carveAmt);
   return dilated.sub(ct).div(float(1).sub(ct).max(0.0001)).clamp(0, 1);
 }
@@ -1233,10 +1304,17 @@ function getShellOpacityLUT(
           dilated,
           cs,
           billowCarveAmtForType(convRow),
+          // FULL carve variance: the LUT is the statistical reference — it
+          // integrates the true noise ensemble (Monte-Carlo), so it never
+          // aliases and must NOT see the marcher's variance fade.
+          float(0),
         );
         // Marcher erosion + solidity gamma → Beer-Lambert opacity for this
         // sample's density (see BASE_EROSION_K, DENSITY_GAMMA, uDensityMul).
-        const eroded = dimProfile
+        // `: Node` — TSL's operator typings mis-infer vec3 through this chain
+        // (same class as the mix() mis-inference in billowCarveKernel).
+         
+        const eroded: Node = dimProfile
           .sub(float(1).sub(carved).mul(erosionKForType(convRow)))
           .clamp(0, 1);
         const dens = PER_TYPE_DETAIL
@@ -1299,6 +1377,11 @@ function columnMacroCoverage(
     outerRadiusScaled,
   } = opts;
   if (SHELL_DEBUG_VIZ === "rawCoverage") return field.coverageAt(dir);
+  // Raw physics channels (grayscale, no rendering) — the pure-shell twin of
+  // the marcher's 'weatherRaw' viz, for isolating WHICH channel a data seam
+  // lives in when the volumetric is faded out (orbit).
+  if (SHELL_DEBUG_VIZ === "rawConv") return field.weatherAt(dir).convectivity;
+  if (SHELL_DEBUG_VIZ === "rawTop") return field.weatherAt(dir).topHeight;
   // DEBUG-ONLY 3D taps (the retired aliasing ladder — see SHELL_DEBUG_VIZ).
   // baseVolume/detailVolume are otherwise UNUSED here (the LUT replaced them).
   if (SHELL_DEBUG_VIZ === "colSample") {
@@ -1575,14 +1658,28 @@ function buildCloudShellMesh({
   };
 }
 
+// (REAL_WEATHER_MAP / REAL_WEATHER_MAP_PATH moved to cloudShared — the leaf
+// module — so fractionPlacement can gate on them without an import cycle.
+// Pipeline reminder: bake_weather_map.py → convert-to-ktx2.sh --linear
+// (EXPLICIT --linear: an sRGB decode silently corrupts all four DATA
+// channels) → flip the const in cloudShared → full reload. earth.ts injects
+// the path into the tier records ONLY when the const is on, so a missing
+// file can never wedge tier loading while it's off.)
+
 export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
-  // WEATHER_V2: swap the Blue Marble coverage KTX2 for the synthetic v2 control
-  // stack (R=coverage / G=convectivity / B=topHeight / A=cirrus). Chosen ONCE
-  // at graph-build time (build const → page reload), so no WebGPU bind-group
-  // reassignment. Flows to the marcher, shell, AND light-volume bake (all take
-  // this same `weatherMap`), keeping them coherent by construction.
+  // WEATHER_V2: swap the Blue Marble coverage KTX2 for the v2 control stack
+  // (R=coverage / G=convectivity / B=topHeight / A=cirrus). REAL_WEATHER_MAP
+  // (Phase 4) selects the ERA5 bake — loaded through the tier texture records
+  // (earth.ts adds the path when the const is on) so it arrives via the normal
+  // async KTX2 pipeline; the synthetic chart is the fallback while it loads
+  // and the source when the const is off. Chosen ONCE at graph-build time
+  // (build const → page reload), so no WebGPU bind-group reassignment. Flows
+  // to the marcher, shell, AND light-volume bake (all take this same
+  // `weatherMap`), keeping them coherent by construction.
   const weatherMap = WEATHER_V2
-    ? getSyntheticWeatherMapV2()
+    ? REAL_WEATHER_MAP && ctx.textures.weatherV2
+      ? ctx.textures.weatherV2
+      : getSyntheticWeatherMapV2()
     : ctx.textures.clouds;
   if (!weatherMap) return [];
 
@@ -2253,8 +2350,10 @@ export function marchCloudVolume({
       // per-step cloudType here would read the LAST step's value (the
       // documented TSL var-aliasing footgun — see feedback_tsl_var_aliasing).
       // If USE_DETILE is re-enabled under PER_TYPE_DETAIL, thread carveAmt as
-      // an explicit parameter through detileBlend instead.
-      return billowCarveKernel(dil, cs, float(BILLOW_CARVE));
+      // an explicit parameter through detileBlend instead. Same for the
+      // per-step cwVarFade (BILLOW_VAR_FADE) — fixed 0 here for the same
+      // closure-scope reason.
+      return billowCarveKernel(dil, cs, float(BILLOW_CARVE), float(0));
     };
 
     // Diagnostic counters hoisted to fragment scope so the debug return at
@@ -2473,6 +2572,23 @@ export function marchCloudVolume({
           .lessThan(0.5)
           .select(dtSkipInBand, dtDenseEff);
         const tSample = t.add(stratJitter.mul(jitterScale).mul(DITHER_FRACTION));
+
+        // ── Shared per-step noise variance fade (BILLOW_VAR_FADE +
+        // BASE_VAR_FADE — the volumetric→shell detail hand-off) ──
+        // ONE node for the base tap, the primary carve, the 800 m self-shadow
+        // probe, and the cone taps (case #21: a fade mismatch between the view
+        // ray and its self-shadow inverts the crest/crevice relief; case #13:
+        // the probeShape gate and the dense pipeline read the SAME faded
+        // fields). 0 near → 1 across the SHELL_HANDOFF band, converging the
+        // volumetric to the shell's smooth macro look. Materialized with
+        // .toVar() because `t` is reassigned at the end of the iteration (the
+        // TSL var-aliasing footgun).
+        const noiseVarFade = smoothstep(
+          float(BILLOW_VAR_FADE_NEAR),
+          float(BILLOW_VAR_FADE_FAR),
+          t,
+        ).toVar();
+
         const p = roEarth.add(rdEarth.mul(tSample));
         const r = length(p).max(0.0001);
         const altitude01 = clamp(
@@ -2498,6 +2614,7 @@ export function marchCloudVolume({
         const dirP = p.div(r);
         const uvP = equirectDirToUv(dirP, uCloudUvOffset);
         // ONE weather tap, swizzled (never re-sampled). Forced mip 0 (the
+        // ONE weather tap, swizzled (never re-sampled). Forced mip 0 (the
         // marcher's per-quad derivatives break auto-mip — case #2). v2 reads
         // RGBA = coverage/convectivity/topHeight/cirrus; legacy uses only .r.
         const wTap = texture(weatherMap, uvP).level(int(0)) as Node;
@@ -2506,24 +2623,30 @@ export function marchCloudVolume({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let mesoTap: any = null;
         if (WEATHER_V2 || MESOSCALE_TEST) {
-          // MARCHER-SPACE mesoscale octave (§3.6 H3): mask coverage with a
-          // ~31 km cellular field (true zeros in the lanes) sampled from the 3D
-          // base noise — resolution-FREE, so it supplies the 10-40 km local
-          // organization a 2D equirect map at 2048px physically cannot carry
-          // (the Phase-1a RESOLUTION FORK, resolved toward option b). In v2 this
-          // is the STANDING mechanism (layered under the map's coarse hundreds-
-          // of-km cells → hierarchical, like real Sc); in legacy it's the
-          // Phase-F MESOSCALE_TEST preview. World-anchored (projected to the
-          // inner shell → a 2D pattern on the sphere, not volume noise).
-          // The SAME tap's G channel drives the per-cell topAlt tower jitter
-          // below (cloudShared.jitterTopAlt) — one fetch, two consumers.
+          // MARCHER-SPACE mesoscale octave (§3.6 H3): a ~62.5 km-tile cellular
+          // field from the 3D base noise — resolution-FREE, supplying the
+          // 8-30 km local organization a 2D equirect map physically cannot
+          // carry (the Phase-1a RESOLUTION FORK, resolved toward option b).
+          // World-anchored (projected to the inner shell → a 2D pattern on
+          // the sphere, not volume noise). ONE fetch, four consumers: coverage
+          // placement (below), topAlt jitter, turret mask, anvil skirt.
           mesoTap = texture3D(
             baseVolume,
             dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
           ).level(int(0)) as Node;
-          coverageRaw = coverageRaw.mul(
-            smoothstep(float(MESO_LANE_LO), float(MESO_LANE_HI), mesoTap.r),
-          );
+          if (WEATHER_V2) {
+            // FRACTION→PLACEMENT (Phase 4): the map's R is an AREA FRACTION
+            // (ERA5 semantics) — threshold the updraft field by it so the
+            // fraction becomes real clouds with real gaps (area-mean
+            // preserved; see cloudShared.fractionPlacement). Replaces the
+            // legacy lane-mask multiply, which kept fraction-soup interiors.
+            coverageRaw = fractionPlacement(coverageRaw, mesoTap.g);
+          } else {
+            // Phase-F MESOSCALE_TEST preview (legacy path): lane-mask multiply.
+            coverageRaw = coverageRaw.mul(
+              smoothstep(float(MESO_LANE_LO), float(MESO_LANE_HI), mesoTap.r),
+            );
+          }
         }
 
         // Coverage. LEGACY lifts with pow(0.6) (the Nubis Remap thresholds away
@@ -2686,7 +2809,16 @@ export function marchCloudVolume({
               .add(baseSample.b.mul(0.25))
               .add(baseSample.a.mul(0.125));
             // Dilated base shape — erosion form (see cloudDetile.ts baseDilate).
-            const baseShape = baseDilate(baseSample.r, baseFbm);
+            // BASE_VAR_FADE: pinned to its measured mean at distance (the
+            // sphere-lattice beat fix — see the constants block). Faded HERE
+            // so the probeShape gate and the dense pipeline see one field.
+            const baseShape = BASE_VAR_FADE
+              ? mix(
+                  baseDilate(baseSample.r, baseFbm),
+                  float(DILATED_BASE_MEAN),
+                  noiseVarFade,
+                )
+              : baseDilate(baseSample.r, baseFbm);
             // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
             // Carve valleys (low carve-Worley) deeper than lump centres so the
             // smooth dilated dome becomes ~1-2 km cauliflower. Schneider
@@ -2711,6 +2843,7 @@ export function marchCloudVolume({
                   // detailConv = cloudType outside the anvil shield; pulled
                   // to stratiform inside it (T2 glaciated smoothing).
                   billowCarveAmtForType(detailConv),
+                  noiseVarFade,
                 ),
               );
               // ── Fine octave folded into the base field (see FINE_CARVE_BIAS) ──
@@ -3119,7 +3252,15 @@ export function marchCloudVolume({
                         .mul(0.625)
                         .add(baseLs.b.mul(0.25))
                         .add(baseLs.a.mul(0.125));
-                      const dilatedLs = baseDilate(baseLs.r, fbmLs);
+                      // BASE_VAR_FADE mirror (case #21: the self-shadow must
+                      // read the SAME faded field as the view ray).
+                      const dilatedLs = BASE_VAR_FADE
+                        ? mix(
+                            baseDilate(baseLs.r, fbmLs),
+                            float(DILATED_BASE_MEAN),
+                            noiseVarFade,
+                          )
+                        : baseDilate(baseLs.r, fbmLs);
                       const carveLsSrc = texture3D(
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
@@ -3132,6 +3273,7 @@ export function marchCloudVolume({
                         dilatedLs,
                         carveLsSrc,
                         billowCarveAmtForType(detailConv),
+                        noiseVarFade,
                       );
                     }
                     // profileConv (not cloudType): the anvil sheet's
@@ -3290,10 +3432,19 @@ export function marchCloudVolume({
                     .mul(0.625)
                     .add(baseSampleL.b.mul(0.25))
                     .add(baseSampleL.a.mul(0.125));
-                  const baseShapeDilatedL = baseSampleL.r
+                  const baseShapeDilatedRawL = baseSampleL.r
                     .add(float(1).sub(baseFbmL))
                     .div(float(2).sub(baseFbmL).max(0.0001))
                     .clamp(0, 1);
+                  // BASE_VAR_FADE mirror (dead path while USE_LIGHT_VOLUME;
+                  // kept consistent with the primary tap regardless).
+                  const baseShapeDilatedL = BASE_VAR_FADE
+                    ? mix(
+                        baseShapeDilatedRawL,
+                        float(DILATED_BASE_MEAN),
+                        noiseVarFade,
+                      )
+                    : baseShapeDilatedRawL;
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   let baseShapeL: any = baseShapeDilatedL;
                   if (CONE_SAMPLE_CARVE) {
@@ -3305,6 +3456,7 @@ export function marchCloudVolume({
                       baseShapeDilatedL,
                       carveSrcL,
                       billowCarveAmtForType(detailConv),
+                      noiseVarFade,
                     );
                   }
                   const coverageL = coverage;  // primary-ray's coverage

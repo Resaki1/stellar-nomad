@@ -34,6 +34,7 @@ import {
   deriveTopAlt,
   WEATHER_V2,
   MESO_SCALE,
+  fractionPlacement,
   deriveColumnV2,
   convectiveCoverage,
   anvilProfileConv,
@@ -343,6 +344,11 @@ export function createCloudLightVolume(
         baseVolume,
         pColumn.mul(float(MESO_SCALE)),
       ).level(int(0)) as Node;
+      // FRACTION→PLACEMENT mirror (Phase 4): the marcher thresholds the map's
+      // area fraction into placed clouds — the shadow must be cast by the
+      // SAME placed clouds, not by the raw fraction soup, or every gap the
+      // placement opens still sits in shadow.
+      coverage = fractionPlacement(coverage, mesoTap.g);
       const col = deriveColumnV2(wTap.b, mesoTap.g, cloudType);
       topAlt = col.topAlt;
       coverage = convectiveCoverage(coverage, col.turretT, col.shield);

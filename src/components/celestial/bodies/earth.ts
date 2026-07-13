@@ -41,6 +41,10 @@ import {
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
+import {
+  REAL_WEATHER_MAP,
+  REAL_WEATHER_MAP_PATH,
+} from "./cloudShared";
 import { CLOUD_OUTER_ALTITUDE_KM } from "./cloudShared";
 import { EARTH_ATMOSPHERE } from "./atmosphereData";
 import {
@@ -86,8 +90,16 @@ const SHELL_FADE_FULL_ALT_KM = 28; // full above this altitude
 // passes entirely while blend = 0). At 3000 km a 5 km cumulus cell subtends
 // ~2 px — below that the volumetric becomes visually meaningful, so ramp it
 // in across 3000 → 1500 km and let the flat overlay carry everything higher.
-const VOLUMETRIC_BLEND_START_ALT_KM = 3000;
-const VOLUMETRIC_BLEND_FULL_ALT_KM = 1500;
+// 2026-07-12 (damascus-rings resolution — see earthClouds SHELL_HANDOFF_*):
+// lowered from 3000/1500. Above START the marcher pass is skipped entirely
+// (SpaceRenderer gates on uVolumetricBlend), so this now ALSO caps the march
+// to the near field — a perf win at orbit AND it stops the volumetric from
+// contributing its coarse-sampled (ringing) colour where the shell already
+// carries the far field. Keep FULL ≥ the altitude where the volumetric is
+// still finely sampled and START aligned with SHELL_HANDOFF_FAR_KM so the
+// crossover (volumetric fade-out ↔ shell fade-in) lands in one band.
+const VOLUMETRIC_BLEND_START_ALT_KM = 700;
+const VOLUMETRIC_BLEND_FULL_ALT_KM = 250;
 
 // ── Scratch vectors for onFrame ──
 const _moonScaled = new THREE.Vector3();
@@ -429,6 +441,10 @@ export const earthConfig: CelestialBodyConfig = {
       clouds: "/textures/earth_clouds_8k.ktx2",
       normal: "/textures/earth_normal.ktx2",
       spec: "/textures/earth_specular.ktx2",
+      // Phase 4: the baked ERA5 weather map (see earthClouds
+      // REAL_WEATHER_MAP). Injected ONLY when the const is on so a missing
+      // file can never wedge tier loading while it's off.
+      ...(REAL_WEATHER_MAP ? { weatherV2: REAL_WEATHER_MAP_PATH } : {}),
     },
     segments: 128,
     computeTangents: true,
@@ -439,6 +455,7 @@ export const earthConfig: CelestialBodyConfig = {
       night: "/textures/earth_night_2k.ktx2",
       clouds: "/textures/earth_clouds_2k.ktx2",
       spec: "/textures/earth_specular.ktx2",
+      ...(REAL_WEATHER_MAP ? { weatherV2: REAL_WEATHER_MAP_PATH } : {}),
     },
     segments: 48,
   },
@@ -456,6 +473,17 @@ export const earthConfig: CelestialBodyConfig = {
     }
     if (tier === "mid" && textures.clouds) {
       textures.clouds.anisotropy = 4;
+    }
+    if (textures.weatherV2) {
+      // DATA channels, not colour: force NoColorSpace even if the ktx2 was
+      // accidentally converted without --linear (the §4.7 sRGB footgun — an
+      // sRGB decode would silently corrupt coverage/convectivity/topHeight).
+      // Longitude wraps (equirect atan2 seam), latitude clamps.
+      textures.weatherV2.colorSpace = THREE.NoColorSpace;
+      textures.weatherV2.wrapS = THREE.RepeatWrapping;
+      textures.weatherV2.wrapT = THREE.ClampToEdgeWrapping;
+      textures.weatherV2.anisotropy = 4;
+      textures.weatherV2.needsUpdate = true;
     }
   },
 

@@ -1386,6 +1386,263 @@ canonical camera positions per phase.
   present off Peru/Namibia/California with cell structure; ITCZ reads as
   broken Cb band; topHeight-variance acceptance test (§4.2); ground-shadow +
   far-shell coherence (R8); UASTC channel-crosstalk check.
+  **Phase 4a+4b ✅ LANDED 2026-07-09 (awaiting the user's CDS download+bake).**
+  4a: `scripts/bake_weather_map.py` (Python — kept over a Node port because
+  ERA5 delivers NetCDF4/HDF5, unreadable by netcdfjs, and cdsapi has no Node
+  equivalent; deps numpy/netCDF4/Pillow/cdsapi in a user venv, key in
+  ~/.cdsapirc — NEVER in the repo). Modes: --print-request / --download
+  (cdsapi, both datasets) / bake. Inputs: single-levels (lcc, mcc, hcc, tcc,
+  cape) + pressure-levels cloud fraction (27 levels 1000→100 hPa). Channels
+  (ALL LINEAR, anti-bimodal): R = 1−(1−lcc)(1−mcc) random-overlap; G =
+  CAPE/2500 clamped; B = top of the LOWEST CONTIGUOUS cloud system per column
+  (scan up from lowest cloudy level, ≥2-level clear gap ends the system —
+  cirrus-over-stratus canNOT fake an 11 km stratus top), pressure→km via
+  standard atmosphere, encoded as the EXACT INVERSE of topHeightToTopAlt
+  (0 → 2.3 km, 1 → 13.35 km; real tropical tops clamp into turret headroom);
+  A = hcc. No-cloud texels: B filled from neighbours (bilinear-filter
+  safety; coverage≈0 makes the value inert — no coupling that can collapse).
+  Longitudes rolled 0-360 → −180-180 to match the project's earth textures;
+  4096×2048 PNG out + validation stats (channel percentiles, dense-region
+  top-span acceptance, floater risk, deep-conv fraction). Default timestamp
+  2005-08-28 18:00 UTC (Katrina at peak — §6 known-good candidate).
+  Syntax-verified + --print-request smoke-tested (full bake test needs the
+  real data). 4b: REAL_WEATHER_MAP (default OFF) + REAL_WEATHER_MAP_PATH in
+  earthClouds; earth.ts injects the path into near+mid tier records ONLY when
+  ON (a missing file can never wedge tier loading) and onTexturesLoaded
+  forces NoColorSpace (sRGB-footgun belt-and-suspenders) + wrapS repeat;
+  buildEarthClouds prefers ctx.textures.weatherV2 over the synthetic chart.
+  Lint clean. USER STEPS: venv install → --download (CDS queues: minutes) →
+  bake → convert-to-ktx2 --linear → flip REAL_WEATHER_MAP → full reload.
+  WATCH on first load: cloud/ground longitude alignment (uCloudUvOffset
+  exists if a fine shift is needed) + the §4.7 verify list above.
+  **FIRST-BAKE VERDICT + FIX (2026-07-11): fraction→placement.** User bake
+  stats: coverage p50 0.586 / conv p50 0.001 / top p50 0. Three diagnosed
+  failures: (1) WASHED-OUT BIG CHUNKS — ERA5's R is an AREA FRACTION per
+  28 km cell, not placement; rendered directly, scattered-cumulus cells
+  become translucent fraction-soup decks (the Blue Marble looked right
+  because a PHOTO carries placement). (2) BLOCKY — bilinear upsample of the
+  0.25° grid exposes texel edges. (3) GENUS COLLAPSE — linear CAPE/2500 is
+  far too peaky (p50 0.001 → whole planet stratiform; also re-exposed the
+  sloping-sheet artifact as stepping stratiform levels). FIXES:
+  • cloudShared.fractionPlacement(mapCov, mesoG) behind FRACTION_PLACEMENT
+    (default ON): the fraction becomes the THRESHOLD of the existing updraft
+    field — thr(cov) = 0.675 − 0.4·cov, calibrated to G's measured quantiles;
+    soft edge ±0.10; low-fraction kill switch (thr(0) still has ~4% of G
+    above it → ghost clouds otherwise). VERIFIED Monte-Carlo vs the real G
+    distribution: E[placement] ≈ mapCov within a few % across the range, 0
+    at fraction 0, ~0.94 at fraction 1 (thin spots realistic). Replaces the
+    v2 lane-mask multiply in the marcher (legacy MESOSCALE_TEST keeps the
+    lane form); MIRRORED into the light-volume bake (shadows must be cast by
+    the PLACED clouds, not the fraction soup); far shell stays on raw
+    fraction (placement is mean-preserving; ~8 km cells sub-pixel at shell
+    range). Also dissolves the blockiness up close: cloud edges become
+    iso-contours of the smooth 3D noise, not texel edges. One fetch now
+    feeds FOUR consumers (placement/jitter/turret/skirt) — coherent by
+    construction: strong updraft = present AND taller AND turret candidate.
+  • Baker: G = sqrt(CAPE/2000) (monotone concave rescale of a physical
+    proxy — NOT a smoothstep-on-noise; documented vs the anti-bimodal rule);
+    smooth_grid() 2-pass binomial on the NATIVE grid (σ ≈ 20-30 km, x-wraps,
+    y-clamps) rounds the block corners for the far shell/orbit view too.
+  USER: re-run bake (same .nc files, no re-download) + convert + reload.
+  Orbit view = shell = raw (smoothed) fraction — if orbit still reads
+  chunky, the follow-up is shell-side placement or a placement-aware
+  opacity transfer, noted as Phase-4 polish. Sloping-sheet issue PARKED
+  (user-directed) — placement may already change its reading (fronts break
+  into placed clouds at stepping heights); reassess after re-bake.
+  **SECOND-BAKE VERDICT + FIX (2026-07-11): placement moved INTO the bake.**
+  Runtime placement fixed nothing at ORBIT range — the far shell samples the
+  raw fraction (single-mip 3D noise cannot supply shell detail without
+  aliasing), so orbit stayed washed-out with stair-step texel contours
+  (user's 2 screenshots; sqrt-CAPE did land: conv p50 .001→.039, deep-conv
+  2.4→7.6%). THE AAA PATTERN (user asked): nobody ray-noises at orbit — the
+  far representation is always a MIPPABLE 2D map that already carries
+  cloud-scale placement (photo / artist map / composited live-weather bake);
+  our old Blue Marble WAS that. FIX: the baker now synthesizes the placement
+  field itself (worley-FBM on the sphere, TILE_KM=62.5, freqs 4/8/16,
+  weights .625/.25/.125 — the runtime meso field's character; exact grid
+  alignment NOT required, jitter/turrets keep their own field) and
+  thresholds the fraction AT BAKE TIME (same calibrated line/edge/kill
+  switch — lockstep constants documented on both sides), writing PLACED
+  coverage into R at 8192×4096 ≈ 5 km/texel (the Blue Marble regime; KTX2
+  mips give detail at every distance). --no-placement keeps the fraction
+  form. RUNTIME: fractionPlacement now returns mapCov unchanged when
+  REAL_WEATHER_MAP (double-thresholding erodes edges); consts moved to
+  cloudShared (leaf module — earthClouds/earth.ts/bake all import it, no
+  cycle). Runtime placement remains for the SYNTHETIC map.
+  **THIRD-BAKE VERDICT + FIX (2026-07-11): BAND-LIMITED enrichment.** The
+  baked placement stippled + ringed. PROVEN cause (viewed the native-res PNG
+  crop): v1 synthesized worley octaves freq 8/16 of a 62.5 km tile = 1.6 &
+  0.8 texels/cell — BELOW the 8k Nyquist (≥2 texels) → aliased per-texel
+  noise IN the source; mips can't fix base garbage; rings = mip-band
+  transitions of that noise on the sphere. "Why not Blue Marble" answer given:
+  8k = 4.9 km/texel, individual clouds (1-10 km) are SUB-TEXEL — Blue Marble
+  doesn't resolve them either; its detail is band-limited photographic
+  SYSTEM-scale texture + pre-baked shading. User chose BAND-LIMITED PROCEDURAL
+  (AskUserQuestion; keeps ERA5 storms + generalizes to procedural, over
+  photo-composite options). FIX: synth_enrichment_field = value-noise fBm
+  (C1-smooth, non-periodic sin-hash → no tile seam) on a 500 km tile, octaves
+  4/8/16/32 = 125/62/31/16 km cells (all ≥3.2 texels, Nyquist-safe),
+  domain-warped (freq 2, amp 0.25 tile) → filaments; bake_placement
+  thresholds fraction at thr=1−cov, soft EDGE 0.16 → PLACED coverage. A
+  threshold of a band-limited field is band-limited (edges = smooth
+  iso-contours). VERIFIED PRE-HANDOFF: JS adjacent-texel max jump 0.306→0.048
+  (6× smoother); area mean 0.545 vs 0.567 (adds Blue-Marble-like CONTRAST:
+  cov .3→.13, .7→.87); native-res rendered preview = smooth structured
+  clouds, zero stipple. Runtime UNCHANGED (fractionPlacement returns mapCov
+  for the real map; near marcher reads baked R like the old photo — no double
+  placement). Baker G=sqrt(CAPE/2000) + smooth_grid retained. USER: re-bake
+  (same .nc) → convert --linear → reload. If partly-cloudy regions read too
+  sparse/dense, tune the contrast stretch (1.4 in synth_enrichment_field) or
+  PLACEMENT_EDGE. If ~16 km finest is still too coarse for orbit, a 16k map
+  (or the photo-composite option) is the next lever.
+  **FOURTH ITERATION (2026-07-12): REAL SATELLITE IMAGE for Earth's R — the
+  strategic resolution.** The third bake came out nearly EMPTY (placed mean
+  0.136 vs fraction 0.567): the sin-hash value noise ran in float32, and at
+  the finest-octave coordinates (~800 tile units × 43758 ≈ 2.6e10) float32
+  has ZERO fractional precision → the noise degenerated near-constant and
+  the threshold deleted the planet. (The JS pre-verification passed because
+  JS is float64 — LESSON: numeric-precision behaviour does NOT port between
+  the verification language and the implementation language; verify in the
+  target dtype.) Fixed: _value_noise3 forces float64.
+  THE STEP BACK (user asked "what are we even trying to achieve?"): ERA5 is
+  the right data for PHYSICS and the wrong data for APPEARANCE — it carries
+  no shape information below 28 km, so ALL synthesized orbit detail is
+  invented (too fine → aliases; too soft → washed out). Blue Marble looks
+  good because it is a REAL MODIS PHOTOGRAPH. User approved the split (with
+  same-date matching): R = real MODIS true-color composite OF THE SAME DATE
+  (NASA GIBS WMS, daily global back to 2000, no key, one GET at 8192×4096);
+  G/B/A stay ERA5; procedural enrichment (float64-fixed) remains the
+  R-source for procedural planets. Baker: --download-image (GIBS fetch),
+  --cloud-image (bake mode): cloud extraction = soft ramp on min(R,G,B)
+  (clouds bright+neutral; deserts fail the min test), swath-gap/polar-night
+  no-data filled with PROCEDURAL placement (feathered 4-pass mask → no
+  seam), ERA5-consistency veto (image-bright where ERA5 low+mid ≈ 0 = snow/
+  ice or lone cirrus → softly suppressed; kills Greenland-as-cloud +
+  phantom decks under cirrus veils). Temporal caveat documented: imagery =
+  daily composite of ~10:30-local overpasses vs ERA5 18Z snapshot — same
+  synoptic day, hours apart locally. Game side needs NO changes (same map
+  contract). gitignore: era5_gibs_*.jpg. USER: --download-image → re-bake
+  with --cloud-image → convert --linear → reload.
+  **FIFTH ITERATION (2026-07-12): first image bake SUCCEEDED — "way better" —
+  two residuals fixed.** (Also: a `valid` name collision crashed the stats
+  tail AFTER the PNG write — image-mask `valid` shadowed the ERA5
+  cloudy-column mask → (721,1440)×(4096,8192) broadcast error; renamed
+  img_valid. The written PNG was fine.) User residuals:
+  (1) "FLAT / missing fine detail" — OUR extraction clipped: placed-R p50 =
+  1.0 (half the planet pinned at full white; everything above minRGB 0.55
+  saturated, deleting the photo's interior texture). FIX: ramp widened
+  IMG_CLOUD_LO/HI 0.28/0.55 → 0.30/0.90 — interiors now map to VARIED
+  0.5-1.0 coverage (also softens the near-binary stipple quantization).
+  Deserts stay excluded (Sahara min-channel ≈ 0.35-0.45 → ramp ≈ 0).
+  (2) "areas don't fit together" — TWO seam mechanisms: (a) image↔procedural
+  fill boundaries (11.1% no-data wedges; content-character mismatch no
+  feather hides) → FIX: fetch + merge same-day MODIS AQUA under Terra at the
+  RGB stage (--download-image now gets both; --cloud-image-2; Aqua's swaths
+  are offset ~3 h → real pixels fill most Terra gaps; residual ≈ polar
+  night) + feather widened 4→24 passes (σ ≈ 17 km) for what remains;
+  (b) SWATH-TIME SEAMS INSIDE the imagery (razor-straight diagonals — 
+  adjacent orbital passes ~100 min apart, clouds moved, sun angle changed) —
+  the honest DATA LIMIT of daily composites: Blue Marble is a MONTHLY
+  hand-curated composite of the same source. Mitigations if wanted: pick a
+  cleaner date, or hand-touch the baked PNG (legitimate for an offline hero
+  asset — NASA did the same). USER: re-run --download-image (now 2 files) →
+  re-bake with --cloud-image + --cloud-image-2 → convert --linear → reload.
+  Expect: interior texture restored (p50 well below 1.0), most straight
+  seams gone; remaining diagonals = swath-time seams (data).
+  **SIXTH ITERATION (2026-07-12): hard-seam diagnosis PROVEN + fixed,
+  verified end-to-end in-session.** User: detail "way better", but hard seams
+  remained (slit-shaped bands, visible in shell AND volumetric = in the map).
+  Debugged EMPIRICALLY (sips/numpy crops of terra.jpg / aqua.jpg / baked R at
+  a Pacific wedge): (1) the Terra↔Aqua merge was a hard np.where — razor
+  edges tracing every wedge outline; (2) worse, Terra's gap wedges land
+  exactly on AQUA'S SCAN-EDGE/GLINT zones (both sun-synchronous) — bright
+  neutral HAZE that the minRGB ramp converted into phantom 0.3-0.6 coverage →
+  glowing mismatched wedge bands. FIX (image_coverage): FEATHERED merge
+  (w_t = 24-pass-smoothed eroded Terra validity, σ ≈ 17 km; never weight
+  toward a satellite with no data), extraction floor rising to
+  AQUA_FILL_LO=0.42 inside the fill (weighted by aqua_w — haze reads clear,
+  real bright clouds survive), 2 px validity-mask erosion (JPEG-degraded gap
+  rims). VERIFIED: re-baked in-session via the user's venv — no-data
+  11.1→8.7% (equatorial wedges now real Aqua; residual ≈ Antarctic polar
+  night → procedural), and the SAME Pacific wedge crop shows the glowing
+  gradient band GONE (dark clear ocean + real cloud bits, soft edges; the
+  open-cell Sc honeycomb in valid Terra data untouched). ktx2 converted
+  in-session (--linear, 29.8 MB). USER: reload only. Residual risk:
+  sun-glint stripes in swath CENTERS may still read as faint cloud in both
+  satellites (unfixed; revisit if visible in-game).
+
+  **SEVENTH ITERATION (2026-07-12): "damascus steel" contour bands at low
+  orbit = 8-BIT TERRACES in the smooth ERA5 channels → TPDF dither at the
+  bake.** User: nested flowing bands, fixed locations, visible 8400→6500 km
+  center (2030→130 km alt), "flash" then gone below. Full diagnosis in
+  docs/CLOUD_DEBUGGING_LESSONS.md case study #23 (regime mapping matched
+  every reported distance to uVolumetricBlend + VOL_FADE_ALT constants;
+  offline mip/UASTC extraction ruled the texture pipeline out; user's
+  DEBUG_VIZ ladder showed bands in EVERYTHING incl. alpha+firstHit;
+  terrace-edge maps of quantized G/B were a visual dead ringer for the
+  in-game pattern). ROOT CAUSE: smooth 8-bit G/B → 5-40 km terraces along
+  weather isolines, amplified by the marcher's steep gates at low orbit
+  (map texels MAGNIFIED there; shell is immune — auto-mip averaging
+  de-quantizes; near field immune — light volume + detail noise). FIX:
+  ±1 LSB triangular (TPDF) dither at the uint8 write in
+  bake_weather_map.py (deterministic seed 0x5EED), re-baked + re-toktx'd
+  in-session (32 MB — dither adds entropy), terrace-edge detector verified
+  coherent contours → uniform grain. Also fixed convert-to-ktx2.sh spurious
+  exit-1 (cleanup `&&` guard as last statement under set -e).
+  **TERRACE THEORY REFUTED same day** — dither changed nothing; the user's
+  full viz-ladder matrix (banded: everything sampling 3D volumes / at marched
+  samples; clean: weatherRaw/convType/topAlt + all bookkeeping) pinned the
+  REAL cause: sub-Nyquist MARCH sampling of the ~1.4 km billow-carve Worley
+  (DENSE_INTEG_CAP 750 m → <2 samples/cell beyond ~72 km; jitter+EMA turns
+  the aliasing into STATIONARY fringes that organize along the real map's
+  smooth macro gradients — the synthetic map's noisy coverage had masked it).
+  FIX: `BILLOW_VAR_FADE` in earthClouds — carve variance fades to its
+  MEASURED mean (CARVE_CW_MEAN=0.4012, from CPU volumes via tsx) over
+  t=100→300 km via a new explicit `cwVarFade` param on billowCarveKernel
+  (marched sites share ONE per-step node, case #21; shell LUT passes 0 —
+  full variance, it's the statistical reference). DC-preserved ⇒ far-field
+  fullness unchanged. Full trail: LESSONS case study #23 + continuation.
+  The map-side TPDF dither is KEPT (correct practice for smooth 8-bit
+  channels, just not this bug's cause).
+  **CARVE FADE ALSO NULL** (BILLOW_VAR_FADE on/off = no change at 7616 km)
+  → REAL ROOT CAUSE PROVEN OFFLINE (sphere_beat_sim.py): the SPHERE-LATTICE
+  BEAT — column-integrating the real base volume through the thin spherical
+  slab (~3 base cells thick; 20 km tile, no warp/detile active) produces
+  20-40 km coherent fingerprint arcs that a flat-slab control does NOT.
+  Planet-fixed, regional, scale-dependent (up close the arcs are 100s of px
+  = invisible undulation), shell immune (phase-free LUT statistics),
+  masked before by the synthetic map's noisy coverage. FIX: BASE_VAR_FADE —
+  dilated base pinned to its MEASURED mean 0.672 (fade the RESULT: dilate
+  is nonlinear, dilate(E[r],E[fbm])≈0.81 would shift far density +20%) over
+  the same t=100→300 km fade (shared noiseVarFade node; primary tap covers
+  probeShape gate + dense = case #13; probe + cone mirrored = case #21;
+  LUT/bake/debug taps keep full variance). Full trail: LESSONS case #23 +
+  two continuations.
+  **RESOLVED (2026-07-13) — the above three "fixes" were ALL in-game NULL
+  results; see LESSONS case #23 "DEFINITIVE RESOLUTION".** Real damascus
+  cause, found by an in-engine `ISOLATE` constant-override ladder (not the
+  offline sims): the volumetric's LIT COLOR read at a first-hit position
+  QUANTIZED by the coarse orbit front-detection (uLodMinSamples floors at 8
+  by ~200 km alt → ~8 samples/slab). `analyticAlpha`→gone (march
+  accumulation), `flatColor`→gone / `smoothDepth`→stays (it's the COLOR),
+  `FORCE_MIN_SAMPLES=96`→gone (confirmed sampling). SHIPPED FIX = hand-off
+  retune: SHELL_HANDOFF 1000/2500→250/700 km + VOLUMETRIC_BLEND 3000/1500→
+  700/250 km alt (marcher pass skipped >700 km = perf win) + LOD_MIN_SAMPLES_FAR
+  8→16, so the clean analytic shell carries the far field and the volumetric
+  only renders where finely sampled. BILLOW/BASE_VAR_FADE RE-TUNED to the
+  250/700 band as the legit volumetric→shell detail-fade; MESO_VAR_FADE +
+  decode-dither + 2048 smooth-map split REMOVED (dead weight). Issue 2/3
+  (dissolve-noise, height-lines) resolved by this; no Jensen gap.
+  **COVERAGE SEAMS (separate bug, same session): FIXED.** Hard straight
+  "one-side-different" seams = MODIS swath-gap merge + sun-glint in the R
+  channel (weatherRaw=full-red isolated it; true-color reflectance is the
+  wrong source — Terra/Aqua 3 h apart don't align, glint reads as cloud).
+  FIX: coverage R ← clean Blue Marble composite (bake `--coverage-texture
+  public/textures/earth_clouds_8k.webp`); ERA5 keeps G/B/A. Seam/glint-free;
+  trade-off = idealised placement, not the real day. topHeight (B) plateau
+  seams from fill_from_neighbours also fixed (σ≈130 km smooth). USER SIGNED
+  OFF "good enough". Diagnostic scaffolding (ISOLATE/FORCE_MIN_SAMPLES)
+  removed; rawConv/rawTop shell viz kept. tsc 0 / lint baseline.
 - **Phase 5 — Cirrus layer.** PRECONDITION: shell Bugs A/B resolved or
   measured (Bug A is largely fixed by Phases 1-2; Bug B's mechanism —
   fresh-every-frame shell + sub-pixel content — applies verbatim to the

@@ -37,3 +37,8 @@ next-env.d.ts
 
 /docs/VolumetricCloudReferences/KerbalSpaceProgramVolumetricCloudsMod
 /.pnpm-store
+
+# ERA5 weather-bake intermediates (bake_weather_map.py) — the .ktx2 ships, not these
+era5_*.nc
+era5_gibs_*.jpg
+/public/textures/weather/*.png
