@@ -34,6 +34,7 @@ import {
   USE_LIGHT_VOLUME,
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
+import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -78,6 +79,10 @@ const ATMOSPHERE_PASS_ENABLED = true;
 // ~3000 km (earth.ts VOLUMETRIC_BLEND_START_ALT_KM); above that the bake is
 // wasted. Set a touch higher so the froxel is ready before clouds fade in.
 const FROXEL_BAKE_MAX_ALT_KM = 4000;
+
+// Altitude band (km, below BSM_MAX_ALT_KM) over which the ground cloud-shadow
+// strength ramps 1→0, so shadows don't pop off at the BSM bake ceiling.
+const BSM_FADE_BAND_KM = 400;
 
 // ── Cloud-only resolution clamp ──────────────────────────────────────────────
 // The whole scene renders at gl.getPixelRatio() (DPR, clamped to [0.5, 1.5] in
@@ -609,6 +614,43 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // the pass runs as a passthrough copy (uActive=0).
     if (atmospherePass && rtB) {
       atmospherePass.updateUniforms({ scaledCamera, dominant });
+      // Cloud Beer Shadow Map (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md L0). Bake
+      // BEFORE the froxel/sky-view/main pass so those consumers read a fresh
+      // map on the same GPU queue. Gated to the near-tier pipeline being mounted
+      // (its shared density uniforms/textures back the bake) + low altitude (the
+      // consumers are the atmosphere pass, which needs it only below the deck).
+      // Runs OUTSIDE the cloudsVisible block on purpose — the marcher is skipped
+      // above ~700 km but ground shadows/god rays still apply there. The base
+      // noise volume is warm-baked at startup + drained by flushCloudBakes above,
+      // so it is valid here regardless of altitude.
+      let bsmStrength = 0;
+      if (dominant) {
+        const bsmPipeline = getActiveCloudPipeline();
+        const bsmEarth = bsmPipeline ? getEarthMatrixWorldRef() : null;
+        const bsmAltKm =
+          dominant.distanceKm - dominant.params.groundRadiusKm;
+        if (
+          bsmPipeline &&
+          bsmEarth &&
+          bsmPipeline.hasCloudShadowMap() &&
+          bsmAltKm < BSM_MAX_ALT_KM
+        ) {
+          bsmPipeline.updateCloudShadowMap(scaledCamera.position, bsmEarth);
+          bsmPipeline.bakeCloudShadowMap(renderer);
+          // Consumer freshness gate: full below the fade band, ramp to 0 over
+          // the top BSM_FADE_BAND_KM so ground shadows don't pop off at the
+          // altitude ceiling (above it the bake is skipped → stale map).
+          bsmStrength =
+            1 -
+            THREE.MathUtils.smoothstep(
+              bsmAltKm,
+              BSM_MAX_ALT_KM - BSM_FADE_BAND_KM,
+              BSM_MAX_ALT_KM,
+            );
+        }
+      }
+      // Set every frame (0 when not baked) so a stale map never shadows.
+      setCloudShadowStrength(bsmStrength);
       // Phase 4: bake the aerial-perspective froxel for this frame (needs the
       // camera/sun uniforms just set + the LUTs baked in the pre-pass). Cheap
       // 32³ compute. FROXEL_ENABLED gates the dispatch out entirely unless a

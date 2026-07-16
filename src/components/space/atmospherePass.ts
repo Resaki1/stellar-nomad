@@ -38,6 +38,7 @@ import {
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 import type { AtmosphereParams } from "../celestial/types";
+import { getCloudShadowMap } from "./cloudShadowMap";
 
 // =============================================================================
 // Physically-based atmospheric scattering — Hillaire 2020 (the Unreal model).
@@ -107,6 +108,22 @@ type AtmoDebug =
   | "froxel" // blit the AP froxel's far-slice in-scatter → the froxel bake
   | "skyView"; // blit the Sky-View LUT (lat/long sky map) → the sky-view bake
 const DEBUG_ATMOSPHERE: AtmoDebug = "off";
+
+// ── Cloud Beer Shadow Map blit (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md L0) ──
+// Build-const, mirroring DEBUG_ATMOSPHERE: 'off' compiles the branch away
+// entirely (no BSM texture bind). Blits the singleton getCloudShadowMap() at
+// screenUV — the map is a sun-orthographic projection, so this is a top-down-
+// from-the-sun view of the cloud shadow field. Purpose: verify L0 (the bake
+// produces the cloud pattern, is stable when the camera is still, and doesn't
+// swim when flying — the texel-snapped window). Modes:
+//   "hit"    — A channel: white where a cloud was crossed (the coverage
+//              silhouette in sun projection). The primary "is it working" check.
+//   "shadow" — exp(−tau_max): full-column transmittance (white lit → black
+//              thick shadow). Reads like the shadow that will land on the ground.
+//   "tau"    — tau_max × 0.1: raw optical depth ramp.
+//   "front"  — |d_front| × 0.15: sun-depth of the first hit (structure check).
+type BsmBlit = "off" | "hit" | "shadow" | "tau" | "front";
+const BSM_BLIT: BsmBlit = "off";
 
 // The AP froxel bake is GPU work worth doing only when something consumes the
 // volume: the 'froxel' debug viz, or the cloud aerial perspective (Phase 4
@@ -1311,6 +1328,24 @@ export function setupAtmospherePass(
       // u=0.5, the lower half is the toward-ground march. Validates the BAKE
       // (forward mapping); the sampler's inverse mapping is exercised in step 2.
       return vec4(texture(skyViewLUT.texture, screenUV).rgb, 1);
+    }
+    if (BSM_BLIT !== "off") {
+      const bsm = (
+        texture(getCloudShadowMap().texture, screenUV).level(int(0)) as Node
+      ).toVar();
+      if (BSM_BLIT === "hit") return vec4(bsm.a, bsm.a, bsm.a, 1);
+      if (BSM_BLIT === "shadow") {
+        const T = exp(bsm.b.negate());
+        return vec4(T, T, T, 1);
+      }
+      if (BSM_BLIT === "tau") {
+        const g = bsm.b.mul(0.1);
+        return vec4(g, g, g, 1);
+      }
+      if (BSM_BLIT === "front") {
+        const f = bsm.r.abs().mul(0.15);
+        return vec4(f, f, f, 1);
+      }
     }
 
     If(uActive.greaterThan(0.5), () => {

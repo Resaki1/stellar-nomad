@@ -7,6 +7,7 @@ import {
   uv,
   normalWorld,
   positionWorld,
+  positionLocal,
   tangentWorld,
   bitangentWorld,
   cameraPosition,
@@ -51,8 +52,29 @@ import {
   getAtmosphereLUTs,
   transmittanceLutUv,
 } from "@/components/space/atmospherePass";
+import {
+  cloudShadowAt,
+  cloudShadowStrengthNode,
+} from "@/components/space/cloudShadowMap";
 
 export { PLANET_POSITION_KM };
+
+// Max darkening the ground cloud-shadow applies to the day term: the lit factor
+// is mix(1, T_sun, GROUND_SHADOW_STRENGTH), so thick cloud (T→0) → (1−k)× daylight
+// (k=0.85 → 0.15×). DARKENING KNOB #1 (raise toward 1 for near-black shadows).
+// Knob #2 is SHADOW_TAU_BOOST in cloudShadowMap.ts (τ contrast — but that also
+// lifts optically-THIN clouds into visible shadows, so prefer this knob for pure
+// darkness). The legacy fake used 0.7; the crossfade band is small.
+const GROUND_SHADOW_STRENGTH = 1.0;
+// Grazing-sun shadow fade (cosSunToGeomNormal = sin(sun elevation)). Shadows fade
+// to none below GRAZE_LO (~1.7°) and are full above GRAZE_HI (~8.6°) — kills the
+// razor-sharp long terminator streaks (twilight diffuses real shadows; the
+// sun-ortho map is also unreliable at grazing angles).
+const GRAZE_LO = 0.03;
+const GRAZE_HI = 0.15;
+// Debug overlay: tint shadowed ground magenta to inspect cloud-shadow ↔ cloud
+// registration (see the SHADOW_DEBUG block in the fragment). Off = zero cost.
+const SHADOW_DEBUG = false;
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.15 * Math.PI, 0.8 * Math.PI);
 
@@ -271,6 +293,9 @@ function buildEarthFragmentNode(opts: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let nMapped: any = nGeom;
     const cloudShadowVal = float(0).toVar();
+    // The ground cloud-shadow lit factor (1 = lit, <1 = shadowed), captured for
+    // the SHADOW_DEBUG overlay below.
+    const groundShadowLight = float(1).toVar();
 
     if (detailed && texNormal) {
       // Normal mapping via TBN
@@ -299,11 +324,41 @@ function buildEarthFragmentNode(opts: {
         dot(bW, sunOnSurface)
       ).mul(float(0.0015).div(cosSunToGeomNormal.max(0.12)));
 
-      // Two-tap soft shadow for penumbra
+      // ── Ground cloud shadow: legacy FAKE crossfaded → the Beer Shadow Map ──
+      // FAKE (texClouds.r at a sun-projected UV offset): the high-altitude
+      // fallback, since the BSM only bakes below BSM_MAX_ALT_KM.
       const cs1 = texture(texClouds, uvCoord.add(shadowUV.mul(0.4))).r;
       const cs2 = texture(texClouds, uvCoord.add(shadowUV)).r;
       cloudShadowVal.assign(cs1.mul(0.6).add(cs2.mul(0.4)));
-      dayAmount.mulAssign(float(1.0).sub(float(0.7).mul(cloudShadowVal)));
+      const fakeLight = float(1.0).sub(float(0.7).mul(cloudShadowVal));
+      // BSM (L1): physical sun transmittance. positionLocal is the surface's
+      // object-space position = scaled-km, earth-fixed = the BSM's exact
+      // earth-model frame, so no transform is needed. cloudShadowAt already folds
+      // in the freshness `strength` gate (→ 1 above the bake ceiling).
+      const bsmLight = mix(
+        float(1.0),
+        cloudShadowAt(positionLocal),
+        float(GROUND_SHADOW_STRENGTH),
+      );
+      // Crossfade by the SAME strength: low alt (strength→1) → pure BSM (no
+      // double-count with the fake); high alt (strength→0) → pure fake. The band
+      // is small (SpaceRenderer BSM_FADE_BAND_KM) so the handoff is seamless.
+      const shadowLight = mix(fakeLight, bsmLight, cloudShadowStrengthNode());
+      // ── Grazing-sun fade ──
+      // As the sun drops toward the horizon (cosSunToGeomNormal = sin(elevation)
+      // → 0 at the terminator) the projected shadow degenerates into long, razor-
+      // sharp streaks — physically WRONG: at grazing sun the penumbra widens and
+      // twilight scattering washes shadows out. Also the sun-ortho map is
+      // unreliable there (rays exit the window). So fade the shadow toward "lit"
+      // below ~GRAZE_HI elevation. Fades the fake too (uniform look through the
+      // BSM→fake handoff).
+      const grazeFade = smoothstep(
+        float(GRAZE_LO),
+        float(GRAZE_HI),
+        cosSunToGeomNormal,
+      );
+      groundShadowLight.assign(mix(float(1.0), shadowLight, grazeFade));
+      dayAmount.mulAssign(groundShadowLight);
     }
 
     // Apply only eclipse darkening — the base sigmoid is already in dayAmount.
@@ -324,6 +379,17 @@ function buildEarthFragmentNode(opts: {
     // Sun-lit day albedo is tinted by the atmospheric transmittance (Phase 3b);
     // the night-light emission (city lights) is NOT — it's not sunlit.
     const col = mix(nightCol.mul(nightMask), dayCol.mul(sunT), dayAmount).toVar();
+
+    // ── SHADOW_DEBUG: cloud-shadow / cloud registration overlay ──
+    // Build-const (dead-eliminated when off). Tints shadowed ground MAGENTA over
+    // the normal surface so the shadow SHAPE is unmistakable — fly so both the
+    // rendered clouds and the ground are in view and check each magenta patch
+    // sits anti-sunward of a cloud (the physical offset). A magenta patch with NO
+    // cloud sun-ward of it ⇒ real coverage/projection mismatch; an offset that
+    // grows with sun-grazing but tracks a cloud ⇒ correct. Near-tier only.
+    if (SHADOW_DEBUG) {
+      return vec4(mix(vec3(1, 0, 1), col, groundShadowLight), 1);
+    }
 
     // Apply terminator warmth -- reduced for mid LOD where the smooth geometric
     // normal makes the band bleed across the entire day side. Phase 3b: skipped

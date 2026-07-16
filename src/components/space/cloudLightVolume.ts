@@ -177,7 +177,7 @@ const BAKE_BASE_LOD = 0;
 // lockstep with the marcher or shadows drift off their clouds.
 // 2026-06-16: 0 to match WARP_AMPLITUDE=0 (warp-off path; see cloudDetile.ts
 // USE_DETILE note). MUST equal earthClouds.ts WARP_AMPLITUDE.
-const WARP_AMPLITUDE_MIRROR = 0;
+export const WARP_AMPLITUDE_MIRROR = 0;
 // (TOPALT_LINEAR_MIRROR removed in Phase 0 — the topAlt spread now comes from
 // the shared cloudShared.topAltSpread/deriveTopAlt, so there is nothing to
 // hand-mirror. cloudHeightProfileInline likewise replaced by the shared

@@ -49,6 +49,7 @@ import {
   createCloudLightVolume,
   type CloudLightVolume,
 } from "./cloudLightVolume";
+import { createCloudShadowMap } from "./cloudShadowMap";
 
 // =============================================================================
 // Phase D — Cloud pipeline (two-pass architecture, MRT marcher)
@@ -154,6 +155,21 @@ export type CloudPipeline = {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   computeLightVolume: (renderer: any) => void;
+
+  /**
+   * Cloud Beer Shadow Map (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md L0). Driven from
+   * SpaceRenderer's ATMOSPHERE block (not the cloudsVisible block) so the map
+   * bakes up to BSM_MAX_ALT_KM for the atmosphere-pass consumers. updateWindow
+   * recomputes the sun-space window; bake renders it. Both no-op when the BSM
+   * toggle is off (hasCloudShadowMap() === false).
+   */
+  updateCloudShadowMap: (
+    cameraScaledPos: THREE.Vector3,
+    earthMesh: THREE.Object3D,
+  ) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bakeCloudShadowMap: (renderer: any) => void;
+  hasCloudShadowMap: () => boolean;
 
   /**
    * Current volumetric crossfade value (earth.ts uVolumetricBlend, 0 = flat
@@ -499,6 +515,23 @@ export function setupCloudPipeline(
       })
     : null;
 
+  // Cloud Beer Shadow Map (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md L0). Shares the
+  // EXACT density-recipe nodes with the light volume + marcher so its shadows
+  // register with the drawn clouds. Unlike the marcher/light-volume it must bake
+  // at higher altitude than cloudsVisible (its consumers are the atmosphere pass),
+  // so SpaceRenderer drives updateCloudShadowMap/bakeCloudShadowMap separately in
+  // the atmosphere block — NOT through updateUniforms/computeLightVolume below.
+  const shadowMap = createCloudShadowMap({
+    baseVolume: opts.baseVolume,
+    weatherMap: opts.weatherMap,
+    uInnerRadius: opts.uInnerRadius,
+    uOuterRadius: opts.uOuterRadius,
+    uBaseScale: opts.uBaseScale,
+    uColumnScale: opts.uColumnScale,
+    uCloudUvOffset: opts.uCloudUvOffset,
+    uSunRel: opts.uSunRel,
+  });
+
   const color = createColorPass(opts, shared, stbnTexture, lightVolume);
   const reconstruction = setupCloudReconstructionPass({
     uOuterRadius: opts.uOuterRadius,
@@ -592,6 +625,7 @@ export function setupCloudPipeline(
     color.geo.dispose();
     reconstruction.dispose();
     lightVolume?.dispose();
+    shadowMap?.dispose();
     if (activePipeline === handle) activePipeline = null;
   };
 
@@ -603,6 +637,11 @@ export function setupCloudPipeline(
     updateUniforms,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     computeLightVolume: (renderer: any) => lightVolume?.compute(renderer),
+    updateCloudShadowMap: (cameraScaledPos, earthMesh) =>
+      shadowMap?.updateWindow(cameraScaledPos, earthMesh),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    bakeCloudShadowMap: (renderer: any) => shadowMap?.bake(renderer),
+    hasCloudShadowMap: () => shadowMap !== null,
     getVolumetricBlend: () => opts.uVolumetricBlend.value as number,
     dispose,
   };
