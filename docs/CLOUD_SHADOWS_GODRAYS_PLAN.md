@@ -566,4 +566,298 @@ this — keep the raw numbers in the work log below).
   surface pixel (cheap vs the marcher). tsc 0, lint baseline. NOTE: the fuller
   physical fix (skylight in-scatter FILLING the shadow toward the terminator)
   arrives with L2 atmosphere↔cloud coupling; this penumbra blur is the geometric
-  half.
+  half. **L1 signed off by user after this fix ("Looks good").**
+- 2026-07-14 — **L2 LANDED (god rays)** — code-complete, static-verified,
+  adversarial review CLEAN (2 lenses — frames/units + TSL/integration — read the
+  live code and returned zero findings; no fixes needed).
+  - `cloudShadowMap.ts`: new `invModel` Matrix4 uniform (earth inverse-model,
+    refreshed each `updateWindow`); `cloudShadowAt` refactored into
+    `cloudShadowCore(P, penumbra)` (surface path unchanged, 5-tap penumbra); NEW
+    `cloudShadowAtPlanetKm(PKm)` — planet-centred INERTIAL km input, converts
+    km→scaled (`kmToScaledUnits(1)`) and rotates through `invModel` as a
+    direction (`vec4(…,0)`, valid because the earth mesh is translation=centre,
+    scale=1 — same precedent as `cloudLightVolume.ts:296`), SINGLE-tap
+    reconstruction (5 penumbra taps × 32 steps would be 160 taps/pixel; the
+    march's own integration averages).
+  - `atmospherePass.ts`: `GODRAYS=true` + `MS_CLOUD_SHADOW=0.5` +
+    `GODRAYS_SKY_MARCH=false` consts (by `BSM_BLIT`); one shared
+    `shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib)` closure in
+    `setupAtmospherePass`; ALL THREE per-step integrands now call it (main march
+    `runMarch`, froxel bake, Sky-View bake — grep `shadowedSunScatter`). Direct
+    single-scatter ×= cloudT (one BSM tap/step, `.toVar()`d); directionless MS
+    term ×= `mix(1, cloudT, 0.5)`. `GODRAYS=false` compiles the taps away.
+    `GODRAYS_SKY_MARCH` forces `uSkyViewBlend=1` (crisp per-pixel sky shafts;
+    re-spends the Phase-4 sky-march savings — measure before shipping on).
+  - Graceful degradation: BSM stale/unbaked (Mars, high alt) → strength gate 0 →
+    cloudT=1 → god rays absent, no per-body special-casing.
+  - tsc 0, lint 101 baseline.
+  - **Verify in-engine (user):** sun low over broken cumulus, camera under/beside
+    the deck → bright/dark shafts converging on the sun, anchored to specific
+    clouds (fly sideways: shafts parallax with the clouds, unlike a post effect);
+    overcast deck → haze beneath globally dimmed; from above looking down-sun →
+    dark anti-shafts across the ground haze; DEBUG_ATMOSPHERE="inscatter" shows
+    the raw shafts if in doubt. Measure frame time before/after at 1440p (expect
+    <0.3 ms). Knobs: MS_CLOUD_SHADOW (ambient fill under decks),
+    GODRAYS_SKY_MARCH (crisp sky shafts, perf), SHADOW_TAU_LO/HI (shared with L1
+    — gate which clouds cast).
+- 2026-07-14 — **L2 in-engine feedback + FIX 1: soft (blurred) shadow map.**
+  USER CONFIRMED: shafts render above/inside/below the deck; anti-sunward sky
+  shadow bands visible (real phenomenon — ANTICREPUSCULAR rays, cloud shadow
+  volumes through haze converging at the antisolar point). ISSUES: shafts "too
+  harsh, individual lines" from above; BLOCKY shadow volumes in the sky;
+  GODRAYS_SKY_MARCH=true measured **−10–20% fps and looked WORSE** (the Sky-View
+  LUT had been hiding the blocks; per-pixel march renders the raw texels) → keep
+  OFF, treat as dead knob.
+  - ROOT CAUSE of blockiness: shafts are extrusions of the 512² map
+    (5.9 km/texel) through the whole atmosphere; bilinear's piecewise-linear
+    ramps (re-sharpened by the τ gate) read as hard facets edge-on.
+  - FIX (the industry standard — UE r.VolumetricCloud.ShadowMap.Blur, Frostbite,
+    Unity cookie blur): second singleton RT `getCloudShadowMapSoft()`; a 3×3
+    Gaussian pass (offset `BSM_SOFT_BLUR_TEXELS=1.5`) runs right after each bake
+    (same queue → ordered). VOLUME consumers (cloudShadowAtPlanetKm → god rays)
+    sample the SOFT map; the SURFACE consumer keeps the SHARP map + its
+    grazing-adaptive penumbra (L1 tuning untouched). Physically justified:
+    multi-scattering diffuses real shafts far beyond the ~50 m geometric
+    penumbra; sub-texel features are unresolvable anyway.
+  - Knobs for residual harshness: `BSM_SOFT_BLUR_TEXELS` (shaft softness; raise
+    to 2–3 for hazier), `MS_CLOUD_SHADOW` (lower → more ambient fill → less
+    contrast). tsc 0, lint baseline.
+- 2026-07-14 — **L2 FIX 2: sky-ray shafts off the LUT lattice** (user: post-blur,
+  shafts fine BELOW the horizon but blocky CURVED bands ABOVE it). ROOT CAUSE:
+  two render paths — ground rays march per-pixel (smooth), but low-altitude SKY
+  pixels read the 200×256 Sky-View LUT, and the L2 bake-injection quantized the
+  shafts to its (azimuth, elevation) lattice → curved texel bands (Hillaire's own
+  caveat: a sky-view LUT cannot carry volumetric shadows; UE evaluates shafts
+  per-pixel).
+  - FIX: Sky-View bake reverted to UNSHADOWED; new `skyShaftFactor(ro, rd)` in
+    the main fragment modulates the LUT's in-scatter per pixel at sample time:
+    density-weighted mean of soft-BSM transmittance along the ray — 12 taps,
+    quadratic spacing t=s²·400 km (dense near camera), weights
+    2s·exp(−h/6 km) (air density at sample altitude: thin-air/high samples don't
+    dilute the shadow; horizon-grazing rays keep far contributions), denominator-
+    guarded → 1 outside the atmosphere. Tmean untouched (star attenuation isn't
+    cloud-shadowed). ~1/6 the cost of GODRAYS_SKY_MARCH for the same full-res
+    lattice-free result; taps only on LUT-path sky pixels. No double-shadowing:
+    LUT path = unshadowed LUT × factor; march paths keep per-step shadow; the
+    crossfade band mixes two independently-shadowed estimates.
+  - `GODRAYS_SKY_MARCH` now documented as superseded (A/B tool only).
+  - Consts: GODRAY_SKY_SAMPLES=12, GODRAY_SKY_TMAX_KM=400,
+    GODRAY_SKY_WEIGHT_H_KM=6. tsc 0, lint baseline.
+- 2026-07-14 — **L2 FIX 3: multiplicative → ADDITIVE sky-shaft correction.** The
+  FIX 2 multiplicative factor FAILED in-engine (user screenshots: near-black band
+  hugging the horizon + the deck's cloud pattern smeared onto the sky).
+  STRUCTURAL failure, diagnosable from the formulation: the factor averaged
+  cloud shadow over the NEAR 400 km and multiplied the WHOLE path's LUT
+  in-scatter — but horizon-grazing rays draw most of their light from hundreds
+  of km of bright UNSHADOWED far air, and with the camera just above a deck the
+  near segment of every low sky ray sits inside the deck's shadow volume →
+  (near shadow ≈ 0.02) × (far-field brightness) = black horizon band. High sky
+  fine (near-field dominated) — exactly the screenshots' signature.
+  - FIX: `skyShaftDelta(ro, rd)` — a 10-step quadratic near-field march
+    (RANGE=150 km) of the light the shadow REMOVES: ΔL = ∫T·σs·phase·Tsun·
+    earthShadow·(1−cloudT)dt, same integrand as the real march (direct term
+    only); `L′ = L_LUT − ΔL, max(0)`. The far field stays exactly LUT-bright →
+    the horizon-band artifact class is impossible by construction. Beyond RANGE
+    the shadow is assumed 1 (slight under-shadow far along grazing rays —
+    benign). Cost ≈ ⅓ of GODRAYS_SKY_MARCH (10 steps × sampleMedium ALU + 1
+    transmittance tap + 1 soft-BSM tap, LUT-path sky pixels only).
+  - LESSON (design-level, not TSL): a shadow factor estimated over a SEGMENT of
+    a ray must never scale the radiance of the WHOLE ray — either march the
+    shadowed segment's contribution (delta/additive) or shadow per-step. Any
+    "mean shadow × total L" shortcut fails wherever the unshadowed remainder
+    dominates (horizons, limbs). Consts: GODRAY_SKY_STEPS=10,
+    GODRAY_SKY_RANGE_KM=150. tsc 0, lint baseline.
+- 2026-07-14 — **FIX 2 + FIX 3 REVERTED (user decision) — sky-ray shafts back to
+  LUT-BAKED shadows; the curved-band artifact is an ACCEPTED KNOWN LIMITATION.**
+  In-engine result of FIX 3: the additive delta did NOT cure the artifact and
+  cost additional frame time. So BOTH per-pixel LUT-path corrections failed:
+  the multiplicative factor (structural horizon failure, correctly diagnosed)
+  AND the delta whose design made that failure "impossible" — meaning the
+  REAL mechanism was never established. Two "structurally certain" armchair
+  diagnoses in a row shipped without an in-engine falsification step; the
+  second failure proves the first diagnosis was at best incomplete.
+  UNVERIFIED candidate mechanisms for the persistent artifact (for whoever
+  picks this up): (a) sharp per-pixel ΔL subtracted from the BILINEARLY-SMEARED
+  LUT L goes negative at the horizon's steep radiance gradient → max(0) clamps
+  to black band; (b) something wrong in cloudShadowAtPlanetKm specifically for
+  near-horizontal sky rays (frame/units) that ground-ray marching doesn't hit;
+  (c) the LUT sample's (φ,θ) mapping vs the delta's assumptions. NEXT TIME:
+  in-engine bisection FIRST (constant-override the delta to 0 / to a fixed
+  value / visualize ΔL directly as a debug output) before ANY redesign — the
+  damascus lesson applied to design changes, not just debugging.
+  - Current shipped state: sky-view bake keeps `shadowedSunScatter` (shadows in
+    the LUT, soft curved bands at low-alt sky); main march + froxel keep per-step
+    shadows (correct, artifact-free); `GODRAYS_SKY_MARCH=false` documented as the
+    quality-tier candidate (−10–20% fps, looks correct post-blur).
+  - tsc 0, lint baseline.
+- 2026-07-14 — **L3 LANDED (clouds shadow the ship)** — code-complete,
+  static-verified; in-engine pending.
+  - DESIGN CHANGE from the plan's readback sketch: instead of reading raw BSM
+    texels + a CPU mirror of the reconstruction (fp16 decode, y-flip risk,
+    math-drift risk), a **1×1 FloatType GPU probe** renders
+    `cloudShadowCore(U.shipPos, penumbra=true)` each bake — the GPU
+    reconstruction stays the single source of truth — and
+    `readRenderTargetPixelsAsync` reads that ONE pixel (rgba32float → exact
+    Float32Array; verified in three r183's WebGPUTextureUtils).
+  - `cloudShadowMap.ts`: `shipPos` uniform (earth-model, = camera; the
+    third-person offset is metres vs km-scale penumbra), probe scene rendered in
+    `bake()` after the blur; async readback every `SHIP_READBACK_INTERVAL=4`
+    frames, fire-and-forget with an in-flight guard (plan risk #7);
+    `getShipCloudShadowT()` advances an EMA (`SHIP_SHADOW_SMOOTH=0.08`,
+    ~0.25 s) toward the readback, RELAXING to 1 whenever the strength gate is 0
+    (high alt / no pipeline) so a stale shadow never sticks to the key light.
+  - `atmospherePass.ts` `computeAtmosphereLighting` (after the eclipse/ring
+    occlusion): `sunTransmittance ×= shipT`;
+    `skyIntensity ×= 1 − AMBIENT_CLOUD_DIM·(1−shipT)` (`AMBIENT_CLOUD_DIM=0.6`
+    — under a deck the sky dome dims but the deck itself scatters light down).
+    `SHIP_CLOUD_SHADOW=true` build const. SunLight.tsx / AtmosphereSkyLight.tsx
+    unchanged (they already consume these fields).
+  - tsc 0, lint baseline.
+  - **Verify in-engine (user):** fly under the edge of a THICK deck at midday →
+    the hull's key light dims smoothly (~quarter-second ramp, no pop) and the
+    blue sky-fill softens; back out into a gap → brightens; above the deck →
+    unchanged; climb past ~2000 km → shadow releases to fully lit even if you
+    were shadowed when the gate closed. Knobs: `AMBIENT_CLOUD_DIM` (fill
+    dimming), `SHIP_SHADOW_SMOOTH` (response speed), `SHIP_READBACK_INTERVAL`.
+- 2026-07-17 — **L4 LANDED (ship casts shadow on clouds)** — code-complete,
+  static-verified; in-engine pending (user testing L3+L4 together).
+  - Analytic directional-sun SPHERE occluder multiplied into the marcher's
+    finalized per-sample `Tsun` (earthClouds.ts, right after the light-volume/
+    cone if-else joins, BEFORE the `Tsun_ms` derivation → the ms fill dims with
+    it; slightly over-dark in the umbra core — accepted, the shadow should read
+    dramatic). Disk-overlap model: αo=R/h vs αs=SUN_ANGULAR_RADIUS(0.00465);
+    occFrac = 1−smoothstep(αo−αs, αo+αs, β=perp/h); ×maxOcc=clamp((αo/αs)²,0,1)
+    (area ratio once the ship is smaller than the sun disk — fades the shadow
+    out past the R/αs ≈ 10.7 km umbra); ×soft sun-ward gate (h>0 over 10 m).
+    Branchless, ~10 ALU/dense sample, inside a UNIFORM `If(uShipOccluderOn)`.
+  - Consts (earthClouds.ts): SHIP_OCCLUDER=true, SHIP_OCCLUDER_RADIUS_KM=0.05,
+    SUN_ANGULAR_RADIUS=0.00465, SHIP_SHADOW_STRENGTH=1.0.
+  - Plumbing (cloudFullscreenPass.ts): shared uniforms uShipOccluderPos (earth-
+    model scaled, = tmpEarthCam already computed for uLodMinSamples) +
+    uShipOccluderOn (gate: camera radius < outer shell + SHIP_OCCLUDER_MAX_ALT_KM
+    =15 km — beyond that the umbra can't touch any cloud), set in
+    updateUniforms; passed into marchCloudVolume as optional params (light-volume
+    pattern). Cone fallback path also covered (the multiply sits after the join).
+  - tsc 0, lint baseline.
+  - **Verify in-engine (user):** skim 100–500 m above a deck at MIDDAY (high
+    sun) → a soft dark blob a few hundred metres wide tracks the ship across the
+    cloud tops directly anti-sunward; descend closer → it sharpens/shrinks;
+    climb → it softens, fades entirely by ~10 km above the deck; at low sun it
+    elongates away from the sun. Knobs: SHIP_OCCLUDER_RADIUS_KM (size),
+    SHIP_SHADOW_STRENGTH (darkness).
+- 2026-07-17 — **DEBUG INSTRUMENTS for the L3/L4/L1 review (user reported: L4
+  ship shadow too sharp / hard circle edge from afar; L3 ship dimming barely
+  visible / maybe not working; L1 ground shadows start where no cloud + look at
+  the wrong height "above the clouds"). No behavioural change — measure first.**
+  - `DEBUG_VIZ = "shipShadow"` (earthClouds.ts) — greyscale of the L4 occlusion
+    factor at the visible cloud surface (`lastShipOcc`). White = full ship
+    shadow, grey ramp = penumbra, black = clear/gate-off. Reads the blob
+    directly: size, penumbra gradient, whether it softens with ship height.
+    Only non-black within SHIP_OCCLUDER_MAX_ALT_KM (15 km) of the deck.
+  - `SHIP_PROBE_DEBUG = true` (cloudShadowMap.ts) — console-logs the L3 readback
+    chain once per readback: raw 1-px probe value, EMA'd value, strength gate,
+    ship radius. Reveals whether the GPU probe ever returns <1 under a deck and
+    whether it survives the gate + EMA into the lighting bridge.
+  - L1 isolation uses EXISTING instruments: `SHADOW_DEBUG` (earth.ts, magenta on
+    shadowed ground) + `BSM_BLIT="shadow"` (atmospherePass.ts, sun-space map),
+    with GODRAYS/SHIP_CLOUD_SHADOW/SHIP_OCCLUDER flipped false to separate a
+    genuine ground-shadow error from L2 god-ray shafts in the AIR being read as
+    "shadows above the clouds".
+  - tsc 0, lint baseline. Findings + fixes to follow once the user reports.
+- 2026-07-17 — **L3/L4/L1-review FINDINGS (from the debug instruments) + FIXES.**
+  All three diagnosed from evidence, no guessing:
+  - **A (L4 ship shadow hard/doesn't soften with height):** `shipShadow` viz →
+    hard-cored disk that shrinks with height, constant softness. ROOT: the bare
+    sun geometric penumbra (±SUN_ANGULAR_RADIUS=0.00465) on a 50 m ship is
+    metres → razor dot; physically pure but wrong-looking. FIX: separate
+    `SHIP_PENUMBRA_ANGLE=0.015` (≈3× sun) for the shadow EDGE smoothstep band,
+    keeping SUN_ANGULAR_RADIUS for the maxOcc umbra-length. Angular band ⇒
+    penumbra grows with ship height, umbra dissolves above ~R/pen ≈ 3.3 km →
+    soft/fading when high, crisp when skimming. Models atmospheric/cloud-top
+    scattering (same reasoning as the god-ray map blur).
+  - **B (L3 ship dimming barely visible / "specular unaffected"):**
+    `SHIP_PROBE_DEBUG` telemetry → probe WORKS (raw 0.65 under thick deck, 0.88
+    tower, 0.997 clear; chain read=ema=raw, strength=1). So the DATA path is
+    correct. ROOT (two compounding): (1) the hull is lit by an intensity-30 sun
+    through bloom+tonemap → clipped near white, so ≤35% key dim stays clipped;
+    (2) the τ-gate caps the probe at ~0.65 even under a visually-thick deck
+    (0.651 ≈ mix(1,exp(−τ),gate) for moderate τ). FIX: `SHIP_SHADOW_GAMMA=3.0` —
+    shipT^γ turns 0.65→0.27 (visible, survives the clip) while clear sky (≈1)
+    stays put. Specular-clip is the real reason raw values read as "nothing";
+    the gamma pushes moderate cloud below the clip point.
+  - **C (L1 "shadows above the clouds / wrong height / harsh, inconsistent with
+    cloud pos"):** GODRAYS=false test → they VANISH ⇒ they are the L2 god-ray
+    shafts in the AIR (crepuscular, offset from clouds by the sun angle — real,
+    but too harsh from near-horizontal/orbital views), NOT an L1 ground-shadow
+    bug. L1 itself is fine. FIX: `GODRAY_STRENGTH=0.6` dial (lerps the per-step
+    cloud shadow toward unshadowed → shafts present but paler); BSM_SOFT_BLUR_TEXELS
+    remains the softer-EDGES knob.
+  - Instruments left in place (off by default): `DEBUG_VIZ="shipShadow"`,
+    `SHIP_PROBE_DEBUG`. tsc 0, lint baseline.
+  - **User to re-test:** A — skim + climb, blob should soften/fade with height
+    now; B — under a thick deck the hull should now visibly dim; C — the harsh
+    air-shafts should be tamer. Knobs: SHIP_PENUMBRA_ANGLE, SHIP_SHADOW_GAMMA,
+    GODRAY_STRENGTH, MS_CLOUD_SHADOW, BSM_SOFT_BLUR_TEXELS.
+- 2026-07-17 — **Follow-up review (godrays-near-clear-sun; ship behind tower).**
+  - GODRAYS near a clear sun: PHYSICS is correct (crepuscular rays — the caster
+    cloud is between the sun and the shadowed AIR, need not be near the sun in
+    view / can be off-screen), BUT low-alt SKY pixels read the 200×256 Sky-View
+    LUT (baked shadows → coarse lattice bands = the documented FIX-2/3 limitation)
+    so distant-cloud shadows can smear into unexpected sky bands. BISECTION for
+    the user: GODRAYS_SKY_MARCH=true → if the odd bands sharpen/vanish it was the
+    LUT (tune GODRAY_STRENGTH / accept), if they persist they're real off-view
+    shafts. Not a bug.
+  - SHIP behind a tall TOWER not dimming (telemetry raw=0.996): ROOT = the ship
+    shadow reads the MACRO BSM (512² ≈ 5.9 km/texel, τ-gated, NO detail carve).
+    Broad decks fill texels → probe drops (works). A narrow tower / ship grazing
+    its edge at low sun is under-resolved in the macro field → raw≈1 while the
+    detailed rendered tower visually blocks the sun. Fundamental coarse-map
+    limitation for a point receiver (what most engines accept for object
+    shadows). Proper fix if wanted: a dedicated 1-px sun-MARCH probe through the
+    full density (base+detail+carve) instead of the BSM tap — moderate lift
+    (the carve density lives in the marcher closure, not shared). DEFERRED
+    pending user preference.
+  - Responsiveness (ship laggy leaving a deck into sun): FIXED —
+    SHIP_READBACK_INTERVAL 4→2, SHIP_SHADOW_SMOOTH 0.08→0.2 (~0.25 s → ~0.07 s).
+    tsc 0, lint baseline.
+- 2026-07-17 — **Ship-shadow follow-up 2.** GODRAYS_SKY_MARCH toggle changed
+  NOTHING for the near-clear-sun godrays ⇒ they are the per-pixel main-march
+  shafts, NOT the coarse LUT ⇒ Issue 1 CONFIRMED physically correct (real
+  crepuscular rays from off-view clouds); GODRAY_STRENGTH is the only taste dial.
+  - Ship still under-dims (user: inside a tower's dark base, single=... was
+    raw=0.881). DESIGN BUG found: the L3 probe used cloudShadowCore(shipPos,
+    penumbra=TRUE) — the 5-tap grazing EDGE blur (up to 6 texels ≈ 35 km) meant
+    for softening the ground shadow's visible edges. A POINT receiver must not
+    use it: it averages a narrow tower's shadow into the surrounding clear air →
+    under-dims. FIX: probe now uses penumbra=FALSE (single bilinear tap at the
+    ship). The probe RT now also outputs the old 5-tap value in .g as a pure
+    DIAGNOSTIC: SHIP_PROBE_DEBUG logs `single` (lighting) vs `soft`. If under a
+    tower single≪soft ⇒ the blur was the whole problem (fixed); if single≈soft
+    (~0.88) ⇒ the macro 512² map genuinely can't resolve the tower and only a
+    dedicated sun-march probe will.
+  - COST of the dedicated ship sun-march (answer to the user): RUNTIME ~free —
+    it is ONE pixel doing ~24 density samples/frame (the main marcher does
+    millions); <0.01 ms. The real cost is CODE — the detailed density (weather +
+    base + DETAIL + carve) lives inside the marcher closure, so it needs
+    factoring out / replicating (~40–60 lines). Build it ONLY if the telemetry
+    shows single≈soft under a tower. tsc 0, lint baseline.
+- 2026-07-17 — **Ship-shadow follow-up 3 — telemetry verdict + STOP.** Under a
+  tower: `single=1.000 soft=0.881`, and ALWAYS single ≥ soft. So the ship's OWN
+  macro column is a NO-HIT (the coarse 512² map has zero cloud there) even when
+  the ship is visually inside a detailed tower; the 5-tap soft only dims because
+  it averages in NEIGHBOURING macro cloud. Reverted the probe to the SOFT tap
+  (.r) — it's the less-wrong BSM answer (single=1.0 = no dimming at all); single
+  kept in .g as a diagnostic. CONSEQUENCE: NO BSM tap can fix the ship-in-tower
+  case — the macro map lacks the data. COST CORRECTION: the dedicated detailed
+  sun-march is NOT the "~40–60 line" job estimated earlier — `billowCarveKernel`/
+  `carvedShapeAt`/fine-carve are module-local in earthClouds and entangled with
+  per-sample locals (detailConv, noiseVarFade, topAlt…), so it's a real refactor
+  of the MOST-debugged file with regression risk to the whole cloud render
+  (CLAUDE.md "avoid large refactors without explicit ask"). Also unresolved WHY
+  the macro sun-ray reads clear there (coverage-placement gap? sun-ray exits a
+  narrow tower's side? — would need more in-engine bisection). RECOMMENDATION:
+  ACCEPT the macro limit — ship dims correctly + responsively under broad decks
+  (the common case); inside narrow detailed towers it stays ~0.88 (mild). This is
+  the standard shadow-map-for-objects tradeoff. Deferred the detailed march
+  unless the user explicitly wants it. Ship lighting = SOLID for the common case;
+  L1–L4 all functionally complete.

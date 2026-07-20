@@ -272,8 +272,21 @@ function createSharedUniforms() {
     uAtmoH: uniform(kmToScaledUnits(Math.sqrt(6471 * 6471 - 6371 * 6371))),
     uAtmoSunIlluminance: uniform(new THREE.Vector3(20, 20, 20)),
     uAtmoSkyColor: uniform(new THREE.Vector3(0.4, 0.6, 1.0)),
+    // ── L4 ship occluder (earthClouds SHIP_OCCLUDER) ──
+    // Ship position in earth-model scaled units (≈ camera; the third-person
+    // offset is metres against the shadow's ~100 m+ width) and the uniform
+    // gate — CPU-set below, 1 only when the ship is within
+    // SHIP_OCCLUDER_MAX_ALT_KM of the cloud tops so the marcher's occluder
+    // branch costs nothing while flying high.
+    uShipOccluderPos: uniform(new THREE.Vector3()),
+    uShipOccluderOn: uniform(0),
   };
 }
+
+// Gate altitude for the ship→cloud occluder (km above the cloud OUTER shell).
+// The 50 m ship's umbra reaches ~10.7 km, so beyond ~15 km above the tops the
+// shadow cannot touch any cloud.
+const SHIP_OCCLUDER_MAX_ALT_KM = 15;
 
 // -----------------------------------------------------------------------------
 // Helpers for the color/depth pass marcher entry: compute the full-res
@@ -457,6 +470,9 @@ function createColorPass(
       uAtmoH: shared.uAtmoH,
       uAtmoSunIlluminance: shared.uAtmoSunIlluminance,
       uAtmoSkyColor: shared.uAtmoSkyColor,
+      // ── L4 ship→cloud shadow (analytic occluder) ──
+      uShipOccluderPos: shared.uShipOccluderPos,
+      uShipOccluderOn: shared.uShipOccluderOn,
     });
     // Aerial-perspective fog applied HERE (pre-reconstruction) so its depth-
     // driven colour variance is averaged by the temporal EMA rather than
@@ -580,6 +596,15 @@ export function setupCloudPipeline(
       LOD_MIN_SAMPLES_FAR,
       altT,
     );
+
+    // ── L4 ship→cloud occluder: position (ship ≈ camera, earth-model — the
+    // tmpEarthCam just computed above) + the near-slab uniform gate. ──
+    shared.uShipOccluderPos.value.copy(tmpEarthCam);
+    shared.uShipOccluderOn.value =
+      tmpEarthCam.length() <
+      opts.uOuterRadius.value + kmToScaledUnits(SHIP_OCCLUDER_MAX_ALT_KM)
+        ? 1
+        : 0;
 
     // Atmosphere coupling (Phase 3): push the dominant body's static geometry +
     // unified illuminance + sky tint. Static terms are cheap to re-copy; skyColor

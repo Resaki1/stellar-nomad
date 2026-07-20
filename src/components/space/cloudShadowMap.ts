@@ -142,6 +142,18 @@ const SHADOW_PENUMBRA_MIN = 0.6; // blur radius (texels) at high sun
 const SHADOW_PENUMBRA_MAX = 6.0; // blur radius (texels) at the terminator
 const SHADOW_PENUMBRA_ELEV = 0.5; // cosElev at/above which the blur is MIN (~30°)
 
+// ── Soft (blurred) map for the VOLUME consumers (L2 god rays) ──
+// The god-ray shafts are extrusions of this map through the whole atmosphere:
+// at 5.9 km/texel, bilinear's piecewise-linear ramps (further sharpened by the
+// τ gate) read as hard BLOCKY facets in the sky. The industry fix is to blur
+// the shadow map itself (UE r.VolumetricCloud.ShadowMap.Blur, Frostbite,
+// Unity's cookie): physically, multiple scattering through cloud edges diffuses
+// real shafts far beyond the ~50 m geometric penumbra, and sub-texel features
+// are unresolvable anyway. A 3×3 Gaussian at BSM_SOFT_BLUR_TEXELS offset runs
+// after each bake into a second RT. The SURFACE consumer keeps the SHARP map
+// (its grazing-adaptive 5-tap penumbra already softens it — tuned in L1).
+const BSM_SOFT_BLUR_TEXELS = 1.5; // blur tap offset (texels); raise for softer shafts
+
 // ── Singleton RenderTarget (process-lifetime; bound once at graph build for
 //    bind-group-cache stability — never reassigned, never disposed) ──
 let _bsmRT: RenderTarget | null = null;
@@ -159,6 +171,69 @@ export function getCloudShadowMap(): RenderTarget {
     _bsmRT = rt;
   }
   return _bsmRT;
+}
+
+// The blurred companion (see BSM_SOFT_BLUR_TEXELS) — written by the blur pass
+// right after each bake, sampled by the VOLUME consumers (god rays). Same
+// process-lifetime singleton discipline as the sharp map.
+let _bsmSoftRT: RenderTarget | null = null;
+export function getCloudShadowMapSoft(): RenderTarget {
+  if (!_bsmSoftRT) {
+    const rt = new RenderTarget(BSM_SIZE, BSM_SIZE, {
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+    });
+    rt.texture.wrapS = THREE.ClampToEdgeWrapping;
+    rt.texture.wrapT = THREE.ClampToEdgeWrapping;
+    _bsmSoftRT = rt;
+  }
+  return _bsmSoftRT;
+}
+
+// ── L3: ship cloud-shadow probe (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md) ─────────
+// A 1×1 FloatType RT whose single fragment evaluates cloudShadowCore at the
+// ship's earth-model position — the GPU reconstruction is the single source of
+// truth (no CPU mirror to drift, no uv/y-flip/fp16 concerns; rgba32float reads
+// back as Float32Array). Rendered every bake (one fragment ≈ free), read back
+// asynchronously every SHIP_READBACK_INTERVAL frames, EMA-smoothed on the CPU.
+// FloatType because rgba32float is renderable (NoBlending) and readback-exact.
+let _shipProbeRT: RenderTarget | null = null;
+function getShipProbeRT(): RenderTarget {
+  if (!_shipProbeRT) {
+    _shipProbeRT = new RenderTarget(1, 1, {
+      type: THREE.FloatType,
+      depthBuffer: false,
+    });
+  }
+  return _shipProbeRT;
+}
+const SHIP_READBACK_INTERVAL = 2; // frames between async 1-px readbacks
+// EMA coefficient per frame (~0.07 s time constant at 60 fps): smooths the
+// readback latency + cloud-edge crossings without the sluggish lag the user hit
+// when flying out of a deck into a sunlit gap (was 0.08 ≈ 0.25 s). Raise toward
+// 1 for snappier / lower for smoother.
+const SHIP_SHADOW_SMOOTH = 0.2;
+// DEBUG (dev only): console-log the ship-shadow readback chain — the raw 1-px
+// probe value, the EMA'd value, and the strength gate — throttled to once per
+// readback. Reveals whether the GPU probe ever returns <1 (ship under cloud)
+// and whether it survives the strength gate + EMA into the lighting bridge.
+const SHIP_PROBE_DEBUG = false;
+let _shipCloudTRead = 1; // latest readback value
+let _shipCloudTSmooth = 1; // EMA'd value handed to the lighting bridge
+let _shipReadbackInFlight = false;
+let _shipFrameCounter = 0;
+
+/**
+ * Smoothed sun transmittance through clouds at the SHIP ∈ (0,1]. Call once per
+ * frame (the atmosphere lighting bridge does) — each call advances the EMA.
+ * Relaxes to 1 whenever the BSM is stale/unbaked (strength gate 0 — high
+ * altitude, no cloud pipeline), so the key light never keeps a stale shadow.
+ */
+export function getShipCloudShadowT(): number {
+  const strength = _bsmUniforms ? (_bsmUniforms.strength.value as number) : 0;
+  const target = strength > 0 ? _shipCloudTRead : 1;
+  _shipCloudTSmooth += (target - _shipCloudTSmooth) * SHIP_SHADOW_SMOOTH;
+  return _shipCloudTSmooth;
 }
 
 // ── Window uniforms (process-lifetime singleton, like the RT) ──
@@ -179,6 +254,15 @@ type BsmUniforms = {
   // sunward-entry depth tOuter = sqrt(rOut²−wp²) to undo the slab-relative R
   // encoding. Set once from the deps in createCloudShadowMap.
   outerRadius: Node;
+  // scaled-world → earth-model matrix (refreshed each updateWindow). Consumers
+  // holding planet-centred INERTIAL positions (the atmosphere pass, L2) rotate
+  // them into the BSM's earth-model frame through this — as a DIRECTION (w=0),
+  // since planet-centred positions need only the rotation part.
+  invModel: Node;
+  // Ship position in earth-model scaled units (refreshed each updateWindow) —
+  // the L3 probe's receiver point. Ship ≈ camera (the third-person offset is
+  // metres against km-scale penumbra/texels).
+  shipPos: Node;
 };
 let _bsmUniforms: BsmUniforms | null = null;
 function getBsmUniforms(): BsmUniforms {
@@ -193,6 +277,8 @@ function getBsmUniforms(): BsmUniforms {
       // 0 until createCloudShadowMap copies the real cloud-outer radius; with 0,
       // tOuter collapses to 0 → depthIntoDeck ≤ 0 → no shadow (safe transient).
       outerRadius: uniform(0),
+      invModel: uniform(new THREE.Matrix4()),
+      shipPos: uniform(new THREE.Vector3()),
     };
   }
   return _bsmUniforms;
@@ -425,6 +511,75 @@ export function createCloudShadowMap(
   const scene = new THREE.Scene();
   scene.add(mesh);
 
+  // ── Soft-map blur pass: sharp bsmRT → 3×3 Gaussian → soft RT ──
+  // All four channels blur together; across cloud/no-cloud boundaries the
+  // G=σ/B=τ channels shrink toward their 0 no-hit values, weakening the shadow
+  // smoothly (the same argument that makes the LinearFilter edge bleed safe).
+  const bsmSoftRT = getCloudShadowMapSoft();
+  const blurFragment = Fn(() => {
+    const px = float(BSM_SOFT_BLUR_TEXELS / BSM_SIZE);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tap = (dx: number, dy: number, w: number): any =>
+      (
+        texture(
+          bsmRT.texture,
+          screenUV.add(vec2(px.mul(dx), px.mul(dy))),
+        ).level(int(0)) as Node
+      ).mul(w);
+    // 3×3 Gaussian (1 2 1 / 2 4 2 / 1 2 1) / 16.
+    return tap(-1, -1, 1 / 16)
+      .add(tap(0, -1, 2 / 16))
+      .add(tap(1, -1, 1 / 16))
+      .add(tap(-1, 0, 2 / 16))
+      .add(tap(0, 0, 4 / 16))
+      .add(tap(1, 0, 2 / 16))
+      .add(tap(-1, 1, 1 / 16))
+      .add(tap(0, 1, 2 / 16))
+      .add(tap(1, 1, 1 / 16));
+  });
+  const blurMat = new NodeMaterial();
+  blurMat.transparent = false;
+  blurMat.depthTest = false;
+  blurMat.depthWrite = false;
+  blurMat.blending = THREE.NoBlending;
+  blurMat.fragmentNode = blurFragment();
+  const blurMesh = new THREE.Mesh(quad, blurMat);
+  blurMesh.frustumCulled = false;
+  const blurScene = new THREE.Scene();
+  blurScene.add(blurMesh);
+
+  // ── L3 ship probe: reconstruct the BSM shadow at the ship's earth-model
+  //    position. R = SINGLE-tap (used for lighting — a point receiver wants the
+  //    value AT its position, NOT the edge-softening penumbra blur, which
+  //    averages a narrow tower's shadow into the clear air around it →
+  //    under-dims; that blur is only for the ground shadow's visible EDGES).
+  //    G = the old 5-tap penumbra value, kept purely as a DIAGNOSTIC (compare
+  //    R vs G under a tower: R≪G ⇒ the blur was the culprit; R≈G ⇒ the macro
+  //    512² map genuinely can't resolve the tower and a dedicated sun-march is
+  //    the only fix). ──
+  const shipProbeRT = getShipProbeRT();
+  const shipProbeFragment = Fn(() => {
+    // .r drives the lighting. Telemetry (2026-07-17) showed the single tap reads
+    // the ship's OWN macro column, which is frequently a no-hit (1.0) even when
+    // the ship is visually inside a detailed tower — so the 5-tap neighbourhood
+    // (which catches surrounding macro cloud) is the LESS-wrong BSM answer. Both
+    // are fundamentally macro-limited; the accurate fix is the dedicated
+    // sun-march below. .g keeps the single tap as a diagnostic.
+    const soft = cloudShadowCore(U.shipPos, true);
+    const single = cloudShadowCore(U.shipPos, false);
+    return vec4(soft, single, 0, 1);
+  });
+  const probeMat = new NodeMaterial();
+  probeMat.transparent = false;
+  probeMat.depthTest = false;
+  probeMat.depthWrite = false;
+  probeMat.blending = THREE.NoBlending;
+  probeMat.fragmentNode = shipProbeFragment();
+  const probeMesh = new THREE.Mesh(quad, probeMat);
+  probeMesh.frustumCulled = false;
+  const probeScene = new THREE.Scene();
+  probeScene.add(probeMesh);
+
   // ── CPU per-frame window update (no per-frame allocation) ──
   const _inverseModel = new THREE.Matrix4();
   const _earthCam = new THREE.Vector3();
@@ -479,6 +634,10 @@ export function createCloudShadowMap(
     U.right.value.copy(_right);
     U.up.value.copy(_up);
     U.sunDir.value.copy(_sunDirEarth);
+    // For inertial-km consumers (cloudShadowAtPlanetKm — the atmosphere pass).
+    U.invModel.value.copy(_inverseModel);
+    // L3 ship probe receiver (ship ≈ camera; _earthCam already computed above).
+    U.shipPos.value.copy(_earthCam);
   };
 
   const bake: CloudShadowMap["bake"] = (renderer) => {
@@ -486,15 +645,67 @@ export function createCloudShadowMap(
       return;
     renderer.setRenderTarget(bsmRT);
     renderer.render(scene, bakeCamera);
+    // Blur into the soft map (same queue → ordered before any consumer read).
+    renderer.setRenderTarget(bsmSoftRT);
+    renderer.render(blurScene, bakeCamera);
+    // L3 ship probe (1 fragment; reads the sharp map just written — same-queue
+    // ordering makes the same-frame read safe).
+    renderer.setRenderTarget(shipProbeRT);
+    renderer.render(probeScene, bakeCamera);
     renderer.setRenderTarget(null);
+    // Async 1-px readback every Nth frame. FIRE-AND-FORGET — never awaited in
+    // the frame loop (plan risk #7); the in-flight flag stops promise pile-up
+    // if a backend maps slowly. Value lands 1-2 frames later; the consumer-side
+    // EMA (getShipCloudShadowT) absorbs the latency.
+    _shipFrameCounter++;
+    if (_shipFrameCounter % SHIP_READBACK_INTERVAL === 0 && !_shipReadbackInFlight) {
+      _shipReadbackInFlight = true;
+      (
+        renderer as unknown as {
+          readRenderTargetPixelsAsync: (
+            rt: RenderTarget,
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ) => Promise<Float32Array>;
+        }
+      )
+        .readRenderTargetPixelsAsync(shipProbeRT, 0, 0, 1, 1)
+        .then((px) => {
+          // rgba32float → Float32Array. .r = 5-tap soft (lighting), .g =
+          // single-tap (diagnostic only).
+          if (px && px.length >= 1 && Number.isFinite(px[0])) {
+            _shipCloudTRead = Math.min(Math.max(px[0], 0), 1);
+          }
+          if (SHIP_PROBE_DEBUG) {
+            const sp = U.shipPos.value as THREE.Vector3;
+            console.log(
+              `[ship-probe] soft=${px && px.length ? px[0].toFixed(3) : "n/a"} ` +
+                `single=${px && px.length >= 2 ? px[1].toFixed(3) : "n/a"} ` +
+                `ema=${_shipCloudTSmooth.toFixed(3)} ` +
+                `strength=${(U.strength.value as number).toFixed(2)} ` +
+                `shipR=${sp.length().toFixed(3)}`,
+            );
+          }
+          _shipReadbackInFlight = false;
+        })
+        .catch(() => {
+          _shipReadbackInFlight = false;
+        });
+    }
   };
 
   const dispose: CloudShadowMap["dispose"] = () => {
     scene.remove(mesh);
     mat.dispose();
+    blurScene.remove(blurMesh);
+    blurMat.dispose();
+    probeScene.remove(probeMesh);
+    probeMat.dispose();
     quad.dispose();
-    // The RT is a process-lifetime singleton — deliberately NOT disposed (it
-    // outlives pass rebuilds for bind-group stability).
+    // The RTs are process-lifetime singletons — deliberately NOT disposed (they
+    // outlive pass rebuilds for bind-group stability).
   };
 
   return { updateWindow, bake, dispose };
@@ -505,16 +716,18 @@ export function createCloudShadowMap(
 // =============================================================================
 
 /**
- * Sun transmittance ∈ (0,1] at an EARTH-MODEL SCALED position `P` (e.g. the
- * earth surface mesh's object-space `positionLocal`, which is scaled-km and
- * earth-fixed — the BSM's exact frame). A consumer holding an INERTIAL position
- * must rotate it by the earth inverse-model + convert km→scaled first.
- * Returns 1 (fully lit) outside the window, sunward of the deck, AND wherever the
- * map is stale/unbaked (strength 0 — the SpaceRenderer altitude gate).
+ * Shared reconstruction core. `P` is EARTH-MODEL SCALED. `penumbra` (build-time
+ * JS boolean — dead branch eliminated) picks 5-tap grazing-widened blur (surface
+ * shading) vs a single tap (volume marches, where the per-step integration
+ * already averages and 5 taps × 32 steps would be 160 taps/pixel).
  */
-export function cloudShadowAt(P: Node): Node {
+function cloudShadowCore(P: Node, penumbra: boolean): Node {
   const U = getBsmUniforms();
-  const rt = getCloudShadowMap();
+  // Surface path (penumbra) reads the SHARP map — its grazing-adaptive 5-tap
+  // blur supplies the softness. Volume path (single-tap god rays) reads the
+  // pre-BLURRED soft map, whose extruded shafts would otherwise show the 512²
+  // texel facets (see BSM_SOFT_BLUR_TEXELS).
+  const rt = penumbra ? getCloudShadowMap() : getCloudShadowMapSoft();
   const rel = P.sub(U.center);
   const x = dot(rel, U.right);
   const y = dot(rel, U.up);
@@ -555,6 +768,11 @@ export function cloudShadowAt(P: Node): Node {
     return mix(float(1), exp(tau.negate()), gate);
   };
 
+  if (!penumbra) {
+    // Single tap — volume-march consumers (god rays).
+    return mix(float(1), reconstructAt(vec2(0, 0)), edgeFade);
+  }
+
   // Grazing-sun penumbra: blur the map lookup with a radius that grows as the sun
   // grazes (cosElev = sin(elevation) = −d/|P| → 0 at the terminator), so long
   // terminator shadows soften instead of streaking razor-sharp. 5-tap cross.
@@ -572,6 +790,34 @@ export function cloudShadowAt(P: Node): Node {
     .add(reconstructAt(vec2(0, r.negate())))
     .mul(float(1).div(5));
   return mix(float(1), shadowT, edgeFade);
+}
+
+/**
+ * Sun transmittance ∈ (0,1] at an EARTH-MODEL SCALED position `P` (e.g. the
+ * earth surface mesh's object-space `positionLocal`, which is scaled-km and
+ * earth-fixed — the BSM's exact frame). 5-tap grazing-widened penumbra — the
+ * SURFACE-shading flavour (L1). Returns 1 (fully lit) outside the window,
+ * sunward of the deck, AND wherever the map is stale/unbaked (strength 0 —
+ * the SpaceRenderer altitude gate).
+ */
+export function cloudShadowAt(P: Node): Node {
+  return cloudShadowCore(P, true);
+}
+
+/**
+ * Sun transmittance at a planet-centred INERTIAL position in KM (the atmosphere
+ * pass's native frame — L2 god rays). Converts km→scaled and rotates into the
+ * BSM's earth-model frame via the invModel uniform (as a direction: planet-
+ * centred positions need only the rotation part). SINGLE-tap reconstruction —
+ * per-step march integration already averages, and the penumbra's 5 taps would
+ * be 160 taps/pixel inside a 32-step march.
+ */
+export function cloudShadowAtPlanetKm(PKm: Node): Node {
+  const U = getBsmUniforms();
+  const Pm = U.invModel.mul(
+    vec4(PKm.mul(float(kmToScaledUnits(1))), 0),
+  ).xyz;
+  return cloudShadowCore(Pm, false);
 }
 
 /**

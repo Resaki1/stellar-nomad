@@ -1012,7 +1012,8 @@ const DEBUG_VIZ:
   | "litShape"
   | "detailShadow"
   | "weatherRaw"
-  | "convType" = "off";
+  | "convType"
+  | "shipShadow" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
 // truth for the marcher, the far shell, and the light-volume bake.
@@ -1926,6 +1927,32 @@ const USE_ATMOSPHERE_CLOUD_LIGHTING = true;
 // far-field overlay/shell so near↔far brightness matches — see ISSUE 2). Values
 // unchanged (0.6 / 2.0).
 
+// ── L4: ship shadow on clouds (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md) ──────────
+// An ANALYTIC directional-sun sphere occluder multiplied into the per-sample
+// sun transmittance: for a sample P with the ship sun-ward of it, the occluded
+// sun fraction follows the angular sizes — occluder αo = R/h vs the sun's
+// αs ≈ 0.00465 rad. The umbra is real and surprisingly long (R/αs ≈ 10.7 km for
+// a 50 m ship), the penumbra widens ∝ distance — physically-correct soft
+// shadow for ~10 ALU per dense sample, no render pass. Gated by a UNIFORM
+// branch (uShipOccluderOn — CPU sets it only when the ship is near the slab),
+// so cost is ~zero when flying high. NOT added to the atmosphere march (a 50 m
+// occluder's haze shafts are negligible — plan L5 flourish).
+const SHIP_OCCLUDER = true;
+// Effective occluder radius (km). The ship is ~50 m across; a single sphere is
+// the "rough" shadow the plan calls for (elongate later with a 2nd sphere).
+const SHIP_OCCLUDER_RADIUS_KM = 0.05;
+// Sun angular RADIUS from Earth (radians) — sets the umbra LENGTH (maxOcc fade).
+const SUN_ANGULAR_RADIUS = 0.00465;
+// Penumbra half-angle for the shadow EDGE (radians). ≫ SUN_ANGULAR_RADIUS on
+// purpose: the bare sun penumbra on a 50 m ship is metres (razor-hard dot), so
+// this fudges in the atmospheric/cloud-top scattering that diffuses real shadow
+// edges. Being angular, it softens + grows the shadow with ship height and
+// dissolves the umbra above ~R/pen ≈ 3.3 km. Raise for softer/more diffuse,
+// lower toward SUN_ANGULAR_RADIUS for physically-crisp.
+const SHIP_PENUMBRA_ANGLE = 0.015;
+// Artistic multiplier on the occlusion (1 = physical).
+const SHIP_SHADOW_STRENGTH = 0.4;
+
 export function marchCloudVolume({
   roEarth,
   rdEarth,
@@ -1964,6 +1991,8 @@ export function marchCloudVolume({
   uAtmoH,
   uAtmoSunIlluminance,
   uAtmoSkyColor,
+  uShipOccluderPos,
+  uShipOccluderOn,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   roEarth: any;
@@ -2041,6 +2070,11 @@ export function marchCloudVolume({
   uAtmoSunIlluminance?: any; // top-of-atmosphere sun illuminance (vec3)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uAtmoSkyColor?: any; // sky-ambient tint (vec3)
+  // ── L4 ship occluder (see SHIP_OCCLUDER consts above) ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uShipOccluderPos?: any; // ship position, earth-model scaled (≈ camera)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uShipOccluderOn?: any; // uniform gate: 1 only when the ship is near the slab
 }) {
     const b = dot(roEarth, rdEarth);
     const d2 = dot(roEarth, roEarth);
@@ -2395,6 +2429,10 @@ export function marchCloudVolume({
     // roughly the visible surface (where alpha saturates).
     const lastTsunMs = float(0).toVar();
     const lastTsun = float(0).toVar(); // DEBUG_VIZ='lightVol' / cone parity
+    // DEBUG_VIZ='shipShadow': the L4 ship-occlusion factor at the last dense
+    // voxel (0 = clear sun, 1 = fully ship-shadowed). Lets us SEE the blob's
+    // shape + penumbra gradient + whether maxOcc fades it with ship height.
+    const lastShipOcc = float(0).toVar();
 
     // Last-dense raw cone-march optical depth, for DEBUG_VIZ='coneDepth'.
     // Shows opticalDepthSun directly (before pow-tonemap), bypassing the
@@ -3547,6 +3585,67 @@ export function marchCloudVolume({
               });
               }
 
+              // ── L4: ship shadow on clouds (analytic sphere occluder) ──
+              // Multiplies the FINALIZED per-sample sun transmittance (both
+              // light-volume and cone paths), BEFORE the multi-scatter
+              // derivation below — so `ms` dims with it too (Tsun^MS_COEF;
+              // slightly over-dark in the umbra core since real ms fill comes
+              // from surrounding lit cloud, but the shadow should read
+              // dramatic). Branchless inside a UNIFORM gate: ~10 ALU per dense
+              // sample when the ship is near the slab, zero otherwise.
+              if (SHIP_OCCLUDER && uShipOccluderPos && uShipOccluderOn) {
+                If(uShipOccluderOn.greaterThan(0.5), () => {
+                  const vShip = uShipOccluderPos.sub(p);
+                  // h = sun-ward distance from the sample to the ship's plane;
+                  // only a ship BETWEEN the sample and the sun occludes (h>0).
+                  const hShip = dot(vShip, sunDirEarth);
+                  const hSafe = hShip.max(1e-7);
+                  const perp = length(vShip.sub(sunDirEarth.mul(hShip)));
+                  const alphaO = float(
+                    kmToScaledUnits(SHIP_OCCLUDER_RADIUS_KM),
+                  ).div(hSafe);
+                  const beta = perp.div(hSafe);
+                  // Disk-overlap approx: full core occlusion for β<αo−pen, none
+                  // past β>αo+pen. The penumbra half-angle uses SHIP_PENUMBRA_ANGLE
+                  // (≫ the bare sun αs) — the sun's geometric penumbra on a ~50 m
+                  // object is metres, so the physically-pure shadow reads as a
+                  // razor dot (user: "hard ring, only shrinks with height"). A
+                  // wider angle models the atmospheric + cloud-top multiple
+                  // scattering that diffuses real shadow edges (same reasoning as
+                  // the god-ray map blur / L1 grazing penumbra). Because the band
+                  // is ANGULAR (÷h), the physical penumbra grows with ship height
+                  // AND the umbra vanishes above ~R/pen km → soft, fading shadow
+                  // when high; crisp when skimming. (αs is kept for maxOcc below —
+                  // the true umbra LENGTH is a sun-size fact, not an edge-softness
+                  // choice.)
+                  const occFrac = float(1).sub(
+                    smoothstep(
+                      alphaO.sub(float(SHIP_PENUMBRA_ANGLE)),
+                      alphaO.add(float(SHIP_PENUMBRA_ANGLE)),
+                      beta,
+                    ),
+                  );
+                  // Occluder smaller than the sun disk → at most the AREA
+                  // ratio of the disks is blocked (fades the shadow out past
+                  // the ~10.7 km umbra length).
+                  const maxOcc = clamp(
+                    alphaO
+                      .mul(alphaO)
+                      .div(SUN_ANGULAR_RADIUS * SUN_ANGULAR_RADIUS),
+                    0,
+                    1,
+                  );
+                  // Sun-ward gate (h>0, soft over 10 m) — branchless.
+                  const behind = smoothstep(float(0), float(1e-5), hShip);
+                  const shipOcc = occFrac
+                    .mul(maxOcc)
+                    .mul(behind)
+                    .mul(float(SHIP_SHADOW_STRENGTH));
+                  lastShipOcc.assign(shipOcc); // DEBUG_VIZ='shipShadow'
+                  Tsun.mulAssign(float(1).sub(shipOcc));
+                });
+              }
+
               // Multi-scatter transmittance.
               // pow(Tsun, MS_COEF) ≡ exp(-MS_COEF × opticalDepthSun) on the
               // day side. MS_COEF controls how fast multi-scatter
@@ -3993,6 +4092,24 @@ export function marchCloudVolume({
           hitT.select(lastTsunMs, float(0)),
           hitT.select(lastTsunMs, float(0)),
           hitT.select(lastTsunMs, float(0)),
+          float(1),
+        ),
+        tFront: float(0),
+      };
+    }
+
+    if (DEBUG_VIZ === "shipShadow") {
+      // L4 ship→cloud occlusion at the visible cloud surface, grayscale.
+      // WHITE = the ship fully blocks the sun there; grey ramp = penumbra;
+      // black = clear (or the occluder gate is off / ship too high). Reads the
+      // BLOB directly: check its size, whether the edge softens with ship
+      // height (should), and whether it lands anti-sunward of the ship.
+      const hitS = alpha.greaterThan(0.001);
+      return {
+        rgba: vec4(
+          hitS.select(lastShipOcc, float(0)),
+          hitS.select(lastShipOcc, float(0)),
+          hitS.select(lastShipOcc, float(0)),
           float(1),
         ),
         tFront: float(0),

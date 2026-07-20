@@ -38,7 +38,11 @@ import {
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 import type { AtmosphereParams } from "../celestial/types";
-import { getCloudShadowMap } from "./cloudShadowMap";
+import {
+  getCloudShadowMap,
+  cloudShadowAtPlanetKm,
+  getShipCloudShadowT,
+} from "./cloudShadowMap";
 
 // =============================================================================
 // Physically-based atmospheric scattering — Hillaire 2020 (the Unreal model).
@@ -124,6 +128,54 @@ const DEBUG_ATMOSPHERE: AtmoDebug = "off";
 //   "front"  — |d_front| × 0.15: sun-depth of the first hit (structure check).
 type BsmBlit = "off" | "hit" | "shadow" | "tau" | "front";
 const BSM_BLIT: BsmBlit = "off";
+
+// ── God rays (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md L2) ────────────────────────
+// Multiply the DIRECT single-scatter term of ALL THREE atmosphere integrals by
+// the cloud sun-transmittance from the (soft/blurred) Beer Shadow Map, per
+// step. Shadowed air in-scatters less → bright/dark shafts anchored to the
+// clouds that cast them (crepuscular rays). Sites: the full-res per-pixel main
+// march (ground rays + high-alt sky), the AP froxel (cloud fog), and the
+// Sky-View LUT bake (low-altitude sky — where the 200×256 lattice quantizes
+// shafts into soft curved bands, an ACCEPTED known limitation; see the bake
+// site's note for the two reverted per-pixel alternatives). Build const: false
+// compiles the taps away and the BSM texture is never bound here. When the BSM
+// is stale/unbaked (no cloud pipeline — e.g. Mars — or above its altitude
+// ceiling) its strength gate is 0 and cloudShadowAtPlanetKm returns 1 → god
+// rays gracefully absent.
+const GODRAYS = true;
+// Overall god-ray shaft CONTRAST (0 = off, 1 = full physical). The shafts read
+// too harsh from near-horizontal / orbital views where they extrude across the
+// whole limb (user, image 2); this lerps the per-step cloud shadow toward
+// unshadowed so shafts stay present but paler. Also try a larger
+// BSM_SOFT_BLUR_TEXELS (cloudShadowMap.ts) for softer shaft EDGES.
+const GODRAY_STRENGTH = 0.6;
+// The multi-scatter term is directionless ambient — under a deck some ambient
+// survives (light leaks around the clouds), so shadow it only partially.
+// 0 = unshadowed ambient, 1 = fully shadowed. Frostbite-style middle ground.
+const MS_CLOUD_SHADOW = 0.5;
+// Force the per-pixel march for SKY rays at low altitude (uSkyViewBlend → 1) so
+// sky-side shafts render crisp per-pixel instead of quantized to the Sky-View
+// LUT lattice. Measured at −10–20% fps — the candidate QUALITY TIER if the
+// LUT-lattice banding ever needs solving (post-blur the marched shafts look
+// correct). Default OFF.
+const GODRAYS_SKY_MARCH = false;
+
+// ── L3: clouds shadow the ship ──────────────────────────────────────────────
+// The CPU lighting bridge multiplies the ship's key light by the smoothed BSM
+// transmittance at the ship position (getShipCloudShadowT — 1×1 GPU probe +
+// async readback in cloudShadowMap.ts) and partially dims the hemisphere sky
+// fill. Flip false to detach ship lighting from clouds entirely.
+const SHIP_CLOUD_SHADOW = true;
+// How much of the sky-fill dims under a fully opaque deck (0 = none, 1 = all).
+// Under a deck the sky dome darkens but the cloud itself scatters light down,
+// so full dimming reads wrong.
+const AMBIENT_CLOUD_DIM = 0.6;
+// Contrast curve on the ship's cloud transmittance before it dims the key light
+// (shipT^γ, γ>1). The hull is exposed near white (sun intensity 30 + bloom/
+// tonemap) so a raw ≤35% dim is invisible; γ pushes moderate cloud (0.65) to a
+// visible 0.34 while leaving clear sky (≈1) unchanged. Raise for punchier ship
+// shadow, 1 = raw physical.
+const SHIP_SHADOW_GAMMA = 3.0;
 
 // The AP froxel bake is GPU work worth doing only when something consumes the
 // volume: the 'froxel' debug viz, or the cloud aerial perspective (Phase 4
@@ -859,6 +911,25 @@ export function computeAtmosphereLighting(
   const ga = params.groundAlbedo;
   _lighting.groundColor.setRGB(ga[0], ga[1], ga[2]);
 
+  // ── L3: cloud shadow on the ship (docs/CLOUD_SHADOWS_GODRAYS_PLAN.md) ──
+  // Smoothed BSM transmittance at the ship (1×1 GPU probe + async readback;
+  // relaxes to 1 when the map is stale). Scales the key light like the
+  // planet-eclipse occlusion above (scalar — clouds are grey), and dims the
+  // hemisphere sky fill PARTIALLY: under a deck the sky dome darkens, but the
+  // deck itself scatters, so full dimming would read wrong. SunLight.tsx /
+  // AtmosphereSkyLight.tsx consume these fields unchanged.
+  if (SHIP_CLOUD_SHADOW) {
+    // Gamma the raw transmittance DOWN: the hull is lit by an intensity-30 sun
+    // through bloom+tonemapping, so it clips near white and a ≤35% key-light
+    // dim stays clipped (user: "specular unaffected, barely dims"). The τ-gate
+    // also caps the probe at ~0.65 even under a visually-thick deck. shipT^γ
+    // (γ>1) turns a moderate 0.65 into a dramatic 0.34 that survives the clip,
+    // while leaving near-1 (clear sky) essentially unchanged.
+    const shipT = Math.pow(getShipCloudShadowT(), SHIP_SHADOW_GAMMA);
+    _lighting.sunTransmittance.multiplyScalar(shipT);
+    _lighting.skyIntensity *= 1 - AMBIENT_CLOUD_DIM * (1 - shipT);
+  }
+
   _lighting.active = true;
 }
 
@@ -1299,6 +1370,42 @@ export function setupAtmospherePass(
     return vec4(psi, 1);
   });
 
+  // ── Shadowed per-step sun scatter (L2 god rays) ────────────────────────────
+  // The one integrand shared by the main march, the froxel bake, and the
+  // Sky-View bake: S = illuminance · (shadow·Tsun·phase + ms). With GODRAYS the
+  // direct term is additionally shadowed by the cloud Beer-Shadow-Map
+  // transmittance at P (planet-centred km — the helper converts to the BSM's
+  // earth-model frame), and the ambient ms term partially (MS_CLOUD_SHADOW).
+  // GODRAYS=false compiles to the original expression exactly.
+  const shadowedSunScatter = (
+    P: Node,
+    earthShadow: Node,
+    Tsun: Node,
+    phaseScat: Node,
+    msContrib: Node,
+  ): Node => {
+    if (!GODRAYS) {
+      return uSunIlluminance.mul(
+        earthShadow.mul(Tsun).mul(phaseScat).add(msContrib),
+      );
+    }
+    // .toVar(): consumed by both the direct and ms terms — evaluate (and tap
+    // the BSM) once per step, not twice.
+    const cloudTraw = cloudShadowAtPlanetKm(P).toVar();
+    // GODRAY_STRENGTH tones the shaft CONTRAST toward unshadowed — the shafts
+    // read too harsh from near-horizontal views (user, image 2) where they
+    // extrude across the whole limb. mix(1, cloudT, s): s=1 full, lower = softer
+    // (paler) shafts. The ms term is toned by the same dial × MS_CLOUD_SHADOW.
+    const cloudT = mix(float(1), cloudTraw, float(GODRAY_STRENGTH)).toVar();
+    return uSunIlluminance.mul(
+      earthShadow
+        .mul(Tsun)
+        .mul(cloudT)
+        .mul(phaseScat)
+        .add(msContrib.mul(mix(float(1), cloudT, float(MS_CLOUD_SHADOW)))),
+    );
+  };
+
   // ── Main on-screen fragment ────────────────────────────────────────────────
   const mainFragment = Fn(() => {
     const sceneColor = texture(inputTexture, screenUV).rgb;
@@ -1467,9 +1574,8 @@ export function setupAtmospherePass(
             const msContrib = getMultipleScattering(P, uSunDir)
               .mul(m.scattering)
               .mul(sunVis);
-            const S = uSunIlluminance.mul(
-              earthShadow.mul(Tsun).mul(phaseScat).add(msContrib),
-            );
+            // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
+            const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
             const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
             L.addAssign(throughput.mul(Sint));
             throughput.mulAssign(sampleT);
@@ -1493,6 +1599,8 @@ export function setupAtmospherePass(
             runMarch,
           );
           // Sky-View LUT lookup for sky rays (skipped once fully in march mode).
+          // Cloud-shadow shafts come baked in the LUT (see the bake's KNOWN
+          // LIMITATION note — per-pixel corrections tried and reverted).
           const lutOut = vec4(sceneColor, 1).toVar();
           If(tGround.lessThanEqual(0).and(uSkyViewBlend.lessThan(0.999)), () => {
             const sky = sampleSkyView(rd, ro);
@@ -1572,9 +1680,8 @@ export function setupAtmospherePass(
         ).negate();
         const sunVis = smoothstep(cosHorizonP.sub(0.05), cosHorizonP.add(0.05), cosSunZenP);
         const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis);
-        const S = uSunIlluminance.mul(
-          earthShadow.mul(Tsun).mul(phaseScat).add(msContrib),
-        );
+        // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
+        const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
         const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
         L.addAssign(throughput.mul(Sint));
         throughput.mulAssign(sampleT);
@@ -1656,9 +1763,16 @@ export function setupAtmospherePass(
           ).negate();
           const sunVis = smoothstep(cosHorizonP.sub(0.05), cosHorizonP.add(0.05), cosSunZenP);
           const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis);
-          const S = uSunIlluminance.mul(
-            earthShadow.mul(Tsun).mul(phaseScat).add(msContrib),
-          );
+          // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
+          // KNOWN LIMITATION: baked into this 200×256 LUT, shafts quantize to
+          // its (azimuth, elevation) lattice → soft curved bands on the
+          // low-altitude sky. Two per-pixel replacements were tried and BOTH
+          // failed in-engine (work log 2026-07-14 FIX 2/3 REVERTED — a
+          // multiplicative near-field factor black-banded the horizon; an
+          // additive near-field delta didn't cure it and cost more). Revisit
+          // only with proper in-engine bisection; candidates: GODRAYS_SKY_MARCH
+          // as a quality tier, higher LUT res, froxel-carried sky shadow.
+          const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
           const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
           L.addAssign(throughput.mul(Sint));
           throughput.mulAssign(sampleT);
@@ -1767,9 +1881,13 @@ export function setupAtmospherePass(
     // stale/never-baked LUT. This makes USE_SKYVIEW=false a clean full-march
     // fallback (the LUT sample is a never-taken uniform branch → ~zero cost).
     const altKm = _camToPlanet.length() - dominant.params.groundRadiusKm;
-    uSkyViewBlend.value = SKYVIEW_ENABLED
-      ? smoothstepScalar(SKYVIEW_FULL_ALT_KM, SKYVIEW_MARCH_ALT_KM, altKm)
-      : 1;
+    // GODRAYS_SKY_MARCH: blend=1 forces the per-pixel march for sky rays →
+    // crisp per-pixel sky shafts instead of the LUT's 200×256 smear. Perf
+    // toggle (re-spends the Phase-4 sky-march savings) — default off.
+    uSkyViewBlend.value =
+      SKYVIEW_ENABLED && !(GODRAYS && GODRAYS_SKY_MARCH)
+        ? smoothstepScalar(SKYVIEW_FULL_ALT_KM, SKYVIEW_MARCH_ALT_KM, altKm)
+        : 1;
 
     // Ring annulus (fog clamp + shadow). Zeroed when the body has none —
     // outer = 0 makes every ring term a no-op.
