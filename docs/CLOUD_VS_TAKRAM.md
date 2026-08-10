@@ -484,6 +484,38 @@ channel, with interval-skipping of the clear air between decks. *Files:*
 our per-region variety and profile LUT (don't collapse to takram's global model).
 
 **#6 — Octave multi-scatter + analytic scattering integral (retire MS_GAIN fudge).**
+> ⛔ **DO NOT IMPLEMENT AS WRITTEN — MEASURED WORSE, 2026-08-07.** Evaluated against
+> the two-stream conservative-scattering law (`R = (τ'/2)/(1+τ'/2)`, `τ' = τ(1−g)`)
+> on homogeneous slabs, sweeping ~150 configurations: three placements of the
+> reduced extinction `bⁿ` (sun-transmittance only / view only / both), 4–8 octaves,
+> `a ∈ [0.5,0.7]`, `b ∈ [0.3,0.7]`, `c ∈ [0.1,0.5]`, plus a hybrid keeping our
+> phase-free `ms` floor:
+>
+> | | RMS vs two-stream | ratio τ32:τ1 (target 3.38×) | view swing thin→thick |
+> |---|---|---|---|
+> | best octave variant | 0.144 | 1.79× | 12.1 → 8.1 |
+> | best hybrid | 0.289 | 1.39× | 6.0 → 5.2 |
+> | **current shipped model** | **0.084** | **2.95×** | **3.15 → 1.82** |
+>
+> Our "fudge" beats every octave configuration on all three metrics. **Why it is
+> structural, not a tuning miss:** octave 0 of the sum *is* single scattering with
+> the full phase at weight 1, so the sum's directionality is at least single
+> scattering's, damped only by later octaves — whereas our `ms` carries NO phase at
+> all and therefore damps far harder. That is why our view swing (3.15→1.82,
+> correctly shrinking toward the diffusion limit) beats every octave config
+> (6–12×, barely shrinking). Separately, the reduced-extinction octaves saturate
+> too fast in τ, overshooting the thin end (0.48 at τ=0.5 vs the true 0.16).
+>
+> **Caveat on scope:** this measures dropping the octave sum into *our* system,
+> where the phase is a dual-lobe HG with measured effective g = 0.250. Takram pairs
+> its octaves with a fitted Mie phase (g ≈ 0.85) and an energy-conserving integral;
+> the sum may well be right *there*. The decision measured here is the one actually
+> on the table. See `CLOUD_DEBUGGING_LESSONS.md` case #25.
+>
+> Still worth taking from this item: the **analytic scattering integral** (item xi)
+> as a PERF enabler — but our accumulation already appears to be `L·(1−e^−od)·T`,
+> which is that form for σ_s = σ_t, so verify before doing work.
+
 Impact **M** · Effort **M** · Risk **med**.
 Realism + a step toward unified exposure. Replace `pow(Tsun,MS_COEF)·MS_GAIN` with
 an 8-octave energy-conserving sum; adopt the Frostbite per-step analytic integral

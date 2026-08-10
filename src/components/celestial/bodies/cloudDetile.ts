@@ -101,40 +101,19 @@ export function baseDilate(r: any, fbm: any): any {
   );
 }
 
-// ── MULTI-OCTAVE SHAPE (case study #24, 2026-08-07) ─────────────────────────
-// MEASURED PROBLEM: `baseDilate` is dominated by ONE octave — `r` (Perlin-Worley,
-// grid 4 = 5.6 km cells at BASE_SCALE 45) — with the multi-octave `fbm` entering
-// only as a small additive perturbation. The detail volume is used ONLY
-// subtractively (billow + fine carve), and a subtractive carve can bite inward
-// but cannot ADD octaves to a silhouette. Result: the field's amplitude GROWS at
-// every octave (octave step 1.29-1.57 vs a self-similar ~1.0), which is
-// mathematically a smooth bell curve with faint texture — the user's "smooth
-// rounded pyramids / shaved off by a 3D bell curve". It also makes surface
-// roughness PATCHY (p90/p10 = 1.8x across half-cloud windows), because whether a
-// patch looks bumpy depends entirely on where the single dominant octave's
-// features happen to land — which is why two clouds at the SAME distance differ,
-// and one side of one cloud differs from the other.
-//
-// BASE_FBM_BILLOW was introduced (2026-06-18) as the fix for exactly this and
-// MEASURABLY DOES NOT WORK: raising it 1.2 -> 3.0 moves the average octave step
-// by 0.01. It only adds the base volume's own bands, which are correlated with r
-// and far too small in amplitude.
-//
-// FOUR NULL RESULTS before this (do not re-run — see case study #24): the
-// DETAIL_FADE distance fade, clamp saturation in baseDilate, shader-side G/B/A
-// reweighting, and re-baking the volume at higher FBM persistence.
-//
-// THE FIX: sum the detail volume into the SHAPE as extra octaves, in addition to
-// its existing subtractive carve role. MEASURED offline on the real volumes:
-//              octave step avg   roughness   patchiness
-//   current           1.29         0.0166       1.4x
-//   fbm only (no r)   1.19         0.0105       2.4x   <- WORSE, keep r
-//   this              1.16         0.0283       1.4x
-//   takram ref        1.14         0.0149       1.2x
-// Honest limit: patchiness 1.8 -> 1.4, NOT to takram's 1.2. This reduces the
-// smooth/bumpy variation; it does not eliminate it.
-//
-// A/B: set MULTI_OCTAVE_SHAPE = false for the byte-identical previous behaviour.
+// ── MULTI-OCTAVE SHAPE (case study #24) ─────────────────────────────────────
+// `baseDilate` is dominated by ONE octave (`r`, 5.6 km cells); the detail volume
+// was used only SUBTRACTIVELY, and a carve cannot add octaves to a silhouette.
+// Result: amplitude grew at every octave (step 1.29-1.57 vs a self-similar ~1.0)
+// = a smooth bell curve with faint texture, and PATCHY roughness (p90/p10 1.8x)
+// because whether a patch looks bumpy depended on one octave's phase.
+// BASE_FBM_BILLOW was the intended fix for this and does NOT work: 1.2 -> 3.0
+// moves the octave step by 0.01. Four other null results are in case #24 — do
+// not re-run them (DETAIL_FADE, clamp saturation, G/B/A reweighting, persistence).
+// FIX: sum the detail volume into the SHAPE as extra octaves. Measured octave
+// step 1.29 -> 1.16, roughness 0.0166 -> 0.0283, patchiness 1.4x (takram ref:
+// 1.14 / 0.0149 / 1.2x). KEEP `r` — dropping it makes patchiness WORSE (2.4x).
+// A/B: set false for the previous behaviour.
 export const MULTI_OCTAVE_SHAPE = true;
 // Weights on the two base-volume terms. r supplies the coherent cloud-body scale
 // (dropping it makes patchiness WORSE — measured 2.4x), the flat g/b/a mean
@@ -153,26 +132,16 @@ const MO_DETAIL2 = 0.27;
 export const MO_DETAIL2_SCALE = 700; // tile = 1000/700 = 1.43 km
 // Contrast gain about the 0.4 pivot, matching baseDilate's BASE_FBM_BILLOW.
 const MO_GAIN = 1.2;
-// ── PROFILE GRADING (2026-08-07, follow-up: "CU break apart into blobs") ──
-// Ungraded, the extra octaves fire at FULL amplitude in thin/edge regions where
-// the erosion threshold (1 − dimProfile) is already near 1, so any downward
-// excursion disconnects material. MEASURED on a synthetic cumulus (3D
-// 6-connected flood fill, shape > 0.02):
-//                          components   floater mass   octave avg   roughness
-//   old (pre multi-octave)     512          0.05%         1.34        0.0150
-//   multi-octave ungraded     1158          0.26%         1.16        0.0283
-//   AMPLITUDE grade p^0.5      669          0.12%          —            —
-//   AMPLITUDE grade p^1.0      571          0.08%         1.20        0.0212
-//   FREQUENCY grade p^1.0      498          0.29%         1.21        0.0207
-// AMPLITUDE grading (scale BOTH extra octaves by profile^p) is the one that
-// fixes it. FREQUENCY grading (keep the coarse octave full at the edges, grade
-// only the fine one — the literal Nubis p.109 reading) gives the FEWEST
-// fragments but does NOT reduce floater MASS, because the coarse octave is
-// exactly what makes an edge lump big enough to see and detach. Fragment COUNT
-// and visible-blob MASS are different metrics; mass is what the eye reads.
-// p = 1.0 keeps ~75% of the octave-balance win and ~47% of the roughness gain
-// while returning floater mass to near the pre-change baseline. Lower it toward
-// 0.5 for more edge detail at the cost of more floaters.
+// ── PROFILE GRADING (case study #24 follow-up) ──────────────────────────────
+// Ungraded, the extra octaves fire at full amplitude where the erosion threshold
+// (1 - dimProfile) is already ~1, so any dip disconnects material -> CU broke
+// into floating blobs. Grading by dimProfile^p fixes it. MEASURED (3D flood
+// fill): components 1158 -> 571, floater mass 0.26% -> 0.08% (pre-change 0.05%),
+// keeping ~75% of the octave win. p=0.5 gives more edge detail at 0.12% floaters.
+// ⚠️ AMPLITUDE grading (this) not FREQUENCY grading: grading only the fine octave
+// gives the FEWEST fragments (498) but leaves floater MASS at 0.29%, because the
+// coarse octave is what makes an edge lump big enough to see. Fragment COUNT and
+// visible-blob MASS recommend opposite fixes; mass is what the eye reads.
 const MO_GRADE_POW = 1.0;
 // MEASURED E[shape] = 0.6748 vs the old E[baseDilate] = 0.6716, so
 // DILATED_BASE_MEAN (0.672) stays valid for BASE_VAR_FADE — no DC step at

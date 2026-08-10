@@ -226,7 +226,12 @@ function buildColorNode(
   const s11 = composeAt(pW.add(hashOffset(cell.add(vec2(1, 1)))));
   const detiled = mix(mix(s00, s10, wx), mix(s01, s11, wx), wy);
 
-  const carved = u.detile.greaterThan(0.5).select(detiled, single);
+  // `as Node`: TSL's select() typings mis-infer a union here, which then
+  // poisons .pow()/.select() downstream (same workaround as the marcher's
+  // billowCarveKernel). Narrow at the propagation point.
+  const carved = u.detile
+    .greaterThan(0.5)
+    .select(detiled, single) as Node;
 
   // ── Envelope mode: apply the REAL vertical profile + coverage + Nubis erosion ──
   // Turns the raw noise `carved` into the marcher's actual density silhouette so a
@@ -238,13 +243,15 @@ function buildColorNode(
   const dimProfile = u.coverage.mul(heightProfile);
   const eroded = dimProfile
     .sub(float(1).sub(carved).mul(u.erosionK))
-    .clamp(0, 1);
+    .clamp(0, 1) as Node;
   // Apply DENSITY_GAMMA (render-faithful): the marcher renders pow(shape, γ).
   // γ<1 (e.g. 0.7 convective) lifts mids → fills low-density holes; γ>1 (e.g. 4.0
   // stratiform) thins. Preserves 0 and 1, so true holes survive but the phantom
   // near-zero binary holes fill in — stops us over-reading the isosurface.
   const erodedGamma = eroded.pow(u.gamma);
-  const sel = u.envelope.greaterThan(0.5).select(erodedGamma, carved);
+  const sel = u.envelope
+    .greaterThan(0.5)
+    .select(erodedGamma, carved) as Node;
 
   // Grayscale OR binary isosurface; thin magenta contour at the threshold.
   // In envelope mode set threshold low (~0.02): any positive `eroded` is cloud.

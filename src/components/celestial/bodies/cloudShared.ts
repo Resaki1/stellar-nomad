@@ -70,7 +70,7 @@ export const REAL_WEATHER_MAP_PATH = "/textures/weather/era5_2005082818.ktx2";
 // the slab via the marcher's radius uniforms (nothing to mirror).
 export const CLOUD_INNER_ALTITUDE_KM = 1;
 export const CLOUD_OUTER_ALTITUDE_KM = 16;
-const SLAB_SPAN_KM = CLOUD_OUTER_ALTITUDE_KM - CLOUD_INNER_ALTITUDE_KM; // 15
+export const SLAB_SPAN_KM = CLOUD_OUTER_ALTITUDE_KM - CLOUD_INNER_ALTITUDE_KM; // 15
 
 // Map the v2 topHeight channel into the cloud-TOP altitude parameter topN.
 // KM-ANCHORED (T2): ordinary columns span the same PHYSICAL 2.3–13.35 km
@@ -875,14 +875,41 @@ export function shapeAlteringFunction(heightFraction: Node, bias: Node): Node {
   return float(1).sub(x.mul(x));
 }
 
-// The km-anchored altNorm the profile uses internally (see cloudHeightProfile):
-// altitude fraction within the column's own [baseN, topN] span. Exposed so the
-// takram path can drive shapeAlteringFunction with the SAME height axis.
-// `topAltForBase` (optional) lets the caller derive the column BASE from a
-// different (unperturbed) top than the one that sets the span's TOP. Needed by
-// the fine top perturbation below: without it, wobbling the top drags the base
-// with it and cloud bases go ragged — real cumulus share a flat condensation
-// level (MEASURED: decoupling holds base sd at 0.05 km at every amplitude).
+// The column's BASE in slab-normalised altitude. SINGLE SOURCE OF TRUTH —
+// columnAltNorm routes through it, so marcher, self-shadow probe, light volume,
+// shadow map and far shell all re-derive. DEBUG_VIZ='baseAlt' reads it too.
+//
+// SHARED CONDENSATION BASE (case #26). Cloud base is the lifting condensation
+// level: set by the thermodynamic profile, essentially uniform across a region.
+// The legacy stratiform branch was `topAlt − 1.6 km`, so the base rode the
+// column's own top; since `convectivity` derives from COVERAGE, the base swept
+// upward toward every cloud's edges — d(base)/d(top) = (1 − convectivity), so at
+// low convectivity 100% of the top variation landed in the BASE. Field-wide base
+// spread was 10.74 km. Now 0.00 km.
+// BASE_TOPALT_COUPLING: 0 = shared base (physical), 1 = legacy top-tracking.
+// TRADE-OFF at 0: stratiform thinness used to come from the thin span, so a
+// low-convectivity region with a HIGH top now reads as a deep slab rather than a
+// high thin sheet. If stratus decks read too thick, raise toward 0.3-0.5.
+export const BASE_TOPALT_COUPLING = 0.0;
+
+export function columnBaseN(topAltForBase: Node, cloudType: Node): Node {
+  const baseRef = clamp(topAltForBase, 0, 1);
+  const convectivity = clamp(cloudType, 0, 1);
+  const stratiformBase = mix(
+    float(CONVECTIVE_BASE_N),
+    baseRef.sub(float(STRATIFORM_THICKNESS_N)),
+    float(BASE_TOPALT_COUPLING),
+  );
+  return mix(stratiformBase, float(CONVECTIVE_BASE_N), convectivity).max(
+    float(0),
+  );
+}
+
+// Altitude fraction within the column's own [baseN, topN] span — the axis the
+// profile LUT is indexed by. `topAltForBase` lets the caller derive the BASE from
+// a different (unperturbed) top than the one setting the TOP: without it,
+// wobbling the top drags the base and cloud bottoms go ragged (real cumulus share
+// a flat condensation level; MEASURED base sd 0.05 km at every amplitude).
 export function columnAltNorm(
   alt01: Node,
   topAlt: Node,
@@ -890,13 +917,7 @@ export function columnAltNorm(
   topAltForBase?: Node,
 ): Node {
   const topN = clamp(topAlt, 0, 1);
-  const baseRef = clamp(topAltForBase ?? topAlt, 0, 1);
-  const convectivity = clamp(cloudType, 0, 1);
-  const baseN = mix(
-    baseRef.sub(float(STRATIFORM_THICKNESS_N)),
-    float(CONVECTIVE_BASE_N),
-    convectivity,
-  ).max(float(0));
+  const baseN = columnBaseN(topAltForBase ?? topAlt, cloudType);
   const span = topN.sub(baseN).max(float(0.001));
   return alt01.sub(baseN).div(span).clamp(0, 1);
 }

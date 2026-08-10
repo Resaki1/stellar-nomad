@@ -31,7 +31,6 @@ import {
   smoothstep,
   exp,
   fract,
-  sin,
   pow,
   PI,
 } from "three/tsl";
@@ -76,6 +75,8 @@ import {
   TAKRAM_SHAPE,
   takramDensity,
   columnAltNorm,
+  columnBaseN,
+  SLAB_SPAN_KM,
   TAKRAM_SHAPE_TAP_SCALE,
   TAKRAM_DETAIL_TAP_SCALE,
   TAKRAM_SS_TAPS,
@@ -743,7 +744,9 @@ const FINE_CARVE_STRENGTH = 0.2;
 // continuous with the legacy look.
 const PER_TYPE_DETAIL = true;
 // FINE_CARVE_STRENGTH ramp: soft St edges → hard sharp Cu edges.
-// mix(0.12, 0.28, 0.5) = 0.20 = the legacy FINE_CARVE_STRENGTH (continuous).
+// STALE COMMENT FIXED 2026-08-07: this used to read "mix(0.12, 0.28, 0.5) =
+// 0.20 = the legacy FINE_CARVE_STRENGTH", but the CU end has shipped at 0.70
+// since the shape work, so the midpoint is mix(0.12, 0.70, 0.5) = 0.41.
 const FINE_CARVE_STRENGTH_ST = 0.12;
 const FINE_CARVE_STRENGTH_CU = 0.70;
 // WISP_AMOUNT ramp (applied inside fineCarveDelta): wispy stratiform edges →
@@ -766,41 +769,21 @@ const BILLOW_CARVE_CU = 0.7;
 // convective end is CAPPED at 1.0 (K=1.2 read as unrealistically patchy in the
 // 2026-07-06 A/B). case #13: BOTH the probeShape skip-gate and the opacity
 // erosion read erosionKForType — never inline a second copy.
-// ── LEGACY-PATH NUBIS FORM (decisive A/B test, 2026-07-23) ──────────────────
-// ⚠️ SUPERSEDED 2026-08-07 — the "inversion" premise below was WRONG. MEASURED:
-// the subtractive form `saturate(p - (1-c)*K)` and the normalised remap
-// `remapClamped(c, 1-p*K, 1)` have IDENTICAL ZERO CROSSINGS (both at c = 1-p*K),
-// i.e. the SAME silhouette. There is no inversion — only a different K mapping
-// (÷K vs ×K) and a different ramp above the threshold. Further, canonical Nubis
-// 2022 `saturate(c + p - 1)` is ALGEBRAICALLY the subtractive form with K=1.
-// So the "finally looks lumpier" win came from the effective K going 0.7 -> 1.0,
-// NOT from the normalisation. The normalisation bought zero shape benefit and:
-//   (a) VIOLATED the case-#20 envelope bound `shape <= dimProfile` by up to
-//       0.717 (worst at carved 0.98, profile 0.14) -> floaters return;
-//   (b) made thin edges 2.6x over-dense (at p=0.25,c=1.0: shape 1.0 vs 0.25 ->
-//       density 12000 vs 4547) -> the user's "CU too harsh / not soft enough";
-//   (c) DESYNCED near from far — the shell opacity LUT (:1392) never branched on
-//       this flag and kept baking `dimProfile - (1-carved)*erosionKForType`,
-//       while `stepEroK` (:2911) became dead code, bypassing ALL per-type K.
-// Reverting to the subtractive form with EROSION_K_CU = 1.0 keeps the silhouette,
-// restores the bound, and re-synchronises the shell for free.
-// MEASURED effect of the revert: chords in the visibly translucent band
-// (OD 0.05-4) go 2.8% -> 11.7% (4.2x more soft edge material); cores stay
-// saturated (alpha = 1.0 either way) and cover fraction is unchanged (0.75 ->
-// 0.73). uDensityMul deliberately NOT raised — 15000 measured WORSE (10.1%),
-// because extra density just re-hardens the edges this revert exists to soften.
-//   true  -> shape = Remap(baseShapeCarved, 1 - dimProfile*k, 1, 0, 1)   [DO NOT USE]
-//   false -> the subtractive form, per-type K via erosionKForType (canonical)
-const LEGACY_NUBIS_FORM = false;
-const LEGACY_NUBIS_K = 1.0;
+// NOTE: a normalised-remap erosion `remap(carved, 1-dimProfile*K, 1)` was tried
+// (LEGACY_NUBIS_FORM, 2026-07-23) and REMOVED 2026-08-07. Same silhouette as the
+// subtractive form, but it renormalises the ramp to 1.0 so density stops being
+// bounded by the envelope: case-#20's `shape <= dimProfile` violated by 0.717,
+// thin edges 2.6x over-dense, and it bypassed erosionKForType entirely.
+// Full measurements: CLOUD_DEBUGGING_LESSONS case #25.
 const EROSION_K_ST = 0.5;
 // 0.72 -> 1.0 (2026-08-07): canonical Nubis K=1, and the value Phase F
 // (2026-07-06) validated in-app but which CLOUD_VS_TAKRAM §5#1 records was never
 // propagated into the per-type endpoints. Capped at 1.0 — the K=1.2 A/B read as
 // patchy holes-through-to-terrain (cloud_shape_anatomy.md:236-251); do not raise.
 const EROSION_K_CU = 1.0;
-// Solidity gamma ramp (§4.3): soft translucent stratiform sheets (γ=1, no
-// sharpen) → solid convective cores (γ=0.7 raises mids).
+// Solidity gamma ramp (§4.3): stratiform sheets thinned (γ=4 — NOT the γ=1
+// "no sharpen" this comment claimed until 2026-08-07) → solid convective cores
+// (γ=0.7 raises mids). density = pow(shape, mix(GAMMA_ST, GAMMA_CU, conv)).
 const DENSITY_GAMMA_ST = 4.0;
 const DENSITY_GAMMA_CU = 0.7;
 // ── Body-term crevice darkening (tonal-range fix, 2026-07-23) ────────────────
@@ -1089,6 +1072,8 @@ const DEBUG_VIZ:
   | "whyStop"
   | "lightVol"
   | "maxProfile"
+  | "msGate"
+  | "baseAlt"
   | "maxProbeShape"
   | "baseShape"
   | "floaterProbe"
@@ -1097,7 +1082,6 @@ const DEBUG_VIZ:
   | "detailShadow"
   | "weatherRaw"
   | "convType"
-  | "carveAmt"
   | "shipShadow" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
@@ -2475,14 +2459,18 @@ export function marchCloudVolume({
     // driven by the INVERTED form washing crevices out; with the inversion gone
     // and the term gated by the in-scatter probability, this supplies the cool
     // blue-grey shadow floor that keeps flanks/bases from crushing to black.
-    const skylight = float(0.03); // RESET 2026-07-23: back to the pre-session value; only the (1-profile) INVERSION fix is retained
+    // 0.03 -> 0.07 (2026-08-07): completes the pairing recorded as validated in
+    // VOLUMETRIC_CLOUDS_SHAPE_PLAN.md:196 ("ambient pow(1−profile,0.5),
+    // skylight=0.07"). The 0.03 was set while ambient was NON-inverted. Measured
+    // effect alone: +0.1% of L (ambient is ~0.1-1% at the real HDR weights,
+    // sun 12 / sky 2) — a code/doc alignment, not a look change.
+    const skylight = float(0.07);
 
     // Powder blend, constant along ray (depends only on cosTheta).
     const powderFrontMix = clamp(cosTheta.mul(0.5).add(0.5), 0, 1);
     const powderFrontInv = powderFrontMix.oneMinus();
 
     // Constants, hoisted so TSL doesn't rebuild them per-iteration.
-    const phaseIsotropic = float(0.07957747); // 1 / (4π)
     const densScale = uDensityMul;
 
     // ── Tile-&-offset shape samplers (anti-tiling; see cloudDetile.ts) ──
@@ -2589,18 +2577,18 @@ export function marchCloudVolume({
     // as 'density' but normalised — shows the detail-noise structure
     // directly without the densScale multiplier obscuring it.
     const lastEroded = float(0).toVar();
-    // DEBUG_VIZ='carveAmt': the BILLOW CARVE STRENGTH at the LAST DENSE voxel
-    // (i.e. the visible surface — NOT the slab midpoint that 'convType' uses,
-    // which is the case-#2 anti-pattern and never lines up with cloud faces).
-    // This is the direct test of "are the smoothed clouds the low-carve ones?".
-    // MEASURED 2026-07-23: carve amount + convectivity came back UNIFORM (~1)
-    // across the whole scene, refuting the convectivity-gate hypothesis. Now
-    // measuring the EROSION THRESHOLD instead: in the Nubis form the threshold
-    // is (1 - dimProfile*k), so a DENSE column gets a LOW threshold (noise
-    // passes everywhere -> SMOOTH) while a thin one gets a HIGH threshold (only
-    // peaks survive -> LUMPY). If the smooth clouds read LOW here, that's it.
-    const lastEroThresh = float(0).toVar();
     const lastDimProfile = float(0).toVar();
+    // DEBUG_VIZ='msGate': the RAW `profile · inScatter` product that multiplies
+    // `ms`, captured at the visible surface. This is the factor measured to be
+    // responsible for thin edges rendering ~40-80x too dark vs the two-stream
+    // law. Deliberately the UNSOFTENED product, so the viz stays diagnostic
+    // whether or not MS_PROFILE_W / MS_INSCATTER_V are applied.
+    const lastMsGate = float(0).toVar();
+    // DEBUG_VIZ='baseAlt': the column BASE (slab-normalised) captured at the
+    // FIRST dense voxel — looking from below, that IS the base you see. Sentinel
+    // -1 = never hit. Uses a select rather than If() to avoid TSL scope effects
+    // (case law #2: never wrap a capture in a bare If).
+    const lastBaseN = float(-1).toVar();
 
     // ── Cauliflower-detail measurement captures ──
     // Dead-store-eliminated when DEBUG_VIZ is 'off'. Captured at the last dense
@@ -3219,18 +3207,9 @@ export function marchCloudVolume({
           // so the gate engages exactly where density can be > 0. stepEroK =
           // per-type K × turret core softening, computed ONCE per step — the
           // SAME node as the dense-branch `shape` below (case #13 gate law).
-          // LEGACY_NUBIS_FORM: same inversion fix as the takram path, applied to
-          // the legacy chain. MUST stay the identical expression to the dense
-          // `shape` below (case #13 gate law) or skip/dense desyncs.
           const probeShape = TAKRAM_SHAPE
             ? takramShape
-            : LEGACY_NUBIS_FORM
-              ? remapClamped(
-                  baseShapeCarved,
-                  float(1).sub(profile.mul(float(LEGACY_NUBIS_K))),
-                  float(1),
-                )
-              : profile.sub(float(1).sub(baseShapeCarved).mul(stepEroK));
+            : profile.sub(float(1).sub(baseShapeCarved).mul(stepEroK));
           maxProbeShape.assign(maxProbeShape.max(probeShape));
           maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
           If(probeShape.greaterThan(0.0001), () => {
@@ -3290,19 +3269,9 @@ export function marchCloudVolume({
               // MUST stay the same node as the probeShape gate (case #13).
               const shape = TAKRAM_SHAPE
                 ? takramShape
-                : LEGACY_NUBIS_FORM
-                  ? // Canonical Nubis: threshold the NOISE by the envelope, so
-                    // the outline is an iso-contour of the noise (billowy) rather
-                    // than of the smooth envelope. Identical expression to the
-                    // probeShape gate above (case #13).
-                    remapClamped(
-                      baseShapeCarved,
-                      float(1).sub(dimProfile.mul(float(LEGACY_NUBIS_K))),
-                      float(1),
-                    )
-                  : dimProfile
-                      .sub(float(1).sub(baseShapeCarved).mul(stepEroK))
-                      .clamp(0, 1);
+                : dimProfile
+                    .sub(float(1).sub(baseShapeCarved).mul(stepEroK))
+                    .clamp(0, 1);
 
               // NOTE: the old opacity-only detail erosion (the original
               // Schneider remap: eroded = Remap(shape, detailFBM·strength,...))
@@ -3312,8 +3281,13 @@ export function marchCloudVolume({
               // un-self-shadowed high-freq on top → disconnected edge speckle.
               // `shape` already carries all detail via baseShapeCarved.
               lastEroded.assign(shape);
-              lastEroThresh.assign(
-                float(1).sub(dimProfile.mul(float(LEGACY_NUBIS_K))).clamp(0, 1),
+              // First-dense capture of the column base (see lastBaseN). Same
+              // arguments the marcher's own columnAltNorm uses above:
+              // UNPERTURBED topAlt as the base reference, profileConv as type.
+              lastBaseN.assign(
+                lastBaseN
+                  .lessThan(float(0))
+                  .select(columnBaseN(topAlt, profileConv), lastBaseN),
               );
               lastDimProfile.assign(dimProfile.clamp(0, 1));
 
@@ -4025,32 +3999,16 @@ export function marchCloudVolume({
                 });
               }
 
-              // Multi-scatter transmittance.
-              // pow(Tsun, MS_COEF) ≡ exp(-MS_COEF × opticalDepthSun) on the
-              // day side. MS_COEF controls how fast multi-scatter
-              // illumination falls off as cone-marched sun absorption rises:
-              //   MS_COEF = 0.15 (Wrenninge default): very gentle. At full
-              //     absorption, Tsun_ms ≈ 0.35 — still bright. Shadow
-              //     sides too bright.
-              //   MS_COEF = 0.5: Tsun_ms = √Tsun — sqrt LIFTS the shadow
-              //     end (0.14 → 0.37) so the self-shadow contrast in the
-              //     dominant `ms` term gets compressed → bodies read as one
-              //     flat colour even though Tsun varies. This was a primary
-              //     cause of the "same colour all over" look.
-              //   MS_COEF = 0.75 (current): Tsun_ms = Tsun^0.75 — keeps far
-              //     more of the RAW cone-march self-shadow (shadow end
-              //     0.14 → 0.23 vs 0.37) and pushes shadowed undersides
-              //     genuinely darker → dramatic top-bright / underside-dark
-              //     per-body shading like the Star Citizen / KSP-EVE refs.
-              //     Pairs with the dual-lobe phase (direct term): `ms` does
-              //     the within-body contrast, `direct` adds the silver rim.
-              //     Higher (→1.0) deepens shadows further but dims overall;
-              //     lower brightens but flattens. Dial against 'lightingOnly'.
-              //   0.9 (current): in the FINAL 'off' image the white cloud
-              //     albedo + ms fill were lifting shadowed valleys to mid-grey
-              //     (form present but soft). 0.9 drops the fill in shadow
-              //     (Tsun^0.9) so valleys read darker → more dramatic body
-              //     shading, while sunlit crowns (Tsun≈1) stay bright/white.
+              // Multi-scatter transmittance: Tsun_ms = Tsun^MS_COEF, feeding `ms`.
+// Lower = more fill in shadow (flatter); higher = darker valleys (more dramatic
+// body shading). Shipped history: 0.5 -> 0.75 -> 0.9. Dial against 'lightingOnly'.
+// ⚠️ MUST STAY BELOW 1. `ms` is MULTIPLE scattering, and higher scattering orders
+// have REDUCED effective extinction (Wrenninge/Frostbite octaves use σ_e·bⁿ,
+// b < 1). 2.5 was tried 2026-08-07 and reverted: it makes `ms` decay faster than
+// single scattering, deleting the fill that keeps cumulus interiors and shadowed
+// flanks grey rather than black (broad dark field on the sun-facing side).
+// The metric that justified it — maximising corr(L, Tsun) — was itself the error:
+// r -> 1 is the signature of SINGLE scattering. Case #25.
               const MS_COEF = float(0.9);
               const Tsun_ms = pow(Tsun.max(0.0001), MS_COEF).mul(daylightS);
               lastTsunMs.assign(Tsun_ms);
@@ -4152,36 +4110,106 @@ export function marchCloudVolume({
                   ),
                 ),
               );
-              const vertProb = pow(
-                remapClamped(altNVar, float(0.07), float(0.14))
-                  .mul(0.9)
-                  .add(0.1),
-                float(0.8),
-              );
+              // ── DARK-BASE BAND: KM-ANCHORED (case #26) ──────────────────
+              // Was `remap(altNVar, 0.07, 0.14)` — a fraction of COLUMN SPAN, so
+              // a tall column pushed its dark base far higher than its neighbours
+              // (measured +0.64 km edge-to-centre). Real cumulus have a dark base
+              // a few hundred metres thick regardless of height. Defaults
+              // reproduce the old band for a typical ~10 km column.
+              // NOTE: measured a visual NULL in-game — kept because it is more
+              // correct, not because it changed anything. Do not re-test.
+              const VERT_PROB_KM_ANCHORED = true;
+              const VERT_PROB_LO_KM = 0.7;
+              const VERT_PROB_HI_KM = 1.4;
+              const vertBand = VERT_PROB_KM_ANCHORED
+                ? (() => {
+                    // altitude above this column's own base, in km
+                    const spanKm = clamp(topAlt, 0, 1)
+                      .sub(columnBaseN(topAlt, profileConv))
+                      .max(float(0.001))
+                      .mul(float(SLAB_SPAN_KM));
+                    const altAboveBaseKm = altNVar.mul(spanKm);
+                    return remapClamped(
+                      altAboveBaseKm,
+                      float(VERT_PROB_LO_KM),
+                      float(VERT_PROB_HI_KM),
+                    );
+                  })()
+                : remapClamped(altNVar, float(0.07), float(0.14));
+              const vertProb = pow(vertBand.mul(0.9).add(0.1), float(0.8));
               const inScatter = depthProb.mul(vertProb);
-              const msAmount = profile.mul(
+              // ── ms GATE SOFTENING (case #25) ────────────────────────────
+              // `profile` and `inScatter` both ramp with cloud thickness and
+              // MULTIPLY, so they compounded: measured brightness ratio
+              // tau32:tau1 = 251x against the two-stream law's 3.14x, i.e. thin
+              // cloud ~40-80x too dark ("thin edges darker than thick body").
+              // PROOF it is the gates and not the transport: with `profile`
+              // frozen the model spans only 1.21x. Softening both toward 1 with
+              // W=0.5, V=0.25 lands 2.94x. A/B: set both to 1.0 for the old look.
+              // Does NOT fix the view-angle swing — but that measured fine
+              // (3.24x thin -> 1.80x thick, correctly approaching isotropic).
+              const MS_PROFILE_W = 0.5;
+              const MS_INSCATTER_V = 0.25;
+              const msRawGate = profile.mul(
                 mix(
                   mix(float(1), shape, float(MS_DENSITY_MIX)),
                   inScatter,
                   IN_SCATTER,
                 ),
               );
+              lastMsGate.assign(msRawGate.clamp(0, 1));
+              const msAmount = mix(
+                float(1),
+                profile,
+                float(MS_PROFILE_W),
+              ).mul(
+                mix(
+                  float(1),
+                  mix(
+                    mix(float(1), shape, float(MS_DENSITY_MIX)),
+                    inScatter,
+                    IN_SCATTER,
+                  ),
+                  float(MS_INSCATTER_V),
+                ),
+              );
               const ms = msAmount.mul(Tsun_ms).mul(MS_GAIN);
-              // Sky ambient. The (1−profile) inversion this used to have was an
-              // OUTWARD gradient — right for a convex rim, BACKWARDS for a
-              // crevice (which sees less sky yet got more fill). Gated by
-              // inScatter so it darkens where light can't reach. Its old 0.03
-              // magnitude was ~0.4% of L (0 code values after AgX) — raised to
-              // 0.10 ONLY because the inversion is gone in the same edit; the
-              // documented 0.25→0.15→0.07→0.03 regression was that inversion
-              // washing crevices out, so re-check top-down deck separation.
-              // The (1−profile) INVERSION is gone for good — it was an OUTWARD
-              // gradient (right for a convex rim, backwards for a crevice, which
-              // sees less sky yet got more fill). The inScatter gating is blended
-              // by IN_SCATTER so IN_SCATTER=0 is a clean baseline revert.
-              const ambient = profile
+              // Sky ambient, (1−profile)^0.5 — restored 2026-08-07 and matching
+              // the validated config in VOLUMETRIC_CLOUDS_SHAPE_PLAN.md:196.
+              // The removal argued "(1−profile) is backwards for a crevice", but
+              // `profile` is the SMOOTH ENVELOPE and cannot see a noise-carved
+              // crevice at all — it distinguishes cloud EDGE from CORE, and sky
+              // access is highest at the edge. Crevice darkening belongs to
+              // `inScatter`, which reads the CARVED field and is still applied.
+              // Gate softened with MS_INSCATTER_V for the same reason as `ms`:
+              // inScatter is lowest on thin exposed material, where sky access is
+              // highest. Sky share of L at the thin end: 0.08% -> ~1.2%. Small.
+              const ambient = float(1)
+                .sub(profile)
+                // guard: pow(negative, 0.5) is NaN and would propagate to the
+                // whole pixel if `profile` ever lands a hair above 1.
+                .max(float(0))
                 .pow(float(0.5))
-                .mul(mix(float(1), inScatter, IN_SCATTER))
+                // GATE CONSISTENCY (2026-08-07): this carried the SAME full
+                // `inScatter` gate that was measured to over-darken `ms`, and it
+                // is worse here — `inScatter` = 0.05 + shape^e is LOWEST on thin
+                // exposed material, which is exactly where SKY ACCESS IS
+                // HIGHEST. Softened with the same MS_INSCATTER_V so the gate is
+                // treated identically everywhere it appears. Crevice darkening
+                // is still represented (inScatter reads the CARVED field), just
+                // no longer dominant.
+                // MEASURED sky share of total radiance at the thin end (real HDR
+                // weights sun 12 / sky 2, sun behind camera):
+                //   current (full gate, skylight 0.03) : 0.08%
+                //   softened gate                      : ~0.5%
+                //   softened + skylight 0.07           : ~1.2%
+                // All small. Real diffuse skylight is ~10-20% of the
+                // illumination on a sunlit surface, so this term is still
+                // ~an order of magnitude under-weighted — but that comparison is
+                // CONFOUNDED by MS_GAIN being an acknowledged fudge inflating the
+                // sun side, so it is NOT evidence for a big skylight raise.
+                // Treat this as a correctness/consistency fix, not a look change.
+                .mul(mix(float(1), inScatter, float(MS_INSCATTER_V)))
                 .mul(skylight);
 
               const scatterFrac = float(1).sub(exp(opticalDepthStep.negate()));
@@ -4599,16 +4627,60 @@ export function marchCloudVolume({
       };
     }
 
-    if (DEBUG_VIZ === "carveAmt") {
-      // R = EROSION THRESHOLD (1 - dimProfile*k) at the visible surface.
-      //     HIGH/red  = strongly carved (only noise peaks survive) -> LUMPY
-      //     LOW/dark  = nothing carved (noise passes wholesale)    -> SMOOTH
-      // G = dimProfile (coverage x height) that drives it.
-      // So: RED-ish  = thin cloud, carved, lumpy
-      //     GREEN-ish= dense cloud, threshold collapsed, smooth   <- the suspect
-      //     YELLOW   = both high (shouldn't happen; they're complementary)
+    if (DEBUG_VIZ === "baseAlt") {
+      // R = column BASE altitude, scaled so 0 km -> 0 and 7 km -> 1
+      //     (baseN / 0.4; the measured range is 1.65 km core .. 6.15 km edge).
+      // G = convectivity, the thing that slides the base between those two.
+      // So: GREEN  = low flat convective base (1.65 km)  — what a cumulus wants
+      //     RED    = high stratiform base (up to 6.15 km) — the surrounding sheet
+      //     a RED->GREEN gradient across one cloud = the 4.50 km base ramp.
+      //
+      // WHAT TO CHECK: point at the underside of a CU you think is bowed.
+      //   - If the base ramp lines up with the bowing, the coverage->
+      //     convectivity->base coupling is the cause (measured 4.50 km swing).
+      //   - If the base reads FLAT/uniformly green under a cloud that still
+      //     looks bowed, the geometric base is fine and the curvature is coming
+      //     from the profile LUT's bottom ramp instead — that ramp is in
+      //     NORMALISED altitude, so a tall column's density onset sits ~1.4 km
+      //     above its base while a short column's is ~0.4 km, which bows the
+      //     VISIBLE base upward where the column is tallest. That would match
+      //     "middle higher than edges" and is a different fix.
+      // RESCALED 2026-08-07: the original /0.4 spread a 7 km range over the
+      // channel, so a 1-2 km base variation compressed to ~0.2 and read as
+      // "flat" — it hid exactly the variation being investigated. Now centred
+      // on the band that matters: 1.65 km (convective base) -> ~4.1 km.
+      //   BLACK/dark = base at the condensation level (1.65 km) - correct
+      //   BRIGHT RED = base lifted >= ~4 km - the top-tracking artefact
+      const baseScaled = lastBaseN
+        .sub(float(0.0433))
+        .max(float(0))
+        .div(float(0.16))
+        .clamp(0, 1);
       return {
-        rgba: vec4(lastEroThresh, lastDimProfile, float(0), float(1)),
+        // lastBaseN's -1 sentinel already yields 0 on a miss (max(0) above),
+        // so no hit-test is needed here: no cloud -> black.
+        rgba: vec4(baseScaled, lastDimProfile, float(0), float(1)),
+        tFront: float(0),
+      };
+    }
+    if (DEBUG_VIZ === "msGate") {
+      // THE VERIFICATION VIZ for the thin-edge over-darkening.
+      // Shows `profile · inScatter` — the factor that multiplies `ms`, which is
+      // 78-90% of the radiance when looking away from the sun.
+      // R = the gate. G = dimProfile alone, so you can see which half drives it.
+      //
+      // PREDICTION if the diagnosis is right: the gate is DARK exactly on the
+      // thin wisps/edges and BRIGHT in the thick regions between billows — i.e.
+      // it looks like an INVERTED version of how the cloud should be lit, and
+      // it should line up with the dark patches you see in 'off'/'lightingOnly'
+      // while NOT lining up with 'tsunMs'/'detailShadow' (which read correctly).
+      //
+      // REFUTED IF: the gate comes back roughly uniform, or its dark areas do
+      // NOT coincide with the dark areas in 'off'. Then the over-darkening is
+      // somewhere else and the two-stream slab measurement does not transfer to
+      // the real geometry (offline proves POSSIBLE, never ACTUAL — case #29).
+      return {
+        rgba: vec4(lastMsGate, lastDimProfile, float(0), float(1)),
         tFront: float(0),
       };
     }

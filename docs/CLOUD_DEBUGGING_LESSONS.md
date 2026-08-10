@@ -2717,3 +2717,258 @@ what the eye reads — here, mass — before trusting a sweep.**
 Cost of the grade: keeps ~75% of the octave-balance win (1.34 → 1.20 of a possible
 1.16) and ~47% of the roughness gain. Lower `MO_GRADE_POW` toward 0.5 for more
 edge detail at the cost of more floaters (0.12% vs 0.08%).
+
+---
+
+## Case study #25 — "thin edges darker than thick body" was the `ms` GATE, and two instruments lied before one worked (2026-08-07)
+
+**Symptom.** User, front-lit CU: "thin parts at the edges are darker than thick
+areas between billows… those areas look more correct in `tsunMs` and
+`detailShadow`." I.e. the sun march computed the right structure and the
+composite then discarded it.
+
+### TWO FAILED INSTRUMENTS (record these — both looked authoritative)
+
+1. **Per-voxel radiance with hand-picked (profile, Tsun) tuples.** Produced
+   "outer billow renders 4.3× darker than inner crevice" — a confident,
+   quantified claim that did NOT survive sampling the real population
+   (9978 visible-surface points showed L rising monotonically with Tsun,
+   r = 0.78). **Hand-picked operating points are not a measurement.**
+2. **Monte Carlo volumetric path tracer** (delta tracking + NEE), intended as
+   ground truth. Failed twice: (a) returned 0.0000 for every ray because the
+   camera sat outside the density grid box and the tracking loop broke on the
+   first step; (b) after that fix, still untrustworthy — for OD ≈ 50 with
+   conservative scattering the mean number of scattering events scales like
+   OD², so a 48-bounce cap truncates most of the energy and systematically
+   under-reports the thick-cloud case that mattered. Discarded rather than
+   reported. **A path tracer is not automatically ground truth; check its
+   convergence regime against the optical depth you are probing.**
+
+### THE INSTRUMENT THAT WORKED
+
+**Two-stream conservative scattering on HOMOGENEOUS slabs.** No MC convergence
+needed, no geometry or noise to confound it:
+`R = (τ'/2)/(1 + τ'/2)`, `τ' = τ(1−g)`, using our OWN dual-lobe's measured
+effective asymmetry (**g = 0.250** — itself worth noting; real cloud droplets are
+≈0.85, so our phase is far more isotropic than Mie).
+
+| brightness τ=32 vs τ=1 | |
+|---|---|
+| two-stream (physical law) | **3.14×** |
+| ours | **118–251×** |
+
+Optically thin cloud rendered **~40–80× too dark**.
+
+### ISOLATION — freeze one variable
+
+| profile gate | inScatter gate | profile coupled to τ | ratio |
+|---|---|---|---|
+| on | on | yes | 251× |
+| off | on | yes | 13.2× |
+| on | off | yes | 23.6× |
+| off | off | yes | 1.18× |
+| **on** | **on** | **NO (frozen)** | **1.21×** |
+
+The frozen row is the proof: with `profile` held constant the model spans only
+1.21×, so **the radiative-transfer accumulation was never the problem.** The
+entire error was that `profile` and `inScatter` are multiplicative gates that
+BOTH ramp with cloud thickness and therefore **compound** (23.6 × 13.2 ≈ 251).
+Neither has a counterpart in the reference formulation (CLOUD_VS_TAKRAM.md:193 —
+takram/Frostbite gate multi-scatter by optical depth and phase only).
+
+**Fix:** `MS_PROFILE_W = 0.5`, `MS_INSCATTER_V = 0.25` soften both toward 1 →
+2.94× against the physical 3.14×. In-game verdict: *"WAY better… one of the
+largest wins in the last months."* Confirmed in-engine with a new
+`DEBUG_VIZ='msGate'` (R = `profile·inScatter`, G = `dimProfile`): the gate reads
+dark on thin edges and, being green-dominant, shows `inScatter` — not `profile` —
+is what suppresses `ms` globally.
+
+### A WRONG TURN WORTH KEEPING: the metric that rewarded deleting the physics
+
+Before the above, I raised `MS_COEF` 0.9 → 2.5 because it improved
+`corr(final L, Tsun)` from 0.78 to 0.86. That was **backwards**. `ms` models
+light that has scattered many times, and higher scattering orders have REDUCED
+effective extinction (the Wrenninge/Frostbite octave sum uses σ_e·bⁿ, b < 1), so
+the Tsun exponent belongs BELOW 1 — which is why every value this project ever
+shipped was 0.5 / 0.75 / 0.9. Raising it made `ms` decay faster than single
+scattering and produced a broad dark field over the sun-facing side.
+
+**r → 1 is the signature of SINGLE scattering.** A physically correct thick cloud
+must have brightness *decoupled* from direct sun transmittance — that is what
+multiple scattering IS. The metric I chose scored "more single-scattering-like"
+as "better". **Before optimising a correlation, ask what a perfect score would
+physically mean.** Reverted to 0.9.
+
+### Other lessons
+
+- **The reference's own numbers are a check on your knobs.** `MS_COEF` had a
+  documented history of 0.5 → 0.75 → 0.9; 2.5 was far outside every value ever
+  explored. That alone should have prompted a physics re-derivation.
+- **`(1−profile)` for sky ambient is correct and was restored.** The removal
+  argued it is "backwards for a crevice", but `profile` is the SMOOTH SEPARABLE
+  ENVELOPE and cannot see a noise-carved crevice at all — two points at equal
+  coverage and height have identical `profile` whether one is a rim or a crevice
+  floor. What it distinguishes is edge vs core, and sky access is highest at the
+  edge. Crevice darkening belongs to `inScatter`, which reads the CARVED field.
+  Matches the validated config in VOLUMETRIC_CLOUDS_SHAPE_PLAN.md:196.
+- **Still open:** this fixes the thin/thick ordering, NOT the view-angle swing
+  (phase never goes isotropic; brightness still swings ~17× with view direction).
+  The reference answer is the 8-octave energy-conserving sum
+  (CLOUD_VS_TAKRAM #6). My octave sketch measured 1.41× — too FLAT — so it is
+  the documented direction but NOT a validated replacement.
+
+### Follow-up — one of the two "remaining gaps" did not exist
+
+Closing out case #25 I listed two open items. Measuring both changed both.
+
+**RETRACTED: "brightness still swings ~17× with view direction."** That number was
+the raw PHASE ratio at a single operating point (1.807 toward the sun / 0.108 away),
+not the rendered swing. Measured properly on slabs, `L(toward)/L(away)`:
+
+| τ | 0.5 | 1 | 2 | 4 | 8 | 16 | 32 | 128 |
+|---|---|---|---|---|---|---|---|---|
+| swing | 3.24× | 3.14× | 2.98× | 2.74× | 2.40× | 1.97× | 1.83× | 1.80× |
+
+Large for thin cloud, shrinking toward isotropic as τ grows — which is exactly
+the diffusion limit, i.e. **physically correct behaviour**. `ms` carries no phase,
+so as it comes to dominate in thick cloud the angular dependence washes out on
+its own. The 8-octave sum remains a principled upgrade (energy conservation; our
+thin-end albedo is still too high — 0.24 at τ=0.5 vs the two-stream 0.16 — and
+our curve saturates too early), but the defect that was cited as the reason to do
+it is not real.
+
+**FOURTH single-point overclaim of the session.** The pattern is now unmistakable:
+*every* wrong call in this investigation came from evaluating one hand-picked
+operating point (the 4.3× "inversion", the `corr(L,Tsun)` objective, this 17×);
+*every* correct call came from a population, an integral, or an analytic law.
+**Do not quote a ratio from one (profile, Tsun, τ) tuple. Integrate or sample the
+population.**
+
+**Item 2 (skylight) was inert as specified** — 0.03 → 0.07 measures +0.1% of total
+radiance at the real HDR weights (sun 12 / sky 2). Applied anyway to complete the
+pairing VOLUMETRIC_CLOUDS_SHAPE_PLAN.md:196 records as validated, but it is a
+code/doc alignment, not a look change.
+
+**What it did surface: `ambient` still carried the full `inScatter` gate** — the
+same gate measured to over-darken `ms` — and it is *worse* on the sky term, since
+`inScatter = 0.05 + shape^e` is lowest on thin exposed material, which is exactly
+where sky access is HIGHEST. Now softened with the same `MS_INSCATTER_V`, so that
+gate is treated identically everywhere it appears. Sky share of total radiance at
+the thin end: 0.08% → ~0.5% (→ ~1.2% with skylight 0.07). Still ~an order of
+magnitude below real diffuse skylight (~10-20% of illumination on a sunlit
+surface), but that comparison is CONFOUNDED by `MS_GAIN` being an acknowledged
+fudge inflating the sun side — so it is not evidence for a large skylight raise.
+**When a term looks under-weighted, check whether the thing you are comparing it
+against is itself a fudge.**
+
+### Closing #25 — the octave multi-scatter rewrite was MEASURED WORSE than our fudge
+
+The last open lighting item was CLOUD_VS_TAKRAM #6: replace
+`pow(Tsun,MS_COEF)·MS_GAIN` with an 8-octave energy-conserving sum. Before
+implementing (effort **M**), it was validated offline against the two-stream law
+on homogeneous slabs. ~150 configurations: three placements of the reduced
+extinction `bⁿ` (sun-transmittance only / view only / both), 4–8 octaves,
+`a ∈ [0.5,0.7]`, `b ∈ [0.3,0.7]`, `c ∈ [0.1,0.5]`, plus a hybrid retaining our
+phase-free `ms` floor.
+
+| | RMS vs two-stream | ratio τ32:τ1 (target 3.38×) | view swing thin→thick |
+|---|---|---|---|
+| best octave variant | 0.144 | 1.79× | 12.1 → 8.1 |
+| best hybrid | 0.289 | 1.39× | 6.0 → 5.2 |
+| **current shipped model** | **0.084** | **2.95×** | **3.15 → 1.82** |
+
+**Every variant lost on every metric.** The reason is structural, not a tuning
+miss: octave 0 of the sum IS single scattering with the full phase at weight 1,
+so the sum can never be less directional than single scattering — it is only
+damped by later octaves. Our `ms` carries NO phase at all, so it damps far
+harder. Hence our view swing shrinks correctly toward the diffusion limit
+(3.15 → 1.82) while every octave config sits at 6–12× and barely moves.
+
+Scope caveat, stated honestly: this measures the octave sum dropped into OUR
+system, whose phase is a dual-lobe HG with measured effective g = 0.250. Takram
+pairs its octaves with a fitted Mie phase (g ≈ 0.85); the sum may be correct
+there. The decision measured is the one actually on the table.
+
+**Lessons.**
+- **Validate a recommendation before implementing it, even your own project's.**
+  This one had been carried in the comparison doc as priority #6 with effort M
+  for weeks. An afternoon of slab measurement retired it.
+- **"Principled" does not mean "better here."** An energy-conserving octave sum is
+  more physically motivated than a global `MS_GAIN` fudge, and still loses on
+  every measurable axis in this system, because the fudge happens to supply an
+  isotropic floor that the octave sum structurally cannot.
+- The doc entry has been annotated in place with ⛔ and the table, so the
+  recommendation is not followed blindly later.
+
+---
+
+## Case study #26 — bowed/sloping cloud bases: the base rode the column TOP (2026-08-07)
+
+**Symptom.** "Undersides of CU are not flat but curved — the middle of the base is
+higher than the edges", "the height difference looks way too drastic", "individual
+cloud bodies just sloping upwards in some areas."
+
+### FIVE wrong calls before the right one — all mine, all avoidable
+
+1. **Coverage→base coupling, dismissed too early.** Correct mechanism, but I
+   computed it from `deriveTopAlt` — **dead code**. `WEATHER_V2 = true`, so the
+   live path is `deriveColumnV2 → topHeightToTopAlt`. The codebase's own law says
+   *verify the current code state before theorising*; I didn't, and got a table
+   that was wrong by construction.
+2. **Profile LUT bottom ramp.** Right direction (normalised ramp → taller column
+   ⇒ higher density onset), but **+0.07 km**. Invisible.
+3. **`vertProb` dark-base band.** Same normalisation issue, 9× larger at
+   **+0.64 km** — km-anchored it, and the in-game result was a **null**.
+4. **Perspective.** A flat base seen from below genuinely does read as a dome, and
+   the computed sagitta (4–18% of frame for ordinary geometry) bracketed the
+   user's sketched ~11–13%. Refuted by the falsifiable test it came with: the
+   curvature **does not flatten with viewing distance**, so it is geometric.
+5. **Over-reading my own viz.** `DEBUG_VIZ='baseAlt'` scaled `baseN` by 0.4 (a
+   7 km range), so a 1–2 km base variation compressed into ~0.2 of the red channel
+   and read as "flat green". I treated that as proof the base was uniform. **An
+   instrument that cannot resolve the effect size is not evidence of absence.**
+   Rescaled to centre on 1.65 → 4.1 km.
+
+### ROOT CAUSE
+
+`columnBaseN` interpolated the base between a stratiform branch of
+`topAlt − 1.6 km` and a fixed convective 1.65 km, keyed on `convectivity` — which
+is derived from COVERAGE, and coverage falls off across every cloud's footprint.
+So `d(base)/d(top) = (1 − convectivity)`: at low convectivity **100% of a column's
+top variation landed in its BASE**. On the live path (topAlt 2.30–13.35 km) the
+field-wide base spread was **10.74 km**, with low-convectivity columns basing as
+high as ~11.7 km beside convective neighbours at 1.65 km.
+
+### FIX — shared condensation base
+
+Cloud base is the lifting condensation level: set by surface temperature and
+humidity, essentially uniform across a region. Every cumulus in a field shares it
+regardless of how tall it grows. `BASE_TOPALT_COUPLING = 0.0` makes the
+stratiform base the same condensation level as the convective one.
+
+| | field-wide base spread | d(base)/d(top) at conv=0 |
+|---|---|---|
+| before | 10.74 km | 100% |
+| after | **0.00 km** | **0%** |
+
+**Trade-off:** stratiform thinness previously came from placing the base just
+below the top. With a shared base, a stratiform column's thickness is set by its
+top alone — a low-convectivity region with a high top becomes a deep slab rather
+than a high thin sheet. Physically reasonable (deep stratiform = nimbostratus),
+but if stratus decks read too thick, raise `BASE_TOPALT_COUPLING` toward 0.3–0.5
+rather than restoring the full coupling.
+
+### Lessons
+
+- **A quantity that is physically a CONSTANT should not be derived from a field
+  that varies.** Cloud base is set by the thermodynamic profile, not by how much
+  cloud happens to be overhead. Deriving it from coverage guaranteed it would
+  vary across every cloud.
+- **Check which branch is live before measuring it.** `WEATHER_V2` had been true
+  for weeks; `deriveTopAlt` only feeds the far shell.
+- **Calibrate a debug viz to the effect size you are hunting.** A 7 km colour
+  ramp cannot show a 1.5 km artefact. Rescale, then re-read.
+- **A hypothesis that ships with its own falsification test is worth more than a
+  confident one.** The perspective theory was wrong, but it predicted "curvature
+  flattens with distance", which took seconds to refute — versus the four earlier
+  theories that each cost a full measurement cycle.
