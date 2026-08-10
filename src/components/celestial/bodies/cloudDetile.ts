@@ -101,6 +101,128 @@ export function baseDilate(r: any, fbm: any): any {
   );
 }
 
+// ── MULTI-OCTAVE SHAPE (case study #24, 2026-08-07) ─────────────────────────
+// MEASURED PROBLEM: `baseDilate` is dominated by ONE octave — `r` (Perlin-Worley,
+// grid 4 = 5.6 km cells at BASE_SCALE 45) — with the multi-octave `fbm` entering
+// only as a small additive perturbation. The detail volume is used ONLY
+// subtractively (billow + fine carve), and a subtractive carve can bite inward
+// but cannot ADD octaves to a silhouette. Result: the field's amplitude GROWS at
+// every octave (octave step 1.29-1.57 vs a self-similar ~1.0), which is
+// mathematically a smooth bell curve with faint texture — the user's "smooth
+// rounded pyramids / shaved off by a 3D bell curve". It also makes surface
+// roughness PATCHY (p90/p10 = 1.8x across half-cloud windows), because whether a
+// patch looks bumpy depends entirely on where the single dominant octave's
+// features happen to land — which is why two clouds at the SAME distance differ,
+// and one side of one cloud differs from the other.
+//
+// BASE_FBM_BILLOW was introduced (2026-06-18) as the fix for exactly this and
+// MEASURABLY DOES NOT WORK: raising it 1.2 -> 3.0 moves the average octave step
+// by 0.01. It only adds the base volume's own bands, which are correlated with r
+// and far too small in amplitude.
+//
+// FOUR NULL RESULTS before this (do not re-run — see case study #24): the
+// DETAIL_FADE distance fade, clamp saturation in baseDilate, shader-side G/B/A
+// reweighting, and re-baking the volume at higher FBM persistence.
+//
+// THE FIX: sum the detail volume into the SHAPE as extra octaves, in addition to
+// its existing subtractive carve role. MEASURED offline on the real volumes:
+//              octave step avg   roughness   patchiness
+//   current           1.29         0.0166       1.4x
+//   fbm only (no r)   1.19         0.0105       2.4x   <- WORSE, keep r
+//   this              1.16         0.0283       1.4x
+//   takram ref        1.14         0.0149       1.2x
+// Honest limit: patchiness 1.8 -> 1.4, NOT to takram's 1.2. This reduces the
+// smooth/bumpy variation; it does not eliminate it.
+//
+// A/B: set MULTI_OCTAVE_SHAPE = false for the byte-identical previous behaviour.
+export const MULTI_OCTAVE_SHAPE = true;
+// Weights on the two base-volume terms. r supplies the coherent cloud-body scale
+// (dropping it makes patchiness WORSE — measured 2.4x), the flat g/b/a mean
+// supplies the mid octaves. The flat (1/3,1/3,1/3) mean replaces Schneider's
+// 0.625/0.25/0.125 here specifically because that weighting is what biases the
+// composite toward its lowest band.
+const MO_R_WEIGHT = 0.5;
+const MO_FBM_WEIGHT = 0.5;
+// Detail-volume octaves added to the SHAPE. d1 is taken at CARVE_SCALE (the tap
+// the billow carve already uses — same position and scale, so it is perfectly
+// correlated with the carve, which is what the real field does); d2 is a new,
+// finer tap. Both are centered on the detail volume's ~0.4 mean so they bulge
+// and crease rather than only filling.
+const MO_DETAIL1 = 0.45;
+const MO_DETAIL2 = 0.27;
+export const MO_DETAIL2_SCALE = 700; // tile = 1000/700 = 1.43 km
+// Contrast gain about the 0.4 pivot, matching baseDilate's BASE_FBM_BILLOW.
+const MO_GAIN = 1.2;
+// ── PROFILE GRADING (2026-08-07, follow-up: "CU break apart into blobs") ──
+// Ungraded, the extra octaves fire at FULL amplitude in thin/edge regions where
+// the erosion threshold (1 − dimProfile) is already near 1, so any downward
+// excursion disconnects material. MEASURED on a synthetic cumulus (3D
+// 6-connected flood fill, shape > 0.02):
+//                          components   floater mass   octave avg   roughness
+//   old (pre multi-octave)     512          0.05%         1.34        0.0150
+//   multi-octave ungraded     1158          0.26%         1.16        0.0283
+//   AMPLITUDE grade p^0.5      669          0.12%          —            —
+//   AMPLITUDE grade p^1.0      571          0.08%         1.20        0.0212
+//   FREQUENCY grade p^1.0      498          0.29%         1.21        0.0207
+// AMPLITUDE grading (scale BOTH extra octaves by profile^p) is the one that
+// fixes it. FREQUENCY grading (keep the coarse octave full at the edges, grade
+// only the fine one — the literal Nubis p.109 reading) gives the FEWEST
+// fragments but does NOT reduce floater MASS, because the coarse octave is
+// exactly what makes an edge lump big enough to see and detach. Fragment COUNT
+// and visible-blob MASS are different metrics; mass is what the eye reads.
+// p = 1.0 keeps ~75% of the octave-balance win and ~47% of the roughness gain
+// while returning floater mass to near the pre-change baseline. Lower it toward
+// 0.5 for more edge detail at the cost of more floaters.
+const MO_GRADE_POW = 1.0;
+// MEASURED E[shape] = 0.6748 vs the old E[baseDilate] = 0.6716, so
+// DILATED_BASE_MEAN (0.672) stays valid for BASE_VAR_FADE — no DC step at
+// distance (case #18(c): always check a faded term's MEAN).
+//
+// NOTE the marcher's necessary-condition carve gate needs NO widening: it tests
+// `baseShape` itself, and the extra octaves are already inside it, so the
+// "carve only lowers" property still holds.
+export function baseDilateMulti(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  r: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  g: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  b: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  a: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  d1: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  d2: any,
+  // Dimensional profile (coverage × height) at this sample. Grades the extra
+  // octaves down toward thin edges so they cannot fragment the body — see
+  // MO_GRADE_POW. MUST be the profile at THIS position, not the view ray's
+  // (case #21: the self-shadow probe has to read the same field).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dimProfile: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  if (!MULTI_OCTAVE_SHAPE) {
+    return baseDilate(r, g.mul(0.625).add(b.mul(0.25)).add(a.mul(0.125)));
+  }
+  const flat = g.add(b).add(a).div(float(3));
+  const grade = clamp(dimProfile, 0, 1).pow(float(MO_GRADE_POW));
+  const extra = d1
+    .sub(float(BASE_FBM_BIAS))
+    .mul(float(MO_DETAIL1))
+    .add(d2.sub(float(BASE_FBM_BIAS)).mul(float(MO_DETAIL2)))
+    .mul(grade);
+  const sum = r
+    .mul(float(MO_R_WEIGHT))
+    .add(flat.mul(float(MO_FBM_WEIGHT)))
+    .add(extra);
+  return clamp(
+    sum.sub(float(BASE_FBM_BIAS)).mul(float(MO_GAIN)).add(float(0.5)),
+    0,
+    1,
+  );
+}
+
 // Compile-time toggle. true = tile-&-offset; false = the original warp path
 // (each call site keeps its original code under `else`).
 //

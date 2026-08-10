@@ -38,6 +38,10 @@ import {
   deriveColumnV2,
   convectiveCoverage,
   anvilProfileConv,
+  TAKRAM_SHAPE,
+  TAKRAM_ENVELOPE_WARP,
+  TAKRAM_ENV_WARP_SCALE,
+  envelopeWarpOffset,
 } from "@/components/celestial/bodies/cloudShared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -302,9 +306,48 @@ export function createCloudLightVolume(
   // shadows land beside the clouds that should cast them.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const densityAt = (q: any) => {
-    const r = length(q).max(0.0001);
+    const rTrue = length(q).max(0.0001);
+    // ── Envelope warp (LOCKSTEP with the marcher) ──
+    // Apply the SAME shared envelopeWarpOffset the marcher uses so the baked
+    // shadow tracks the WARPED cloud (before this, the warp lived marcher-only
+    // and the shadow detached — user-confirmed 2026-07-23). Gate inputs
+    // (convectivity .g, coverage .r) sampled at the UNWARPED dir. The takram
+    // NOISE warp is NOT mirrored (the bake uses the legacy low-freq body as a
+    // coarse stand-in; the macro envelope alignment is what places the shadow).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let qW: any = q;
+    if (TAKRAM_SHAPE && TAKRAM_ENVELOPE_WARP) {
+      const dirT = q.div(rTrue);
+      const uvT = vec2(
+        fract(atan(dirT.z, dirT.x.negate()).mul(invTwoPi)),
+        acos(clamp(dirT.y.negate(), -1, 1)).mul(invPi),
+      ).add(uCloudUvOffset);
+      const convGate = (texture(weatherMap, uvT).level(int(0)) as Node).g;
+      // placement gate = mesoTap.g at the UNWARPED column dir (MESO_SCALE) —
+      // IDENTICAL signal to the marcher's placeGate (no drift → no detach).
+      const placeGate = (
+        texture3D(
+          baseVolume,
+          dirT.mul(uInnerRadius).mul(float(MESO_SCALE)),
+        ).level(int(0)) as Node
+      ).g;
+      const warpTap = texture3D(
+        baseVolume,
+        q.mul(float(TAKRAM_ENV_WARP_SCALE)),
+      ).level(int(0)) as Node;
+      qW = q.add(
+        envelopeWarpOffset(
+          q,
+          rTrue,
+          convGate,
+          placeGate,
+          vec3(warpTap.g, warpTap.b, warpTap.a),
+        ),
+      );
+    }
+    const r = length(qW).max(0.0001);
     const alt01 = clamp(r.sub(uInnerRadius).mul(invSlabThickness), 0, 1);
-    const dir = q.div(r);
+    const dir = qW.div(r);
 
     // Coverage from the weather map at the column lat/lon — same pow(0.6)
     // shaping as the marcher.

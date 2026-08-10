@@ -100,8 +100,8 @@ export function makeEquirectTextureField(
 
 // ── Lighting magnitudes — SHARED with the volumetric marcher (earthClouds.ts
 // imports these) so near/far brightness + colour agree at the crossfade. ──
-export const CLOUD_SUN_SCALE = 0.6; // × sunIlluminance × T(cloud alt) ≈ 12 HDR sunlit
-export const CLOUD_SKY_SCALE = 2.0; // × sky tint → ambient fill
+export const CLOUD_SUN_SCALE = 0.45; // × sunIlluminance × T(cloud alt) ≈ 12 HDR sunlit
+export const CLOUD_SKY_SCALE = 1.0; // × sky tint → ambient fill
 
 // Cool-blue ambient sky tint (matches the marcher's fallback skyColor). A planet
 // may pass its own; this is the default. Plain tuple (not a TSL node) so it can

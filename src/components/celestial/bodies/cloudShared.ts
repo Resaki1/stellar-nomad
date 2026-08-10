@@ -5,10 +5,14 @@ import {
   clamp,
   texture,
   vec2,
+  vec3,
+  dot,
   int,
   floor,
   fract,
+  pow,
 } from "three/tsl";
+import { kmToScaledUnits } from "@/sim/units";
 import { getCloudProfileLUT } from "./cloudProfileLUT";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -299,7 +303,7 @@ function finalizeTopAlt(topAlt: Node): Node {
 // bake, and the topAlt diagnostics call the SAME function. Far shell =
 // accepted divergence (its LUT peak scan is span-independent; anvil regions
 // are rare).
-export const ANVIL = true;
+export const ANVIL = false; // RESET 2026-07-23: MEASURED annular-cavity source — the skirt sheet-morph fires on EVERY tall convective column at conv 0.9 (gate=1.00), not just mature Cb, lifting a ring of columns' bases to 4-11 km with clear air beneath. Re-enable only behind a far tighter gate.
 // Region gates — MEASURED-reachable (map conv p90 ≈ 0.71; the failed draft's
 // ss(0.75, 1.0) was ≈ 0 over virtually the whole planet).
 const ANVIL_CONV_LO = 0.6;
@@ -614,4 +618,413 @@ export function cloudHeightProfile(
     smoothstep(float(0.0), float(0.5), cloudType),
   );
   return mix(lowerMix, cumulus, smoothstep(float(0.5), float(1.0), cloudType));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAKRAM-RECIPE SHAPE PORT (docs/CLOUD_VS_TAKRAM.md #2b fallback, 2026-07-20).
+// A composition-only port of @takram/three-clouds' density shaping, driving it
+// with OUR baked noise + coverage map. Gated by TAKRAM_SHAPE; when off, nothing
+// here runs and the legacy profile-LUT + Nubis-erosion path is byte-identical.
+// The point of takram's clean cumulus is the COMPOSITION, not new noise:
+//   1. shapeAlteringFunction — a downward-biased semicircle height gradient
+//      (bias<1 → widest just above base, tapering to top = the cumulus DOME,
+//      the thing our profile-LUT plateau could never give).
+//   2. coverageFilterWidth remap — soft/hard cloud edge per type.
+//   3. remap-erosion by the base shape (renormalising, keeps cores solid).
+//   4. height-dependent detail — pow(detail,6) whippy base / (1-detail) fluffy
+//      top, from one detail tap.
+// Reference: clouds.glsl sampleWeather/sampleMedia; cloudShape/Detail.frag.
+// Phase 1 wires only the view-ray marcher + its skip-gate; the self-shadow
+// probe + far shell still use the legacy path (so under the toggle self-shadow
+// / orbit may not match yet — Phase 2). ALL knobs below are tunable.
+export const TAKRAM_SHAPE = false;
+const TAKRAM_COVERAGE = 0.5; //          global cloudiness bias in `factor`
+const TAKRAM_BIAS_ST = 0.6; //           shapeAlteringFunction bias: St less base-heavy
+const TAKRAM_BIAS_CU = 0.25; //          Cu strongly base-heavy (takram default 0.35)
+const TAKRAM_COVW_ST = 0.9; //           coverageFilterWidth: St soft/overcast edge
+const TAKRAM_COVW_CU = 0.7; //           Cu harder cumuliform edge
+const TAKRAM_SHAPE_AMT_ST = 0.6; //      base-shape erosion strength (St gentler)
+// 2026-07-20: 1.0 → 1.8. At 1.0 the deepest erosion threshold is (1−shapeMin
+// 0.43)·1.0 = 0.57, so a DENSE tower (covD≈0.95) only erodes to ~0.88 → smooth
+// opaque mound, no lobes. >1 lets (1−shape)·amt reach ≥1 → erosion can carve
+// dense bodies to 0 at lobe boundaries → actual cauliflower lobes + crevices.
+const TAKRAM_SHAPE_AMT_CU = 1.0; // RESET 2026-07-23: back inside takram's range. >1 lets the erosion threshold (1-baseMin)*amt exceed covD and punch holes through solid body.
+// How strongly a dense core resists erosion (see the coupling in takramDensity).
+// erosionThreshold *= (1 - covD * TAKRAM_CORE_SOLIDITY). At 0.6 a full-coverage
+// mid-height core (covD ≈ 0.71) caps its threshold at ≈0.59 < covD → CANNOT be
+// hollowed, while an edge column (covD ≈ 0.4) still reaches ≈0.78 > covD → still
+// erodes to zero → wispy edges + lobed tops. 0 = the old sponge behaviour.
+const TAKRAM_CORE_SOLIDITY = 0; // RESET 2026-07-23: unnecessary at shapeAmt <= 1.0 (cores cannot be hollowed anyway). Kept wired for when shapeAmt is raised again.
+// ── Nubis erosion form (see the long note in takramDensity) ─────────────────
+// true  = Remap(NOISE, 1 - covD*k, 1)  → outline is an iso-contour of the NOISE
+//         (billowy). MEASURED +31% lobe prominence at k=2.0 with solid cores.
+// false = the takram form (outline follows the smooth coverage envelope).
+export const TAKRAM_NUBIS_FORM = true;
+const TAKRAM_NUBIS_K = 2.0;
+// Measured percentiles of the RE-BAKED shape volume — used to normalize the
+// noise to a full [0,1] signal. Re-measure if the volume is re-baked.
+const SHAPE_VOL_P1 = 0.584;
+const SHAPE_VOL_P99 = 0.941;
+const TAKRAM_DETAIL_AMT_ST = 0.5; //     detail erosion strength
+const TAKRAM_DETAIL_AMT_CU = 1.0;
+// Tap scales for the takram noise volumes (used by earthClouds' marcher). The
+// volume tiles ≈ 1000/scale km. Shape ≈3.3 km matches takram's shapeRepeat
+// 0.0003; detail finer. The Phase-1 composition test used our coarse base at
+// 20 km (uBaseScale 50) — far too big for cumulus lobes. TUNE for lobe size.
+export const TAKRAM_SHAPE_TAP_SCALE = 150; //  ~3.3 km billows
+export const TAKRAM_DETAIL_TAP_SCALE = 1200; // ~0.83 km detail
+// Phase 2 self-shadow of the takram lobes: march takramDensity toward the sun at
+// the detail (~1 km) + lobe (~3 km) scales so crevices between lobes read dark
+// (the cauliflower look). TAKRAM_SS_DENSITY = per-tap optical-depth scale (tune
+// for crevice darkness; kept < LOCAL_SHADOW_DENSITY 2000 so the long far tap
+// doesn't crush interiors to black — the multi-scatter term lifts them back).
+// ── SUN MARCH SCHEDULE (rewritten 2026-07-23 — the FLAT-CLOUD root cause) ────
+// The old probe was TWO taps at 1 km and 3 km, weighted by their own distance:
+//   odT = dens(1km)*D*0.001 + dens(3km)*D*0.003
+// MEASURED (scratchpad/od_measure.mjs, 2716 visible-surface samples, high sun):
+//   • sampled density at BOTH taps: p50 = 0.000 — they land OUTSIDE the cloud
+//   • resulting odT p50 = 0.000  →  Tsun p50 = 1.000  →  DEBUG_VIZ 'tsunMs'
+//     reads pure white in-game, exactly as observed
+//   • but 77% of the TRUE sun-path optical depth lies within 0-1 km — the range
+//     the old schedule sampled ZERO times.
+// Since Tsun is the ONLY per-voxel term in the lighting (phase is constant per
+// ray, `profile` is the smooth envelope), Tsun≡1 collapses the cloud to a flat
+// mid-white blob. THAT is why midday cumulus had no tonal range.
+//
+// Fix: a proper Beer-Lambert quadrature — samples concentrated NEAR the surface
+// with explicit SEGMENT LENGTHS (not "weight by own distance", which both
+// double-counted the far tap and left 0-1 km unsampled).
+// [distance, segmentLength] in SCALED units (1 unit = 1000 km ⇒ 0.0003 = 300 m).
+// Measured vs a 48-sample ground-truth integral: 3-tap corr 0.727, Tsun spread
+// 0.02–1.0 (vs the old 2-tap's degenerate 1.0). A 4th tap only buys corr 0.764,
+// not worth +2 texture3D in the hot loop — add [0.0026, 0.002] if you want it.
+export const TAKRAM_SS_TAPS: readonly (readonly [number, number])[] = [
+  [0.00015, 0.0003], // 150 m, 300 m segment — the near field that carries ~77%
+  [0.0006, 0.0006], // 600 m, 600 m segment
+  [0.0018, 0.0021], // 1.8 km, 2.1 km segment — inter-lobe / neighbour shadowing
+];
+// Extinction for the sun march, per SCALED unit (÷1000 = per km). The view ray
+// uses uDensityMul = 12000 (12/km); a physically-matched sun march would use the
+// same, but that is the classic single-scatter over-darkening (real clouds stay
+// bright via multiple scattering, which we only approximate with MS_COEF). 6000
+// (6/km) was picked from the measured sweep: Tsun p10/p50/p90 = 0.02/0.41/0.91 —
+// genuinely dark crevices and bases, bright sunlit crowns. Raise → more dramatic
+// and darker; lower → flatter. (Old value 800 was tuned to compensate for the
+// broken quadrature and is meaningless under the new one.)
+export const TAKRAM_SS_DENSITY = 6000;
+
+// ── Envelope domain warp (the SILHOUETTE fix, 2026-07-23) ────────────────────
+// ROOT CAUSE of "smooth-pyramid" cumulus outlines (offline-proven, see
+// docs/CLOUD_VS_TAKRAM.md + memory): the macro shape is a SEPARABLE smooth
+// envelope coverage(dir)×heightProfile(alt); inward-only erosion can only fringe
+// its edge, never bulge OUT into the medium-scale lobes real cumulus has. The
+// fix is a domain warp of the ENVELOPE evaluation position — it displaces the
+// smooth coverage/altitude field into 3D lobes → scalloped organic outline.
+// MEASURED: warping the NOISE phase (the retired legacy warp) does NOT lump the
+// outline; only warping the COVERAGE+ALTITUDE lookup does. Envelope warp can't
+// re-introduce the old "stringy" shear (that was noise-phase warp of a high-freq
+// field; the coverage field is smooth/low-freq). Radial component is damped so
+// cloud bases stay roughly flat. Cost: +1 base-volume tap per primary step.
+export const TAKRAM_ENVELOPE_WARP = false; // RESET 2026-07-23: neither reference uses an envelope warp; ours caused rings, flames/drips (via the noise warp it fed) and fold cavities (5.3% of volume at amp 2.5).
+// ANTI-FOLD RULE (2026-07-23): the warp punches rings/holes through the cloud
+// (domain-warp FOLDING) once the displacement gradient ≈ AMP_KM × SCALE / 250
+// approaches 1. The user's 3.3/78 was ~1.03 → heavy rings. Keep the product
+// ≲ 165 (gradient ≲ 0.66). To get MORE lumpy displacement without folding you
+// must accept BIGGER lobes (lower SCALE): 2.5/65≈0.65 (~3.9 km lobes),
+// 3.0/54≈0.65 (~4.6 km), 2.0/80≈0.64 (~3.1 km).
+// 2.5 → 1.0 (2026-07-23): MEASURED FOLDING. A domain warp is only a valid
+// (invertible) deformation while |∇displacement| < 1; above that det(Jacobian)
+// goes negative and space is DOUBLED OVER — regions get traversed twice and the
+// fold surfaces render as smooth layered walls around a cavity. That is the
+// "outer shell → empty space → dense core" the user flew through.
+// Monte-Carlo over the warp field (40k samples, incl. the TANGENT/RADIAL scaling):
+//   amp 2.5 → 5.3% of volume FOLDED (min det −1.86, mean|∇d| 1.18)
+//   amp 1.5 → 0.0% but min det −0.08 (marginal)
+//   amp 1.0 → 0.0%, min det +0.24  ← safe
+// (My earlier "gradient 0.65 is fold-free" was wrong: that divided amplitude by
+// wavelength; the true mean gradient is ~1.18 at amp 2.5.)
+// NOTE the references use NO envelope warp at all — takram gets its puffiness
+// from the noise + composition alone. Treat this knob as a small optional nudge,
+// never as the mechanism that creates the shape.
+export const TAKRAM_ENV_WARP_AMP_KM = 1.0; //  lobe displacement (keep ≤1.0: fold-free)
+export const TAKRAM_ENV_WARP_SCALE = 65; //   ~15 km tile → ~3.9 km lobes (fold-free at amp 2.5)
+// ── TANGENTIAL vs RADIAL split (2026-07-23, the "flames not puffs" fix) ──────
+// These do VERY different things and were previously conflated:
+//   TANGENTIAL — slides the position sideways, which slides `dirP`: the lookup
+//     into the WEATHER MAP and the mesoTap PLACEMENT field (fractionPlacement,
+//     turret mask, anvil skirt, topAlt jitter). Because those fields carry real
+//     STRUCTURE, displacing the lookup by a noise SMEARS that structure into
+//     streaks — the licking/flame-like tendrils (user-reported 2026-07-23). It
+//     lobes the outline, but it scrambles placement to do it.
+//   RADIAL — moves the sample up/down the column, so it reads a different point
+//     of the vertical profile. This undulates the cloud's TOP SURFACE into lobes
+//     WITHOUT touching the horizontal placement at all — the clean way to lump.
+// The old single RADIAL=0.1 knob meant the offset was ~90% TANGENTIAL, i.e.
+// almost all lobing came from the placement-scrambling path. Bisect in-game:
+// set TANGENT 0 (pure radial) — if the flames vanish, tangential is the culprit.
+// TANGENT 1.0 / RADIAL 0.1 reproduces the previous (flame-y) behaviour exactly.
+// With TAKRAM_NOISE_WARP_FRAC = 0 the noise is no longer sheared by either
+// component, so both can contribute lobing without the flame/drip artifact.
+// TANGENT still slides the weather/placement LOOKUP (keep it moderate — it
+// smears placement structure, a milder artifact than the noise shear);
+// RADIAL undulates the column's top surface, which is the cleanest lobing.
+export const TAKRAM_ENV_WARP_TANGENT = 0.35;
+export const TAKRAM_ENV_WARP_RADIAL = 0.4;
+// CONVECTIVITY GATE (2026-07-23): warping a thin STRATIFORM sheet fragments it
+// (user-confirmed "ST looks weird"). Gate the warp by the weather map's
+// convectivity (G) so only convective CU/Cb columns lobe; stratiform stays the
+// smooth flat sheet it was. Sampled at the UNWARPED direction (convectivity is a
+// smooth hundreds-of-km field → warped≈unwarped). Below LO = no warp, above HI =
+// full warp.
+export const TAKRAM_ENV_WARP_CONV_LO = 0.4;
+export const TAKRAM_ENV_WARP_CONV_HI = 0.65;
+// PLACEMENT gate (2026-07-23, rev 2): the conv gate stops STRATIFORM warping,
+// but thin sheets BETWEEN cumulus towers still swirled. First attempt gated by
+// the weather map's coverage (.r) — WRONG signal: for the real ERA5 map .r is a
+// ~28 km cell average, moderate even under a big tower, so it starved the CU of
+// warp too (user-confirmed). The signal that separates a TOWER from the thin
+// inter-cloud gap is the SUB-CELL placement/updraft field (mesoTap.g, the same
+// field that drives fractionPlacement + turrets): high in solid cloud cores,
+// near the placement threshold (~0.475) in the marginal gaps. Gate the warp by
+// it → towers lobe, thin gaps stay flat. Sampled at the UNWARPED dir.
+export const TAKRAM_ENV_WARP_PLACE_LO = 0.48;
+export const TAKRAM_ENV_WARP_PLACE_HI = 0.6;
+// NOISE warp (2026-07-23): the ENV warp lobes the OUTLINE but leaves compact
+// "floating blob" edges; displacing the NOISE tap by a fraction of the same
+// (conv-gated) warp vector stretches edge detail into fine WISPS instead (the
+// look the user liked in the offline `final_winner`). REUSES the env warp vector
+// → zero extra taps. Applied to BOTH the view ray AND the self-shadow probe so
+// crest/crevice relief stays correlated (case #21). CAUTION: this is the
+// noise-phase warp that historically caused "stringy" shear (CLOUD_DEBUGGING_
+// LESSONS #19) — keep the fraction modest and watch top-down views for strings.
+// 0 = env-only (no wisps, no string risk); 1 = noise warps as much as the
+// envelope (max wisps, max string risk).
+// 0.55 → 0.3 → 0 (2026-07-23). THIS KNOB WAS THE "FLAMES"/"DRIPS" ARTIFACT.
+// It displaces the NOISE PHASE by a fraction of the envelope warp, which SHEARS
+// the noise features along the warp direction — the documented "stringy billows"
+// failure (CLOUD_DEBUGGING_LESSONS #19). Proven by A/B: with a mostly-TANGENTIAL
+// warp the smear was horizontal → licking flame tendrils; after the split made
+// the warp mostly RADIAL the smear rotated to vertical → candle-wax drips down
+// the towers. Same bug, rotated with the warp — so no tangential/radial split
+// can cure it. Only the ENVELOPE warp (which moves the coverage/altitude LOOKUP
+// and leaves the noise features intact) may lump the outline.
+// COST OF 0: we lose the fine wisps this bought at the cloud edges (the look the
+// user liked in the offline `final_winner`). Wisps must come from a mechanism
+// that doesn't shear the body — e.g. the detail volume's Alligator/wisp channel
+// applied at EDGES only — not from warping the whole noise field.
+export const TAKRAM_NOISE_WARP_FRAC = 0;
+
+// Envelope warp offset — the SINGLE source of the warp math, called by BOTH the
+// marcher AND the light-volume bake so they can't drift (the whole cloudShared
+// philosophy; before this the warp lived marcher-only and baked shadows detached
+// from the warped clouds). Callers sample the inputs at the UNWARPED position:
+//   convectivity — weather map .g   (gate OUT stratiform)
+//   placement    — mesoTap.g        (gate OUT thin inter-cloud gaps; the
+//                  sub-cell updraft field that also drives placement/turrets)
+//   warpNoiseVec — baseVolume .gba at q·TAKRAM_ENV_WARP_SCALE (vec3)
+// Returns a scaled-units offset (0 when disabled / stratiform / gap). Radial
+// component damped (flat-ish bases). The caller adds it to q before deriving the
+// coverage-lookup dir + altitude; the marcher additionally reuses a FRACTION of
+// it (TAKRAM_NOISE_WARP_FRAC) to displace the noise tap for wisps.
+export function envelopeWarpOffset(
+  q: Node,
+  r: Node,
+  convectivity: Node,
+  placement: Node,
+  warpNoiseVec: Node,
+): Node {
+  const gate = smoothstep(
+    float(TAKRAM_ENV_WARP_CONV_LO),
+    float(TAKRAM_ENV_WARP_CONV_HI),
+    clamp(convectivity, 0, 1),
+  ).mul(
+    smoothstep(
+      float(TAKRAM_ENV_WARP_PLACE_LO),
+      float(TAKRAM_ENV_WARP_PLACE_HI),
+      clamp(placement, 0, 1),
+    ),
+  );
+  const raw = warpNoiseVec
+    .sub(vec3(0.5, 0.5, 0.5))
+    .mul(float(kmToScaledUnits(TAKRAM_ENV_WARP_AMP_KM) * 2))
+    .mul(gate);
+  // Split the raw displacement into its RADIAL and TANGENTIAL parts and scale
+  // them independently (see TAKRAM_ENV_WARP_TANGENT/RADIAL): tangential slides
+  // the weather/placement LOOKUP (lobes the outline but smears placement into
+  // flame-like streaks); radial slides up/down the column (undulates the top
+  // surface into lobes with placement untouched).
+  const dirUp = q.div(r);
+  const radial = dot(raw, dirUp);
+  const radialVec = dirUp.mul(radial);
+  const tangentVec = raw.sub(radialVec);
+  return tangentVec
+    .mul(float(TAKRAM_ENV_WARP_TANGENT))
+    .add(radialVec.mul(float(TAKRAM_ENV_WARP_RADIAL)));
+}
+
+// clamp((v−lo)/(hi−lo), 0, 1) — takram's remapClamped(v, lo, hi) → [0,1].
+export function remapClamped(v: Node, lo: Node, hi: Node): Node {
+  return v.sub(lo).div(hi.sub(lo).max(float(1e-4))).clamp(0, 1);
+}
+
+// Biased semicircle (clouds.glsl:68-73): 0 at base+top, peak skewed toward the
+// base when bias<1 → wide base narrowing to a rounded top (the cumulus dome).
+export function shapeAlteringFunction(heightFraction: Node, bias: Node): Node {
+  const biased = pow(clamp(heightFraction, 0, 1), bias);
+  const x = clamp(biased.mul(2).sub(1), -1, 1);
+  return float(1).sub(x.mul(x));
+}
+
+// The km-anchored altNorm the profile uses internally (see cloudHeightProfile):
+// altitude fraction within the column's own [baseN, topN] span. Exposed so the
+// takram path can drive shapeAlteringFunction with the SAME height axis.
+// `topAltForBase` (optional) lets the caller derive the column BASE from a
+// different (unperturbed) top than the one that sets the span's TOP. Needed by
+// the fine top perturbation below: without it, wobbling the top drags the base
+// with it and cloud bases go ragged — real cumulus share a flat condensation
+// level (MEASURED: decoupling holds base sd at 0.05 km at every amplitude).
+export function columnAltNorm(
+  alt01: Node,
+  topAlt: Node,
+  cloudType: Node,
+  topAltForBase?: Node,
+): Node {
+  const topN = clamp(topAlt, 0, 1);
+  const baseRef = clamp(topAltForBase ?? topAlt, 0, 1);
+  const convectivity = clamp(cloudType, 0, 1);
+  const baseN = mix(
+    baseRef.sub(float(STRATIFORM_THICKNESS_N)),
+    float(CONVECTIVE_BASE_N),
+    convectivity,
+  ).max(float(0));
+  const span = topN.sub(baseN).max(float(0.001));
+  return alt01.sub(baseN).div(span).clamp(0, 1);
+}
+
+// ── Fine per-column TOP perturbation (silhouette lobing, 2026-07-23) ─────────
+// THE measured way to lobe the silhouette without a domain warp. Established by
+// measurement that the outline is essentially INVARIANT to the noise (tap scale,
+// carve depth, core solidity, noise contrast, coverage structure, cloud size and
+// optical density all left lobe prominence at ~3%): the silhouette is just where
+// the SMOOTH SEPARABLE envelope crosses the erosion threshold, so only moving
+// the ENVELOPE moves it. The domain warp did that by displacing POSITION — and
+// folded space (cavities). This perturbs the envelope BY VALUE instead: each
+// column's top wobbles, so the cloud's upper surface undulates. A value
+// perturbation has no Jacobian, so FOLDING IS MATHEMATICALLY IMPOSSIBLE.
+// MEASURED (N=16 independent samples): convex protrusions along the silhouette
+// 3.3 (baseline) → 4.3 (amp .08) → 5.4 (amp .15) → 6.0 (amp .22), with base
+// flatness unchanged at 0.05 km. Cauliflower is MANY bumps, not a few big ones,
+// so the lobe COUNT is the meaningful gain here (prominence stays ~3-4%, which
+// is the noise fringe width). Scale 300 (~3.3 km tile) measured best; 150 and
+// 600 gave no gain. Physically this is "each convective cell tops out at its own
+// height" at bud scale — the existing TOPALT_JITTER does the same at ~8 km.
+// COST: +1 texture3D per primary step (column-direction tap). Set AMP 0 to disable.
+export const TAKRAM_TOP_PERTURB_AMP = 0;
+export const TAKRAM_TOP_PERTURB_SCALE = 300;
+// The baked shape volume's measured distribution — used to turn a raw sample
+// into a zero-mean, unit-ish signed perturbation.
+const SHAPE_VOL_MEAN = 0.797;
+const SHAPE_VOL_SD = 0.077;
+export function perturbTopAlt(topAlt: Node, shapeSample: Node): Node {
+  if (TAKRAM_TOP_PERTURB_AMP <= 0) return topAlt;
+  const z = shapeSample.sub(float(SHAPE_VOL_MEAN)).div(float(SHAPE_VOL_SD));
+  return topAlt
+    .add(z.mul(0.5).mul(float(TAKRAM_TOP_PERTURB_AMP)))
+    .clamp(float(TOPALT_FLOOR), float(TOPALT_CEIL));
+}
+
+// Full takram density ∈ [0,1] at a sample. `coverageSignal` = our per-column
+// coverage (takram's per-texel localWeather); `baseShapeRaw` = a base-noise tap
+// (takram shapeTexture.r); `detailRaw` = a detail tap (shapeDetailTexture.r).
+// Feeds gamma+extinction downstream exactly like the legacy `shape`.
+export function takramDensity(
+  coverageSignal: Node,
+  altNorm: Node,
+  convectivity: Node,
+  baseShapeRaw: Node,
+  detailRaw: Node,
+): Node {
+  const conv = clamp(convectivity, 0, 1);
+  const bias = mix(float(TAKRAM_BIAS_ST), float(TAKRAM_BIAS_CU), conv);
+  const covW = mix(float(TAKRAM_COVW_ST), float(TAKRAM_COVW_CU), conv);
+  const shapeAmt = mix(float(TAKRAM_SHAPE_AMT_ST), float(TAKRAM_SHAPE_AMT_CU), conv);
+  const detAmt = mix(float(TAKRAM_DETAIL_AMT_ST), float(TAKRAM_DETAIL_AMT_CU), conv);
+
+  const heightScale = shapeAlteringFunction(altNorm, bias);
+  const factor = float(1).sub(float(TAKRAM_COVERAGE).mul(heightScale));
+  // Coverage → soft-edged, dome-shaped density (Skybolt/takram modulation).
+  const covD = remapClamped(
+    mix(clamp(coverageSignal, 0, 1), float(1), covW),
+    factor,
+    factor.add(covW),
+  );
+  // Erode by the base shape (renormalising remap — solid cores, rounded edges).
+  //
+  // CORE-SOLIDITY COUPLING (2026-07-23 — the "cloud is a sponge" fix).
+  // The bare form `remap(covD, (1-base)*shapeAmt, 1)` has an erosion threshold
+  // that depends ONLY on the noise, so it bites just as deep in the CORE as at
+  // the edge. With shapeAmt raised to 1.8 (done deliberately to force surface
+  // lobes out of a smooth mound) the threshold reaches (1-0.43)*1.8 = 1.03 and
+  // exceeds covD EVERYWHERE → holes punched clean through the body. MEASURED
+  // (scratchpad/hollow_test.mjs): cumulus interiors were 22-42% EMPTY by volume;
+  // horizontal cross-sections render as foam. That is what the user hit flying
+  // in: wisp shell → void → dense core.
+  // Both references avoid this by making the erosion ENVELOPE-MODULATED:
+  //   Nubis  — threshold is (1 - dimProfile): →0 in cores (noise passes, SOLID),
+  //            →1 at edges (only peaks survive, wispy).
+  //   takram — same remap but shapeAmount ≲1, so the max threshold (0.57) can
+  //            never exceed a dense core's covD.
+  // We keep the strong shapeAmt (needed for edge/top lobes) but scale it down
+  // where covD is high, restoring the invariant "cores cannot be hollowed" while
+  // leaving edges and tops fully carveable. 0 = old sponge behaviour.
+  const coreSolidity = float(1).sub(
+    covD.mul(float(TAKRAM_CORE_SOLIDITY)),
+  );
+  // ── NUBIS FORM vs TAKRAM FORM — the "why is our silhouette smooth" answer ──
+  // These two are INVERTED with respect to each other:
+  //   Nubis/Schneider: shape = Remap( NOISE , 1 - coverage , 1, 0, 1 )
+  //                    → the outline is an ISO-CONTOUR OF THE 3D NOISE
+  //                      (billowy by construction); coverage sets the level.
+  //   takram (ported):  shape = remap( covD , (1-noise)*amt , 1 )
+  //                    → the outline is an iso-contour of the SMOOTH COVERAGE
+  //                      ENVELOPE; the noise only nudges the threshold.
+  // Ours is smooth because the baked noise spans only ~0.58-0.94, so
+  // (1-noise)*amt is squeezed into ~[0.06,0.42] while covD runs 0→0.71 — the
+  // boundary therefore sits where covD is small and tracks the coverage falloff.
+  // MEASURED (offline, protrusion metric on the alpha=0.5 silhouette):
+  //   takram form      lobe prominence 0.281 km, interior 0.4% empty
+  //   Nubis k=1.4      0.428 km but 25% HOLLOW
+  //   Nubis k=2.0      0.367 km (+31%) and only 3.0% empty  ← chosen
+  //   Nubis k=2.4      0.306 km, 0% empty (back to smooth)
+  // k scales the coverage's reach into the threshold: high k drives the CORE
+  // threshold to ~0 (solid core) while the edges keep a high threshold (carved).
+  // Set TAKRAM_NUBIS_FORM=false to return to the takram form exactly.
+  const nubisEroded = remapClamped(
+    // normalize the baked noise p1..p99 → [0,1] so it can act as a full-range
+    // SIGNAL rather than a compressed threshold nudge.
+    remapClamped(
+      clamp(baseShapeRaw, 0, 1),
+      float(SHAPE_VOL_P1),
+      float(SHAPE_VOL_P99),
+    ),
+    float(1).sub(covD.mul(float(TAKRAM_NUBIS_K))),
+    float(1),
+  );
+  const takramEroded = remapClamped(
+    covD,
+    float(1)
+      .sub(clamp(baseShapeRaw, 0, 1))
+      .mul(shapeAmt)
+      .mul(coreSolidity),
+    float(1),
+  );
+  const eroded = TAKRAM_NUBIS_FORM ? nubisEroded : takramEroded;
+  // Height-dependent detail: whippy base (pow6) → fluffy top (1−detail).
+  const d = clamp(detailRaw, 0, 1);
+  const detailMod = mix(
+    pow(d, float(6)),
+    float(1).sub(d),
+    remapClamped(altNorm, float(0.2), float(0.4)),
+  ).mul(detAmt);
+  return remapClamped(eroded.mul(2), detailMod.mul(0.5), float(1));
 }

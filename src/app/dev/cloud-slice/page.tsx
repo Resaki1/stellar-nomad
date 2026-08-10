@@ -53,6 +53,10 @@ import {
   getCloudBaseVolume,
   getCloudDetailVolume,
 } from "@/components/celestial/bodies/noiseVolumes";
+// Envelope mode: the REAL vertical profile (genus LUT) so a vertical slice shows
+// the actual cloud silhouette, not just the raw noise field. Self-fetches the
+// 64×64 profile LUT (CPU DataTexture singleton) — no GPU bake needed here.
+import { cloudHeightProfile } from "@/components/celestial/bodies/cloudShared";
 
 const CANVAS_PX = 768;
 
@@ -73,6 +77,17 @@ const DEFAULTS = {
   detile: 0, // tile-&-offset anti-tiling
   tileSizeKm: 20, // empirical sweet spot (2026-06-15): breaks tiling, few straight edges
   blendWidth: 0.5,
+  // ── Envelope mode (the SILHOUETTE instrument) ──
+  // When on, the shown field is the REAL marcher composition on the noise:
+  //   shape = saturate(coverage·heightProfile(alt01,topAlt,conv) − (1−carved)·K)
+  // with alt01 = canvas-Y (bottom=slab floor, top=ceiling). Set axis=vertical +
+  // Span≈15 km so the noise Y matches altitude. Field is forced to carved(3).
+  envelope: 0,
+  coverage: 0.7,
+  convectivity: 0.8,
+  topAlt: 0.7,
+  erosionK: 0.95,
+  gamma: 1.0, // env: DENSITY_GAMMA — render uses ~0.7 (convective) / 4.0 (stratiform)
 };
 
 const FIELD_NAMES = ["R (perlin-worley)", "baseShape", "carveWorley", "baseShapeCarved"];
@@ -103,6 +118,12 @@ type Uniforms = {
   tileSize: UniformNum;
   blendWidth: UniformNum;
   offsetRange: UniformNum;
+  envelope: UniformNum;
+  coverage: UniformNum;
+  convectivity: UniformNum;
+  topAlt: UniformNum;
+  erosionK: UniformNum;
+  gamma: UniformNum;
 };
 
 function buildColorNode(
@@ -205,9 +226,28 @@ function buildColorNode(
   const s11 = composeAt(pW.add(hashOffset(cell.add(vec2(1, 1)))));
   const detiled = mix(mix(s00, s10, wx), mix(s01, s11, wx), wy);
 
-  const sel = u.detile.greaterThan(0.5).select(detiled, single);
+  const carved = u.detile.greaterThan(0.5).select(detiled, single);
+
+  // ── Envelope mode: apply the REAL vertical profile + coverage + Nubis erosion ──
+  // Turns the raw noise `carved` into the marcher's actual density silhouette so a
+  // VERTICAL slice reads as a cloud (flat base, dome/tower top), not just noise.
+  // alt01 = canvas-Y (0 = slab floor, 1 = ceiling). Uses the SAME cloudHeightProfile
+  // (genus LUT) the marcher/shell/light-volume use, so this mirrors the pipeline.
+  const alt01 = uv().y;
+  const heightProfile = cloudHeightProfile(alt01, u.topAlt, u.convectivity) as Node;
+  const dimProfile = u.coverage.mul(heightProfile);
+  const eroded = dimProfile
+    .sub(float(1).sub(carved).mul(u.erosionK))
+    .clamp(0, 1);
+  // Apply DENSITY_GAMMA (render-faithful): the marcher renders pow(shape, γ).
+  // γ<1 (e.g. 0.7 convective) lifts mids → fills low-density holes; γ>1 (e.g. 4.0
+  // stratiform) thins. Preserves 0 and 1, so true holes survive but the phantom
+  // near-zero binary holes fill in — stops us over-reading the isosurface.
+  const erodedGamma = eroded.pow(u.gamma);
+  const sel = u.envelope.greaterThan(0.5).select(erodedGamma, carved);
 
   // Grayscale OR binary isosurface; thin magenta contour at the threshold.
+  // In envelope mode set threshold low (~0.02): any positive `eroded` is cloud.
   const grayOrBinary = u.binary
     .greaterThan(0.5)
     .select(step(u.threshold, sel), sel);
@@ -271,6 +311,12 @@ export default function CloudSlicePage() {
       tileSize: uniform(DEFAULTS.tileSizeKm / 1000),
       blendWidth: uniform(DEFAULTS.blendWidth),
       offsetRange: uniform(4), // Mm; ≫ 20 km tile so phase fully randomises
+      envelope: uniform(DEFAULTS.envelope),
+      coverage: uniform(DEFAULTS.coverage),
+      convectivity: uniform(DEFAULTS.convectivity),
+      topAlt: uniform(DEFAULTS.topAlt),
+      erosionK: uniform(DEFAULTS.erosionK),
+      gamma: uniform(DEFAULTS.gamma),
     };
   }
 
@@ -382,6 +428,18 @@ export default function CloudSlicePage() {
             </span>
           </div>
 
+          <div style={row}>
+            <span style={label}>ENVELOPE mode</span>
+            <input
+              type="checkbox"
+              checked={s.envelope === 1}
+              onChange={(e) => setU("envelope", e.target.checked ? 1 : 0)}
+            />
+            <span style={{ color: "#9f9", fontSize: 12 }}>
+              (real profile×coverage×erosion → cloud SILHOUETTE)
+            </span>
+          </div>
+
           {(
             [
               ["threshold", "Threshold", 0, 1, 0.005],
@@ -394,6 +452,11 @@ export default function CloudSlicePage() {
               ["columnScale", "warp src scale ↓=lower freq", 0.25, 16, 0.25],
               ["tileSizeKm", "detile: tile size (km)", 10, 200, 1],
               ["blendWidth", "detile: blend width", 0.02, 0.5, 0.01],
+              ["coverage", "env: coverage", 0, 1, 0.01],
+              ["convectivity", "env: convectivity", 0, 1, 0.01],
+              ["topAlt", "env: topAlt", 0, 1, 0.01],
+              ["erosionK", "env: erosion K", 0, 1.2, 0.01],
+              ["gamma", "env: gamma (render ~0.7)", 0.1, 4, 0.05],
             ] as const
           ).map(([key, lab, min, max, stepv]) => (
             <div style={row} key={key}>
@@ -460,6 +523,17 @@ export default function CloudSlicePage() {
             should break up while billows stay round (no curved strings). Tune
             tile size + blend width; widen the Span to ~150 km to see the
             repetition.
+            <br />
+            <b>Silhouette (macro shape):</b> ENVELOPE mode ON, axis ={" "}
+            <i>vertical</i>, Field = <code>baseShapeCarved</code>, Span ≈ 15 km
+            (so canvas-Y ≈ altitude across the 1–16 km slab), Threshold ≈ 0.02.
+            Now the white region is the ACTUAL cloud cross-section:{" "}
+            <code>saturate(coverage·heightProfile(alt01,topAlt,conv) −
+            (1−carved)·K)</code>. Sweep <code>env: convectivity</code>{" "}
+            (stratus→cumulus), <code>env: topAlt</code> (tower height), and{" "}
+            <code>env: coverage</code>. THIS is where a malformed vertical
+            macro shape (flat base? dome? tower? or amorphous?) will show — the
+            raw-noise fields above do not include the profile.
           </p>
         </div>
       </div>

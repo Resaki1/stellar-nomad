@@ -45,7 +45,13 @@ import {
   queueCloudBake,
   tslHash3,
 } from "./cloudVolumeCompute";
-import { detileBlend, USE_DETILE, baseDilate } from "./cloudDetile";
+import {
+  detileBlend,
+  USE_DETILE,
+  baseDilate,
+  baseDilateMulti,
+  MO_DETAIL2_SCALE,
+} from "./cloudDetile";
 import {
   cloudHeightProfile,
   deriveCloudType,
@@ -67,7 +73,26 @@ import {
   anvilProfileConv,
   CLOUD_INNER_ALTITUDE_KM,
   CLOUD_OUTER_ALTITUDE_KM,
+  TAKRAM_SHAPE,
+  takramDensity,
+  columnAltNorm,
+  TAKRAM_SHAPE_TAP_SCALE,
+  TAKRAM_DETAIL_TAP_SCALE,
+  TAKRAM_SS_TAPS,
+  TAKRAM_TOP_PERTURB_AMP,
+  TAKRAM_TOP_PERTURB_SCALE,
+  perturbTopAlt,
+  TAKRAM_SS_DENSITY,
+  remapClamped,
+  TAKRAM_ENVELOPE_WARP,
+  TAKRAM_ENV_WARP_SCALE,
+  TAKRAM_NOISE_WARP_FRAC,
+  envelopeWarpOffset,
 } from "./cloudShared";
+import {
+  getTakramShapeVolume,
+  getTakramDetailVolume,
+} from "./takramNoise";
 import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
   CLOUD_SUN_SCALE,
@@ -103,7 +128,7 @@ type Node = any;
 // marcher's uBaseScale/uColumnScale uniforms AND the far-shell's macro-coverage
 // model (columnMacroCoverage), so both sample the noise identically → the
 // shell's coverage matches the volumetric footprint by construction.
-const BASE_SCALE = 50;
+const BASE_SCALE = 45;
 const COLUMN_SCALE = 30;
 
 // Altitude (km) of the far-field cloud SHELL sphere (ISSUE 2 Phase 2). Defaults
@@ -666,7 +691,7 @@ const MESO_LANE_HI = 0.7; // above → cell interior (mask 1)
 // Carve-noise scale: detail-volume tile ≈ 1000/CARVE_SCALE km. 80 → ~12.5 km
 // tile, R-octave cells ~3 km, G-octave ~1.6 km → ~1.5-3 km macro relief.
 // (Fine cauliflower detail will return as a separate close-up layer — Step 4.)
-const CARVE_SCALE = 360;
+const CARVE_SCALE = 180;
 
 // ── Fine cauliflower carve (2026-06-18 — the SHARED-density cauliflower fix) ──
 // The macro BILLOW_CARVE (~5.5 km) gives km-scale lumps. Cauliflower lives at
@@ -687,6 +712,17 @@ const CARVE_SCALE = 360;
 // near the deck the baked volume is faded, so lockstep drift is tolerable for
 // this experiment). If it lands, propagate to cloudLightVolume.ts (lockstep).
 const FINE_CARVE = true;
+// 350 -> 1200 (2026-07-23): the legacy chain's FINEST octave was 1000/350 =
+// 2.9 km, while the takram path's detail volume runs at 0.83 km (tap 1200) —
+// 3.5x finer. That gap IS the "missing small-scale lumps" when comparing the
+// legacy render to the takram one; the legacy macro/billow octaves (22.2 km /
+// 5.6 km) were never the problem. Chosen to match takram's detail tile exactly.
+// SAFE to change: FINE_CARVE_SCALE is used only by the near marcher and its
+// self-shadow probe (they share this const, so they stay correlated — case #21),
+// and the light-volume bake deliberately skips the carve entirely. Contrast with
+// BASE_SCALE, which IS mirrored in cloudLightVolume and drives the far shell.
+// If the lumps read too fine/noisy, back off toward ~800 (1.25 km); if too weak,
+// raise FINE_CARVE_STRENGTH_CU (0.30) rather than the scale.
 const FINE_CARVE_SCALE = 350;
 const FINE_CARVE_STRENGTH = 0.2;
 
@@ -709,7 +745,7 @@ const PER_TYPE_DETAIL = true;
 // FINE_CARVE_STRENGTH ramp: soft St edges → hard sharp Cu edges.
 // mix(0.12, 0.28, 0.5) = 0.20 = the legacy FINE_CARVE_STRENGTH (continuous).
 const FINE_CARVE_STRENGTH_ST = 0.12;
-const FINE_CARVE_STRENGTH_CU = 0.20;
+const FINE_CARVE_STRENGTH_CU = 0.70;
 // WISP_AMOUNT ramp (applied inside fineCarveDelta): wispy stratiform edges →
 // solid convective edges.
 const WISP_AMOUNT_ST = 1.0;
@@ -720,19 +756,67 @@ const WISP_AMOUNT_CU = 0.35;
 // would open a near/far seam at the 300-600 km handoff.
 // BILLOW_CARVE ramp: shallow carve → fuller connected stratiform sheets;
 // deep carve → lumpier convective cauliflower. mix(0.35,0.55,0.5)=0.45=legacy.
-const BILLOW_CARVE_ST = 0.05;
-const BILLOW_CARVE_CU = 0.85;
+// 0.05 -> 0.30 (2026-07-23). The ST floor was so low that any cloud sampling
+// mid convectivity came out CARVED SMOOTH (user: "most CUs look smoothed, some
+// have lumpy sides and smoothed sides"). Even stratiform has surface texture.
+const BILLOW_CARVE_ST = 0.3;
+const BILLOW_CARVE_CU = 0.7;
 // Value-erosion K ramp (§4.2): stratiform smooth/filled (K<1 restores a mild
 // density floor — DESIRED for sheets), convective fully Nubis-carved. The
 // convective end is CAPPED at 1.0 (K=1.2 read as unrealistically patchy in the
 // 2026-07-06 A/B). case #13: BOTH the probeShape skip-gate and the opacity
 // erosion read erosionKForType — never inline a second copy.
+// ── LEGACY-PATH NUBIS FORM (decisive A/B test, 2026-07-23) ──────────────────
+// ⚠️ SUPERSEDED 2026-08-07 — the "inversion" premise below was WRONG. MEASURED:
+// the subtractive form `saturate(p - (1-c)*K)` and the normalised remap
+// `remapClamped(c, 1-p*K, 1)` have IDENTICAL ZERO CROSSINGS (both at c = 1-p*K),
+// i.e. the SAME silhouette. There is no inversion — only a different K mapping
+// (÷K vs ×K) and a different ramp above the threshold. Further, canonical Nubis
+// 2022 `saturate(c + p - 1)` is ALGEBRAICALLY the subtractive form with K=1.
+// So the "finally looks lumpier" win came from the effective K going 0.7 -> 1.0,
+// NOT from the normalisation. The normalisation bought zero shape benefit and:
+//   (a) VIOLATED the case-#20 envelope bound `shape <= dimProfile` by up to
+//       0.717 (worst at carved 0.98, profile 0.14) -> floaters return;
+//   (b) made thin edges 2.6x over-dense (at p=0.25,c=1.0: shape 1.0 vs 0.25 ->
+//       density 12000 vs 4547) -> the user's "CU too harsh / not soft enough";
+//   (c) DESYNCED near from far — the shell opacity LUT (:1392) never branched on
+//       this flag and kept baking `dimProfile - (1-carved)*erosionKForType`,
+//       while `stepEroK` (:2911) became dead code, bypassing ALL per-type K.
+// Reverting to the subtractive form with EROSION_K_CU = 1.0 keeps the silhouette,
+// restores the bound, and re-synchronises the shell for free.
+// MEASURED effect of the revert: chords in the visibly translucent band
+// (OD 0.05-4) go 2.8% -> 11.7% (4.2x more soft edge material); cores stay
+// saturated (alpha = 1.0 either way) and cover fraction is unchanged (0.75 ->
+// 0.73). uDensityMul deliberately NOT raised — 15000 measured WORSE (10.1%),
+// because extra density just re-hardens the edges this revert exists to soften.
+//   true  -> shape = Remap(baseShapeCarved, 1 - dimProfile*k, 1, 0, 1)   [DO NOT USE]
+//   false -> the subtractive form, per-type K via erosionKForType (canonical)
+const LEGACY_NUBIS_FORM = false;
+const LEGACY_NUBIS_K = 1.0;
 const EROSION_K_ST = 0.5;
-const EROSION_K_CU = 0.7;
+// 0.72 -> 1.0 (2026-08-07): canonical Nubis K=1, and the value Phase F
+// (2026-07-06) validated in-app but which CLOUD_VS_TAKRAM §5#1 records was never
+// propagated into the per-type endpoints. Capped at 1.0 — the K=1.2 A/B read as
+// patchy holes-through-to-terrain (cloud_shape_anatomy.md:236-251); do not raise.
+const EROSION_K_CU = 1.0;
 // Solidity gamma ramp (§4.3): soft translucent stratiform sheets (γ=1, no
 // sharpen) → solid convective cores (γ=0.7 raises mids).
 const DENSITY_GAMMA_ST = 4.0;
-const DENSITY_GAMMA_CU = 0.1;
+const DENSITY_GAMMA_CU = 0.7;
+// ── Body-term crevice darkening (tonal-range fix, 2026-07-23) ────────────────
+// The multi-scatter body term is `ms = profile × Tsun^0.9`, where `profile` is
+// the SMOOTH coverage×height envelope. So at high sun (where the self-shadow
+// Tsun barely varies across the sunlit face) crevices between the geometric
+// lobes stay as bright as the crowns → flat mid-white (user 2026-07-23). Offline
+// measurement (scratchpad/lighting_test.mjs) shows the one structural lever is
+// to modulate the body AMOUNT by the ACTUAL local density: a crevice has less
+// cloud, so it should scatter less light regardless of sun angle. We do it
+// MULTIPLICATIVELY — ms amount = profile × mix(1, shape, MIX) — so it can only
+// DARKEN low-density crevices, never brighten cores (avoids the AgX-saturation
+// that killed the earlier `ms = eroded × Tsun_ms` attempt — see the ms comment).
+// 0 = byte-identical old behaviour; 1 = full profile×density. Tune vs
+// DEBUG_VIZ 'lightingOnly'.
+const MS_DENSITY_MIX = 0; // RESET 2026-07-23: 0 = plain takram baseline (superseded by IN_SCATTER anyway)
 // Fine-octave BIAS (2026-06-18 — the "half-lumps" fix; reference-grounded).
 // Nubis/Frostbite build the silhouette from a MULTI-OCTAVE base field (noiseL),
 // so lumps bulge OUT; their erosion (noiseH) is a separate finest-edge refine.
@@ -1013,6 +1097,7 @@ const DEBUG_VIZ:
   | "detailShadow"
   | "weatherRaw"
   | "convType"
+  | "carveAmt"
   | "shipShadow" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
@@ -1109,7 +1194,16 @@ function billowCarveKernel(
 // PER_TYPE_DETAIL is off (byte-identical A/B baseline).
 function billowCarveAmtForType(convectivity: Node): Node {
   return PER_TYPE_DETAIL
-    ? mix(float(BILLOW_CARVE_ST), float(BILLOW_CARVE_CU), convectivity.clamp(0, 1))
+    ? // SHARPENED RAMP (2026-07-23): a LINEAR mix over a convectivity field
+      // that varies at ~28 km/texel means a 6-13 km cloud straddles several
+      // values, so one SIDE gets carve ~0.3 and the other ~0.6 — visible as a
+      // cloud that is lumpy on one flank and smoothed on the other. A smoothstep
+      // makes a column commit to one regime instead of gradating across itself.
+      mix(
+        float(BILLOW_CARVE_ST),
+        float(BILLOW_CARVE_CU),
+        smoothstep(float(0.25), float(0.65), convectivity.clamp(0, 1)),
+      )
     : float(BILLOW_CARVE);
 }
 // case #13 gate law: the probeShape skip-gate AND the opacity erosion MUST both
@@ -1294,10 +1388,35 @@ function getShellOpacityLUT(
         );
         // Pointwise mirror of the marcher's macro shape: dilate + the shared
         // dense-branch billow carve (billowCarveKernel — one definition).
+        // Third independent sample stream for the multi-octave shape's finer
+        // detail octave (case #24). d1 deliberately reuses `cs` — the SAME
+        // sample the billow carve takes — because in the real field the shape's
+        // CARVE_SCALE octave and the carve tap are the same texel; making them
+        // independent here would understate the correlation and bias the LUT.
+        const pd = vec3(
+          tslHash3(i, uint(6), uint(0), 107),
+          tslHash3(i, uint(7), uint(0), 108),
+          tslHash3(i, uint(8), uint(0), 109),
+        );
         const bs = texture3D(baseVolume, pb).level(int(0)) as Node;
-        const fbm = bs.g.mul(0.625).add(bs.b.mul(0.25)).add(bs.a.mul(0.125));
-        const dilated = baseDilate(bs.r, fbm);
         const cs = texture3D(detailVolume, pc).level(int(0)) as Node;
+        const ds = texture3D(detailVolume, pd).level(int(0)) as Node;
+        // LOCKSTEP with the marcher's primary shape (case #24): if this LUT
+        // keeps baking the old single-octave composition while the near field
+        // renders the multi-octave one, far cloud AREA stops matching near
+        // cloud area and the hand-off seam returns.
+        // `dimProfile` is this LUT column's dimensional-profile bin — the exact
+        // quantity the marcher grades by, so the LUT's octave content tracks the
+        // near field bin for bin.
+        const dilated = baseDilateMulti(
+          bs.r,
+          bs.g,
+          bs.b,
+          bs.a,
+          cs.r,
+          ds.r,
+          dimProfile,
+        );
         // Per-type carve/K/gamma from THIS ROW's convectivity — the same
         // helpers the marcher dense branch reads with its per-step cloudType,
         // so near and far stay statistically matched (Phase 3b lockstep).
@@ -1784,7 +1903,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
   // Sweep 5000 (softest / most translucent) → 40000 (crisper / harder edges)
   // to taste. Watch thin wisps (translucency) and iso-altitude banding at the
   // low end.
-  const uDensityMul = uniform(3000);
+  const uDensityMul = uniform(12000);
   // Base-volume tiling per scaled unit. 1 scaled unit = 1000 km.
   //
   // Was 250 → 4 km tile, 1 km cumulus cells. At orbital view distances,
@@ -2350,7 +2469,13 @@ export function marchCloudVolume({
     //     shadow fill is affected — sunlit tops (sun-dominated) are unchanged,
     //     so this raises contrast without dimming the deck overall.
     // Tracks daylight via skyColor (no duplication needed here).
-    const skylight = float(0.07);
+    // 0.03 → 0.10 (2026-07-23): PAIRED with removing the (1−profile) inversion
+    // in `ambient` below. At 0.03 the term's total swing was 0.060 HDR ≈ 0 code
+    // values after AgX — inert. The 0.25→0.15→0.07→0.03 history above was
+    // driven by the INVERTED form washing crevices out; with the inversion gone
+    // and the term gated by the in-scatter probability, this supplies the cool
+    // blue-grey shadow floor that keeps flanks/bases from crushing to black.
+    const skylight = float(0.03); // RESET 2026-07-23: back to the pre-session value; only the (1-profile) INVERSION fix is retained
 
     // Powder blend, constant along ray (depends only on cosTheta).
     const powderFrontMix = clamp(cosTheta.mul(0.5).add(0.5), 0, 1);
@@ -2464,6 +2589,18 @@ export function marchCloudVolume({
     // as 'density' but normalised — shows the detail-noise structure
     // directly without the densScale multiplier obscuring it.
     const lastEroded = float(0).toVar();
+    // DEBUG_VIZ='carveAmt': the BILLOW CARVE STRENGTH at the LAST DENSE voxel
+    // (i.e. the visible surface — NOT the slab midpoint that 'convType' uses,
+    // which is the case-#2 anti-pattern and never lines up with cloud faces).
+    // This is the direct test of "are the smoothed clouds the low-carve ones?".
+    // MEASURED 2026-07-23: carve amount + convectivity came back UNIFORM (~1)
+    // across the whole scene, refuting the convectivity-gate hypothesis. Now
+    // measuring the EROSION THRESHOLD instead: in the Nubis form the threshold
+    // is (1 - dimProfile*k), so a DENSE column gets a LOW threshold (noise
+    // passes everywhere -> SMOOTH) while a thin one gets a HIGH threshold (only
+    // peaks survive -> LUMPY). If the smooth clouds read LOW here, that's it.
+    const lastEroThresh = float(0).toVar();
+    const lastDimProfile = float(0).toVar();
 
     // ── Cauliflower-detail measurement captures ──
     // Dead-store-eliminated when DEBUG_VIZ is 'off'. Captured at the last dense
@@ -2629,8 +2766,58 @@ export function marchCloudVolume({
 
         const p = roEarth.add(rdEarth.mul(tSample));
         const r = length(p).max(0.0001);
+        // ── Envelope domain warp (the SILHOUETTE fix — see cloudShared
+        //    TAKRAM_ENVELOPE_WARP) ──
+        // Displace the position feeding the COVERAGE + ALTITUDE lookup so the
+        // separable smooth envelope becomes medium-scale 3D lobes (scalloped
+        // outline). Offline-proven: warping the coverage/altitude lookup lumps
+        // the outline; warping the NOISE phase does NOT (and would string).
+        // `p` (noise taps) and `r` (lighting/terminator) stay TRUE — only the
+        // envelope's dir + altitude read the warped position. Radial component
+        // damped (TAKRAM_ENV_WARP_RADIAL) so cloud bases stay flat-ish.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let pEnv: any = p;
+        // Noise-tap displacement (wisps): a fraction of the env warp, reused by
+        // the view-ray takram tap AND the self-shadow probe (case #21). 0 when
+        // the warp is off / stratiform-gated → noise taps read raw `p`.
+        const noiseWarpOffset = vec3(0, 0, 0).toVar();
+        if (TAKRAM_SHAPE && TAKRAM_ENVELOPE_WARP) {
+          // Gate inputs sampled at the UNWARPED dir: convectivity (weather .g,
+          // gate OUT stratiform) + placement (mesoTap.g at MESO_SCALE, the
+          // sub-cell updraft field — gate OUT the thin inter-cloud gaps; the
+          // weather .r cell-average was too coarse to tell a tower from a gap).
+          // The offset math is the SHARED envelopeWarpOffset so the light-volume
+          // bake applies the IDENTICAL warp (no drift → no detach).
+          const dirTrue = p.div(r);
+          const convGate = (
+            texture(
+              weatherMap,
+              equirectDirToUv(dirTrue, uCloudUvOffset),
+            ).level(int(0)) as Node
+          ).g;
+          const placeGate = (
+            texture3D(
+              baseVolume,
+              dirTrue.mul(uInnerRadius).mul(float(MESO_SCALE)),
+            ).level(int(0)) as Node
+          ).g;
+          const warpTap = texture3D(
+            baseVolume,
+            p.mul(float(TAKRAM_ENV_WARP_SCALE)),
+          ).level(int(0)) as Node;
+          const envOffset = envelopeWarpOffset(
+            p,
+            r,
+            convGate,
+            placeGate,
+            vec3(warpTap.g, warpTap.b, warpTap.a),
+          );
+          pEnv = p.add(envOffset);
+          noiseWarpOffset.assign(envOffset.mul(float(TAKRAM_NOISE_WARP_FRAC)));
+        }
+        const rEnv = length(pEnv).max(0.0001);
         const altitude01 = clamp(
-          sub(r, uInnerRadius).mul(invSlabThickness),
+          sub(rEnv, uInnerRadius).mul(invSlabThickness),
           0,
           1,
         );
@@ -2649,7 +2836,10 @@ export function marchCloudVolume({
         // (still using the hoisted 3-tap max) early-exits the loop so
         // they pay 0 of these per-step samples. For pixels through cloud
         // regions, ~96 extra weather-map taps — modest cost on modern GPUs.
-        const dirP = p.div(r);
+        // dirP uses the ENVELOPE-warped position → coverage/type/topHeight +
+        // mesoTap (placement/turret/anvil) all read the warped lookup, so the
+        // whole macro column lobes coherently. Noise taps below keep raw `p`.
+        const dirP = pEnv.div(rEnv);
         const uvP = equirectDirToUv(dirP, uCloudUvOffset);
         // ONE weather tap, swizzled (never re-sampled). Forced mip 0 (the
         // ONE weather tap, swizzled (never re-sampled). Forced mip 0 (the
@@ -2825,7 +3015,66 @@ export function marchCloudVolume({
           // taps stay at level 0 until the footprint-matched mip scheme is
           // deliberately re-enabled.
           const baseShapeCarved = float(0).toVar();
-          if (USE_DETILE) {
+          // TAKRAM_SHAPE (Phase 1): compute the takram-recipe density directly
+          // from RAW base + detail taps + the shared takramDensity composition,
+          // and use it in place of both the skip-gate probeShape and the dense
+          // `shape` (below). Skips our dilate/carve/fine + profile-LUT erosion.
+          // Self-shadow probe + far shell still use the legacy path (Phase 2).
+          const takramShape = float(0).toVar();
+          // Column height fraction, computed ONCE so both the density chain and
+          // the LIGHTING (in-scatter probability, see IN_SCATTER below) read the
+          // same normalized altitude. Pure ALU, no extra tap.
+          // Fine per-column TOP perturbation (silhouette lobing — see
+          // perturbTopAlt in cloudShared). Sampled at the COLUMN DIRECTION so it
+          // is a per-column property (a "top"), not a 3D field that would vary
+          // with altitude. The BASE is derived from the UNPERTURBED topAlt so
+          // cloud bases stay flat at the shared condensation level.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let topAltFine: any = topAlt;
+          if (TAKRAM_SHAPE && TAKRAM_TOP_PERTURB_AMP > 0) {
+            const topNoise = (
+              texture3D(
+                getTakramShapeVolume(),
+                dirP.mul(uInnerRadius).mul(float(TAKRAM_TOP_PERTURB_SCALE)),
+              ).level(int(0)) as Node
+            ).r;
+            topAltFine = perturbTopAlt(topAlt, topNoise);
+          }
+          const altNVar = columnAltNorm(
+            altitude01,
+            topAltFine,
+            profileConv,
+            topAlt, // base reference: UNPERTURBED → flat bases
+          ).toVar();
+          if (TAKRAM_SHAPE) {
+            // Takram-EXACT noise volumes (baked by scripts/bake_takram_noise.mjs),
+            // tapped at takram-scale (~3.3 km shape / ~0.83 km detail) — NOT our
+            // coarse 20 km base. Single-channel RedFormat → .r.
+            // Noise tap displaced by noiseWarpOffset (wisps — see the warp
+            // block). Zero offset when warp off/stratiform → raw `p`.
+            const pNoise = p.add(noiseWarpOffset);
+            const baseRaw = (
+              texture3D(
+                getTakramShapeVolume(),
+                pNoise.mul(float(TAKRAM_SHAPE_TAP_SCALE)),
+              ).level(int(0)) as Node
+            ).r;
+            const detailRaw = (
+              texture3D(
+                getTakramDetailVolume(),
+                pNoise.mul(float(TAKRAM_DETAIL_TAP_SCALE)),
+              ).level(int(0)) as Node
+            ).r;
+            takramShape.assign(
+              takramDensity(
+                coverage,
+                altNVar,
+                profileConv,
+                baseRaw,
+                detailRaw,
+              ),
+            );
+          } else if (USE_DETILE) {
             // ── Tile-&-offset anti-tiling (cloudDetile.ts) ──
             // Blend the dilated+carved base shape across 4 rigidly-offset
             // tiles → no warp, no shear (the warp's km-scale shear was the
@@ -2842,21 +3091,41 @@ export function marchCloudVolume({
               baseVolume,
               pWarped.mul(uBaseScale),
             ).level(int(0)) as Node;
-            const baseFbm = baseSample.g
-              .mul(0.625)
-              .add(baseSample.b.mul(0.25))
-              .add(baseSample.a.mul(0.125));
+            // MULTI_OCTAVE_SHAPE (case #24): the detail volume also feeds the
+            // SHAPE as two extra octaves, not only the subtractive carve — a
+            // carve cannot add octaves to a silhouette. d1 is the SAME tap the
+            // billow carve takes below (same position + CARVE_SCALE, so shape
+            // and carve stay correlated as they are in the real field); d2 is
+            // the new finer octave. Both are no-ops when the flag is off.
+            const moD1 = (
+              texture3D(detailVolume, pWarped.mul(float(CARVE_SCALE))).level(
+                int(0),
+              ) as Node
+            ).r;
+            const moD2 = (
+              texture3D(
+                detailVolume,
+                pWarped.mul(float(MO_DETAIL2_SCALE)),
+              ).level(int(0)) as Node
+            ).r;
             // Dilated base shape — erosion form (see cloudDetile.ts baseDilate).
             // BASE_VAR_FADE: pinned to its measured mean at distance (the
             // sphere-lattice beat fix — see the constants block). Faded HERE
             // so the probeShape gate and the dense pipeline see one field.
+            // DILATED_BASE_MEAN is still correct: E[shape] measured 0.6748 for
+            // the multi-octave form vs 0.6716 for the old one.
+            const dilatedPrimary = baseDilateMulti(
+              baseSample.r,
+              baseSample.g,
+              baseSample.b,
+              baseSample.a,
+              moD1,
+              moD2,
+              profile,
+            );
             const baseShape = BASE_VAR_FADE
-              ? mix(
-                  baseDilate(baseSample.r, baseFbm),
-                  float(DILATED_BASE_MEAN),
-                  noiseVarFade,
-                )
-              : baseDilate(baseSample.r, baseFbm);
+              ? mix(dilatedPrimary, float(DILATED_BASE_MEAN), noiseVarFade)
+              : dilatedPrimary;
             // ── Mid-scale billowy carve (Step 1; see BILLOW_CARVE) ──
             // Carve valleys (low carve-Worley) deeper than lump centres so the
             // smooth dilated dome becomes ~1-2 km cauliflower. Schneider
@@ -2950,9 +3219,18 @@ export function marchCloudVolume({
           // so the gate engages exactly where density can be > 0. stepEroK =
           // per-type K × turret core softening, computed ONCE per step — the
           // SAME node as the dense-branch `shape` below (case #13 gate law).
-          const probeShape = profile.sub(
-            float(1).sub(baseShapeCarved).mul(stepEroK),
-          );
+          // LEGACY_NUBIS_FORM: same inversion fix as the takram path, applied to
+          // the legacy chain. MUST stay the identical expression to the dense
+          // `shape` below (case #13 gate law) or skip/dense desyncs.
+          const probeShape = TAKRAM_SHAPE
+            ? takramShape
+            : LEGACY_NUBIS_FORM
+              ? remapClamped(
+                  baseShapeCarved,
+                  float(1).sub(profile.mul(float(LEGACY_NUBIS_K))),
+                  float(1),
+                )
+              : profile.sub(float(1).sub(baseShapeCarved).mul(stepEroK));
           maxProbeShape.assign(maxProbeShape.max(probeShape));
           maxBaseShape.assign(maxBaseShape.max(baseShapeCarved));
           If(probeShape.greaterThan(0.0001), () => {
@@ -3010,9 +3288,21 @@ export function marchCloudVolume({
               // stepEroK = per-type K (Phase 3b, §4.2: stratiform smooth →
               // convective fully carved) × turret core softening (T1, §4.11).
               // MUST stay the same node as the probeShape gate (case #13).
-              const shape = dimProfile
-                .sub(float(1).sub(baseShapeCarved).mul(stepEroK))
-                .clamp(0, 1);
+              const shape = TAKRAM_SHAPE
+                ? takramShape
+                : LEGACY_NUBIS_FORM
+                  ? // Canonical Nubis: threshold the NOISE by the envelope, so
+                    // the outline is an iso-contour of the noise (billowy) rather
+                    // than of the smooth envelope. Identical expression to the
+                    // probeShape gate above (case #13).
+                    remapClamped(
+                      baseShapeCarved,
+                      float(1).sub(dimProfile.mul(float(LEGACY_NUBIS_K))),
+                      float(1),
+                    )
+                  : dimProfile
+                      .sub(float(1).sub(baseShapeCarved).mul(stepEroK))
+                      .clamp(0, 1);
 
               // NOTE: the old opacity-only detail erosion (the original
               // Schneider remap: eroded = Remap(shape, detailFBM·strength,...))
@@ -3022,6 +3312,10 @@ export function marchCloudVolume({
               // un-self-shadowed high-freq on top → disconnected edge speckle.
               // `shape` already carries all detail via baseShapeCarved.
               lastEroded.assign(shape);
+              lastEroThresh.assign(
+                float(1).sub(dimProfile.mul(float(LEGACY_NUBIS_K))).clamp(0, 1),
+              );
+              lastDimProfile.assign(dimProfile.clamp(0, 1));
 
               // Solidity gamma (Nubis low-density sharpen; see DENSITY_GAMMA):
               // raise mid densities so the carved body reads SOLID, not balls in
@@ -3273,6 +3567,78 @@ export function marchCloudVolume({
                       0,
                       1,
                     );
+                    if (TAKRAM_SHAPE) {
+                      // Phase 2: self-shadow the takram lobes so crevices read
+                      // dark (the cauliflower look). March takramDensity toward
+                      // the sun at the detail (~1 km) + lobe (~3 km) scales — the
+                      // occluder is the SAME field the view ray renders, so the
+                      // shadow lands in the real crevices (case #21).
+                      lastLitShape.assign(takramShape);
+                      const odT = float(0).toVar();
+                      // Beer-Lambert quadrature toward the sun (see
+                      // TAKRAM_SS_TAPS): `seg` is this sample's SEGMENT LENGTH,
+                      // not its distance. The old "weight by own distance" form
+                      // left 0-1 km — which carries ~77% of the real sun-path
+                      // optical depth — completely unsampled, so Tsun collapsed
+                      // to 1 and every cloud rendered flat.
+                      const takramSSTap = (dist: number, seg: number): void => {
+                        const pS = p.add(sunDirEarth.mul(float(dist)));
+                        const rS = length(pS).max(0.0001);
+                        const altS = clamp(
+                          sub(rS, uInnerRadius).mul(invSlabThickness),
+                          0,
+                          1,
+                        );
+                        const altNS = columnAltNorm(altS, topAlt, profileConv);
+                        // Same noise-warp offset as the view ray so the wisps
+                        // self-shadow in place (case #21 correlation).
+                        const pSNoise = pS.add(noiseWarpOffset);
+                        const bS = (
+                          texture3D(
+                            getTakramShapeVolume(),
+                            pSNoise.mul(float(TAKRAM_SHAPE_TAP_SCALE)),
+                          ).level(int(0)) as Node
+                        ).r;
+                        const dS = (
+                          texture3D(
+                            getTakramDetailVolume(),
+                            pSNoise.mul(float(TAKRAM_DETAIL_TAP_SCALE)),
+                          ).level(int(0)) as Node
+                        ).r;
+                        const densS = takramDensity(
+                          coverage,
+                          altNS,
+                          profileConv,
+                          bS,
+                          dS,
+                        );
+                        // Same solidity gamma as the view ray (the primary
+                        // renders pow(shape, γ)); without it the occluder is a
+                        // different medium than the one being shaded.
+                        odT.addAssign(
+                          pow(densS, densityGammaForType(profileConv))
+                            .mul(float(TAKRAM_SS_DENSITY))
+                            .mul(float(seg)),
+                        );
+                      };
+                      for (const [dist, seg] of TAKRAM_SS_TAPS) {
+                        takramSSTap(dist, seg);
+                      }
+                      lastDetailSS.assign(exp(odT.negate()));
+                      TsunLocal.assign(exp(odT.negate()));
+                      return;
+                    }
+                    // profileConv (not cloudType): the anvil sheet's
+                    // self-shadow must read the SAME morphed profile as the
+                    // view ray or the shield shadows as a phantom tower.
+                    // HOISTED above the base sample (2026-08-07) because
+                    // baseDilateMulti grades its extra octaves by the profile
+                    // AT THIS POSITION (case #21 — same field as the view ray).
+                    const profileLs = cloudHeightProfile(
+                      altLs,
+                      topAlt,
+                      profileConv,
+                    );
                     // ── Carved base shape at the 800 m self-shadow probe ──
                     // Must use the SAME anti-tiling as the primary or the near
                     // self-shadow won't register with the rendered cloud.
@@ -3286,19 +3652,40 @@ export function marchCloudVolume({
                         baseVolume,
                         pLsWarped.mul(uBaseScale),
                       ).level(int(0)) as Node;
-                      const fbmLs = baseLs.g
-                        .mul(0.625)
-                        .add(baseLs.b.mul(0.25))
-                        .add(baseLs.a.mul(0.125));
+                      // MULTI_OCTAVE_SHAPE mirror — case #21: the self-shadow
+                      // MUST read the same field as the view ray, or the
+                      // crest/crevice shading inverts. Same two extra octaves,
+                      // same scales, at the probe position.
+                      const moD1Ls = (
+                        texture3D(
+                          detailVolume,
+                          pLsWarped.mul(float(CARVE_SCALE)),
+                        ).level(int(0)) as Node
+                      ).r;
+                      const moD2Ls = (
+                        texture3D(
+                          detailVolume,
+                          pLsWarped.mul(float(MO_DETAIL2_SCALE)),
+                        ).level(int(0)) as Node
+                      ).r;
                       // BASE_VAR_FADE mirror (case #21: the self-shadow must
                       // read the SAME faded field as the view ray).
+                      const dilatedLsRaw = baseDilateMulti(
+                        baseLs.r,
+                        baseLs.g,
+                        baseLs.b,
+                        baseLs.a,
+                        moD1Ls,
+                        moD2Ls,
+                        profileLs,
+                      );
                       const dilatedLs = BASE_VAR_FADE
                         ? mix(
-                            baseDilate(baseLs.r, fbmLs),
+                            dilatedLsRaw,
                             float(DILATED_BASE_MEAN),
                             noiseVarFade,
                           )
-                        : baseDilate(baseLs.r, fbmLs);
+                        : dilatedLsRaw;
                       const carveLsSrc = texture3D(
                         detailVolume,
                         pLsWarped.mul(float(CARVE_SCALE)),
@@ -3314,14 +3701,6 @@ export function marchCloudVolume({
                         noiseVarFade,
                       );
                     }
-                    // profileConv (not cloudType): the anvil sheet's
-                    // self-shadow must read the SAME morphed profile as the
-                    // view ray or the shield shadows as a phantom tower.
-                    const profileLs = cloudHeightProfile(
-                      altLs,
-                      topAlt,
-                      profileConv,
-                    );
                     // MEASUREMENT: the LIT macro shape the 800 m probe absorbs
                     // by (DEBUG_VIZ 'litShape'). Compare to 'eroded'. (The
                     // DETAIL_IN_LIGHTING experiment — detail at 800 m — was
@@ -3739,9 +4118,71 @@ export function marchCloudVolume({
               // lower if cores/near clouds wash out. (If brightening the far
               // view over-brightens the NEAR clouds, the next step is to
               // distance-gate this gain like DETAIL_FADE.)
-              const MS_GAIN = float(5);
-              const ms = profile.mul(Tsun_ms).mul(MS_GAIN);
-              const ambient = profile.oneMinus().pow(float(0.5)).mul(skylight);
+              const MS_GAIN = float(2);
+              // ── In-scatter probability (Nubis 2017) — the SUN-ANGLE-INDEPENDENT
+              // crevice/bud shading, and the real fix for flat midday cumulus ──
+              // WHY a sun march alone cannot fix midday: for a voxel on a sunlit
+              // CROWN the sun ray leaves the medium almost immediately, so Tsun
+              // ≡ 1 there no matter how well the march is sampled (the 3-tap
+              // quadrature fix above restores flank/base shadowing, not this).
+              // Since `phase` is constant per ray and `profile` is the smooth
+              // separable envelope, with Tsun≡1 the whole image collapses to
+              // sun·profile → flat white. Nubis's answer is a per-voxel
+              // PROBABILITY that light in-scatters here at all:
+              //   depth    — pow(density, e): low-density throats scatter less.
+              //              e ramps 0.5→2.0 with height, so the same density
+              //              reads much darker near the TOP than at the base —
+              //              which is exactly what separates individual buds on
+              //              a crown instead of one smooth dome.
+              //   vertical — the bottom ~7-14% of the column is driven toward
+              //              0.1: the dark flat cumulus base, at ANY sun angle.
+              // Pure ALU, zero texture taps. IN_SCATTER blends it against the
+              // older MS_DENSITY_MIX behaviour: 0 = previous look, 1 = full
+              // Nubis. (These two are alternatives — don't run both at strength.)
+              // RESET 2026-07-23: 0 = plain takram baseline (ms = profile×Tsun).
+              // Re-enable to 1.0 only after the baseline look is confirmed good.
+              const IN_SCATTER = float(1.0); // MEASURED on the reset baseline at high sun: p10-p90 tonal range 0.323 -> 0.443 (+37%), sd 0.150 -> 0.180. Zero texture taps. Visually MODEST — it does not fix the macro form.
+              const depthProb = float(0.05).add(
+                pow(
+                  shape.max(float(1e-4)),
+                  mix(
+                    float(0.5),
+                    float(2.0),
+                    remapClamped(altNVar, float(0.3), float(0.85)),
+                  ),
+                ),
+              );
+              const vertProb = pow(
+                remapClamped(altNVar, float(0.07), float(0.14))
+                  .mul(0.9)
+                  .add(0.1),
+                float(0.8),
+              );
+              const inScatter = depthProb.mul(vertProb);
+              const msAmount = profile.mul(
+                mix(
+                  mix(float(1), shape, float(MS_DENSITY_MIX)),
+                  inScatter,
+                  IN_SCATTER,
+                ),
+              );
+              const ms = msAmount.mul(Tsun_ms).mul(MS_GAIN);
+              // Sky ambient. The (1−profile) inversion this used to have was an
+              // OUTWARD gradient — right for a convex rim, BACKWARDS for a
+              // crevice (which sees less sky yet got more fill). Gated by
+              // inScatter so it darkens where light can't reach. Its old 0.03
+              // magnitude was ~0.4% of L (0 code values after AgX) — raised to
+              // 0.10 ONLY because the inversion is gone in the same edit; the
+              // documented 0.25→0.15→0.07→0.03 regression was that inversion
+              // washing crevices out, so re-check top-down deck separation.
+              // The (1−profile) INVERSION is gone for good — it was an OUTWARD
+              // gradient (right for a convex rim, backwards for a crevice, which
+              // sees less sky yet got more fill). The inScatter gating is blended
+              // by IN_SCATTER so IN_SCATTER=0 is a clean baseline revert.
+              const ambient = profile
+                .pow(float(0.5))
+                .mul(mix(float(1), inScatter, IN_SCATTER))
+                .mul(skylight);
 
               const scatterFrac = float(1).sub(exp(opticalDepthStep.negate()));
               // Schneider canonical: sun-side contributions (direct + ms)
@@ -4158,6 +4599,19 @@ export function marchCloudVolume({
       };
     }
 
+    if (DEBUG_VIZ === "carveAmt") {
+      // R = EROSION THRESHOLD (1 - dimProfile*k) at the visible surface.
+      //     HIGH/red  = strongly carved (only noise peaks survive) -> LUMPY
+      //     LOW/dark  = nothing carved (noise passes wholesale)    -> SMOOTH
+      // G = dimProfile (coverage x height) that drives it.
+      // So: RED-ish  = thin cloud, carved, lumpy
+      //     GREEN-ish= dense cloud, threshold collapsed, smooth   <- the suspect
+      //     YELLOW   = both high (shouldn't happen; they're complementary)
+      return {
+        rgba: vec4(lastEroThresh, lastDimProfile, float(0), float(1)),
+        tFront: float(0),
+      };
+    }
     if (DEBUG_VIZ === "eroded") {
       // Last-dense per-voxel `eroded` value (0-1). Shows the actual
       // detail-noise structure at the visible cloud surface, with NO

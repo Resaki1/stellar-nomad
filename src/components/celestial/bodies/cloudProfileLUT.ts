@@ -77,18 +77,31 @@ type RowParams = {
   //                    Multiplicative ≤1 → boundary-zero invariant unaffected.
 };
 
+// 2026-07-20 SHAPE FIX — BASE-HEAVY TAPER (was: constant-width columns/towers).
+// Root cause: a high `fadeStart` held a long full-density PLATEAU through the
+// cloud's mid-band. Through a plateau the value-erosion threshold is constant,
+// so the cloud stays the SAME WIDTH all the way up = a column/tower (raise its
+// top with a turret → a thin vertical tower). Real cumulus + takram taper: the
+// density (and thus the threshold-crossing width) PEAKS just above the base and
+// DECREASES to the top → widest base, narrowing dome. Takram does this with a
+// downward-biased semicircle (shapeAlteringFunction); we do it by lowering
+// fadeStart so the dome fade spans almost the whole column (no plateau).
+// domeExp kept ≥2 (parabolic) so the top stays ROUNDED, not sliced flat (see
+// cloudShared cumTop note). Stratiform (St/Sc) keep more plateau — flat sheets
+// are correct there. TUNE fadeStart/domeExp live: /dev/cloud-profile (the curve)
+// + /dev/cloud-slice ENVELOPE mode (the silhouette).
 const ANCHORS: { c: number; p: RowParams }[] = [
   // prettier-ignore
-  { c: 0.0, p: { baseRampW: 0.2, fadeStart: 0.72, domeExp: 3.0, plateau: 0.92, waist: 0 } }, // St
+  { c: 0.0, p: { baseRampW: 0.2, fadeStart: 0.72, domeExp: 3.0, plateau: 0.92, waist: 0 } }, // St (flat sheet — plateau kept)
   // prettier-ignore
-  { c: 0.4, p: { baseRampW: 0.14, fadeStart: 0.6, domeExp: 2.4, plateau: 0.96, waist: 0 } }, // Sc
+  { c: 0.4, p: { baseRampW: 0.14, fadeStart: 0.6, domeExp: 2.4, plateau: 0.96, waist: 0 } }, // Sc (was 0.6 — mild de-plateau)
   // prettier-ignore
-  { c: 0.7, p: { baseRampW: 0.08, fadeStart: 0.48, domeExp: 2.0, plateau: 1.0, waist: 0 } }, // Cu
-  // Cb (T2): fadeStart raised 0.62→0.70 (top RE-WIDEN — density holds fuller
-  // toward the glaciated shield before the dome fade) + a mild mid waist →
-  // the classic anvil silhouette even before the coverage-pow spread.
+  { c: 0.7, p: { baseRampW: 0.08, fadeStart: 0.14, domeExp: 1.5, plateau: 1.0, waist: 0 } }, // Cu (was 0.48 — base-heavy dome)
+  // Cb: de-plateaued (fadeStart 0.70→0.24) + waist reduced (0.25→0.12) so the
+  // bare tower TAPERS base-heavy instead of holding full density high ("top-
+  // heavy"). The anvil RE-WIDEN is a SEPARATE modifier (§4.4 skirt), not the row.
   // prettier-ignore
-  { c: 1.0, p: { baseRampW: 0.05, fadeStart: 0.7, domeExp: 2.6, plateau: 1.0, waist: 0.25 } }, // Cb
+  { c: 1.0, p: { baseRampW: 0.05, fadeStart: 0.2, domeExp: 2.5, plateau: 1.0, waist: 0.12 } }, // Cb (baseRampW MUST be [0,1]; domeExp≥~3 re-plateaus)
 ];
 
 function lerp(a: number, b: number, t: number): number {

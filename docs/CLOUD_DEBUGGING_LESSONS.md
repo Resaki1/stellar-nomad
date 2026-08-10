@@ -2560,3 +2560,160 @@ completely different"). Localised with ZERO guessing:
   baseline before continuing.** The 2048 split + three variance fades + decode
   dither were compounding into new artifacts; pulling them once the true cause
   (hand-off) was known made the remaining issues legible.
+
+---
+
+## Case study #24 — "smooth rounded pyramids with cotton glued on" was the OCTAVE BALANCE: our shape is ONE dominant octave + a subtractive carve (2026-08-07)
+
+**Symptom.** Cumulus read as "smooth rounded pyramids", "shaved off by a 3D bell
+curve", with occasional bumpy patches. Critically, the user's discriminating
+observation: **two CU at the SAME distance differ, and a SINGLE cloud can be
+bumpy on one side and shaved on the other.** Compared against a Blender
+volumetric-cloud render showing dense self-similar cauliflower at every scale.
+
+### The measurement rig (reusable)
+
+`noiseVolumes.ts` was transpiled with the local `typescript` package and run in
+Node with `three` / `cloudDetile` stubbed, so the offline noise is **byte-identical
+to the startup bake**. Primary instrument = the **variogram**
+`gamma(d) = 0.5·E[(f(x+d) − f(x))²]` over a horizontal world-space slice, reported
+two ways:
+
+- **octave step** = `amp(2d)/amp(d)` where `amp = sqrt(gamma)`. **~1.00 = self-similar
+  (cauliflower). >1 = blob-dominated** (amplitude grows with scale; the field is one
+  big smooth lump with faint texture).
+- **patchiness** = p90/p10 of *local* roughness in 3 km windows (≈ half a cumulus).
+  **Low = every cloud/side looks alike. High = some smooth, some bumpy.**
+
+The second metric is the one that matches the user's observation, and it is the
+one no previous session had measured.
+
+### Measured baseline
+
+| | octave steps .31/.63/1.25/2.5/5 | avg | roughness | patchiness |
+|---|---|---|---|---|
+| legacy (current) | 1.57 1.41 1.29 1.28 1.14 | 1.34 | 0.0166 | 1.8× |
+| takram volume | 1.45 1.26 1.00 1.01 0.97 | 1.14 | 0.0149 | 1.2× |
+
+Our amplitude **grows at every octave** — mathematically a bell curve with a faint
+texture, which is exactly the words the user used. Takram plateaus above 0.6 km.
+
+### FOUR NULL RESULTS — do not re-run these
+
+1. **`DETAIL_FADE` distance fade.** Refuted by observation, not code: a distance
+   fade cannot make two clouds at the same distance differ, nor one side of one
+   cloud differ from the other. (Case law #27 makes distance fades the first
+   suspect for "detail only near camera" — that law is right, but it did not
+   apply here. Check whether the symptom is actually distance-ordered first.)
+2. **Clipping in `baseDilate`.** Hypothesis: `clamp(r + (fbm−0.4)·1.2, 0, 1)`
+   saturates (measured: **19.8%** of the field clamps at 1) and the clamp destroys
+   fine detail in those patches. **REFUTED**: Pearson r(clampFraction,
+   localRoughness) = **+0.29** — wrong sign — and mean roughness is flat across
+   clamp-fraction bins (0.0092 / 0.0117 / 0.0103). Saturation is real but is NOT
+   what makes patches look shaved.
+3. **Shader-side octave reweighting.** Flattening the G/B/A weights
+   (.625/.25/.125 → .33/.33/.33) and raising `BASE_FBM_BILLOW` 1.2 → 3.0:
+   avg octave step **1.49 → 1.46**. Null. Each of G/B/A is *itself* a multi-octave
+   FBM with its own internal falloff, so shader weights cannot rebalance it.
+4. **Re-baking the volume at higher FBM persistence.** Patched the three
+   `fbmG/B/A = crease(...)` weight lines in the generator to persistence
+   0.4 → 0.55 → 0.70 → 0.85: avg step **1.34 → 1.31**, patchiness **1.8× → 1.6×**.
+   Null. The persistence is not the binding constraint.
+
+### ROOT CAUSE
+
+`baseDilate = clamp(R + (fbm − 0.4)·BILLOW)`. **`R` (Perlin-Worley, grid 4 =
+5.6 km cells at BASE_SCALE 45) is ONE octave carrying most of the amplitude**, and
+the multi-octave `fbm` enters only as a small additive perturbation. The detail
+volume is used **only subtractively** (billow carve + fine carve), and a
+subtractive carve can only bite INWARD — it cannot add octaves to the silhouette.
+
+**This is case law #24's own failure mode, and case law #24's fix does not work.**
+`BASE_FBM_BILLOW` was introduced (2026-06-18) precisely to make the base
+multi-octave. Measured: raising it 1.2 → 3.0 moves the average octave step by
+**0.01**. It is ineffective because it adds only the base volume's own bands,
+which are correlated with R and far too small in amplitude.
+
+Patchiness has the same origin: when one octave dominates, whether a patch looks
+bumpy depends entirely on where that octave's features happen to land — hence
+per-cloud AND per-side variation with **no distance dependence**.
+
+### THE FIX THAT MEASURES
+
+Feed the detail volume into the **shape ADDITIVELY as extra octaves**, in addition
+to (not instead of) its subtractive carve role:
+
+| config | avg step | roughness | patchiness |
+|---|---|---|---|
+| current | 1.29 | 0.0166 | 1.4× |
+| fbm only (drop R) | 1.19 | 0.0105 | **2.4× — worse** |
+| **0.5·R + 0.5·fbm + detail octaves @0.45** | **1.16** | **0.0283** | **1.4×** |
+| takram reference | 1.14 | 0.0149 | 1.2× |
+
+Reaches takram's octave profile and ~2× its roughness. **Keep R** — dropping it
+makes patchiness *worse* (2.4×); R supplies the coherent cloud-body scale.
+Honest limit: patchiness 1.8 → 1.4, not to takram's 1.2. This reduces the
+smooth/bumpy variation, it does not eliminate it.
+
+### Lessons
+
+- **Measure the octave BALANCE, not the amount of detail.** Every previous shape
+  experiment (crease power, carve compaction, detail-erosion cranking, fine-carve
+  strength/scale/grade sweeps) tuned ONE band of a field whose problem is the
+  ratio BETWEEN bands. That is why they all came back null. `sqrt(variogram)` +
+  the octave-step ratio is the instrument that shows it in one table.
+- **"Patchiness" is a first-class metric.** p90/p10 of local roughness in
+  half-a-cloud windows is what "some sides are shaved off" actually is. A field
+  dominated by one octave is necessarily patchy; a self-similar one is not.
+- **A subtractive carve cannot add octaves to a silhouette.** It only bites
+  inward. If the silhouette must be multi-octave, the octaves have to be summed
+  into the SHAPE, not subtracted from it.
+- **Verify that a documented fix actually did what it claimed.** `BASE_FBM_BILLOW`
+  has been in the tree since 2026-06-18 as the answer to "the base is one octave",
+  and it measurably is not. A fix landing is not evidence it worked — re-measure
+  the property it was supposed to change.
+- **The user's discriminating observation beat four of my hypotheses.** "Same
+  distance, different clouds; one side of one cloud differs" ruled out every
+  distance- and camera-keyed mechanism in a single sentence. Ask for the
+  discriminating detail before building instruments.
+
+### Follow-up (same day) — the multi-octave shape FRAGMENTED cumulus into floating blobs
+
+Shipping the fix above produced the expected detail gain (user: "clearly more
+detail, I like that"; 34 → 32 fps) plus a new symptom: **CU breaking apart into
+individual small floating blobs.**
+
+Measured with a 3D 6-connected flood fill on a synthetic cumulus (`shape > 0.02`),
+reporting both component COUNT and the mass held in components under 1% each:
+
+| variant | components | floater mass | octave avg | roughness |
+|---|---|---|---|---|
+| old (pre multi-octave) | 512 | 0.05% | 1.34 | 0.0150 |
+| multi-octave, ungraded | 1158 | **0.26%** | 1.16 | 0.0283 |
+| AMPLITUDE grade p^0.5 | 669 | 0.12% | — | — |
+| **AMPLITUDE grade p^1.0** | **571** | **0.08%** | **1.20** | **0.0212** |
+| FREQUENCY grade p^1.0 | 498 | **0.29%** | 1.21 | 0.0207 |
+
+**Cause.** Ungraded, the extra octaves fire at full amplitude in thin/edge
+regions where the erosion threshold `(1 − dimProfile)` is already near 1, so any
+downward excursion disconnects material. `shape ≤ profile` (case #20) still holds
+— these are not floaters OUTSIDE the envelope — but connectivity WITHIN the
+envelope is a separate property that the envelope bound does not give you.
+
+**Fix.** Grade the extra octaves by `dimProfile^MO_GRADE_POW` (p = 1.0), at the
+sample's own position — hoisting `profileLs` above the probe's base sample so the
+self-shadow reads the same field (case #21).
+
+**The lesson worth keeping — fragment COUNT and visible-blob MASS are different
+metrics, and they recommend opposite fixes.** Frequency grading (keep the coarse
+octave at full amplitude at the edges and grade only the fine one — the literal
+Nubis p.109 reading) gives the FEWEST fragments (498, better than the pre-change
+baseline) yet leaves floater mass UNCHANGED at 0.29%, because the coarse octave is
+precisely what makes an edge lump big enough to see and to detach. Amplitude
+grading is what removes the visible blobs. Had we optimised the component count we
+would have shipped the variant that looks worse. **Pick the metric that matches
+what the eye reads — here, mass — before trusting a sweep.**
+
+Cost of the grade: keeps ~75% of the octave-balance win (1.34 → 1.20 of a possible
+1.16) and ~47% of the roughness gain. Lower `MO_GRADE_POW` toward 0.5 for more
+edge detail at the cost of more floaters (0.12% vs 0.08%).
