@@ -335,9 +335,15 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
             rt.texture,
             atmosphereLUTs.transmittance,
             atmosphereLUTs.multiScatter,
+            // Full-res drawing-buffer size; the pass derives its own reduced-res
+            // aerial-perspective target from it (AP_RES_SCALE). Same expression
+            // `rt` is sized with, and `rt` is in the dep list, so a resize
+            // rebuilds both together.
+            Math.floor(size.width * gl.getPixelRatio()),
+            Math.floor(size.height * gl.getPixelRatio()),
           )
         : null,
-    [rt, atmosphereLUTs]
+    [rt, atmosphereLUTs, gl, size.width, size.height]
   );
   useEffect(() => () => { atmospherePass?.dispose(); }, [atmospherePass]);
 
@@ -731,9 +737,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         atmospherePass.bakeSkyView(renderer);
         frameGates.skyViewBaked = true;
       }
-      renderer.setRenderTarget(rtB);
-      gl.autoClear = true;
-      gl.render(atmospherePass.scene, atmospherePass.camera);
+      // Pass 1.5 + 1.6: march aerial perspective at AP_RES_SCALE, then apply it
+      // to the full-res scene. Owns its own intermediate target and restores
+      // setRenderTarget(null) — the next pass sets its own.
+      atmospherePass.render(renderer, rtB);
     }
 
     // Phase 2 light coupling: compute the sun transmittance + sky-ambient fill

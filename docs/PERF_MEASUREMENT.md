@@ -572,7 +572,9 @@ First run with `env.startedFrom` recorded: **earth @ 10,375 km alt, 55 textures 
 `earth_6629` now sits on the 120 fps vsync cap (was 94). `earth_2100` 40 → 57 fps.
 CPU is 1.7–1.9 ms everywhere — never the limit. Atmosphere is **74–90% of frame**.
 
-## ⚠ Run-to-run variance is 5–25%, and we do not know why
+## ⚠ Run-to-run variance was 5–25% — RESOLVED 2026-08-11 12:35/12:40: it is start state, not noise
+
+**Read the resolution at the end of this section before using any number here.**
 
 The 09:51 and 11:48 runs have **identical shader code** and the same canvas. They
 differ only in where the sweep was started (Saturn vs Earth orbit). Yet:
@@ -610,3 +612,280 @@ changes larger than ~25%.
 Indicative cumulative vs the original no-gates baseline, canvas-normalised:
 `earth_2100` −36% frame (40 → 57 fps), `earth_4100` −32% (62 → 85), `earth_6629`
 −27% (94 → 120, capped), the deck −11%.
+
+### ✅ RESOLUTION — 2026-08-11 12:35 and 12:40, two sweeps from an identical clean start
+
+Protocol used (**this is now the required protocol for any comparable sweep**): warp
+to `deep_space`, reload, run the sweep. Both runs report `startedFrom` = no body,
+32 textures — i.e. a genuinely empty residency set. Canvas 3000×1816 both times.
+
+`1.5 atmosphere` mean ms, run 1 → run 2:
+
+| scenario | run 1 | run 2 | Δ | | scenario | run 1 | run 2 | Δ |
+|---|---|---|---|---|---|---|---|---|
+| deep_space | 0.80 | 0.91 | +13.0% ¹ | | earth_1900 | 20.47 | 20.43 | **−0.2%** |
+| belt | 3.068 | 3.066 | **−0.1%** | | earth_750 | 23.15 | 23.08 | **−0.3%** |
+| earth_12629 | 2.67 | 3.04 | +13.9% ¹ | | earth_650 | 23.17 | 23.39 | **+1.0%** |
+| earth_6629 | 5.27 | 5.30 | **+0.7%** | | earth_250 | 23.73 | 23.70 | **−0.1%** |
+| earth_4100 | 9.03 | 9.00 | **−0.4%** | | earth_120 | 24.02 | 24.07 | **+0.2%** |
+| earth_3900 | 9.46 | 9.55 | **+0.9%** | | earth_30 | 24.20 | 24.25 | **+0.2%** |
+| earth_2100 | 14.65 | 14.82 | **+1.2%** | | earth_8 | 23.75 | 23.56 | **−0.8%** |
+
+¹ The only two rows above 1.2% are the two where the atmosphere pass is smallest:
+the absolute deltas are **0.10 ms and 0.37 ms**, i.e. 2–6 timestamp quanta
+(0.0655 ms). Both rows are also vsync-capped at exactly 8.30 ms frame p50, so
+neither affects any decision. Every row that matters agrees within **1.2%**.
+
+Frame p50 agrees within 0.3 ms on all 14 scenarios.
+
+**Conclusions:**
+
+1. **The harness is reproducible to ~1% when the start state is controlled.** Single-
+   digit-percent attribution is back on the table. Always reload from `deep_space`.
+2. **The 5–25% spread above was caused by start state, not by noise or thermals.**
+   These two runs also match the 11:48 *earth-orbit*-start run closely (earth_4100
+   85 fps, earth_2100 57, deck 31) — so the outlier is specifically the **09:51
+   Saturn-start** run, which was *slower*. Consistent with resident-texture / VRAM
+   pressure from another body's 8K set, though the mechanism is still unproven.
+3. The retraction above **still stands**: contamination reaches every pass, and the
+   ring gate's −6.3% was measured across a start-state boundary so it remains
+   indicative. It is now cheaply re-measurable under the clean protocol.
+
+### 2026-08-11 12:35/12:40 — THE BASELINE. Mean of the two clean runs.
+
+| scenario | frame p50 | fps | **atmo ms** | **atmo %** | scaled | post | gpu/frame |
+|---|---|---|---|---|---|---|---|
+| deep_space | 8.30 | 120 (cap) | 0.85 | 10% | 0.54 | 4.63 ² | 0.78 |
+| belt | 6.15 | 163 | 3.07 | 50% | 0.57 | 2.31 | 1.02 |
+| earth_12629 | 8.30 | 120 (cap) | 2.86 | 34% | 0.44 | 2.40 ² | 0.73 |
+| earth_6629 | 8.30 | 120 (cap) | 5.29 | 64% | 0.63 | 1.98 | 0.98 |
+| earth_4100 | 11.80 | 85 | 9.01 | **76%** | 1.00 | 1.97 | 1.04 |
+| earth_3900 | 12.40 | 81 | 9.50 | **77%** | 1.10 | 1.93 | 1.04 |
+| earth_2100 | 17.60 | 57 | 14.74 | **84%** | 1.41 | 1.95 | 1.05 |
+| earth_1900 | 23.20 | 43 | 20.45 | **88%** | 1.61 | 1.85 | 1.28 |
+| earth_750 | 25.90 | 39 | 23.11 | **89%** | 1.68 | 1.83 | 1.45 |
+| earth_650 | 28.25 | 35 | 23.28 | 82% | 1.72 | 1.84 | 3.84 |
+| earth_250 | 30.10 | 33 | 23.71 | 79% | 1.91 | 1.80 | 3.75 |
+| earth_120 | 32.30 | 31 | 24.05 | 74% | 1.97 | 1.81 | 3.90 |
+| earth_30 | 32.85 | 30 | 24.23 | 74% | 1.98 | 1.80 | 3.93 |
+| earth_8 | 32.35 | 31 | 23.65 | 73% | 1.37 | 1.80 | 3.78 |
+
+Rows with `gpu/frame` ≤ 1.05 (**down to and including earth_2100**) are fully
+trustworthy per-pass. Below that, use the six-pass subset (which matches frame p50
+to ±2.2 ms across the cloud band) or gate-straddle ablation.
+
+² **NEW PROFILER ARTIFACT — the trailing pass absorbs the vsync wait.** `5 post` reads
+4.63 ms at `deep_space` and 2.40 at `earth_12629`, but 1.80–1.98 on all eleven other
+rows — same canvas, same 15-context bloom chain. The inflation tracks idle time under
+the 120 fps cap exactly: deep_space has 8.33 − 6.17 = 2.2 ms idle (post +2.8), 12629
+has 2.5 ms idle (+0.5), earth_6629 has 0.2 ms idle (+0.0). **Bloom's real cost is
+~1.8–2.0 ms everywhere.** Do not "optimise" it from the deep_space number.
+
+### Gate-straddle Δ on ground-truth frame p50 (mean of both runs)
+
+Independent of timestamps, therefore valid at every altitude:
+
+| gate | straddle | **Δ frame** | Δ atmosphere | what it tells us |
+|---|---|---|---|---|
+| AP froxel (4000 km) | 4100 → 3900 | **+0.60** | +0.47 | bake 0.12 + what it enables in the march |
+| Beer Shadow Map (2000 km) | 2100 → 1900 | **+5.60** | **+5.82** | the cost is the **taps inside the march**, not the bake |
+| cloud pipeline (700 km alt) | 750 → 650 | **+2.35** | +0.17 | the whole volumetric cloud system |
+
+The BSM row is the important one. `bsmStrength` goes 0 → 0.156 and the atmosphere
+pass alone gains +5.82 ms, which accounts for the entire +5.60 ms frame delta — so
+the reported `1b beer shadow map` 5.4–5.6 ms is **phantom**, and the real cost is the
+32 dependent shadow fetches per pixel that the `strength > 0` gate opens. (Going
+0.156 → 1.0 between 1900 and 750 km adds only +2.7 ms, all of it planet coverage:
+once the branch is taken, magnitude is free.) This is the same gate that buys
+−20…−23% above 2000 km — below it we still pay in full.
+
+## 7. Next lever, chosen from the baseline above: half-resolution atmosphere
+
+`rtB` is allocated at **full DPR** (`SpaceRenderer.tsx:302-310`, comment says so),
+and the march is `MAIN_STEPS = 32` per pixel with ground rays *always* marching
+(`atmospherePass.ts:1614`). At 3000×1816 that is 5.45 Mpx × 32 = **174 M step-evals
+per frame**, and it saturates at ~23.7 ms from 750 km down once the planet fills the
+screen. The clouds got a `CLOUD_MAX_DPR` clamp plus a reconstruction pass; the
+atmosphere never did.
+
+### AS BUILT (2026-08-11)
+
+The march no longer produces pixels. It produces **aerial perspective** — in-scattered
+radiance in `rgb`, mean transmittance in `a` — into a half-res RGBA16F, and a cheap
+full-res pass applies it: `scene·T + L`.
+
+**It costs no extra full-resolution pass.** The old pass was already a full-res
+rt → rtB blit that happened to also march. The blit stayed where it was; only the
+march moved out of it and into a quarter-of-the-pixels target.
+
+Storing `(L, Tmean)` is not a compromise invented here — it is Hillaire §5.5's own AP
+representation, and `getAtmosphereFroxel()` and `getSkyViewLUT()` in this same file
+already pack exactly that way (`atmospherePass.ts` `vec4(L, Tmean)`), which is why the
+Sky-View crossfade folded in as a straight copy instead of a special case.
+
+Knobs, all in `atmospherePass.ts`:
+- `AP_RES_SCALE` (0.5) — 1.0 keeps the split but marches at full res, so it isolates
+  the *upsample's* quality cost from the *split's*. Bisect any artefact with this
+  before suspecting the split.
+- `AP_SPECTRAL_TRANSMITTANCE` (true) — expands the stored mean back to per-channel via
+  `T_c = Tmean ^ k_c`, with `k` from the vertical column integral in `setAtmosphere`.
+  This is what preserves Rayleigh reddening of distant terrain, which a grey
+  transmittance would flatten. Exact at `Tmean = 1` and for a grey atmosphere; error
+  grows only with optical depth. `false` = grey (the froxel/sky-view convention).
+
+Why no depth-aware upsample: the march never reads a depth buffer — it finds its
+endpoint analytically (`raySphereNearest` against `uBottomRadius`). So there is no
+depth discontinuity to respect, and the only edge in the AP field is the **analytic**
+limb, across which a bilinear blend of two `(L, T)` pairs is a smooth interpolation
+rather than a wrong one.
+
+Projected — atmosphere to ~¼, plus the apply pass appearing as `1.6 atmo apply`
+(a 2-tap full-res blit, expect ~0.5–0.8 ms):
+
+| scenario | now | projected frame | projected fps |
+|---|---|---|---|
+| earth_4100 | 11.80 | ~5.1 | 120 (cap) |
+| earth_2100 | 17.60 | ~6.5 | 120 (cap) |
+| earth_1900 | 23.20 | ~7.9 | ~120 (cap) |
+| earth_8 (deck) | 32.35 | ~14.6 | ~68 |
+
+`deep_space` should be a wash (the march was already ~0.85 ms there, and the blit is
+unchanged) — if it *regresses*, the apply pass is costing more than a blit should.
+
+**Verified in-engine before measuring:** compiles with no WGSL errors; Saturn renders
+with rings, limb shading, terminator and ring shadow intact (so the ring path and
+`uActive` passthrough are fine); Earth at 12,629 km shows the surface through the
+atmosphere with the limb glow — which rules out a collapsed transmittance, the failure
+mode that would erase the scene. `earth_2100`, the row with 84% atmosphere, renders
+correct aerial perspective.
+
+**What still needs the real display + a sweep** (the in-app browser pane runs hidden,
+so it cannot sustain a frame loop or read back the WebGPU swapchain):
+1. The **analytic-vs-rendered limb** band. The analytic sphere and the rendered planet
+   mesh never coincided exactly; at half res that disagreement is ~2 px wider. Look at
+   the limb against space at `earth_2100` and `earth_4100`.
+2. **Hue/saturation of distant terrain at a low sun** — the one place
+   `AP_SPECTRAL_TRANSMITTANCE`'s approximation does real work. Compare the terminator
+   at `earth_120` / `earth_8` against the previous build.
+3. The numbers. Clean protocol: warp `deep_space` → reload → sweep.
+
+Fallbacks if the limb shows artefacts: `AP_RES_SCALE = 0.707` (half the *area*, not a
+quarter) before dropping back; and `SAMPLE_SEGMENT_T` jitter already decorrelates step
+positions, so temporal reuse is available if it ever needs to go below 0.5.
+
+### RESULT — 2026-08-11 13:12, clean protocol, no visual issues reported
+
+| scenario | frame p50 | fps | atmo family (ground truth) |
+|---|---|---|---|
+| deep_space | 8.30 → 8.30 | 120 → 120 (cap) | 0.85 → 1.21 |
+| belt | 6.15 → 5.90 | 163 → 169 | 3.07 → 2.82 |
+| earth_12629 | 8.30 → 8.30 | 120 → 120 (cap) | capped |
+| earth_6629 | 8.30 → 8.30 | 120 → 120 (cap) | capped |
+| earth_4100 | 11.80 → **8.30** | 85 → **120 (cap)** | capped |
+| earth_3900 | 12.40 → **8.30** | 81 → **120 (cap)** | capped |
+| earth_2100 | 17.60 → **8.30** | 57 → **120 (cap)** | capped |
+| earth_1900 | 23.20 → **9.70** | 43 → **103** | 20.45 → **6.95** |
+| earth_750 | 25.90 → **11.30** | 39 → **88** | 23.11 → **8.51** |
+| earth_650 | 28.25 → **13.60** | 35 → **74** | 23.28 → **8.63** |
+| earth_250 | 30.10 → **15.70** | 33 → **64** | 23.71 → **9.31** |
+| earth_120 | 32.30 → **17.50** | 31 → **57** | 24.05 → **9.25** |
+| earth_30 | 32.85 → **18.10** | 30 → **55** | 24.23 → **9.48** |
+| earth_8 | 32.35 → **17.80** | 31 → **56** | 23.65 → **9.10** |
+
+Frame time −45% to −58% across the whole band below 4100 km. Everything from 2100 km
+up now sits on the 120 fps cap. The atmosphere family fell ~62%.
+
+**⚠ PROFILER ARTIFACT #4 — `1.6 atmo apply` duplicates `1.5 atmosphere`'s window.**
+On every GPU-saturated row the two report nearly the same number (9.22 / 9.32 at the
+deck) and **`1.5` ALONE equals the ground-truth total of both** — verified against the
+frame delta on all 7 uncapped rows, within 0.3 ms. Do not add them. The one clean
+measurement of the apply pass is **`deep_space`: 0.72 ms**, where the GPU is idle under
+the cap so the spans cannot overlap — and that matches the bandwidth estimate for a
+2-tap full-res blit, so 0.72 ms is the apply's real cost at every altitude.
+
+### ⚠ THE MARCH IS NOW LATENCY-BOUND — this changes which levers work
+
+Quartering the pixels did **not** quarter the cost. Backing the apply's 0.72 ms out of
+the reported `1.5`:
+
+| scenario | march before | march now | speedup | G step-evals/s before → now |
+|---|---|---|---|---|
+| earth_1900 | 20.45 | 6.06 | 3.37× | 8.5 → 7.2 |
+| earth_750 | 23.11 | 7.78 | 2.97× | 7.5 → 5.6 |
+| earth_250 | 23.71 | 8.37 | 2.83× | 7.4 → 5.2 |
+| earth_30 | 24.23 | 8.94 | 2.71× | 7.2 → 4.9 |
+| earth_8 | 23.65 | 8.50 | 2.78× | 7.4 → 5.1 |
+
+Throughput-bound would be 4.00×. We got 2.7–3.4×, and the per-step-eval *rate got
+worse* (7.4 → 5.1 G/s). Fewer pixels in flight = less parallelism to hide the march's
+dependent LUT-fetch latency (~2–3 dependent texture fetches per step × 32 steps =
+a 64–96-deep chain per pixel).
+
+**This retro-explains the run-to-run variance mystery above.** That gradient was
+"largest where FEWEST pixels march" — which is precisely the latency-bound regime,
+where cache and fetch behaviour dominate and a neighbouring body's resident textures
+can move the number. Same mechanism, two symptoms. The hypothesis recorded there as
+unproven now has independent support.
+
+**Consequences for lever choice:**
+- Further **resolution** cuts give diminishing returns — another halving would yield
+  well under 2×. `AP_RES_SCALE` has given what it has to give.
+- What helps a latency-bound shader is a **shorter dependent-fetch chain**: fewer
+  steps, or fewer fetches per step. `MAIN_STEPS 32 → 16` halves the chain directly
+  and, unlike a resolution cut, does **not** reduce occupancy — so it should scale
+  closer to a true 2× than the resolution cut did.
+
+### Budget at `earth_8` (17.80 ms / 56 fps) — where the remaining time goes
+
+Gate-straddle deltas on frame p50, plus the trustworthy per-pass rows:
+
+| item | ms | % frame | how measured |
+|---|---|---|---|
+| atmosphere family | 9.10 | **51%** | ground truth (frame delta) |
+| cloud pipeline | 2.30 | 13% | straddle 750 → 650 (11.30 → 13.60) |
+| post (bloom) | 1.81 | 10% | per-pass, unsaturated |
+| sky-view LUT | ≤1.80 | 10% | straddle 250 → 120 (15.70 → 17.50) |
+| beer shadow map taps | ~1.40 | 8% | straddle 2100 → 1900, floor ≥1.37 |
+| scaled scene | 1.36 | 8% | per-pass |
+| froxel + local | 0.67 | 4% | per-pass |
+
+Sums to 18.44 against a 17.80 ms frame — the budget closes to 0.6 ms.
+
+Two things worth noting. The **BSM taps fell from +5.60 to ~1.40 ms**, almost exactly
+the predicted 5.60/4 — independent confirmation that everything *inside* the march got
+the full resolution win. And the **sky-view LUT's reported 4.27 ms is contradicted by
+its own straddle (≤1.80, coverage growth included)**, which supports the "reported cost
+is 35× too high" suspicion.
+
+### ⚠ HARNESS GAP: the mid band is now unmeasurable
+
+`earth_4100`, `earth_3900`, `earth_2100`, `earth_12629`, `earth_6629` and `deep_space`
+all sit at exactly 8.30 ms. **The froxel gate straddle (4100 → 3900) is dead** — both
+sides cap — and the BSM straddle only yields a floor. Any further work in that band
+needs an off-vsync measurement mode (or a higher-refresh display) before it can be
+attributed at all.
+
+**Second lever, after that:** the +5.60 ms of cloud-shadow taps below 2000 km. Tap
+every Nth step and interpolate, or fold the shadow term into the AP froxel. Note
+this is the same term the god rays need per-step, so it constrains how far it can be
+cheapened — see the LUT-safety note below.
+
+**Not a lever:** the volumetric cloud pipeline (2.35 ms of frame time, measured
+twice), and bloom (artifact ²).
+
+**Open question, needs one ablation:** `1d sky-view LUT` reports 4.3–4.7 ms for
+200×256 texels × 30 steps = 1.5 M step-evals. At the main march's measured rate
+(174 M step-evals / 23.7 ms ≈ 7.4 G/s) that should be **~0.2 ms** — it is reporting
+**35× too much time per step-eval**. Either the timestamp is capturing a
+write→read barrier stall (the main pass samples the LUT in the same frame), or the
+bake is doing something unexpected. Gate the bake off for one sweep at `earth_8`
+and read frame p50. Do not act on the 4.3 ms until then.
+
+**LUT safety with cloud coupling (answered):** god rays tap the Beer Shadow Map
+*per march step* (`shadowedSunScatter` → `cloudShadowAtPlanetKm`, `GODRAYS = true`,
+`MS_CLOUD_SHADOW = 0.5`). A LUT parameterised by (altitude, view-zenith,
+sun-zenith) cannot represent a term that varies along the ray with the cloud field,
+at any resolution. But the BSM only contributes below `BSM_MAX_ALT_KM` = 2000 km:
+**above 2000 km there is no coupling to break, so a LUT/froxel path is safe there;
+below it the marched path must stay.** The half-res change above is orthogonal — it
+preserves the per-step march and so preserves the shafts at every altitude.

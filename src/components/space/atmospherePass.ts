@@ -197,6 +197,52 @@ const USE_SKYVIEW = true;
 export const SKYVIEW_ENABLED: boolean =
   USE_SKYVIEW || (DEBUG_ATMOSPHERE as string) === "skyView";
 
+// ── Half-resolution aerial perspective (perf) ───────────────────────────────
+// MEASURED 2026-08-11 (docs/PERF_MEASUREMENT.md § THE BASELINE): the full-DPR
+// 32-step march was 76% / 84% / 88% of frame time at 4100 / 2100 / 1900 km
+// altitude, saturating at ~23.7 ms once the planet fills the screen — the single
+// largest cost in the renderer by a wide margin.
+//
+// Fix, following Hillaire §5.5 and Unreal's AerialPerspectiveLUT: the march no
+// longer produces final pixels. It produces AERIAL PERSPECTIVE — in-scattered
+// radiance (rgb) and mean transmittance (a) — at REDUCED resolution, and a cheap
+// full-resolution "apply" pass combines it with the scene: scene·T + L.
+//
+// Why that split is the right one: the scene colour stays FULL RES, so geometry
+// edges (terrain silhouettes, the ship, stars) keep their exact pixels. Only the
+// two smooth scattering terms are upsampled, and those are low-frequency by
+// construction — the same property that makes the froxel and Sky-View LUT work
+// at 32³ and 200×256 respectively.
+//
+// 0.5 = quarter the marched pixels. 1 = full res (structurally identical graph,
+// so it is a clean A/B for the upsample's quality cost — use it to bisect any
+// artefact before blaming the split itself).
+export const AP_RES_SCALE = 0.5;
+
+// Reconstruct PER-CHANNEL transmittance from the stored mean in the apply pass.
+//
+// The march accumulates a vec3 throughput (Rayleigh reddens long paths — this is
+// what makes a low sun redden distant terrain), but only 4 channels fit in the
+// AP target and rgb is spent on L. Storing the mean and reconstructing is what
+// keeps that reddening: since T_c = exp(-tau_c) and the path's spectral SHAPE is
+// dominated by a fixed extinction ratio, T_c ≈ Tmean^(tau_c/tau_mean), i.e. a
+// per-channel pow() with a constant vec3 exponent (uTSpectralK, from the
+// vertical column integral in setAtmosphere).
+//
+// Two properties make the approximation safe where it matters: it is EXACT at
+// Tmean = 1 (no attenuation → no error), and exact for a grey atmosphere
+// (k = 1,1,1). Error grows only with optical depth, which is precisely where a
+// grey transmittance would visibly desaturate. Flip false to store/apply the
+// mean greyly (Hillaire's own froxel convention, and what getSkyViewLUT and
+// getAtmosphereFroxel already do) if the pow() ever misbehaves.
+const AP_SPECTRAL_TRANSMITTANCE = true;
+
+// Compile-time debug blits bypass the AP split: the march writes its diagnostic
+// colour straight to rgb with a = 0, so the apply pass (scene·a + rgb) hands it
+// through verbatim. Keeps every DEBUG_ATMOSPHERE / BSM_BLIT mode working.
+const AP_DEBUG_BLIT: boolean =
+  (DEBUG_ATMOSPHERE as string) !== "off" || (BSM_BLIT as string) !== "off";
+
 /**
  * Map (radius, sun-zenith-cosine) → transmittance-LUT UV (Bruneton param).
  * Pure TSL; UNIT-AGNOSTIC — r, bottomRadius, topRadius, H must share one unit
@@ -939,9 +985,12 @@ export function computeAtmosphereLighting(
 // =============================================================================
 
 export type AtmospherePass = {
-  // Main on-screen pass (rt → rtB).
-  scene: THREE.Scene;
-  camera: THREE.OrthographicCamera;
+  /**
+   * Main on-screen pass (rt → `target`, normally rtB). Internally two renders:
+   * the aerial-perspective march at AP_RES_SCALE, then a full-resolution apply.
+   * Leaves the render target set to null.
+   */
+  render: (renderer: WebGPURenderer, target: RenderTarget) => void;
   // Static LUT bakes (rendered once per atmosphere).
   transmittanceBakeScene: THREE.Scene;
   multiScatterBakeScene: THREE.Scene;
@@ -968,11 +1017,18 @@ export type AtmospherePass = {
  * passed in; this module binds them (read in the MS bake + main pass) and writes
  * them in bakeLUTs. Textures are bound at build time (stable RTs) per the
  * WebGPU bind-group-cache caveat; rebuild on resize (input RT change).
+ *
+ * `widthPx`/`heightPx` are the FULL-resolution drawing-buffer dimensions (the
+ * same numbers `rt` was sized with). The internal aerial-perspective target is
+ * derived from them via AP_RES_SCALE, so the caller must rebuild this pass on
+ * resize — which it already does, since `inputTexture` changes too.
  */
 export function setupAtmospherePass(
   inputTexture: THREE.Texture,
   transmittanceLUT: RenderTarget,
   multiScatterLUT: RenderTarget,
+  widthPx: number,
+  heightPx: number,
 ): AtmospherePass {
   // ── Uniforms ──────────────────────────────────────────────────────────────
   // Static (per-atmosphere; km / km^-1) — set in setAtmosphere().
@@ -1015,8 +1071,30 @@ export function setupAtmospherePass(
   // march is skipped), 1 = pure per-pixel march (space). Set per frame from
   // altitude in updateUniforms.
   const uSkyViewBlend = uniform(1);
+  // Per-channel exponent that expands the AP target's mean transmittance back to
+  // a spectral one: T_c = Tmean ^ uTSpectralK_c. Set from the atmosphere's
+  // vertical column integral in setAtmosphere; (1,1,1) = grey. See
+  // AP_SPECTRAL_TRANSMITTANCE.
+  const uTSpectralK = uniform(new THREE.Vector3(1, 1, 1));
   const froxel = getAtmosphereFroxel();
   const skyViewLUT = getSkyViewLUT();
+
+  // Aerial-perspective target: the march's output at AP_RES_SCALE. HDR (the
+  // in-scatter is scene-referred radiance and routinely exceeds 1), no depth (the
+  // pass is a fullscreen quad with depthTest off, and the march finds its own
+  // endpoint analytically via raySphere — it never reads a depth buffer).
+  // LinearFilter is what makes the apply pass's upsample a free bilinear tap.
+  const apWidth = Math.max(1, Math.round(widthPx * AP_RES_SCALE));
+  const apHeight = Math.max(1, Math.round(heightPx * AP_RES_SCALE));
+  const apRT = new RenderTarget(apWidth, apHeight, {
+    type: THREE.HalfFloatType,
+    depthBuffer: false,
+  });
+  apRT.texture.minFilter = THREE.LinearFilter;
+  apRT.texture.magFilter = THREE.LinearFilter;
+  apRT.texture.wrapS = THREE.ClampToEdgeWrapping;
+  apRT.texture.wrapT = THREE.ClampToEdgeWrapping;
+  apRT.texture.generateMipmaps = false;
 
   // ── Shared TSL helpers (plain functions → inlined into each graph) ──────────
 
@@ -1046,6 +1124,11 @@ export function setupAtmospherePass(
   // Component-wise exp for a vec3 (three/tsl types the scalar exp() narrowly,
   // so do it per channel — runtime-identical, fully typed).
   const expVec3 = (v: Node): Node => vec3(exp(v.x), exp(v.y), exp(v.z));
+
+  // Scalar base raised to a vec3 of exponents — same narrow-typing dodge as
+  // expVec3. Used to expand the AP target's mean transmittance per channel.
+  const powVec3 = (base: Node, k: Node): Node =>
+    vec3(pow(base, k.x), pow(base, k.y), pow(base, k.z));
 
   // Ray ∩ ring annulus (planet-centred km; the ring plane passes through the
   // origin). Returns {t, hitF, rHit}: t = distance to the plane along rd, hitF
@@ -1422,16 +1505,27 @@ export function setupAtmospherePass(
     );
   };
 
-  // ── Main on-screen fragment ────────────────────────────────────────────────
-  const mainFragment = Fn(() => {
-    const sceneColor = texture(inputTexture, screenUV).rgb;
-    const out = vec4(sceneColor, 1).toVar();
+  // ── Aerial-perspective fragment (half res — see AP_RES_SCALE) ──────────────
+  // Writes AP, not pixels: rgb = in-scattered radiance, a = mean transmittance.
+  // The apply pass below turns that into `scene·T + L` at full resolution.
+  // Neutral value is (0,0,0,1) — no in-scatter, full transmittance — so a
+  // skipped/inactive pixel leaves the scene untouched.
+  //
+  // DEBUG builds instead write their diagnostic colour to rgb with a = 0, which
+  // the same apply formula passes through verbatim (see AP_DEBUG_BLIT). Only
+  // those builds sample the scene here; the shipping graph never does, which is
+  // the point — the AP target holds no scene colour to be upsampled.
+  const apFragment = Fn(() => {
+    const sceneColor = AP_DEBUG_BLIT
+      ? texture(inputTexture, screenUV).rgb
+      : vec3(0);
+    const out = (AP_DEBUG_BLIT ? vec4(sceneColor, 0) : vec4(0, 0, 0, 1)).toVar();
 
     // Geometry-free debug (compile-time):
     if (DEBUG_ATMOSPHERE === "lutT")
-      return vec4(texture(transmittanceLUT.texture, screenUV).rgb, 1);
+      return vec4(texture(transmittanceLUT.texture, screenUV).rgb, 0);
     if (DEBUG_ATMOSPHERE === "lutMS")
-      return vec4(texture(multiScatterLUT.texture, screenUV).rgb, 1);
+      return vec4(texture(multiScatterLUT.texture, screenUV).rgb, 0);
     if (DEBUG_ATMOSPHERE === "froxel") {
       // Sample the froxel's far-ish slice (w≈0.97 → depth ≈ 0.94·max) and blit
       // its in-scatter. Should read like the foreground atmospheric haze —
@@ -1442,7 +1536,7 @@ export function setupAtmospherePass(
             int(0),
           ) as Node
         ).rgb,
-        1,
+        0,
       );
     }
     if (DEBUG_ATMOSPHERE === "skyView") {
@@ -1450,24 +1544,24 @@ export function setupAtmospherePass(
       // sky (blue → reddened toward the horizon at v=0.5), the sun glow sits at
       // u=0.5, the lower half is the toward-ground march. Validates the BAKE
       // (forward mapping); the sampler's inverse mapping is exercised in step 2.
-      return vec4(texture(skyViewLUT.texture, screenUV).rgb, 1);
+      return vec4(texture(skyViewLUT.texture, screenUV).rgb, 0);
     }
     if (BSM_BLIT !== "off") {
       const bsm = (
         texture(getCloudShadowMap().texture, screenUV).level(int(0)) as Node
       ).toVar();
-      if (BSM_BLIT === "hit") return vec4(bsm.a, bsm.a, bsm.a, 1);
+      if (BSM_BLIT === "hit") return vec4(bsm.a, bsm.a, bsm.a, 0);
       if (BSM_BLIT === "shadow") {
         const T = exp(bsm.b.negate());
-        return vec4(T, T, T, 1);
+        return vec4(T, T, T, 0);
       }
       if (BSM_BLIT === "tau") {
         const g = bsm.b.mul(0.1);
-        return vec4(g, g, g, 1);
+        return vec4(g, g, g, 0);
       }
       if (BSM_BLIT === "front") {
         const f = bsm.r.abs().mul(0.15);
-        return vec4(f, f, f, 1);
+        return vec4(f, f, f, 0);
       }
     }
 
@@ -1486,7 +1580,7 @@ export function setupAtmospherePass(
       // Geometry-dependent debug (compile-time; skips the normal march):
       if (DEBUG_ATMOSPHERE === "slabHit") {
         out.assign(
-          select(atmo.tFar.greaterThan(0), vec4(0, 0, 1, 1), vec4(0.3, 0, 0, 1)),
+          select(atmo.tFar.greaterThan(0), vec4(0, 0, 1, 0), vec4(0.3, 0, 0, 0)),
         );
         return;
       }
@@ -1496,7 +1590,7 @@ export function setupAtmospherePass(
           ro.add(rd.mul(tGround)),
           ro.add(rd.mul(atmo.tNear.max(0))),
         );
-        out.assign(vec4(sampleMedium(Ptest).extinction.mul(30), 1));
+        out.assign(vec4(sampleMedium(Ptest).extinction.mul(30), 0));
         return;
       }
       if (DEBUG_ATMOSPHERE === "sunT") {
@@ -1505,7 +1599,7 @@ export function setupAtmospherePass(
           ro.add(rd.mul(tGround)),
           ro.add(rd.mul(atmo.tNear.max(0))),
         );
-        out.assign(vec4(getSunTransmittance(Ptest, uSunDir), 1));
+        out.assign(vec4(getSunTransmittance(Ptest, uSunDir), 0));
         return;
       }
 
@@ -1538,12 +1632,14 @@ export function setupAtmospherePass(
           .mul(select(ringView.t.lessThan(tEnd), float(1), float(0)));
         const ringGlowKeep = float(1).sub(clamp(ringInFrontCover, 0, 1));
 
-        // Per-pixel raymarch (default = unfogged scene when skipped or tMax≤0).
+        // Per-pixel raymarch (default = neutral AP when skipped or tMax≤0).
         // GROUND rays always march (fine-grained surface aerial perspective); SKY
         // rays march only when the crossfade needs it (uSkyViewBlend > 0, i.e.
         // near/above the atmosphere top) — below that the Sky-View LUT replaces
         // the march and it is SKIPPED (the perf win).
-        const marched = vec4(sceneColor, 1).toVar();
+        const marched = (
+          AP_DEBUG_BLIT ? vec4(sceneColor, 0) : vec4(0, 0, 0, 1)
+        ).toVar();
         const runMarch = () => {
           const cosTheta = dot(rd, uSunDir);
           const phaseR = rayleighPhase(cosTheta);
@@ -1602,9 +1698,18 @@ export function setupAtmospherePass(
           // and stays attenuated by the full-path throughput — only the ADDED
           // in-scatter is ring-occluded.
           const Lvis = L.mul(ringGlowKeep);
-          if ((DEBUG_ATMOSPHERE as string) === "inscatter")
-            marched.assign(vec4(Lvis, 1));
-          else marched.assign(vec4(sceneColor.mul(throughput).add(Lvis), 1));
+          if ((DEBUG_ATMOSPHERE as string) === "inscatter") {
+            marched.assign(vec4(Lvis, 0));
+          } else if (AP_DEBUG_BLIT) {
+            // Debug builds resolve to final pixels here (alpha 0 = pass through).
+            marched.assign(vec4(sceneColor.mul(throughput).add(Lvis), 0));
+          } else {
+            // Ship path: emit AP. `a` is the MEAN transmittance, the same packing
+            // getAtmosphereFroxel and getSkyViewLUT already use; the apply pass
+            // expands it back to per-channel via uTSpectralK.
+            const Tmean = throughput.x.add(throughput.y).add(throughput.z).div(3);
+            marched.assign(vec4(Lvis, Tmean));
+          }
         };
 
         if ((DEBUG_ATMOSPHERE as string) === "off") {
@@ -1617,11 +1722,22 @@ export function setupAtmospherePass(
           // Sky-View LUT lookup for sky rays (skipped once fully in march mode).
           // Cloud-shadow shafts come baked in the LUT (see the bake's KNOWN
           // LIMITATION note — per-pixel corrections tried and reverted).
-          const lutOut = vec4(sceneColor, 1).toVar();
+          // The LUT already stores (L, Tmean), so in AP form this is a straight
+          // copy — no scene multiply here any more.
+          const lutOut = (
+            AP_DEBUG_BLIT ? vec4(sceneColor, 0) : vec4(0, 0, 0, 1)
+          ).toVar();
           If(tGround.lessThanEqual(0).and(uSkyViewBlend.lessThan(0.999)), () => {
             const sky = sampleSkyView(rd, ro);
-            lutOut.assign(vec4(sceneColor.mul(sky.Tmean).add(sky.L), 1));
+            if (AP_DEBUG_BLIT) {
+              lutOut.assign(vec4(sceneColor.mul(sky.Tmean).add(sky.L), 0));
+            } else {
+              lutOut.assign(vec4(sky.L, sky.Tmean));
+            }
           });
+          // The crossfade stays valid in AP form: `scene·T + L` is linear in both
+          // T and L, so mixing the (L, T) pairs and then applying is identical to
+          // applying each and then mixing the pixels.
           out.assign(
             select(groundHit, marched, mix(lutOut, marched, uSkyViewBlend)),
           );
@@ -1800,6 +1916,27 @@ export function setupAtmospherePass(
     return vec4(L, Tmean);
   });
 
+  // ── Aerial-perspective apply fragment (full res) ───────────────────────────
+  // The cheap half of the split: one bilinear tap of the AP target, one tap of
+  // the scene, `scene·T + L`. No loop, no LUT fetches, no ray/sphere maths — this
+  // is what lets the expensive half run at AP_RES_SCALE.
+  //
+  // Because the scene tap is FULL RES and enters multiplicatively, every hard
+  // edge in the scaled scene (terrain silhouette, the planet's limb against
+  // space, stars) keeps its own pixel. Only L and T — both smooth by
+  // construction — carry the upsample.
+  const applyFragment = Fn(() => {
+    const sceneColor = texture(inputTexture, screenUV).rgb;
+    const apSample = texture(apRT.texture, screenUV).toVar();
+    const T = AP_SPECTRAL_TRANSMITTANCE
+      ? // Exact at a = 1 and for a grey atmosphere. max() keeps pow away from a
+        // negative base, which bilinear filtering of an HDR target can produce
+        // next to a sharp edge in L.
+        powVec3(apSample.a.max(0), uTSpectralK)
+      : vec3(apSample.a);
+    return vec4(sceneColor.mul(T).add(apSample.rgb), 1);
+  });
+
   // ── Materials / scenes ──────────────────────────────────────────────────
   const quad = new THREE.PlaneGeometry(2, 2);
   const bakeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -1822,7 +1959,8 @@ export function setupAtmospherePass(
   const transmittanceBake = makeScene(transmittanceBakeFragment);
   const multiScatterBake = makeScene(multiScatterBakeFragment);
   const skyViewBake = makeScene(skyViewBakeFragment);
-  const main = makeScene(mainFragment);
+  const ap = makeScene(apFragment);
+  const apply = makeScene(applyFragment);
 
   // Pass names for the per-pass GPU profiler (perf/perfProfiler.ts): three's
   // inspector hook reports each render context under its scene's name, and each
@@ -1831,7 +1969,8 @@ export function setupAtmospherePass(
   transmittanceBake.scene.name = PASS.atmoLUT;
   multiScatterBake.scene.name = PASS.atmoLUT;
   skyViewBake.scene.name = PASS.skyView;
-  main.scene.name = PASS.atmosphere;
+  ap.scene.name = PASS.atmosphere;
+  apply.scene.name = PASS.atmoApply;
   froxelBake.name = PASS.froxel;
 
   // ── API ──────────────────────────────────────────────────────────────────
@@ -1874,6 +2013,29 @@ export function setupAtmospherePass(
     );
     uGroundAlbedo.value.set(p.groundAlbedo[0], p.groundAlbedo[1], p.groundAlbedo[2]);
     uSunIlluminance.value.set(p.sunIlluminance[0], p.sunIlluminance[1], p.sunIlluminance[2]);
+
+    // Spectral exponent for the AP apply pass (see AP_SPECTRAL_TRANSMITTANCE).
+    // Take each species' VERTICAL COLUMN — coefficient × the thickness over which
+    // it acts — so the ratio reflects the optical depth a real path accumulates
+    // rather than the ground-level coefficient. Ozone rides a box of full width
+    // 2·halfWidth; the well-mixed gas absorber rides the Rayleigh profile (see
+    // uGasAbsorption). Then normalise so the mean exponent is 1, which makes the
+    // reconstruction the identity for a grey atmosphere.
+    const HR = p.rayleighScaleHeightKm;
+    const HM = p.mieScaleHeightKm;
+    const WO = p.ozoneWidthKm;
+    const tau = [0, 1, 2].map(
+      (c) =>
+        (p.rayleighScattering[c] + p.gasAbsorption[c]) * 1000 * HR +
+        (p.mieScattering[c] + p.mieAbsorption[c]) * 1000 * HM +
+        p.ozoneAbsorption[c] * 1000 * WO,
+    );
+    const tauMean = (tau[0] + tau[1] + tau[2]) / 3;
+    if (tauMean > 0) {
+      uTSpectralK.value.set(tau[0] / tauMean, tau[1] / tauMean, tau[2] / tauMean);
+    } else {
+      uTSpectralK.value.set(1, 1, 1);
+    }
   };
 
   const _camToPlanet = new THREE.Vector3();
@@ -1954,17 +2116,32 @@ export function setupAtmospherePass(
     renderer.setRenderTarget(null);
   };
 
+  // Render the atmosphere into `target`: march AP at AP_RES_SCALE, then apply it
+  // to the full-res scene. Two passes so the expensive one is the small one — see
+  // AP_RES_SCALE. `autoClear` is set for each because both write every pixel of
+  // their target, and the caller's state is not assumed.
+  const render = (renderer: WebGPURenderer, target: RenderTarget) => {
+    renderer.setRenderTarget(apRT);
+    renderer.autoClear = true;
+    renderer.render(ap.scene, camera);
+    renderer.setRenderTarget(target);
+    renderer.autoClear = true;
+    renderer.render(apply.scene, camera);
+    renderer.setRenderTarget(null);
+  };
+
   const dispose = () => {
     quad.dispose();
     transmittanceBake.mat.dispose();
     multiScatterBake.mat.dispose();
     skyViewBake.mat.dispose();
-    main.mat.dispose();
+    ap.mat.dispose();
+    apply.mat.dispose();
+    apRT.dispose();
   };
 
   return {
-    scene: main.scene,
-    camera,
+    render,
     transmittanceBakeScene: transmittanceBake.scene,
     multiScatterBakeScene: multiScatterBake.scene,
     bakeCamera,
