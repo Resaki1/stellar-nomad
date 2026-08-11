@@ -729,6 +729,32 @@ export function createCloudShadowMap(
  */
 function cloudShadowCore(P: Node, penumbra: boolean): Node {
   const U = getBsmUniforms();
+
+  // ── Uniform early-out when the map is not live ────────────────────────────
+  // `strength` is SpaceRenderer's freshness gate: 0 whenever the BSM was not
+  // baked this frame (altitude > BSM_MAX_ALT_KM, no pipeline, etc.). Every path
+  // below already multiplies out to exactly 1 in that case — via
+  // `edgeFade = smoothstep(...)·strength` feeding `mix(1, shadowT, edgeFade)` —
+  // but it multiplied AFTER doing the work, so the texture fetch and the whole
+  // τ reconstruction still ran. Inside the atmosphere pass's 32-step march that
+  // is 32 wasted dependent fetches per ground pixel on every frame above
+  // 2000 km, which MEASURED as the dominant share of a 13–22 ms pass
+  // (docs/PERF_MEASUREMENT.md).
+  //
+  // `strength` is a per-frame uniform, so this branch is coherent across the
+  // entire draw — the whole pass takes one side, no divergence. Returning 1
+  // directly is also strictly safer than `mix(1, x, 0)`, which propagates a NaN
+  // from `x` on hardware where 0·NaN = NaN.
+  const shadowOut = float(1).toVar();
+  If(U.strength.greaterThan(0), () => {
+    shadowOut.assign(cloudShadowLive(P, penumbra));
+  });
+  return shadowOut;
+}
+
+/** The actual reconstruction. Only reached when the map is live — see above. */
+function cloudShadowLive(P: Node, penumbra: boolean): Node {
+  const U = getBsmUniforms();
   // Surface path (penumbra) reads the SHARP map — its grazing-adaptive 5-tap
   // blur supplies the softness. Volume path (single-tap god rays) reads the
   // pre-BLURRED soft map, whose extruded shafts would otherwise show the 512²

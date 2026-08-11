@@ -384,3 +384,47 @@ Smaller items:
   5.4 — asteroid streaming hitches, unrelated to the above.
 - `earth_650` runs the full cloud pipeline at `volumetricBlend = 0.111` — full cost
   for 11% opacity. Free ~2 ms if the `cloudsVisible` threshold is raised.
+
+---
+
+## 6. Optimisation log
+
+One change at a time, each with the scenario rows it is predicted to move. If the
+improvement shows up in rows it was **not** predicted to move, something else
+changed and the attribution is wrong.
+
+### 2026-08-11 — gate the Beer-Shadow-Map reconstruction on `strength > 0`
+
+`cloudShadowMap.ts` → `cloudShadowCore`. The function ended in
+`mix(1, shadowT, edgeFade)` where `edgeFade = smoothstep(…) · strength`, so with
+`strength = 0` it always returned exactly 1 — **after** doing a texture fetch and
+the full τ reconstruction. `strength` is SpaceRenderer's freshness gate: zero
+whenever the BSM was not baked that frame, i.e. above `BSM_MAX_ALT_KM` (2000 km).
+
+The waste, per pixel, on every frame above 2000 km:
+- `1.5 atmosphere` — `cloudShadowAtPlanetKm` is called **inside the 32-step
+  march** (single tap) → **32 dependent fetches**
+- `1 scaled scene` — `cloudShadowAt` is called by the planet surface shader
+  (`earth.ts:340`) with the **5-tap** penumbra kernel → **5 fetches**
+
+Now wrapped in `If(strength > 0)`. `strength` is a per-frame uniform, so the
+branch is coherent across the whole draw — one side for the entire pass, zero
+divergence. Returning 1 directly is also strictly safer than `mix(1, x, 0)`,
+which propagates NaN from `x` where `0·NaN = NaN`.
+
+**Zero quality change**: at `strength = 0` the old code's output was already
+identically 1. Verified rendering correctly at both ends — high altitude
+(gate closed) and inside the cloud band with `clouds froxel bsm skyview lightvol`
+all open (gate open, reconstruction still running).
+
+**Predicted signature** — from `bsmStrength` in the 2026-08-11 baseline:
+
+| scenario | bsmStrength | prediction |
+|---|---|---|
+| earth_12629, earth_6629, earth_4100, earth_3900, earth_2100 | 0 | **`1.5 atmosphere` and `1 scaled scene` both drop** |
+| earth_1900 | 0.156 | unchanged (branch taken) |
+| earth_750, 650, 250, 120, 30, 8 | 1 | unchanged (branch taken) |
+| deep_space, belt | 0 | `1 scaled scene` may drop slightly; no atmosphere march to speak of |
+
+The interesting rows are **earth_4100 (16.00 ms) and earth_2100 (25.10 ms)** —
+the steepest part of the collapse, and both entirely above the BSM gate.
