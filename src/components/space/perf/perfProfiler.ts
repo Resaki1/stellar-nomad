@@ -208,8 +208,24 @@ export type PerfSnapshot = {
   gpuTotalMs: SeriesStats;
   /** Per-pass GPU ms, in `PASS_ORDER`, omitting passes that never ran. */
   passes: Array<{ label: string; gpu: SeriesStats }>;
-  /** Last frame's renderer counters (valid now that info.reset() runs). */
-  counters: { drawCalls: number; triangles: number; renderCalls: number; computeCalls: number };
+  /**
+   * Last frame's renderer counters (valid now that info.reset() runs).
+   *
+   * `textures`/`geometries` are NOT per-frame — they are live resident-resource
+   * counts from `renderer.info.memory`, recorded because they are the cheapest
+   * signal for the contamination described in `docs/PERF_MEASUREMENT.md`: the
+   * `CelestialBody` LOD latch only ever loads, never unloads, so wherever you
+   * flew before a sweep leaves its textures resident and quietly changes
+   * `1 scaled scene`. Two runs are only comparable when these match.
+   */
+  counters: {
+    drawCalls: number;
+    triangles: number;
+    renderCalls: number;
+    computeCalls: number;
+    textures: number;
+    geometries: number;
+  };
   gates: GateState;
   /** True once at least one GPU timing sample has landed. */
   gpuAvailable: boolean;
@@ -256,7 +272,14 @@ class PerfProfiler {
 
   private readonly passes = new Map<string, Series>();
 
-  counters = { drawCalls: 0, triangles: 0, renderCalls: 0, computeCalls: 0 };
+  counters = {
+    drawCalls: 0,
+    triangles: 0,
+    renderCalls: 0,
+    computeCalls: 0,
+    textures: 0,
+    geometries: 0,
+  };
   gates: GateState = emptyGates();
 
   /** Names seen in `renders[]`/`computes[]` that we did not label. Diagnostic. */
@@ -332,12 +355,14 @@ class PerfProfiler {
     this.gates = g;
   }
 
-  setCounters(drawCalls: number, triangles: number, renderCalls: number, computeCalls: number): void {
+  setCounters(c: PerfSnapshot["counters"]): void {
     if (!this.enabled) return;
-    this.counters.drawCalls = drawCalls;
-    this.counters.triangles = triangles;
-    this.counters.renderCalls = renderCalls;
-    this.counters.computeCalls = computeCalls;
+    this.counters.drawCalls = c.drawCalls;
+    this.counters.triangles = c.triangles;
+    this.counters.renderCalls = c.renderCalls;
+    this.counters.computeCalls = c.computeCalls;
+    this.counters.textures = c.textures;
+    this.counters.geometries = c.geometries;
   }
 
   /**

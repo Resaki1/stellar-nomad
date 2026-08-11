@@ -116,6 +116,25 @@ export type BenchReport = {
      */
     gpuResolutionMs: number;
     unlabeledPasses: string[];
+    /**
+     * Where the ship was when the sweep STARTED, and how many resources were
+     * resident then.
+     *
+     * This matters more than it looks. `CelestialBody`'s LOD latch only ever
+     * loads tiers — it never unloads them — so flying past Saturn before a sweep
+     * leaves its textures resident for the whole run and measurably changes
+     * `1 scaled scene` at Earth, with identical draw calls. Two runs are only
+     * comparable when this block matches; the only clean reset is a page reload.
+     * MEASURED: a sweep started near Saturn read 8–23% higher on `1 scaled scene`
+     * than the same build started near Earth.
+     */
+    startedFrom: {
+      body: string | null;
+      altitudeKm: number;
+      distanceKm: number;
+      textures: number;
+      geometries: number;
+    };
   };
   results: ScenarioResult[];
 };
@@ -300,8 +319,21 @@ export class BenchRunner {
     console.log(`[bench] warped to ${scenario.id} — ${scenario.what}`);
   }
 
+  /** Where the ship was when this session opened. See BenchReport.env.startedFrom. */
+  private startedFrom: BenchReport["env"]["startedFrom"] | null = null;
+
   /** Enter benchmark mode and clear anything already on screen. */
   private beginSession(): void {
+    // Snapshot BEFORE the first warp, while the gates still describe where the
+    // player actually was.
+    const snap = perf.snapshot();
+    this.startedFrom = {
+      body: snap.gates.body,
+      altitudeKm: snap.gates.altitudeKm,
+      distanceKm: snap.gates.distanceKm,
+      textures: snap.counters.textures,
+      geometries: snap.counters.geometries,
+    };
     this.store.set(benchModeAtom, true);
     // Drop any comms already queued; benchModeAtom stops new ones arriving.
     this.store.set(commsQueueAtom, []);
@@ -350,6 +382,14 @@ export class BenchRunner {
       gpuTimings: perf.gpuTimingAvailable,
       gpuResolutionMs: perf.snapshot().gpuResolutionMs,
       unlabeledPasses: unlabeled,
+      startedFrom:
+        this.startedFrom ?? {
+          body: null,
+          altitudeKm: 0,
+          distanceKm: 0,
+          textures: 0,
+          geometries: 0,
+        },
     };
   }
 
@@ -535,6 +575,16 @@ function printReport(report: BenchReport): void {
         : ""),
   );
 
+  // Comparability header. This is the check that would have caught the
+  // 2026-08-11 09:51 run being started near Saturn.
+  const from = report.env.startedFrom;
+  console.log(
+    `[bench] started from ${from.body ?? "deep space"} at ` +
+      `${Math.round(from.altitudeKm)} km alt, with ${from.textures} textures / ` +
+      `${from.geometries} geometries resident. Runs are ONLY comparable when this ` +
+      `line matches — LOD tiers never unload, so reload the page for a clean baseline.`,
+  );
+
   console.table(
     report.results.map((r) => ({
       scenario: r.scenario,
@@ -550,6 +600,9 @@ function printReport(report: BenchReport): void {
       "gpu/frame": r.frameMs.p50 > 0 ? f2(r.gpuTotalMs.mean / r.frameMs.p50) : 0,
       "cpu ms": f2(r.cpuTotalMs.mean),
       "draws": r.counters.drawCalls,
+      // Resident-resource count: if this drifts across a sweep, later scenarios
+      // are not comparable with earlier ones.
+      "tex": r.counters.textures,
       clouds: r.gates.cloudsVisible ? "Y" : "-",
       froxel: r.gates.froxelBaked ? "Y" : "-",
       bsm: r.gates.bsmBaked ? "Y" : "-",

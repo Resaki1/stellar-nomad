@@ -24,8 +24,33 @@ __bench.report()                // print live per-pass timings, no warping
 __bench.lastJson                // full result as JSON — copy this to share
 ```
 
+Or from **Settings → Dev**, no console needed:
+- **warp to body** — any body + an altitude above its surface. Uses the same
+  `resolveScenario` math the benchmark does, so what you eyeball is what gets
+  measured.
+- **perf scenario** — pick a named scenario, then *warp* to it or *measure* just
+  that one (~30 s, vs ~2 min for a full sweep).
+- **run perf sweep** — the whole ladder.
+
+All of these close the settings menu first, because `settingsIsOpenAtom` sets
+`frameloop="never"` — with the menu open there are no frames to measure and a warp
+sits unconsumed.
+
 A sweep takes roughly `14 scenarios × ~550 frames` ≈ 2 minutes at 60 fps.
 Don't touch the mouse or keyboard while it runs.
+
+### ⚠ Reload before a sweep you intend to compare
+
+`CelestialBody`'s LOD latch only ever *loads* tiers — it never unloads them. So
+wherever you flew before a sweep leaves its textures resident for the whole run.
+MEASURED: a sweep started near Saturn read **8–23% higher on `1 scaled scene`** at
+Earth than the same build started near Earth, with *identical* draw calls and
+triangle counts — so it is residency, not extra geometry. Flying away does not undo
+it; only a page reload does.
+
+Every report now records `env.startedFrom` (body, altitude, and resident
+texture/geometry counts) and prints it as a header, and each scenario row carries a
+`tex` column. **Two runs are only comparable when those match.**
 
 ---
 
@@ -417,7 +442,40 @@ identically 1. Verified rendering correctly at both ends — high altitude
 (gate closed) and inside the cloud band with `clouds froxel bsm skyview lightvol`
 all open (gate open, reconstruction still running).
 
-**Predicted signature** — from `bsmStrength` in the 2026-08-11 baseline:
+**RESULT — confirmed 2026-08-11 09:32, exactly as predicted.** Canvas grew to
+3000×1816 (+7.8% pixels) between runs, so everything below is normalised against
+what that pixel increase alone predicts:
+
+| scenario | bsmStrength | `1.5 atmosphere` | frame | fps |
+|---|---|---|---|---|
+| belt | 0 | **−22.3%** | — (vsync) | 120 |
+| earth_12629 | 0 | **−19.5%** | — (vsync) | 120 |
+| earth_6629 | 0 | **−22.6%** | **−20.4%** | 94 → **110** |
+| earth_4100 | 0 | **−22.1%** | **−20.0%** | 62 → **72** |
+| earth_3900 | 0 | **−22.4%** | **−21.4%** | 59 → **69** |
+| earth_2100 | 0 | **−22.8%** | **−22.4%** | 40 → **48** |
+| earth_1900 | 0.156 | −1.5% | −4.0% | 38 → 37 |
+| earth_750 | 1 | +2.3% | −0.3% | 36 → 33 |
+| earth_650 | 1 | +1.9% | −1.1% | 33 → 31 |
+| earth_250 | 1 | +2.4% | −0.9% | 31 → 29 |
+| earth_120 | 1 | +2.3% | −0.7% | 29 → 27 |
+| earth_30 | 1 | +1.9% | −0.8% | 29 → 27 |
+| earth_8 | 1 | +2.1% | −0.4% | 29 → 27 |
+
+Every `strength = 0` row dropped ~20–23%; every row where the branch is taken is
+flat within noise. **Zero leakage into rows it was not predicted to move** — which
+is what makes the attribution trustworthy. The residual +2% on taken-branch rows is
+the branch itself plus normalisation imprecision. Raw fps *fell* on the taken-branch
+rows purely because the canvas got 7.8% bigger; frame time there is flat once
+normalised.
+
+Note the `belt` row's raw p50 moved 8.30 → 10.00 while its *mean* stayed 8.34 —
+a vsync-capped bimodal distribution (ProMotion switching refresh), not a
+regression. In capped scenarios the GPU idles and downclocks, so `deep_space` and
+`earth_12629` absolute pass values are not comparable between runs at all.
+
+**Predicted signature** (as written before the run) — from `bsmStrength` in the
+2026-08-11 baseline:
 
 | scenario | bsmStrength | prediction |
 |---|---|---|
@@ -428,3 +486,127 @@ all open (gate open, reconstruction still running).
 
 The interesting rows are **earth_4100 (16.00 ms) and earth_2100 (25.10 ms)** —
 the steepest part of the collapse, and both entirely above the BSM gate.
+
+### 2026-08-11 — gate the ring-shadow term on `uRingOpacity > 0`
+
+`atmospherePass.ts` → `directSunOcclusion`, which runs **once per march step**.
+It ended with `earthShadow · (1 − ringOpacityAt(rHit) · hitF)`, and
+`ringOpacityAt = uRingOpacity · ringDensityProfile(...)`. `uRingOpacity` is set to
+0 every frame for any body without rings (`updateUniforms`), so the factor
+collapsed to exactly 1 — but only *after* running the annulus intersection and the
+**six-smoothstep** radial density profile. That is ~40 ALU ops × 32 steps × every
+ground pixel, for a guaranteed no-op at Earth, Mars, Venus and every moon.
+
+Now wrapped in `If(uRingOpacity > 0)`. Per-frame uniform ⇒ coherent branch. The
+branch body is the previous code verbatim, so Saturn (`saturn.ts:223` defines
+`rings`) is unchanged.
+
+**Zero quality change** at `uRingOpacity = 0` by the same argument as the BSM gate.
+Verified rendering correctly at `earth_8` with all gates open. **Not** visually
+verified at Saturn — there is no ringed-body scenario in the harness yet, which is
+itself the gap to close (see below).
+
+**Predicted signature** (as written before the run): orthogonal to the BSM gate —
+the ring term ran on *every* body, so `1.5 atmosphere` should drop in **all** rows,
+including the `strength = 1` rows the BSM gate left flat. Magnitude smaller than the
+BSM gate's: ALU, not a dependent texture fetch.
+
+**RESULT — confirmed 2026-08-11 09:51.** Same canvas as the previous run, so no
+normalisation needed. The six `strength = 1` rows the BSM gate left flat:
+
+| scenario | `1.5 atmosphere` | frame p50 |
+|---|---|---|
+| earth_750 | 27.19 → 25.68 (**−5.5%**) | 30.10 → 28.70 |
+| earth_650 | 27.18 → 25.69 (**−5.5%**) | 32.20 → 31.00 |
+| earth_250 | 27.83 → 26.04 (**−6.4%**) | 34.30 → 32.70 |
+| earth_120 | 28.21 → 27.24 (**−3.4%**) | 36.40 → 35.50 |
+| earth_30 | 28.34 → 26.23 (**−7.4%**) | 36.90 → 35.30 |
+| earth_8 | 27.92 → 25.30 (**−9.4%**) | 36.60 → 34.20 |
+
+Mean **−6.3%** on the previously-flat block; already-fixed rows moved only −1 to
+−3.5%. Correct signature, correct relative magnitude.
+
+**Caveat: this run was started near Saturn** and is therefore contaminated —
+`1 scaled scene` rose 8–23% (see the reload warning in the TL;DR), and `earth_6629`
+and `belt` are outliers. The ring-gate conclusion survives because its signature
+sits in a pass the contamination cannot reach (`directSunOcclusion` is in
+`atmospherePass`, not the surface shader) and is consistent across six rows — but
+per-row precision is degraded. This run is what prompted `env.startedFrom`.
+
+**Ringed path now verified.** Warping to Saturn at 150,000 km via the new dev
+control renders rings, planet shadow on the rings, and atmosphere correctly, with
+the gate line reading `saturn alt 150000km` — i.e. `uRingOpacity > 0` and the branch
+taken. (Note for a future Saturn *scenario*: the shared approach axis puts the rings
+near edge-on at first, so a scenario will want its own look direction.)
+
+**Cumulative across both gates**, normalised for canvas: 2,100 km **−23% frame time
+(40 → 48 fps)**, 4,100 km −21% (62 → 73 fps), the deck −7%. The atmosphere pass is
+still 74–86% of the frame — both wins were dead-work removal, not the architectural
+change.
+
+**Add a Saturn scenario** before trusting the ringed path — it is the only branch
+here with no test coverage, and the upcoming gas-giant generalisation needs it too.
+
+### 2026-08-11 11:48 — CLEAN BASELINE (both gates) — use this as the reference
+
+First run with `env.startedFrom` recorded: **earth @ 10,375 km alt, 55 textures /
+30 geometries resident**, canvas 3000×1816. Both uniform gates in.
+
+| scenario | frame p50 | fps | **atmo** | atmo % | bsm | clouds | tex |
+|---|---|---|---|---|---|---|---|
+| deep_space | 8.30 | 120 (cap) | 0.99 | 12% | — | — | 55 |
+| belt | 6.10 | 164 | 3.05 | 50% | — | — | 55 |
+| earth_12629 | 8.30 | 120 (cap) | 2.76 | 33% | — | — | 55 |
+| earth_6629 | 8.30 | **120 (cap)** | 5.24 | 63% | — | — | 55 |
+| earth_4100 | 11.80 | **85** | 8.99 | 76% | — | — | 55 |
+| earth_3900 | 12.30 | **81** | 9.41 | 77% | — | — | 56 |
+| earth_2100 | 17.40 | **57** | 14.60 | 84% | — | — | 56 |
+| earth_1900 | 23.70 | 42 | 20.95 | 88% | 6.02 | — | 57 |
+| earth_750 | 26.10 | 38 | 23.43 | 90% | 10.60 | — | 57 |
+| earth_650 | 28.10 | 36 | 23.26 | 83% | 10.63 | 69.3 | 64 |
+| earth_250 | 30.40 | 33 | 23.97 | 79% | 12.14 | 72.9 | 64 |
+| earth_120 | 32.30 | 31 | 24.26 | 75% | 12.46 | 81.4 | 64 |
+| earth_30 | 32.90 | 30 | 24.44 | 74% | 12.87 | 82.9 | 64 |
+| earth_8 | 32.60 | 31 | 23.98 | 74% | 11.65 | 79.5 | 64 |
+
+`earth_6629` now sits on the 120 fps vsync cap (was 94). `earth_2100` 40 → 57 fps.
+CPU is 1.7–1.9 ms everywhere — never the limit. Atmosphere is **74–90% of frame**.
+
+## ⚠ Run-to-run variance is 5–25%, and we do not know why
+
+The 09:51 and 11:48 runs have **identical shader code** and the same canvas. They
+differ only in where the sweep was started (Saturn vs Earth orbit). Yet:
+
+| scenario | atmo 09:51 → 11:48 | frame |
+|---|---|---|
+| earth_6629 | −24.8% | −19.4% |
+| earth_2100 | −17.2% | −16.3% |
+| earth_750 | −8.8% | −9.1% |
+| earth_8 | −5.2% | −4.7% |
+
+Note the gradient: the effect is **largest where fewest pixels march** and smallest
+at the deck where all of them do. That is not what uniform GPU downclocking looks
+like. A plausible (UNPROVEN) mechanism: at low marched-pixel counts the pass is
+latency-bound rather than throughput-bound, so LUT-fetch cache behaviour dominates,
+and another body's resident 8K textures worsen it. At the deck there is enough
+parallelism to hide the misses.
+
+**What this invalidates.** A claim made on 2026-08-11 that the ring gate's
+signature "sits in a pass the contamination cannot reach" was **wrong** — it reaches
+every pass. So the ring gate's −6.3% cannot be cleanly separated from start-state
+variance, and neither can the cumulative-vs-original figures below (the original
+baseline's start state was never recorded). Treat both as indicative.
+
+**What survives.** *Within-run differential signatures* — "these rows should move,
+those should not" — are immune to a global state offset, which is why the BSM gate's
+attribution (six rows −20…−23%, six rows flat, zero leakage) still stands.
+
+**Do this before trusting any single-digit-percent result: run the same sweep twice
+from the same clean start** (reload, warp nowhere, sweep; reload, warp nowhere,
+sweep). That bounds pure variance and tells us whether the 25% above is really
+start-state or just noise. Until then, only trust within-run signatures and
+changes larger than ~25%.
+
+Indicative cumulative vs the original no-gates baseline, canvas-normalised:
+`earth_2100` −36% frame (40 → 57 fps), `earth_4100` −32% (62 → 85), `earth_6629`
+−27% (94 → 120, capped), the deck −11%.

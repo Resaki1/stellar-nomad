@@ -216,4 +216,10 @@
   &:focus {
     border-color: rgba(200, 200, 200, 0.6); // legacy bright-glass variant; keep raw to preserve visuals
   }
+
+  // Scenario ids are long ("earth_12629", "deep_space") — give them room so the
+  // dropdown doesn't truncate the one you're picking.
+  &--wide {
+    min-width: 180px;
+  }
 }

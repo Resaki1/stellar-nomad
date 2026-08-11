@@ -231,6 +231,34 @@ export function resolveScenario(scenario: Scenario): DevWarp {
   };
 }
 
+// ── Free-form dev warps ─────────────────────────────────────────────────────
+
+/** Every body id in the active system, in `sol.json` order. */
+export const BODY_IDS: readonly string[] = bodies.map((b) => b.id);
+
+/** Surface radius of a body, km — the dev UI shows it next to the altitude field. */
+export function bodyRadiusKm(id: string): number {
+  return body(id).radiusKm;
+}
+
+/**
+ * An ad-hoc "put me `altitudeKm` above <body>, looking at it" warp, for the
+ * Settings → Dev body picker.
+ *
+ * Deliberately routed through `resolveScenario` so a hand-driven warp lands in
+ * exactly the same pose a benchmark scenario would: same approach axis, same
+ * look-at, same +Z convention. Eyeballing a body at some altitude and then
+ * measuring a scenario at that altitude should be comparing like with like.
+ */
+export function resolveBodyWarp(bodyId: string, altitudeKm: number): DevWarp {
+  return resolveScenario({
+    id: `dev_${bodyId}_${Math.round(altitudeKm)}`,
+    what: "ad-hoc dev warp",
+    bodyId,
+    altitudeKm,
+  });
+}
+
 /** Distance from the given scenario's eye point to Earth's centre, km. */
 export function scenarioDistanceToEarthKm(scenario: Scenario): number {
   const warp = resolveScenario(scenario);

@@ -30,6 +30,14 @@ import { ITEMS, RESEARCH_NODES } from "@/data/content";
 import { resetCommsPlayedAtom } from "@/store/comms";
 import { benchProgress, getBenchRunner } from "@/components/space/perf/benchRunner";
 import { isPerfEnabled } from "@/components/space/perf/perfProfiler";
+import {
+  BODY_IDS,
+  SCENARIOS,
+  bodyRadiusKm,
+  findScenario,
+  resolveBodyWarp,
+  resolveScenario,
+} from "@/components/space/perf/scenarios";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -152,6 +160,7 @@ const renderSubMenu = (
             // constructed, so this only takes effect on the next page load.
             label="perf profiler (reload)"
           />
+          <BodyWarpControls />
           <PerfSweepButton />
           {devHandlers && <DevControls {...devHandlers} />}
           {onResetWorld && (
@@ -166,6 +175,128 @@ const renderSubMenu = (
       );
   }
 };
+
+// ---------------------------------------------------------------------------
+// Body / scenario warps — see docs/PERF_MEASUREMENT.md
+// ---------------------------------------------------------------------------
+
+/** Sensible starting altitude per body: low enough to see it, high enough to be outside it. */
+const DEFAULT_ALT_KM = 2000;
+
+/**
+ * Two ways to get somewhere specific without the console:
+ *  • any body + an altitude — for eyeballing
+ *  • a named benchmark scenario — for reproducing a measured row
+ *
+ * Both route through the same `resolveScenario` math the sweep uses, so the pose
+ * you eyeball is the pose that gets measured. A dropdown rather than one button
+ * per body: 14 buttons still would not let you pick a distance, and distance is
+ * what drives every altitude gate.
+ *
+ * Both close the menu, because `settingsIsOpenAtom` sets `frameloop="never"` —
+ * with the menu open the warp sits unconsumed and nothing appears to happen.
+ */
+function BodyWarpControls() {
+  const store = useStore();
+  const setIsOpen = useSetAtom(settingsIsOpenAtom);
+  const [bodyId, setBodyId] = useState<string>("earth");
+  const [altKm, setAltKm] = useState(String(DEFAULT_ALT_KM));
+  const [scenarioId, setScenarioId] = useState<string>(SCENARIOS[0].id);
+
+  const warpTo = useCallback(
+    (warp: ReturnType<typeof resolveBodyWarp>) => {
+      setIsOpen(false);
+      store.set(devTeleportAtom, warp);
+    },
+    [store, setIsOpen],
+  );
+
+  const handleBodyWarp = useCallback(() => {
+    const alt = parseFloat(altKm);
+    if (!Number.isFinite(alt)) return;
+    warpTo(resolveBodyWarp(bodyId, alt));
+  }, [bodyId, altKm, warpTo]);
+
+  const handleScenarioWarp = useCallback(() => {
+    const s = findScenario(scenarioId);
+    if (s) warpTo(resolveScenario(s));
+  }, [scenarioId, warpTo]);
+
+  const handleScenarioMeasure = useCallback(() => {
+    setIsOpen(false);
+    void getBenchRunner(store)
+      .run(scenarioId)
+      .catch((err) => console.error(err));
+  }, [scenarioId, store, setIsOpen]);
+
+  return (
+    <>
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">
+          warp to body — altitude above surface (r = {Math.round(bodyRadiusKm(bodyId))} km)
+        </div>
+        <div className="dev-controls__row">
+          <select
+            className="dev-controls__select"
+            value={bodyId}
+            onChange={(e) => setBodyId(e.target.value)}
+          >
+            {BODY_IDS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+          <input
+            className="dev-controls__input dev-controls__input--wide"
+            type="number"
+            placeholder="km"
+            value={altKm}
+            onChange={(e) => setAltKm(e.target.value)}
+          />
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={handleBodyWarp}
+          >
+            warp
+          </button>
+        </div>
+      </div>
+
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">perf scenario</div>
+        <div className="dev-controls__row dev-controls__row--wrap">
+          <select
+            className="dev-controls__select dev-controls__select--wide"
+            value={scenarioId}
+            onChange={(e) => setScenarioId(e.target.value)}
+          >
+            {SCENARIOS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.id}
+              </option>
+            ))}
+          </select>
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={handleScenarioWarp}
+          >
+            warp
+          </button>
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={handleScenarioMeasure}
+          >
+            measure
+          </button>
+        </div>
+        <div className="dev-controls__hint">
+          {findScenario(scenarioId)?.what}
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Perf sweep launcher — see docs/PERF_MEASUREMENT.md

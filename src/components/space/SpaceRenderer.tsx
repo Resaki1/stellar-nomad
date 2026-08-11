@@ -991,12 +991,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // zeroed them — they now describe THIS frame only. `finish()` is what makes
     // the inspector resolve this frame's GPU timestamps (a no-op without a
     // profiling inspector installed).
-    perf.setCounters(
-      renderer.info.render.drawCalls,
-      renderer.info.render.triangles,
-      renderer.info.render.frameCalls,
-      renderer.info.compute.frameCalls,
-    );
+    perf.setCounters({
+      drawCalls: renderer.info.render.drawCalls,
+      triangles: renderer.info.render.triangles,
+      renderCalls: renderer.info.render.frameCalls,
+      computeCalls: renderer.info.compute.frameCalls,
+      // Live resident-resource counts (NOT per-frame). These are how a benchmark
+      // detects that a previous flight left another body's LOD tier loaded — see
+      // PerfSnapshot.counters.
+      textures: renderer.info.memory.textures,
+      geometries: renderer.info.memory.geometries,
+    });
     perf.setGates(frameGates);
     renderer.inspector.finish();
     perf.markRenderEnd();

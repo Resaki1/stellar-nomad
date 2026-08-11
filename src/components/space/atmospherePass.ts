@@ -1117,8 +1117,23 @@ export function setupAtmospherePass(
       float(0),
       float(1),
     );
-    const ring = rayRingHit(P, uSunDir);
-    return earthShadow.mul(float(1).sub(ringOpacityAt(ring.rHit).mul(ring.hitF)));
+    // Ring shadow, uniform-gated. `uRingOpacity` is set to 0 every frame for any
+    // body without rings (see updateUniforms), which makes `ringOpacityAt` — and
+    // therefore this whole factor — collapse to exactly 1. But it collapsed only
+    // AFTER running the annulus intersection and the six-smoothstep radial
+    // density profile, and this function is called ONCE PER MARCH STEP: ~40 ALU
+    // ops × 32 steps × every ground pixel, for a guaranteed no-op at Earth, Mars,
+    // Venus and every moon. Same recipe as the BSM strength gate in
+    // cloudShadowMap.ts (docs/PERF_MEASUREMENT.md §6).
+    //
+    // `uRingOpacity` is a per-frame uniform ⇒ the branch is coherent across the
+    // whole draw. Saturn takes the branch and is bit-identical to before.
+    const ringKeep = float(1).toVar();
+    If(uRingOpacity.greaterThan(0), () => {
+      const ring = rayRingHit(P, uSunDir);
+      ringKeep.assign(float(1).sub(ringOpacityAt(ring.rHit).mul(ring.hitF)));
+    });
+    return earthShadow.mul(ringKeep);
   };
 
   // Medium scattering/extinction (km^-1) at position P (planet-centred km).
