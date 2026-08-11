@@ -187,7 +187,12 @@ prefer chunking work over frames or using Web Workers.
 
 When changing perf-sensitive code:
 
-Measure first (Chrome Performance panel).
+Measure first — see [`docs/PERF_MEASUREMENT.md`](docs/PERF_MEASUREMENT.md). There is
+a per-pass GPU/CPU profiler (Settings → Dev → "perf profiler", needs a reload) and a
+scripted benchmark: `await __bench.sweep()` in the console warps through a fixed
+scenario ladder and prints per-pass GPU milliseconds. Never quote eye-balled FPS as
+a before/after; quote pass milliseconds at a named scenario. Chrome's Performance
+panel is still the right tool for CPU main-thread work.
 
 Optimize big wins first: allocations/GC, draw calls, shader complexity, postFX passes.
 

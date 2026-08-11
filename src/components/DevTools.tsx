@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * Dev utilities — exposes debug helpers on `window.__dev` in development mode.
+ * Dev utilities — exposes debug helpers on `window.__dev` in development mode,
+ * and the performance benchmark harness on `window.__bench`.
  *
  * Usage from browser console:
  *   __dev.grantAssay(100)          — grant 100 assay samples
@@ -9,6 +10,14 @@
  *   __dev.unlockAll()              — complete all research nodes
  *   __dev.grantAllItems()          — add all craftable items to inventory
  *   __dev.resetProgress()          — reset research + modules to defaults
+ *
+ *   await __bench.sweep()          — measure every perf scenario (see
+ *                                    docs/PERF_MEASUREMENT.md)
+ *   await __bench.run("earth_650") — measure one scenario
+ *   __bench.list()                 — available scenarios
+ *   __bench.warp("earth_8")        — fly to a scenario and stay
+ *   __bench.report()               — print live per-pass timings
+ *   __bench.lastJson               — full result as JSON (copy this to share)
  */
 
 import { useEffect } from "react";
@@ -18,6 +27,7 @@ import { addAssaySamplesAtom, researchAtom } from "@/store/research";
 import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
+import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
 
 export default function DevTools() {
   const store = useStore();
@@ -94,11 +104,21 @@ export default function DevTools() {
       },
     };
 
-    (window as Window & { __dev?: typeof devApi }).__dev = devApi;
+    // Shared with the Settings → Dev "run perf sweep" button.
+    const bench = getBenchRunner(store);
+
+    type DevWindow = Window & {
+      __dev?: typeof devApi;
+      __bench?: BenchRunner;
+    };
+    (window as DevWindow).__dev = devApi;
+    (window as DevWindow).__bench = bench;
     console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
+    console.log("[Dev] Perf harness via __bench. Try __bench.list() or await __bench.sweep()");
 
     return () => {
-      delete (window as Window & { __dev?: typeof devApi }).__dev;
+      delete (window as DevWindow).__dev;
+      delete (window as DevWindow).__bench;
     };
   }, [store]);
 

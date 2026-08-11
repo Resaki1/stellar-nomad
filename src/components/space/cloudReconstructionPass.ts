@@ -18,6 +18,7 @@ import {
   clamp,
   mix,
 } from "three/tsl";
+import { PASS } from "./perf/perfProfiler";
 
 // =============================================================================
 // Phase D — Cloud reconstruction pass (D3 + D4 + D5)
@@ -203,6 +204,8 @@ export function setupCloudReconstructionPass(
   opts: SetupCloudReconstructionOpts,
 ): CloudReconstructionPass {
   const scene = new THREE.Scene();
+  // Label for the per-pass GPU profiler (perf/perfProfiler.ts).
+  scene.name = PASS.reconstruct;
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   const geo = new THREE.PlaneGeometry(2, 2);

@@ -27,6 +27,7 @@ import {
   MIN_SAMPLES_FAR_ALT_KM,
 } from "@/components/celestial/bodies/earthClouds";
 import { kmToScaledUnits } from "@/sim/units";
+import { PASS } from "./perf/perfProfiler";
 import {
   getStbnTexture,
 } from "@/components/celestial/bodies/stbnTexture";
@@ -348,6 +349,8 @@ function createColorPass(
   lightVolume: CloudLightVolume | null,
 ) {
   const scene = new THREE.Scene();
+  // Label for the per-pass GPU profiler (perf/perfProfiler.ts).
+  scene.name = PASS.marcher;
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const geo = new THREE.PlaneGeometry(2, 2);
   const mat = new NodeMaterial();

@@ -4,6 +4,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import type { CommsMessage } from "@/data/commsMessages";
+import { benchModeAtom } from "@/store/dev";
 
 // ---------------------------------------------------------------------------
 // Persistent registry of message IDs that have already been shown.
@@ -60,6 +61,11 @@ const pendingDelayedIds = new Set<string>();
 const insertIntoQueueAtom = atom(
   null,
   (get, set, message: CommsMessage): void => {
+    // Benchmark mode: never surface a message. Guarding here rather than in
+    // enqueueCommsAtom also catches messages whose `delaySec` timer was armed
+    // before the benchmark started and would otherwise land mid-measurement.
+    if (get(benchModeAtom)) return;
+
     const played = get(playedMessageIdsAtom);
     const stored = readPlayedIdsFromStorage();
     if (played.includes(message.messageId) || stored.includes(message.messageId)) return;

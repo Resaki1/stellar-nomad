@@ -17,6 +17,7 @@ import {
   storage,
 } from "three/tsl";
 import { StorageInstancedBufferAttribute } from "three/webgpu";
+import { PASS } from "@/components/space/perf/perfProfiler";
 
 // =============================================================================
 // GPU compute bake of the Nubis-style BASE cloud noise volume (128³ RGBA8).
@@ -474,6 +475,10 @@ export function createCloudBaseVolumeCompute(
   });
 
   const computeNode = populate().compute(voxels);
+  // Label for the per-pass GPU profiler (space/perf/perfProfiler.ts): three's
+  // inspector reports each compute dispatch under its node's name. All three
+  // static volume bakes share one label — they are one one-shot startup cost.
+  computeNode.name = PASS.noiseBake;
 
   return {
     tex,
@@ -560,6 +565,10 @@ export function createCloudDetailVolumeCompute(
   });
 
   const computeNode = populate().compute(voxels);
+  // Label for the per-pass GPU profiler (space/perf/perfProfiler.ts): three's
+  // inspector reports each compute dispatch under its node's name. All three
+  // static volume bakes share one label — they are one one-shot startup cost.
+  computeNode.name = PASS.noiseBake;
 
   return {
     tex,
@@ -660,6 +669,10 @@ export function createDetailMip1Compute(
   });
 
   const computeNode = populate().compute(voxels);
+  // Label for the per-pass GPU profiler (space/perf/perfProfiler.ts): three's
+  // inspector reports each compute dispatch under its node's name. All three
+  // static volume bakes share one label — they are one one-shot startup cost.
+  computeNode.name = PASS.noiseBake;
 
   return {
     tex,
@@ -764,6 +777,16 @@ export function getGpuCloudDetailMip1(): THREE.Storage3DTexture {
  * (computeAsync at load, behind the loading screen) is the follow-up that
  * removes even that. See project_cloud_noise_startup.
  */
+/**
+ * Whether any one-shot volume bake is still queued. The benchmark harness waits
+ * on this before measuring — the first dispatch compiles a large compute
+ * pipeline synchronously (~150 ms) and would otherwise land inside a sample
+ * window as a phantom spike.
+ */
+export function hasPendingCloudBakes(): boolean {
+  return pendingBakes.length > 0;
+}
+
 export function flushCloudBakes(renderer: any): void {
   if (pendingBakes.length === 0) return;
   if (!renderer?.backend?.device) return; // device not ready yet — stay queued

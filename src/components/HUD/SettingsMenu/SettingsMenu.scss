@@ -146,6 +146,20 @@
   color: s.$text-tertiary;
 }
 
+// Explanatory line under a dev control — sits below $text-tertiary labels so it
+// reads as secondary to them.
+.dev-controls__hint {
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: s.$text-tertiary;
+  opacity: 0.75;
+  max-width: 32em;
+
+  code {
+    font-family: s.$font-mono;
+  }
+}
+
 .dev-controls__row {
   display: flex;
   gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing

@@ -10,7 +10,7 @@ import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom, shipHealthAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
-import { devTeleportAtom, devMaxSpeedOverrideAtom } from "@/store/dev";
+import { devTeleportAtom, devMaxSpeedOverrideAtom, benchModeAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom } from "@/store/death";
 import { cargoAtom } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
@@ -138,12 +138,18 @@ const SpaceShip = memo(() => {
 
   // ── Flush on beforeunload ───────────────────────────────────────────
   useEffect(() => {
-    const flush = () => saveShipState(posKm.current, simQuat.current);
+    const flush = () => {
+      // Never let a benchmark teleport become the player's next spawn point.
+      if (store.get(benchModeAtom)) return;
+      saveShipState(posKm.current, simQuat.current);
+    };
     window.addEventListener("beforeunload", flush);
     return () => {
       window.removeEventListener("beforeunload", flush);
       flush(); // also save on unmount
     };
+    // `store` is a stable Jotai store reference for the app's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Track dead state to show/hide ship mesh
@@ -175,7 +181,12 @@ const SpaceShip = memo(() => {
     }
 
     // Read input imperatively (zero subscriptions → zero re-renders).
-    const movement = store.get(movementAtom);
+    // `let` because a dev warp below zeroes the input and must take effect on the
+    // same frame (the physics loop reads this local, not the atom).
+    let movement = store.get(movementAtom);
+    // Benchmark mode: suppress the wall-clock-driven and save-mutating side
+    // effects that would make a measurement irreproducible. See benchModeAtom.
+    const benchMode = store.get(benchModeAtom);
 
     // Consume collision impact once per frame, before the physics loop.
     const impact = store.get(collisionImpactAtom);
@@ -187,14 +198,45 @@ const SpaceShip = memo(() => {
       store.set(collisionImpactAtom, null);
     }
 
-    // ── Dev teleport (one-shot) ────────────────────────────────────────
-    const teleport = store.get(devTeleportAtom);
-    if (teleport) {
-      posKm.current.set(teleport[0], teleport[1], teleport[2]);
+    // ── Dev warp (one-shot) ────────────────────────────────────────────
+    // Everything that carries motion across the jump must be zeroed here, or the
+    // pose keeps settling for seconds afterwards: `prevPosKm` because the swept-
+    // sphere collider below would otherwise sweep from the OLD position straight
+    // through whatever planets lie between (instant death); the steering rates
+    // and `movementAtom.speed` because they keep integrating; the transit drive
+    // because it holds its own velocity; and `speed.current` because the chase
+    // camera's standoff distance scales with it (see the camera block below), so
+    // a non-zero throttle silently changes the view a benchmark is measuring.
+    const warp = store.get(devTeleportAtom);
+    if (warp) {
+      posKm.current.set(warp.positionKm[0], warp.positionKm[1], warp.positionKm[2]);
       prevPosKm.current.copy(posKm.current);
+      if (warp.quaternion) {
+        simQuat.current.set(
+          warp.quaternion[0],
+          warp.quaternion[1],
+          warp.quaternion[2],
+          warp.quaternion[3],
+        );
+        prevQuat.current.copy(simQuat.current);
+      }
       worldOrigin.setShipPosKm(posKm.current);
       worldOrigin.setWorldOriginKm(posKm.current);
       speed.current = 0;
+      yawRate.current = 0;
+      pitchRate.current = 0;
+      vRoll.current = 0;
+      vPitch.current = 0;
+      prevVRoll.current = 0;
+      prevVPitch.current = 0;
+      physicsAcc.current = 0;
+      shakeIntensity.current = 0;
+      movement = { ...movement, yaw: 0, pitch: 0, speed: 0 };
+      store.set(movementAtom, movement);
+      transitDriveBuffer.velocityKmps = { x: 0, y: 0, z: 0 };
+      transitDriveBuffer.phase = "idle";
+      transitDriveBuffer.spoolAccS = 0;
+      transitDriveBuffer.autopilot = false;
       store.set(devTeleportAtom, null);
     }
 
@@ -419,7 +461,11 @@ const SpaceShip = memo(() => {
     // Consume new shake trigger
     const shakeSignal = store.get(cameraShakeIntensityAtom);
     if (shakeSignal > 0) {
-      shakeIntensity.current = Math.min(1, shakeIntensity.current + shakeSignal);
+      // Consumed either way; only applied outside benchmark mode — the shake is
+      // `performance.now()`-seeded, so it never reproduces across runs.
+      if (!benchMode) {
+        shakeIntensity.current = Math.min(1, shakeIntensity.current + shakeSignal);
+      }
       store.set(cameraShakeIntensityAtom, 0);
     }
 
@@ -467,13 +513,17 @@ const SpaceShip = memo(() => {
         ) * 1000 // km/s → m/s
       : 0;
     const normalSpeedMps = speed.current * hudMaxSpeedKmps * 1000;
-    store.set(hudInfoAtom, { speed: Math.max(normalSpeedMps, transitSpeedMps) });
+    // Benchmark mode skips this write (it re-renders HUD React subtrees) and the
+    // persist below (which would overwrite the player's saved position).
+    if (!benchMode) {
+      store.set(hudInfoAtom, { speed: Math.max(normalSpeedMps, transitSpeedMps) });
+    }
 
     // ── Periodic persist ──────────────────────────────────────────────
     persistAcc.current += delta;
     if (persistAcc.current >= PERSIST_INTERVAL) {
       persistAcc.current = 0;
-      saveShipState(posKm.current, simQuat.current);
+      if (!benchMode) saveShipState(posKm.current, simQuat.current);
     }
   });
 

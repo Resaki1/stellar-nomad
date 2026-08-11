@@ -52,6 +52,7 @@ import {
   flushCloudBakes,
   warmCloudBakes,
 } from "@/components/celestial/bodies/cloudVolumeCompute";
+import { PASS, perf, type GateState } from "./perf/perfProfiler";
 
 const LOCAL_CAMERA_NEAR = 0.01;
 // 20,000 km expressed in local meters
@@ -137,8 +138,28 @@ const tempCamPlanetKm = new THREE.Vector3();
 // Scratch for the dominant body's sun illuminance handed to the cloud marcher
 // (Phase 3 cloud↔atmosphere coupling) — avoids a per-frame allocation.
 const tempAtmoSunIll = new THREE.Vector3();
+// Live gate state handed to the perf profiler each frame (mutated in place — a
+// timing table is uninterpretable without knowing which altitude gates were open
+// when it was captured). See perf/perfProfiler.ts.
+const frameGates: GateState = {
+  altitudeKm: 0,
+  distanceKm: 0,
+  body: null,
+  volumetricBlend: 0,
+  bsmStrength: 0,
+  cloudsVisible: false,
+  froxelBaked: false,
+  skyViewBaked: false,
+  bsmBaked: false,
+  lightVolume: false,
+};
+
 const scaledScene = new THREE.Scene();
 const localScene = new THREE.Scene();
+// Scene names double as the per-pass profiler labels: three's inspector hook
+// reports each render context under its scene's name (see perf/perfProfiler.ts).
+scaledScene.name = PASS.scaled;
+localScene.name = PASS.local;
 
 // Halton(2,3) sub-pixel jitter is obsolete in the 1/16 reconstruction
 // architecture — replaced by the deterministic BAYER schedule above.
@@ -149,6 +170,7 @@ const localScene = new THREE.Scene();
 // lifetime — the cloud-texture node inside the material is rebuilt when the
 // RT changes, but the geometry + camera are static.
 const compositeScene = new THREE.Scene();
+compositeScene.name = PASS.composite;
 const compositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const compositeGeometry = new THREE.PlaneGeometry(2, 2);
 
@@ -536,6 +558,35 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Skip until WebGPU backend is ready (init is async).
     if (!(gl as unknown as WebGPURenderer).initialized) return;
 
+    const renderer = gl as unknown as WebGPURenderer;
+    perf.markRenderStart();
+
+    // ── Per-frame renderer bookkeeping ──────────────────────────────────────
+    // Scene.tsx calls `_animation.stop()` because R3F owns the frame loop, so
+    // four things that loop did (three.js `Renderer._animation.start()`) have to
+    // happen here. Only `nodeFrame.update()` was being done. Without the rest:
+    // `info.render.{drawCalls,frameCalls,triangles}` accumulate for the whole
+    // session (any readout of them is meaningless), `info.frame` stays pinned at
+    // 0, and the inspector hook that carries GPU timestamps never fires. Order
+    // below matches three's loop exactly.
+    if (renderer.info.autoReset) renderer.info.reset();
+    // _nodes is a private renderer field; the public animation loop (which
+    // normally advances nodeFrame) is stopped because R3F owns the frame loop.
+    const nodeFrame = (
+      renderer as unknown as {
+        _nodes: { nodeFrame: { update: () => void; frameId: number } };
+      }
+    )._nodes.nodeFrame;
+    // Advance the node frame so BloomNode's updateBefore runs each frame.
+    nodeFrame.update();
+    // `info.frame` is readonly in the typings because the renderer's own loop
+    // normally owns it. It is baked into every timestamp-query UID (`…:f<frame>`)
+    // which the inspector matches against its per-frame records — leave it at 0
+    // and per-pass GPU timings never resolve.
+    (renderer.info as unknown as { frame: number }).frame = nodeFrame.frameId;
+    // No-op unless a profiling inspector is installed (perf/perfProfiler.ts).
+    renderer.inspector.begin();
+
     if (!firstFrameLogged.current) {
       firstFrameLogged.current = true;
       performance.mark("first-frame-render");
@@ -545,10 +596,6 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       );
     }
 
-    // Advance the node frame so BloomNode's updateBefore runs each frame.
-    // Normally the renderer's internal animation loop does this, but we
-    // stopped it because R3F owns the frame loop (Scene.tsx: _animation.stop()).
-    const renderer = gl as unknown as WebGPURenderer;
     // Warm the static cloud-noise bake at startup (off the near-tier crossing):
     // the ~150 ms compute-pipeline compile + bake run async, off the main
     // thread, so flying into the near tier never hitches. Idempotent no-op once
@@ -562,11 +609,6 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // surface. This unconditional drain dispatches it from orbit. No-op once the
     // queue is empty; the tiny 256×1 LUT compile is negligible.
     flushCloudBakes(renderer);
-    // _nodes is a private renderer field; the public animation loop (which
-    // normally advances nodeFrame) is stopped because R3F owns the frame loop.
-    (
-      renderer as unknown as { _nodes: { nodeFrame: { update: () => void } } }
-    )._nodes.nodeFrame.update();
 
     // Sync scaled camera with local camera
     tempScaledPos
@@ -593,6 +635,14 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // invisible atmosphere until reload; the LUT RTs persist so no rebake). The
     // atmosphere MARCH still runs in Pass 1.5 (it reads `rt`).
     const dominant = atmospherePass ? getDominantAtmosphereBody() : null;
+    frameGates.body = dominant ? dominant.id : null;
+    frameGates.distanceKm = dominant ? dominant.distanceKm : 0;
+    frameGates.altitudeKm = dominant
+      ? dominant.distanceKm - dominant.params.groundRadiusKm
+      : 0;
+    frameGates.bsmBaked = false;
+    frameGates.froxelBaked = false;
+    frameGates.skyViewBaked = false;
     if (atmospherePass && dominant) {
       atmospherePass.setAtmosphere(dominant.params);
       if (bakedAtmosphereId.current !== dominant.id) {
@@ -637,6 +687,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         ) {
           bsmPipeline.updateCloudShadowMap(scaledCamera.position, bsmEarth);
           bsmPipeline.bakeCloudShadowMap(renderer);
+          frameGates.bsmBaked = true;
           // Consumer freshness gate: full below the fade band, ramp to 0 over
           // the top BSM_FADE_BAND_KM so ground shadows don't pop off at the
           // altitude ceiling (above it the bake is skipped → stale map).
@@ -651,6 +702,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       }
       // Set every frame (0 when not baked) so a stale map never shadows.
       setCloudShadowStrength(bsmStrength);
+      frameGates.bsmStrength = bsmStrength;
       // Phase 4: bake the aerial-perspective froxel for this frame (needs the
       // camera/sun uniforms just set + the LUTs baked in the pre-pass). Cheap
       // 32³ compute. FROXEL_ENABLED gates the dispatch out entirely unless a
@@ -664,6 +716,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
           FROXEL_BAKE_MAX_ALT_KM
       ) {
         atmospherePass.bakeFroxel(renderer);
+        frameGates.froxelBaked = true;
       }
       // Phase 4: bake the Sky-View LUT for this frame (same prerequisites). The
       // main pass samples it for sky rays below the crossfade altitude; above
@@ -676,6 +729,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
           SKYVIEW_BAKE_MAX_ALT_KM
       ) {
         atmospherePass.bakeSkyView(renderer);
+        frameGates.skyViewBaked = true;
       }
       renderer.setRenderTarget(rtB);
       gl.autoClear = true;
@@ -735,6 +789,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // march ran across that whole range for an invisible result.
     const cloudsVisible =
       !!pipelineHandle && pipelineHandle.getVolumetricBlend() > 0.001;
+    frameGates.volumetricBlend = pipelineHandle
+      ? pipelineHandle.getVolumetricBlend()
+      : 0;
+    frameGates.cloudsVisible = cloudsVisible;
+    frameGates.lightVolume = USE_LIGHT_VOLUME && cloudsVisible;
 
     if (pipelineHandle && earthMesh && cloudsVisible) {
       clearedHistoryCount.current = 0;
@@ -926,6 +985,21 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // scaled scene was just rendered with.)
     prevWorldOriginKm.current.copy(worldOrigin.worldOriginKm);
     hasPrevWorldOrigin.current = true;
+
+    // ── Close the profiling frame ───────────────────────────────────────────
+    // Counters are read here because info.reset() at the top of this frame
+    // zeroed them — they now describe THIS frame only. `finish()` is what makes
+    // the inspector resolve this frame's GPU timestamps (a no-op without a
+    // profiling inspector installed).
+    perf.setCounters(
+      renderer.info.render.drawCalls,
+      renderer.info.render.triangles,
+      renderer.info.render.frameCalls,
+      renderer.info.compute.frameCalls,
+    );
+    perf.setGates(frameGates);
+    renderer.inspector.finish();
+    perf.markRenderEnd();
   }, 1);
 
   return (

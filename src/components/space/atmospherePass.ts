@@ -37,6 +37,7 @@ import {
   smoothstep,
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
+import { PASS } from "./perf/perfProfiler";
 import type { AtmosphereParams } from "../celestial/types";
 import {
   getCloudShadowMap,
@@ -1807,6 +1808,16 @@ export function setupAtmospherePass(
   const multiScatterBake = makeScene(multiScatterBakeFragment);
   const skyViewBake = makeScene(skyViewBakeFragment);
   const main = makeScene(mainFragment);
+
+  // Pass names for the per-pass GPU profiler (perf/perfProfiler.ts): three's
+  // inspector hook reports each render context under its scene's name, and each
+  // compute dispatch under its node's name. The two static LUT bakes share one
+  // label — they are a single one-shot cost.
+  transmittanceBake.scene.name = PASS.atmoLUT;
+  multiScatterBake.scene.name = PASS.atmoLUT;
+  skyViewBake.scene.name = PASS.skyView;
+  main.scene.name = PASS.atmosphere;
+  froxelBake.name = PASS.froxel;
 
   // ── API ──────────────────────────────────────────────────────────────────
   const setAtmosphere = (p: AtmosphereParams) => {

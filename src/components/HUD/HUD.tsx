@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { Microscope, Shield, Wrench } from "lucide-react";
 import { keybindsAtom } from "@/store/keybinds";
-import { settingsIsOpenAtom } from "@/store/store";
+import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import MiningHUD from "./MiningHUD/MiningHUD";
@@ -24,6 +24,8 @@ import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
 import TransitHUD from "./TransitHUD/TransitHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
+import PerfHUD from "./PerfHUD/PerfHUD";
+import { isPerfEnabled } from "@/components/space/perf/perfProfiler";
 
 import "./HUD.scss";
 
@@ -33,6 +35,19 @@ export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  // Either the persisted setting (which shows a "needs reload" hint when the
+  // renderer was built without timestamp queries) or `?perf=1`, which turns
+  // profiling on from a cold load and should show the readout too.
+  //
+  // The `?perf=1` read must happen AFTER mount: it depends on `window`, so
+  // evaluating it during the first render disagrees with the server render and
+  // fails hydration. (`settingsAtom` is safe — atomWithStorage yields its default
+  // on both sides and hydrates in an effect.)
+  const [perfForced, setPerfForced] = useState(false);
+  useEffect(() => {
+    if (isPerfEnabled()) setPerfForced(true);
+  }, []);
+  const perfHudOn = useAtomValue(settingsAtom).perf || perfForced;
   const store = useStore();
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
@@ -116,6 +131,7 @@ export default function HUD() {
       <DeathScreen />
       <Hotbar />
       <TransitHUD />
+      {perfHudOn && <PerfHUD />}
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">

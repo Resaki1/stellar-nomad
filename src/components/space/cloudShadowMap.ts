@@ -47,6 +47,7 @@ import {
   baseDilate,
 } from "@/components/celestial/bodies/cloudDetile";
 import { WARP_AMPLITUDE_MIRROR } from "./cloudLightVolume";
+import { PASS } from "./perf/perfProfiler";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -510,6 +511,9 @@ export function createCloudShadowMap(
   mesh.frustumCulled = false;
   const scene = new THREE.Scene();
   scene.add(mesh);
+  // All three BSM passes (bake, blur, ship probe) share one profiler label —
+  // they are one logical cost. See perf/perfProfiler.ts.
+  scene.name = PASS.bsm;
 
   // ── Soft-map blur pass: sharp bsmRT → 3×3 Gaussian → soft RT ──
   // All four channels blur together; across cloud/no-cloud boundaries the
@@ -547,6 +551,7 @@ export function createCloudShadowMap(
   blurMesh.frustumCulled = false;
   const blurScene = new THREE.Scene();
   blurScene.add(blurMesh);
+  blurScene.name = PASS.bsm;
 
   // ── L3 ship probe: reconstruct the BSM shadow at the ship's earth-model
   //    position. R = SINGLE-tap (used for lighting — a point receiver wants the
@@ -579,6 +584,7 @@ export function createCloudShadowMap(
   probeMesh.frustumCulled = false;
   const probeScene = new THREE.Scene();
   probeScene.add(probeMesh);
+  probeScene.name = PASS.bsm;
 
   // ── CPU per-frame window update (no per-frame allocation) ──
   const _inverseModel = new THREE.Matrix4();

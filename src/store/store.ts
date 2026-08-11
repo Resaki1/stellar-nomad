@@ -14,6 +14,13 @@ export type Settings = {
   bloom: boolean;
   toneMapping: boolean;
   fps: boolean;
+  /**
+   * Per-pass GPU/CPU profiler (dev only). Read at renderer construction, not
+   * live — GPU timestamp queries can only be requested when the WebGPURenderer
+   * is created, so toggling this needs a reload. See
+   * `space/perf/perfProfiler.ts` and `docs/PERF_MEASUREMENT.md`.
+   */
+  perf: boolean;
   initial: boolean;
 };
 
@@ -22,6 +29,7 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   bloom: false,
   toneMapping: false,
   fps: false,
+  perf: false,
   initial: true,
 });
 

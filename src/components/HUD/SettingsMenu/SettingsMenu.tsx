@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import "./SettingsMenu.scss";
-import { SetStateAction, useAtom, useAtomValue, useSetAtom } from "jotai";
+import { SetStateAction, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
 import {
   SetAtom,
@@ -28,6 +28,8 @@ import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
 import { resetCommsPlayedAtom } from "@/store/comms";
+import { benchProgress, getBenchRunner } from "@/components/space/perf/benchRunner";
+import { isPerfEnabled } from "@/components/space/perf/perfProfiler";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -138,6 +140,19 @@ const renderSubMenu = (
             }
             label="show fps"
           />
+          <SettingsCheckbox
+            active={settings.perf}
+            onChange={() =>
+              setSettings((prev) => ({
+                ...prev,
+                perf: !prev.perf,
+              }))
+            }
+            // GPU timestamp queries are requested when the WebGPURenderer is
+            // constructed, so this only takes effect on the next page load.
+            label="perf profiler (reload)"
+          />
+          <PerfSweepButton />
           {devHandlers && <DevControls {...devHandlers} />}
           {onResetWorld && (
             <button
@@ -151,6 +166,76 @@ const renderSubMenu = (
       );
   }
 };
+
+// ---------------------------------------------------------------------------
+// Perf sweep launcher — see docs/PERF_MEASUREMENT.md
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `__bench.sweep()` without needing the console.
+ *
+ * Two things this has to get right:
+ *  • **It must close the settings menu first.** `settingsIsOpenAtom` drives
+ *    `frameloop="never"` in Scene.tsx, so with the menu open there are no frames
+ *    to measure and the sweep would hang forever on its first `advance()`.
+ *  • Profiling has to have been on at page load (GPU timestamp queries are
+ *    requested when the renderer is constructed), so when it isn't, this offers
+ *    the reload instead of failing silently.
+ */
+function PerfSweepButton() {
+  const store = useStore();
+  const setIsOpen = useSetAtom(settingsIsOpenAtom);
+  const settings = useAtomValue(settingsAtom);
+  const [busy, setBusy] = useState(benchProgress.running);
+
+  const perfActive = isPerfEnabled();
+
+  const handleRun = useCallback(() => {
+    setIsOpen(false); // MUST come first — see above.
+    setBusy(true);
+    // No requestAnimationFrame deferral: React flushes the close before the next
+    // paint, and the runner counts RENDERED frames (perf.renderedFrames), so it
+    // synchronises itself. An rAF wrapper here only adds a failure mode — rAF is
+    // frozen outright in a hidden tab, which silently swallowed the whole run.
+    void getBenchRunner(store)
+      .sweep()
+      .catch((err) => console.error(err))
+      .finally(() => setBusy(false));
+  }, [store, setIsOpen]);
+
+  if (!perfActive) {
+    return (
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">perf sweep</div>
+        <div className="dev-controls__hint">
+          {settings.perf
+            ? "enabled — reload the page to arm GPU timers"
+            : "turn on “perf profiler” above, then reload"}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dev-controls__section">
+      <div className="dev-controls__label">perf sweep — ~2 min, closes this menu</div>
+      <div className="dev-controls__row">
+        <button
+          className="settings-menu__button settings-menu__button--subtle"
+          onClick={handleRun}
+          disabled={busy}
+        >
+          {busy ? "running…" : "run perf sweep"}
+        </button>
+      </div>
+      <div className="dev-controls__hint">
+        Don&apos;t touch the controls while it runs. Progress shows in the perf
+        overlay; the result prints to the console and is copied to the clipboard
+        (also at <code>__bench.lastJson</code>).
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Dev-only controls (position teleport + max speed override)
@@ -452,7 +537,7 @@ const SettingsMenu = () => {
       IS_DEV
         ? {
             onTeleport: (x: number, y: number, z: number) =>
-              setDevTeleport([x, y, z]),
+              setDevTeleport({ positionKm: [x, y, z] }),
             onSetMaxSpeed: (speed: number | null) => setDevMaxSpeed(speed),
             currentMaxSpeedOverride: devMaxSpeed,
             onGrantAssay: (amount: number) => setAddAssay(amount),

@@ -35,6 +35,17 @@ const STBN_PATH = "/textures/stbn_128.bin";
 
 let cachedTexture: THREE.Data3DTexture | null = null;
 let loadStarted = false;
+let loaded = false;
+
+/**
+ * Whether the real blue-noise data has landed (vs the zero placeholder the
+ * texture starts as). The benchmark harness waits on this: with a zero STBN the
+ * marcher's per-sample jitter is absent, which changes both its look and its
+ * sampling cost.
+ */
+export function isStbnLoaded(): boolean {
+  return loaded;
+}
 
 /**
  * Returns a singleton 128 × 128 × 64 R8 `Data3DTexture` for spatiotemporal
@@ -80,6 +91,7 @@ export function getStbnTexture(): THREE.Data3DTexture {
         }
         data.set(bytes);
         tex.needsUpdate = true;
+        loaded = true;
       })
       .catch((err) => {
         // Non-fatal — the shader keeps the zero placeholder, which produces

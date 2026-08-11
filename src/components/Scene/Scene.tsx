@@ -3,10 +3,16 @@
 
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
 import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import * as THREE from "three/webgpu";
+import {
+  hasGpuTimestamps,
+  installPerfInspector,
+  isPerfEnabled,
+  perf,
+} from "../space/perf/perfProfiler";
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
@@ -69,9 +75,27 @@ function WebGPUGate({ children }: { children: ReactNode }) {
   return ready ? <>{children}</> : null;
 }
 
+/**
+ * Brackets the whole R3F frame to measure total JS time per frame.
+ *
+ * Priorities -1000 / +1000 put these before and after every other `useFrame` in
+ * the app (SpaceRenderer is priority 1, everything else 0), so the delta covers
+ * ship physics, the 14 CelestialBody LOD updates, asteroid streaming and pass
+ * submission together. Comparing that against GPU total is what tells us whether
+ * a scenario is CPU- or GPU-bound. Mounted only when profiling is on.
+ */
+function PerfProbe() {
+  useFrame(() => perf.markFrameStart(), -1000);
+  useFrame(() => perf.markFrameEnd(), 1000);
+  return null;
+}
+
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  // Read once and independently of the atom: the `gl` factory below decides
+  // `trackTimestamp` from the same value, and the two must not disagree.
+  const perfOn = useMemo(() => isPerfEnabled(), []);
   const isSafari =
     typeof window !== "undefined" && navigator
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
@@ -129,11 +153,17 @@ const Scene = () => {
       frameloop={settingsIsOpen ? "never" : "always"}
       dpr={[0.5, 1.5]}
       gl={(defaultProps) => {
+          // Profiling must be decided here: `trackTimestamp` allocates the GPU
+          // query pool at construction and cannot be turned on later. See
+          // isPerfEnabled() for why this reads localStorage rather than the atom.
+          perf.enabled = isPerfEnabled();
           const renderer = new THREE.WebGPURenderer({
             canvas: defaultProps.canvas as HTMLCanvasElement,
             powerPreference: "high-performance",
             logarithmicDepthBuffer: true,
+            trackTimestamp: perf.enabled,
           });
+          installPerfInspector(renderer);
 
           const origRender = renderer.render.bind(renderer);
           renderer.render = function (
@@ -153,12 +183,23 @@ const Scene = () => {
               "[perf] WebGPU renderer.init() done",
               performance.measure("webgpu-init", "webgpu-init-start", "webgpu-init-end").duration.toFixed(0) + "ms",
             );
+            if (perf.enabled) {
+              // `trackTimestamp` is silently downgraded when the adapter lacks
+              // the `timestamp-query` feature, so report what we actually got.
+              perf.gpuTimingSupported = hasGpuTimestamps(renderer);
+              console.log(
+                perf.gpuTimingSupported
+                  ? "[perf] Per-pass GPU timing ACTIVE. __bench.report() / __bench.sweep()"
+                  : "[perf] Per-pass GPU timing UNAVAILABLE (adapter lacks timestamp-query) — CPU timings only.",
+              );
+            }
           });
           (renderer as unknown as RendererInternals).__initPromise = initPromise;
           return renderer;
         }}
     >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
+          {perfOn ? <PerfProbe /> : null}
 
           <WebGPUGate>
             <SpaceRenderer scaled={scaledContent} local={localContent} />

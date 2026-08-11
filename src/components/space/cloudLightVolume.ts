@@ -43,6 +43,7 @@ import {
   TAKRAM_ENV_WARP_SCALE,
   envelopeWarpOffset,
 } from "@/components/celestial/bodies/cloudShared";
+import { PASS } from "./perf/perfProfiler";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -500,7 +501,11 @@ export function createCloudLightVolume(
     // Build the compute node ONCE — rebuilding each frame recompiles the
     // pipeline. Per-frame inputs flow through the uniform() nodes, mutated
     // CPU-side in updateBox.
-    return populate().compute(VOXEL_COUNT);
+    const node = populate().compute(VOXEL_COUNT);
+    // Label for the per-pass GPU profiler (space/perf/perfProfiler.ts): three's
+    // inspector reports each compute dispatch under its node's name.
+    node.name = PASS.lightVolume;
+    return node;
   };
 
   // ── Per-side CPU state ──

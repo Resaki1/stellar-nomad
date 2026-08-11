@@ -24,7 +24,7 @@ export default function DeathScreen() {
     setShipHealth(cfg.maxHealth);
 
     // Teleport to starting position
-    setTeleport([...STARTING_POSITION_KM]);
+    setTeleport({ positionKm: [...STARTING_POSITION_KM] });
 
     // Clear persisted ship state so it doesn't restore to the death position
     clearShipState();

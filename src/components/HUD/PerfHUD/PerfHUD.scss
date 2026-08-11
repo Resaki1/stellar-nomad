@@ -1,0 +1,58 @@
+@use '../../../styles' as s;
+
+// Dev diagnostic overlay. Hologram-first per docs/UI_STYLE_GUIDE.md §3.3: no
+// panel, no border, no backdrop-filter (§10 — this renders every frame's worth
+// of data and must stay free). A null-surface scrim carries legibility against
+// bright planet surfaces, which is exactly the case the mixin exists for.
+.perf-hud {
+  position: fixed;
+  // Clears both drei's Stats panel (80×48 at the origin) and CargoHUD, which
+  // share this corner.
+  top: 100px;
+  left: s.$space-2;
+  z-index: s.$z-hud-overlay;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-1;
+
+  @include s.null-surface;
+  padding: s.$space-2 s.$space-3;
+
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1.45;
+  color: s.$text-secondary;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.9);
+
+  pre {
+    margin: 0;
+    font: inherit;
+    white-space: pre;
+  }
+
+  &__head {
+    color: s.$text-primary;
+    font-weight: 700;
+  }
+
+  &__gates {
+    color: s.$accent-info;
+  }
+
+  &__table {
+    padding-top: s.$space-1;
+    border-top: 1px solid s.$stroke-faint;
+  }
+
+  &__hint {
+    color: s.$text-secondary;
+    opacity: 0.5;
+  }
+
+  // Frame-budget tint on the headline only — a glance-level "are we there yet".
+  &[data-budget='good'] .perf-hud__head { color: s.$accent-ok; }
+  &[data-budget='warn'] .perf-hud__head { color: s.$accent-warn; }
+  &[data-budget='bad'] .perf-hud__head { color: s.$accent-crit; }
+}
