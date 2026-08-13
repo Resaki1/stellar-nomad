@@ -82,7 +82,28 @@ const TRANSMITTANCE_STEPS = 40;
 const MS_SQRT_SAMPLES = 8; // → 64 sphere directions
 const MS_SAMPLE_COUNT = MS_SQRT_SAMPLES * MS_SQRT_SAMPLES;
 const MS_STEPS = 20;
-const MAIN_STEPS = 32; // per-pixel screen march (fixed; jitter/adaptive is Phase 4)
+// Per-pixel screen march step count. 32 → 16 on 2026-08-11, chosen from the
+// MEASURED finding that this march is LATENCY-bound, not throughput-bound: the
+// half-res AP split quartered the pixels but bought only 2.7–3.4×, and the
+// per-step-eval rate DROPPED (7.4 → 5.1 G/s). See docs/PERF_MEASUREMENT.md
+// § "THE MARCH IS NOW LATENCY-BOUND".
+//
+// Each step issues ~2–3 dependent texture fetches (getSunTransmittance,
+// getMultipleScattering, and cloudShadowAtPlanetKm once the BSM gate opens), so
+// 32 steps is a 64–96-deep dependent chain per pixel. Halving the steps halves
+// that chain and — unlike another resolution cut — does NOT reduce occupancy, so
+// it should scale closer to a true 2× than AP_RES_SCALE managed.
+//
+// ⚠ NO DITHER SAFETY NET. SAMPLE_SEGMENT_T below is a FIXED bias, not per-frame
+// jitter (see its comment), and this pass keeps no temporal history, so nothing
+// hides coarser steps. Banding on smooth gradients — the limb, the terminator,
+// the twilight sky — is the risk to look for, and it is unmitigated. If it shows:
+// 24 first (still ~1.5× on the chain), and only then reach for a dither. A dither
+// here needs care: without temporal accumulation it converts banding into static
+// per-pixel noise, though the half-res → full-res bilinear upsample does smooth
+// some of it. Blue-noise infrastructure already exists (stbnTexture.ts, and the
+// cloud marcher's BAYER cycle) if it comes to that.
+const MAIN_STEPS = 16;
 const SAMPLE_SEGMENT_T = 0.3; // reference midpoint bias for the screen march
 
 // ── Aerial-perspective froxel (Phase 4) ──
@@ -193,7 +214,36 @@ export const FROXEL_ENABLED: boolean =
 // sky rays at low altitude (crossfading to the raymarch above), so the bake is
 // on. Flip false to disable the whole Sky-View path (main pass falls back to the
 // per-pixel march everywhere).
-const USE_SKYVIEW = true;
+//
+// ── ABLATION IN PROGRESS 2026-08-11 — currently FALSE, see below ──
+// The profiler reports this bake at 4.3–4.7 ms, but 200×256 texels × 30 steps is
+// only 1.5 M step-evals; at the main march's own measured rate (~7.4 G/s that run)
+// it should cost ~0.2 ms. It is reporting ~35× too much time per step-eval, and
+// its own gate straddle (earth_250 → earth_120) bounds it at ≤1.80 ms including
+// coverage growth. So the reported number is not believable and the real one is
+// unknown.
+//
+// The half-res AP split changed the trade-off that justified this LUT in the
+// first place: sky-ray marching is now ~3× cheaper than when the LUT was added.
+// So the decision-relevant question is not "what does the bake cost" but "is the
+// LUT still worth having at all" — which this flag answers directly, because the
+// LUT has exactly ONE consumer (sampleSkyView) and blend→1 is a clean full-march
+// fallback.
+//
+// There is a QUALITY dimension pointing the same way: shafts baked into the
+// 200×256 lattice band the low-altitude sky (see the KNOWN LIMITATION note in the
+// bake — two per-pixel fixes were tried and both reverted). Marching gives crisp
+// per-pixel shafts instead. If this is perf-neutral or better, it is a double win
+// and the whole subsystem can go.
+//
+// PREDICTION, written before measuring (uSkyViewBlend = smoothstep(60,150,altKm)):
+//   MUST move — earth_120 (blend 0.741, so already ¾ marching yet paying the full
+//     bake → should be the clearest win), earth_30 and earth_8 (blend 0.000, pure
+//     LUT → these two swap the bake for a full sky march, sign unknown).
+//   MUST stay flat — the other 11. earth_250 and above already run blend = 1.000
+//     with the bake skipped (alt > SKYVIEW_BAKE_MAX_ALT_KM = 180). Any movement
+//     there means the attribution is wrong, not that the change worked.
+const USE_SKYVIEW = false;
 export const SKYVIEW_ENABLED: boolean =
   USE_SKYVIEW || (DEBUG_ATMOSPHERE as string) === "skyView";
 
@@ -988,7 +1038,8 @@ export type AtmospherePass = {
   /**
    * Main on-screen pass (rt → `target`, normally rtB). Internally two renders:
    * the aerial-perspective march at AP_RES_SCALE, then a full-resolution apply.
-   * Leaves the render target set to null.
+   * They must stay adjacent — separating them was measured and reverted, see the
+   * implementation. Leaves the render target set to null.
    */
   render: (renderer: WebGPURenderer, target: RenderTarget) => void;
   // Static LUT bakes (rendered once per atmosphere).
@@ -2120,6 +2171,17 @@ export function setupAtmospherePass(
   // to the full-res scene. Two passes so the expensive one is the small one — see
   // AP_RES_SCALE. `autoClear` is set for each because both write every pixel of
   // their target, and the caller's state is not assumed.
+  //
+  // ⚠ KEEP THESE TWO BACK-TO-BACK. There is a ~2.4 ms fixed cost in this pass that
+  // scales with neither resolution nor step count (docs/PERF_MEASUREMENT.md
+  // § "A ~3 ms FIXED COST"). It looked exactly like a write→read flush stall — the
+  // apply samples the target the march just wrote — so on 2026-08-11 the two were
+  // split and the whole cloud pipeline (~17 ms, provably independent) was moved
+  // into the gap. **That was MEASURED and REVERTED: it made every scenario 0.3–0.7 ms
+  // SLOWER, including the clouds-off control row where nothing moved into the gap
+  // at all.** The fixed cost is not an inter-pass stall, and separating these two
+  // costs cache locality on `apRT` — the apply wants it while it is still warm. Do
+  // not re-litigate without reading that section.
   const render = (renderer: WebGPURenderer, target: RenderTarget) => {
     renderer.setRenderTarget(apRT);
     renderer.autoClear = true;

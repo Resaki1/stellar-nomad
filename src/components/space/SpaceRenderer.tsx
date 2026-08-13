@@ -740,6 +740,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       // Pass 1.5 + 1.6: march aerial perspective at AP_RES_SCALE, then apply it
       // to the full-res scene. Owns its own intermediate target and restores
       // setRenderTarget(null) — the next pass sets its own.
+      //
+      // The two halves belong together: splitting them to put the cloud pipeline
+      // between the AP write and its read was measured on 2026-08-11 and made
+      // every scenario 0.3–0.7 ms slower. See atmospherePass.ts `render`.
       atmospherePass.render(renderer, rtB);
     }
 

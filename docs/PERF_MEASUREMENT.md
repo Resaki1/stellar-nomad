@@ -770,8 +770,13 @@ so it cannot sustain a frame loop or read back the WebGPU swapchain):
 3. The numbers. Clean protocol: warp `deep_space` → reload → sweep.
 
 Fallbacks if the limb shows artefacts: `AP_RES_SCALE = 0.707` (half the *area*, not a
-quarter) before dropping back; and `SAMPLE_SEGMENT_T` jitter already decorrelates step
-positions, so temporal reuse is available if it ever needs to go below 0.5.
+quarter) before dropping back below 0.5.
+
+**Correction:** an earlier draft of this section claimed `SAMPLE_SEGMENT_T` provides
+jitter that decorrelates step positions. It does not — it is a **fixed** 0.3 midpoint
+bias (its own comment says "fixed; jitter/adaptive is Phase 4"), and this pass keeps no
+temporal history. There is **no dither anywhere in the atmosphere march**, so nothing
+masks coarse sampling. That matters for step-count changes, not for resolution ones.
 
 ### RESULT — 2026-08-11 13:12, clean protocol, no visual issues reported
 
@@ -857,13 +862,298 @@ the full resolution win. And the **sky-view LUT's reported 4.27 ms is contradict
 its own straddle (≤1.80, coverage growth included)**, which supports the "reported cost
 is 35× too high" suspicion.
 
+### PENDING MEASUREMENT — `USE_SKYVIEW = false`: is the Sky-View LUT still worth having?
+
+Prediction recorded **before** measuring (method: §6 — predict which rows move, treat
+leakage as proof the attribution is wrong).
+
+Why this and not a bake-only ablation: the reported 4.3–4.7 ms is not believable
+(1.5 M step-evals should be ~0.2 ms at the march's own measured rate — 35× off) and its
+straddle bounds it at ≤1.80 ms, so "what does the bake cost" has no trustworthy answer
+to improve on. The decision-relevant question is whether the LUT should exist at all,
+and **the half-res split changed the trade-off that justified it** — sky-ray marching
+is now ~3× cheaper than when the LUT was added. The LUT has exactly one consumer
+(`sampleSkyView`), and `USE_SKYVIEW = false` forces `uSkyViewBlend = 1`, a clean
+full-march fallback.
+
+`uSkyViewBlend = smoothstep(60, 150, altKm)`, so:
+
+| scenario | alt | blend now | bake? | prediction |
+|---|---|---|---|---|
+| earth_120 | 120 km | **0.741** | yes | **clearest win** — already ¾ marching yet paying the full bake |
+| earth_30 | 30 km | **0.000** | yes | swaps bake for a full sky march — **sign unknown** |
+| earth_8 | 8 km | **0.000** | yes | swaps bake for a full sky march — **sign unknown** |
+| earth_250 and above | ≥250 km | 1.000 | no (alt > 180) | **must be flat** |
+| deep_space, belt | — | — | no | **must be flat** |
+
+Any movement in the 11 flat rows means the attribution is wrong, not that the change
+worked.
+
+**Quality points the same way, which is why this is worth doing even at perf parity:**
+shafts baked into the 200×256 lattice band the low-altitude sky — a documented KNOWN
+LIMITATION with two attempted per-pixel fixes, both reverted. Marching gives crisp
+per-pixel shafts. Perf-neutral-or-better ⇒ delete the subsystem and the limitation
+with it.
+
+**Scenario-coverage caveat:** every scenario looks *at* the planet, so sky pixels are a
+minority in all of them — this sweep systematically **under**-measures both the LUT's
+benefit and the march's added cost. Judge quality by looking **up** from low altitude
+by hand. (Still-open gap: `earth_up_8` / `earth_horizon_8` / `earth_up_120` scenarios.)
+
+### RESULT — `USE_SKYVIEW = false`, measured 2026-08-11 14:24
+
+`gates.skyViewBaked` is `false` on every row and the `1d sky-view LUT` pass is gone, so
+the bake definitely stopped. Frame p50 vs the 13:12 run:
+
+| scenario | prev | new | Δ | predicted |
+|---|---|---|---|---|
+| earth_120 | 17.50 | 17.40 | **−0.10** | must move ✓ |
+| earth_30 | 18.10 | 17.80 | **−0.30** | must move ✓ |
+| earth_8 | 17.80 | 17.50 | **−0.30** | must move ✓ |
+| belt | 5.90 | 6.10 | +0.20 | flat (CPU-bound row, cpu p50 also moved 4.30 → 3.80) |
+| earth_750 | 11.30 | 11.50 | +0.20 | flat |
+| earth_250 | 15.70 | 15.80 | +0.10 | flat |
+| earth_3900 | 8.30 | 8.40 | +0.10 | flat |
+| other 7 | — | — | 0.00 | flat ✓ |
+
+**The prediction held in direction and location** — all three predicted rows moved, and
+they are the only ones that moved *faster*. But the honest conclusion is about
+magnitude: **the largest delta anywhere is 0.30 ms, which is exactly the run-to-run
+reproducibility floor.** So:
+
+**⚠ PROFILER ARTIFACT #5 — the whole Sky-View subsystem cost ≲0.3 ms, not 4.3–4.7 ms.**
+Bake *and* sample together are indistinguishable from zero. The reported 4.3–4.7 ms was
+a phantom, as the step-eval arithmetic predicted (1.5 M step-evals should be ~0.2 ms).
+Cause is almost certainly a write→read barrier stall inside the timestamp span: the main
+pass samples the LUT in the same frame it is baked. **General rule: a small pass whose
+output is consumed later in the same frame will over-report.**
+
+**Decision: keep `USE_SKYVIEW = false`.** It is not a perf lever — but it is free, and it
+retires the 200×256 lattice banding of god-ray shafts (the KNOWN LIMITATION with two
+reverted fix attempts). User on looking up: *"maybe it looks a little bit better"*,
+consistent with crisp per-pixel shafts replacing the lattice smear.
+
+Note the orientation caveat cuts the reassuring way here: looking **up** from low
+altitude, rays exit the shell in ~90 km versus 300 km+ toward the horizon, so sky-up
+pixels are *cheaper* per pixel than the ground pixels already being marched. Dropping
+the LUT is therefore not a perf risk in the orientation the scenario set fails to cover.
+
+Dead code left in place deliberately (the never-taken `uSkyViewBlend < 0.999` branch is
+uniform-valued and free; the unused LUT is one 200×256 RGBA16F ≈ 400 KB). Removing it is
+a cleanup, not a perf fix.
+
+### PENDING — `MAIN_STEPS` 32 → 16
+
+Prediction recorded before measuring. The march runs wherever `uActive = 1`, so:
+
+- **`deep_space` must be flat** (no body in range → no march at all).
+- **Everything else should move**, but the five rows pinned at 8.30 (12629, 6629, 4100,
+  3900, 2100) cannot show it — see the harness gap below.
+- Measurable rows, if it scales a true 2× on the march (reported `1.5` minus ~0.8 ms of
+  apply, halved): `earth_1900` 9.70 → ~6.7 and `earth_750` 11.50 → ~7.6 **should both
+  reach the cap**; `earth_650` 13.60 → ~9.7; `earth_250` 15.80 → ~11.6;
+  `earth_120` 17.40 → ~13.2; `earth_30` 17.80 → ~13.5; `earth_8` 17.50 → ~13.4.
+- If it instead scales like the resolution cut did (~0.7 of ideal), the deck lands
+  ~14.6 ms. **Either way the whole ladder clears 60 fps.**
+
+Watch for **banding** on the limb, the terminator and the twilight sky — there is no
+dither to hide it (see the correction above). Fallback ladder: 24 steps, then a
+blue-noise dither via the existing `stbnTexture.ts` / BAYER infrastructure.
+
+### RESULT — `MAIN_STEPS` 32 → 16, measured 2026-08-11 15:08. **≥60 fps everywhere.**
+
+| scenario | frame p50 | fps | | scenario | frame p50 | fps |
+|---|---|---|---|---|---|---|
+| deep_space | 8.30 → 8.30 | 120 (cap), **flat ✓** | | earth_1900 | 9.70 → **8.30** | 103 → **120 (cap)** |
+| belt | 6.10 → 5.70 | 164 → 175 | | earth_750 | 11.50 → **8.80** | 87 → **114** |
+| earth_12629 | 8.30 → 8.30 | 120 (cap) | | earth_650 | 13.60 → **11.10** | 74 → **90** |
+| earth_6629 | 8.30 → 8.30 | 120 (cap) | | earth_250 | 15.80 → **13.10** | 63 → **76** |
+| earth_4100 | 8.30 → 8.30 | 120 (cap) | | earth_120 | 17.40 → **14.90** | 57 → **67** |
+| earth_3900 | 8.40 → 8.30 | 119 → 120 (cap) | | earth_30 | 17.80 → **15.40** | 56 → **65** |
+| earth_2100 | 8.30 → 8.30 | 120 (cap) | | earth_8 | 17.50 → **14.90** | 57 → **67** |
+
+`deep_space` flat as predicted (no body → no march), `earth_1900` reached the cap as
+predicted, no leakage. **Every scenario is now ≥64 fps; the ≥60 target is met.**
+No banding reported.
+
+**My 2× prediction was wrong — it delivered 1.4×.** The reasoning ("halving steps halves
+the dependent chain without cutting occupancy, so it should beat the resolution cut's
+efficiency") does not survive the data. Both levers deliver the *same* ~70% of ideal, and
+that regularity is the actual finding:
+
+### ⚠ A ~3 ms FIXED COST that scales with NEITHER resolution NOR step count
+
+Marginal cost of a step-eval, from the two levers independently (frame-time ground
+truth at `earth_8`, so no timestamps involved):
+
+| lever | step-evals removed | frame saved | marginal rate |
+|---|---|---|---|
+| resolution 4× (full → half) | 130.4 M | 14.55 ms | **8.96 G/s** |
+| steps 2× (32 → 16) | 21.8 M | 2.60 ms | **8.38 G/s** |
+
+Two completely different changes agree on **~8.7 G step-evals/s**. So the marginal
+model is solid — and it leaves a residual:
+
+```
+atmosphere family at earth_8, 16 steps, half res:   6.30 ms  (ground truth)
+  step-evals   21.8 M / 8.7 G/s                  = 2.51 ms
+  apply blit   (clean deep_space measurement)     = 0.75 ms
+  ─────────────────────────────────────────────────────────
+  UNEXPLAINED                                      3.04 ms
+```
+
+A three-point fit across all measurements — full-res/32, half-res/32, half-res/16 —
+gives `cost = 3.2 ms + work / 8.5 G/s` and predicts all three within 0.25 ms. A term
+independent of *both* pixels and steps is the only thing that explains 2.88×-from-4× and
+1.4×-from-2× simultaneously; neither a per-pixel term nor a per-step term can.
+
+**This ~3 ms is now 48% of the atmosphere family and the single largest item in the
+frame.** Leading hypothesis: a **GPU bubble from the apRT write → read dependency** —
+the AP march writes the half-res target and the apply pass samples it immediately, so
+the GPU stalls waiting for the write to flush. That is the same mechanism as profiler
+artifacts #4 and #5, except here it costs real frame time rather than just mis-reporting.
+
+Candidate fixes, cheapest first:
+1. **Reorder passes** so independent work sits between the AP march and the apply. Note
+   the BSM cannot move after the march (the march taps it for god rays), but the cloud
+   marcher (~9.8 ms) looks independent of both `apRT` and `rtB` — verify before trusting.
+   Free if it works, and it is simultaneously the test and the fix.
+2. **Merge the apply into a pass that already reads `rtB`** (cloud composite / local
+   scene), removing the round trip entirely.
+3. Confirm-only: `AP_RES_SCALE = 0.25` should save just ~0.6 ms of work if the model
+   holds, versus ~1.9 ms if the residual is really pixel-dependent after all.
+
+**Quality note from this change** (user-observed): *"the shadows the clouds throw into
+the atmosphere … not really worse, just different"*. Expected and worth naming — god rays
+tap the BSM **per march step**, so halving the steps halves the shaft sampling rate along
+each ray. Shafts get slightly chunkier. This is the one real fidelity cost of the step
+cut, and it is recoverable independently (tap the BSM on a different cadence than the
+medium samples) if it ever reads wrong.
+
+### PENDING — pass reorder: put the cloud pipeline inside the AP march → apply gap
+
+Refined model first. The pre-split build had no `apRT` round trip at all, so fitting
+`cost = bubble + P·px + S·px·steps` across all three measurements at `earth_8`
+(pre-split full/32 = 23.65, post-split half/32 = 8.35, half/16 = 5.81) pins each term —
+and the bubble term is only needed for the **post-split** rows:
+
+| term | value | scales with |
+|---|---|---|
+| **bubble** | **2.44 ms** | **nothing — appeared *with* the split** |
+| step work | 2.54 ms (at 16 steps) | pixels × steps |
+| per-pixel setup | 0.83 ms (at half res) | pixels |
+| apply blit | 0.75 ms | pixels |
+| total | 6.56 ms | — measured 6.56 ✓ |
+
+`S = 0.117 ms per Mpx per step` and `P = 0.611 ms per Mpx` both come out physically
+sensible, and the fit reproduces the pre-split 23.65 ms with **no bubble term** — which is
+what a write→read flush stall predicts, since that dependency did not exist before.
+
+**The change:** `AtmospherePass.render()` is split into `marchAP()` and `applyAP()`.
+`marchAP` stays at pass 1.5; `applyAP` moves down to just before the cloud composite, so
+the marcher + reconstruction (~17 ms) sit between writing the half-res AP target and
+sampling it.
+
+Verified safe before moving it: the cloud marcher and reconstruction bind **only** the
+sparse colour/depth and history RTs — `rg` finds no reference to the scene target in
+either module — and everything that *does* read `rtB` (the composite, which blends with
+`autoClear` off; the local scene; post) comes after the new call site. Both call sites
+carry the same `atmospherePass && rtB` guard, so they stay symmetric.
+
+Prediction, recorded before measuring — with a built-in control group, because the cloud
+pipeline is gated on `cloudsVisible` (below 700 km): clouds-on rows should gain **−2.4 ms**,
+`earth_750` (clouds off, nothing to fill the gap) should be **unchanged**.
+
+### ❌ RESULT 2026-08-11 18:51 — REFUTED ON BOTH ARMS, AND REVERTED
+
+| scenario | before | after | Δ | clouds | predicted |
+|---|---|---|---|---|---|
+| earth_650 | 11.10 | 11.40 | **+0.30** | on | −2.4 |
+| earth_250 | 13.10 | 13.50 | **+0.40** | on | −2.4 |
+| earth_120 | 14.90 | 15.50 | **+0.60** | on | −2.4 |
+| earth_30 | 15.40 | 16.00 | **+0.60** | on | −2.4 |
+| earth_8 | 14.90 | 15.60 | **+0.70** | on | −2.4 |
+| **earth_750** | 8.80 | 9.40 | **+0.60** | **off — control** | **0.00** |
+| belt | 5.70 | 5.90 | +0.20 | off | 0.00 |
+| deep_space, ≥1900 km | 8.30 | 8.30 | 0.00 | capped — uninformative | — |
+
+**Every row moved the same direction: slower.** The clouds-on rows went the *opposite*
+way from the prediction, and the control row — where nothing at all moved into the gap —
+regressed by the same amount. That second fact is what kills the hypothesis: a change
+that only reorders work around the cloud pipeline cannot slow down a frame that has no
+cloud pipeline, so the regression is not about filling the gap.
+
+**Conclusion: the ~2.4 ms fixed cost is NOT an inter-pass write→read flush stall.**
+Reverted to the adjacent ordering, with a warning comment at both sites.
+
+Two secondary observations worth keeping:
+- The reported `1.5` and `1.6` **stopped being near-equal** once separated (6.95 vs 9.28
+  at `earth_120`). So artifact #4's duplication was caused by *adjacency* — which is
+  self-consistent, and means the duplication is a property of the measurement, not of the
+  work.
+- The apply's reported time *rose* (6.6→8.0 … 7.1→10.0 ms) when moved later. The most
+  likely mechanism for the regression is the opposite of the hypothesis: adjacency was
+  **helping** via cache/tile locality on `apRT`, and ~17 ms of cloud work in between
+  evicts it. Splitting also adds render-pass transitions.
+
+What the ~2.4 ms actually is remains **unknown**. The remaining candidate is a general
+occupancy/latency floor inside the march itself — which is where the "latency-bound"
+reading pointed before the two-lever symmetry argued against it. It is not resolved, and
+it should not be guessed at again without a way to measure inside a pass (Xcode Metal
+capture on the GPU process, per §1).
+
+## 8. The frame is now BALANCED — and that changes the shape of the remaining work
+
+Best build is the 15:08 one (half-res AP, 16 steps, no Sky-View, adjacent ordering).
+Budget at `earth_8`, the worst case, at **14.90 ms / 67 fps**:
+
+| item | ms | % | how measured |
+|---|---|---|---|
+| atmosphere family | 6.56 | 44% | reported `1.5` ≈ ground truth (artifact #4) |
+| cloud pipeline | 2.30 | 15% | straddle 750 → 650, stable across **3** sweeps |
+| BSM taps | ~2.1 | 14% | straddle scaled by the resolution cut, + coverage |
+| post (bloom) | 1.80 | 12% | per-pass, unsaturated rows agree |
+| scaled scene | 1.33 | 9% | per-pass |
+| froxel + local | 0.60 | 4% | per-pass |
+| **total** | **14.69** | | vs frame **14.90** — closes to 0.2 ms |
+
+**120 fps at the deck needs −6.57 ms, and there is no longer a single lever that gets
+it.** When this work started, one pass was 74–90% of the frame; now the top six items are
+6.6 / 2.3 / 2.1 / 1.8 / 1.3 / 0.6. Reaching 8.33 ms means roughly halving *everything*.
+
+That is the honest state, and it is a normal place for a renderer to arrive. The mid band
+(≥2100 km) is already at 120 and done.
+
+Candidate program, with sizes, if 120 at the deck is wanted:
+
+| change | est. saving | risk |
+|---|---|---|
+| `AP_RES_SCALE` 0.5 → 0.35 (step work 2.54→1.24, setup 0.83→0.41) | ~1.7 ms | more upsample blur |
+| post/bloom: fewer mips, or half-res high-pass | ~0.9 ms | affects the whole game's look |
+| cloud pipeline: `CLOUD_MAX_DPR` or march steps | ~1.0 ms | cloud detail — the thing being built |
+| BSM taps: every Nth step, or a coarser mip (task #8) | ~1.0 ms | god-ray shaft fidelity |
+| the unexplained 2.4 ms atmosphere floor | up to 2.4 ms | mechanism unknown after the refutation |
+
+The first four sum to ~4.6 ms → ~10.3 ms → **97 fps**. Closing the last gap to 120
+requires cracking the 2.4 ms floor, which needs in-pass profiling (Xcode Metal capture),
+not another guess.
+
 ### ⚠ HARNESS GAP: the mid band is now unmeasurable
 
-`earth_4100`, `earth_3900`, `earth_2100`, `earth_12629`, `earth_6629` and `deep_space`
-all sit at exactly 8.30 ms. **The froxel gate straddle (4100 → 3900) is dead** — both
-sides cap — and the BSM straddle only yields a floor. Any further work in that band
-needs an off-vsync measurement mode (or a higher-refresh display) before it can be
-attributed at all.
+**Now blocking, as of the 15:08 run.** Eight of fourteen scenarios sit at exactly
+8.30 ms: `deep_space`, `belt` (CPU-bound anyway), `earth_12629`, `earth_6629`,
+`earth_4100`, `earth_3900`, `earth_2100`, `earth_1900`.
+
+- The **froxel straddle** (4100 → 3900) is dead — both sides cap.
+- The **BSM straddle** (2100 → 1900) is now dead too — both sides cap. It gave a
+  ≥1.37 ms floor last run; it gives nothing now.
+- Only the **cloud straddle** (750 → 650) still works, and 750 is at 8.80 ms — one more
+  win and it goes too. (It has read +2.30/+2.35 ms in three consecutive sweeps, so the
+  cloud pipeline's cost is at least well established before we lose the instrument.)
+
+Any further attribution below 4100 km needs an off-vsync mode first. Options: render N
+times per frame and divide; scale the canvas up to re-saturate the GPU (canvas size is
+already normalised across runs); or present without waiting for vblank.
 
 **Second lever, after that:** the +5.60 ms of cloud-shadow taps below 2000 km. Tap
 every Nth step and interpolate, or fold the shadow term into the AP froxel. Note
