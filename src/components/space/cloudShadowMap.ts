@@ -310,9 +310,18 @@ export type CloudShadowMap = {
     cameraScaledPos: THREE.Vector3,
     earthMesh: THREE.Object3D,
   ) => void;
-  /** Render the BSM for this frame. SYNCHRONOUS; call after updateWindow and
-   *  BEFORE any consumer (froxel/sky-view/main atmosphere pass). */
-  bake: (renderer: WebGPURenderer) => void;
+  /**
+   * Render the BSM for this frame. SYNCHRONOUS; call after updateWindow and
+   * BEFORE any consumer (froxel/sky-view/main atmosphere pass).
+   *
+   * The two expensive renders are SKIPPED when no bake input changed — see the
+   * bake-cache note in the implementation. The 1-fragment ship probe always runs.
+   *
+   * @param fieldUnstable Force the expensive renders and do not cache the result.
+   *   Pass true while the cloud volumes are still baking, so a half-built field
+   *   can never be cached as final.
+   */
+  bake: (renderer: WebGPURenderer, fieldUnstable?: boolean) => void;
   dispose: () => void;
 };
 
@@ -595,6 +604,43 @@ export function createCloudShadowMap(
   const _up = new THREE.Vector3();
   const _center = new THREE.Vector3();
 
+  // ── Bake cache: rebake ONLY when a bake input actually changed ──────────────
+  //
+  // MEASURED 2026-08-13: the bake is 1.7–2.4 ms, the largest single item in the
+  // frame (docs/PERF_MEASUREMENT.md). And it was running EVERY frame while
+  // producing a bit-identical image, because its output is a pure function of just
+  // four things — and none of them change frame to frame in the common case:
+  //
+  //   • the cloud field   — static; drift (uCloudUvOffset) is not animated yet
+  //   • the sun direction — static (nothing orbits or rotates)
+  //   • the window basis  — derived purely from the sun direction ⇒ static
+  //   • the window centre — already TEXEL-SNAPPED above, so it only changes when
+  //                         the camera moves a whole 5.86 km texel
+  //
+  // So with the camera parked (every bench scenario) the second and every later
+  // bake was pure waste, and in flight a rebake is needed roughly every 5.86 km of
+  // sun-perpendicular travel rather than 60–120 times a second.
+  //
+  // The check compares the ACTUAL inputs rather than assuming what is static, so it
+  // is self-correcting: animate cloud drift, add planetary rotation, or make the
+  // sun move, and rebaking simply resumes. The centre is compared as integer texel
+  // SNAP INDICES, so that part needs no epsilon.
+  //
+  // `_bakeDirty` starts true ⇒ the first bake always happens. Note the noise
+  // volumes are already drained before this runs (SpaceRenderer calls
+  // flushCloudBakes earlier in the same frame), and `bake(renderer, true)` forces a
+  // rebake for callers that know the field is still settling.
+  let _bakeDirty = true;
+  let _bakedSnapX = NaN;
+  let _bakedSnapY = NaN;
+  const _bakedSunDir = new THREE.Vector3(NaN, NaN, NaN);
+  const _bakedUvOffset = new THREE.Vector2(NaN, NaN);
+  let _bakedOuterRadius = NaN;
+  // Snap indices computed by the latest updateWindow, committed to the cache only
+  // once a bake actually succeeds.
+  let _pendingSnapX = NaN;
+  let _pendingSnapY = NaN;
+
   const updateWindow: CloudShadowMap["updateWindow"] = (
     cameraScaledPos,
     earthMesh,
@@ -629,8 +675,10 @@ export function createCloudShadowMap(
     const texel = (2 * half) / BSM_SIZE;
     const cx = _earthCam.dot(_right);
     const cy = _earthCam.dot(_up);
-    const cxS = Math.round(cx / texel) * texel;
-    const cyS = Math.round(cy / texel) * texel;
+    const snapX = Math.round(cx / texel);
+    const snapY = Math.round(cy / texel);
+    const cxS = snapX * texel;
+    const cyS = snapY * texel;
     _center
       .copy(_right)
       .multiplyScalar(cxS)
@@ -644,21 +692,58 @@ export function createCloudShadowMap(
     U.invModel.value.copy(_inverseModel);
     // L3 ship probe receiver (ship ≈ camera; _earthCam already computed above).
     U.shipPos.value.copy(_earthCam);
+
+    // Does the next bake actually have anything new to draw? See the bake-cache
+    // note above. Snap indices are integers so they compare exactly; the sun
+    // direction gets an epsilon because `_inverseModel` is re-inverted every frame
+    // (the floating origin shifts its translation) and that leaves ~1e-12 jitter in
+    // the rotation part. 1e-12 on a squared distance ≈ 1e-6 rad — far below
+    // anything visible, far below any real sun motion.
+    if (
+      snapX !== _bakedSnapX ||
+      snapY !== _bakedSnapY ||
+      _sunDirEarth.distanceToSquared(_bakedSunDir) > 1e-12 ||
+      !uCloudUvOffset.value.equals(_bakedUvOffset) ||
+      (U.outerRadius.value as number) !== _bakedOuterRadius
+    ) {
+      _bakeDirty = true;
+    }
+    _pendingSnapX = snapX;
+    _pendingSnapY = snapY;
   };
 
-  const bake: CloudShadowMap["bake"] = (renderer) => {
+  const bake: CloudShadowMap["bake"] = (renderer, fieldUnstable = false) => {
     if (!(renderer as unknown as { backend?: { device?: unknown } }).backend?.device)
       return;
-    renderer.setRenderTarget(bsmRT);
-    renderer.render(scene, bakeCamera);
-    // Blur into the soft map (same queue → ordered before any consumer read).
-    renderer.setRenderTarget(bsmSoftRT);
-    renderer.render(blurScene, bakeCamera);
-    // L3 ship probe (1 fragment; reads the sharp map just written — same-queue
-    // ordering makes the same-frame read safe).
+    // Skip the two EXPENSIVE renders when nothing that feeds them has changed —
+    // the existing map is already the exact image they would redraw. See the
+    // bake-cache note above. Worth 1.7–2.4 ms.
+    const rebake = _bakeDirty || fieldUnstable;
+    if (rebake) {
+      renderer.setRenderTarget(bsmRT);
+      renderer.render(scene, bakeCamera);
+      // Blur into the soft map (same queue → ordered before any consumer read).
+      renderer.setRenderTarget(bsmSoftRT);
+      renderer.render(blurScene, bakeCamera);
+    }
+    // L3 ship probe — ALWAYS, even on a cached frame. It is a single fragment, and
+    // the ship keeps moving *within* a texel while the window stands still, so its
+    // lighting must track that. Reads the sharp map (fresh or cached); same-queue
+    // ordering makes the same-frame read safe either way.
     renderer.setRenderTarget(shipProbeRT);
     renderer.render(probeScene, bakeCamera);
     renderer.setRenderTarget(null);
+
+    // Commit the cache only after the expensive renders actually ran, and never
+    // while the caller says the cloud field is still settling.
+    if (rebake && !fieldUnstable) {
+      _bakeDirty = false;
+      _bakedSnapX = _pendingSnapX;
+      _bakedSnapY = _pendingSnapY;
+      _bakedSunDir.copy(U.sunDir.value as THREE.Vector3);
+      _bakedUvOffset.copy(uCloudUvOffset.value as THREE.Vector2);
+      _bakedOuterRadius = U.outerRadius.value as number;
+    }
     // Async 1-px readback every Nth frame. FIRE-AND-FORGET — never awaited in
     // the frame loop (plan risk #7); the in-flight flag stops promise pile-up
     // if a backend maps slowly. Value lands 1-2 frames later; the consumer-side

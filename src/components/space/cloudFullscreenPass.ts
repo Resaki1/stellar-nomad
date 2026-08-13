@@ -169,7 +169,7 @@ export type CloudPipeline = {
     earthMesh: THREE.Object3D,
   ) => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  bakeCloudShadowMap: (renderer: any) => void;
+  bakeCloudShadowMap: (renderer: any, fieldUnstable?: boolean) => void;
   hasCloudShadowMap: () => boolean;
 
   /**
@@ -668,7 +668,8 @@ export function setupCloudPipeline(
     updateCloudShadowMap: (cameraScaledPos, earthMesh) =>
       shadowMap?.updateWindow(cameraScaledPos, earthMesh),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    bakeCloudShadowMap: (renderer: any) => shadowMap?.bake(renderer),
+    bakeCloudShadowMap: (renderer: any, fieldUnstable?: boolean) =>
+      shadowMap?.bake(renderer, fieldUnstable),
     hasCloudShadowMap: () => shadowMap !== null,
     getVolumetricBlend: () => opts.uVolumetricBlend.value as number,
     dispose,

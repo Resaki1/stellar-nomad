@@ -103,6 +103,18 @@ const MS_STEPS = 20;
 // per-pixel noise, though the half-res → full-res bilinear upsample does smooth
 // some of it. Blue-noise infrastructure already exists (stbnTexture.ts, and the
 // cloud marcher's BAYER cycle) if it comes to that.
+// Per-pixel screen march step count. Restored to 16 after the 2026-08-13 diagnostic
+// build (MAIN_STEPS = 2) confirmed the fixed-cost floor is real.
+//
+// MEASURED at earth_8, half res: 16 steps → `1.5 atmosphere` 6.37 ms; 2 steps → 4.47.
+// That gives S = 0.0997 ms per Mpx per step and, extrapolated to zero steps, **4.20 ms
+// of cost that is not step work at all**. Minus the ~0.70 ms apply blit, the march
+// carries a **~3.50 ms fixed cost — 55% of the pass, and the single largest item in the
+// frame** (23% of earth_8's 15.30 ms).
+//
+// So step count is NOT where the remaining time is: driving steps to zero would save
+// only ~2.2 ms of the 6.37. Do not spend quality here again without re-reading
+// docs/PERF_MEASUREMENT.md § "the fixed cost is real".
 const MAIN_STEPS = 16;
 const SAMPLE_SEGMENT_T = 0.3; // reference midpoint bias for the screen march
 
@@ -181,6 +193,23 @@ const MS_CLOUD_SHADOW = 0.5;
 // LUT-lattice banding ever needs solving (post-blur the marched shafts look
 // correct). Default OFF.
 const GODRAYS_SKY_MARCH = false;
+
+// ⚠ DO NOT try to make the per-step BSM tap cheaper — MEASURED, IT IS ALREADY FREE.
+// On 2026-08-13 the tap was strided to every 2nd march step (held across the pair,
+// sampled at the pair centre, skipped via a uniform-valued `If(s.mod(2) == 0)` so
+// the fetch genuinely did not execute). Removing EIGHT dependent fetches per pixel
+// moved `1.5 atmosphere` by a mean of **−0.17 ms** and frame p50 by **0.00…−0.10 ms**,
+// i.e. nothing above the 0.4 ms noise floor. The control group was perfect: every
+// `bsmStrength = 0` row moved exactly 0.00. Reverted — it cost god-ray fidelity for
+// no frame time. ≈21 µs per fetch per frame at 1.36 Mpx: the BSM is a 512² map, small
+// enough to stay in cache, unlike the transmittance/MS LUTs or the 3D noise volumes.
+//
+// COROLLARY, and this is the useful part: the +5.60 ms that the 2000 km gate cost
+// pre-half-res is therefore NOT the march taps. Nor is it the planet surface shader's
+// 5-tap penumbra (`1 scaled scene` moves only +0.12 ms across that same gate). What
+// is left is the **bake** — 3 renders × 512² × 24 steps ≈ 18.9 M step-evals ≈ 2.2 ms
+// at the measured 8.7 G step-evals/s. Attack the bake's step count or resolution
+// (cloudShadowMap.ts), not the tap rate. See docs/PERF_MEASUREMENT.md.
 
 // ── L3: clouds shadow the ship ──────────────────────────────────────────────
 // The CPU lighting bridge multiplies the ship's key light by the smoothed BSM
@@ -267,6 +296,17 @@ export const SKYVIEW_ENABLED: boolean =
 // 0.5 = quarter the marched pixels. 1 = full res (structurally identical graph,
 // so it is a clean A/B for the upsample's quality cost — use it to bisect any
 // artefact before blaming the split itself).
+// Restored to 0.5 after the 2026-08-13 per-pixel-vs-per-pass diagnostic (0.25).
+//
+// MEASURED: quartering the pixels dropped `1.5 atmosphere` by only 1.66–1.78 ms on
+// every row — exactly the step-work term (16 × 0.0997 × (1.362 − 0.34) = 1.63) and
+// nothing more. Had the ~3.50 ms fixed cost been per-pixel, each row would have
+// dropped a further ~2.6 ms. It did not move at all.
+//
+// **So the fixed cost is per-PASS: independent of resolution AND of step count.**
+// Both knobs are therefore mined out — each can only ever reach the 2.17 ms step term,
+// and pushing either further trades quality for progressively less. Do not reach for
+// AP_RES_SCALE again as a perf lever without re-reading docs/PERF_MEASUREMENT.md.
 export const AP_RES_SCALE = 0.5;
 
 // Reconstruct PER-CHANNEL transmittance from the stored mean in the apply pass.
@@ -1677,11 +1717,22 @@ export function setupAtmospherePass(
         // ring-plane side and flipping when the camera crossed the plane. Keeping
         // the full march preserves that darkening; only the ADDED glow is
         // occluded. Ringless bodies: hitF/opacity 0 → cover 0 → L unchanged.
-        const ringView = rayRingHit(ro, rd);
-        const ringInFrontCover: Node = ringView.hitF
-          .mul(ringOpacityAt(ringView.rHit))
-          .mul(select(ringView.t.lessThan(tEnd), float(1), float(0)));
-        const ringGlowKeep = float(1).sub(clamp(ringInFrontCover, 0, 1));
+        // Gated on `uRingOpacity > 0` for the same reason directSunOcclusion's ring
+        // term is (see there): a per-frame uniform makes the branch coherent across
+        // the whole draw, so it is free, and on every ringless body this is ~40 ALU
+        // ops including 6 smoothsteps computed per pixel for a guaranteed no-op.
+        // This one was missed when the in-march term was gated — and it sits in the
+        // per-pixel, OUTSIDE-the-loop part of the pass, which the 2026-08-13
+        // MAIN_STEPS=2 probe showed is 55% of the pass's cost. Saturn takes the
+        // branch and is bit-identical to before.
+        const ringGlowKeep = float(1).toVar();
+        If(uRingOpacity.greaterThan(0), () => {
+          const ringView = rayRingHit(ro, rd);
+          const ringInFrontCover: Node = ringView.hitF
+            .mul(ringOpacityAt(ringView.rHit))
+            .mul(select(ringView.t.lessThan(tEnd), float(1), float(0)));
+          ringGlowKeep.assign(float(1).sub(clamp(ringInFrontCover, 0, 1)));
+        });
 
         // Per-pixel raymarch (default = neutral AP when skipped or tMax≤0).
         // GROUND rays always march (fine-grained surface aerial perspective); SKY
@@ -2101,6 +2152,23 @@ export function setupAtmospherePass(
       uActive.value = 0;
       return;
     }
+    // Restored to 1 after the 2026-08-13 ground-truth march ablation.
+    //
+    // ⚠ THE ATMOSPHERE MARCH IS DONE AS AN OPTIMISATION TARGET. Setting this to 0
+    // deletes the entire march (both passes still run, targets unchanged, apply does
+    // `scene·1 + 0`) and MEASURED only **−2.56 ms** of frame time across six rows
+    // (earth_8 15.30 → 12.70). That is the hard ceiling on everything this march could
+    // ever give — and it is ≈ the 2.17 ms step-work term, so **the march has no
+    // meaningful fixed cost of its own.**
+    //
+    // The "~3.5 ms fixed cost" chased over three rounds was substantially a MEASUREMENT
+    // ARTIFACT: with the march off these passes still *report* 4.07 ms at earth_8
+    // (gpu/frame 3.3, saturated, spans overlap) but only 0.38 ms at deep_space
+    // (gpu/frame 0.8, unsaturated) — same passes, same targets, same full-res writes.
+    //
+    // LESSON: when gpu/frame > 1.15, ABLATE. Do not do arithmetic on reported per-pass
+    // numbers, however self-consistent the model looks. One ablation settled in a single
+    // sweep what three rounds of curve-fitting got wrong. See docs/PERF_MEASUREMENT.md.
     uActive.value = 1;
     uCameraMatrixWorld.value.copy(scaledCamera.matrixWorld);
     uTanHalfFov.value = Math.tan((scaledCamera.fov * Math.PI) / 180 / 2);

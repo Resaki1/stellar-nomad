@@ -1102,7 +1102,563 @@ reading pointed before the two-lever symmetry argued against it. It is not resol
 it should not be guessed at again without a way to measure inside a pass (Xcode Metal
 capture on the GPU process, per §1).
 
-## 8. The frame is now BALANCED — and that changes the shape of the remaining work
+### 2026-08-13 07:22 — a repeat of the 15:08 build. Revert confirmed; variance floor widened.
+
+This sweep ran 3 minutes after the commit that reverted the pass reorder, on **identical
+code** to the 15:08 run. It is therefore a variance measurement, not a change:
+
+| scenario | 15:08 | 07:22 | Δ |
+|---|---|---|---|
+| earth_750 | 8.80 | 9.00 | +0.20 |
+| earth_650 | 11.10 | 11.30 | +0.20 |
+| earth_250 | 13.10 | 13.30 | +0.20 |
+| earth_120 | 14.90 | 15.10 | +0.20 |
+| earth_30 | 15.40 | 15.70 | +0.30 |
+| earth_8 | 14.90 | 15.30 | **+0.40** |
+| all eight capped rows | 8.30 | 8.30 | 0.00 |
+
+The reorder revert restored the baseline. But **the reproducibility floor is ~0.4 ms on
+uncapped rows, not the 0.3 ms recorded earlier** — treat anything below 0.5 ms as noise.
+
+Note the trap in reading this table: *all* the movement is on BSM-active rows, which looks
+like a pattern until you notice those are simply the only rows not pinned at the vsync cap.
+The capped rows cannot vary. With 8 of 14 scenarios capped, "where the variance appeared"
+carries almost no information any more — another reason the off-vsync mode matters.
+
+**⚠ A PROCESS FAILURE WORTH NOT REPEATING.** This sweep was initially read as a
+measurement of `GODRAY_SHADOW_STRIDE = 2`, and a conclusion ("BSM taps are free, so the
+2000 km gate cost must be the bake") was drawn from it. **The stride change was not in the
+tree** — the worktree had been reset to HEAD, discarding it. Check `git status` / grep for
+the knob before attributing a sweep to a change. A clean worktree after an edit is the
+tell.
+
+### PENDING (re-applied 2026-08-13) — `GODRAY_SHADOW_STRIDE = 2`
+
+The naive form is a trap: changing *where* the tap happens still taps once per step. The
+saving needs the fetch skipped, so the tap sits inside `If(s.mod(2) == 0)` — a condition on
+the **loop counter**, identical for every invocation in the draw, hence a uniform-valued
+branch and free, the same property behind the `strength > 0` and `uRingOpacity > 0` gates.
+16 dependent fetches per pixel become 8.
+
+The retained tap is at the **centre** of each pair, not its first step, so shafts are not
+biased toward the camera. Inside the branch `s` is already the group's first step, so the
+centre is `s + SAMPLE_SEGMENT_T + (stride−1)/2` — no `floor()` — and at stride 1 that
+collapses back to the step's own position, making 1 an exact no-op.
+
+Prediction — the `strength > 0` gate provides the control group for free:
+
+| rows | bsmStrength | prediction |
+|---|---|---|
+| earth_8 / 30 / 120 / 250 / 650 / 750 | 1 | **−1.0 ms** if the taps are the cost |
+| earth_1900 | 0.156 | should gain, but **capped** — cannot show |
+| deep_space, belt, ≥2100 km | **0** | **exactly flat** — the tap never runs |
+
+If the BSM-active rows move by less than ~0.5 ms, the taps are **not** the lever, and the
++5.60 ms the 2000 km gate cost pre-half-res has to be the **bake** instead (3 renders ×
+512² × 24 steps ≈ 18.9 M step-evals ≈ 2.2 ms at the measured 8.7 G step-evals/s) plus the
+planet surface shader's 5-tap penumbra. That would redirect this lever from the taps to the
+bake's step count and resolution — a genuinely useful negative result, so it is worth the
+sweep either way.
+
+### ❌ RESULT 2026-08-13 07:41 — `GODRAY_SHADOW_STRIDE = 2`: the BSM taps are already free. Reverted.
+
+Control group perfect (every `bsmStrength = 0` row exactly 0.00). But:
+
+| | frame p50 Δ | `1.5 atmosphere` Δ |
+|---|---|---|
+| earth_750 | −0.10 | −0.18 |
+| earth_650 | 0.00 | −0.07 |
+| earth_250 | −0.10 | −0.20 |
+| earth_120 | 0.00 | −0.19 |
+| earth_30 | 0.00 | −0.21 |
+| earth_8 | 0.00 | −0.18 |
+
+Removing **eight dependent BSM fetches per pixel** moved the pass by a mean of
+**−0.17 ms** and frame time by nothing above the 0.4 ms floor. That is ≈**21 µs per
+fetch per frame** at 1.36 Mpx — the BSM is a 512² map, small enough to live in cache,
+unlike the transmittance/MS LUTs or the 3D noise volumes. Reverted: it cost god-ray
+fidelity for no frame time.
+
+**COROLLARY — this redirects the BSM lever.** The +5.60 ms the 2000 km gate cost
+pre-half-res is not the march taps, and not the planet surface shader's 5-tap penumbra
+either (`1 scaled scene` moves only +0.12 ms across that gate). What remains is the
+**bake**: 3 renders × 512² × 24 steps ≈ 18.9 M step-evals ≈ **2.2 ms** at the measured
+8.7 G step-evals/s. Any future BSM work belongs in `cloudShadowMap.ts` — its step count
+and resolution — not in the tap rate.
+
+### ⚠ METAL TOOLING IS CLOSED: hardened runtime strips the debug env vars
+
+`MTL_HUD_ENABLED=1` and `MTL_CAPTURE_ENABLED=1` do **nothing** for a stock-signed
+browser, whether passed on the command line or via `launchctl setenv`. Verified by
+code signature:
+
+```
+Arc:    flags=0x10000(runtime)
+Chrome: flags=0x12a00(kill,restrict,library-validation,runtime)
+```
+
+Both are hardened-runtime signed with **no** `com.apple.security.get-task-allow`, and
+Chrome additionally sets `restrict`. macOS strips `MTL_*` and `DYLD_*` from such
+processes before they start, which is also why `launchctl setenv` changes nothing —
+same delivery path, same stripping. Xcode Metal frame capture is closed for the same
+reason. Re-signing Chromium would work but breaks its signature; not worth it.
+
+**Consequence for §1's tooling table:** the "frame capture (RenderDoc/PIX/Xcode Metal)"
+row has NO working equivalent for us. In-pass questions must be answered by **ablation
+using the existing harness**, not by an external profiler.
+
+### PENDING — diagnostic: `MAIN_STEPS = 2` to test whether the 2.44 ms floor is real
+
+⚠ Not a shipping value; the atmosphere looks wrong in this build. Restore 16 after.
+
+The fitted model says `pass = 2.44 (fixed) + 0.117·Mpx·steps + 0.611·Mpx + 0.75`. At 2
+steps the step term collapses to 0.32 ms, so whatever remains is floor + setup + apply:
+
+| hypothesis | predicted `1.5 atmosphere` at earth_8 |
+|---|---|
+| the 2.44 ms floor is real | **≈4.3 ms** |
+| there is no floor (3-point fit was overfitting) | **≈1.9 ms** |
+
+Those are 2.3× apart — far outside any noise. This is the single highest-information
+experiment available and it costs one sweep and one line. Either answer is progress: a
+real floor becomes the top remaining target, and no floor kills the whole line of
+enquiry and hands the budget back to the step term (where `AP_RES_SCALE` and
+`MAIN_STEPS` already work).
+
+### ✅ RESULT 2026-08-13 08:31 — the fixed cost is REAL, and it is bigger than fitted
+
+`MAIN_STEPS = 2` diagnostic. Predicted ≈4.3 ms if the floor is real, ≈1.9 if not.
+**Measured 4.47 ms at earth_8** — within 0.17 of one prediction and 2.4× off the other.
+
+Per-step coefficient, refitted from 16 → 2 steps across six rows (remarkably tight):
+
+| scenario | `1.5` @16 | @2 | Δ | ms/Mpx/step |
+|---|---|---|---|---|
+| earth_8 | 6.37 | 4.47 | −1.90 | 0.0996 |
+| earth_30 | 6.80 | 4.91 | −1.89 | 0.0991 |
+| earth_120 | 6.65 | 4.77 | −1.88 | 0.0986 |
+| earth_250 | 6.51 | 4.60 | −1.91 | 0.1002 |
+| earth_650 | 5.99 | 4.00 | −1.99 | 0.1044 |
+| earth_750 | 5.84 | 4.00 | −1.84 | 0.0965 |
+
+**S = 0.0997 ms per Mpx per step.** Extrapolating earth_8 to zero steps leaves
+**4.20 ms**; minus the ~0.70 ms apply blit, the march carries a **~3.50 ms fixed cost.**
+
+So the shipping 6.37 ms atmosphere family at earth_8 decomposes as:
+
+| | ms | share |
+|---|---|---|
+| step work (16 steps) | 2.17 | 34% |
+| apply blit | 0.70 | 11% |
+| **FIXED** | **3.50** | **55%** |
+
+**That 3.50 ms is the single largest item in the entire frame** (23% of earth_8's
+15.30 ms). And it reframes the two levers already spent: driving steps to *zero* would
+save only 2.2 ms of the 6.37. `MAIN_STEPS` and `AP_RES_SCALE` have both been mined out.
+
+`MAIN_STEPS` restored to 16.
+
+### LANDED — gate the ring-GLOW-occlusion term (free, zero quality change)
+
+Found while reading the newly-identified per-pixel region: the ring-glow term
+(`atmospherePass.ts` ~1711) was computed **unconditionally per pixel**, while the
+structurally identical term inside `directSunOcclusion` (~1296) has been gated on
+`uRingOpacity > 0` since 2026-08-11. The in-march one was gated; this one was missed.
+On every ringless body it is ~40 ALU ops including 6 smoothsteps for a guaranteed
+no-op, and it sits in the outside-loop region that the probe above just showed is 55%
+of the pass.
+
+Now gated the same way. Verified both branches in-engine: Earth (gate closed) renders
+correctly with clouds; **Saturn at 150,000 km (gate open) renders rings, the planet's
+shadow on the rings, the limb glow, and the ring passing in front of the atmosphere
+glow** — which is exactly what this term computes.
+
+Expected saving is honestly small — pure ALU arithmetic says ~0.05 ms, though the
+earlier in-march ring gate over-delivered relative to the same arithmetic. **It may
+well sit under the 0.4 ms noise floor and be unmeasurable.** Kept regardless: it is
+free and provably a no-op on ringless bodies. Its effect can be read later by comparing
+a normal (0.5-scale) sweep against the 07:41 run.
+
+### PENDING — diagnostic: `AP_RES_SCALE = 0.25`, per-PIXEL vs per-PASS
+
+⚠ Not a shipping value. This is the one thing we still cannot tell about the 3.50 ms,
+and it decides where to attack it. Predictions for `1.5 atmosphere` at earth_8, against
+6.37 ms at 0.5 scale:
+
+| hypothesis | step 0.54 | apply 0.70 | fixed | **total** |
+|---|---|---|---|---|
+| fixed is **per-pixel** | 0.54 | 0.70 | 3.50 × ¼ = 0.88 | **≈2.1 ms** |
+| fixed is **per-pass** | 0.54 | 0.70 | 3.50 | **≈4.7 ms** |
+
+2.2× apart. **Per-pixel** → the outside-loop work and shader occupancy are the target,
+and resolution becomes a genuine lever (which would need a quality decision).
+**Per-pass** → something structural, and resolution will never help no matter how far
+it is pushed.
+
+Note the ring gate rides along in this build. It cannot confuse the result: at most
+~0.5 ms against a 2.6 ms separation.
+
+### ✅ RESULT 2026-08-13 08:44 — the fixed cost is per-PASS. Both knobs are mined out.
+
+`AP_RES_SCALE = 0.25` diagnostic (a 4× pixel cut). Predicted ≈2.1 ms if the fixed cost
+is per-pixel, ≈4.7 if per-pass. **Measured 4.59 ms at earth_8** — within 0.11 of one,
+2.2× off the other.
+
+| scenario | `1.5` @0.5 | @0.25 | Δ measured | Δ if step-work only | Δ if fixed scaled too |
+|---|---|---|---|---|---|
+| earth_8 | 6.37 | 4.59 | **−1.78** | −1.63 | −4.26 |
+| earth_30 | 6.80 | 5.11 | **−1.69** | −1.63 | −4.26 |
+| earth_120 | 6.65 | 4.97 | **−1.68** | −1.63 | −4.26 |
+| earth_250 | 6.51 | 4.79 | **−1.72** | −1.63 | −4.26 |
+| earth_650 | 5.99 | 4.23 | **−1.76** | −1.63 | −4.26 |
+| earth_750 | 5.84 | 4.18 | **−1.66** | −1.63 | −4.26 |
+
+Every row matches "step work only". The fixed term did not move at all.
+
+**So the ~3.50 ms is per-PASS: independent of resolution AND step count.** That closes
+out both knobs — each can only ever reach the 2.17 ms step term, and pushing either
+further buys progressively less for progressively more quality. `AP_RES_SCALE` restored
+to 0.5, `MAIN_STEPS` to 16. Neither is a lever any more.
+
+### PENDING — GROUND-TRUTH ablation: force `uActive = 0`
+
+Two mechanism guesses have now been measured and refuted (the inter-pass flush stall,
+and the BSM taps). The reported numbers have produced **five** distinct artifacts. So
+the next step deliberately uses **no timestamps at all**.
+
+`uActive` gates the entire `If(uActive > 0.5)` block in `apFragment`. Setting it to 0
+leaves both passes running, both render targets identical, and the apply computing
+`scene·1 + 0` — only the march's work vanishes. **The frame-p50 delta is then the
+march's true cost, measured on ground truth.**
+
+Against the 07:41 baseline at earth_8 (frame 15.30, reported family 6.37):
+
+| hypothesis | predicted frame p50 |
+|---|---|
+| the family really costs ~6.37 (pass structure ~1.2) | **≈10.2 ms (98 fps)** |
+| most of the reported 6.37 is phantom | **≈14.x ms** |
+
+This also sets a hard **upper bound on every possible future atmosphere optimisation**:
+no amount of work on this pass can beat deleting it. If the answer is ≈14, the
+atmosphere is already cheap, the last several rounds were chasing a measurement
+artifact, and the remaining budget lives in the BSM bake, the cloud pipeline and post
+instead.
+
+Verified the ablation is actually live before measuring: at `earth_2100` the terminator
+is razor-sharp with no scattering gradient and no limb glow.
+
+### ⛔ RESULT 2026-08-13 09:05 — the "3.5 ms fixed cost" was largely a MEASUREMENT ARTIFACT
+
+Ground-truth ablation: `uActive = 0` deletes the entire march while leaving both passes
+running, both targets identical, and the apply computing `scene·1 + 0`.
+
+| scenario | frame ON | frame OFF | Δ | fps OFF | `1.5` ON | `1.5` OFF |
+|---|---|---|---|---|---|---|
+| earth_8 | 15.30 | **12.70** | −2.60 | 79 | 6.37 | 4.07 |
+| earth_30 | 15.70 | **13.10** | −2.60 | 76 | 6.80 | 4.51 |
+| earth_120 | 15.10 | **12.60** | −2.50 | 79 | 6.65 | 4.39 |
+| earth_250 | 13.20 | **10.80** | −2.40 | 93 | 6.51 | 4.19 |
+| earth_650 | 11.30 | **8.60** | −2.70 | 116 | 5.99 | 3.58 |
+| earth_750 | 8.90 | 8.30 | −0.60 | 120 (cap) | 5.84 | 3.55 |
+
+**Deleting the entire march saves 2.56 ms.** Predictions were ≈10.2 ms (family real) or
+≈14.x (family phantom); the answer, 12.70, is neither — because both predictions rested
+on the reported numbers being decomposable, and they are not.
+
+**2.56 ms ≈ the 2.17 ms step-work term. So the march has no meaningful fixed cost of its
+own.** The "~3.5 ms fixed" lives in the two fullscreen passes' structure — and even that
+is mostly inflation:
+
+| | `1.5` reported with **zero** march work | gpu/frame |
+|---|---|---|
+| earth_8 | **4.07 ms** | 3.3 — saturated, spans overlap |
+| deep_space | **0.38 ms** | 0.8 — unsaturated, trustworthy |
+
+Same passes, same targets, same full-res writes, 10× different reported cost. The
+difference is GPU saturation, not work.
+
+**⚠ THE METHODOLOGICAL LESSON, and it is the most important entry in this document:
+when `gpu/frame` > 1.15, ABLATE — do not do arithmetic on reported per-pass numbers.**
+Three consecutive rounds fitted an increasingly precise model (2.44 → 3.50 ms, a 3-point
+fit reproducing every measurement within 0.25 ms, two independent levers agreeing on
+8.7 G step-evals/s) to numbers that were partly artifact. The model's internal
+consistency was not evidence — inflated numbers can be *consistently* inflated. One
+ablation settled in a single sweep what the curve-fitting got wrong, and it is the same
+trap already catalogued as artifacts #1–#5. `§ Interpretation rule` says to read
+gpu/frame first; that rule should have stopped the arithmetic at earth_8's 3.3.
+
+### ✅ THE ATMOSPHERE IS DONE AS AN OPTIMISATION TARGET
+
+Hard ceiling: **2.56 ms** at the deck for everything the march could ever give, and the
+resolution and step levers have already taken most of what is reachable. From where this
+started — a full-res 32-step march at 23.65 ms, 74–90% of frame — the march is now worth
+2.56 ms. All diagnostics restored: `MAIN_STEPS = 16`, `AP_RES_SCALE = 0.5`, `uActive = 1`.
+
+**120 fps at the deck therefore requires the other systems**, and every remaining
+estimate for them rests on the same untrustworthy reported numbers. The next step is
+three one-line ablations, each ground truth, each one sweep:
+
+| ablation | what it measures | current *reported* (untrustworthy) |
+|---|---|---|
+| force `bsmStrength = 0` | true Beer-Shadow-Map cost | 12.20 ms |
+| force `cloudsVisible = false` | true cloud pipeline cost | ~2.3 ms (straddle, trustworthy) |
+| disable bloom | true post cost | 1.81 ms |
+
+The BSM is the big unknown: it *reports* 12.20 ms at the deck, its bake arithmetic
+suggests ~2.2 ms, and its taps measured free. Given 12.70 ms remains at the deck with the
+atmosphere march deleted, and post + scaled + froxel + local + clouds account for only
+~6 ms of it, the BSM is the largest unexplained item left. **Ablate it before touching
+it.**
+
+### PENDING — GROUND-TRUTH ablation: `BSM_ABLATE_DIAGNOSTIC = true`
+
+⚠ Not a shipping value; cloud shadows disappear. One flag in `SpaceRenderer.tsx`
+short-circuits the whole BSM block, which removes **both** the bake (3 renders × 512² ×
+24 steps) **and** every consumer — skipping the block leaves `bsmStrength = 0`, closing
+the `strength > 0` gate in the atmosphere march and the planet surface shader alike.
+Frame-p50 delta = the BSM's true total cost.
+
+Three numbers for this pass cannot all be right, which is why it needs ground truth:
+
+| source | says |
+|---|---|
+| reported `1b beer shadow map` at the deck | **12.20 ms** |
+| bake arithmetic (18.9 M step-evals at 8.7 G/s) | **~2.2 ms** |
+| its per-march taps, measured 2026-08-13 | **free** |
+
+And it is the largest unexplained item left: with the atmosphere march deleted entirely,
+`earth_8` still sat at 12.70 ms, while post (1.81) + scaled (1.42) + froxel/local (0.38)
++ clouds (~2.3, straddle-measured) account for only ~6 ms of it.
+
+Prediction — control group free, since below the gate the work does not run at all:
+
+| rows | bsmStrength | prediction |
+|---|---|---|
+| earth_750 / 650 / 250 / 120 / 30 / 8 | 1 | **should move** — magnitude is the question |
+| earth_1900 | 0.156 | should gain, but **capped** — cannot show |
+| deep_space, belt, ≥2100 km | **0** | **exactly flat** |
+
+Confirmation the ablation is live: every row must report `bsmStrength: 0` **and**
+`bsmBaked: false`. Verified in-engine at `earth_250` — clouds still render but are
+uniformly lit, with no self-shadowing between masses.
+
+**⚠ One confound, stated up front:** the baseline is the 07:41 run, which predates the
+ring-glow gate. So the measured delta is (BSM) + (ring gate, expected ≤0.5 ms and
+probably under the 0.4 ms noise floor), both in the same direction. That does not affect
+the decision at the expected BSM magnitudes, but subtract ~0.3 ms before quoting a
+number. There is no clean control for it here because every `bsmStrength = 0` row except
+`belt` is vsync-capped.
+
+If it lands near 2 ms, the bake's step count (24) and resolution (512²) are the lever.
+If it lands near 6, something else is happening and it needs its own investigation.
+
+### ✅ RESULT 2026-08-13 11:24 — the BSM costs 2.8–3.7 ms. Largest single item in the frame.
+
+| scenario | BSM on | BSM off | Δ | fps off | bsmStrength |
+|---|---|---|---|---|---|
+| earth_8 | 15.30 | **11.60** | **−3.70** | 86 | 1 |
+| earth_30 | 15.70 | **12.10** | **−3.60** | 83 | 1 |
+| earth_120 | 15.10 | **11.80** | **−3.30** | 85 | 1 |
+| earth_250 | 13.20 | **10.10** | **−3.10** | 99 | 1 |
+| earth_650 | 11.30 | **8.50** | **−2.80** | 118 | 1 |
+| earth_750 | 8.90 | 8.30 | −0.60 | 120 (cap) | 1 |
+| deep_space, belt, ≥1900 km | — | — | **0.00** | — | 0 |
+
+**Control group perfect** — every `bsmStrength = 0` row moved exactly 0.00 (belt −0.20 is
+the CPU-bound row). Gates confirm `bsmStrength: 0` and `bsmBaked: false` throughout.
+Backing out the ~0.3 ms ring-gate confound: **the BSM is ~2.5–3.4 ms.**
+
+That resolves the three mutually-inconsistent claims:
+
+| claim | verdict |
+|---|---|
+| reported `1b beer shadow map` = 12.20 ms | **phantom, 3.6× inflated** |
+| its per-march taps are free | **confirmed** |
+| bake arithmetic ≈ 2.2 ms | **wrong — and my arithmetic was wrong by 3×** |
+
+**Correction to an earlier note in this document:** the bake is *not* "3 renders × 512² ×
+24 steps". Only **one** of the three renders in `bakeCloudShadowMap` does the 24-step
+march (512² × 24 = 6.29 M step-evals ≈ **0.7 ms** at 8.7 G/s); the other two are a 512²
+blur and a 1×1 ship probe. So the bake plausibly accounts for only ~0.7 of the ~3.4 ms,
+which would make `BSM_MARCH_STEPS` and `BSM_SIZE` nearly pointless as levers.
+
+### PENDING — split the 3.4 ms: `BSM_CONSUMERS_ABLATE_DIAGNOSTIC = true`
+
+Leaves the bake running and zeroes only the strength, closing every consumer gate. Then
+`full − this` = the consumers, and `this − full-off` = the bake.
+
+| hypothesis | predicted earth_8 frame | ⇒ lever |
+|---|---|---|
+| bake ~0.7, consumers ~2.7 | **≈12.3 ms** | cheapen the **consumers** |
+| bake ~2.7, consumers ~0.7 | **≈14.3 ms** | cheapen the **bake** |
+
+2 ms apart. Same control group as before: `bsmStrength = 0` rows exactly flat.
+
+This is deliberately one more ablation rather than a change: the bake's step count and
+resolution are the obvious knobs, and the arithmetic says they may be worth almost
+nothing. Given that arithmetic on this pass has now been wrong twice (12.20 reported,
+2.2 estimated, ~3.4 actual), the split gets measured before anything gets tuned.
+
+### ✅ RESULT 2026-08-13 13:46 — the BSM split: bake 1.7–2.4 ms, consumers 1.1–1.3 ms
+
+| scenario | full | consumers off | all off | ⇒ consumers | ⇒ **bake** |
+|---|---|---|---|---|---|
+| earth_8 | 15.30 | 14.00 | 11.60 | 1.30 | **2.40** |
+| earth_30 | 15.70 | 14.40 | 12.10 | 1.30 | **2.30** |
+| earth_120 | 15.10 | 14.00 | 11.80 | 1.10 | **2.20** |
+| earth_250 | 13.20 | 12.10 | 10.10 | 1.10 | **2.00** |
+| earth_650 | 11.30 | 10.20 | 8.50 | 1.10 | **1.70** |
+
+Predicted ≈12.3 (bake small) or ≈14.3 (bake large); measured **14.00**. **The bake
+dominates**, so the lever is `bakeCloudShadowMap` — `BSM_MARCH_STEPS` (24), `BSM_SIZE`
+(512), or baking on alternate frames — not the consumers.
+
+**⚠ THIRD WRONG PREDICTION ON THIS ONE PASS, and a new portable lesson.** I predicted the
+bake at ~0.7 ms from "512² × 24 = 6.29 M step-evals at 8.7 G step-evals/s". Actual 2.40.
+The 8.7 G/s figure was measured on the *atmosphere* march, which taps 2D LUTs; the BSM
+march samples **3D cloud noise volumes** and is far heavier per step.
+**Step-eval rates are NOT portable between shaders.** Running tally for this single pass:
+reported 12.20 (phantom), my estimate 2.2 (3× wrong), my estimate 0.7 (3× wrong), measured
+3.4 total. Every ablation was right; every estimate was wrong.
+
+### ⛔ 120 fps AT THE DECK IS NOT REACHABLE — the arithmetic that settles it
+
+Using only ground-truth ablation numbers at `earth_8` (15.30 ms / 65 fps):
+
+| remove | remaining | fps |
+|---|---|---|
+| — | 15.30 | 65 |
+| the **entire** BSM (3.40, measured) | 11.90 | 84 |
+| **and** the entire atmosphere march (2.56, measured) | **9.34** | **107** |
+
+**Deleting both systems outright — every cloud shadow, every god ray, all aerial
+perspective — still leaves 9.34 ms, i.e. 107 fps, not 120.** The remaining 9.34 is the
+cloud pipeline, post, the scaled scene and the atmosphere's pass structure. So 120 fps at
+the cloud deck would require cutting into the volumetric clouds and bloom as well, which
+is the visual core of the game.
+
+**Recommendation: stop here.** The ≥60 fps target is met with margin everywhere
+(deck 65, low orbit 66–72, everything ≥2100 km on the 120 cap). The remaining levers are
+each ~1 ms for a real quality cost:
+
+| lever | est. saving | cost |
+|---|---|---|
+| `BSM_MARCH_STEPS` 24 → 12 | ~1.0 ms | optical-depth accuracy, partly hidden by the existing blur |
+| `BSM_SIZE` 512 → 384 | ~0.9 ms | shadow sharpness (already 5.9 km/texel) |
+| bake on alternate frames | ~1.2 ms | no spatial cost, but alternating frame cost risks judder |
+| the BSM consumers | ~1.2 ms total | spread thin; taps already measured free |
+
+### PENDING — the BSM bake was redundant. Cache it. (User's observation, and it is right.)
+
+"Why do we even need to rebake the BSM? our volumetric clouds are completely static."
+
+Reading `updateWindow`, the bake's output is a pure function of exactly four things, and
+**none of them change frame to frame in the common case:**
+
+| input | varies? |
+|---|---|
+| the cloud field | **static** — drift (`uCloudUvOffset`) is "future-proofed for sim-time animation", not animated yet |
+| the sun direction | **static** — nothing orbits or rotates |
+| the window basis (`right`, `up`) | derived purely from the sun direction ⇒ **static** |
+| the window centre | already **TEXEL-SNAPPED**, so it only moves in whole 5.86 km steps |
+
+So with the camera parked — **every bench scenario, since the ship sits at 0 m/s** — the
+second and every subsequent bake was redrawing a **bit-identical image** at 1.7–2.4 ms a
+frame. That is not a quality trade at all; it is pure waste, and it is the largest single
+item in the frame.
+
+**The fix:** cache the bake inputs and skip the two expensive renders when none changed.
+Three details that make it safe:
+
+1. **It compares the actual inputs, not an assumption about what is static.** Animate
+   cloud drift, add planetary rotation, or make the sun move, and rebaking simply resumes.
+   Self-correcting — no future discipline required.
+2. **The window centre is compared as integer texel snap indices**, so that part needs no
+   epsilon. The sun direction does get one (1e-12 squared ≈ 1e-6 rad) because
+   `_inverseModel` is re-inverted every frame — the floating origin shifts its translation,
+   which leaves FP jitter in the rotation part.
+3. **The 1-fragment ship probe still runs every frame.** The ship keeps moving *within* a
+   texel while the window stands still, so its cloud-shadow lighting must track that. Only
+   the 512² march and the blur are skipped.
+
+Plus `bake(renderer, fieldUnstable)` — SpaceRenderer passes `hasPendingCloudBakes()` so a
+half-built noise field can never be cached as final.
+
+Prediction: the bake cost disappears from every stationary row.
+
+| scenario | full | predicted | fps |
+|---|---|---|---|
+| earth_8 | 15.30 | **≈12.90** | 78 |
+| earth_30 | 15.70 | **≈13.40** | 75 |
+| earth_120 | 15.10 | **≈12.90** | 78 |
+| earth_250 | 13.20 | **≈11.20** | 89 |
+| earth_650 | 11.30 | **≈9.60** | 104 |
+| earth_750 | 8.90 | ≈7.4 → **cap** | 120 |
+| `bsmStrength = 0` rows | — | **exactly flat** | — |
+
+**⚠ Honest caveat — the sweep measures the BEST case.** The bench camera never moves, so
+the sweep shows the full win. In flight a rebake is needed every 5.86 km of
+sun-perpendicular travel, i.e. at 120 fps: ~0.1% of frames at 1 km/s, ~14% at 100 km/s,
+and *every* frame above ~700 km/s. So the benefit is largest when parked or slow — which
+is exactly when the player is looking at the scenery — and degrades gracefully to the old
+cost during fast transit. Quote the sweep as "stationary", not as a universal number.
+
+Not verified in-engine: fine-grained invalidation while flying, because every bench
+scenario is stationary. Gross invalidation is verified (warping between 250/8/30 km
+re-bakes and renders correctly). **Fly around and confirm shadows track the ship.**
+
+### ✅ RESULT 2026-08-13 14:13 — the bake cache lands, and the prediction was near-exact
+
+| scenario | before | after | Δ | predicted | fps |
+|---|---|---|---|---|---|
+| earth_8 | 15.30 | **12.80** | −2.50 | 12.90 | **78** |
+| earth_30 | 15.70 | **13.30** | −2.40 | 13.40 | **75** |
+| earth_120 | 15.10 | **12.90** | −2.20 | 12.90 | **78** |
+| earth_250 | 13.20 | **11.00** | −2.20 | 11.20 | **91** |
+| earth_650 | 11.30 | **9.60** | −1.70 | 9.60 | **104** |
+| **earth_750** | 8.90 | **8.30** | −0.60 | →cap | **120 (cap)** |
+| all `bsmStrength = 0` rows | — | — | 0.00 | flat | — |
+
+**Prediction error: 0.00 / −0.10 / 0.00 / −0.20 / −0.10 ms across five rows.** Worth
+noting *why* it was that accurate: every input came from a ground-truth ablation, none
+from reported per-pass arithmetic. The same method that produced a confident wrong model
+three rounds earlier produced a near-perfect one once it was fed measured numbers.
+
+The reported `1b beer shadow map` collapsed 8–13× (earth_8: 12.03 → 0.94), i.e. its
+phantom inflation shrank in proportion to the real work — consistent with every other
+artifact observation. The ~1.0–1.3 ms residual is the always-on 1-fragment ship probe plus
+that pass's share of overlap.
+
+User confirms **no shadow issues while flying**, so fine-grained invalidation works in
+practice, not just on warps.
+
+## 8. FINAL STATE — and what 120 fps at the deck would still cost
+
+| scenario | eye-balled start | 2026-08-11 baseline | **now** | fps |
+|---|---|---|---|---|
+| earth_4100 and above | <60 | 11.80 | **8.30** | **120 (cap)** |
+| earth_2100 | <60 | 17.60 | **8.30** | **120 (cap)** |
+| earth_1900 | ~43 | 23.20 | **8.30** | **120 (cap)** |
+| earth_750 | ~39 | 25.90 | **8.30** | **120 (cap)** |
+| earth_650 | ~35 | 28.25 | **9.60** | **104** |
+| earth_250 | ~33 | 30.10 | **11.00** | **91** |
+| earth_120 | ~31 | 32.30 | **12.90** | **78** |
+| earth_30 | ~30 | 32.85 | **13.30** | **75** |
+| earth_8 (deck) | 25–40 | 32.35 | **12.80** | **78** |
+
+**Everything from 750 km up is on the 120 fps cap. The deck band is 75–78 fps.** Against
+the 12:35 baseline that is −60% frame time at the deck; against the original eye-balled
+ladder the deck went 25–40 → 78 fps.
+
+Reaching 120 at the deck needs a further −4.5 ms, and no single item supplies it — the
+remainder is the cloud pipeline, post/bloom, the scaled scene, the atmosphere's pass
+structure and the BSM consumers, each 1–2 ms. That means cutting into the volumetric
+clouds and bloom, i.e. the visual core. **The ≥60 target is met with wide margin; 120 at
+the deck is a separate, much more expensive project.**
+
+Anything further should start with the three remaining one-line ablations — cloud
+pipeline, bloom, scaled scene — because every estimate for them still rests on reported
+numbers, and this document's record on those is 0 for 4.
 
 Best build is the 15:08 one (half-res AP, 16 steps, no Sky-View, adjacent ordering).
 Budget at `earth_8`, the worst case, at **14.90 ms / 67 fps**:

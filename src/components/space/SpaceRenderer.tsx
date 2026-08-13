@@ -51,6 +51,7 @@ import {
 import {
   flushCloudBakes,
   warmCloudBakes,
+  hasPendingCloudBakes,
 } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { PASS, perf, type GateState } from "./perf/perfProfiler";
 
@@ -84,6 +85,45 @@ const FROXEL_BAKE_MAX_ALT_KM = 4000;
 // Altitude band (km, below BSM_MAX_ALT_KM) over which the ground cloud-shadow
 // strength ramps 1→0, so shadows don't pop off at the BSM bake ceiling.
 const BSM_FADE_BAND_KM = 400;
+
+// ⚠⚠ TEMPORARY DIAGNOSTIC — MUST be false. Cloud shadows disappear when true.
+//
+// GROUND-TRUTH ablation of the ENTIRE Beer Shadow Map — bake AND every consumer, because
+// skipping the block leaves `bsmStrength = 0`, which closes the `strength > 0` gate in the
+// atmosphere march, the planet surface penumbra and the ship lighting alike.
+//
+// ✅ MEASURED 2026-08-13: **the BSM costs 2.8–3.7 ms** (≈2.5–3.4 after backing out the
+// ring-gate confound). earth_8 15.30 → 11.60, earth_30 15.70 → 12.10, earth_650
+// 11.30 → 8.50. Control group perfect: every `bsmStrength = 0` row moved exactly 0.00.
+// **This is the largest single item left in the frame.**
+//
+// It also settled which of three mutually-inconsistent claims was right: the reported
+// `1b beer shadow map` 12.20 ms is a PHANTOM (3.6× inflated), and the per-march taps
+// really are free. Per docs/PERF_MEASUREMENT.md § "the METHODOLOGICAL LESSON", do not
+// substitute arithmetic on reported per-pass numbers for an ablation like this.
+const BSM_ABLATE_DIAGNOSTIC = false;
+
+// ⚠⚠ TEMPORARY DIAGNOSTIC — MUST be false. Cloud shadows disappear when true.
+//
+// Splits the MEASURED ~3.4 ms total BSM cost into BAKE vs CONSUMERS. This one leaves the
+// bake running and zeroes only the strength, which closes every consumer gate (atmosphere
+// march, planet surface penumbra, ship lighting). So:
+//   full − this      = the consumers' cost
+//   this − full-off  = the bake's cost
+//
+// ✅ MEASURED 2026-08-13 (earth_8: full 15.30, this 14.00, all-off 11.60):
+//   **consumers 1.1–1.3 ms, BAKE 1.7–2.4 ms — the bake dominates.**
+// So the lever is `bakeCloudShadowMap` in cloudShadowMap.ts (BSM_MARCH_STEPS = 24,
+// BSM_SIZE = 512, or baking on alternate frames), NOT the consumers.
+//
+// ⚠ AND THE THIRD WRONG PREDICTION ON THIS PASS. I predicted the bake at ~0.7 ms from
+// "512² × 24 = 6.29 M step-evals at 8.7 G step-evals/s". Actual: 2.40 ms. The 8.7 G/s
+// figure was measured on the ATMOSPHERE march, which taps 2D LUTs; the BSM march samples
+// 3D cloud noise volumes and is far heavier per step.
+// **LESSON: step-eval rates are NOT portable between shaders.** Running tally on this one
+// pass: reported 12.20 (phantom), my estimate 2.2 (wrong 3×), my estimate 0.7 (wrong 3×),
+// measured 3.4 total. Ablate.
+const BSM_CONSUMERS_ABLATE_DIAGNOSTIC = false;
 
 // ── Cloud-only resolution clamp ──────────────────────────────────────────────
 // The whole scene renders at gl.getPixelRatio() (DPR, clamped to [0.5, 1.5] in
@@ -680,7 +720,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       // noise volume is warm-baked at startup + drained by flushCloudBakes above,
       // so it is valid here regardless of altitude.
       let bsmStrength = 0;
-      if (dominant) {
+      // BSM_ABLATE_DIAGNOSTIC short-circuits the bake AND leaves strength at 0, which
+      // closes the consumer gates too — see its declaration.
+      if (dominant && !BSM_ABLATE_DIAGNOSTIC) {
         const bsmPipeline = getActiveCloudPipeline();
         const bsmEarth = bsmPipeline ? getEarthMatrixWorldRef() : null;
         const bsmAltKm =
@@ -692,7 +734,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
           bsmAltKm < BSM_MAX_ALT_KM
         ) {
           bsmPipeline.updateCloudShadowMap(scaledCamera.position, bsmEarth);
-          bsmPipeline.bakeCloudShadowMap(renderer);
+          // The bake now caches itself and re-runs only when a bake input actually
+          // changes (see cloudShadowMap.ts' bake-cache note) — worth 1.7–2.4 ms,
+          // because with a static cloud field and a static sun it was redrawing a
+          // bit-identical map every frame. Force it while the noise volumes are
+          // still settling so a half-built field can never be cached as final.
+          bsmPipeline.bakeCloudShadowMap(renderer, hasPendingCloudBakes());
           frameGates.bsmBaked = true;
           // Consumer freshness gate: full below the fade band, ramp to 0 over
           // the top BSM_FADE_BAND_KM so ground shadows don't pop off at the
@@ -707,6 +754,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         }
       }
       // Set every frame (0 when not baked) so a stale map never shadows.
+      if (BSM_CONSUMERS_ABLATE_DIAGNOSTIC) bsmStrength = 0;
       setCloudShadowStrength(bsmStrength);
       frameGates.bsmStrength = bsmStrength;
       // Phase 4: bake the aerial-perspective froxel for this frame (needs the
