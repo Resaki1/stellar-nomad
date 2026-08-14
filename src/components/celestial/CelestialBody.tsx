@@ -307,6 +307,17 @@ function CelestialBody({ config }: CelestialBodyProps) {
     _sunRelative.copy(_sunScaled).sub(_bodyScaled);
     uSunRel.value.copy(_sunRelative);
 
+    // Body→star distance in km, recomputed every frame. This drives the body's
+    // sun illuminance (1/r²), so it MUST stay live: once bodies orbit, a cached
+    // value freezes their brightness. See docs/LIGHTING_PLAN.md §3.0 (D17).
+    // Computed from the km positions directly rather than from _sunRelative,
+    // which is in scaled units and floating-origin relative.
+    const starDistKm = Math.hypot(
+      sunPositionKm[0] - positionKm[0],
+      sunPositionKm[1] - positionKm[1],
+      sunPositionKm[2] - positionKm[2],
+    );
+
     // ── Ship distance ──
     _shipToBody.set(
       positionKm[0] - worldOrigin.shipPosKm.x,
@@ -353,6 +364,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
           _bodyScaled,
           _sunRelative,
           distKm,
+          starDistKm,
           config.atmosphere,
           atmosphereRings,
         );

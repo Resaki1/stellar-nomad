@@ -1602,6 +1602,7 @@ function buildCloudShellMesh({
   shellRadiusScaled,
   uSunRel,
   uShellOpacity,
+  uSunIlluminance,
 }: {
   tier: "near" | "mid";
   weatherMap: THREE.Texture;
@@ -1615,6 +1616,9 @@ function buildCloudShellMesh({
   uSunRel: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uShellOpacity: any;
+  /** Per-frame sun illuminance (game units) from the atmosphere record. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any;
 }): ExtraMeshDef {
   // Drift uniform: static 0 today (cloud drift unused). Local to the shell for
   // now — when drift is animated, consolidate with the marcher's uCloudUvOffset
@@ -1735,11 +1739,9 @@ function buildCloudShellMesh({
     const selfShadow = float(1).sub(coverage.mul(0.5));
 
     const lit = farCloudLit({
-      sunIlluminance: vec3(
-        EARTH_ATMOSPHERE.sunIlluminance[0],
-        EARTH_ATMOSPHERE.sunIlluminance[1],
-        EARTH_ATMOSPHERE.sunIlluminance[2],
-      ),
+      // Per-frame uniform (was a compile-time literal baked from
+      // EARTH_ATMOSPHERE.sunIlluminance — see docs/LIGHTING_PLAN.md §3.0).
+      sunIlluminance: uSunIlluminance,
       sunT,
       skyColor: vec3(
         CLOUD_SKY_AMBIENT[0],
@@ -1820,6 +1822,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     shellRadiusScaled: kmToScaledUnits(PLANET_RADIUS_KM + SHELL_ALTITUDE_KM),
     uSunRel: ctx.uSunRel,
     uShellOpacity: ctx.uniforms.uShellOpacity,
+    uSunIlluminance: ctx.uniforms.uSunIlluminance,
   });
 
   // Mid (and any non-near) tier: ONLY the shell. The volumetric marcher + its

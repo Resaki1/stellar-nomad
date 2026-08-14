@@ -35,6 +35,8 @@ import {
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
+import { uExposure } from "./photometry";
+import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -510,10 +512,26 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     const sceneRt = rtB ?? rt;
     const sceneTexture = texture(sceneRt.texture);
 
+    // ── EXPOSURE (docs/LIGHTING_PLAN.md §3.4) ──
+    // The single global exposure multiply, taking the scene from its physical
+    // luminance scale (1 game unit ≈ 6,038 cd/m²) into the tonemapper's domain.
+    // Phase 0 pins it at 1.0, so this is a bit-exact no-op; Phase 1 hangs a
+    // manual EV slider off it and Phase 5 the auto-exposure histogram.
+    //
+    // Applied BEFORE bloom deliberately: bloom's threshold (1.0) is a
+    // display-referred "brighter than white" test, so it has to see
+    // post-exposure values or it means something different at every exposure.
+    //
+    // NOT done via `renderer.toneMappingExposure` — three's ToneMappingNode
+    // defaults its exposure to a renderer reference for that property, so using
+    // it would apply exposure AFTER bloom (wrong side of the threshold) and risk
+    // double-counting. Left at its default 1.0; `uExposure` is the one hook.
+    const exposed = sceneTexture.mul(uExposure);
+
     // Bloom is added in linear HDR (pre-tonemap), as before.
-    let hdr: typeof pipeline.outputNode = sceneTexture;
+    let hdr: typeof pipeline.outputNode = exposed;
     if (settings.bloom) {
-      hdr = sceneTexture.add(bloom(sceneTexture, 0.02, 0, 1));
+      hdr = exposed.add(bloom(exposed, 0.02, 0, 1));
     }
 
     // Tone-map IN-GRAPH (the SAME call renderOutput() would make), then add an
@@ -558,6 +576,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   // Cleanup
   useEffect(() => () => { pipeline.dispose(); }, [pipeline]);
+
+  // Drop the __lum probe target on unmount so the harness reports "no scene"
+  // rather than reading a disposed RenderTarget.
+  useEffect(() => () => clearLumSource(), []);
 
   const firstFrameLogged = useRef(false);
   // Ping-pong index: this frame writes cloudRts[frameParity], next frame
@@ -895,8 +917,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         atmoTopRadiusScaled = rt * SCALED_UNITS_PER_KM;
         atmoHScaled =
           Math.sqrt(Math.max(0, rt * rt - rg * rg)) * SCALED_UNITS_PER_KM;
-        const si = dominant.params.sunIlluminance;
-        atmoSunIlluminance = tempAtmoSunIll.set(si[0], si[1], si[2]);
+        // Per-frame illuminance off the record, NOT the static params (D17).
+        atmoSunIlluminance = tempAtmoSunIll.copy(dominant.sunIlluminance);
         atmoSkyColor = getAtmosphereLighting().skyColor;
       }
 
@@ -1008,6 +1030,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Restore so the RenderPipeline picks them up for its renderOutput() pass
     renderer.toneMapping = savedToneMapping;
     renderer.outputColorSpace = savedColorSpace;
+
+    // Publish the final PRE-TONEMAP target for `__lum` (photometric probing).
+    // Must be here — after everything has composited into it, before the post
+    // chain applies exposure/bloom/tonemapping — because game units only exist
+    // on this side of the tone curve. Two reference writes; no-op when unchanged.
+    setLumSource(renderer, rtB ?? rt);
 
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();

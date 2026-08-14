@@ -38,6 +38,7 @@ import {
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 import { PASS } from "./perf/perfProfiler";
+import { sunIlluminanceAt } from "./photometry";
 import type { AtmosphereParams } from "../celestial/types";
 import {
   getCloudShadowMap,
@@ -749,6 +750,16 @@ export type AtmosphereBodyRecord = {
   sunDir: THREE.Vector3;
   /** Camera→centre distance in km (dominance + gating). */
   distanceKm: number;
+  /** Body→STAR distance in km. Drives `sunIlluminance` — must be live. */
+  starDistanceKm: number;
+  /**
+   * Top-of-atmosphere sun illuminance in game units (≈6,038 lux each), RECOMPUTED
+   * EVERY FRAME from `starDistanceKm`. This used to be a compile-time constant on
+   * `AtmosphereParams`, which froze every body's brightness at its authored
+   * position — defect D17 in docs/LIGHTING_PLAN.md, and a hard blocker for both
+   * orbital motion and procedural systems. Read this, never `params.*`.
+   */
+  sunIlluminance: THREE.Vector3;
   params: AtmosphereParams;
   rings: AtmosphereRingRecord | null;
 };
@@ -761,6 +772,7 @@ export function setAtmosphereBody(
   centerScaled: THREE.Vector3,
   sunDir: THREE.Vector3,
   distanceKm: number,
+  starDistanceKm: number,
   params: AtmosphereParams,
   rings: AtmosphereRingRecord | null = null,
 ): void {
@@ -771,6 +783,8 @@ export function setAtmosphereBody(
       centerScaled: new THREE.Vector3(),
       sunDir: new THREE.Vector3(),
       distanceKm: 0,
+      starDistanceKm: 0,
+      sunIlluminance: new THREE.Vector3(),
       params,
       rings: null,
     };
@@ -779,7 +793,16 @@ export function setAtmosphereBody(
   rec.centerScaled.copy(centerScaled);
   rec.sunDir.copy(sunDir).normalize();
   rec.distanceKm = distanceKm;
+  rec.starDistanceKm = starDistanceKm;
   rec.params = params;
+  // Per-frame 1/r² illuminance. Grey for now (the star's colour temperature
+  // becomes a per-channel tint in Phase 3 — LIGHTING_PLAN §3.0, defect D18).
+  const illum = sunIlluminanceAt(
+    starDistanceKm,
+    params.starLuminositySun,
+    params.illuminanceTrim,
+  );
+  rec.sunIlluminance.set(illum, illum, illum);
   if (rings) {
     if (!rec.rings) {
       rec.rings = {
@@ -800,6 +823,16 @@ export function setAtmosphereBody(
 
 export function clearAtmosphereBody(id: string): void {
   atmosphereBodies.delete(id);
+}
+
+/**
+ * One body's live atmosphere record, or undefined if it is not registered this
+ * frame. Use this to read a body's PER-FRAME `sunIlluminance` from code that
+ * isn't the atmosphere pass (e.g. Earth's cloud shell) instead of baking the
+ * old static `params.sunIlluminance` into a shader literal.
+ */
+export function getAtmosphereBody(id: string): AtmosphereBodyRecord | undefined {
+  return atmosphereBodies.get(id);
 }
 
 /** Nearest active atmosphere body, or null. (Phase 1: only Earth registers.) */
@@ -2114,7 +2147,9 @@ export function setupAtmospherePass(
       p.gasAbsorption[2] * 1000,
     );
     uGroundAlbedo.value.set(p.groundAlbedo[0], p.groundAlbedo[1], p.groundAlbedo[2]);
-    uSunIlluminance.value.set(p.sunIlluminance[0], p.sunIlluminance[1], p.sunIlluminance[2]);
+    // uSunIlluminance is NOT set here — it is dynamic (1/r² on the body's live
+    // distance to its star) and is written in updateUniforms() from the
+    // AtmosphereBodyRecord. See docs/LIGHTING_PLAN.md §3.0.
 
     // Spectral exponent for the AP apply pass (see AP_SPECTRAL_TRANSMITTANCE).
     // Take each species' VERTICAL COLUMN — coefficient × the thickness over which
@@ -2170,6 +2205,9 @@ export function setupAtmospherePass(
     // numbers, however self-consistent the model looks. One ablation settled in a single
     // sweep what three rounds of curve-fitting got wrong. See docs/PERF_MEASUREMENT.md.
     uActive.value = 1;
+    // Per-frame sun illuminance (1/r² on the LIVE body→star distance). Must be
+    // written before bakeSkyView(), which multiplies it into the LUT.
+    uSunIlluminance.value.copy(dominant.sunIlluminance);
     uCameraMatrixWorld.value.copy(scaledCamera.matrixWorld);
     uTanHalfFov.value = Math.tan((scaledCamera.fov * Math.PI) / 180 / 2);
     uAspect.value = scaledCamera.aspect;

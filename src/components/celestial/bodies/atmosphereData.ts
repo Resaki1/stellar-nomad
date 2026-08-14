@@ -27,19 +27,18 @@
 
 import solSystem from "@/sim/systems/sol.json";
 import type { AtmosphereGasId, CelestialBodyDef } from "@/sim/systemTypes";
+import { sunIlluminanceAt } from "@/components/space/photometry";
 import type { AtmosphereParams, Vec3Tuple } from "../types";
 
-// Unified linear-luminance working space (see ATMOSPHERE_PLAN.md §6).
-// The whole scaled scene (sun illuminance, atmosphere in-scatter, surface
-// lighting) shares this scale; a single EXPOSURE multiply is applied before
-// tonemapping. Calibrated in Phase 1 against a noon Earth view — for now it is
-// an identity placeholder so Phase 0 is a strict no-op.
-export const ATMOSPHERE_EXPOSURE = 1.0;
+// The unified linear-luminance working space now lives in
+// `space/photometry.ts` — 1 game unit ≈ 6,038 cd/m², and the single global
+// EXPOSURE multiply is `uExposure`, applied in SpaceRenderer's post chain.
+// (The old `ATMOSPHERE_EXPOSURE = 1.0` placeholder was referenced by nothing
+// for the whole of Phases 1–5; deleted rather than left as a decoy.)
 
 // ── Physical constants ─────────────────────────────────────────────────
 const R_GAS = 8.314462; // universal gas constant, J/(mol·K)
 const G_GRAV = 6.674e-11; // gravitational constant, m³/(kg·s²)
-const AU_KM = 1.495979e8;
 
 // ── Earth anchors (Hillaire 2020, Table 1) ─────────────────────────────
 // The derivation is a set of physical RATIOS against these. Earth sea-level
@@ -64,9 +63,9 @@ const COLUMN_TEMP_FACTOR = 0.9502;
 // Atmosphere top = this many Rayleigh scale heights (density ~e⁻¹²·⁵ ≈ 4e-6
 // of surface — visually nothing above). Earth: 12.5 × 8 km = the canonical 100.
 const TOP_SCALE_HEIGHTS = 12.5;
-// Game-luminance units received at 1 AU from a 1 L☉ star (the §6 unified
-// scale; Phase 1 tuned Earth's sky against sunIlluminance = 21.2).
-const SUN_ILLUM_GAME_1AU = 21.2;
+// SUN_ILLUM_GAME_1AU (the game-luminance units received at 1 AU from a 1 L☉
+// star) moved to space/photometry.ts, which is now the single definition of the
+// light scale. Illuminance itself is derived PER FRAME there, not here.
 
 // ── Gas table ──────────────────────────────────────────────────────────
 // rayleighRel = Rayleigh scattering cross-section at 550 nm RELATIVE to Earth
@@ -196,13 +195,11 @@ export function deriveAtmosphere(
     MIE_ABSORB_EARTH * haze * tintA[2],
   ];
 
-  // Top-of-atmosphere illuminance from the star's luminosity + actual distance.
-  const dx = body.positionKm[0] - star.positionKm[0];
-  const dy = body.positionKm[1] - star.positionKm[1];
-  const dz = body.positionKm[2] - star.positionKm[2];
-  const dAU = Math.sqrt(dx * dx + dy * dy + dz * dz) / AU_KM;
-  const illum =
-    (SUN_ILLUM_GAME_1AU * (star.luminositySun ?? 1)) / Math.max(1e-6, dAU * dAU);
+  // NOTE: sun illuminance is NOT derived here any more. It depends on the body's
+  // LIVE distance to its star, so it is computed per frame in
+  // `setAtmosphereBody()` via `sunIlluminanceAt()` (space/photometry.ts). Only
+  // the star's luminosity — genuinely static — is carried through.
+  // See docs/LIGHTING_PLAN.md §3.0 (defect D17).
 
   // Scalar g broadcasts to all channels; a tuple gives wavelength-dependent
   // forward peaking (Mars' blue sunset glow).
@@ -225,9 +222,25 @@ export function deriveAtmosphere(
     ozoneWidthKm: hasOzone ? OZONE_WIDTH_EARTH_KM * hRatio : 0,
     gasAbsorption,
     groundAlbedo: atm.groundAlbedo ?? [0.3, 0.3, 0.3],
-    sunIlluminance: [illum, illum, illum],
+    starLuminositySun: star.luminositySun ?? 1,
+    illuminanceTrim: 1,
     ...tweaks,
   };
+}
+
+/**
+ * Body→star distance in km, from the authored positions.
+ *
+ * ⚠ Only for computing the fixed `illuminanceTrim` scaffolds below, which must
+ * reproduce the pre-Phase-0 look exactly. Runtime code must NOT use this — it
+ * reads the authored (static) position, which is precisely what breaks once
+ * bodies orbit. Live distance comes from `CelestialBody`'s per-frame update.
+ */
+function authoredStarDistanceKm(body: CelestialBodyDef, star: CelestialBodyDef): number {
+  const dx = body.positionKm[0] - star.positionKm[0];
+  const dy = body.positionKm[1] - star.positionKm[1];
+  const dz = body.positionKm[2] - star.positionKm[2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 // ── Sol-system presets (derived from sol.json descriptions) ─────────────
@@ -243,41 +256,67 @@ function findBody(id: string): CelestialBodyDef {
 const sol = findBody("sol");
 
 // Earth reproduces Hillaire Table 1 from its physical description (scale
-// height 8.000 km, Rayleigh +0.1%, ozone/Mie exact). Only the illuminance is
-// pinned: the game's Earth orbits at 0.972 AU (system-authoring quirk), which
-// would derive 21.2 and brighten the Phase-1-tuned look by 6%.
+// height 8.000 km, Rayleigh +0.1%, ozone/Mie exact).
+//
+// ⚠ ILLUMINANCE PIN (Phase 0 scaffold — see AtmosphereParams.illuminanceTrim).
+// The game's Earth orbits at 0.9716 AU (system-authoring quirk), which derives
+// 22.458 game units, but the sky was hand-tuned in ATMOSPHERE_PLAN Phase 1
+// against 20. Express that as a trim so the switch to per-frame illuminance is
+// bit-exact, rather than silently brightening the tuned look by 12%.
+// Phase 2 deletes this and re-tunes against physics.
+const EARTH_ILLUM_PIN = 20;
+const earthBody = findBody("earth");
 export const EARTH_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(
-  findBody("earth"),
+  earthBody,
   sol,
-  { sunIlluminance: [20, 20, 20] },
+  {
+    illuminanceTrim:
+      EARTH_ILLUM_PIN /
+      sunIlluminanceAt(authoredStarDistanceKm(earthBody, sol), sol.luminositySun ?? 1),
+  },
+);
+
+/**
+ * Earth's sun illuminance at its AUTHORED position, in game units.
+ *
+ * Only for INITIALISING uniforms so nothing flashes on frame 0. The live value
+ * is on the AtmosphereBodyRecord and is what actually drives rendering — do not
+ * use this constant in a shader or a per-frame path.
+ */
+export const EARTH_SUN_ILLUMINANCE_AUTHORED = sunIlluminanceAt(
+  authoredStarDistanceKm(earthBody, sol),
+  sol.luminositySun ?? 1,
+  EARTH_ATMOSPHERE.illuminanceTrim,
 );
 
 // Venus: 92 bar CO2 → Rayleigh ~90× Earth (the sky is optically deep; the
 // transmittance LUT goes ~0 well above the surface, as it should), plus the
 // H2SO4 cloud shroud as a tall bright Mie deck.
 //
-// ILLUMINANCE TRIM (§6 exposure bridge, on-device finding 2026-07-02): with the
-// full derived illuminance (~40 — Venus sits at 0.72 AU) the disc renders BLOWN
-// WHITE from orbit until touching the surface. Physically Venus IS the
-// brightest planet, but the game's surfaces shade on a ~[0,1] albedo scale
-// while atmosphere in-scatter lives on the sunIlluminance scale — an optically-
-// DEEP atmosphere (vertical Rayleigh OD ≈ 18: the disc "surface" is pure
-// in-scatter) therefore reads ~30-40 game units vs ~1-5 for everything else,
-// far past the tonemap shoulder. (Hillaire's Ψ/(1−F_ms) multi-scatter
-// approximation also overshoots on near-conservative deep atmospheres,
-// compounding it.) Until the §6 unified-exposure pass lands, trim Venus'
-// illuminance to keep the disc in the scene's luminance range — ONE knob,
-// raise/lower to taste.
+// ⚠ THE VENUS TRIM IS BACKWARDS, AND MEASURING IT WAS THE KEY FINDING OF THE
+// 2026-08-14 lighting audit (docs/LIGHTING_PLAN.md §2.2). A JS replica of this
+// very march puts Venus' disc at L = [11.1, 12.6, 13.3] game units against a
+// Lambertian-equivalent physical 8.92 at its real geometric albedo 0.69. So the
+// disc was NEVER ~40× too bright — this 0.025 trim UNDER-renders Venus by ~32×.
+//
+// It nonetheless LOOKED right, because every planet surface is simultaneously
+// missing its irradiance factor sunIlluminance/π (= 6.37× at Earth's orbit).
+// Two errors partially cancelling.
+//
+// ⇒ DO NOT REMOVE THIS ALONE. Removing the trim without adding the surface
+// irradiance factor makes Venus blow out again; adding the factor without
+// removing the trim makes Venus vanish. They must land in the SAME commit
+// (LIGHTING_PLAN §4.1, the cancellation trap).
+//
+// Residual +18…+21% from Hillaire's Ψ/(1−F_ms) approximation IS real (validated
+// against a Monte Carlo in §2.2) but is the paper's own documented hue-drift
+// limit at high scattering coefficients, not a bug here. Accepted; not a knob.
 const VENUS_ILLUM_TRIM = 0.025;
-const venusDerived = deriveAtmosphere(findBody("venus"), sol);
-export const VENUS_ATMOSPHERE: AtmosphereParams = {
-  ...venusDerived,
-  sunIlluminance: [
-    venusDerived.sunIlluminance[0] * VENUS_ILLUM_TRIM,
-    venusDerived.sunIlluminance[1] * VENUS_ILLUM_TRIM,
-    venusDerived.sunIlluminance[2] * VENUS_ILLUM_TRIM,
-  ],
-};
+export const VENUS_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(
+  findBody("venus"),
+  sol,
+  { illuminanceTrim: VENUS_ILLUM_TRIM },
+);
 
 // Mars: 6 mbar CO2 → feeble Rayleigh; the look is the DUST — red-scattering,
 // blue-absorbing Mie mixed high (butterscotch day sky, bluish sunsets).

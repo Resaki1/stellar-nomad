@@ -47,7 +47,11 @@ import {
   REAL_WEATHER_MAP_PATH,
 } from "./cloudShared";
 import { CLOUD_OUTER_ALTITUDE_KM } from "./cloudShared";
-import { EARTH_ATMOSPHERE } from "./atmosphereData";
+import {
+  EARTH_ATMOSPHERE,
+  EARTH_SUN_ILLUMINANCE_AUTHORED,
+} from "./atmosphereData";
+import { getAtmosphereBody } from "@/components/space/atmospherePass";
 import {
   getAtmosphereLUTs,
   transmittanceLutUv,
@@ -565,9 +569,29 @@ export const earthConfig: CelestialBodyConfig = {
     // tiers (read by buildCloudShellMesh via ctx.uniforms). Value 1 for now;
     // step 5 drives it from altitude to fade the shell out below the deck.
     uShellOpacity: uniform(1),
+    // Per-frame sun illuminance for the far cloud shell. This used to be a
+    // COMPILE-TIME LITERAL baked from EARTH_ATMOSPHERE.sunIlluminance into the
+    // shell's shader — a second static bake alongside D17 (see
+    // docs/LIGHTING_PLAN.md §3.0). Initialised to the authored value so frame 0
+    // matches, then overwritten every frame from the atmosphere record below.
+    uSunIlluminance: uniform(
+      new THREE.Vector3(
+        EARTH_SUN_ILLUMINANCE_AUTHORED,
+        EARTH_SUN_ILLUMINANCE_AUTHORED,
+        EARTH_SUN_ILLUMINANCE_AUTHORED,
+      ),
+    ),
   }),
 
   onFrame: ({ uniforms, worldOrigin, distKm }) => {
+    // Live sun illuminance for the cloud shell (1/r² on Earth's real distance to
+    // the star). `setAtmosphereBody` runs earlier in the same CelestialBody
+    // useFrame, so this is same-frame fresh. Left unchanged if Earth isn't
+    // registered — which can only happen on the billboard tier, where no shell
+    // exists to read it.
+    const atmoRec = getAtmosphereBody("earth");
+    if (atmoRec) uniforms.uSunIlluminance.value.copy(atmoRec.sunIlluminance);
+
     // Update moon position in scaled coords
     const moonKm = LUNA_POSITION_KM;
     _earthRelKm.set(moonKm[0], moonKm[1], moonKm[2]);

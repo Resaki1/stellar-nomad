@@ -28,6 +28,7 @@ import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
 import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
+import { getLumHarness, type LumHarness } from "./space/perf/lumHarness";
 
 export default function DevTools() {
   const store = useStore();
@@ -106,19 +107,25 @@ export default function DevTools() {
 
     // Shared with the Settings → Dev "run perf sweep" button.
     const bench = getBenchRunner(store);
+    // Photometric counterpart to __bench — see docs/LIGHTING_PLAN.md §4.2.
+    const lum = getLumHarness(store);
 
     type DevWindow = Window & {
       __dev?: typeof devApi;
       __bench?: BenchRunner;
+      __lum?: LumHarness;
     };
     (window as DevWindow).__dev = devApi;
     (window as DevWindow).__bench = bench;
+    (window as DevWindow).__lum = lum;
     console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
     console.log("[Dev] Perf harness via __bench. Try __bench.list() or await __bench.sweep()");
+    console.log("[Dev] Photometry harness via __lum. Try __lum.units() or await __lum.probe()");
 
     return () => {
       delete (window as DevWindow).__dev;
       delete (window as DevWindow).__bench;
+      delete (window as DevWindow).__lum;
     };
   }, [store]);
 

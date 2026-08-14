@@ -1,0 +1,1018 @@
+# Physically-Based Lighting & Exposure — Implementation Plan
+
+Status: **design, not started.** Companion to [`ATMOSPHERE_PLAN.md`](ATMOSPHERE_PLAN.md),
+whose §6 ("Photometry & exposure — the unified scale") was specified but never built.
+This document is that §6, expanded to cover the whole engine.
+
+Evidence base: [`LightingResearch/AUDIT_1_pipeline.md`](LightingResearch/AUDIT_1_pipeline.md),
+[`AUDIT_2_lights_surfaces.md`](LightingResearch/AUDIT_2_lights_surfaces.md),
+[`AUDIT_3_far_lod.md`](LightingResearch/AUDIT_3_far_lod.md) (12 / 16 / 23 findings, all
+cited to file:line), plus two numerical replicas of the engine's own atmosphere march in
+[`LightingResearch/`](LightingResearch/).
+
+---
+
+## 0. Read this first
+
+1. The engine has **five mutually incompatible brightness scales**. Only two respond to
+   distance from the sun. No two agree on what `1.0` means.
+2. **There is no exposure control of any kind** — not auto, not manual. `ATMOSPHERE_EXPOSURE`
+   is declared and referenced by nothing.
+3. The planets are **not lit by the three.js lights at all** (two independent disconnects).
+   `SunLight` and `ambientLight` illuminate only the ship and near/mid asteroids.
+4. Every planet surface is missing exactly one factor: **`sunIlluminance / π` = 6.37× at 1 AU**.
+5. `VENUS_ILLUM_TRIM = 0.025` is **backwards**. Measured, the Venus disc marches to 11–13
+   game units against a physical 8.9 — it was never 40× too bright. The trim *under*-renders
+   Venus ~32×, and only looked right because Earth's surfaces are simultaneously 6.37× too dark.
+   **Two errors partially cancelling** → the surface-irradiance fix and the trim removal must
+   land in the *same* commit.
+6. The good news: the scene's existing scale is **already a pre-exposed physical scale** with a
+   discoverable constant — **1 game unit ≈ 6,400 cd/m²**. Almost nothing needs rescaling; the
+   scale needs *finishing* and *documenting*.
+7. The offscreen chain is genuinely RGBA16F end-to-end and tone-maps exactly once. **The
+   plumbing is fine.** The defects are all in the radiometry and the missing exposure stage.
+8. Scene dynamic range is **44 stops** (EV100 −10 → +34). Unreal's default auto-exposure
+   histogram covers 12. This is the central design constraint.
+9. The shipped defaults are `toneMapping: false` **and** `bloom: false`
+   ([`store.ts:29-30`](../src/store/store.ts#L29)) — so a fresh player gets `Neutral`
+   (which crushes everything above linear ≈4) with no bloom at all. Flip both.
+10. Real browser HDR output exists today (three r180+): `outputType: HalfFloatType` +
+    `ExtendedSRGBColorSpace`. Display headroom is **not** reliably detectable → ship a
+    calibration screen, as every console HDR title does.
+11. **`sunIlluminance` is baked at module load** from a static position
+    ([`atmosphereData.ts:249`](../src/components/celestial/bodies/atmosphereData.ts#L249)).
+    Orbital motion and procedural systems both require it to be per-frame. Fix in Phase 0 — see §3.0.
+12. **§2.2 is closed** — Venus over-scatters by +18…+21%, which is the Hillaire multiple-scattering
+    approximation's own documented hue-drift limit at high scattering coefficients, not a bug in
+    our code. Accepted without a correction knob. Nothing blocks Phase 0.
+13. The aesthetic target is **what a dark-adapted human eye would see**, which means a
+    scotopic/mesopic vision model, two-timescale adaptation, and veiling glare — not just
+    a tone curve. See §3.9. Happily, "stars visible unless something bright is in frame"
+    falls out of that physics for free rather than needing to be art-directed.
+
+---
+
+## 1. Problem statement
+
+### 1.1 The root cause
+
+One defect explains most of the symptoms: **the engine grew two lighting systems that never
+met.** The atmosphere/cloud system (Phases 1–5 of `ATMOSPHERE_PLAN.md`) is physically based and
+carries a real illuminance scale derived from star luminosity and true orbital distance. Every
+other surface in the game predates it and shades on a bare `[0,1]` albedo scale. The bridge
+between them — a single global exposure multiply — was specified in `ATMOSPHERE_PLAN.md` §6 and
+never implemented, so the two scales were reconciled **per body, by hand**, with art constants.
+
+`VENUS_ILLUM_TRIM = 0.025` and `CLOUD_SUN_SCALE = 0.45` are not tuning knobs. They are the
+missing exposure pass, implemented twice, badly, in the wrong place.
+
+### 1.2 The five scales
+
+| Tier | Site | Output is… | Scale | 1/r²? |
+|---|---|---|---|---|
+| Sphere near/mid | `bodies/*.ts` `buildFragmentNode` | `albedo × f(N·L)` | `[0,1]` albedo | ❌ |
+| Far billboard | [`useFarLOD.ts:43`](../src/components/celestial/useFarLOD.ts#L43) | `albedo × sunDot` | `[0,1]` albedo | ❌ |
+| Stellar point | [`StellarPoint.tsx:250-255`](../src/components/space/StellarPoint.tsx#L250) | `flux/JUPITER_REF_FLUX × 12` | arbitrary, clamped 500 | ✅ |
+| Sun disc | [`Star.tsx:80`](../src/components/Star/Star.tsx#L80) | `CORE_HDR = 4096` | arbitrary | n/a (correctly constant) |
+| Atmosphere + clouds | [`atmosphereData.ts:69`](../src/components/celestial/bodies/atmosphereData.ts#L69) | `sunIlluminance × …` | 20 units @ 1 AU | ✅ |
+| Ship + asteroids | [`Scene.tsx:130-131`](../src/components/Scene/Scene.tsx#L130) | three.js lights | `30/π = 9.55` | ❌ |
+
+Six, if you count the ship separately from the planets it flies past. It is worth stating
+plainly: **`SunLight` does not light a single planet.**
+
+### 1.3 Ranked defects
+
+Severity is quantified as the factor by which the render deviates from its own physics.
+
+| # | Defect | Where | Wrong by | Root cause |
+|---|---|---|---|---|
+| D01 | No exposure stage anywhere | `ATMOSPHERE_EXPOSURE` unused | — | R |
+| D02 | Surfaces missing `E/π` irradiance factor | all `bodies/*.ts` | **6.37×** @ 1 AU | R |
+| D03 | **Ship/asteroid** sun brightness constant across the system | [`SunLight.tsx:21`](../src/components/Star/SunLight.tsx#L21) | **6,040×** Mercury↔Neptune | R |
+| D03b | **Planet-disc** luminance partly bypasses `sunIlluminance` | surface shaders + the §4.1 seam | **12.9× Neptune, 16.5× Venus** (measured, §2.2.2) | R |
+| D04 | Far billboard has no illuminance term | [`useFarLOD.ts:43`](../src/components/celestial/useFarLOD.ts#L43) | **1,940×** disc ratio | R |
+| D05 | `VENUS_ILLUM_TRIM` under-renders Venus | [`atmosphereData.ts:271`](../src/components/celestial/bodies/atmosphereData.ts#L271) | **32×** | R |
+| D06 | Billboard→point handoff discontinuity | AUDIT_3 §2 | **68–86,000×** | R |
+| D07 | Planets unreachable by three.js lights | `fragmentNode` bypasses `setupLighting()` | structural | I |
+| D08 | Earth has no Lambert cosine (sigmoid, ≥0.98 for cosθ>0.1) | [`earth.ts:269`](../src/components/celestial/bodies/earth.ts#L269) | flat day disc | I |
+| D09 | Textures are brightness-normalised art, uncorrected | all colour maps | **0.37×–5.4×**, 14.6× spread | I |
+| D10 | Clouds ~100× brighter than the ground below them | [`cloudCommon.ts:141`](../src/components/celestial/bodies/cloudCommon.ts#L141) | **10–30×** | R |
+| D11 | Shipped defaults are `toneMapping: false` (→ Neutral, crushes above linear ≈4) **and** `bloom: false` | [`store.ts:29-30`](../src/store/store.ts#L29) | 2 code values | I |
+| D12 | Bloom is radius 0, strength 0.02, additive | [`SpaceRenderer.tsx:516`](../src/components/space/SpaceRenderer.tsx#L516) | no glare | I |
+| D13 | No SDR/HDR display handling; 8-bit sRGB only | `Scene.tsx` renderer ctor | — | I |
+| D14 | No AA of any kind (`antialias:false`, no TAA) | `Renderer.js:101,275` | flicker | I |
+| D15 | Sun disc radiance 61× below its own scale | [`Star.tsx:80`](../src/components/Star/Star.tsx#L80) | **61×** | R |
+| D16 | Night side has nothing but a texture | — | — | I |
+| D17 | `sunIlluminance` baked at module load from a static position | [`atmosphereData.ts:249`](../src/components/celestial/bodies/atmosphereData.ts#L249) | blocks orbital motion + procedural systems | F |
+| D18 | Star radius, colour and luminance hardcoded G2V/Sol | [`Star.tsx:38,154`](../src/components/Star/Star.tsx#L38) | blocks procedural systems | F |
+| D19 | No scotopic/mesopic vision model; deep space is underexposed daylight | — | look, not correctness | I |
+| D20 | Luna's `stellarPoint.geometricAlbedo` is 0.0036 vs a measured 0.136 | [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) | **38×** too dim | I |
+
+`R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
+survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
+requirement (orbital motion, procedural systems — §3.0) rather than being visible today.
+
+Note that eight are independent and two are future-blocking — this is not "just add
+auto-exposure". The two `F` rows are the cheapest items on the list *now* and among the most
+expensive to retrofit later, which is why they land in Phase 0 and Phase 3.
+
+---
+
+## 2. Engine facts verified against current code
+
+Everything here is cited and was read, not assumed.
+
+- **The HDR chain is real.** Every offscreen target is `HalfFloatType` (RGBA16F): `rt`, `rtB`,
+  `apRT`, both LUTs, the BSM pair, the sparse cloud MRT, the cloud history. Nothing clamps to
+  `[0,1]` before the tonemapper. The clamp is exactly where it should be — the final canvas write.
+- **Tone mapping is applied exactly once**, in-graph at
+  [`SpaceRenderer.tsx:526`](../src/components/space/SpaceRenderer.tsx#L526), with
+  `renderer.toneMapping = NoToneMapping` set so `renderOutput()` cannot re-apply it. The
+  save/restore dance around the scaled/local passes is **vestigial — a provable no-op**, not a bug.
+- **`renderer.toneMappingExposure` is already wired into the node graph and never written.**
+  It sits at 1.0. This is a free exposure hook.
+- **R3F never touches `toneMapping` or `outputColorSpace`** (grepped the dist bundle; zero hits),
+  so the three.js defaults are live: `outputColorSpace = SRGBColorSpace`,
+  `toneMapping = NoToneMapping`, `toneMappingExposure = 1.0`.
+- **`ColorManagement.workingColorSpace` is the default `LinearSRGBColorSpace`** — not written
+  anywhere in `src/`.
+- **Planets are doubly disconnected from the lights.** (a) They live in `scaledScene`, rendered
+  by a separate `gl.render()` call ([`:707`](../src/components/space/SpaceRenderer.tsx#L707) vs
+  [`:1004`](../src/components/space/SpaceRenderer.tsx#L1004)). (b) three r183 skips
+  `setupLighting()` entirely when `NodeMaterial.fragmentNode !== null`
+  (`three.webgpu.js:20934`, `:20990-21003`).
+- **The seam is one line** —
+  [`atmospherePass.ts:2039`](../src/components/space/atmospherePass.ts#L2039):
+  ```ts
+  return vec4(sceneColor.mul(T).add(apSample.rgb), 1);
+  ```
+  `sceneColor` ≈ 0.09 (albedo scale) is added to `apSample.rgb` = `uSunIlluminance × (…)` ≈ 20
+  (illuminance scale). Nothing rescales either side.
+- **`sunIlluminance` already derives from real orbital distance and 1/r²**
+  ([`atmosphereData.ts:199`](../src/components/celestial/bodies/atmosphereData.ts#L199)). The
+  physics is there; only the surfaces don't consume it.
+- **Clouds already consume `sunIlluminance`** —
+  [`cloudCommon.ts:141`](../src/components/celestial/bodies/cloudCommon.ts#L141):
+  `sunIlluminance.mul(sunT).mul(CLOUD_SUN_SCALE).mul(shadow)`. So clouds sit at ≈9 units while
+  the ground beneath them sits at ≈0.09. That ~100× ratio (physically ~3–10×) is why the
+  screenshots show blown-white cloud tops over a dark ocean.
+- **Nothing casts a shadow-map shadow.** `renderer.shadowMap` is never touched, no light has
+  `castShadow`, and `ShipOne`'s `castShadow`/`receiveShadow` flags are inert. All seven
+  shadowing effects in the game are analytic or texture-based.
+- **No MSAA, no TAA, no FXAA.** `antialias: false`, `samples: 0`.
+
+### 2.1 Measured (numerical replica of the engine's own march)
+
+`node docs/LightingResearch/audit4_atmosphere_replica.mjs` — a JS replica of the MS bake +
+main march driven by the real `sol.json`:
+
+| | Earth (illum 20) | Venus (illum 40.631, untrimmed) |
+|---|---|---|
+| Disc L, 256 steps | `[0.151, 0.325, 0.781]` | `[11.081, 12.605, 13.271]` |
+| Single-scatter only | `[0.103, 0.219, 0.486]` | `[2.160, 2.311, 2.380]` |
+| `1/(1−F_ms)` peak | `1.45` | **`174`** |
+| Lambertian physical `p·E/π` | 2.737 (p=0.43) | 8.924 (p=0.69) |
+| Blue transmittance at surface | 0.80 | 2.5e-17 |
+
+Ground-truth zenith sky from the surface, sun at zenith: `[0.459, 0.614, 1.019]` game units,
+photopic mix 0.610 → **3,900 cd/m²** at the calibration below. Real clear-sky zenith at solar
+noon is ~2,000–8,000 cd/m². ✅ The atmosphere's absolute scale is right.
+
+### 2.2 The Venus multiple-scattering question — RESOLVED 2026-08-14
+
+**Verdict: the engine over-scatters Venus by +18…+21%, it is NOT a bug in our code, and it is
+the documented limitation of the chosen approximation. Accept it; do not add a knob.**
+
+Three findings, in the order they were established.
+
+**(a) The Monte Carlo estimator is validated.** The three-way disagreement in the original audit
+was resolved: **my own derivation was the wrong one.** I used Rayleigh `p(180°) = 3/(8π) = 0.1194`
+(the `∫p dΩ = 1` convention) inside a formula written for the `∫p dΩ = 4π` convention, which
+needs `p(180°) = (3/4)(1+cos²Θ) = 1.5`. That is a factor of exactly `4π = 12.566` — and
+`0.00271 × 4π = 0.0341`. The correct analytic reference is:
+
+```
+π·L/F₀ = ω · p(180°) · [1 − e^{−2τ}] / 8 ,   p(180°) = 1.5      [∫p dΩ = 4π]
+τ = 0.1, ω = 1  ⇒  0.0340
+```
+
+Restricting the MC to **exactly one scattering event** makes it compute the same quantity as the
+analytic. Run at N = 4×10⁶ (`audit4_mc_validation.mjs`):
+
+| τ | analytic SS | MC (1 scatter) | ratio | ±1σ |
+|---|---|---|---|---|
+| 0.01 | 3.713e-3 | 3.918e-3 | 1.0553 | 2.56% |
+| 0.03 | 1.092e-2 | 1.094e-2 | **1.0015** | 1.53% |
+| 0.1 | 3.399e-2 | 3.418e-2 | **1.0056** | 0.86% |
+| 0.3 | 8.460e-2 | 8.464e-2 | **1.0005** | 0.55% |
+| 1.0 | 1.621e-1 | 1.611e-1 | **0.9939** | 0.40% |
+
+Agreement within ±0.9% across two decades of τ (the τ=0.01 row is 2σ on ~150 counted photons).
+With full physics restored the excess grows monotonically with τ — 1.002, 1.033, 1.089, 1.272 at
+τ = 0.01…0.3 — which *is* multiple scattering. The earlier apparent "20% bias" was Poisson noise
+at N = 4×10⁵; the original script's printed expectation of 0.0188 remains unexplained and should
+be deleted.
+
+**(b) Venus, with the validated estimator** (N = 2×10⁵, `E_venus = 40.631` game units):
+
+| ch | τ | ω | true π·L/E | L_true | engine | **engine/true** |
+|---|---|---|---|---|---|---|
+| R | 9.07 | 0.9838 | 0.7245 ±0.75% | 9.370 | 11.081 | **1.183** |
+| G | 19.52 | 0.9912 | 0.8068 ±0.72% | 10.434 | 12.605 | **1.208** |
+| B | 45.88 | 0.9941 | 0.8541 ±0.70% | 11.047 | 13.271 | **1.201** |
+
+Re-running with `surfAlb = 0` instead of 0.5 moves the result by 0.3–0.6%, confirming the ground
+is irrelevant at these optical depths and the comparison is clean. The +18…+21% excess is ~28σ
+outside the error bar: **real, and quantified.**
+
+Note also that the *true* values (9.37–11.05) themselves exceed the Lambertian `p·E/π` of 8.924
+by 1.05–1.24×. So the original caution was right: exceeding `A·E/π` at phase 0 is **not** evidence
+of an energy violation, and the audit was correct to refuse to conclude from it.
+
+**(c) It is the approximation's own documented failure mode, not our bug.** From
+[`EpicGames.md`](AtmosphereReferences/EpicGames.md) (Hillaire 2020):
+
+- The method explicitly targets dense atmospheres. Figure 7 shows "**50 times denser air**";
+  Figure 11 shows "Earth atmosphere **55× thicker**" against a path-traced reference at depth 100,
+  and claims it is "the only non-iterative technique that can approximate the ground truth". §7:
+  "the atmosphere may get denser and it then becomes important to account for higher scattering
+  orders. **While our new model (O) automatically takes that into account**…". Venus' ~90×
+  Rayleigh is only 1.6–1.8× beyond the published test — the same order, not a different regime.
+- But §7 names our exact symptom: "When using very high scattering coefficients, the **hue** can
+  be lost or even start to drift as compared to the ground truth," and Figure 12: "a dense
+  atmosphere can result in a **different multiple-scattering color**." Our error is not a uniform
+  gain — it is 1.183 / 1.208 / 1.201, i.e. red-deficient relative to green and blue. **A mild hue
+  drift at high scattering coefficients is precisely what the paper says to expect.**
+- **Our implementation follows the paper's own recommendation.** The paper says `f_ms` must stay
+  in `[0,1]` and that "to help respect that range, it is recommended to use the analytical
+  solution to the integration of Equation 8". [`atmospherePass.ts:1533-1536`](../src/components/space/atmospherePass.ts#L1533)
+  does exactly that: `MSint = scattering·(1 − sampleT)/extinction`. And the guard at
+  [`:1559`](../src/components/space/atmospherePass.ts#L1559),
+  `psi = inScattered / max(1 − Fms, 1e-4)`, permits amplification to 10,000× — our Venus peak is
+  174×, so it never engages. There is no clamp bug and no range violation.
+- Also settled: the paper states 16-bit float is sufficient for its LUTs ("a 16 bit float
+  representation is enough for model (O)"), so our `HalfFloatType` LUTs are per its own guidance.
+  The `T = 2.5e-17` blue transmittance underflowing to 0 in half-float is **correct behaviour** —
+  at optical depth 46 the true transmittance is zero to any precision that matters.
+
+**Decision: accept the +20%.** It is 0.24 stops, on a body that will be at or near exposure
+clipping regardless, and it is dwarfed by the defects this plan actually fixes (6.37× on surfaces,
+32× on the trim). Adding an `f_ms` clamp or a density-dependent correction would be a new
+per-body art constant — exactly the pattern §3.0 forbids. Revisit only if Venus' hue reads wrong
+on device after Phase 2, and if so fix it by improving the *model* (a real UV/blue absorber for
+the H₂SO₄ haze), not by scaling the output.
+
+### 2.2.2 FIRST LIVE MEASUREMENTS — `__lum`, 2026-08-14
+
+Six probes of the real engine, decoded (the raw readings needed a half-float fix — see §5.2).
+**Two of these validate the design; two quantify defects for the first time.**
+
+All values below are from the **fixed** decoder, with `__lum.selftest()` passing.
+
+| View | units (R,G,B) | photopic units | cd/m² | expected | verdict |
+|---|---|---|---|---|---|
+| Day side, just above cloud tops, sun high | 2.92, 3.19, 3.74 | 3.17 | **19,143** | 10,000–30,000 | ✅ |
+| Sun **disc** near the horizon | 208, 62.5, 18.0 | 90.2 | 545,000 | ≈600,000 | ✅ R/B = 11.6 |
+| Sky **beside** the horizon sun | 1.55, 0.379, 0.128 | 0.609 | 3,678 | — | ✅ R/B = 12.1 |
+| Terminator, looking up | 0.0114, 0.0136, 0.0346 | 0.0147 | 89 | twilight | ✅ B/R = 3.0 |
+| Terminator, looking down at Earth | 0.0019, 0.0031, 0.0107 | 0.0034 | 21 | — | plausible |
+| **Venus** disc from orbit, zero phase | 2.18, 3.89, 6.05 | 3.68 | 22,216 | 0.223 units | ❌ **16.5×** |
+| **Neptune** disc from orbit | 0.0086, 0.0385, 0.174 | 0.0420 | 253 | 0.0033 units | ❌ **12.9×** |
+| Venus' shadow, facing deep space | 0.0034, 0.0027, 0.0029 | 0.0029 | 17.3 | ~1e-4 | ❌ **~170,000×** |
+
+**✅ The 6,038 cd/m² calibration is independently confirmed.** Sunlit cloud tops at 19,143 cd/m²
+lands inside the real 10,000–30,000 range, by a completely different route from the two anchors in
+§3.1. The unit convention is settled.
+
+**✅ The atmosphere's spectral behaviour is right.** The horizon sun at R/B = 11.6 and the sky
+beside it at R/B = 12.1 are Rayleigh extinction through a horizon airmass, at an absolute level
+(545,000 cd/m²) matching the real horizon sun.
+
+**❌ THE PLANET-DISC ERROR IS 13–17×, NOT THE 400–1,100× FIRST REPORTED.** The first pass
+misidentified Venus as an ice giant from its blue colour and drew a wildly wrong conclusion. Venus'
+disc from orbit *is* blue-dominant (B/R = 2.8) because it is dominated by in-scatter through a
+Rayleigh column of optical depth 9–46 — exactly what the §2.1 replica predicted
+(`[11.08, 12.61, 13.27]`, blue-highest). The warm `[1.0, 0.97, 0.85]` tint belongs to the
+*stellar-point* tier, which is not in play from orbit. **Measured, per body:**
+
+| Body | live E | expected `p·E/π` | measured | error |
+|---|---|---|---|---|
+| Neptune | 0.02343 | 0.00330 units (20 cd/m²) | 0.0420 | **12.9×** |
+| Venus (against its TRIMMED E) | 1.0158 | 0.2228 units (1,345 cd/m²) | 3.68 | **16.5×** |
+| Venus (against UNTRIMMED E) | 40.631 | 8.912 units (53,815 cd/m²) | 3.68 | 0.41× |
+
+**Two consequences, and the second is new:**
+
+1. **Distinguish two different defects that §1.3 conflated.** D03 (the *ship's* `SunLight.intensity`
+   being distance-independent, a structural 6,040× across Mercury↔Neptune) is separate from the
+   *planet-disc* error, which is now measured at **13–17×**. Both are real; only the second has a
+   number. Correct the expectation for Phase 2: it is a ~1-in-15 brightness change on planet discs,
+   not a thousandfold one.
+2. **Removing the Venus trim alone will NOT restore physics — a large part of Venus' disc bypasses
+   `sunIlluminance` entirely.** Venus measures 16.5× *above* what its own trimmed illuminance
+   implies, and 0.41× of the untrimmed value. If the disc were purely atmospheric in-scatter it
+   would track illuminance linearly and land at 0.28 units (the replica's 11.08 scaled by
+   1.0158/40.631). It measures 3.68. So most of Venus' brightness arrives through an
+   albedo-scale path that ignores illuminance — which is precisely the §4.1 seam, and it means the
+   cancellation is *partial and body-dependent*, not a clean factor. Phase 2 must re-measure
+   Venus and Neptune with `__lum.compare()` after the change, not assume the trim removal balances.
+   That Neptune (12.9×) and Venus (16.5×) sit so close together is encouraging: it suggests a
+   systematic bypass fraction rather than per-body chaos.
+
+**❌ The deep-space floor is ~170,000× too bright, and it IS the skybox.** 17.3 cd/m² where
+airglow/zodiacal light is ~1e-4 — that is 13.1 magnitudes, matching AUDIT_3's "~20 mag" estimate in
+kind. **Correction to the first report:** I claimed the floor was "exactly grey (R=G=B to the bit)"
+and inferred a constant additive term. With the decoder fixed the channels differ
+(0.0034, 0.0027, 0.0029, red-dominant), so it is a *texture* — the Milky Way panorama — not a
+constant. Phase 7 should re-author or rescale it, as originally planned.
+
+⚠ **This is the real constraint on `evMin`.** §3.4 argued the background sits ~3 orders of
+magnitude *below* a mag-6 star's per-pixel equivalent (1.07e-2 cd/m²). At 17.3 cd/m² it currently
+sits ~1,600× *above* it, so no exposure setting can show stars against this sky. **The skybox
+rescale is therefore a prerequisite for the stars-visible goal, not a nice-to-have — promote it
+from Phase 7 into Phase 5 alongside auto-exposure.**
+
+### 2.2.3 Probe methodology note
+
+Two probes of "the horizon sun" at the same pose returned 90.2 and 0.609 photopic units — a 148×
+spread — with **near-identical hue** (R/B 11.6 vs 12.1). Same optical path, different position on
+the glare falloff: one hit the disc, one the aureole beside it. For anything small or point-like,
+single-pixel `probe()` is too fragile; use `probeMax(n)` or `compare(bodyId)`, which is what the
+ladder does.
+
+### 2.2.1 Still open (does not block any phase)
+
+- The MC's nadir sub-solar reflectance for the engine's Venus model is 0.72/0.81/0.85, while real
+  Venus' *geometric* albedo is 0.689. These are **not directly comparable** — normal albedo at the
+  sub-solar point exceeds the disc-averaged geometric albedo for any limb-darkened body — so no
+  conclusion follows about whether the derived Venus coefficients are too reflective. Answering it
+  needs a disc integration, not a nadir sample. Worth doing when `__lum` exists, since it would
+  validate `deriveAtmosphere()` against measured albedo for *every* body at once, which is
+  directly load-bearing for procedural systems (§3.0).
+
+---
+
+## 3. Target architecture
+
+### 3.0 Locked decision — design for motion and procedural generation from day one
+
+Two confirmed future requirements change what "correct" means here, and both are cheap now and
+expensive later:
+
+1. **True-to-life orbital motion and rotation.** Bodies orbit, so their distance to the star
+   changes continuously — and so do the phase angle (sun–body–camera) and the sun's direction.
+2. **Procedurally generated star systems, backed by real science, with no per-system tuning.**
+
+Together they impose one rule: **nothing about lighting may be a hand-tuned per-body constant,
+and nothing may be baked at module load.** Every brightness must be a pure function of
+(physical description, live geometry). This is already the stated philosophy of
+[`atmosphereData.ts`](../src/components/celestial/bodies/atmosphereData.ts) — *"Planets are
+DESCRIBED, not tuned"* — but it is only half-implemented.
+
+**The blocker.** `AtmosphereParams` is built once at import:
+```ts
+export const EARTH_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(findBody("earth"), sol, …)
+```
+against a **static** `PLANET_POSITION_KM`. So `sunIlluminance` is a compile-time constant. Under
+orbital motion Earth's illuminance would be frozen at its authored position; under procedural
+generation there is no module-level body list to enumerate at all.
+
+**The fix — split `AtmosphereParams` by what it depends on:**
+
+| Static (composition + mass + radius) | Dynamic (per frame, from live geometry) |
+|---|---|
+| Rayleigh/Mie/ozone coefficients, scale heights | `sunIlluminance` = `L★ / d(t)²` |
+| radii, atmosphere top, phase-function `g` | sun direction, phase angle α |
+| aerosol/dust load | star colour temperature → RGB |
+
+Only the static half is derivable once per body and cacheable; the dynamic half becomes a
+per-frame uniform. This is a small, surgical change (`sunIlluminance` is already a uniform,
+`uSunIlluminance`, at [`atmospherePass.ts:1150`](../src/components/space/atmospherePass.ts#L1150)
+— it is only its *source* that is frozen) and it is the difference between this design surviving
+requirement #1 or being rewritten for it.
+
+**Consequences for the rest of this plan:**
+
+- **Phase angle must be a first-class input.** §3.6's `Φ(α)` already takes it; the sphere tier
+  gets it from `N·L` and the view vector. Nothing may assume full-phase.
+- **The star is not necessarily G2V.** `Star.tsx` hardcodes `vec3(1.0, 0.95, 0.9)` and
+  `RADIUS_KM = 696_340`. Both must come from the star's description: radius from the body def,
+  colour from a blackbody(T_eff) → linear-sRGB conversion, and luminance from
+  `L = σT⁴/π` scaled into game units. Then an M-dwarf system is red and dim *for free*.
+- **Texture-mean albedo calibration (§3.6) does not generalise.** Procedural bodies have no
+  authored texture. So the albedo pipeline must be: *the body's geometric albedo is the
+  authority; a texture, if present, is a zero-mean variation on it.* That works identically for
+  hand-authored and generated bodies. Do not implement it the other way round.
+- **No new per-body art constants.** `VENUS_ILLUM_TRIM`, `CLOUD_SUN_SCALE`,
+  `REFERENCE_HDR`, `JUPITER_REF_FLUX` and `mars.ts:109`'s `12.0` are exactly the pattern to
+  eliminate, not to extend. Each one is a future procedural system rendered wrong.
+- **Validation must be parametric.** `__lum` (§4.2) should be able to assert the §3.6 table for
+  a *generated* system too, by checking `L = p·E/π` against its own description rather than
+  against hardcoded expectations.
+
+### 3.1 Locked decision — the unit convention
+
+**One linear scale for the entire frame: pre-exposed physical luminance, where
+1 game unit = 6,400 cd/m² (equivalently 6,400 lux for illuminance).**
+
+This is not a new scale — it is the scale the atmosphere already uses, back-solved:
+
+```
+Earth TOA solar illuminance  = 1361 W/m² × ~93 lm/W ≈ 126,600 lux
+Engine pins Earth to           sunIlluminance = 20 game units
+                            ⇒ 1 game unit = 126,600 / 20 ≈ 6,330 ≈ 6,400 lux
+```
+
+Adopting it means **the atmosphere, clouds and sky need no rescaling at all**. Only the
+surfaces, impostors, star and ship lights move — and they move by a factor that is now
+*derived*, not tuned.
+
+Every shader variable gets an explicit documented quantity:
+
+| Variable | Quantity | Units |
+|---|---|---|
+| `sunIlluminance` | illuminance ⊥ to the sun at the body | game units (=6,400 lux) |
+| surface output | radiance | game units (=6,400 cd/m²) |
+| `apSample.rgb` | in-scattered radiance | game units |
+| `apSample.a` | transmittance | dimensionless `[0,1]` |
+| impostor output | radiance | game units |
+| `uExposure` | scale to tonemapper domain | 1/game units |
+
+**The Lambertian surface term becomes, exactly:**
+```
+L_surface = albedo · (sunIlluminance / π) · N·L · T_atmos  +  ambient
+```
+The `1/π` is the Lambertian BRDF normalisation and is the single most commonly dropped factor
+in this class of bug. Its absence is D02.
+
+### 3.2 Locked decision — pre-exposure, not absolute luminance
+
+The sun's disc is 1.6e9 cd/m² = **250,000 game units**, which overflows RGBA16F (max 65,504).
+An absolute-luminance pipeline is therefore *impossible* in half-float. Two consequences:
+
+1. **Adopt Frostbite's pre-exposure trick**: multiply by the current frame's exposure *at the
+   source* in each shader, so buffers hold post-exposure values around `[0.01, 100]` and
+   half-float precision is spent where the eye is. `uExposure` becomes a global uniform that
+   every radiance-producing shader multiplies by.
+2. **An exposure ceiling is mandatory, for numerical reasons as well as aesthetic ones.** With
+   the ship in deep space metering on starlight (~1e-8 units), an unclamped auto-exposure would
+   drive the sun disc past half-float max. The same clamp that prevents the overflow is the
+   clamp that stops space being auto-brightened into grey mush. One knob, two jobs.
+
+### 3.3 Closing the seam — sun illuminance everywhere
+
+`sunIlluminance` already exists per body with correct 1/r². The work is to route it to the four
+consumers that ignore it:
+
+1. **Planet surfaces** — multiply by `sunIlluminance/π`. Removes D02 and, with the trim removal,
+   D05.
+2. **Far billboards** — replace `albedo × sunDot` with `albedo × (E/π) × Φ(α)`, where `E` is the
+   body's illuminance and `Φ` a proper phase function (§3.6). Removes D04.
+3. **Ship + asteroids** — `SunLight.intensity` becomes a per-frame value derived from the ship's
+   actual distance to the star, in the same units. Removes D03. Note this is the *one* place
+   three.js's light pipeline is still used, so the unit conversion to `DirectionalLight.intensity`
+   must be pinned by a test (§4.2).
+4. **Sun disc** — `CORE_HDR` becomes `solarLuminance / 6400 = 250,000`, pre-exposed. Removes D15.
+   Disc *radiance* is correctly distance-invariant; only its solid angle changes. The existing
+   code gets this right and must not be "fixed".
+
+### 3.4 Exposure — the camera model and auto-exposure
+
+**Locked: a physically based camera with histogram auto-exposure, and hard clamps.**
+
+Metering (Filament/Unreal convention, `S=100`, `K=12.5`):
+```
+EV100    = log2(L_avg · 100 / 12.5) = log2(L_avg · 8)
+exposure = 1 / (1.2 · 2^EV100)
+```
+
+**The scene spans 44 stops** and this is the design's hardest constraint:
+
+| Subject | cd/m² | game units | EV100 |
+|---|---|---|---|
+| Sun disc | 1.6e9 | 250,000 | **+33.6** |
+| Mercury sub-solar | 38,600 | 6.03 | +18.2 |
+| Earth sub-solar | 17,700 | 2.76 | +17.1 |
+| Full Moon | 5,540 | 0.87 | +15.4 |
+| Neptune full disc | 20 | 0.0031 | +7.3 |
+| Milky Way (22 mag/arcsec²) | 1.7e-4 | 2.7e-8 | −9.5 |
+| Airglow | ~1e-4 | 1.6e-8 | −10.3 |
+
+For comparison, Unreal's default histogram covers `histogram_log_min = −8` to
+`histogram_log_max = +4` — **12 stops**. Ours must cover ≥44. Initial parameters:
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| histogram bins | 128 | 0.35 stops/bin over the range |
+| `logMin` / `logMax` | −12 / +34 EV | covers airglow → sun disc |
+| low / high percentile | 40% / 90% | high tail must exclude the sun; 90% is deliberately below Unreal's default because a 0.5°-wide 1e9 source is a bigger outlier than anything in a car game |
+| metering | centre-weighted, cos⁴ falloff | keeps a sun at the frame edge from driving the whole exposure |
+| adapt speed up / down | 1.5 / 0.6 EV s⁻¹ | asymmetric, as human adaptation is |
+| **`evMin` (floor on metered EV100)** | **−16** | the most sensitive the eye is allowed to get — see the derivation below |
+| `evMax` (ceiling on metered EV100) | +20 | prevents crushing a sub-solar Mercury |
+| manual override | full | screenshot/photo mode, and the perf bench (§4.3) |
+
+Note the direction: **low EV = high exposure = more sensitive.** `evMin` is therefore the
+*brightest* the pipeline may render a dark scene.
+
+**Deriving `evMin` from the stated goal ("stars brightly visible").** The dark-adapted naked-eye
+limit outside the atmosphere is about magnitude 8 — more stars than anyone sees from the ground.
+Targeting a comfortable mag 6:
+
+```
+E(mag 6)    = 2.54e-6 · 10^(−6/2.5)        = 1.01e-8 lux
+Ω(1 px)     = (1.047 rad / 1080)²           ≈ 9.4e-7 sr      (60° FOV, 1080p)
+L_equiv     = E / Ω = 1.07e-2 cd/m²         = 1.68e-6 game units
+render at ~0.1 post-exposure ⇒ exposure    ≈ 6e4
+exposure = 1/(1.2·2^EV)      ⇒ EV100       ≈ −16.1
+```
+
+**The "grey mush" fear is misplaced, and this matters for where the aesthetic control lives.**
+At `evMin = −16` the interplanetary sky background (zodiacal light + integrated starlight,
+~1e-4 cd/m² = 1.6e-8 units) renders at ~9e-4 — essentially black. Stars sit **three orders of
+magnitude above the background**, so they pop against black rather than washing into haze. The
+real risk of grey mush is the **Milky Way panorama being authored ~20 magnitudes too bright**
+(AUDIT_3 §5). So the aesthetic knob is the *skybox's absolute luminance* and the *adaptation time
+constants* (§3.9), **not** a hard exposure clamp. Set `evMin` loose and fix the skybox.
+
+**⚠ Do not use the exposure clamp to prevent half-float overflow.** Never clamping the sun disc
+out of range would require `EV ≳ +1.7`, which directly contradicts `evMin = −16`. Instead:
+
+- **Clamp the written radiance, not the exposure**: `min(preExposed, 60000)` in the shaders that
+  can emit the star. Nothing is lost — the tonemapper maps everything above ~10 to white anyway.
+- **Drive the glare from a uniform carrying the star's true flux**, not from reading the clipped
+  buffer. This is the one architectural consequence of clipping the sun, and getting it wrong is
+  how a clipped sun ends up with a glare that is too *small* rather than blinding (§3.7).
+
+**Implementation note:** a GPU histogram + a 1-frame-latent readback is the standard approach,
+but a CPU readback stalls the frame. Prefer keeping the histogram and the adaptation entirely
+on the GPU (a 1×1 `exposure` storage texture read as a uniform next frame), which is what
+Unreal does — no readback, one frame of latency, no stall.
+
+### 3.5 Tone mapping and display output
+
+**Locked: AgX as the default operator.** Rationale:
+
+- Its hue-preserving desaturation toward white on the path to clipping is *exactly* the fix for
+  the "blown white Venus" and "hue-twisted sun" failure modes. Per-channel curves (Reinhard,
+  Hable) skew hue as channels clip at different points — the problem GT7 named "hue twisting"
+  and rebuilt its operator to solve.
+- `NeutralToneMapping` — the **current default** — is the Khronos PBR Neutral operator, designed
+  for asset fidelity in low-dynamic-range product shots. It crushes everything above linear ≈4.
+  It is the wrong tool and it is what ships today (D11). Demote to a debug option.
+- GT7's "Color Volume Mapping" (Yasutomi / Suzuki / Uchimura, CEDEC 2026) is the genuine state
+  of the art — it maps brightness and colour *together* rather than per-channel, and drives one
+  pipeline to both SDR and HDR. It is the right long-term target, but the published material
+  does not contain implementable detail. AgX is the closest available shipping equivalent and is
+  already in three.js. **Revisit if Polyphony publishes the operator.**
+
+**Display output, three tiers from one render:**
+
+| Display | Path |
+|---|---|
+| SDR sRGB | current path: AgX → sRGB encode → 8-bit + dither. Unchanged. |
+| SDR P3 | as above; optionally `outputColorSpace = DisplayP3ColorSpace` |
+| **HDR** | `new WebGPURenderer({ outputType: THREE.HalfFloatType })` + `ColorManagement.define({ [ExtendedSRGBColorSpace]: ExtendedSRGBColorSpaceImpl })` + `renderer.outputColorSpace = ExtendedSRGBColorSpace` (three r180+) |
+
+Detection: `matchMedia('(dynamic-range: high)')`. Gamut: `matchMedia('(color-gamut: p3)')`.
+
+⚠ **Display peak luminance is not reliably detectable in the browser.** The three.js HDR PR
+says so explicitly: WebGPU's HDR support tells you "nothing about the display", leaving
+developers guessing at headroom. Therefore: **ship an HDR calibration screen** — the
+"raise until the logo just disappears" pattern every console HDR title uses. That value feeds
+the tonemapper's peak-luminance parameter. This is not a workaround; it is what the industry does.
+
+⚠ Also from that PR: three's own tone mapping and HDR output are **not yet meant to be
+configured together**. We are lucky here — tone mapping is already applied in-graph with
+`renderer.toneMapping = NoToneMapping`, so we own the display transform and can emit
+extended-range values ourselves. The existing architecture is the one this needs.
+
+CSS `dynamic-range-limit` (Chrome 133+) is available to constrain HDR on the *page* if the HUD
+ever needs protection from an extended-range canvas.
+
+### 3.6 Distant-body photometry — one radiance model for all LOD tiers
+
+**Locked: all three tiers compute radiance from the same formula, so brightness is continuous
+by construction rather than by matched fudge factors.**
+
+```
+L_body(α) = p · (E_body / π) · Φ(α)          [game units]
+E_body    = L_star_solar / d_AU²  ·  20      [game units, = the existing sunIlluminance]
+```
+
+with `Φ(0) = 1` by the definition of geometric albedo. The sphere tier gets it per-pixel via
+`N·L`; the billboard tier per-pixel via its dome normal; the point tier integrates it over the
+disc's solid angle. **The 68–86,000× handoff discontinuity (D06) disappears** because there is
+nothing left to mismatch — and `REFERENCE_HDR`, `JUPITER_REF_FLUX`, the `fade = t²` ramp and the
+`500` clamp can all be deleted.
+
+**Phase function.** `clamp(N·L, 0, 1)` is a Lambertian sphere and is wrong for regolith — it is
+why the Moon reads as a soft ball rather than a flat disc with a hard limb. Use the
+**lunar-Lambert (McEwen) mix**, which is one `mix()` in the shader:
+```
+Φ_LL = (1−k)·μ₀ + k·(2μ₀/(μ₀+μ))       // k ≈ 0.9 for lunar regolith, 0 for clouds/ice
+```
+The second term is Lommel-Seeliger. This also delivers the opposition surge that makes a full
+Moon 1.2 mag brighter than 2× a half Moon.
+
+**Per-body reference table** (derived: `L = 6.366·p/d²` game units; ×6,400 for cd/m²):
+
+| Body | d (AU) | p (geom. albedo) | disc L (units) | disc L (cd/m²) | EV100 |
+|---|---|---|---|---|---|
+| Mercury | 0.387 | 0.142 | 6.03 | 38,600 | +18.2 |
+| Venus | 0.723 | 0.689 | 8.39 | 53,700 | +18.7 |
+| Earth | 1.000 | 0.434 | 2.76 | 17,700 | +17.1 |
+| Moon | 1.000 | 0.136 | 0.866 | 5,540 | +15.4 |
+| Mars | 1.524 | 0.170 | 0.466 | 2,980 | +14.6 |
+| Jupiter | 5.203 | 0.538 | 0.127 | 810 | +12.7 |
+| Io | 5.203 | 0.63 | 0.148 | 947 | +12.9 |
+| Europa | 5.203 | 0.67 | 0.158 | 1,011 | +13.0 |
+| Ganymede | 5.203 | 0.43 | 0.101 | 646 | +12.4 |
+| Callisto | 5.203 | 0.22 | 0.052 | 331 | +11.4 |
+| Saturn | 9.537 | 0.499 | 0.035 | 223 | +10.8 |
+| Uranus | 19.19 | 0.488 | 0.0084 | 54 | +8.8 |
+| Neptune | 30.07 | 0.442 | 0.0031 | 20 | +7.3 |
+
+**Two independent cross-checks that this table is right:**
+- Moon row → 5,540 cd/m². Derived independently from the magnitude system: full Moon
+  `m = −12.74`, `E = 2.54e-6 × 10^(12.74/2.5) = 0.317 lux` (literature: 0.25–0.32 ✅),
+  `Ω = π(1865″/2 / 206265)² = 6.42e-5 sr`, `L = E/Ω = 4,938 cd/m²`. **Agreement to 12%.**
+- Earth row → 17,700 cd/m². A sunlit cloud top at noon measures 10,000–30,000 cd/m². ✅
+
+**Colour** must be calibrated, not eyeballed (D09). Every colour texture in the repo is
+brightness-normalised art; the fix is to rescale each texture so its *mean* matches the body's
+geometric albedo above, preserving its variation. That single operation removes a 14.6× spread.
+
+**Sub-pixel flux conservation.** A body below ~1 px must be splatted through a PSF that
+conserves total flux, not rasterised as a shrinking quad (D06/D14). This also removes
+`MIN_SCREEN_PX` and the flicker. Note the case that motivated this whole audit:
+
+> Venus from Earth subtends 25″ = 0.125 px at 60° FOV / 1080 p — deep in the point regime.
+> The full Moon subtends 1865″ = **9.3 px**, which sits *directly on* the
+> `STELLAR_PX_THRESHOLD = 8` handoff. The Moon is rendered right at the seam where the
+> brightness discontinuity is largest. That is why it looks wrong.
+
+### 3.7 Glare as a point-spread function
+
+Bloom currently carries all the "brighter than white" information and is mis-shaped for it:
+`bloom(sceneTexture, 0.02, 0, 1)` — strength 0.02, **radius 0**, additive (D12). A Gaussian mip
+chain at radius 0 cannot represent the glare of a 1e9 cd/m² point source.
+
+**Locked: a Spencer et al. (1995) style PSF, energy-conserving.** Spencer's filter is
+psychophysically derived from measured human-eye optics (corneal/lens/retinal scatter plus
+diffraction on the lens's radial fibres — the ciliary corona) and its whole purpose is to
+"substantially increase the *perceived* dynamic range" of an image containing light sources.
+That is precisely the requirement.
+
+Two decisions:
+- **Eye, not camera.** The player is looking out of a cockpit, not through a lens. Commit to the
+  eye PSF and drop lens-flare/anamorphic streaks, which would be a different and inconsistent
+  conceit. (Aperture diffraction stays available for a photo mode.)
+- **Energy-conserving composite**: `out = (1−k)·scene + k·PSF(scene)` rather than
+  `scene + bloom`. The clipped sun then reads as blinding because its energy is *redistributed*
+  into the glare, which is how the real percept works — instead of an additive fudge on top.
+
+### 3.8 The night side
+
+The night side is currently a texture and nothing else (D16). Everything below is real light
+that exists and is absent. Under a working auto-exposure system, adding it is what turns the
+dark side from "black" into "quiet" — this is where "realistic *and* awe-inspiring" is won.
+
+| Source | cd/m² | game units | Notes |
+|---|---|---|---|
+| City lights (dense urban, from orbit) | ~1–10 | 1.6e-4 – 1.6e-3 | VIIRS DNB is the data source |
+| Full-moon-lit ground | ~0.1 | 1.6e-5 | from 0.25 lux ÷ π × albedo |
+| Aurora (IBC III) | ~1e-2 | 1.6e-6 | |
+| Airglow | ~1e-4 | 1.6e-8 | the true night-sky floor |
+| Zodiacal light / integrated starlight | ~1e-4 | 1.6e-8 | |
+
+The terminator spans ~6 orders of magnitude between the sunlit and airglow ends, so it is also
+the best available test of whether the exposure curve behaves.
+
+### 3.9 Locked decision — model the eye, not a camera
+
+The stated goal is *what the player's own eyes would see, flying through space*. That is more
+than a tone curve: three properties of human vision are load-bearing, and all three are cheap.
+
+**(a) Two-timescale adaptation.** Cone adaptation is fast (~0.2–2 s); rod adaptation is slow
+(20–40 minutes for full dark adaptation). A single exponential cannot represent both, and 40
+minutes is unplayable.
+
+> **Deliberate deviation from physics, stated explicitly:** compress rod adaptation to ~4–8 s.
+> Keep the *asymmetry* (dark-adaptation slower than light-adaptation, roughly 3:1), because that
+> asymmetry is what the player actually feels — the wince coming into sunlight, the slow reveal
+> of stars afterwards. Model as two exponentials blended by adapted luminance, not one.
+
+**(b) Scotopic/mesopic vision — this is the big awe win, and it is nearly free.** Below about
+0.03 cd/m² the rods dominate: **no colour**, a blue-shifted spectral response (the Purkinje
+shift), and reduced acuity. Between ~0.03 and ~3 cd/m² vision is mesopic — partial colour. In
+deep space, looking away from the sun, the eye is genuinely scotopic. This is why astronauts and
+observers report the Milky Way as **grey**, not colourful, and why naked-eye nebulae have no hue.
+
+Implementation is a lerp in the tonemap stage, driven by the adaptation luminance `L_a`:
+```
+s        = smoothstep(0.03, 3.0, L_a)          // 0 = scotopic, 1 = photopic
+rodLum   = dot(colour, scotopicWeights)        // V′(λ) — blue-weighted vs photopic
+colour   = mix(rodLum · purkinjeTint, colour, s)
+```
+Two constants and a mix. It makes deep space read as *night vision* — desaturated, blue-grey,
+quiet — instead of an underexposed daylight image, and it is a genuine differentiator.
+
+**(c) Veiling glare is what makes stars disappear, not the exposure curve.** Intraocular scatter
+raises the retinal light floor whenever something bright is in view. This is the Spencer PSF of
+§3.7, and it means the requirement *"stars brightly visible unless something really bright is in
+the view"* is **produced by the physics rather than art-directed**. Nothing extra to build.
+
+**⚠ One honest limitation.** The human eye adapts *locally*; a single global exposure cannot.
+So you cannot have brightly-visible stars **and** a correctly-exposed sunlit Earth in the same
+frame. The good news is that this is not a compromise — it is what actually happens: with a
+sunlit planet filling your view your eye adapts to it and the stars genuinely vanish, which is
+exactly why astronauts must shield their eyes and wait to see stars. **A single global exposure
+plus veiling glare is the physically correct answer here**, and it satisfies the requirement as
+stated. Do not add local/bilateral adaptation to "fix" it — that would be the unrealistic choice.
+
+---
+
+## 4. Migration strategy
+
+### 4.1 The cancellation constraint (read before touching anything)
+
+**D02 and D05 must be fixed in the same commit.** Earth's surfaces are 6.37× too dark; Venus is
+32× too dark from the trim. Fix the surfaces alone and Venus becomes invisible relative to a
+now-correct Earth. Remove the trim alone and Venus blows out again. The general rule:
+
+> Any commit that changes one side of the albedo↔illuminance seam must change the other side,
+> or add the compensating exposure, in the same commit.
+
+This is why §5 leads with a *no-visual-change* refactor phase.
+
+### 4.2 Validation harness — `__lum`
+
+Modelled on the existing `__bench` (see [`PERF_MEASUREMENT.md`](PERF_MEASUREMENT.md)), which
+proved that eye-balled before/after is worthless. Build the photometric equivalent **first**, in
+Phase 0, so every later phase has a numeric acceptance test:
+
+- `__lum.probe(x, y)` — reads back the pre-tonemap RGBA16F value at a pixel, in game units, and
+  prints it alongside cd/m² and EV100.
+- `__lum.sweep()` — warps to a fixed ladder of named views (`earth_subsolar`, `earth_terminator`,
+  `earth_night_city`, `moon_full_from_earth`, `venus_from_earth`, `neptune_disc`, `sun_disc_1au`,
+  `sun_disc_30au`, `deep_space_milkyway`) and prints measured vs **expected** luminance from the
+  §3.6 table, with the ratio.
+- `__lum.assert()` — fails any row outside a stated tolerance.
+
+Acceptance for the whole project: **every row within ±25% of the §3.6 table.**
+
+The harness must force **manual exposure** while sweeping, or auto-exposure makes every
+measurement a function of the previous frame. Same lesson as `__bench`'s start-state protocol.
+
+### 4.3 Interaction with `__bench`
+
+⚠ Auto-exposure introduces frame-to-frame state, which will break `__bench` reproducibility
+(currently ±0.4 ms) unless the bench pins exposure manually. Add that to `__bench`'s warp
+protocol in the same phase that lands auto-exposure.
+
+---
+
+## 5. Phased plan
+
+Each phase is independently shippable and has an explicit on-device check. Phases 0–2 are
+ordered so the risky look-changing work happens only after the measurement tools exist.
+
+| Phase | Content | Visual change | Risk |
+|---|---|---|---|
+| **0** ✅ | `__lum` harness; document the unit convention in code; **split `AtmosphereParams` static/dynamic so `sunIlluminance` is per-frame (§3.0)**; `uExposure` wired at 1.0 | **none** (no-op) | low |
+| **1** | Manual exposure only: wire `uExposure`, expose an EV slider in Dev settings, flip defaults `toneMapping → true` (AgX) and `bloom → true` | AgX + bloom become the default look; exposure becomes tunable | low |
+| **2** | **The seam commit.** Surfaces × `sunIlluminance/π`; delete `VENUS_ILLUM_TRIM`; re-anchor `CLOUD_SUN_SCALE`; fix Earth's sigmoid → true `N·L`; albedo-authoritative texture calibration (§3.0) | **large** — the whole system's relative brightness becomes correct | **high** |
+| **3** | Distance-correct sun for ship + asteroids (`SunLight.intensity` from live distance); `CORE_HDR` → 250,000 pre-exposed with the write-clamp; star radius + blackbody colour from its description | outer system goes dim, inner system harsh | medium |
+| **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
+| **5** | GPU histogram auto-exposure + two-timescale adaptation + `evMin`/`evMax`; pin `__bench` exposure; **rescale the Milky Way skybox to absolute luminance (measured 170,000× hot — §2.2.2; promoted from Phase 7 because no exposure can show stars against it)** | the "eye" arrives; ground↔space transitions work; stars become visible | medium |
+| **6** | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
+| **7** | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
+| **8** | PSF glare replacing mip-chain bloom, energy-conserving, driven by the star-flux uniform | the sun becomes blinding; stars veil correctly | medium |
+| **9** | Night-side stack: city lights at absolute luminance, moonlight, airglow, aurora | night side becomes quietly alive | low |
+
+**Per-phase on-device checks** are the corresponding `__lum.sweep()` rows plus a look pass at:
+ground / low orbit / high orbit / deep space / sunrise / night side / Neptune / looking at the sun.
+
+### 5.1 Phase 0 — as built (2026-08-14)
+
+New: [`space/photometry.ts`](../src/components/space/photometry.ts) (the convention, EV/exposure
+helpers, `sunIlluminanceAt`, `uExposure`), [`data/bodyPhotometry.ts`](../src/data/bodyPhotometry.ts)
+(reference albedos + lunar-Lambert k), [`space/perf/lumHarness.ts`](../src/components/space/perf/lumHarness.ts)
+(`__lum`). Touched: `celestial/types.ts`, `bodies/atmosphereData.ts`, `space/atmospherePass.ts`,
+`celestial/CelestialBody.tsx`, `bodies/earth.ts`, `bodies/earthClouds.ts`, `space/SpaceRenderer.tsx`,
+`DevTools.tsx`.
+
+**The exact calibration constant is 6,038, not 6,400.** Derived, not rounded:
+`128,000 lux at 1 AU ÷ SUN_ILLUM_GAME_1AU (21.2) = 6,038`. The 6,400 quoted in §3.1/§3.6 was a
+round figure; the cd/m² column of §3.6's table is therefore ~6% high. Immaterial against its own
+±25% tolerance, and the Moon cross-check *improves* with the exact value (5,843 vs the
+magnitude-derived 4,938 — 18% high, which is the right sign for sub-solar vs disc-average).
+
+**The no-op is proven, not assumed.** All seven atmosphere bodies produce bit-identical
+illuminance before and after (`===`, not "close"): Earth exactly 20, Venus 1.0157736376550237,
+and Mars/Jupiter/Saturn/Uranus/Neptune unchanged to full precision. Earth's pin is expressed as
+`illuminanceTrim = 20 / 22.4583 = 0.8905395790877341` rather than an absolute override, so the
+derivation stays the single path.
+
+**A second static bake was found and fixed.** Beyond D17, `earthClouds.ts:1738` baked
+`EARTH_ATMOSPHERE.sunIlluminance` into the far cloud shell's shader as a **compile-time literal**.
+Now a per-frame uniform fed from the atmosphere record via `earth.ts`'s `onFrame`
+(`setAtmosphereBody` runs earlier in the same `CelestialBody` frame, so it is same-frame fresh).
+
+**Deviation from the plan text, deliberate:** `uExposure` is applied **once in the post chain**,
+not per-shader at the source. Mathematically identical while nothing overflows, and the brightest
+thing in the scene today is `CORE_HDR = 4096`. Source pre-exposure becomes necessary in Phase 3
+when `CORE_HDR` reaches its physical ~265,000. It is applied **before** bloom so bloom's
+threshold keeps meaning "brighter than white", and deliberately **not** via
+`renderer.toneMappingExposure` (three's `ToneMappingNode` defaults its exposure to a renderer
+reference for that property, which would put exposure on the wrong side of the threshold and risk
+double-counting).
+
+**New defect found, D20:** [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) sets
+`stellarPoint.geometricAlbedo = 0.0036`. The measured lunar geometric albedo is **0.136 — the
+value in the engine is 38× too dim.** Almost certainly eyeballed down to stop the point glaring,
+i.e. the same hand-patching pattern as Mars' `12.0`. Correct value is in `bodyPhotometry.ts`;
+fix in Phase 4. Expect `__lum`'s `luna_disc` row to fail until then — that is the harness working.
+
+### 5.2 The readback bug — two traps in `readRenderTargetPixelsAsync`
+
+`__lum` shipped broken and its first live run caught it, which is the harness doing its job. The
+tell was a probe of dark space returning **exactly 6272 in all three channels**: a uniform integer
+is never a rendered radiance. Both faults are properties of reading a `HalfFloatType` target:
+
+1. **It returns raw binary16 BITS, not floats.** `rgba16float` maps to `Uint16Array` in
+   `WebGPUTextureUtils._getTypedArrayType` and three does no decoding.
+   `6272 = 0x1880 = 2^(6−15)·1.125 = 0.002197`. Reading bits as numbers inflated everything by
+   10³–10⁶ and made every cd/m² and EV figure meaningless.
+2. **Rows are padded to a 256-byte stride** (`bytesPerRow = ceil(width·8 / 256)·256`), so a
+   multi-pixel read's row pitch is *not* `width·4` elements — a 9-wide read is padded from 72 to
+   256 bytes. Indexing linearly walks into padding.
+
+Fixed with an explicit `halfToFloat` + stride-aware indexing, plus **`__lum.selftest()`** which
+checks the decoder against eight known bit patterns (including the two from this run) and the
+stride against the 256-byte rule. Run it whenever a number looks absurd.
+
+**Lesson, and it is the same one as `docs/PERF_MEASUREMENT.md`'s:** a measurement harness needs its
+own ground truth before its output is worth anything. Here the falsifier was free — a physically
+impossible reading (uniform integer, dark space at 13 million cd/m²) — and it was available on the
+very first probe. Sanity-check a new instrument against a value you already know before you
+believe anything it says about a value you don't.
+
+**Why this order:**
+
+- Phase 2 is the one that can leave the game looking broken, which is why Phase 0's harness and
+  Phase 1's exposure slider land first — with a manual EV control, Phase 2's output can be
+  re-centred by hand in seconds instead of by re-tuning 50 constants.
+- **Phase 0's `AtmosphereParams` split is new and non-negotiable.** It is a pure refactor with no
+  visual change, and doing it first means every later phase is written against per-frame
+  illuminance. Retrofitting it after Phase 4 would touch all of them again.
+- **HDR (6) now precedes glare (8), deliberately.** Glare is partly a *trick for faking dynamic
+  range the display cannot show* — its correct strength differs by several times between an
+  8-bit SDR output and a 1600-nit XDR panel. Tuning it before the output path is settled
+  guarantees re-tuning it after. Auto-exposure (5) must come first either way, since HDR needs a
+  stable reference white to map against.
+- Scotopic vision (7) precedes glare (8) because both operate on the deep-space look and glare
+  should be judged against the final desaturated night-vision image, not a colourful one.
+
+---
+
+## 6. Performance budget
+
+The current baseline (`PERF_MEASUREMENT.md` § THE BASELINE, post-BSM-cache) is **deck 75–78 fps,
+everything from 750 km up on the 120 fps cap**, with the atmosphere pass dominating. There is
+**no headroom at the deck** — the doc's own conclusion is that reaching 120 there would require
+cutting the volumetric clouds. So this work must be close to free.
+
+| Element | Est. cost | Notes |
+|---|---|---|
+| `uExposure` multiply | ~0 | one MAD in shaders that already run |
+| Surface `E/π` factor | ~0 | one multiply |
+| Impostor radiance + phase | ~0 | impostors are a handful of pixels |
+| Histogram auto-exposure | **0.1–0.3 ms** | one 128-bin compute pass over a downsampled target; keep it at ≤¼ res and off the readback path |
+| PSF glare | **⚠ 0.5–2.0 ms** | the real risk. Replaces bloom's measured ~1.8–2.0 ms, so it can be *net neutral* — but only if implemented as a separable/mip approximation of the PSF rather than an FFT convolution. **Must be ablated, not estimated.** |
+| Night-side additions | ~0 | texture reads in an existing shader |
+| HDR output path | ~0 | format change only |
+
+⚠ Per `PERF_MEASUREMENT.md`'s hardest-won lesson: when `gpu/frame > 1.15`, **ablate, never do
+arithmetic on reported per-pass numbers**. The record on estimates in this repo is *0 for 4*.
+Every number in the table above is an estimate and must be replaced by a ground-truth ablation
+before it is believed. In particular, do not accept the "PSF is net neutral vs bloom" claim
+without measuring it.
+
+---
+
+## 7. Risks & gotchas
+
+1. **The cancellation trap (§4.1).** The single most likely way to make this work look like a
+   regression. Mitigated by phase ordering.
+2. **`fragmentNode` bypasses `setupLighting()`.** Any plan that assumes adding a three.js light
+   will illuminate a planet is wrong (D07). Planet lighting is hand-written TSL; keep it that way
+   and pass illuminance as a uniform. Do not attempt to move planets into the local scene.
+3. **Half-float overflow.** 250,000 game units for the sun disc exceeds RGBA16F max 65,504.
+   Pre-exposure is mandatory, and the exposure *ceiling* is a numerical requirement, not just an
+   aesthetic one (§3.2).
+4. **Auto-exposure pumping.** A 0.5°-wide 1e9 cd/m² source entering frame will slam any naive
+   metering. Mitigated by log-domain histogram + 90% percentile clipping + centre weighting.
+5. **Auto-exposure vs `__bench`.** Breaks perf reproducibility unless pinned (§4.3).
+6. **Auto-exposure vs the HUD.** The HUD is HTML over the canvas and is *not* tone-mapped, so it
+   will not track exposure. That is arguably correct (it is a screen, not a window) but must be
+   checked for legibility against a fully-exposed bright planet.
+7. **The Milky Way skybox is authored for SDR looks, not absolute luminance.** AUDIT_3 estimates
+   a ~20-magnitude discrepancy. Under correct exposure it either vanishes or needs re-authoring.
+   Decide before Phase 5.
+8. **TSL mutable-var aliasing.** A node reading a `.toVar()` that is reassigned before use
+   evaluates to the *new* value — this previously caused an invisible atmosphere. Materialise
+   with `.toVar()` when threading `uExposure` through existing graphs.
+9. **No AA.** Sub-pixel bright bodies will flicker regardless of the radiance fix (D14).
+   The PSF splat in Phase 4 addresses the bodies; a general TAA is out of scope here.
+10. **three.js HDR + tone mapping are not officially composable yet.** We are insulated because
+    tone mapping is already in-graph, but a three.js upgrade could change that assumption.
+11. **Venus multiple scattering: RESOLVED, +18…+21%, accepted** (§2.2). Faithful implementation
+    of an approximation operating near its documented limit. Not a bug, not blocking, and
+    deliberately *not* given a correction knob. Do not "fix" it by scaling the output.
+12. **Orbital motion will expose latent full-phase assumptions.** Anything that currently reads
+    correctly only because bodies never move — a frozen `sunIlluminance`, an impostor tuned at one
+    phase angle, a texture-space sun direction — will break the day orbits are enabled. §3.0's
+    split removes the known one; assume there are more, and make `__lum.sweep()` include at least
+    one non-zero-phase view (e.g. `venus_crescent`) so they are caught by the harness rather than
+    by eye.
+13. **Compressed rod adaptation is a deliberate physics deviation** (§3.9a): ~4–8 s instead of
+    20–40 minutes. Documented here so it is not later "fixed" into unplayability. The asymmetry
+    between light- and dark-adaptation is the part that must be preserved.
+14. **Scotopic desaturation will fight the HUD and the impostor colours.** A grey-blue deep-space
+    image makes the coloured HUD markers and any remaining saturated impostor tint look pasted-on.
+    Check both when Phase 7 lands.
+
+---
+
+## 8. Decisions — settled with the author, 2026-08-14
+
+1. **How dark should space be? → Replicate the dark-adapted human eye.** Stars brightly visible
+   unless something bright is in frame. Implemented as `evMin = −16` (derived in §3.4, not
+   guessed) + veiling glare + the scotopic model (§3.9). The requirement falls out of the physics.
+   The aesthetic knob moved from a hard exposure clamp to the **skybox's absolute luminance** and
+   the **adaptation time constants** — see §3.4 for why the "grey mush" fear was misplaced.
+2. **Eye, not camera.** Human-eye PSF; no lens flare, no anamorphic streaks. The player should
+   feel what *they* would see out of the cockpit. Aperture diffraction stays available for photo
+   mode only. This also settles §3.9's scotopic model as in-scope: an eye has rods, a camera doesn't.
+3. **Let exposure place the Milky Way first**, re-author only if needed. AUDIT_3 estimates it is
+   ~20 magnitudes off, so expect to re-author — but measure before spending the effort (Phase 7).
+4. **AgX now**, GT7-style Color Volume Mapping later as a swap-in.
+5. **HDR is a first-class goal, not an afterthought.** Target device: MacBook M2 Pro built-in XDR
+   (P3, ~1,000 nits sustained / 1,600 peak). SDR still comes first — a correct SDR image is a
+   prerequisite for a correct HDR one, not the reverse — but HDR moved **from Phase 8 to Phase 6**,
+   ahead of the glare work, because glare strength depends on the output path (§5). Every phase
+   from 3 onward should be sanity-checked on the XDR panel even before Phase 6 lands.
+6. **`mars.ts:109`'s `12.0` is not a typo — it is a symptom, and it confirms the diagnosis.**
+   The author set Mars' stellar point bright red to match how Mars looks to the naked eye from
+   Earth, then pushed the *billboard* value to `12.0` because the transition between the two
+   tiers looked wrong. That is D06 — the 68–86,000× billboard↔point discontinuity — being
+   hand-patched at one body. It is the clearest possible evidence for §3.6's unified radiance
+   model: once all three tiers compute `L = p·(E/π)·Φ(α)`, there is no transition to patch.
+   **Delete the `12.0` in Phase 4** rather than retuning it; Mars will then be correct by
+   construction (disc L = 0.466 units = 2,980 cd/m², and a properly red-orange
+   albedo-calibrated texture gives the naked-eye colour for free).
+
+### 8.1 Remaining open questions
+
+None blocking. §2.2 closed the Venus multiple-scattering question (+18…+21%, accepted as the
+approximation's documented limit). The one loose end, §2.2.1, is whether `deriveAtmosphere()`
+reproduces measured geometric albedo across all bodies — best answered by a disc integration once
+`__lum` exists, and directly load-bearing for procedural systems.
+
+**Everything in §2.2 is now settled, so implementation can start at Phase 0.**
+
+---
+
+## 9. Key files
+
+**New:** `src/components/space/exposure.ts` (histogram + adaptation + `uExposure`),
+`src/components/space/glarePass.ts` (PSF), `src/components/space/perf/lumHarness.ts` (`__lum`),
+`src/data/bodyPhotometry.ts` (the §3.6 table).
+
+**Touched:** `SpaceRenderer.tsx` (exposure stage, glare replacing bloom, HDR output),
+`Scene.tsx` (renderer ctor for HDR), `Star/SunLight.tsx` (distance), `Star/Star.tsx` (`CORE_HDR`),
+`celestial/useFarLOD.ts` + `space/StellarPoint.tsx` (unified radiance),
+`celestial/bodies/*.ts` (all surface shaders: `E/π`; Earth's sigmoid; texture calibration),
+`celestial/bodies/atmosphereData.ts` (delete `VENUS_ILLUM_TRIM`, document the 6,400 constant),
+`celestial/bodies/cloudCommon.ts` (`CLOUD_SUN_SCALE` re-anchor), `store/store.ts` +
+`SettingsMenu.tsx` (exposure/HDR settings).
+
+---
+
+## 10. References
+
+- Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique* (2020) —
+  `docs/AtmosphereReferences/Frostbite.md`
+- Lagarde & de Rousiers, *Moving Frostbite to Physically Based Rendering* — pre-exposure, units
+- Google Filament documentation — physically based camera, EV100, light units
+- Unreal Engine, [Auto Exposure](https://dev.epicgames.com/documentation/en-us/unreal-engine/auto-exposure-in-unreal-engine) — histogram defaults (−8…+4 EV, 10/90 percentile)
+- Spencer, Shirley, Zimmerman & Greenberg, *Physically-Based Glare Effects for Digital Images*, SIGGRAPH 1995
+- Ritschel et al., *[Temporal Glare](http://people.compute.dtu.dk/jerf/papers/TemporalGlare.pdf)* — real-time eye scattering
+- Uchimura, *Practical HDR and Wide Color Techniques in Gran Turismo SPORT*, [SIGGRAPH Asia 2018](http://cdn2.gran-turismo.com/data/www/pdi_publications/siggraph_asia_2018_cousenotes.pdf)
+- Yasutomi, Suzuki & Uchimura, *Driving Toward Reality: Physically Based Tone Mapping and Perceptual Fidelity in Gran Turismo 7*, CEDEC 2026 — "Color Volume Mapping"
+- three.js [WebGPURenderer HDR support PR #29573](https://github.com/mrdoob/three.js/pull/29573) and [`.outputType` PR #30320](https://github.com/mrdoob/three.js/pull/30320)
+- MDN — [`dynamic-range-limit`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/dynamic-range-limit), [`@media (dynamic-range)`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/dynamic-range)
+- McEwen, *Photometric functions for photoclinometry* (1991) — the lunar-Lambert mix
+- `docs/PERF_MEASUREMENT.md` — the ablate-don't-estimate rule this plan's §6 defers to

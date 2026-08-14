@@ -35,8 +35,34 @@ export type AtmosphereParams = {
    */
   gasAbsorption: Vec3Tuple;
   groundAlbedo: Vec3Tuple;
-  /** Top-of-atmosphere sun illuminance in the unified luminance scale. */
-  sunIlluminance: Vec3Tuple;
+  /**
+   * Star luminosity in solar units. Static per system; feeds the PER-FRAME sun
+   * illuminance derivation — see `sunIlluminanceAt()` in space/photometry.ts.
+   *
+   * NOTE there is deliberately no `sunIlluminance` field here any more. It is a
+   * function of the body's LIVE distance to its star, so baking it into these
+   * static params froze Mercury and Neptune at identical brightness (defect D17
+   * in docs/LIGHTING_PLAN.md). The live value lives on `AtmosphereBodyRecord`,
+   * recomputed every frame in `setAtmosphereBody()`.
+   */
+  starLuminositySun: number;
+  /**
+   * ⚠ TEMPORARY MIGRATION SCAFFOLD — Phase 2 deletes every non-1 value here,
+   * and then this field itself. Do NOT add new ones (docs/LIGHTING_PLAN.md §3.0
+   * forbids per-body art constants; each one is a future procedurally generated
+   * system rendered wrong).
+   *
+   * It exists so the Phase 0 refactor is a BIT-EXACT no-op: two bodies are
+   * currently driven off-physics, and reproducing them exactly is what makes
+   * the switch to per-frame illuminance provably safe.
+   *   • Earth — sky tuned against 20 units while 0.9716 AU derives 22.458.
+   *   • Venus — the 0.025 "blown white disc" hack, which docs/LIGHTING_PLAN
+   *     §2.2 measured as UNDER-rendering Venus ~32× rather than correcting an
+   *     overshoot. It only looked right because every surface is
+   *     simultaneously missing sunIlluminance/π. Both must be fixed in ONE
+   *     commit or the game looks worse — see §4.1, the cancellation trap.
+   */
+  illuminanceTrim: number;
 };
 
 export type LODTier = {
