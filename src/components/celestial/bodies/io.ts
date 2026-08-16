@@ -21,6 +21,6 @@ export const ioConfig: CelestialBodyConfig = {
   far: { albedo: new THREE.Color(0.36, 0.26, 0.14) },
   stellarPoint: { geometricAlbedo: 0.63, color: [0.90, 0.78, 0.50] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildRockyFragmentNode(textures.color, uSunRel, 0.10),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, 0.10),
 };

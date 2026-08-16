@@ -32,6 +32,15 @@ const ganymede = findBody("ganymede");
 export const STAR_POSITION_KM = sol.positionKm as [number, number, number];
 /** Sun radius in km. */
 export const STAR_RADIUS_KM = sol.radiusKm;
+/**
+ * Star luminosity in solar units. Drives every body's sun illuminance via
+ * `sunIlluminanceAt()` — see docs/LIGHTING_PLAN.md §3.0.
+ *
+ * ⚠ This is the primary star of the CURRENTLY HARDCODED system. When procedural
+ * systems land it must come from the active system's description, not a module
+ * constant — that is the seam.
+ */
+export const STAR_LUMINOSITY_SUN = sol.luminositySun ?? 1;
 
 /** Mercury position in km. */
 export const MERCURY_POSITION_KM = mercury.positionKm as [number, number, number];

@@ -24,6 +24,7 @@ import {
   JUPITER_RADIUS_KM,
 } from "@/sim/celestialConstants";
 import { JUPITER_ATMOSPHERE } from "./atmosphereData";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { JUPITER_POSITION_KM, JUPITER_RADIUS_KM };
@@ -42,6 +43,8 @@ function buildJupiterFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -76,7 +79,10 @@ function buildJupiterFragmentNode(
     const desatAmount = limbPow.mul(0.2).mul(hazeDayMask);
     col.assign(mix(col, vec3(lum, lum, lum), desatAmount));
 
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Without this a body's brightness ignores its distance to the star —
+    // measured 12.9× too bright on Neptune (defect D02/D03b).
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -129,6 +135,6 @@ export const jupiterConfig: CelestialBodyConfig = {
   far: { albedo: JUPITER_ALBEDO, buildFragment: jupiterBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.538, color: [0.90, 0.83, 0.65] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildJupiterFragmentNode(textures.color, uSunRel),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildJupiterFragmentNode(textures.color, uSunRel, uSunIlluminance),
 };

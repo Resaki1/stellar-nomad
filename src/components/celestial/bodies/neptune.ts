@@ -24,6 +24,7 @@ import {
   NEPTUNE_RADIUS_KM,
 } from "@/sim/celestialConstants";
 import { NEPTUNE_ATMOSPHERE } from "./atmosphereData";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { NEPTUNE_POSITION_KM, NEPTUNE_RADIUS_KM };
@@ -42,6 +43,8 @@ function buildNeptuneFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -71,7 +74,10 @@ function buildNeptuneFragmentNode(
     const desatAmount = limbPow.mul(0.15).mul(dayMask);
     col.assign(mix(col, vec3(lum, lum, lum), desatAmount));
 
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Without this a body's brightness ignores its distance to the star —
+    // measured 12.9× too bright on Neptune (defect D02/D03b).
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -117,6 +123,6 @@ export const neptuneConfig: CelestialBodyConfig = {
   far: { albedo: NEPTUNE_ALBEDO, buildFragment: neptuneBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.442, color: [0.42, 0.52, 0.90] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildNeptuneFragmentNode(textures.color, uSunRel),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildNeptuneFragmentNode(textures.color, uSunRel, uSunIlluminance),
 };

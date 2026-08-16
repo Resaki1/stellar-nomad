@@ -19,6 +19,7 @@ import {
   MERCURY_POSITION_KM,
   MERCURY_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { MERCURY_POSITION_KM, MERCURY_RADIUS_KM };
@@ -33,6 +34,8 @@ function buildMercuryFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -58,7 +61,10 @@ function buildMercuryFragmentNode(
 
     const col = albedo.mul(diffuse.add(surge)).mul(limbDark);
 
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Without this a body's brightness ignores its distance to the star —
+    // measured 12.9× too bright on Neptune (defect D02/D03b).
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -75,6 +81,6 @@ export const mercuryConfig: CelestialBodyConfig = {
   far: { albedo: new THREE.Color(0.35, 0.33, 0.30) },
   stellarPoint: { geometricAlbedo: 0.142, color: [0.78, 0.74, 0.70] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildMercuryFragmentNode(textures.color, uSunRel),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildMercuryFragmentNode(textures.color, uSunRel, uSunIlluminance),
 };

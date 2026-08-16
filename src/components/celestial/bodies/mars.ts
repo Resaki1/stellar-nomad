@@ -24,6 +24,7 @@ import {
   MARS_RADIUS_KM,
 } from "@/sim/celestialConstants";
 import { MARS_ATMOSPHERE } from "./atmosphereData";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { MARS_POSITION_KM, MARS_RADIUS_KM };
@@ -49,6 +50,8 @@ function buildMarsFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -79,7 +82,10 @@ function buildMarsFragmentNode(
     // Terminator warmth
     col.assign(mix(col, col.mul(warmTint), terminatorMask.mul(0.2)));
 
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Without this a body's brightness ignores its distance to the star —
+    // measured 12.9× too bright on Neptune (defect D02/D03b).
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -130,6 +136,6 @@ export const marsConfig: CelestialBodyConfig = {
   far: { albedo: MARS_ALBEDO, buildFragment: marsBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.170, color: [1.0, 0.36, 0.20] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildMarsFragmentNode(textures.color, uSunRel),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildMarsFragmentNode(textures.color, uSunRel, uSunIlluminance),
 };

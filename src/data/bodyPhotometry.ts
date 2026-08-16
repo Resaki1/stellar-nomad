@@ -53,7 +53,7 @@ export const BODY_PHOTOMETRY: Record<string, BodyPhotometry> = {
     bondAlbedo: 0.76,
     colorIndexBV: 0.82,
     lunarLambertK: 0.0,
-    note: "Cloud deck, so Lambertian-ish limb. See LIGHTING_PLAN §2.2 for the +18…+21% multiple-scattering excess and the 0.025 illuminanceTrim that must die with the surface-irradiance fix.",
+    note: "Cloud deck, so Lambertian-ish limb. Its optical depth (τ 9–46, single-scatter albedo →0.994) diverges Hillaire's Ψ=L₂/(1−F_ms) series; regularised by the uFmsMax=0.85 clamp in atmospherePass.ts (LIGHTING_PLAN §2.2.8). VERIFIED: R = 0.832 vs Monte-Carlo ground truth R* = 0.793, 4.9% high. Its correct `ratio vs sub-solar` is 0.767, NOT 1.0 — that reference assumes a Lambert sphere and Venus' real sub-solar/geometric ratio is 1.15.",
   },
   earth: { geometricAlbedo: 0.434, bondAlbedo: 0.306, colorIndexBV: 0.2, lunarLambertK: 0.1 },
   luna: {

@@ -21,6 +21,6 @@ export const europaConfig: CelestialBodyConfig = {
   far: { albedo: new THREE.Color(0.55, 0.52, 0.48) },
   stellarPoint: { geometricAlbedo: 0.67, color: [0.88, 0.85, 0.80] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildRockyFragmentNode(textures.color, uSunRel, 0.10),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, 0.10),
 };

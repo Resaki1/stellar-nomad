@@ -48,7 +48,7 @@
 // CORE_HDR goes to its physical value.
 // ─────────────────────────────────────────────────────────────────────
 
-import { uniform } from "three/tsl";
+import { float, uniform } from "three/tsl";
 
 // ── The anchor ───────────────────────────────────────────────────────
 
@@ -113,8 +113,12 @@ export const evFromExposure = (exposure: number): number =>
  *
  * @param distanceKm      live body→star distance
  * @param luminositySun   star luminosity in solar units
- * @param trim            ⚠ TEMPORARY migration scaffold — see AtmosphereParams
- *                        .illuminanceTrim. Phase 2 deletes every non-1 value.
+ * @param trim            Unused in practice: the per-body illuminance trims were
+ *                        deleted in Phase 2 and `AtmosphereParams` no longer has a
+ *                        brightness knob (LIGHTING_PLAN §3.0 forbids per-body art
+ *                        constants). Kept only so a future star with a genuinely
+ *                        non-grey output has somewhere to go — do NOT reintroduce
+ *                        per-planet tuning through it.
  */
 export function sunIlluminanceAt(
   distanceKm: number,
@@ -144,6 +148,63 @@ export function discRadianceAtZeroPhase(
   return (geometricAlbedo * sunIlluminanceGameUnits) / Math.PI;
 }
 
+/**
+ * Sub-solar-point / geometric-albedo ratio for a Lambert sphere = **3/2**.
+ *
+ * ⚠ THIS FACTOR IS EASY TO DROP AND I DROPPED IT. `p·E/π` is a DISC-AVERAGED
+ * quantity — geometric albedo is defined by the total flux the disc returns at
+ * zero phase. A probe aimed at the SUB-SOLAR POINT samples the brightest point
+ * on that disc, not its average.
+ *
+ * For a Lambert sphere of surface albedo A:
+ *   • sub-solar nadir radiance  L = A·E/π   ⇒ reflectance R = A
+ *   • geometric albedo          p = (2/3)A
+ *   ⇒ R = 1.5·p
+ *
+ * So a perfectly Lambertian, perfectly calibrated body probed at its sub-solar
+ * point reads **ratio 1.5 against `p·E/π`, not 1.0**. Limb-darkened and
+ * backscattering surfaces read higher still (Venus' validated Monte Carlo gives
+ * 1.15; the Moon's opposition surge pushes its true value well above that).
+ */
+export const LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5;
+
+/** Sub-solar-point radiance of a Lambert sphere — what a centre probe should see. */
+export function subSolarRadianceLambert(
+  geometricAlbedo: number,
+  sunIlluminanceGameUnits: number,
+): number {
+  return (
+    discRadianceAtZeroPhase(geometricAlbedo, sunIlluminanceGameUnits) *
+    LAMBERT_SUBSOLAR_OVER_GEOMETRIC
+  );
+}
+
+// ── The surface radiance helper (TSL) ────────────────────────────────
+
+/**
+ * Convert a reflectance (albedo × shading term, on the `[0,1]` scale every body
+ * shader already produces) into RADIANCE in game units.
+ *
+ *   L = reflectance · E / π
+ *
+ * The `1/π` is the Lambertian BRDF normalisation and is the single most commonly
+ * dropped factor in this class of bug. Use this instead of writing the multiply
+ * by hand, so there is exactly one place the convention lives.
+ *
+ * ⚠ Pass the FULL reflectance, i.e. albedo × N·L (or whatever shading term the
+ * body uses) — not the bare albedo. `E` is illuminance on a surface facing the
+ * sun; the cosine belongs inside the reflectance.
+ *
+ * Before Phase 2 every body returned the reflectance directly as if it were
+ * radiance, which made a body's brightness independent of its distance to the
+ * star: measured 12.9× too bright on Neptune, and Mercury vs Neptune wrong by
+ * 6,040× in principle. See docs/LIGHTING_PLAN.md §2.2.2.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function surfaceRadiance(reflectance: any, uSunIlluminanceNode: any): any {
+  return reflectance.mul(uSunIlluminanceNode).mul(float(1 / Math.PI));
+}
+
 // ── Global exposure state ────────────────────────────────────────────
 //
 // Phase 0: fixed at 1.0, so the whole chain is a bit-exact no-op.
@@ -163,32 +224,83 @@ export const EV_MIN = -16;
 export const EV_MAX = 20;
 
 /**
+ * The metered EV100 that reproduces `exposure = 1`, i.e. exactly today's image.
+ *
+ *   exposure = 1/(1.2·2^EV) = 1  ⇒  EV = log2(1/1.2) = −0.263
+ *
+ * The Phase 0/1 neutral point. Keeping it named (rather than hardcoding −0.263)
+ * makes it obvious that the pre-lighting-work look is an arbitrary spot on the
+ * exposure axis, not a calibrated one.
+ */
+export const EV_NEUTRAL = evFromExposure(1);
+
+/**
  * The shared exposure scalar, applied once in SpaceRenderer's post chain.
  * Everything that wants to know "what is the current exposure" reads this.
+ *
+ * ── HOW THE TWO INPUTS COMPOSE ───────────────────────────────────────
+ *
+ *   effective exposure = exposureFromEV(clamp(meteredEV, EV_MIN, EV_MAX)) · 2^compensation
+ *
+ * `meteredEV` is what the scene measures — fixed at EV_NEUTRAL in Phases 0–4,
+ * written by the histogram in Phase 5. `compensation` is the artist/player knob
+ * in STOPS, where +1 means twice as bright, matching the photographic convention
+ * and Unreal's `ExposureCompensation`.
+ *
+ * Splitting them this way matters: a single "set the exposure" setter would be
+ * overwritten by auto-exposure the moment Phase 5 lands, and the manual knob
+ * would have to be rebuilt. This composes instead.
  */
 export const uExposure = uniform(1);
 
+let _meteredEV = EV_NEUTRAL;
+let _compensationStops = 0;
 let _exposure = 1;
 let _manual = true;
 
-/** Current exposure multiplier. */
-export const getExposure = (): number => _exposure;
-
-/** True while exposure is driven manually (Phase 0/1, and the benchmarks). */
-export const isManualExposure = (): boolean => _manual;
-
-/** Set exposure directly. Clamped to the [EV_MAX, EV_MIN] exposure range. */
-export function setExposure(exposure: number): void {
-  const lo = exposureFromEV(EV_MAX);
-  const hi = exposureFromEV(EV_MIN);
-  _exposure = Math.min(Math.max(exposure, lo), hi);
+function recompute(): void {
+  const ev = Math.min(Math.max(_meteredEV, EV_MIN), EV_MAX);
+  _exposure = exposureFromEV(ev) * 2 ** _compensationStops;
   uExposure.value = _exposure;
 }
 
-/** Set exposure from a metered EV100 (the physically based camera model). */
-export function setExposureEV(ev100: number): void {
-  setExposure(exposureFromEV(ev100));
+/** Current effective exposure multiplier. */
+export const getExposure = (): number => _exposure;
+
+/** Current metered EV100 (before compensation). */
+export const getMeteredEV = (): number => _meteredEV;
+
+/** Current exposure compensation, in stops (+1 = twice as bright). */
+export const getExposureCompensation = (): number => _compensationStops;
+
+/** True while exposure is driven manually (Phases 0–4, and the benchmarks). */
+export const isManualExposure = (): boolean => _manual;
+
+/**
+ * Set the metered EV100 — the physically based camera's reading of the scene.
+ * Phase 5's histogram calls this; `__lum` calls it to pin a known exposure.
+ */
+export function setMeteredEV(ev100: number): void {
+  _meteredEV = ev100;
+  recompute();
 }
+
+/**
+ * Set exposure compensation in stops (+1 = twice as bright, −1 = half).
+ * This is the Dev slider, and it survives into Phase 5 unchanged.
+ */
+export function setExposureCompensation(stops: number): void {
+  _compensationStops = stops;
+  recompute();
+}
+
+/** Set the effective exposure directly, via the metered EV. */
+export function setExposure(exposure: number): void {
+  setMeteredEV(evFromExposure(exposure / 2 ** _compensationStops));
+}
+
+/** @deprecated Use `setMeteredEV`. Kept so existing call sites keep working. */
+export const setExposureEV = setMeteredEV;
 
 /**
  * Pin exposure manually, or hand it back to auto-exposure (Phase 5).

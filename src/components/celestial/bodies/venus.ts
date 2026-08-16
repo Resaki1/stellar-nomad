@@ -19,6 +19,7 @@ import {
   VENUS_RADIUS_KM,
 } from "@/sim/celestialConstants";
 import { VENUS_ATMOSPHERE } from "./atmosphereData";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { VENUS_POSITION_KM, VENUS_RADIUS_KM };
@@ -41,6 +42,8 @@ function buildVenusFragmentNode(
   colorTex: THREE.Texture,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -54,7 +57,10 @@ function buildVenusFragmentNode(
     // Venus's thick clouds scatter light well past the terminator.
     const diffuse = clamp(NdotL.mul(0.75).add(0.25), 0, 1);
 
-    return vec4(albedo.mul(diffuse), 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Without this a body's brightness ignores its distance to the star —
+    // measured 12.9× too bright on Neptune (defect D02/D03b).
+    return vec4(surfaceRadiance(albedo.mul(diffuse), uSunIlluminance), 1.0);
   })();
 }
 
@@ -100,6 +106,6 @@ export const venusConfig: CelestialBodyConfig = {
   far: { albedo: VENUS_ALBEDO, buildFragment: venusBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.689, color: [1.0, 0.97, 0.85] },
 
-  buildFragmentNode: ({ textures, uSunRel }) =>
-    buildVenusFragmentNode(textures.color, uSunRel),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
+    buildVenusFragmentNode(textures.color, uSunRel, uSunIlluminance),
 };

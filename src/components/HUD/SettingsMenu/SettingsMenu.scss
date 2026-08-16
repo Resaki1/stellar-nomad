@@ -170,6 +170,16 @@
   }
 }
 
+// Exposure compensation slider (docs/LIGHTING_PLAN.md §3.4). Live-dragged, so it
+// needs to be wide enough to resolve ~0.25-stop steps across ±8 stops.
+.dev-controls__range {
+  flex: 1;
+  min-width: 140px;
+  accent-color: rgba(200, 200, 200, 0.8);
+  background: transparent;
+  cursor: pointer;
+}
+
 .dev-controls__input {
   width: 72px;
   padding: (s.$space-1 + 2px) s.$space-2; // 6px 8px — TODO(phase-3): normalize spacing

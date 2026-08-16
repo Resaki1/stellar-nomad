@@ -31,15 +31,19 @@
  */
 
 import type { createStore } from "jotai";
+import { Matrix4, Quaternion, Vector3 } from "three";
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 
-import { devTeleportAtom } from "@/store/dev";
+import solSystem from "@/sim/systems/sol.json";
+import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
+import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { bodyPhotometry } from "@/data/bodyPhotometry";
-import { getAtmosphereBody } from "../atmospherePass";
+import { getAtmosphereBody, setFmsMax, setMsScale } from "../atmospherePass";
 import {
   NITS_PER_GAME_UNIT,
   SUN_ILLUM_GAME_1AU,
   discRadianceAtZeroPhase,
+  subSolarRadianceLambert,
   evFromGameUnits,
   getExposure,
   setExposureEV,
@@ -118,8 +122,10 @@ export type LumExpectation = {
   geometricAlbedo: number;
   /** Live top-of-atmosphere illuminance at that body, game units. */
   sunIlluminance: number;
-  /** Lambertian-equivalent disc radiance p·E/π, game units. */
+  /** Lambertian-equivalent DISC-AVERAGE radiance p·E/π, game units. */
   discUnits: number;
+  /** What a SUB-SOLAR probe should read on a Lambert sphere: 1.5·p·E/π. */
+  subSolarUnits: number;
   discNits: number;
   discEv: number;
   note?: string;
@@ -152,7 +158,7 @@ const LADDER: readonly LumScenario[] = [
   { id: "earth_disc", bodyId: "earth", altitudeKm: 12_629, expect: "disc", what: "Earth's sunlit disc from high orbit" },
   { id: "earth_sky", bodyId: "earth", altitudeKm: 8, expect: "sky", what: "Sky from the cloud deck (replica ground truth: 0.61 units photopic)" },
   { id: "luna_disc", bodyId: "luna", altitudeKm: 20_000, expect: "disc", what: "The Moon's sunlit disc" },
-  { id: "venus_disc", bodyId: "venus", altitudeKm: 30_000, expect: "disc", what: "Venus' cloud deck — the illuminanceTrim victim" },
+  { id: "venus_disc", bodyId: "venus", altitudeKm: 30_000, expect: "disc", what: "Venus' cloud deck — was the 0.025-trim victim; the acid test for Phase 2" },
   { id: "mars_disc", bodyId: "mars", altitudeKm: 20_000, expect: "disc", what: "Mars' disc" },
   { id: "jupiter_disc", bodyId: "jupiter", altitudeKm: 200_000, expect: "disc", what: "Jupiter's disc at 5.2 AU" },
   { id: "neptune_disc", bodyId: "neptune", altitudeKm: 100_000, expect: "disc", what: "Neptune's disc at 30 AU — the 1/r² acid test" },
@@ -160,6 +166,85 @@ const LADDER: readonly LumScenario[] = [
 ];
 
 const REC709 = [0.2126, 0.7152, 0.0722] as const;
+
+// Pose scratch — same convention as scenarios.ts (`_flipY` included; without it
+// the ship faces 180° away and every probe reads empty sky).
+const _eye = new Vector3();
+const _target = new Vector3();
+const _sunDir = new Vector3();
+const _up = new Vector3(0, 1, 0);
+const _lookMatrix = new Matrix4();
+const _quat = new Quaternion();
+const _flipY = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
+
+/** A body's authored record from the system description. */
+function authoredBody(bodyId: string) {
+  const bodies = solSystem.celestialBodies as unknown as Array<{
+    id: string;
+    radiusKm?: number;
+    positionKm?: number[];
+  }>;
+  return bodies.find((b) => b.id === bodyId) ?? null;
+}
+
+/**
+ * Camera pose on the body→star line, looking back at the body: the SUB-SOLAR
+ * point dead centre, at zero phase angle.
+ *
+ * This is the geometry `p·E/π` is defined at, and it is NOT what
+ * `resolveBodyWarp` gives — that uses a fixed approach axis, so the phase angle
+ * is incidental and a body can end up measured over its night side. That is
+ * exactly what made Earth read 0.0106× (198 cd/m²) on the first attempt.
+ *
+ * Default altitude is 3 radii: far enough that the disc is comfortably inside
+ * the probe block and any atmosphere is fully in front of it, close enough that
+ * the body still fills the frame centre.
+ */
+function subSolarPose(bodyId: string, altitudeKm?: number): DevWarp | null {
+  const b = authoredBody(bodyId);
+  const star = authoredBody("sol");
+  if (!b?.positionKm || !b.radiusKm || !star?.positionKm) return null;
+
+  _target.set(b.positionKm[0], b.positionKm[1], b.positionKm[2]);
+  _sunDir
+    .set(star.positionKm[0], star.positionKm[1], star.positionKm[2])
+    .sub(_target)
+    .normalize();
+  _eye
+    .copy(_sunDir)
+    .multiplyScalar(b.radiusKm + (altitudeKm ?? b.radiusKm * 3))
+    .add(_target);
+
+  _lookMatrix.lookAt(_eye, _target, _up);
+  _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
+  return {
+    positionKm: [_eye.x, _eye.y, _eye.z],
+    quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
+  };
+}
+
+/**
+ * Body→star distance in km from the AUTHORED system description.
+ *
+ * Fallback for `expected()` when the body is not the currently registered
+ * atmosphere body — which is most of them, most of the time. Once bodies orbit
+ * this becomes stale and the live record must win; that is why it is only a
+ * fallback.
+ */
+function authoredStarDistanceKm(bodyId: string): number | null {
+  const bodies = solSystem.celestialBodies as unknown as Array<{
+    id: string;
+    positionKm?: number[];
+  }>;
+  const body = bodies.find((b) => b.id === bodyId);
+  const star = bodies.find((b) => b.id === "sol");
+  if (!body?.positionKm || !star?.positionKm) return null;
+  return Math.hypot(
+    body.positionKm[0] - star.positionKm[0],
+    body.positionKm[1] - star.positionKm[1],
+    body.positionKm[2] - star.positionKm[2],
+  );
+}
 
 // ── Readback decoding ────────────────────────────────────────────────────
 //
@@ -269,26 +354,112 @@ export class LumHarness {
   }
 
   /**
-   * Probe the centre and print it against what physics says that body's disc
-   * should be. The quick "is this body right?" check.
+   * Warp to a body's SUB-SOLAR point, settle, probe, and print against physics.
+   *
+   * ⚠ IT WARPS BY DEFAULT, AND THAT IS THE WHOLE POINT. The first version just
+   * probed the screen centre, so `compare("earth")` while parked at Venus
+   * measured VENUS and compared it to EARTH's expectation — silently, with a
+   * confident-looking ratio. Two calls from one location returned byte-identical
+   * "measurements" for different bodies, which is how it was caught.
+   *
+   * The pose is deliberately NOT `resolveBodyWarp`'s: that places the eye along a
+   * fixed approach axis, so the phase angle is whatever it happens to be, and a
+   * body can be measured over its night side. `p·E/π` is defined at ZERO PHASE,
+   * so this puts the camera on the body→star line looking back at the body —
+   * the sub-solar point dead centre, which is the geometry the expectation
+   * describes.
+   *
+   * Pass `{ warp: false }` to probe wherever you already are.
    */
-  async compare(bodyId: string, blockSize = 9) {
+  async compare(
+    bodyId: string,
+    {
+      warp = true,
+      altitudeKm,
+      settleFrames = 420,
+      blockSize = 9,
+    }: {
+      warp?: boolean;
+      altitudeKm?: number;
+      settleFrames?: number;
+      blockSize?: number;
+    } = {},
+  ) {
+    if (warp) {
+      const pose = subSolarPose(bodyId, altitudeKm);
+      if (!pose) {
+        console.error(`[lum] no pose for "${bodyId}" — not in the system description`);
+        return null;
+      }
+      this.store.set(devTeleportAtom, pose);
+      await sleepFrames(settleFrames);
+    }
     const m = await this.probeMax(blockSize);
     const exp = this.expected(bodyId);
     if (!m || !exp) return null;
     const ratio = m.luma / exp.discUnits;
+    // Back-solve the REFLECTANCE the shader must be emitting: R = L·π/E.
+    //
+    // ⚠ THIS IS THE DIAGNOSTIC THAT MATTERS, because it separates a real energy
+    // bug from a bad probe. Unfavourable geometry (off sub-solar point, limb
+    // darkening, N·L < 1, atmospheric transmittance) can only push R DOWN. So:
+    //   • R > 1  ⇒ the body emits more light than falls on it. IMPOSSIBLE at any
+    //              geometry — an unambiguous energy-conservation violation.
+    //   • R < p  ⇒ ambiguous: could be texture-albedo error (D09), or just a
+    //              probe that landed away from the sub-solar point. Re-measure
+    //              with a consistent pose (`sweep()`) before concluding.
+    const reflectance = (m.luma * Math.PI) / exp.sunIlluminance;
+    const verdict =
+      reflectance > 1
+        ? `← IMPOSSIBLE: reflectance ${reflectance.toPrecision(3)} > 1, emits more than it receives`
+        : ratio > 3
+          ? "← too bright"
+          : ratio < 0.5
+            ? "← too dim (or the probe missed the sub-solar point — see below)"
+            : "";
     console.log(
       [
         `${bodyId}:`,
-        `  measured  ${m.luma.toPrecision(4)} units  (${Math.round(m.nits)} cd/m², EV ${m.ev.toFixed(1)})`,
-        `  expected  ${exp.discUnits.toPrecision(4)} units  (${Math.round(exp.discNits)} cd/m², EV ${exp.discEv.toFixed(1)})`,
-        `  ratio     ${ratio.toPrecision(4)}×  ${ratio > 3 ? "← FAR TOO BRIGHT" : ratio < 0.5 ? "← FAR TOO DIM" : ""}`,
+        `  measured      ${m.luma.toPrecision(4)} units  (${Math.round(m.nits)} cd/m², EV ${m.ev.toFixed(1)})`,
+        `  expected      ${exp.discUnits.toPrecision(4)} units  (${Math.round(exp.discNits)} cd/m², EV ${exp.discEv.toFixed(1)})`,
+        `  ratio         ${ratio.toPrecision(4)}× vs disc-avg p·E/π  ${verdict}`,
+        `  vs sub-solar  ${(m.luma / exp.subSolarUnits).toPrecision(4)}×  ← THE ONE TO READ (1.0 = a correct Lambert sphere at this probe geometry)`,
+        `  implied refl. ${reflectance.toPrecision(4)}  (geometric albedo ${exp.geometricAlbedo}; R>1 is impossible, R<p is ambiguous)`,
         exp.note ? `  note: ${exp.note}` : "",
       ]
         .filter(Boolean)
         .join("\n"),
     );
-    return { measured: m, expected: exp, ratio };
+    return { measured: m, expected: exp, ratio, reflectance };
+  }
+
+  /**
+   * ABLATE the multiple-scattering term (0) or restore it (1).
+   *
+   * The binary falsification test for Venus' measured ~16× excess
+   * (docs/LIGHTING_PLAN.md §2.2.4). Run `__lum.compare("venus")` at 1 and at 0:
+   *   • ratio collapses toward ~1  ⇒ the MS geometric series is the culprit;
+   *     narrow it with `setFmsMax()`.
+   *   • ratio stays ~16×           ⇒ single scattering is the culprit; the MS
+   *     term is innocent and the search moves to the phase/normalisation path.
+   * Forces a LUT re-bake, so it takes effect on the next frame.
+   */
+  setMsScale(scale: number): void {
+    setMsScale(scale);
+    console.log(`[lum] multiple-scattering scale = ${scale} (LUTs re-baking)`);
+  }
+
+  /**
+   * Clamp F_ms before the 1/(1−F_ms) geometric series. 1 = unclamped.
+   *
+   * Ψ = L2nd/(1−F_ms) is ill-conditioned as F_ms → 1: on Venus the replica
+   * measured F_ms = 0.9943 (a 174× amplification), where a 0.5% change in F_ms
+   * moves the output 6×. Clamping bounds the amplification to 1/(1−x).
+   * Try 0.95 (20×), 0.9 (10×), 0.8 (5×) and re-measure.
+   */
+  setFmsMax(maxFms: number): void {
+    setFmsMax(maxFms);
+    console.log(`[lum] F_ms clamp = ${maxFms} → max amplification ${(1 / (1 - Math.min(maxFms, 0.999999))).toFixed(1)}× (LUTs re-baking)`);
   }
 
   /** Print the unit convention and the current exposure. */
@@ -401,14 +572,19 @@ export class LumHarness {
       console.error(`[lum] no reference photometry for "${bodyId}"`);
       return null;
     }
+    // Prefer the LIVE record (correct once bodies orbit). Fall back to the
+    // authored position, so `expected()` works for every body from anywhere —
+    // the first version only worked for whichever body was currently registered
+    // as the dominant atmosphere, which made cross-body comparison impossible.
     const rec = getAtmosphereBody(bodyId);
+    const dist = starDistanceKm ?? authoredStarDistanceKm(bodyId);
     const illum =
       rec?.sunIlluminance.x ??
-      (starDistanceKm != null ? sunIlluminanceAt(starDistanceKm) : NaN);
+      (dist != null ? sunIlluminanceAt(dist, STAR_LUMINOSITY_SUN) : NaN);
     if (!Number.isFinite(illum)) {
       console.warn(
-        `[lum] "${bodyId}" is not a registered atmosphere body and no starDistanceKm given — ` +
-          `cannot derive its illuminance. Warp to it first, or pass the distance.`,
+        `[lum] cannot derive illuminance for "${bodyId}" — not a registered ` +
+          `atmosphere body and not found in the system description.`,
       );
       return null;
     }
@@ -418,6 +594,7 @@ export class LumHarness {
       geometricAlbedo: phot.geometricAlbedo,
       sunIlluminance: illum,
       discUnits,
+      subSolarUnits: subSolarRadianceLambert(phot.geometricAlbedo, illum),
       discNits: discUnits * NITS_PER_GAME_UNIT,
       discEv: evFromGameUnits(discUnits),
       note: phot.note,
@@ -435,7 +612,7 @@ export class LumHarness {
    * `settleFrames` defaults high because a warp triggers texture streaming and a
    * LOD tier swap; too low and you measure the previous body.
    */
-  async sweep({ settleFrames = 180, ev = 14 }: { settleFrames?: number; ev?: number } = {}) {
+  async sweep({ settleFrames = 420, ev = 14 }: { settleFrames?: number; ev?: number } = {}) {
     if (!_source) {
       console.error("[lum] no render target registered — is the scene mounted?");
       return [];
@@ -445,10 +622,33 @@ export class LumHarness {
 
     const rows: Array<Record<string, string | number>> = [];
     for (const s of LADDER) {
-      this.store.set(devTeleportAtom, resolveBodyWarp(s.bodyId, s.altitudeKm));
+      // Disc rows use the SUB-SOLAR pose (zero phase — the geometry p·E/π is
+      // defined at). Sky/space rows keep the approach-axis warp, which is what
+      // they are actually about.
+      const pose =
+        s.expect === "disc"
+          ? subSolarPose(s.bodyId, s.altitudeKm)
+          : resolveBodyWarp(s.bodyId, s.altitudeKm);
+      this.store.set(devTeleportAtom, pose ?? resolveBodyWarp(s.bodyId, s.altitudeKm));
       await sleepFrames(settleFrames);
+      // ⚠ PROBE TWICE. Earth swung 7.1× between two identical sweeps (implied
+      // reflectance 0.875 vs 0.123 — cloud top vs open ocean) because its 8K
+      // tiers, cloud shell and TAA reconstruction had not finished settling. A
+      // single probe reports that as a confident number. Two probes separated in
+      // time turn it into a visible warning, which is the whole point of having
+      // an instrument.
+      const m0 = await this.probeMax(9);
+      await sleepFrames(90);
       const m = await this.probeMax(9);
-      if (!m) continue;
+      if (!m || !m0) continue;
+      const drift = Math.abs(m.luma - m0.luma) / Math.max(m.luma, m0.luma, 1e-12);
+      if (drift > 0.02) {
+        console.warn(
+          `[lum] ${s.id}: UNSETTLED — two probes 90 frames apart differ by ` +
+            `${(drift * 100).toFixed(1)}% (${m0.luma.toPrecision(4)} → ${m.luma.toPrecision(4)}). ` +
+            `Raise settleFrames; do not trust this row.`,
+        );
+      }
 
       const exp = s.expect === "disc" ? this.expected(s.bodyId) : null;
       rows.push({
@@ -457,16 +657,20 @@ export class LumHarness {
         "measured (units)": m.luma.toPrecision(4),
         "measured (cd/m²)": Math.round(m.nits),
         "measured EV": m.ev.toFixed(1),
-        "expected (units)": exp ? exp.discUnits.toPrecision(4) : "—",
-        ratio: exp ? (m.luma / exp.discUnits).toFixed(3) : "—",
+        "expected disc-avg": exp ? exp.discUnits.toPrecision(4) : "—",
+        "expected sub-solar": exp ? exp.subSolarUnits.toPrecision(4) : "—",
+        "ratio vs sub-solar": exp ? (m.luma / exp.subSolarUnits).toFixed(3) : "—",
+        drift: drift > 0.02 ? `⚠ ${(drift * 100).toFixed(1)}%` : "ok",
       });
     }
 
     console.table(rows);
     console.log(
-      "[lum] `ratio` = measured / Lambertian-equivalent p·E/π. Expect it ABOVE 1 for a\n" +
-        "      limb-darkened body (sub-solar nadir exceeds the disc average), and grossly\n" +
-        "      BELOW 1 wherever the missing sunIlluminance/π factor (D02) still bites.",
+      "[lum] Read `ratio vs sub-solar`: 1.0 = a correct Lambert sphere at this probe\n" +
+        "      geometry. The probe aims at the SUB-SOLAR POINT, which on a Lambert sphere is\n" +
+        "      1.5× the disc-averaged p·E/π that geometric albedo is defined by — so the\n" +
+        "      disc-average column is NOT the target and reading it as one overstates every\n" +
+        "      body by 1.5×. Real surfaces sit somewhat above 1.0 (backscatter, opposition).",
     );
     // Restore rather than leave the session pinned somewhere surprising.
     setManualExposure(true);

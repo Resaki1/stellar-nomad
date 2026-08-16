@@ -46,23 +46,6 @@ export type AtmosphereParams = {
    * recomputed every frame in `setAtmosphereBody()`.
    */
   starLuminositySun: number;
-  /**
-   * ⚠ TEMPORARY MIGRATION SCAFFOLD — Phase 2 deletes every non-1 value here,
-   * and then this field itself. Do NOT add new ones (docs/LIGHTING_PLAN.md §3.0
-   * forbids per-body art constants; each one is a future procedurally generated
-   * system rendered wrong).
-   *
-   * It exists so the Phase 0 refactor is a BIT-EXACT no-op: two bodies are
-   * currently driven off-physics, and reproducing them exactly is what makes
-   * the switch to per-frame illuminance provably safe.
-   *   • Earth — sky tuned against 20 units while 0.9716 AU derives 22.458.
-   *   • Venus — the 0.025 "blown white disc" hack, which docs/LIGHTING_PLAN
-   *     §2.2 measured as UNDER-rendering Venus ~32× rather than correcting an
-   *     overshoot. It only looked right because every surface is
-   *     simultaneously missing sunIlluminance/π. Both must be fixed in ONE
-   *     commit or the game looks worse — see §4.1, the cancellation trap.
-   */
-  illuminanceTrim: number;
 };
 
 export type LODTier = {
@@ -102,6 +85,20 @@ export type FragmentNodeContext = {
   textures: Record<string, THREE.Texture>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
+  /**
+   * Top-of-atmosphere sun ILLUMINANCE at this body, game units, as a vec3
+   * uniform. Recomputed every frame from the body's live distance to its star,
+   * so it is automatically correct under orbital motion and for procedurally
+   * generated systems (docs/LIGHTING_PLAN.md §3.0).
+   *
+   * ⚠ EVERY surface fragment MUST scale its albedo by `uSunIlluminance / π` to
+   * produce radiance. The `1/π` is the Lambertian BRDF normalisation. Omitting
+   * the whole factor was defect D02/D03b — a 6.37× error at Earth's orbit and a
+   * measured 12.9× on Neptune, because a body's brightness then ignored how far
+   * from the star it actually is. Use the `surfaceRadiance()` helper.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uniforms: Record<string, any>;
   tier: "near" | "mid";
@@ -122,6 +119,9 @@ export type ExtraMeshContext = {
   textures: Record<string, THREE.Texture>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
+  /** Per-frame sun illuminance at this body, game units — see FragmentNodeContext. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uniforms: Record<string, any>;
   tier: "near" | "mid";

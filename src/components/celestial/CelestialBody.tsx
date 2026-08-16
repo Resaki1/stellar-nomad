@@ -10,7 +10,8 @@ import SimGroup from "../space/SimGroup";
 import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { STAR_POSITION_KM } from "@/sim/celestialConstants";
+import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
+import { sunIlluminanceAt } from "../space/photometry";
 import { useFarLOD } from "./useFarLOD";
 import {
   setAtmosphereBody,
@@ -45,6 +46,9 @@ type TexturedLODsProps = {
   scaledRadius: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
+  /** Per-frame sun illuminance at this body, game units. See FragmentNodeContext. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uniforms: Record<string, any>;
   nearRef: { current: THREE.Mesh | null };
@@ -63,6 +67,7 @@ function TexturedLODs({
   config,
   scaledRadius,
   uSunRel,
+  uSunIlluminance,
   uniforms,
   nearRef,
   midRef,
@@ -114,34 +119,34 @@ function TexturedLODs({
     if (!config.near || !nearTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = config.buildFragmentNode({ textures: nearTex, uSunRel, uniforms, tier: "near" });
+    m.fragmentNode = config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uniforms, tier: "near" });
+      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
     }
     return m;
-  }, [nearTex, uSunRel, uniforms, config]);
+  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config]);
 
   const midMat = useMemo(() => {
     if (!midTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = config.buildFragmentNode({ textures: midTex, uSunRel, uniforms, tier: "mid" });
+    m.fragmentNode = config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uniforms, tier: "mid" });
+      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
     }
     return m;
-  }, [midTex, uSunRel, uniforms, config]);
+  }, [midTex, uSunRel, uSunIlluminance, uniforms, config]);
 
   // ── Extra meshes (Saturn ring, etc.) ──
   const nearExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !nearTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uniforms, tier: "near" });
-  }, [config, scaledRadius, nearTex, uSunRel, uniforms]);
+    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
+  }, [config, scaledRadius, nearTex, uSunRel, uSunIlluminance, uniforms]);
 
   const midExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !midTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uniforms, tier: "mid" });
-  }, [config, scaledRadius, midTex, uSunRel, uniforms]);
+    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
+  }, [config, scaledRadius, midTex, uSunRel, uSunIlluminance, uniforms]);
 
   // Allow partial rendering: tiers load independently as they become ready.
   // Far billboard (always available) covers until the first textured tier loads.
@@ -250,6 +255,27 @@ function CelestialBody({ config }: CelestialBodyProps) {
 
   // ── Standard uniforms ──
   const uSunRel = useMemo(() => uniform(new THREE.Vector3(0, 0, 1)), []);
+  /**
+   * Top-of-atmosphere sun illuminance at this body, game units. Written every
+   * frame in useFrame from the LIVE body→star distance, so it stays correct once
+   * bodies orbit and for procedurally generated systems (LIGHTING_PLAN §3.0).
+   *
+   * Every body gets one, atmosphere or not — the airless moons need it just as
+   * much as Earth does, and routing it through the atmosphere record would leave
+   * them out. Initialised from the authored distance so frame 0 is not black.
+   */
+  const uSunIlluminance = useMemo(() => {
+    const e = sunIlluminanceAt(
+      Math.hypot(
+        sunPositionKm[0] - positionKm[0],
+        sunPositionKm[1] - positionKm[1],
+        sunPositionKm[2] - positionKm[2],
+      ),
+      STAR_LUMINOSITY_SUN,
+    );
+    return uniform(new THREE.Vector3(e, e, e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const uSpR = useMemo(() => uniform(0), []);
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
@@ -317,6 +343,14 @@ function CelestialBody({ config }: CelestialBodyProps) {
       sunPositionKm[1] - positionKm[1],
       sunPositionKm[2] - positionKm[2],
     );
+
+    // Live 1/r² illuminance for this body's surface shader. Grey for now; the
+    // star's colour temperature becomes a per-channel tint in Phase 3.
+    const illum = sunIlluminanceAt(
+      starDistKm,
+      STAR_LUMINOSITY_SUN,
+    );
+    uSunIlluminance.value.set(illum, illum, illum);
 
     // ── Ship distance ──
     _shipToBody.set(
@@ -433,6 +467,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
             config={config}
             scaledRadius={scaledRadius}
             uSunRel={uSunRel}
+            uSunIlluminance={uSunIlluminance}
             uniforms={extraUniforms}
             nearRef={nearRef}
             midRef={midRef}
@@ -449,6 +484,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
           config={config}
           scaledRadius={scaledRadius}
           uSunRel={uSunRel}
+          uSunIlluminance={uSunIlluminance}
           uniforms={extraUniforms}
           nearRef={nearRef}
           midRef={midRef}

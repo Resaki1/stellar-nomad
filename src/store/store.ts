@@ -21,15 +21,27 @@ export type Settings = {
    * `space/perf/perfProfiler.ts` and `docs/PERF_MEASUREMENT.md`.
    */
   perf: boolean;
+  /**
+   * Exposure compensation in STOPS (+1 = twice as bright), applied on top of the
+   * metered exposure. Dev-only for now; see docs/LIGHTING_PLAN.md §3.4 and the
+   * "exposure" section of Settings → Dev. 0 = the calibrated neutral.
+   */
+  exposureStops: number;
   initial: boolean;
 };
 
 export const settingsAtom = atomWithStorage<Settings>("settings", {
   invertPitch: false,
-  bloom: false,
-  toneMapping: false,
+  // Both default ON as of the Phase 1 lighting work (docs/LIGHTING_PLAN.md §5.3).
+  // `toneMapping: false` selects Khronos PBR Neutral, which crushes everything
+  // above linear ≈4 — wrong for a scene whose own reference white is ~20 and
+  // whose sun disc is ~1e5. AgX is the correct default, and bloom is currently
+  // the only cue that anything is brighter than white.
+  bloom: true,
+  toneMapping: true,
   fps: false,
   perf: false,
+  exposureStops: 0,
   initial: true,
 });
 

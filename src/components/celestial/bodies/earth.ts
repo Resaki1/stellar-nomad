@@ -52,6 +52,7 @@ import {
   EARTH_SUN_ILLUMINANCE_AUTHORED,
 } from "./atmosphereData";
 import { getAtmosphereBody } from "@/components/space/atmospherePass";
+import { surfaceRadiance } from "@/components/space/photometry";
 import {
   getAtmosphereLUTs,
   transmittanceLutUv,
@@ -201,6 +202,9 @@ function buildEarthFragmentNode(opts: {
   texSpec: THREE.Texture | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any;
+  /** Per-frame sun illuminance, game units. See FragmentNodeContext. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uMoonPos: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -214,7 +218,7 @@ function buildEarthFragmentNode(opts: {
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
-    uSunRel, uMoonPos, uMoonRadius, uSunRadius, transmittanceLUT,
+    uSunRel, uSunIlluminance, uMoonPos, uMoonRadius, uSunRadius, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -382,7 +386,20 @@ function buildEarthFragmentNode(opts: {
     const nightMask = smoothstep(float(0.15), float(0), dayAmount);
     // Sun-lit day albedo is tinted by the atmospheric transmittance (Phase 3b);
     // the night-light emission (city lights) is NOT — it's not sunlit.
-    const col = mix(nightCol.mul(nightMask), dayCol.mul(sunT), dayAmount).toVar();
+    //
+    // ⚠ THE NIGHT TERM IS DELIBERATELY HELD OUT OF `col` (lighting Phase 2).
+    // `col` accumulates REFLECTANCE — day albedo, ocean specular, fresnel — and
+    // is converted to radiance at the return by × sunIlluminance/π. City lights
+    // are EMISSIVE, so scaling them by the solar illuminance would be wrong
+    // (they do not get brighter when Earth is nearer the sun). They are added
+    // back after the conversion, unchanged, which keeps the night side exactly as
+    // it renders today. Giving them a real absolute luminance (~1–10 cd/m², i.e.
+    // ~1.6e-4–1.6e-3 game units) is the night-side phase's job — see
+    // docs/LIGHTING_PLAN.md §3.8.
+    //
+    // This reproduces the old `mix()` exactly: mix(n, d, a) = n·(1−a) + d·a.
+    const nightEmissive = nightCol.mul(nightMask).mul(float(1.0).sub(dayAmount));
+    const col = dayCol.mul(sunT).mul(dayAmount).toVar();
 
     // ── SHADOW_DEBUG: cloud-shadow / cloud registration overlay ──
     // Build-const (dead-eliminated when off). Tints shadowed ground MAGENTA over
@@ -455,7 +472,14 @@ function buildEarthFragmentNode(opts: {
     // (`hemiAmount` is retained for the eclipse term; the terminator warm tint
     // above is superseded by the atmosphere's sunset reddening in Phase 2.)
 
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // Earth's ground was ~6.37× too dark without this, which is what made the
+    // cloud tops read ~35× brighter than the ocean beneath them (physically the
+    // ratio is 3–12×). The emissive city lights are added AFTER, unscaled.
+    return vec4(
+      surfaceRadiance(col, uSunIlluminance).add(nightEmissive),
+      1.0,
+    );
   })();
 }
 
@@ -629,7 +653,7 @@ export const earthConfig: CelestialBodyConfig = {
     );
   },
 
-  buildFragmentNode: ({ textures, uSunRel, uniforms, tier }) => {
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, tier }) => {
     return buildEarthFragmentNode({
       texDay: textures.day,
       texNight: textures.night,
@@ -637,6 +661,7 @@ export const earthConfig: CelestialBodyConfig = {
       texNormal: tier === "near" ? textures.normal : null,
       texSpec: textures.spec ?? null,
       uSunRel,
+      uSunIlluminance,
       uMoonPos: uniforms.uMoonPos,
       uMoonRadius: uniforms.uMoonRadius,
       uSunRadius: uniforms.uSunRadius,

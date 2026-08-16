@@ -223,7 +223,6 @@ export function deriveAtmosphere(
     gasAbsorption,
     groundAlbedo: atm.groundAlbedo ?? [0.3, 0.3, 0.3],
     starLuminositySun: star.luminositySun ?? 1,
-    illuminanceTrim: 1,
     ...tweaks,
   };
 }
@@ -231,8 +230,8 @@ export function deriveAtmosphere(
 /**
  * Body→star distance in km, from the authored positions.
  *
- * ⚠ Only for computing the fixed `illuminanceTrim` scaffolds below, which must
- * reproduce the pre-Phase-0 look exactly. Runtime code must NOT use this — it
+ * ⚠ Only for INITIALISING uniforms so nothing flashes on frame 0. Runtime code
+ * must NOT use this — it
  * reads the authored (static) position, which is precisely what breaks once
  * bodies orbit. Live distance comes from `CelestialBody`'s per-frame update.
  */
@@ -258,23 +257,14 @@ const sol = findBody("sol");
 // Earth reproduces Hillaire Table 1 from its physical description (scale
 // height 8.000 km, Rayleigh +0.1%, ozone/Mie exact).
 //
-// ⚠ ILLUMINANCE PIN (Phase 0 scaffold — see AtmosphereParams.illuminanceTrim).
-// The game's Earth orbits at 0.9716 AU (system-authoring quirk), which derives
-// 22.458 game units, but the sky was hand-tuned in ATMOSPHERE_PLAN Phase 1
-// against 20. Express that as a trim so the switch to per-frame illuminance is
-// bit-exact, rather than silently brightening the tuned look by 12%.
-// Phase 2 deletes this and re-tunes against physics.
-const EARTH_ILLUM_PIN = 20;
+// ✅ THE ILLUMINANCE PIN IS GONE (lighting Phase 2). Earth's sky was hand-tuned
+// against sunIlluminance = 20 while its authored orbit (0.9716 AU) derives
+// 22.458 — a 12% discrepancy that existed only because the tuning had no
+// physical anchor. Now that surfaces carry sunIlluminance/π and the whole frame
+// shares one documented scale (1 game unit ≈ 6,038 cd/m²), the derived value IS
+// the right value and the pin would be a lie.
 const earthBody = findBody("earth");
-export const EARTH_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(
-  earthBody,
-  sol,
-  {
-    illuminanceTrim:
-      EARTH_ILLUM_PIN /
-      sunIlluminanceAt(authoredStarDistanceKm(earthBody, sol), sol.luminositySun ?? 1),
-  },
-);
+export const EARTH_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(earthBody, sol);
 
 /**
  * Earth's sun illuminance at its AUTHORED position, in game units.
@@ -286,36 +276,37 @@ export const EARTH_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(
 export const EARTH_SUN_ILLUMINANCE_AUTHORED = sunIlluminanceAt(
   authoredStarDistanceKm(earthBody, sol),
   sol.luminositySun ?? 1,
-  EARTH_ATMOSPHERE.illuminanceTrim,
 );
 
 // Venus: 92 bar CO2 → Rayleigh ~90× Earth (the sky is optically deep; the
 // transmittance LUT goes ~0 well above the surface, as it should), plus the
 // H2SO4 cloud shroud as a tall bright Mie deck.
 //
-// ⚠ THE VENUS TRIM IS BACKWARDS, AND MEASURING IT WAS THE KEY FINDING OF THE
-// 2026-08-14 lighting audit (docs/LIGHTING_PLAN.md §2.2). A JS replica of this
-// very march puts Venus' disc at L = [11.1, 12.6, 13.3] game units against a
-// Lambertian-equivalent physical 8.92 at its real geometric albedo 0.69. So the
-// disc was NEVER ~40× too bright — this 0.025 trim UNDER-renders Venus by ~32×.
+// ✅ THE 0.025 ILLUMINANCE TRIM IS GONE (lighting Phase 2), together with the
+// missing surface irradiance factor it was compensating for — the SAME COMMIT,
+// which was mandatory (docs/LIGHTING_PLAN.md §4.1, the cancellation trap).
 //
-// It nonetheless LOOKED right, because every planet surface is simultaneously
-// missing its irradiance factor sunIlluminance/π (= 6.37× at Earth's orbit).
-// Two errors partially cancelling.
+// The history, because it is the most instructive bug in this system: the trim
+// was added on the belief that Venus' disc rendered ~40× too bright. Measuring it
+// showed the opposite — a JS replica of this very march puts the disc at
+// L = [11.1, 12.6, 13.3] game units against a Lambertian-equivalent 8.92 at
+// Venus' real geometric albedo 0.69, so the trim was UNDER-rendering Venus ~32×.
+// It only looked right because every planet surface was simultaneously missing
+// sunIlluminance/π (6.37× at Earth's orbit). Two errors partially cancelling.
 //
-// ⇒ DO NOT REMOVE THIS ALONE. Removing the trim without adding the surface
-// irradiance factor makes Venus blow out again; adding the factor without
-// removing the trim makes Venus vanish. They must land in the SAME commit
-// (LIGHTING_PLAN §4.1, the cancellation trap).
+// ⚠ THE CANCELLATION WAS PARTIAL AND BODY-DEPENDENT, so this pair of changes is
+// NOT expected to be self-balancing: measured pre-change, Venus' disc sat 16.5×
+// above its own trimmed p·E/π and Neptune's 12.9× above its (untrimmed) one, i.e.
+// most of Venus' brightness arrived through the albedo-scale path rather than
+// through illuminance. Re-measure with `__lum.compare("venus")` and
+// `__lum.compare("neptune")` — do not assume.
 //
 // Residual +18…+21% from Hillaire's Ψ/(1−F_ms) approximation IS real (validated
 // against a Monte Carlo in §2.2) but is the paper's own documented hue-drift
 // limit at high scattering coefficients, not a bug here. Accepted; not a knob.
-const VENUS_ILLUM_TRIM = 0.025;
 export const VENUS_ATMOSPHERE: AtmosphereParams = deriveAtmosphere(
   findBody("venus"),
   sol,
-  { illuminanceTrim: VENUS_ILLUM_TRIM },
 );
 
 // Mars: 6 mbar CO2 → feeble Rayleigh; the look is the DUST — red-scattering,

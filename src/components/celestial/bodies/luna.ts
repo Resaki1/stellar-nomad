@@ -25,6 +25,7 @@ import {
   LUNA_RADIUS_KM,
 } from "@/sim/celestialConstants";
 import { kmToScaledUnits } from "@/sim/units";
+import { surfaceRadiance } from "@/components/space/photometry";
 import type { CelestialBodyConfig } from "../types";
 
 export { LUNA_POSITION_KM, LUNA_RADIUS_KM };
@@ -47,6 +48,8 @@ function buildLunaFragmentNode(
   texelSize: number,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRel: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uSunIlluminance: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -106,7 +109,11 @@ function buildLunaFragmentNode(
       .mul(darkSideMask);
 
     const col = albedo.mul(diffuse.add(surge)).add(darkColor);
-    return vec4(col, 1.0);
+    // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
+    // The earthshine term rides along correctly: it is modelled as a FRACTION of
+    // the same solar illuminance (Earth sits at the same distance from the star),
+    // so it scales with it rather than being an independent emissive.
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -150,10 +157,10 @@ export const lunaConfig: CelestialBodyConfig = {
   far: { albedo: LUNA_ALBEDO },
   stellarPoint: { geometricAlbedo: 0.0036, color: [0.85, 0.82, 0.78] },
 
-  buildFragmentNode: ({ textures, uSunRel, tier }) => {
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, tier }) => {
     const bumpStrength = tier === "near" ? 0.8 : 0.6;
     const texelSize = tier === "near" ? 1 / 4096 : 1 / 1024;
-    return buildLunaFragmentNode(textures.color, textures.displacement, bumpStrength, texelSize, uSunRel);
+    return buildLunaFragmentNode(textures.color, textures.displacement, bumpStrength, texelSize, uSunRel, uSunIlluminance);
   },
 
   buildPositionNode: ({ textures }) => {

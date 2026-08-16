@@ -178,10 +178,25 @@ Ground-truth zenith sky from the surface, sun at zenith: `[0.459, 0.614, 1.019]`
 photopic mix 0.610 → **3,900 cd/m²** at the calibration below. Real clear-sky zenith at solar
 noon is ~2,000–8,000 cd/m². ✅ The atmosphere's absolute scale is right.
 
-### 2.2 The Venus multiple-scattering question — RESOLVED 2026-08-14
+### 2.2 The Venus multiple-scattering question
 
-**Verdict: the engine over-scatters Venus by +18…+21%, it is NOT a bug in our code, and it is
-the documented limitation of the chosen approximation. Accept it; do not add a knob.**
+> ## ⛔ THE "+18…+21%, ACCEPTED" VERDICT BELOW IS RETRACTED — see §2.2.4
+>
+> On-device measurement after Phase 2a puts Venus' disc at an implied **reflectance of 11.35**,
+> i.e. it emits **11× more light than falls on it**. That is impossible at any geometry, so the
+> excess is **~16×, not 20%**, and it IS a bug.
+>
+> **RESOLVED in §2.2.5** — it was the multiple-scattering geometric series diverging; clamped
+> at `uFmsMax = 0.92`, calibrated against the validated Monte Carlo.
+>
+> **The reasoning error was mine and it is worth naming:** §2.2 validated the Monte Carlo against
+> an analytic reference, and the *replica* against the Monte Carlo — then I concluded something
+> about the **engine**, which was never measured against either. The replica was written as "a JS
+> replica of the engine's own march" and I trusted that label instead of testing it. The engine
+> produces ~12× more than the replica does.
+>
+> The rest of this section is still valid *about the replica and the Monte Carlo*, and §2.2.3's
+> paper findings still stand. Read it as background, not as a verdict on the engine.
 
 Three findings, in the order they were established.
 
@@ -331,6 +346,228 @@ magnitude *below* a mag-6 star's per-pixel equivalent (1.07e-2 cd/m²). At 17.3 
 sits ~1,600× *above* it, so no exposure setting can show stars against this sky. **The skybox
 rescale is therefore a prerequisite for the stars-visible goal, not a nice-to-have — promote it
 from Phase 7 into Phase 5 alongside auto-exposure.**
+
+### 2.2.4 POST-PHASE-2a MEASUREMENTS — Venus is a real energy bug, ~16×
+
+Measured on device with `__lum.compare()` after Phase 2a. `E` is each body's live illuminance;
+**implied reflectance** `R = L·π/E` is the reflectance the shader must be emitting.
+
+| body | E | expected `p·E/π` | measured | ratio | implied R | p | R/p |
+|---|---|---|---|---|---|---|---|
+| earth | 22.458 | 3.103 | 0.2845 | 0.092× | 0.0398 | 0.434 | 0.092 |
+| **venus** | 40.631 | 8.911 | **146.8** | **16.47×** | **11.35** | 0.689 | **16.5** |
+| mars | 9.124 | 0.4937 | 0.2414 | 0.489× | 0.0831 | 0.170 | 0.489 |
+| jupiter | 0.7715 | 0.1321 | 0.08337 | 0.631× | 0.3395 | 0.538 | 0.631 |
+| neptune | 0.02343 | 0.003296 | 0.00002827 | 0.0086× | 0.00379 | 0.442 | 0.0086 |
+
+**The `R > 1` test is what makes this conclusive, and it is the tool to reach for in future.**
+Unfavourable geometry — probing away from the sub-solar point, limb darkening, `N·L < 1`,
+atmospheric transmittance — can only push `R` **down**. So:
+
+- **Venus `R = 11.35 > 1` is impossible at any geometry.** A body cannot emit more than it
+  receives. This is an unambiguous energy-conservation violation in the atmosphere pass, ~16×.
+  It is now the largest known defect in the system.
+- **Every other row has `R < p`, which is AMBIGUOUS.** It could be the texture-albedo error (D09,
+  Phase 2c) or simply a probe that landed off the sub-solar point — a single hand-aimed probe
+  cannot separate them. Do not read Earth's 0.092× or Neptune's 0.0086× as measurements of D09
+  until they are re-taken from a consistent pose.
+
+**Venus' ratio is invariant across Phase 2a — 16.5× before, 16.47× after — while its `E` changed
+40×.** That is itself informative: the disc scales exactly with illuminance, so it is entirely
+in-scatter, with no albedo-scale component. It also means the trim removal did precisely what it
+was supposed to (it was a pure exposure hack) and left the underlying 16× untouched.
+
+**Harness bug found and fixed by this run:** `expected()` only worked for whichever body was
+currently the registered dominant atmosphere, so four of five `compare()` calls failed. It now
+falls back to the authored star distance, and `compare()` prints the implied reflectance.
+
+### 2.2.5 FOUND AND FIXED — the multiple-scattering geometric series (2026-08-14)
+
+Ablation settled it in one session. `__lum.compare("venus")` in Venus orbit, implied
+reflectance `R = L·π/E` (R > 1 is physically impossible):
+
+| configuration | max amplification | measured R | vs ground truth |
+|---|---|---|---|
+| MS ablated (`setMsScale(0)`) | — | 0.061 | 13× too dim |
+| `uFmsMax = 1` (previous behaviour) | 10,000× | **6.974** | **8.8× — IMPOSSIBLE** |
+| `uFmsMax = 0.95` | 20× | 1.176 | 1.48× — still impossible |
+| `uFmsMax = 0.90` | 10× | 0.618 | 0.78× |
+| `uFmsMax = 0.85` | 6.7× | 0.432 | 0.55× |
+
+**The entire excess lives in the geometric series**, not in single scattering — MS off leaves
+Venus 13× too *dim*, MS unclamped leaves it emitting 7× more light than falls on it.
+
+**Why this is a regularisation and not a fudge.** `Ψ = L₂/(1−F_ms)` sums infinite isotropic
+re-scattering assuming each bounce returns a fraction `F_ms`. For Venus (single-scatter albedo
+0.984–0.994, vertical τ 9–46) `F_ms → 0.994` is arguably *correct* — and the series' honest answer
+is then ~174×. The series is simply the wrong model at that point, because it ignores that energy
+also escapes. Hillaire states `F_ms` is "in the range [0,1]" and recommends techniques "to help
+respect that range", i.e. he acknowledges it can breach; his `max(1−F_ms, 1e-4)` is a
+divide-by-zero guard that still permits 10,000×.
+
+**The value is calibrated against ground truth, not taste.** The validated Monte Carlo (±0.9%
+against an analytic single-scatter reference) gives Venus' nadir sub-solar π·L/E =
+[0.7245, 0.8068, 0.8541], photopic **R\* = 0.7927**. Log-interpolating the table above for
+`R = R*` gives **0.9193 → `uFmsMax = 0.92`**, now the default. Note R\* is *not* Venus' geometric
+albedo 0.689 — sub-solar nadir legitimately exceeds the disc average for a limb-darkened body.
+
+**And it is provably inert everywhere else.** The clamp only bites where `1/(1−F_ms)` would exceed
+12.5×. Earth's `F_ms` peaks at 0.310 (amplification 1.45×), far below it; the H₂/He giants scatter
+weakly per molecule and sit lower still. So this is a **global bound on a divergent series**, not
+the kind of per-body art constant §3.0 forbids — it changes exactly those bodies where the
+approximation has already broken down.
+
+✅ **VERIFIED on device:** with `uFmsMax = 0.92`, Venus measures **R = 0.7575 against the Monte
+Carlo's R\* = 0.7927 — 4.4% low**, comfortably inside the MC's own uncertainty. Ratio vs the
+disc-averaged `p·E/π` is 1.099×, which is the expected sign (sub-solar exceeds the disc average).
+
+⚠ **Earth's inertness is still unverified** — the attempt was invalidated by the `compare()` bug
+below. The clamp *cannot* engage at Earth's F_ms = 0.31, but that is an argument, not a measurement.
+
+### 2.2.6 `compare()` was measuring the wrong body — fixed
+
+The Earth inertness check returned `ratio 3.158×, R = 1.370` from Venus orbit, and
+**byte-identical `measured` values for `compare("venus")` and `compare("earth")` from the same
+location** (9.797 units at Venus, 0.03279 at Earth). That is the tell: `compare()` probed the
+screen centre *without warping*, so it measured whatever was on screen and compared it against
+the **named** body's expectation. Every cross-body number taken this way is meaningless.
+
+Two fixes, both now in:
+
+1. **`compare()` warps by default.** Pass `{ warp: false }` to probe where you are.
+2. **The pose is the SUB-SOLAR point**, not `resolveBodyWarp`'s. That helper places the eye along
+   a fixed approach axis, so the phase angle is incidental and a body can be measured over its
+   night side — which is exactly why Earth read 0.0106× (198 cd/m²) at `earth_4100`. `p·E/π` is
+   defined at **zero phase**, so the harness now puts the camera on the body→star line looking
+   back at the body, sub-solar point dead centre. `sweep()`'s disc rows use the same pose.
+
+**This retroactively voids the "ambiguous `R < p`" readings in §2.2.4** for Earth, Mars, Jupiter
+and Neptune — they may have been measuring partly-lit discs. Re-take them with the fixed
+`compare()` before drawing any conclusion about texture calibration (Phase 2c).
+
+**Diagnostics retained:** `__lum.setMsScale(x)` and `__lum.setFmsMax(x)`, both forcing a LUT
+re-bake via an epoch counter (the LUTs are otherwise baked only on body change, so a runtime dial
+would silently do nothing).
+
+### 2.2.7 The 3/2 I dropped, and what the clean sweep actually shows
+
+**My expectation was wrong by a factor of 1.5, and it coloured every "too dim/too bright" call.**
+`p·E/π` is a DISC-AVERAGED quantity — geometric albedo is defined by the total flux the disc
+returns at zero phase. The probe aims at the **sub-solar point**, the brightest point on that disc.
+For a Lambert sphere of surface albedo A: sub-solar `R = A`, geometric `p = (2/3)A`, so
+**`R = 1.5p`**. A perfectly correct Lambertian body reads **ratio 1.5, not 1.0**.
+
+`__lum` now reports `ratio vs sub-solar` as the headline number (1.0 = correct Lambert sphere).
+First clean sweep, re-read against it:
+
+| body | vs disc-avg | **vs sub-solar** | implied A | p |
+|---|---|---|---|---|
+| earth | 2.015 | **1.343** | 0.875 | 0.434 |
+| venus | 2.037 | **1.358** | 1.403 | 0.689 |
+| mars | 2.013 | **1.342** | 0.342 | 0.170 |
+| luna | 2.979 | **1.986** | 0.405 | 0.136 |
+| jupiter | 0.782 | **0.521** | 0.421 | 0.538 |
+| neptune | 0.427 | **0.285** | 0.189 | 0.442 |
+
+**This splits into two independent defects, which is the useful result:**
+
+1. **The three bodies with significant atmospheres cluster at 1.34 within 1.2%** (earth 1.343,
+   venus 1.358, mars 1.342). Three very different discs — ocean+land texture, pure in-scatter
+   cloud deck, dust haze — cannot agree to 1% by coincidence. Venus in particular is in-scatter
+   dominated (T ≈ 0), so a texture explanation is impossible for it. **This is the atmosphere pass.**
+2. **The weak/no-atmosphere bodies scatter 0.29–1.99**, which is D09 texture calibration and
+   matches AUDIT_2's independent per-body measurements in both sign and magnitude: Luna's texture
+   too bright (audit 0.37× ⇒ 2.7×; measured 1.99), Neptune's too dark (audit 5.4×; measured 3.5×).
+   **This is Phase 2c**, and it now has numbers.
+
+### 2.2.8 RETRACTED — the disc IS distance-invariant
+
+Measured across 2,000 → 60,000 km at the sub-solar pose: **18.13, 18.14, 18.15, 18.16 units.**
+Flat to 0.2%. Radiometry is intact; there is no altitude-dependent bug.
+
+**The apparent 1.85× was my own instrument.** The 9,600 km reading (9.797 units) was taken with
+the OLD `compare()`, before it warped — so it sampled an off-centre point on the disc, not the
+sub-solar point. Two probes of different points on the same disc, compared as if they were the
+same measurement.
+
+⚠ **This invalidates the clamp calibration in §2.2.5.** That whole ablation series was taken at the
+off-centre pose, so the fit — and the "R = 0.7575 vs R\* = 0.7927, 4.4%, verified" — were both
+artefacts. The clamp was tuned to the wrong target.
+
+**Recalibrated** by scaling the series by the measured pose factor (1.852), which cross-checks to
+6% at an independent point (predicts R = 1.32 at clamp 0.92 against a measured 1.403):
+
+| clamp | R at sub-solar | vs ground truth R\* = 0.7927 |
+|---|---|---|
+| 0.95 | 2.18 | 2.75× |
+| 0.92 | 1.40 (measured) | 1.77× — still impossible (R > 1) |
+| 0.90 | 1.15 | 1.44× |
+| **0.85** | **0.80** | **1.01×** ✅ |
+
+`uFmsMax` is now **0.85**.
+
+✅ **VERIFIED at the sub-solar pose: R = 0.8316 against ground truth 0.7927 — 4.9% high, and
+below 1.** The energy violation is gone, and the rescaled-series prediction (0.80) held to 4%.
+`ratio vs sub-solar` reads 0.8046 against a target of 0.767 — the same 4.9%, consistently.
+
+**CONVERGED — stop here.** 4.9% sits inside the stacked uncertainty: the MC's own ±0.7%, the
+±6% pose-factor rescale, and the gap between the *derived* Venus atmosphere and the real one
+(`deriveAtmosphere` fits bulk composition, not Venus' actual H₂SO₄ haze). Chasing the last 5%
+would be over-fitting a single body — precisely how `VENUS_ILLUM_TRIM` came to exist.
+
+⚠ Note Venus' target is **0.767, not 1.0**. The Lambert reference assumes sub-solar = 1.5·p;
+Venus' real ratio is `R*/p = 1.15`, so `1.15/1.5 = 0.767`. The "1.0 = correct" rule is a Lambert
+approximation — wherever real ground truth exists, it wins.
+
+### 2.2.10 Clamp confirmed body-selective; Earth's row is unsettled
+
+Post-clamp sweep. Four of five non-Venus bodies moved by ≤2%, confirming the `F_ms` argument —
+the clamp only bites where the series has diverged:
+
+| body | before | after | change |
+|---|---|---|---|
+| venus | 18.15 | 10.76 | **−41%** (intended) |
+| luna | 2.882 | 2.934 | +1.8% |
+| mars | 0.9940 | 0.9950 | +0.1% |
+| jupiter | 0.1033 | 0.1032 | −0.1% |
+| neptune | 0.001409 | 0.001409 | 0.0% |
+
+Venus reads **0.805 against its 0.767 target**, matching `compare()`'s 0.8046 — two independent
+paths agreeing.
+
+⚠ **Earth swung 7.1× between identical sweeps** (6.253 → 0.8777 units). Nothing in the change can
+do that: its `F_ms` is 0.31, far below the clamp, and every other body held. The implied
+reflectance went 0.875 → 0.123 — **cloud top versus open ocean**. Earth is the only body with
+volumetric clouds, a cloud shell, TAA reconstruction and 8K texture tiers, so the probe lands on
+different content depending on what has finished streaming. `deep_space`'s 5.2× swing is separate
+and benign: it uses the approach-axis pose and 317,001 cd/m² is the sun drifting into frame.
+
+**Fixed by making it visible rather than silent:** `sweep()` now settles 420 frames (was 180) and
+**probes twice, 90 frames apart**, warning when the two differ by >2% and printing a `drift`
+column. A single probe reports an unsettled scene as a confident number — which is the failure an
+instrument exists to prevent.
+
+### 2.2.9 ⚠ A limit of point-probing textured bodies
+
+Venus was clean to calibrate because its disc is a **uniform** cloud deck: the sub-solar point is
+representative, so comparing it to a whole-disc geometric albedo is meaningful.
+
+That does **not** hold for a textured body. Earth's measured sub-solar reflectance is 0.875 — but
+Earth's geometric albedo of 0.434 is a whole-disc average over bright cloud *and* dark ocean, and
+a thick cloud alone is 0.8–0.9. So Earth's 1.34 may be entirely legitimate: the probe simply landed
+on cloud. Mars is the same story (implied 0.342 against p = 0.170, and Martian bright dust reaches
+0.3+).
+
+**So the Earth/Mars/Luna/Jupiter/Neptune ratios cannot settle D09 on their own.** Phase 2c needs a
+**disc-average** measurement — integrate the rendered disc and compare *that* to geometric albedo,
+which is the quantity geometric albedo is actually defined as. A centre probe is the wrong
+instrument for that question, and reading D09 off these numbers would repeat the geometry mistake
+in a new costume.
+
+**Lesson, third time on the same theme:** every one of these three errors — the replica standing in
+for the engine, `compare()` measuring the wrong body, and now a rescaled pose — came from trusting
+a measurement whose *geometry* I had not verified. The value was always plausible. Check what the
+instrument is pointed at before believing what it says.
 
 ### 2.2.3 Probe methodology note
 
@@ -781,8 +1018,11 @@ ordered so the risky look-changing work happens only after the measurement tools
 | Phase | Content | Visual change | Risk |
 |---|---|---|---|
 | **0** ✅ | `__lum` harness; document the unit convention in code; **split `AtmosphereParams` static/dynamic so `sunIlluminance` is per-frame (§3.0)**; `uExposure` wired at 1.0 | **none** (no-op) | low |
-| **1** | Manual exposure only: wire `uExposure`, expose an EV slider in Dev settings, flip defaults `toneMapping → true` (AgX) and `bloom → true` | AgX + bloom become the default look; exposure becomes tunable | low |
-| **2** | **The seam commit.** Surfaces × `sunIlluminance/π`; delete `VENUS_ILLUM_TRIM`; re-anchor `CLOUD_SUN_SCALE`; fix Earth's sigmoid → true `N·L`; albedo-authoritative texture calibration (§3.0) | **large** — the whole system's relative brightness becomes correct | **high** |
+| **1** ✅ | Manual exposure: compensation slider in Settings → Dev, flip defaults `toneMapping → true` (AgX) and `bloom → true` | AgX + bloom become the default look; exposure becomes tunable | low |
+| **2a** ✅ | **The seam commit (atomic).** Surfaces × `sunIlluminance/π`; delete `VENUS_ILLUM_TRIM` **and** Earth's illuminance pin; delete the `illuminanceTrim` field itself | **large** — the solar system's relative brightness becomes correct | **high** |
+| **2b** | Earth's sigmoid → true `N·L` (D08) | day disc gains a real cosine falloff to the terminator | medium |
+| **2c** | Albedo-authoritative texture calibration (§3.0, D09) | per-body 0.37×–5.4× corrections | medium |
+| **2d** | `CLOUD_SUN_SCALE` re-anchor to `albedo/π` (0.45 → ~0.22) | cloud tops ~2× dimmer | medium |
 | **3** | Distance-correct sun for ship + asteroids (`SunLight.intensity` from live distance); `CORE_HDR` → 250,000 pre-exposed with the write-clamp; star radius + blackbody colour from its description | outer system goes dim, inner system harsh | medium |
 | **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** | GPU histogram auto-exposure + two-timescale adaptation + `evMin`/`evMax`; pin `__bench` exposure; **rescale the Milky Way skybox to absolute luminance (measured 170,000× hot — §2.2.2; promoted from Phase 7 because no exposure can show stars against it)** | the "eye" arrives; ground↔space transitions work; stars become visible | medium |
@@ -834,6 +1074,93 @@ double-counting).
 value in the engine is 38× too dim.** Almost certainly eyeballed down to stop the point glaring,
 i.e. the same hand-patching pattern as Mars' `12.0`. Correct value is in `bodyPhotometry.ts`;
 fix in Phase 4. Expect `__lum`'s `luna_disc` row to fail until then — that is the harness working.
+
+### 5.3 Phase 1 — as built (2026-08-14)
+
+Touched: `space/photometry.ts`, `store/store.ts`, `space/SpaceRenderer.tsx`,
+`HUD/SettingsMenu/SettingsMenu.{tsx,scss}`.
+
+**Exposure is split into two composing inputs, not one setter.** A single
+"set the exposure" would be overwritten by Phase 5's histogram, and the manual knob
+would have to be rebuilt:
+
+```
+effective = exposureFromEV(clamp(meteredEV, EV_MIN, EV_MAX)) · 2^compensation
+```
+
+`meteredEV` is the scene's reading — pinned at `EV_NEUTRAL` in Phases 0–4, written by the
+histogram in Phase 5. `compensation` is the Dev slider, in **stops, + = brighter**, matching the
+photographic convention and Unreal's `ExposureCompensation`. It survives into Phase 5 untouched.
+
+`EV_NEUTRAL = evFromExposure(1) = −0.263` — the EV that reproduces the pre-lighting-work image.
+Naming it makes explicit that today's look is an arbitrary point on the exposure axis, not a
+calibrated one. **Verified: `stops = 0` yields exposure exactly `1.0` to full float precision, and
+±N stops yield exactly 2^±N**, so the default is a strict no-op.
+
+**Defaults flipped** (`store.ts`): `bloom: true`, `toneMapping: true`. The first-run GPU-tier pass
+now only *steps down* — bloom off below tier 2 (a measured 1.8–2.0 ms mip chain). Tone mapping is
+deliberately **not** stepped down: swapping AgX for Neutral is not a perf win (one curve evaluation
+either way), it just picks a worse curve.
+
+**⚠ `atomWithStorage` REPLACES the default object, it does not merge.** Anyone who opened Settings
+before `exposureStops` existed has a stored object without it, so it reads `undefined` and the
+slider's `.toFixed()` would throw. Guarded with `?? 0` at both read sites. Confirmed live: the dev
+browser's stored value is
+`{"invertPitch":false,"bloom":true,"toneMapping":true,"fps":false,"perf":false,"initial":false}` —
+no `exposureStops`. Same hazard as the comms-store hydration trap.
+
+**⚠ The default flip does NOT affect existing profiles**, for the same reason. Anyone with stored
+settings keeps whatever they had; only fresh installs get the new defaults. Existing players who
+want AgX must toggle it in Settings → Graphics, or clear the `settings` localStorage key.
+
+### 5.4 Phase 2a — as built (2026-08-14)
+
+**Phase 2 was SPLIT.** The original phase bundled five changes; only three were actually
+inseparable (the surface factor + both trim removals — §4.1). Earth's sigmoid, the texture
+calibration and the `CLOUD_SUN_SCALE` re-anchor each change the look on their own and each
+deserves its own measurement, so they became 2b/2c/2d. Bundling them would have made an
+unattributable diff — the same reasoning as `PERF_MEASUREMENT.md`'s one-lever-at-a-time rule.
+
+**Every body now gets a per-frame `uSunIlluminance`**, created and written in
+`CelestialBody.tsx` from the LIVE body→star distance and threaded through
+`FragmentNodeContext` / `ExtraMeshContext`. Deliberately not routed via the atmosphere record:
+airless moons need it just as much as Earth, and they never register as atmosphere bodies.
+`STAR_LUMINOSITY_SUN` (new, `celestialConstants.ts`) is the marked seam for procedural systems.
+
+**All 14 sphere fragments + Saturn's rings** now convert reflectance → radiance through one
+shared helper, `surfaceRadiance(reflectance, uSunIlluminance)` in `photometry.ts`, so the `1/π`
+lives in exactly one place. Billboard fragments were deliberately **not** touched — they are the
+Phase 4 impostor work and have no illuminance in scope.
+
+**Earth's emissive night lights are held out of the conversion.** `col` now accumulates
+reflectance only; `nightEmissive` is added *after* the `× E/π`, because city lights do not get
+brighter when Earth is nearer the sun. The split reproduces the old `mix()` exactly
+(`mix(n,d,a) = n·(1−a) + d·a`), so the night side is unchanged. Giving city lights a real absolute
+luminance is still §3.8's job.
+
+**Both trims are gone, and so is the field.** `illuminanceTrim` was removed from
+`AtmosphereParams` entirely rather than left pinned at 1 — a permanent-1 brightness knob is a trap
+that §3.0 forbids. Verified zero remaining references.
+
+**Expected deltas (derived, NOT yet measured on device):**
+
+| Body | E before → after | surface factor | net |
+|---|---|---|---|
+| Mercury | 141 (unchanged) | × 141/π = **×44.9** | far brighter |
+| Earth | 20 → 22.458 | × **×7.15** | ground ~7× brighter; sky +12%; cloud/ground ratio 35× → ~5× ✅ |
+| Venus | 1.016 → 40.631 | ×12.93, but T≈0 so in-scatter dominates: **×40** | far brighter |
+| Neptune | 0.0234 (unchanged) | × 0.0234/π = **×0.00746** | surface 134× dimmer |
+
+⚠ **The solar system's dynamic range just went from ~flat to ~6,000:1, which is the point — and
+it means ONE global exposure can no longer serve both Mercury and Neptune.** Expect to move the
+Dev exposure slider when travelling between them. That is correct behaviour, not a regression, and
+it is precisely the gap Phase 5's auto-exposure closes.
+
+**Acceptance (run before starting 2b):** `__lum.compare()` on `earth`, `venus`, `neptune`,
+`mars`, `jupiter`. Ratios should collapse from 12.9–16.5× toward ~1–2× (above 1 is expected —
+sub-solar nadir exceeds the disc-averaged `p·E/π` for a limb-darkened body). **Venus is the one to
+watch**: pre-change it sat 16.5× above its *trimmed* expectation, meaning much of its brightness
+arrived through the albedo-scale path, so this pair of changes is not guaranteed to balance.
 
 ### 5.2 The readback bug — two traps in `readRenderTargetPixelsAsync`
 

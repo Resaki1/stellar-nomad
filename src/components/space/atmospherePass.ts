@@ -78,6 +78,105 @@ export const TRANSMITTANCE_LUT_W = 256;
 export const TRANSMITTANCE_LUT_H = 64;
 export const MULTISCATTER_LUT_SIZE = 32;
 
+// ── Diagnostic dials (docs/LIGHTING_PLAN.md §2.2.4) ──────────────────────
+// Module scope so `__lum` can drive them without a handle on the pass. Both
+// default to a strict no-op; they exist to ABLATE, which is this repo's rule for
+// in-pass questions (see docs/PERF_MEASUREMENT.md — "when gpu/frame > 1.15,
+// ablate, never do arithmetic on reported numbers"; the same discipline applies
+// to radiometry, and skipping it is what produced the retracted §2.2 verdict).
+
+/** Scales the multiple-scattering contribution. 0 = single scattering only. */
+export const uMsScale = uniform(1);
+/**
+ * Upper clamp on F_ms before the 1/(1−F_ms) geometric series, bounding the
+ * multiple-scattering amplification to 1/(1−x). 1 = unclamped.
+ *
+ * ── WHY THIS EXISTS AND WHY 0.92 (docs/LIGHTING_PLAN.md §2.2.5) ──────────
+ *
+ * MEASURED on device, Venus' disc, `__lum.compare("venus")`, implied
+ * reflectance R = L·π/E (R > 1 is physically impossible — the body would emit
+ * more than it receives):
+ *
+ *   MS ablated (uMsScale = 0)   R = 0.061   ← single scattering alone, 13× too dim
+ *   clamp 1.00 (unclamped)      R = 6.974   ← IMPOSSIBLE, 10.1× over expectation
+ *   clamp 0.95                  R = 1.176   ← still impossible
+ *   clamp 0.90                  R = 0.618
+ *   clamp 0.85                  R = 0.432
+ *
+ * So the ENTIRE excess lives in the geometric series, not in single scattering.
+ *
+ * ⚠ THE APPROXIMATION GENUINELY DIVERGES HERE — this is a regularisation, not a
+ * fudge. Ψ = L₂/(1−F_ms) sums infinite isotropic re-scattering assuming each
+ * bounce returns a fraction F_ms. For a near-conservative deep atmosphere
+ * (Venus: single-scatter albedo 0.984–0.994, vertical τ 9–46) F_ms → 0.994 is
+ * arguably CORRECT, and the series' honest answer is then ~174× — but the series
+ * is the wrong model at that point, because it ignores that energy also escapes.
+ * Hillaire says F_ms is "in the range [0,1]" and recommends techniques "to help
+ * respect that range", i.e. he acknowledges it can breach. His own
+ * `max(1−F_ms, 1e-4)` is a divide-by-zero guard that still permits 10,000×.
+ *
+ * ⚠ THE TABLE ABOVE WAS TAKEN AT THE WRONG GEOMETRY. `__lum.compare()` did not
+ * warp at the time, so it probed an off-centre point on the disc — measured
+ * 1.852× dimmer than the sub-solar point it was assumed to be. The first
+ * calibration (0.92) and its apparent 4.4% agreement with ground truth were both
+ * artefacts of that. Scaling the series by the measured pose factor:
+ *
+ *   clamp 0.95 → R ≈ 2.18   (2.75× over ground truth)
+ *   clamp 0.90 → R ≈ 1.15   (1.44×)
+ *   clamp 0.85 → R ≈ 0.80   (1.01×)   ← lands on ground truth
+ *
+ * Cross-check: that scaling predicts R = 1.32 at clamp 0.92 against a MEASURED
+ * 1.403 — 6% agreement at an independent point, so the factor is sound.
+ *
+ * ── THE VALUE IS CALIBRATED AGAINST GROUND TRUTH, NOT AGAINST TASTE ──────
+ * The validated Monte Carlo (`docs/LightingResearch/audit4_mc_validation.mjs`,
+ * checked to ±0.9% against an analytic single-scatter reference) gives Venus'
+ * nadir sub-solar π·L/E = [0.7245, 0.8068, 0.8541], photopic **R* = 0.7927**.
+ * That puts the clamp at **0.85**. Note R* is NOT Venus' geometric albedo 0.689:
+ * sub-solar nadir legitimately exceeds the disc average (for Venus by 1.15×, and
+ * for a Lambert sphere by exactly 1.5× — see LAMBERT_SUBSOLAR_OVER_GEOMETRIC).
+ *
+ * ✅ VERIFIED at the sub-solar pose: **R = 0.8316 vs ground truth 0.7927 — 4.9%
+ * high, and below 1**, so the energy violation is gone. The rescaled-series
+ * prediction was 0.80, i.e. accurate to 4%. 4.9% sits inside the stacked
+ * uncertainty (MC ±0.7%, pose-factor rescale ±6%, derived-vs-real Venus
+ * atmosphere), so this is CONVERGED — do not tune it further. Chasing the last
+ * 5% would be exactly the over-fitting that produced VENUS_ILLUM_TRIM.
+ *
+ * ── AND IT IS PROVABLY INERT EVERYWHERE ELSE ─────────────────────────────
+ * The clamp only bites where 1/(1−F_ms) would exceed 12.5×. Earth's F_ms peaks
+ * at 0.310 (amplification 1.45×) — two-thirds of the way below the clamp, so it
+ * never engages. The H₂/He giants scatter weakly per molecule and sit lower
+ * still. This is therefore a GLOBAL bound on a divergent series, not a per-body
+ * art constant of the kind §3.0 forbids: it changes exactly the bodies where the
+ * approximation has already broken down.
+ */
+export const uFmsMax = uniform(0.85);
+
+/**
+ * LUT epoch — bumped whenever a diagnostic dial changes, so SpaceRenderer knows
+ * to re-bake. Necessary because the transmittance/multi-scatter LUTs are baked
+ * ONLY when the dominant body changes; without this, turning a dial at runtime
+ * would silently do nothing until you warped to another planet and back.
+ */
+let _lutEpoch = 0;
+export const getAtmosphereLutEpoch = (): number => _lutEpoch;
+export const invalidateAtmosphereLUTs = (): void => {
+  _lutEpoch++;
+};
+
+/** Ablate multiple scattering (0) or restore it (1). Forces a LUT re-bake. */
+export function setMsScale(scale: number): void {
+  uMsScale.value = scale;
+  invalidateAtmosphereLUTs();
+}
+
+/** Clamp F_ms before the geometric series. Forces a LUT re-bake. */
+export function setFmsMax(maxFms: number): void {
+  uFmsMax.value = maxFms;
+  invalidateAtmosphereLUTs();
+}
+
 // Step / sample counts.
 const TRANSMITTANCE_STEPS = 40;
 const MS_SQRT_SAMPLES = 8; // → 64 sphere directions
@@ -797,11 +896,7 @@ export function setAtmosphereBody(
   rec.params = params;
   // Per-frame 1/r² illuminance. Grey for now (the star's colour temperature
   // becomes a per-channel tint in Phase 3 — LIGHTING_PLAN §3.0, defect D18).
-  const illum = sunIlluminanceAt(
-    starDistanceKm,
-    params.starLuminositySun,
-    params.illuminanceTrim,
-  );
+  const illum = sunIlluminanceAt(starDistanceKm, params.starLuminositySun);
   rec.sunIlluminance.set(illum, illum, illum);
   if (rings) {
     if (!rec.rings) {
@@ -1589,7 +1684,24 @@ export function setupAtmospherePass(
     // Σ·(4π/N)·(1/4π) = Σ/N (the two 4π factors cancel — see reference).
     const inScattered = Lsum.div(MS_SAMPLE_COUNT);
     const Fms = fmsSum.div(MS_SAMPLE_COUNT);
-    const psi = inScattered.div(vec3(1).sub(Fms).max(1e-4));
+
+    // ⚠ THE GEOMETRIC SERIES IS THE SUSPECT FOR VENUS' MEASURED ~16× EXCESS
+    // (docs/LIGHTING_PLAN.md §2.2.4). Ψ = L2nd/(1−F_ms) models infinite isotropic
+    // re-scattering, and it is only meaningful while F_ms is comfortably below 1.
+    // On Venus (ω → 0.994, vertical τ 9–46) the replica measured F_ms up to
+    // 0.9943, i.e. an amplification of 174×. In that regime the series is
+    // catastrophically ill-conditioned: F_ms 0.9938 → 0.9990 is a 0.5% change in
+    // the input and a 6× change in the output, so two implementations of the same
+    // algorithm that differ only in sample count can disagree by an order of
+    // magnitude. Hillaire's own `max(…, 1e-4)` is a divide-by-zero guard (it
+    // still permits 10,000×), NOT a physical bound.
+    //
+    // `uFmsMax` clamps F_ms to a maximum, bounding the amplification to
+    // 1/(1−uFmsMax). Default 1.0 reproduces the previous behaviour exactly, so
+    // this is a no-op until someone turns the dial. Drive it from
+    // `__lum.setFmsMax(x)` and re-measure with `__lum.compare("venus")`.
+    const FmsClamped = Fms.min(uFmsMax);
+    const psi = inScattered.div(vec3(1).sub(FmsClamped).max(1e-4));
     return vec4(psi, 1);
   });
 
@@ -1820,7 +1932,8 @@ export function setupAtmospherePass(
             );
             const msContrib = getMultipleScattering(P, uSunDir)
               .mul(m.scattering)
-              .mul(sunVis);
+              .mul(sunVis)
+              .mul(uMsScale);
             // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
             const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
             const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
@@ -1946,7 +2059,7 @@ export function setupAtmospherePass(
           max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
         ).negate();
         const sunVis = smoothstep(cosHorizonP.sub(0.05), cosHorizonP.add(0.05), cosSunZenP);
-        const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis);
+        const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis).mul(uMsScale);
         // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
         const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
         const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
@@ -2029,7 +2142,7 @@ export function setupAtmospherePass(
             max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
           ).negate();
           const sunVis = smoothstep(cosHorizonP.sub(0.05), cosHorizonP.add(0.05), cosSunZenP);
-          const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis);
+          const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis).mul(uMsScale);
           // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
           // KNOWN LIMITATION: baked into this 200×256 LUT, shafts quantize to
           // its (azimuth, elevation) lattice → soft curved bands on the

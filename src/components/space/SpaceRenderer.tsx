@@ -35,11 +35,12 @@ import {
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
-import { uExposure } from "./photometry";
+import { setExposureCompensation, uExposure } from "./photometry";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
+  getAtmosphereLutEpoch,
   getAtmosphereLUTs,
   getAtmosphereLighting,
   computeAtmosphereLighting,
@@ -392,6 +393,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // Identity of the atmosphere the LUTs were last baked for. Reset whenever the
   // pass or LUTs are rebuilt so a one-shot rebake re-runs (idempotent).
   const bakedAtmosphereId = useRef<string | null>(null);
+  // Re-bake when a diagnostic dial changes, not only when the body changes —
+  // see invalidateAtmosphereLUTs() in atmospherePass.ts.
+  const bakedLutEpoch = useRef(-1);
   // Reset only when the LUT RTs are recreated (their GPU content is lost) — NOT
   // on a pass rebuild from resize, which keeps the baked LUTs valid.
   useEffect(() => {
@@ -581,6 +585,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // rather than reading a disposed RenderTarget.
   useEffect(() => () => clearLumSource(), []);
 
+  // Exposure compensation (Settings → Dev). Human-rate, so an effect is right —
+  // this must NOT go in useFrame. Composes with the metered exposure inside
+  // photometry.ts, so Phase 5's auto-exposure will not clobber it.
+  useEffect(() => {
+    setExposureCompensation(settings.exposureStops ?? 0);
+  }, [settings.exposureStops]);
+
   const firstFrameLogged = useRef(false);
   // Ping-pong index: this frame writes cloudRts[frameParity], next frame
   // writes the other. compositeScene gets the matching mesh swapped in.
@@ -713,7 +724,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     frameGates.skyViewBaked = false;
     if (atmospherePass && dominant) {
       atmospherePass.setAtmosphere(dominant.params);
-      if (bakedAtmosphereId.current !== dominant.id) {
+      const lutEpoch = getAtmosphereLutEpoch();
+      if (bakedAtmosphereId.current !== dominant.id || bakedLutEpoch.current !== lutEpoch) {
+        bakedLutEpoch.current = lutEpoch;
         atmospherePass.bakeLUTs(renderer);
         bakedAtmosphereId.current = dominant.id;
       }

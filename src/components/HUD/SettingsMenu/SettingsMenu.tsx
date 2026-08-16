@@ -57,6 +57,8 @@ const renderSubMenu = (
     onTeleport: (x: number, y: number, z: number) => void;
     onSetMaxSpeed: (speed: number | null) => void;
     currentMaxSpeedOverride: number | null;
+    exposureStops: number;
+    onSetExposureStops: (stops: number) => void;
     onGrantAssay: (amount: number) => void;
     onGrantCargo: (resourceId: string, amount: number) => void;
     onUnlockAllResearch: () => void;
@@ -386,6 +388,8 @@ function DevControls({
   onTeleport,
   onSetMaxSpeed,
   currentMaxSpeedOverride,
+  exposureStops,
+  onSetExposureStops,
   onGrantAssay,
   onGrantCargo,
   onUnlockAllResearch,
@@ -396,6 +400,8 @@ function DevControls({
   onTeleport: (x: number, y: number, z: number) => void;
   onSetMaxSpeed: (speed: number | null) => void;
   currentMaxSpeedOverride: number | null;
+  exposureStops: number;
+  onSetExposureStops: (stops: number) => void;
   onGrantAssay: (amount: number) => void;
   onGrantCargo: (resourceId: string, amount: number) => void;
   onUnlockAllResearch: () => void;
@@ -474,6 +480,34 @@ function DevControls({
 
   return (
     <div className="dev-controls">
+      {/* Exposure — docs/LIGHTING_PLAN.md §3.4. Compensation in STOPS on top of
+          the metered exposure; +1 = twice as bright. 0 is the calibrated neutral,
+          and this same knob survives into Phase 5's auto-exposure unchanged. */}
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">
+          exposure {exposureStops > 0 ? "+" : ""}
+          {exposureStops.toFixed(2)} stops
+          {exposureStops === 0 ? " (neutral)" : ` — ×${(2 ** exposureStops).toPrecision(3)}`}
+        </div>
+        <div className="dev-controls__row">
+          <input
+            className="dev-controls__range"
+            type="range"
+            min={-8}
+            max={8}
+            step={0.25}
+            value={exposureStops}
+            onChange={(e) => onSetExposureStops(Number(e.target.value))}
+          />
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={() => onSetExposureStops(0)}
+          >
+            reset
+          </button>
+        </div>
+      </div>
+
       {/* Teleport */}
       <div className="dev-controls__section">
         <div className="dev-controls__label">teleport (km)</div>
@@ -671,6 +705,15 @@ const SettingsMenu = () => {
               setDevTeleport({ positionKm: [x, y, z] }),
             onSetMaxSpeed: (speed: number | null) => setDevMaxSpeed(speed),
             currentMaxSpeedOverride: devMaxSpeed,
+            // `?? 0` is load-bearing: `atomWithStorage` REPLACES the default with
+            // whatever is in localStorage, it does not merge. Any player who
+            // opened Settings before this field existed has a stored object
+            // without it, so this reads `undefined` and the slider's
+            // `.toFixed()` would throw. Same hazard as the hydration trap noted
+            // in the comms store.
+            exposureStops: settings.exposureStops ?? 0,
+            onSetExposureStops: (stops: number) =>
+              setSettings((prev) => ({ ...prev, exposureStops: stops })),
             onGrantAssay: (amount: number) => setAddAssay(amount),
             onGrantCargo: (resourceId: string, amount: number) =>
               setAddCargo({ resourceId, amount }),
@@ -709,7 +752,7 @@ const SettingsMenu = () => {
             onResetComms: () => resetComms(),
           }
         : undefined,
-    [setDevTeleport, setDevMaxSpeed, devMaxSpeed, setAddAssay, setAddCargo, setResearch, setAddCraftedItem, setModules, resetComms]
+    [setDevTeleport, setDevMaxSpeed, devMaxSpeed, settings.exposureStops, setSettings, setAddAssay, setAddCargo, setResearch, setAddCraftedItem, setModules, resetComms]
   );
 
   const handleResetKeybinds = useCallback(() => {
@@ -735,22 +778,16 @@ const SettingsMenu = () => {
       localStorage.getItem("settings") ?? '{"initial": true}'
     );
     if (storedSettings.initial === true) {
-      if (gpu.tier >= 2) {
-        setSettings((prev) => ({
-          ...prev,
-          bloom: true,
-          initial: false,
-        }));
-      }
-
-      if (gpu.tier >= 3) {
-        setSettings((prev) => ({
-          ...prev,
-          bloom: true,
-          toneMapping: true,
-          initial: false,
-        }));
-      }
+      // Both bloom and AgX now default ON (store.ts), so this first-run pass only
+      // has to STEP DOWN on weak hardware. Bloom is a real cost — a 15-context mip
+      // chain measured at 1.8–2.0 ms (docs/PERF_MEASUREMENT.md) — so drop it below
+      // tier 2. Tone mapping is NOT stepped down: swapping AgX for Neutral is not a
+      // perf win (same single curve evaluation), it just picks a worse curve.
+      setSettings((prev) => ({
+        ...prev,
+        bloom: gpu.tier >= 2,
+        initial: false,
+      }));
     }
   }, []);
 
