@@ -1048,7 +1048,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Must be here — after everything has composited into it, before the post
     // chain applies exposure/bloom/tonemapping — because game units only exist
     // on this side of the tone curve. Two reference writes; no-op when unchanged.
-    setLumSource(renderer, rtB ?? rt);
+    // `scaledCamera` rides along so `__lum.disc()` can turn a body's angular
+    // radius into a pixel radius analytically, instead of thresholding on
+    // luminance (which would let the atmosphere's halo inflate the footprint).
+    setLumSource(renderer, rtB ?? rt, scaledCamera);
 
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();

@@ -40,6 +40,11 @@ import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { bodyPhotometry } from "@/data/bodyPhotometry";
 import { getAtmosphereBody, setFmsMax, setMsScale } from "../atmospherePass";
 import {
+  setErosionScale,
+  setShellOpticalPath,
+} from "@/components/celestial/bodies/earthClouds";
+import { setCloudSunScale } from "@/components/celestial/bodies/cloudCommon";
+import {
   NITS_PER_GAME_UNIT,
   SUN_ILLUM_GAME_1AU,
   discRadianceAtZeroPhase,
@@ -60,6 +65,11 @@ type LumSource = {
   renderer: WebGPURenderer;
   /** The final composited pre-tonemap target (rtB when the AP pass routes through it). */
   target: RenderTarget;
+  /**
+   * The SCALED camera, needed only by `disc()` to convert a body's angular
+   * radius into a pixel radius. Optional so an older caller still registers.
+   */
+  camera?: { fov: number };
 };
 
 let _source: LumSource | null = null;
@@ -67,13 +77,24 @@ let _setCount = 0;
 
 /**
  * Publish the current pre-tonemap target for probing. Called by SpaceRenderer
- * once per frame — cheap (two reference writes) and it has to be per-frame
+ * once per frame — cheap (a few reference writes) and it has to be per-frame
  * because `rt`/`rtB` are recreated on resize and dpr change.
  */
-export function setLumSource(renderer: WebGPURenderer, target: RenderTarget): void {
+export function setLumSource(
+  renderer: WebGPURenderer,
+  target: RenderTarget,
+  camera?: { fov: number },
+): void {
   _setCount++;
-  if (_source && _source.renderer === renderer && _source.target === target) return;
-  _source = { renderer, target };
+  if (
+    _source &&
+    _source.renderer === renderer &&
+    _source.target === target &&
+    _source.camera === camera
+  ) {
+    return;
+  }
+  _source = { renderer, target, camera };
 }
 
 export function clearLumSource(): void {
@@ -462,6 +483,85 @@ export class LumHarness {
     console.log(`[lum] F_ms clamp = ${maxFms} → max amplification ${(1 / (1 - Math.min(maxFms, 0.999999))).toFixed(1)}× (LUTs re-baking)`);
   }
 
+  /**
+   * Sweep the far cloud shell's effective optical path and re-bake its opacity
+   * LUT. The knob that decides how much of the disc reads as cloud.
+   *
+   * At the shipped value of 1, Beer caps even a FULLY dense column at
+   * 1 − e⁻¹ = 0.632, and the erosion in front of it (`saturate(d + carved − 1)`,
+   * K_EFF = 1) zeroes any column with `carved < 1 − d` — two multiplicative
+   * gates compounding, the same shape as the `profile × inScatter` bug in
+   * CLOUD_DEBUGGING_LESSONS case #25.
+   *
+   * ⚠ A DIAGNOSTIC, NOT A FIX. The 1 was fitted down from 18 to match the
+   * marcher at the 250–700 km handoff, so raising the shell alone fixes orbit
+   * and tears the seam. Use it to size how much of Earth's 5.5× albedo deficit
+   * the shell can account for, then move the marcher with it.
+   *
+   * Suggested ladder, measuring `__lum.disc("earth")` at each:
+   *   1 (shipped) → 3 → 8 → 20.  Target: disc mean → 0.434, contrast staying ~8×.
+   */
+  setOpticalPath(path: number): void {
+    setShellOpticalPath(path);
+    const cap = 1 - Math.exp(-path);
+    console.log(
+      `[lum] shell optical path = ${path} → a fully dense column caps at ` +
+        `${(cap * 100).toFixed(1)}% opacity (LUT re-baking; give it a frame). ` +
+        `Then: await __lum.disc("earth")`,
+    );
+  }
+
+  /**
+   * Scale the SHARED cloud erosion K — the cloud-AREA knob, and the one lever
+   * measurement says can actually close Earth's 5.5× disc-albedo deficit.
+   *
+   * Erosion is `eroded = saturate(d − (1−carved)·K)`. With K = 1 (cumulus), any
+   * column whose carve field sits below `1 − d` vanishes outright, and the
+   * weather map's cloudy texels carry d ≈ 0.2 (it is a reflectance-encoded
+   * image read as a fraction — its cloud AREA is correct at 64% of the globe
+   * above 0.10, only its VALUES are low). So the erosion deletes real cloud.
+   *
+   * ✅ Unlike `setOpticalPath`, this is applied inside `erosionKForType`, which
+   * the shell's opacity LUT and the marcher's dense branch BOTH read — so near
+   * and far move together and the 250–700 km handoff cannot tear. No
+   * fix-both-sides-in-one-commit trap here.
+   *
+   * Ladder, with `await __lum.disc("earth")` after each:
+   *   1 (shipped) → 0.7 → 0.5 → 0.3
+   * ACCEPTANCE: p50 must rise much faster than p98 (that is what "more cloud
+   * AREA" looks like), disc mean → 0.434, and p98/p02 contrast should stay
+   * near 8.7. If p98 outruns p50, it is the wrong lever again.
+   */
+  setErosionScale(scale: number): void {
+    setErosionScale(scale);
+    console.log(
+      `[lum] cloud erosion K × ${scale} (shell LUT re-baking; marcher live). ` +
+        `Then: await __lum.disc("earth") — watch p50 vs p98.`,
+    );
+  }
+
+  /**
+   * Cloud sun scale — the Phase-2d brightness re-anchor, live.
+   *
+   * Physically `albedo/π` = 0.7/π ≈ **0.223**, half the shipped 0.45. Pair it
+   * with a large `setOpticalPath`: PATH's physical value is an OPTICAL DEPTH
+   * (τ = density × extinction × slab), so for a 14 km slab at density 0.25 with
+   * cloud extinction 10–50/km, τ ≈ 35–175 — i.e. **~50–100, not 1**. At that
+   * PATH most covered columns go opaque, which is how the missing cloud AREA
+   * returns; 0.223 then keeps the tops at a physical reflectance instead of the
+   * 0.749 overshoot measured at PATH 20 with 0.45.
+   *
+   * Both the shell (farCloudLit) and the marcher read this uniform, so near and
+   * far stay in lockstep. Runtime only — no LUT re-bake needed.
+   */
+  setCloudSunScale(scale: number): void {
+    setCloudSunScale(scale);
+    console.log(
+      `[lum] cloud sun scale = ${scale} (albedo/π = 0.223 is the physical value) ` +
+        `→ implied cloud-top reflectance ≈ ${(scale * 0.725 * Math.PI).toFixed(3)}`,
+    );
+  }
+
   /** Print the unit convention and the current exposure. */
   units(): void {
     console.log(
@@ -555,6 +655,193 @@ export class LumHarness {
       luma: bestLuma,
       nits: bestLuma * NITS_PER_GAME_UNIT,
       ev: evFromGameUnits(bestLuma),
+    };
+  }
+
+  /**
+   * DISC AVERAGE + brightness distribution over a body's whole lit disc.
+   *
+   * The instrument LIGHTING_PLAN §2.2.9 says Phase 2c needs, and the answer to
+   * "which pixels do I probe?" — you don't. It warps to the sub-solar pose,
+   * finds the disc analytically (angular radius from the pose distance and the
+   * camera FOV — no luminance thresholding, so the atmosphere's halo cannot
+   * inflate the footprint), reads it back in one go and reports percentiles.
+   *
+   * Why percentiles rather than named points: on a textured body the ordering
+   * IS the identification. The darkest few per cent of a fully-lit Earth disc is
+   * clear deep ocean; the brightest non-glint few per cent is thick cloud top.
+   * So p02 and p98 answer the cloud-contrast question without anyone picking a
+   * pixel, and p50/mean answer the geometric-albedo question that a centre probe
+   * structurally cannot (§2.2.9).
+   *
+   * ⚠ `p100` is usually the SPECULAR GLINT, not cloud — read p98 for cloud.
+   *
+   * `mean` is over the disc's projected area, which is what geometric albedo is
+   * defined on, so `impliedGeometricAlbedo` is directly comparable to
+   * bodyPhotometry's value. Anything ABOVE 1.0 is an energy violation.
+   */
+  async disc(
+    bodyId = "earth",
+    {
+      warp = true,
+      altitudeKm,
+      settleFrames = 420,
+      inset = 0.92,
+    }: {
+      warp?: boolean;
+      altitudeKm?: number;
+      settleFrames?: number;
+      /** Fraction of the disc radius to sample within — trims the limb. */
+      inset?: number;
+    } = {},
+  ) {
+    if (!_source) {
+      console.error("[lum] no render target registered — is the scene mounted?");
+      return null;
+    }
+    const body = authoredBody(bodyId);
+    if (!body?.radiusKm) {
+      console.error(`[lum] unknown body "${bodyId}"`);
+      return null;
+    }
+
+    if (warp) {
+      const pose = subSolarPose(bodyId, altitudeKm);
+      if (!pose) {
+        console.error(`[lum] cannot pose at "${bodyId}"`);
+        return null;
+      }
+      this.store.set(devTeleportAtom, pose);
+      await sleepFrames(settleFrames);
+    }
+
+    const { renderer, target, camera } = _source;
+    if (!camera) {
+      console.error(
+        "[lum] no camera registered — SpaceRenderer must pass it to setLumSource. Full reload if you just edited it.",
+      );
+      return null;
+    }
+
+    // Disc radius in pixels. subSolarPose puts the camera at radius+altitude on
+    // the body→star line looking straight back, so the disc is centred and its
+    // angular radius is asin(R/d). Vertical FOV maps to target.height.
+    const distKm = body.radiusKm + (altitudeKm ?? body.radiusKm * 3);
+    const angRadius = Math.asin(Math.min(1, body.radiusKm / distKm));
+    const halfFov = (camera.fov * Math.PI) / 180 / 2;
+    const radiusPx = (Math.tan(angRadius) / Math.tan(halfFov)) * (target.height / 2);
+    const rInner = radiusPx * inset;
+    if (rInner < 4) {
+      console.error(
+        `[lum] disc is only ${(radiusPx * 2).toFixed(1)} px across — move closer (lower altitudeKm).`,
+      );
+      return null;
+    }
+
+    // One readback of the disc's bounding box, clamped to the target.
+    const cx = target.width / 2;
+    const cy = target.height / 2;
+    const x0 = Math.max(0, Math.floor(cx - rInner));
+    const y0 = Math.max(0, Math.floor(cy - rInner));
+    const x1 = Math.min(target.width, Math.ceil(cx + rInner));
+    const y1 = Math.min(target.height, Math.ceil(cy + rInner));
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const buf = await renderer.readRenderTargetPixelsAsync(target, x0, y0, w, h);
+    const isHalf = buf instanceof Uint16Array;
+    const isByte = buf instanceof Uint8Array;
+    const a = buf as unknown as ArrayLike<number>;
+    const stride = rowStrideElements(w, isHalf ? 2 : isByte ? 1 : 4);
+
+    const lumas: number[] = [];
+    let sum = 0;
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    const r2 = rInner * rInner;
+    for (let row = 0; row < h; row++) {
+      const dy = y0 + row + 0.5 - cy;
+      for (let col = 0; col < w; col++) {
+        const dx = x0 + col + 0.5 - cx;
+        if (dx * dx + dy * dy > r2) continue; // circular mask, not the bbox
+        const [r, g, b] = decodeRgb(a, row * stride + col * 4, isHalf, isByte);
+        const l = REC709[0] * r + REC709[1] * g + REC709[2] * b;
+        lumas.push(l);
+        sum += l;
+        sumR += r;
+        sumG += g;
+        sumB += b;
+      }
+    }
+    if (lumas.length === 0) {
+      console.error("[lum] no pixels inside the disc mask");
+      return null;
+    }
+    lumas.sort((p, q) => p - q);
+    const pct = (f: number) =>
+      lumas[Math.min(lumas.length - 1, Math.floor(f * lumas.length))];
+    const n = lumas.length;
+    const mean = sum / n;
+
+    const exp = this.expected(bodyId);
+    const ref = bodyPhotometry(bodyId);
+    // Disc-mean radiance → geometric albedo: p = L·π/E, the definition.
+    const impliedP = exp ? (mean * Math.PI) / exp.sunIlluminance : NaN;
+
+    const rows = [
+      ["p02  (darkest — clear ocean on Earth)", pct(0.02)],
+      ["p25", pct(0.25)],
+      ["p50  (median)", pct(0.5)],
+      ["mean (disc average)", mean],
+      ["p75", pct(0.75)],
+      ["p98  (brightest non-glint — cloud top)", pct(0.98)],
+      ["p100 (usually the SPECULAR GLINT)", lumas[n - 1]],
+    ] as const;
+
+    console.log(
+      `[lum] ${bodyId} disc — ${n.toLocaleString()} px, radius ${radiusPx.toFixed(0)} px (inset ${inset})`,
+    );
+    console.table(
+      Object.fromEntries(
+        rows.map(([label, v]) => [
+          label,
+          {
+            units: Number(v.toPrecision(4)),
+            "cd/m²": Math.round(v * NITS_PER_GAME_UNIT),
+            EV: Number(evFromGameUnits(v).toFixed(1)),
+            "implied refl.": exp
+              ? Number(((v * Math.PI) / exp.sunIlluminance).toPrecision(3))
+              : "—",
+          },
+        ]),
+      ),
+    );
+    const contrast = pct(0.98) / Math.max(pct(0.02), 1e-9);
+    console.log(
+      `[lum] p98/p02 contrast = ${contrast.toFixed(1)}×` +
+        (bodyId === "earth" ? "  (real Earth cloud:ocean from orbit ≈ 8.7×)" : ""),
+    );
+    console.log(
+      `[lum] implied geometric albedo = ${impliedP.toFixed(4)}` +
+        (ref ? `  vs measured ${ref.geometricAlbedo}` : "") +
+        (impliedP > 1 ? "   ⚠ IMPOSSIBLE (>1)" : ""),
+    );
+
+    return {
+      bodyId,
+      pixels: n,
+      radiusPx,
+      mean,
+      meanRgb: [sumR / n, sumG / n, sumB / n] as [number, number, number],
+      p02: pct(0.02),
+      p25: pct(0.25),
+      p50: pct(0.5),
+      p75: pct(0.75),
+      p98: pct(0.98),
+      max: lumas[n - 1],
+      contrast,
+      impliedGeometricAlbedo: impliedP,
+      referenceGeometricAlbedo: ref?.geometricAlbedo,
     };
   }
 

@@ -94,7 +94,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D05 | `VENUS_ILLUM_TRIM` under-renders Venus | [`atmosphereData.ts:271`](../src/components/celestial/bodies/atmosphereData.ts#L271) | **32×** | R |
 | D06 | Billboard→point handoff discontinuity | AUDIT_3 §2 | **68–86,000×** | R |
 | D07 | Planets unreachable by three.js lights | `fragmentNode` bypasses `setupLighting()` | structural | I |
-| D08 | Earth has no Lambert cosine (sigmoid, ≥0.98 for cosθ>0.1) | [`earth.ts:269`](../src/components/celestial/bodies/earth.ts#L269) | flat day disc | I |
+| D08 ✅ | Earth has no Lambert cosine (sigmoid, ≥0.98 for cosθ>0.1) | [`earth.ts:269`](../src/components/celestial/bodies/earth.ts#L269) | flat day disc | I |
 | D09 | Textures are brightness-normalised art, uncorrected | all colour maps | **0.37×–5.4×**, 14.6× spread | I |
 | D10 | Clouds ~100× brighter than the ground below them | [`cloudCommon.ts:141`](../src/components/celestial/bodies/cloudCommon.ts#L141) | **10–30×** | R |
 | D11 | Shipped defaults are `toneMapping: false` (→ Neutral, crushes above linear ≈4) **and** `bloom: false` | [`store.ts:29-30`](../src/store/store.ts#L29) | 2 code values | I |
@@ -107,6 +107,10 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D18 | Star radius, colour and luminance hardcoded G2V/Sol | [`Star.tsx:38,154`](../src/components/Star/Star.tsx#L38) | blocks procedural systems | F |
 | D19 | No scotopic/mesopic vision model; deep space is underexposed daylight | — | look, not correctness | I |
 | D20 | Luna's `stellarPoint.geometricAlbedo` is 0.0036 vs a measured 0.136 | [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) | **38×** too dim | I |
+| D21 | `earth_normal` is 2K/58 KB; 1 LSB = 1.00° spurious tilt, and `N·L` amplifies it 1/cosθ | `public/textures/earth_normal.ktx2` | ±28% hard-edged steps at 87° SZA; **asset, mitigated in-shader** — §5.5 | I |
+| D22 ✅ | Ocean "Schlick" Fresnel is `0.02 + 2.0·(1−cosθ)^2.5` — not Schlick, **peaks at 2.02** | [`earth.ts:543`](../src/components/celestial/bodies/earth.ts#L543) | ocean returns 202% of incident light; 7.4× hot at 60° | I |
+| D23 | Day texture's dark end is crushed: deep Pacific linear luminance **0.0014** vs a real 0.03–0.06 | `earth_day_*.ktx2` | ocean **21–43× too dark**, Amazon 4–6×; Sahara + ice correct ⇒ non-uniform, per-region. Phase 2c | I |
+| D24 ✅ | **Every planet rendered MIRRORED.** All KTX2s are `KTXorientation: rd` (top-down); three's KTX2Loader ignores orientation; `SphereGeometry` `uv.y = 1` at north ⇒ v-flip | `CelestialBody.tsx`, `cloudCommon.ts` | geometric north pole was showing Antarctica — see §5.6 | I |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -564,6 +568,51 @@ which is the quantity geometric albedo is actually defined as. A centre probe is
 instrument for that question, and reading D09 off these numbers would repeat the geometry mistake
 in a new costume.
 
+**✅ BUILT 2026-08-17 — `__lum.disc(bodyId)`.** Warps to the sub-solar pose, derives the disc's
+pixel radius **analytically** (`asin(R/d)` against the scaled camera's FOV — no luminance
+thresholding, so the atmosphere's halo cannot inflate the footprint), masks to a circle, and reads
+the whole disc back in one call. Reports the projected-area **mean** → `impliedGeometricAlbedo`,
+directly comparable to `bodyPhotometry`, plus **percentiles**.
+
+Percentiles because on a textured body *the ordering is the identification*: p02 of a fully-lit
+Earth disc is clear deep ocean, p98 is thick cloud top. So the cloud-contrast question gets answered
+without anyone hand-picking a pixel — which was the other half of why point-probing failed here.
+⚠ `p100` is normally the specular glint, not cloud; read p98. `setLumSource` now carries the scaled
+camera to make this possible.
+
+#### First run (2026-08-17) — it overturned two standing beliefs at once
+
+| | units | implied R | real |
+|---|---|---|---|
+| p02 clear ocean | 0.3165 | **0.0443** | 0.06–0.10 ✅ |
+| p50 | 0.4104 | 0.0574 | |
+| **mean (disc avg)** | 0.5636 | **0.0788** | **0.434 ⇒ 5.5× too dark** |
+| p98 cloud top | 2.652 | 0.371 | ~0.70 |
+| p100 glint | 6.30 | 0.881 | |
+
+**p98/p02 contrast = 8.4× against a real 8.7×.** So the atmosphere in-scatter and the ocean level
+are both about right, and the prediction that the haze was running 4–6× hot was **wrong** — the
+washed-out look is not a too-bright atmosphere.
+
+**The entire 5.5× deficit is cloud COVERAGE.** 75% of the rendered disc sits at R ≤ 0.076, i.e.
+clear sky; only ~2% reaches cloud brightness. Real Earth is ~60–67% cloud. The arithmetic closes
+from both directions: real `0.67·0.7 + 0.33·0.05 = 0.49 ≈ 0.434`; ours
+`0.02·0.371 + 0.98·0.055 = 0.061 ≈ 0.079`. And cloud pixels are only ~⅓ opaque — the shell's own
+radiance implies R ≈ 1.02, so p98 landing at 0.371 means α ≈ 0.33 at the *brightest* cloud. The
+ERA5 data is not the problem (coverage ≥0.2 over 53% of the globe, and the opacity transfer
+saturates at raw 0.2), so this is `columnMacroCoverage`/`fractionPlacement`. **Fix coverage, not
+brightness** — and note Phase 2d still wants the brightness *halved*, so tuning it up here would
+have to be undone.
+
+⚠ **`compare("earth")` has been measuring the SPECULAR GLINT.** `p100 = 6.30` matches compare()'s
+6.288 exactly. At the sub-solar pose the retroreflection is dead centre *by construction*, and
+`probeMax(9)` takes the max over the centre block — so it finds the glint every time. That is also
+what made Earth's row swing 7.1×. **Earth's compare()/sweep number is meaningless**, and the
+§2.2's "three atmospheric bodies agree at 1.34 ⇒ atmosphere pass" inference loses Earth and is down
+to two bodies — re-derive before leaning on it. The sub-solar pose is *correct* for geometric
+albedo and *wrong* for a max-of-centre probe on a body with a specular ocean; the two choices
+interact, and `disc()` is the instrument for Earth from here on.
+
 **Lesson, third time on the same theme:** every one of these three errors — the replica standing in
 for the engine, `compare()` measuring the wrong body, and now a rescaled pose — came from trusting
 a measurement whose *geometry* I had not verified. The value was always plausible. Check what the
@@ -1020,9 +1069,9 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **0** ✅ | `__lum` harness; document the unit convention in code; **split `AtmosphereParams` static/dynamic so `sunIlluminance` is per-frame (§3.0)**; `uExposure` wired at 1.0 | **none** (no-op) | low |
 | **1** ✅ | Manual exposure: compensation slider in Settings → Dev, flip defaults `toneMapping → true` (AgX) and `bloom → true` | AgX + bloom become the default look; exposure becomes tunable | low |
 | **2a** ✅ | **The seam commit (atomic).** Surfaces × `sunIlluminance/π`; delete `VENUS_ILLUM_TRIM` **and** Earth's illuminance pin; delete the `illuminanceTrim` field itself | **large** — the solar system's relative brightness becomes correct | **high** |
-| **2b** | Earth's sigmoid → true `N·L` (D08) | day disc gains a real cosine falloff to the terminator | medium |
-| **2c** | Albedo-authoritative texture calibration (§3.0, D09) | per-body 0.37×–5.4× corrections | medium |
-| **2d** | `CLOUD_SUN_SCALE` re-anchor to `albedo/π` (0.45 → ~0.22) | cloud tops ~2× dimmer | medium |
+| **2b** ✅ | Earth's sigmoid → true `N·L` (D08), **ground and cloud deck together** | day disc gains a real cosine falloff to the terminator | medium |
+| **2c** | Albedo-authoritative texture calibration (§3.0, D09 + **D23**) | per-body 0.37×–5.4×; Earth's disc **0.146 → 0.434** is now **entirely** surface texture (§5.7). ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works** | medium |
+| **2d** ✅ | `CLOUD_SUN_SCALE` → `albedo/π` = 0.223 **+ `SHELL_OPTICAL_PATH` 1 → 60 (a units error, not a fit) + erosion-area factor 0.5** | cloud cover 3.5% → **21.9%** measured (user chose 0.5 over 0.3 for edge detail); see §5.7 | medium |
 | **3** | Distance-correct sun for ship + asteroids (`SunLight.intensity` from live distance); `CORE_HDR` → 250,000 pre-exposed with the write-clamp; star radius + blackbody colour from its description | outer system goes dim, inner system harsh | medium |
 | **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** | GPU histogram auto-exposure + two-timescale adaptation + `evMin`/`evMax`; pin `__bench` exposure; **rescale the Milky Way skybox to absolute luminance (measured 170,000× hot — §2.2.2; promoted from Phase 7 because no exposure can show stars against it)** | the "eye" arrives; ground↔space transitions work; stars become visible | medium |
@@ -1161,6 +1210,264 @@ it is precisely the gap Phase 5's auto-exposure closes.
 sub-solar nadir exceeds the disc-averaged `p·E/π` for a limb-darkened body). **Venus is the one to
 watch**: pre-change it sat 16.5× above its *trimmed* expectation, meaning much of its brightness
 arrived through the albedo-scale path, so this pair of changes is not guaranteed to balance.
+
+### 5.5 Phase 2b — as built (2026-08-16)
+
+**The one-line version of D08:** Earth's day term was `1/(1+exp(−40·cosθ))`. That is ≥0.98 for
+every `cosθ > 0.1`, so the lit hemisphere was a flat wall of light with a hard 6°-wide edge, not a
+sphere curving into shadow.
+
+**What made it more than a one-line fix** is that the single `dayAmount` variable was doing two
+unrelated jobs. It multiplied the diffuse albedo (a *lighting* term, which wants `cosθ`) **and** it
+gated the ocean specular, the fresnel, and the city-light mask (a *visibility* term, which does
+not). Swapping the sigmoid for a cosine in place would have lit the cities through mid-morning —
+`1 − cosθ` is 0.5 at 30° sun elevation. So the fix splits it:
+
+| | drives | function |
+|---|---|---|
+| `nDotL` | diffuse albedo | soft Lambert cosine |
+| `sunVis` | specular, fresnel, city-light mask, terminator band | the legacy sigmoid, unchanged |
+
+Both are then attenuated by the shared occluders (lunar eclipse × ground cloud shadow).
+
+**Specular deliberately keeps the visibility gate.** A glint does not fade as `cosθ`: in a
+microfacet BRDF the `1/(4·cosθᵢ·cosθₒ)` denominator cancels the incident cosine outright and
+Fresnel climbs toward grazing. That is *why* the sunset glint is the bright one, and gating it by
+`cosθ` would have deleted the best thing on the water.
+
+**The normal map went from multiplicative to additive.** It was `× (1 + 0.8·Δcos)` — a relative
+delta, which is what you are forced into when the base term is a saturated sigmoid you cannot
+re-evaluate at a new angle. On a real cosine it is just the additive blend it always meant:
+`mix(cosGeom, cosMapped, 0.8) ≡ cosGeom + 0.8·Δcos`. Same strength, correct algebra.
+
+**Soft terminator from the star's finite angular radius.** `max(N·L, 0)` has a slope
+discontinuity at the terminator. The physical fix is free: the star is a disc of angular radius
+`r = R★/d`, and the irradiance from a partly-risen disc is `≈(cosθ+r)²/(4r)`, which meets `cosθ`
+continuously in *both value and slope* at `cosθ = r`. Written branch-free by clamping the argument
+into the band and adding the linear part above it. At 1 AU `r = 0.00465`, a 0.53°-wide band — you
+will never see it. **It is in for §3.0:** a close-orbiting red dwarf subtends degrees and gets a
+correctly soft terminator with no per-system tuning. Verified numerically: identical to
+`max(cosθ,0)` to machine precision outside the band, slope 1.000000 on both sides of the seam.
+
+**`hemiAmount` was dead** — assigned, eclipse-scaled, never read. Deleted.
+
+#### The cloud deck had the same defect, and fixing only the ground would have looked worse
+
+`earthClouds.ts` carried a second copy of the identical `exp(−40·…)` sigmoid, and `farCloudLit`
+had **no cosine at all** — the deck sat at full noon brightness to the terminator. That was
+harmless only because the ground underneath it was equally flat-lit. Fixing the ground alone would
+have painted a blazing white cloud band along the terminator. Measured:
+
+| `cosθ` | cloud:ground, before | **ground fixed, deck left flat** | both fixed |
+|---|---|---|---|
+| 1.0 | 4.9× | 4.9× | 4.9× |
+| 0.5 | 4.9× | 9.9× | 5.3× |
+| 0.15 | 5.0× | **33.0×** | 6.7× |
+
+A thick cloud deck is genuinely close to Lambert in `μ₀` near nadir, which is the licence to use
+the same cosine: Chandrasekhar's conservative semi-infinite reflection
+`R = H(μ)H(μ₀)/(4(μ+μ₀))` gives `L/F = 1.06 / 0.55 / 0.21` at `μ₀ = 1 / 0.5 / 0.2` — proportional
+to `μ₀` within ~6%, because `H(μ₀)`'s growth cancels against the `(μ+μ₀)` denominator. So
+`farCloudLit` gained a `sunCos` parameter scaling the direct term, and `daylight` went back to
+being a pure night gate.
+
+The deck's cosine is lifted by its own horizon: a sheet at altitude `h` still sees the sun until
+`cosθ = −√(1−(R/(R+h))²)`, which is **0.066** at 14 km — the hand-picked `0.025` it replaces was
+standing in for exactly this. Derived from the geometry, so any planet or deck altitude gets it
+right for free. The lift also keeps the sunset-cloud glow, which is physically a *volume* being lit
+from below its local horizontal rather than a sheet obeying a cosine.
+
+**Only the far-field shell needed this.** The volumetric marcher computes per-voxel sun
+transmittance along the slant path, so it already darkens a low sun through real extinction. The
+shell is the analytic stand-in that had no such mechanism.
+
+#### Predictions to check against
+
+Derived before the change, so they are falsifiable:
+
+- **`__lum.compare("earth")` must not move.** At the sub-solar point `cosθ = 1` and both the old
+  sigmoid and the new cosine equal 1.000000. If the probe moves, something else broke.
+- **The disc average drops by exactly 2/3 — 0.58 stops.** Numerically integrated over the lit
+  disc at zero phase: 0.9990 → 0.6667, landing on the Lambert ideal. This is *not* a D09 fix and
+  does not change what Phase 2c has to do; 2c's texture calibration is still open.
+- Neither prediction can be confirmed by a centre probe alone. **The disc-average instrument
+  (§2.2.9) is what closes this**, and it is a 2c blocker regardless.
+
+#### D21 — the normal map cannot survive a real cosine (found by 2b, on device)
+
+Phase 2b shipped and immediately produced **hard-edged squares near the terminator**, fixed to the
+surface, all the same orientation, only a few of them. Worth recording the *diagnosis path*, because
+I got it wrong twice before the user's bisection settled it:
+
+| hypothesis | killed by |
+|---|---|
+| AP froxel (32×32 screen cells — shape fit perfectly) | froxel bake is skipped above 4,000 km; the shot was at 10,471 km |
+| AP march step quantisation (`MAIN_STEPS = 16`, no dither — the code even *pre-registers* banding at "the limb, the terminator, the twilight sky") | `MAIN_STEPS = 64` and `AP_RES_SCALE = 1.0` both changed nothing |
+| weather-map block compression | no `SHELL_DEBUG_VIZ` or `DEBUG_VIZ` mode showed it |
+| bloom mip chain (`radius 0`, `threshold 1`) | toggling bloom and tone mapping changed nothing |
+
+**The user's bisection found it in one step:** swapping `texNormal` for `texSpec` in
+`buildEarthFragmentNode` makes it vanish. It is the normal map.
+
+**Measured on the decoded source.** `earth_normal.ktx2` is 2048×1024 from a **58 KB** WebP —
+0.028 bytes/px, against the 8K/1.5 MB albedo beside it, and the oldest asset in the set. The ocean,
+which should be exactly `(128,128,255)` everywhere, holds **two distinct values per channel**
+(R∈{126,128}, G∈{127,128}) in flat, hard-edged, axis-aligned patches. That is 1 LSB =
+**1.00° of spurious tilt**.
+
+1° is nothing at normal incidence. But a true Lambert cosine amplifies any tilt error by **1/cosθ**:
+
+| cosθ | SZA | brightness error |
+|---|---|---|
+| 1.00 | 0° | ±1.4% |
+| 0.20 | 78° | ±7% |
+| 0.10 | 84° | ±14% |
+| 0.05 | 87° | ±28% |
+
+So D08's fix did not create this — it removed the thing that was hiding it. The old sigmoid pinned
+the modulation at a constant ~1% across the entire disc.
+
+**A quantisation deadzone was tried and rejected by measurement**, which is the part worth
+remembering: 96% of Sahara and 95% of Himalaya texels *also* sit within 2 LSB. The map's
+signal-to-quantisation ratio is **≈1 over almost its whole area** — there is nothing to threshold
+against. This asset cannot drive grazing-incidence lighting at all.
+
+**Shipped mitigation** (`NORMAL_MAP_STRENGTH` / `NORMAL_GRAZE_LO` / `_HI` in `earth.ts`): full
+normal strength above 75° SZA, fading to the geometric normal by 87°. Noise now **peaks at ~6% and
+falls to zero** instead of diverging. Relief still reads strongly at 75–85° SZA where 1/cosθ is
+already a 4–10× amplifier. Defensible past the artifact — sub-texel relief self-shadows at grazing
+incidence, so naive `N'·L` over-predicts contrast there regardless, and fading toward geometric is a
+conservative stand-in for the masking term we do not compute.
+
+**The real fix is the asset**, and this mitigation should be walked back (GRAZE_LO/HI → 0) when it
+lands: a 16-bit normal map, or normals baked from elevation, at 8K to match the albedo. There is no
+height/displacement source in the repo, so this needs an external asset.
+
+**D21 has a second site: the sun glint.** The grazing fade above only covers the *diffuse* cosine.
+`reflect(-sunDir, nMapped)` still fed the mapped normal into a `pow(·,40)` lobe, and the same
+squares reappeared inside the ocean specular. A reflection doubles an angular error and that lobe is
+steepest ~10° off-axis, so 1° of quantisation noise is plenty. Fixed by reflecting the GEOMETRIC
+normal — which is independently correct: `earth_normal` is a LAND relief map whose ocean is a
+uniform `(128,128,255)`, so it has no wave data to contribute and everything it adds over water is
+noise. Real glint breakup needs an actual wave normal.
+**Generalise: after fixing an amplifier, grep for every other consumer of the same input.** The
+diffuse path was one of two.
+
+#### D22/D23 — found while answering "why are the clouds so faint from orbit?"
+
+Two measurements, both independent of Phase 2b:
+
+- **D22, an outright energy violation.** The ocean's "Schlick Fresnel" is
+  `0.02 + 2.0·(1−cosθ)^2.5`. Schlick is `F0 + (1−F0)·(1−cosθ)⁵` and is bounded by 1.0; this one
+  **peaks at 2.02** and runs 7.4× hot at a 60° view angle (0.374 vs 0.051). The ocean was returning
+  up to 202% of the light falling on it, as a blue wash that grows toward the limb — which is
+  exactly the term that flattens the contrast clouds need to read against. Fixed to real Schlick.
+- **D23, the day texture's dark end is crushed** (measured on the decoded asset, linearised from
+  sRGB): deep Pacific luminance **0.0014** against a real 0.03–0.06, Amazon 0.031 vs 0.12–0.18 —
+  but Sahara 0.315 vs 0.30–0.40 ✅ and Antarctic ice 0.853 vs 0.60–0.80 ≈✅. So the error is
+  **non-uniform and per-region**, not a global gain. A single scalar cannot fix it, which is a
+  direct constraint on how Phase 2c must work.
+
+Note the two pull opposite ways on cloud contrast: D22 was inflating the ocean, D23 is deflating it.
+Do not tune either by eye against the cloud look — measure cloud and clear-ocean radiance at the
+same solar geometry and compare to the real ~8:1.
+
+**LESSON, and it is the session's recurring one in a new costume:** correct physics is an amplifier.
+`N·L` multiplies input error by 1/cosθ, so a fix that is right in isolation can expose an asset that
+was only ever adequate because the wrong code was numerically forgiving. When a physical correction
+lands and something ugly appears, suspect the inputs it newly stresses — not just the change.
+
+### 5.6 D24 — every planet was rendering mirrored, and why nobody could see it
+
+Noticed only once Phase 2b's darker terminator and the Fresnel fix stopped the clouds from
+obscuring the ground. Spain rendered east of Turkey; Sicily on the wrong side of Italy's toe.
+
+**The chain, each link verified:**
+
+1. `toktx` defaults to upper-left → (s0,t0) and stamps **`KTXorientation: rd`** (right, DOWN).
+   Confirmed with `ktxinfo` on all of them — day, night, clouds, normal, specular, ERA5. Row 0 of
+   the stored data is the TOP of the image (north).
+2. three's `KTX2Loader` **never reads that metadata** — grep it for `orientation` or `flipY`, both
+   come back empty. And a compressed texture cannot be flipped at upload the way `flipY` flips an
+   uncompressed one.
+3. `SphereGeometry` emits `uvs.push(u, 1 - v)`, so **`uv.y = 1` at the north pole**.
+4. ⇒ The north pole sampled t=1 = the last row = **Antarctica**. Every planet texture upside down.
+
+**Why it presented as an east-west mirror rather than an upside-down globe** — this is the part
+that hid it. Inverting v maps latitude λ → −λ: a reflection through the equatorial plane,
+determinant −1, so the rendered globe is its own mirror image. Nothing else in the scene defines
+which geometric pole is north (each body's rotation Euler is arbitrary), so the flip has no way to
+present as "upside down". It can only present as **chirality**.
+
+**This is also why analysing `u` kept exonerating the code.** Differentiating three's own formula,
+`dP/du = (+2πr, 0, 0)` at the point facing the camera — east really does go to screen right. The
+mirror was never in `u`, and two rounds of checking `u` could never have found it. When something
+is mirrored and the obvious axis checks out, **check the other axis for a chirality flip** before
+re-checking the first.
+
+**Fix:** `flipGeometryV()` in `CelestialBody.tsx` (before `computeTangents` — tangents derive from
+uv) and the matching `.negate()` removal in `cloudCommon.ts`'s `equirectDirToUv`. Both must move
+together: ground and cloud were mirrored *in lockstep*, which kept them registered to each other
+and removed the one cue that would have exposed this years earlier.
+
+The root-cause alternative is `toktx --lower_left_maps_to_s0t0` (→ orientation `ru`) in
+`scripts/convert-to-ktx2.sh` plus a full re-convert; it costs no runtime work but re-encodes every
+texture in the repo. If that is ever done, **both** flips must be removed.
+
+⚠ NOT covered: Saturn's rings build their own `BufferGeometry` with a radial UV convention, so they
+are untouched by this and want a separate look.
+
+### 5.7 Phase 2d + the cloud-cover hunt — as built (2026-08-17)
+
+Earth rendered a **5.5× too dark disc** (implied geometric albedo 0.0788 vs 0.434) with visibly too
+few clouds against the Apollo 8 and Artemis II photographs. `__lum.disc()` localised it: 75% of the
+disc sat at clear-sky reflectance, the median pixel was 4% cloud where Earth's is ~65%.
+
+**Shipped values, and which are derived:**
+
+| constant | from | to | basis |
+|---|---|---|---|
+| `SHELL_OPTICAL_PATH` | 1 | **60** | **derived** — `τ = density × extinction × slab`; a 14 km deck at density 0.25 with extinction 10–50 /km is τ ≈ 35–175 |
+| `CLOUD_SUN_SCALE` | 0.45 | **0.223** | **derived** — `albedo/π` |
+| `uErosionScale` | — | **0.3** | **empirical** — the only one; kept out of `EROSION_K_ST/CU` so their Nubis provenance survives |
+
+Measured result: effective cloud cover **3.5% → 25.6%**, disc albedo **0.0788 → 0.163**, cloud-top
+reflectance 0.479 (under the ~0.70 physical ceiling, no overshoot), clear sky untouched, and the
+250–700 km handoff verified good on device at every step.
+
+**The root cause was a units error, not a tuning miss.** `SHELL_OPTICAL_PATH` multiplied a
+*normalised density* to produce what the Beer term treats as an *optical depth*. At 1, a fully dense
+column capped at `1−e⁻¹` = 0.632 and a median one reached ~0.05. The old comment recorded it as
+"EMPIRICAL: 1 gives the seamless orbit→surface transition… tune ~1–5", having rejected 18 as too
+dense — so the wrong value was locked in by matching a marcher that was wrong the same way.
+
+**Two knobs that compound must be swept jointly.** `SHELL_OPTICAL_PATH` and the erosion K each read
+as a null result alone (20× of PATH moved albedo 0.0788 → 0.1212 with the median pixel's cloud
+fraction pinned at 4–5%; 3.3× of K moved it 0.0788 → 0.0863 with **p98 frozen**, which was the tell
+that the other gate was binding). Jointly, (0.3, 8) gave 1.75× where the product of the two singles
+predicted 1.39×. This is the same structure as `profile × inScatter` in CLOUD_DEBUGGING_LESSONS case
+#25 — cited during this hunt and then still tested one knob at a time.
+
+**Metrics that misled, and what replaced them:**
+
+- **Disc albedo against 0.434 was the wrong acceptance target.** Even with perfect cloud area the
+  disc reaches only `0.65·0.42 + 0.35·0.044 = 0.288`, because D23 leaves clear sky at 0.044 against
+  a real ~0.12. **The cloud finish line is ~0.29; the last 1.5× is Phase 2c.**
+- **`p98/p02` contrast is not usable while D23 is open** — our clear-sky floor is 1.8× too dark, so
+  the correct target is **11.4×, not 8.7×**. The measured 10.8× is right, not an overshoot.
+- **Use effective cloud cover** = `(mean_R − clear_R)/(fullCloud_R − clear_R)`. Normalised by both
+  endpoints, so D23 cancels.
+
+**Still open: ~2.5× of cloud area** (25.6% vs ~65%). Four successive analytic models of the opacity
+LUT's internals were each wrong in a new way — the last assumed `carved` was independent of
+`dimProfile` when it is computed *from* it, which invalidated a distribution back-out and predicted
+a step change at K=0.2 that measured as +2.1pp. **That residual needs the LUT's internals
+instrumented (`dilated`/`carved`/`eroded` distributions), not more knob sweeps.**
+
+⚠ Ruled out along the way, so nobody re-treads it: the weather map is NOT short of cloud (73% of the
+globe above 0.05, 64% above 0.10, against Earth's ~67% — its *values* are low because it is
+reflectance-encoded, and every transfer that lifts its mean to 0.567 saturates 25–44% of the globe
+to flat white); and `maxProfile` ≈ 1, so the profile is not attenuating anything.
 
 ### 5.2 The readback bug — two traps in `readRenderTargetPixelsAsync`
 

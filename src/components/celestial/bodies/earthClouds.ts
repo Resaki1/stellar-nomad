@@ -96,7 +96,7 @@ import {
 } from "./takramNoise";
 import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
-  CLOUD_SUN_SCALE,
+  uCloudSunScale,
   CLOUD_SKY_SCALE,
   CLOUD_SKY_AMBIENT,
   COVERAGE_GAMMA,
@@ -217,11 +217,99 @@ const SHELL_COL_SAMPLE = 0.65;
 // 1−exp(−pow(eroded, DENSITY_GAMMA)·OPTICAL_PATH), meaned over the noise. RAISE
 // → fuller/harder-edged far field, LOWER → softer/thinner. Because it lives
 // inside the exp(), it shapes low vs high coverage correctly at ALL values, not
-// as a global multiply. EMPIRICAL (2026-07-07): 1 gives the seamless
-// orbit→surface transition — the marcher's apparent orbital opacity is quite
-// translucent, so the shell must be too. (Started at 18 ≈ opaque; that made the
-// far field far denser than the volumetric it hands to.) Tune ~1–5.
-const SHELL_OPTICAL_PATH = 1;
+// as a global multiply.
+//
+// ⚠ WAS 1, AND THAT WAS A UNITS ERROR, NOT A FIT. The old note read "EMPIRICAL
+// (2026-07-07): 1 gives the seamless orbit→surface transition… tune ~1–5", with
+// 18 rejected as too dense. But this multiplies a NORMALISED density to make an
+// OPTICAL DEPTH, and τ = density × extinction × slab: a 14 km deck at density
+// 0.25 with cloud extinction 10–50 /km is **τ ≈ 35–175**, i.e. opaque. At 1, a
+// FULLY dense column capped at 1−e⁻¹ = 0.632 and the median one reached ~0.05.
+// That single factor-of-~50 is why every attempt to recover Earth's cloud cover
+// by sweeping other knobs came back a partial (LIGHTING_PLAN §5.7).
+// MEASURED on device at 60 (`__lum.disc`): effective cloud cover 3.5% → 25.6%,
+// disc albedo 0.0788 → 0.163, cloud-top reflectance 0.479 (under the ~0.70
+// physical ceiling), and the 250–700 km handoff verified good by eye at every
+// step of the sweep. Above ~60 the Beer term is saturated, so this is not a
+// knife-edge value — anything ≳40 behaves the same.
+// ⚠ MUST move together with CLOUD_SUN_SCALE: raising this turns covered columns
+// opaque, so at the old 0.45 brightness the tops overshot to R = 0.749.
+const SHELL_OPTICAL_PATH = 60;
+
+// ── Live override for the coverage calibration sweep ─────────────────────────
+// `__lum.setOpticalPath(x)`. Measured 2026-08-17: Earth's disc-average geometric
+// albedo renders 0.0788 against a real 0.434 — 5.5× dark — and `__lum.disc()`
+// localises the whole deficit to cloud COVERAGE (75% of the disc sits at clear-sky
+// reflectance; only ~2% reaches cloud, vs a real 60–67% cloud fraction).
+//
+// ⚠ THIS KNOB IS BAKED INTO THE OPACITY LUT, so writing the uniform alone does
+// NOTHING — the LUT must be re-dispatched. Exactly the trap `uFmsMax` hit in the
+// atmosphere pass (LIGHTING_PLAN §2.2.5), hence the explicit re-queue below.
+//
+// ⚠⚠ AND DO NOT SHIP A CHANGE TO THIS ALONE. The 1 above is not arbitrary: it was
+// fitted DOWN from 18 on 2026-07-07 to match the marcher's translucency at the
+// 250–700 km handoff. So the shell is faithfully reproducing a marcher that is
+// itself too thin. Raising only the shell fixes the orbit view and tears the
+// seam — the same shape as the VENUS_ILLUM_TRIM cancellation trap, where two
+// errors were agreeing with each other. Measure the marcher against a physical
+// target and move both in ONE commit.
+export const uShellOpticalPath = uniform(SHELL_OPTICAL_PATH);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _opacityLutCompute: any = null;
+
+/** Re-bake the shell opacity LUT with the current `uShellOpticalPath`. */
+export function setShellOpticalPath(path: number): void {
+  uShellOpticalPath.value = path;
+  if (!_opacityLutCompute) {
+    console.warn(
+      "[clouds] opacity LUT not built yet — fly near Earth once, then retry.",
+    );
+    return;
+  }
+  queueCloudBake({ computeNode: _opacityLutCompute });
+}
+
+export const getShellOpticalPath = (): number => uShellOpticalPath.value;
+
+// ── Cloud-AREA factor: scales the SHARED erosion K (see erosionKForType) ─────
+// The marcher reads this live; the shell's opacity LUT bakes it, so a change has
+// to re-dispatch that bake — hence the shared helper below rather than a bare
+// uniform write. Both consumers move together by construction (case #13).
+//
+// DEFAULT 0.5 (user's call, 2026-08-17 — 0.3 read too soft-edged), and it is THE
+// ONE VALUE IN THE CLOUD SET THAT IS EMPIRICAL — the
+// other two (SHELL_OPTICAL_PATH = 60, CLOUD_SUN_SCALE = 0.223) are derived. It
+// lives here rather than in EROSION_K_ST/CU deliberately: those carry a
+// documented Nubis-canonical provenance ("K=1 … validated in-app … do not
+// raise") and govern cloud SHAPE, so overwriting them would destroy that trail
+// to fix a photometric problem. This factor is the photometric correction,
+// separately named and auditable.
+//
+// MEASURED (`__lum.disc`, at PATH 60 / scale 0.223): effective cloud cover
+// 15.4% at 1.0 → 25.6% at 0.3 → 27.7% at 0.2 — so the curve is FLAT below ~0.3
+// and this is nowhere near a knife-edge. 0.5 sits deliberately back up the curve
+// (MEASURED 21.9% cover, disc albedo 0.146): the user chose edge detail over
+// the last few points of area, and
+// that is the right axis to spend it on while ~2.5× of area is still missing for
+// a structural reason this factor cannot fix.
+// ⚠ TRADE-OFF, and it is the user's to veto: K is the Nubis carve strength, so
+// scaling it down means softer/blobbier cloud edges in exchange for area.
+// Earth's real cover is ~65% against our 25.6%, so ~2.5× of area is still
+// missing — see LIGHTING_PLAN §5.7; that residual is NOT in this factor.
+export const uErosionScale = uniform(0.5);
+
+export function setErosionScale(scale: number): void {
+  uErosionScale.value = scale;
+  if (!_opacityLutCompute) {
+    console.warn(
+      "[clouds] opacity LUT not built yet — fly near Earth once, then retry.",
+    );
+    return;
+  }
+  queueCloudBake({ computeNode: _opacityLutCompute });
+}
+
+export const getErosionScale = (): number => uErosionScale.value;
 
 // ── SHELL debug visualisation ────────────────────────────────────────────────
 // Replaces the shell's output with a false-colour scalar (alpha=1, no lighting,
@@ -1194,9 +1282,30 @@ function billowCarveAmtForType(convectivity: Node): Node {
 // read THIS helper with the SAME cloudType — if they drift, dense mode engages
 // where integrated density is 0 (or skips real cloud): the tile-speckle class.
 function erosionKForType(convectivity: Node): Node {
-  return PER_TYPE_DETAIL
+  const k = PER_TYPE_DETAIL
     ? mix(float(EROSION_K_ST), float(EROSION_K_CU), convectivity.clamp(0, 1))
     : float(BASE_EROSION_K_EFF);
+  // ── uErosionScale: the cloud-AREA knob (`__lum.setErosionScale`) ──────────
+  // Erosion is `eroded = saturate(d − (1−carved)·K)`, so with K = 1 (cumulus)
+  // ANY column whose carve field sits below 1−d vanishes entirely. MEASURED
+  // 2026-08-17: that is what deletes Earth's cloud area. The weather map is NOT
+  // the problem — earth_clouds_8k greys to 64% of the globe above 0.10 and 73%
+  // above 0.05, against Earth's real ~67% cloud fraction, so the AREA IS THERE.
+  // Its VALUES are low (mean 0.278, p50 0.204 — a reflectance-encoded image read
+  // as a coverage fraction), and this erosion then treats "0.2" as "80% carved
+  // away" and removes the column. Rendered result: the median disc pixel is 5%
+  // cloud where it should be ~65% (`__lum.disc` — LIGHTING_PLAN §2.2.9).
+  //
+  // ⚠ DELIBERATELY APPLIED INSIDE THE SHARED HELPER. The shell's opacity-LUT
+  // bake and the marcher's dense branch BOTH read erosionKForType (the case #13
+  // gate law above), so scaling here moves near and far field TOGETHER and the
+  // 250–700 km handoff cannot tear. That is the whole reason this is the knob to
+  // sweep rather than SHELL_OPTICAL_PATH, which lives on the shell side only and
+  // measured as a wash anyway (albedo 0.0788 → 0.1212 over a 20× sweep, while
+  // the median pixel's cloud fraction stayed pinned at 4–5%).
+  //
+  // Lowering it should raise p50 far faster than p98 — the acceptance test.
+  return k.mul(uErosionScale);
 }
 function densityGammaForType(convectivity: Node): Node {
   return mix(
@@ -1426,9 +1535,9 @@ function getShellOpacityLUT(
           : (DENSITY_GAMMA as number) === 1
             ? eroded
             : pow(eroded, float(DENSITY_GAMMA));
-        sum.addAssign(
-          float(1).sub(exp(dens.mul(float(-SHELL_OPTICAL_PATH)))),
-        );
+        // Uniform, not the const — so `__lum.setOpticalPath()` can sweep it with
+        // a re-bake instead of a rebuild. Identical at the default.
+        sum.addAssign(float(1).sub(exp(dens.mul(uShellOpticalPath).negate())));
       },
     );
     const opacity = sum.div(float(SHELL_OPACITY_LUT_SAMPLES));
@@ -1442,11 +1551,12 @@ function getShellOpacityLUT(
   // Queued AFTER the volumes (getShellOpacityLUT is called with the already-
   // requested singletons) so the in-order bake dispatch populates its inputs
   // first — same ordering contract as detail mip1.
-  queueCloudBake({
-    computeNode: kernel().compute(
-      SHELL_OPACITY_LUT_SIZE * SHELL_OPACITY_LUT_CONV_ROWS,
-    ),
-  });
+  // Kept so `setShellOpticalPath()` can re-queue the SAME dispatch (the queue
+  // is drained and cleared each frame, so re-pushing re-bakes).
+  _opacityLutCompute = kernel().compute(
+    SHELL_OPACITY_LUT_SIZE * SHELL_OPACITY_LUT_CONV_ROWS,
+  );
+  queueCloudBake({ computeNode: _opacityLutCompute });
   cachedOpacityLUT = tex;
   return tex;
 }
@@ -1692,10 +1802,36 @@ function buildCloudShellMesh({
     const nWorld = normalize(normalWorld);
     const sunDir = normalize(uSunRel);
     const cosSun = dot(nWorld, sunDir);
-    // Cloud-horizon daylight gate — clouds catch sun slightly past the ground
-    // terminator (mirrors earth.ts overlay's cloudHemi).
+    // ── Deck illumination geometry (lighting Phase 2b, D08) ──
+    // The deck's horizon lift: a sheet at altitude h still sees the sun until
+    // cos θ = −√(1 − (R/(R+h))²) — 0.066 at 14 km, which is what the hand-picked
+    // 0.025 was standing in for. And a cloud is a VOLUME: sun from below the
+    // local horizontal still lights it, which IS the sunset-cloud glow. Derived
+    // from the deck geometry, so any planet or deck altitude gets it right with
+    // no tuning (§3.0 procedural systems).
+    const DECK_COS_LIFT = Math.sqrt(
+      Math.max(
+        0,
+        1 -
+          (PLANET_RADIUS_KM / (PLANET_RADIUS_KM + CLOUD_OUTER_ALTITUDE_KM)) ** 2,
+      ),
+    );
+    // LAMBERT COSINE for the direct term, lifted to the deck horizon. This used
+    // to be missing entirely: `daylight` alone was a flat ≥0.98 gate for every
+    // cosθ > 0.1, so the deck stayed at full noon brightness right to the
+    // terminator. Harmless while the GROUND under it was equally flat-lit —
+    // but once the ground got its real cosine (earth.ts, same phase), a flat
+    // deck would have painted a blazing white cloud band along the terminator:
+    // at μ₀ = 0.15 the cloud:ground radiance ratio goes from ~5× to ~33×.
+    const sunCos = clamp(
+      cosSun.add(float(DECK_COS_LIFT)).div(float(1 + DECK_COS_LIFT)),
+      0,
+      1,
+    );
+    // Night gate, now a PURE gate (the falloff is sunCos). Centred on the deck's
+    // real horizon rather than the hand-picked offset.
     const daylight = float(1).div(
-      float(1).add(exp(float(-40).mul(cosSun.add(0.025)))),
+      float(1).add(exp(float(-40).mul(cosSun.add(float(DECK_COS_LIFT))))),
     );
 
     // Physical sun transmittance at cloud altitude, normalised by the zenith tap
@@ -1748,6 +1884,7 @@ function buildCloudShellMesh({
         CLOUD_SKY_AMBIENT[1],
         CLOUD_SKY_AMBIENT[2],
       ),
+      sunCos,
       daylight,
       selfShadow,
     });
@@ -3379,9 +3516,11 @@ export function marchCloudVolume({
                 );
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const sunT: any = texture(uTransmittanceLUT, sunUv).level(int(0));
+                // uniform, not the const — keeps the MARCHER in lockstep with
+                // farCloudLit when `__lum.setCloudSunScale` sweeps it.
                 sunColorS = uAtmoSunIlluminance
                   .mul(sunT.rgb)
-                  .mul(float(CLOUD_SUN_SCALE));
+                  .mul(uCloudSunScale);
                 skyColorS = uAtmoSkyColor
                   .mul(daylightS)
                   .mul(float(CLOUD_SKY_SCALE));

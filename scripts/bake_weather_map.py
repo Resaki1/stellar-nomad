@@ -134,6 +134,39 @@ ENRICH_WEIGHTS = [0.5, 0.25, 0.125, 0.0625]
 ENRICH_WARP_FREQ = 2.0  # domain-warp octave (~250 km) → filaments/swirls
 ENRICH_WARP_AMP = 0.25  # warp displacement in tile units (~125 km)
 PLACEMENT_EDGE = 0.16  # soft threshold half-width (fluffy, mippable edges)
+# ── Placement threshold: thr(cov) = Q_g(1 − cov), the field's INVERSE CDF ────
+# ⚠ SCOPE: bake_placement runs on the --cloud-image and DEFAULT-PROCEDURAL paths
+# only. The shipped Earth map is baked with --coverage-texture, which assigns
+# `placed` straight from the composite and never calls this — so this fix does
+# NOT change Earth's current asset. It matters for the procedural/alien-planet
+# path (LIGHTING_PLAN §3.0) and for any --cloud-image bake. Earth's own coverage
+# deficit lives in the --coverage-texture branch; see COVERAGE_TEXTURE_RAMP.
+# ⚠ WAS `thr = 1.0 - cov`, justified as "noise ~uniform-ish → P(g>1−cov) ≈ cov".
+# THE ENRICHMENT FIELD IS NOT UNIFORM — it is a weighted fBm sum normalised to
+# ~[0,1], i.e. BELL-SHAPED (measured on this exact field: p10 0.319, p50 0.505,
+# p90 0.693). `1−cov` is therefore exact only at cov = 0 / 0.5 / 1 and S-curves
+# badly in between, deleting thin cloud and inflating thick decks:
+#
+#     cov     1−cov       linear fit    inverse CDF     ideal
+#     0.20    0.038 (5.3× LOSS)  0.194      0.226        0.20
+#     0.40    0.278 (1.4× loss)  0.386      0.411        0.40
+#     0.586   0.714 (1.2× GAIN)  0.599      0.577        0.586
+#     1.00    0.998 ✓            0.924 (25% SHORT) 0.998  1.00
+#
+# ⚠ A LINEAR quantile fit (thr = 0.739 − 0.468·cov) was tried and MEASURED AS A
+# WASH: placed mean 0.284 → 0.278. It is better mid-range but thresholds
+# fully-overcast cells at 0.271 instead of 0, losing 25% of exactly the cells
+# that should be solid — and since this input's p50 is 0.586, i.e. most of the
+# mass sits ABOVE 0.5 where `1−cov` was already OVER-placing, the two errors
+# cancelled. Do not re-try a linear fit; the extremes are where the mass is.
+#
+# So: use the field's EXACT empirical inverse CDF. `P(g > Q_g(1−cov)) = cov` by
+# construction, at every cov, with no distributional assumption to be wrong
+# about. Self-calibrating — it re-derives from the field, so an ENRICH_* change
+# cannot silently desync it (which is how this bug survived: the runtime's
+# cloudShared.fractionPlacement already carried a measured correction,
+# `0.675 − 0.4·cov`, and the baker never got it).
+PLACEMENT_CDF_SAMPLES = 512  # equirect grid width for the CDF subsample
 PLACEMENT_MIN_COV_LO = 0.03  # kill placement below tiny fractions (no ghosts)
 PLACEMENT_MIN_COV_HI = 0.12
 
@@ -473,18 +506,35 @@ def bake_placement(coverage_hi):
     """Threshold the (upsampled, smoothed) fraction by the BAND-LIMITED
     enrichment field → placed coverage with system-scale structure, alias-free.
     A threshold of a band-limited field is band-limited (edges = smooth
-    iso-contours). Mean-preserving-ish: thr = 1−cov (noise ~uniform-ish →
-    P(noise>1−cov) ≈ cov); the baker prints the fraction-vs-placed area check."""
+    iso-contours). Mean-preserving via PLACEMENT_THR_A/B — see those constants;
+    the baker prints the fraction-vs-placed area check."""
     import numpy as np
 
     h, w = coverage_hi.shape
+
+    # The field's empirical CDF, from a coarse EQUIRECT subsample — the field is
+    # stationary, so a coarse grid gives the same marginal, and using equirect
+    # matches the bake grid's own pole weighting. `q_vals` sorted ascending is
+    # Q_g evaluated on `q_p`.
+    cw = PLACEMENT_CDF_SAMPLES
+    ch = max(2, cw // 2)
+    q_vals = np.sort(synth_enrichment_field(cw, ch, 0, ch).ravel())
+    q_p = np.linspace(0.0, 1.0, q_vals.size)
+    print(
+        f"  placement CDF: p10 {np.interp(0.10, q_p, q_vals):.3f} "
+        f"p50 {np.interp(0.50, q_p, q_vals):.3f} "
+        f"p90 {np.interp(0.90, q_p, q_vals):.3f} "
+        f"(n={q_vals.size})"
+    )
+
     placed = np.zeros_like(coverage_hi, dtype=np.float32)
     chunk = 128
     for row0 in range(0, h, chunk):
         rows = min(chunk, h - row0)
         g = synth_enrichment_field(w, h, row0, rows)
         cov = coverage_hi[row0 : row0 + rows]
-        thr = 1.0 - cov  # mean-preserving soft threshold
+        # thr = Q_g(1 − cov)  ⇒  P(g > thr) = cov exactly, at every cov.
+        thr = np.interp(1.0 - cov, q_p, q_vals).astype(np.float32)
         placed[row0 : row0 + rows] = smoothstep01(
             thr - PLACEMENT_EDGE, thr + PLACEMENT_EDGE, g
         ) * smoothstep01(PLACEMENT_MIN_COV_LO, PLACEMENT_MIN_COV_HI, cov)
@@ -626,6 +676,27 @@ def bake(args) -> int:
     #   3. default: band-limited procedural placement (the alien-planet path);
     #   4. --no-placement: the raw ERA5 fraction (debug/inspection).
     if args.coverage_texture:
+        # ⚠⚠ NO EXTRACTION RAMP ON THIS PATH — the composite's greyscale IS the
+        # coverage, verbatim. MEASURED 2026-08-17: earth_clouds_8k.webp greys to
+        # mean 0.2776, and that is exactly the shipped map's R mean. But ERA5's
+        # own low+mid fraction for the SAME timestamp is 0.567, and Earth's real
+        # total cloud fraction is ~0.67 — so this branch under-covers the planet
+        # by 2.04×, and it is the FIRST of the two big terms in Earth's 5.5×
+        # disc-albedo deficit (the shell's erosion is the other, ~5.9×).
+        #
+        # The baker prints this as `area check: fraction mean X vs placed mean Y
+        # (should be close)` and it has read 0.567 vs 0.278 — 2× apart — for the
+        # whole life of this path. On this branch the two sides are DIFFERENT
+        # SOURCES (ERA5 vs the composite), so the check is comparing apples to
+        # oranges rather than validating a transform.
+        #
+        # A ramp calibrated to ERA5 would be `smoothstep(0.03, 0.280, grey)`
+        # (solved: mean → 0.567, clear sky stays exactly 0). NOT APPLIED YET: it
+        # saturates p75 and p90 to exactly 1.0, which is the documented failure
+        # mode the MODIS ramp was widened to escape (see IMG_CLOUD_HI's note —
+        # "half the planet pinned at full white… deleting the photo's interior
+        # texture"). Needs a transfer that lifts the mean WITHOUT clipping the
+        # top, and the shell's ~5.9× is the bigger term to settle first.
         print(f"coverage from clean composite {args.coverage_texture}...")
         cim = Image.open(args.coverage_texture).convert("L")
         if cim.size != (OUT_W, OUT_H):

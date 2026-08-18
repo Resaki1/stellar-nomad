@@ -101,15 +101,18 @@ function TexturedLODs({
   }, [midTex, config]);
 
   // ── Geometry ──
+  // ⚠ EVERY PLANET WAS RENDERING MIRRORED UNTIL THIS FLIP. See the helper.
   const nearGeo = useMemo(() => {
     if (!config.near) return null;
     const g = new THREE.SphereGeometry(scaledRadius, config.near.segments, config.near.segments);
+    flipGeometryV(g); // MUST precede computeTangents — tangents are derived from uv
     if (config.near.computeTangents) g.computeTangents();
     return g;
   }, [scaledRadius, config.near]);
 
   const midGeo = useMemo(() => {
     const g = new THREE.SphereGeometry(scaledRadius, config.mid.segments, config.mid.segments);
+    flipGeometryV(g);
     if (config.mid.computeTangents) g.computeTangents();
     return g;
   }, [scaledRadius, config.mid]);
@@ -215,6 +218,47 @@ function TexturedLODs({
       ))}
     </>
   );
+}
+
+/**
+ * Flip a sphere's UV v-axis so it matches how our KTX2 textures are actually
+ * stored. **Without this every planet renders MIRRORED**, and the reason is
+ * subtle enough to be worth writing down.
+ *
+ * `toktx` defaults to upper-left → (s0,t0) and stamps `KTXorientation: rd`
+ * (right, DOWN) — verified with `ktxinfo` on all of them. So row 0 of the data
+ * is the TOP of the image (north). three's `KTX2Loader` never reads that
+ * metadata (grep it — there is no `orientation` or `flipY` handling), and a
+ * compressed texture cannot be flipped at upload the way `flipY` flips an
+ * uncompressed one. Meanwhile `SphereGeometry` emits `uv.y = 1 - v`, i.e. 1 at
+ * the north pole. So the north pole sampled t=1 = the LAST row = Antarctica:
+ * every planet texture was upside down.
+ *
+ * ⚠ AND THAT READS AS AN EAST-WEST MIRROR, NOT AS "UPSIDE DOWN". Inverting v
+ * maps latitude λ → −λ, a reflection through the equatorial plane — determinant
+ * −1, so the globe becomes its own mirror image. Nothing else in the scene
+ * defines which geometric pole is north (the body rotation is arbitrary), so
+ * the flip cannot show up as an inverted globe. It can only show up as
+ * chirality: Spain east of Turkey, Sicily on the wrong side of Italy's toe.
+ * That is why it survived so long, and why `u` looks correct under analysis —
+ * the mirror was never in `u`.
+ *
+ * Applied here rather than at the assets so it is one reversible line instead
+ * of a re-encode of every texture in the repo. The alternative root-cause fix
+ * is `toktx --lower_left_maps_to_s0t0` (→ orientation `ru`) in
+ * scripts/convert-to-ktx2.sh plus a full re-convert; if that is ever done, this
+ * flip AND the matching one in cloudCommon's `equirectDirToUv` must both go.
+ *
+ * NOT covered: Saturn's rings build their own BufferGeometry with a radial UV
+ * convention, so they are unaffected by this and want a separate look.
+ */
+function flipGeometryV(g: THREE.BufferGeometry): void {
+  const uvAttr = g.getAttribute("uv");
+  if (!uvAttr) return;
+  for (let i = 0; i < uvAttr.count; i++) {
+    uvAttr.setY(i, 1 - uvAttr.getY(i));
+  }
+  uvAttr.needsUpdate = true;
 }
 
 // ─────────────────────────────────────────────────────────────────────

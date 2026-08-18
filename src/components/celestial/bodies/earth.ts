@@ -83,6 +83,43 @@ const SHADOW_DEBUG = false;
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.15 * Math.PI, 0.8 * Math.PI);
 
+// ── Normal-map strength, and why it must fade at grazing sun ──────────────
+// ⚠ MITIGATION FOR A BAD ASSET, not a physical model. Do not "clean this up".
+//
+// `earth_normal.ktx2` is 2048×1024 from a 58 KB WebP (0.028 bytes/px, vs the
+// 8K/1.5 MB albedo beside it). MEASURED on the decoded source: the ocean, which
+// should be exactly (128,128,255) everywhere, holds only TWO distinct values per
+// channel — R∈{126,128}, G∈{127,128} — in flat, hard-edged, axis-aligned
+// patches. That is 1 LSB = 1.00° of SPURIOUS TILT.
+//
+// A 1° error is nothing at normal incidence (1% of brightness). But a true
+// Lambert cosine amplifies any tilt error by 1/cosθ, so the SAME 1° becomes:
+//     cosθ 0.20 (78° SZA) →  ±7%
+//     cosθ 0.10 (84° SZA) → ±14%
+//     cosθ 0.05 (87° SZA) → ±28%
+// — a ±28% hard-edged step across what should be featureless ocean. That is the
+// "squares near the terminator" artifact, and it appeared the moment the day
+// term stopped being a saturated sigmoid (which pinned the modulation at a
+// constant ~1% and hid it everywhere).
+//
+// A quantisation deadzone was tried and REJECTED by measurement: 96% of Sahara
+// and 95% of Himalaya texels also sit within 2 LSB, so the map's signal-to-
+// quantisation ratio is ≈1 over almost its whole area. There is nothing to
+// threshold against — the asset simply lacks the precision to drive
+// grazing-incidence lighting, and only a better map fixes that properly.
+//
+// So: keep full normal strength where the map is trustworthy and fade to the
+// geometric normal over the last ~12° before the terminator. Defensible beyond
+// the artifact — sub-texel relief SELF-SHADOWS at grazing incidence, so naive
+// N'·L over-predicts contrast there anyway, and fading toward geometric is a
+// conservative stand-in for the masking term we do not compute. Relief still
+// reads strongly from 75–85° SZA, where 1/cosθ is already a 4–10× amplifier.
+// ⇒ RAISE GRAZE_LO/HI toward 0 once the normal map is re-sourced at adequate
+// precision (16-bit, or baked from elevation instead of a lossy 8-bit image).
+const NORMAL_MAP_STRENGTH = 0.8;
+const NORMAL_GRAZE_LO = 0.05; // ≥87° SZA → geometric normal only
+const NORMAL_GRAZE_HI = 0.25; // ≤75° SZA → full normal map
+
 // ── Atmosphere↔surface lighting coupling (Phase 3b, docs/ATMOSPHERE_PLAN.md §5.4) ──
 // When ON, the day-lit surface (+ ocean sun-glint + flat cloud overlay) is tinted
 // by the PHYSICAL sun transmittance from the shared LUT — sampled at ground
@@ -245,7 +282,7 @@ function buildEarthFragmentNode(opts: {
     //               so it reddens MILDLY, matching the volumetric marcher (which
     //               samples cloud-altitude transmittance per-voxel) instead of
     //               the much-redder ground — otherwise the flat clouds stick out.
-    // Below-horizon μ clamps the UV harmlessly (night is gated by dayAmount). Off
+    // Below-horizon μ clamps the UV harmlessly (night is gated by nDotL). Off
     // → white (no change).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sunT: any = vec3(1, 1, 1);
@@ -273,11 +310,12 @@ function buildEarthFragmentNode(opts: {
       sunT = sunTAt(rgKm);
     }
 
-    // ── Day/night transition ──
-    const dayAmount = float(1.0)
-      .div(float(1.0).add(exp(float(-40).mul(cosSunToGeomNormal))))
-      .toVar();
-    const hemiAmount = dayAmount.toVar();
+    // ── Sun geometry ──
+    // The effective sun cosine. Starts geometric; the normal map perturbs it in
+    // the detailed branch below. Everything angular derives from this ONE value,
+    // split into a Lambert term and a visibility term after the branch — see the
+    // block after the cloud-shadow section.
+    const cosSunEff = cosSunToGeomNormal.toVar();
 
     // ── Eclipse calculation ──
     const surfacePosW = positionWorld;
@@ -295,7 +333,6 @@ function buildEarthFragmentNode(opts: {
     );
 
     const eclipseAmount = eclipseFn(angSunMoon, angSunDisk, angMoonDisk);
-    hemiAmount.mulAssign(eclipseAmount);
 
     // ── Detail-dependent: normal mapping + cloud shadow ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -317,11 +354,25 @@ function buildEarthFragmentNode(opts: {
         tW.mul(tN.x).add(bW.mul(tN.y)).add(nGeom.mul(tN.z))
       );
 
+      // Normal-map perturbation of the sun cosine. This used to be a MULTIPLICA-
+      // TIVE relative delta, `× (1 + 0.8·Δcos)`, because the old day term was a
+      // saturated sigmoid you could not simply re-evaluate at a new angle. On a
+      // true cosine the same intent is just the additive blend it always meant:
+      // mix(a, b, 0.8) ≡ a + 0.8·(b − a). Strength 0.8 is preserved verbatim.
       const cosSunToMappedNormal = dot(nMapped, sunDir);
-      dayAmount.mulAssign(
-        float(1.0).add(
-          float(0.8).mul(cosSunToMappedNormal.sub(cosSunToGeomNormal))
-        )
+      // Strength fades to 0 at grazing sun — see NORMAL_MAP_STRENGTH above for
+      // the measurement that forces this (1 LSB of an 8-bit normal map = 1.00°
+      // of tilt, which N·L amplifies by 1/cosθ into a ±28% hard-edged step at
+      // 87° SZA over what should be flat ocean).
+      const normalStrength = float(NORMAL_MAP_STRENGTH).mul(
+        smoothstep(
+          float(NORMAL_GRAZE_LO),
+          float(NORMAL_GRAZE_HI),
+          cosSunToGeomNormal,
+        ),
+      );
+      cosSunEff.assign(
+        mix(cosSunToGeomNormal, cosSunToMappedNormal, normalStrength)
       );
 
       // Cloud shadow: project sun onto tangent plane for shadow offset
@@ -366,24 +417,73 @@ function buildEarthFragmentNode(opts: {
         cosSunToGeomNormal,
       );
       groundShadowLight.assign(mix(float(1.0), shadowLight, grazeFade));
-      dayAmount.mulAssign(groundShadowLight);
     }
 
-    // Apply only eclipse darkening — the base sigmoid is already in dayAmount.
-    dayAmount.mulAssign(eclipseAmount);
-    dayAmount.assign(clamp(dayAmount, 0, 1));
+    // ── Lambert cosine vs sun visibility (lighting Phase 2b, defect D08) ──
+    // TWO DISTINCT QUANTITIES that used to be conflated into one `dayAmount`:
+    //
+    //   nDotL  — the LAMBERT COSINE, multiplying the diffuse albedo. Real
+    //            photometry: irradiance on a tilted surface is E·cosθ.
+    //   sunVis — the SUN-ABOVE-HORIZON gate. NOT a lighting term; it answers
+    //            "can this point see the sun at all". Gates the ocean specular
+    //            + fresnel and drives the city-light mask.
+    //
+    // The old code used sunVis's sigmoid, 1/(1+exp(−40·cosθ)), for BOTH. That
+    // is ≥0.98 for every cosθ > 0.1, so the day disc was flat-lit right up to
+    // the terminator — a uniform bright wall instead of a sphere curving into
+    // shadow. Sub-solar radiance is UNCHANGED by this fix (cosθ = 1 → 1 either
+    // way, so the __lum probe should not move); the disc AVERAGE drops by the
+    // Lambert 2/3, i.e. 0.58 stops.
+    //
+    // Specular deliberately keeps the visibility gate rather than the cosine: a
+    // glint does not fade as cosθ. In a microfacet BRDF the 1/(4·cosθᵢ·cosθₒ)
+    // denominator cancels the incident cosine outright, and Fresnel climbs
+    // toward grazing — which is exactly why the sunset glint is the bright one.
+    //
+    // SOFT TERMINATOR from the star's FINITE ANGULAR RADIUS: sinSunR = R★/d
+    // (0.00465 at 1 AU → a 0.53°-wide band, invisible here). It is in for the
+    // procedural-systems requirement (§3.0): a close-orbiting red dwarf
+    // subtends degrees and gets a correctly soft terminator with no per-system
+    // tuning. Irradiance from a partly-risen disc is ≈(cosθ+r)²/(4r), which is
+    // continuous in BOTH value and slope with cosθ at cosθ = r. Written
+    // branch-free by clamping the argument into the band and adding the linear
+    // part above it — the `.max(0)` term is 0 inside the band, and the
+    // quadratic saturates to exactly r at the band's top.
+    const sinSunR = clamp(uSunRadius.div(distEarthToSun), 1e-4, 1);
+    const cosBand = clamp(cosSunEff, sinSunR.negate(), sinSunR).add(sinSunR);
+    const nDotL = cosBand
+      .mul(cosBand)
+      .div(sinSunR.mul(4))
+      .add(cosSunEff.sub(sinSunR).max(0))
+      .clamp(0, 1)
+      .toVar();
+    // Twilight-width visibility ramp. Kept at the legacy sigmoid steepness (±3°
+    // in sun elevation) rather than the geometric 0.53°: the city lights and the
+    // terminator band are authored against this width, and ±3° is a fair stand-in
+    // for real twilight (civil twilight runs to −6°).
+    const sunVis = float(1.0)
+      .div(float(1.0).add(exp(float(-40).mul(cosSunEff))))
+      .toVar();
+
+    // Shared occluders — lunar eclipse and the ground cloud shadow — attenuate
+    // both terms. (`groundShadowLight` is 1 on the non-detailed tier.)
+    const occlusion = eclipseAmount.mul(groundShadowLight);
+    nDotL.mulAssign(occlusion);
+    sunVis.mulAssign(occlusion);
 
     // ── Terminator warm tones (Rayleigh at low sun angles) ──
-    const terminatorBand = smoothstep(float(0), float(0.5), dayAmount)
-      .mul(smoothstep(float(1), float(0.5), dayAmount));
+    const terminatorBand = smoothstep(float(0), float(0.5), sunVis)
+      .mul(smoothstep(float(1), float(0.5), sunVis));
     const warmTint = vec3(1.0, 0.6, 0.3);
 
     // (The flat cloud overlay that sampled texClouds here was removed in ISSUE 2
     // Phase 2 — the cloud shell carries the far field now. texClouds is still
     // sampled above for the ground cloud-shadow (cloudShadowVal).)
 
-    // Night mask (sharper city-light cutoff)
-    const nightMask = smoothstep(float(0.15), float(0), dayAmount);
+    // Night mask (sharper city-light cutoff). Driven by sun VISIBILITY, not by
+    // the Lambert cosine — on a cosine, `1 − dayAmount` would be 0.5 at 30° sun
+    // elevation and city lights would glow through mid-morning.
+    const nightMask = smoothstep(float(0.15), float(0), sunVis);
     // Sun-lit day albedo is tinted by the atmospheric transmittance (Phase 3b);
     // the night-light emission (city lights) is NOT — it's not sunlit.
     //
@@ -398,8 +498,8 @@ function buildEarthFragmentNode(opts: {
     // docs/LIGHTING_PLAN.md §3.8.
     //
     // This reproduces the old `mix()` exactly: mix(n, d, a) = n·(1−a) + d·a.
-    const nightEmissive = nightCol.mul(nightMask).mul(float(1.0).sub(dayAmount));
-    const col = dayCol.mul(sunT).mul(dayAmount).toVar();
+    const nightEmissive = nightCol.mul(nightMask).mul(float(1.0).sub(sunVis));
+    const col = dayCol.mul(sunT).mul(nDotL).toVar();
 
     // ── SHADOW_DEBUG: cloud-shadow / cloud registration overlay ──
     // Build-const (dead-eliminated when off). Tints shadowed ground MAGENTA over
@@ -427,25 +527,41 @@ function buildEarthFragmentNode(opts: {
 
     if (texSpec) {
       const specMask = texture(texSpec, uvCoord).r;
-      const refl = reflect(sunDir.negate(), nMapped);
+      // ⚠ GEOMETRIC normal, not `nMapped` — D21 again, in the glint this time.
+      // `earth_normal` carries LAND relief; its ocean is a uniform
+      // (128,128,255), so every wrinkle it has over water is quantisation noise
+      // (1 LSB = 1.00° of tilt). A reflection doubles an angular error, and
+      // pow(·,40) is steepest ~10° off-axis, so that 1° reproduced the exact
+      // same hard-edged squares inside the sun glint that it produced at the
+      // terminator. Water carries no terrain, so this is also just correct: the
+      // map has no wave data to contribute. Real glint breakup needs an actual
+      // wave normal, which is a separate asset.
+      const refl = reflect(sunDir.negate(), nGeom);
       const specAngle = dot(refl, viewDir).max(0);
       const specHighlight = pow(specAngle, float(40.0)).mul(0.8).mul(specMask);
       const specBroad = pow(specAngle, float(8.0)).mul(0.15).mul(specMask);
       // Sun glint is reflected sunlight → tint by the same transmittance (Phase
       // 3b); reddens the glint at sunset. (The fresnel sky-reflection below is
       // skylight, not sun, so it is left as the fixed sky-blue.)
-      col.addAssign(dayAmount.mul(sunT).mul(specHighlight.add(specBroad)));
+      col.addAssign(sunVis.mul(sunT).mul(specHighlight.add(specBroad)));
 
       // ── Fresnel ocean reflection + land limb darkening ──
       const vDotN = clamp(viewDotNRaw, 0, 1);
       const oneMinusVdotN = float(1.0).sub(vDotN);
-      // Schlick Fresnel: F0 ≈ 0.02 for water
+      // Schlick Fresnel: F = F0 + (1−F0)·(1−cosθ)⁵, F0 ≈ 0.02 for water.
+      // ⚠ This was written as `0.02 + 2.0·(1−cosθ)^2.5`, which is not Schlick
+      // and is not bounded: it PEAKS AT 2.02, i.e. the ocean returned twice the
+      // light falling on it — the plan's own `R > 1` test, failed outright. It
+      // ran 7.3× hot at a 60° view angle (0.374 vs 0.051), which is what lifted
+      // the ocean toward the limb into a bright blue wash and flattened the
+      // contrast the clouds need to read against. Correct Schlick maxes at 1.0
+      // exactly, at true grazing.
       const fresnel = float(0.02).add(
-        float(2.0).mul(pow(oneMinusVdotN, float(2.5)))
+        float(0.98).mul(pow(oneMinusVdotN, float(5.0)))
       );
       // Ocean reflects atmosphere blue at grazing angles
       col.addAssign(
-        vec3(0.0, 0.25, 1.0).mul(fresnel).mul(specMask).mul(dayAmount)
+        vec3(0.0, 0.25, 1.0).mul(fresnel).mul(specMask).mul(sunVis)
       );
 
       // Land: rough diffuse surfaces darken at oblique viewing angles
@@ -469,8 +585,9 @@ function buildEarthFragmentNode(opts: {
     // atmosphere pass (atmospherePass.ts), which fogs this surface color with
     // real transmittance + in-scattering. The surface shader outputs ground
     // radiance only; all atmospheric effects are applied downstream.
-    // (`hemiAmount` is retained for the eclipse term; the terminator warm tint
-    // above is superseded by the atmosphere's sunset reddening in Phase 2.)
+    // (The terminator warm tint above is superseded by the atmosphere's sunset
+    // reddening in Phase 2. `hemiAmount` — a second eclipse-scaled copy of the
+    // day term that nothing ever read — was deleted with the Phase 2b split.)
 
     // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
     // Earth's ground was ~6.37× too dark without this, which is what made the

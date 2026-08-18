@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import {
+  uniform,
   float,
   mix,
   clamp,
@@ -41,7 +42,15 @@ export function equirectDirToUv(dirLocal: Node, uvOffset: Node): Node {
   const u = fract(
     atan(dirLocal.z, dirLocal.x.negate()).mul(float(1).div(PI.mul(2))),
   );
-  const v = acos(clamp(dirLocal.y.negate(), -1, 1)).mul(float(1).div(PI));
+  // v = 0 at the NORTH pole. Matches `flipGeometryV` in CelestialBody.tsx — our
+  // KTX2s are stored top-down (`KTXorientation: rd`) and three's KTX2Loader does
+  // not compensate, so row 0 is north. This used to be `dirLocal.y.negate()`,
+  // giving v = 1 at north, which sampled the map upside down — and an inverted
+  // v on a sphere is a reflection through the equatorial plane, so it rendered
+  // as an east-west MIRROR rather than as an upside-down globe. Ground and cloud
+  // were mirrored in lockstep, which is why they stayed registered to each other
+  // and the bug hid. Both flips must change together.
+  const v = acos(clamp(dirLocal.y, -1, 1)).mul(float(1).div(PI));
   return vec2(u, v).add(uvOffset);
 }
 
@@ -100,7 +109,27 @@ export function makeEquirectTextureField(
 
 // ── Lighting magnitudes — SHARED with the volumetric marcher (earthClouds.ts
 // imports these) so near/far brightness + colour agree at the crossfade. ──
-export const CLOUD_SUN_SCALE = 0.45; // × sunIlluminance × T(cloud alt) ≈ 12 HDR sunlit
+// ✅ PHASE 2d CLOSED (2026-08-17): 0.45 → albedo/π = 0.7/π = 0.223, the physical
+// anchor a Lambert cloud top wants. Not a look tweak — it MUST accompany
+// SHELL_OPTICAL_PATH's correction to 60: that turns covered columns opaque (which
+// is how cloud area comes back), and at the old 0.45 the tops then overshot to
+// reflectance 0.749 against a real ceiling of ~0.70. MEASURED together on device
+// (`__lum.disc`): cloud-top R settles at 0.479 ✅, disc albedo 0.0788 → 0.163,
+// contrast 10.8× against the D23-corrected target of 11.4× ✅.
+export const CLOUD_SUN_SCALE = 0.223; // = albedo/π. × sunIlluminance × T(cloud alt)
+// ── Live override for the Phase-2d re-anchor (`__lum.setCloudSunScale`) ──────
+// Physically this wants to be `albedo/π` = 0.7/π ≈ 0.223, i.e. HALF the shipped
+// 0.45 (LIGHTING_PLAN Phase 2d). It has to move together with the shell's
+// optical path: raising PATH to its physical value turns most covered columns
+// opaque — which is how the missing cloud AREA comes back — and at 0.45 the
+// cloud tops then overshoot (measured p98 reflectance 0.749 vs a real ~0.70).
+// Runtime-only in BOTH consumers (farCloudLit here and the marcher's dense
+// branch), nothing baked, so a plain uniform keeps near and far in lockstep.
+export const uCloudSunScale = uniform(CLOUD_SUN_SCALE);
+export function setCloudSunScale(scale: number): void {
+  uCloudSunScale.value = scale;
+}
+export const getCloudSunScale = (): number => uCloudSunScale.value;
 export const CLOUD_SKY_SCALE = 1.0; // × sky tint → ambient fill
 
 // Cool-blue ambient sky tint (matches the marcher's fallback skyColor). A planet
@@ -121,24 +150,38 @@ const FAR_AMBIENT_FRAC = 0.3; // fraction of the sky term that fills the far fie
  * pass the body's sun illuminance + sky tint.
  * - `sunT`      : sun transmittance at cloud altitude (vec3; reddens at sunset —
  *                 the SAME LUT the marcher + sky sample, so the terminator matches).
+ * - `sunCos`    : 0..1 Lambert cosine at the deck (lighting Phase 2b, D08).
+ *                 Scales the DIRECT term only. A thick cloud deck is close to
+ *                 Lambert in μ₀ near nadir: Chandrasekhar's conservative
+ *                 semi-infinite reflection R = H(μ)H(μ₀)/(4(μ+μ₀)) gives
+ *                 L/F = 1.06 / 0.55 / 0.21 at μ₀ = 1 / 0.5 / 0.2 — proportional
+ *                 to μ₀ within ~6%, because H(μ₀)'s growth cancels against the
+ *                 (μ+μ₀) denominator. Pass 1 for a deck you want flat-lit.
  * - `daylight`  : 0..1 sun-above-cloud-horizon gate (kills the night side).
+ *                 A pure gate — the angular FALLOFF is `sunCos`, not this.
  * - `selfShadow`: 0..1, 1 = fully lit (e.g. 1 − k·cloudShadowMap).
  */
 export function farCloudLit({
   sunIlluminance,
   sunT,
   skyColor,
+  sunCos,
   daylight,
   selfShadow,
 }: {
   sunIlluminance: Node;
   sunT: Node;
   skyColor: Node;
+  sunCos: Node;
   daylight: Node;
   selfShadow: Node;
 }): Node {
   const shadow = mix(float(FAR_SHADOW_FLOOR), float(1), clamp(selfShadow, 0, 1));
-  const direct = sunIlluminance.mul(sunT).mul(float(CLOUD_SUN_SCALE)).mul(shadow);
+  const direct = sunIlluminance
+    .mul(sunT)
+    .mul(uCloudSunScale) // uniform, not the const — see setCloudSunScale
+    .mul(shadow)
+    .mul(clamp(sunCos, 0, 1));
   const ambient = skyColor.mul(float(CLOUD_SKY_SCALE)).mul(float(FAR_AMBIENT_FRAC));
   return direct.add(ambient).mul(clamp(daylight, 0, 1));
 }
