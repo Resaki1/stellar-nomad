@@ -140,6 +140,9 @@
 }
 
 .dev-controls__label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -175,6 +178,7 @@
 .dev-controls__range {
   flex: 1;
   min-width: 140px;
+  max-width: 240px;
   accent-color: rgba(200, 200, 200, 0.8);
   background: transparent;
   cursor: pointer;

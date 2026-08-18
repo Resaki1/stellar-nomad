@@ -219,7 +219,12 @@ export function surfaceRadiance(reflectance: any, uSunIlluminanceNode: any): any
  * guessed. Deep-space background sits ~3 orders below a mag-6 star's per-pixel
  * equivalent luminance, so this does not produce grey mush.
  */
-export const EV_MIN = -16;
+// −16 was derived as "a mag-6 star renders at middle grey" (1.15e-2 cd/m²).
+// Lowered to −18 in Phase 5: the star PANORAMA's texels are dimmer than the
+// magnitudes they stand for, so at −16 only the brightest few hundred showed
+// (measured: brightest sampled texel rendered 0.051). −18 gives 4× more
+// headroom → 0.20, and it only ever binds in near-total darkness.
+export const EV_MIN = -18;
 
 /** Ceiling on metered EV100 — stops a sub-solar Mercury being crushed. */
 export const EV_MAX = 20;
@@ -257,7 +262,10 @@ export const uExposure = uniform(1);
 let _meteredEV = EV_NEUTRAL;
 let _compensationStops = 0;
 let _exposure = 1;
-let _manual = true;
+// ✅ PHASE 5: auto-exposure is now the default. `__lum` / `__bench` still pin it
+// via setManualExposure(true) — they MUST, since adaptation is frame-to-frame
+// state and an unpinned sweep measures a function of the previous frame.
+let _manual = false;
 
 function recompute(): void {
   const ev = Math.min(Math.max(_meteredEV, EV_MIN), EV_MAX);

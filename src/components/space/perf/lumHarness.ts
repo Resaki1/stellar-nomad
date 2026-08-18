@@ -45,12 +45,18 @@ import {
 } from "@/components/celestial/bodies/earthClouds";
 import { setCloudSunScale } from "@/components/celestial/bodies/cloudCommon";
 import {
+  adaptationTarget,
+  exposureMeterStatus,
+  resetExposureAdaptation,
+} from "../exposureMeter";
+import {
   NITS_PER_GAME_UNIT,
   SUN_ILLUM_GAME_1AU,
   discRadianceAtZeroPhase,
   subSolarRadianceLambert,
   evFromGameUnits,
   getExposure,
+  getExposureCompensation,
   setExposureEV,
   setManualExposure,
   sunIlluminanceAt,
@@ -559,6 +565,62 @@ export class LumHarness {
     console.log(
       `[lum] cloud sun scale = ${scale} (albedo/π = 0.223 is the physical value) ` +
         `→ implied cloud-top reflectance ≈ ${(scale * 0.725 * Math.PI).toFixed(3)}`,
+    );
+  }
+
+  /**
+   * Auto-exposure / eye-adaptation state (Phase 5).
+   *
+   * `metered` is the centre-weighted log-average EV of the frame; `target` is
+   * what partial adaptation asks for; `adapted` is where the follower actually
+   * is. **`target` ≠ `metered` is not a bug** — full adaptation would render deep
+   * space and sunlit Mercury equally bright, undoing Phases 0–3. See
+   * ADAPTATION_K in exposureMeter.ts (Stevens' ⅓ brightness exponent).
+   */
+  exposure(): void {
+    const st = exposureMeterStatus();
+    console.table({
+      "metered EV (scene)": Number(st.meteredEV.toFixed(2)),
+      "target EV (adapted)": Number(st.targetEV.toFixed(2)),
+      "actual EV (follower)": Number(st.adaptedEV.toFixed(2)),
+      "exposure multiplier": Number(getExposure().toPrecision(4)),
+      "compensation (stops)": getExposureCompensation(),
+      "samples this frame": st.samples,
+      "EV p05 (darkest)": Number(st.dist.p05.toFixed(2)),
+      "EV p50": Number(st.dist.p50.toFixed(2)),
+      "EV p90": Number(st.dist.p90.toFixed(2)),
+      "EV p98": Number(st.dist.p98.toFixed(2)),
+      "EV max": Number(st.dist.max.toFixed(2)),
+      "top 1% flux share": `${(st.topFluxShare * 100).toFixed(0)}%`,
+      "centre sigma": st.centreSigma,
+      "adaptation k": st.adaptationK,
+      "output bias (stops)": st.biasStops,
+      "anchor EV": st.anchorEV,
+      "PINNED (manual)": st.manual,
+    });
+    console.log(
+      "[lum] ⚠ EVs here are GAME-UNIT EVs (log2(units×8)), NOT the cd/m² EVs the " +
+        "probe tables print — they differ by ~12.6 stops. If `metered` sits far " +
+        "from p90/p98 the band is landing on the wrong part of the scene.",
+    );
+    if (st.manual) {
+      console.warn(
+        "[lum] exposure is PINNED — auto-exposure is not running. __lum.auto() to release.",
+      );
+    } else {
+      console.log(
+        `[lum] partial adaptation: a ${(1 - st.adaptationK).toFixed(2)}× slope, so a ` +
+          `44-stop world presents as ~${(44 * (1 - st.adaptationK)).toFixed(0)} stops. ` +
+          `Full adaptation (k=1) would flatten it to 0.`,
+      );
+    }
+  }
+
+  /** Snap adaptation to the current scene — no slow fade after a warp. */
+  snapExposure(): void {
+    resetExposureAdaptation();
+    console.log(
+      `[lum] adaptation snapped to ${adaptationTarget(exposureMeterStatus().meteredEV).toFixed(2)} EV`,
     );
   }
 

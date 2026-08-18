@@ -111,6 +111,9 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D22 ✅ | Ocean "Schlick" Fresnel is `0.02 + 2.0·(1−cosθ)^2.5` — not Schlick, **peaks at 2.02** | [`earth.ts:543`](../src/components/celestial/bodies/earth.ts#L543) | ocean returns 202% of incident light; 7.4× hot at 60° | I |
 | D23 | Day texture's dark end is crushed: deep Pacific linear luminance **0.0014** vs a real 0.03–0.06 | `earth_day_*.ktx2` | ocean **21–43× too dark**, Amazon 4–6×; Sahara + ice correct ⇒ non-uniform, per-region. Phase 2c | I |
 | D24 ✅ | **Every planet rendered MIRRORED.** All KTX2s are `KTXorientation: rd` (top-down); three's KTX2Loader ignores orientation; `SphereGeometry` `uv.y = 1` at north ⇒ v-flip | `CelestialBody.tsx`, `cloudCommon.ts` | geometric north pole was showing Antarctica — see §5.6 | I |
+| D25 | Diffuse sky **underflows RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stores as exactly 0 | `MilkyWaySkybox.tsx` | no Milky Way nebulosity; needs source pre-exposure (§3.2) | I |
+| D26 | The player ship's hull carries **99% of metered flux** in deep space | `ShipOne.tsx` + meter | stars vanish; third-person-camera problem, damp the local scene in metering | I |
+| D27 | `SunLight` has **no geometric planet shadow** — ship is fully sunlit inside an eclipse | [`SunLight.tsx`](../src/components/Star/SunLight.tsx) | ship blows out in a planet's shadow | I |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1075,7 +1078,7 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **3a** ✅ | **Distance-correct sun for ship + asteroids** — `SunLight.intensity` and the bounce fill from live star distance via the SAME `sunIlluminanceAt` the planets use | ship/asteroids stop being lit by a constant: 4.7× brighter at Mercury, 1,280× dimmer at Neptune | medium |
 | **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
 | **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
-| **5** | GPU histogram auto-exposure + two-timescale adaptation + `evMin`/`evMax`; pin `__bench` exposure; **rescale the Milky Way skybox to absolute luminance (measured 170,000× hot — §2.2.2; promoted from Phase 7 because no exposure can show stars against it)** | the "eye" arrives; ground↔space transitions work; stars become visible | medium |
+| **5** ✅ | **Auto-exposure / eye adaptation**: centre-weighted log-average metering, **PARTIAL** adaptation (Stevens' ⅓), asymmetric cone/rod time constants, + the **skybox rescaled to absolute luminance** (measured 189,000× hot) | the "eye" arrives; stars become visible in deep space and vanish when the sun enters frame | medium |
 | **6** | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
 | **7** | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
 | **8** | PSF glare replacing mip-chain bloom, energy-conserving, driven by the star-flux uniform | the sun becomes blinding; stars veil correctly | medium |
@@ -1532,6 +1535,199 @@ this out to remove a warm cast.
 Resulting disc: 265,000 radiance while resolved (Mercury 29.8 px, Earth 11.5 px), falling to 6,224
 at Neptune's 0.38 px and 563 at 100 AU — so apparent brightness now drops through **solid angle**,
 which is the physics, rather than through a fudged radiance.
+
+### 5.9 Phase 5 — auto-exposure, as built (2026-08-17)
+
+#### Why not Unreal's histogram
+
+The AAA baseline (UE5, Frostbite, REDengine) builds a GPU histogram of log-luminance, averages a
+percentile band (UE defaults 80–98.3%), clamps to min/max EV, then follows with asymmetric speeds and
+an artist-authored exposure-compensation curve. Forza is the other school — a real camera model
+(aperture/shutter/ISO) with a filmic curve, explicitly a CAMERA, which §8 rejected for this game.
+
+### The estimator took FOUR attempts, and the fourth is the one with a principle
+
+| attempt | failed how (all MEASURED on device) |
+|---|---|
+| 1. weighted log-average of the frame | **21 stops low.** Earth centred metered −17.68 vs a disc at EV 3 → 1057× exposure → white screen. Log-averages are robust to a bright *minority* and catastrophically not to a dark *majority*. |
+| 2. Unreal's percentile band p90–p98 | Fixed big subjects, broke small ones. On the sun, p90 = −23.6 (void) and p98 = −0.9 (sun): the band straddled two populations 23 stops apart. **A percentile of PIXELS conflates "how bright" with "how much of the frame".** |
+| 3. void rejection + log-average | **Still inverted.** Earth metered 0.85 (exposure 0.297); turning to the SUN metered −1.81 (exposure **1.404**). Turning toward the brightest object in the solar system *raised* exposure. |
+| 4. ✅ **weighted mean of LINEAR radiance** | Sun now meters 1.4 stops brighter than Earth. Direction correct. |
+
+**The mistake common to the first three was the domain, and it was avoidable from the start.**
+Log space is right for TONE MAPPING and wrong for ADAPTATION. Retinal illuminance is a *linear*
+integral of the field — the eye adapts to total flux arriving, not to a log-average of it. §8 asked
+for an eye rather than a camera, and log/percentile metering is exactly where *cameras* come from: a
+camera wants a chosen SUBJECT correctly exposed, so it must discount the rest of the frame. An eye
+cannot discount anything.
+
+A linear mean needs no void rejection and no percentile band, because **the void contributes ~0 to a
+linear sum by construction** — that is precisely the property attempts 2 and 3 were trying to fake.
+
+⚠ **A flux mean is only as good as the emissives.** It responds to whatever is genuinely bright, so an
+uncalibrated emissive now moves exposure. MEASURED: at Neptune the ship's exhaust glow (≈1.13 game
+units ≈ 6,800 cd/m², ~1% of frame) carries **13× the flux of Neptune's entire 92%-of-frame disc**,
+pulling the meter 1.7 stops bright. That is the meter reading a wrong input correctly — the same shape
+as D21/D23, where a physical correction exposed an asset that was only ever adequate because the
+previous code was forgiving. `__lum.exposure()` now reports **`top 1% flux share`** for exactly this:
+a physical scene sits low, and >~50% means one small hot feature is driving adaptation.
+
+### Phase 5 follow-ups from on-device tuning
+
+**`EXPOSURE_BIAS_STOPS = 2.5`, and it decomposes.** 0.79 stops are derived: the photographic constant
+places the metered luminance at 1/9.6 = 0.104 display-linear, but tone curves including AgX are built
+around middle grey ≈ 0.18, and log2(0.18/0.104) = 0.79. The remaining ~1.7 are authored — the user
+judged the physically-neutral result "a bit dark" *consistently across unrelated scenes* (Earth from
+the belt AND looking at the sun), and a consistent offset is a calibration constant rather than a
+per-scene tweak. It is the ONE artistic number in `exposureMeter.ts`. ⚠ It must never be used to mask
+a metering error: a scene wrong in only one view is a bug, and only a consistent offset belongs here.
+
+**The ship's hull emissive was 6,700 cd/m².** The GLB bakes lit-panel emissive at `emissiveIntensity 1`
+= 1.11 game units — as bright as a sunlit cloud top, on a small part, always on regardless of throttle
+(the plume is the separate `<EngineExhaust>`). Invisible while exposure was manual; load-bearing the
+moment Phase 5 metered a LINEAR flux mean, where ~1% of frame carried **13× the flux of Neptune's
+entire 92%-of-frame disc** and dragged adaptation 1.7 stops bright. Fixed at the source rather than
+worked around in the meter: `HULL_EMISSIVE_INTENSITY = 0.03` ≈ 200 cd/m², a plausible lit panel. Flux
+share vs Neptune's disc goes 13× → **0.38×**. Cloned rather than mutated, since `useGLTF` caches
+materials per URL. **No Blender edit needed.**
+
+**Player-facing brightness slider** added to Settings → Graphics, riding on `exposureStops` — the
+compensation term, which composes with the metered EV instead of replacing it, exactly as Unreal's
+ExposureCompensation does. So the eye still adapts and the player only shifts where it settles, which
+is the right control to expose given display peak luminance is not detectable (§3.5).
+
+### ⛔ D25 — the diffuse sky UNDERFLOWS half-float, and it is the same defect as the sun overflowing it
+
+`await __lum.probe()` on empty sky returns **`units: [0,0,0]`, `luma: 0`**. Not dim — exactly zero. The
+cause is numerical, not a lost multiply:
+
+| | value |
+|---|---|
+| RGBA16F smallest subnormal (2⁻²⁴) | **5.96e-8** — below this stores as exactly 0 |
+| sky p50 / p75 / p90 (correctly calibrated) | 9.6e-9 / 1.7e-8 / 2.8e-8 → **all underflow** |
+| sky p99 | 7.3e-8 → survives |
+| brightest star | 5.1e-6 → survives |
+
+So the panorama's stars store fine and its nebulosity flushes to zero — which is exactly what the
+render shows and exactly what the probe reports.
+
+**This is Phase 3b's problem at the other end.** There the sun disc (265,000) exceeded half-float's
+65,504 ceiling and needed a write clamp. Here the sky falls under its floor. The buffer offers ~40
+stops; the scene spans **44.6**. No fixed calibration can seat both ends at once.
+
+⚠ **Do NOT "fix" this by raising `SKY_TARGET_NITS`** — that recreates the original 189,000× error and
+turns deep space grey. **The fix is source pre-exposure (§3.2):** multiply radiance by the adapted
+exposure at write time and divide it out in the post chain. It works precisely *because* exposure
+tracks the scene — in a dark frame the sky is scaled up and the sun is not present; with the sun in
+frame exposure is ~0.05 and 265,000 × 0.05 = 13,250 sits comfortably inside range. The seams to touch
+already exist and are centralised (`surfaceRadiance`, `farCloudLit`, the atmosphere output, `Star.tsx`,
+the skybox, and `SunLight`'s two intensities), plus one division in the post chain.
+
+### ⛔ D26 — the player's own ship owns adaptation in dark scenes
+
+MEASURED with `HULL_EMISSIVE_INTENSITY = 0.03` (≈60 cd/m² peak) in a deep-space frame: the hull carried
+**99% of the metered flux** and stars vanished. At 0 the same frame meters −17 instead of −11.98.
+
+The meter is not wrong — physically your own lit hull *is* the brightest thing in interstellar space,
+so an eye would adapt to it and lose the sky. This is the **third-person camera problem** every game
+with a visible player vehicle hits, and the standard answer is to exclude or damp the player vehicle in
+metering rather than to dim the ship. Set to 0 as an interim; restore a physical value once the meter
+can discount the local scene. ⚠ Metering `rt` (pre-local) is not a shortcut — the atmosphere and clouds
+composite into `rtB`, so that would drop the sky near a planet.
+
+### ⛔ D27 — `SunLight` has no geometric planet shadow
+
+Inside Neptune's shadow the ship renders fully sunlit: at emissive 0 its peak is still 0.25 cd/m², and
+at exposure 65,140 that is 2.7 — blown. `SunLight` only attenuates via
+`getAtmosphereLighting().sunTransmittance`, which is atmospheric extinction, not a geometric eclipse
+test. Cheap fix available: the ray-sphere test against the dominant body already exists for the
+atmosphere pass.
+
+### Two more corrections found by the same measurements
+
+**⛔ My own luma clamp was above the sky.** The floor was 1e-8 game units; the rescaled skybox is
+9.6e-9 — so the clamp flattened the entire void to one value, and the reported distribution read
+p05 = p50 = p90 = p98 = −23.56. That destroyed exactly the star/sky contrast the metering needed to
+see. Now 1e-11 (6e-8 cd/m², three decades below scotopic threshold).
+
+**`EV_MIN` −16 → −18.** It was derived as "a mag-6 star renders at middle grey", but the panorama's
+texels are dimmer than the magnitudes they stand for, so at −16 only the brightest few hundred stars
+showed (measured: brightest sampled texel rendered 0.051). −18 gives 4× more headroom → 0.20. It only
+ever binds in near-total darkness.
+
+**⛔ `ADAPTATION_K = 0.67` was Stevens misapplied.** Stevens' ⅓ exponent describes brightness matching
+**within** a fixed adaptation state, not **across** adaptation — and across a large excursion the eye
+adapts far more completely than ⅓. Consequence, measured: Neptune's day side rendered 3.8 stops below
+middle grey (0.0065 linear — "barely visible", and it was). **Now 0.85**, leaving 44 × 0.15 ≈ 6.6
+stops of the world's range visible, still far from the k = 1 that would render deep space and sunlit
+Mercury identically.
+
+⚠ For the record, one thing that *is* working as intended and looked wrong: turning from dark space
+toward Earth shows Earth bright, then dimming. That is correct dark-adapted behaviour — a bright
+object is initially dazzling and settles as adaptation catches up. `TAU_BRIGHTEN` is only 0.25 s, so
+the settle is fast by design.
+
+#### Why FULL adaptation would have undone Phases 0–3
+
+Terrestrial games span 15–20 stops. **We measured 44.6** (deep space −23.6 → sun disc +21.0, game-unit
+EV). If exposure always maps the metered value to middle grey, deep space and sunlit Mercury render
+*equally bright* — the entire photometric effort would be thrown away in the last pass. This is the
+one decision that mattered.
+
+The amount is not taste. **Stevens' power law** puts perceived brightness ∝ L^≈0.33, so a 44-stop
+luminance range should present as ≈15 stops of perceived range, not 0:
+`adaptedEV = anchor + k·(metered − anchor)` with **k = 0.67**. That is what Unreal's compensation curve
+is hand-authored to accomplish; deriving it means it also holds for generated systems untuned (§3.0).
+
+Validated end to end before shipping:
+
+| scene | metered | target | stars render at | cloud tops | sun disc |
+|---|---|---|---|---|---|
+| deep space | −23.6 | −14.3 | **0.086** ✅ visible | — | — |
+| Earth high orbit | 3.06 | 3.59 | ~0 | 0.220 | — |
+| sunlit ground | 4.66 | 4.66 | ~0 | **0.104** = 1/9.6, middle grey ✅ | — |
+| sun 20% of frame | 18.7 | 14.1 | **2.5e-10** gone ✅ | 0.0002 | 12.9 blown ✅ |
+
+The last two rows are §8's requirement verbatim — "stars brightly visible unless something really
+bright, like the sun, is in the view" — arrived at by physics rather than art direction.
+
+#### ⚠ The unit trap, caught by checking
+
+**Every EV in `exposureMeter.ts` is a GAME-UNIT EV**, `log2(gameUnits × 8)` — *not* the cd/m² EV that
+`evFromGameUnits` and the `__lum` probe tables print. They differ by log2(6038) ≈ 12.6 stops, so
+confusing them is a 6,038× exposure error. The tell that settles it: `exposureFromEV` feeds
+`uExposure`, which multiplies the scene in game units, and `EV_MIN = −16` works out to 1.15e-2 cd/m²
+— a mag-6 star's per-pixel equivalent, exactly how §8 derived it. My first draft used cd/m² anchors
+(17.0 instead of 4.665) and would have been 12.6 stops off.
+
+#### Eye, not camera: asymmetric two-timescale
+
+Adapting to BRIGHTER is fast and protective — τ 0.25 s, the squint response that stops a glance at the
+sun from blinding you. Adapting to DARKER is slow and slower the darker it gets: τ 2 s photopic
+(cones) ramping to 6 s below the mesopic boundary (rods, really 20–40 minutes, compressed per §8).
+Looking away from a planet into deep space therefore gives a gradual star reveal rather than an
+instant one.
+
+Also: **centre-weighted metering** (power 2, 5% edge floor), because the eye's adaptation is strongly
+foveal and because without it, flying toward a planet against a mostly-empty starfield meters the
+empty part and blows the planet out — the subject-versus-sky failure, which here is the common case.
+
+#### The skybox rescale
+
+`MilkyWaySkybox` had `map: tex` and nothing else, so the texture's sRGB-decoded value WAS the radiance:
+a whole-sky mean of 0.0031 game units = **19 cd/m²** against a real interplanetary ~1e-4. That is
+189,000× hot and sat ~1,600× above a mag-6 star, so **no exposure could ever have shown stars** — which
+is why this was promoted out of Phase 7. The scale is derived (target ÷ the texture's own
+solid-angle-weighted mean linear luminance, measured 0.003137 — the sin θ weight matters), and it
+cross-checks against the independent in-engine probe of 17.3 cd/m².
+
+✅ **Stars survive it**, measured at mip 1: median sky 5.8e-5 cd/m², p99.9 1.5e-3, brightest texel
+3.1e-2 — a 530× contrast, brightest stars near naked-eye mag 4–5. An earlier read off mip 4 suggested
+they would vanish; that was mip-averaging of point sources. **Measure point features at full res.**
+
+⚠ Not addressed: the skybox mesh uses `geo.scale(-1,1,1)` to face inward, which mirrors the panorama —
+the same chirality class as D24, but far harder to notice on a starfield. And `StarsComponent.tsx`
+exists but is not mounted anywhere, so the panorama is the only star source.
 
 ### 5.2 The readback bug — two traps in `readRenderTargetPixelsAsync`
 

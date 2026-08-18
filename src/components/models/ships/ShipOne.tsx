@@ -12,6 +12,7 @@ import { useGLTF } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
 import { Mesh, MeshStandardMaterial } from "three";
 
+import { useMemo } from "react";
 import type { JSX } from "react";
 
 type GLTFResult = GLTF & {
@@ -23,17 +24,55 @@ type GLTFResult = GLTF & {
   };
 };
 
+// ── Hull emissive on the photometric scale (LIGHTING_PLAN Phase 5) ──────────
+// The GLB's baked emissive (lit panels / nozzle interiors) ships at
+// emissiveIntensity 1, which MEASURED at 1.11 game units ≈ **6,700 cd/m²** — as
+// bright as a sunlit cloud top, on a small ship part, always on regardless of
+// throttle (the actual thruster plume is the separate <EngineExhaust>).
+//
+// That was invisible while exposure was manual, and became load-bearing the
+// moment Phase 5 metered on a LINEAR flux mean: an emissive at ~1% of frame
+// carried **13× the flux of Neptune's entire 92%-of-frame disc**, dragging
+// adaptation 1.7 stops bright and darkening the planet behind it. A flux mean is
+// only as good as the emissives — so the emissive gets a physical value rather
+// than the meter getting a workaround.
+//
+// ⚠ 0 FOR NOW, and the reason is not that a glowing hull is wrong. MEASURED at
+// 0.03 (≈60 cd/m² peak): in a deep-space frame the hull still carried **99% of
+// the metered flux** and owned adaptation outright, so stars vanished. At 0 the
+// same frame meters −17 instead of −11.98.
+//
+// That is not the meter misbehaving — it is the THIRD-PERSON CAMERA problem every
+// game with a visible player vehicle hits: the flux mean is physically right, and
+// physically your own lit hull *is* the brightest thing in interstellar space, so
+// an eye would adapt to it and lose the sky. Games solve this by excluding or
+// damping the player vehicle in metering, not by dimming the ship.
+//
+// ⇒ Restore a real value (0.03 ≈ 200 cd/m², or 0.15 ≈ 1,000) once the meter can
+// discount the local scene. Until then 0 keeps deep space legible. The units are
+// real, so any value chosen later is a physical statement, not a fudge.
+const HULL_EMISSIVE_INTENSITY = 0;
+
 export function ShipOne({ children, ...props }: JSX.IntrinsicElements["group"]) {
   const { nodes, materials } = useGLTF(
     "/models/ships/ShipOne.glb"
   ) as unknown as GLTFResult;
+  // CLONE rather than mutate: useGLTF caches materials per URL, so writing to the
+  // hook's material would be a cross-instance side effect during render (and the
+  // lint rule is right to object). The clone is memoised on the source material,
+  // so it happens once per loaded GLB, not per frame.
+  const hull = useMemo(() => {
+    const m = materials["Material.003"].clone();
+    m.emissiveIntensity = HULL_EMISSIVE_INTENSITY;
+    return m;
+  }, [materials]);
   return (
     <group {...props} dispose={null} scale={0.3}>
       <mesh
         castShadow
         receiveShadow
         geometry={nodes.Starship_Material003_0.geometry}
-        material={materials["Material.003"]}
+        material={hull}
         scale={0.01}
       />
       {children}

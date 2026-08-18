@@ -91,6 +91,31 @@ const renderSubMenu = (
             }
             label="AgX tone mapping"
           />
+          {/* Player-facing brightness. Rides on TOP of auto-exposure rather than
+              replacing it: `exposureStops` is the compensation term, which
+              composes with the metered EV (photometry.ts) exactly the way
+              Unreal's ExposureCompensation does. So the eye still adapts; the
+              player only shifts where it settles — which is what a display
+              brightness control should do, since we cannot detect their panel. */}
+          <label className="dev-controls__label">
+            brightness {settings.exposureStops > 0 ? "+" : ""}
+            {(settings.exposureStops ?? 0).toFixed(1)} stops
+            {(settings.exposureStops ?? 0) === 0 ? " (default)" : ""}
+            <input
+              type="range"
+              className="dev-controls__range"
+              min={-4}
+              max={4}
+              step={0.5}
+              value={settings.exposureStops ?? 0}
+              onChange={(e) =>
+                setSettings((prev) => ({
+                  ...prev,
+                  exposureStops: Number(e.target.value),
+                }))
+              }
+            />
+          </label>
         </>
       );
     case SubMenu.Controls: {

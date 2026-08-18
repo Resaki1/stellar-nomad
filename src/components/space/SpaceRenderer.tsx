@@ -37,6 +37,7 @@ import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
 import { setExposureCompensation, uExposure } from "./photometry";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
+import { updateExposureMeter } from "./exposureMeter";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -633,7 +634,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     clearedHistoryCount.current = 0;
   }, [historyRts, sparseCloudRts]);
 
-  useFrame(() => {
+  useFrame((_state, delta) => {
     // Skip until WebGPU backend is ready (init is async).
     if (!(gl as unknown as WebGPURenderer).initialized) return;
 
@@ -1052,6 +1053,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // radius into a pixel radius analytically, instead of thresholding on
     // luminance (which would let the atmosphere's halo inflate the footprint).
     setLumSource(renderer, rtB ?? rt, scaledCamera);
+
+    // ── Phase 5: auto-exposure / eye adaptation ──────────────────────────────
+    // Meters the SAME pre-exposure buffer `__lum` probes — it must be this side
+    // of the tone chain or metering becomes a feedback loop on its own output.
+    // No-ops while exposure is pinned (`__lum`, `__bench`). Fire-and-forget
+    // readback; never stalls the pipeline.
+    updateExposureMeter(renderer, (rtB ?? rt).texture, delta);
 
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();
