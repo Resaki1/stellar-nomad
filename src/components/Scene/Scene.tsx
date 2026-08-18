@@ -127,7 +127,8 @@ const Scene = () => {
   const localContent = useMemo(
     () => (
       <>
-        <ambientLight intensity={0.5} />
+        {/* SunLight owns BOTH the key light and the bounce fill now — they
+            must scale together with star distance (Phase 3 / D03). */}
         <SunLight />
         <AtmosphereSkyLight />
         <SpaceShip />
