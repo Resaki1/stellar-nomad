@@ -31,7 +31,8 @@
       "type": "star",
       "positionKm": [0, 0, 0],
       "radiusKm": 696340,
-      "luminositySun": 1.0
+      "luminositySun": 1.0,
+      "tempK": 5772
     },
     {
       "id": "mercury",

@@ -6,7 +6,10 @@ import * as THREE from "three";
 import { STAR_POSITION_KM } from "./Star";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { getAtmosphereLighting } from "@/components/space/atmospherePass";
-import { sunIlluminanceAt } from "@/components/space/photometry";
+import {
+  STAR_COLOR_LINEAR,
+  sunIlluminanceAt,
+} from "@/components/space/photometry";
 import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
 
 type SunLightProps = {
@@ -39,13 +42,24 @@ const BOUNCE_FILL_FRACTION = 1 / 60;
 
 const SunLight = ({
   sunPositionKm = STAR_POSITION_KM,
-  color = "white",
+  color,
 }: SunLightProps) => {
   const ref = useRef<THREE.DirectionalLight>(null!);
   const fillRef = useRef<THREE.AmbientLight>(null!);
   const worldOrigin = useWorldOrigin();
-  // Base (untinted) light colour; the atmosphere transmittance multiplies it.
-  const baseColor = useMemo(() => new THREE.Color(color), [color]);
+  // ── Key-light colour: the STAR's blackbody hue, not white (defect D18) ──────
+  // This was hardcoded `"white"`, so the ship and asteroids were lit by a D65
+  // illuminant while the star's own disc rendered at its blackbody colour — the
+  // two disagreed. Luminance-normalised, so the intensity set below is still the
+  // full illuminance; only the hue changes. An explicit `color` prop still wins,
+  // for debugging. See STAR_COLOR_LINEAR for the white-balance caveat.
+  const baseColor = useMemo(
+    () =>
+      color !== undefined
+        ? new THREE.Color(color)
+        : new THREE.Color(...STAR_COLOR_LINEAR),
+    [color],
+  );
 
   useFrame(() => {
     // DirectionalLight.position is interpreted as a direction vector.
@@ -94,7 +108,7 @@ const SunLight = ({
   // Intensities start at 0 and are set on the first frame from the live distance.
   return (
     <>
-      <directionalLight ref={ref} intensity={0} color={color} />
+      <directionalLight ref={ref} intensity={0} />
       <ambientLight ref={fillRef} intensity={0} />
     </>
   );

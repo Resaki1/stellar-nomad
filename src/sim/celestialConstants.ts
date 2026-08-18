@@ -42,6 +42,15 @@ export const STAR_RADIUS_KM = sol.radiusKm;
  */
 export const STAR_LUMINOSITY_SUN = sol.luminositySun ?? 1;
 
+/**
+ * Effective temperature of the primary, K. Drives the star's blackbody COLOUR
+ * (`blackbodyLinearSrgb`), replacing Star.tsx's hardcoded G2V `vec3(1,.95,.9)` —
+ * without this a generated M-dwarf or B-star renders Sol-coloured (§3.0). Same
+ * procedural-systems seam as STAR_LUMINOSITY_SUN. Default 5772 = Sol.
+ */
+export const STAR_TEMP_K: number =
+  (sol as { tempK?: number }).tempK ?? 5772;
+
 /** Mercury position in km. */
 export const MERCURY_POSITION_KM = mercury.positionKm as [number, number, number];
 /** Mercury radius in km. */

@@ -11,7 +11,7 @@ import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
-import { sunIlluminanceAt } from "../space/photometry";
+import { STAR_COLOR_LINEAR, sunIlluminanceAt } from "../space/photometry";
 import { useFarLOD } from "./useFarLOD";
 import {
   setAtmosphereBody,
@@ -394,7 +394,14 @@ function CelestialBody({ config }: CelestialBodyProps) {
       starDistKm,
       STAR_LUMINOSITY_SUN,
     );
-    uSunIlluminance.value.set(illum, illum, illum);
+    // D18: tinted by the star's blackbody colour (luminance-normalised, so the
+    // total illuminance is still `illum`). Grey here would light an M-dwarf's
+    // planets stark white — see STAR_COLOR_LINEAR.
+    uSunIlluminance.value.set(
+      illum * STAR_COLOR_LINEAR[0],
+      illum * STAR_COLOR_LINEAR[1],
+      illum * STAR_COLOR_LINEAR[2],
+    );
 
     // ── Ship distance ──
     _shipToBody.set(

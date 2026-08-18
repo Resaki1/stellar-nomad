@@ -104,7 +104,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D15 | Sun disc radiance 61× below its own scale | [`Star.tsx:80`](../src/components/Star/Star.tsx#L80) | **61×** | R |
 | D16 | Night side has nothing but a texture | — | — | I |
 | D17 | `sunIlluminance` baked at module load from a static position | [`atmosphereData.ts:249`](../src/components/celestial/bodies/atmosphereData.ts#L249) | blocks orbital motion + procedural systems | F |
-| D18 | Star radius, colour and luminance hardcoded G2V/Sol | [`Star.tsx:38,154`](../src/components/Star/Star.tsx#L38) | blocks procedural systems | F |
+| D18 ✅ | Star radius, colour and luminance hardcoded G2V/Sol | [`Star.tsx:38,154`](../src/components/Star/Star.tsx#L38) | blocks procedural systems | F |
 | D19 | No scotopic/mesopic vision model; deep space is underexposed daylight | — | look, not correctness | I |
 | D20 | Luna's `stellarPoint.geometricAlbedo` is 0.0036 vs a measured 0.136 | [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) | **38×** too dim | I |
 | D21 | `earth_normal` is 2K/58 KB; 1 LSB = 1.00° spurious tilt, and `N·L` amplifies it 1/cosθ | `public/textures/earth_normal.ktx2` | ±28% hard-edged steps at 87° SZA; **asset, mitigated in-shader** — §5.5 | I |
@@ -1073,7 +1073,7 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **2c** | Albedo-authoritative texture calibration (§3.0, D09 + **D23**) | per-body 0.37×–5.4×; Earth's disc **0.146 → 0.434** is now **entirely** surface texture (§5.7). ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works** | medium |
 | **2d** ✅ | `CLOUD_SUN_SCALE` → `albedo/π` = 0.223 **+ `SHELL_OPTICAL_PATH` 1 → 60 (a units error, not a fit) + erosion-area factor 0.5** | cloud cover 3.5% → **21.9%** measured (user chose 0.5 over 0.3 for edge detail); see §5.7 | medium |
 | **3a** ✅ | **Distance-correct sun for ship + asteroids** — `SunLight.intensity` and the bounce fill from live star distance via the SAME `sunIlluminanceAt` the planets use | ship/asteroids stop being lit by a constant: 4.7× brighter at Mercury, 1,280× dimmer at Neptune | medium |
-| **3b** | `CORE_HDR` 4096 → ~265,000 pre-exposed with the write-clamp; star radius + blackbody colour from its description | the sun disc becomes physically bright | medium |
+| **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
 | **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** | GPU histogram auto-exposure + two-timescale adaptation + `evMin`/`evMax`; pin `__bench` exposure; **rescale the Milky Way skybox to absolute luminance (measured 170,000× hot — §2.2.2; promoted from Phase 7 because no exposure can show stars against it)** | the "eye" arrives; ground↔space transitions work; stars become visible | medium |
 | **6** | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
@@ -1469,6 +1469,69 @@ instrumented (`dilated`/`carved`/`eroded` distributions), not more knob sweeps.*
 globe above 0.05, 64% above 0.10, against Earth's ~67% — its *values* are low because it is
 reflectance-encoded, and every transfer that lifts its mean to 0.567 saturates 25–44% of the globe
 to flat white); and `maxProfile` ≈ 1, so the profile is not attenuating anything.
+
+### 5.8 Phase 3 — as built (2026-08-17)
+
+**3a — D03, the last structural 1/r² error.** `SunLight.tsx` carried a hardcoded `intensity = 30`.
+Every planet had scaled correctly since 2a, so the ship — the one object on screen in every frame —
+was the only thing lit by a constant: **0.21× at Mercury, 1,280× at Neptune, a 6,037× span** that
+matches the audit's D03 figure exactly. Now `sunIlluminanceAt(distKm, STAR_LUMINOSITY_SUN)`, the
+same helper the surfaces and atmosphere pass use, so ship and bodies cannot drift and generated
+systems need no tuning.
+
+⚠ The flat `<ambientLight intensity={0.5}/>` **had to move with it** — against Neptune's 0.0234 sun a
+fixed fill is 21× brighter than the star, i.e. a flat grey cut-out ship in the outer system. It is
+now `illuminance × 1/60`, and `SunLight` owns both lights so they cannot desync. **1/60 preserves the
+shipped 30 : 0.5 key:fill ratio exactly**, so the only change at 1 AU is a uniform 1.42× dim
+(30 → 21.2, the convention's own value) that the exposure stage absorbs — the ship's modelling is
+untouched, only its absolute level corrected. *Reusable: when fixing an absolute scale, pick the
+companion constant to preserve the existing ratio, and the visible change becomes one global factor
+instead of a re-tune.*
+
+**3b — the star's surface.** `CORE_HDR = 4096` → `SUN_DISC_RADIANCE_GAME ≈ 265,000`, derived from the
+photosphere's 1.6e9 cd/m² and **distance-independent** (a surface's radiance does not fall off with
+range; only its solid angle does). Three things had to come with it:
+
+- **`HALF_FLOAT_WRITE_MAX = 60,000` clamp on the write.** 265,000 exceeds RGBA16F's 65,504, and an
+  `Inf` in that buffer becomes NaN through every filter downstream — bloom's mip chain, TAA, the
+  half-res AP upsample — where one texel poisons a neighbourhood. The clipping is invisible (any
+  exposure showing 60,000 as other than flat white shows 265,000 the same), but it means **nothing
+  may infer the star's flux from the buffer** — Phase 8's glare must read the constant.
+- **Sub-pixel flux conservation.** `uCoreRatio` keeps the disc at its true angular size at all
+  ranges, so it genuinely goes sub-pixel outward (Neptune: 0.38 px). At 265,000 that strobes — one
+  fragment sample decides between a 265,000 core and nothing, which is precisely the instability the
+  old `4096` comment settled for. Below a 2.5 px floor the core is drawn at the floor with radiance
+  divided by the area ratio; verified exact (30 AU: true px² 0.1468 = rendered px²×scale 0.1468).
+  Same trick `StellarPoint` already used.
+- **Blackbody colour.** `vec3(1, 0.95, 0.9)` only ever described a G2V star. Now Planck integrated
+  against CIE 1931 CMFs (Wyman/Sloan/Shirley analytic fits) → linear sRGB, **luminance-normalised so
+  it carries hue only** and the magnitude stays `SUN_DISC_RADIANCE_GAME`'s job. Sol's 5772 K lands at
+  (1.110, 0.976, 0.912), within a few percent of the hand-picked value — and a 3500 K M-dwarf now
+  renders orange, a 20,000 K B-star blue, with no per-system work. `tempK` added to the system
+  description alongside `luminositySun`; `STAR_RADIUS_KM` replaces a duplicated 696,340 literal.
+
+**D18 — the illuminant's colour, closed in the same phase (and only because the user asked).** I
+marked Phase 3 done with `tempK` wired to the star's DISC only. The three sites that actually cast
+sunlight were all still grey: `atmospherePass`'s `rec.sunIlluminance` (sky + clouds),
+`CelestialBody`'s `uSunIlluminance` (every planet surface) and `SunLight`'s hardcoded `"white"`
+(ship + asteroids). So the star rendered at its blackbody colour while everything it lit was D65 —
+the two disagreed, and the atmosphere site's own comment had already flagged it as "becomes a
+per-channel tint in Phase 3 — defect D18".
+
+All three now multiply `STAR_COLOR_LINEAR`, one definition in photometry.ts.
+**Luminance-normalised is the load-bearing property**: 21.2 game units stays 21.2 after tinting, so
+§3.1's calibration is untouched and only the hue moves. Sol is a ±10% warm nudge; a 3500 K M-dwarf is
+(1.553, 0.896, 0.405), which is why grey was untenable for §3.0.
+
+⚠ Known tension, resolved deliberately: the body textures are photographs, i.e. closer to
+"reflectance already white-balanced under daylight" than to raw spectral reflectance, so a physical
+illuminant arguably double-counts the sun's warmth. The choice is to keep the ILLUMINANT physical and
+leave viewer chromatic adaptation to the eye model (Phase 7), where the real eye does it. Do not grey
+this out to remove a warm cast.
+
+Resulting disc: 265,000 radiance while resolved (Mercury 29.8 px, Earth 11.5 px), falling to 6,224
+at Neptune's 0.38 px and 563 at 100 AU — so apparent brightness now drops through **solid angle**,
+which is the physics, rather than through a fudged radiance.
 
 ### 5.2 The readback bug — two traps in `readRenderTargetPixelsAsync`
 

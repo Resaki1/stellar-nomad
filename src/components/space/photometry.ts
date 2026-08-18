@@ -49,6 +49,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import { float, uniform } from "three/tsl";
+import { STAR_TEMP_K } from "@/sim/celestialConstants";
 
 // ── The anchor ───────────────────────────────────────────────────────
 
@@ -313,3 +314,148 @@ export const setExposureEV = setMeteredEV;
 export function setManualExposure(manual: boolean): void {
   _manual = manual;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// PHASE 3b — the star's own surface, and its colour
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Mean luminance of the Sun's photosphere, cd/m². Distance-INDEPENDENT: a
+ * surface's radiance does not fall off with range (only its solid angle does),
+ * so this is the value the disc should carry from Mercury to Neptune alike.
+ */
+export const SUN_DISC_LUMINANCE_NITS = 1.6e9;
+
+/**
+ * The disc's radiance in game units — ≈265,000, i.e. **4.0× over RGBA16F's
+ * 65,504 ceiling**. This is why the write clamp below is a NUMERICAL
+ * requirement rather than an aesthetic one, and why `Star.tsx`'s old
+ * `CORE_HDR = 4096` was 65× short of physical.
+ */
+export const SUN_DISC_RADIANCE_GAME =
+  SUN_DISC_LUMINANCE_NITS / NITS_PER_GAME_UNIT;
+
+/**
+ * Largest value safe to WRITE into an RGBA16F target. Half-float's max finite
+ * is 65,504; leaving headroom means an additive blend of disc + glow cannot tip
+ * to `Inf`, which would poison every filter downstream (bloom's mip chain, TAA,
+ * the half-res AP upsample) with NaN — the "one bad texel poisons a whole
+ * square" failure mode.
+ *
+ * ⚠ Clipping here is invisible and that is the point: any exposure that renders
+ * 60,000 as anything but flat white also renders 265,000 as flat white. Nothing
+ * downstream may INFER the star's flux from this buffer — read
+ * `SUN_DISC_RADIANCE_GAME` (or a per-star uniform) instead. Phase 8's glare
+ * depends on that distinction.
+ */
+export const HALF_FLOAT_WRITE_MAX = 60_000;
+
+/**
+ * A star's radiance scaled so that a disc rendered at `renderedPx` conserves the
+ * flux of a disc that truly subtends `truePx`.
+ *
+ * Below ~2 px a disc cannot be rasterised honestly: the fragment either samples
+ * it or misses, so a physically bright core flickers violently frame to frame
+ * (the risk `Star.tsx`'s original comment named when it settled for 4096). The
+ * fix is the same one `StellarPoint` already uses — draw at a pixel floor and
+ * divide the radiance by the area ratio, so the integrated flux is right even
+ * though the shape is not.
+ */
+export function subPixelFluxScale(truePx: number, renderedPx: number): number {
+  if (renderedPx <= 0) return 0;
+  if (truePx >= renderedPx) return 1;
+  const r = truePx / renderedPx;
+  return r * r;
+}
+
+// ── Blackbody colour ─────────────────────────────────────────────────
+// Planck's law integrated against the CIE 1931 colour-matching functions, then
+// XYZ → linear sRGB. Replaces `Star.tsx`'s hardcoded `vec3(1, 0.95, 0.9)`, which
+// only ever described a G2V star — a procedurally generated M-dwarf or B-star
+// has to get its colour from its temperature or every generated system looks
+// like Sol (§3.0). Analytic CMF fits: Wyman, Sloan & Shirley, JCGT 2013.
+
+const xFit = (w: number) =>
+  1.056 * g(w, 599.8, 37.9, 31.0) +
+  0.362 * g(w, 442.0, 16.0, 26.7) -
+  0.065 * g(w, 501.1, 20.4, 26.2);
+const yFit = (w: number) =>
+  0.821 * g(w, 568.8, 46.9, 40.5) + 0.286 * g(w, 530.9, 16.3, 31.1);
+const zFit = (w: number) =>
+  1.217 * g(w, 437.0, 11.8, 36.0) + 0.681 * g(w, 459.0, 26.0, 13.8);
+
+/** Piecewise-Gaussian lobe: different falloff either side of the peak. */
+function g(x: number, mu: number, s1: number, s2: number): number {
+  const t = (x - mu) * (x < mu ? 1 / s1 : 1 / s2);
+  return Math.exp(-0.5 * t * t);
+}
+
+/** Spectral radiance of a blackbody at wavelength `nm`, arbitrary scale. */
+function planck(nm: number, tempK: number): number {
+  const l = nm * 1e-9;
+  const c1 = 3.7418e-16; // 2πhc²
+  const c2 = 1.4388e-2; // hc/k
+  return c1 / (Math.pow(l, 5) * (Math.exp(c2 / (l * tempK)) - 1));
+}
+
+/**
+ * Blackbody temperature → linear sRGB, normalised so the **luminance is 1**.
+ * That normalisation matters: the star's brightness comes from
+ * `SUN_DISC_RADIANCE_GAME`, so this must contribute hue only, never magnitude.
+ * Sol (5772 K) lands very close to the old hand-picked (1, 0.95, 0.9).
+ */
+export function blackbodyLinearSrgb(tempK: number): [number, number, number] {
+  let X = 0;
+  let Y = 0;
+  let Z = 0;
+  for (let nm = 380; nm <= 780; nm += 5) {
+    const p = planck(nm, tempK);
+    X += p * xFit(nm);
+    Y += p * yFit(nm);
+    Z += p * zFit(nm);
+  }
+  // Normalise on Y (luminance) so only chromaticity survives.
+  if (Y <= 0) return [1, 1, 1];
+  X /= Y;
+  Z /= Y;
+  Y = 1;
+  // CIE XYZ (D65) → linear sRGB.
+  const r = 3.2406 * X - 1.5372 * Y - 0.4986 * Z;
+  const gg = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
+  const b = 0.0557 * X - 0.204 * Y + 1.057 * Z;
+  // Clamp the out-of-gamut negatives a very hot/cool blackbody produces, then
+  // re-normalise luminance (clamping changes it).
+  const c: [number, number, number] = [
+    Math.max(0, r),
+    Math.max(0, gg),
+    Math.max(0, b),
+  ];
+  const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  return lum > 0 ? [c[0] / lum, c[1] / lum, c[2] / lum] : [1, 1, 1];
+}
+
+/**
+ * The primary's colour as luminance-normalised linear sRGB — the ONE definition
+ * every consumer of "sunlight" should multiply by (defect D18).
+ *
+ * ⚠ LUMINANCE-NORMALISED IS THE LOAD-BEARING PART. `blackbodyLinearSrgb` divides
+ * out luminance, so this changes HUE ONLY: an illuminance of 21.2 game units
+ * stays 21.2 after tinting, and the whole photometric calibration (§3.1) is
+ * untouched. Multiplying by a non-normalised blackbody would silently rescale
+ * every surface in the system.
+ *
+ * For Sol this is a ±10% warm nudge — (1.110, 0.976, 0.912), because 5772 K is
+ * warmer than linear sRGB's D65 white point. It matters far more for generated
+ * systems: a 3500 K M-dwarf is (1.553, 0.896, 0.405), and leaving the illuminant
+ * grey there would light an orange star's planets stark white (§3.0).
+ *
+ * ⚠ KNOWN TENSION, deliberately resolved this way: the body textures are
+ * PHOTOGRAPHS, so they are closer to "reflectance already white-balanced under
+ * daylight" than to raw spectral reflectance — meaning a physical illuminant
+ * arguably double-counts the sun's warmth. The choice here is to keep the
+ * ILLUMINANT physical and leave viewer chromatic adaptation to the eye model
+ * (Phase 7), which is where the real eye does it. Do NOT "fix" a warm cast by
+ * greying this out; that would break every generated system.
+ */
+export const STAR_COLOR_LINEAR: readonly [number, number, number] =
+  blackbodyLinearSrgb(STAR_TEMP_K);

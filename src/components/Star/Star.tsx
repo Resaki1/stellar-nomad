@@ -12,7 +12,6 @@ import {
   modelWorldMatrix,
   cameraViewMatrix,
   cameraProjectionMatrix,
-  vec3,
   vec4,
   float,
   length,
@@ -26,7 +25,17 @@ import {
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
-import { STAR_POSITION_KM } from "@/sim/celestialConstants";
+import {
+  STAR_POSITION_KM,
+  STAR_RADIUS_KM,
+  STAR_TEMP_K,
+} from "@/sim/celestialConstants";
+import {
+  blackbodyLinearSrgb,
+  HALF_FLOAT_WRITE_MAX,
+  SUN_DISC_RADIANCE_GAME,
+  subPixelFluxScale,
+} from "@/components/space/photometry";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 
 export { STAR_POSITION_KM };
@@ -35,7 +44,9 @@ type StarProps = {
   bloom: boolean;
 };
 
-const RADIUS_KM = 696_340;
+// From the system description (was a duplicated 696_340 literal) so a generated
+// system's primary gets its own radius — Phase 3b / §3.0.
+const RADIUS_KM = STAR_RADIUS_KM;
 const RADIUS = kmToScaledUnits(RADIUS_KM); // 696.34 scaled units
 
 // ── Reusable vectors ──
@@ -75,9 +86,24 @@ const GLOW_PAD = 8;
 // is large enough from the outer solar system for stable rendering.
 const MIN_SCREEN_PX = 60;
 
-// Core HDR brightness — above bloom threshold (1.0) but moderate enough
-// that sub-pixel drift doesn't cause visible bloom flicker.
-const CORE_HDR = 4096;
+// ── Disc radiance (Phase 3b) ─────────────────────────────────────────────────
+// Was `CORE_HDR = 4096`, justified as "above bloom threshold but moderate enough
+// that sub-pixel drift doesn't cause visible bloom flicker". The physical value
+// is SUN_DISC_RADIANCE_GAME ≈ 265,000 — **65× higher** — and it is
+// distance-INDEPENDENT, because a surface's radiance does not fall off with
+// range (only its solid angle does).
+//
+// The old comment's worry was real, and it is handled properly now rather than
+// by under-writing the number: below PX_FLOOR the disc is sub-pixel and cannot be
+// rasterised honestly (a fragment either samples it or misses → violent
+// flicker), so it is drawn at the floor size with its radiance divided by the
+// area ratio. Flux is conserved; only the shape is approximate. Same trick
+// StellarPoint already uses.
+const DISC_PX_FLOOR = 2.5;
+// Glow magnitudes stay RELATIVE to the disc, as before (0.3 / a fixed 8), so the
+// star's shape is unchanged — only its absolute level is corrected.
+const INNER_GLOW_FRAC = 0.3;
+const OUTER_GLOW_ABS = 8.0;
 
 function Star({ bloom: _bloom }: StarProps) {
   const worldOrigin = useWorldOrigin();
@@ -87,6 +113,15 @@ function Star({ bloom: _bloom }: StarProps) {
   const uScale = useMemo(() => uniform(RADIUS * GLOW_PAD), []);
   // Fraction of billboard radius that is the star disc [0..0.5].
   const uCoreRatio = useMemo(() => uniform(1 / GLOW_PAD), []);
+  // Disc radiance, game units. Physical (SUN_DISC_RADIANCE_GAME) while the disc
+  // resolves; flux-conserving below DISC_PX_FLOOR — see the constant.
+  const uCoreRadiance = useMemo(() => uniform(SUN_DISC_RADIANCE_GAME), []);
+  // Blackbody hue from the primary's T_eff, luminance-normalised so it carries
+  // colour ONLY — the magnitude is uCoreRadiance's job.
+  const uStarColor = useMemo(() => {
+    const [r, g, b] = blackbodyLinearSrgb(STAR_TEMP_K);
+    return uniform(new THREE.Color(r, g, b));
+  }, []);
 
   const geo = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
 
@@ -135,23 +170,35 @@ function Star({ bloom: _bloom }: StarProps) {
         max(uCoreRatio.sub(uCoreRatio.mul(0.15)), float(0)),
         dist,
       );
-      const disc = discEdge.mul(float(CORE_HDR));
+      const disc = discEdge.mul(uCoreRadiance);
 
       // Inner glow: bright halo just beyond the disc. Falls off with
       // distance² for a concentrated luminous feel.
       const innerR = float(0.35);
       const innerFalloff = clamp(innerR.sub(dist).div(innerR), 0, 1);
-      const innerGlow = pow(innerFalloff, float(2.5)).mul(float(CORE_HDR * 0.3));
+      const innerGlow = pow(innerFalloff, float(2.5)).mul(
+        uCoreRadiance.mul(float(INNER_GLOW_FRAC)),
+      );
 
       // Outer glow: wide soft halo extending to billboard edge.
       // Stays above bloom threshold (1.0) for the inner half.
       const outerFalloff = clamp(float(1.0).sub(dist), 0, 1);
-      const outerGlow = pow(outerFalloff, float(3.5)).mul(float(8.0));
+      const outerGlow = pow(outerFalloff, float(3.5)).mul(float(OUTER_GLOW_ABS));
 
-      const brightness = disc.add(innerGlow).add(outerGlow);
+      // ⚠ CLAMP THE WRITE. 265,000 exceeds RGBA16F's 65,504 finite max, so an
+      // unclamped disc stores `Inf` — and Inf survives every filter downstream
+      // (bloom's mip chain, TAA, the half-res AP upsample) as NaN, where one bad
+      // texel poisons a whole neighbourhood. Clipping is invisible: any exposure
+      // that renders 60,000 as other than flat white renders 265,000 the same.
+      // ⚠ NOTHING may infer the star's flux from this buffer — read
+      // SUN_DISC_RADIANCE_GAME instead (Phase 8's glare depends on that).
+      const brightness = disc
+        .add(innerGlow)
+        .add(outerGlow)
+        .min(float(HALF_FLOAT_WRITE_MAX));
 
-      // G2V star: warm white
-      const color = vec3(1.0, 0.95, 0.9).mul(brightness);
+      // Blackbody colour from the primary's T_eff (was a hardcoded G2V tint).
+      const color = uStarColor.mul(brightness);
 
       // Alpha ramps to zero at billboard edge so additive blending
       // doesn't add light where there's no glow.
@@ -161,7 +208,7 @@ function Star({ bloom: _bloom }: StarProps) {
     })();
 
     return m;
-  }, [uScale, uCoreRatio]);
+  }, [uScale, uCoreRatio, uCoreRadiance, uStarColor]);
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
@@ -171,7 +218,8 @@ function Star({ bloom: _bloom }: StarProps) {
       STAR_POSITION_KM[1] - worldOrigin.shipPosKm.y,
       STAR_POSITION_KM[2] - worldOrigin.shipPosKm.z,
     );
-    const distScaled = _shipToStar.length() * 0.001;
+    const distKm = _shipToStar.length();
+    const distScaled = distKm * 0.001;
 
     // Physical billboard size: star radius + glow padding.
     const physicalHalf = RADIUS * GLOW_PAD;
@@ -193,6 +241,26 @@ function Star({ bloom: _bloom }: StarProps) {
 
     uScale.value = halfExtent * 2; // PlaneGeometry goes ±0.5, so ×2
     uCoreRatio.value = RADIUS / halfExtent;
+
+    // ── Sub-pixel flux conservation (Phase 3b) ───────────────────────────────
+    // uCoreRatio above keeps the disc at its TRUE angular size at every range —
+    // MIN_SCREEN_PX only enlarges the glow canvas — so from the outer system the
+    // disc genuinely goes sub-pixel (Neptune: the Sun is ~0.4 px). At the
+    // physical 265,000 that would strobe: one fragment sample decides whether
+    // the frame gets a 265,000 core or nothing.
+    //
+    // So below DISC_PX_FLOOR, draw the core at the floor and scale its radiance
+    // by the area ratio. Integrated flux is preserved, the star stays a steady
+    // point, and nothing above the floor is touched.
+    const discPx = (RADIUS_KM * 2 / distKm / fovRad) * screenH;
+    if (discPx < DISC_PX_FLOOR) {
+      uCoreRatio.value = (DISC_PX_FLOOR / 2 / screenH) * fovRad
+        * distScaled / halfExtent;
+      uCoreRadiance.value =
+        SUN_DISC_RADIANCE_GAME * subPixelFluxScale(discPx, DISC_PX_FLOOR);
+    } else {
+      uCoreRadiance.value = SUN_DISC_RADIANCE_GAME;
+    }
   });
 
   return (

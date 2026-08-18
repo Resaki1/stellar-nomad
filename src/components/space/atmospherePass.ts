@@ -38,7 +38,7 @@ import {
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 import { PASS } from "./perf/perfProfiler";
-import { sunIlluminanceAt } from "./photometry";
+import { STAR_COLOR_LINEAR, sunIlluminanceAt } from "./photometry";
 import type { AtmosphereParams } from "../celestial/types";
 import {
   getCloudShadowMap,
@@ -897,7 +897,14 @@ export function setAtmosphereBody(
   // Per-frame 1/r² illuminance. Grey for now (the star's colour temperature
   // becomes a per-channel tint in Phase 3 — LIGHTING_PLAN §3.0, defect D18).
   const illum = sunIlluminanceAt(starDistanceKm, params.starLuminositySun);
-  rec.sunIlluminance.set(illum, illum, illum);
+  // D18 CLOSED: tinted by the star's blackbody colour instead of grey. The tint
+  // is luminance-normalised, so total illuminance is still exactly `illum` —
+  // only the hue changes, and the §3.1 calibration is untouched.
+  rec.sunIlluminance.set(
+    illum * STAR_COLOR_LINEAR[0],
+    illum * STAR_COLOR_LINEAR[1],
+    illum * STAR_COLOR_LINEAR[2],
+  );
   if (rings) {
     if (!rec.rings) {
       rec.rings = {
