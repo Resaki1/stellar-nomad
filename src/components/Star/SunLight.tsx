@@ -5,12 +5,22 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { STAR_POSITION_KM } from "./Star";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { getAtmosphereLighting } from "@/components/space/atmospherePass";
+import {
+  getAtmosphereLighting,
+  getDominantAtmosphereBody,
+} from "@/components/space/atmospherePass";
+import {
+  publishDirectSunState,
+  sunVisibility,
+} from "@/components/space/sunOcclusion";
 import {
   STAR_COLOR_LINEAR,
   sunIlluminanceAt,
 } from "@/components/space/photometry";
-import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
+import {
+  STAR_LUMINOSITY_SUN,
+  STAR_RADIUS_KM,
+} from "@/sim/celestialConstants";
 
 type SunLightProps = {
   sunPositionKm?: [number, number, number];
@@ -23,6 +33,10 @@ type SunLightProps = {
 };
 
 const _dir = new THREE.Vector3();
+// Direct sunlight actually reaching the hull: base star colour × atmospheric
+// transmittance × geometric eclipse visibility. Drives BOTH lights (see below).
+const _directColor = new THREE.Color();
+const _WHITE = new THREE.Color(1, 1, 1);
 
 // ── Bounce/zodiacal fill, as a FRACTION of the star's illuminance ────────────
 // The flat `<ambientLight intensity={0.5} />` that used to live in Scene.tsx was
@@ -38,6 +52,28 @@ const _dir = new THREE.Vector3();
 // was 30 : 0.5 = 60 : 1. So the only change at 1 AU is that both terms drop by
 // the same 30 → 21.2 factor (see below), which the exposure stage absorbs — the
 // ship's modelling is untouched, only its absolute level is corrected.
+//
+// D27 — THE FILL IS OCCLUDED WITH THE KEY. This term stands for sunlight
+// bouncing off the hull onto itself, so it is a FUNCTION of the direct sun and
+// must vanish when the direct sun does. It used to be driven by illuminance
+// alone, which is what made the ship glow inside Neptune's umbra: the key light
+// went correctly black (the atmosphere pass zeroes its transmittance there) and
+// this fill kept delivering illuminance/60 from every direction, uniformly, with
+// no falloff. Measured at Neptune: 21.2/30.08²/60 = 3.90e-4 game units of
+// ambient × albedo/π → 0.25 cd/m² at hull albedo 0.333, matching the observed
+// peak exactly. That 0.25 cd/m² was 99% of the metered flux, so the eye adapted
+// to the ship and the stars disappeared (the symptom logged as D26).
+//
+// The one term that genuinely does NOT vanish in an umbra is zodiacal light, but
+// it is ~1e-4 cd/m² — three orders below the hull self-bounce this fraction was
+// fitted to, and below the half-float floor D25 is about anyway. Modelling it is
+// not worth a constant.
+//
+// A ship in a planet's umbra now goes very nearly black. That is correct, not a
+// regression: an eclipsed spacecraft is lit only by starlight and by the thin
+// sunlit crescent of the planet's limb. PLANETSHINE — which does light the hull
+// at crescent phases, and is a derivable (2/3)·A·E·(R/d)²·Φ(α) term needing no
+// tuning — is Phase 4 IBL work, not this fix.
 const BOUNCE_FILL_FRACTION = 1 / 60;
 
 const SunLight = ({
@@ -95,11 +131,37 @@ const SunLight = ({
     // camera (sunset reddening + planet-shadow darkening on the ship). White
     // when no atmosphere body is in range (deep space → unchanged look).
     const lighting = getAtmosphereLighting();
-    if (lighting.active) {
-      ref.current.color.copy(baseColor).multiply(lighting.sunTransmittance);
-    } else {
-      ref.current.color.copy(baseColor);
-    }
+    _directColor.copy(baseColor);
+    if (lighting.active) _directColor.multiply(lighting.sunTransmittance);
+
+    // ── D27: geometric eclipse by every body EXCEPT the dominant one ──────────
+    // The dominant atmosphere body's own shadow is already in `sunTransmittance`
+    // above, and better than a pure-geometry test can do it (it reddens through
+    // the limb). Skipping it here keeps exactly one owner per body — applying
+    // both would multiply two different soft ramps and narrow the penumbra. Every
+    // other body (atmosphere-less moons, a second body in the same system, or a
+    // body whose sphere LOD has dropped out so it no longer registers with the
+    // atmosphere pass at all) is handled here. See space/sunOcclusion.ts.
+    const visibility = sunVisibility(
+      worldOrigin.shipPosKm,
+      sunPositionKm,
+      STAR_RADIUS_KM,
+      getDominantAtmosphereBody()?.id ?? null,
+    );
+    if (visibility < 1) _directColor.multiplyScalar(visibility);
+
+    // Both lights carry the same occluded, tinted direct sunlight: the key IS
+    // that light, and the fill is that light bounced off the hull. (The fill was
+    // previously left at three.js's default white, so it also ignored the star's
+    // blackbody hue — a D18 leftover this closes.)
+    ref.current.color.copy(_directColor);
+    fillRef.current.color.copy(_directColor);
+
+    publishDirectSunState(
+      illuminance,
+      lighting.active ? lighting.sunTransmittance : _WHITE,
+      fillRef.current.intensity,
+    );
   });
 
   // `color` here is only the initial value — the useFrame above owns the live

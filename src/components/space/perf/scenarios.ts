@@ -259,6 +259,41 @@ export function resolveBodyWarp(bodyId: string, altitudeKm: number): DevWarp {
   });
 }
 
+/**
+ * "Put me inside <body>'s UMBRA, looking back at its dark limb" — the pose that
+ * exercises the geometric sun occlusion (defect D27, space/sunOcclusion.ts).
+ *
+ * The eye goes straight down-sun of the body's centre, so the star is exactly
+ * behind the body and `sunVisibility` should return 0. `radiiBehind` trades off
+ * two things: too close and the body fills the screen, too far and you leave the
+ * umbra — its tip is at `R·d/(R☆−R)`, which is 6,700 body radii for Earth and
+ * 6,500 for Neptune, so anything up to a few hundred is safely inside.
+ *
+ * Derived from `sol.json` positions and radii only — no hand-placed poses, so it
+ * stays correct when bodies start orbiting.
+ */
+export function resolveUmbraWarp(bodyId: string, radiiBehind = 4): DevWarp {
+  const b = body(bodyId);
+  const star = bodies[0]; // sol — index 0 by convention in sol.json
+  _eye
+    .set(
+      b.positionKm[0] - star.positionKm[0],
+      b.positionKm[1] - star.positionKm[1],
+      b.positionKm[2] - star.positionKm[2],
+    )
+    .normalize()
+    .multiplyScalar(b.radiusKm * radiiBehind)
+    .add(new Vector3(b.positionKm[0], b.positionKm[1], b.positionKm[2]));
+
+  _target.set(b.positionKm[0], b.positionKm[1], b.positionKm[2]);
+  _lookMatrix.lookAt(_eye, _target, _up);
+  _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
+  return {
+    positionKm: [_eye.x, _eye.y, _eye.z],
+    quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
+  };
+}
+
 /** Distance from the given scenario's eye point to Earth's centre, km. */
 export function scenarioDistanceToEarthKm(scenario: Scenario): number {
   const warp = resolveScenario(scenario);

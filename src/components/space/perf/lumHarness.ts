@@ -12,6 +12,7 @@
  *   await __lum.sweep()               // the ladder: measured vs expected + ratio
  *   __lum.expected("luna")            // what physics says this body's disc is
  *   __lum.setEV(14) / __lum.auto()    // pin / release exposure
+ *   __lum.sun()                       // eclipse / umbra state on the ship (D27)
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -38,7 +39,13 @@ import solSystem from "@/sim/systems/sol.json";
 import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { bodyPhotometry } from "@/data/bodyPhotometry";
-import { getAtmosphereBody, setFmsMax, setMsScale } from "../atmospherePass";
+import {
+  getAtmosphereBody,
+  getDominantAtmosphereBody,
+  setFmsMax,
+  setMsScale,
+} from "../atmospherePass";
+import { sunOcclusionStatus } from "../sunOcclusion";
 import {
   setErosionScale,
   setShellOpticalPath,
@@ -61,7 +68,7 @@ import {
   setManualExposure,
   sunIlluminanceAt,
 } from "../photometry";
-import { resolveBodyWarp } from "./scenarios";
+import { resolveBodyWarp, resolveUmbraWarp } from "./scenarios";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -614,6 +621,78 @@ export class LumHarness {
           `Full adaptation (k=1) would flatten it to 0.`,
       );
     }
+  }
+
+  /**
+   * Direct-sun state on the LOCAL scene (ship/asteroids) — eclipses, umbra,
+   * atmospheric transmittance, and the hull self-bounce fill (defect D27).
+   *
+   * Read this when the ship looks wrongly bright or wrongly dark. `visibility`
+   * is the fraction of the star's DISC that is geometrically unobstructed;
+   * `transmittance` is what the atmosphere pass left of the sun for the DOMINANT
+   * body (it hard-zeroes on its own ground hit, so 0,0,0 there means "in that
+   * body's shadow"). The two have separate owners on purpose — see
+   * space/sunOcclusion.ts "DIVISION OF LABOUR".
+   */
+  sun(): void {
+    const st = sunOcclusionStatus();
+    const dominant = getDominantAtmosphereBody();
+    const t = st.transmittance;
+    // What the hull's shadow side actually receives, so this table can be
+    // compared directly against `__lum.probe()` on the ship.
+    const tMean = (t[0] + t[1] + t[2]) / 3;
+    const fillRadiance = (st.fillIntensity * tMean * st.visibility) / Math.PI;
+    console.table({
+      "sun disc visible": `${(st.visibility * 100).toFixed(1)}%`,
+      "atmo transmittance": t.map((v) => Number(v.toFixed(4))).join(", "),
+      "dominant body": dominant?.id ?? "(none — deep space)",
+      "illuminance (game)": Number(st.illuminance.toPrecision(4)),
+      "illuminance (lux)": Number((st.illuminance * NITS_PER_GAME_UNIT).toPrecision(4)),
+      "key light (game)": Number((st.illuminance * tMean * st.visibility).toPrecision(4)),
+      "bounce fill (game)": Number((st.fillIntensity * tMean * st.visibility).toPrecision(4)),
+      "fill → albedo-1 hull": `${(fillRadiance * NITS_PER_GAME_UNIT).toPrecision(3)} cd/m²`,
+      "occluders registered": st.registered,
+    });
+    if (st.occluding.length === 0) {
+      console.log(
+        "[lum] nothing geometrically eclipsing the star" +
+          (dominant
+            ? ` (${dominant.id} is dominant, so ITS shadow is in transmittance above, not here)`
+            : ""),
+      );
+    } else {
+      console.log("[lum] bodies covering the star's disc:");
+      console.table(
+        st.occluding.map((o) => ({
+          body: o.id,
+          "covers": `${(o.covered * 100).toFixed(1)}%`,
+          "ang. radius (°)": Number(o.angOccDeg.toFixed(3)),
+          "separation (°)": Number(o.angSepDeg.toFixed(3)),
+          "distance (km)": Number(o.distKm.toPrecision(4)),
+        })),
+      );
+    }
+    if (st.visibility > 0.999 && tMean > 0.999) {
+      console.log("[lum] the ship is in FULL sun — nothing is shadowing it.");
+    }
+  }
+
+  /**
+   * Warp into a body's UMBRA and report the resulting sun occlusion (D27).
+   *
+   * `await __lum.eclipse("luna")` is the canonical check that a body with no
+   * atmosphere casts a shadow at all; `__lum.eclipse("neptune")` checks that an
+   * atmosphere body's shadow survives past its LOD gate. The ship should go
+   * essentially black — the only thing lighting it in an umbra is starlight and
+   * the planet's sunlit crescent (planetshine, Phase 4).
+   */
+  async eclipse(bodyId: string, radiiBehind = 4): Promise<void> {
+    this.store.set(devTeleportAtom, resolveUmbraWarp(bodyId, radiiBehind));
+    await sleepFrames(120);
+    console.log(
+      `[lum] in ${bodyId}'s umbra, ${radiiBehind} body radii down-sun of centre:`,
+    );
+    this.sun();
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

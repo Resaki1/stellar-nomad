@@ -113,7 +113,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D24 ✅ | **Every planet rendered MIRRORED.** All KTX2s are `KTXorientation: rd` (top-down); three's KTX2Loader ignores orientation; `SphereGeometry` `uv.y = 1` at north ⇒ v-flip | `CelestialBody.tsx`, `cloudCommon.ts` | geometric north pole was showing Antarctica — see §5.6 | I |
 | D25 | Diffuse sky **underflows RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stores as exactly 0 | `MilkyWaySkybox.tsx` | no Milky Way nebulosity; needs source pre-exposure (§3.2) | I |
 | D26 | The player ship's hull carries **99% of metered flux** in deep space | `ShipOne.tsx` + meter | stars vanish; third-person-camera problem, damp the local scene in metering | I |
-| D27 | `SunLight` has **no geometric planet shadow** — ship is fully sunlit inside an eclipse | [`SunLight.tsx`](../src/components/Star/SunLight.tsx) | ship blows out in a planet's shadow | I |
+| D27 | ✅ **The bounce fill was never occluded** (and non-dominant bodies cast no shadow at all) | [`SunLight.tsx`](../src/components/Star/SunLight.tsx), [`sunOcclusion.ts`](../src/components/space/sunOcclusion.ts) | ship glowed at 0.25 cd/m² inside an umbra, drowning the stars | ✅ |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1635,13 +1635,97 @@ metering rather than to dim the ship. Set to 0 as an interim; restore a physical
 can discount the local scene. ⚠ Metering `rt` (pre-local) is not a shortcut — the atmosphere and clouds
 composite into `rtB`, so that would drop the sky near a planet.
 
-### ⛔ D27 — `SunLight` has no geometric planet shadow
+### ✅ D27 — the bounce fill was never occluded (CLOSED 2026-08-18)
 
-Inside Neptune's shadow the ship renders fully sunlit: at emissive 0 its peak is still 0.25 cd/m², and
-at exposure 65,140 that is 2.7 — blown. `SunLight` only attenuates via
-`getAtmosphereLighting().sunTransmittance`, which is atmospheric extinction, not a geometric eclipse
-test. Cheap fix available: the ray-sphere test against the dominant body already exists for the
-atmosphere pass.
+**⛔ My first diagnosis of this was wrong and the correction is the interesting part.** I wrote that
+"`SunLight` only attenuates via `getAtmosphereLighting().sunTransmittance`, which is atmospheric
+extinction, not a geometric eclipse test." That is false: `computeAtmosphereLighting` **already**
+hard-zeroes `sunTransmittance` when the camera→sun ray hits the ground (see the `tGround` branch and
+the `SUN_EMERGE_BAND` comment). The key light was correctly black inside Neptune's umbra the whole
+time.
+
+**What was actually lit was the FILL.** `fillRef.current.intensity = illuminance *
+BOUNCE_FILL_FRACTION` never saw the transmittance, so an un-occluded ambient kept delivering
+illuminance/60 from every direction. The arithmetic closes to three digits:
+
+```
+Neptune at 30.081 AU  → illuminance   21.2 / 30.081²      = 2.343e-2 game units
+bounce fill           → 2.343e-2 / 60                     = 3.905e-4 game units
+hull radiance         → 3.905e-4 × albedo / π
+                        at albedo 0.333                   = 4.14e-5 game units
+                                                          = 0.250 cd/m²   ← measured peak: 0.25
+```
+
+An implied hull albedo of exactly 0.333 for a grey hull is not a coincidence. **Lesson: when a defect
+is "X is not attenuated", check every consumer of X, not the one you expect.** The key light was the
+obvious suspect and it was innocent; the fill had no occlusion code at all, which is why grepping for
+a *wrong* attenuation found nothing.
+
+Physically the fill stands for sunlight bouncing off the hull onto itself, so it is a *function of*
+the direct sun and must vanish with it. It now does. The one term that genuinely survives an umbra is
+zodiacal light (~1e-4 cd/m²) — three decades below the self-bounce this fraction was fitted to, and
+under the D25 half-float floor anyway, so it is not worth a constant.
+
+#### Three real gaps, closed by [`space/sunOcclusion.ts`](../src/components/space/sunOcclusion.ts)
+
+The atmosphere path occludes exactly ONE body — the nearest one that registered an atmosphere — which
+leaves:
+
+| # | gap | evidence |
+|---|-----|----------|
+| 1 | Bodies with no `config.atmosphere` (Luna, Mercury, Io, Europa, Ganymede, Callisto) never register, so they cast **no shadow at all** | in Luna's umbra: `transmittance 1,1,1`, dominant = earth |
+| 2 | Only the NEAREST atmosphere body is dominant, so a second body in the same neighbourhood cannot eclipse | — |
+| 3 | Registration is gated on the sphere LOD (`distKm < config.lod.far`). **Neptune's gate is 12 M km; its umbra is 165 M km** | at 19.7 M km down-sun: `dominant (none)`, `transmittance 1,1,1` |
+
+The new module is a registry every `CelestialBody` writes to **unconditionally** (gating it is
+precisely bug 3) plus one CPU visibility test per frame. The penumbra is the exact analytic
+circle-circle overlap of the star's disc and the occluder's — not a binary test, because the star is
+0.267° wide at 1 AU and a binary test would snap the hull from full sun to black in one frame.
+
+**DIVISION OF LABOUR — exactly one owner per body.** `sunVisibility()` takes a `skipId` and `SunLight`
+passes the dominant body's id, so the dominant body's shadow stays with the atmosphere path (which
+does it *better* — it reddens through the limb) and every other body is handled geometrically.
+Applying both would multiply two different soft ramps together and narrow the penumbra, and would put
+this ramp in a fight with the emergence band that was tuned to fix the orange flash on shadow exit.
+
+#### Validation
+
+Geometry checked against known astronomy before touching the scene, by `eval`-ing the shipped
+`discCoveredFraction` out of the source file:
+
+| case | expected | measured |
+|------|----------|----------|
+| Moon at perigee (356,500 km) vs Sun | total, 100% | **100.00%** |
+| Moon at apogee (406,700 km) vs Sun | annular, r² = (0.2448/0.2666)² = 84.3% | **84.31%** |
+| Neptune umbra length | `R·d/(R☆−R)` = 165 M km | visibility 0% to 165 M km, **30.9% at 200 M** |
+| penumbra ramp | smooth, 50% at the geometric midpoint | 50.0% at sep = angOcc exactly |
+
+Penumbra widths come out right too: 25 km at Neptune (the sun is nearly a point at 30 AU) against
+5,900 km far down-sun of Earth.
+
+In-scene, via the new `__lum.eclipse(bodyId)` / `__lum.sun()`:
+
+| pose | disc visible | transmittance | dominant | key | fill |
+|------|-------------|---------------|----------|-----|------|
+| Earth day side (baseline) | 100% | 1,1,1 | earth | 22.46 | 0.374 |
+| Luna's umbra, 4 R behind | **0%** (luna, ang 14.478°) | 1,1,1 | earth | 0 | **0** |
+| Neptune, 19.7 M km down-sun | **0%** (neptune, ang 0.072°) | 1,1,1 | **(none)** | 0 | **0** |
+| Earth's umbra, 3 R behind | 100% (**earth skipped**) | **0,0,0** | earth | 0 | **0** |
+
+The last two rows are the ones that matter. Neptune proves gap 3 (nothing else attenuates there — the
+old code left the hull in full sun); Earth proves the skip, with the shadow owned by transmittance and
+the geometric test reporting 100% so nothing is double-counted. Luna's `ang 14.478°` is
+`asin(1737.4/6948)` to five digits.
+
+⚠ **A ship in an umbra now goes very nearly black, and that is correct.** An eclipsed spacecraft is
+lit only by starlight and by the planet's sunlit crescent. PLANETSHINE is the missing term that lights
+a hull at crescent phases, and it is fully derivable — `E = (2/3)·A·E☉·(R/d)²·Φ(α)`, validated against
+earthshine on the Moon (predicts 7.0 lux at full Earth against ~8 cited) — but it is Phase 4 IBL work,
+not this fix. Note it does **not** rescue the umbra: at α ≈ 180° the phase function Φ → 0.
+
+⚠ **sol.json places every body on one axis**, so from behind Neptune every inner planet also transits
+the star (measured: Uranus 1.0%, Saturn 1.5%, both matching r² for their angular radii). Harmless — a
+0.06-stop dip — and it disappears once bodies orbit. But do not read it as a bug in the registry.
 
 ### Two more corrections found by the same measurements
 

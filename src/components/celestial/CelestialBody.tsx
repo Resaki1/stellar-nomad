@@ -17,6 +17,7 @@ import {
   setAtmosphereBody,
   clearAtmosphereBody,
 } from "../space/atmospherePass";
+import { setSunOccluder, clearSunOccluder } from "@/components/space/sunOcclusion";
 import type { CelestialBodyConfig, ExtraMeshDef } from "./types";
 
 // ── Shared scratch vectors (safe: useFrame is sequential) ──
@@ -282,6 +283,9 @@ function CelestialBody({ config }: CelestialBodyProps) {
   // Clear this body's atmosphere registration on unmount.
   useEffect(() => () => clearAtmosphereBody(config.id), [config.id]);
 
+  // Clear this body's sun-occluder registration on unmount (D27).
+  useEffect(() => () => clearSunOccluder(config.id), [config.id]);
+
   // Ring annulus for the atmosphere pass (fog clamp + shadow). The ring mesh
   // lies in the body's local XZ plane, so its normal is local +Y rotated by
   // config.rotation — static per config, computed once.
@@ -410,6 +414,13 @@ function CelestialBody({ config }: CelestialBodyProps) {
       positionKm[2] - worldOrigin.shipPosKm.z,
     );
     const distKm = _shipToBody.length();
+
+    // ── Sun-occluder registration (D27) ──
+    // UNCONDITIONAL — not gated on LOD tier or distance, unlike the atmosphere
+    // registration below. A body's umbra is far longer than the range at which
+    // the body is worth drawing: Neptune's runs 165 M km against a 12 M km LOD
+    // gate. Gating this is precisely the bug. See space/sunOcclusion.ts.
+    setSunOccluder(config.id, positionKm, radiusKm);
 
     // ── Prefetch texture loading triggers (one-shot per tier) ──
     if (distKm < prefetchFarDist) setLoadMid(true);
