@@ -612,13 +612,29 @@ export class LumHarness {
       "EV p90": Number(st.dist.p90.toFixed(2)),
       "EV p98": Number(st.dist.p98.toFixed(2)),
       "EV max": Number(st.dist.max.toFixed(2)),
-      "top 1% flux share": `${(st.topFluxShare * 100).toFixed(0)}%`,
+      "hot-tail flux share": `${(st.topFluxShare * 100).toFixed(0)}% (uncapped)`,
+      "hot tail = top": `${(st.hotWeightFraction * 100).toFixed(0)}% of weight`,
+      "hot share cap": `${(st.maxHotFluxShare * 100).toFixed(0)}%`,
+      "hot tail LIFTS reading by": `${st.hotLiftStops.toFixed(2)} stops`,
+      "compressor HELD BACK": `${st.hotClipStops.toFixed(2)} stops (unbounded)`,
+      "hot compress exponent": st.hotCompressExponent,
       "centre sigma": st.centreSigma,
       "adaptation k": st.adaptationK,
       "output bias (stops)": st.biasStops,
       "anchor EV": st.anchorEV,
       "PINNED (manual)": st.manual,
     });
+    if (st.hotClipStops > 0.05) {
+      console.log(
+        `[lum] HOT-TAIL CAP is active: the brightest ${(st.hotWeightFraction * 100).toFixed(0)}% of ` +
+          `weight wanted ${(st.topFluxShare * 100).toFixed(0)}% of total flux, capped to ` +
+          `${(st.maxHotFluxShare * 100).toFixed(0)}% before compression. It LIFTS the reading ` +
+          `${st.hotLiftStops.toFixed(2)} stops above the rest of the frame, and the compressor HELD ` +
+          `BACK ${st.hotClipStops.toFixed(2)} stops relative to a raw flux mean. ⚠ Those are two ` +
+          `different numbers — "held back" is unbounded ON PURPOSE. Expect this whenever a small ` +
+          `un-calibrated emissive (engine plume, VFX) is on screen. See D26.`,
+      );
+    }
     console.log(
       "[lum] ⚠ EVs here are GAME-UNIT EVs (log2(units×8)), NOT the cd/m² EVs the " +
         "probe tables print — they differ by ~12.6 stops. If `metered` sits far " +

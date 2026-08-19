@@ -545,7 +545,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Bloom is added in linear HDR (pre-tonemap), as before.
     let hdr: typeof pipeline.outputNode = exposed;
     if (settings.bloom) {
-      hdr = exposed.add(bloom(exposed, 0.02, 0, 1));
+      hdr = exposed.add(bloom(exposed, 0.001, 0, 1));
     }
 
     // Tone-map IN-GRAPH (the SAME call renderOutput() would make), then add an
@@ -1077,8 +1077,14 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // of the tone chain or metering becomes a feedback loop on its own output.
     // No-ops while exposure is pinned (`__lum`, `__bench`). Fire-and-forget
     // readback; never stalls the pipeline.
+    //
+    // ⚠ This DOES include the player's own vehicle (defect D26). Excluding it by
+    // splitting the local pass on a layer was tried and REVERTED — see the D26
+    // section in docs/LIGHTING_PLAN.md. Short version: three.js layers gate
+    // light↔object interaction, so it un-lit the ship, and excluding the ship
+    // only moved the problem to a blown exhaust. The root cause is that the
+    // emissives are not on the photometric scale.
     updateExposureMeter(renderer, (rtB ?? rt).texture, delta);
-
     // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
     pipelineRef.current.render();
 

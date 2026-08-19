@@ -61,7 +61,8 @@
 import * as THREE from "three";
 import { NodeMaterial, RenderTarget } from "three/webgpu";
 import type { WebGPURenderer } from "three/webgpu";
-import { Fn, float, length, log2, max, texture, uv, vec2, vec4 } from "three/tsl";
+import type { Node } from "three/webgpu";
+import { Fn, Loop, float, length, log2, max, texture, uv, vec2, vec4 } from "three/tsl";
 import {
   EV_MAX,
   EV_MIN,
@@ -97,8 +98,47 @@ const GRID = 64;
 // makes exposure twitchy. Subjects under ~1% of frame still over-expose; that is
 // accepted — the eye does not fully adapt to a tiny bright dot either, and
 // sub-pixel/small bodies are Phase 4's impostor problem.
-const CENTRE_SIGMA = 0.25;
-const EDGE_WEIGHT = 0.02; // never fully ignore the periphery
+// ── Hot-tail cap (D26) ───────────────────────────────────────────────────────
+// Fraction of total sample WEIGHT treated as the "hot tail", and the largest
+// share of total flux that tail is allowed to contribute.
+//
+// While the tail sits UNDER the cap it lifts the reading by at most
+// log2(1/(1−S)) = 0.51 stops above the rest-only reading; past the cap the power
+// law below lets that grow slowly rather than freezing (which was non-monotonic).
+// ⚠ This is NOT a bound on `hotClipStops`, which measures the distance from an
+// uncapped mean and is unbounded on purpose. 2% of weight sits BELOW the coverage of a
+// legitimately bright subject (Earth's disc fills 10–20% of frame at orbit, so its
+// bulk stays in `rest` and still meters normally) and ABOVE that of a nozzle glow.
+// Taps per axis inside each metering tile (TILE_TAPS² samples per output texel).
+// 16 → 256 taps × 4096 texels = 1.05 M fetches/frame, which is nothing next to a
+// 2 MP frame. See the stratified-sampling note at the use site for why this is
+// about VARIANCE, not coverage.
+const TILE_TAPS = 16;
+
+const HOT_WEIGHT_FRACTION = 0.02;
+const MAX_HOT_FLUX_SHARE = 0.3;
+// Log-log slope applied to the hot tail's flux ABOVE the cap. 1.0 = no
+// compression (raw flux mean); 0 = a hard cap, which is non-monotonic — see the
+// soft-compression note at the use site. 0.25 = 4:1 compression in stops.
+const HOT_COMPRESS_EXPONENT = 0.5;
+
+// ── Spatial weighting ────────────────────────────────────────────────────────
+// ⚠ σ = 0.25 was a CAMERA's spot meter and it contradicted §8's own premise.
+// MEASURED: with σ = 0.25, a subject sliding from frame centre to the left edge
+// loses 2.9 stops of weight (1.0 → 0.135), so simply TURNING made the scene
+// brighten — "the earth and ship get visibly brighter" when the sun came into
+// frame, because the subject had moved off-centre faster than the sun added.
+//
+// A camera wants a chosen SUBJECT exposed, so it must discount the rest of the
+// frame. An eye cannot discount anything — adaptation is dominated by the fovea
+// but the whole retina contributes. σ = 0.5 with a 0.25 floor keeps a mild centre
+// bias (edge weight 0.61, corner 0.38) while making exposure far less a function
+// of where the camera happens to point.
+//
+// ⚠ Trade-off: a SMALL centred subject now gets less relative emphasis, so if a
+// distant planet under-meters, σ is the knob — not the hot-tail constants.
+const CENTRE_SIGMA = 0.5;
+const EDGE_WEIGHT = 0.25; // an eye cannot discount the periphery (see above)
 
 // ── Partial adaptation (see the header) ─────────────────────────────────────
 // k: fraction of a scene's real brightness change that exposure cancels.
@@ -200,6 +240,8 @@ let _lastDist: { p05: number; p50: number; p90: number; p98: number; max: number
 // small hot feature is driving adaptation, which in practice means an emissive
 // that was never put on the game-unit scale.
 let _lastTopFluxShare = 0;
+let _lastHotClipStops = 0;
+let _lastHotLiftStops = 0;
 
 /** Diagnostics for `__lum.exposure()`. */
 export function exposureMeterStatus() {
@@ -210,6 +252,11 @@ export function exposureMeterStatus() {
     samples: _lastSampleCount,
     dist: _lastDist,
     topFluxShare: _lastTopFluxShare,
+    hotClipStops: _lastHotClipStops,
+    hotLiftStops: _lastHotLiftStops,
+    hotCompressExponent: HOT_COMPRESS_EXPONENT,
+    hotWeightFraction: HOT_WEIGHT_FRACTION,
+    maxHotFluxShare: MAX_HOT_FLUX_SHARE,
     centreSigma: CENTRE_SIGMA,
     grid: GRID,
     adaptationK: ADAPTATION_K,
@@ -252,7 +299,51 @@ function build(renderer: WebGPURenderer): void {
     // ⚠ MUST read the PRE-EXPOSURE buffer. Metering the exposed image would be a
     // feedback loop that settles wherever the tone curve's fixed point happens
     // to be, which is not a measurement of anything.
-    const c = srcNode.sample(p);
+    // ── TILE AVERAGE, not a point sample (defect D31) ─────────────────────────
+    // This used to be a single `srcNode.sample(p)` per output texel — one bilinear
+    // tap standing in for a whole tile of the frame (30×30 screen px at 1920 wide,
+    // more on a Retina buffer). Two measured symptoms:
+    //
+    //  1. THE SUN WAS NOT METERED AT ALL. `EV max` read 5.3 (≈4.9 game units,
+    //     Earth's cloud highlights) while the sun disc is 265,000 game units =
+    //     EV 21. A ~3 px disc has roughly a 10% chance of landing on any given
+    //     tap, so looking straight at the sun cost no adaptation whatsoever.
+    //  2. THE READING DEPENDED ON DISPLAY RESOLUTION. The same pose measured
+    //     `EV max` 6.55 on a Retina XDR buffer and 5.60 at 1920×1080 — ~1 stop
+    //     apart. A measurement of the SCENE must not be a function of the
+    //     drawing-buffer size.
+    //
+    // Both are the same aliasing bug, and the latent third symptom is worse: when
+    // a small bright feature DOES happen to hit a tap, the reading jumps ~15
+    // stops, so exposure would flicker as the camera drifts sub-pixel.
+    //
+    // 🔑 Stratified taps make the tile mean an UNBIASED estimator at any
+    // resolution. One tap is unbiased too — in expectation — but with enormous
+    // variance, and that variance IS the flicker. TILE_TAPS² taps spread evenly
+    // over the tile cut the variance ~TILE_TAPS²-fold (16× in stddev at 16 taps)
+    // without needing to know the source resolution: the offsets are computed in
+    // UV, so they cover the tile whatever its pixel size.
+    //
+    // ⚠ The average MUST be of LINEAR luma, taken BEFORE the log2 below. Avering
+    // the per-tap EVs would be a geometric mean, which under-weights exactly the
+    // hot features this whole pass exists to see — the same class of error as the
+    // log-average estimator that read 21 stops low (§5.9).
+    const tileOrigin = p.mul(float(GRID)).floor().div(float(GRID));
+    const tapStep = float(1 / (GRID * TILE_TAPS));
+    const lumaSum = float(0).toVar();
+    Loop(TILE_TAPS, ({ i }: { i: Node }) => {
+      Loop(TILE_TAPS, ({ i: j }: { i: Node }) => {
+        const off = vec2(
+          float(i).add(0.5).mul(tapStep),
+          float(j).add(0.5).mul(tapStep),
+        );
+        const t = srcNode.sample(tileOrigin.add(off));
+        lumaSum.addAssign(
+          t.r.mul(0.2126).add(t.g.mul(0.7152)).add(t.b.mul(0.0722)),
+        );
+      });
+    });
+    const c = lumaSum.div(float(TILE_TAPS * TILE_TAPS));
     // Photopic luma. `max` against a floor keeps log2 finite in true black —
     // 1e-8 game units is ~6e-5 cd/m², two decades below the scotopic threshold,
     // so it can never pull the mean up out of a legitimately black frame.
@@ -262,10 +353,7 @@ function build(renderer: WebGPURenderer): void {
     // destroying the star/sky contrast the metering needs to see. 1e-11 is
     // 6e-8 cd/m², three decades below the scotopic threshold, so it can only
     // ever catch true black.
-    const luma = max(
-      c.r.mul(0.2126).add(c.g.mul(0.7152)).add(c.b.mul(0.0722)),
-      float(1e-11),
-    );
+    const luma = max(c, float(1e-11));
     // Same EV100 convention as photometry.ts: EV = log2(L · 8).
     const ev = log2(luma.mul(8));
     // Centre weight: Gaussian in radius (r = 1 at the frame corner), floored so
@@ -372,21 +460,82 @@ export function updateExposureMeter(
         samples.sort((x, y) => x[0] - y[0]);
         // Weighted mean of LINEAR radiance. EV → radiance is 2^ev/8 (the inverse
         // of the shader's log2(luma·8)), so this reconstructs flux exactly.
-        let num = 0;
         let den = 0;
+        let totalFlux = 0;
         for (const [ev, w] of samples) {
-          num += Math.pow(2, ev) * 0.125 * w;
+          totalFlux += Math.pow(2, ev) * 0.125 * w;
           den += w;
         }
-        // How much of the total flux the brightest 1% of samples carries. >~50%
-        // means a small hot feature is driving adaptation — usually an emissive
-        // that is not on the photometric scale, not a real scene change.
-        let topFlux = 0;
-        const topStart = Math.floor(samples.length * 0.99);
-        for (let i = topStart; i < samples.length; i++) {
-          topFlux += Math.pow(2, samples[i][0]) * 0.125 * samples[i][1];
+
+        // ── HOT-TAIL CAP (defect D26) ─────────────────────────────────────────
+        // A weighted mean of linear flux is the physically right estimator — the
+        // eye adapts to the flux arriving, not to a log-average of it — but it is
+        // also MAXIMALLY sensitive to a single hot sample. One 6,038 cd/m² engine
+        // plume covering 1% of a deep-space frame (where everything else is
+        // ~1e-8) owns the mean outright, which is what made the scene "go
+        // completely black except for the ship".
+        //
+        // ⚠ NO estimator can single out the ship, and it is worth being explicit
+        // about why: the exhaust at 1.0 game units and Earth's sunlit disc at 0.43
+        // are the SAME order of brightness and can occupy the SAME small screen
+        // area. They are genuinely indistinguishable to a meter. So the goal here
+        // is NOT identification — it is a BOUND: no small part of the visual field
+        // may hold unlimited authority over adaptation.
+        //
+        // That bound is also the more defensible model of the eye. Adaptation is
+        // spatially distributed and dominated by where you are foveating; a small
+        // bright source in the periphery does not fully reset your night vision,
+        // which a pure flux mean says it should.
+        //
+        // The hot tail is defined by WEIGHT, not sample count, because the
+        // centre-weighted Gaussian means a centre sample counts for ~50× an edge
+        // one — and the player's vehicle sits dead centre, exactly where a
+        // count-based percentile would under-measure it.
+        const hotWeightTarget = den * HOT_WEIGHT_FRACTION;
+        let hotWeight = 0;
+        let hotFlux = 0;
+        for (let i = samples.length - 1; i >= 0 && hotWeight < hotWeightTarget; i--) {
+          hotWeight += samples[i][1];
+          hotFlux += Math.pow(2, samples[i][0]) * 0.125 * samples[i][1];
         }
-        _lastTopFluxShare = num > 0 ? topFlux / num : 0;
+        const restFlux = Math.max(0, totalFlux - hotFlux);
+        // Solve hot/(hot+rest) ≤ S for hot: hot ≤ S/(1−S) · rest.
+        const hotCap = (MAX_HOT_FLUX_SHARE / (1 - MAX_HOT_FLUX_SHARE)) * restFlux;
+        // ⚠ SOFT compression, not a hard `min()`. A hard cap is NON-MONOTONIC:
+        // above the cap `hotUsed` is constant, so making a hot feature brighter
+        // changes the reading not at all. MEASURED consequence — turning to put the
+        // SUN in frame made the metered EV go DOWN (0.46 → −1.95) and exposure UP,
+        // because the sun is a few pixels, landed wholly in the hot tail, and was
+        // truncated to a constant while the subject slid off-centre. The one thing
+        // that genuinely SHOULD dominate adaptation was what the cap discarded
+        // hardest.
+        //
+        // A power law fixes it while keeping the influence bounded in practice:
+        //   continuous at hotFlux = hotCap, strictly MONOTONIC (brighter hot
+        //   feature always ⇒ brighter reading), and UNBOUNDED, so the sun still
+        //   drives adaptation — but compressed, so a 10⁶× overshoot contributes
+        //   10^(6·0.25) ≈ 32×, not 10⁶×.
+        const hotUsed =
+          hotFlux <= hotCap
+            ? hotFlux
+            : hotCap * Math.pow(hotFlux / hotCap, HOT_COMPRESS_EXPONENT);
+        const num = restFlux + hotUsed;
+        // Report the UNCAPPED share — the diagnostic's job is to reveal that a hot
+        // feature exists, not to hide it once the cap has tamed it.
+        _lastTopFluxShare = totalFlux > 0 ? hotFlux / totalFlux : 0;
+        // How many stops the CAP moved the final reading — i.e. how much higher
+        // exposure is than a raw flux mean would have chosen. Deliberately NOT
+        // log2(hotFlux/hotCap), which is the tail's own attenuation and reads
+        // larger; the number that matters is the effect on the metered EV.
+        // Bounded by log2(1/(1−MAX_HOT_FLUX_SHARE)) = 0.51 stops at S = 0.3.
+        // TWO different numbers, and conflating them is a mistake I shipped twice:
+        //  • `hotClipStops` = how far the compressor pulled the reading DOWN from an
+        //    uncapped flux mean. UNBOUNDED by design — that is the point of it.
+        //  • `hotLiftStops` = how much the hot tail lifted the reading ABOVE the
+        //    rest-only reading. THIS is the bounded one, ≤ log2(1/(1−S)) only while
+        //    the tail is under the cap; the power law lets it grow slowly past that.
+        _lastHotClipStops = num > 0 ? Math.log2(totalFlux / num) : 0;
+        _lastHotLiftStops = restFlux > 0 ? Math.log2(num / restFlux) : 0;
         if (den > 0) {
           // Linear mean back to EV, floored so a truly black frame is finite.
           _lastMeteredEV = Math.log2(Math.max(num / den, 1e-14) * 8);

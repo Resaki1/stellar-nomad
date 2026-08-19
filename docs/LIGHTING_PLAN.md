@@ -52,6 +52,40 @@ cited to file:line), plus two numerical replicas of the engine's own atmosphere 
 
 ---
 
+## 0.9 REMAINING WORK — status as of 2026-08-18
+
+Phases 0, 1, 2a, 2b, 2d, 3a, 3b and 5 are shipped. **2c, 4, 6, 7, 8, 9 are open.**
+
+Closed defects: D01, D02, D03, D03b, D05, D08, D10, D11, D15, D17, D18, D22, D24, **D25, D27, D31**.
+
+### Open, grouped by what actually unblocks what
+
+| # | work | defects | blocked by | note |
+|---|------|---------|-----------|------|
+| 1 | **Star catalogue** — see [`STAR_CATALOGUE_PLAN.md`](STAR_CATALOGUE_PLAN.md) | **D30**, and D29 via its S4 | nothing | the biggest *visible* gap; D25 unblocked the D29 half |
+| 2 | **Emissive calibration** | **D26** | nothing | exhaust/VFX are ~1.0 game units picked against a fixed exposure of 30, never a luminance. Root cause of the "blown plume" |
+| 3 | **Phase 4 — unified impostor radiance** | **D04, D06, D20** | nothing | every distant body is still on an arbitrary scale: billboard `albedo × sunDot` with no illuminance, stellar point normalised to a Jupiter reference, Luna's point albedo 38× off |
+| 4 | **Phase 2c — texture calibration** | **D09, D23** | nothing | ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works**; needs a per-region or physically-derived remap |
+| 5 | **D28 — refracted limb light** | D28 | nothing | ~1 lux of coppery ring in an atmosphere planet's umbra, 3,400× starlight, representable today |
+| 6 | **Phase 6 — HDR output** | D13 | best after the star work | pre-exposure changed what the post chain hands the display |
+| 7 | **Phase 7 — scotopic/mesopic + Purkinje** | D19 | after stars | the "night vision" look; pointless while stars are 482× too dim |
+| 8 | **Phase 8 — PSF glare replacing mip bloom** | D12 | after 2 and 3 | bloom currently reports *correctly* on miscalibrated emissives; fix the inputs first |
+| 9 | **Phase 9 — night-side stack** | D16 | after 4 | city lights at absolute luminance, moonlight, airglow, aurora |
+| — | **D21** `earth_normal` asset | D21 | asset re-source | mitigated by the grazing fade; a 4K+ normal map would let that fade be deleted |
+| — | **D07** planets bypass three.js lights | D07 | — | arguably *resolved by design*: surfaces consume `uSunIlluminance` directly. Revisit only if a body ever needs multiple light sources |
+| — | **D14** no AA | D14 | — | outside the lighting plan, but interacts: sub-pixel stars and the sun disc both alias |
+
+### Two independent findings worth carrying forward
+
+- **The cloud terminator nonlinearity.** `__lum.preExposure(8)` shifts the far cloud shell's terminator
+  and pushes it through orange before fading. A brightness change would be a missing multiply; a **hue
+  and position** change means a genuine nonlinearity in the shell path. Candidates: the AP target's
+  `(L, Tmean)` split, the extra half-float hops through the sparse/history RTs, the opacity LUT. Needs
+  `SHELL_DEBUG_VIZ`, not speculation — see `CLOUD_DEBUGGING_LESSONS.md`.
+- **`HOT_COMPRESS_EXPONENT = 0.25` is an artistic knob**, not a derived constant. With the sun in frame
+  the hot tail is 98% of flux and the compressor holds back 4.4 stops, lifting the reading only 1.27.
+  Raise the exponent toward 1.0 to make staring at the sun genuinely punishing.
+
 ## 1. Problem statement
 
 ### 1.1 The root cause
@@ -112,10 +146,12 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D23 | Day texture's dark end is crushed: deep Pacific linear luminance **0.0014** vs a real 0.03–0.06 | `earth_day_*.ktx2` | ocean **21–43× too dark**, Amazon 4–6×; Sahara + ice correct ⇒ non-uniform, per-region. Phase 2c | I |
 | D24 ✅ | **Every planet rendered MIRRORED.** All KTX2s are `KTXorientation: rd` (top-down); three's KTX2Loader ignores orientation; `SphereGeometry` `uv.y = 1` at north ⇒ v-flip | `CelestialBody.tsx`, `cloudCommon.ts` | geometric north pole was showing Antarctica — see §5.6 | I |
 | D25 | ✅ Diffuse sky **underflowed RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stored as exactly 0 | [`photometry.ts`](../src/components/space/photometry.ts) + 6 source sites | fixed by source pre-exposure; sky now reads 2.3e-8 where it read 0 | ✅ |
-| D26 | The player ship's hull carries **99% of metered flux** in deep space | `ShipOne.tsx` + meter | stars vanish; third-person-camera problem, damp the local scene in metering | I |
+| D26 | The player's vehicle carries **99% of metered flux** in deep space | meter + **`EngineExhaust.tsx`** | ⚠ ROOT CAUSE RE-DIAGNOSED: the emissives are not on the photometric scale. Metering exclusion tried and REVERTED | I |
 | D27 | ✅ **The bounce fill was never occluded** (and non-dominant bodies cast no shadow at all) | [`SunLight.tsx`](../src/components/Star/SunLight.tsx), [`sunOcclusion.ts`](../src/components/space/sunOcclusion.ts) | ship glowed at 0.25 cd/m² inside an umbra, drowning the stars | ✅ |
 | D28 | **No refracted limb light** — a ship in an atmosphere planet's umbra gets no coppery ring illumination | `atmospherePass.ts` + `SunLight.tsx` | eclipsed hull is black instead of dim red; **3,400× starlight** | II |
 | D29 | **The skybox is not a light source** — integrated starlight never reaches the hull | `MilkyWaySkybox.tsx` + `SunLight.tsx` | atmosphere-less umbra (Luna) is pure black; blocked by D25 | III |
+| D30 | **Stars are 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | no stars at twilight; needs a CATALOGUE, not a brighter texture | I |
+| D31 | ✅ Metering **point-sampled** one tap per tile → the sun was never metered, and the reading depended on display resolution | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | fixed with stratified tile averaging; resolution drift 1 stop → **0.03** | ✅ |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1075,16 +1111,16 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **1** ✅ | Manual exposure: compensation slider in Settings → Dev, flip defaults `toneMapping → true` (AgX) and `bloom → true` | AgX + bloom become the default look; exposure becomes tunable | low |
 | **2a** ✅ | **The seam commit (atomic).** Surfaces × `sunIlluminance/π`; delete `VENUS_ILLUM_TRIM` **and** Earth's illuminance pin; delete the `illuminanceTrim` field itself | **large** — the solar system's relative brightness becomes correct | **high** |
 | **2b** ✅ | Earth's sigmoid → true `N·L` (D08), **ground and cloud deck together** | day disc gains a real cosine falloff to the terminator | medium |
-| **2c** | Albedo-authoritative texture calibration (§3.0, D09 + **D23**) | per-body 0.37×–5.4×; Earth's disc **0.146 → 0.434** is now **entirely** surface texture (§5.7). ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works** | medium |
+| **2c** ⛔ | Albedo-authoritative texture calibration (§3.0, D09 + **D23**) | per-body 0.37×–5.4×; Earth's disc **0.146 → 0.434** is now **entirely** surface texture (§5.7). ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works** | medium |
 | **2d** ✅ | `CLOUD_SUN_SCALE` → `albedo/π` = 0.223 **+ `SHELL_OPTICAL_PATH` 1 → 60 (a units error, not a fit) + erosion-area factor 0.5** | cloud cover 3.5% → **21.9%** measured (user chose 0.5 over 0.3 for edge detail); see §5.7 | medium |
 | **3a** ✅ | **Distance-correct sun for ship + asteroids** — `SunLight.intensity` and the bounce fill from live star distance via the SAME `sunIlluminanceAt` the planets use | ship/asteroids stop being lit by a constant: 4.7× brighter at Mercury, 1,280× dimmer at Neptune | medium |
 | **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
-| **4** | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
+| **4** ⛔ | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** ✅ | **Auto-exposure / eye adaptation**: centre-weighted log-average metering, **PARTIAL** adaptation (Stevens' ⅓), asymmetric cone/rod time constants, + the **skybox rescaled to absolute luminance** (measured 189,000× hot) | the "eye" arrives; stars become visible in deep space and vanish when the sun enters frame | medium |
-| **6** | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
-| **7** | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
-| **8** | PSF glare replacing mip-chain bloom, energy-conserving, driven by the star-flux uniform | the sun becomes blinding; stars veil correctly | medium |
-| **9** | Night-side stack: city lights at absolute luminance, moonlight, airglow, aurora | night side becomes quietly alive | low |
+| **6** ⛔ | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
+| **7** ⛔ | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
+| **8** ⛔ | PSF glare replacing mip-chain bloom, energy-conserving, driven by the star-flux uniform | the sun becomes blinding; stars veil correctly | medium |
+| **9** ⛔ | Night-side stack: city lights at absolute luminance, moonlight, airglow, aurora | night side becomes quietly alive | low |
 
 **Per-phase on-device checks** are the corresponding `__lum.sweep()` rows plus a look pass at:
 ground / low orbit / high orbit / deep space / sunrise / night side / Neptune / looking at the sun.
@@ -1861,6 +1897,199 @@ sub-floor content exists everywhere in the panorama, not just in the diffuse ban
 ⚠ **Still unregistered** (same one-line registry call, not yet done): `DebrisEffect`, `FlashEffect`,
 `AsteroidVFX`, `WreckCollector`. All are on the old uncalibrated scale (0.4/0.5/0.6 — the D26 class), so
 they want pre-exposing *and* calibrating.
+
+### ⛔ D26 — re-diagnosed 2026-08-18: it is an EMISSIVE CALIBRATION defect, not a metering defect
+
+**A metering exclusion was implemented and REVERTED.** Recording it because the negative result is worth
+more than the code was.
+
+**The attempt:** put the player's vehicle on its own layer, split the local pass in two (world, then
+vehicle), and meter between them so adaptation never sees the ship.
+
+**Failure 1 — ⚠⚠ THREE.JS LAYERS GATE LIGHT↔OBJECT INTERACTION, not just visibility.** A light
+illuminates an object only if `light.layers.test(object.layers)`. Moving the vehicle to its own layer
+while `SunLight`'s key and fill stayed on the world layer left the hull lit by *nothing but its own
+emissive* — black in full sun. Enabling both layers on every light fixes that specific bug, but see
+failure 3.
+
+**Failure 2 — the exclusion did not solve the problem, it MOVED it.** With the ship out of the meter,
+adaptation stopped collapsing… and the exhaust went fully blown instead. Which is the real finding:
+**excluding the plume from metering revealed that the plume's value is radiometrically absurd.**
+`uIntensity` reaches 1.0 game units = **6,038 cd/m²** — brighter than a sunlit cloud top — because it
+was chosen to look right against a *fixed* exposure of 30. It was never a luminance.
+
+**Failure 3 — `layers.set()` mutates persistent `Object3D` state, so reverting the code did not revert
+the scene.** The stamped objects kept layer 1 and stayed invisible until a full page reload. Anything
+that writes to live scene-graph state needs an explicit undo path, not just a code revert.
+
+#### 🔑 The re-diagnosis: my own instrument had already said this
+
+`_lastTopFluxShare` ships with the comment *">~50% means a small hot feature is driving adaptation —
+usually an emissive that is not on the photometric scale."* That is exactly the situation, and I built a
+metering exclusion instead of reading it. **The estimator is also implicated:** the shipped metering is a
+**weighted mean of LINEAR radiance**, which is maximally sensitive to a single hot pixel. That choice was
+right for the "eye, not camera" premise — but it makes one small blown emissive able to set the whole
+frame's exposure, which a real eye does *not* let a small peripheral source do.
+
+#### How shipped AAA games actually handle this
+
+| technique | who | notes |
+|---|---|---|
+| **Emissives authored in real luminance units** | UE5, Frostbite | the first line of defence, and the root fix here. UE documents that implausible emissive values break auto-exposure |
+| **Exposure metering MASK** (screen-space weight texture) | UE5 | down-weights, does not exclude — and crucially never touches how the scene is RENDERED, so it cannot break lighting the way a layer split does |
+| **Local Exposure** (bilateral log-luminance base/detail split) | UE5.1+ | shipped precisely because one global exposure cannot hold a bright emissive plus a dark world |
+| **Percentile / histogram metering** rather than a mean | UE, most engines | a hot 1% cannot drag the reading |
+| **Tone curve with a long shoulder** + bloom | ACES, AgX | a blown plume reads as "very bright" instead of clipping the frame |
+
+#### ✅ Step 2 shipped — the HOT-TAIL CAP (2026-08-18)
+
+Taken FIRST, ahead of calibration, because it bounds *any* small hot feature rather than the one we
+happen to have found — including ones not yet built.
+
+**🔑 The goal is a BOUND, not identification.** Being explicit about why no estimator can single out the
+ship: the exhaust at 1.0 game units and Earth's sunlit disc at 0.43 are the same order of brightness and
+can occupy the same small screen area. They are genuinely indistinguishable to a meter. So instead:
+*no small part of the visual field may hold unlimited authority over adaptation.*
+
+That is also the better model of the eye. Adaptation is spatially distributed and dominated by where you
+foveate; a small bright source in the periphery does not fully reset your night vision — which a pure
+flux mean says it should.
+
+```
+hot tail  = brightest HOT_WEIGHT_FRACTION (2%) of total sample WEIGHT
+constraint: hot / (hot + rest) ≤ MAX_HOT_FLUX_SHARE (0.3)   →   hot ≤ S/(1−S) · rest
+bound on the metered EV: log2(1/(1−S)) = 0.51 stops, vs ~unbounded for a raw flux mean
+```
+
+⚠ **The tail is defined by WEIGHT, not sample count.** The centre-weighted Gaussian makes a centre
+sample worth ~50× an edge one, and the player's vehicle sits dead centre — exactly where a count-based
+percentile would under-measure it.
+
+⚠ **2% is chosen to sit BELOW the coverage of a legitimately bright subject** (Earth fills 10–20% of
+frame at orbit, so its bulk stays in `rest` and meters normally) **and above that of a nozzle glow**.
+
+**Measured, Earth at orbit with the exhaust lit:** the hot tail wanted **40%** of total flux, capped to
+30%, moving the metered EV by **0.16 stops**; metered EV **1.24**, against a pre-D26 baseline of 1.25 in
+the same view — so Earth still meters correctly while the plume no longer owns the frame. `EV max` 8.38
+(41.6 game units ≈ 251,000 cd/m²) confirms the plume *is* the hot tail.
+
+⚠ The diagnostic reports the **shift in the metered EV**, not `log2(hotFlux/hotCap)`. The latter is the
+tail's own attenuation, reads considerably larger (0.65 vs 0.16 stops in the measurement above), and
+would overstate the effect. First version of this table got that wrong.
+
+#### Remaining plan, in order
+
+1. **Calibrate the emissives** — exhaust, mining beam/muzzle, debris, flash, wreck — to real
+   luminances. This is the root cause and it is where D26 actually lives. ⚠ Expect the plume to be
+   *legitimately* very bright (a chemical rocket is ~1e5–1e6 cd/m²), so this alone will not tame it.
+2. **Then reconsider the estimator**: percentile-band or hot-pixel-capped metering, so no single small
+   feature can own the frame. Cheaper and less invasive than either of the next two.
+3. **Then a screen-space metering weight mask** if the vehicle still dominates — UE's approach, and
+   safe because it changes only metering, never the render.
+4. **Local exposure** last, if a global exposure still cannot hold it.
+
+⚠ Do NOT re-attempt the layer split. Even with the light layers fixed it is the wrong tool: it is a
+render-order change in service of a metering problem, and it cannot express "count this less", only
+"do not count this at all".
+
+### ✅ D31 — the meter point-sampled, so it never saw the sun (CLOSED 2026-08-18)
+
+Found while checking why fixing D26's monotonicity appeared to fix the sun-in-frame inversion "too well":
+turning to put the sun on screen changed the metered EV by 0.02 stops. It should have changed it a lot.
+
+`updateExposureMeter`'s downsample took **one bilinear tap per 64×64 output texel** — one sample standing
+in for a 30×30-screen-pixel tile at 1920 wide, and more on a Retina buffer. Three symptoms, two measured:
+
+1. **The sun was not metered at all.** `EV max` read 5.3 (≈4.9 game units — Earth's cloud highlights)
+   while the sun disc is 265,000 game units = **EV 21**. A ~3 px disc has roughly a 10% chance of landing
+   on any given tap, so looking straight at the sun cost no adaptation whatsoever.
+2. **The reading depended on display resolution.** The same pose measured `EV max` **6.55** on a Retina
+   XDR buffer and **5.60** at 1920×1080 — ~1 stop apart. A measurement of the SCENE must not be a
+   function of the drawing-buffer size. (This came from the user correcting my assumed 1920; the
+   correction strengthened the diagnosis rather than weakening it.)
+3. **Latent flicker**, the worst of the three: when a small bright feature *does* hit a tap, the reading
+   jumps ~15 stops, so exposure would twitch as the camera drifts sub-pixel.
+
+#### 🔑 The fix is about VARIANCE, not coverage
+
+A single tap is already an *unbiased* estimator of the tile mean — in expectation. Its problem is
+enormous variance, and that variance IS the flicker. `TILE_TAPS²` stratified taps spread evenly across
+the tile cut the variance ~TILE_TAPS²-fold (16× in stddev at 16 taps) while staying unbiased **at any
+resolution**, because the offsets are computed in UV and therefore cover the tile whatever its pixel
+size. That framing matters: chasing "full pixel coverage" would have made the tap count
+resolution-dependent for no gain.
+
+⚠ **The average must be of LINEAR luma, taken BEFORE the log2.** Averaging the per-tap EVs would be a
+geometric mean, which under-weights exactly the hot features this pass exists to see — the same class of
+error as the log-average estimator that read 21 stops low (§5.9).
+
+Cost: 256 taps × 4096 texels = 1.05 M fetches/frame, nothing against a 2 MP frame.
+
+**Measured after the fix**, identical pose at two buffer sizes 1.68× apart in linear resolution:
+
+| | 2560×1440 | 1520×860 |
+|---|---|---|
+| **EV max** | −4.18 | **−4.21** |
+| metered EV | −12.75 | −12.63 |
+| p98 | −7.46 | −7.36 |
+| hot-tail share | 81% | 79% |
+
+**0.03 stops** on `EV max`, against ~1 stop before. Resolution independence achieved.
+
+⚠ Note what this changes about the sun: its flux is now *averaged into* its tile rather than missed, so a
+3 px disc in a 900 px tile contributes 265,000 × 3/900 ≈ 883 game units. That is the correct flux-average
+answer, and it means **looking at the sun finally costs adaptation** — the hot-tail compressor (D26) is
+what keeps that from being a cliff.
+
+### ⛔ D30 — stars are 6.7 magnitudes too dim, and no rescale can fix it
+
+User: *"at sunset the brightest stars start to become visible… at cloud level at the terminator I see no
+star at all. Are you sure the brightness of our stars is correct?"* **No. They are 482× too dim, and the
+answer is not a bigger number.**
+
+A star is a POINT source, so what matters is its flux divided by the solid angle it lands in
+(6.53e-7 sr for one pixel at 50° vFOV / 1080 px):
+
+| star | mag | should render as |
+|---|---|---|
+| Sirius | −1.46 | **14.9 cd/m²** |
+| Vega | 0.03 | 3.78 cd/m² |
+| Polaris | 1.98 | 0.63 cd/m² |
+| naked-eye limit | 6.0 | 0.0155 cd/m² |
+
+Our brightest panorama texel post-rescale measures **3.1e-2 cd/m²** → an implied magnitude of **5.25**.
+So the brightest object in our sky renders as a *barely-naked-eye* star. Deficit vs Sirius: **482× = 8.9
+stops = 6.7 magnitudes.**
+
+#### 🔑 Root cause: the asset is LDR and is being asked to hold 17 stops
+
+Real Sirius : diffuse Milky Way = **1.19e5 : 1 = 16.9 stops**. An 8-bit sRGB texture holds ~8 stops of
+usable range. **The panorama physically cannot represent both ends**, so calibrating it by the whole-sky
+MEAN — which is correct for the diffuse band, and what `SKY_RADIANCE_SCALE` does — necessarily leaves the
+stars crushed toward that mean.
+
+This is D25's problem one level out: there, the *buffer* could not hold the scene's range; here the
+*asset* cannot hold the sky's. And it has the same shape of answer — no single scale works, the two
+populations must be separated.
+
+⚠ **So do NOT "fix" this by raising the star texels or re-scaling the panorama.** Brightening the whole
+texture re-breaks the diffuse band (the 189,000×-too-bright error), and there is no per-texel way to tell
+a star from nebulosity in an LDR image.
+
+#### The fix: stars from a catalogue, panorama for diffuse only
+
+Render stars as point sprites from a real catalogue (Hipparcos / Yale BSC) with physical magnitudes →
+illuminance → per-pixel luminance, and strip them from the panorama so it carries only nebulosity. This
+is what Space Engine, Elite and Star Citizen do, it needs no per-system tuning (a generated system gets
+its own catalogue), and there is already an **unmounted `StarsComponent.tsx`** in the repo to build on.
+
+#### Cross-check against the user's own test
+
+At the terminator with the sun set, looking up: measured sky p50 = EV −3.34 = **74.5 cd/m²** — a
+plausible twilight zenith (real: 10–100). Sirius at 14.9 cd/m² against that is a **0.20 : 1** contrast,
+i.e. genuinely marginal in reality too — which matches the user's observation that the brightest stars
+only *start* to appear. But our star at 3.1e-2 cd/m² sits **2,404× below the sky**, so it is not marginal,
+it is absent. The sky level is roughly right; the stars are the defect.
 
 ### ⛔ D28 — no refracted limb light (the dominant illuminant in an umbra)
 
