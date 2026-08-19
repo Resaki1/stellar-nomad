@@ -66,6 +66,7 @@ import {
   EV_MAX,
   EV_MIN,
   evFromGameUnits,
+  getPreExposure,
   isManualExposure,
   setMeteredEV,
 } from "./photometry";
@@ -326,6 +327,19 @@ export function updateExposureMeter(
 
   if (!_readPending) {
     _readPending = true;
+    // ── D25: undo this frame's source pre-exposure ────────────────────────────
+    // `source` holds PRE-EXPOSED radiance, and the downsample shader stores
+    // log2(luma·8) — so the pre-exposure appears as a pure OFFSET of log2(preExp)
+    // on every sampled EV, and removing it is one subtraction. This is not
+    // optional: metering the pre-exposed buffer means metering our own output,
+    // and the loop (brighter reading → more exposure → brighter reading) diverges
+    // until it hits EV_MAX.
+    //
+    // Captured HERE, at submit time, not read in the callback: the readback is
+    // async, so by the time it resolves `getPreExposure()` may already belong to
+    // a later frame. `_readPending` guarantees only one is ever in flight, so a
+    // single tag is sufficient.
+    const preExpLog2 = Math.log2(Math.max(getPreExposure(), 1e-30));
     void renderer
       .readRenderTargetPixelsAsync(_rt, 0, 0, GRID, GRID)
       .then((buf) => {
@@ -341,10 +355,11 @@ export function updateExposureMeter(
         for (let row = 0; row < GRID; row++) {
           for (let col = 0; col < GRID; col++) {
             const i = row * stride + col * 4;
-            const ev = isHalf ? halfToFloat(a[i]) : a[i];
+            const evRaw = isHalf ? halfToFloat(a[i]) : a[i];
             const w = isHalf ? halfToFloat(a[i + 1]) : a[i + 1];
-            if (!Number.isFinite(ev) || !Number.isFinite(w) || w <= 0) continue;
-            samples.push([ev, w]);
+            if (!Number.isFinite(evRaw) || !Number.isFinite(w) || w <= 0) continue;
+            // Back to ABSOLUTE game-unit EV (see preExpLog2 above).
+            samples.push([evRaw - preExpLog2, w]);
             totalW += w;
           }
         }

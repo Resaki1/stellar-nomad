@@ -1,9 +1,13 @@
 "use client";
 
 import { useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKTX2 } from "@/hooks/useKTX2";
-import { NITS_PER_GAME_UNIT } from "@/components/space/photometry";
+import {
+  NITS_PER_GAME_UNIT,
+  getPreExposure,
+} from "@/components/space/photometry";
 
 // Whole-sky mean this panorama should emit, cd/m² — zodiacal light + integrated
 // starlight seen from interplanetary space, no airglow.
@@ -86,6 +90,19 @@ export default function MilkyWaySkybox({
 
     return [geo, mat];
   }, [tex]);
+
+  // ── D25: pre-expose the panorama every frame ──────────────────────────────
+  // This is THE site the half-float floor bit: at the physically correct
+  // SKY_RADIANCE_SCALE the diffuse band is 9.6e-9 game units against a smallest
+  // subnormal of 5.96e-8, so it stored as exactly zero and the Milky Way had no
+  // nebulosity at all — only the stars, which are 500× brighter, survived.
+  //
+  // A MeshBasicMaterial's colour is a CPU value set once at material creation,
+  // so unlike the uniform-driven sites this one has to be re-written per frame.
+  // It is a single scalar write; the material is not rebuilt.
+  useFrame(() => {
+    material.color.setScalar(SKY_RADIANCE_SCALE * getPreExposure());
+  });
 
   // Render at a large radius within the scaled camera's far plane.
   // depthWrite=false ensures it never occludes other scaled objects.

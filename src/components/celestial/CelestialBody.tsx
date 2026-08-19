@@ -11,7 +11,11 @@ import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
-import { STAR_COLOR_LINEAR, sunIlluminanceAt } from "../space/photometry";
+import {
+  STAR_COLOR_LINEAR,
+  getPreExposure,
+  sunIlluminanceAt,
+} from "../space/photometry";
 import { useFarLOD } from "./useFarLOD";
 import {
   setAtmosphereBody,
@@ -401,10 +405,13 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // D18: tinted by the star's blackbody colour (luminance-normalised, so the
     // total illuminance is still `illum`). Grey here would light an M-dwarf's
     // planets stark white — see STAR_COLOR_LINEAR.
+    // × preExposure (D25): the surface shaders are LINEAR in this, so scaling it
+    // here pre-exposes every lit planet pixel without touching a single shader.
+    const illumPre = illum * getPreExposure();
     uSunIlluminance.value.set(
-      illum * STAR_COLOR_LINEAR[0],
-      illum * STAR_COLOR_LINEAR[1],
-      illum * STAR_COLOR_LINEAR[2],
+      illumPre * STAR_COLOR_LINEAR[0],
+      illumPre * STAR_COLOR_LINEAR[1],
+      illumPre * STAR_COLOR_LINEAR[2],
     );
 
     // ── Ship distance ──

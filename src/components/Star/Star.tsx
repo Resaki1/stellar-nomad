@@ -35,6 +35,7 @@ import {
   HALF_FLOAT_WRITE_MAX,
   SUN_DISC_RADIANCE_GAME,
   subPixelFluxScale,
+  getPreExposure,
 } from "@/components/space/photometry";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 
@@ -252,14 +253,20 @@ function Star({ bloom: _bloom }: StarProps) {
     // So below DISC_PX_FLOOR, draw the core at the floor and scale its radiance
     // by the area ratio. Integrated flux is preserved, the star stays a steady
     // point, and nothing above the floor is touched.
+    // × preExposure (D25). This is the site the half-float CEILING bit: at the
+    // physical 265,000 the disc had to be clamped to HALF_FLOAT_WRITE_MAX on
+    // write. With pre-exposure on, a frame containing the sun meters at exposure
+    // ~0.05, so 265,000 × 0.05 = 13,250 — comfortably inside range and no longer
+    // clipped. The clamp stays as a guard, not as the mechanism.
+    const preExp = getPreExposure();
     const discPx = (RADIUS_KM * 2 / distKm / fovRad) * screenH;
     if (discPx < DISC_PX_FLOOR) {
       uCoreRatio.value = (DISC_PX_FLOOR / 2 / screenH) * fovRad
         * distScaled / halfExtent;
       uCoreRadiance.value =
-        SUN_DISC_RADIANCE_GAME * subPixelFluxScale(discPx, DISC_PX_FLOOR);
+        SUN_DISC_RADIANCE_GAME * subPixelFluxScale(discPx, DISC_PX_FLOOR) * preExp;
     } else {
-      uCoreRadiance.value = SUN_DISC_RADIANCE_GAME;
+      uCoreRadiance.value = SUN_DISC_RADIANCE_GAME * preExp;
     }
   });
 

@@ -38,7 +38,11 @@ import {
 } from "three/tsl";
 import { SCALED_UNITS_PER_KM } from "@/sim/units";
 import { PASS } from "./perf/perfProfiler";
-import { STAR_COLOR_LINEAR, sunIlluminanceAt } from "./photometry";
+import {
+  STAR_COLOR_LINEAR,
+  getPreExposure,
+  sunIlluminanceAt,
+} from "./photometry";
 import type { AtmosphereParams } from "../celestial/types";
 import {
   getCloudShadowMap,
@@ -900,10 +904,13 @@ export function setAtmosphereBody(
   // D18 CLOSED: tinted by the star's blackbody colour instead of grey. The tint
   // is luminance-normalised, so total illuminance is still exactly `illum` —
   // only the hue changes, and the §3.1 calibration is untouched.
+  // × preExposure (D25) — pre-exposes the atmosphere march, the cloud shell and
+  // the volumetric marcher in one write, since all three are linear in it.
+  const illumPre = illum * getPreExposure();
   rec.sunIlluminance.set(
-    illum * STAR_COLOR_LINEAR[0],
-    illum * STAR_COLOR_LINEAR[1],
-    illum * STAR_COLOR_LINEAR[2],
+    illumPre * STAR_COLOR_LINEAR[0],
+    illumPre * STAR_COLOR_LINEAR[1],
+    illumPre * STAR_COLOR_LINEAR[2],
   );
   if (rings) {
     if (!rec.rings) {
@@ -1169,7 +1176,11 @@ export function computeAtmosphereLighting(
     cosHorizon + SKY_DAY_BAND_HI,
     cosSunUp,
   );
-  _lighting.skyIntensity = SKY_AMBIENT_MAX_INTENSITY * densityAtCam * dayFactor;
+  // × preExposure (D25): this drives AtmosphereSkyLight's hemisphere intensity,
+  // which lights the LOCAL scene — so it must move in lockstep with SunLight's
+  // key and fill or the ship's sky fill and its sunlit side would disagree.
+  _lighting.skyIntensity =
+    SKY_AMBIENT_MAX_INTENSITY * densityAtCam * dayFactor * getPreExposure();
 
   // Sky tint: Rayleigh-blue, desaturated toward white by SKY_TINT_SATURATION.
   const rs = params.rayleighScattering;

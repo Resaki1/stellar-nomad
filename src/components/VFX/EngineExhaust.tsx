@@ -18,6 +18,7 @@ import {
   mul,
   add,
 } from "three/tsl";
+import { getPreExposure } from "@/components/space/photometry";
 
 // ── Types ────────────────────────────────────────────────────────────
 export type ExhaustConfig = {
@@ -154,7 +155,9 @@ const EngineExhaust = memo(function EngineExhaust({
   useFrame((_, delta) => {
     const intensity = intensityRef.current ?? 0;
 
-    uIntensity.value = intensity;
+    // × preExposure (D25) — the plume is emissive, so nothing else scales it.
+    // Its absolute level is still the old uncalibrated one (D26 class).
+    uIntensity.value = intensity * getPreExposure();
     uTime.value += delta;
 
     // Scale plume length by intensity (Z axis); keep X/Y at 1.

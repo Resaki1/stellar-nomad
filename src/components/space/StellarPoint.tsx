@@ -48,6 +48,7 @@ import {
   log2,
   cameraFar,
 } from "three/tsl";
+import { getPreExposure } from "./photometry";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { STAR_POSITION_KM } from "@/sim/celestialConstants";
 
@@ -268,7 +269,16 @@ function StellarPoint({
     const fade = t * t;
 
     // Clamp to a sane maximum — Venus at inferior conjunction can spike.
-    uBrightness.value = Math.min(hdr * fade, 500);
+    // × preExposure (D25). ⚠ Like the far billboard, `hdr` is normalised to an
+    // arbitrary Jupiter reference, NOT to the photometric scale — still defect
+    // D06. This restores INVARIANCE under pre-exposure (measured: distant bodies
+    // darkened 8× at `__lum.preExposure(8)`); the absolute level stays D06's job.
+    //
+    // ⚠ The 500 clamp is an ABSOLUTE ceiling, so it must sit INSIDE the
+    // pre-exposure — clamping after would make the cap itself scale-dependent,
+    // which is exactly the trap that makes the sun disc's HALF_FLOAT_WRITE_MAX
+    // clamp break invariance (see LIGHTING_PLAN's D25 section).
+    uBrightness.value = Math.min(hdr * fade, 500) * getPreExposure();
 
     // ── Billboard size: guarantee minimum screen pixels ──
     const distScaled = distKm * 0.001; // km → scaled units

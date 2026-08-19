@@ -52,7 +52,9 @@ import {
   EARTH_SUN_ILLUMINANCE_AUTHORED,
 } from "./atmosphereData";
 import { getAtmosphereBody } from "@/components/space/atmospherePass";
-import { surfaceRadiance } from "@/components/space/photometry";
+import { surfaceRadiance,
+  uPreExposure,
+} from "@/components/space/photometry";
 import {
   getAtmosphereLUTs,
   transmittanceLutUv,
@@ -498,7 +500,16 @@ function buildEarthFragmentNode(opts: {
     // docs/LIGHTING_PLAN.md §3.8.
     //
     // This reproduces the old `mix()` exactly: mix(n, d, a) = n·(1−a) + d·a.
-    const nightEmissive = nightCol.mul(nightMask).mul(float(1.0).sub(sunVis));
+    // × uPreExposure (D25): city lights are EMISSIVE, so they are NOT carried by
+    // the × sunIlluminance/π conversion that pre-exposes every reflective term —
+    // they need it applied directly. MEASURED as a missing site by
+    // `__lum.preExposure(8)`: the night side darkened 8×. Their ABSOLUTE level is
+    // still the old uncalibrated one (§3.8's job); pre-exposure and calibration
+    // are orthogonal, and this fixes only the former.
+    const nightEmissive = nightCol
+      .mul(nightMask)
+      .mul(float(1.0).sub(sunVis))
+      .mul(uPreExposure);
     const col = dayCol.mul(sunT).mul(nDotL).toVar();
 
     // ── SHADOW_DEBUG: cloud-shadow / cloud registration overlay ──

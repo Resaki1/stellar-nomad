@@ -111,9 +111,11 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D22 ✅ | Ocean "Schlick" Fresnel is `0.02 + 2.0·(1−cosθ)^2.5` — not Schlick, **peaks at 2.02** | [`earth.ts:543`](../src/components/celestial/bodies/earth.ts#L543) | ocean returns 202% of incident light; 7.4× hot at 60° | I |
 | D23 | Day texture's dark end is crushed: deep Pacific linear luminance **0.0014** vs a real 0.03–0.06 | `earth_day_*.ktx2` | ocean **21–43× too dark**, Amazon 4–6×; Sahara + ice correct ⇒ non-uniform, per-region. Phase 2c | I |
 | D24 ✅ | **Every planet rendered MIRRORED.** All KTX2s are `KTXorientation: rd` (top-down); three's KTX2Loader ignores orientation; `SphereGeometry` `uv.y = 1` at north ⇒ v-flip | `CelestialBody.tsx`, `cloudCommon.ts` | geometric north pole was showing Antarctica — see §5.6 | I |
-| D25 | Diffuse sky **underflows RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stores as exactly 0 | `MilkyWaySkybox.tsx` | no Milky Way nebulosity; needs source pre-exposure (§3.2) | I |
+| D25 | ✅ Diffuse sky **underflowed RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stored as exactly 0 | [`photometry.ts`](../src/components/space/photometry.ts) + 6 source sites | fixed by source pre-exposure; sky now reads 2.3e-8 where it read 0 | ✅ |
 | D26 | The player ship's hull carries **99% of metered flux** in deep space | `ShipOne.tsx` + meter | stars vanish; third-person-camera problem, damp the local scene in metering | I |
 | D27 | ✅ **The bounce fill was never occluded** (and non-dominant bodies cast no shadow at all) | [`SunLight.tsx`](../src/components/Star/SunLight.tsx), [`sunOcclusion.ts`](../src/components/space/sunOcclusion.ts) | ship glowed at 0.25 cd/m² inside an umbra, drowning the stars | ✅ |
+| D28 | **No refracted limb light** — a ship in an atmosphere planet's umbra gets no coppery ring illumination | `atmospherePass.ts` + `SunLight.tsx` | eclipsed hull is black instead of dim red; **3,400× starlight** | II |
+| D29 | **The skybox is not a light source** — integrated starlight never reaches the hull | `MilkyWaySkybox.tsx` + `SunLight.tsx` | atmosphere-less umbra (Luna) is pure black; blocked by D25 | III |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1726,6 +1728,201 @@ not this fix. Note it does **not** rescue the umbra: at α ≈ 180° the phase f
 ⚠ **sol.json places every body on one axis**, so from behind Neptune every inner planet also transits
 the star (measured: Uranus 1.0%, Saturn 1.5%, both matching r² for their angular radii). Harmless — a
 0.06-stop dip — and it disappears once bodies orbit. But do not read it as a bug in the registry.
+
+### ✅ D25 — source pre-exposure (CLOSED 2026-08-18)
+
+**A static rescale cannot work, and that is worth proving before reaching for one.** The scene spans
+44.6 stops; RGBA16F holds ~40 (subnormal 5.96e-8 → below that a value stores as *exactly* zero; max
+65,504). Putting the sky safely into the normals needs ×1e5, which sends sunlit Mercury (6 units) to
+6e5 and over the ceiling. So the two ends cannot be seated at once by any fixed factor — the fix has
+to move with the scene, which is exactly Frostbite's/UE's pre-exposure (§3.2).
+
+#### Why multiplying the LIGHT SOURCES is equivalent — and much safer
+
+The render is **linear in its light sources**, so scaling every source scales the image; there is no
+need to find every shader that writes radiance. The seams are the places an absolute photometric value
+*enters*, which is already the "one authority" list Phases 2a/3 funnelled everything through:
+
+| # | site | covers |
+|---|------|--------|
+| 1 | `CelestialBody`'s `uSunIlluminance` | every lit planet/moon surface |
+| 2 | `setAtmosphereBody`'s `rec.sunIlluminance` | atmosphere march, cloud shell, volumetric marcher |
+| 3 | `SunLight`'s key + fill intensity | the whole local scene (ship, asteroids) |
+| 4 | `computeAtmosphereLighting`'s `skyIntensity` | `AtmosphereSkyLight`'s hemisphere fill |
+| 5 | `MilkyWaySkybox`'s `material.color` | the panorama — **the site D25 is about** |
+| 6 | `Star.tsx`'s `uCoreRadiance` | the sun disc — the site the *ceiling* bit |
+
+Five of the six are CPU-side per-frame writes, so this is mostly JS multiplies, not shader surgery.
+(#5 is a `MeshBasicMaterial` colour, set once at material creation, so it had to become a `useFrame`.)
+
+⚠ **Linearity is the whole licence, so every NON-linear op on radiance had to be audited.** Checked
+and cleared: the atmosphere's spectral-transmittance `powVec3` operates on a *transmittance* (and the
+AP target keeps radiance in rgb, mean transmittance in alpha, so `scene·a + rgb` stays uniformly
+pre-exposed), the Henyey-Greenstein denominator is dimensionless, and the ship cloud-shadow gamma is
+applied to a transmittance. None is radiance.
+
+#### Three consumers MUST divide it back out
+
+1. **The exposure meter** — it reads the pre-exposed buffer, so without the divide-out it meters its
+   own output and the loop (brighter reading → more exposure → brighter reading) diverges to `EV_MAX`.
+   The downsample stores `log2(luma·8)`, so pre-exposure is a pure **offset** and removal is one
+   subtraction. Captured at *submit* time, not in the async callback, which would belong to a later
+   frame.
+2. **`__lum`** — done in `decodeRgb`, the single chokepoint all of probe/probeMax/disc route through.
+   Without it every absolute number in this document would silently become a reading of the exposure
+   follower instead of the scene.
+3. **Temporal history** — the cloud reconstruction blends last frame's output, written at the
+   *previous* pre-exposure. `uPreExposureRatio` rescales it on read. Skipping this would not look like
+   a scale error: the YCoCg variance clamp would see legitimate history as divergent and reject it, so
+   the TAA would quietly stop converging exactly while the eye is adapting.
+
+`uPostExposure = exposure / preExposure` is what the post chain multiplies by — not `exposure`, and
+not 1. It is ~1.0 in the steady state, but the meter updates `_exposure` *after* the scaled scene has
+been rendered, so this carries that late change onto an already-written frame instead of dropping it.
+
+#### Validation — an invariance test, not an enumeration
+
+`__lum.preExposure(f)` pins an arbitrary factor. The design rests on one invariant: **the image must
+not depend on the pre-exposure**, since the post chain divides out exactly what the sources multiplied
+in. So any site that was MISSED shows up immediately as a region moving by `f`. That is falsifiable,
+which an enumeration of source sites is not.
+
+Measured, same camera, dark-sky frame:
+
+| probe | preExp ×1 | preExp ×10⁴ (divided back out) |
+|-------|-----------|-------------------------------|
+| (400,400) | `0, 0, 0` | `3.09e-8, 2.45e-8, 2.71e-8` |
+| (400,250) | `0, 0, 0` | `2.71e-8, 2.19e-8, 1.81e-8` |
+| (200,300) | `0, 0, 0` | `2.58e-8` (grey) |
+| (640,120) | `0, 0, 0` | `2.32e-8, 1.81e-8, 2.06e-8` |
+
+Exactly zero → correctly valued, and the channels now **differ**, which is real nebulosity colour
+rather than a flat fill. 2.3e-8 × 6038 = **1.4e-4 cd/m²**, landing where `SKY_TARGET_NITS` (1e-4) and
+the Milky Way band (1.25e-4) predict — so the divide-out preserves the absolute calibration. The image
+was visually identical at ×1 and ×10⁴.
+
+**End-to-end with the follower driving it** (`preExposure = exposure`, no override): Earth correctly
+exposed with cloud structure, ship lit, stars visible, and the meter *stable* — metered 1.25 → target
+1.76 → follower 5.3, with exposure 0.12 reconciling to EV 5.3 exactly once the +2.5-stop output bias is
+applied. At `preExposure ≈ 6e-6`, a source that had been missed would render ~10⁵× off — pure black or
+blown white — so "everything looks right" is a strong completeness check here, not a weak one.
+
+⚠ **Values far below what the current exposure can display still underflow, and that is correct.**
+With Earth in frame the exposure is small, so the sky underflows again — but it would display as black
+either way. Pre-exposure spends half-float precision where the exposure says the eye is looking; it
+does not widen the buffer.
+
+#### What the invariance test then found — and the two results that are NOT bugs
+
+Run by the user with the sun and the night side in frame. Six things moved, and they split three ways —
+which is the point of a test that *localises* rather than one that just passes or fails.
+
+**(a) Four genuinely missing multiplies.** All darkened by exactly the 8× the test predicts for a
+source that never got pre-exposed (raw value unchanged, post chain still divides by 8):
+
+| site | fix |
+|------|-----|
+| Earth's night-side city lights | `nightEmissive.mul(uPreExposure)` — held out of `col` on purpose, so the × sunIlluminance/π conversion that pre-exposes every reflective term never touched them |
+| distant bodies, billboard tier | `useFarLOD`'s `albedo × sunDot` × `uPreExposure` |
+| distant bodies, stellar-point tier | `StellarPoint`'s `uBrightness` × `getPreExposure()` |
+| engine exhaust + mining laser | `uIntensity` × `getPreExposure()`; the laser via a registry (below) |
+
+🔑 **Pre-exposure and CALIBRATION are orthogonal, and conflating them would have stalled this.** The
+billboard is `albedo × sunDot` with no illuminance at all (still **D04**) and the stellar point is
+normalised to an arbitrary Jupiter reference (still **D06**). Multiplying an arbitrary-scale value by
+the pre-exposure makes it scale-INVARIANT while leaving it exactly as mis-calibrated as it was. That is
+the correct separation: D25 owns invariance, D04/D06 own the absolute level.
+
+Plain (non-TSL) emissive materials needed [`preExposedEmissive.ts`](../src/components/space/preExposedEmissive.ts)
+rather than an inline multiply. A `MeshBasicMaterial`'s `color` is a CPU value, so pre-exposing it means
+**rewriting** it each frame — and rewriting in place destroys the base, so frame two would compound
+(base × p × p × …). The registry keeps each material's authored colour and always writes `base × p`.
+It also stops the next VFX site added from silently breaking invariance, which would surface as "this
+effect darkens as the scene brightens" — miserable to debug from the symptom.
+
+**(b) ⚠ The sun getting darker is the `HALF_FLOAT_WRITE_MAX` clamp, not a missing multiply.**
+`SUN_DISC_RADIANCE_GAME` is 265,000, so at preExposure 8 the write is 2.12e6 → clamped to 60,000, and
+the post chain then divides by 8 → exactly the 8× dimming observed. **An absolute clamp cannot be
+invariant to a scale applied before it**, by construction.
+
+In real play this is nearly inert, which is the whole point of pre-exposure: with `preExposure =
+exposure`, the clamp binds only when 265,000 × exposure > 60,000, i.e. exposure > 0.226 → below EV
+≈1.9. So it can only bite in the ~0.25 s `TAU_BRIGHTEN` transient after swinging toward the sun from
+deep space, and there it *limits* a blowout rather than causing one. Left as a guard against `Inf`, no
+longer the mechanism. (`StellarPoint`'s 500 clamp is the same hazard and was fixed properly — the clamp
+is applied INSIDE the pre-exposure, so the cap stays absolute.)
+
+**(c) ⚠ Background stars getting BRIGHTER is D25 working, not a double-multiply.** The skybox is
+pre-exposed exactly once. What changes is that the panorama's FAINT star texels sit below the half-float
+floor at preExposure 1 and emerge above it at 8 — so more stars appear, which reads as "brighter". The
+direct evidence is already in the table above: four "empty sky" points all read exactly `0`, so
+sub-floor content exists everywhere in the panorama, not just in the diffuse band.
+
+⚠ **Still unregistered** (same one-line registry call, not yet done): `DebrisEffect`, `FlashEffect`,
+`AsteroidVFX`, `WreckCollector`. All are on the old uncalibrated scale (0.4/0.5/0.6 — the D26 class), so
+they want pre-exposing *and* calibrating.
+
+### ⛔ D28 — no refracted limb light (the dominant illuminant in an umbra)
+
+Closing D27 raised the right question: *should* an eclipsed ship be black? Physically no — and the
+term that saves it is not starlight, it is **sunlight refracted through the planet's atmosphere**.
+That is why a totally eclipsed Moon is coppery red rather than invisible, and it is ~3,400× larger
+than starlight.
+
+Backed out of real total-lunar-eclipse photometry. The back-out is valid because the albedo and the
+phase are the *same* in both cases, so the magnitude drop from full moon IS the drop in incident
+illuminance:
+
+| eclipsed Moon V | incident | hull radiance @ albedo 0.333 | vs half-float floor |
+|---|---|---|---|
+| −1.5 (bright eclipse) | 4.2 lux | 0.45 cd/m² | 1,248× |
+| 0 (typical) | **1.1 lux** | **0.11 cd/m²** | **315×** |
+| +1 | 0.42 lux | 0.045 cd/m² | 125× |
+| +2.5 (dark, post-volcanic) | 0.11 lux | 0.011 cd/m² | 31× |
+
+**It is representable in half-float TODAY** (315× above the 5.96e-8 floor), unlike starlight — so
+unlike D29 this is not blocked by D25.
+
+⚠ Two things not to get wrong:
+- **Eclipse brightness swings ~2 magnitudes** with atmospheric aerosol loading (volcanic eruptions
+  darken eclipses measurably). ~1 lux is a central value, not a constant to bake.
+- **Do not transplant the Moon's number.** At 3 R⊕ the refracting ring subtends far more solid angle
+  than at the Moon's 60 R⊕, so the ring's geometry has to be integrated properly. The atmosphere pass
+  already owns the transmittance LUT and grazing-path machinery this needs.
+
+Applies **only to atmosphere-bearing bodies.** In Luna's umbra starlight really is all there is, so
+D27's near-black is *correct* at Luna and *wrong* at Earth. Do not "fix" it globally.
+
+### ⛔ D29 — the skybox is not a light source (blocked by D25)
+
+The panorama lights nothing. Physically the hull in an atmosphere-less umbra is lit by integrated
+starlight plus zodiacal light, and it is faintly visible — but **darker than the sky behind it**:
+
+| | value | reading |
+|---|---|---|
+| hull radiance from starlight | **3.3e-5 cd/m²** | |
+| vs scotopic absolute threshold (~1e-6 cd/m²) | **33× above** | a real eye WOULD see it |
+| vs Milky Way band (1.25e-4 cd/m²) | **0.27×** | a dark silhouette AGAINST the galaxy |
+| vs half-float floor (5.96e-8 game) | **0.093×** | **stores as exactly zero** |
+
+So "almost black" is closer to right than "lit" — the correct look is a dark shape against a brighter
+sky, not a visibly grey ship.
+
+**🔑 The calibration is already done and it validates independently.** Integrated starlight from S10
+units (40 S10 at the galactic pole, 150 in the plane; `1 S10 = 8.34e-7 cd/m²`, machinery checked
+against the known 22 mag/arcsec² = 1.7e-4 cd/m²) gives `E = πL ≈ 1.6e-4 lux`, ~3e-4 with zodiacal.
+And `π × SKY_TARGET_NITS = 3.14e-4 lux`. Those agreeing means **an IBL derived from the panorama is
+automatically photometrically correct** — and it makes the hull and the sky share ONE authority, so
+they cannot drift apart. It also needs no per-system tuning: bake from whatever skybox a generated
+system ships.
+
+**Use SH-L2 (9 coefficients), not a PMREM.** The irradiance of a sky whose only structure is one
+broad band is inherently low-frequency, so L2 captures the plane-vs-pole gradient (4× in radiance,
+~2–3× in irradiance) exactly, at 9 `vec3`s and zero texture fetches, baked once from the KTX2 already
+loaded. A PMREM would buy specular reflections that are meaningless at 3e-5 cd/m².
+
+⚠ **BLOCKED BY D25.** At 5.5e-9 game units this is 0.093× the half-float floor — it renders *exactly
+nothing* until source pre-exposure lands. Building it first means debugging a correct implementation.
 
 ### Two more corrections found by the same measurements
 

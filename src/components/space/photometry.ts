@@ -259,9 +259,58 @@ export const EV_NEUTRAL = evFromExposure(1);
  */
 export const uExposure = uniform(1);
 
+// ── SOURCE PRE-EXPOSURE (§3.2, defect D25) ──────────────────────────────────
+// The scene spans 44.6 stops; RGBA16F holds ~40 (smallest subnormal 2⁻²⁴ =
+// 5.96e-8 → below that a value stores as EXACTLY zero; largest finite 65,504).
+// So NO fixed calibration can seat both ends: the diffuse Milky Way underflowed
+// (p50 9.6e-9) at the same time as the sun disc overflowed (265,000, hence the
+// HALF_FLOAT_WRITE_MAX clamp). A STATIC scale cannot fix it either — putting the
+// sky safely in the normals needs ×1e5, which sends sunlit Mercury (6 units) to
+// 6e5 and straight over the ceiling. Measured, not guessed: 44.6 > 40.
+//
+// The fix is Frostbite's/UE's pre-exposure: multiply radiance by the current
+// frame's exposure AT THE SOURCE, so the buffer holds display-referred values
+// around [0.01, 100] and half-float precision is spent where the eye is looking.
+// It works *because* exposure tracks the scene — a dark frame scales the sky up
+// and has no sun in it; a frame with the sun in it has exposure ~0.05, and
+// 265,000 × 0.05 = 13,250 sits comfortably inside range.
+//
+// ── WHY MULTIPLYING THE LIGHT SOURCES IS EQUIVALENT (and much safer) ─────────
+// The render is LINEAR in its light sources, so scaling every source scales the
+// image — no need to find every shader that writes radiance. The seams are the
+// places an absolute photometric value ENTERS: `uSunIlluminance` (planets,
+// atmosphere, clouds), the three.js light intensities (local scene), the skybox
+// radiance, the star's core radiance, and emissives. That set is small and is
+// already the "one authority" list Phases 2a/3 funnelled everything through.
+//
+// ⚠ Linearity is what makes it safe, so anything NON-linear in radiance must be
+// checked. Audited: the atmosphere's spectral-transmittance `powVec3` operates on
+// a TRANSMITTANCE (dimensionless, and stored in the AP target's alpha while
+// radiance lives in rgb), the Henyey-Greenstein denominator is dimensionless, and
+// the cloud shadow gamma is applied to a transmittance. None are radiance. The
+// `(L, Tmean)` apply is `scene·a + rgb`, which stays uniformly pre-exposed as
+// long as `a` is left alone.
+//
+// ⚠ THREE CONSUMERS MUST DIVIDE IT BACK OUT or they silently break:
+//   1. the exposure meter — it reads the pre-exposed buffer, so without the
+//      divide-out it meters its own output and runs away (positive feedback);
+//   2. `__lum.probe` and everything built on it — otherwise every absolute
+//      measurement in this document becomes meaningless;
+//   3. temporal history (the cloud reconstruction) — it holds LAST frame's
+//      pre-exposure, so it must be rescaled by preExpNow/preExpPrev on read.
+export const uPreExposure = uniform(1);
+
+// What the post chain multiplies by: `exposure / preExposure`. Exactly 1.0 once
+// pre-exposure is live and nothing has moved mid-frame — the buffer is already
+// display-referred. It is NOT redundant: the meter updates `_exposure` after the
+// scaled scene has been rendered, so this carries the residual of that late
+// change onto an already-written frame instead of dropping it.
+export const uPostExposure = uniform(1);
+
 let _meteredEV = EV_NEUTRAL;
 let _compensationStops = 0;
 let _exposure = 1;
+let _preExposure = 1;
 // ✅ PHASE 5: auto-exposure is now the default. `__lum` / `__bench` still pin it
 // via setManualExposure(true) — they MUST, since adaptation is frame-to-frame
 // state and an unpinned sweep measures a function of the previous frame.
@@ -271,10 +320,79 @@ function recompute(): void {
   const ev = Math.min(Math.max(_meteredEV, EV_MIN), EV_MAX);
   _exposure = exposureFromEV(ev) * 2 ** _compensationStops;
   uExposure.value = _exposure;
+  uPostExposure.value = _exposure / _preExposure;
 }
 
 /** Current effective exposure multiplier. */
 export const getExposure = (): number => _exposure;
+
+/**
+ * The factor every radiance SOURCE is multiplied by this frame (defect D25).
+ * 1.0 means pre-exposure is disabled and buffers hold absolute game units.
+ */
+export const getPreExposure = (): number => _preExposure;
+
+/**
+ * Set this frame's source pre-exposure. Call ONCE per frame, at the top of the
+ * frame BEFORE anything renders, so every source site in the frame agrees — a
+ * split-brain frame (half the sources at the old value) is an internally
+ * inconsistent image, which is the same failure mode as the Venus-trim
+ * cancellation trap in §2.2.
+ */
+export function setPreExposure(preExposure: number): void {
+  const next = preExposure > 0 && Number.isFinite(preExposure) ? preExposure : 1;
+  uPreExposureRatio.value = next / _preExposure;
+  _preExposure = next;
+  uPreExposure.value = next;
+  uPostExposure.value = _exposure / next;
+}
+
+/**
+ * thisFrame's preExposure ÷ lastFrame's — the rescale any TEMPORAL buffer must
+ * apply when reading its history (defect D25).
+ *
+ * The cloud reconstruction blends last frame's output with this frame's samples.
+ * That history was written at the PREVIOUS pre-exposure, so when exposure moves,
+ * the two sides of the blend are on different scales and the result is a flicker
+ * that tracks the adaptation follower — worst exactly during the fast 0.25 s
+ * brighten. Multiplying the history sample by this puts both sides on this
+ * frame's scale. 1.0 whenever pre-exposure is steady or disabled.
+ */
+export const uPreExposureRatio = uniform(1);
+
+/** Master switch for source pre-exposure. Flip to disable D25 wholesale. */
+export const PRE_EXPOSURE_ENABLED = true;
+
+let _preExposureOverride: number | null = null;
+
+/**
+ * Force a FIXED pre-exposure, for the invariance test (`__lum.preExposure(8)`).
+ *
+ * The whole design rests on one invariant: **the final image must not depend on
+ * the pre-exposure**, because the post chain divides out exactly what the sources
+ * multiplied in. So forcing an arbitrary factor and seeing the picture not move is
+ * a complete check — and any site that was MISSED shows up immediately as a
+ * region that brightens or darkens by that factor. That is a falsification test,
+ * not an enumeration, which is the only way to be sure about a cross-cutting
+ * change like this one. Pass null to hand control back to the exposure follower.
+ */
+export function setPreExposureOverride(factor: number | null): void {
+  _preExposureOverride = factor;
+}
+
+export const getPreExposureOverride = (): number | null => _preExposureOverride;
+
+/**
+ * Pick this frame's pre-exposure. Call ONCE at the top of the frame, before
+ * anything renders — see setPreExposure's note on split-brain frames.
+ */
+export function updatePreExposureForFrame(): void {
+  if (!PRE_EXPOSURE_ENABLED) {
+    setPreExposure(1);
+    return;
+  }
+  setPreExposure(_preExposureOverride ?? _exposure);
+}
 
 /** Current metered EV100 (before compensation). */
 export const getMeteredEV = (): number => _meteredEV;

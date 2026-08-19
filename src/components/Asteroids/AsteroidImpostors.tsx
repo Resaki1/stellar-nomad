@@ -28,6 +28,7 @@ import {
   cameraProjectionMatrix,
   cameraPosition,
 } from "three/tsl";
+import { uPreExposure } from "@/components/space/photometry";
 import { STAR_POSITION_KM } from "@/components/Star/Star";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
@@ -164,7 +165,12 @@ const AsteroidImpostors = memo(function AsteroidImpostors({
       const shade = float(0.15).add(float(8.0).mul(sunDot));
 
       // rocky grey
-      const color = vec3(0.1, 0.1, 0.1).mul(shade);
+      // × uPreExposure (D25). ⚠ Same class as the far planet billboard: `0.1 ×
+      // (0.15 + 8·sunDot)` is a hardcoded arbitrary level with no illuminance in
+      // it at all, so it never joined the photometric scale (D04/D06 family).
+      // This multiply only restores INVARIANCE under pre-exposure — measured as
+      // an 8× darkening at `__lum.preExposure(8)`. Calibration is separate.
+      const color = vec3(0.1, 0.1, 0.1).mul(shade).mul(uPreExposure);
 
       // Distance fade via alphaHash: opacity ramps 1→0 over the fade zone.
       // vCenterDist is a varying computed in the vertex stage from the

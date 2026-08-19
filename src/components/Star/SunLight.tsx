@@ -15,6 +15,7 @@ import {
 } from "@/components/space/sunOcclusion";
 import {
   STAR_COLOR_LINEAR,
+  getPreExposure,
   sunIlluminanceAt,
 } from "@/components/space/photometry";
 import {
@@ -121,8 +122,13 @@ const SunLight = ({
     // Earth. That is the correction, not a regression: 30 was arbitrary.
     const distKm = _dir.length();
     const illuminance = sunIlluminanceAt(distKm, STAR_LUMINOSITY_SUN);
-    ref.current.intensity = illuminance;
-    fillRef.current.intensity = illuminance * BOUNCE_FILL_FRACTION;
+    // × preExposure (D25). three.js irradiance is linear in `intensity`, so the
+    // whole local scene (ship, asteroids) pre-exposes from these two writes. It
+    // MUST use the same factor as the planets' `uSunIlluminance` — the ship flies
+    // between bodies lit by that, and a mismatch would be a visible seam.
+    const preExp = getPreExposure();
+    ref.current.intensity = illuminance * preExp;
+    fillRef.current.intensity = illuminance * preExp * BOUNCE_FILL_FRACTION;
 
     _dir.normalize();
     ref.current.position.copy(_dir);
@@ -157,10 +163,12 @@ const SunLight = ({
     ref.current.color.copy(_directColor);
     fillRef.current.color.copy(_directColor);
 
+    // Published in ABSOLUTE game units (pre-exposure divided back out) so
+    // `__lum.sun()` keeps reporting physical numbers after D25.
     publishDirectSunState(
       illuminance,
       lighting.active ? lighting.sunTransmittance : _WHITE,
-      fillRef.current.intensity,
+      fillRef.current.intensity / preExp,
     );
   });
 

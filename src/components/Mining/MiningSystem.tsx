@@ -5,6 +5,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
+import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 
 import {
   miningStateAtom,
@@ -186,6 +187,10 @@ const NativeLineSegment = memo(
         blending,
         toneMapped: false,
       });
+      // D25: the beam is emissive and its colour is a plain CPU value, so it has
+      // to be rescaled per frame from its authored colour. MEASURED as a missing
+      // site by `__lum.preExposure(8)` — the laser darkened 8×.
+      registerPreExposedEmissive(mat);
 
       const line = new THREE.Line(geo, mat);
       line.frustumCulled = frustumCulled;

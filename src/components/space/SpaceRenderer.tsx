@@ -35,7 +35,12 @@ import {
 } from "./cloudFullscreenPass";
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
-import { setExposureCompensation, uExposure } from "./photometry";
+import {
+  setExposureCompensation,
+  updatePreExposureForFrame,
+  uPostExposure,
+} from "./photometry";
+import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import { updateExposureMeter } from "./exposureMeter";
 import {
@@ -531,7 +536,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // defaults its exposure to a renderer reference for that property, so using
     // it would apply exposure AFTER bloom (wrong side of the threshold) and risk
     // double-counting. Left at its default 1.0; `uExposure` is the one hook.
-    const exposed = sceneTexture.mul(uExposure);
+    // `uPostExposure` = exposure / preExposure (photometry.ts). Before D25 went
+    // live that is just the exposure; with pre-exposure on it is ~1.0, because
+    // the buffer already carries the exposure the sources applied. Using the
+    // ratio rather than either term means the two can never double-count.
+    const exposed = sceneTexture.mul(uPostExposure);
 
     // Bloom is added in linear HDR (pre-tonemap), as before.
     let hdr: typeof pipeline.outputNode = exposed;
@@ -640,6 +649,15 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
     const renderer = gl as unknown as WebGPURenderer;
     perf.markRenderStart();
+
+    // ── D25: pick this frame's SOURCE PRE-EXPOSURE, before anything renders ───
+    // Must be the first thing in the frame: every radiance source multiplies by
+    // it, and a frame where some sources used the old value is an internally
+    // inconsistent image. See photometry.ts's setPreExposure note.
+    updatePreExposureForFrame();
+    // Plain (non-TSL) emissive materials can't read a uniform — rescale them from
+    // their authored colours now that this frame's factor is chosen.
+    updatePreExposedEmissives();
 
     // ── Per-frame renderer bookkeeping ──────────────────────────────────────
     // Scene.tsx calls `_animation.stop()` because R3F owns the frame loop, so

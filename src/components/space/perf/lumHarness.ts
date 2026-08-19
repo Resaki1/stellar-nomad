@@ -63,9 +63,11 @@ import {
   subSolarRadianceLambert,
   evFromGameUnits,
   getExposure,
+  getPreExposure,
   getExposureCompensation,
   setExposureEV,
   setManualExposure,
+  setPreExposureOverride,
   sunIlluminanceAt,
 } from "../photometry";
 import { resolveBodyWarp, resolveUmbraWarp } from "./scenarios";
@@ -318,18 +320,30 @@ function rowStrideElements(width: number, bytesPerElement: number): number {
   return bytesPerRow / bytesPerElement;
 }
 
-/** Decode one pixel's RGB from a readback buffer, whatever its storage type. */
+/**
+ * Decode one pixel's RGB from a readback buffer, whatever its storage type, and
+ * return it in ABSOLUTE game units.
+ *
+ * ⚠ The divide by `getPreExposure()` is what keeps this whole harness meaningful
+ * after D25. The buffer holds radiance × preExposure, so without it every number
+ * in docs/LIGHTING_PLAN.md — every `compare` ratio, every implied albedo — would
+ * silently become a reading of the exposure follower instead of the scene. It is
+ * 1.0 while pre-exposure is off, so this is a bit-exact no-op until D25 goes live.
+ *
+ * This is the ONE chokepoint: probe, probeMax and disc all decode through here,
+ * so there is no second place to forget.
+ */
 function decodeRgb(
   buf: ArrayLike<number>,
   base: number,
   isHalf: boolean,
   isByte: boolean,
 ): [number, number, number] {
+  const inv = 1 / getPreExposure();
   const c = (k: number) => {
     const raw = buf[base + k] ?? 0;
-    if (isHalf) return halfToFloat(raw);
-    if (isByte) return raw / 255;
-    return raw; // Float32Array — already linear floats
+    const v = isHalf ? halfToFloat(raw) : isByte ? raw / 255 : raw;
+    return v * inv;
   };
   return [c(0), c(1), c(2)];
 }
@@ -693,6 +707,35 @@ export class LumHarness {
       `[lum] in ${bodyId}'s umbra, ${radiiBehind} body radii down-sun of centre:`,
     );
     this.sun();
+  }
+
+  /**
+   * Force a FIXED source pre-exposure, to test D25's core invariance.
+   *
+   * **The image must not change.** The post chain divides out exactly what the
+   * sources multiplied in, so `__lum.preExposure(8)` should be visually
+   * indistinguishable from `__lum.preExposure(1)`. Anything that DOES change
+   * brightness is a radiance source that was never pre-exposed — the region that
+   * moves localises the missed site. Call with no argument to hand control back
+   * to the exposure follower.
+   */
+  preExposure(factor?: number): void {
+    setPreExposureOverride(factor ?? null);
+    if (factor === undefined) {
+      console.log(
+        `[lum] pre-exposure released to the exposure follower (now ×${getPreExposure().toPrecision(4)})`,
+      );
+      return;
+    }
+    console.log(
+      [
+        `[lum] pre-exposure PINNED at ×${factor}`,
+        `  The image should look IDENTICAL to __lum.preExposure(1).`,
+        `  Anything that brightens/darkens by ~${factor}× is a source that`,
+        `  is missing its × getPreExposure() — the moving region names it.`,
+        `  Absolute readings (probe/disc/compare) are corrected automatically.`,
+      ].join("\n"),
+    );
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

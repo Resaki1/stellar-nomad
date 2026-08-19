@@ -17,6 +17,7 @@ import {
   Discard,
 } from "three/tsl";
 import type { FarBillboardConfig } from "./types";
+import { uPreExposure } from "@/components/space/photometry";
 
 /**
  * Default billboard fragment: simple hard-diffuse hemisphere.
@@ -40,7 +41,13 @@ function defaultBillboardFragment(
       0, 1,
     );
 
-    const col = vec3(albedo.r, albedo.g, albedo.b).mul(sunDot);
+    // × uPreExposure (D25). ⚠ This billboard is `albedo × sunDot` — REFLECTANCE
+    // with no illuminance at all, i.e. still defect D04 (it never joined the
+    // photometric scale in Phase 3). Pre-exposure and calibration are orthogonal:
+    // this multiply restores INVARIANCE under pre-exposure (measured: distant
+    // bodies darkened 8× at `__lum.preExposure(8)`) and leaves the absolute level
+    // exactly as wrong as it was, for D04 to fix.
+    const col = vec3(albedo.r, albedo.g, albedo.b).mul(sunDot).mul(uPreExposure);
 
     return vec4(col, edge);
   })();

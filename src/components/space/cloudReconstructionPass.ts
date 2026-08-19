@@ -18,6 +18,7 @@ import {
   clamp,
   mix,
 } from "three/tsl";
+import { uPreExposureRatio } from "./photometry";
 import { PASS } from "./perf/perfProfiler";
 
 // =============================================================================
@@ -385,7 +386,18 @@ export function setupCloudReconstructionPass(
     );
 
     // History sample (always read; the gating happens via inBounds below).
-    const historyRgba = texture(uHistoryNode, prevUv);
+    //
+    // × uPreExposureRatio (D25): history was WRITTEN at the previous frame's
+    // pre-exposure. Without this rescale the variance clamp below would compare
+    // it against this frame's samples on a different scale — so a moving exposure
+    // would make legitimate history read as divergent and get rejected, i.e. the
+    // TAA would silently stop converging exactly while the eye is adapting.
+    // Alpha is coverage, not radiance, so only rgb is scaled.
+    const historyRaw = texture(uHistoryNode, prevUv);
+    const historyRgba = vec4(
+      historyRaw.rgb.mul(uPreExposureRatio),
+      historyRaw.a,
+    );
 
     // ── YCoCg variance clamp (D4) ──
     // 3×3 neighbourhood of fresh sparse-RT samples around this tile.
