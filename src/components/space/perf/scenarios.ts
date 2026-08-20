@@ -294,6 +294,30 @@ export function resolveUmbraWarp(bodyId: string, radiiBehind = 4): DevWarp {
   };
 }
 
+/**
+ * "Stand at `eyeKm` and look along `dirGame`" — the pose `__lum.star()` needs to
+ * put a named star dead centre so its peak can be probed (plan §8.2 gap 1).
+ *
+ * Routed through the same look-at + `_flipY` convention as `resolveScenario`, so
+ * "centre of frame" means the same thing here as in every benchmark pose. A
+ * second convention would make the gate measure the pose, not the star.
+ */
+export function resolveLookDirectionWarp(
+  dirGame: Vector3,
+  eyeKm: readonly [number, number, number],
+): DevWarp {
+  _eye.set(eyeKm[0], eyeKm[1], eyeKm[2]);
+  // A point far enough along the direction that lookAt is numerically stable at
+  // interplanetary scale; the star itself is effectively at infinity.
+  _target.copy(_eye).addScaledVector(dirGame, 1e9);
+  _lookMatrix.lookAt(_eye, _target, _up);
+  _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
+  return {
+    positionKm: [_eye.x, _eye.y, _eye.z],
+    quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
+  };
+}
+
 /** Distance from the given scenario's eye point to Earth's centre, km. */
 export function scenarioDistanceToEarthKm(scenario: Scenario): number {
   const warp = resolveScenario(scenario);

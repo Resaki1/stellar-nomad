@@ -62,7 +62,7 @@ Closed defects: D01, D02, D03, D03b, D05, D08, D10, D11, D15, D17, D18, D22, D24
 
 | # | work | defects | blocked by | note |
 |---|------|---------|-----------|------|
-| 1 | **Star catalogue** — see [`STAR_CATALOGUE_PLAN.md`](STAR_CATALOGUE_PLAN.md) | **D30**, and D29 via its S4 | nothing | the biggest *visible* gap; D25 unblocked the D29 half |
+| 1 | ✅ **Star catalogue** rendering — S0–S2 done, validated 0.999× | **D30** ✅ | — | remaining: S3 diffuse split, S4 SH bake (D29), S5 parallax, S6 navigation |
 | 2 | **Emissive calibration** | **D26** | nothing | exhaust/VFX are ~1.0 game units picked against a fixed exposure of 30, never a luminance. Root cause of the "blown plume" |
 | 3 | **Phase 4 — unified impostor radiance** | **D04, D06, D20** | nothing | every distant body is still on an arbitrary scale: billboard `albedo × sunDot` with no illuminance, stellar point normalised to a Jupiter reference, Luna's point albedo 38× off |
 | 4 | **Phase 2c — texture calibration** | **D09, D23** | nothing | ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works**; needs a per-region or physically-derived remap |
@@ -150,7 +150,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D27 | ✅ **The bounce fill was never occluded** (and non-dominant bodies cast no shadow at all) | [`SunLight.tsx`](../src/components/Star/SunLight.tsx), [`sunOcclusion.ts`](../src/components/space/sunOcclusion.ts) | ship glowed at 0.25 cd/m² inside an umbra, drowning the stars | ✅ |
 | D28 | **No refracted limb light** — a ship in an atmosphere planet's umbra gets no coppery ring illumination | `atmospherePass.ts` + `SunLight.tsx` | eclipsed hull is black instead of dim red; **3,400× starlight** | II |
 | D29 | **The skybox is not a light source** — integrated starlight never reaches the hull | `MilkyWaySkybox.tsx` + `SunLight.tsx` | atmosphere-less umbra (Luna) is pure black; blocked by D25 | III |
-| D30 | **Stars are 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | no stars at twilight; needs a CATALOGUE, not a brighter texture | I |
+| D30 | ✅ **Stars were 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | CLOSED: 8,920-star catalogue, flux validated to **0.999×** on 3 named stars. See STAR_CATALOGUE_PLAN §8.3 | ✅ |
 | D31 | ✅ Metering **point-sampled** one tap per tile → the sun was never metered, and the reading depended on display resolution | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | fixed with stratified tile averaging; resolution drift 1 stop → **0.03** | ✅ |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would

@@ -1,0 +1,2990 @@
+[
+ {
+  "id": 70666,
+  "name": "Proxima Centauri",
+  "named": true,
+  "hip": "70890",
+  "gl": "Gl 551",
+  "distLy": 4.2267,
+  "magV": 11.01,
+  "absMagV": 15.447,
+  "colorBV": 1.807,
+  "spectral": "M5Ve",
+  "posLy": [
+   -1.54032,
+   -1.1789,
+   -3.75477
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 71453,
+  "name": "Toliman",
+  "named": true,
+  "hip": "71681",
+  "gl": "Gl 559B",
+  "distLy": 4.3209,
+  "magV": 1.35,
+  "absMagV": 5.739,
+  "colorBV": 0.9,
+  "spectral": "K1V",
+  "posLy": [
+   -1.61506,
+   -1.3502,
+   -3.77257
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 71456,
+  "name": "Rigil Kentaurus",
+  "named": true,
+  "hip": "71683",
+  "gl": "Gl 559A",
+  "distLy": 4.3209,
+  "magV": -0.01,
+  "absMagV": 4.379,
+  "colorBV": 0.71,
+  "spectral": "G2V",
+  "posLy": [
+   -1.61514,
+   -1.35056,
+   -3.77241
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 87665,
+  "name": "Barnard's Star",
+  "named": true,
+  "hip": "87937",
+  "gl": "Gl 699",
+  "distLy": 5.9484,
+  "magV": 9.54,
+  "absMagV": 13.235,
+  "colorBV": 1.57,
+  "spectral": "sdM4",
+  "posLy": [
+   -0.05666,
+   -5.925,
+   0.48637
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118720,
+  "name": "Wolf 359",
+  "named": true,
+  "hip": null,
+  "gl": "Gl 406",
+  "distLy": 7.7971,
+  "magV": 13.45,
+  "absMagV": 16.557,
+  "colorBV": 2.0,
+  "spectral": "M6",
+  "posLy": [
+   -7.44553,
+   2.11784,
+   0.95256
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 53879,
+  "name": "Lalande 21185",
+  "named": true,
+  "hip": "54035",
+  "gl": "Gl 411",
+  "distLy": 8.3069,
+  "magV": 7.49,
+  "absMagV": 10.46,
+  "colorBV": 1.502,
+  "spectral": "M2V",
+  "posLy": [
+   -6.5166,
+   1.64482,
+   4.87768
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118079,
+  "name": "Gl 65A",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 65A",
+  "distLy": 8.5671,
+  "magV": 12.57,
+  "absMagV": 15.473,
+  "colorBV": 1.85,
+  "spectral": "dM5.5e",
+  "posLy": [
+   7.40538,
+   3.41476,
+   -2.64175
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118080,
+  "name": "Gl 65B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 65B",
+  "distLy": 8.5671,
+  "magV": 12.7,
+  "absMagV": 15.603,
+  "colorBV": 1.5,
+  "spectral": "dM5.5e",
+  "posLy": [
+   7.40581,
+   3.41496,
+   -2.6419
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 32263,
+  "name": "Sirius",
+  "named": true,
+  "hip": "32349",
+  "gl": "Gl 244A",
+  "distLy": 8.6011,
+  "magV": -1.44,
+  "absMagV": 1.454,
+  "colorBV": 0.009,
+  "spectral": "A0m...",
+  "posLy": [
+   -1.61227,
+   8.07802,
+   -2.47385
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118441,
+  "name": "Gl 244B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 244B",
+  "distLy": 8.6011,
+  "magV": 8.44,
+  "absMagV": 11.334,
+  "colorBV": -0.03,
+  "spectral": "DA2",
+  "posLy": [
+   -1.61245,
+   8.07829,
+   -2.4738
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 92115,
+  "name": "Ross 154",
+  "named": true,
+  "hip": "92403",
+  "gl": "Gl 729",
+  "distLy": 9.6862,
+  "magV": 10.37,
+  "absMagV": 13.006,
+  "colorBV": 1.51,
+  "spectral": "M3.5Ve",
+  "posLy": [
+   1.91089,
+   -8.65115,
+   -3.91428
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119585,
+  "name": "Ross 248",
+  "named": true,
+  "hip": null,
+  "gl": "Gl 905",
+  "distLy": 10.3346,
+  "magV": 12.29,
+  "absMagV": 14.786,
+  "colorBV": 1.9,
+  "spectral": "dM6  e",
+  "posLy": [
+   7.37977,
+   -0.58389,
+   7.19264
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 16496,
+  "name": "Ran",
+  "named": true,
+  "hip": "16537",
+  "gl": "Gl 144",
+  "distLy": 10.4895,
+  "magV": 3.72,
+  "absMagV": 6.183,
+  "colorBV": 0.881,
+  "spectral": "K2V",
+  "posLy": [
+   6.19361,
+   8.28902,
+   -1.72381
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 113687,
+  "name": "Lacaille 9352",
+  "named": true,
+  "hip": "114046",
+  "gl": "Gl 887",
+  "distLy": 10.6846,
+  "magV": 7.35,
+  "absMagV": 9.773,
+  "colorBV": 1.483,
+  "spectral": "M2/M3V",
+  "posLy": [
+   8.41983,
+   -2.02658,
+   -6.2582
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 57375,
+  "name": "Ross 128",
+  "named": true,
+  "hip": "57548",
+  "gl": "Gl 447",
+  "distLy": 10.9435,
+  "magV": 11.12,
+  "absMagV": 13.491,
+  "colorBV": 1.746,
+  "spectral": "M4.5V",
+  "posLy": [
+   -10.92589,
+   0.58503,
+   0.15366
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119518,
+  "name": "EZ Aqr",
+  "named": true,
+  "hip": null,
+  "gl": "Gl 866A",
+  "distLy": 11.0825,
+  "magV": 12.66,
+  "absMagV": 15.004,
+  "colorBV": 1.98,
+  "spectral": "M5  e",
+  "posLy": [
+   10.01265,
+   -3.71578,
+   -2.92219
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 91487,
+  "name": "Struve 2398 B",
+  "named": true,
+  "hip": "91772",
+  "gl": "Gl 725B",
+  "distLy": 11.2671,
+  "magV": 9.7,
+  "absMagV": 12.008,
+  "colorBV": 1.561,
+  "spectral": "K5",
+  "posLy": [
+   1.05729,
+   -5.59801,
+   9.7207
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 103879,
+  "name": "Gl 820A",
+  "named": false,
+  "hip": "104214",
+  "gl": "Gl 820A",
+  "distLy": 11.3714,
+  "magV": 5.2,
+  "absMagV": 7.488,
+  "colorBV": 1.069,
+  "spectral": "K5V",
+  "posLy": [
+   6.4558,
+   -6.07837,
+   7.11638
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118493,
+  "name": "Gl 280B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 280B",
+  "distLy": 11.407,
+  "magV": 10.7,
+  "absMagV": 12.981,
+  "colorBV": 0.06,
+  "spectral": "DA",
+  "posLy": [
+   -4.7693,
+   10.30987,
+   1.03917
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 103883,
+  "name": "Gl 820B",
+  "named": false,
+  "hip": "104217",
+  "gl": "Gl 820B",
+  "distLy": 11.409,
+  "magV": 6.05,
+  "absMagV": 8.331,
+  "colorBV": 1.309,
+  "spectral": "K7V",
+  "posLy": [
+   6.47836,
+   -6.09844,
+   7.13872
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 37173,
+  "name": "Procyon",
+  "named": true,
+  "hip": "37279",
+  "gl": "Gl 280A",
+  "distLy": 11.4618,
+  "magV": 0.4,
+  "absMagV": 2.671,
+  "colorBV": 0.432,
+  "spectral": "F5IV-V",
+  "posLy": [
+   -4.79225,
+   10.35928,
+   1.04378
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 117979,
+  "name": "Gl 15B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 15B",
+  "distLy": 11.6373,
+  "magV": 11.06,
+  "absMagV": 13.298,
+  "colorBV": 1.79,
+  "spectral": "M6 Ve",
+  "posLy": [
+   8.34231,
+   0.67019,
+   8.08866
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 91484,
+  "name": "Struve 2398 A",
+  "named": true,
+  "hip": "91768",
+  "gl": "Gl 725A",
+  "distLy": 11.6408,
+  "magV": 8.94,
+  "absMagV": 11.177,
+  "colorBV": 1.504,
+  "spectral": "K5",
+  "posLy": [
+   1.09215,
+   -5.7831,
+   10.04349
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 1472,
+  "name": "Groombridge 34",
+  "named": true,
+  "hip": "1475",
+  "gl": "Gl 15A",
+  "distLy": 11.7002,
+  "magV": 8.09,
+  "absMagV": 10.316,
+  "colorBV": 1.56,
+  "spectral": "M1V",
+  "posLy": [
+   8.38638,
+   0.67407,
+   8.13126
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 108526,
+  "name": "Gl 845",
+  "named": false,
+  "hip": "108870",
+  "gl": "Gl 845",
+  "distLy": 11.8147,
+  "magV": 4.69,
+  "absMagV": 6.895,
+  "colorBV": 1.056,
+  "spectral": "K5V",
+  "posLy": [
+   5.65095,
+   -3.153,
+   -9.88354
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118541,
+  "name": "GJ 1111",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1111",
+  "distLy": 11.8258,
+  "magV": 14.81,
+  "absMagV": 17.013,
+  "colorBV": 2.06,
+  "spectral": "M6.5",
+  "posLy": [
+   -6.42023,
+   8.3801,
+   5.32765
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 8087,
+  "name": "Gl 71",
+  "named": false,
+  "hip": "8102",
+  "gl": "Gl 71",
+  "distLy": 11.9054,
+  "magV": 3.49,
+  "absMagV": 5.678,
+  "colorBV": 0.727,
+  "spectral": "G8V",
+  "posLy": [
+   10.28724,
+   5.0212,
+   -3.26893
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 5632,
+  "name": "Gl 54.1",
+  "named": false,
+  "hip": "5643",
+  "gl": "Gl 54.1",
+  "distLy": 12.0348,
+  "magV": 12.1,
+  "absMagV": 14.265,
+  "colorBV": 1.85,
+  "spectral": "M5.5Ve",
+  "posLy": [
+   10.93854,
+   3.58112,
+   -3.51868
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 82472,
+  "name": "HYG 82472",
+  "named": false,
+  "hip": "82724",
+  "gl": null,
+  "distLy": 12.056,
+  "magV": 11.85,
+  "absMagV": 14.011,
+  "colorBV": 1.729,
+  "spectral": "Mp",
+  "posLy": [
+   -1.57388,
+   -5.35924,
+   -10.68408
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 36107,
+  "name": "Luyten's Star",
+  "named": true,
+  "hip": "36208",
+  "gl": "Gl 273",
+  "distLy": 12.4024,
+  "magV": 9.84,
+  "absMagV": 11.94,
+  "colorBV": 1.573,
+  "spectral": "M5",
+  "posLy": [
+   -4.59733,
+   11.46393,
+   1.12967
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 24129,
+  "name": "Kapteyn's Star",
+  "named": true,
+  "hip": "24186",
+  "gl": "Gl 191",
+  "distLy": 12.7573,
+  "magV": 8.86,
+  "absMagV": 10.898,
+  "colorBV": 1.543,
+  "spectral": "M0V",
+  "posLy": [
+   1.88844,
+   8.8231,
+   -9.02873
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 104751,
+  "name": "Lacaille 8760",
+  "named": true,
+  "hip": "105090",
+  "gl": "Gl 825",
+  "distLy": 12.8708,
+  "magV": 6.69,
+  "absMagV": 8.709,
+  "colorBV": 1.397,
+  "spectral": "M1/M2V",
+  "posLy": [
+   7.59946,
+   -6.53342,
+   -8.07719
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 110547,
+  "name": "Kruger 60",
+  "named": true,
+  "hip": "110893",
+  "gl": "Gl 860A",
+  "distLy": 13.0495,
+  "magV": 9.59,
+  "absMagV": 11.579,
+  "colorBV": 1.613,
+  "spectral": "M2V",
+  "posLy": [
+   6.41887,
+   -2.72494,
+   11.02893
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119505,
+  "name": "Gl 860B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 860B",
+  "distLy": 13.0714,
+  "magV": 11.3,
+  "absMagV": 13.286,
+  "colorBV": 1.8,
+  "spectral": "M6 V",
+  "posLy": [
+   6.4274,
+   -2.72845,
+   11.04385
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118428,
+  "name": "Gl 234B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 234B",
+  "distLy": 13.4282,
+  "magV": 14.6,
+  "absMagV": 16.527,
+  "colorBV": 0.65,
+  "spectral": null,
+  "posLy": [
+   -1.71559,
+   13.30184,
+   -0.65883
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 30847,
+  "name": "Ross 614",
+  "named": true,
+  "hip": "30920",
+  "gl": "Gl 234A",
+  "distLy": 13.4598,
+  "magV": 11.12,
+  "absMagV": 13.042,
+  "colorBV": 1.69,
+  "spectral": "M4.5Ve",
+  "posLy": [
+   -1.71932,
+   13.33368,
+   -0.66082
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 82473,
+  "name": "HYG 82473",
+  "named": false,
+  "hip": "82725",
+  "gl": null,
+  "distLy": 13.5241,
+  "magV": 11.72,
+  "absMagV": 13.632,
+  "colorBV": 0.65,
+  "spectral": null,
+  "posLy": [
+   -1.76516,
+   -6.01115,
+   -11.98545
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 3820,
+  "name": "Van Maanen's Star",
+  "named": true,
+  "hip": "3829",
+  "gl": "Gl 35",
+  "distLy": 13.9027,
+  "magV": 12.37,
+  "absMagV": 14.222,
+  "colorBV": 0.554,
+  "spectral": "DG",
+  "posLy": [
+   13.52556,
+   2.94688,
+   1.30576
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118236,
+  "name": "GJ 1061",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1061",
+  "distLy": 13.998,
+  "magV": 13.03,
+  "absMagV": 14.867,
+  "colorBV": 1.9,
+  "spectral": "M4.5",
+  "posLy": [
+   5.86595,
+   8.07367,
+   -9.81104
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 80579,
+  "name": "Wolf 1061",
+  "named": true,
+  "hip": "80824",
+  "gl": "Gl 628",
+  "distLy": 13.9993,
+  "magV": 10.1,
+  "absMagV": 11.937,
+  "colorBV": 1.604,
+  "spectral": "M4",
+  "posLy": [
+   -5.21027,
+   -12.62559,
+   -3.06869
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118830,
+  "name": "Gl 473A",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 473A",
+  "distLy": 14.0463,
+  "magV": 13.04,
+  "absMagV": 14.869,
+  "colorBV": 1.83,
+  "spectral": "dM5.5eJ",
+  "posLy": [
+   -13.72647,
+   -2.0077,
+   2.20233
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118831,
+  "name": "Gl 473B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 473B",
+  "distLy": 14.0463,
+  "magV": 13.3,
+  "absMagV": 15.129,
+  "colorBV": 1.5,
+  "spectral": "M7",
+  "posLy": [
+   -13.72647,
+   -2.0077,
+   2.20233
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 442,
+  "name": "Gl 1",
+  "named": false,
+  "hip": "439",
+  "gl": "Gl 1",
+  "distLy": 14.1549,
+  "magV": 8.56,
+  "absMagV": 10.373,
+  "colorBV": 1.462,
+  "spectral": "M2V",
+  "posLy": [
+   11.24862,
+   0.26544,
+   -8.58935
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118583,
+  "name": "GJ 3522",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3522",
+  "distLy": 14.5606,
+  "magV": 10.89,
+  "absMagV": 12.641,
+  "colorBV": 1.67,
+  "spectral": "k",
+  "posLy": [
+   -10.136,
+   10.2307,
+   2.14601
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118100,
+  "name": "Gl 83.1",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 83.1",
+  "distLy": 14.5736,
+  "magV": 12.28,
+  "absMagV": 14.029,
+  "colorBV": 1.8,
+  "spectral": "dM8  e",
+  "posLy": [
+   12.284,
+   7.10757,
+   3.29033
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118704,
+  "name": "GJ 3618",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3618",
+  "distLy": 14.6389,
+  "magV": 13.92,
+  "absMagV": 15.66,
+  "colorBV": 1.82,
+  "spectral": "m",
+  "posLy": [
+   -6.67471,
+   2.28121,
+   -12.82736
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118707,
+  "name": "GJ 3622",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3622",
+  "distLy": 14.7583,
+  "magV": 15.6,
+  "absMagV": 17.322,
+  "colorBV": 2.1,
+  "spectral": "M6.5",
+  "posLy": [
+   -13.76505,
+   4.45867,
+   -2.90087
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 85899,
+  "name": "Gl 687",
+  "named": false,
+  "hip": "86162",
+  "gl": "Gl 687",
+  "distLy": 14.769,
+  "magV": 9.15,
+  "absMagV": 10.87,
+  "colorBV": 1.505,
+  "spectral": "M3.5Vvar",
+  "posLy": [
+   -0.55959,
+   -5.42237,
+   13.72547
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 85264,
+  "name": "Gl 674",
+  "named": false,
+  "hip": "85523",
+  "gl": "Gl 674",
+  "distLy": 14.8091,
+  "magV": 9.38,
+  "absMagV": 11.094,
+  "colorBV": 1.553,
+  "spectral": "K5",
+  "posLy": [
+   -1.37923,
+   -10.02496,
+   -10.812
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 57194,
+  "name": "Gl 440",
+  "named": false,
+  "hip": "57367",
+  "gl": "Gl 440",
+  "distLy": 15.0296,
+  "magV": 11.5,
+  "absMagV": 13.182,
+  "colorBV": 0.196,
+  "spectral": "DC:",
+  "posLy": [
+   -6.37703,
+   0.39799,
+   -13.60383
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 112660,
+  "name": "Gl 876",
+  "named": false,
+  "hip": "113020",
+  "gl": "Gl 876",
+  "distLy": 15.2925,
+  "magV": 10.16,
+  "absMagV": 11.805,
+  "colorBV": 1.597,
+  "spectral": "M5",
+  "posLy": [
+   14.19737,
+   -4.25409,
+   -3.76783
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 117960,
+  "name": "GJ 1002",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1002",
+  "distLy": 15.3267,
+  "magV": 13.75,
+  "absMagV": 15.39,
+  "colorBV": 1.98,
+  "spectral": "M5-5.5",
+  "posLy": [
+   15.18075,
+   0.44584,
+   -2.01005
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119312,
+  "name": "GJ 1245A",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1245A",
+  "distLy": 15.3848,
+  "magV": 13.41,
+  "absMagV": 15.042,
+  "colorBV": 1.9,
+  "spectral": "M5.5 V e",
+  "posLy": [
+   5.23955,
+   -9.65979,
+   10.76697
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119313,
+  "name": "GJ 1245B",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1245B",
+  "distLy": 15.3848,
+  "magV": 14.01,
+  "absMagV": 15.642,
+  "colorBV": 1.98,
+  "spectral": "m",
+  "posLy": [
+   5.24025,
+   -9.6594,
+   10.76697
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118727,
+  "name": "Gl 412B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 412B",
+  "distLy": 15.7609,
+  "magV": 14.4,
+  "absMagV": 15.979,
+  "colorBV": 2.09,
+  "spectral": "M6  e",
+  "posLy": [
+   -11.10705,
+   2.69133,
+   10.85334
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 54052,
+  "name": "Gl 412A",
+  "named": false,
+  "hip": "54211",
+  "gl": "Gl 412A",
+  "distLy": 15.8121,
+  "magV": 8.82,
+  "absMagV": 10.392,
+  "colorBV": 1.491,
+  "spectral": "M2Vvar",
+  "posLy": [
+   -11.14308,
+   2.70216,
+   10.89105
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 49767,
+  "name": "Gl 380",
+  "named": false,
+  "hip": "49908",
+  "gl": "Gl 380",
+  "distLy": 15.8939,
+  "magV": 6.6,
+  "absMagV": 8.161,
+  "colorBV": 1.326,
+  "spectral": "K8V",
+  "posLy": [
+   -9.19244,
+   4.71571,
+   12.07702
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118676,
+  "name": "Gl 388",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 388",
+  "distLy": 15.996,
+  "magV": 9.4,
+  "absMagV": 10.947,
+  "colorBV": 1.54,
+  "spectral": "M4.5Ve",
+  "posLy": [
+   -13.62508,
+   6.38181,
+   5.43761
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 106098,
+  "name": "Gl 832",
+  "named": false,
+  "hip": "106440",
+  "gl": "Gl 832",
+  "distLy": 16.1568,
+  "magV": 8.66,
+  "absMagV": 10.185,
+  "colorBV": 1.521,
+  "spectral": "M1V",
+  "posLy": [
+   8.50731,
+   -6.32003,
+   -12.19545
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 19799,
+  "name": "Keid",
+  "named": true,
+  "hip": "19849",
+  "gl": "Gl 166A",
+  "distLy": 16.2573,
+  "magV": 4.43,
+  "absMagV": 5.942,
+  "colorBV": 0.82,
+  "spectral": "K1V",
+  "posLy": [
+   7.10866,
+   14.45817,
+   -2.16483
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 1240,
+  "name": "GJ 1005A",
+  "named": false,
+  "hip": "1242",
+  "gl": "GJ 1005A",
+  "distLy": 16.2648,
+  "magV": 11.49,
+  "absMagV": 13.001,
+  "colorBV": 1.75,
+  "spectral": "M:",
+  "posLy": [
+   15.5878,
+   1.05368,
+   -4.51944
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118281,
+  "name": "Gl 166B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 166B",
+  "distLy": 16.4526,
+  "magV": 9.52,
+  "absMagV": 11.006,
+  "colorBV": 0.03,
+  "spectral": "DA4",
+  "posLy": [
+   7.18677,
+   14.63285,
+   -2.19187
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118282,
+  "name": "Gl 166C",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 166C",
+  "distLy": 16.4526,
+  "magV": 11.17,
+  "absMagV": 12.656,
+  "colorBV": 1.67,
+  "spectral": "dM4.5e",
+  "posLy": [
+   7.18495,
+   14.62915,
+   -2.19132
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 85951,
+  "name": "Gl 682",
+  "named": false,
+  "hip": "86214",
+  "gl": "Gl 682",
+  "distLy": 16.5645,
+  "magV": 10.94,
+  "absMagV": 12.411,
+  "colorBV": 1.655,
+  "spectral": "M5",
+  "posLy": [
+   -1.18408,
+   -11.79065,
+   -11.57165
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 88327,
+  "name": "Gl 702A",
+  "named": false,
+  "hip": "88601",
+  "gl": "Gl 702A",
+  "distLy": 16.5798,
+  "magV": 4.03,
+  "absMagV": 5.499,
+  "colorBV": 0.86,
+  "spectral": "K0V SB",
+  "posLy": [
+   0.3942,
+   -16.55916,
+   0.72322
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 119198,
+  "name": "Gl 702B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 702B",
+  "distLy": 16.5883,
+  "magV": 6.0,
+  "absMagV": 7.468,
+  "colorBV": 1.15,
+  "spectral": "K5 Ve",
+  "posLy": [
+   0.3947,
+   -16.56618,
+   0.723
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 112106,
+  "name": "Gl 873",
+  "named": false,
+  "hip": "112460",
+  "gl": "Gl 873",
+  "distLy": 16.707,
+  "magV": 10.29,
+  "absMagV": 11.743,
+  "colorBV": 1.54,
+  "spectral": "M4.5Ve",
+  "posLy": [
+   11.34627,
+   -3.75083,
+   11.67553
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 97338,
+  "name": "Altair",
+  "named": true,
+  "hip": "97649",
+  "gl": "Gl 768",
+  "distLy": 16.7302,
+  "magV": 0.76,
+  "absMagV": 2.21,
+  "colorBV": 0.221,
+  "spectral": "A7IV-V",
+  "posLy": [
+   7.68251,
+   -14.63562,
+   2.57908
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118578,
+  "name": "GJ 1116A",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1116A",
+  "distLy": 17.0495,
+  "magV": 14.06,
+  "absMagV": 15.469,
+  "colorBV": 1.84,
+  "spectral": "m",
+  "posLy": [
+   -11.25504,
+   11.42815,
+   5.76311
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118579,
+  "name": "GJ 1116B",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1116B",
+  "distLy": 17.0495,
+  "magV": 14.92,
+  "absMagV": 16.329,
+  "colorBV": 1.93,
+  "spectral": "m",
+  "posLy": [
+   -11.25867,
+   11.43183,
+   5.7655
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 67380,
+  "name": "HYG 67380",
+  "named": false,
+  "hip": "67593",
+  "gl": null,
+  "distLy": 17.3708,
+  "magV": 13.31,
+  "absMagV": 14.678,
+  "colorBV": 0.65,
+  "spectral": null,
+  "posLy": [
+   -14.06656,
+   -7.40456,
+   7.00342
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 57371,
+  "name": "Gl 445",
+  "named": false,
+  "hip": "57544",
+  "gl": "Gl 445",
+  "distLy": 17.4546,
+  "magV": 10.8,
+  "absMagV": 12.158,
+  "colorBV": 1.572,
+  "spectral": "M4",
+  "posLy": [
+   -3.41722,
+   0.18373,
+   17.11248
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118406,
+  "name": "GJ 3379",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3379",
+  "distLy": 17.5071,
+  "magV": 11.33,
+  "absMagV": 12.681,
+  "colorBV": 1.68,
+  "spectral": "M4",
+  "posLy": [
+   -0.00454,
+   17.48756,
+   0.82686
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 66943,
+  "name": "Gl 526",
+  "named": false,
+  "hip": "67155",
+  "gl": "Gl 526",
+  "distLy": 17.5834,
+  "magV": 8.46,
+  "absMagV": 9.802,
+  "colorBV": 1.435,
+  "spectral": "M3V",
+  "posLy": [
+   -15.21684,
+   -7.56443,
+   4.51888
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118311,
+  "name": "Gl 169.1B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 169.1B",
+  "distLy": 17.9839,
+  "magV": 12.44,
+  "absMagV": 13.733,
+  "colorBV": 0.31,
+  "spectral": "DC5",
+  "posLy": [
+   3.50208,
+   8.58022,
+   15.41225
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 58735,
+  "name": "HYG 58735",
+  "named": false,
+  "hip": "58910",
+  "gl": null,
+  "distLy": 17.9937,
+  "magV": 7.57,
+  "absMagV": 8.862,
+  "colorBV": 0.626,
+  "spectral": "F0Ib-II",
+  "posLy": [
+   -8.44504,
+   -0.1774,
+   -15.88785
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 21036,
+  "name": "Gl 169.1A",
+  "named": false,
+  "hip": "21088",
+  "gl": "Gl 169.1A",
+  "distLy": 18.1937,
+  "magV": 10.82,
+  "absMagV": 12.088,
+  "colorBV": 1.17,
+  "spectral": null,
+  "posLy": [
+   3.54329,
+   8.68169,
+   15.59168
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 33139,
+  "name": "HYG 33139",
+  "named": false,
+  "hip": "33226",
+  "gl": null,
+  "distLy": 18.2201,
+  "magV": 9.89,
+  "absMagV": 11.154,
+  "colorBV": 1.58,
+  "spectral": "K:...",
+  "posLy": [
+   -3.60918,
+   14.80098,
+   9.9952
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 83352,
+  "name": "HYG 83352",
+  "named": false,
+  "hip": "83609",
+  "gl": null,
+  "distLy": 18.3153,
+  "magV": 9.25,
+  "absMagV": 10.503,
+  "colorBV": 0.607,
+  "spectral": "G0",
+  "posLy": [
+   -3.59654,
+   -14.79466,
+   -10.18005
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 25813,
+  "name": "Gl 205",
+  "named": false,
+  "hip": "25878",
+  "gl": "Gl 205",
+  "distLy": 18.451,
+  "magV": 7.97,
+  "absMagV": 9.207,
+  "colorBV": 1.474,
+  "spectral": "M1V",
+  "posLy": [
+   2.28734,
+   18.27063,
+   -1.18338
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119276,
+  "name": "Gl 754",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 754",
+  "distLy": 18.5632,
+  "magV": 12.23,
+  "absMagV": 13.454,
+  "colorBV": 1.68,
+  "spectral": "M4.5",
+  "posLy": [
+   4.48874,
+   -12.19962,
+   -13.25563
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 102708,
+  "name": "HYG 102708",
+  "named": false,
+  "hip": "103039",
+  "gl": null,
+  "distLy": 18.6343,
+  "magV": 11.41,
+  "absMagV": 12.626,
+  "colorBV": 1.653,
+  "spectral": null,
+  "posLy": [
+   12.18615,
+   -13.0053,
+   -5.44028
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119112,
+  "name": "Gl 644B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 644B",
+  "distLy": 18.7197,
+  "magV": 9.9,
+  "absMagV": 11.106,
+  "colorBV": 0.65,
+  "spectral": null,
+  "posLy": [
+   -5.14642,
+   -17.79255,
+   -2.71447
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119113,
+  "name": "Gl 644C",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 644C",
+  "distLy": 18.7197,
+  "magV": 16.78,
+  "absMagV": 17.986,
+  "colorBV": 1.99,
+  "spectral": "M7",
+  "posLy": [
+   -5.13747,
+   -17.79569,
+   -2.73378
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 29222,
+  "name": "Gl 229",
+  "named": false,
+  "hip": "29295",
+  "gl": "Gl 229",
+  "distLy": 18.7651,
+  "magV": 8.15,
+  "absMagV": 9.35,
+  "colorBV": 1.487,
+  "spectral": "M1/M2V",
+  "posLy": [
+   -0.80344,
+   17.39684,
+   -6.98846
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 95799,
+  "name": "Alsafi",
+  "named": true,
+  "hip": "96100",
+  "gl": "Gl 764",
+  "distLy": 18.7693,
+  "magV": 4.67,
+  "absMagV": 5.87,
+  "colorBV": 0.786,
+  "spectral": "K0V",
+  "posLy": [
+   2.55854,
+   -6.00133,
+   17.59989
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118447,
+  "name": "Gl 251",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 251",
+  "distLy": 18.7879,
+  "magV": 10.01,
+  "absMagV": 11.208,
+  "colorBV": 1.57,
+  "spectral": "dM4",
+  "posLy": [
+   -3.72164,
+   15.2644,
+   10.30906
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 45211,
+  "name": "Gl 338A",
+  "named": false,
+  "hip": "45343",
+  "gl": "Gl 338A",
+  "distLy": 18.9539,
+  "magV": 7.64,
+  "absMagV": 8.819,
+  "colorBV": 1.41,
+  "spectral": "M0V",
+  "posLy": [
+   -8.61783,
+   7.59898,
+   15.07498
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 26792,
+  "name": "Gl 213",
+  "named": false,
+  "hip": "26857",
+  "gl": "Gl 213",
+  "distLy": 19.0123,
+  "magV": 11.56,
+  "absMagV": 12.732,
+  "colorBV": 1.675,
+  "spectral": "M5",
+  "posLy": [
+   1.44416,
+   18.50916,
+   4.11223
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 86722,
+  "name": "Gl 693",
+  "named": false,
+  "hip": "86990",
+  "gl": "Gl 693",
+  "distLy": 19.0201,
+  "magV": 10.75,
+  "absMagV": 11.921,
+  "colorBV": 1.66,
+  "spectral": "M5",
+  "posLy": [
+   -0.60135,
+   -10.25069,
+   -16.00624
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 72957,
+  "name": "Gl 570A",
+  "named": false,
+  "hip": "73184",
+  "gl": "Gl 570A",
+  "distLy": 19.0488,
+  "magV": 5.72,
+  "absMagV": 6.888,
+  "colorBV": 1.024,
+  "spectral": "K4V",
+  "posLy": [
+   -12.678,
+   -12.40077,
+   -6.95558
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 94466,
+  "name": "Gl 752A",
+  "named": false,
+  "hip": "94761",
+  "gl": "Gl 752A",
+  "distLy": 19.1451,
+  "magV": 9.12,
+  "absMagV": 10.277,
+  "colorBV": 1.464,
+  "spectral": "M3.5V",
+  "posLy": [
+   6.28042,
+   -18.0043,
+   1.72491
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119275,
+  "name": "Gl 752B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 752B",
+  "distLy": 19.1565,
+  "magV": 17.52,
+  "absMagV": 18.676,
+  "colorBV": 2.2,
+  "spectral": "dM5  e",
+  "posLy": [
+   6.28775,
+   -18.01331,
+   1.7191
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118532,
+  "name": "Gl 300",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 300",
+  "distLy": 19.1858,
+  "magV": 12.1,
+  "absMagV": 13.252,
+  "colorBV": 1.6,
+  "spectral": "M4",
+  "posLy": [
+   -9.76308,
+   14.93682,
+   -7.04765
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 72955,
+  "name": "Gl 570B",
+  "named": false,
+  "hip": "73182",
+  "gl": "Gl 570B",
+  "distLy": 19.3254,
+  "magV": 8.01,
+  "absMagV": 9.146,
+  "colorBV": 1.519,
+  "spectral": "K5V",
+  "posLy": [
+   -12.86372,
+   -12.57977,
+   -7.05531
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 75841,
+  "name": "Gl 588",
+  "named": false,
+  "hip": "76074",
+  "gl": "Gl 588",
+  "distLy": 19.3381,
+  "magV": 9.31,
+  "absMagV": 10.445,
+  "colorBV": 1.524,
+  "spectral": "M0",
+  "posLy": [
+   -8.73575,
+   -11.61545,
+   -12.75731
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 84147,
+  "name": "Guniibuu",
+  "named": true,
+  "hip": "84405",
+  "gl": "Gl 663A",
+  "distLy": 19.3518,
+  "magV": 4.33,
+  "absMagV": 5.464,
+  "colorBV": 0.855,
+  "spectral": "K2:III:",
+  "posLy": [
+   -3.34978,
+   -16.97578,
+   -8.66583
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118021,
+  "name": "Gl 34B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 34B",
+  "distLy": 19.4151,
+  "magV": 7.51,
+  "absMagV": 8.636,
+  "colorBV": 1.39,
+  "spectral": "K7 V",
+  "posLy": [
+   10.10562,
+   2.1976,
+   16.43355
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 3814,
+  "name": "Achird",
+  "named": true,
+  "hip": "3821",
+  "gl": "Gl 34A",
+  "distLy": 19.4164,
+  "magV": 3.46,
+  "absMagV": 4.586,
+  "colorBV": 0.587,
+  "spectral": "G0V SB",
+  "posLy": [
+   10.10583,
+   2.19903,
+   16.43298
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 37659,
+  "name": "Gl 285",
+  "named": false,
+  "hip": "37766",
+  "gl": "Gl 285",
+  "distLy": 19.4278,
+  "magV": 11.19,
+  "absMagV": 12.315,
+  "colorBV": 1.6,
+  "spectral": "M4.5Ve",
+  "posLy": [
+   -8.55146,
+   17.40386,
+   1.20384
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 84220,
+  "name": "Gl 664",
+  "named": false,
+  "hip": "84478",
+  "gl": "Gl 664",
+  "distLy": 19.4732,
+  "magV": 6.33,
+  "absMagV": 7.45,
+  "colorBV": 1.144,
+  "spectral": "K5V",
+  "posLy": [
+   -3.30731,
+   -17.10336,
+   -8.70292
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 83882,
+  "name": "Gl 661A",
+  "named": false,
+  "hip": "84140",
+  "gl": "Gl 661A",
+  "distLy": 19.4963,
+  "magV": 9.31,
+  "absMagV": 10.427,
+  "colorBV": 1.485,
+  "spectral": "K5",
+  "posLy": [
+   -2.82498,
+   -13.3281,
+   13.94466
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 117106,
+  "name": "Gl 908",
+  "named": false,
+  "hip": "117473",
+  "gl": "Gl 908",
+  "distLy": 19.4963,
+  "magV": 8.98,
+  "absMagV": 10.097,
+  "colorBV": 1.46,
+  "spectral": "M2V",
+  "posLy": [
+   19.45554,
+   -0.91675,
+   0.81675
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119135,
+  "name": "Guniibuu B",
+  "named": true,
+  "hip": null,
+  "gl": "Gl 663B",
+  "distLy": 19.5211,
+  "magV": 5.07,
+  "absMagV": 6.185,
+  "colorBV": 0.85,
+  "spectral": "K1 Ve",
+  "posLy": [
+   -3.37974,
+   -17.12413,
+   -8.74177
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 99143,
+  "name": "Gl 783A",
+  "named": false,
+  "hip": "99461",
+  "gl": "Gl 783A",
+  "distLy": 19.6183,
+  "magV": 5.32,
+  "absMagV": 6.424,
+  "colorBV": 0.868,
+  "spectral": "K2V",
+  "posLy": [
+   8.58498,
+   -13.32141,
+   -11.55714
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 15471,
+  "name": "82 G. Eri",
+  "named": true,
+  "hip": "15510",
+  "gl": "Gl 139",
+  "distLy": 19.7109,
+  "magV": 4.26,
+  "absMagV": 5.354,
+  "colorBV": 0.711,
+  "spectral": "G8V",
+  "posLy": [
+   9.26036,
+   11.02897,
+   -13.4621
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 119334,
+  "name": "Gl 783B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 783B",
+  "distLy": 19.7383,
+  "magV": 11.5,
+  "absMagV": 12.591,
+  "colorBV": 1.5,
+  "spectral": "M3.5",
+  "posLy": [
+   8.63912,
+   -13.40519,
+   -11.63049
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 71027,
+  "name": "Gl 555",
+  "named": false,
+  "hip": "71253",
+  "gl": "Gl 555",
+  "distLy": 19.7683,
+  "magV": 11.32,
+  "absMagV": 12.407,
+  "colorBV": 1.633,
+  "spectral": "M4",
+  "posLy": [
+   -15.0885,
+   -12.03208,
+   -4.28529
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 98924,
+  "name": "Gl 780",
+  "named": false,
+  "hip": "99240",
+  "gl": "Gl 780",
+  "distLy": 19.9229,
+  "magV": 3.55,
+  "absMagV": 4.62,
+  "colorBV": 0.751,
+  "spectral": "G5IV-Vvar",
+  "posLy": [
+   4.28495,
+   -6.80921,
+   -18.22559
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118344,
+  "name": "GJ 3323",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3323",
+  "distLy": 20.0097,
+  "magV": 12.1,
+  "absMagV": 13.161,
+  "colorBV": 1.5,
+  "spectral": "m",
+  "posLy": [
+   4.97759,
+   19.22907,
+   -2.41952
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119184,
+  "name": "GJ 1221",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1221",
+  "distLy": 20.0342,
+  "magV": 14.15,
+  "absMagV": 15.208,
+  "colorBV": 0.4,
+  "spectral": "DXP9",
+  "posLy": [
+   -0.3404,
+   -6.55497,
+   18.92839
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118488,
+  "name": "GJ 3454",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3454",
+  "distLy": 20.133,
+  "magV": 13.22,
+  "absMagV": 14.268,
+  "colorBV": 1.5,
+  "spectral": "m",
+  "posLy": [
+   -8.15963,
+   18.23729,
+   2.48161
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 115766,
+  "name": "Gl 896A",
+  "named": false,
+  "hip": "116132",
+  "gl": "Gl 896A",
+  "distLy": 20.163,
+  "magV": 10.05,
+  "absMagV": 11.094,
+  "colorBV": 1.19,
+  "spectral": "M6Ve",
+  "posLy": [
+   18.81198,
+   -2.32068,
+   6.87541
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 82565,
+  "name": "Gl 644A",
+  "named": false,
+  "hip": "82817",
+  "gl": "Gl 644A",
+  "distLy": 20.2067,
+  "magV": 9.02,
+  "absMagV": 10.06,
+  "colorBV": 1.553,
+  "spectral": "M3Ve",
+  "posLy": [
+   -5.55462,
+   -19.20645,
+   -2.92969
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 99382,
+  "name": "Gl 784",
+  "named": false,
+  "hip": "99701",
+  "gl": "Gl 784",
+  "distLy": 20.2155,
+  "magV": 7.97,
+  "absMagV": 9.009,
+  "colorBV": 1.431,
+  "spectral": "M0V",
+  "posLy": [
+   7.86099,
+   -11.88907,
+   -14.33473
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118644,
+  "name": "GJ 1128",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1128",
+  "distLy": 20.2582,
+  "magV": 12.78,
+  "absMagV": 13.814,
+  "colorBV": 1.73,
+  "spectral": "m",
+  "posLy": [
+   -6.02909,
+   4.10947,
+   -18.89487
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118995,
+  "name": "GJ 3877",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3877",
+  "distLy": 20.2582,
+  "magV": 17.05,
+  "absMagV": 18.084,
+  "colorBV": 1.34,
+  "spectral": "dM8",
+  "posLy": [
+   -12.81248,
+   -12.44184,
+   -9.56225
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 74766,
+  "name": "Gl 581",
+  "named": false,
+  "hip": "74995",
+  "gl": "Gl 581",
+  "distLy": 20.2696,
+  "magV": 10.57,
+  "absMagV": 11.603,
+  "colorBV": 1.6,
+  "spectral": "M5",
+  "posLy": [
+   -12.94782,
+   -15.35523,
+   -2.72363
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119568,
+  "name": "Gl 896B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 896B",
+  "distLy": 20.3773,
+  "magV": 12.4,
+  "absMagV": 13.421,
+  "colorBV": 1.65,
+  "spectral": "dM6  e",
+  "posLy": [
+   19.01173,
+   -2.34494,
+   6.94842
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 34511,
+  "name": "Gl 268",
+  "named": false,
+  "hip": "34603",
+  "gl": "Gl 268",
+  "distLy": 20.5299,
+  "magV": 11.65,
+  "absMagV": 12.655,
+  "colorBV": 1.7,
+  "spectral": "M5Ve",
+  "posLy": [
+   -4.83173,
+   15.31717,
+   12.78912
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119134,
+  "name": "Gl 661B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 661B",
+  "distLy": 20.6206,
+  "magV": 10.4,
+  "absMagV": 11.396,
+  "colorBV": 1.5,
+  "spectral": "M3.5",
+  "posLy": [
+   -2.98814,
+   -14.09741,
+   14.74933
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 45214,
+  "name": "Gl 338B",
+  "named": false,
+  "hip": "120005",
+  "gl": "Gl 338B",
+  "distLy": 20.8473,
+  "magV": 7.7,
+  "absMagV": 8.672,
+  "colorBV": 1.42,
+  "spectral": "K2",
+  "posLy": [
+   -9.47988,
+   8.35678,
+   16.58078
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118865,
+  "name": "GJ 2097",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 2097",
+  "distLy": 20.9076,
+  "magV": 12.58,
+  "absMagV": 13.546,
+  "colorBV": 1.62,
+  "spectral": "m",
+  "posLy": [
+   -18.71182,
+   -5.63494,
+   7.42927
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118399,
+  "name": "Gl 223.2",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 223.2",
+  "distLy": 21.0694,
+  "magV": 14.45,
+  "absMagV": 15.399,
+  "colorBV": 1.05,
+  "spectral": "DZ9",
+  "posLy": [
+   0.44367,
+   21.00893,
+   -1.53199
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 80218,
+  "name": "Gl 625",
+  "named": false,
+  "hip": "80459",
+  "gl": "Gl 625",
+  "distLy": 21.2537,
+  "magV": 10.13,
+  "absMagV": 11.06,
+  "colorBV": 1.591,
+  "spectral": "M2",
+  "posLy": [
+   -4.9741,
+   -11.35964,
+   17.26033
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118812,
+  "name": "GJ 1156",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1156",
+  "distLy": 21.3313,
+  "magV": 13.81,
+  "absMagV": 14.732,
+  "colorBV": 1.88,
+  "spectral": "dM   e",
+  "posLy": [
+   -20.8585,
+   -1.73369,
+   4.11595
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 114260,
+  "name": "Gl 892",
+  "named": false,
+  "hip": "114622",
+  "gl": "Gl 892",
+  "distLy": 21.3508,
+  "magV": 5.57,
+  "absMagV": 6.49,
+  "colorBV": 1.0,
+  "spectral": "K3Vvar",
+  "posLy": [
+   11.33589,
+   -2.34327,
+   17.93997
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 53612,
+  "name": "Gl 408",
+  "named": false,
+  "hip": "53767",
+  "gl": "Gl 408",
+  "distLy": 21.7292,
+  "magV": 10.03,
+  "absMagV": 10.912,
+  "colorBV": 1.525,
+  "spectral": "M3",
+  "posLy": [
+   -19.34579,
+   5.17727,
+   8.43196
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118988,
+  "name": "Gl 566B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 566B",
+  "distLy": 21.8515,
+  "magV": 6.97,
+  "absMagV": 7.84,
+  "colorBV": 1.16,
+  "spectral": "K4 Ve",
+  "posLy": [
+   -15.13927,
+   -14.04241,
+   7.1501
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 105765,
+  "name": "Gl 829",
+  "named": false,
+  "hip": "106106",
+  "gl": "Gl 829",
+  "distLy": 21.8678,
+  "magV": 10.33,
+  "absMagV": 11.198,
+  "colorBV": 1.62,
+  "spectral": "M4",
+  "posLy": [
+   16.51087,
+   -12.71353,
+   6.62769
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 72432,
+  "name": "Gl 566A",
+  "named": false,
+  "hip": "72659",
+  "gl": "Gl 566A",
+  "distLy": 21.8926,
+  "magV": 4.54,
+  "absMagV": 5.406,
+  "colorBV": 0.72,
+  "spectral": "G8V + K4V",
+  "posLy": [
+   -15.16732,
+   -14.06842,
+   7.16384
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 82557,
+  "name": "Gl 643",
+  "named": false,
+  "hip": "82809",
+  "gl": "Gl 643",
+  "distLy": 21.9014,
+  "magV": 11.73,
+  "absMagV": 12.595,
+  "colorBV": 1.7,
+  "spectral": "M4",
+  "posLy": [
+   -6.02582,
+   -20.8157,
+   -3.17008
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118530,
+  "name": "Gl 299",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 299",
+  "distLy": 22.0377,
+  "magV": 12.83,
+  "absMagV": 13.681,
+  "colorBV": 1.77,
+  "spectral": "dM5",
+  "posLy": [
+   -11.85566,
+   18.26335,
+   3.36134
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 52866,
+  "name": "Gl 402",
+  "named": false,
+  "hip": "53020",
+  "gl": "Gl 402",
+  "distLy": 22.0495,
+  "magV": 11.64,
+  "absMagV": 12.49,
+  "colorBV": 1.679,
+  "spectral": "M4:",
+  "posLy": [
+   -20.90543,
+   6.50454,
+   2.61386
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119513,
+  "name": "GJ 4285",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 4285",
+  "distLy": 22.1874,
+  "magV": 11.45,
+  "absMagV": 12.287,
+  "colorBV": 1.5,
+  "spectral": "m",
+  "posLy": [
+   8.51192,
+   -3.18205,
+   -20.24115
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 85345,
+  "name": "HYG 85345",
+  "named": false,
+  "hip": "85605",
+  "gl": null,
+  "distLy": 22.2116,
+  "magV": 11.39,
+  "absMagV": 12.224,
+  "colorBV": 1.101,
+  "spectral": null,
+  "posLy": [
+   -2.66947,
+   -20.00955,
+   9.26531
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 84451,
+  "name": "Gl 667A",
+  "named": false,
+  "hip": "84709",
+  "gl": "Gl 667A",
+  "distLy": 22.2951,
+  "magV": 5.91,
+  "absMagV": 6.736,
+  "colorBV": 1.082,
+  "spectral": "K4V",
+  "posLy": [
+   -3.25389,
+   -17.97318,
+   -12.78469
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 112936,
+  "name": "Gl 880",
+  "named": false,
+  "hip": "113296",
+  "gl": "Gl 880",
+  "distLy": 22.3257,
+  "magV": 8.68,
+  "absMagV": 9.503,
+  "colorBV": 1.507,
+  "spectral": "M2:",
+  "posLy": [
+   20.58552,
+   -5.84646,
+   6.36058
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118510,
+  "name": "Gl 293",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 293",
+  "distLy": 22.5403,
+  "magV": 14.08,
+  "absMagV": 14.882,
+  "colorBV": 0.66,
+  "spectral": "DQ9",
+  "posLy": [
+   -4.04076,
+   7.50042,
+   -20.86823
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119143,
+  "name": "Gl 667B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 667B",
+  "distLy": 22.7367,
+  "magV": 7.2,
+  "absMagV": 7.983,
+  "colorBV": 1.0,
+  "spectral": "K5 V",
+  "posLy": [
+   -3.31833,
+   -18.32859,
+   -13.03901
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119144,
+  "name": "Gl 667C",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 667C",
+  "distLy": 22.7367,
+  "magV": 10.24,
+  "absMagV": 11.023,
+  "colorBV": 1.57,
+  "spectral": "M2.5",
+  "posLy": [
+   -3.31666,
+   -18.32774,
+   -13.04053
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 102765,
+  "name": "Gl 809",
+  "named": false,
+  "hip": "103096",
+  "gl": "Gl 809",
+  "distLy": 22.9898,
+  "magV": 8.55,
+  "absMagV": 9.309,
+  "colorBV": 1.483,
+  "spectral": "M2V",
+  "posLy": [
+   7.3688,
+   -7.81071,
+   20.32734
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 51172,
+  "name": "Gl 393",
+  "named": false,
+  "hip": "51317",
+  "gl": "Gl 393",
+  "distLy": 23.0498,
+  "magV": 9.65,
+  "absMagV": 10.404,
+  "colorBV": 1.507,
+  "spectral": "M2",
+  "posLy": [
+   -21.2516,
+   8.91962,
+   0.33832
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 12082,
+  "name": "268 G. Cet",
+  "named": true,
+  "hip": "12114",
+  "gl": "Gl 105A",
+  "distLy": 23.419,
+  "magV": 5.79,
+  "absMagV": 6.509,
+  "colorBV": 0.918,
+  "spectral": "K3V",
+  "posLy": [
+   18.06405,
+   14.63863,
+   2.80825
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118835,
+  "name": "GJ 3737",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3737",
+  "distLy": 23.4643,
+  "magV": 12.74,
+  "absMagV": 13.455,
+  "colorBV": 1.69,
+  "spectral": "M4",
+  "posLy": [
+   -18.13203,
+   -3.10072,
+   -14.56676
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118157,
+  "name": "Gl 105B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 105B",
+  "distLy": 23.512,
+  "magV": 11.66,
+  "absMagV": 12.371,
+  "colorBV": 1.6,
+  "spectral": "dM4.5",
+  "posLy": [
+   18.12764,
+   14.71347,
+   2.81362
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119571,
+  "name": "GJ 1286",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1286",
+  "distLy": 23.5322,
+  "magV": 14.69,
+  "absMagV": 15.399,
+  "colorBV": 1.96,
+  "spectral": "M5",
+  "posLy": [
+   23.37393,
+   -2.5416,
+   -0.98148
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119212,
+  "name": "GJ 4053",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 4053",
+  "distLy": 23.7549,
+  "magV": 13.48,
+  "absMagV": 14.168,
+  "colorBV": 1.83,
+  "spectral": "m",
+  "posLy": [
+   0.79247,
+   -9.55636,
+   21.73351
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119229,
+  "name": "GJ 1230A",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1230A",
+  "distLy": 23.982,
+  "magV": 12.4,
+  "absMagV": 13.068,
+  "colorBV": 1.71,
+  "spectral": "k-m",
+  "posLy": [
+   3.88861,
+   -21.42294,
+   10.05337
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119230,
+  "name": "GJ 1230B",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1230B",
+  "distLy": 23.982,
+  "magV": 14.0,
+  "absMagV": 14.668,
+  "colorBV": 1.5,
+  "spectral": "m",
+  "posLy": [
+   3.88856,
+   -21.42266,
+   10.05401
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 83688,
+  "name": "GJ 3991",
+  "named": false,
+  "hip": "83945",
+  "gl": "GJ 3991",
+  "distLy": 24.284,
+  "magV": 11.77,
+  "absMagV": 12.411,
+  "colorBV": 1.696,
+  "spectral": "M3",
+  "posLy": [
+   -3.83658,
+   -17.13778,
+   16.77165
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 3759,
+  "name": "96 G. Psc",
+  "named": true,
+  "hip": "3765",
+  "gl": "Gl 33",
+  "distLy": 24.3146,
+  "magV": 5.74,
+  "absMagV": 6.378,
+  "colorBV": 0.89,
+  "spectral": "K2V",
+  "posLy": [
+   23.67363,
+   5.07335,
+   2.23774
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 119492,
+  "name": "GJ 4274",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 4274",
+  "distLy": 24.3218,
+  "magV": 13.25,
+  "absMagV": 13.887,
+  "colorBV": 1.84,
+  "spectral": "M4",
+  "posLy": [
+   21.14144,
+   -9.51113,
+   -7.35719
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 2016,
+  "name": "Gl 19",
+  "named": false,
+  "hip": "2021",
+  "gl": "Gl 19",
+  "distLy": 24.3274,
+  "magV": 2.82,
+  "absMagV": 3.457,
+  "colorBV": 0.618,
+  "spectral": "G2IV",
+  "posLy": [
+   5.33353,
+   0.60181,
+   -23.72855
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 12748,
+  "name": "Gl 109",
+  "named": false,
+  "hip": "12781",
+  "gl": "Gl 109",
+  "distLy": 24.4937,
+  "magV": 10.55,
+  "absMagV": 11.172,
+  "colorBV": 1.53,
+  "spectral": "M3.5Ve",
+  "posLy": [
+   16.66583,
+   14.52042,
+   10.5542
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 62752,
+  "name": "HYG 62752",
+  "named": false,
+  "hip": "62951",
+  "gl": null,
+  "distLy": 24.5544,
+  "magV": 8.51,
+  "absMagV": 9.126,
+  "colorBV": 0.497,
+  "spectral": "A2",
+  "posLy": [
+   -22.70339,
+   -5.44828,
+   -7.60188
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 117987,
+  "name": "GJ 2005",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 2005",
+  "distLy": 24.5599,
+  "magV": 15.42,
+  "absMagV": 16.036,
+  "colorBV": 1.5,
+  "spectral": "M5.5",
+  "posLy": [
+   21.69492,
+   2.34739,
+   -11.18964
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 7966,
+  "name": "Gl 68",
+  "named": false,
+  "hip": "7981",
+  "gl": "Gl 68",
+  "distLy": 24.5674,
+  "magV": 5.24,
+  "absMagV": 5.855,
+  "colorBV": 0.836,
+  "spectral": "K1V",
+  "posLy": [
+   20.77878,
+   9.96623,
+   8.5103
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 119199,
+  "name": "GJ 1224",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 1224",
+  "distLy": 24.5785,
+  "magV": 13.63,
+  "absMagV": 14.244,
+  "colorBV": 1.79,
+  "spectral": "m",
+  "posLy": [
+   0.778,
+   -23.6176,
+   -6.76064
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 118043,
+  "name": "Gl 53B",
+  "named": false,
+  "hip": null,
+  "gl": "Gl 53B",
+  "distLy": 24.6343,
+  "magV": 11.0,
+  "absMagV": 11.609,
+  "colorBV": 0.65,
+  "spectral": null,
+  "posLy": [
+   13.53426,
+   4.15492,
+   20.15956
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 5325,
+  "name": "Gl 53A",
+  "named": false,
+  "hip": "5336",
+  "gl": "Gl 53A",
+  "distLy": 24.6379,
+  "magV": 5.17,
+  "absMagV": 5.779,
+  "colorBV": 0.704,
+  "spectral": "G5Vp",
+  "posLy": [
+   13.53451,
+   4.15556,
+   20.16014
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118405,
+  "name": "GJ 3378",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3378",
+  "distLy": 24.6714,
+  "magV": 11.71,
+  "absMagV": 12.316,
+  "colorBV": 1.6,
+  "spectral": "m",
+  "posLy": [
+   -0.06318,
+   12.48406,
+   21.27967
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 112923,
+  "name": "Gl 879",
+  "named": false,
+  "hip": "113283",
+  "gl": "Gl 879",
+  "distLy": 24.8179,
+  "magV": 6.48,
+  "absMagV": 7.073,
+  "colorBV": 1.094,
+  "spectral": "K4Vp",
+  "posLy": [
+   20.3371,
+   -5.79309,
+   -12.99166
+  ],
+  "nakedEye": true
+ },
+ {
+  "id": 118187,
+  "name": "GJ 3193B",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3193B",
+  "distLy": 24.8975,
+  "magV": 11.8,
+  "absMagV": 12.386,
+  "colorBV": 1.5,
+  "spectral": "M3",
+  "posLy": [
+   16.73651,
+   17.00707,
+   -7.10866
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 119616,
+  "name": "GJ 3192",
+  "named": false,
+  "hip": null,
+  "gl": "GJ 3192",
+  "distLy": 24.8975,
+  "magV": 10.96,
+  "absMagV": 11.26,
+  "colorBV": 1.69,
+  "spectral": "M3",
+  "posLy": [
+   16.73629,
+   17.00711,
+   -7.10907
+  ],
+  "nakedEye": false
+ },
+ {
+  "id": 65653,
+  "name": "Gl 514",
+  "named": false,
+  "hip": "65859",
+  "gl": "Gl 514",
+  "distLy": 24.9699,
+  "magV": 9.05,
+  "absMagV": 9.63,
+  "colorBV": 1.493,
+  "spectral": "M1V",
+  "posLy": [
+   -22.69235,
+   -9.39907,
+   4.49783
+  ],
+  "nakedEye": false
+ }
+]

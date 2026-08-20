@@ -13,6 +13,7 @@
  *   __lum.expected("luna")            // what physics says this body's disc is
  *   __lum.setEV(14) / __lum.auto()    // pin / release exposure
  *   __lum.sun()                       // eclipse / umbra state on the ship (D27)
+ *   await __lum.star("Sirius")        // THE STAR GATE — measured vs published mag
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -70,7 +71,18 @@ import {
   setPreExposureOverride,
   sunIlluminanceAt,
 } from "../photometry";
-import { resolveBodyWarp, resolveUmbraWarp } from "./scenarios";
+import {
+  resolveBodyWarp,
+  resolveLookDirectionWarp,
+  resolveUmbraWarp,
+} from "./scenarios";
+import {
+  STAR_PSF_SIGMA_PX,
+  equatorialToGame,
+  getStarPsfInputs,
+  getStarPsfNorm,
+  starIlluminanceGame,
+} from "@/components/Stars/StarField";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -754,6 +766,171 @@ export class LumHarness {
     );
   }
 
+  /**
+   * **THE STAR GATE** (STAR_CATALOGUE_PLAN.md §9 / S2). Aim at a NAMED star and
+   * measure it.
+   *
+   *     await __lum.star("Sirius")
+   *
+   * Everything before this only proved the star pipeline was self-consistent. This
+   * is the check that it is *correct*: it takes the star's published magnitude,
+   * converts to illuminance, applies the PSF normalisation THE SHADER IS ACTUALLY
+   * USING this frame, and compares against a probe of the centre pixel.
+   *
+   * ⚠ The expected value is the PSF **peak**, not `E / Ω_pixel`. With σ = 1 px a
+   * star's flux spreads over 2πσ² ≈ 6.3 px², so Sirius peaks near 2.4 cd/m² while
+   * still carrying its full 14.9 cd/m²-equivalent flux. Reading the gate as
+   * "flux ÷ one pixel" would look like a 6× failure when nothing is wrong.
+   *
+   * It also validates the equatorial → game-frame rotation end to end: the name
+   * lookup is in the catalogue's equatorial frame, the camera is aimed through
+   * `StarField`'s own `equatorialToGame`, so a wrong rotation puts empty sky at
+   * the centre and the probe reads ~0.
+   */
+  async star(name: string, radiiBehind = 400): Promise<void> {
+    if (!_namedStars) {
+      const res = await fetch("/data/stars_named.json");
+      if (!res.ok) {
+        console.error(`[lum] no /data/stars_named.json (${res.status})`);
+        return;
+      }
+      _namedStars = (await res.json()) as NamedStar[];
+      console.log(`[lum] loaded ${_namedStars.length} named stars`);
+    }
+    const key = name.trim().toLowerCase();
+    const star =
+      _namedStars.find((s2) => s2.name.toLowerCase() === key) ??
+      _namedStars.find((s2) => s2.name.toLowerCase().startsWith(key));
+    if (!star) {
+      const near = _namedStars
+        .filter((s2) => s2.name.toLowerCase().includes(key))
+        .slice(0, 8)
+        .map((s2) => s2.name);
+      console.error(
+        `[lum] "${name}" not found.` +
+          (near.length ? ` Did you mean: ${near.join(", ")}?` : ""),
+      );
+      return;
+    }
+
+    // Measure from deep inside Neptune's umbra: the darkest sky available, no sun
+    // in frame, and the panorama's diffuse floor at its least intrusive.
+    const dark = resolveUmbraWarp("neptune", radiiBehind);
+    equatorialToGame(_starDir, star.posEqLy[0], star.posEqLy[1], star.posEqLy[2]);
+    _starDir.normalize();
+    this.store.set(
+      devTeleportAtom,
+      resolveLookDirectionWarp(_starDir, dark.positionKm),
+    );
+    await sleepFrames(150);
+
+    const psfNorm = getStarPsfNorm();
+    const illum = starIlluminanceGame(star.magV);
+    // ⚠ COMPARE FLUX, NOT PEAK. The first version of this gate compared the peak
+    // and reported 0.7087× for Sirius, Vega AND Betelgeuse — identical to four
+    // figures across three magnitudes and two very different colours, i.e. a
+    // systematic factor, not an error. The cause is that aiming dead-centre puts
+    // the star on a pixel CORNER (the exact centre of an even-sized buffer), so
+    // its true peak is never sampled. The pixel SUM is 2πσ² regardless of
+    // sub-pixel placement, so integrating removes the artefact entirely — and
+    // flux is what the design actually promises to conserve.
+    //
+    // A peak comparison that passes at 0.71 is a gate with a badly chosen
+    // tolerance, not a validated renderer.
+    const expectedPeak = illum * psfNorm;
+    // 2πσ² pixels of effective area — the Gaussian's normalisation.
+    const psfPixelArea = 2 * Math.PI * STAR_PSF_SIGMA_PX * STAR_PSF_SIGMA_PX;
+    const expectedFlux = expectedPeak * psfPixelArea;
+    const f = await this.probeFlux(15);
+    const m = await this.probeMax(9);
+    if (!f || !m) {
+      console.error("[lum] probe failed — is the scene rendering?");
+      return;
+    }
+    const ratio = f.sumLuma / Math.max(expectedFlux, 1e-30);
+    console.table({
+      star: star.name,
+      "magnitude V": star.magV,
+      "B−V": star.colorBV,
+      "illuminance (lux)": Number((illum * NITS_PER_GAME_UNIT).toPrecision(4)),
+      "PSF σ (px)": STAR_PSF_SIGMA_PX,
+      "expected FLUX (Σ game)": Number(expectedFlux.toPrecision(4)),
+      "measured FLUX (Σ game)": Number(f.sumLuma.toPrecision(4)),
+      "FLUX measured / expected": Number(ratio.toPrecision(4)),
+      "— peak, for reference —": "",
+      "expected peak (cd/m²)": Number((expectedPeak * NITS_PER_GAME_UNIT).toPrecision(4)),
+      "measured peak (cd/m²)": Number(m.nits.toPrecision(4)),
+      "peak ratio (grid-dependent)": Number(
+        (m.luma / Math.max(expectedPeak, 1e-30)).toPrecision(4),
+      ),
+      "measured RGB": m.units.map((v) => Number(v.toPrecision(3))).join(", "),
+    });
+
+    // ── Solve the ACTUAL on-screen PSF from the two measurements ──────────────
+    // Two unknowns (the rendered σ in screen pixels, and how far off a pixel
+    // centre the star landed) against two measurements (flux ratio and peak
+    // ratio), so both are determined:
+    //     fluxRatio = σ_screen²                    (amplitude cancels)
+    //     peakRatio = exp(−r_offset²/(2 σ_screen²))
+    // Printing these next to the RAW INPUTS is what turns "the ratio is 0.36"
+    // into "the sprite is rasterising N× smaller than the shader assumes" — a
+    // statement you can act on.
+    const peakRatio = m.luma / Math.max(expectedPeak, 1e-30);
+    const sigmaScreen = Math.sqrt(Math.max(ratio, 1e-12));
+    const rOffset = Math.sqrt(
+      Math.max(0, -2 * ratio * Math.log(Math.max(peakRatio, 1e-12))),
+    );
+    const inputs = getStarPsfInputs();
+    const src = lumSourceStatus();
+    console.table({
+      "solved σ on screen (px)": Number(sigmaScreen.toPrecision(4)),
+      "intended σ (px)": STAR_PSF_SIGMA_PX,
+      "sprite renders (px wide)": Number((sigmaScreen * 8).toPrecision(4)),
+      "intended (px wide)": 8,
+      "sprite scale error": `${(1 / sigmaScreen).toPrecision(4)}× too small`,
+      "solved sampling offset (px)": Number(rOffset.toPrecision(4)),
+      "— raw inputs —": "",
+      "camera fov (deg)": Number(inputs.fovDeg.toPrecision(4)),
+      "drawing buffer height": inputs.bufferH,
+      "RENDER TARGET height": src.height,
+      "⚠ buffer / target": Number(
+        (inputs.bufferH / Math.max(src.height, 1)).toPrecision(4),
+      ),
+      "devicePixelRatio": window.devicePixelRatio,
+      "projection u/tan(u)": Number(
+        (((inputs.fovDeg * Math.PI) / 360) /
+          Math.tan((inputs.fovDeg * Math.PI) / 360)).toPrecision(4),
+      ),
+    });
+    console.log(
+      "[lum] If `buffer / target` is not 1.0, StarField is sizing its sprites " +
+        "against a different resolution than the scene rasterises into. " +
+        "`projection u/tan(u)` is the small-angle error in pxAngle — it can only " +
+        "ever be ≤ 1, so a solved σ ABOVE that product needs a third explanation.",
+    );
+    // Tight, because flux is placement-independent: ±10% leaves room for the
+    // half-float buffer and the 15×15 window's clipped tail, and nothing else.
+    // The old ±40% band was wide enough to pass a 29% systematic error.
+    if (ratio > 0.9 && ratio < 1.1) {
+      console.log(
+        `[lum] ✅ GATE PASSED — ${star.name}'s FLUX is within ` +
+          `${(Math.abs(ratio - 1) * 100).toFixed(1)}% of its published magnitude.`,
+      );
+    } else if (ratio < 0.05) {
+      console.warn(
+        "[lum] ⚠ essentially nothing at the centre. Either the equatorial → game " +
+          "rotation is wrong (empty sky is being aimed at), or StarField is not mounted.",
+      );
+    } else {
+      console.warn(
+        `[lum] ⚠ GATE FAILED on FLUX at ${ratio.toPrecision(3)}× — ` +
+          `${Math.abs(Math.log2(ratio)).toFixed(2)} stops ` +
+          `${ratio > 1 ? "BRIGHT" : "DIM"}. Suspect the PSF normalisation, the ` +
+          "pixel-solid-angle uniform, or a double pre-exposure.",
+      );
+    }
+  }
+
   /** Snap adaptation to the current scene — no slow fade after a warp. */
   snapExposure(): void {
     resetExposureAdaptation();
@@ -823,6 +1000,43 @@ export class LumHarness {
    * body's disc rather than `probe()`, so a one-pixel miss (the body slightly
    * off-centre, a cloud gap, a dark surface feature) doesn't read as a failure.
    */
+  /**
+   * Integrate photopic luma over an n×n block centred on the target, and return
+   * both the sum and the peak.
+   *
+   * 🔑 **FLUX, not peak, is the placement-independent quantity.** A point source
+   * aimed dead-centre lands on a pixel CORNER for any even-sized buffer, so its
+   * true peak is never sampled — but the SUM over pixels is `2πσ²` whatever the
+   * sub-pixel offset (verified: 6.2832 both on-grid and half-pixel-off). Comparing
+   * peaks measures where the star fell relative to the pixel grid; comparing sums
+   * measures the physics. Used by `star()`.
+   */
+  async probeFlux(
+    n = 15,
+  ): Promise<{ sumLuma: number; peakLuma: number; samples: number } | null> {
+    if (!_source) return null;
+    const { renderer, target } = _source;
+    const half = Math.floor(n / 2);
+    const cx = Math.round(target.width / 2) - half;
+    const cy = Math.round(target.height / 2) - half;
+    const buf = await renderer.readRenderTargetPixelsAsync(target, cx, cy, n, n);
+    const isHalf = buf instanceof Uint16Array;
+    const isByte = buf instanceof Uint8Array;
+    const a = buf as unknown as ArrayLike<number>;
+    const stride = rowStrideElements(n, isHalf ? 2 : isByte ? 1 : 4);
+    let sum = 0;
+    let peak = 0;
+    for (let row = 0; row < n; row++) {
+      for (let col = 0; col < n; col++) {
+        const [r, g, b] = decodeRgb(a, row * stride + col * 4, isHalf, isByte);
+        const l = REC709[0] * r + REC709[1] * g + REC709[2] * b;
+        sum += l;
+        if (l > peak) peak = l;
+      }
+    }
+    return { sumLuma: sum, peakLuma: peak, samples: n * n };
+  }
+
   async probeMax(n = 9): Promise<LumSample | null> {
     if (!_source) return null;
     const { renderer, target } = _source;
@@ -1165,6 +1379,15 @@ export class LumHarness {
     return rows;
   }
 }
+
+type NamedStar = {
+  name: string;
+  magV: number;
+  colorBV: number;
+  posEqLy: [number, number, number];
+};
+let _namedStars: NamedStar[] | null = null;
+const _starDir = new Vector3();
 
 let _harness: LumHarness | null = null;
 

@@ -16,6 +16,7 @@ import {
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
+import StarField from "../Stars/StarField";
 import Mercury from "../Mercury/Mercury";
 import Venus from "../Venus/Venus";
 import Earth from "../Earth/Earth";
@@ -104,7 +105,10 @@ const Scene = () => {
   const scaledContent = useMemo(
     () => (
       <>
-        <MilkyWaySkybox />
+        {/* <MilkyWaySkybox /> */}
+        {/* Catalogue stars at real magnitudes (D30). Draws just after the
+            panorama; see StarField.tsx for the flux-conservation argument. */}
+        <StarField />
         <Mercury />
         <Venus />
         <Earth />
