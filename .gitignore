@@ -42,3 +42,5 @@ next-env.d.ts
 era5_*.nc
 era5_gibs_*.jpg
 /public/textures/weather/*.png
+
+/public/assets/8k_milkyway_diffuse.png

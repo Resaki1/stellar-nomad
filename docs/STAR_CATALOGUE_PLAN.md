@@ -212,7 +212,7 @@ distribution with a galactic-plane bias), emit the same 20-byte records, re-bake
 | **S0** ✅ | Data pipeline | [`scripts/build_star_catalogue.py`](../scripts/build_star_catalogue.py) → `public/data/stars_visual.bin` (8,920 stars, 174 KB) + `stars_nearby.json` (166, 44 KB). Source is **HYG v41**, not VizieR — see §4 and the ⚠ licence note |
 | **S1** ✅ | Renderer | [`StarField.tsx`](../src/components/Stars/StarField.tsx) — renders, 8,920 instances, one draw. **Three gaps below before this is done** |
 | **S2** ✅ | Validate | `__lum.star(name)` compares **FLUX**. Sirius/Vega/Betelgeuse all **0.999×**; found two real bugs on the way |
-| **S3** | Diffuse split | adopt a **star-free** dust layer (Deep Star Maps galaxy layer); keep it LDR — the band is only 2.6 stops, see §8.2; re-measure `SKY_TEXTURE_MEAN_LINEAR` |
+| **S3** 🔨 | Diffuse split | adopt a **star-free** dust layer (Deep Star Maps galaxy layer); keep it LDR — the band is only 2.6 stops, see §8.2; re-measure `SKY_TEXTURE_MEAN_LINEAR` |
 | **S4** | SH-L2 bake | closes D29 — the hull lit by the real sky |
 | **S5** | Parallax | 3D positions live; apparent directions recomputed on interstellar jump |
 | **S6** | Neighbourhood set | navigation targets, names, the "acquire Proxima on instruments" loop |
@@ -444,6 +444,98 @@ that was *not* dpr-scaled looked like an obvious culprit. It was not — `buffer
 1.0. Printing the raw inputs killed that theory in one run, after two rounds of me reasoning past a
 missing measurement.
 
+## 8.4 S3 as built (2026-08-20) — the diffuse split
+
+`scripts/strip_panorama_stars.sh` → `public/assets/8k_milkyway_diffuse.ktx2` (13 MB, down from the
+star-laden 24.6 MB — a smooth field compresses better).
+
+**Method: a radius-3 median filter.** Stars are impulses, nebulosity is a smooth field, so a median at a
+radius larger than a star removes the former and keeps the latter — the standard way astronomers build
+star-free background maps. No new asset had to be sourced.
+
+🔑 **The split is DERIVED and cross-validated by two unrelated routes:**
+
+| route | star share of sky flux |
+|---|---|
+| summing `E = 2.54e-6·10^(−0.4m)` over the whole catalogue vs 4π·1e-4 cd/m² | **19.5%** |
+| linear flux the median filter removed from the texture | **20.9%** |
+
+Agreeing to 1.4 points. So the diffuse layer is calibrated to `SKY_TARGET_NITS × (1 − 0.195)` =
+**8.05e-5 cd/m²** and total sky flux is conserved across the change — re-enabling the panorama alongside
+the catalogue does not shift the sky's overall brightness.
+
+🔑 **That 80.5% is physics, not a fudge.** The catalogue's flux is still *rising* at its faint limit —
+mag 5–6 alone carries 21% of it and mag 6–6.5 another 13% — so most integrated starlight comes from stars
+*fainter* than the naked-eye cutoff. Those unresolved stars belong in a diffuse layer, together with
+diffuse galactic light and zodiacal light.
+
+**Verified in-engine** (Neptune's umbra, settled adaptation, samples across the Milky Way band):
+
+| | measured | published |
+|---|---|---|
+| median of band samples | **1.303e-4 cd/m²** | galactic plane **1.25e-4** → **4%** |
+| brightest sample | 2.35e-4 | Sagittarius peak 2.08e-4 |
+| faintest sample | 9.5e-5 | mid-latitude 5e-5 |
+
+The band correctly reads ~1.6× the whole-sky *mean*, which is what a band should do.
+
+⚠ **A measurement trap that cost a wrong conclusion first time.** Measuring the texture's mean requires
+**linearising BEFORE downscaling**. Averaging sRGB-encoded values and linearising afterwards
+underestimates a high-variance field, because the EOTF is convex — and it did so badly enough that the
+median filter appeared to *raise* the texture's mean (0.002441 → 0.002660), which is impossible. With the
+order corrected: 0.002626 → 0.002078, a 20.9% drop. **When a measurement says something impossible,
+the measurement is what is wrong.**
+
+⚠ Two open caveats. (1) The radius-3 median also smooths genuine dust structure finer than ~3 px (0.13°
+at 8k) — a visual judgement call, and a larger radius makes it worse. (2) `SKY_TEXTURE_MEAN_LINEAR =
+0.002078` was measured on the **.webp** while the shipped asset is UASTC-compressed KTX2; the in-engine
+probe above is what actually validates it, and the 4% agreement says any compression shift is small.
+
+## 8.5 S3 revised — a SOURCED star-free map beats a filter (2026-08-20)
+
+The median-filter build worked photometrically but **looked smudgy**, and the user (from
+astrophotography experience) identified why immediately: *a median cannot distinguish a star from genuine
+dust structure at the same scale — it removes both.* That was the caveat §8.4 flagged, and it dominates
+the look.
+
+**The fix is to source a map whose stars were never there.** NASA's Deep Star Maps 2020
+(<https://svs.gsfc.nasa.gov/4851>) are RENDERED from Gaia DR2 + Tycho-2, so the starless variants simply
+**omit** the catalogued stars. No filtering, no detail loss — strictly better than anything recoverable
+from a composited image. `scripts/build_diffuse_sky.sh` replaces `strip_panorama_stars.sh`.
+
+Three decisions, with reasons:
+
+| choice | why |
+|---|---|
+| **celestial (equatorial), not galactic** | `StarField` owns a validated equatorial-J2000 → game rotation (0.07° against published coords for 3 stars). Galactic would need a second, different rotation — more code and another frame to get wrong. |
+| **EXR source, 8k or 16k** | Float means no quantisation upstream of our single careful encode. The 1024×512 JPG is far too coarse; 4k is 5.3 arcmin/texel and reads soft, 8k is 2.6 arcmin and resolves dust lanes. |
+| **still ship 8-bit sRGB** | The band is only **2.6 stops**, against ~8 usable in 8-bit — and decisively, Basis/UASTC (the whole KTX2 path) is LDR and cannot carry HDR at all. Float in, one careful encode, LDR out. |
+
+⚠ **Licence upside:** NASA SVS imagery is generally public domain, which is materially better than HYG's
+CC BY-SA given the intent to sell on Steam. Confirm on the page, and note Gaia's own attribution terms may
+still apply upstream.
+
+⚠ Two traps the script guards against:
+- **Clipping.** An EXR is linear float and may exceed 1.0. Converting naively would clip the bright band —
+  the part that matters most. The script measures the linear peak first and normalises against it. The
+  absolute scale is irrelevant anyway, since `SKY_RADIANCE_SCALE` rescales to an absolute target; only the
+  SHAPE and the measured mean matter.
+- **Banding headroom.** It reports where the mean lands in 8-bit code values after normalisation, because
+  a 2.6-stop signal squeezed into the bottom of the range would band on a smooth gradient.
+
+⚠ And the measurement trap from §8.4 still applies and is still guarded: **linearise BEFORE downscaling.**
+
+**Status: pipeline ready, asset not yet fetched.** `svs.gsfc.nasa.gov` is outside the sandbox's network
+allowlist, so the download is a manual step:
+
+```
+./scripts/build_diffuse_sky.sh path/to/starless_celestial_8k.exr
+```
+
+then set the printed `SKY_TEXTURE_MEAN_LINEAR` and re-verify in-engine (band should read ~1.25e-4 cd/m²).
+The `CATALOGUE_FLUX_SHARE = 0.195` split is unaffected — it comes from the catalogue's own magnitudes, not
+from the texture.
+
 ## 9. Verification
 
 The user's own test is the acceptance criterion: **at Earth's terminator with the sun just set, the
@@ -454,3 +546,290 @@ visible." Today our star sits 2,404× below the sky, so it is not marginal, it i
 
 Second criterion: **from Proxima, Sol should be a magnitude 0.40 star** — comparable to Altair. That
 single check exercises the position pipeline, the parallax path and the magnitude conversion at once.
+
+## 8.6 S3b — the panorama's orientation, MEASURED (2026-08-20)
+
+The asset from §8.5 loaded, calibrated and looked stunning — and was **misaligned**. This section is
+mostly about *how the misalignment survived four fixes*, because that is the reusable part.
+
+### The four failed attempts
+
+| # | attempt | why it failed |
+|---|---|---|
+| 1 | `geo.scale(-1, 1, 1)` + `BackSide` | guessed. Also mirrors the UVs, so it swapped one wrong for another. |
+| 2 | a derived `rotX(π − ε)` | guessed. `SphereGeometry` uses `x = −cos φ sin θ` with `uv = (u, 1−v)`, a **reflection** away from the celestial equirect convention — and **no rotation can undo a reflection**. |
+| 3 | explicit UV from the world direction, `u = RA/2π, v = (90° − Dec)/180°`, verified to **1e-14** on six landmarks | The verification was *correct* and *useless*: it checked the formula against the equirect **definition**, and the definition was never the unknown. **The asset's convention was.** |
+| 4 | `__lum.aim()` at Orion and at the north celestial pole "looking right" | Those tests were exercising the **star catalogue**, which is drawn as geometry and never touches the panorama's UVs. A passing test on the wrong subsystem proves nothing. |
+
+🔑 **The symptom that finally made it unarguable** was a cross-check between two *independently sourced*
+things in one frame: the **Big Dipper**, drawn from the catalogue (equatorial → game validated to 0.07°),
+sat **on** the band. Its galactic latitude is **+60°**. One subsystem contradicting another is worth more
+than any number of self-consistency checks.
+
+### ⚠ A plane normal cannot solve this
+
+An earlier pass fitted the band plane, found its normal **59° from the true north galactic pole**, and
+stalled — correctly. A normal is **2 DOF**; a rotation is **3**. Worse, a plane fit returns **±n**, so it
+cannot even distinguish a rotation from a reflection, which is the whole question.
+
+### The measurement: `scripts/solve_sky_orientation.py`
+
+Reads the panorama under whatever convention the shader currently implements, measures **four** landmarks,
+and solves orthogonal Procrustes **with reflection allowed** (forcing `det = +1`, the usual Kabsch
+convention, would have hidden the answer):
+
+- **band plane** — luma-weighted moment tensor of pixel directions, solid-angle weighted; minimum
+  eigenvector is the normal. Stable across floor percentiles (RA 23.026h → 23.008h, Dec +25.73 → +25.68).
+- **galactic centre** — brightest *coarse-blurred* point within 12° of that plane.
+- **both Magellanic Clouds** — the parity-breakers, and the only landmarks precise enough to trust.
+
+🐛 **The blob detector's first version was wrong in an instructive way.** "Brightest pixel >15° off the
+plane" returned two features **11.7°** apart against a true LMC–SMC separation of **20.75°** — they were
+lumps of the galactic **bulge**, whose smooth glow at 15–25° latitude outshines the Clouds. **Peak
+brightness does not identify an object; SCALE does.** Unsharp masking (a ~2° blur minus a ~20° blur) killed
+the smooth bulge and the Clouds came out at **21.33°** apart.
+
+### The answer
+
+```
+u = fract(0.5 − RA/2π)        v = (90° − Dec)/180°
+```
+
+RA 0h at the image **centre**, RA increasing **leftward** — the ordinary astronomical chart convention
+(north up, **east left**). **The asset is a sky chart, not a globe texture**, which makes it a
+**reflection** of the naive reading. That is precisely why attempts 1–2 could never have worked.
+
+### Why this is believed, in order of strength
+
+1. **`det(R) = −1.00000`** — a reflection, measured, not assumed.
+2. **The Magellanic Clouds match to 1.17° and 0.68°.** They are compact and catalogued to arcminutes.
+3. **Whole-image test — the decisive one.** Transform every pixel into true galactic coordinates and
+   measure the luma-weighted rms galactic latitude of the light:
+
+   | candidate | rms \|b\| |
+   |---|---|
+   | old formula (`u = RA/2π`) | **37.7°** — band smeared across the whole sky |
+   | **`u = fract(0.5 − RA/2π)`** | **9.69°** |
+   | best-fit offset `k = 0.4950` | 9.60° |
+   | unconstrained 3×3 Procrustes | 9.66° |
+
+   The residual 9.69° is the band's *real* thickness plus the Clouds at b = −33° and −44°.
+4. **The unconstrained 3×3 buys −0.03°.** Its extra ~3° of tilt was fitting the two deliberately-fuzzy
+   landmarks (the plane normal is biased by the band's brightness asymmetry; "brightest point near the
+   plane" measured Dec −35.7 against Sgr A*'s −29.0). Those two carried the entire 6.70° worst-case
+   residual while the Clouds sat under 1.2°. 🔑 **Judging the closed form on all four landmarks reported it
+   as a non-fit** — a tolerance can be wrong by being *tight on the wrong measurements*, which is the
+   mirror image of the ±40% lesson in §8.3.
+
+### The gate: `await __lum.skyAlign()`
+
+Does not aim at anything and ask a human to look. Landmarks are given in **galactic** coordinates so the
+intent is unarguable. Uses the **median** of a 31×31 window (a catalogue star would dominate a mean) and
+divides `SKY_ARTISTIC_GAIN` back out, so it measures physics and not the look knob.
+
+#### 🐛 …and its first version FAILED the correctly-aligned sky
+
+Worth recording in full, because the renderer was right and the **gate** was wrong. v1 asserted
+`min(band) / max(off-band) ≥ 3` and measured **0.81×**. Both ends of that ratio were bad choices:
+
+- **`b = ±20` at `l = 0` is still the galactic BULGE**, not off-band. It measures 0.20–0.31 of the centre —
+  *brighter* than the band's faint stretches.
+- **The band's own surface brightness varies ~6× along its length.** `l = 270` measures **0.17** of the
+  centre. So v1 divided the dimmest point *on* the band by a bulge sample.
+
+The same three ratios, computed offline on the raw asset by `solve_sky_orientation.py` §11 — same data,
+same correct alignment:
+
+| metric | value |
+|---|---|
+| `min(b=0) / max(\|b\|=90)` | **7.93×** ← the honest one |
+| `mean(b=0) / mean(\|b\|=90)` | 38.55× |
+| `min(b=0) / max(\|b\|=20, l=0)` | **0.56×** ← what v1 used |
+
+🔑 **A gate is only as good as the quantity it compares.** A tolerance can be wrong by being *tight on the
+wrong measurement* just as easily as by being *loose on the right one* (§8.3's ±40%). Both ship a renderer
+whose state you do not actually know — and this one is the more dangerous failure, because a false ❌ invites
+you to "fix" working code.
+
+#### v2 — what it asserts now
+
+1. **`min(b = 0) / max(|b| = 90) ≥ 3`.** The poles are the only place on the sky unambiguously off the band.
+2. **Brightness falls monotonically with `|b|` along each meridian arm** (b = 0 → ±20 → ±40 → ±60 → ±90,
+   1.25× slack per rung for faint-end noise). This is the signature that actually discriminates: a
+   misaligned panorama crosses the latitude ladder at some other angle and cannot produce it. Comparing
+   along a meridian divides the longitude variation out.
+
+#### Offline and in-engine agree
+
+The strongest single consistency check available, since the two share no code — Python sampling the EXR
+versus WebGPU sampling the UASTC texture through the TSL graph:
+
+| landmark | offline (rel. to centre) | in-engine (rel. to centre) |
+|---|---|---|
+| l=0, b=0 | 1.000 | 1.000 |
+| l=90, b=0 | 1.103 | 0.982 |
+| **l=180, b=0** | **0.435** | **0.436** |
+| l=270, b=0 | 0.172 | 0.229 |
+| l=0, b=+20 | 0.204 | 0.218 |
+| l=0, b=−20 | 0.307 | 0.284 |
+| l=0, b=+60 | 0.034 | 0.039 |
+
+The faint end drifts a little because the offline sampler subtracts a p02 floor while the engine carries the
+diffuse floor plus faint catalogue stars. The anticentre agreeing to **0.435 vs 0.436** is the meaningful
+number.
+
+### Side effect worth knowing
+
+The `fract` wrap — and therefore the **seam** — moved from RA 0h to **RA 12h**, where it now coincides with
+`atan`'s own branch cut. Both still land on the texture's `u = 0/1` boundary, which is the only thing
+`wrapS = RepeatWrapping` needs in order to keep the pole-to-pole line suppressed.
+
+
+## 8.7 Star magnitude compression (2026-08-20)
+
+`STAR_ARTISTIC_GAIN` is a **flat** lift — it multiplies Sirius by the same factor as a mag-6.5 star. But the
+reason to lift at all is the **faint** end: stars should stay visible when the hull is sunlit. (A real eye
+would lose them — Apollo crews had to shield their eyes from sunlit surfaces to see stars — so this is a
+deliberate gameplay deviation, not a bug fix.) Dragging the bright end along is pure cost, and the cost is
+specific:
+
+🔑 **Gain makes stars BIGGER.** Apparent radius is where the Gaussian crosses the display threshold,
+`r = σ·√(2·ln(A/T))` with `A ∝ gain`, so gain enters under a log but never cancels: 1024× widens a 2σ star
+to ~4.2σ. The instinct is then to shrink σ — which is how σ reached **0.6**, i.e. **FWHM 1.41 px**, well
+under the FWHM ≥ 2 px critical-sampling rule from astronomical photometry. Below that the brightest pixel
+depends on sub-pixel position (the same aliasing D31 fixed in the meter, and the reason `__lum.star()` gates
+on flux rather than peak), which shows up as **twinkling — worst on stars near the visibility threshold,
+which pop in and out rather than merely wobbling.** There is no scintillation in vacuum, so it reads as an
+obvious artefact.
+
+**So the two look knobs were fighting each other.** Compression separates them:
+
+```
+m_render = ANCHOR + γ·(m − ANCHOR)          ANCHOR = 6.5 = the catalogue's faint limit
+```
+
+Anchoring at the faint limit means **faint-star visibility does not move at all** for any γ — only the
+bright end comes down, which is the end that was forcing σ down.
+
+| γ | Sirius eff. mag | σ for same apparent size | FWHM | Sirius : faintest |
+|---|---|---|---|---|
+| **1.00** (identity) | −8.99 | 0.60 | 1.41 | 1528× |
+| 0.70 | −6.60 | 0.69 | 1.64 | 169× |
+| **0.55** | −5.40 | 0.76 | 1.79 | **56×** |
+| 0.40 | −4.21 | 0.85 | **2.01** | 19× |
+
+⚠ **FWHM 2.0 is not free.** Apparent size comes from where the Gaussian crosses the clip threshold, so
+compressing brightness compresses **size** too — and the brightness hierarchy is much of what makes
+constellations readable. At γ = 0.4 Sirius is only **19×** the faintest visible star against 1528× in
+reality: the sky goes flat. **0.5–0.6 is the sane range.**
+
+### As built
+
+| decision | why |
+|---|---|
+| applied in the **vertex** stage | per-instance, so 4 evaluations per star rather than one per covered pixel |
+| in the **shader**, not the buffer | `aIllum` keeps the true photometric value; the physical layer stays auditable. The file's own rule: never fold a look adjustment into the catalogue or into `starIlluminanceGame()` |
+| expressed in **illuminance**, `E_render = E_anchor·(E/E_anchor)^γ` | one `pow`, no logarithm |
+| γ = 1 **short-circuits the node entirely** | the default is bit-identical to the uncompressed render, not "identical up to `pow(x, 1.0)`" |
+| `starCompressionFactor(magV)` exported | `__lum.star()` must divide it out |
+
+⚠ **The gate needed a per-star divisor, not a constant.** `STAR_ARTISTIC_GAIN` is one number for the whole
+sky, but compression scales *each star differently*. Dividing out only the gain would make the gate read 1.0
+at the anchor magnitude and drift smoothly with brightness everywhere else — which looks exactly like a
+photometric bug in the renderer. The table now prints the gain, the per-star compression factor, and their
+product, all labelled "divided out".
+
+**Verified:** `starCompressionFactor(m)·E(m)` against the shader's `E_anchor·(E/E_anchor)^γ` over 30 (γ, mag)
+pairs — max relative disagreement **7.3e-16**. γ = 1 gives exactly 1.000000000000000 for every magnitude,
+and the anchor magnitude gives exactly 1 for every γ.
+
+⚠ Recomputing this table also caught **two errors in the numbers I first quoted**: the "Sirius : faintest"
+column had 27× and 83× for γ = 0.55 and 0.40, which were the *peak-reduction* factors (27.1× and 81.4×) in
+the wrong column. The true ratios are **56×** and **19×** — i.e. the hierarchy cost is materially worse than
+first stated, which is what moved the recommendation firmly to 0.5–0.6.
+
+
+## 8.8 The star gate needed aperture photometry — and a unit bug it had been hiding
+
+Setting `PSF_SIGMA_PX = 0.85` and `STAR_MAGNITUDE_COMPRESSION = 0.6` made the gate report Sirius at
+**1.033×** and Vega at **1.058×** — both passing at ±10%, but *disagreeing with each other*, which for a
+systematic factor is the interesting part. Two separate defects, and neither was in the renderer.
+
+### 🐛 A factor of 1 hides a unit error perfectly
+
+The diagnostic table printed:
+
+```
+"solved σ on screen (px)": Math.sqrt(fluxRatio)
+```
+
+`sqrt(fluxRatio)` is the **dimensionless scale** `σ_screen / σ_intended`, printed with a `px` label. It was
+invisible for as long as `PSF_SIGMA_PX` was exactly **1.0** — the single value where a ratio and an absolute
+σ are numerically equal. The gate had been reporting "σ 0.9997 px vs intended 1.0" and reading like a
+triumph.
+
+Setting σ = 0.85 exposed it at once: the table claimed **1.017 px** against an intended 0.85, which looks
+like a 20% rendering error and is actually **1.7%**. The sampling offset inherited the same bug — it used
+`fluxRatio` where `σ_screen²` **in px²** belongs:
+
+| quantity | reported | correct |
+|---|---|---|
+| Sirius σ_screen | "1.017 px" | scale 1.0164 ⇒ **0.864 px** |
+| Sirius offset | 0.597 px | **0.508 px** |
+| Vega σ_screen | "1.029 px" | scale 1.0286 ⇒ **0.874 px** |
+| Vega offset | 0.603 px | **0.513 px** |
+
+Corrected, both offsets land at ~0.51 px — half a pixel, exactly as the model predicts for a star aimed at
+the dead centre of an even-sized buffer. 🔑 **Same lesson as the `pxAngle = fov/height` small-angle bug this
+very table was built to catch: anything printed with a unit must be constructed with one.** The table now
+prints the scale and the absolute σ as separate rows, and states the expected offset inline.
+
+Also fixed: `sprite scale error` reported `1/scale` as "N× too small" — inverted. It now reads
+`"+1.6% LARGER than intended"`.
+
+### ⚠ A raw window sum is aperture PLUS SKY
+
+`SKY_ARTISTIC_GAIN` has been pushed to ~1e3 as a stand-in for the Phase 7 adaptation model (§8.7), which
+makes the diffuse Milky Way a genuine contributor inside a 15×15 window. Sirius sits at galactic latitude
+**−8.9°** and Vega at **+19.2°** — both near the band, and contaminated by different amounts, which is why
+they disagreed.
+
+The fix is the standard one from astronomical photometry: estimate the sky from an **annulus** outside the
+aperture and subtract `sky × aperture_area`.
+
+| choice | why |
+|---|---|
+| annulus at Chebyshev radius ≥ `half + 2` | at σ ≈ 0.85 px the Gaussian there is ~e^−56 of peak, so it cannot contain any star |
+| **median**, not mean | with 8,920 catalogue stars, a neighbour landing in the annulus is likely; a mean would inherit it |
+| subtract from the **peak** as well | otherwise the σ/offset solve inherits the bias |
+| report `sky was % of raw sum` | a silent correction is just a different unmeasured number |
+
+**Predictions for the next run**, if the excess was entirely sky: flux ratio → ~1.000 for both, σ_screen →
+~0.850 px, offset → ~0.500 px, with the sky rows reading ~3.2% (Sirius) and ~5.5% (Vega).
+
+⚠ **But sky is probably not quite the whole story, and the gate now says so rather than guessing.** At equal
+per-pixel sky, Vega should be contaminated **2.25×** more than Sirius (it scales as
+`aperture_area / (lookGain · expectedFlux)`). Observed is **1.76×**, implying Vega's sky is 0.78× Sirius's —
+where the `skyAlign` latitude ladder puts that pair nearer 0.5×. So a residual of order 1–2% may survive.
+The `sky was % of raw sum` row is what turns that from speculation into a reading.
+
+### ✅ Measured, at `STAR_MAGNITUDE_COMPRESSION = 0.6`, `PSF_SIGMA_PX = 0.85`
+
+| quantity | predicted | Sirius | Vega |
+|---|---|---|---|
+| FLUX measured / expected | ~1.000 | **1.002** | **1.006** |
+| solved σ on screen | ~0.850 px | **0.8508** | **0.8525** |
+| σ scale vs intended | ~1.000 | 1.001 | 1.003 |
+| sampling offset | ~0.500 px | **0.5005** | **0.5019** |
+| sky share of raw sum | ~3.2% / ~5.5% | **3.06%** | **4.91%** |
+
+**0.2% and 0.6%** against published magnitudes — the tightest this gate has ever read, and it now reads that
+tightly with two look knobs active, which is the whole point of dividing them out.
+
+The predicted residual did **not** survive: sky was essentially all of it. 🔑 And the reason the
+latitude-only inference was wrong is worth keeping — **it ignored LONGITUDE.** The band varies ~6× along its
+length (§8.6's ladder: `l = 270` measures 0.17 of the centre), and Sirius sits at `l = 227°`, a faint
+stretch, while Vega is at `l = 67°`, a brighter one. That offsets Sirius's lower latitude and moves the
+expected ratio from 0.5 to the measured **0.729**. Implied aperture sky: **0.103 cd/m² per px** at Sirius,
+**0.075** at Vega — a direct consequence of `SKY_ARTISTIC_GAIN = 1024`, and a number that will change when
+Phase 7 replaces that knob.

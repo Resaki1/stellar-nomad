@@ -60,6 +60,7 @@ import {
   float,
   length,
   modelWorldMatrix,
+  pow,
   positionGeometry,
   uniform,
   uv,
@@ -83,17 +84,147 @@ const STAR_SHELL_RADIUS = 900_000;
 /** Billboard size in PIXELS. Must comfortably contain the Gaussian below. */
 const QUAD_PX = 8;
 /**
- * PSF width in pixels. ~1 px keeps a star point-like while giving it enough
- * footprint that a sub-pixel source cannot flicker on and off as the camera
- * drifts — the same aliasing failure D31 fixed in the meter.
+ * PSF width in pixels — a LOOK knob with a hard floor.
+ *
+ * Smaller reads crisper and more point-like (real stars are point sources; all
+ * apparent "size" is observer optics).
+ *
+ * ⚠ HARD FLOOR: FWHM = 2.355σ, and the critical-sampling rule from astronomical
+ * photometry is **FWHM ≥ 2 px, i.e. σ ≥ 0.85**. Below that the brightest pixel
+ * depends on where the star falls on the pixel grid — the same aliasing failure D31
+ * fixed in the meter, and the reason `__lum.star()` gates on FLUX and not on the
+ * peak. It shows up as twinkling, worst on stars near the visibility threshold
+ * (they pop in and out rather than merely wobbling), and there is no scintillation
+ * in vacuum, so it reads as an obvious artefact. Test any change with a slow pan.
+ *
+ * 🔑 If stars look too LARGE, reach for `STAR_MAGNITUDE_COMPRESSION` before
+ * reaching for σ. Size at the bright end is driven by `STAR_ARTISTIC_GAIN`, and
+ * fighting it with σ trades a look problem for a sampling artefact.
+ *
+ * Flux is conserved automatically: `uPsfNorm` is 1/(2πσ²·Ω_pixel), so shrinking σ
+ * makes the star smaller AND proportionally brighter at its peak, leaving the
+ * integral — the thing `__lum.star()` gates on — unchanged.
  */
-const PSF_SIGMA_PX = 1.0;
+const PSF_SIGMA_PX = 0.85;
+
+/**
+ * ── ARTISTIC GAIN — a display knob, deliberately OUTSIDE the physics ──────────
+ *
+ * Tune this freely for looks. It is applied AFTER the photometric conversion, so
+ * the physical layer above stays honest and `__lum.star()` keeps reporting the
+ * PHYSICAL ratio (it divides this back out and prints the gain separately).
+ *
+ * 🔑 Boosting is not "abandoning physics", it is a PERCEPTUAL correction for a
+ * viewing condition we cannot reproduce. A dark-adapted eye at ~1e-4 cd/m² sees
+ * the sky as clear and structured; an SDR panel driven by a daylight tone curve
+ * fundamentally cannot show rod vision. Phase 7 (scotopic + Purkinje, defect D19)
+ * is the principled version of this; a flat gain is its crude stand-in.
+ *
+ * ⚠ NEVER fold a look adjustment into the catalogue, `uPsfNorm`, or the
+ * magnitude→illuminance conversion. Mixing art into the physical layer is how a
+ * calibrated system quietly stops being calibrated — and the star gate would then
+ * happily certify the art instead of the physics.
+ */
+export const STAR_ARTISTIC_GAIN = 1024.0;
+
+/**
+ * ── MAGNITUDE COMPRESSION — the OTHER half of the look, and the one that lets σ
+ *    stay above its sampling floor ──────────────────────────────────────────────
+ *
+ *     m_render = ANCHOR + γ·(m − ANCHOR)          γ = STAR_MAGNITUDE_COMPRESSION
+ *
+ * γ = 1 is the identity and is short-circuited entirely (the node is not even
+ * built), so the default reproduces the uncompressed render exactly.
+ *
+ * 🔑 WHY THIS EXISTS. `STAR_ARTISTIC_GAIN` is a FLAT lift: it multiplies Sirius by
+ * the same factor as a mag-6.5 star. But the reason to lift at all is the FAINT end
+ * (stars should stay visible when the hull is sunlit — a real eye would lose them,
+ * but players need the orientation cue). Dragging the bright end up with it is pure
+ * cost, and it is a specific cost: **gain makes stars BIGGER.** Apparent radius is
+ * where the Gaussian crosses the display threshold,
+ *
+ *     r = σ·√(2·ln(A/T))            A ∝ gain
+ *
+ * so gain enters under a log but never cancels. 1024× widens a 2σ star to ~4.2σ.
+ * The instinct is then to shrink σ to compensate — which is how σ ended up at 0.6,
+ * i.e. FWHM 1.41 px, well under the FWHM ≥ 2 px critical-sampling rule, so the
+ * brightest stars flicker as the camera drifts sub-pixel. In vacuum there is no
+ * scintillation, so that reads as an obvious artefact.
+ *
+ * Anchoring at the catalogue's faint limit means **faint-star visibility does not
+ * move at all** — only the bright end comes down, which is exactly the end that was
+ * forcing σ down. Knocking N magnitudes off the peak frees √(2·ln) worth of σ:
+ *
+ *     γ     Sirius eff. mag   σ for same size   FWHM   Sirius : faintest
+ *     1.00      −8.99               0.60           1.41       1528×   (today)
+ *     0.70      −6.60               0.69           1.64        169×
+ *     0.55      −5.40               0.76           1.79         56×
+ *     0.40      −4.21               0.85           2.01         19×   ← FWHM 2 px
+ *
+ * (σ column assumes Sirius's visible radius is ~2.5 px at σ = 0.6 today. The
+ * MECHANISM is exact; that one anchor is eyeballed, so treat the column as a
+ * starting point and confirm by eye. `starCompressionFactor` is unit-tested against
+ * the shader's own formulation to 7e-16 — see the verification in §8.7 of
+ * STAR_CATALOGUE_PLAN.md.)
+ *
+ * ⚠ THE COST IS THE BRIGHTNESS HIERARCHY, and the last column is the one to watch.
+ * Because apparent size comes from where the Gaussian crosses the clip threshold,
+ * compressing brightness also compresses SIZE — and that hierarchy is much of what
+ * makes constellations readable. At γ = 0.4 Sirius is only **19×** the faintest
+ * visible star, against 1528× in reality: the sky goes flat, every star a similar
+ * dot. So FWHM 2.0 is NOT free, and chasing it is the wrong trade. **0.5–0.6 is the
+ * sane range** — σ ≈ 0.75, FWHM ≈ 1.8, hierarchy still ~50×.
+ *
+ * ⚠ This is a LOOK knob and lives outside the physics, exactly like the gain:
+ * `aIllum` keeps the true photometric value, the compression is applied in the
+ * VERTEX stage, and `__lum.star()` divides `starCompressionFactor()` back out so
+ * the gate keeps measuring physics. Never fold it into the catalogue or into
+ * `starIlluminanceGame()`.
+ */
+const STAR_MAGNITUDE_COMPRESSION: number = 0.6;
+
+/**
+ * The magnitude held FIXED by the compression. The catalogue's faint limit, so the
+ * faintest stars — the whole reason for the gain — never move when γ changes.
+ */
+const STAR_COMPRESSION_ANCHOR_MAG = 6.5;
+
+/**
+ * Multiplier the renderer applies to a star's PHYSICAL illuminance, as a function
+ * of its magnitude. Exactly 1 for every star when γ = 1, and exactly 1 at the
+ * anchor magnitude for any γ.
+ *
+ * Exported for `__lum.star()`, which must divide it out — the gate's whole value is
+ * that it reports the physical ratio no matter how the look knobs are set.
+ */
+export const starCompressionFactor = (magV: number): number =>
+  Math.pow(
+    10,
+    -0.4 * (STAR_MAGNITUDE_COMPRESSION - 1) * (magV - STAR_COMPRESSION_ANCHOR_MAG),
+  );
+
+/**
+ * True when the compression is a no-op, so the shader can skip it entirely.
+ * ⚠ `STAR_MAGNITUDE_COMPRESSION` is annotated `: number` deliberately — without it
+ * TypeScript narrows the literal and this comparison becomes a compile error for
+ * every value except 1.
+ */
+const COMPRESSION_IS_IDENTITY = STAR_MAGNITUDE_COMPRESSION === 1;
 
 /** PSF width in pixels — exported so `__lum.star()` reports the same σ the shader uses. */
 export const STAR_PSF_SIGMA_PX = PSF_SIGMA_PX;
 
 /** A magnitude-0 star delivers 2.54e-6 lux outside the atmosphere (V band). */
 const LUX_AT_MAG_0 = 2.54e-6;
+
+/**
+ * Illuminance of a star at the compression anchor, game units. The compression is
+ * expressed in illuminance rather than magnitude so the shader needs one `pow` and
+ * no logarithm:  E_render = E_anchor · (E/E_anchor)^γ.
+ */
+const COMPRESSION_ANCHOR_ILLUM =
+  (LUX_AT_MAG_0 * Math.pow(10, -0.4 * STAR_COMPRESSION_ANCHOR_MAG)) /
+  NITS_PER_GAME_UNIT;
 
 /** Ballesteros (2012): B−V → effective temperature. */
 function temperatureFromBV(bv: number): number {
@@ -315,7 +446,18 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
 
   const material = useMemo(() => {
     const m = new NodeMaterial();
-    m.transparent = true;
+    // ⚠⚠ `transparent` MUST STAY FALSE. In three.js a transparent material is
+    // rendered in a SEPARATE PASS AFTER all opaque geometry, and `renderOrder`
+    // only sorts WITHIN a bucket — so `renderOrder = -999` is silently ignored
+    // against the planets. With `transparent = true` the stars drew LAST, and
+    // with depthTest off they painted straight over every celestial body: their
+    // night sides vanished entirely.
+    //
+    // Opaque-bucket + renderOrder −999 + no depth write is the correct
+    // combination: the panorama draws first (−1000), then the stars, then real
+    // geometry whose depth writes cover them. Blending is honoured regardless of
+    // this flag — `transparent` selects the render list, not whether blending runs.
+    m.transparent = false;
     m.depthTest = false;
     m.depthWrite = false;
     // ⚠⚠ TRUE additive, NOT `THREE.AdditiveBlending`. That preset is
@@ -344,7 +486,23 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
     const vColor = varying(vec3(0), "v_starColor");
 
     m.vertexNode = Fn(() => {
-      vIllum.assign(aIllum);
+      // Compression belongs HERE, not in the fragment and not in the buffer:
+      //   • vertex, not fragment — it is per-instance, so 4 evaluations per star
+      //     instead of one per covered pixel;
+      //   • shader, not buffer — `aIllum` stays the true photometric value, which
+      //     is what keeps the physical layer auditable.
+      // At γ = 1 the node is not built at all, so the default path is bit-identical
+      // to the uncompressed render rather than "identical up to a pow(x, 1.0)".
+      vIllum.assign(
+        COMPRESSION_IS_IDENTITY
+          ? aIllum
+          : float(COMPRESSION_ANCHOR_ILLUM).mul(
+              pow(
+                aIllum.div(float(COMPRESSION_ANCHOR_ILLUM)),
+                float(STAR_MAGNITUDE_COMPRESSION),
+              ),
+            ),
+      );
       vColor.assign(aColor);
       const worldCenter = modelWorldMatrix.mul(
         vec4(aDir.mul(float(STAR_SHELL_RADIUS)), 1),
@@ -367,7 +525,12 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
       );
       // E → peak radiance via the PSF's effective solid angle, then the frame's
       // source pre-exposure (D25) like every other radiance source.
-      const radiance = vIllum.mul(uPsfNorm).mul(g).mul(uPreExposure);
+      const radiance = vIllum
+        .mul(uPsfNorm)
+        .mul(g)
+        .mul(uPreExposure)
+        // Artistic gain LAST, so everything before it is physical.
+        .mul(float(STAR_ARTISTIC_GAIN));
       return vec4(vColor.mul(radiance), g);
     })();
 

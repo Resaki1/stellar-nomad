@@ -14,6 +14,8 @@
  *   __lum.setEV(14) / __lum.auto()    // pin / release exposure
  *   __lum.sun()                       // eclipse / umbra state on the ship (D27)
  *   await __lum.star("Sirius")        // THE STAR GATE — measured vs published mag
+ *   __lum.aim(17.7611, -29.0078)     // aim at a sky coordinate (orientation check)
+ *   await __lum.skyAlign()           // GATE: is the Milky Way panorama aligned?
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -77,12 +79,15 @@ import {
   resolveUmbraWarp,
 } from "./scenarios";
 import {
+  STAR_ARTISTIC_GAIN,
   STAR_PSF_SIGMA_PX,
+  starCompressionFactor,
   equatorialToGame,
   getStarPsfInputs,
   getStarPsfNorm,
   starIlluminanceGame,
 } from "@/components/Stars/StarField";
+import { SKY_ARTISTIC_GAIN } from "@/components/Skybox/MilkyWaySkybox";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -847,7 +852,25 @@ export class LumHarness {
       console.error("[lum] probe failed — is the scene rendering?");
       return;
     }
-    const ratio = f.sumLuma / Math.max(expectedFlux, 1e-30);
+    // ⚠ DIVIDE OUT THE ARTISTIC GAIN so this gate keeps measuring PHYSICS. The
+    // gain is a display knob applied after the photometric conversion; if it were
+    // left in, the gate would report 1.0 only when the look happened to match the
+    // physics, and would "fail" the moment anyone tuned the sky — i.e. it would be
+    // certifying the art. Reported separately below so it is never invisible.
+    // ⚠ AND divide out the MAGNITUDE COMPRESSION, which unlike the gain is
+    // per-star: γ ≠ 1 scales each star by `starCompressionFactor(magV)`, so a single
+    // constant cannot undo it. Miss this and the gate reads 1.0 only for stars at
+    // the anchor magnitude and drifts smoothly with brightness everywhere else —
+    // which would look exactly like a photometric bug in the renderer.
+    const lookGain =
+      STAR_ARTISTIC_GAIN * starCompressionFactor(star.magV);
+    // ⚠ Subtract the sky from the PEAK too, or the σ solve below inherits the bias.
+    // `probeMax` reads a raw pixel; the background estimate comes from probeFlux's
+    // annulus, which is the only place it is measured.
+    const physicalFlux = f.sumLuma / Math.max(lookGain, 1e-12);
+    const physicalPeak =
+      Math.max(m.luma - f.backgroundPerPx, 0) / Math.max(lookGain, 1e-12);
+    const ratio = physicalFlux / Math.max(expectedFlux, 1e-30);
     console.table({
       star: star.name,
       "magnitude V": star.magV,
@@ -855,13 +878,26 @@ export class LumHarness {
       "illuminance (lux)": Number((illum * NITS_PER_GAME_UNIT).toPrecision(4)),
       "PSF σ (px)": STAR_PSF_SIGMA_PX,
       "expected FLUX (Σ game)": Number(expectedFlux.toPrecision(4)),
-      "measured FLUX (Σ game)": Number(f.sumLuma.toPrecision(4)),
+      "measured FLUX (Σ game)": Number(physicalFlux.toPrecision(4)),
+      "sky subtracted (Σ game)": Number(
+        ((f.sumLumaRaw - f.sumLuma) / Math.max(lookGain, 1e-12)).toPrecision(4),
+      ),
+      "sky was % of raw sum": Number(
+        (100 * (1 - f.sumLuma / Math.max(f.sumLumaRaw, 1e-30))).toPrecision(3),
+      ),
+      "artistic gain (divided out)": STAR_ARTISTIC_GAIN,
+      "mag compression (divided out)": Number(
+        starCompressionFactor(star.magV).toPrecision(4),
+      ),
+      "total look gain (divided out)": Number(lookGain.toPrecision(4)),
       "FLUX measured / expected": Number(ratio.toPrecision(4)),
       "— peak, for reference —": "",
       "expected peak (cd/m²)": Number((expectedPeak * NITS_PER_GAME_UNIT).toPrecision(4)),
-      "measured peak (cd/m²)": Number(m.nits.toPrecision(4)),
+      "measured peak (cd/m²)": Number(
+        (physicalPeak * NITS_PER_GAME_UNIT).toPrecision(4),
+      ),
       "peak ratio (grid-dependent)": Number(
-        (m.luma / Math.max(expectedPeak, 1e-30)).toPrecision(4),
+        (physicalPeak / Math.max(expectedPeak, 1e-30)).toPrecision(4),
       ),
       "measured RGB": m.units.map((v) => Number(v.toPrecision(3))).join(", "),
     });
@@ -870,25 +906,43 @@ export class LumHarness {
     // Two unknowns (the rendered σ in screen pixels, and how far off a pixel
     // centre the star landed) against two measurements (flux ratio and peak
     // ratio), so both are determined:
-    //     fluxRatio = σ_screen²                    (amplitude cancels)
-    //     peakRatio = exp(−r_offset²/(2 σ_screen²))
-    // Printing these next to the RAW INPUTS is what turns "the ratio is 0.36"
-    // into "the sprite is rasterising N× smaller than the shader assumes" — a
-    // statement you can act on.
-    const peakRatio = m.luma / Math.max(expectedPeak, 1e-30);
-    const sigmaScreen = Math.sqrt(Math.max(ratio, 1e-12));
+    //     fluxRatio = (σ_screen / σ_intended)²      (amplitude cancels)
+    //     peakRatio = exp(−r_offset² / (2 σ_screen²))
+    //
+    // 🐛 ⚠⚠ THE FIRST VERSION CONFLATED A DIMENSIONLESS SCALE WITH A LENGTH.
+    // `sqrt(fluxRatio)` is the scale factor σ_screen/σ_intended, but it was printed
+    // as "solved σ on screen (px)" — and it was INVISIBLE for months because
+    // `PSF_SIGMA_PX` was exactly 1.0, the one value where a ratio and an absolute σ
+    // are numerically identical. Setting σ = 0.85 exposed it instantly: the label
+    // read 1.017 px for an intended 0.85, which looks like a 20% rendering error and
+    // is actually 1.7%.
+    //
+    // The offset inherited the same bug — it used `ratio` where σ_screen² IN PIXELS²
+    // belongs, inflating a true 0.508 px to 0.597. 🔑 Same lesson as the `fov/height`
+    // small-angle bug this table was built to catch: **a factor of 1 hides a unit
+    // error perfectly.** Anything printed with a unit must be constructed with one.
+    const peakRatio = physicalPeak / Math.max(expectedPeak, 1e-30);
+    const sigmaScale = Math.sqrt(Math.max(ratio, 1e-12));
+    const sigmaScreenPx = STAR_PSF_SIGMA_PX * sigmaScale;
     const rOffset = Math.sqrt(
-      Math.max(0, -2 * ratio * Math.log(Math.max(peakRatio, 1e-12))),
+      Math.max(
+        0,
+        -2 * sigmaScreenPx * sigmaScreenPx * Math.log(Math.max(peakRatio, 1e-12)),
+      ),
     );
     const inputs = getStarPsfInputs();
     const src = lumSourceStatus();
     console.table({
-      "solved σ on screen (px)": Number(sigmaScreen.toPrecision(4)),
+      "solved σ on screen (px)": Number(sigmaScreenPx.toPrecision(4)),
       "intended σ (px)": STAR_PSF_SIGMA_PX,
-      "sprite renders (px wide)": Number((sigmaScreen * 8).toPrecision(4)),
+      "σ scale (solved / intended)": Number(sigmaScale.toPrecision(4)),
+      "sprite renders (px wide)": Number((sigmaScale * 8).toPrecision(4)),
       "intended (px wide)": 8,
-      "sprite scale error": `${(1 / sigmaScreen).toPrecision(4)}× too small`,
+      "sprite scale error": `${((sigmaScale - 1) * 100).toFixed(1)}% ${
+        sigmaScale >= 1 ? "LARGER" : "smaller"
+      } than intended`,
       "solved sampling offset (px)": Number(rOffset.toPrecision(4)),
+      "  (expect ~0.5 — dead centre of an even buffer is a pixel CORNER)": "",
       "— raw inputs —": "",
       "camera fov (deg)": Number(inputs.fovDeg.toPrecision(4)),
       "drawing buffer height": inputs.bufferH,
@@ -929,6 +983,283 @@ export class LumHarness {
           "pixel-solid-angle uniform, or a double pre-exposure.",
       );
     }
+  }
+
+  /**
+   * Aim at an equatorial (RA/Dec, J2000) sky direction from a dark vantage.
+   *
+   *     __lum.aim(17.7611, -29.0078, "galactic centre")   // Sgr A*
+   *     __lum.aim(5.5883,   -1.2019, "Orion's belt (Alnilam)")
+   *     __lum.aim(0, 90, "north celestial pole")           // Polaris ~0.7° away
+   *
+   * 🔑 **This is how to check the PANORAMA's orientation**, which cannot be
+   * validated on its own — an all-sky image has no landmark whose position we know
+   * independently. But the star catalogue IS validated (flux to 0.999×, positions
+   * to 0.07°), so it can be used as the reference: aim at the galactic centre and
+   * the Milky Way's core should be dead centre, with catalogue stars sitting ON the
+   * band rather than beside it. Any offset is the panorama's, not the catalogue's.
+   *
+   * Uses `StarField`'s own `equatorialToGame`, so it tests the shipped rotation
+   * rather than a second copy of it.
+   */
+  aim(raHours: number, decDeg: number, label = ""): void {
+    const ra = (raHours * 15 * Math.PI) / 180;
+    const dec = (decDeg * Math.PI) / 180;
+    // Equatorial unit vector: +x to the vernal equinox, +z to the celestial pole.
+    equatorialToGame(
+      _starDir,
+      Math.cos(dec) * Math.cos(ra),
+      Math.cos(dec) * Math.sin(ra),
+      Math.sin(dec),
+    );
+    _starDir.normalize();
+    const dark = resolveUmbraWarp("neptune", 400);
+    this.store.set(
+      devTeleportAtom,
+      resolveLookDirectionWarp(_starDir, dark.positionKm),
+    );
+    const latDeg = (Math.asin(_starDir.y) * 180) / Math.PI;
+    const lonDeg =
+      ((Math.atan2(-_starDir.z, _starDir.x) * 180) / Math.PI + 360) % 360;
+    console.log(
+      `[lum] aiming at RA ${raHours}h Dec ${decDeg}°${label ? ` (${label})` : ""} → ` +
+        `game dir (${_starDir.x.toFixed(4)}, ${_starDir.y.toFixed(4)}, ${_starDir.z.toFixed(4)}), ` +
+        `ecliptic lat ${latDeg.toFixed(2)}° lon ${lonDeg.toFixed(2)}°`,
+    );
+    console.log(
+      "[lum] give adaptation a second, then check what is at the CENTRE of frame.",
+    );
+  }
+
+  /**
+   * SKYBOX ORIENTATION GATE — is the Milky Way panorama aligned with the sky?
+   *
+   *     await __lum.skyAlign()
+   *
+   * ── WHY THIS EXISTS ───────────────────────────────────────────────────────
+   * The panorama was misaligned for FOUR attempts, and every attempt that
+   * "verified" it verified the wrong thing:
+   *   • `geo.scale(-1,1,1)` then `side: BackSide` — guessed, wrong.
+   *   • a derived `rotX(π−ε)` — guessed, wrong (no rotation can undo a mirror).
+   *   • an explicit UV formula checked to 1e-14 against the equirect DEFINITION —
+   *     correct about the definition, which was never the unknown.
+   *   • `aim()` at Orion and at the celestial pole "looking right" — those tests
+   *     were exercising the STAR CATALOGUE, which is drawn as geometry and never
+   *     touched the panorama's UVs at all.
+   *
+   * 🔑 So this gate does not aim at anything and ask a human to look. It measures
+   * the one thing that must be true if the panorama is aligned and cannot be true
+   * if it is not: **the light has to be concentrated at galactic latitude 0.**
+   * Landmarks are specified in GALACTIC coordinates precisely so the intent is
+   * unarguable — b = 0 is the band and must be bright, b = ±90 is the galactic
+   * pole and must be dark. A misaligned panorama puts band on pole and the
+   * contrast collapses toward 1.
+   *
+   * Measures the MEDIAN of a 31×31 window, not the mean: a catalogue star landing
+   * in the window would dominate a mean, and this gate is about the diffuse layer.
+   * `SKY_ARTISTIC_GAIN` is divided out so it keeps measuring physics.
+   */
+  async skyAlign(settleFrames = 150): Promise<{
+    pass: boolean;
+    contrast: number;
+    monotone: boolean;
+    bandMinNits: number;
+    poleMaxNits: number;
+  } | null> {
+    // Galactic → equatorial, from the IAU definition: the north galactic pole and
+    // the l = 0, b = 0 direction, J2000. Built as an orthonormal frame (x̂ is
+    // re-projected perpendicular to ẑ — the two published directions are 0.01° from
+    // orthogonal) so the conversion is exact rather than nearly exact.
+    const dir = (raDeg: number, decDeg: number): [number, number, number] => {
+      const ra = (raDeg * Math.PI) / 180;
+      const dec = (decDeg * Math.PI) / 180;
+      return [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec)];
+    };
+    const gz = dir(192.85948, 27.12825); // north galactic pole
+    const gcRaw = dir(266.40510, -28.93617); // l = 0, b = 0
+    const d0 = gz[0] * gcRaw[0] + gz[1] * gcRaw[1] + gz[2] * gcRaw[2];
+    const gxU = gcRaw.map((c, i) => c - gz[i] * d0);
+    const gxN = Math.hypot(gxU[0], gxU[1], gxU[2]);
+    const gx = gxU.map((c) => c / gxN);
+    const gy = [
+      gz[1] * gx[2] - gz[2] * gx[1],
+      gz[2] * gx[0] - gz[0] * gx[2],
+      gz[0] * gx[1] - gz[1] * gx[0],
+    ];
+    const galToEq = (lDeg: number, bDeg: number): [number, number, number] => {
+      const l = (lDeg * Math.PI) / 180;
+      const b = (bDeg * Math.PI) / 180;
+      const cb = Math.cos(b);
+      return [0, 1, 2].map(
+        (i) => cb * Math.cos(l) * gx[i] + cb * Math.sin(l) * gy[i] + Math.sin(b) * gz[i],
+      ) as [number, number, number];
+    };
+
+    // ⚠⚠ THE FIRST VERSION OF THIS GATE FAILED A CORRECTLY-ALIGNED SKY, and the bug
+    // was the METRIC, not the renderer. It compared `min(band) / max(off-band)` with
+    // "off-band" meaning b = ±20 at l = 0 — and **b = ±20 at l = 0 is still the
+    // galactic BULGE**, which is brighter than the band's own faint stretches. The
+    // band's surface brightness varies ~6× along its length (l = 270 measures 0.17 of
+    // the centre), so that ratio divided the dimmest band point by a bulge sample and
+    // came out at 0.81×. Verified offline too: `solve_sky_orientation.py` §11 prints
+    // the same three ratios on the raw asset — 7.93×, 38.55× and 0.56× for the same,
+    // correct alignment.
+    //
+    // 🔑 The lesson generalises past this file: **a gate is only as good as the
+    // quantity it compares.** A tolerance can be wrong by being tight on the wrong
+    // measurement, exactly as it can be wrong by being loose on the right one (the
+    // ±40% star-gate lesson). Both ship a renderer whose state you do not know.
+    //
+    // So this gate asserts the two things that are actually diagnostic:
+    //   1. every b = 0 point beats every |b| = 90 point by ≥3×, and
+    //   2. brightness falls MONOTONICALLY with |b| at fixed longitude.
+    // (2) is the real signature: a misaligned panorama cannot produce it, because its
+    // band crosses the latitude ladder at some other angle. Longitude variation is
+    // divided out by comparing only along a meridian.
+    const marks: Array<{ l: number; b: number; what: string }> = [
+      { l: 0, b: 0, what: "galactic centre" },
+      { l: 90, b: 0, what: "band, l=90" },
+      { l: 180, b: 0, what: "anticentre" },
+      { l: 270, b: 0, what: "band, l=270 (a genuinely FAINT stretch)" },
+      { l: 0, b: 20, what: "b=+20 (still bulge!)" },
+      { l: 0, b: -20, what: "b=-20 (still bulge!)" },
+      { l: 0, b: 40, what: "b=+40" },
+      { l: 0, b: -40, what: "b=-40" },
+      { l: 0, b: 60, what: "b=+60 (Big Dipper's latitude)" },
+      { l: 0, b: -60, what: "b=-60" },
+      { l: 0, b: 90, what: "north galactic pole" },
+      { l: 0, b: -90, what: "south galactic pole" },
+    ];
+
+    if (!_source) {
+      console.error("[lum] no render source — is the scene rendering?");
+      return null;
+    }
+    const dark = resolveUmbraWarp("neptune", 400);
+    // The eye sits radially OUTSIDE Neptune on the anti-sun line, so the sun (and
+    // Neptune's dark disc in front of it) is at −normalize(eye). Reported per row:
+    // a landmark that happens to point that way is measuring an eclipsed disc, not
+    // sky, and that must not be invisible in the table.
+    const en = Math.hypot(...dark.positionKm);
+    const sunDir = dark.positionKm.map((c) => -c / en);
+
+    const rows: Record<string, Record<string, string>> = {};
+    const measured = new Map<string, number>();
+    const N = 31;
+
+    for (const m of marks) {
+      const eq = galToEq(m.l, m.b);
+      equatorialToGame(_starDir, eq[0], eq[1], eq[2]);
+      _starDir.normalize();
+      this.store.set(
+        devTeleportAtom,
+        resolveLookDirectionWarp(_starDir, dark.positionKm),
+      );
+      await sleepFrames(settleFrames);
+
+      const { renderer, target } = _source;
+      const half = Math.floor(N / 2);
+      const cx = Math.round(target.width / 2) - half;
+      const cy = Math.round(target.height / 2) - half;
+      const buf = await renderer.readRenderTargetPixelsAsync(target, cx, cy, N, N);
+      const isHalf = buf instanceof Uint16Array;
+      const isByte = buf instanceof Uint8Array;
+      const a = buf as unknown as ArrayLike<number>;
+      const stride = rowStrideElements(N, isHalf ? 2 : isByte ? 1 : 4);
+      const lumas: number[] = [];
+      for (let row = 0; row < N; row++) {
+        for (let col = 0; col < N; col++) {
+          const [r, g, b] = decodeRgb(a, row * stride + col * 4, isHalf, isByte);
+          lumas.push(REC709[0] * r + REC709[1] * g + REC709[2] * b);
+        }
+      }
+      lumas.sort((x, y) => x - y);
+      const median = lumas[Math.floor(lumas.length / 2)];
+      const physical = median / Math.max(SKY_ARTISTIC_GAIN, 1e-12);
+      const nits = physical * NITS_PER_GAME_UNIT;
+      measured.set(`${m.l},${m.b}`, nits);
+      const sunAng =
+        (Math.acos(
+          Math.max(-1, Math.min(1, _starDir.x * sunDir[0] + _starDir.y * sunDir[1] + _starDir.z * sunDir[2])),
+        ) *
+          180) /
+        Math.PI;
+      rows[`gal l=${m.l} b=${m.b >= 0 ? "+" : ""}${m.b}`] = {
+        what: m.what,
+        "median cd/m²": nits.toExponential(3),
+        "vs sky mean": `${(nits / 8.05e-5).toFixed(2)}×`,
+        "° from sun": sunAng.toFixed(0) + (sunAng < 5 ? " ⚠ Neptune in frame" : ""),
+      };
+    }
+    console.table(rows);
+
+    const at = (l: number, b: number) => measured.get(`${l},${b}`) ?? 0;
+    const bandMin = Math.min(...[0, 90, 180, 270].map((l) => at(l, 0)));
+    const poleMax = Math.max(at(0, 90), at(0, -90));
+    const contrast = bandMin / Math.max(poleMax, 1e-30);
+
+    // Monotone falloff along each meridian arm. A 1.25× slack per rung absorbs the
+    // faint-end noise (a 31×31 median at ~1e-5 cd/m² sits near the half-float floor
+    // even with pre-exposure) without admitting a real reversal.
+    const SLACK = 1.25;
+    const arms: Array<[string, number[]]> = [
+      ["b = 0 → +20 → +40 → +60 → +90", [0, 20, 40, 60, 90]],
+      ["b = 0 → −20 → −40 → −60 → −90", [0, -20, -40, -60, -90]],
+    ];
+    let monotone = true;
+    for (const [label, ladder] of arms) {
+      const vals = ladder.map((b) => at(0, b));
+      const steps = vals
+        .slice(0, -1)
+        .map((v, i) => `${(vals[i + 1] / Math.max(v, 1e-30)).toFixed(2)}×`);
+      const ok = vals.every((v, i) => i === 0 || v <= vals[i - 1] * SLACK);
+      if (!ok) monotone = false;
+      console.log(
+        `[lum] ${ok ? "✓" : "✗"} ${label}:  ` +
+          vals.map((v) => v.toExponential(2)).join("  →  ") +
+          `   (ratios ${steps.join(" ")})`,
+      );
+    }
+    console.log(
+      `[lum] faintest b=0 point ${bandMin.toExponential(3)} cd/m²,  ` +
+        `brightest galactic pole ${poleMax.toExponential(3)} cd/m²  →  ${contrast.toFixed(2)}×`,
+    );
+    // ⚠ Compare b=0 against |b|=90 ONLY. The poles are the one place on the sky that
+    // is unambiguously off the band; every intermediate latitude at l≈0 still catches
+    // bulge. Measured on this asset: 7.93× offline, ~7× in-engine, so 3× is a floor a
+    // misalignment cannot sneak past — a wrong orientation drives this toward 1.
+    if (contrast >= 3 && monotone) {
+      console.log(
+        `[lum] ✅ SKY ALIGNED — band/pole ${contrast.toFixed(2)}× ≥ 3 and brightness falls\n` +
+          "      monotonically with galactic latitude on both arms.",
+      );
+    } else if (contrast >= 3) {
+      console.error(
+        "[lum] ⚠ band/pole contrast is fine but the latitude falloff is NOT monotone.\n" +
+          "      Either the sky is subtly rotated, or a bright body is in frame for one\n" +
+          "      of the landmarks — check the '° from sun' column above.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ SKY MISALIGNED — band/pole ${contrast.toFixed(2)}× < 3. The panorama's\n` +
+          "      bright band is not sitting on galactic latitude 0. Re-run\n" +
+          "      `python3 scripts/solve_sky_orientation.py <panorama>` and compare its\n" +
+          "      answer with the u/v formula in MilkyWaySkybox.tsx.",
+      );
+    }
+    console.log(
+      "[lum] cross-check by eye: __lum.aim(12.2570, 56.382, 'Big Dipper') — galactic\n" +
+        "      latitude +60°, so it must sit FAR off the band. That is the check that\n" +
+        "      exposed the original misalignment when four others had passed.",
+    );
+    // Returned as well as logged, so the gate can be asserted on rather than read.
+    return {
+      pass: contrast >= 3 && monotone,
+      contrast,
+      monotone,
+      bandMinNits: bandMin,
+      poleMaxNits: poleMax,
+    };
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */
@@ -1013,28 +1344,77 @@ export class LumHarness {
    */
   async probeFlux(
     n = 15,
-  ): Promise<{ sumLuma: number; peakLuma: number; samples: number } | null> {
+    outer = 31,
+  ): Promise<{
+    sumLuma: number;
+    peakLuma: number;
+    samples: number;
+    backgroundPerPx: number;
+    sumLumaRaw: number;
+  } | null> {
     if (!_source) return null;
     const { renderer, target } = _source;
+    // ── APERTURE PHOTOMETRY, not a bare sum ─────────────────────────────────
+    // ⚠ A raw window sum is aperture PLUS SKY, and the sky is not negligible any
+    // more. `SKY_ARTISTIC_GAIN` is a look knob that has been pushed to ~1e3, which
+    // makes the diffuse Milky Way a real contributor inside a 15×15 window —
+    // MEASURED as +3.3% on Sirius and +5.8% on Vega, both of which sit within ~20°
+    // of the galactic plane. That is the whole reason the two stars disagreed with
+    // each other while each looked "close enough".
+    //
+    // 🔑 The fix is the standard one from astronomical photometry: estimate the sky
+    // from an ANNULUS outside the aperture and subtract `sky × aperture_area`. The
+    // annulus starts at Chebyshev radius `half + 2`, where a σ ≈ 0.85 px Gaussian is
+    // ~e^−56 of its peak, so it cannot contain any of the star. The MEDIAN is used
+    // rather than the mean so a neighbouring catalogue star in the annulus — likely,
+    // at 8,920 stars — cannot bias the estimate.
     const half = Math.floor(n / 2);
-    const cx = Math.round(target.width / 2) - half;
-    const cy = Math.round(target.height / 2) - half;
-    const buf = await renderer.readRenderTargetPixelsAsync(target, cx, cy, n, n);
+    const oHalf = Math.floor(outer / 2);
+    const cx = Math.round(target.width / 2) - oHalf;
+    const cy = Math.round(target.height / 2) - oHalf;
+    const buf = await renderer.readRenderTargetPixelsAsync(
+      target,
+      cx,
+      cy,
+      outer,
+      outer,
+    );
     const isHalf = buf instanceof Uint16Array;
     const isByte = buf instanceof Uint8Array;
     const a = buf as unknown as ArrayLike<number>;
-    const stride = rowStrideElements(n, isHalf ? 2 : isByte ? 1 : 4);
-    let sum = 0;
-    let peak = 0;
-    for (let row = 0; row < n; row++) {
-      for (let col = 0; col < n; col++) {
+    const stride = rowStrideElements(outer, isHalf ? 2 : isByte ? 1 : 4);
+    const ring: number[] = [];
+    const lumas: number[][] = [];
+    for (let row = 0; row < outer; row++) {
+      const line: number[] = [];
+      for (let col = 0; col < outer; col++) {
         const [r, g, b] = decodeRgb(a, row * stride + col * 4, isHalf, isByte);
         const l = REC709[0] * r + REC709[1] * g + REC709[2] * b;
-        sum += l;
+        line.push(l);
+        const cheb = Math.max(Math.abs(row - oHalf), Math.abs(col - oHalf));
+        if (cheb >= half + 2) ring.push(l);
+      }
+      lumas.push(line);
+    }
+    ring.sort((x, y) => x - y);
+    const bg = ring.length ? ring[Math.floor(ring.length / 2)] : 0;
+
+    let raw = 0;
+    let peak = 0;
+    for (let row = oHalf - half; row <= oHalf + half; row++) {
+      for (let col = oHalf - half; col <= oHalf + half; col++) {
+        const l = lumas[row][col];
+        raw += l;
         if (l > peak) peak = l;
       }
     }
-    return { sumLuma: sum, peakLuma: peak, samples: n * n };
+    return {
+      sumLuma: raw - bg * n * n,
+      peakLuma: Math.max(peak - bg, 0),
+      samples: n * n,
+      backgroundPerPx: bg,
+      sumLumaRaw: raw,
+    };
   }
 
   async probeMax(n = 9): Promise<LumSample | null> {

@@ -62,7 +62,7 @@ Closed defects: D01, D02, D03, D03b, D05, D08, D10, D11, D15, D17, D18, D22, D24
 
 | # | work | defects | blocked by | note |
 |---|------|---------|-----------|------|
-| 1 | ✅ **Star catalogue** rendering — S0–S2 done, validated 0.999× | **D30** ✅ | — | remaining: S3 diffuse split, S4 SH bake (D29), S5 parallax, S6 navigation |
+| 1 | ✅ **Star catalogue** rendering — S0–S2 done, validated 0.999× | **D30** ✅ | — | S3 diffuse split ✅ too; remaining: S4 SH bake (D29), S5 parallax, S6 navigation |
 | 2 | **Emissive calibration** | **D26** | nothing | exhaust/VFX are ~1.0 game units picked against a fixed exposure of 30, never a luminance. Root cause of the "blown plume" |
 | 3 | **Phase 4 — unified impostor radiance** | **D04, D06, D20** | nothing | every distant body is still on an arbitrary scale: billboard `albedo × sunDot` with no illuminance, stellar point normalised to a Jupiter reference, Luna's point albedo 38× off |
 | 4 | **Phase 2c — texture calibration** | **D09, D23** | nothing | ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works**; needs a per-region or physically-derived remap |
@@ -152,6 +152,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D29 | **The skybox is not a light source** — integrated starlight never reaches the hull | `MilkyWaySkybox.tsx` + `SunLight.tsx` | atmosphere-less umbra (Luna) is pure black; blocked by D25 | III |
 | D30 | ✅ **Stars were 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | CLOSED: 8,920-star catalogue, flux validated to **0.999×** on 3 named stars. See STAR_CATALOGUE_PLAN §8.3 | ✅ |
 | D31 | ✅ Metering **point-sampled** one tap per tile → the sun was never metered, and the reading depended on display resolution | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | fixed with stratified tile averaging; resolution drift 1 stop → **0.03** | ✅ |
+| D32 | ✅ **The Milky Way panorama was MIRRORED** — the NASA asset is a sky *chart* (RA 0h centred, RA increasing **leftward**), not a globe texture, so the textbook `u = RA/2π` renders the sky reflected | [`MilkyWaySkybox.tsx`](../src/components/Skybox/MilkyWaySkybox.tsx) | CLOSED: `u = fract(0.5 − RA/2π)`. Measured `det(R) = −1.00000`; whole-image rms galactic latitude **37.7° → 9.69°**; Big Dipper stars now read **71×** dimmer than band stars. Gate: `__lum.skyAlign()` — whose own v1 metric produced a false ❌ on the fixed sky, see §8.6 | ✅ |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1446,6 +1447,8 @@ present as "upside down". It can only present as **chirality**.
 mirror was never in `u`, and two rounds of checking `u` could never have found it. When something
 is mirrored and the obvious axis checks out, **check the other axis for a chirality flip** before
 re-checking the first.
+
+🔁 **This recurred as D32** (2026-08-20), in the same shape and with the same misdirection: the Milky Way panorama was reflected, `det = −1`, and *three* attempted fixes were rotations — which cannot undo a reflection. The generalised lesson is in STAR_CATALOGUE_PLAN §8.6, and the sharpest part is new: **a check that verifies your formula against a *definition* proves nothing when the unknown is an *asset's* convention.** What broke it open was cross-checking two independently-sourced things in one frame — catalogue geometry against panorama texels.
 
 **Fix:** `flipGeometryV()` in `CelestialBody.tsx` (before `computeTangents` — tangents derive from
 uv) and the matching `.negate()` removal in `cloudCommon.ts`'s `equirectDirToUv`. Both must move
