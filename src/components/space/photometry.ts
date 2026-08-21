@@ -167,6 +167,85 @@ export function discRadianceAtZeroPhase(
  * backscattering surfaces read higher still (Venus' validated Monte Carlo gives
  * 1.15; the Moon's opposition surge pushes its true value well above that).
  */
+/**
+ * Illuminance a resolved-or-unresolved BODY delivers at the camera, game units.
+ * The photometric quantity Phase 4 needs, shared by every impostor tier (D04/D06).
+ *
+ *     E_cam = p · Φ(α) · E_sun(d_sun) · (R / d_cam)²
+ *
+ * Derivation, so it can be checked rather than trusted: the disc's radiance is
+ * `L = p·Φ·E_sun/π` and its solid angle from the camera is `Ω = π(R/d_cam)²`, so
+ * `E_cam = L·Ω` and the two π's cancel. Φ is the phase function the caller already
+ * computes (1 at opposition by the definition of geometric albedo).
+ *
+ * 🔑 WHY THIS EXISTS. `StellarPoint` normalised brightness to an arbitrary Jupiter
+ * reference (`(flux / JUPITER_REF_FLUX) × REFERENCE_HDR`) and `useFarLOD` multiplies
+ * albedo by `sunDot` with NO illuminance term at all. Two tiers of the same object on
+ * two different scales is what makes the billboard→point handoff discontinuous. One
+ * function, used by both, is the only way that discontinuity closes.
+ *
+ * ⚠⚠ MEASURED, AND THIS IS WHY IT IS NOT WIRED UP YET: for Jupiter at the module's own
+ * reference geometry (p 0.538, R 69,911 km, 5.2 AU from the sun, 4.2 AU from the
+ * camera) this gives **5.222e-9 game units = 3.15e-5 lux**. Converting that to the
+ * sprite's radiance — `E_cam / (θ_h² · I)`, where θ_h is the sprite's angular half
+ * extent and `I = 0.09315` is the exact flux integral of its `core + halo` profile —
+ * yields `uBrightness = 1.156e-2` at 1783p against the shipped **12.0**. The stellar
+ * point is **1,038× too bright at 1783p and 2,830× at 1080p**.
+ *
+ * ⚠ Note the RESOLUTION DEPENDENCE in those two numbers. The correct value scales as
+ * 1/θ_h², because the sprite is a fixed 6 PIXELS across, so its solid angle shrinks as
+ * resolution rises and its radiance must rise to conserve flux. `REFERENCE_HDR` is a
+ * constant, so distant planets' flux currently depends on window size — the same
+ * defect class as D31's metering and the star gate's σ bug.
+ *
+ * ⚠⚠ DO NOT WIRE ONE TIER WITHOUT THE OTHER. Correcting `StellarPoint` alone makes the
+ * handoff discontinuity WORSE, because `useFarLOD` is still uncalibrated reflectance.
+ * That is the Venus-trim cancellation trap from §5: two errors that cancel in one
+ * scene and diverge everywhere else. Both tiers switch to this function in ONE change,
+ * with `__lum.disc()` / a probe on a named body as the gate.
+ */
+export function bodyIlluminanceAtCamera(
+  geometricAlbedo: number,
+  phase: number,
+  radiusKm: number,
+  dSunKm: number,
+  dCamKm: number,
+): number {
+  const eSun = SUN_ILLUM_GAME_1AU * (AU_KM / Math.max(dSunKm, 1)) ** 2;
+  const rOverD = radiusKm / Math.max(dCamKm, 1);
+  return geometricAlbedo * phase * eSun * rOverD * rOverD;
+}
+
+/**
+ * Exact flux integral of `StellarPoint`'s sprite profile,
+ * `core + halo = clamp((0.2−r)/0.2)^1.2 + 0.4·clamp((0.6−r)/0.6)^2.5`, over the disc
+ * in units of the quad's half extent: `∫ f(r)·2πr dr`.
+ *
+ * Computed in closed form from Beta functions — `2π·0.2²·B(2,2.2) + 0.4·2π·0.6²·B(2,3.5)`
+ * — rather than measured, so it cannot drift from the shader if either exponent
+ * changes. ⚠ If you edit that profile, recompute this.
+ */
+export const STELLAR_POINT_PROFILE_INTEGRAL = 0.093146;
+
+/**
+ * Sprite radiance that makes a point source carry exactly `illuminanceGame`.
+ *
+ * `radiance = E / (θ_h² · I)` — the same flux-conservation shape `StarField` uses for
+ * stars (`E / (2πσ²·Ω_pixel)`), which is validated to 0.999× on three named stars.
+ * A stellar point IS a star-like sub-pixel source, so it should share the machinery
+ * rather than carry a second, unvalidated derivation.
+ *
+ * @param angularHalfExtentRad the sprite's angular half extent, i.e. half of
+ *   `(MIN_SCREEN_PX / bufferHeight) · fovRad`.
+ */
+export function stellarPointRadiance(
+  illuminanceGame: number,
+  angularHalfExtentRad: number,
+): number {
+  const t = Math.max(angularHalfExtentRad, 1e-12);
+  return illuminanceGame / (t * t * STELLAR_POINT_PROFILE_INTEGRAL);
+}
+
 export const LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5;
 
 /** Sub-solar-point radiance of a Lambert sphere — what a centre probe should see. */

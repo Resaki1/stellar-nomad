@@ -48,10 +48,38 @@ type GLTFResult = GLTF & {
 // an eye would adapt to it and lose the sky. Games solve this by excluding or
 // damping the player vehicle in metering, not by dimming the ship.
 //
-// ⇒ Restore a real value (0.03 ≈ 200 cd/m², or 0.15 ≈ 1,000) once the meter can
-// discount the local scene. Until then 0 keeps deep space legible. The units are
-// real, so any value chosen later is a physical statement, not a fudge.
-const HULL_EMISSIVE_INTENSITY = 0;
+// ── D26, 2026-08-21: RESOLVED — STAYS 0, for a BETTER reason than the above ──
+// The reasoning above ("0 because the meter cannot discount the local scene") has
+// EXPIRED: D31's stratified tile metering and the hot-tail compressor
+// (`HOT_WEIGHT_FRACTION` 0.02, `MAX_HOT_FLUX_SHARE` 0.3, `HOT_COMPRESS_EXPONENT` 0.5)
+// both landed afterwards, and the compressor IS a discount on any small hot region —
+// a better formulation than excluding the player, since it also covers the mining
+// laser and a close sunlit asteroid.
+//
+// 🔑 But restoring the emissive was still wrong, on grounds unrelated to the meter:
+// **this emissive is the nozzle interior, and it glowed at ZERO THROTTLE.** A thruster
+// emitting light while the ship is stationary is incorrect at ANY luminance. The
+// dynamic plume is the separate <EngineExhaust>, which does scale with acceleration.
+// So 0 here is the physics, not a workaround.
+//
+// ⚠ AND THE EXPERIMENT THAT WAS MEANT TO SETTLE IT WAS INCONCLUSIVE — how it failed
+// is the reusable part: 0.03 and 0.0 returned BYTE-IDENTICAL meter readings, metered
+// EV −14.74 with every percentile equal (p05 −16.28 … max −9.18). A 181 cd/m²
+// emissive on an in-frame object cannot leave `EV max` at ~2e-4 cd/m², so the value
+// was never live: `hull` is memoised on `materials`, and Fast Refresh does not re-run
+// that memo. **A constant consumed inside a useMemo needs a FULL RELOAD to test** —
+// and two identical readings are evidence of a dead experiment, not of a null result.
+//
+// ⇒ If the GLB's emissive also covers lit PANELS or indicators (things that SHOULD
+// glow at rest), the fix is to split the material or drive the nozzle term from
+// throttle — not one compromise value for both. The units are real, so whatever gets
+// chosen is a physical statement.
+//
+// ⇒ MEASURED, and this is where D26 actually lives: the <EngineExhaust> plume drags
+// metered EV from −14.74 to −10.3 — **4.4 stops** — while occupying 2% of frame
+// weight and carrying ~100% of frame flux, with the compressor already holding back
+// ~5.5 stops. The hull was never the problem. See LIGHTING_PLAN D26.
+const HULL_EMISSIVE_INTENSITY = 0.0;
 
 export function ShipOne({ children, ...props }: JSX.IntrinsicElements["group"]) {
   const { nodes, materials } = useGLTF(

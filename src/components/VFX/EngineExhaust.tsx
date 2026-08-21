@@ -44,8 +44,32 @@ const PLUME_MAX_LENGTH = 4.0;
 /** Segments around the cone circumference */
 const PLUME_RADIAL_SEGMENTS = 16;
 /** HDR brightness multiplier — pushes core above bloom threshold */
+/**
+ * Plume peak radiance in game units at full thrust.
+ *
+ * 12 game units = **72,456 cd/m²** (LIGHTING_PLAN §3.1: 1 unit = 6,038 cd/m²), which
+ * is a defensible plasma-plume luminance — a sunlit cloud top is ~20,000 and an arc
+ * lamp ~1e8. ⚠ So contrary to D26's original framing this is NOT badly calibrated.
+ *
+ * 🔑 MEASURED, and this is D26's real finding: the plume still drags metered EV from
+ * −14.74 to −10.3 (**4.4 stops**) in deep space, occupying 2% of frame weight while
+ * carrying ~100% of frame flux, with the hot-tail compressor already holding back
+ * ~5.5 stops. That is not a units error — deep space is ~1e-4 cd/m², so a physically
+ * correct plume IS ~7e8× the sky and a real eye WOULD be blinded by it. Which is why
+ * real spacecraft do not put the nozzle in the pilot's field of view, and we do.
+ *
+ * ⇒ The remaining fix is therefore a METERING POLICY, not a value here. Do not
+ * "solve" it by lowering this number: that trades a correct plume for a wrong one and
+ * silently corrupts every consumer that now reads absolute luminance — S4b's
+ * reflection cube, the SH probe, and Phase 8's energy-conserving glare.
+ */
 const PLUME_HDR = 12.0;
-/** Point-light intensity at full thrust */
+/**
+ * Point-light illuminance at full thrust, game units — the light the plume CASTS, as
+ * distinct from the radiance it emits. ⚠ Still an uncalibrated eyeball value: it is
+ * not derived from PLUME_HDR × the plume's solid angle, so the plume and its
+ * illumination can disagree. Deriving it is the honest follow-up.
+ */
 const LIGHT_INTENSITY = 2.0;
 /** Point-light distance (model-local) */
 const LIGHT_DISTANCE = 6.0;
@@ -171,7 +195,18 @@ const EngineExhaust = memo(function EngineExhaust({
       }
       const light = lightRefs.current[i];
       if (light) {
-        light.intensity = intensity * LIGHT_INTENSITY;
+        // ⚠ × preExposure, like EVERY other light in the project (D25). This was
+        // missing, and the asymmetry is the bug: the plume MESH above is multiplied by
+        // `getPreExposure()` but its point light was not, so in a dark scene — where
+        // pre-exposure runs to ~1e4–1e5 — the plume blazed while casting essentially
+        // NO light on the hull. A blindingly bright exhaust that fails to illuminate
+        // the ship it is attached to.
+        //
+        // 🔑 Same class as D27, where the bounce fill was not occluded with the key:
+        // when one term of a pair gets a per-frame factor, EVERY consumer of that pair
+        // needs it, and the one you forget is invisible precisely because the other
+        // one looks right.
+        light.intensity = intensity * LIGHT_INTENSITY * getPreExposure();
         light.visible = intensity > 0.01;
       }
     }
