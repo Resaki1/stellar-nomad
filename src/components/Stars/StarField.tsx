@@ -68,6 +68,12 @@ import {
   vec3,
   vec4,
 } from "three/tsl";
+import { SKY_CAPTURE_LAYER } from "@/components/space/skySpecular";
+import {
+  accumulatePointSource,
+  setCatalogueSh,
+  type ShCoefficients,
+} from "@/components/space/skyIrradiance";
 import {
   NITS_PER_GAME_UNIT,
   blackbodyLinearSrgb,
@@ -286,8 +292,60 @@ const STRIDE = 7; // dir(3) + illuminance(1) + colour(3)
 // Live PSF normalisation, 1/(2πσ²·Ω_pixel), published by the mounted StarField.
 const _psfNormRef: { get: () => number } = { get: () => 0 };
 
+/** Set by the mounted StarField so a capture can retarget its PSF. See below. */
+let _setPsfForBuffer: ((fovDeg: number, bufferH: number) => void) | null = null;
+
+/**
+ * Run `body()` with the star PSF rebuilt for an off-screen buffer of `faceSize`
+ * pixels at 90° FOV — i.e. one cube-map face — restoring the on-screen values after.
+ *
+ * ⚠⚠ MANDATORY FOR ANY OFF-SCREEN SKY CAPTURE (S4b). `uQuadWorld` and `uPsfNorm` are
+ * rebuilt every frame from the CANVAS drawing-buffer height AND FOV, because a
+ * star's brightness is a FLUX and how bright it renders depends on how many pixels
+ * it covers. Capture into a 256² cube face without this and every star carries
+ * **85.5×** its correct flux.
+ *
+ * ⚠ Note it is 85.5× and not (1816/256)² = 50×: a cube face is 90° FOV, so
+ * `tanPerPx = 2·tan45°/256 = 7.81e-3` against the canvas's `2·tan37.5°/1816 =
+ * 8.45e-4` — a 9.245× linear ratio, squared for solid angle. Getting this wrong by
+ * the FOV term is the same mistake as the small-angle `fov/height` bug: the
+ * projection is linear in **tan**(angle), not in the angle. Which is exactly why the
+ * override feeds fov+height through the one shared derivation rather than a
+ * hand-computed scale.
+ *
+ * It would present as "the reflections look too bright" — a look problem rather than
+ * a units problem, which is how long that bug would have survived.
+ *
+ * ⚠ Restores IMMEDIATELY, from the last on-screen values — not by waiting for the
+ * next `useFrame`. The capture runs inside a frame callback, so the on-screen render
+ * of that same frame would otherwise still be holding the capture's uniforms: one
+ * frame of stars at 50× brightness. A single-frame flash is exactly the kind of
+ * artefact that gets dismissed as "something flickered".
+ */
+export function withStarCaptureResolution<T>(faceSize: number, body: () => T): T {
+  const set = _setPsfForBuffer;
+  if (!set) return body(); // StarField not mounted; nothing to retarget
+  try {
+    // A cube face is 90° FOV over `faceSize` pixels. Feeding fov+height (rather
+    // than a precomputed scale) means the capture goes through the SAME one
+    // derivation as the on-screen path and cannot drift from it.
+    set(90, faceSize);
+    return body();
+  } finally {
+    // Back to the live on-screen geometry, recorded by the last useFrame.
+    set(_psfOnScreen.fovDeg, _psfOnScreen.bufferH);
+    _psfOverride.bufferH = 0;
+  }
+}
+
 /** Raw inputs behind the PSF scaling, for the `__lum.star()` diagnostic. */
 const _psfDebug = { fovDeg: 0, bufferH: 0 };
+
+/** Active PSF override during an off-screen capture; bufferH ≤ 0 means "none". */
+const _psfOverride = { fovDeg: 0, bufferH: 0 };
+
+/** Last on-screen FOV/buffer height, so a capture can restore exactly. */
+const _psfOnScreen = { fovDeg: 75, bufferH: 1080 };
 
 /**
  * The FOV and drawing-buffer height `StarField` used this frame.
@@ -347,6 +405,11 @@ function parseCatalogue(bytes: ArrayBuffer): Catalogue {
   const src = new Float32Array(bytes, 16, count * 5);
   const out = new Float32Array(count * STRIDE);
   let brightest = 0;
+  // Accumulated in the parse loop below and published to `skyIrradiance` (S4).
+  const catalogueSh: ShCoefficients = Array.from(
+    { length: 9 },
+    () => new THREE.Vector3(),
+  );
 
   const dir = new THREE.Vector3();
   for (let i = 0; i < count; i++) {
@@ -380,6 +443,18 @@ function parseCatalogue(bytes: ArrayBuffer): Catalogue {
     // remains the single authority on brightness.
     const [r, g, b] = blackbodyLinearSrgb(temperatureFromBV(bv));
 
+    // ── The catalogue's contribution to the sky's SH-L2 light probe (S4) ────
+    // 🔑 Done HERE, in the loop that already exists, because a star is a DELTA
+    // SOURCE: its SH contribution is the exact analytic `E·rgb·Y_i(d)`, with no
+    // resolution dependence at all. That is the same property that makes stars
+    // impossible to carry in a texture (see the header) turned into an advantage —
+    // and it means the ~19.5% of the sky's flux that lives in this catalogue lights
+    // the hull exactly, rather than being rasterised into some cubemap's texels.
+    //
+    // Costs one multiply-add per star per coefficient; no extra iteration, and the
+    // interstellar-jump case comes free because a jump re-derives directions here.
+    accumulatePointSource(catalogueSh, dir.x, dir.y, dir.z, illumGame, r, g, b);
+
     const o = i * STRIDE;
     out[o] = dir.x;
     out[o + 1] = dir.y;
@@ -389,6 +464,7 @@ function parseCatalogue(bytes: ArrayBuffer): Catalogue {
     out[o + 5] = g;
     out[o + 6] = b;
   }
+  setCatalogueSh(catalogueSh);
 
   const ib = new THREE.InstancedInterleavedBuffer(out, STRIDE, 1);
   ib.setUsage(THREE.StaticDrawUsage);
@@ -439,6 +515,28 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
   // is how a validated pipeline silently drifts out of validation.
   useEffect(() => {
     _psfNormRef.get = () => uPsfNorm.value as number;
+    // A capture cannot wait for the next useFrame, so it writes the uniforms
+    // directly through the same derivation.
+    _setPsfForBuffer = (fovDeg: number, bufferH: number) => {
+      _psfOverride.fovDeg = fovDeg;
+      _psfOverride.bufferH = bufferH;
+      if (bufferH <= 0) return;
+      const t = (2 * Math.tan((fovDeg * Math.PI) / 360)) / bufferH;
+      uQuadWorld.value = STAR_SHELL_RADIUS * t * (QUAD_PX * 0.5);
+      uPsfNorm.value = 1 / (2 * Math.PI * PSF_SIGMA_PX * PSF_SIGMA_PX * t * t);
+      // 🐛 MUST update `_psfDebug` too. It was omitted at first, and the S4b capture
+      // witness — which reads it through `getStarPsfInputs()` — therefore reported
+      // the ON-SCREEN 75°/1783 px during a capture that had actually been overridden
+      // correctly. The gate failed a working capture, and the failure message
+      // confidently blamed the wrong thing.
+      //
+      // 🔑 The real lesson is in the fix on the gate side: witness the UNIFORM the
+      // shader samples, not a bookkeeping field that happens to travel alongside it.
+      // A diagnostic that reads its own notes rather than the state cannot be trusted
+      // when the two diverge — and divergence is exactly when you need it.
+      _psfDebug.fovDeg = fovDeg;
+      _psfDebug.bufferH = bufferH;
+    };
     return () => {
       _psfNormRef.get = () => 0;
     };
@@ -571,8 +669,8 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
     // Published raw for `__lum.star()` — see the ⚠ note there. The gate solves the
     // on-screen PSF width from its own measurements, and comparing that against
     // these inputs is what localises a pixel-scale error instead of guessing at it.
-    _psfDebug.fovDeg = cam.fov;
-    _psfDebug.bufferH = size.y;
+    _psfDebug.fovDeg = _psfOverride.bufferH > 0 ? _psfOverride.fovDeg : cam.fov;
+    _psfDebug.bufferH = _psfOverride.bufferH > 0 ? _psfOverride.bufferH : size.y;
     // ⚠ One pixel's size in TANGENT space, not `fov/height`. The small-angle form
     // is wrong by u/tan(u) — only 0.4% at 10° but **14.7% at this camera's 75°**,
     // which made every sprite 0.853× too small and its flux 0.727× too low
@@ -582,7 +680,16 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
     // The SAME quantity feeds the quad size and the solid angle on purpose: as
     // long as both come from `tanPerPx`, the two cannot disagree and flux is
     // conserved by construction — which is the entire promise of this component.
-    const tanPerPx = (2 * Math.tan((cam.fov * Math.PI) / 360)) / size.y;
+    // One derivation, two consumers (on-screen and capture) — see
+    // `withStarCaptureResolution`. Overriding the INPUTS rather than the outputs is
+    // what keeps `uQuadWorld` and `uPsfNorm` mutually consistent in both paths.
+    if (_psfOverride.bufferH <= 0) {
+      _psfOnScreen.fovDeg = cam.fov;
+      _psfOnScreen.bufferH = size.y;
+    }
+    const fovDeg = _psfOverride.bufferH > 0 ? _psfOverride.fovDeg : cam.fov;
+    const bufferH = _psfOverride.bufferH > 0 ? _psfOverride.bufferH : size.y;
+    const tanPerPx = (2 * Math.tan((fovDeg * Math.PI) / 360)) / bufferH;
     const pxSolidAngle = tanPerPx * tanPerPx;
     // Quad half-width in world units at the shell radius, so it covers QUAD_PX.
     uQuadWorld.value = STAR_SHELL_RADIUS * tanPerPx * (QUAD_PX * 0.5);
@@ -599,6 +706,11 @@ export default function StarField({ url = "/data/stars_visual.bin" }: Props) {
     <instancedMesh
       ref={(m) => {
         meshRef.current = m;
+        // ⚠ ENABLE, never set — the sprites must stay on layer 0 for the on-screen
+        // render and ALSO appear on the sky-capture layer (S4b). `layers.set()`
+        // mutates persistent Object3D state, which is what made the D26 layer
+        // experiment survive a code revert and need a page reload.
+        if (m) m.layers.enable(SKY_CAPTURE_LAYER);
       }}
       args={[geometry, material, cat.count]}
       count={cat.count}

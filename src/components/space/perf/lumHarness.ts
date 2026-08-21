@@ -16,6 +16,7 @@
  *   await __lum.star("Sirius")        // THE STAR GATE — measured vs published mag
  *   __lum.aim(17.7611, -29.0078)     // aim at a sky coordinate (orientation check)
  *   await __lum.skyAlign()           // GATE: is the Milky Way panorama aligned?
+ *   __lum.skyProbe()                 // GATE: is the sky lighting the hull? (D29)
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -87,7 +88,23 @@ import {
   getStarPsfNorm,
   starIlluminanceGame,
 } from "@/components/Stars/StarField";
-import { SKY_ARTISTIC_GAIN } from "@/components/Skybox/MilkyWaySkybox";
+import {
+  SKY_ARTISTIC_GAIN,
+  SKY_DIFFUSE_TARGET_NITS,
+} from "@/components/Skybox/MilkyWaySkybox";
+import {
+  SKY_CUBE_SIZE,
+  captureTanPerPx,
+  skySpecularStatus,
+} from "@/components/space/skySpecular";
+import {
+  accumulatePointSource,
+  evaluateShIrradiance,
+  getPanoramaMeanRadiance,
+  getSkySh,
+  skyIrradianceStatus,
+  type ShCoefficients,
+} from "@/components/space/skyIrradiance";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -1260,6 +1277,272 @@ export class LumHarness {
       bandMinNits: bandMin,
       poleMaxNits: poleMax,
     };
+  }
+
+  /**
+   * SKY IRRADIANCE GATE — is the SH-L2 light probe correct? (S4 / D29)
+   *
+   *     __lum.skyProbe()
+   *
+   * ── WHY THIS CAN BE AN EXACT GATE, UNLIKE MOST LIGHTING CHECKS ────────────
+   * Diffuse irradiance from an environment is normally only checkable against a
+   * reference render. But SH-L2 has two closed-form consequences, and they pin the
+   * convention AND the truncation with no renderer involved:
+   *
+   *   1. **A uniform sky of radiance L gives irradiance exactly πL** on every
+   *      normal. Band 0 alone: `0.886227 × (L·0.282095·4π) = πL`, and all higher
+   *      bands are identically zero. Any error in the basis normalisation, the
+   *      solid-angle weighting, or the Â_l constants breaks this immediately.
+   *   2. **A single source of illuminance E gives exactly 1.0625·E** at its own
+   *      direction, because `Σ_l Â_l (2l+1)/4π = [π + 3(2π/3) + 5(π/4)]/4π =
+   *      4.25π/4π`. 🔑 That 6.25% overshoot is SH-L2 RINGING — a known property of
+   *      truncating at band 2, not an error. Asserting it means the gate would also
+   *      catch someone "fixing" it, which would be the real bug.
+   *
+   * Then it reports the SHIPPED sky, whose absolute level cannot be derived in
+   * closed form but whose SHAPE can be sanity-checked: irradiance must peak toward
+   * the galactic plane and trough toward the poles, mirroring `skyAlign()`.
+   *
+   * ⚠ Everything here evaluates through `evaluateShIrradiance`, a transcription of
+   * three's own `getShIrradianceAt` constants, so the gate measures the shipping
+   * evaluator rather than a second implementation of it.
+   */
+  skyProbe(): void {
+    // ⚠ TOLERANCE IS BOUNDED BELOW BY THE REFERENCE CONSTANTS, not by the maths.
+    // three publishes its SH constants rounded to 6 decimals (0.282095 for
+    // 1/(2√π) = 0.2820947917…, and so on), each carrying ~1e-6 of relative error;
+    // summed over nine terms that reaches ~1.6e-6. A 1e-6 tolerance therefore FAILS
+    // a perfectly correct implementation — it did, on the first run of this gate —
+    // while a real defect here (a wrong basis normalisation, a missing sinθ weight,
+    // a dropped Â_l) is percent-level or worse. So 1e-5: an order of magnitude above
+    // the achievable floor and four below anything that could actually be wrong.
+    const SH_TOL = 1e-5;
+    const mk = (): ShCoefficients =>
+      Array.from({ length: 9 }, () => new Vector3());
+    const NORMALS: Array<[string, [number, number, number]]> = [
+      ["+x", [1, 0, 0]],
+      ["−x", [-1, 0, 0]],
+      ["+y (ecliptic N)", [0, 1, 0]],
+      ["−y", [0, -1, 0]],
+      ["+z", [0, 0, 1]],
+      ["diagonal", [0.5774, 0.5774, 0.5774]],
+    ];
+
+    // ── Test 1: uniform sky ⇒ πL exactly, on EVERY normal ──────────────────
+    const L = 3.7;
+    const uni = mk();
+    // Project a constant radiance analytically: coeff_i = L·∫Y_i dω, which is
+    // L·0.282095·4π for band 0 and exactly 0 for every other band.
+    uni[0].set(L, L, L).multiplyScalar(0.282095 * 4 * Math.PI);
+    let uniWorst = 0;
+    for (const [, n] of NORMALS) {
+      const e = evaluateShIrradiance(uni, n[0], n[1], n[2]);
+      uniWorst = Math.max(uniWorst, Math.abs(e[0] / (Math.PI * L) - 1));
+    }
+
+    // ── Test 2: one point source ⇒ 1.0625·E at its own direction ───────────
+    const E = 0.25;
+    // ⚠ NORMALISE, don't trust a hand-typed "unit" vector. The first version of
+    // this gate used [0.2673, 0.5345, 0.8018], whose length is 1.000011 — and the
+    // 1.1e-5 error propagated straight into the band-2 terms and failed a 1e-6
+    // tolerance on machinery that was perfectly correct. A gate that is less exact
+    // than its own tolerance reports bugs it invented.
+    const dRaw = new Vector3(1, 2, 3).normalize();
+    const d: [number, number, number] = [dRaw.x, dRaw.y, dRaw.z];
+    const pt = mk();
+    accumulatePointSource(pt, d[0], d[1], d[2], E, 1, 1, 1);
+    // Three exact values, all from E(θ)/E = ¼ + ½cosθ + (5/32)(3cos²θ − 1), which
+    // is Σ_l Â_l (2l+1)/(4π) P_l(cosθ) — the SH-L2 reconstruction of a delta source.
+    //
+    // 🐛 The first version asserted only "the opposite lobe should be NEGATIVE",
+    // and that was WRONG: since Y_lm(−d) = (−1)^l Y_lm(d), the antipode is
+    // [Â₀ − 3Â₁ + 5Â₂]/4π = +1/16 exactly. The lobe does go negative — but at
+    // cos θ = −8/15 (θ = 122.2°), where it reaches exactly −19/480. Asserting a
+    // SIGN at the wrong angle taught nothing; asserting three closed-form values
+    // pins the whole reconstruction.
+    const atSource = evaluateShIrradiance(pt, d[0], d[1], d[2])[0];
+    const RING = (Math.PI + 3 * ((2 * Math.PI) / 3) + 5 * (Math.PI / 4)) /
+      (4 * Math.PI); // = 1.0625 = 17/16
+    const opp = evaluateShIrradiance(pt, -d[0], -d[1], -d[2])[0];
+    const OPP_EXACT = (Math.PI - 3 * ((2 * Math.PI) / 3) + 5 * (Math.PI / 4)) /
+      (4 * Math.PI); // = 0.0625 = 1/16
+    // The true minimum, at cos θ = −8/15. Build that direction by rotating d.
+    const perp = new Vector3(d[0], d[1], d[2])
+      .clone()
+      .cross(new Vector3(0, 0, 1))
+      .normalize();
+    const cMin = -8 / 15;
+    const nMin = new Vector3(d[0], d[1], d[2])
+      .multiplyScalar(cMin)
+      .addScaledVector(perp, Math.sqrt(1 - cMin * cMin));
+    const atMin = evaluateShIrradiance(pt, nMin.x, nMin.y, nMin.z)[0];
+    const MIN_EXACT = -19 / 480;
+
+    console.table({
+      "uniform sky: worst |E/πL − 1|": uniWorst.toExponential(3),
+      "  → tests basis norm, dΩ weight, Â_l": uniWorst < SH_TOL ? "✅" : "❌",
+      "point source: at source, E/E": Number((atSource / E).toPrecision(8)),
+      "  → analytic 17/16": Number(RING.toPrecision(8)),
+      "point source: antipode, E/E": Number((opp / E).toPrecision(8)),
+      "  → analytic 1/16": Number(OPP_EXACT.toPrecision(8)),
+      "point source: min at cosθ=−8/15": Number((atMin / E).toPrecision(8)),
+      "  → analytic −19/480 (ringing goes NEGATIVE here)": Number(
+        MIN_EXACT.toPrecision(8),
+      ),
+    });
+    const t1 = uniWorst < SH_TOL;
+    const t2 = Math.abs(atSource / E / RING - 1) < SH_TOL;
+    const t3 = Math.abs(opp / E / OPP_EXACT - 1) < SH_TOL;
+    const t4 = Math.abs(atMin / E - MIN_EXACT) < SH_TOL;
+    if (t1 && t2 && t3 && t4) {
+      console.log(
+        "[lum] ✅ SH machinery exact — uniform sky = πL; delta source 17/16 at the\n" +
+          "      source, 1/16 at the antipode, −19/480 at its minimum.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ SH machinery WRONG (uniform ${t1 ? "ok" : "FAIL"}, ` +
+          `source ${t2 ? "ok" : "FAIL"}, antipode ${t3 ? "ok" : "FAIL"}, ` +
+          `min ${t4 ? "ok" : "FAIL"}). Check shBasis() against three's ` +
+          "SphericalHarmonics3.getBasisAt and the dΩ = sinθ·Δθ·Δφ weighting.",
+      );
+    }
+
+    // ── The shipped sky ────────────────────────────────────────────────────
+    const st = skyIrradianceStatus();
+    console.table(st);
+    const sh = getSkySh();
+    if (!sh) {
+      console.error(
+        "[lum] no sky SH yet — the panorama bake runs a few frames after " +
+          "MilkyWaySkybox mounts, and the catalogue half lands when stars_visual.bin " +
+          "parses. Reload and retry.",
+      );
+      return;
+    }
+    const gain = SKY_ARTISTIC_GAIN;
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const [name, n] of NORMALS) {
+      const e = evaluateShIrradiance(sh, n[0], n[1], n[2]);
+      const luma = REC709[0] * e[0] + REC709[1] * e[1] + REC709[2] * e[2];
+      rows[name] = {
+        "irradiance (game)": luma.toExponential(3),
+        "irradiance (lux)": (luma * NITS_PER_GAME_UNIT).toExponential(3),
+        "as rendered (×gain)": (luma * gain * NITS_PER_GAME_UNIT).toExponential(3),
+        "R:G:B": `${e[0].toExponential(2)} ${e[1].toExponential(2)} ${e[2].toExponential(2)}`,
+      };
+    }
+    console.table(rows);
+
+    // ── Does the PANORAMA half hit its own calibration target? ─────────────
+    // 🔑 THIS IS THE CHECK THAT SHOULD HAVE EXISTED FIRST. The ratio test below did
+    // catch the underflow bug — it read 2.418 against a predicted 1.24 — but its
+    // message blamed the CATALOGUE half, when the catalogue was exact and the
+    // panorama was 5.85× low. A ratio between two measured things tells you they
+    // disagree; only an absolute check against a KNOWN target says which one moved.
+    const meanNits = getPanoramaMeanRadiance() * NITS_PER_GAME_UNIT;
+    const meanRatio = meanNits / SKY_DIFFUSE_TARGET_NITS;
+    console.log(
+      `[lum] panorama mean radiance ${meanNits.toExponential(4)} cd/m² vs target ` +
+        `${SKY_DIFFUSE_TARGET_NITS.toExponential(4)} → ${meanRatio.toFixed(4)}×`,
+    );
+    if (Math.abs(meanRatio - 1) < 0.05) {
+      console.log("[lum] ✅ panorama half is calibrated (within 5%).");
+    } else {
+      console.error(
+        `[lum] ❌ panorama half is ${meanRatio.toFixed(3)}× its target.\n` +
+          "      If it is LOW by roughly 6×, suspect half-float underflow in the bake:\n" +
+          "      RGBA16F's smallest subnormal is 5.96e-8 and the calibrated sky is\n" +
+          "      ~1.3e-8, so the render target must hold RAW texels with radianceScale\n" +
+          "      applied on the CPU (skyIrradiance.ts says why). If it is off by the\n" +
+          "      texture's mean, SKY_TEXTURE_MEAN_LINEAR is stale — re-run\n" +
+          "      scripts/build_diffuse_sky.sh and paste the printed value.",
+      );
+    }
+
+    // Whole-sky consistency: the MEAN irradiance over all normals must equal
+    // π × (mean radiance), because every band above 0 integrates to zero over the
+    // sphere. That ties the SH back to the flux the bake actually measured, and it
+    // is the one absolute check available on the real sky.
+    const meanIrr =
+      0.886227 *
+      (REC709[0] * sh[0].x + REC709[1] * sh[0].y + REC709[2] * sh[0].z);
+    const fromMean = Math.PI * getPanoramaMeanRadiance();
+    console.log(
+      `[lum] band-0 irradiance ${meanIrr.toExponential(4)} game units;  ` +
+        `π × panorama mean radiance ${fromMean.toExponential(4)}  ` +
+        `→ ratio ${(meanIrr / Math.max(fromMean, 1e-30)).toFixed(3)}`,
+    );
+    console.log(
+      "[lum] ⚠ expect ≈1.24: π×mean covers the PANORAMA only, while band 0 also\n" +
+        "      carries the catalogue's ~19.5% share of the sky's flux (0.195/0.805).\n" +
+        "      ≈1.0 → the catalogue half never landed. MUCH HIGHER → the panorama\n" +
+        "      half is too dim; read the absolute panorama check above, which names\n" +
+        "      which half moved instead of only saying that they disagree.",
+    );
+    // ── S4b: was the environment cube captured at the right star scale? ─────
+    // 🔑 THIS IS THE ONE CHECK THAT MATTERS FOR THE CAPTURE. A cube face is 90° FOV
+    // over 256 px; the canvas is 75° over ~1816. `StarField` derives sprite size AND
+    // PSF normalisation from `tanPerPx`, so capturing without overriding those inputs
+    // gives every star (0.0078125/0.000845)² ≈ **85.5×** its correct flux — and it
+    // would read as "the reflections look too bright", a LOOK problem, which is how
+    // long it would have survived. Asserting the witnessed inputs is cheap and
+    // catches it exactly.
+    //
+    // ⚠ What this does NOT yet do is integrate the cube's own texels and compare
+    // that flux against the SH. That needs per-cube-face readback, which
+    // `readRenderTargetPixelsAsync` is not wired for here, so it is honest to say the
+    // capture's photometry is checked at its INPUTS and not at its output.
+    const sp = skySpecularStatus();
+    console.table(sp);
+    if (!sp.captured) {
+      console.log(
+        "[lum] sky cube not captured yet — it runs a few frames after the skybox\n" +
+          "      mounts, on the same one-shot as the SH bake.",
+      );
+    } else {
+      // 🔑 WITNESS THE UNIFORM, NOT THE BOOKKEEPING. The first version of this check
+      // compared `capturePsfFovDeg/BufferH`, which come from `_psfDebug` — a field
+      // only StarField's useFrame wrote. The override set the uniforms correctly but
+      // not that field, so the gate FAILED A WORKING CAPTURE and its message
+      // confidently blamed `withStarCaptureResolution` for not running.
+      //
+      // `uPsfNorm` is what the shader actually samples, so comparing it cannot be
+      // fooled by stale notes. The expected value is built HERE because it needs σ
+      // (StarField) and the face geometry (skySpecular), and this is the only module
+      // that legitimately imports both.
+      const t = captureTanPerPx();
+      const expectedNorm =
+        1 / (2 * Math.PI * STAR_PSF_SIGMA_PX * STAR_PSF_SIGMA_PX * t * t);
+      const normRatio = sp.capturePsfNorm / expectedNorm;
+      // uPsfNorm ∝ 1/Ω_pixel, so a wrong buffer scales it by the solid-angle ratio —
+      // i.e. this ratio IS the flux error, directly.
+      console.log(
+        `[lum] uPsfNorm during capture ${sp.capturePsfNorm.toPrecision(6)} vs ` +
+          `expected ${expectedNorm.toPrecision(6)} → ${normRatio.toPrecision(4)}×`,
+      );
+      if (Math.abs(normRatio - 1) < 1e-4) {
+        console.log(
+          `[lum] ✅ capture used the cube-face PSF (90° over ${SKY_CUBE_SIZE} px) —\n` +
+            "      star flux in the cube faces is scaled correctly.",
+        );
+      } else {
+        console.error(
+          `[lum] ❌ capture used the WRONG PSF: uPsfNorm was ${normRatio.toPrecision(4)}×\n` +
+            `      its correct value, so every star's flux in the cube is off by that\n` +
+            `      factor. Reported inputs: fov ${sp.capturePsfFovDeg}° over ` +
+            `${sp.capturePsfBufferH} px, expected 90° over ${SKY_CUBE_SIZE}.\n` +
+            "      Check that StarField is mounted before captureSkyCube() runs.",
+        );
+      }
+    }
+
+    console.log(
+      "[lum] then look: warp into Neptune's umbra and check the hull is lit at all\n" +
+        "      (it used to be pure black), brighter on the side facing the galactic\n" +
+        "      plane, and now with the band faintly REFLECTED in the glossy panels.\n" +
+        "      __lum.aim(17.7611, -29.0078) puts the core behind you.",
+    );
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

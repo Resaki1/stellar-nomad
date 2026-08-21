@@ -833,3 +833,102 @@ stretch, while Vega is at `l = 67°`, a brighter one. That offsets Sirius's lowe
 expected ratio from 0.5 to the measured **0.729**. Implied aperture sky: **0.103 cd/m² per px** at Sirius,
 **0.075** at Vega — a direct consequence of `SKY_ARTISTIC_GAIN = 1024`, and a number that will change when
 Phase 7 replaces that knob.
+
+## 8.9 S4 — the sky as a light (SH-L2 irradiance, closes D29)
+
+An atmosphere-less umbra rendered pure black: the key light and its bounce fill both derive from the sun and
+both vanish in shadow, so nothing lit the hull. The calibrated sky was not a light source.
+
+### Design, and where it agrees and disagrees with the engines
+
+SH-L2 for distant **diffuse** irradiance is the standard — Unity's ambient probe, Unreal's SkyLight lower
+band, Frostbite's distant diffuse — because the cosine lobe is smooth enough that 9 coefficients capture
+~99% of the response to any environment (Ramamoorthi & Hanrahan 2001). 27 floats, no texture, no per-frame
+cost. `LightProbeNode` is registered in three's WebGPU library (`BasicNodeLibrary`, verified in 0.183.2), so
+`THREE.LightProbe` reaches **every** standard material with no per-material shader work.
+
+🔑 **The two halves of the sky are integrated differently, and that is the interesting part.** The obvious
+engine answer is to capture the sky into a cubemap and prefilter it. But the catalogue's stars are **delta
+functions** — the same property that made a panorama unable to *render* them (§1: flux is correct at exactly
+one FOV). Rasterising them into a cubemap smears each star across whatever texel it lands in. SH has no such
+problem: a point source of illuminance E from direction d contributes **exactly** `E·Y_i(d)`, at any
+resolution. So the panorama is projected numerically off a 64×32 render, and the catalogue is summed
+analytically inside the parse loop that already existed. Measured: the catalogue half was correct on the
+first run, to 4 significant figures.
+
+**Runtime bake, not 27 pasted constants.** Rejected the offline option because this repo has twice been
+burned by a derived constant drifting from its asset (`SKY_TEXTURE_MEAN_LINEAR`, and the orientation itself,
+§8.6). A bake that reads the shipped texture through the shipped mapping cannot go stale, and it works
+unchanged for a procedural sky. It also forced a structural improvement: the panorama UV mapping now lives in
+`skyPanoramaMapping.ts` with **one** copy, shared by the renderer and the bake — because a bake that
+disagreed with the render about where the galactic centre is would light the hull with a sky that is not the
+sky on screen, and no picture could show you that.
+
+### 🐛 Three defects, all mine, all caught before or by the gate
+
+**1. Double-counted `SKY_ARTISTIC_GAIN`** (caught before running). The bake was handed
+`SKY_RADIANCE_SCALE × SKY_ARTISTIC_GAIN` while `SkyLight` also multiplies by it — 1024² = 1.05e6×. The
+Venus-trim cancellation pattern, and invisible in practice because nothing else in an umbra is a brightness
+reference.
+
+**2. ⚠⚠ HALF-FLOAT UNDERFLOW IN THE BAKE — D25, reproduced inside the module whose own comment warns about
+that exact floor.** The bake rendered *calibrated* radiance (~1.3e-8 game units) into an RGBA16F target whose
+smallest subnormal is 2⁻²⁴ = **5.96e-8**. Most of the sphere underflowed to zero; only the bright band
+survived. Measured mean **2.2807e-9** against a **1.3332e-8** target — **5.85× low**.
+
+The arithmetic that nailed it, from one gate run:
+
+| | |
+|---|---|
+| catalogue band-0, predicted `0.886227 · Y₀₀ · 4.062e-8` | **1.0154e-8** |
+| measured total band-0 | 1.7323e-8 |
+| ⇒ implied panorama part | **7.1686e-9** |
+| π × measured panorama mean | **7.1650e-9** |
+
+Agreement to 4 figures ⇒ the catalogue half was exact and the panorama half was the whole error.
+🔑 **The fix is not a wider buffer, it is to keep the numbers O(1) where the precision lives:** render the
+raw texel (in [0,1]) and apply `radianceScale` on the CPU in float64. Source pre-exposure's trick, without
+needing an exposure.
+
+**3. Asserted a sign at the wrong angle.** The gate claimed the antipode lobe "should be NEGATIVE". It is
+`+1/16` exactly — since `Y_lm(−d) = (−1)^l Y_lm(d)`, the antipode is `[Â₀ − 3Â₁ + 5Â₂]/4π`. The lobe *does*
+go negative, at `cos θ = −8/15` (θ = 122.2°) where it equals exactly `−19/480`. Replaced by three
+closed-form assertions from `E(θ)/E = ¼ + ½cos θ + (5/32)(3cos²θ − 1)`.
+
+### ⚠ Tolerance is bounded below by the REFERENCE constants
+
+The gate first failed correct code at 1e-6, because three publishes its SH constants rounded to six decimals:
+
+| constant | exact | three | rel err |
+|---|---|---|---|
+| Y₀₀ | 0.282094791774 | 0.282095 | 7.4e-7 |
+| Â₁·Y₁ | 1.023326707946 | 1.023328 | 1.3e-6 |
+
+Nine such terms accumulate to ~1.6e-6. A real defect here — wrong normalisation, missing `sinθ` weight,
+dropped `Â_l` — is percent-level. Hence **1e-5**: an order of magnitude above the achievable floor, four
+below anything that could be wrong. 🔑 Same family as §8.8's unit bug: **know what your instrument's own
+precision is before choosing a tolerance.**
+
+### What the gate asserts, and expected values after the fix
+
+| quantity | expected |
+|---|---|
+| uniform sky of radiance L | irradiance **exactly πL** on every normal |
+| delta source, at the source | **17/16 = 1.0625** |
+| delta source, antipode | **1/16 = 0.0625** |
+| delta source, minimum (cos θ = −8/15) | **−19/480 = −0.0395833** |
+| `panoramaMeanRadianceGame` | **1.3332e-8** (ratio 1.0000×) |
+| band-0 irradiance | **5.2039e-8** game units |
+| band-0 / (π × panorama mean) | **1.2424** — the catalogue's 0.195/0.805 share |
+
+⚠ The absolute panorama check is new and exists *because* the ratio test, while it did catch the underflow
+(2.418 against a predicted 1.24), blamed the wrong half. **A ratio between two measured things says they
+disagree; only an absolute check against a known target says which one moved.**
+
+### Deliberately not done
+
+- **No specular.** SH-L2 cannot carry a mirror reflection; star reflections on a glossy hull need a
+  prefiltered GGX cubemap (the split-sum half of the engines' scheme). That is **S4b**.
+- **No occlusion.** One global probe for a sky at infinity, so inside Luna's umbra the hull receives the
+  whole sky although Luna blocks half of it. The disc-overlap machinery from D27 (`sunOcclusion.ts`) could
+  supply a scalar factor per body.

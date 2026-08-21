@@ -34,6 +34,7 @@ import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
 import SunLight from "../Star/SunLight";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
+import SkyLight from "../Star/SkyLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import MiningSystem from "../Mining/MiningSystem";
 import PingBrackets3D from "../Mining/PingBrackets3D";
@@ -135,6 +136,11 @@ const Scene = () => {
             must scale together with star distance (Phase 3 / D03). */}
         <SunLight />
         <AtmosphereSkyLight />
+        {/* The sky itself as a light — SH-L2 from the panorama + catalogue (S4,
+            closes D29). This is the only thing lighting the hull inside an
+            atmosphere-less umbra, where the key light and its bounce fill are
+            both zero. */}
+        <SkyLight />
         <SpaceShip />
         <AsteroidField />
         <MiningSystem />

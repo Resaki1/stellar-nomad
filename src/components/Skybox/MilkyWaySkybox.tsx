@@ -1,22 +1,31 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
   Fn,
-  asin,
   atan,
-  clamp,
   float,
   normalize,
   positionLocal,
   texture as tslTexture,
-  vec2,
   vec3,
   vec4,
 } from "three/tsl";
+import { useFrame, useThree } from "@react-three/fiber";
 import { useKTX2 } from "@/hooks/useKTX2";
+import { bakePanoramaSh } from "@/components/space/skyIrradiance";
+import {
+  SKY_CAPTURE_LAYER,
+  captureSkyCube,
+} from "@/components/space/skySpecular";
+import {
+  getStarPsfInputs,
+  getStarPsfNorm,
+  withStarCaptureResolution,
+} from "@/components/Stars/StarField";
+import { panoramaUvFromGameDir } from "./skyPanoramaMapping";
 import {
   NITS_PER_GAME_UNIT,
   uPreExposure,
@@ -44,7 +53,7 @@ const SKY_TARGET_NITS = 1e-4;
 // cutoff. Those unresolved stars are *supposed* to be part of a diffuse layer,
 // along with diffuse galactic light and zodiacal light.
 const CATALOGUE_FLUX_SHARE = 0.195;
-const SKY_DIFFUSE_TARGET_NITS = SKY_TARGET_NITS * (1 - CATALOGUE_FLUX_SHARE);
+export const SKY_DIFFUSE_TARGET_NITS = SKY_TARGET_NITS * (1 - CATALOGUE_FLUX_SHARE);
 
 // Solid-angle-weighted mean linear luminance of 8k_milkyway_diffuse.ktx2, measured.
 // ⚠ Re-measure if the panorama is ever replaced; this is a property of the asset.
@@ -65,9 +74,6 @@ const SKY_DIFFUSE_TARGET_NITS = SKY_TARGET_NITS * (1 - CATALOGUE_FLUX_SHARE);
 // (the EOTF is convex), and it did so badly enough that the median filter appeared
 // to *raise* the mean — an impossible result that was purely the measurement.
 const SKY_TEXTURE_MEAN_LINEAR = 0.035450;
-const OBLIQUITY_J2000_RAD = (23.4392911 * Math.PI) / 180;
-const COS_OBLIQUITY = Math.cos(OBLIQUITY_J2000_RAD);
-const SIN_OBLIQUITY = Math.sin(OBLIQUITY_J2000_RAD);
 
 /**
  * ── ARTISTIC GAIN — a display knob, deliberately OUTSIDE the physics ──────────
@@ -96,6 +102,9 @@ const SKY_RADIANCE_SCALE =
 type Props = {
   url?: string;
 };
+
+/** Reused mask for the capture camera; allocated once, never per frame. */
+const _captureLayers = new THREE.Layers();
 
 /**
  * Renders the star panorama as a large inverted sphere instead of scene.background.
@@ -207,29 +216,16 @@ export default function MilkyWaySkybox({
     mat.fragmentNode = Fn(() => {
       // The sphere is centred on the scaled origin and uniformly scaled, so the
       // local position IS the view direction.
-      const d = normalize(positionLocal);
-      // game → equatorial (inverse of equatorialToGame)
-      const ex = d.x;
-      const ey = float(-SIN_OBLIQUITY)
-        .mul(d.y)
-        .sub(float(COS_OBLIQUITY).mul(d.z));
-      const ez = float(COS_OBLIQUITY)
-        .mul(d.y)
-        .sub(float(SIN_OBLIQUITY).mul(d.z));
-      // RA → u, Dec → v with v = 0 at the north pole.
-      // TSL exposes the two-argument form as `atan(y, x)`.
       //
-      // ⚠ NOTE THE MINUS SIGN AND THE HALF-TURN: `u = fract(0.5 − RA/2π)`, NOT
-      // `u = RA/2π`. That is the asset's convention, MEASURED — see the block above.
-      // `atan` returns (−π, π], so `RA/2π ∈ (−0.5, 0.5]` and `1.5 − that ∈ [1, 2)`;
-      // the `fract` brings it to [0, 1) without a branch.
-      const u = float(1.5)
-        .sub(atan(ey, ex).mul(float(1 / (2 * Math.PI))))
-        .fract();
-      const v = float(0.5).sub(
-        asin(clamp(ez, float(-1), float(1))).mul(float(1 / Math.PI)),
-      );
-      const rgb = tslTexture(tex, vec2(u, v)).rgb;
+      // ⚠ The mapping itself lives in `skyPanoramaMapping.ts` and is SHARED with
+      // `skyIrradiance.ts`, which integrates this same sky into the SH-L2 light
+      // probe. A second copy here is precisely the defect D32 was: if the bake and
+      // the render disagree about where the galactic centre is, the hull is lit by
+      // a sky that is not the sky on screen, and the picture cannot show you that.
+      const rgb = tslTexture(
+        tex,
+        panoramaUvFromGameDir(normalize(positionLocal)),
+      ).rgb;
       // × uPreExposure like every other radiance source (D25). Doing it in the
       // graph means no per-frame CPU write and nothing to forget.
       return vec4(
@@ -258,10 +254,64 @@ export default function MilkyWaySkybox({
   }, [tex]);
 
 
+  // ── Kick the SH-L2 irradiance bake, once (S4) ─────────────────────────────
+  // Triggered from HERE because this component owns both inputs the bake needs:
+  // the shipped texture and `SKY_RADIANCE_SCALE`, the calibration that turns its
+  // texels into absolute radiance. Putting the bake anywhere else would mean
+  // passing the calibration around, i.e. a second place for it to go stale.
+  //
+  // Inside `useFrame` rather than an effect so the render-to-target happens at a
+  // safe point in the frame, and deferred a few frames so the KTX2 upload has
+  // certainly completed — sampling a not-yet-uploaded texture would bake a black
+  // sky, and a silently-black probe is the hardest kind of bug to notice.
+  const renderer = useThree((s2) => s2.gl);
+  const scaledScene = useThree((s2) => s2.scene);
+  const bakeState = useRef({ frames: 0, done: false });
+  useFrame(() => {
+    const st = bakeState.current;
+    if (st.done) return;
+    if (st.frames++ < 4) return;
+    st.done = true;
+    // ⚠ `SKY_RADIANCE_SCALE` ONLY — NOT × SKY_ARTISTIC_GAIN. The gain is applied
+    // once, on `LightProbe.intensity` in `SkyLight.tsx`. Multiplying it in here as
+    // well double-counts it (1024² = 1.05e6×), and it would be invisible: the hull
+    // would just look "too bright" in a scene where nothing else is a reference.
+    // This is the same cancellation trap as the Venus trim in LIGHTING_PLAN — two
+    // places applying one factor is always one place too many.
+    void bakePanoramaSh(renderer as never, tex, SKY_RADIANCE_SCALE).then((ok) => {
+      if (!ok) st.done = false;
+    });
+
+    // ── S4b: capture the sky into the environment cube ─────────────────────
+    // Same one-shot trigger, and from here because `useThree` inside this portal
+    // resolves to the SCALED scene — the one that holds the panorama and the
+    // starfield. The camera renders only SKY_CAPTURE_LAYER, so the planets that
+    // share this scene stay out of the reflections (they move; the sky does not).
+    _captureLayers.set(SKY_CAPTURE_LAYER);
+    captureSkyCube({
+      renderer: renderer as never,
+      scene: scaledScene,
+      layers: _captureLayers,
+      withCaptureResolution: withStarCaptureResolution,
+      readPsfInputs: getStarPsfInputs,
+      readPsfNorm: getStarPsfNorm,
+    });
+  });
+
+  // ⚠ ENABLE, not set: the mesh must stay on layer 0 for the on-screen render and
+  // additionally appear on the capture layer.
+  const meshRef = useRef<THREE.Mesh>(null!);
+  useFrame(() => {
+    if (meshRef.current && !meshRef.current.layers.isEnabled(SKY_CAPTURE_LAYER)) {
+      meshRef.current.layers.enable(SKY_CAPTURE_LAYER);
+    }
+  });
+
   // Render at a large radius within the scaled camera's far plane.
   // depthWrite=false ensures it never occludes other scaled objects.
   return (
     <mesh
+      ref={meshRef}
       geometry={geometry}
       material={material}
       scale={[1_000_000, 1_000_000, 1_000_000]}
