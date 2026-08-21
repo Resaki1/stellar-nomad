@@ -212,8 +212,9 @@ distribution with a galactic-plane bias), emit the same 20-byte records, re-bake
 | **S0** ✅ | Data pipeline | [`scripts/build_star_catalogue.py`](../scripts/build_star_catalogue.py) → `public/data/stars_visual.bin` (8,920 stars, 174 KB) + `stars_nearby.json` (166, 44 KB). Source is **HYG v41**, not VizieR — see §4 and the ⚠ licence note |
 | **S1** ✅ | Renderer | [`StarField.tsx`](../src/components/Stars/StarField.tsx) — renders, 8,920 instances, one draw. **Three gaps below before this is done** |
 | **S2** ✅ | Validate | `__lum.star(name)` compares **FLUX**. Sirius/Vega/Betelgeuse all **0.999×**; found two real bugs on the way |
-| **S3** 🔨 | Diffuse split | adopt a **star-free** dust layer (Deep Star Maps galaxy layer); keep it LDR — the band is only 2.6 stops, see §8.2; re-measure `SKY_TEXTURE_MEAN_LINEAR` |
-| **S4** | SH-L2 bake | closes D29 — the hull lit by the real sky |
+| **S3** ✅ | Diffuse split | adopt a **star-free** dust layer (Deep Star Maps galaxy layer); keep it LDR — the band is only 2.6 stops, see §8.2; re-measure `SKY_TEXTURE_MEAN_LINEAR` |
+| **S4** ✅ | SH-L2 bake | closes D29 — the hull lit by the real sky. Panorama projected off a 64×32 supersampled render, catalogue summed ANALYTICALLY. Gate `__lum.skyProbe()`. See §8.9 |
+| **S4b** ✅ | Specular IBL | sky captured to a 256²/face cube → PMREM → `scene.environmentNode`; the band reflects off the hull. Gate witnesses `uPsfNorm` during capture (the 85.5× trap). See §8.10 |
 | **S5** | Parallax | 3D positions live; apparent directions recomputed on interstellar jump |
 | **S6** | Neighbourhood set | navigation targets, names, the "acquire Proxima on instruments" loop |
 
@@ -932,3 +933,57 @@ disagree; only an absolute check against a known target says which one moved.**
 - **No occlusion.** One global probe for a sky at infinity, so inside Luna's umbra the hull receives the
   whole sky although Luna blocks half of it. The disc-overlap machinery from D27 (`sunOcclusion.ts`) could
   supply a scalar factor per body.
+
+## 8.10 S4b — specular IBL, and the skybox mip artefacts (2026-08-21)
+
+Sky captured into a 256²/face cube, PMREM'd, assigned to `scene.environmentNode` — the split-sum half of the
+engines' scheme (Karis 2013). ✅ Verified in-game: the galactic band reflects off the hull.
+
+**Option A, not B, and why.** `MeshStandardNodeMaterial.setupEnvironment` ends with an unconditional
+`return new EnvironmentNode( envNode )`, and `EnvironmentNode` writes BOTH `context.radiance` and
+`context.iblIrradiance`. A specular-only environment is unreachable without a prototype patch on three or
+re-creating every material as a subclass. So the environment supplies both terms and `SkyLight`'s SH probe is
+held at `intensity = 0` — kept mounted and current because it is the intended REFERENCE for validating the
+capture. ⚠ `scene.environmentIntensity` is **dead** in the WebGPU node path (it exists on `Scene`, nothing
+reads it); only `material.envMapIntensity` reaches the shader, which is why the per-frame pre-exposure rides
+on `scene.environmentNode = pmremTexture(cube).mul(uPreExposure)`.
+
+**⚠ The 85.5× trap.** `StarField` derives sprite size and PSF normalisation from the CANVAS buffer height and
+FOV. A cube face is 90° over 256 px, so capturing without overriding those inputs gives every star
+`(0.0078125/0.000845)² ≈ 85.5×` its correct flux. ⚠ I first quoted 50× from the height ratio alone — the
+projection is linear in **tan**(angle), the same trap as the `pxAngle = fov/height` bug. Hence
+`withStarCaptureResolution(faceSize, body)` takes fov AND height through the one shared derivation.
+
+**🐛 The gate failed a working capture, and blamed the wrong thing.** Its first version compared
+`getStarPsfInputs()`, which reads `_psfDebug` — a field only StarField's `useFrame` writes. The override set
+the uniforms correctly but not that field, so the gate reported the on-screen 75°/1783 px and confidently
+told the user `withStarCaptureResolution` had not run. 🔑 **Witness the UNIFORM the shader samples, not a
+bookkeeping field that travels alongside it.** A diagnostic that reads its own notes is worthless exactly
+when the notes and the state diverge — which is the only time you need it. Now compares `uPsfNorm` against
+`1/(2πσ²·Ω_face)`: reads **3609.13 vs 3609.13 → 1.000×**.
+
+⚠ That was the third time in this work that the INSTRUMENT was wrong rather than the renderer (after §8.8's
+σ unit label and §8.9's antipode sign). Every one was measuring a proxy instead of the thing.
+
+### The skybox seam line and pole smears — solved
+
+🔑 **The diagnostic observation was the user's:** the line read DARK grey on bright sky and LIGHT grey on dark
+sky. Only something pulling toward the GLOBAL MEAN inverts contrast like that — i.e. a 1×1 mip. That skipped
+the entire edge-mismatch-vs-compression hypothesis space.
+
+**MEASURED: the shipped KTX2 has `levelCount: 14`**, a full chain down to 1×1, because `convert-to-ktx2.sh`
+passes `--genmipmap`. `generateMipmaps = false` only stops *three* from generating mips. At the RA 12h seam
+`u` wraps a full turn in one pixel and at the celestial poles every `u` converges, so implicit LOD selection
+reached near level 13 — a **~5,800×** texel-footprint error. (Smear positions confirmed the poles
+independently: the south celestial pole is ~18° from the Magellanic Clouds, both poles 27° off the plane.)
+
+**⚠ A hard `.level(0)` is NOT free** — at 1080p the screen is coarser than the texture (0.056°/px vs
+0.044°/texel) and would alias. ✅ Fix: compute the LOD **analytically per frame**, since a sphere at fixed
+radius has uniform angular scale and one global LOD is genuinely correct:
+`max(0, log2(tanPerPx / (2π/texWidth)))` → **0.890 @1080p, 0.475 @1440p, 0.166 @1783p, 0 @2160p**. Those
+being small is the proof the GPU was ~12 levels off. ✅ User confirms no artefacts on three resolutions.
+
+**⚠⚠ And a real crash `tsc` cannot catch.** `uSkyLod` was first declared AFTER the material `useMemo` that
+closes over it — a temporal dead zone, throwing on first render. TypeScript does not track TDZ across
+closures; the `react-hooks` React Compiler rule caught it. 🔑 **A new `pnpm lint` ERROR is a bug report, not
+a style note.**

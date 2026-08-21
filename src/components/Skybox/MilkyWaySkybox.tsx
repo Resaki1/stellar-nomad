@@ -9,6 +9,7 @@ import {
   float,
   normalize,
   positionLocal,
+  uniform,
   texture as tslTexture,
   vec3,
   vec4,
@@ -116,6 +117,13 @@ export default function MilkyWaySkybox({
 }: Props) {
   const tex = useKTX2(url);
 
+  // ⚠ DECLARED BEFORE the material useMemo, which closes over it. Putting it after
+  // is a temporal dead zone: the memo callback runs during the same render and would
+  // throw "Cannot access 'uSkyLod' before initialization". TypeScript does not track
+  // TDZ across closures, so tsc passed it — the React Compiler lint rule is what
+  // caught it. Same ordering StarField uses for uQuadWorld/uPsfNorm.
+  const uSkyLod = useMemo(() => uniform(0), []);
+
   const [geometry, material] = useMemo(() => {
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.mapping = THREE.EquirectangularReflectionMapping;
@@ -222,10 +230,46 @@ export default function MilkyWaySkybox({
       // probe. A second copy here is precisely the defect D32 was: if the bake and
       // the render disagree about where the galactic centre is, the hull is lit by
       // a sky that is not the sky on screen, and the picture cannot show you that.
-      const rgb = tslTexture(
-        tex,
-        panoramaUvFromGameDir(normalize(positionLocal)),
-      ).rgb;
+      // ── ⚠⚠ EXPLICIT LOD 0 — this is what kills the seam and the pole smear ──
+      // MEASURED: the shipped KTX2 carries **levelCount = 14**, a full mip chain down
+      // to 1×1. `generateMipmaps = false` only stops THREE from generating mips; the
+      // file's own levels are uploaded regardless. At the UV singularities the
+      // derivative explodes — u wraps a full turn in one pixel at the RA 12h seam,
+      // and every u converges at the celestial poles — so implicit LOD selection
+      // picks the coarsest levels, and level 13 IS the texture's global average.
+      //
+      // 🔑 THE OBSERVATION THAT DIAGNOSED IT: the seam line reads DARK grey against
+      // bright sky and LIGHT grey against dark sky. Nothing about a wrap mode or a
+      // mismatched edge inverts contrast like that — only something pulling values
+      // toward the global mean, which is exactly a 1×1 mip.
+      //
+      // Forcing LOD 0 is free here: the panorama is 360/8192 = 0.044°/texel against
+      // roughly 0.034°/screen-pixel at 75° vFOV, so the sky is slightly MAGNIFIED and
+      // level 0 is already the correct level everywhere on screen. Nothing is lost by
+      // taking the choice away from the derivative.
+      //
+      // ⚠ BUT NOT A HARD ZERO — that claim was wrong. At 1080p the screen is COARSER
+      // than the texture (0.056°/px against 0.044°/texel), so a forced level 0 would
+      // alias the dust. So the LOD is computed ANALYTICALLY once per frame instead:
+      // the sky is a sphere at fixed radius, so its angular scale is uniform and ONE
+      // global LOD is genuinely correct. The GPU's per-pixel derivative only differs
+      // from that constant AT the singularities — which is precisely the artefact.
+      // Measured LODs: 0.17 at 1783p, 0.89 at 1080p, 0 (clamped) at 2160p — small
+      // numbers, which is itself the proof that the artefact came from the GPU
+      // selecting drastically coarser levels than the geometry warrants.
+      //
+      // ⚠ The residual pole artefact is geometric, not filtering: at the exact pole
+      // many screen pixels map to the same texel row, so a correct LOD leaves
+      // 1-texel-wide radial streaks of REAL data instead of mip mush. Fixing that
+      // properly needs a progressive polar low-pass in the ASSET (the equirect
+      // over-samples u by 1/cos(dec), so those rows carry no information such a
+      // low-pass would destroy).
+      const rgb = vec3(
+        tslTexture(
+          tex,
+          panoramaUvFromGameDir(normalize(positionLocal)),
+        ).level(uSkyLod),
+      );
       // × uPreExposure like every other radiance source (D25). Doing it in the
       // graph means no per-frame CPU write and nothing to forget.
       return vec4(
@@ -251,7 +295,7 @@ export default function MilkyWaySkybox({
     // recreates the original 189,000×-too-bright error and turns space grey.
 
     return [geo, mat] as [THREE.BufferGeometry, NodeMaterial];
-  }, [tex]);
+  }, [tex, uSkyLod]);
 
 
   // ── Kick the SH-L2 irradiance bake, once (S4) ─────────────────────────────
@@ -264,8 +308,20 @@ export default function MilkyWaySkybox({
   // safe point in the frame, and deferred a few frames so the KTX2 upload has
   // certainly completed — sampling a not-yet-uploaded texture would bake a black
   // sky, and a silently-black probe is the hardest kind of bug to notice.
+  const camera = useThree((s2) => s2.camera as THREE.PerspectiveCamera);
+  const size = useThree((s2) => s2.size);
+  useFrame(() => {
+    const texW = (tex.image as { width?: number } | undefined)?.width ?? 8192;
+    // Same `tanPerPx` shape StarField uses — the projection is linear in tan(angle).
+    const tanPerPx =
+      (2 * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(size.height, 1);
+    const radPerTexel = (2 * Math.PI) / texW;
+    uSkyLod.value = Math.max(0, Math.log2(tanPerPx / radPerTexel));
+  });
+
   const renderer = useThree((s2) => s2.gl);
   const scaledScene = useThree((s2) => s2.scene);
+
   const bakeState = useRef({ frames: 0, done: false });
   useFrame(() => {
     const st = bakeState.current;
