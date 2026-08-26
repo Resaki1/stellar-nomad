@@ -537,10 +537,21 @@ function warnIfInflated(snap: PerfSnapshot): void {
   if (k > 1.15) {
     console.warn(
       `[bench] per-pass GPU sums to ${f2(snap.gpuTotalMs.mean)}ms inside a ` +
-        `${f2(snap.frameMs.p50)}ms frame (${f2(k)}×). Pass spans overlap when the ` +
-        `GPU is saturated, so they are not additive here. Compare passes to EACH ` +
-        `OTHER and across runs — do not read them as a ms budget. The frame and ` +
-        `CPU numbers are unaffected.`,
+        `${f2(snap.frameMs.p50)}ms frame (${f2(k)}×) — NOT additive. Compare passes to ` +
+        `EACH OTHER and across runs;\n        do not read the sum as a ms budget. The ` +
+        `frame and CPU numbers are unaffected.\n` +
+        `        🔑 CAUSE: GPUs PIPELINE ACROSS FRAMES, so pass spans from consecutive ` +
+        `frames overlap and their\n        durations sum past the frame interval. ⚠ This ` +
+        `does NOT require the GPU to be saturated —\n        MEASURED 1.71× at ` +
+        `deep_space while hitting 120 fps with zero dropped frames. An earlier version\n` +
+        `        of this message said "when the GPU is saturated", which is why a 1.5× ` +
+        `inflation at 120 fps\n        looked like a bug; it is not.\n` +
+        `        ⚠ Secondary suspect, worth one look: an UNEXCLUDED CONTAINER context ` +
+        `(one that encloses\n        others) would be summed alongside its own children. ` +
+        `Check env.unlabeledPasses for a new\n        container three has added, and add ` +
+        `it to CONTAINER_NAMES in perfProfiler.ts. ⚠ Do not expect\n        much: three's ` +
+        `"Render Pipeline" container measured ~0 ms of its own, so excluding it moved the\n` +
+        `        post bucket by 0.1 ms. Structurally right, causally irrelevant.`,
     );
   }
 }

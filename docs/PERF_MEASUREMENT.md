@@ -1735,3 +1735,39 @@ at any resolution. But the BSM only contributes below `BSM_MAX_ALT_KM` = 2000 km
 **above 2000 km there is no coupling to break, so a LUT/froxel path is safe there;
 below it the marched path must stay.** The half-res change above is orthogonal — it
 preserves the per-step march and so preserves the shafts at every altitude.
+
+## 2026-08-26 — `5 post` is the standing target, and it is bloom at strength 0.001
+
+**MEASURED with SMAA off:** `5 post` = **11.59 ms at deep_space = 81% of gpuTotal**, 9.83 (54%) at earth_4100,
+7.77 (14%) at earth_8. ⚠ It is **flat across all 14 scenarios** while every other pass scales ~20× with scene
+content — the signature of a fixed, resolution-driven cost. The output transform alone should be <0.5 ms at
+5.4 Mpx, so **bloom is ~11 ms** — for `bloom(exposed, 0.001, 0, 1)`: strength 0.001, radius 0, deliberately
+tuned down by the author because it was too strong.
+
+⚠ three's `BloomNode` **does** downsample correctly (starts at W/2, halves per mip). I hypothesised it did not,
+then read the source: blur pixels are only **3.63 Mpx** against a 5.45 Mpx frame. **The cost is ~49 M DEPENDENT
+texture fetches** across kernel radii `[6,10,14,18,22]` in `Loop()`s whose bound is a NODE (`int(kernelRadius)`)
+and so may not unroll. **Latency-bound, not fill-bound** — the same conclusion the atmosphere march reached, and
+the same reason a resolution cut under-delivers there.
+
+Fix options, cheapest first: feed `bloom()` a half-res input (all its mips shrink 4×); or replace it with a cheap
+custom glow (downsample + 2 blurs, Kawase/dual-filter). ⚠ Both change the LOOK of a tuned value — not a silent
+change.
+
+### SMAA measured +4.19 ms and fixed nothing reported → default OFF
+
+Enabling post-tonemap SMAA moved `5 post` by **+3.51 … +4.80 ms (mean +4.19)** across all 12 scenarios, ~24% of
+the earth_8 budget. Its `render:RTT` blit is the giveaway in `env.unlabeledPasses`. It was added for a real
+effect — MSAA resolves in linear HDR with the tone curve after, so on a high-contrast edge its first coverage
+step measures **73% of the whole output range** — but the aliasing actually reported was atmosphere march
+banding (D14d), fixed by a jitter for ~0 ms.
+
+### ⚠ Reading `gpuTotalMs` vs `frameMs`
+
+`gpuTotalMs` still exceeds `frameMs` (2.13× at deep_space). **GPUs pipeline across frames, so pass spans from
+consecutive frames overlap and sum past the frame interval — this does NOT require saturation** (measured while
+hitting 120 fps with zero dropped frames). Per-pass numbers are SPANS, not an additive budget; compare them to
+each other and across runs. A secondary suspect is an unexcluded CONTAINER context (see `CONTAINER_NAMES` in
+`perfProfiler.ts`) — but three's `Render Pipeline` container measured ~0 ms of its own, so excluding it moved the
+post bucket by 0.1 ms. ⚠ And at 120 fps with 0 dropped frames the frame is **vsync-capped**, so `frameMs` reveals
+no headroom at all there: the only scenarios with a readable budget are those actually missing vsync.

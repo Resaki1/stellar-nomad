@@ -8,6 +8,7 @@ import {
   uniform,
   texture,
   texture3D,
+  screenCoordinate,
   screenUV,
   vec2,
   vec3,
@@ -222,6 +223,43 @@ const MS_STEPS = 20;
 const MAIN_STEPS = 16;
 const SAMPLE_SEGMENT_T = 0.3; // reference midpoint bias for the screen march
 
+// ── D14d: BLUE-NOISE JITTER OF THE MARCH SAMPLE POSITION ────────────────────
+//
+// 🔑🔑 THIS IS THE ACTUAL CAUSE OF THE "ALIASED ATMOSPHERE LIMB", and the warning
+// above called it before it was seen: "Banding on smooth gradients — THE LIMB, the
+// terminator, the twilight sky — is the risk to look for, and it is unmitigated."
+//
+// With MAIN_STEPS fixed and SAMPLE_SEGMENT_T a CONSTANT, every pixel samples the same
+// lattice of positions along its ray. As the path length varies continuously across
+// the limb, which parts of the density profile land on a sample changes DISCRETELY →
+// terracing. ⚠ It is a quantisation of the INTEGRAL, not of coverage or of the pixel
+// grid, which is why 4× MSAA, post-tonemap SMAA and an analytic silhouette band all
+// changed NOTHING, and why AP_RES_SCALE = 1.0 only helped "a bit" (finer terraces,
+// same terraces). The user's own observation localised it exactly: "hard steps INSIDE
+// the atmosphere at the limb… the planet sphere below it does not seem to alias."
+//
+// ⚠⚠ THE STRUCTURE MATTERS MORE THAN THE NOISE, and getting it wrong trades bands for
+// GRAIN. The march used SAMPLE POSITIONS as segment ends (`dt = tNew − t`), so the
+// integrated path was `tMax·(N−1+ξ)/N`. Jittering ξ in that scheme varies the TOTAL
+// PATH LENGTH per pixel by 1/N ≈ 6% ⇒ per-pixel brightness noise. So the segment
+// BOUNDARIES are now fixed (`dt = tMax/N`, constant, total exactly `tMax`) and only
+// the sample POSITION inside each segment moves. That is textbook stratified
+// sampling: zero path-length noise, and the sample lattice decorrelates per pixel.
+//
+// 🔑 Matches the hard-won cloud-marcher result: "the per-sample stratified jitter in
+// the loop is what actually broke the bands", whereas a whole-march start offset
+// "traded bands for flicker, refuted, removed".
+//
+// ⚠ SPATIAL ONLY — deliberately NOT cycled per frame. This pass keeps no temporal
+// history, so per-frame noise would shimmer on a static view. Static blue-ish noise
+// at half res, bilinearly upsampled by the apply pass, reads as very fine grain.
+//
+// ⚠ SIDE EFFECT TO EXPECT: fixing the boundaries also integrates the ~0.7/N ≈ 4.4% of
+// path the old right-endpoint scheme systematically DROPPED, so the atmosphere gets
+// slightly denser/brighter. That is a bug fix, not a tuning change — but it is
+// visible, hence the flag.
+const ATMO_MARCH_JITTER = true;
+
 // ── Aerial-perspective froxel (Phase 4) ──
 // A camera-frustum volume: (x,y) = screen tile, z = depth slice. Stores the
 // atmosphere integrated from the camera to each depth (RGB = in-scatter, A =
@@ -412,6 +450,16 @@ export const SKYVIEW_ENABLED: boolean =
 // and pushing either further trades quality for progressively less. Do not reach for
 // AP_RES_SCALE again as a perf lever without re-reading docs/PERF_MEASUREMENT.md.
 export const AP_RES_SCALE = 0.5;
+
+/**
+ * Half-width of the ground-silhouette antialiasing band, in MARCH pixels (D14b).
+ *
+ * 0.5 = a one-march-pixel ramp, the narrowest a half-res march can represent; the
+ * apply pass's bilinear upsample then spreads it over ~2 screen pixels. Raise it if
+ * the limb still steps, lower it if the limb looks soft. ⚠ Below ~0.5 the ramp is
+ * narrower than the march grid and the stair-stepping returns.
+ */
+const SILHOUETTE_AA_MARCH_PX = 0.5;
 
 // Reconstruct PER-CHANNEL transmittance from the stored mean in the apply pass.
 //
@@ -1299,6 +1347,39 @@ export function setupAtmospherePass(
   const uTanHalfFov = uniform(1);
   const uAspect = uniform(1);
   const uCameraPlanetKm = uniform(new THREE.Vector3()); // camera in planet-centred km
+  // ── D14b: analytic coverage of the GROUND SILHOUETTE ──────────────────────
+  // Half-width of the antialiasing band, in km of IMPACT PARAMETER. Set per frame
+  // on the CPU (everything it needs is already a CPU-side value).
+  //
+  // 🔑🔑 THIS, NOT THE SHELL, IS WHERE THE VISIBLE ALIASING COMES FROM. `tEnd` was
+  // `select(groundHit, tGround, atmo.tFar)` — a HARD BINARY BRANCH at the planet's
+  // ground silhouette. `tGround` there is the grazing distance while `atmo.tFar` is
+  // the far shell exit, so `tEnd`, and with it L and T, jump discontinuously across
+  // the planet's edge.
+  //
+  // ⚠⚠ IT IS AN INTERNAL SHADER BRANCH, SO NEITHER MSAA NOR A SHELL MESH CAN TOUCH
+  // IT. MSAA supersamples geometric COVERAGE; this is a per-pixel `if`. That is why
+  // 4× MSAA visibly fixed airless bodies and did nothing for Jupiter — and it is why
+  // "draw the atmosphere as a shell mesh" fixes occlusion and cost but NOT this.
+  //
+  // ⚠ Compounded by AP_RES_SCALE = 0.5: the branch is evaluated at HALF resolution
+  // and bilinearly upsampled, so the step becomes 2×2-pixel blocks. That matches the
+  // reported symptom exactly ("aliased at mid distances, fine when far or close" —
+  // far = billboard tier, no march; close = the edge leaves the screen).
+  //
+  // THE FIX: the silhouette is an exact analytic circle, so its sub-pixel coverage is
+  // closed-form. A ray's impact parameter is `b⊥ = √(r² − (ro·rd)²)`, the silhouette
+  // sits at `b⊥ = Rg`, and one pixel of angle maps to `db⊥/dθ = √(r² − Rg²)` km (at
+  // the silhouette sin θ = Rg/r ⇒ cos θ = √(1 − Rg²/r²)). So the band half-width is
+  //   `HALF_PX · tanPerMarchPx · √(r² − Rg²)`.
+  // 🔑 Same `tanPerPx` discipline as the sky LOD and the star sprites: a perspective
+  // projection is linear in TAN of the angle, not the angle.
+  //
+  // ⚠ Sized in MARCH pixels, not screen pixels, ON PURPOSE. A ramp narrower than one
+  // march pixel cannot be represented at half res — it would alias again. 0.5 gives a
+  // one-march-pixel ramp, which the apply pass's bilinear upsample then spreads over
+  // ~2 screen pixels.
+  const uSilhouetteHalfWidthKm = uniform(0);
   const uSunDir = uniform(new THREE.Vector3(0, 0, 1)); // normalised, planet frame
   const uActive = uniform(0); // 0 = passthrough, 1 = march
   // AP froxel far plane (km). Static for now; a per-frame uniform so a future
@@ -1864,7 +1945,38 @@ export function setupAtmospherePass(
           .max(0)
           .add(select(atmo.tNear.greaterThan(0), float(SURFACE_OFFSET_KM), float(0)))
           .toVar();
-        const tEnd = select(groundHit, tGround, atmo.tFar);
+        // ── D14b: blend the two branches over one march pixel ────────────────
+        // ⚠ `tGround` is ≤ 0 where there is no hit, so it cannot be mixed directly.
+        // `-(ro·rd)` is the closest-approach distance, which is exactly what
+        // `tGround` converges to AT the silhouette (the discriminant vanishes there),
+        // so it is the continuous continuation of the ground branch outward and the
+        // mix is C0 across the edge.
+        //
+        // ⚠ This interpolates the march ENDPOINT rather than the two results. L is
+        // monotone in `tEnd`, so the blended value is bounded between the branches
+        // and moves smoothly — an approximation, but over a one-pixel band and far
+        // cheaper than marching twice.
+        const roDotRd = dot(ro, rd).toVar();
+        const tGroundCont = select(groundHit, tGround, roDotRd.negate());
+        // ⚠⚠ `bPerp` is the distance from the planet centre to the INFINITE LINE, not
+        // to the forward ray. A camera looking AWAY from the planet has its closest
+        // approach BEHIND it, so `bPerp` can be < Rg with no forward hit at all — and
+        // then `tGroundCont = −(ro·rd)` is NEGATIVE and the blended `tEnd` would run
+        // the march backwards. `ro` points outward from the centre, so `ro·rd ≥ 0` is
+        // exactly "moving away"; force full sky coverage there. Continuous at the
+        // grazing case, where `ro·rd → 0` and both branches meet.
+        const movingAway = roDotRd.greaterThanEqual(0);
+        const bPerp = dot(ro, ro).sub(roDotRd.mul(roDotRd)).max(0).sqrt();
+        const groundCoverage = select(
+          movingAway,
+          float(1),
+          smoothstep(
+            uBottomRadius.sub(uSilhouetteHalfWidthKm),
+            uBottomRadius.add(uSilhouetteHalfWidthKm),
+            bPerp,
+          ),
+        );
+        const tEnd = mix(tGroundCont, atmo.tFar, groundCoverage);
         const tMax = tEnd.sub(tStart);
         // ── Ring occlusion of the atmosphere in-scatter (Phase 5) ──
         // Rings render into the scaled scene transparent + depthWrite:false, so
@@ -1914,15 +2026,39 @@ export function setupAtmospherePass(
           const throughput = vec3(1).toVar();
           const t = float(0).toVar();
 
+          // Per-pixel jitter ξ ∈ [0,1), constant across steps for this pixel so the
+          // whole sample lattice shifts together (decorrelates bands between
+          // neighbours without adding intra-ray noise). Interleaved-gradient noise:
+          // one dot + fract, no texture fetch, and far more even than a plain hash.
+          // Interleaved-gradient noise (Jimenez 2014):
+          //   fract(52.9829189 · fract(0.06711056·x + 0.00583715·y))
+          // One dot and two fracts — no texture fetch, and far more evenly
+          // distributed than a plain hash, which is what matters for band-breaking.
+          // ⚠ `screenCoordinate` here is the AP TARGET's pixel, not the screen's,
+          // which is what we want: the lattice must decorrelate per MARCH pixel.
+          const jitter = ATMO_MARCH_JITTER
+            ? screenCoordinate.x
+                .mul(0.06711056)
+                .add(screenCoordinate.y.mul(0.00583715))
+                .fract()
+                .mul(52.9829189)
+                .fract()
+            : float(SAMPLE_SEGMENT_T);
+
           Loop(MAIN_STEPS, ({ i: s }: { i: Node }) => {
-            const tNew = tMax.mul(float(s).add(SAMPLE_SEGMENT_T).div(MAIN_STEPS));
+            const tNew = tMax.mul(float(s).add(jitter).div(MAIN_STEPS));
             // .toVar() MATERIALISES dt = tNew - t_old HERE, before t is
             // reassigned below. Without it, `dt` is a live node referencing the
             // variable `t`; since `t.assign(tNew)` runs before dt is consumed,
             // dt would evaluate to tNew - tNew = 0 → sampleT=1 → Sint=0 → the
             // entire in-scatter integral collapses to zero (the invisible-
             // atmosphere bug).
-            const dt = tNew.sub(t).toVar();
+            // ⚠ FIXED segment length, so ∑dt = tMax exactly and the jitter cannot
+            // modulate total optical depth (see ATMO_MARCH_JITTER). The legacy path
+            // keeps the old sample-position-as-segment-end scheme bit-exact.
+            const dt = (
+              ATMO_MARCH_JITTER ? tMax.div(float(MAIN_STEPS)) : tNew.sub(t)
+            ).toVar();
             t.assign(tNew);
             const P = ro.add(rd.mul(tStart.add(t)));
             const m = sampleMedium(P);
@@ -2348,6 +2484,26 @@ export function setupAtmospherePass(
       .sub(dominant.centerScaled)
       .multiplyScalar(1 / SCALED_UNITS_PER_KM);
     uCameraPlanetKm.value.copy(_camToPlanet);
+    // ── D14b: ground-silhouette AA band, in km of impact parameter ───────────
+    // ⚠⚠ MUST BE AFTER `_camToPlanet` IS POPULATED. This block first sat ~10 lines
+    // EARLIER, before the copy below it — so frame 1 read a zero vector
+    // (`rCam = 0` ⇒ `tangentKm = 0` ⇒ half-width 0 ⇒ the smoothstep degenerated to a
+    // hard step) and every later frame read a one-frame-stale camera. A uniform whose
+    // value is computed from another uniform's SOURCE has an ordering dependency that
+    // nothing in the type system can see.
+    //
+    // `db⊥ = dθ · √(r² − Rg²)`, and one MARCH pixel of angle is
+    // `2·tan(fov/2) / apHeight` (tan, not angle — the projection is linear in tan).
+    // ⚠ apHeight, not the screen height: the branch is evaluated at AP_RES_SCALE and
+    // a band narrower than one march pixel would alias again.
+    {
+      const rCam = _camToPlanet.length();
+      const rg = uBottomRadius.value;
+      const tangentKm = Math.sqrt(Math.max(rCam * rCam - rg * rg, 0));
+      const tanPerMarchPx = (2 * uTanHalfFov.value) / Math.max(apHeight, 1);
+      uSilhouetteHalfWidthKm.value =
+        SILHOUETTE_AA_MARCH_PX * tanPerMarchPx * tangentKm;
+    }
     uSunDir.value.copy(dominant.sunDir);
 
     // Sky-View crossfade (sky rays): pure LUT at/below FULL_ALT (march skipped),

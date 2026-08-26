@@ -71,6 +71,39 @@ const renderSubMenu = (
     case SubMenu.Graphics:
       return (
         <>
+          {/* D14. Applies to the scaled scene (planets, asteroids, stars), which
+              is where the aliasing was reported; the ship's own pass is not
+              multisampled — see the note in SpaceRenderer. Costs GPU memory and a
+              little fill on that one target, so it is worth exposing. */}
+          <SettingsCheckbox
+            active={settings.antialias ?? true}
+            onChange={() =>
+              setSettings((prev) => ({
+                ...prev,
+                // ⚠ `?? true` — atomWithStorage replaces the defaults with the saved
+                // blob, so a key added after first run is `undefined` and `!undefined`
+                // would flip it to `true` on the FIRST click and `false` on the
+                // second, i.e. the toggle would appear to do nothing the first time.
+                antialias: !(prev.antialias ?? true),
+              }))
+            }
+            label="anti-aliasing (4× MSAA)"
+          />
+          {/* D14c. Fixes a DIFFERENT failure than MSAA: MSAA resolves in linear HDR
+              and the tone curve lands after, so its first coverage step measures 73%
+              of the output range on a planet-vs-space edge. SMAA runs post-tonemap.
+              ⚠ Watch the starfield when toggling — SMAA is much safer than FXAA for
+              isolated bright dots, but not immune. */}
+          <SettingsCheckbox
+            active={settings.antialiasPost ?? false}
+            onChange={() =>
+              setSettings((prev) => ({
+                ...prev,
+                antialiasPost: !(prev.antialiasPost ?? false),
+              }))
+            }
+            label="edge smoothing (SMAA)"
+          />
           <SettingsCheckbox
             active={settings.bloom}
             onChange={() =>
@@ -811,6 +844,12 @@ const SettingsMenu = () => {
       setSettings((prev) => ({
         ...prev,
         bloom: gpu.tier >= 2,
+        // D14: MSAA costs a 4× colour+depth allocation on the scaled-scene target
+        // plus coverage fill, so a low-tier GPU should not pay it by default. Same
+        // tier gate as bloom.
+        antialias: gpu.tier >= 2,
+        // ⚠ Off on every tier — see the measured +4.19 ms note in store.ts.
+        antialiasPost: false,
         initial: false,
       }));
     }

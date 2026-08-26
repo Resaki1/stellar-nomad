@@ -447,6 +447,18 @@ const perPassScratch = new Map<string, number>();
 
 const KNOWN_LABELS: ReadonlySet<string> = new Set<string>(PASS_ORDER);
 
+/**
+ * Render contexts that ENCLOSE other contexts and must therefore be excluded from
+ * the per-pass sum. See the note at the use site — including them double-counted
+ * everything inside `RenderPipeline` and made `gpuTotalMs` exceed `frameMs`.
+ *
+ * These are still reported under `container(excluded):` so a rename in three shows
+ * up as a missing exclusion rather than as silent inflation.
+ */
+const CONTAINER_NAMES: ReadonlySet<string> = new Set<string>([
+  "Render Pipeline",
+]);
+
 class PerfInspector extends RendererInspector {
   constructor() {
     super();
@@ -482,6 +494,32 @@ class PerfInspector extends RendererInspector {
 
     for (const stats of f.renders) {
       const name = stats.name;
+      // ⚠⚠ CONTAINERS MUST NOT BE SUMMED — they ENCLOSE their children, so adding
+      // both double-counts. `RenderPipeline` reports one context wrapping its
+      // `Output Color Transform`, its 12 bloom passes and its `QuadMesh`, and this
+      // loop used to add all of them.
+      //
+      // MEASURED SYMPTOM, and it is the one that should always be checked first:
+      // **`gpuTotalMs` EXCEEDED `frameMs` in every scenario of a 14-point sweep, by
+      // 1.5× to 3.1×.** A serial GPU pipeline cannot do 55 ms of work inside a
+      // 17.7 ms frame at 56.8 fps with zero dropped frames. The inflation landed
+      // almost entirely in `PASS.post`, which reported a flat 8.3–11.7 ms and made
+      // bloom look like 91% of the deep-space frame.
+      //
+      // 🔑 THE INVARIANT THIS RESTORES, and the assert worth keeping: the sum of
+      // per-pass GPU time must be ≤ the wall-clock frame time. If it is not, the
+      // brackets are wrong, not the renderer. (Fourth instrument error in this
+      // area — see the D09c note in LIGHTING_PLAN.)
+      //
+      // ⚠ `InspectorStats` carries only `{name, gpu}` with no parent link, so
+      // containers can only be excluded by NAME. Keep this list in sync with
+      // three's RenderPipeline internals; a container that is missed inflates the
+      // total, and a NON-container listed here silently loses real cost. The
+      // `gpuTotal ≤ frameMs` check is what catches both.
+      if (name && CONTAINER_NAMES.has(name)) {
+        perf.unlabeled.add(`container(excluded):${name}`);
+        continue;
+      }
       if (name && KNOWN_LABELS.has(name)) {
         add(name, stats.gpu);
       } else {

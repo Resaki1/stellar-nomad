@@ -14,6 +14,15 @@ import {
   hash,
 } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
+// ⚠⚠ A NEW node_modules IMPORT NEEDS A DEV-SERVER RESTART, not just a page reload.
+// Turbopack once emitted a reference to this chunk and then served 404 for it, leaving
+// the ESM binding uninitialised — `ReferenceError: smaa is not defined` thrown inside
+// the node-graph memo, which took out the ENTIRE scene (black, HUD only) while tsc and
+// eslint stayed clean. ⚠ It is UNGUARDABLE: `typeof smaa === "function"` also throws,
+// because `typeof` on a declared-but-uninitialised import hits the TDZ (unlike an
+// undeclared identifier). If this ever recurs, check the network tab for a 404 chunk
+// before touching the code, and restart the dev server.
+import { smaa } from "three/addons/tsl/display/SMAANode.js";
 import {
   LOCAL_TO_SCALED_FROM_LOCAL_UNITS,
   SCALED_UNITS_PER_KM,
@@ -333,14 +342,45 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
   // Offscreen render target — both scenes render here with depth-clear
   // compositing, then the pipeline reads from it for bloom + tonemapping.
+  // ── D14: MSAA, ON THIS TARGET ONLY ────────────────────────────────────────
+  // The scene had no anti-aliasing of any kind (`antialias:false`, no TAA), which
+  // the user reported as "planets look really pixelated at the edges until I get
+  // pretty close". This is the fix, and the choice of MSAA over a post-process AA
+  // is driven by what the content actually is.
+  //
+  // 🔑 WHY MSAA AND NOT FXAA/SMAA. A planet limb is a GEOMETRIC edge against black —
+  // exactly what coverage supersampling solves exactly. And MSAA does not touch
+  // shading, which matters here more than usual: the starfield is 1–2 px Gaussian
+  // point sprites whose flux was calibrated to 0.999× (STAR_CATALOGUE_PLAN §8.3),
+  // and FXAA's edge detector treats an isolated bright pixel as an edge and blurs
+  // it. A post-process AA would quietly undo the star photometry.
+  //
+  // ⚠⚠ WHY ONLY `rt` AND NOT `rtB`. Geometry is drawn in TWO places: the scaled
+  // scene into `rt` (planets, asteroids, stars, skybox) and the local scene into
+  // `rtB` (the ship), with the atmosphere and cloud FULLSCREEN passes in between.
+  // Multisampling `rtB` would make those fullscreen writes pay 4× coverage for
+  // nothing — and they are the two most expensive passes in the frame. So the ship
+  // stays aliased for now; it is small, close, and not what was reported. A
+  // dedicated cheap AA for the local pass is the follow-up.
+  //
+  // three's WebGPU backend allocates a separate MSAA texture and resolves into the
+  // primary, so `rt.texture` stays sampleable by the atmosphere pass unchanged.
+  // ⚠⚠ `?? true` IS LOAD-BEARING, NOT DEFENSIVE. `settingsAtom` is an
+  // `atomWithStorage`, which REPLACES the defaults with the persisted blob rather
+  // than merging into them — so every setting added after a player's first run
+  // arrives as `undefined` and its shipped default never applies. MEASURED on this
+  // very change: a saved blob had no `antialias` key, so MSAA read as off and the
+  // `antialias: true` default in store.ts did nothing. `exposureStops ?? 0` a few
+  // lines down exists for the same reason; match it for every new key.
+  const rtSamples = (settings.antialias ?? true) ? 4 : 0;
   const rt = useMemo(() => {
     const dpr = gl.getPixelRatio();
     return new RenderTarget(
       Math.floor(size.width * dpr),
       Math.floor(size.height * dpr),
-      { type: HalfFloatType, depthBuffer: true }
+      { type: HalfFloatType, depthBuffer: true, samples: rtSamples }
     );
-  }, [gl, size.width, size.height]);
+  }, [gl, size.width, size.height, rtSamples]);
 
   useEffect(() => () => { rt.dispose(); }, [rt]);
 
@@ -570,8 +610,64 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // raymarch sky bands at quantization too. TPDF (difference of two per-pixel
     // hashes) is flat, distortion-free dither; scaled to ~OUTPUT_DITHER_LSB.
     const toneMode = settings.toneMapping ? AgXToneMapping : NeutralToneMapping;
-    const mapped = hdr.toneMapping(toneMode);
+    const toneMapped = hdr.toneMapping(toneMode);
+
+    // ── D14c: SMAA, AFTER TONE MAPPING. This is the AA that fixes planet limbs ──
+    //
+    // 🔑🔑 WHY MSAA ALONE CANNOT DO IT, which is quantitative and was the miss in the
+    // D14 reasoning. MSAA resolves by AVERAGING IN LINEAR HDR, and the tone curve is
+    // applied AFTER — and the curve is steepest near black, so equal COVERAGE steps
+    // are wildly unequal PERCEPTUAL steps. MEASURED for a blown-out planet
+    // (display-linear ~3.0) against space, the 4× MSAA output levels come out at
+    // 0.000 / 0.731 / 0.791 / 0.827 / 0.852:
+    //
+    //   ⚠ **the FIRST step is 73% of the entire range.** One covered sample out of
+    //   four already renders near-white, so the edge is effectively BINARY no matter
+    //   how many samples are added — 8× only lowers that first step to 0.670.
+    //
+    // That is why 4× MSAA visibly fixed dim airless bodies (moderate contrast) and did
+    // nothing for Jupiter, and why widening the atmosphere's own AA band 4× changed
+    // nothing: the edge in question is the geometry edge, already MSAA'd, and MSAA's
+    // resolve is in the wrong space. The standard fixes are to resolve MSAA THROUGH a
+    // tone curve (Karis) — not reachable through three's automatic resolve — or to run
+    // AA on the TONEMAPPED image, where a step is what the eye actually sees.
+    //
+    // ⚠ SMAA rather than FXAA specifically because of the STARS. The starfield is 1–2
+    // px Gaussian sprites whose flux is calibrated to 0.999×; FXAA's edge detector
+    // treats an isolated bright pixel as an edge and blurs it. SMAA classifies edge
+    // PATTERNS and needs a continuous edge over several pixels, so an isolated dot is
+    // far less likely to trigger it. ⚠ "Far less likely" is not "never" — check the
+    // starfield when toggling this, that is the risk it carries.
+    //
+    // ⚠ Kept as a SEPARATE setting from MSAA on purpose: the two fix different failure
+    // modes (coverage vs resolve space) and we do not yet know which the player
+    // actually notices. Collapse them into one "Anti-aliasing: off/medium/high" once
+    // that is known.
+    // ⚠ `smaa()` returns an SMAANode, which three types WITHOUT the operator
+    // extensions (`.add` etc.) that every other node in this graph carries — so the
+    // dither below cannot be applied to it as typed. It IS a vec4 node at runtime;
+    // the cast restores the operators and nothing else. (Same shape of gap as
+    // `localExposureNode`'s inferred return type.)
+    // ── D14c: SMAA on the TONE-MAPPED image ──────────────────────────────────
+    // ⚠ This does NOT fix the atmosphere limb — that turned out to be march banding
+    // (D14d). It is here for the case it WAS reasoned for: MSAA resolves by averaging
+    // in linear HDR with the tone curve applied after, and the curve is steepest near
+    // black, so on a high-contrast edge its first coverage step MEASURED 73% of the
+    // whole output range — the edge stays effectively binary however many samples are
+    // added. SMAA runs where a step is what the eye actually sees.
+    //
+    // ⚠ SMAA not FXAA because of the STARS: 1–2 px sprites calibrated to 0.999×, and
+    // FXAA's detector treats an isolated bright pixel as an edge and blurs it. SMAA
+    // needs a continuous edge pattern. Not immune — watch the starfield.
+    // ⚠ MEASURED +4.19 ms mean across all 12 sweep scenarios (+3.51 … +4.80), which
+    // is why this now defaults OFF. See the note in store.ts.
+    const mapped: typeof toneMapped = (settings.antialiasPost ?? false)
+      ? (smaa(toneMapped) as unknown as typeof toneMapped)
+      : toneMapped;
+
     const px = screenCoordinate;
+    // ⚠ Dither stays LAST — after AA, immediately before the 8-bit write. Dithering
+    // before SMAA would let SMAA's edge detector see the noise as structure.
     const dither = hash(px.x.add(px.y.mul(1000)))
       .sub(hash(px.y.add(px.x.mul(1000))))
       .mul(OUTPUT_DITHER_LSB / 255);
@@ -586,7 +682,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     return () => {
       pipeline.needsUpdate = true;
     };
-  }, [settings.bloom, settings.toneMapping, pipeline, rt, rtB, gl]);
+  }, [settings.bloom, settings.toneMapping, settings.antialiasPost, pipeline, rt, rtB, gl]);
 
   // Camera setup
   useEffect(() => {
