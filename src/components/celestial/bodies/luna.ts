@@ -155,7 +155,16 @@ export const lunaConfig: CelestialBodyConfig = {
     computeTangents: true,
   },
   far: { albedo: LUNA_ALBEDO },
-  stellarPoint: { geometricAlbedo: 0.0036, color: [0.85, 0.82, 0.78] },
+  // D20: was **0.0036**, against the Moon's measured geometric albedo of 0.136 —
+  // 38× too dim, and a clear outlier (every other body here is 0.14–0.67). It was a
+  // number tuned by eye to look right against `StellarPoint`'s old arbitrary
+  // Jupiter-relative scale; with Phase 4 putting that tier on absolute illuminance,
+  // a real albedo is both correct and load-bearing.
+  //
+  // 🔑 Worth noting HOW it got there: a wrong constant compensating for a wrong scale
+  // looked fine, so nothing flagged it. That is the cancellation pattern again — and
+  // it is the argument for fixing the scale rather than tuning against it.
+  stellarPoint: { geometricAlbedo: 0.136, color: [0.85, 0.82, 0.78] },
 
   buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, tier }) => {
     const bumpStrength = tier === "near" ? 0.8 : 0.6;

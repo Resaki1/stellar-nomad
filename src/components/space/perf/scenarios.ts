@@ -250,6 +250,24 @@ export function bodyRadiusKm(id: string): number {
  * look-at, same +Z convention. Eyeballing a body at some altitude and then
  * measuring a scenario at that altitude should be comparing like with like.
  */
+/**
+ * A body's centre in scene km, and the star's. Exported for `__lum.lod()`, which must
+ * compute the real PHASE ANGLE: `resolveScenario` places the eye along a fixed
+ * `APPROACH_DIR`, NOT along the sub-solar direction, so a gate that assumed full
+ * illumination (Φ = 1) would be comparing against the wrong reference and would read
+ * as a renderer error.
+ */
+export function bodyPositionKm(id: string): [number, number, number] {
+  const b = body(id);
+  return [b.positionKm[0], b.positionKm[1], b.positionKm[2]];
+}
+
+/** The system's star centre, scene km. Index 0 by convention in sol.json. */
+export function starPositionKm(): [number, number, number] {
+  const s2 = bodies[0];
+  return [s2.positionKm[0], s2.positionKm[1], s2.positionKm[2]];
+}
+
 export function resolveBodyWarp(bodyId: string, altitudeKm: number): DevWarp {
   return resolveScenario({
     id: `dev_${bodyId}_${Math.round(altitudeKm)}`,

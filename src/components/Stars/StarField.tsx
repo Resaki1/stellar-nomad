@@ -217,6 +217,26 @@ export const starCompressionFactor = (magV: number): number =>
  */
 const COMPRESSION_IS_IDENTITY = STAR_MAGNITUDE_COMPRESSION === 1;
 
+/**
+ * `1/(2πσ²·Ω_pixel)` for a given camera and buffer — the flux-conserving conversion
+ * from a point source's ILLUMINANCE to its PSF peak radiance.
+ *
+ * ⚠ Exported so `StellarPoint` uses the SAME derivation rather than a second one.
+ * A sub-pixel planet and a star are the same physical problem, and this form is
+ * validated to 0.999× on three named stars — whereas the stellar point's own
+ * `core + halo` profile lost 47% of its flux to undersampling (its core spans 0.6 px,
+ * so the rasteriser simply cannot sample it; see LIGHTING_PLAN Phase 4).
+ *
+ * 🔑 The projection is linear in **tan**(angle), so this takes the FOV and buffer
+ * height and derives `tanPerPx` itself — the same one quantity the sprite size comes
+ * from, so the two cannot drift.
+ */
+export function psfNormForBuffer(fovRad: number, bufferH: number): number {
+  const tanPerPx = (2 * Math.tan(fovRad / 2)) / Math.max(bufferH, 1);
+  const pxSolidAngle = tanPerPx * tanPerPx;
+  return 1 / (2 * Math.PI * PSF_SIGMA_PX * PSF_SIGMA_PX * pxSolidAngle);
+}
+
 /** PSF width in pixels — exported so `__lum.star()` reports the same σ the shader uses. */
 export const STAR_PSF_SIGMA_PX = PSF_SIGMA_PX;
 

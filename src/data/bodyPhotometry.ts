@@ -33,6 +33,35 @@ export type BodyPhotometry = {
    * or smooth ice (soft Lambertian limb).
    */
   lunarLambertK: number;
+  /**
+   * Set when the body's COLOUR MAP carries only part of its disc albedo, with the
+   * reason. D09's automatic calibration (`albedoCalibration.ts`) is SKIPPED for
+   * these, because scaling a partial layer up to the whole-disc `geometricAlbedo`
+   * double-counts whatever the other layers contribute.
+   *
+   * ⚠⚠ THIS FIELD EXISTS BECAUSE THE INSTRUMENT CAUGHT IT. Earth's day map measured
+   * a sphere-mean of **0.0893**, and calibration wanted to scale it ×4.86 (+2.28
+   * stops) to reach p = 0.434. But 0.0893 is very close to the real CLOUD-FREE Earth
+   * surface albedo (~0.10 — 71% ocean at ~0.06 plus land at ~0.2), so the texture was
+   * already about right and the TARGET was wrong: most of Earth's 0.434 is the
+   * separate cloud layer. 🔑 That the measurement landed on an independently-known
+   * physical value is also the best validation the reduction pass has — it is right,
+   * which is how we know the target was the wrong half.
+   */
+  colourMapPartialReason?: string;
+  /**
+   * Measured reflectance as linear sRGB, when published spectrophotometry is
+   * available. Overrides the B−V derivation in `bodyColour.ts`.
+   *
+   * ⚠⚠ THIS FIELD IS FOR MEASUREMENTS ONLY. `colorIndexBV` gives one degree of
+   * freedom (blue-vs-green) and RGB needs two, so the derivation closes the gap with
+   * a linear-spectral-slope model — which is weakest exactly where methane absorbs in
+   * the red, i.e. the ICE GIANTS. That is the case this override exists for. Putting
+   * an eyeballed triple here re-creates the authored-constant problem D09 was about;
+   * only fill it in with a citable value and put the citation in `note`.
+   * Magnitude is ignored — the value is renormalised to `geometricAlbedo`.
+   */
+  measuredReflectanceRgb?: readonly [number, number, number];
   /** Where the number came from, and anything that disagrees with it in-engine. */
   note?: string;
 };
@@ -55,7 +84,18 @@ export const BODY_PHOTOMETRY: Record<string, BodyPhotometry> = {
     lunarLambertK: 0.0,
     note: "Cloud deck, so Lambertian-ish limb. Its optical depth (τ 9–46, single-scatter albedo →0.994) diverges Hillaire's Ψ=L₂/(1−F_ms) series; regularised by the uFmsMax=0.85 clamp in atmospherePass.ts (LIGHTING_PLAN §2.2.8). VERIFIED: R = 0.832 vs Monte-Carlo ground truth R* = 0.793, 4.9% high. Its correct `ratio vs sub-solar` is 0.767, NOT 1.0 — that reference assumes a Lambert sphere and Venus' real sub-solar/geometric ratio is 1.15.",
   },
-  earth: { geometricAlbedo: 0.434, bondAlbedo: 0.306, colorIndexBV: 0.2, lunarLambertK: 0.1 },
+  earth: {
+    geometricAlbedo: 0.434,
+    bondAlbedo: 0.306,
+    colorIndexBV: 0.2,
+    lunarLambertK: 0.1,
+    colourMapPartialReason:
+      "`day` is a CLOUD-FREE surface map and clouds are a separate layer, so most of " +
+      "the 0.434 disc albedo is not in this texture. Its measured sphere-mean 0.0893 " +
+      "already matches the real cloud-free surface (~0.10). Earth's disc albedo has to " +
+      "be closed by accounting for the cloud layer's contribution (and D23's crushed " +
+      "ocean), not by scaling the surface up 4.86x.",
+  },
   luna: {
     geometricAlbedo: 0.136,
     bondAlbedo: 0.11,

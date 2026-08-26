@@ -62,7 +62,21 @@ import * as THREE from "three";
 import { NodeMaterial, RenderTarget } from "three/webgpu";
 import type { WebGPURenderer } from "three/webgpu";
 import type { Node } from "three/webgpu";
-import { Fn, Loop, float, length, log2, max, texture, uv, vec2, vec4 } from "three/tsl";
+import {
+  Fn,
+  Loop,
+  exp2,
+  float,
+  length,
+  log2,
+  max,
+  min,
+  texture,
+  uniform,
+  uv,
+  vec2,
+  vec4,
+} from "three/tsl";
 import {
   EV_MAX,
   EV_MIN,
@@ -170,6 +184,37 @@ const EDGE_WEIGHT = 0.25; // an eye cannot discount the periphery (see above)
 // attempts were trying to fake. It also responds correctly to the sun for the
 // same reason.
 //
+// ⚠⚠⚠ 2026-08-24 — **THE PARAGRAPH ABOVE IS HALF RIGHT, AND THE OTHER HALF IS D33.**
+// "The void contributes ~0 to a linear sum" is true of the NUMERATOR and false of
+// the DENOMINATOR. `Σ L·w / Σ w` adds nothing to the top for an empty pixel and its
+// full share to the bottom — so this estimator is the mean IRRADIANCE OF THE FIELD,
+// which is proportional to how much of the frame the subject covers:
+//
+//     metered ≈ coverage · L_subject      ⇒     rendered ∝ coverage^(−ADAPTATION_K)
+//
+// MEASURED on Uranus at 100/200/400 kkm (`__lum.meter`): the disc's own radiance is
+// invariant — 57.3 / 57.7 / 55.3 cd/m², exactly as radiance conservation requires —
+// while `metered EV` swings **3.38 stops** and the disc renders at **0.93 / 3.08 /
+// 6.85** display-linear. Predicted +1.70 stops per 4× coverage drop, measured +1.72.
+// At coverage = 1 the same chain puts the disc on **0.160**, i.e. middle grey, so
+// ANCHOR_EV / ADAPTATION_K / EXPOSURE_BIAS_STOPS are all correctly set and the whole
+// error is **+2.5 to +5.4 stops of coverage over-exposure.**
+//
+// 🔑 So the log-average, the percentile band and this flux mean are **ONE defect in
+// three guises**: every global frame statistic is a function of the frame's
+// COMPOSITION as well as its light. Do NOT try to tune out of it.
+//
+// 🔑 The fix follows from this file's own premise — "photons are photons" — applied
+// to the denominator too: **weight by FLUX, not by area.** `Σ L²w / Σ Lw` is the mean
+// luminance of an arriving photon; it returns L_subject independently of coverage,
+// returns L on a uniform field, and needs no threshold or percentile. ⚠ It is a
+// SECOND moment, so it makes D26 worse and the hot-tail cap (derived on the first
+// moment) must be re-derived with it. The alternative, and the modern AAA answer, is
+// local exposure (UE5.1) — coverage-independent by construction because the local
+// neighbourhood of a disc IS the disc, and it also handles Mercury at 105,000 cd/m²
+// and Neptune at 8 cd/m² in one frame, which NO global exposure can. ⚠ That needs an
+// edge-aware pyramid; a Gaussian local mean across a disc/black-sky edge haloes.
+//
 // ⚠ IT IS ONLY AS GOOD AS THE EMISSIVES. A flux mean responds to whatever is
 // actually bright, so an UNCALIBRATED emissive now moves exposure. Measured: at
 // Neptune the ship's exhaust glow (≈1.13 game units ≈ 6,800 cd/m², ~1% of frame)
@@ -177,6 +222,94 @@ const EDGE_WEIGHT = 0.25; // an eye cannot discount the periphery (see above)
 // meter 1.7 stops bright. That is the meter reading a wrong input correctly —
 // see `topFluxShare` in the diagnostics, which exists to catch exactly this.
 const ADAPTATION_K = 0.85;
+
+// ── The estimator (D33) — THREE, and the third is the answer ────────────────
+// All three are computed every frame and all three print in `__lum.exposure()`,
+// because their DIFFERENCES are the diagnostic.
+//
+//  • **"area"** — `Σ L·w / Σ w`, the mean IRRADIANCE of the field. What shipped.
+//    An empty pixel adds nothing to the numerator and its full share to the
+//    denominator ⇒ the reading is proportional to the subject's COVERAGE, which is
+//    D33: rendered ∝ coverage^(−k). MEASURED slope −0.678.
+//  • **"flux"** — `Σ L²w / Σ Lw`, the flux-weighted mean luminance. Coverage-
+//    independent (MEASURED flat to 0.05 stops where the hot cap is idle) but it
+//    discards AREA, so a bright dot claims full authority over adaptation: with the
+//    sun in frame everything else went black. Rejected — see the note below.
+//  • **"pooled"** — the foveally-weighted soft-max over the metering grid's CELLS.
+//    ✅ THE ONE THAT IS RIGHT, and the reason is that it separates two things the
+//    other two conflate.
+//
+// 🔑🔑 THE INSIGHT THAT RESOLVES D33: **POOLING and COVERAGE-INDEPENDENCE ARE TWO
+// DIFFERENT MECHANISMS, and each estimator above tried to get both from one number.**
+//
+//   1. A source SMALLER than the eye's adaptation pooling area (~1° of visual angle)
+//      should count as its FLUX SPREAD OVER THAT AREA, not as its surface luminance.
+//      That is why a bright dot does not blind you — and it is a property of the
+//      SAMPLING, not of the statistic.
+//   2. A source LARGER than the pool should count as its own luminance, whatever
+//      fraction of the frame it fills. That is coverage-independence, and it is a
+//      property of the STATISTIC.
+//
+// 🔑 THE GRID IS ALREADY THE POOL. Each of the 64×64 cells is a tile AVERAGE of the
+// frame — at 1080p tall that is 16.9 px ≈ **0.78° at a 50° FOV**, i.e. the retinal
+// pooling area, by accident of a grid chosen for readback size. So mechanism (1) is
+// already paid for: a sub-cell plume or star already enters as flux/cellArea. All
+// that was ever needed was to stop averaging the pooled cells over the whole frame
+// and instead take the brightest of them.
+//
+// ⚠⚠ AND THE INSTRUMENT HAD ALREADY PROVEN IT. `dist.max` — the brightest cell — read
+// **−3.72 / −3.71 / −3.77** on Uranus across a 4× distance change while `metered`
+// swung **3.38 stops**. The coverage-invariant estimator was sitting in the
+// diagnostics the whole time, printed next to the broken one.
+//
+// ⚠ WHY THIS IS NOT §5.9's FAILED PERCENTILE BAND. That was a percentile of AREA
+// (p90–p98 of pixels), which by construction asks "how much of the frame", so it
+// straddled two populations 23 stops apart. This asks "what is the brightest pooled
+// region", which has no area term at all. Unreal's histogram band is the same family
+// and works there only because a terrestrial scene has no 25-stop void in it.
+//
+// ⚠ A SOFT max, not `max()`: the mean of every cell within POOL_WINDOW_STOPS of the
+// weighted maximum. A hard max would ride one noisy cell frame to frame; averaging
+// the top plateau gives the same answer on a resolved subject (all its cells are
+// within the window) and is stable.
+type Estimator = "area" | "flux" | "pooled";
+// ⚠⚠ 2026-08-24 — BACK TO "area", AND THE REASON MATTERS MORE THAN THE VALUE.
+// "pooled" did what it claimed (slope −0.678 → −0.084) and the game got WORSE, in two
+// ways that are both fatal and both instructive:
+//
+//  1. **IT STEPS.** The 2-stop window is a HARD membership test, so as the camera
+//     moves a cell entering or leaving the pool changes the mean discontinuously. With
+//     a subject spanning a handful of the 4096 cells, one cell is a large fraction of
+//     the pool. A mean over the whole frame is smooth; a windowed max is not. The user
+//     reported exactly this: "adapting less smooth", "harder steps".
+//  2. **THE POOLING SCALE IS WRONG FOR THE GLOBAL TERM.** Luna at 377,000 km subtends
+//     0.53° — smaller than one 0.78° cell — and blacked out the whole frame. Check it
+//     against reality: the full moon is ~3,000 cd/m² at 0.52°, and it does NOT stop you
+//     seeing stars. Your GLOBAL adaptation is set by the whole-field average, in which
+//     the moon contributes 3,000·(0.5/200)² ≈ 0.02 cd/m². **The moon is genuinely
+//     clipped in your visual experience** — a bright white disc whose maria you can
+//     barely make out. So "let a small bright object clip" is CORRECT behaviour, and
+//     the area-weighted mean was producing it for the right reason.
+//
+// 🔑🔑 THE ERROR IN THE D33 ARGUMENT, STATED PLAINLY: the eye has BOTH a global term
+// (pupil + photochemical, driven by the field AVERAGE — that is `area`) and a local
+// term (receptor gain at ~1°). I measured the coverage law correctly and then assigned
+// it to the wrong term. Coverage-independence is a property of the LOCAL term; forcing
+// it into the GLOBAL term is what produced the moon blackout and the sun blackout.
+//
+// ⚠⚠ AND I OVER-FITTED THE LADDER. `__lum.meter` sweeps to 0.166% coverage, where the
+// spread is 5.4 stops — but that is a 91 px dot, the Luna case, where clipping is
+// right. At the coverage the ACTUAL COMPLAINT lived at (a planet filling ~40% of frame)
+// the coverage error is only ~1 stop. **The washed-out planets were mostly the TONE
+// CURVE POSITION, not metering**: at the old +2.5 stops bias a metered scene renders at
+// 0.59 display-linear, deep in AgX's desaturating shoulder, and a planet's disc is a
+// LOW-CONTRAST subject — Saturn's bands are a ~20% reflectance spread, which survives
+// at 0.18 and dies at 0.6. A 5-stop "fix" was applied to a ~1-stop problem.
+const ESTIMATOR: Estimator = "area";
+// Cells within this many stops of the weighted max form the "brightest thing I am
+// looking at". 2 stops passes a real subject's own shading variation and excludes
+// the next population down.
+const POOL_WINDOW_STOPS = 2.0;
 
 // ⚠⚠ EVERY EV IN THIS FILE IS A **GAME-UNIT** EV, i.e. log2(gameUnits × 8) — NOT
 // the cd/m² EV that `evFromGameUnits` and the `__lum` probe tables report. The
@@ -205,10 +338,36 @@ const ANCHOR_EV = 4.665;
 //    scenes is a calibration constant, not a per-scene tweak — which is exactly
 //    what Unreal's global ExposureCompensation is for.
 //
+// ⚠⚠ 2026-08-21: THE WARNING BELOW CAME TRUE, AND THIS VALUE DROPPED BY 0.585.
+// The authored ~1.7 stops existed because the physically-neutral result looked "a
+// bit dark" — and Phase 4 then proved the scene really WAS too dark: every lit
+// surface was missing the geometric→Lambert albedo conversion (`p = (2/3)·A`), i.e.
+// exactly **log2(1.5) = 0.585 stops**. So that much of the authored offset was
+// compensating for a renderer bug, not expressing a preference.
+//
+// 🔑 HOW IT SURFACED: with the Lambert factor restored, planets went washed-out and
+// featureless — and the discriminating observation was that **Uranus did NOT**.
+// Uranus's sub-solar radiance is 81 cd/m² against Saturn's 332 and Jupiter's 1,216,
+// so it lands ~2 stops lower on the curve and escapes the shoulder. A clipping
+// threshold that depends only on absolute radiance is a TONE problem, not a per-body
+// one. At +2.5 stops a correctly-metered planet renders at 0.104 × 2^2.5 = 0.59
+// display-linear, well into AgX's desaturating shoulder; that is the washout.
+//
+// 0.585 removed, leaving 1.915 = 0.79 derived + ~1.125 authored. ⚠ THE REMAINING
+// AUTHORED PART IS STILL A LOOK CHOICE and should be re-judged now that lit bodies
+// are correct — 0.79 alone puts a metered scene exactly on middle grey (0.18), which
+// is where surface detail is most visible. Do not go back up without checking a
+// planet's disc for clipping.
+//
 // ⚠ This is the ONE artistic number in the file; everything else is derived. It
 // must NOT be used to paper over a metering error — a scene that is wrong only in
 // one view is a metering bug, and only a consistent offset belongs here.
-const EXPOSURE_BIAS_STOPS = 2.5;
+//
+// ⚠⚠ AND D33 IS EXACTLY SUCH A METERING BUG — planets read washed out because
+// exposure scales as coverage^(−k), NOT because this number is too high. Lowering it
+// would darken the coverage-100% case (already correct at middle grey) to fix the
+// coverage-1% case. Run `__lum.meter()` before touching this.
+const EXPOSURE_BIAS_STOPS = 1.415;
 
 // ── Time constants, seconds ─────────────────────────────────────────────────
 const TAU_BRIGHTEN = 0.25; // scene got brighter → exposure drops fast (squint)
@@ -217,6 +376,122 @@ const TAU_DARKEN_ROD = 6.0; // scene got darker, scotopic → rods (real: 20–4
 // Mesopic boundary, GAME-UNIT EV: below this, rod adaptation sets the rate.
 // 0.03 cd/m² = 4.97e-6 game units → log2(4.97e-6 × 8) = −14.62.
 const MESOPIC_EV = -14.62;
+
+// ─────────────────────────────────────────────────────────────────────
+// LOCAL EXPOSURE (D33 / D33b) — the actual fix, and NOT a new pipeline
+//
+// ── Why a local term is forced, not chosen ──────────────────────────────────
+// D33 measured `rendered ∝ coverage^(−ADAPTATION_K)`: a global mean is a function
+// of the frame's COMPOSITION as well as its light. Both moments of that mean were
+// measured (`__lum.meter`, 324× of coverage) and both fail, in opposite directions
+// — p = 1 slope −0.678, p = 2 slope −0.302 — and the hot-tail cap that causes
+// p = 2's residual is the same cap that stops a bright dot owning adaptation. It
+// cannot separate those cases because **both are "small and bright", and size is
+// the wrong discriminator.** Only SPATIAL LOCALITY separates them. That is the
+// whole argument for this block, and it is UE5.1's Local Exposure.
+//
+// 🔑 THE PASS WE NEED ALREADY EXISTS. The metering shader above renders a 64×64
+// target whose R channel is tile-averaged log-luma. At 1920 wide that is ~30 screen
+// px per cell — **≈1° of visual angle, which is the actual retinal pooling scale of
+// local adaptation.** So this costs one bilateral blur of 4096 texels and one
+// multiply in the composite, not a new pyramid.
+//
+// ── The strength is DERIVED, not authored ───────────────────────────────────
+// For a subject of coverage f on a void the global meter reads `EV_disc + log2(f)`,
+// so the subject sits `gap = log2(1/f)` stops above the reference, and D33's law
+// says it renders `k · log2(1/f)` stops too bright. Those are the same quantity:
+//
+//        over-exposure = ADAPTATION_K · gap        ⇒  **strength = ADAPTATION_K**
+//
+// ✅ CHECKED against the p = 1 sweep at four coverages (54.4 / 10.7 / 1.51 / 0.168%):
+// k·gap = 0.84 / 2.81 / 5.23 / 6.21 stops against a measured over-exposure of
+// 0.55 / 2.58 / 5.00 / 6.00. That is a **flat −0.24-stop residual with no slope** —
+// i.e. this flattens the coverage law and leaves a constant offset, which is a bias
+// question (EXPOSURE_BIAS_STOPS) and not a coverage one. ⚠ Do not pre-compensate the
+// 0.24 here; a constant belongs in the one place constants belong.
+// So there is no per-system tuning and nothing to re-derive for a procedural system.
+//
+// ── ⚠⚠ HIGHLIGHTS ONLY, AND THAT IS NOT A SIMPLIFICATION ────────────────────
+// A symmetric local gain would BRIGHTEN dark regions toward the reference, and in
+// this game the dark region is deep space sitting ~25 stops down: it would be lifted
+// ~12 stops, blowing the starfield to white and undoing the entire 44-stop
+// calibration locally. UE exposes highlight and shadow contrast separately for
+// exactly this reason. Our defect is one-sided — bright subjects render too bright —
+// so this only ever DARKENS. `LOCAL_SHADOW_STRENGTH` exists, defaults to 0, and
+// should stay there until something measured asks for it.
+// 🔑 The one-sided clamp also makes an unbuilt/black map safe by construction: a
+// local EV of −∞ gives a positive `stops` that `max(…, 0)` on the shadow side
+// ignores, so the gain is exactly 1 before the first blur lands.
+// ─────────────────────────────────────────────────────────────────────
+// ── ⚠⚠ WHY THIS IS OFF BY DEFAULT — MEASURED, 2026-08-24 ────────────────────
+// Built, wired, measured, and turned off. It WORKS as specified — it pulled the
+// coverage slope from −0.678 to **−0.151** — and it is still the wrong tool here.
+//
+// 🔑 THE USER'S OBJECTION WAS THE RIGHT ONE: *"isn't this just compressing the
+// dynamic range?"* Yes. That is definitionally what a per-pixel gain does, and the
+// gate says how much: `local gain` ran **0.572 → 0.0283** across the sweep, i.e. it
+// was applying **4.3 stops of spatially-varying compression.** For scale, UE5's
+// Local Exposure ships around 0.8 highlight contrast ≈ 1.3 stops, and its docs warn
+// about flatness and halos at that. Four stops through a local operator is not a
+// setting anybody ships; it is the 2008 HDR-photo look.
+//
+// And it showed exactly as theory predicts for a 30 px pooling grid asked to carry a
+// 5-stop gradient: **visible cell structure and temporal flicker** (the map is
+// re-derived every frame from a stratified sample with no history, so the bilateral's
+// range weights flip between neighbours frame to frame).
+//
+// ⚠ It also had a real bug: the map was applied VERTICALLY MIRRORED, so the
+// darkening landed on the reflection of the subject. That is fixable. It is not why
+// this is off — the compression is.
+//
+// **The reframe that made it unnecessary:** the per-pixel gain was compensating for a
+// GLOBAL estimator that was wrong. Fix the global estimator (see "pooled" above) and
+// there is no per-pixel correction left to make, no compression, no cells, no halos,
+// no flicker. Kept, gated at strength 0, because it is the honest answer to a
+// DIFFERENT problem we will eventually have — a lit cockpit interior against a
+// sunlit planet, where two surfaces genuinely need different exposure in one frame.
+// ⚠ Fix the flip before ever re-enabling it, and keep the strength near UE's ~1 stop.
+//
+// ── ⚠ KNOWN LIMIT: THE CELL SIZE IS THE HALO WIDTH ─────────────────────────
+// A cell is 30 screen px at 1920 wide, so the gain transitions from "subject" to
+// "void" over ~1 cell at the limb. That is fine for a disc hundreds of px across and
+// MARGINAL for a small one: at the 5%-of-height stop the disc is ~91 px ≈ 3 cells, so
+// a third of it is transition and the limb will darken visibly less than the middle —
+// a bright rim. Below ~3 cells local exposure degenerates and a global scalar is all
+// there is. **If a rim shows, GRID is the knob** (128 → 15 px cells, 4× the metering
+// fetches, and it also changes the global metering statistics — change ONE at a time).
+// ⚠⚠ AND NOTE THE GATE'S BLIND SPOT: `__lum.meter()` reads `probeMax(9)` at the disc
+// CENTRE, the most-darkened point, so it can report a flat slope while the limb
+// glows. Confirm with `__lum.localMap()` and with your eyes, not the slope alone.
+const LOCAL_BLUR_RADIUS = 3; // cells; 7×7 taps over a 64×64 map
+const LOCAL_SPATIAL_SIGMA = 1.5; // cells ≈ 45 px ≈ 1.2° at a 50° FOV
+// ⚠ THE EDGE-AWARE TERM IS THE WHOLE POINT. A plain Gaussian local mean across a
+// planet/black-sky boundary is what produces the classic dark halo, because the
+// cells just outside the limb average in the disc. 2 stops passes real shading
+// variation and rejects a 10-stop subject/void step outright.
+const LOCAL_RANGE_SIGMA_STOPS = 2.0;
+// Backstop only — the derived strength cannot reach this on any physical frame.
+const LOCAL_MAX_DARKEN_STOPS = 8;
+const LOCAL_SHADOW_STRENGTH = 0; // see above; do not raise without a measurement
+
+// ⚠⚠ DEFAULT OFF. See "WHY THIS IS OFF" above the constants.
+let _localEnabled = false;
+let _localStrengthOverride: number | null = null;
+let _blurRt: RenderTarget | null = null;
+let _blurScene: THREE.Scene | null = null;
+// ⚠ ONE stable node, created at module scope and its `.value` swapped in `build()`.
+// `localExposureNode()` is called from SpaceRenderer's node-graph useMemo, which runs
+// BEFORE the first frame builds the render targets — so a node created at call time
+// would capture the placeholder texture and never see the real map. Same pattern the
+// metering pass already uses for its own source proxy.
+const _localMapNode = /*#__PURE__*/ texture(new THREE.Texture());
+const _localMapTex = _localMapNode as unknown as { value: THREE.Texture | null };
+let _blurSrcTex: { value: THREE.Texture | null } = { value: null };
+let _localMapReady = false;
+/** Stops the local map's reference sits at, in the SAME pre-exposed units it stores. */
+const uLocalRefEv = /*#__PURE__*/ uniform(0);
+/** 0 disables local exposure entirely (bit-exact no-op). Derived: ADAPTATION_K. */
+const uLocalStrength = /*#__PURE__*/ uniform(0);
 
 let _rt: RenderTarget | null = null;
 let _scene: THREE.Scene | null = null;
@@ -242,6 +517,11 @@ let _lastDist: { p05: number; p50: number; p90: number; p98: number; max: number
 let _lastTopFluxShare = 0;
 let _lastHotClipStops = 0;
 let _lastHotLiftStops = 0;
+// Both estimators, always, so the D33 divergence is visible without a rebuild.
+let _lastEvArea = ANCHOR_EV;
+let _lastEvFlux = ANCHOR_EV;
+let _lastEvPooled = ANCHOR_EV;
+let _lastPoolCells = 0;
 
 /** Diagnostics for `__lum.exposure()`. */
 export function exposureMeterStatus() {
@@ -254,6 +534,12 @@ export function exposureMeterStatus() {
     topFluxShare: _lastTopFluxShare,
     hotClipStops: _lastHotClipStops,
     hotLiftStops: _lastHotLiftStops,
+    estimator: ESTIMATOR,
+    evAreaWeighted: _lastEvArea,
+    evFluxWeighted: _lastEvFlux,
+    evPooledMax: _lastEvPooled,
+    poolCells: _lastPoolCells,
+    poolWindowStops: POOL_WINDOW_STOPS,
     hotCompressExponent: HOT_COMPRESS_EXPONENT,
     hotWeightFraction: HOT_WEIGHT_FRACTION,
     maxHotFluxShare: MAX_HOT_FLUX_SHARE,
@@ -376,7 +662,179 @@ function build(renderer: WebGPURenderer): void {
   _scene.add(mesh);
   _camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   _sourceTex = srcNode as unknown as { value: THREE.Texture | null };
+
+  // ── The local-adaptation map: a bilateral blur of the metering grid ────────
+  // ⚠ LinearFilter, unlike the metering target's Nearest: this one is sampled at
+  // SCREEN resolution, so each cell is stretched over ~30 px and nearest would make
+  // the local gain visibly blocky.
+  _blurRt = new RenderTarget(GRID, GRID, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    depthBuffer: false,
+    stencilBuffer: false,
+    generateMipmaps: false,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+  });
+  _blurRt.texture.colorSpace = THREE.NoColorSpace;
+
+  const blurMat = new NodeMaterial();
+  blurMat.transparent = false;
+  blurMat.depthTest = false;
+  blurMat.depthWrite = false;
+  blurMat.blending = THREE.NoBlending;
+  const blurSrc = texture(_rt.texture);
+  const TAPS = 2 * LOCAL_BLUR_RADIUS + 1;
+  blurMat.fragmentNode = Fn(() => {
+    const p = uv();
+    // R is already log2(luma·8) — a GEOMETRIC local mean, which is the right domain
+    // for a display gain. (⚠ Not the same call as the ESTIMATOR's: adaptation needs
+    // a linear flux mean, §5.9, but this term is tone mapping and log is standard.)
+    const centre = blurSrc.sample(p).r.toVar();
+    const acc = float(0).toVar();
+    const wsum = float(0).toVar();
+    Loop(TAPS, ({ i }: { i: Node }) => {
+      Loop(TAPS, ({ i: j }: { i: Node }) => {
+        const dx = float(i).sub(float(LOCAL_BLUR_RADIUS));
+        const dy = float(j).sub(float(LOCAL_BLUR_RADIUS));
+        const e = blurSrc.sample(p.add(vec2(dx, dy).mul(float(1 / GRID)))).r;
+        const ws = dx
+          .mul(dx)
+          .add(dy.mul(dy))
+          .div(float(-2 * LOCAL_SPATIAL_SIGMA * LOCAL_SPATIAL_SIGMA))
+          .exp();
+        const d = e.sub(centre);
+        const wr = d
+          .mul(d)
+          .div(float(-2 * LOCAL_RANGE_SIGMA_STOPS * LOCAL_RANGE_SIGMA_STOPS))
+          .exp();
+        const w = ws.mul(wr);
+        acc.addAssign(e.mul(w));
+        wsum.addAssign(w);
+      });
+    });
+    return vec4(acc.div(max(wsum, float(1e-6))), 0, 0, 1);
+  })();
+
+  const blurMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blurMat);
+  blurMesh.frustumCulled = false;
+  _blurScene = new THREE.Scene();
+  _blurScene.add(blurMesh);
+  _blurSrcTex = blurSrc as unknown as { value: THREE.Texture | null };
+  _blurSrcTex.value = _rt.texture;
+  _localMapTex.value = _blurRt.texture;
   _initialised = true;
+}
+
+/**
+ * Per-pixel local-exposure gain, to be multiplied into the composite ALONGSIDE the
+ * global exposure and BEFORE bloom — bloom's threshold is a display-referred
+ * "brighter than white" test, so it has to see the final display-linear value.
+ *
+ * Returns 1.0 exactly while `uLocalStrength` is 0 (map not yet built, or disabled),
+ * so wiring it up is a bit-exact no-op until it has something to say.
+ */
+export function localExposureNode() {
+  // Stops this neighbourhood sits ABOVE the global reference. Positive ⇒ a bright
+  // subject the global meter under-read because it did not fill the frame.
+  const excess = _localMapNode.sample(uv()).r.sub(uLocalRefEv);
+  const darken = min(
+    max(excess, float(0)).mul(uLocalStrength),
+    float(LOCAL_MAX_DARKEN_STOPS),
+  );
+  const brighten = min(
+    max(excess.negate(), float(0)).mul(float(LOCAL_SHADOW_STRENGTH)),
+    float(LOCAL_MAX_DARKEN_STOPS),
+  );
+  return exp2(brighten.sub(darken));
+}
+
+/**
+ * The whole blurred local-adaptation map, as a GRID×GRID array of pre-exposed EVs,
+ * row 0 = BOTTOM of the screen (the GPU readback convention).
+ *
+ * 🔑 WHY THIS EXISTS. `readLocalGain` at frame centre is flip-invariant, so it cannot
+ * catch the one bug that would ruin this feature silently: a vertical flip between
+ * `uv()` in the metering pass and `uv()` in the composite would darken the MIRROR of
+ * wherever the bright subject is. Printing the map is the only check that sees it —
+ * and it also shows at a glance whether the bilateral term is holding an edge or
+ * smearing the subject into the sky. Diagnose with the picture, not with theory.
+ */
+export async function readLocalMapGrid(
+  renderer: WebGPURenderer,
+): Promise<{ grid: number[][]; refEv: number } | null> {
+  if (!_blurRt || !_localMapReady) return null;
+  const buf = await renderer.readRenderTargetPixelsAsync(_blurRt, 0, 0, GRID, GRID);
+  const isHalf = buf instanceof Uint16Array;
+  const a = buf as unknown as ArrayLike<number>;
+  const bpe = isHalf ? 2 : buf instanceof Uint8Array ? 1 : 4;
+  // ⚠ 256-byte row padding, the same trap as everywhere else in this codebase.
+  const stride = Math.ceil((GRID * 4 * bpe) / 256) * (256 / bpe);
+  const grid: number[][] = [];
+  for (let row = 0; row < GRID; row++) {
+    const out: number[] = [];
+    for (let col = 0; col < GRID; col++) {
+      const i = row * stride + col * 4;
+      out.push(isHalf ? halfToFloat(a[i]) : a[i]);
+    }
+    grid.push(out);
+  }
+  return { grid, refEv: uLocalRefEv.value };
+}
+
+/** Runtime A/B for `__lum.localExposure()`. `null` restores the derived default. */
+export function setLocalExposure(enabled: boolean, strength?: number): void {
+  _localEnabled = enabled;
+  _localStrengthOverride = strength ?? null;
+}
+
+export function localExposureStatus() {
+  return {
+    enabled: _localEnabled,
+    strength: uLocalStrength.value,
+    derivedStrength: ADAPTATION_K,
+    overridden: _localStrengthOverride !== null,
+    referenceEv: uLocalRefEv.value,
+    mapReady: _localMapReady,
+    cellPx: GRID,
+    blurRadiusCells: LOCAL_BLUR_RADIUS,
+    rangeSigmaStops: LOCAL_RANGE_SIGMA_STOPS,
+    shadowStrength: LOCAL_SHADOW_STRENGTH,
+  };
+}
+
+
+/**
+ * The local gain the SHADER would apply at a screen UV — read back from the actual
+ * blurred map, not recomputed.
+ *
+ * ⚠ `__lum.meter()` needs this: its `display-lin` column is `radiance × exposure`,
+ * and with local exposure live that is no longer the whole story. A gate that
+ * re-derived the gain from its own copy of the formula would agree with itself
+ * while disagreeing with the frame — the same trap as the star-capture witness.
+ */
+export async function readLocalGain(
+  renderer: WebGPURenderer,
+  u = 0.5,
+  v = 0.5,
+): Promise<number> {
+  if (!_blurRt || !_localMapReady || uLocalStrength.value === 0) return 1;
+  const x = Math.min(GRID - 1, Math.max(0, Math.round(u * GRID - 0.5)));
+  const y = Math.min(GRID - 1, Math.max(0, Math.round(v * GRID - 0.5)));
+  const buf = await renderer.readRenderTargetPixelsAsync(_blurRt, x, y, 1, 1);
+  const isHalf = buf instanceof Uint16Array;
+  const a = buf as unknown as ArrayLike<number>;
+  const localEv = isHalf ? halfToFloat(a[0]) : a[0];
+  const excess = localEv - uLocalRefEv.value;
+  const darken = Math.min(
+    Math.max(excess, 0) * uLocalStrength.value,
+    LOCAL_MAX_DARKEN_STOPS,
+  );
+  const brighten = Math.min(
+    Math.max(-excess, 0) * LOCAL_SHADOW_STRENGTH,
+    LOCAL_MAX_DARKEN_STOPS,
+  );
+  return Math.pow(2, brighten - darken);
 }
 
 // ── binary16 decode (same two traps as `__lum`: raw bits + 256-byte rows) ────
@@ -403,15 +861,42 @@ export function updateExposureMeter(
   source: THREE.Texture,
   dtSec: number,
 ): void {
-  if (isManualExposure()) return; // `__lum` / `__bench` pin exposure
   if (!_initialised) build(renderer);
   if (!_rt || !_scene || !_camera) return;
 
+  // ⚠⚠ THE MAPS RENDER UNCONDITIONALLY, INCLUDING WHILE EXPOSURE IS PINNED. This
+  // used to early-return on `isManualExposure()`, which was right when the only
+  // product was a global scalar: pinning meant nothing needed measuring. It is wrong
+  // now — `__lum`/`__bench` pin the GLOBAL exposure but the LOCAL map still has to
+  // describe the CURRENT frame, and a stale map would silently apply the previous
+  // pose's gain to every pinned measurement. Only the readback and the adaptation
+  // filter are gated below.
   _sourceTex.value = source;
   const prevTarget = renderer.getRenderTarget();
   renderer.setRenderTarget(_rt);
   renderer.render(_scene, _camera);
+  if (_blurRt && _blurScene) {
+    renderer.setRenderTarget(_blurRt);
+    renderer.render(_blurScene, _camera);
+    _localMapReady = true;
+  }
   renderer.setRenderTarget(prevTarget);
+
+  // ── Publish the reference the local map is measured against ────────────────
+  // 🔑 BOTH SIDES MUST BE IN THE SAME PRE-EXPOSED UNITS, and that is why this is set
+  // HERE rather than read from a getter in the shader. The map stores
+  // log2(preExposedLuma·8) as rendered THIS frame; `_lastMeteredEV` is ABSOLUTE
+  // (the readback subtracted its own frame's pre-exposure). Adding back the CURRENT
+  // pre-exposure makes the difference `excess` a pure ratio in which pre-exposure
+  // cancels — the D25 discipline applied to a comparison rather than a value.
+  uLocalRefEv.value =
+    _lastMeteredEV + Math.log2(Math.max(getPreExposure(), 1e-30));
+  uLocalStrength.value =
+    _localEnabled && _localMapReady
+      ? (_localStrengthOverride ?? ADAPTATION_K)
+      : 0;
+
+  if (isManualExposure()) return; // global exposure is pinned by `__lum` / `__bench`
 
   if (!_readPending) {
     _readPending = true;
@@ -536,9 +1021,90 @@ export function updateExposureMeter(
         //    the tail is under the cap; the power law lets it grow slowly past that.
         _lastHotClipStops = num > 0 ? Math.log2(totalFlux / num) : 0;
         _lastHotLiftStops = restFlux > 0 ? Math.log2(num / restFlux) : 0;
+        // ── p = 2: the flux-weighted mean luminance (D33) ─────────────────────
+        // Same hot-tail machinery, re-derived on the second moment. ⚠ THE ONE REAL
+        // DIFFERENCE: the compression factor `g` is applied to the hot tail's
+        // contribution to BOTH sums, not just the numerator. That is what makes the
+        // cap actually bound the hot region's influence on the ANSWER — leaving
+        // `hotN` un-attenuated would let the plume own the denominator and drag the
+        // reading back down to its own luminance, which is the bound failing open.
+        // (The p = 1 path above is left EXACTLY as shipped so the A/B is clean.)
+        let m2 = 0;
+        let n2 = 0;
+        for (const [ev, w] of samples) {
+          const L = Math.pow(2, ev) * 0.125;
+          m2 += L * L * w;
+          n2 += L * w;
+        }
+        let hotM2 = 0;
+        let hotN2 = 0;
+        let hw2 = 0;
+        for (let i = samples.length - 1; i >= 0 && hw2 < hotWeightTarget; i--) {
+          const L = Math.pow(2, samples[i][0]) * 0.125;
+          hw2 += samples[i][1];
+          hotM2 += L * L * samples[i][1];
+          hotN2 += L * samples[i][1];
+        }
+        const restM2 = Math.max(0, m2 - hotM2);
+        const restN2 = Math.max(0, n2 - hotN2);
+        const cap2 = (MAX_HOT_FLUX_SHARE / (1 - MAX_HOT_FLUX_SHARE)) * restM2;
+        // cap2 = 0 means 2% of weight holds ALL the flux — there is nothing to
+        // compress against, so pass it through rather than evaluating 0 · ∞.
+        const used2 =
+          cap2 <= 0 || hotM2 <= cap2
+            ? hotM2
+            : cap2 * Math.pow(hotM2 / cap2, HOT_COMPRESS_EXPONENT);
+        const g2 = hotM2 > 0 ? used2 / hotM2 : 1;
+        const den2 = restN2 + g2 * hotN2;
+
+        // ── "pooled": foveally-weighted soft-max over CELLS ───────────────────
+        // The foveal weight enters as a STOP ATTENUATION of the cell's stimulus
+        // (`ev + log2(w)`), not as an averaging weight: the question is "how bright
+        // is the brightest thing I am looking AT", and w is how much of the retina's
+        // adaptation this cell commands. Edge cells (w = EDGE_WEIGHT) are therefore
+        // discounted log2(0.25) = 2 stops rather than excluded.
+        //
+        // 🔑 NO ORIENTATION QUESTION HERE, and that is deliberate. The weight is READ
+        // from the map's G channel, which the metering shader wrote in the same pass
+        // as R — so the two can never desync. Recomputing the Gaussian from row/col
+        // on the CPU would have made this depend on the readback's row order, which
+        // is exactly the flip bug that broke the per-pixel version.
+        let evTop = -Infinity;
+        for (const [ev, w] of samples) {
+          const e = ev + Math.log2(w);
+          if (e > evTop) evTop = e;
+        }
+        // ⚠ THE WEIGHT SELECTS, IT DOES NOT DISTORT. Cells are RANKED by the
+        // attenuated stimulus `ev + log2(w)` — so a central subject beats a brighter
+        // peripheral one — but the pooled value averages the cells' ACTUAL `ev`.
+        // Averaging the attenuated value instead re-introduces a coverage term with
+        // the sign flipped: a disc spanning centre to edge samples w from 1 down to
+        // EDGE_WEIGHT, so its mean attenuation grows with its size and a big disc
+        // would meter ~0.4 stops low. Selecting on one quantity and reporting another
+        // is the whole trick, and it makes this exactly coverage-independent.
+        let poolAcc = 0;
+        let poolW = 0;
+        let poolCells = 0;
+        for (const [ev, w] of samples) {
+          if (ev + Math.log2(w) >= evTop - POOL_WINDOW_STOPS) {
+            poolAcc += ev * w;
+            poolW += w;
+            poolCells++;
+          }
+        }
+        _lastEvPooled = poolW > 0 ? poolAcc / poolW : evTop;
+        _lastPoolCells = poolCells;
+
+        _lastEvArea = den > 0 ? Math.log2(Math.max(num / den, 1e-14) * 8) : ANCHOR_EV;
+        _lastEvFlux =
+          den2 > 0 ? Math.log2(Math.max((restM2 + used2) / den2, 1e-14) * 8) : ANCHOR_EV;
         if (den > 0) {
-          // Linear mean back to EV, floored so a truly black frame is finite.
-          _lastMeteredEV = Math.log2(Math.max(num / den, 1e-14) * 8);
+          _lastMeteredEV =
+            ESTIMATOR === "pooled"
+              ? _lastEvPooled
+              : ESTIMATOR === "flux"
+                ? _lastEvFlux
+                : _lastEvArea;
           _lastSampleCount = samples.length;
         }
         // Weighted percentiles, for diagnostics only.
@@ -594,6 +1160,11 @@ export function resetExposureAdaptation(): void {
 
 export function disposeExposureMeter(): void {
   _rt?.dispose();
+  _blurRt?.dispose();
+  _blurRt = null;
+  _blurScene = null;
+  _localMapReady = false;
+  uLocalStrength.value = 0;
   _rt = null;
   _scene = null;
   _camera = null;

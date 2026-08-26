@@ -17,6 +17,7 @@
  *   __lum.aim(17.7611, -29.0078)     // aim at a sky coordinate (orientation check)
  *   await __lum.skyAlign()           // GATE: is the Milky Way panorama aligned?
  *   __lum.skyProbe()                 // GATE: is the sky lighting the hull? (D29)
+ *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -42,7 +43,17 @@ import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 import solSystem from "@/sim/systems/sol.json";
 import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
-import { bodyPhotometry } from "@/data/bodyPhotometry";
+import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
+import {
+  albedoCalibrationStatus,
+  getStellarPointAlbedos,
+} from "@/components/celestial/albedoCalibration";
+import { bodyColourStatus } from "@/components/celestial/bodyColour";
+import { setStellarPointsEnabled } from "@/components/space/StellarPoint";
+import {
+  getLodState,
+  getLodThresholds,
+} from "@/components/celestial/lodState";
 import {
   getAtmosphereBody,
   getDominantAtmosphereBody,
@@ -59,6 +70,10 @@ import {
   adaptationTarget,
   exposureMeterStatus,
   resetExposureAdaptation,
+  localExposureStatus,
+  readLocalGain,
+  readLocalMapGrid,
+  setLocalExposure,
 } from "../exposureMeter";
 import {
   NITS_PER_GAME_UNIT,
@@ -75,9 +90,12 @@ import {
   sunIlluminanceAt,
 } from "../photometry";
 import {
+  bodyPositionKm,
+  bodyRadiusKm,
   resolveBodyWarp,
   resolveLookDirectionWarp,
   resolveUmbraWarp,
+  starPositionKm,
 } from "./scenarios";
 import {
   STAR_ARTISTIC_GAIN,
@@ -92,6 +110,9 @@ import {
   SKY_ARTISTIC_GAIN,
   SKY_DIFFUSE_TARGET_NITS,
 } from "@/components/Skybox/MilkyWaySkybox";
+import {
+  bodyIlluminanceAtCamera,
+} from "@/components/space/photometry";
 import {
   SKY_CUBE_SIZE,
   captureTanPerPx,
@@ -636,6 +657,11 @@ export class LumHarness {
     const st = exposureMeterStatus();
     console.table({
       "metered EV (scene)": Number(st.meteredEV.toFixed(2)),
+      estimator: st.estimator,
+      "  area-weighted (D33)": Number(st.evAreaWeighted.toFixed(2)),
+      "  flux-weighted": Number(st.evFluxWeighted.toFixed(2)),
+      "  pooled soft-max": Number(st.evPooledMax.toFixed(2)),
+      "  pool cells": `${st.poolCells} within ${st.poolWindowStops} stops of the max`,
       "target EV (adapted)": Number(st.targetEV.toFixed(2)),
       "actual EV (follower)": Number(st.adaptedEV.toFixed(2)),
       "exposure multiplier": Number(getExposure().toPrecision(4)),
@@ -657,6 +683,9 @@ export class LumHarness {
       "output bias (stops)": st.biasStops,
       "anchor EV": st.anchorEV,
       "PINNED (manual)": st.manual,
+      "local exposure": localExposureStatus().enabled
+        ? `ON, strength ${Number(localExposureStatus().strength.toPrecision(3))}`
+        : "OFF",
     });
     if (st.hotClipStops > 0.05) {
       console.log(
@@ -669,6 +698,14 @@ export class LumHarness {
           `un-calibrated emissive (engine plume, VFX) is on screen. See D26.`,
       );
     }
+    const split = st.evPooledMax - st.evAreaWeighted;
+    console.log(
+      `[lum] pooled − area = ${split.toFixed(2)} stops. **That gap IS the subject's coverage**: ` +
+        `the area-weighted mean is ~coverage × the subject's own luminance, so the bright\n` +
+        `      content occupies roughly ${(100 * Math.pow(2, -split)).toFixed(2)}% of the weighted frame. ` +
+        `A big gap is not an error — it is the\n      D33 coverage term made visible, and "pooled" is ` +
+        `the estimator that does not carry it.`,
+    );
     console.log(
       "[lum] ⚠ EVs here are GAME-UNIT EVs (log2(units×8)), NOT the cd/m² EVs the " +
         "probe tables print — they differ by ~12.6 stops. If `metered` sits far " +
@@ -1545,6 +1582,723 @@ export class LumHarness {
     );
   }
 
+  /**
+   * LOD PHOTOMETRY GATE — do all three impostor tiers agree, and with physics?
+   * (Phase 4, defects D04/D06/D20)
+   *
+   *     await __lum.lod("jupiter")
+   *
+   * ── WHY A SWEEP AND NOT A SPOT CHECK ─────────────────────────────────────
+   * A body is drawn three different ways depending on how many pixels it covers —
+   * textured sphere, billboard, stellar point — and before Phase 4 each used its own
+   * brightness scale. The billboard emitted pure REFLECTANCE (no illuminance at all),
+   * and the point normalised to an arbitrary Jupiter reference times a hand-picked
+   * 12.0. Two wrong scales next to each other produce a step at the handoff, and no
+   * single measurement can see a step.
+   *
+   * So this walks the camera across the handoff (the switch is at a disc diameter of
+   * 8 px) and at each stop compares the body's MEASURED flux against the one analytic
+   * value all three tiers should now be computing:
+   *
+   *     E_cam = p · Φ(α) · E_sun(d_sun) · (R/d_cam)²
+   *
+   * 🔑 FLUX, not peak — the same reason `__lum.star()` uses flux. A body's peak
+   * brightness depends on how many pixels it is spread over, which is precisely what
+   * changes across a LOD switch; its flux does not. Comparing peaks would report a
+   * step that is not there and hide one that is.
+   *
+   * ⚠ Φ(α) is computed from the REAL geometry, because `resolveScenario` places the
+   * eye along a fixed `APPROACH_DIR`, not along the sub-solar direction. Assuming
+   * Φ = 1 would compare against the wrong reference and read as a renderer error.
+   *
+   * ⚠ The reference albedo comes from `bodyPhotometry`, the MEASURED table — not from
+   * the body's own `stellarPoint.geometricAlbedo`. If a body disagrees with itself
+   * that is a finding, and it is how D20 was caught (Luna shipped 0.0036 against a
+   * measured 0.136, a number tuned by eye to look right against the old arbitrary
+   * scale).
+   */
+  async lod(
+    bodyId: string,
+    settleFrames = 180,
+    points = true,
+  ): Promise<void> {
+    // ⚠ Sweep with `points:false` to measure the far billboard ALONE. Below 8 px both
+    // it and the stellar point draw, and a single flux number cannot attribute itself.
+    setStellarPointsEnabled(points);
+    console.log(
+      `[lum] stellar points ${points ? "ENABLED" : "DISABLED"} for this sweep.`,
+    );
+    const ref = bodyPhotometry(bodyId);
+    if (!ref) {
+      console.error(`[lum] no bodyPhotometry entry for "${bodyId}"`);
+      return;
+    }
+    if (!_source) {
+      console.error("[lum] no render source — is the scene rendering?");
+      return;
+    }
+    const R = bodyRadiusKm(bodyId);
+    const bPos = bodyPositionKm(bodyId);
+    const sPos = starPositionKm();
+    const dSunKm = Math.hypot(
+      bPos[0] - sPos[0],
+      bPos[1] - sPos[1],
+      bPos[2] - sPos[2],
+    );
+
+    const { camera, target } = _source;
+    const fovRad =
+      (((camera as unknown as { fov?: number }).fov ?? 50) * Math.PI) / 180;
+    const screenH = target.height;
+
+    // Disc diameters that straddle the 8 px stellar-point handoff.
+    // The body's own LOD thresholds, so stops near a boundary can be skipped.
+    const lodNearKm = getLodThresholds(bodyId)?.near ?? 0;
+    const lodFarKm = getLodThresholds(bodyId)?.far ?? 0;
+    const DIAMS = [24, 12, 9, 8.5, 7.5, 6, 3, 1];
+    const rows: Record<string, Record<string, string | number>> = {};
+    const ratios: Array<{ px: number; ratio: number; tier: string }> = [];
+
+    for (const px of DIAMS) {
+      // px = (2R/d)/fovRad × screenH  ⇒  d = 2R·screenH/(px·fovRad)
+      const dCamKm = (2 * R * screenH) / (px * fovRad);
+      const altKm = dCamKm - R;
+      if (altKm <= 0) continue;
+      // ⚠ Skip stops that sit within 15% of this body's own LOD threshold. Jupiter's
+      // 12 px stop landed 1% past its 16,000,000 km boundary and reported tier "far"
+      // while its pixels still measured like "mid" — the readback and the published
+      // state can straddle the switch. A stop that close to a boundary measures the
+      // switch, not the tier.
+      const near0 = lodNearKm > 0 && Math.abs(dCamKm / lodNearKm - 1) < 0.15;
+      const near1 = lodFarKm > 0 && Math.abs(dCamKm / lodFarKm - 1) < 0.15;
+      if (near0 || near1) {
+        console.log(
+          `[lum]   (skipping ${px} px — ${Math.round(dCamKm)} km is within 15% of a ` +
+            "LOD threshold, so it would measure the switch rather than a tier)",
+        );
+        continue;
+      }
+      this.store.set(devTeleportAtom, resolveBodyWarp(bodyId, altKm));
+      // ⚠ Generous settle: the LOD tier only switches once its textures are LOADED
+      // and its shader COMPILED (`nearReadyState === 2`), so an under-settled stop
+      // measures whichever tier happened to be ready — which is why repeated runs
+      // disagreed. Adaptation does not matter here (decodeRgb divides pre-exposure
+      // out), but tier readiness very much does.
+      await sleepFrames(settleFrames);
+
+      // Real phase angle at the body, between the sun and the camera.
+      const warp = resolveBodyWarp(bodyId, altKm);
+      const toSun = new Vector3(
+        sPos[0] - bPos[0],
+        sPos[1] - bPos[1],
+        sPos[2] - bPos[2],
+      ).normalize();
+      const toCam = new Vector3(
+        warp.positionKm[0] - bPos[0],
+        warp.positionKm[1] - bPos[1],
+        warp.positionKm[2] - bPos[2],
+      ).normalize();
+      const alpha = Math.acos(Math.max(-1, Math.min(1, toSun.dot(toCam))));
+      const phi =
+        (1 / Math.PI) *
+        ((Math.PI - alpha) * Math.cos(alpha) + Math.sin(alpha));
+
+      const expected = bodyIlluminanceAtCamera(
+        ref.geometricAlbedo,
+        phi,
+        R,
+        dSunKm,
+        dCamKm,
+      );
+
+      // Aperture must contain the whole disc plus its halo; the annulus subtracts
+      // sky, which at SKY_ARTISTIC_GAIN ~1e3 is NOT negligible (see §8.8).
+      const ap = Math.max(21, 2 * Math.ceil(1.25 * px) + 1);
+      const f = await this.probeFlux(ap, ap + 16);
+      if (!f) continue;
+
+      // ⚠⚠ × Ω_pixel. `probeFlux` returns Σ RADIANCE; the reference is an
+      // ILLUMINANCE. Flux = Σ L·dΩ, so the pixel solid angle is not optional — the
+      // first version of this gate omitted it and every ratio came out 10³–10⁴ times
+      // too large. 🔑 Ω_pixel is CONSTANT at a fixed resolution, which is why the
+      // STEPS it reported were still valid while its absolute numbers were nonsense:
+      // a dimensional error that cancels in ratios is the easiest kind to ship.
+      // Same family as `pxAngle = fov/height` and the σ-scale mislabel.
+      const tanPerPx = (2 * Math.tan(fovRad / 2)) / screenH;
+      const omegaPixel = tanPerPx * tanPerPx;
+      // ⚠⚠ NO `/ getPreExposure()` HERE — `decodeRgb` ALREADY divides it out, and it
+      // is the single chokepoint for exactly that reason. Dividing again put a factor
+      // of ~1e-3 under EVERY reading, which is why both tiers looked absurdly dim in
+      // absolute terms while their relative step was still correct.
+      //
+      // 🔑 `star()` gets this right and I did not copy its pattern. A shared
+      // chokepoint only helps if callers trust it instead of re-applying the
+      // correction "to be safe" — a defensive extra divide is still a bug.
+      const measured = f.sumLuma * omegaPixel;
+
+      // ⚠ The point does NOT replace the billboard, it CROSSFADES OVER it.
+      // `showFar = !showNear && !showMid` switches on absolute distance
+      // (`config.lod.far`), while the stellar point's own gate is
+      // `pixelDiameter < 8` — independent. So below 8 px BOTH draw, and the point
+      // ramps in with `fade = ((8 − px)/8)²`. The expected total is therefore
+      // `E · (1 + fade)`, not `E`. Modelling it as a switch invented a step that the
+      // renderer never had.
+      // ⚠ WITNESS the tier, do not infer it. `showFar` keys on absolute distance
+      // (`config.lod.far`) and only engages once a tier's textures are loaded and its
+      // shader compiled, so the same pixel size is a different tier on different
+      // bodies AND depends on streaming state. Inferring it from `px` is what made the
+      // first reading blame the wrong boundary.
+      const lodState = getLodState(bodyId);
+      const pointVisible = px < 8;
+      const t = pointVisible ? (8 - px) / 8 : 0;
+      const fadeExpected = t * t;
+      // ⚠ EXPECTED IS `E`, NOT `E·(1+fade)`. The crossfade is COMPLEMENTARY now — the
+      // billboard is multiplied by `1 − fade` while the point carries `fade` — so the
+      // two sum to E, they do not stack. The `(1+fade)` model was correct only for the
+      // old behaviour where the point drew on top at full strength.
+      //
+      // 🔑 The gate's reference has to track the renderer's INTENT, not its history. A
+      // stale expectation reports a correct renderer as broken, which is how the 1 px
+      // stop looked like a 4-stop failure.
+      const expectedTotal = expected;
+      const ratio = measured / Math.max(expectedTotal, 1e-30);
+      const tierName = lodState?.tier ?? "?";
+      const tier = pointVisible ? `${tierName} + point` : tierName;
+      ratios.push({ px, ratio, tier });
+      rows[`${px} px disc`] = {
+        tier,
+        "d_cam (AU)": Number((dCamKm / 1.495979e8).toPrecision(4)),
+        "phase α (°)": Number(((alpha * 180) / Math.PI).toFixed(1)),
+        "Φ(α)": Number(phi.toPrecision(3)),
+        "point fade": Number(fadeExpected.toPrecision(3)),
+        "expected E (game)": expectedTotal.toExponential(3),
+        "measured flux (game)": measured.toExponential(3),
+        "measured/expected": Number(ratio.toPrecision(4)),
+        "aperture px": ap,
+        "d_cam (km)": Math.round(dCamKm),
+        "preExposure": Number(getPreExposure().toPrecision(4)),
+        // ⚠ THE MEASUREMENT THAT SPLITS "too dim" FROM "too small". The far billboard
+        // quad is `PlaneGeometry(scaledRadius × 2.1)` and its fragment draws the disc
+        // out to the quad edge, so the RENDERED disc should be 1.05× the body's true
+        // disc — i.e. `1.05 × px`. A 7.5× flux deficit is either a radiance error at
+        // the right size, or a 2.74× LINEAR size error at the right radiance, and
+        // `sumLuma` cannot tell them apart.
+        "lit Ø (px)": Number(f.litDiameterPx.toPrecision(3)),
+        "expected Ø (px)": Number((1.05 * px).toPrecision(3)),
+        "Ø measured/expected": Number(
+          (f.litDiameterPx / Math.max(1.05 * px, 1e-9)).toPrecision(3),
+        ),
+        "peak radiance (game)": Number(f.peakLuma.toPrecision(3)),
+      };
+    }
+    console.table(rows);
+
+    if (ratios.length < 2) {
+      console.error("[lum] not enough stops measured — is the body in frame?");
+      return;
+    }
+    // ── The verdict: is the ratio FLAT across every stop? ───────────────────
+    // 🔑 Flatness is the whole test, and it is stronger than checking one step. If
+    // all three tiers evaluate the same formula, `measured/expected` is one constant
+    // — whatever that constant is — because the form-factor and texture-albedo
+    // differences are properties of a tier, not of distance. Any distance at which
+    // the ratio jumps is a place two tiers disagree about scale.
+    //
+    // Every consecutive pair is reported, so the largest jump names its own location
+    // rather than being averaged into an rms that hides it.
+    let worstJump = { from: 0, to: 0, stops: 0 };
+    for (let i = 1; i < ratios.length; i++) {
+      const a = ratios[i - 1];
+      const b = ratios[i];
+      const stops = Math.log2(
+        Math.max(b.ratio, 1e-30) / Math.max(a.ratio, 1e-30),
+      );
+      console.log(
+        `[lum]   ${a.px} px → ${b.px} px:  ${a.ratio.toPrecision(4)} → ` +
+          `${b.ratio.toPrecision(4)}  (${stops >= 0 ? "+" : ""}${stops.toFixed(2)} stops)` +
+          (Math.abs(stops) > 0.5 ? "   ⚠" : ""),
+      );
+      if (Math.abs(stops) > Math.abs(worstJump.stops)) {
+        worstJump = { from: a.px, to: b.px, stops };
+      }
+    }
+    console.log(
+      `[lum] largest jump: ${worstJump.from} px → ${worstJump.to} px = ` +
+        `${worstJump.stops.toFixed(2)} stops`,
+    );
+    if (Math.abs(worstJump.stops) < 0.5) {
+      console.log(
+        "[lum] ✅ SCALE IS CONTINUOUS across every LOD transition (all jumps < 0.5 stops).",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ the tiers DISAGREE by ${Math.abs(worstJump.stops).toFixed(2)} stops ` +
+          `between ${worstJump.from} px and ${worstJump.to} px.\n` +
+          "      ⚠ Note WHERE: a jump around the sphere→billboard boundary is a\n" +
+          "      FORM-FACTOR/texture-albedo mismatch (the billboard is a hemisphere\n" +
+          "      approximation, the sphere carries a real texture — D09). A jump at\n" +
+          "      8 px is the stellar point's scale. They need different fixes.",
+      );
+    }
+    const worst = ratios.reduce(
+      (a, r) => Math.max(a, Math.abs(Math.log2(Math.max(r.ratio, 1e-30)))),
+      0,
+    );
+    console.log(
+      `[lum] worst |log2(measured/expected)| across all stops: ${worst.toFixed(2)} stops`,
+    );
+    setStellarPointsEnabled(true);
+    console.log(
+      "[lum] ⚠ absolute ratios are NOT expected to be exactly 1: the billboard is a\n" +
+        "      hemisphere approximation and the sphere carries a real texture whose\n" +
+        "      mean albedo differs from bodyPhotometry's disc-averaged value (D09).\n" +
+        "      What must hold is that the ratio is STABLE across the handoff — a step\n" +
+        "      is a scale mismatch, a constant offset is albedo/texture calibration.",
+    );
+  }
+
+  /**
+   * ⚖ COVERAGE INVARIANCE — does a body's rendered brightness depend on how much
+   * of the SCREEN it fills? Physically it must not.
+   *
+   * 🔑 THE INVARIANT BEING TESTED. Radiance is conserved along a ray, so a planet's
+   * surface radiance is **the same at every distance** — only its solid angle
+   * shrinks. A photometrically correct pipeline therefore renders the disc at a
+   * CONSTANT display-linear value while it changes size. Anything else means
+   * exposure is reading the composition of the frame rather than the light in it.
+   *
+   * ⚠ THIS IS THE ONE GATE THAT MUST RUN WITH AUTO EXPOSURE LIVE. Every other
+   * instrument here pins exposure and divides pre-exposure out, precisely so the
+   * meter cannot contaminate a radiance measurement. Here the meter IS the
+   * subject, so `manual` is forced off for the sweep and restored after.
+   *
+   * What the two columns separate:
+   *  • `disc cd/m²` comes from the PRE-exposure buffer ⇒ pure renderer. Constant.
+   *  • `display-lin` is that × `getExposure()` ⇒ renderer × meter. The defect.
+   *
+   * The fitted slope is the headline number. A flux-mean estimator over the frame
+   * returns `metered ≈ coverage · L_disc`, so partial adaptation leaves rendered
+   * brightness ∝ `coverage^(−ADAPTATION_K)` — the slope IS the leak, and it should
+   * read ≈ 0, not ≈ −k.
+   */
+  async meter(bodyId = "uranus", settleFrames = 60): Promise<void> {
+    if (!_source) {
+      console.error("[lum] no render source — is the scene rendering?");
+      return;
+    }
+    const R = bodyRadiusKm(bodyId);
+    if (!R) {
+      console.error(`[lum] unknown body "${bodyId}"`);
+      return;
+    }
+    const { camera, target } = _source;
+    const fovRad =
+      (((camera as unknown as { fov?: number }).fov ?? 50) * Math.PI) / 180;
+    const screenH = target.height;
+    const frameArea = target.width * target.height;
+
+    const wasManual = exposureMeterStatus().manual;
+    setManualExposure(false);
+    const lx = localExposureStatus();
+    console.log(
+      `[lum] ⚖ coverage-invariance sweep on ${bodyId} — auto exposure LIVE ` +
+        `(restored to ${wasManual ? "manual" : "auto"} afterwards)\n` +
+        `      local exposure ${lx.enabled ? "ON" : "OFF"}, strength ` +
+        `${lx.enabled ? (lx.overridden ? `${lx.strength} (OVERRIDDEN)` : `${lx.derivedStrength} (derived = ADAPTATION_K)`) : "—"}`,
+    );
+
+    // Disc diameter as a fraction of frame HEIGHT. Deliberately all within the
+    // textured near/mid tiers: below the far threshold the billboard concentrates
+    // the disc's flux into a handful of pixels, so `probeMax` would no longer be
+    // measuring a surface radiance and the invariant would not apply.
+    const FRACS = [0.9, 0.6, 0.4, 0.25, 0.15, 0.09, 0.05];
+    const lodFarKm = getLodThresholds(bodyId)?.far ?? 0;
+    const rows: Record<string, Record<string, string | number>> = {};
+    const pts: Array<{ cov: number; disp: number; disc: number }> = [];
+
+    for (const frac of FRACS) {
+      const px = frac * screenH;
+      // px = (2R/d)/fovRad × screenH  ⇒  d = 2R·screenH/(px·fovRad)
+      const dCamKm = (2 * R * screenH) / (px * fovRad);
+      const altKm = dCamKm - R;
+      if (altKm <= 0) continue;
+      if (lodFarKm > 0 && dCamKm > lodFarKm) {
+        console.log(
+          `[lum]   (skipping ${(frac * 100).toFixed(0)}% — ${Math.round(dCamKm)} km is ` +
+            "past the far-billboard threshold, where surface radiance is not what draws)",
+        );
+        continue;
+      }
+      this.store.set(devTeleportAtom, resolveBodyWarp(bodyId, altKm));
+      // Settle the SCENE (tier readiness, streaming), then snap adaptation rather
+      // than waiting out TAU_DARKEN_ROD = 6 s per stop, then settle a few more
+      // frames so `getExposure()` reflects the snap.
+      await sleepFrames(settleFrames);
+      // ⚠⚠ ONE SNAP IS NOT ENOUGH, AND THIS SHIPPED WRONG. `resetExposureAdaptation()`
+      // snaps the follower to `adaptationTarget(_lastMeteredEV)` — but the metering
+      // readback is ASYNC with only one request in flight, so on WebGPU it can lag
+      // well past 8 frames. The first version snapped to a STALE metered value and
+      // then read the status a few frames later, by which time `meteredEV` had caught
+      // up and `adaptedEV` had not. MEASURED consequence: it reported exposure ×254.8
+      // where the converged value is ×32 — **a 3-stop error, and every `display-lin`
+      // in that run was a transient.** 🔑 A gate that snaps a lagging filter must wait
+      // for the INPUT to settle before snapping, and then confirm the two agree.
+      let prevEv = Number.NaN;
+      let settled = false;
+      for (let i = 0; i < 24; i++) {
+        await sleepFrames(10);
+        const ev = exposureMeterStatus().meteredEV;
+        if (Math.abs(ev - prevEv) < 0.02) {
+          settled = true;
+          break;
+        }
+        prevEv = ev;
+      }
+      resetExposureAdaptation();
+      await sleepFrames(6);
+      const conv = exposureMeterStatus();
+      const drift = Math.abs(conv.adaptedEV - conv.targetEV);
+      if (!settled || drift > 0.05) {
+        console.warn(
+          `[lum]   ⚠ ${(frac * 100).toFixed(0)}%: adaptation did NOT converge ` +
+            `(metered ${settled ? "settled" : "STILL MOVING"}, follower ${drift.toFixed(2)} ` +
+            "stops off target). This row is a transient — do not read it.",
+        );
+      }
+
+      const m = await this.probeMax(9);
+      if (!m) continue;
+      const st = exposureMeterStatus();
+      const exposure = getExposure();
+      // ⚠ WITH LOCAL EXPOSURE LIVE, `radiance × exposure` IS NO LONGER WHAT SHIPS.
+      // The composite multiplies a per-pixel local gain too, so a gate that stopped
+      // at the global exposure would report the defect as unfixed. Read the gain
+      // from the ACTUAL blurred map at the probe's own position rather than
+      // recomputing the shader's formula here — a diagnostic that re-derives what it
+      // should observe agrees with itself while disagreeing with the frame.
+      const localGain = await readLocalGain(_source.renderer, 0.5, 0.5);
+      // Analytic disc coverage — the projected area of a circle of `px` diameter
+      // over the frame. Not thresholded: an atmosphere halo must not inflate it.
+      const coverage = (Math.PI * (px / 2) * (px / 2)) / frameArea;
+      const displayLinear = m.luma * exposure * localGain;
+      const tier = getLodState(bodyId)?.tier ?? "?";
+      pts.push({ cov: coverage, disp: displayLinear, disc: m.luma });
+      rows[`${(frac * 100).toFixed(0)}% of height`] = {
+        tier,
+        "Ø px": Math.round(px),
+        "coverage %": Number((coverage * 100).toPrecision(3)),
+        "disc cd/m²": Number(m.nits.toPrecision(4)),
+        "metered EV": Number(st.meteredEV.toFixed(2)),
+        "exposure ×": Number(exposure.toPrecision(4)),
+        "local gain": Number(localGain.toPrecision(3)),
+        "display-lin": Number(displayLinear.toPrecision(3)),
+        "hot share": `${(st.topFluxShare * 100).toFixed(0)}%`,
+      };
+    }
+    console.table(rows);
+    setManualExposure(wasManual);
+
+    if (pts.length < 3) {
+      console.error("[lum] too few usable stops to fit a slope");
+      return;
+    }
+
+    const spread = (get: (p: (typeof pts)[number]) => number): number => {
+      const v = pts.map(get).filter((x) => x > 0);
+      return Math.log2(Math.max(...v) / Math.min(...v));
+    };
+    const discSpread = spread((p) => p.disc);
+    const dispSpread = spread((p) => p.disp);
+
+    // Least squares on log2(display-linear) vs log2(coverage).
+    const xs = pts.map((p) => Math.log2(p.cov));
+    const ys = pts.map((p) => Math.log2(p.disp));
+    const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+    let sxy = 0;
+    let sxx = 0;
+    for (let i = 0; i < xs.length; i++) {
+      sxy += (xs[i] - mx) * (ys[i] - my);
+      sxx += (xs[i] - mx) ** 2;
+    }
+    const slope = sxx > 0 ? sxy / sxx : 0;
+
+    console.log(
+      `[lum] disc radiance spread (RENDERER):  ${discSpread.toFixed(2)} stops\n` +
+        `[lum] display-linear spread (× METER): ${dispSpread.toFixed(2)} stops\n` +
+        `[lum] fitted slope d log2(display) / d log2(coverage) = ${slope.toFixed(3)}\n` +
+        `      physically correct = 0.000; a frame-average flux mean predicts ` +
+        `−k = ${(-exposureMeterStatus().adaptationK).toFixed(3)}`,
+    );
+    if (discSpread > 0.35) {
+      console.error(
+        `[lum] ❌ the RENDERER is not radiance-invariant (${discSpread.toFixed(2)} stops). ` +
+          "Fix that before reading the meter columns — a tier change or a phase-angle\n" +
+          "      drift in the warp axis would show up here and invalidate the slope.",
+      );
+    } else {
+      console.log(
+        `[lum] ✅ renderer is radiance-invariant (${discSpread.toFixed(2)} stops) — ` +
+          "the disc's own brightness does not depend on distance, as physics requires.",
+      );
+    }
+    if (Math.abs(slope) < 0.15 && dispSpread < 0.5) {
+      console.log(
+        `[lum] ✅ COVERAGE INVARIANCE HOLDS — slope ${slope.toFixed(3)}, spread ` +
+          `${dispSpread.toFixed(2)} stops. A body's rendered brightness is a function of\n` +
+          "      its light, not of how much of the screen it happens to fill.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ COVERAGE-DRIVEN EXPOSURE — the same disc renders ${dispSpread.toFixed(2)} ` +
+          `stops brighter when it is small (slope ${slope.toFixed(3)}).\n` +
+          "      ⚠ This is NOT fixable by tuning EXPOSURE_BIAS_STOPS or ADAPTATION_K: a\n" +
+          "      frame-average estimator is proportional to coverage BY DEFINITION, so any\n" +
+          "      global mean carries this slope. It needs a coverage-independent estimator\n" +
+          "      or local exposure. See LIGHTING_PLAN D33.",
+      );
+    }
+  }
+
+  /**
+   * A/B local exposure (D33) without a reload.
+   *
+   *   __lum.localExposure()          → report
+   *   __lum.localExposure(false)     → OFF (bit-exact: gain becomes 1.0)
+   *   __lum.localExposure(true)      → ON at the DERIVED strength (= ADAPTATION_K)
+   *   __lum.localExposure(true, 0.5) → ON at a forced strength
+   *
+   * ⚠ The strength is derived, not authored: `over-exposure = ADAPTATION_K · gap`,
+   * so overriding it is a diagnostic, not a tuning knob. If a forced value looks
+   * better than the derived one, something else is wrong — check `__lum.meter()`
+   * before keeping it.
+   */
+  localExposure(enabled?: boolean, strength?: number): void {
+    if (enabled !== undefined) setLocalExposure(enabled, strength);
+    const lx = localExposureStatus();
+    console.table({
+      enabled: lx.enabled,
+      "strength (live)": Number(lx.strength.toPrecision(3)),
+      "strength (derived)": lx.derivedStrength,
+      overridden: lx.overridden,
+      "shadow strength": lx.shadowStrength,
+      "map ready": lx.mapReady,
+      "map grid": `${lx.cellPx}×${lx.cellPx}`,
+      "bilateral radius": `${lx.blurRadiusCells} cells`,
+      "range sigma": `${lx.rangeSigmaStops} stops`,
+      "reference EV (pre-exposed)": Number(lx.referenceEv.toFixed(2)),
+    });
+    if (lx.shadowStrength === 0) {
+      console.log(
+        "[lum] highlights only, ON PURPOSE. A symmetric local gain would lift deep " +
+          "space (~25 stops down) by ~12 stops and blow the starfield out. See the\n" +
+          "      HIGHLIGHTS ONLY note in exposureMeter.ts.",
+      );
+    }
+    console.log("[lum] gate: await __lum.meter(\"uranus\") — slope should read ~0.");
+  }
+
+  /**
+   * PRINT the local-adaptation map, as the gain it will actually apply.
+   *
+   * Orientation is the point: the picture is drawn TOP row = top of the screen, so
+   * the dark patch must sit where the bright subject is. If it is mirrored
+   * vertically, `uv()` disagrees between the metering pass and the composite — the
+   * one failure mode that `__lum.meter()` cannot see, because a centre probe is
+   * flip-invariant.
+   *
+   * Also read the EDGE of the patch: a crisp boundary means the bilateral term is
+   * holding the subject/void step, a soft gradient means it is smearing and a halo
+   * will be visible at the limb.
+   */
+  async localMap(): Promise<void> {
+    if (!_source) {
+      console.error("[lum] no render source — is the scene rendering?");
+      return;
+    }
+    const r = await readLocalMapGrid(_source.renderer);
+    if (!r) {
+      console.error(
+        "[lum] local map not built yet — is local exposure enabled? __lum.localExposure(true)",
+      );
+      return;
+    }
+    const lx = localExposureStatus();
+    // Darkening in stops, per cell. Ramp is coarse ON PURPOSE: this is a picture of
+    // WHERE, not a measurement of how much (that is the `local gain` column).
+    const RAMP = " .:-=+*#%@";
+    const lines: string[] = [];
+    let maxStops = 0;
+    // row 0 is the BOTTOM of the screen in the readback, so walk it in reverse.
+    for (let row = r.grid.length - 1; row >= 0; row -= 2) {
+      let line = "";
+      for (let col = 0; col < r.grid[row].length; col++) {
+        const excess = r.grid[row][col] - r.refEv;
+        const stops = Math.min(Math.max(excess, 0) * lx.strength, 8);
+        maxStops = Math.max(maxStops, stops);
+        line += RAMP[Math.min(RAMP.length - 1, Math.round((stops / 8) * (RAMP.length - 1)))];
+      }
+      lines.push(line);
+    }
+    console.log(
+      `[lum] local-adaptation map — '@' = 8 stops of darkening, ' ' = none.\n` +
+        `      TOP row = TOP of screen. Peak ${maxStops.toFixed(2)} stops. ` +
+        `Reference EV ${r.refEv.toFixed(2)} (pre-exposed), strength ${lx.strength.toPrecision(3)}.\n` +
+        lines.join("\n"),
+    );
+    if (maxStops < 0.05) {
+      console.log(
+        "[lum] the map is flat — either nothing in frame is above the global " +
+          "reference (an even scene, which is correct), or local exposure is off.",
+      );
+    }
+  }
+
+  /**
+   * D09 — what each body's colour map actually measures, and the scale applied.
+   *
+   * Read this FIRST when a body looks individually wrong. `state: "clamped"` or
+   * `"failed"` means no correction is being applied at all, which is the case that
+   * looks like "the fix didn't work".
+   *
+   * ⚠ `scale` is derived from the texture that LOADED, so it is only populated for
+   * bodies you have been near enough to stream. An empty table means nothing has
+   * been visited this session, not that calibration is broken.
+   *
+   * Also asserts the three places a body's albedo is written down still agree —
+   * `bodyPhotometry` (the reference), `stellarPoint.geometricAlbedo` (per body
+   * module) and the far billboard's authored colour. The far tier is normalised
+   * from `bodyPhotometry` at consumption so it cannot drift; the stellar point's
+   * copy CAN, and a silent disagreement there is a per-body brightness step at the
+   * one LOD boundary hardest to eyeball.
+   */
+  albedo(): void {
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const c of albedoCalibrationStatus()) {
+      rows[c.bodyId] = {
+        state: c.state,
+        "texture mean": c.measuredSphereMean !== undefined
+          ? Number(c.measuredSphereMean.toPrecision(4))
+          : "—",
+        "target p": c.targetAlbedo ?? "—",
+        "lum scale ×": Number(c.scale.toPrecision(4)),
+        stops: Number(Math.log2(Math.max(c.scale, 1e-9)).toFixed(2)),
+        "per-channel ×": c.scaleRgb.map((x) => x.toPrecision(3)).join(" / "),
+        "tex hue R/B": c.measuredRgb
+          ? Number((c.measuredRgb[0] / Math.max(c.measuredRgb[2], 1e-9)).toFixed(3))
+          : "—",
+        "target hue R/B": c.targetRgb
+          ? Number((c.targetRgb[0] / Math.max(c.targetRgb[2], 1e-9)).toFixed(3))
+          : "—",
+        "hue clamped": c.hueClamped ? "⚠ YES" : "",
+        note: c.note ?? "",
+      };
+    }
+    if (Object.keys(rows).length === 0) {
+      console.log(
+        "[lum] no bodies calibrated yet — the scale is measured from the MID tier's " +
+          "colour map when it streams in, so visit a body first.",
+      );
+    } else {
+      console.table(rows);
+      for (const c of albedoCalibrationStatus()) {
+        if (c.state === "skipped") {
+          console.warn(
+            `[lum] ⚠ ${c.bodyId}: NO texture calibration applied — ${c.note}`,
+          );
+        }
+      }
+      const scales = albedoCalibrationStatus()
+        .filter((c) => c.state === "done")
+        .map((c) => c.scale);
+      if (scales.length >= 2) {
+        const spread = Math.log2(Math.max(...scales) / Math.min(...scales));
+        const gm = Math.exp(
+          scales.reduce((a, b) => a + Math.log(b), 0) / scales.length,
+        );
+        console.log(
+          `[lum] correction spread ${spread.toFixed(2)} stops, geometric mean ` +
+            `${gm.toPrecision(3)}×.\n` +
+            "      🔑 The SPREAD is what D09 removes — a per-body error no exposure " +
+            "setting can absorb.\n      The geometric MEAN is harmless: it is one global " +
+            "offset that auto-exposure eats.",
+        );
+      }
+    }
+
+    // ── Derived hue (D09) ───────────────────────────────────────────────────
+    // ⚠ READ THE CAVEAT BELOW BEFORE TREATING THESE AS FINAL. B−V constrains
+    // blue-vs-green only, so red is a LINEAR-SLOPE EXTRAPOLATION — which means the
+    // derivation systematically UNDER-saturates any body whose spectrum curves.
+    const hues: Record<string, Record<string, string | number>> = {};
+    for (const [id] of getStellarPointAlbedos()) {
+      const c = bodyColourStatus(id);
+      if (!c.rgb) continue;
+      const m = Math.max(...c.rgb);
+      hues[id] = {
+        source: c.source,
+        "B−V": c.bMinusV ?? "—",
+        "hue R:G:B": c.rgb.map((x) => (x / m).toFixed(2)).join(" : "),
+        "R/B": Number((c.rgb[0] / Math.max(c.rgb[2], 1e-6)).toFixed(2)),
+      };
+    }
+    if (Object.keys(hues).length > 0) {
+      console.table(hues);
+      console.log(
+        "[lum] hue is DERIVED from bodyPhotometry.colorIndexBV, not authored — a body's\n" +
+          "      colour is a measurement, so a hand-picked triple is a second uncontrolled\n" +
+          "      opinion about it (same defect class as the 8.7× brightness spread).\n" +
+          "      ⚠⚠ BUT: B−V is ONE degree of freedom and RGB needs TWO, so red comes from a\n" +
+          "      linear-spectral-slope model. That model cannot represent narrow absorption\n" +
+          "      bands, so it UNDER-saturates bodies whose spectra curve — most visibly Io\n" +
+          "      (sulphur) and the ICE GIANTS (methane absorbing in the red, the exact\n" +
+          "      opposite of a smooth slope). Treat these as a defensible LOWER BOUND on\n" +
+          "      saturation. The real fix is a second measured index (V−R or B−R) per body;\n" +
+          "      until then `measuredReflectanceRgb` overrides — CITED VALUES ONLY.\n" +
+          "      🔑 Neptune coming out PALE is correct: the iconic vivid-blue Voyager images\n" +
+          "      were contrast-enhanced, and reprocessing showed a pale cyan close to Uranus.",
+      );
+    }
+
+    // ── Duplicated-constant audit ───────────────────────────────────────────
+    const dup: Record<string, Record<string, string | number>> = {};
+    const seen = getStellarPointAlbedos();
+    for (const [id, sp] of seen) {
+      const phot = BODY_PHOTOMETRY[id];
+      if (!phot || id === "sol") continue;
+      const ratio = sp / phot.geometricAlbedo;
+      if (Math.abs(Math.log2(ratio)) > 0.02) {
+        dup[id] = {
+          "bodyPhotometry p": phot.geometricAlbedo,
+          "stellarPoint p": sp,
+          stops: Number(Math.log2(ratio).toFixed(2)),
+        };
+      }
+    }
+    if (seen.length === 0) {
+      console.log(
+        "[lum] no bodies mounted yet — this audit and the hue table read what the " +
+          "renderer PUBLISHED, so they only cover bodies that have been in the scene.\n" +
+          "      ⚠ Also empty after an HMR cycle: the registry is a module-level Map, and a " +
+          "replaced\n      module starts fresh while the publishing useMemo's deps have not " +
+          "changed, so nothing\n      re-publishes until a remount. Reload the page rather " +
+          "than trusting an empty table.",
+      );
+    } else if (Object.keys(dup).length > 0) {
+      console.error(
+        "[lum] ❌ stellarPoint.geometricAlbedo DISAGREES with bodyPhotometry for these " +
+          "bodies. The point tier will step against the billboard:",
+      );
+      console.table(dup);
+    } else {
+      console.log(
+        `[lum] ✅ all ${seen.length} mounted bodies' stellarPoint.geometricAlbedo match ` +
+          "bodyPhotometry (the far tier is normalised from it at consumption, so it " +
+          "cannot drift).",
+      );
+    }
+  }
+
   /** Snap adaptation to the current scene — no slow fade after a warp. */
   snapExposure(): void {
     resetExposureAdaptation();
@@ -1634,6 +2388,8 @@ export class LumHarness {
     samples: number;
     backgroundPerPx: number;
     sumLumaRaw: number;
+    litPixels: number;
+    litDiameterPx: number;
   } | null> {
     if (!_source) return null;
     const { renderer, target } = _source;
@@ -1691,12 +2447,29 @@ export class LumHarness {
         if (l > peak) peak = l;
       }
     }
+    // ── Lit footprint ─────────────────────────────────────────────────────
+    // 🔑 WITHOUT THIS, A FLUX DEFICIT IS AMBIGUOUS. `sumLuma` alone cannot say whether
+    // an object is too DIM or too SMALL — dividing by an assumed pixel count to get a
+    // "mean radiance" silently assumes the answer. Counting pixels above a fraction of
+    // the (background-subtracted) peak measures the footprint directly, and the
+    // equivalent diameter `2√(N/π)` is then comparable to the geometry's prediction.
+    const peakNet = Math.max(peak - bg, 0);
+    const cut = bg + peakNet * 0.05;
+    let lit = 0;
+    for (let row = oHalf - half; row <= oHalf + half; row++) {
+      for (let col = oHalf - half; col <= oHalf + half; col++) {
+        if (lumas[row][col] > cut) lit++;
+      }
+    }
     return {
       sumLuma: raw - bg * n * n,
-      peakLuma: Math.max(peak - bg, 0),
+      peakLuma: peakNet,
       samples: n * n,
       backgroundPerPx: bg,
       sumLumaRaw: raw,
+      litPixels: lit,
+      /** Diameter of a disc with the same area as the lit region, in pixels. */
+      litDiameterPx: 2 * Math.sqrt(lit / Math.PI),
     };
   }
 
@@ -1898,10 +2671,24 @@ export class LumHarness {
       `[lum] p98/p02 contrast = ${contrast.toFixed(1)}×` +
         (bodyId === "earth" ? "  (real Earth cloud:ocean from orbit ≈ 8.7×)" : ""),
     );
+    const cal = albedoCalibrationStatus().find((c) => c.bodyId === bodyId);
+    const ratio = ref ? impliedP / ref.geometricAlbedo : NaN;
     console.log(
       `[lum] implied geometric albedo = ${impliedP.toFixed(4)}` +
         (ref ? `  vs measured ${ref.geometricAlbedo}` : "") +
-        (impliedP > 1 ? "   ⚠ IMPOSSIBLE (>1)" : ""),
+        (Number.isFinite(ratio) ? `  → ${ratio.toFixed(3)}× (${(Math.log2(ratio) >= 0 ? "+" : "")}${Math.log2(ratio).toFixed(2)} stops)` : "") +
+        (impliedP > 1 ? "   ⚠ IMPOSSIBLE (>1)" : "") +
+        (cal ? `\n      D09 calibration: ${cal.state}, scale ×${cal.scale.toPrecision(4)}` : ""),
+    );
+    console.log(
+      "[lum] 🔑 HOW TO READ THE RATIO NOW THAT D09 CALIBRATION IS LIVE. The sphere-mean\n" +
+        "      of an albedo MAP is not identically the DISC-AVERAGED geometric albedo — the\n" +
+        "      projection and the limb-darkening law sit between them — so a ratio off 1.0 is\n" +
+        "      expected. What matters is whether it is the SAME ratio on every body:\n" +
+        "        • same on all ⇒ ONE global constant, harmless (auto-exposure absorbs it).\n" +
+        "        • different per body ⇒ that body's COMPOSITION is uncalibrated (Earth's night\n" +
+        "          lights and glint, Mars' rim term), because the texture term is now handled.\n" +
+        "      Run this on 3+ bodies and compare the ratios; a single body's number says little.",
     );
 
     return {
@@ -1941,10 +2728,29 @@ export class LumHarness {
     // the first version only worked for whichever body was currently registered
     // as the dominant atmosphere, which made cross-body comparison impossible.
     const rec = getAtmosphereBody(bodyId);
-    const dist = starDistanceKm ?? authoredStarDistanceKm(bodyId);
+    // ⚠⚠ TAKE THE LIVE **DISTANCE**, NOT THE LIVE ILLUMINANCE. This read
+    // `rec.sunIlluminance.x`, which is wrong twice over, and both errors are
+    // invisible in the printed number:
+    //   1. `atmospherePass` sets that vector to `illum × getPreExposure() × tint`
+    //      (D25 — it pre-exposes the atmosphere march). But `decodeRgb` divides
+    //      pre-exposure OUT of the MEASURED side, so the gate was comparing a
+    //      pre-exposed reference against an absolute measurement.
+    //   2. `.x` is the RED channel of a per-channel star tint, not the illuminance.
+    //
+    // MEASURED consequence: Saturn read 0.040× (−4.66 stops) and Neptune 0.014×
+    // (−6.12) — apparently catastrophic — while the RENDERER was correct to 0.86×
+    // and 1.09× against hand-computed physics. 🔑 The tell was that only the AIRLESS
+    // bodies (Mercury, Luna) came out right: they have no atmosphere record, so they
+    // fell through to the clean authored-distance path. "Which bodies are wrong" was
+    // the diagnosis, not "how wrong".
+    //
+    // The record's `starDistanceKm` is the field documented as "must be live", and
+    // deriving illuminance from it keeps the orbital-motion intent with none of the
+    // render-side factors attached.
+    const dist =
+      starDistanceKm ?? rec?.starDistanceKm ?? authoredStarDistanceKm(bodyId);
     const illum =
-      rec?.sunIlluminance.x ??
-      (dist != null ? sunIlluminanceAt(dist, STAR_LUMINOSITY_SUN) : NaN);
+      dist != null ? sunIlluminanceAt(dist, STAR_LUMINOSITY_SUN) : NaN;
     if (!Number.isFinite(illum)) {
       console.warn(
         `[lum] cannot derive illuminance for "${bodyId}" — not a registered ` +

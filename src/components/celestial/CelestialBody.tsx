@@ -1,11 +1,11 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
-import { uniform } from "three/tsl";
+import { Fn, uniform, vec4 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
@@ -18,6 +18,14 @@ import {
 } from "../space/photometry";
 import { useFarLOD } from "./useFarLOD";
 import {
+  albedoScaleUniform,
+  publishStellarPointAlbedo,
+  requestAlbedoCalibration,
+} from "./albedoCalibration";
+import { publishLodState, publishLodThresholds } from "./lodState";
+import { stellarPointFade } from "@/components/space/StellarPoint";
+import { bodyReflectanceRgb } from "./bodyColour";
+import {
   setAtmosphereBody,
   clearAtmosphereBody,
 } from "../space/atmospherePass";
@@ -29,6 +37,7 @@ const _sunScaled = new THREE.Vector3();
 const _bodyScaled = new THREE.Vector3();
 const _sunRelative = new THREE.Vector3();
 const _relativeKm = new THREE.Vector3();
+const _farFadeBuf = new THREE.Vector2();
 const _shipToBody = new THREE.Vector3();
 
 /** Prefetch multiplier: start loading textures at this factor × LOD threshold */
@@ -97,6 +106,24 @@ function TexturedLODs({
   const nearTex = texOrNull(rawNearTex as Record<string, THREE.Texture> | null);
   const midTex = texOrNull(rawMidTex as Record<string, THREE.Texture> | null);
 
+  // ── D09: albedo calibration ────────────────────────────────────────────────
+  // ONE scale per body, derived from the texture that actually loaded, applied to
+  // every tier. See albedoCalibration.ts for why it is measured rather than tabled.
+  //
+  // ⚠ MEASURED FROM THE **MID** TIER ON PURPOSE. `mid` is required by the type while
+  // `near` is optional, and it loads at a greater distance — so the scale exists
+  // before the near tier can ever draw, and which texture defined it is
+  // deterministic rather than a race between two streams. A near/mid pair that
+  // disagreed about its own mean would otherwise give a body two different albedos
+  // at two distances, which is the LOD step D09 exists to remove.
+  const uAlbedoScale = useMemo(() => albedoScaleUniform(config.id), [config.id]);
+  useMemo(() => {
+    if (!midTex) return;
+    // `color` is the convention; Earth calls its colour map `day`.
+    const colourMap = midTex.color ?? midTex.day;
+    void requestAlbedoCalibration(gl as never, config.id, colourMap);
+  }, [midTex, config.id, gl]);
+
   // Post-load texture tweaks
   useMemo(() => {
     if (nearTex && config.onTexturesLoaded) config.onTexturesLoaded("near", nearTex);
@@ -123,27 +150,61 @@ function TexturedLODs({
   }, [scaledRadius, config.mid]);
 
   // ── Materials ──
+  // ── D09: ONE albedo-scale multiply wrapping EVERY body's fragment ──────────
+  // 🔑 WRAPPED, NOT PASSED IN. There are 13 body modules; a `× uAlbedoScale` that
+  // each one has to remember is a rule a new body can forget, and this is exactly
+  // how the far tier came to be the only one off the photometric scale (see the
+  // same argument in useFarLOD). A wrapper cannot be forgotten.
+  //
+  // ⚠ IT SCALES THE FRAGMENT'S OUTPUT RADIANCE, NOT THE SAMPLED ALBEDO, and that is
+  // deliberate rather than a shortcut. The GOAL is that the body's rendered
+  // disc-average equals its published geometric albedo, which is a statement about
+  // the output; scaling the output achieves it whatever the body composites in.
+  // For a pure-diffuse body the two are identical anyway. ⚠ For a COMPOSITED body
+  // (Earth's night lights and ocean glint, Mars' rim term) the additive parts get
+  // scaled too, which is not strictly right — but those terms are themselves
+  // uncalibrated, and `__lum.disc()` reports the residual per body, so a body that
+  // still deviates after this is a COMPOSITION problem and gets named as one rather
+  // than hidden inside a texture constant.
+  //
+  // ⚠ Alpha is passed through untouched: it is coverage, not brightness.
+  const wrapAlbedo = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (node: any) =>
+      Fn(() => {
+        // `.toVar()` so the body's subgraph — including any `Discard` — is emitted
+        // once rather than duplicated by reading `.xyz` and `.w` separately.
+        const c = vec4(node).toVar();
+        return vec4(c.xyz.mul(uAlbedoScale), c.w);
+      })(),
+    [uAlbedoScale],
+  );
+
   const nearMat = useMemo(() => {
     if (!config.near || !nearTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
+    m.fragmentNode = wrapAlbedo(
+      config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" }),
+    );
     if (config.buildPositionNode) {
       m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
     }
     return m;
-  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config]);
+  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo]);
 
   const midMat = useMemo(() => {
     if (!midTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
-    m.fragmentNode = config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
+    m.fragmentNode = wrapAlbedo(
+      config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" }),
+    );
     if (config.buildPositionNode) {
       m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
     }
     return m;
-  }, [midTex, uSunRel, uSunIlluminance, uniforms, config]);
+  }, [midTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo]);
 
   // ── Extra meshes (Saturn ring, etc.) ──
   const nearExtras = useMemo((): ExtraMeshDef[] => {
@@ -281,6 +342,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
 
   const worldOrigin = useWorldOrigin();
   const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
 
   const scaledRadius = useMemo(() => kmToScaledUnits(radiusKm), [radiusKm]);
 
@@ -328,6 +390,9 @@ function CelestialBody({ config }: CelestialBodyProps) {
     return uniform(new THREE.Vector3(e, e, e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // 1 − the stellar point's crossfade weight. Driven below from the SAME function
+  // StellarPoint uses, so the two halves of the crossfade cannot disagree.
+  const uFarFade = useMemo(() => uniform(1), []);
   const uSpR = useMemo(() => uniform(0), []);
   const uSpU = useMemo(() => uniform(0), []);
   const uSpF = useMemo(() => uniform(0), []);
@@ -338,7 +403,40 @@ function CelestialBody({ config }: CelestialBodyProps) {
     [config],
   );
 
-  const far = useFarLOD(scaledRadius, uSpR, uSpU, uSpF, config.far);
+  // uSunIlluminance carries illuminance × preExposure × star colour — the same
+  // uniform the near and mid tiers get, so all three tiers now share ONE
+  // reflectance → radiance conversion (Phase 4 / D04).
+  // ⚠ PUBLISHED HERE, IN THE OUTER COMPONENT, NOT IN `TexturedLODs`. The audit's job
+  // is to catch a per-body albedo that has drifted from `bodyPhotometry`, and the
+  // stellar point draws at the GREATEST distances — precisely where `TexturedLODs`
+  // has not mounted because no texture has streamed. Publishing from there reported
+  // "no bodies mounted" with the game running and every planet on screen.
+  useMemo(() => {
+    if (config.stellarPoint) {
+      publishStellarPointAlbedo(config.id, config.stellarPoint.geometricAlbedo);
+    }
+  }, [config.id, config.stellarPoint]);
+
+  // Derived hue for the point tier, falling back to the authored triple for a body
+  // with no photometry row. Both LOD tiers now read the same source, so the
+  // billboard→point crossfade cannot shift colour partway through.
+  const pointColour = useMemo((): readonly [number, number, number] => {
+    const c = bodyReflectanceRgb(config.id);
+    return c
+      ? ([c.r, c.g, c.b] as const)
+      : (config.stellarPoint?.color ?? ([1, 1, 1] as const));
+  }, [config.id, config.stellarPoint]);
+
+  const far = useFarLOD(
+    scaledRadius,
+    uSpR,
+    uSpU,
+    uSpF,
+    uSunIlluminance,
+    uFarFade,
+    config.far,
+    config.id,
+  );
 
   // ── Refs for LOD meshes ──
   const nearRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -445,9 +543,37 @@ function CelestialBody({ config }: CelestialBodyProps) {
     const showMid = (wantMid && midReady) || (wantNear && !nearReady && midReady);
     const showFar = !showNear && !showMid;
 
+    // Publish the tier the renderer ACTUALLY chose, for `__lum.lod()` (Phase 4).
+    // Includes the readiness fallbacks above, which is the whole point: an inferred
+    // tier would miss them.
+    // Hand the billboard the complement of the point's fade (Phase 4). Uses
+    // StellarPoint's own exported function and the DRAWING-BUFFER height, so both
+    // halves of the crossfade are computed from one formula with one notion of pixel.
+    const _fovRad = ((camera as THREE.PerspectiveCamera).fov * Math.PI) / 180;
+    const _bufH = gl.getDrawingBufferSize(_farFadeBuf).y;
+    const _pointFade = stellarPointFade(radiusKm, distKm, _fovRad, Math.max(_bufH, 1));
+    uFarFade.value = 1 - _pointFade;
+
+    publishLodThresholds(config.id, config.lod.near ?? 0, config.lod.far);
+    publishLodState(config.id, {
+      tier: showNear ? "near" : showMid ? "mid" : "far",
+      pointVisible: false, // set by StellarPoint, which owns its own gate
+      pointFade: 0,
+      distKm,
+    });
+
     if (nearRef.current) nearRef.current.visible = showNear;
     if (midRef.current) midRef.current.visible = showMid;
-    if (farRef.current) farRef.current.visible = showFar;
+    // ⚠ HIDE the billboard once the crossfade has fully handed over. Below
+    // `STELLAR_PX_SATURATE` its weight is exactly 0, so it renders black — but an
+    // opaque black quad still WRITES DEPTH, coplanar with the additive stellar point
+    // at the same world position. MEASURED: at a 3 px disc the point delivered 0.26 of
+    // its flux while at 1 px it delivered 1.007, same tier and same `fade = 1` — the
+    // signature of z-fighting rejecting a varying fraction of the point's fragments.
+    // Drawing nothing is also one draw call cheaper than drawing black.
+    if (farRef.current) {
+      farRef.current.visible = showFar && uFarFade.value > 1e-3;
+    }
 
     // Extra meshes track their parent tier
     for (const m of extraNearRefs.current) {
@@ -576,7 +702,11 @@ function CelestialBody({ config }: CelestialBodyProps) {
         sunPositionKm={sunPositionKm}
         radiusKm={radiusKm}
         geometricAlbedo={config.stellarPoint.geometricAlbedo}
-        color={config.stellarPoint.color}
+        // ⚠ D09: hue from the measured B−V index, not the authored triple. Same
+        // reasoning as the far tier — a body's colour IS a measurement, so a
+        // hand-picked value is a second uncontrolled opinion about it. StellarPoint
+        // luminance-normalises what it gets, so only the hue is taken from here.
+        color={pointColour}
       />
     </SimGroup>
   );

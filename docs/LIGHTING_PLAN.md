@@ -124,12 +124,15 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D02 | Surfaces missing `E/π` irradiance factor | all `bodies/*.ts` | **6.37×** @ 1 AU | R |
 | D03 | **Ship/asteroid** sun brightness constant across the system | [`SunLight.tsx:21`](../src/components/Star/SunLight.tsx#L21) | **6,040×** Mercury↔Neptune | R |
 | D03b | **Planet-disc** luminance partly bypasses `sunIlluminance` | surface shaders + the §4.1 seam | **12.9× Neptune, 16.5× Venus** (measured, §2.2.2) | R |
-| D04 | Far billboard has no illuminance term | [`useFarLOD.ts:43`](../src/components/celestial/useFarLOD.ts#L43) | **1,940×** disc ratio | R |
+| D04 | ✅ Far billboard had no illuminance term | [`useFarLOD.ts`](../src/components/celestial/useFarLOD.ts) | CLOSED: `useFarLOD` now wraps EVERY builder in `surfaceRadiance` (× E/π), one conversion shared with the near/mid tiers. Also fixed the 7 overrides' missing D25 pre-exposure. Gate `__lum.lod()` | ✅ |
 | D05 | `VENUS_ILLUM_TRIM` under-renders Venus | [`atmosphereData.ts:271`](../src/components/celestial/bodies/atmosphereData.ts#L271) | **32×** | R |
-| D06 | Billboard→point handoff discontinuity | AUDIT_3 §2 | **68–86,000×** | R |
+| D06 | ✅ Billboard→point handoff discontinuity | [`StellarPoint.tsx`](../src/components/space/StellarPoint.tsx) | CLOSED: `bodyIlluminanceAtCamera` + `stellarPointRadiance`; `REFERENCE_HDR`/`JUPITER_REF_FLUX`/the 500 clamp deleted. Every point dims by ONE body-independent factor (1/1,038× at 1783p) and is now correctly resolution-dependent | ✅ |
 | D07 | Planets unreachable by three.js lights | `fragmentNode` bypasses `setupLighting()` | structural | I |
 | D08 ✅ | Earth has no Lambert cosine (sigmoid, ≥0.98 for cosθ>0.1) | [`earth.ts:269`](../src/components/celestial/bodies/earth.ts#L269) | flat day disc | I |
-| D09 | Textures are brightness-normalised art, uncorrected | all colour maps | **0.37×–5.4×**, 14.6× spread | I |
+| D09 | 🔶 **Textures are brightness-normalised art, uncorrected — now calibrated at RUNTIME.** ⚠ Fixed as a MEASUREMENT, not a table: the textures are expected to change, and a pasted constant becomes a lie the moment an asset is swapped (this repo has been burned twice already). **(a) Far tier — analytic, no measurement needed:** the 13 authored `THREE.Color` albedos span **8.7× (3.12 stops)** against `bodyPhotometry` with a geometric mean of **1.076** — 🔑 spread with NO systematic offset, i.e. a pure per-body error that **no exposure setting or tone curve can absorb** (Luna +1.64 hot while Neptune is −1.49 cold in the same frame). `useFarLOD` now normalises each colour's LUMINANCE to `geometricAlbedo`, hue preserved, at consumption. **(b) Near/mid — measured:** [`albedoCalibration.ts`](../src/components/celestial/albedoCalibration.ts) renders the loaded colour map to 128×64 with 16×16 stratified taps at **level 0** (⚠ not a mip: `toktx --genmipmap` filters in sRGB, so a mip is the average of ENCODED texels; and derivative LOD would have made all 256 taps read mip ~6, so the sampler's mip filtering is suppressed for the one draw), then takes the **cos(latitude)-weighted** sphere mean (an equirect over-samples the poles, i.e. the bright ice caps). ⚠ Weighting is symmetric ⇒ immune to the D24 v-flip. Scale = `geometricAlbedo / mean`, applied as ONE wrapper multiply in `CelestialBody` so no body can forget it. **✅ VALIDATED: Earth's day map measured 0.0893 against an independently-computed cloud-free surface albedo of 0.0900 — 0.993×.** ⚠⚠ Which is exactly why Earth is now `colourMapPartialReason`-SKIPPED: its texture is CLOUD-FREE, so most of p=0.434 lives in the separate cloud layer and calibration wanted a wrong **+2.28 stops**. 🔑 D09 is about the texture's MEAN, D23 about its DISTRIBUTION — different defects; Earth's mean is right while its ocean p02 is crushed. Gate `__lum.albedo()` (also audits the duplicated `stellarPoint.geometricAlbedo`: ✅ all 13 match). ⚠ Remaining: the residual sphere-mean→disc-average constant is body-independent, measured by `__lum.disc()` across 3+ bodies. | all colour maps | **8.7× spread closed on the far tier** | R |
+| D09b | ✅ **Hue derived from the measured colour index, not authored.** Both RGB triples per body — the far billboard's `albedo` and `stellarPoint.color` — were picked by eye while `bodyPhotometry.colorIndexBV` sat unused with the comment "used to derive a defensible tint". [`bodyColour.ts`](../src/components/celestial/bodyColour.ts): `Δ(B−V) = −2.5·log₁₀(R_B/R_V)` against the Sun's 0.653 ⇒ `R_B/R_V = 10^(−0.4·Δ)`, closed to RGB by a **linear spectral slope** through the Johnson band centres (442/540 nm) evaluated at the sRGB primaries' dominant wavelengths (611/549/465 nm), then renormalised so Rec709 luminance = `geometricAlbedo`. Both LOD tiers read it, so the crossfade cannot shift colour. ⚠⚠ **B−V is ONE degree of freedom and RGB needs TWO**, so red is an extrapolation and the model **systematically UNDER-saturates** anything with narrow absorption bands — most visibly Io (sulphur) and the ice giants (methane absorbing in the RED, the opposite of a smooth slope). Treat the output as a defensible LOWER BOUND; the real fix is a second measured index (V−R/B−R). Override hook `measuredReflectanceRgb`, cited values only. 🔑 Big visible changes, all toward calibrated imagery: Mars R/B **4.00 → 2.12** (muted butterscotch, not saturated orange), Venus **2.50 → 1.24** (pale cream), Neptune **0.06 → 0.69** — the vivid Voyager blue was contrast-enhanced and the reprocessed data shows a pale cyan close to Uranus. | [`useFarLOD.ts`](../src/components/celestial/useFarLOD.ts), [`CelestialBody.tsx`](../src/components/celestial/CelestialBody.tsx) | 13 authored triples removed | ✅ |
+| D09d | ⚠ **A TIER-HUE STEP I INTRODUCED WITH D09b, then fixed per-channel.** Deriving the FAR tier's hue from B−V while the near/mid tier kept its TEXTURE's hue put the two tiers on different sources. MEASURED on Neptune: far tier R/B **0.690**, texture R/B **0.051** — a **13.5× disagreement on one body in one frame**, visible as a colour shift across the LOD transition. Worse, a saturated-blue texture has LOW Rec709 luminance (blue weight 0.0722), so the luminance-only fix scaled Neptune **+1.85 stops** and produced a *brighter vivid blue* instead of the pale cyan its colour index implies. **Fix: the correction is PER-CHANNEL** — the texture's cos-weighted mean RGB is moved onto the derived RGB, so both tiers share one source and all spatial variation survives. ⚠⚠ **Bounded at 1.5 stops per channel, as an admission of ignorance not a safety margin:** Neptune wants **[19.3, 3.54, 1.42]** — a 19× boost on a red channel whose texture mean is 0.0196 — and Neptune is exactly where the model fails (methane absorbs in the RED, invisible to a slope fitted 442→540 nm). The texture's 0.051 is likely too low and the derived 0.69 too high; **neither source knows where the truth is**, so the hue moves at most 1.5 stops and the body is NAMED. 🔑 A clamp here is a WORKLIST ENTRY: that body needs a real V−R/B−R in `measuredReflectanceRgb`. Luminance stays exact via post-clamp renormalisation — trading the certain result for the uncertain one would be backwards. | [`albedoCalibration.ts`](../src/components/celestial/albedoCalibration.ts) | 13.5× → ≤1.5 stops | 🔶 |
+| D09c | 🐛 **GATE BUG, not a renderer bug — `__lum.disc()` read a PRE-EXPOSED RED CHANNEL.** `expected()` took `rec.sunIlluminance.x`, which `atmospherePass` sets to `illum × getPreExposure() × starTint[0]` (D25), while `decodeRgb` divides pre-exposure OUT of the measured side. MEASURED fallout: Saturn reported **0.040× (−4.66 stops)** and Neptune **0.014× (−6.12)** — apparently catastrophic — while the renderer was correct to **0.86×** and **1.09×** against hand-computed physics. 🔑 The tell was WHICH bodies were wrong, not how wrong: only the AIRLESS ones (Mercury, Luna) read correctly, because with no atmosphere record they fell through to the clean authored-distance path. Fixed to take the record's live `starDistanceKm` and recompute. **After the fix, five bodies from 0.39 to 30 AU agree to 0.51 stops with a geometric mean of 0.993** — so the sphere-mean→disc-average residual D09 expected to leave behind is not there at all. | [`lumHarness.ts`](../src/components/space/perf/lumHarness.ts) | instrument | ✅ |
 | D10 | Clouds ~100× brighter than the ground below them | [`cloudCommon.ts:141`](../src/components/celestial/bodies/cloudCommon.ts#L141) | **10–30×** | R |
 | D11 | Shipped defaults are `toneMapping: false` (→ Neutral, crushes above linear ≈4) **and** `bloom: false` | [`store.ts:29-30`](../src/store/store.ts#L29) | 2 code values | I |
 | D12 | Bloom is radius 0, strength 0.02, additive | [`SpaceRenderer.tsx:516`](../src/components/space/SpaceRenderer.tsx#L516) | no glare | I |
@@ -140,7 +143,7 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D17 | `sunIlluminance` baked at module load from a static position | [`atmosphereData.ts:249`](../src/components/celestial/bodies/atmosphereData.ts#L249) | blocks orbital motion + procedural systems | F |
 | D18 ✅ | Star radius, colour and luminance hardcoded G2V/Sol | [`Star.tsx:38,154`](../src/components/Star/Star.tsx#L38) | blocks procedural systems | F |
 | D19 | No scotopic/mesopic vision model; deep space is underexposed daylight | — | look, not correctness | I |
-| D20 | Luna's `stellarPoint.geometricAlbedo` is 0.0036 vs a measured 0.136 | [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) | **38×** too dim | I |
+| D20 | ✅ Luna's `stellarPoint.geometricAlbedo` was 0.0036 vs a measured 0.136 — now 0.136 | [`luna.ts:151`](../src/components/celestial/bodies/luna.ts#L151) | **38×** too dim | I |
 | D21 | `earth_normal` is 2K/58 KB; 1 LSB = 1.00° spurious tilt, and `N·L` amplifies it 1/cosθ | `public/textures/earth_normal.ktx2` | ±28% hard-edged steps at 87° SZA; **asset, mitigated in-shader** — §5.5 | I |
 | D22 ✅ | Ocean "Schlick" Fresnel is `0.02 + 2.0·(1−cosθ)^2.5` — not Schlick, **peaks at 2.02** | [`earth.ts:543`](../src/components/celestial/bodies/earth.ts#L543) | ocean returns 202% of incident light; 7.4× hot at 60° | I |
 | D23 | Day texture's dark end is crushed: deep Pacific linear luminance **0.0014** vs a real 0.03–0.06 | `earth_day_*.ktx2` | ocean **21–43× too dark**, Amazon 4–6×; Sahara + ice correct ⇒ non-uniform, per-region. Phase 2c | I |
@@ -153,6 +156,9 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D30 | ✅ **Stars were 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | CLOSED: 8,920-star catalogue, flux validated to **0.999×** on 3 named stars. See STAR_CATALOGUE_PLAN §8.3 | ✅ |
 | D31 | ✅ Metering **point-sampled** one tap per tile → the sun was never metered, and the reading depended on display resolution | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | fixed with stratified tile averaging; resolution drift 1 stop → **0.03** | ✅ |
 | D32 | ✅ **The Milky Way panorama was MIRRORED** — the NASA asset is a sky *chart* (RA 0h centred, RA increasing **leftward**), not a globe texture, so the textbook `u = RA/2π` renders the sky reflected | [`MilkyWaySkybox.tsx`](../src/components/Skybox/MilkyWaySkybox.tsx) | CLOSED: `u = fract(0.5 − RA/2π)`. Measured `det(R) = −1.00000`; whole-image rms galactic latitude **37.7° → 9.69°**; Big Dipper stars now read **71×** dimmer than band stars. Gate: `__lum.skyAlign()` — whose own v1 metric produced a false ❌ on the fixed sky, see §8.6 | ✅ |
+| D33 | ⚠⚠ **Exposure is a function of how much of the SCREEN a body fills, not of its light.** MEASURED on Uranus at 100/200/400 kkm: the disc's own radiance is invariant (**57.3 / 57.7 / 55.3 cd/m²**, and `probe` reads 48.7) while `metered EV` swings **3.38 stops** (−6.95 → −10.33) and the disc renders at **0.93 / 3.08 / 6.85** display-linear — i.e. **+2.54 / +4.26 / +5.42 stops** over the coverage-100% reference of 0.160 (which is middle grey, so the *calibration* is right). 🔑 CLOSED FORM: a frame-average flux mean returns `metered ≈ coverage · L_disc`, so rendered brightness ∝ `coverage^(−ADAPTATION_K)` ⇒ **+1.70 stops per 4× coverage drop, measured +1.72.** ⚠ NOT tunable — any global frame mean is proportional to coverage by definition; §5.9's log-average and percentile-band attempts fail the same way in different guises. Needs a coverage-independent estimator or **local exposure** (UE5.1). Explains the whole washout thread, why Uranus looked fine (the user was close), and D26's plume (same pathology, opposite sign). Gate `__lum.meter()` | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | **2.5–5.4 stops** | R |
+| D33b | ⚠ **The hot-tail cap suppresses legitimately bright SMALL subjects.** `HOT_WEIGHT_FRACTION = 0.02` / `MAX_HOT_FLUX_SHARE = 0.3` were chosen on the premise that a real subject covers ≥10% of frame; below ~4% **the subject IS the tail.** MEASURED (`__lum.meter`, p=2 estimator where coverage is otherwise neutralised): metered sits a flat **−0.32 stops** under the disc's own EV while the tail is at 4–23%, then **−0.71 / −1.60 / −2.37 / −2.97** as it crosses the 30% cap at 47–66%. Predicted vs measured over-exposure agrees to **0.03–0.06 stops at all seven stops** ⇒ the residual is 100% the cap. ⚠⚠ **NOT independently fixable**: the cap is also the only restraint on a bright dot owning adaptation, and it cannot separate the two cases because both are "small and bright" — size is the wrong discriminator, which is D33's own finding. Resolved only by local exposure. | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | **up to 3.0 stops** | R |
+| D33c | ⚠⚠ **REVERTED — `ESTIMATOR = "area"` (original p=1), local exposure OFF.** Both fixes worked as specified and both made the game worse. **Error 1: the eye has TWO adaptation terms and D33's law belongs to the LOCAL one.** Global adaptation (pupil + photochemical) IS the field average = p=1. Falsifying case: Luna at 377,000 km subtends 0.53° and "pooled" blacked out the frame — but the real full moon is ~3,000 cd/m² at 0.52° and does not hide the stars, because it adds 3,000·(0.5/200)² ≈ 0.02 cd/m² to the field average. **Letting a small bright object clip is CORRECT.** **Error 2: over-fitted the gate's ladder** — the 5.4-stop spread lives at 0.166% coverage (a 91 px dot = the Luna case); at the ~40% coverage the complaint actually lived at it is ~1 stop. ⇒ **the washout was mostly the TONE CURVE POSITION** (0.59 display-linear at the old +2.5 bias is inside AgX's shoulder, and a planet disc is a ~20%-contrast subject). "pooled" also STEPS: its 2-stop window is a hard membership test, so cells entering/leaving move the mean discontinuously. 🐛 Gate bug fixed alongside: `__lum.meter` snapped the follower to a STALE async readback and reported ×254.8 where the converged value is ×32 — a 3-stop error, whole run a transient. **Next: D09 first** (Luna 10× hot, 14.6× spread ⇒ up to 2.4 stops of per-body mis-exposure before the meter runs), then a simulation-driven adaptation target. | [`exposureMeter.ts`](../src/components/space/exposureMeter.ts) | ~1 stop, not 5.4 | R |
 
 `R` = resolved by the unified scale + exposure work. `I` = **independent** bug that would
 survive a perfect exposure system and needs its own fix. `F` = blocks a stated **future**
@@ -1116,7 +1122,7 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **2d** ✅ | `CLOUD_SUN_SCALE` → `albedo/π` = 0.223 **+ `SHELL_OPTICAL_PATH` 1 → 60 (a units error, not a fit) + erosion-area factor 0.5** | cloud cover 3.5% → **21.9%** measured (user chose 0.5 over 0.3 for edge detail); see §5.7 | medium |
 | **3a** ✅ | **Distance-correct sun for ship + asteroids** — `SunLight.intensity` and the bounce fill from live star distance via the SAME `sunIlluminanceAt` the planets use | ship/asteroids stop being lit by a constant: 4.7× brighter at Mercury, 1,280× dimmer at Neptune | medium |
 | **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
-| **4** ⛔ | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
+| **4** ✅ | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** ✅ | **Auto-exposure / eye adaptation**: centre-weighted log-average metering, **PARTIAL** adaptation (Stevens' ⅓), asymmetric cone/rod time constants, + the **skybox rescaled to absolute luminance** (measured 189,000× hot) | the "eye" arrives; stars become visible in deep space and vanish when the sun enters frame | medium |
 | **6** ⛔ | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
 | **7** ⛔ | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
@@ -2423,3 +2429,205 @@ reproduces measured geometric albedo across all bodies — best answered by a di
 - MDN — [`dynamic-range-limit`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/dynamic-range-limit), [`@media (dynamic-range)`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/dynamic-range)
 - McEwen, *Photometric functions for photoclinometry* (1991) — the lunar-Lambert mix
 - `docs/PERF_MEASUREMENT.md` — the ablate-don't-estimate rule this plan's §6 defers to
+
+## Phase 4 rewire — executable spec (written 2026-08-21, groundwork landed, rewire NOT started)
+
+Foundation is in `photometry.ts`: `bodyIlluminanceAtCamera()`, `stellarPointRadiance()`,
+`STELLAR_POINT_PROFILE_INTEGRAL = 0.093146`. **Nothing is wired to them.** Do the whole list below in ONE
+change — see the atomicity warning.
+
+### ⚠⚠ ATOMICITY — the reason this was not started piecemeal
+
+`useFarLOD` emits `albedo × sunDot × uPreExposure`: pure REFLECTANCE, no illuminance (**D04**).
+`StellarPoint` emits `(flux / JUPITER_REF_FLUX) × 12.0`: normalised to an arbitrary Jupiter reference
+(**D06**). Correcting either alone makes the billboard→point handoff discontinuity WORSE. This is the
+Venus-trim cancellation trap: two errors that partly cancel in one scene and diverge in every other.
+
+### Measured targets
+
+For Jupiter at `StellarPoint`'s own reference geometry (p 0.538, R 69,911 km, 5.2 AU sun, 4.2 AU camera):
+
+| quantity | value |
+|---|---|
+| `E_cam` | **5.222e-9** game units = 3.15e-5 lux |
+| correct `uBrightness` | **1.156e-2** @1783p, **4.24e-3** @1080p |
+| shipped | 12.0 |
+| ⇒ error | **1,038× too bright @1783p, 2,830× @1080p** |
+
+⚠ Note the **resolution dependence**: correct radiance ∝ `1/θ_h²` because the sprite is a fixed 6 PIXELS, so
+its solid angle shrinks as resolution rises. `REFERENCE_HDR` is a constant ⇒ distant planets' flux currently
+depends on window size. Same defect class as D31 and the star gate's `pxAngle = fov/height` bug.
+
+### The work, in dependency order
+
+1. **`StellarPoint.tsx`** — `uBrightness = stellarPointRadiance(bodyIlluminanceAtCamera(p, phase, radiusKm,
+   dSunKm, distKm), minAngle / 2) × getPreExposure()`. Delete `REFERENCE_HDR`, `JUPITER_REF_FLUX`, and the
+   `500` clamp (it exists only because the scale was arbitrary). ⚠ Keep the `× getPreExposure()` INSIDE any
+   remaining clamp, per the D25 note already in that file.
+2. **`CelestialBody.tsx`** — one new `uSunIllum` uniform beside `uSpR/uSpU/uSpF`, set per frame from
+   `sunIlluminanceAt(|positionKm − sunPositionKm|)`. Both branches of the frame loop already have those two
+   vectors. Pass it into `useFarLOD`. This is the ONLY call site for both tiers, which is what makes the
+   atomic switch tractable.
+3. **`useFarLOD.ts`** — thread `uSunIllum` through the props object and multiply:
+   `col = albedo × sunDot × (uSunIllum / π) × uPreExposure`. The `/π` is the Lambert conversion from
+   irradiance to radiance — the same `E/π` factor D02 fixed for surfaces and this tier never received.
+4. **⚠ EVERY `farConfig.buildFragment` OVERRIDE.** `useFarLOD` takes a per-body fragment builder
+   (`farConfig.buildFragment ?? defaultBillboardFragment`) and ~14 body files define one. **Each needs the
+   same illuminance multiply**, or those bodies stay uncalibrated while their neighbours change — a worse
+   state than today. This is the bulk of the work and the reason it is not a quick edit.
+5. **`fade`** — reconsider, do not delete blindly. It exists to hide the discontinuity. Once both tiers share
+   one formula the handoff should be continuous BY CONSTRUCTION, so the fade becomes a cosmetic
+   cross-dissolve rather than a cover-up; measure before removing.
+6. **D20** — Luna's `stellarPoint.geometricAlbedo` is 0.0036 against a measured 0.136 (**38×**). This should
+   fall out by construction once the tier reads real albedo × real illuminance.
+
+### The gate
+
+Probe a named body's flux at three distances that straddle both handoffs (near→billboard, billboard→point) and
+assert the total flux is continuous across each. 🔑 Flux, not peak — the same reasoning as `__lum.star()`:
+peak depends on how many pixels the body covers, flux does not, and flux is what the tiers must agree on.
+Expected absolute value comes from `bodyIlluminanceAtCamera` for the same geometry.
+
+
+## Phase 4 — measured state after the rewire (2026-08-21)
+
+`__lum.lod("jupiter")`, 1783p, DPR 1.8, after the fixes below. Ratio = measured flux / `E_cam·(1+fade)`.
+
+| stop | tier | ratio |
+|---|---|---|
+| 24 px | mid (sphere) | **0.466** |
+| 9 px | far | 0.082 |
+| 8.5 px | far | 0.100 |
+| 7.5 px | far + point | 0.165 |
+| 6 px | far + point | 0.277 |
+| 3 px | far + point | 0.536 |
+| 1 px | far + point | **1.187** |
+
+### ✅ What is fixed and validated
+
+- **D04** — `useFarLOD` wraps EVERY builder in `surfaceRadiance` (× E/π), the same converter the near/mid
+  tiers use. Also gave the 7 `buildFragment` overrides the D25 pre-exposure they never had.
+- **D06** — `StellarPoint` uses `bodyIlluminanceAtCamera` + `stellarPointRadiance`; `REFERENCE_HDR`,
+  `JUPITER_REF_FLUX` and the `500` clamp are gone. At 1 px the point reads **1.187**, i.e. right.
+- **D20** — Luna 0.0036 → 0.136.
+- **`mars.ts`** — rim reflectance `12.0` → `0.12` (a lost decimal; an energy violation once the tier became
+  photometric).
+- **⚠ DPR bug in `StellarPoint`** — `screenH` was `window.innerHeight` (CSS px) while rasterisation is in
+  drawing-buffer px. At DPR 1.8 the sprite was **10.8 device px** not 6, the visibility gate fired at
+  **14.4** not 8, and θ_h — hence the flux normalisation — was off by **3.24×**. `StarField` uses
+  `size.height` and gates at 0.999×. 🔑 **Two sub-pixel-source renderers must not disagree about what a
+  pixel is.** Fixing it moved the 1 px point reading from 0.40 to 1.187.
+
+### ❌ What remains: the far billboard is ~7.5× dim
+
+With the point off (9 / 8.5 px) the far tier reads **0.082–0.100**. Derivation says it should read ~0.68:
+
+```
+flux = E_sun·(R/d)²·1.05²·albedo_luma·(2π/3.4)/π          → 0.72·Φ(α) ≈ 0.68
+```
+
+using `albedo_luma(JUPITER_ALBEDO) = 0.5605` (vs `p = 0.538`, ratio 1.04 — so the albedo constant is NOT the
+cause), the quad's 1.05× oversize, and `limbDark = domeZ^0.4` reducing the disc integral from 2π/3 to 2π/3.4.
+
+⚠ **The deficit is in RADIANCE, not area.** At the 9 px stop the measured mean disc radiance is **0.0067**
+game units where `albedo × sunDot × E_sun/π` predicts **0.0839** — ~12×. Geometry is ruled out: the quad is
+`PlaneGeometry(scaledRadius × 2.1)` with a view-aligned vertex path, no `sizeMultiplier` overrides, and
+`p` spans ±1 across it so the disc radius is 1.05 R.
+
+Remaining suspects, in order: `m.alphaHash = true` (stochastic discard — should cost only the rim, since
+`edge = smoothstep(1.0, 0.92, dist)` is 1 over most of the disc, but worth measuring rather than assuming);
+the `uSpR/uSpU/uSpF` basis magnitude; and whether the scaled scene composites the far tier with any
+additional factor.
+
+### 🔑 The architectural fix, regardless of the residual
+
+The billboard's `domeZ = sqrt(1−r²)` with `sunDot = clamp(ŝ·n̂)` is **not an approximation** — it is the exact
+Lambert-sphere geometry. So the SHAPE is right and only the NORMALISATION is wrong. Rather than hunt
+constants, normalise the profile by its own integral and multiply by the analytic `E_cam`, exactly as
+`STELLAR_POINT_PROFILE_INTEGRAL` does for the point and `uPsfNorm` does for stars:
+
+```
+radiance = shape(p) · E_cam / (θ_q² · ∫shape dA_p)
+```
+
+Then flux equals `E_cam` **by construction** for all 8 builders, the tier step vanishes without tuning, and
+the `fade` ramp becomes a cosmetic cross-dissolve that can finally be deleted. The shape integral varies with
+phase, so measure it on the GPU (one small render + readback, the pattern `skyIrradiance` already uses)
+rather than deriving it 8 times.
+
+### ⚠ Gate bugs found along the way — all in the instrument
+
+`__lum.lod()` needed four fixes before its numbers meant anything: missing `Ω_pixel` (compared Σ radiance to
+an illuminance); a **double** `/preExposure` (`decodeRgb` is the single chokepoint and already divides —
+a defensive extra divide is still a bug); tiers INFERRED from pixel size when the switch is in km and depends
+on texture-streaming readiness; and stops landing within 1% of a threshold, which measures the switch rather
+than a tier. 🔑 The gate now WITNESSES tier, `preExposure` and `uPsfNorm` instead of recomputing them — every
+one of those changes came from a wrong inference.
+
+
+## Phase 4 — after the crossfade fix (2026-08-21, second measurement round)
+
+`__lum.lod("jupiter")`, points ON. **Worst jump 4.22 → 0.59 stops; worst |log2| 5.82 → 1.31.**
+
+| stop | tier | ratio | Δ from previous stop |
+|---|---|---|---|
+| 24 px | mid | 0.4606 | — |
+| 9 px | far | 0.6925 | +0.59 |
+| 8.5 px | far | 0.7009 | +0.02 |
+| 7.5 px | far + point | 0.6951 | −0.01 |
+| 6 px | far + point | 0.6845 | −0.02 |
+| 3 px | far + point | 0.4590 | −0.58 |
+| 1 px | far + point | 0.4039 | −0.18 |
+
+### 🔑 The bug the isolation sweep caught
+
+Sweeping with `__lum.lod(id, 180, false)` (stellar points DISABLED) versus `true` made the overlap
+attributable for the first time. At 7.5 px the billboard ALONE carried **0.6905**; switching the point on
+dropped the total to **0.0442** — the point *destroyed* 15.6× of the flux it was supposed to add.
+
+⚠ `depthWrite = false` did NOT fix it, and that was the useful result: it ruled out occlusion and left one
+explanation. **`transparent = false` means NO BLENDING**, so the point's fragments OVERWRITE the billboard's
+colour. At 7.5 px the point carries `fade = 0.0039` of the flux and replaced a full-strength billboard with
+it. **A source that REDUCES total flux when added is not blending.**
+
+Fixed with One/One `CustomBlending` (⚠ NOT `THREE.AdditiveBlending`, which is `SrcAlpha/One` and would halve
+the flux — the bug the star gate caught), `alphaHash` dropped (it discards ~10% of the energy and would
+corrupt the flux normalisation), and `renderOrder = 1` so the additive sprite draws AFTER the opaque
+billboard.
+
+⚠ Three hypotheses were spent on this overlap — occlusion, non-complementary fade, hidden visibility
+coupling — before the toggle answered it in one run. **The recurring error was trying to attribute a SUM of
+two sources from a single number, which is underdetermined however careful the arithmetic.** Build the
+isolation switch as soon as two things draw in the same place.
+
+### What remains: three form factors, one fix
+
+Each tier is FLAT within itself but lands on its own constant fraction of `E`:
+
+| tier | form factor |
+|---|---|
+| mid sphere | **0.46** |
+| far billboard | **0.69** (matches the analytic 0.68 derivation to 3%) |
+| stellar point | **~0.41–0.46** |
+
+That is the whole of the remaining +0.59 (mid→far) and −0.58 (6→3 px). **Profile normalisation fixes all
+three**: divide each tier's shape by its own integral, multiply by the analytic `E_cam`, so flux is `E` by
+construction. `STELLAR_POINT_PROFILE_INTEGRAL = 0.093146` already attempts this for the point, so its value
+is WRONG rather than missing — recheck it now that `alphaHash` no longer discards part of the profile.
+
+⚠ **One unreconciled number, the thread to pull next.** At the 1 px stop the point's measured PEAK radiance
+is 0.0118 where `E/(θ_h²·I)·f(0)` predicts 0.124 — 10×. But its FLUX ratio is 0.40, not 0.10. Both cannot be
+right: either the rendered sprite is larger than `θ_h` implies (so the flux spreads further than the
+normalisation assumes) or the peak is clipping. Resolving that probably explains the point's form factor
+outright.
+
+### Also fixed this round
+
+- **`StellarPoint` used `window.innerHeight`** — CSS pixels — while rasterising into drawing-buffer pixels.
+  At DPR 1.8: `MIN_SCREEN_PX = 6` became 10.8 device px, the visibility gate fired at 14.4 instead of 8, and
+  θ_h (hence the flux normalisation) was off by 3.24×. Now `gl.getDrawingBufferSize()`, the same source
+  `StarField` uses. ⚠ **The first attempt at this fix was a no-op** — `useThree(s => s.size.height)` is also
+  CSS — and it was caught only because the gate returned numbers IDENTICAL to the pre-fix run, digit for
+  digit. **A fix that changes nothing measurable did not fix anything.**
+- `stellarPointFade()` exported as the single source of truth for the crossfade weight, taking the buffer
+  height explicitly, so the billboard's `1 − fade` and the point's `fade` cannot diverge.

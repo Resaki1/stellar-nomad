@@ -42,7 +42,7 @@ import {
 } from "./photometry";
 import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
-import { updateExposureMeter } from "./exposureMeter";
+import { localExposureNode, updateExposureMeter } from "./exposureMeter";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -540,7 +540,22 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // live that is just the exposure; with pre-exposure on it is ~1.0, because
     // the buffer already carries the exposure the sources applied. Using the
     // ratio rather than either term means the two can never double-count.
-    const exposed = sceneTexture.mul(uPostExposure);
+    // ── LOCAL EXPOSURE (D33/D33b, UE5.1's Local Exposure) ────────────────────
+    // Multiplied in HERE, alongside the global exposure and BEFORE bloom, for the
+    // same reason the global term is: bloom's threshold is a display-referred
+    // "brighter than white" test, so it must see the final display-linear value or
+    // it means something different in every region of the frame.
+    //
+    // 🔑 WHY THIS EXISTS AT ALL. A global scalar cannot be right: D33 measured
+    // `rendered ∝ coverage^(−k)`, so the same planet renders up to 5.4 stops brighter
+    // when it is small on screen — and neither moment of the global mean fixes it
+    // (see the estimator note in exposureMeter.ts). This term is coverage-independent
+    // by construction, because the local neighbourhood of a disc IS the disc.
+    //
+    // Bit-exact 1.0 while the map is unbuilt or `__lum.localExposure(false)` is set,
+    // so it can be A/B'd without a reload. Its strength is DERIVED (= ADAPTATION_K),
+    // not authored.
+    const exposed = sceneTexture.mul(uPostExposure).mul(localExposureNode());
 
     // Bloom is added in linear HDR (pre-tonemap), as before.
     let hdr: typeof pipeline.outputNode = exposed;

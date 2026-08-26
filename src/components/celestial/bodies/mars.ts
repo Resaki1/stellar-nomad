@@ -110,9 +110,17 @@ function marsBillboardFragment({ albedo, uSpR, uSpU, uSpF }: { albedo: THREE.Col
     const a = vec3(albedo.r, albedo.g, albedo.b);
     const col = a.mul(sunDot).toVar();
 
-    // Warm dusty atmosphere rim on lit side
+    // Warm dusty atmosphere rim on lit side.
+    //
+    // ⚠ WAS `vec3(12.0, 0.1, 0.05)` — a red channel 120× and 240× its own neighbours,
+    // and Jupiter's equivalent rim is `vec3(0.7, 0.55, 0.35)`. A lost decimal point.
+    // Phase 4 is what makes it matter: this is a REFLECTANCE added to `col`, and the
+    // far tier now multiplies reflectance by `E/π`, so 12.0 means the rim returns
+    // 1,200% of the light falling on it — an energy violation rather than merely a
+    // garish colour. Flagged in the plan as "mars.ts:109's 12.0"; 0.12 keeps the warm
+    // red-dominant hue at a physical level.
     const rimFactor = clamp(float(1.0).sub(domeZ).mul(2.5), 0, 1);
-    const hazeColor = vec3(12.0, 0.1, 0.05);
+    const hazeColor = vec3(0.12, 0.1, 0.05);
     col.addAssign(hazeColor.mul(rimFactor).mul(sunDot).mul(0.2));
 
     return vec4(col, edge);

@@ -217,36 +217,23 @@ export function bodyIlluminanceAtCamera(
 }
 
 /**
- * Exact flux integral of `StellarPoint`'s sprite profile,
- * `core + halo = clamp((0.2−r)/0.2)^1.2 + 0.4·clamp((0.6−r)/0.6)^2.5`, over the disc
- * in units of the quad's half extent: `∫ f(r)·2πr dr`.
+ * ⚠ REMOVED: `STELLAR_POINT_PROFILE_INTEGRAL` and `stellarPointRadiance()`.
  *
- * Computed in closed form from Beta functions — `2π·0.2²·B(2,2.2) + 0.4·2π·0.6²·B(2,3.5)`
- * — rather than measured, so it cannot drift from the shader if either exponent
- * changes. ⚠ If you edit that profile, recompute this.
+ * They normalised `StellarPoint`'s old `core + halo` profile, and the integral
+ * (0.093146) was CORRECT — for a shape the rasteriser could not sample. The `core`
+ * term spanned 0.6 px radius while carrying 38% of that integral, so the point
+ * measured **0.527** of its expected flux; dropping the core entirely predicts 0.617,
+ * which brackets it.
+ *
+ * 🔑 The fix was not a better constant but a better PROFILE: `StellarPoint` now uses
+ * `psfNormForBuffer()` from `StarField` — a Gaussian at σ = 0.85 px (FWHM 2.0,
+ * critically sampled) whose flux gate reads 0.999×. A sub-pixel planet and a star are
+ * the same problem and now share one validated implementation.
+ *
+ * ⚠ An exactly-correct normalisation of a badly-sampled shape is still wrong. Check
+ * that the shape can be sampled before deriving its integral.
  */
-export const STELLAR_POINT_PROFILE_INTEGRAL = 0.093146;
 
-/**
- * Sprite radiance that makes a point source carry exactly `illuminanceGame`.
- *
- * `radiance = E / (θ_h² · I)` — the same flux-conservation shape `StarField` uses for
- * stars (`E / (2πσ²·Ω_pixel)`), which is validated to 0.999× on three named stars.
- * A stellar point IS a star-like sub-pixel source, so it should share the machinery
- * rather than carry a second, unvalidated derivation.
- *
- * @param angularHalfExtentRad the sprite's angular half extent, i.e. half of
- *   `(MIN_SCREEN_PX / bufferHeight) · fovRad`.
- */
-export function stellarPointRadiance(
-  illuminanceGame: number,
-  angularHalfExtentRad: number,
-): number {
-  const t = Math.max(angularHalfExtentRad, 1e-12);
-  return illuminanceGame / (t * t * STELLAR_POINT_PROFILE_INTEGRAL);
-}
-
-export const LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5;
 
 /** Sub-solar-point radiance of a Lambert sphere — what a centre probe should see. */
 export function subSolarRadianceLambert(
@@ -280,9 +267,42 @@ export function subSolarRadianceLambert(
  * star: measured 12.9× too bright on Neptune, and Mercury vs Neptune wrong by
  * 6,040× in principle. See docs/LIGHTING_PLAN.md §2.2.2.
  */
+/**
+ * A Lambert sphere's SUB-SOLAR radiance relative to what its GEOMETRIC albedo implies.
+ * `p = (2/3)·A_lambert`, so converting the other way is ×3/2. See `surfaceRadiance`.
+ */
+export const LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function surfaceRadiance(reflectance: any, uSunIlluminanceNode: any): any {
-  return reflectance.mul(uSunIlluminanceNode).mul(float(1 / Math.PI));
+  // ── × 3/2: GEOMETRIC albedo → LAMBERT albedo ────────────────────────────────
+  // ⚠ Every albedo this project feeds in — the `far.albedo` constants, the body
+  // textures, `bodyPhotometry.geometricAlbedo` — is a GEOMETRIC albedo, the published
+  // kind. A Lambertian shader needs the LAMBERT albedo, and for a sphere
+  // `p = (2/3)·A`, so the inputs are 2/3 of what the BRDF expects.
+  //
+  // MEASURED, and this is what identified it: matching `E_cam = p·Φ·E_sun·(R/d)²`
+  // requires the billboard's disc integral `∫sunDot dA` to be `π·Φ/1.1025 = 2.849`,
+  // but the EXACT dome integral is `2π/3 = 2.094`. Ratio **0.735** — and
+  // `__lum.lod("jupiter")` measured the far tier at **0.6925**, with
+  // `0.6925 × 1.5 = 1.039`.
+  //
+  // 🔑 The billboard's `domeZ`+`sunDot` is not an approximation, it is the exact
+  // Lambert-sphere geometry, which is why the discrepancy came out as a clean
+  // convention factor rather than a fudge. `LAMBERT_SUBSOLAR_OVER_GEOMETRIC` was
+  // already in this file for exactly this relation; nothing was applying it.
+  //
+  // ⚠ Applied HERE so all three LOD tiers get it together. Applying it to one tier
+  // would widen the mid→far step from 0.59 stops to 1.18 — the Venus-trim
+  // cancellation trap, where two errors partly hide each other.
+  //
+  // ⚠ Expect every lit body to get 50% brighter. That is the correct direction: they
+  // were all too dark by this factor. The mid tier's REMAINING deficit after this
+  // (~1.45×) is D09 — texture mean albedo versus the disc-averaged reference — which
+  // is a different defect with a different fix.
+  return reflectance
+    .mul(uSunIlluminanceNode)
+    .mul(float(LAMBERT_SUBSOLAR_OVER_GEOMETRIC / Math.PI));
 }
 
 // ── Global exposure state ────────────────────────────────────────────
