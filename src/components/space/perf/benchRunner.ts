@@ -34,6 +34,7 @@ import { commsQueueAtom } from "@/store/comms";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { isStbnLoaded } from "@/components/celestial/bodies/stbnTexture";
 import {
+  PASS,
   PASS_ORDER,
   perf,
   type PerfSnapshot,
@@ -556,6 +557,44 @@ function warnIfInflated(snap: PerfSnapshot): void {
   }
 }
 
+/**
+ * ⚠⚠ THE TERMINAL PASS ABSORBS THE FRAME'S IDLE TIME. Warn, loudly, because this
+ * cost me two rounds of work chasing a phantom.
+ *
+ * `5 post` is the LAST timestamped pass, so its GPU span runs until the frame is
+ * actually done — swallowing the vsync wait and the cross-frame pipeline bubble. It
+ * is therefore NOT a cost, and the giveaway is that it moves INVERSELY to the rest
+ * of the frame.
+ *
+ * MEASURED 2026-08-26, deep_space vs earth_8 in one run:
+ *   rest 2.9 ms → post 21.7 ms  |  rest 50.5 ms → post 17.3 ms
+ * A cheap scene produced a BIGGER post. And with bloom fully OFF, post read 21.7 ms
+ * against 15.5 ms with bloom ON — impossible as a bloom cost. The direct A/B settled
+ * it: half-res bloom (quarter the pixels) saved **0.41 ms**, not the ~8 ms inferred
+ * from "post is flat and must therefore be bloom". 🔑 **Flatness across scenarios is
+ * the signature of an IDLE-ABSORBING pass, not of a fixed workload.**
+ */
+function warnIfTerminalPassAbsorbsIdle(snap: PerfSnapshot): void {
+  const post = snap.passes.find((p) => p.label === PASS.post);
+  if (!post) return;
+  const rest = snap.passes
+    .filter((p) => p.label !== PASS.post)
+    .reduce((a, p) => a + p.gpu.mean, 0);
+  if (post.gpu.mean > rest && rest > 0) {
+    console.warn(
+      `[bench] ⚠⚠ "${PASS.post}" (${f2(post.gpu.mean)}ms) EXCEEDS every other pass ` +
+        `combined (${f2(rest)}ms). It is the LAST pass, so its span absorbs the vsync\n` +
+        `        wait and the cross-frame pipeline bubble — **do not read it as a cost.** ` +
+        `The tell is that it moves\n        INVERSELY to the rest of the frame: a cheaper ` +
+        `scene makes it BIGGER. MEASURED: with bloom fully OFF it\n        read 21.7ms vs ` +
+        `15.5ms with bloom ON, and halving the bloom chain's resolution (quarter the ` +
+        `pixels)\n        saved 0.41ms. 🔑 A pass that is FLAT across scenarios is ` +
+        `absorbing idle, not doing fixed work.\n        To measure anything here, use a ` +
+        `scenario that MISSES vsync (earth_8) and A/B one change at a time.`,
+    );
+  }
+}
+
 function printSnapshot(snap: PerfSnapshot): void {
   console.log(
     `frame p50 ${f2(snap.frameMs.p50)}ms (${f2(1000 / (snap.frameMs.p50 || 1))} fps) · ` +
@@ -563,6 +602,7 @@ function printSnapshot(snap: PerfSnapshot): void {
       `alt ${Math.round(snap.gates.altitudeKm)}km`,
   );
   warnIfInflated(snap);
+  warnIfTerminalPassAbsorbsIdle(snap);
   console.table(
     snap.passes.map((p) => ({
       pass: p.label,

@@ -89,21 +89,6 @@ const renderSubMenu = (
             }
             label="anti-aliasing (4× MSAA)"
           />
-          {/* D14c. Fixes a DIFFERENT failure than MSAA: MSAA resolves in linear HDR
-              and the tone curve lands after, so its first coverage step measures 73%
-              of the output range on a planet-vs-space edge. SMAA runs post-tonemap.
-              ⚠ Watch the starfield when toggling — SMAA is much safer than FXAA for
-              isolated bright dots, but not immune. */}
-          <SettingsCheckbox
-            active={settings.antialiasPost ?? false}
-            onChange={() =>
-              setSettings((prev) => ({
-                ...prev,
-                antialiasPost: !(prev.antialiasPost ?? false),
-              }))
-            }
-            label="edge smoothing (SMAA)"
-          />
           <SettingsCheckbox
             active={settings.bloom}
             onChange={() =>
@@ -848,8 +833,6 @@ const SettingsMenu = () => {
         // plus coverage fill, so a low-tier GPU should not pay it by default. Same
         // tier gate as bloom.
         antialias: gpu.tier >= 2,
-        // ⚠ Off on every tier — see the measured +4.19 ms note in store.ts.
-        antialiasPost: false,
         initial: false,
       }));
     }

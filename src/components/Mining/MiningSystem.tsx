@@ -6,6 +6,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { emitterColor } from "@/components/space/emissivePhotometry";
 
 import {
   miningStateAtom,
@@ -79,11 +80,27 @@ const MAX_PING_INDICATORS = 128;
 // --------------------
 // Colors (no arrays in JSX)
 // --------------------
-const COLOR_BEAM_HALO = new THREE.Color(0.35, 0.85, 1.0);
-const COLOR_BEAM_CORE = new THREE.Color(0.9, 0.98, 1.0);
-const COLOR_GLOW_MUZZLE = new THREE.Color(0.65, 0.9, 1.0);
-const COLOR_GLOW_IMPACT = new THREE.Color(0.45, 0.85, 1.0);
-const COLOR_PULSE = new THREE.Color(0.75, 0.95, 1.0);
+// ── Beam radiances on the photometric scale (LIGHTING_PLAN D26 step 1) ──────
+// MATERIAL radiance in game units, from `emissivePhotometry.ts` — each sprite's
+// own `opacity` envelope still applies on top. ⚠ Every magnitude here is
+// UNCHANGED from the authored triples (5,823 / 4,556 / 5,157 / 4,684 / 5,501
+// cd/m² at the material; 4,542 / 729 / 722 / 2,810 / 2,090 as rendered peaks).
+// What changed is that they are now STATED in cd/m² in one auditable table
+// instead of being bare RGB triples, so `__lum.emissives()` can check them and
+// Phase 8's energy-conserving glare can read them.
+//
+// 🔑 The most useful thing the audit found: matched on FLUX, the impact glow
+// emits 8.54e4 cd (effective area 18.2 m² once the alpha gradient and the 0.6
+// opacity are accounted for), which is a real ablation spot **6.3 cm across at
+// 3000 K** — or 14.6 cm at 2500 K. The authored number was already physically
+// right; it just never said so. ⚠ Do NOT "calibrate" it to the melt pool's own
+// 2.7e7 cd/m²; that asserts a centimetre-scale pool fills a 14 m sprite and
+// lands ~5,800× hot.
+const COLOR_BEAM_HALO = emitterColor("mining_beam_halo");
+const COLOR_BEAM_CORE = emitterColor("mining_beam_core");
+const COLOR_GLOW_MUZZLE = emitterColor("mining_muzzle");
+const COLOR_GLOW_IMPACT = emitterColor("mining_spot");
+const COLOR_PULSE = emitterColor("mining_pulse");
 
 const COLOR_HIGHLIGHT_HALO = new THREE.Color(0.35, 0.85, 1.0);
 const COLOR_HIGHLIGHT_CORE = new THREE.Color(0.85, 0.97, 1.0);
@@ -187,15 +204,30 @@ const NativeLineSegment = memo(
         blending,
         toneMapped: false,
       });
-      // D25: the beam is emissive and its colour is a plain CPU value, so it has
-      // to be rescaled per frame from its authored colour. MEASURED as a missing
-      // site by `__lum.preExposure(8)` — the laser darkened 8×.
-      registerPreExposedEmissive(mat);
-
       const line = new THREE.Line(geo, mat);
       line.frustumCulled = frustumCulled;
       return line;
     }, [points, color, opacity, depthTest, depthWrite, blending, frustumCulled]);
+
+    // D25: the beam is emissive and its colour is a plain CPU value, so it has
+    // to be rescaled per frame from its authored colour. MEASURED as a missing
+    // site by `__lum.preExposure(8)` — the laser darkened 8×.
+    //
+    // 🐛 FIXED HERE: this used to call `registerPreExposedEmissive(mat)` INSIDE
+    // the useMemo above and drop the disposer. Every time one of those seven
+    // dependencies changed, a new material was registered and the dead one was
+    // never removed — so the registry grew for the whole session and kept
+    // writing to disposed materials every frame. The registry's own doc warned
+    // about exactly this; the warning was written and then not followed.
+    useEffect(() => {
+      const mat = lineObj.material as THREE.LineBasicMaterial;
+      const unregister = registerPreExposedEmissive(mat);
+      return () => {
+        unregister();
+        mat.dispose();
+        lineObj.geometry.dispose();
+      };
+    }, [lineObj]);
 
     useImperativeHandle(ref, () => ({
       setPositions(positions: number[]) {
@@ -365,6 +397,47 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
     []
   );
 
+  // ── Sprite materials, built imperatively (LIGHTING_PLAN D25 + D26) ─────────
+  // ⚠⚠ NOT `<spriteMaterial color={…}>`. The pre-exposure registry MUTATES
+  // `mat.color` every frame, and this component re-renders whenever
+  // `miningProgress01` ticks — so R3F would re-apply the declarative `color`
+  // prop and stamp the AUTHORED value back over this frame's pre-exposed one,
+  // several times a second. The visible result would be a beam that flickers
+  // between correct and 1/p× too dark, worst in exactly the dark scenes where
+  // pre-exposure is largest. A material under registry control must not also be
+  // under JSX control.
+  //
+  // Each pulse needs its OWN material because each animates its own opacity.
+  const spriteMats = useMemo(() => {
+    const make = (color: THREE.Color, opacity: number) =>
+      new THREE.SpriteMaterial({
+        map: glowTexture,
+        color,
+        transparent: true,
+        opacity,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: true,
+        toneMapped: false,
+      });
+    return {
+      muzzle: make(COLOR_GLOW_MUZZLE, 0.12),
+      impact: make(COLOR_GLOW_IMPACT, 0.45),
+      pulses: Array.from({ length: BEAM_PULSE_COUNT }, () =>
+        make(COLOR_PULSE, 0.2),
+      ),
+    };
+  }, [glowTexture]);
+
+  useEffect(() => {
+    const all = [spriteMats.muzzle, spriteMats.impact, ...spriteMats.pulses];
+    const unregister = all.map((m) => registerPreExposedEmissive(m));
+    return () => {
+      unregister.forEach((u) => u());
+      all.forEach((m) => m.dispose());
+    };
+  }, [spriteMats]);
+
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
 
@@ -471,49 +544,21 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
       />
 
       <sprite ref={muzzleRef}>
-        <spriteMaterial
-          map={glowTexture}
-          color={COLOR_GLOW_MUZZLE}
-          transparent
-          opacity={0.12}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          depthTest
-          toneMapped={false}
-        />
+        <primitive object={spriteMats.muzzle} attach="material" />
       </sprite>
 
       <sprite ref={impactRef}>
-        <spriteMaterial
-          map={glowTexture}
-          color={COLOR_GLOW_IMPACT}
-          transparent
-          opacity={0.45}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          depthTest
-          toneMapped={false}
-        />
+        <primitive object={spriteMats.impact} attach="material" />
       </sprite>
 
-      {Array.from({ length: BEAM_PULSE_COUNT }).map((_, i) => (
+      {spriteMats.pulses.map((mat, i) => (
         <sprite
-           
           key={i}
           ref={(el) => {
             pulseRefs.current[i] = el;
           }}
         >
-          <spriteMaterial
-            map={glowTexture}
-            color={COLOR_PULSE}
-            transparent
-            opacity={0.2}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            depthTest
-            toneMapped={false}
-          />
+          <primitive object={mat} attach="material" />
         </sprite>
       ))}
     </group>

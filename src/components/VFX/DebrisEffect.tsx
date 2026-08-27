@@ -4,6 +4,8 @@ import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import type { VFXEventType } from "@/store/vfx";
+import { emitterColor } from "@/components/space/emissivePhotometry";
+import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -20,23 +22,45 @@ const INITIAL_SPREAD_FACTOR = 0.6; // fraction of asteroid radius for initial of
 // Simple 8-face icosphere approximation (cheap geometry for debris chunks)
 const DEBRIS_GEO = new THREE.IcosahedronGeometry(1, 0);
 
-// Shared material — warm rocky tint, slightly emissive so it reads in dark space
+// ── Emissives on the photometric scale (LIGHTING_PLAN D26 step 1) ───────────
+// These are real MESH geometry, not sprites, so `emissive` IS the surface
+// radiance of the glowing rock — no fill factor, and the blackbody derivation is
+// complete. Both entries live in `emissivePhotometry.ts` with their reasoning.
+//
+// ⚠ `emissiveIntensity` is deliberately 1: the emitted radiance is
+// `emissive × emissiveIntensity`, so leaving a second multiplier at 0.5/0.6
+// would put half the calibration in one file and half in another — and the
+// pre-exposure registry only rescales `emissive`.
+//
+// 🔑 Was `emissive: (0.15, 0.1, 0.06) × 0.5` and `(0.1, 0.15, 0.25) × 0.6`, i.e.
+// 325 and 531 cd/m², picked against the fixed exposure of 30 the project used
+// before Phase 5. The mining one was BLUE ("bluish from laser heat"), which is
+// thermally backwards — nothing at rock's melting point is blue.
+
+// Shared material — warm rocky tint; shock-heated fracture faces at 1200 K.
 const DEBRIS_MAT = new THREE.MeshStandardMaterial({
   color: new THREE.Color(0.55, 0.45, 0.35),
   roughness: 0.85,
   metalness: 0.1,
-  emissive: new THREE.Color(0.15, 0.1, 0.06),
-  emissiveIntensity: 0.5,
+  emissive: emitterColor("debris_collision"),
+  emissiveIntensity: 1,
 });
 
-// Mining-specific: slightly brighter, bluish from laser heat
+// Mining-specific: spall off the laser's melt front at 1600 K.
 const MINING_MAT = new THREE.MeshStandardMaterial({
   color: new THREE.Color(0.5, 0.5, 0.55),
   roughness: 0.7,
   metalness: 0.15,
-  emissive: new THREE.Color(0.1, 0.15, 0.25),
-  emissiveIntensity: 0.6,
+  emissive: emitterColor("debris_mined"),
+  emissiveIntensity: 1,
 });
+
+// D25: both are module-level singletons that live for the session, so they are
+// registered once here rather than per effect instance. The registry rescales
+// `emissive` (NOT `color` — that is reflectance and the light already carries
+// pre-exposure) every frame from the authored value above.
+registerPreExposedEmissive(DEBRIS_MAT);
+registerPreExposedEmissive(MINING_MAT);
 
 // ---------------------------------------------------------------------------
 // Types

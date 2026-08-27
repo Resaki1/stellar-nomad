@@ -65,12 +65,41 @@ const PLUME_RADIAL_SEGMENTS = 16;
  */
 const PLUME_HDR = 12.0;
 /**
- * Point-light illuminance at full thrust, game units — the light the plume CASTS, as
- * distinct from the radiance it emits. ⚠ Still an uncalibrated eyeball value: it is
- * not derived from PLUME_HDR × the plume's solid angle, so the plume and its
- * illumination can disagree. Deriving it is the honest follow-up.
+ * Luminous intensity of a nozzle's glow light at full thrust — the light the
+ * plume CASTS, as distinct from the radiance it EMITS.
+ *
+ * ✅ NOW DERIVED (LIGHTING_PLAN D26 step 1). It was `2.0`, flagged in this file
+ * as "still an uncalibrated eyeball value… not derived from PLUME_HDR × the
+ * plume's solid angle, so the plume and its illumination can disagree."
+ *
+ * `E = L · Ω`, and a `decay = 2` point light in three.js produces `E = I / d²`,
+ * so `I = L · Ω · d²`. The plume presents its side profile to a hull point: a
+ * triangle of base `2r` and height `PLUME_MAX_LENGTH`, i.e. projected area
+ * `r · PLUME_MAX_LENGTH`, and `Ω ≈ area / d²`. The `d²` cancels:
+ *
+ *     I = PLUME_HDR · r · PLUME_MAX_LENGTH
+ *
+ * 🔑 Note what the cancellation means: the hull's distance from the nozzle drops
+ * out entirely, so this needs no reference distance and no per-ship tuning. That
+ * is the inverse-square law and the solid-angle law being the same law.
+ *
+ * 🔑 THE DERIVATION LANDED ON THE AUTHORED VALUE. At the nominal r = 0.3 this
+ * gives **14.4** game units, against an effective authored value of **13.6** —
+ * agreement to 6%, which is a genuine independent check rather than a fit,
+ * because the authored side had to be computed through the hidden multiplier
+ * below to even be comparable. Nobody had noticed it was already right.
+ *
+ * ⚠ Order-unity uncertainty: Ω is a flat-triangle stand-in for a cone seen from
+ * a point beside it, and the true hull distance varies over the hull. Read this
+ * as "±2×, and the shape of the answer is right", not as three digits.
+ *
+ * ⚠ Per-nozzle, because Ω scales with the nozzle radius — a bigger engine both
+ * emits over a larger area and lights the hull more. That is the property that
+ * makes this survive a ship refit, which a constant could not.
  */
-const LIGHT_INTENSITY = 2.0;
+function plumeLightIntensity(nozzleRadius: number): number {
+  return PLUME_HDR * nozzleRadius * PLUME_MAX_LENGTH;
+}
 /** Point-light distance (model-local) */
 const LIGHT_DISTANCE = 6.0;
 
@@ -98,7 +127,26 @@ function getSharedGeometry(radius: number): THREE.ConeGeometry {
 }
 
 // ── Reusable color for light ─────────────────────────────────────────
-const LIGHT_COLOR = new THREE.Color(5.0, 7.0, 10.0);
+/**
+ * ⚠⚠ WAS `new THREE.Color(5.0, 7.0, 10.0)` — A HIDDEN 6.79× MULTIPLIER.
+ * three.js computes a light's contribution as `color × intensity`, so a colour
+ * whose channels exceed 1 is an undeclared second intensity: the Rec709
+ * luminance of (5, 7, 10) is **6.79**, which made the real intensity
+ * `2.0 × 6.79 = 13.6` while the constant next to it said 2.0.
+ *
+ * 🔑 The same defect class as `STAR_COLOR_LINEAR`'s note and D09d's per-channel
+ * clamp: a colour that is not luminance-normalised silently rescales whatever it
+ * multiplies, and the number you can see stops meaning anything. Normalised to
+ * luminance 1 so the hue is hue and the intensity is intensity — and the 6.79 is
+ * now visible inside `plumeLightIntensity`'s derived value instead of hiding here.
+ *
+ * ⚠ NOT a visual change: 6.79 × 2.0 = 13.6 against the derived 14.4 (+6%).
+ */
+const LIGHT_COLOR = (() => {
+  const c = new THREE.Color(5.0, 7.0, 10.0);
+  const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  return c.multiplyScalar(1 / lum);
+})();
 
 // ── Component ────────────────────────────────────────────────────────
 const EngineExhaust = memo(function EngineExhaust({
@@ -180,7 +228,8 @@ const EngineExhaust = memo(function EngineExhaust({
     const intensity = intensityRef.current ?? 0;
 
     // × preExposure (D25) — the plume is emissive, so nothing else scales it.
-    // Its absolute level is still the old uncalibrated one (D26 class).
+    // PLUME_HDR is calibrated (72,456 cd/m², a defensible plasma luminance) and
+    // is the anchor the rest of `emissivePhotometry.ts` is read against.
     uIntensity.value = intensity * getPreExposure();
     uTime.value += delta;
 
@@ -206,7 +255,8 @@ const EngineExhaust = memo(function EngineExhaust({
         // when one term of a pair gets a per-frame factor, EVERY consumer of that pair
         // needs it, and the one you forget is invisible precisely because the other
         // one looks right.
-        light.intensity = intensity * LIGHT_INTENSITY * getPreExposure();
+        light.intensity =
+          intensity * plumeLightIntensity(configs[i].radius) * getPreExposure();
         light.visible = intensity > 0.01;
       }
     }

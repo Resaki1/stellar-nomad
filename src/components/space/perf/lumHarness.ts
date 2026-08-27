@@ -45,6 +45,14 @@ import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
 import {
+  blackbodyAnchors,
+  emitterAudit,
+  gameUnitsToNits,
+} from "@/components/space/emissivePhotometry";
+import {
+  preExposedEmissiveRows,
+} from "@/components/space/preExposedEmissive";
+import {
   albedoCalibrationStatus,
   getStellarPointAlbedos,
 } from "@/components/celestial/albedoCalibration";
@@ -2230,13 +2238,22 @@ export class LumHarness {
     // ⚠ READ THE CAVEAT BELOW BEFORE TREATING THESE AS FINAL. B−V constrains
     // blue-vs-green only, so red is a LINEAR-SLOPE EXTRAPOLATION — which means the
     // derivation systematically UNDER-saturates any body whose spectrum curves.
+    // ⚠ Iterates BODY_PHOTOMETRY, not the mounted-body registry. The hue
+    // derivation is a PURE FUNCTION OF STATIC DATA — band albedos and colour
+    // indices — so gating its table on what has streamed in was simply wrong: it
+    // made the one table that needs no runtime state the hardest to read, empty
+    // after every HMR cycle, and unavailable in any headless check. The
+    // duplicated-constant audit below still (correctly) needs live bodies,
+    // because it compares against what the renderer PUBLISHED.
     const hues: Record<string, Record<string, string | number>> = {};
-    for (const [id] of getStellarPointAlbedos()) {
+    for (const id of Object.keys(BODY_PHOTOMETRY)) {
+      if (id === "sol") continue;
       const c = bodyColourStatus(id);
       if (!c.rgb) continue;
       const m = Math.max(...c.rgb);
       hues[id] = {
         source: c.source,
+        bands: c.bands ?? "—",
         "B−V": c.bMinusV ?? "—",
         "hue R:G:B": c.rgb.map((x) => (x / m).toFixed(2)).join(" : "),
         "R/B": Number((c.rgb[0] / Math.max(c.rgb[2], 1e-6)).toFixed(2)),
@@ -2244,6 +2261,16 @@ export class LumHarness {
     }
     if (Object.keys(hues).length > 0) {
       console.table(hues);
+      console.log(
+        "[lum] ✅ `band spectrum` rows come from MEASURED per-band geometric albedos\n" +
+          "      (Mallama, Krobusek & Pavlov 2017 Table 7 — the same table geometricAlbedo\n" +
+          "      itself came from, V column matching to every digit), integrated against the\n" +
+          "      CIE colour-matching functions under the star's own Planck spectrum. Those\n" +
+          "      rows need no caveat. 🔑 They also QUANTIFIED the old model's error: measured\n" +
+          "      R/B is 0.360 for Uranus and 0.322 for Neptune against 0.875 / 0.686 from the\n" +
+          "      B−V slope, i.e. 1.8× and 1.6× too red — the exact failure D09b predicted.\n" +
+          "      ⚠ `derived from B−V` rows still carry the full caveat below.",
+      );
       console.log(
         "[lum] hue is DERIVED from bodyPhotometry.colorIndexBV, not authored — a body's\n" +
           "      colour is a measurement, so a hand-picked triple is a second uncontrolled\n" +
@@ -2297,6 +2324,98 @@ export class LumHarness {
           "cannot drift).",
       );
     }
+  }
+
+  /**
+   * Audit every self-luminous VFX surface in the game (LIGHTING_PLAN D26 step 1).
+   *
+   * Three things, in the order you want them:
+   *
+   * 1. **The blackbody integral's anchors.** The thermal rows are only as good as
+   *    `blackbodyLuminanceNits`, so this checks it against three targets this
+   *    project did not choose — the solar photosphere, a tungsten filament, and
+   *    the visible-glow threshold — spanning nine decades. 🔑 If a refactor ever
+   *    breaks `planck()` or the ȳ fit, every glowing object in the game silently
+   *    rescales; this fails loudly instead.
+   * 2. **The emitter table**, brightest first, in cd/m² / game units / EV100.
+   *    Compare the EV column against `__lum.prove()`'s metered EV: an emitter far
+   *    above everything else in frame is the one owning adaptation.
+   * 3. **The live pre-exposure registry.** ⚠ THIS IS THE PART THAT CATCHES BUGS.
+   *    The table above is what the code INTENDS; the registry is what is actually
+   *    being rescaled each frame. A VFX that is on screen and NOT in the registry
+   *    is a D25 site — it will darken by exactly the pre-exposure factor as the
+   *    scene gets darker, which `__lum.preExposure(8)` shows as a region moving
+   *    when nothing should move.
+   */
+  emissives(): void {
+    for (const a of blackbodyAnchors()) {
+      console.log(
+        `[lum] blackbody ${a.label.padEnd(24)} ${a.tempK} K -> ` +
+          `${a.nits.toExponential(3)} cd/m2   (expected ${a.expected})`,
+      );
+    }
+
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const r of emitterAudit()) {
+      rows[r.id] = {
+        kind: r.kind,
+        "T (K)": r.tempK ?? "—",
+        "cd/m²": Number(r.nits.toPrecision(4)),
+        "game units": Number(r.gameUnits.toPrecision(4)),
+        EV100: Number(r.ev.toFixed(2)),
+        "peak RGB": r.rgb.map((x) => x.toPrecision(3)).join(" / "),
+      };
+    }
+    console.table(rows);
+    console.log(
+      [
+        "[lum] `thermal` rows are DERIVED — real geometry, so `emissive` IS the surface",
+        "      radiance and Planck's law fixes it completely. `design` rows are AUTHORED",
+        "      but stated in cd/m²: a sprite stands in for something smaller than itself,",
+        "      so its radiance is L_emitter × fill and the fill is not known.",
+        "      ⚠⚠ Move a thermal row by its TEMPERATURE, never by a multiplier. Visible-band",
+        "      blackbody luminance runs ~T¹² near 1500 K (the Planck peak is sweeping INTO",
+        "      the photopic band), so ±200 K is ±10× brightness. The most sensitive knob",
+        "      in the project.",
+        "      🔑 Read each row's `why` in emissivePhotometry.ts before changing it — several",
+        "      record a derivation that landed ON the authored value, which is a result.",
+      ].join("\n"),
+    );
+
+    const live = preExposedEmissiveRows();
+    if (live.length === 0) {
+      console.warn(
+        [
+          "[lum] ⚠ the pre-exposure registry is EMPTY. Module-level VFX materials register",
+          "      on first import, so this is expected until a mining beam / wreck / debris",
+          "      effect has existed once this session. It is NOT expected while one is on",
+          "      screen — that would be a live D25 site.",
+        ].join("\n"),
+      );
+      return;
+    }
+    const byChannel: Record<string, Record<string, string | number>> = {};
+    live
+      .sort((a, b) => b.baseLuminance - a.baseLuminance)
+      .forEach((r, i) => {
+        byChannel[`${i}: ${r.type}`] = {
+          channel: r.channel,
+          "authored units": Number(r.baseLuminance.toPrecision(4)),
+          "cd/m²": Number(gameUnitsToNits(r.baseLuminance).toPrecision(4)),
+          "authored RGB": r.base.map((x) => x.toPrecision(3)).join(" / "),
+        };
+      });
+    console.table(byChannel);
+    console.log(
+      [
+        `[lum] ${live.length} material(s) under per-frame pre-exposure. The \`channel\` column`,
+        "      must read `emissive` for every lit material and `color` for every unlit one.",
+        "      ⚠ A lit material showing `color` would be pre-exposing its REFLECTANCE — the",
+        "      light already carries pre-exposure, so that applies it twice to the reflected",
+        "      term and not at all to the emitted one.",
+        "      Cross-check with `await __lum.preExposure(8)`: anything MISSING here moves.",
+      ].join("\n"),
+    );
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

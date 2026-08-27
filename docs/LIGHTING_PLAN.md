@@ -63,13 +63,13 @@ Closed defects: D01, D02, D03, D03b, D05, D08, D10, D11, D15, D17, D18, D22, D24
 | # | work | defects | blocked by | note |
 |---|------|---------|-----------|------|
 | 1 | ✅ **Star catalogue** rendering — S0–S2 done, validated 0.999× | **D30** ✅ | — | S3 diffuse split ✅ too; remaining: S4 SH bake (D29), S5 parallax, S6 navigation |
-| 2 | **Emissive calibration** | **D26** | nothing | exhaust/VFX are ~1.0 game units picked against a fixed exposure of 30, never a luminance. Root cause of the "blown plume" |
-| 3 | **Phase 4 — unified impostor radiance** | **D04, D06, D20** | nothing | every distant body is still on an arbitrary scale: billboard `albedo × sunDot` with no illuminance, stellar point normalised to a Jupiter reference, Luna's point albedo 38× off |
-| 4 | **Phase 2c — texture calibration** | **D09, D23** | nothing | ⚠ D23 is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works**; needs a per-region or physically-derived remap |
+| 2 | ✅ **Emissive calibration** — step 1 done (2026-08-26) | **D26** | — | every VFX emissive now carries a temperature or a stated cd/m², in [`emissivePhotometry.ts`](../src/components/space/emissivePhotometry.ts). Gate `__lum.emissives()`. 🔑 The audit's verdict: they were NOT badly miscalibrated, they were **unstated** — see D26e. Remaining: the metering policy (step 2), which the hot-tail cap already largely covers |
+| 3 | ✅ **Phase 4 — unified impostor radiance** | **D04, D06, D20** | — | **CLOSED and verified 2026-08-26**: worst |log2| **0.29 stops** (from 1.31), worst tier jump **0.32** (from 0.59), gate reports scale continuous across every transition. The ×3/2 geometric→Lambert prediction landed within **1.5%**. Only residual is the mid tier at 1.22× dim, which is D09/D23 territory |
+| 4 | 🔶 **Phase 2c — texture calibration** | **D09** ✅, **D23** ⛔ | nothing | D09 closed (runtime albedo calibration) and **D09e** closed the hue side with measured band spectra for all 8 planets. ⚠ Remaining: **D23** is per-REGION (ocean 21–43×, forest 4–6×, desert/ice correct) so **no single scalar works**; needs a per-region or physically-derived remap. Plus **D09f**: Io/Luna/Galileans still on one colour degree of freedom, awaiting a primary-source V−R |
 | 5 | **D28 — refracted limb light** | D28 | nothing | ~1 lux of coppery ring in an atmosphere planet's umbra, 3,400× starlight, representable today |
 | 6 | **Phase 6 — HDR output** | D13 | best after the star work | pre-exposure changed what the post chain hands the display |
 | 7 | **Phase 7 — scotopic/mesopic + Purkinje** | D19 | after stars | the "night vision" look; pointless while stars are 482× too dim |
-| 8 | **Phase 8 — PSF glare replacing mip bloom** | D12 | after 2 and 3 | bloom currently reports *correctly* on miscalibrated emissives; fix the inputs first |
+| 8 | **Phase 8 — PSF glare replacing mip bloom** | D12 | ✅ **unblocked** | both prerequisites are done: Phase 4 landed and D26 step 1 gave every emissive an absolute luminance. Glare can now read real inputs. 🔑 This is the answer to "with the sun in view everything else is black" — a PSF veils, a mip bloom does not |
 | 9 | **Phase 9 — night-side stack** | D16 | after 4 | city lights at absolute luminance, moonlight, airglow, aurora |
 | — | **D21** `earth_normal` asset | D21 | asset re-source | mitigated by the grazing fade; a 4K+ normal map would let that fade be deleted |
 | — | **D07** planets bypass three.js lights | D07 | — | arguably *resolved by design*: surfaces consume `uSunIlluminance` directly. Revisit only if a body ever needs multiple light sources |
@@ -132,6 +132,9 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D09 | 🔶 **Textures are brightness-normalised art, uncorrected — now calibrated at RUNTIME.** ⚠ Fixed as a MEASUREMENT, not a table: the textures are expected to change, and a pasted constant becomes a lie the moment an asset is swapped (this repo has been burned twice already). **(a) Far tier — analytic, no measurement needed:** the 13 authored `THREE.Color` albedos span **8.7× (3.12 stops)** against `bodyPhotometry` with a geometric mean of **1.076** — 🔑 spread with NO systematic offset, i.e. a pure per-body error that **no exposure setting or tone curve can absorb** (Luna +1.64 hot while Neptune is −1.49 cold in the same frame). `useFarLOD` now normalises each colour's LUMINANCE to `geometricAlbedo`, hue preserved, at consumption. **(b) Near/mid — measured:** [`albedoCalibration.ts`](../src/components/celestial/albedoCalibration.ts) renders the loaded colour map to 128×64 with 16×16 stratified taps at **level 0** (⚠ not a mip: `toktx --genmipmap` filters in sRGB, so a mip is the average of ENCODED texels; and derivative LOD would have made all 256 taps read mip ~6, so the sampler's mip filtering is suppressed for the one draw), then takes the **cos(latitude)-weighted** sphere mean (an equirect over-samples the poles, i.e. the bright ice caps). ⚠ Weighting is symmetric ⇒ immune to the D24 v-flip. Scale = `geometricAlbedo / mean`, applied as ONE wrapper multiply in `CelestialBody` so no body can forget it. **✅ VALIDATED: Earth's day map measured 0.0893 against an independently-computed cloud-free surface albedo of 0.0900 — 0.993×.** ⚠⚠ Which is exactly why Earth is now `colourMapPartialReason`-SKIPPED: its texture is CLOUD-FREE, so most of p=0.434 lives in the separate cloud layer and calibration wanted a wrong **+2.28 stops**. 🔑 D09 is about the texture's MEAN, D23 about its DISTRIBUTION — different defects; Earth's mean is right while its ocean p02 is crushed. Gate `__lum.albedo()` (also audits the duplicated `stellarPoint.geometricAlbedo`: ✅ all 13 match). ⚠ Remaining: the residual sphere-mean→disc-average constant is body-independent, measured by `__lum.disc()` across 3+ bodies. | all colour maps | **8.7× spread closed on the far tier** | R |
 | D09b | ✅ **Hue derived from the measured colour index, not authored.** Both RGB triples per body — the far billboard's `albedo` and `stellarPoint.color` — were picked by eye while `bodyPhotometry.colorIndexBV` sat unused with the comment "used to derive a defensible tint". [`bodyColour.ts`](../src/components/celestial/bodyColour.ts): `Δ(B−V) = −2.5·log₁₀(R_B/R_V)` against the Sun's 0.653 ⇒ `R_B/R_V = 10^(−0.4·Δ)`, closed to RGB by a **linear spectral slope** through the Johnson band centres (442/540 nm) evaluated at the sRGB primaries' dominant wavelengths (611/549/465 nm), then renormalised so Rec709 luminance = `geometricAlbedo`. Both LOD tiers read it, so the crossfade cannot shift colour. ⚠⚠ **B−V is ONE degree of freedom and RGB needs TWO**, so red is an extrapolation and the model **systematically UNDER-saturates** anything with narrow absorption bands — most visibly Io (sulphur) and the ice giants (methane absorbing in the RED, the opposite of a smooth slope). Treat the output as a defensible LOWER BOUND; the real fix is a second measured index (V−R/B−R). Override hook `measuredReflectanceRgb`, cited values only. 🔑 Big visible changes, all toward calibrated imagery: Mars R/B **4.00 → 2.12** (muted butterscotch, not saturated orange), Venus **2.50 → 1.24** (pale cream), Neptune **0.06 → 0.69** — the vivid Voyager blue was contrast-enhanced and the reprocessed data shows a pale cyan close to Uranus. | [`useFarLOD.ts`](../src/components/celestial/useFarLOD.ts), [`CelestialBody.tsx`](../src/components/celestial/CelestialBody.tsx) | 13 authored triples removed | ✅ |
 | D09d | ⚠ **A TIER-HUE STEP I INTRODUCED WITH D09b, then fixed per-channel.** Deriving the FAR tier's hue from B−V while the near/mid tier kept its TEXTURE's hue put the two tiers on different sources. MEASURED on Neptune: far tier R/B **0.690**, texture R/B **0.051** — a **13.5× disagreement on one body in one frame**, visible as a colour shift across the LOD transition. Worse, a saturated-blue texture has LOW Rec709 luminance (blue weight 0.0722), so the luminance-only fix scaled Neptune **+1.85 stops** and produced a *brighter vivid blue* instead of the pale cyan its colour index implies. **Fix: the correction is PER-CHANNEL** — the texture's cos-weighted mean RGB is moved onto the derived RGB, so both tiers share one source and all spatial variation survives. ⚠⚠ **Bounded at 1.5 stops per channel, as an admission of ignorance not a safety margin:** Neptune wants **[19.3, 3.54, 1.42]** — a 19× boost on a red channel whose texture mean is 0.0196 — and Neptune is exactly where the model fails (methane absorbs in the RED, invisible to a slope fitted 442→540 nm). The texture's 0.051 is likely too low and the derived 0.69 too high; **neither source knows where the truth is**, so the hue moves at most 1.5 stops and the body is NAMED. 🔑 A clamp here is a WORKLIST ENTRY: that body needs a real V−R/B−R in `measuredReflectanceRgb`. Luminance stays exact via post-clamp renormalisation — trading the certain result for the uncertain one would be backwards. | [`albedoCalibration.ts`](../src/components/celestial/albedoCalibration.ts) | 13.5× → ≤1.5 stops | 🔶 |
+| D09e | ✅ **HUE FROM A MEASURED SPECTRUM, NOT A ONE-PARAMETER MODEL — D09b's known failure closed for all eight planets (2026-08-26).** D09b derived colour from `colorIndexBV` alone and said so in writing: *"B−V is ONE degree of freedom and RGB needs TWO… the model systematically UNDER-saturates anything with narrow absorption bands… the real fix is a second measured index."* **The fix turned out to be better than a second index: full per-band geometric albedos.** [`bodyPhotometry.bandAlbedo`](../src/data/bodyPhotometry.ts) now carries U/B/V/R/I for all eight planets from **Mallama, Krobusek & Pavlov (2017), Icarus 282, 19–33, Table 7** (arXiv:1609.05048), and [`bodyColour.ts`](../src/components/celestial/bodyColour.ts) integrates the interpolated spectrum against the CIE colour-matching functions under the star's own Planck spectrum via `reflectanceSpectrumToLinearSrgb`. 🔑🔑 **THE DECISIVE CHECK: that is the table `geometricAlbedo` ALREADY CAME FROM.** All eight V-column values match this repo's existing albedos to every digit (Mercury 0.142, Venus 0.689, Earth 0.434, Mars 0.170, Jupiter 0.538, Saturn 0.499, Uranus 0.488, Neptune 0.442) — so this is the rest of a row the project was quoting one cell of, not a second opinion beside the first. Same for the zero point: `SUN_B_MINUS_V = 0.653` turned out to be **Ramírez et al. (2012), ApJ 752, 5** exactly, which also supplies (V−R)☉ = 0.352 for the two-index path. **⚠⚠ MEASURED — the old model's error, quantified, and it fails EXACTLY where D09b predicted:** Uranus R/B **0.875 → 0.360** (model 1.8× too red), Neptune **0.686 → 0.322** (1.6× too red), Mars **2.13 → 3.27** (1.5× too pale), Earth **0.448 → 0.816** (1.8× too blue) — while Jupiter/Venus/Saturn/Mercury move only 0.89–1.15×. 🔑 The four smooth-spectrum bodies barely budge and the four with real spectral structure move a lot, so the slope model is **kept as the fallback** rather than deleted. ⚠ Luminance is still renormalised to `geometricAlbedo`, so **hue only** moves and the whole D09 brightness calibration is untouched. | [`bodyColour.ts`](../src/components/celestial/bodyColour.ts), [`photometry.ts`](../src/components/space/photometry.ts) | **up to 1.8× on hue, 4 bodies** | ✅ |
+| D09f | ⚠⚠ **A CITATION IS NECESSARY BUT NOT SUFFICIENT — Io and the moons stay OPEN, on purpose.** The obvious route for the moons was the V−R column of a compilation (johnstonsarchive, crediting "L09b"): Ganymede **1.04**, Io **0.72**, Europa **0.69**, Callisto **0.25**. 🔑 That puts **Ganymede redder than Io** and **Callisto bluer than the Sun** (0.352) — both flatly contradicting how those bodies look, while the *same page's* B−V column has the ordering right (Io 1.17 ≫ Europa 0.87 ≈ Ganymede 0.83 ≈ Callisto 0.86). Probably mixing photometric systems. **Rejected, and the rejection is the deliverable:** `colorIndexVR` ships as a supported field with the failed check written into its doc comment, and Luna + the four Galileans stay on the B−V slope model with D09d's ±1.5-stop clamp. Io remains the named worklist body it was. ⇒ **Do not fill these in from a compilation; they need a primary source.** | [`bodyPhotometry.ts`](../src/data/bodyPhotometry.ts) | 5 bodies still on 1 DOF | ⛔ |
+| D09g | 🐛 **GATE BUG — `__lum.albedo()`'s hue table was gated on runtime mounting.** It iterated the published-body registry, so the one table that is a **pure function of static data** (band albedos and colour indices → RGB) was the hardest in the harness to read: empty until a body streamed in, empty again after every HMR cycle, and unavailable to any headless check. Now iterates `BODY_PHOTOMETRY` directly. ⚠ The duplicated-constant audit below it still needs live bodies and correctly still gates on them — it compares against what the renderer PUBLISHED, which is a different question. 🔑 Ask whether a diagnostic depends on runtime state before making it wait for runtime state. | [`lumHarness.ts`](../src/components/space/perf/lumHarness.ts) | instrument | ✅ |
 | D09c | 🐛 **GATE BUG, not a renderer bug — `__lum.disc()` read a PRE-EXPOSED RED CHANNEL.** `expected()` took `rec.sunIlluminance.x`, which `atmospherePass` sets to `illum × getPreExposure() × starTint[0]` (D25), while `decodeRgb` divides pre-exposure OUT of the measured side. MEASURED fallout: Saturn reported **0.040× (−4.66 stops)** and Neptune **0.014× (−6.12)** — apparently catastrophic — while the renderer was correct to **0.86×** and **1.09×** against hand-computed physics. 🔑 The tell was WHICH bodies were wrong, not how wrong: only the AIRLESS ones (Mercury, Luna) read correctly, because with no atmosphere record they fell through to the clean authored-distance path. Fixed to take the record's live `starDistanceKm` and recompute. **After the fix, five bodies from 0.39 to 30 AU agree to 0.51 stops with a geometric mean of 0.993** — so the sphere-mean→disc-average residual D09 expected to leave behind is not there at all. | [`lumHarness.ts`](../src/components/space/perf/lumHarness.ts) | instrument | ✅ |
 | D10 | Clouds ~100× brighter than the ground below them | [`cloudCommon.ts:141`](../src/components/celestial/bodies/cloudCommon.ts#L141) | **10–30×** | R |
 | D11 | Shipped defaults are `toneMapping: false` (→ Neutral, crushes above linear ≈4) **and** `bloom: false` | [`store.ts:29-30`](../src/store/store.ts#L29) | 2 code values | I |
@@ -153,6 +156,12 @@ Severity is quantified as the factor by which the render deviates from its own p
 | D25 | ✅ Diffuse sky **underflowed RGBA16F** (2⁻²⁴ = 5.96e-8; sky p50 is 9.6e-9) → stored as exactly 0 | [`photometry.ts`](../src/components/space/photometry.ts) + 6 source sites | fixed by source pre-exposure; sky now reads 2.3e-8 where it read 0 | ✅ |
 | D26 | 🔶 The player's vehicle carries ~100% of metered flux in deep space | meter + [`EngineExhaust.tsx`](../src/components/VFX/EngineExhaust.tsx) | ⚠⚠ **RE-DIAGNOSED AGAIN, 2026-08-21: NOT a calibration bug.** `PLUME_HDR = 12` = **72,456 cd/m²**, a defensible plasma luminance. MEASURED: the plume drags metered EV −14.74 → −10.3 (**4.4 stops**) at 2% of frame weight / ~100% of flux, compressor already holding back ~5.5 stops. Deep space is 1e-4 cd/m², so a CORRECT plume is ~7e8× the sky and a real eye WOULD be blinded. The hull emissive was never the cause (it is 0 because a nozzle glowing at zero throttle is wrong). ✅ Fixed alongside: the plume's point light was missing `× preExposure` while its mesh had it — a blazing plume casting no light on its own hull. **Remaining part is a METERING POLICY, not a value.** | I |
 | D27 | ✅ **The bounce fill was never occluded** (and non-dominant bodies cast no shadow at all) | [`SunLight.tsx`](../src/components/Star/SunLight.tsx), [`sunOcclusion.ts`](../src/components/space/sunOcclusion.ts) | ship glowed at 0.25 cd/m² inside an umbra, drowning the stars | ✅ |
+| D26e | ✅ **EMISSIVE CALIBRATION (D26 step 1) — and the audit's verdict overturns the premise.** Every self-luminous VFX surface now lives in [`emissivePhotometry.ts`](../src/components/space/emissivePhotometry.ts), each entry carrying either a **temperature** (derived) or a **stated cd/m²** (authored, with its implied physics recorded). 🔑🔑 **THE VFX WERE NOT BADLY MISCALIBRATED — THEY WERE UNSTATED.** Measured across all 11: 197–4,748 cd/m², i.e. "bright fluorescent tube" territory, entirely defensible. The same conclusion the plume reached, now generalised. The defect was never the magnitudes; it was that no number had a unit, so nothing could be checked, and Phase 8's energy-conserving glare had nothing to read. **New derivation:** `blackbodyLuminanceNits(T)` = `(683/π)·∫M_λ(T)·V(λ)dλ`, reusing `photometry.ts`'s existing `planck()` and CIE ȳ fit (the ȳ CMF **is** V(λ)) so hue and magnitude cannot drift apart. ✅ **VALIDATED LIVE on three anchors this project did not choose, across nine decades: 5772 K → 1.844e9 cd/m² vs a measured solar disc of ~2.0e9; 2800 K → 1.657e7 vs a tabulated tungsten filament of 5e6–2e7; 1000 K → 2.71, where "dull red heat" is conventionally placed.** ⚠⚠ **The steepest knob in the project:** visible-band blackbody luminance is NOT ∝T⁴ — the Planck peak sweeps *into* the photopic band, so it runs **~T¹² near 1500 K** (1200 K → 1.4e2, 1600 K → 2.1e4, 2500 K → 5.6e6). A ±200 K guess about a glow is a ±10× guess about its brightness. Gate `__lum.emissives()` | [`emissivePhotometry.ts`](../src/components/space/emissivePhotometry.ts) | **11 emissives, 0 units → 11 units** | ✅ |
+| D26f | 🔑 **WHY SPRITES CANNOT BE DERIVED AND MESHES CAN — the distinction that keeps this honest.** A `MeshStandardMaterial.emissive` on real geometry IS that surface's radiance: no fill factor, derivation complete. A **SPRITE** is a billboard standing in for something SMALLER than itself, so its radiance is `L_emitter · (A_emitter/A_sprite)` — and the fill factor depends on a physical size the sprite does not know. MEASURED consequence: claiming a temperature for the mining impact glow would assert fill = 1 and land **1,800× hot** (a 2500 K melt pool is 5.07e6 cd/m² against the authored 2,810). Same reasoning as `STELLAR_POINT_PROFILE_INTEGRAL` and `uPsfNorm` — a sub-resolution source conserves **FLUX, not radiance**. ⇒ meshes are `kind: "thermal"`, sprites are `kind: "design"`. 🔑🔑 **AND RUNNING IT BACKWARDS IS THE PAYOFF:** the mining glow's effective emitting area is `2πR²·∫a(u)u du·opacity` = **18.2 m²** (the alpha gradient concentrates the light 8.5× versus the naive πR² = 154 m²), so at 4,684 cd/m² it emits **8.54e4 cd** — which is a real ablation spot **6.3 cm across at 3000 K**, or 14.6 cm at 2500 K. Both plausible mining-laser footprints, so the authored value was already physically right; it just never said so. Three more rows came out the same way, which is the real content of D26e's verdict. ⚠ **CORRECTED:** the first version of this row said "33 cm at 2500 K", from a radiance-RATIO shortcut (`authored / L_melt = (r/R)²`) that ignored both the alpha gradient and the 0.6 opacity. **Compare FLUX, never radiance, when the two areas differ** — exactly the discipline `STELLAR_POINT_PROFILE_INTEGRAL` exists to enforce, cited two lines earlier in this very row and then not applied. | — | 1,800× error avoided | ✅ |
+| D26g | 🐛 **FOUR LIVE BUGS FOUND BY DOING THE CALIBRATION — none of them about brightness.** (1) **Four VFX materials were never registered for pre-exposure** (`DebrisEffect` ×2, `FlashEffect`, `WreckCollector`), so they darkened by the full pre-exposure factor as the scene darkened — the D25 signature, flagged as "still unregistered" in this doc since 2026-08-18. (2) ⚠⚠ **The registry could only scale `color`, which is an ENERGY BUG on a lit material**: `MeshStandardMaterial.color` is REFLECTANCE and the light already carries pre-exposure, so scaling it would apply the factor twice to the reflected term and not at all to the emitted one. Now auto-targets `emissive` when the property exists — the same discriminator three.js uses to decide whether the emissive term is in the shader, so the two cannot disagree. (3) 🐛 **`MiningSystem` registered inside a `useMemo` and dropped the disposer**, on a memo with seven dependencies — the registry grew for the whole session and kept writing to disposed materials. The registry's own doc warned about exactly this. (4) ⚠⚠ **NO HALF-FLOAT CLAMP.** `rt` is RGBA16F and pre-exposure reaches `1/(1.2·2^EV_MIN)` ≈ **2.2e5** when dark-adapted, so any emissive above ~0.3 game units overflows to Inf → NaN through the bloom chain during the 0.25 s `TAU_BRIGHTEN` transient — which is exactly when VFX fire in the dark. Now clamped to `HALF_FLOAT_WRITE_MAX` **after** the multiply, as `Star.tsx` does for the sun disc (an absolute cap applied *before* a scale is not a cap). | [`preExposedEmissive.ts`](../src/components/space/preExposedEmissive.ts), [`MiningSystem.tsx`](../src/components/Mining/MiningSystem.tsx) | 4 D25 sites + a NaN hazard | ✅ |
+| D26h | ⚠⚠ **A HIDDEN 6.79× MULTIPLIER IN THE EXHAUST'S LIGHT, and a derivation that landed on the authored value.** `LIGHT_COLOR = Color(5.0, 7.0, 10.0)` sat beside `LIGHT_INTENSITY = 2.0`; three.js computes `color × intensity`, so a colour whose channels exceed 1 is an **undeclared second intensity** — Rec709 luminance of (5,7,10) is **6.79**, making the real intensity 13.6 while the constant next to it said 2.0. Same class as `STAR_COLOR_LINEAR`'s normalisation note and D09d's per-channel clamp: an un-normalised colour silently rescales whatever it multiplies and the visible number stops meaning anything. **Fixed** by normalising the colour to luminance 1. ✅ **And `LIGHT_INTENSITY` is now DERIVED** — this file had flagged it as "an uncalibrated eyeball value… not derived from PLUME_HDR × the plume's solid angle". `E = L·Ω` and a `decay = 2` point light gives `E = I/d²`, so `I = L·Ω·d² = PLUME_HDR · r · PLUME_MAX_LENGTH` — **the d² cancels**, so no reference distance and no per-ship tuning is needed (the inverse-square law and the solid-angle law being the same law). 🔑 At the nominal r = 0.3 that is **14.4** against the authored effective **13.6 — agreement to 6%**, a real independent check because the authored side had to be computed *through* the hidden multiplier to even be comparable. Nobody had noticed it was already right. ⚠ Now per-nozzle, since Ω scales with nozzle radius — the property that survives a ship refit, which a constant could not. | [`EngineExhaust.tsx`](../src/components/VFX/EngineExhaust.tsx) | hidden 6.79× | ✅ |
+| D26i | 🔑 **THE WRECK'S EMISSIVE DERIVES TO ZERO, AND THAT IS THE RESULT.** `WRECK_MAT.emissive = (0.08, 0.08, 0.1) × 0.4` = **197 cd/m²** of hull self-emission. A wrecked hull holding 600 K of residual heat emits **6.0e-7 cd/m²** — 3.3e8× less — and there is **no temperature that glows visibly without also being visibly molten** (1000 K, the threshold of "dull red heat", is 2.7 cd/m² and still invisible on screen). ⇒ the authored value was not a dim glow, it was **ambient light smuggled in as emission**, which is the D26 defect in its purest form. Set to 0. ⚠ A cold object in space is lit by the sun and the sky, and both are now real (`SunLight` distance-correct per Phase 3a; sky an SH probe over the star catalogue per D29). If wrecks become hard to FIND, that is the navigation-marker system's job — do not put the glow back. Same reasoning retired `DebrisEffect`'s "slightly emissive so it reads in dark space" comment: 1200 K of shock heating is a real mechanism and gives 126 cd/m² (2.6× *below* the authored 325), so the glow survives on physics rather than on need. | [`WreckCollector.tsx`](../src/components/WreckCollector.tsx) | 197 → 0 cd/m² | ✅ |
+| D26j | ⚠ **THE MINING DEBRIS WAS BLUE, WHICH IS THERMALLY BACKWARDS** — `emissive: (0.1, 0.15, 0.25)`, comment "bluish from laser heat". Nothing at rock's melting point is blue; blue means >8,000 K. Laser spall leaves the melt front at ~1600 K, which is orange-red at 1.93e4 cd/m². 🔑 **This is the one entry whose magnitude genuinely moved: 531 → 19,320 cd/m² (36×).** It is the only VFX in the set where the physics is fully determined (real mesh geometry ⇒ no fill factor) *and* the authored value was far off, so it is the one place to look first if the mining VFX now read too hot — and the knob is `debris_mined.tempK`, where 1400 K would give 3.9e3 and 1200 K 1.4e2. ⚠ NOT visually verified: `document.hidden` is permanently true in the Browser pane, so rAF never fires there and neither the effect nor `__lum.preExposure(8)` can be reached. Confirmation has to come from the user. | [`DebrisEffect.tsx`](../src/components/VFX/DebrisEffect.tsx) | 36× on one row | 🔶 |
 | D28 | **No refracted limb light** — a ship in an atmosphere planet's umbra gets no coppery ring illumination | `atmospherePass.ts` + `SunLight.tsx` | eclipsed hull is black instead of dim red; **3,400× starlight** | II |
 | D29 | ✅ **The skybox was not a light source** — integrated starlight never reached the hull | [`skyIrradiance.ts`](../src/components/space/skyIrradiance.ts), [`SkyLight.tsx`](../src/components/Star/SkyLight.tsx) | CLOSED: SH-L2 probe from panorama + catalogue. Panorama projected off a 64×32 render, **stars summed analytically** (exact for delta sources). Gate `__lum.skyProbe()` asserts πL, 17/16, 1/16, −19/480. ⚠ diffuse only — specular is S4b; no occlusion. See STAR_CATALOGUE_PLAN §8.9 | ✅ |
 | D30 | ✅ **Stars were 6.7 magnitudes / 482× too dim** — the panorama is an LDR asset asked to carry 17 stops | `MilkyWaySkybox.tsx`, unmounted `StarsComponent.tsx` | CLOSED: 8,920-star catalogue, flux validated to **0.999×** on 3 named stars. See STAR_CATALOGUE_PLAN §8.3 | ✅ |
@@ -1124,7 +1133,7 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **2d** ✅ | `CLOUD_SUN_SCALE` → `albedo/π` = 0.223 **+ `SHELL_OPTICAL_PATH` 1 → 60 (a units error, not a fit) + erosion-area factor 0.5** | cloud cover 3.5% → **21.9%** measured (user chose 0.5 over 0.3 for edge detail); see §5.7 | medium |
 | **3a** ✅ | **Distance-correct sun for ship + asteroids** — `SunLight.intensity` and the bounce fill from live star distance via the SAME `sunIlluminanceAt` the planets use | ship/asteroids stop being lit by a constant: 4.7× brighter at Mercury, 1,280× dimmer at Neptune | medium |
 | **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
-| **4** ✅ | Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
+| **4** ✅ | **CLOSED, measured 0.29 stops worst / 0.32 stops worst jump.** Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** ✅ | **Auto-exposure / eye adaptation**: centre-weighted log-average metering, **PARTIAL** adaptation (Stevens' ⅓), asymmetric cone/rod time constants, + the **skybox rescaled to absolute luminance** (measured 189,000× hot) | the "eye" arrives; stars become visible in deep space and vanish when the sun enters frame | medium |
 | **6** ⛔ | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
 | **7** ⛔ | Scotopic/mesopic vision model + Purkinje shift (§3.9b); fix the skybox's absolute luminance | deep space becomes night-vision quiet, not underexposed daylight | low |
@@ -1905,9 +1914,12 @@ floor at preExposure 1 and emerge above it at 8 — so more stars appear, which 
 direct evidence is already in the table above: four "empty sky" points all read exactly `0`, so
 sub-floor content exists everywhere in the panorama, not just in the diffuse band.
 
-⚠ **Still unregistered** (same one-line registry call, not yet done): `DebrisEffect`, `FlashEffect`,
-`AsteroidVFX`, `WreckCollector`. All are on the old uncalibrated scale (0.4/0.5/0.6 — the D26 class), so
-they want pre-exposing *and* calibrating.
+✅ **All registered as of 2026-08-26** (D26g). `DebrisEffect` (×2 materials), `FlashEffect`,
+`WreckCollector` and `MiningSystem`'s five sprites are on the registry; `AsteroidVFX` turned out to own
+no materials at all — it is a pure event manager, and the emissives are in the `DebrisEffect` /
+`FlashEffect` it mounts. ⚠ It was NOT "the same one-line registry call": the registry could only scale
+`color`, which on a lit material is REFLECTANCE, so `DebrisEffect` and `WreckCollector` needed the
+channel auto-detection first. See D26g for that and for the three other bugs the work turned up.
 
 ### ⛔ D26 — re-diagnosed 2026-08-18: it is an EMISSIVE CALIBRATION defect, not a metering defect
 
@@ -1990,14 +2002,32 @@ would overstate the effect. First version of this table got that wrong.
 
 #### Remaining plan, in order
 
-1. **Calibrate the emissives** — exhaust, mining beam/muzzle, debris, flash, wreck — to real
-   luminances. This is the root cause and it is where D26 actually lives. ⚠ Expect the plume to be
-   *legitimately* very bright (a chemical rocket is ~1e5–1e6 cd/m²), so this alone will not tame it.
-2. **Then reconsider the estimator**: percentile-band or hot-pixel-capped metering, so no single small
-   feature can own the frame. Cheaper and less invasive than either of the next two.
+1. ✅ **Calibrate the emissives** — exhaust, mining beam/muzzle, debris, flash, wreck — to real
+   luminances. **DONE 2026-08-26**; see D26e–D26j and
+   [`emissivePhotometry.ts`](../src/components/space/emissivePhotometry.ts).
+
+   🔑🔑 **AND THE RESULT OVERTURNS THIS STEP'S OWN PREMISE.** The step was written expecting to find
+   radiometrically absurd values. Measured, all eleven emissives sit between **197 and 4,748 cd/m²** —
+   "bright fluorescent tube", entirely defensible. Exactly the conclusion the plume reached in 2026-08,
+   now generalised to the whole set. **The magnitudes were never the defect; the missing UNITS were.**
+   One row genuinely moved (mined debris, 36×, and it was the *hue* that was wrong — blue for hot
+   rock), one derived to zero (the wreck hull, which was ambient light disguised as emission), and
+   three came out *within a few percent of their authored values*, which is a result rather than a
+   coincidence.
+
+   ⚠ So the sentence "expect the plume to be legitimately very bright, so this alone will not tame it"
+   was right, and understated: **nothing about step 1 was ever going to tame it**, because there was
+   almost nothing to tame. What step 1 actually bought is that Phase 8's energy-conserving glare now
+   has real inputs, and that four live D25/NaN bugs got found (D26g).
+2. ✅ **Hot-pixel-capped metering** — shipped 2026-08-18 as the HOT-TAIL CAP above, which bounds the
+   metered-EV shift to 0.51 stops. ⚠ Re-reading the order: this step and step 1 are done, so what is
+   left of D26 is only steps 3–4, and both are **speculative until someone reports the symptom again**
+   on calibrated inputs. ⚠⚠ Do NOT pre-emptively re-open the estimator: three attempts in one session
+   (`flux`, `pooled`, local exposure) all worked as specified and all made the game worse — D33c.
 3. **Then a screen-space metering weight mask** if the vehicle still dominates — UE's approach, and
    safe because it changes only metering, never the render.
-4. **Local exposure** last, if a global exposure still cannot hold it.
+4. **Local exposure** last, if a global exposure still cannot hold it. ⚠ Built and reverted once
+   already (D33c): 4.3 stops of compression against UE5's ~1.3, visible cells, flicker.
 
 ⚠ Do NOT re-attempt the layer split. Even with the light layers fixed it is the wrong tool: it is a
 render-order change in service of a metering problem, and it cannot express "count this less", only
@@ -2404,7 +2434,10 @@ reproduces measured geometric albedo across all bodies — best answered by a di
 
 **New:** `src/components/space/exposure.ts` (histogram + adaptation + `uExposure`),
 `src/components/space/glarePass.ts` (PSF), `src/components/space/perf/lumHarness.ts` (`__lum`),
-`src/data/bodyPhotometry.ts` (the §3.6 table).
+`src/data/bodyPhotometry.ts` (the §3.6 table),
+`src/components/space/emissivePhotometry.ts` (**the D26 emitter table** — every self-luminous VFX
+surface, thermal rows derived from `blackbodyLuminanceNits`, design rows stated in cd/m²),
+`src/components/space/preExposedEmissive.ts` (D25 registry for plain three.js materials).
 
 **Touched:** `SpaceRenderer.tsx` (exposure stage, glare replacing bloom, HDR output),
 `Scene.tsx` (renderer ctor for HDR), `Star/SunLight.tsx` (distance), `Star/Star.tsx` (`CORE_HDR`),
@@ -2418,6 +2451,11 @@ reproduces measured geometric albedo across all bodies — best answered by a di
 
 ## 10. References
 
+- **Mallama, Krobusek & Pavlov,** *Comprehensive wide-band magnitudes and albedos for the planets*
+  (Icarus 282, 19–33, 2017; arXiv:1609.05048) — **Table 7 is the source of both `geometricAlbedo` and
+  `bandAlbedo`** in `bodyPhotometry.ts` (D09e).
+- **Ramírez et al.,** *The UBV(RI)c colors of the Sun* (ApJ 752, 5, 2012; arXiv:1204.0828) — the
+  (B−V)☉ = 0.653 and (V−R)☉ = 0.352 zero points in `bodyColour.ts`.
 - Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique* (2020) —
   `docs/AtmosphereReferences/Frostbite.md`
 - Lagarde & de Rousiers, *Moving Frostbite to Physically Based Rendering* — pre-exposure, units
@@ -2602,7 +2640,72 @@ coupling — before the toggle answered it in one run. **The recurring error was
 two sources from a single number, which is underdetermined however careful the arithmetic.** Build the
 isolation switch as soon as two things draw in the same place.
 
-### What remains: three form factors, one fix
+## ✅ Phase 4 — CLOSED AND MEASURED (2026-08-26)
+
+`__lum.lod("jupiter")`, stellar points enabled. **The three form factors are gone.**
+
+| stop | tier | ratio (was) | Δ from previous stop |
+|---|---|---|---|
+| 24 px | mid (sphere) | **0.8168** (0.4606) | — |
+| 9 px | far | **1.020** (0.6925) | +0.32 |
+| 8.5 px | far | **0.9743** (0.7009) | −0.07 |
+| 7.5 px | far + point | **0.9992** (0.6951) | +0.04 |
+| 6 px | far + point | **0.9867** (0.6845) | −0.02 |
+| 3 px | far + point | **1.000** (0.4590) | +0.02 |
+| 1 px | far + point | **1.005** (0.4039) | +0.01 |
+
+**Worst |log2(measured/expected)| across all stops: 0.29 stops, from 1.31. Largest tier jump: 0.32
+stops, from 0.59 — and 4.22 before the crossfade fix.** The gate's own verdict: *"✅ SCALE IS CONTINUOUS
+across every LOD transition (all jumps < 0.5 stops)."*
+
+🔑🔑 **AND THE ×3/2 PREDICTION VERIFIED TO 1.5%.** The section below derived that the far tier's 0.6925
+was a missing geometric→Lambert albedo conversion, predicting `0.6925 × 1.5 = 1.039`. Measured: **1.020**.
+A convention factor predicted from theory, applied blind to all three tiers at once, landing within
+1.5% — which is the strongest evidence available that the billboard's `domeZ`+`sunDot` really is the
+exact Lambert-sphere geometry and not an approximation.
+
+### ⚠ The one residual: the mid tier reads 0.8168 (1.22× dim)
+
+It is the entire 0.32-stop mid→far jump and the whole of the 0.29-stop worst case. The section below
+attributes it to **D09** — texture MEAN albedo versus the disc-averaged reference — and predicted
+~1.45× there; the runtime albedo calibration has since taken it to **1.22×**. Not chased further: a
+single tier 22% dim with every transition continuous is a good place to stop, and the next move on it
+is D23 (the texture's *distribution*, not its mean) rather than another form factor.
+
+⚠ **Do not read the `Ø measured/expected` column as a renderer defect.** It sits at 0.80–0.84 on every
+resolved stop, but the flux aperture is 61 px against a 20 px lit disc, so no flux is escaping — the
+diameter is threshold-measured and simply under-reads the cosine-dimmed limb. Consistency across three
+different tiers is the tell that it is the instrument, not the render. (The 1.43 and 4.30 at 3 px and
+1 px are the PSF sprite being legitimately wider than the geometric disc for a sub-pixel source.)
+
+### ⚠⚠ Why the section below is STALE — kept for its derivations (noted 2026-08-26)
+
+**Its "what remains" prose would send a reader to rebuild finished work.** What landed after it was
+written, and closed it:
+
+- **`LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5` is now applied inside `surfaceRadiance()`**, i.e. to all
+  three tiers at once. Every albedo this project feeds in is a GEOMETRIC albedo and a Lambertian shader
+  needs the LAMBERT one (`p = (2/3)·A`). That comment records the measurement: the far tier's **0.6925 ×
+  1.5 = 1.039**. So the far billboard's form factor is closed, and closed by a convention factor rather
+  than a fudge — which is what you would expect given the section below already establishes that the
+  billboard's `domeZ`+`sunDot` is the EXACT Lambert-sphere geometry.
+- **`STELLAR_POINT_PROFILE_INTEGRAL` and `stellarPointRadiance()` are DELETED.** The integral (0.093146)
+  was correct for a shape the rasteriser could not sample — the `core` term spanned 0.6 px radius while
+  carrying 38% of the integral. 🔑 That also resolves the "one unreconciled number" the section below
+  ends on: the point's peak read 10× under prediction while its flux ratio was 0.40, and the answer was
+  that the profile was mis-sampled, not that the normalisation was wrong. `StellarPoint` now shares
+  `psfNormForBuffer()` with `StarField`, whose flux gate reads **0.999×**. ⚠ *An exactly-correct
+  normalisation of a badly-sampled shape is still wrong — check the shape can be sampled before
+  deriving its integral.*
+- **The mid tier's residual is D09**, texture mean albedo vs the disc-averaged reference, and the runtime
+  albedo calibration has since landed for it.
+
+⇒ **Verified 2026-08-26 — see the measured table above.** 🔑 The generalisable lesson: this doc's
+per-phase "what remains" prose is written at the moment of measurement and does not self-update, so the
+fixes that closed it landed in `photometry.ts`'s comments instead. **Check the code's own comments for a
+defect before believing a plan section that says it is open.**
+
+### What remains: three form factors, one fix — ⚠ SUPERSEDED, see above
 
 Each tier is FLAT within itself but lands on its own constant fraction of `E`:
 

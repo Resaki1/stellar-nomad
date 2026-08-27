@@ -1736,7 +1736,38 @@ at any resolution. But the BSM only contributes below `BSM_MAX_ALT_KM` = 2000 km
 below it the marched path must stay.** The half-res change above is orthogonal — it
 preserves the per-step march and so preserves the shafts at every altitude.
 
-## 2026-08-26 — `5 post` is the standing target, and it is bloom at strength 0.001
+## 🚨 2026-08-26 (LATER, CORRECTED) — `5 post` IS NOT A COST. The terminal pass absorbs idle time.
+
+**Read this before quoting `5 post`.** The section below it concluded bloom was ~11 ms and 81% of the
+deep-space frame. **That was wrong, and the A/B is unambiguous:**
+
+| | post |
+|---|---|
+| bloom **OFF** | **21.66 ms** — ⚠ *higher* than with bloom on. Impossible as a bloom cost. |
+| bloom ON | 15.53 ms |
+| bloom ON + half-res chain (¼ the pixels) | 15.12 ms ⇒ **saved 0.41 ms**, not the ~8 ms predicted |
+
+**🔑 WHY: `5 post` is the LAST timestamped pass**, so its GPU span runs until the frame is actually done,
+swallowing the vsync wait and the cross-frame pipeline bubble. **The tell is that it moves INVERSELY to the rest
+of the frame** — measured in one run: `deep_space rest 2.9 ms → post 21.7 ms` vs `earth_8 rest 50.5 ms → post
+17.3 ms`. A cheaper scene produces a *bigger* post.
+
+**⚠⚠ THE REASONING ERROR IS THE REUSABLE PART.** All three premises were true — post reads ~11 ms, it is FLAT
+across all 14 scenarios, and the output transform should be <0.5 ms at 5.4 Mpx. The conclusion was still wrong.
+🔑 **Flatness across scenarios is the signature of an IDLE-ABSORBING pass, not of a fixed workload.**
+`__bench` now warns when the terminal pass exceeds every other pass combined.
+
+**⚠ AND: those three sweeps were not comparable.** Battery, back-to-back over ~6 minutes. `earth_8` frameMs went
+**18.2 → 22.5 → 26.9 ms (+47%)**, gpuTotal **67.8 → 92.4 (+36%)**, every pass rising monotonically — thermal and
+power drift larger than the effect under test. **For perf A/Bs: plug in, and interleave A/B/A instead of running
+A then B then C.**
+
+**⇒ Bloom is not a perf target.** The real costs are the cloud and atmosphere passes, which scale with content as
+they should. `earth_8` (which misses vsync) is the only scenario with a readable budget.
+
+---
+
+## SUPERSEDED — the wrong conclusion, kept so the reasoning error stays visible
 
 **MEASURED with SMAA off:** `5 post` = **11.59 ms at deep_space = 81% of gpuTotal**, 9.83 (54%) at earth_4100,
 7.77 (14%) at earth_8. ⚠ It is **flat across all 14 scenarios** while every other pass scales ~20× with scene
@@ -1750,9 +1781,40 @@ texture fetches** across kernel radii `[6,10,14,18,22]` in `Loop()`s whose bound
 and so may not unroll. **Latency-bound, not fill-bound** — the same conclusion the atmosphere march reached, and
 the same reason a resolution cut under-delivers there.
 
-Fix options, cheapest first: feed `bloom()` a half-res input (all its mips shrink 4×); or replace it with a cheap
-custom glow (downsample + 2 blurs, Kawase/dual-filter). ⚠ Both change the LOOK of a tuned value — not a silent
-change.
+### ⚠⚠ TWO THINGS THAT LOOK LIKE FIXES AND ARE NOT
+
+**1. A half-res INPUT does nothing.** `BloomNode.updateBefore` sizes its own chain from
+`renderer.getDrawingBufferSize()`, **not** from the input texture — so a downsampled input is upsampled back into
+full-size mips: identical cost, softer picture. (I proposed this before reading the source. It is wrong.)
+
+**2. No mip subset can be dropped.** At `radius = 0` the weights are exactly `[1.0, 0.8, 0.6, 0.4, 0.2]`, and the
+cost distribution is:
+
+| mip | size @3000×1816 | weight @r=0 | Mtaps | % of blur cost |
+|---|---|---|---|---|
+| 0 | 1500×908 | 1.0 | 30.0 | **61%** |
+| 1 | 750×454 | 0.8 | 12.9 | **26%** |
+| 2 | 375×227 | 0.6 | 4.6 | 9% |
+| 3 | 188×114 | 0.4 | 1.5 | 3% |
+| 4 | 94×57 | 0.2 | 0.5 | 1% |
+
+🔑 **Mips 0+1 are 87% of the cost AND carry the two highest weights.** The coarse mips that make the wide halo
+are only 4%. There is no cheap subset.
+
+### The one reachable lever: `setSize`
+
+`setSize` is public and is the only seam that scales the whole chain (bright-pass RT + all five mip pairs).
+Halving both axes quarters every level ⇒ **expect ~11 ms → ~3 ms.** Shipped as the `bloomHalfRes` setting
+(Graphics → "half-res bloom"), **defaulting OFF**.
+
+⚠⚠ **It widens the glow ~2×.** The kernel radii are baked per mip at setup from a private array, so they stay
+fixed in TEXELS while each texel now covers twice the screen distance. For a normalised blur the integral is
+preserved, so the halo spreads and its core dims — `strength` would need re-judging, and the current 0.001 was
+tuned by eye against the full-res profile.
+
+⚠ **Still unverified: the ~11 ms attribution is an inference**, from "post is flat across all scenarios" plus
+"the output transform should be <0.5 ms at 5.4 Mpx". A single `bloom: false` sweep row would settle it
+directly — worth taking before investing in a custom replacement chain.
 
 ### SMAA measured +4.19 ms and fixed nothing reported → default OFF
 

@@ -21,17 +21,6 @@ export type Settings = {
    * lives in a useMemo keyed on this value.
    */
   antialias: boolean;
-  /**
-   * SMAA on the TONE-MAPPED image (defect D14c) — a different failure mode from
-   * `antialias`, not a redundant one.
-   *
-   * ⚠ MSAA resolves in LINEAR HDR and the tone curve is applied after, so on a
-   * high-contrast edge (a lit planet against space) its first coverage step is
-   * MEASURED at 73% of the whole output range — the edge stays effectively binary.
-   * SMAA runs where a step is what the eye sees. Kept separate from `antialias`
-   * until we know which one players actually notice.
-   */
-  antialiasPost: boolean;
   fps: boolean;
   /**
    * Per-pass GPU/CPU profiler (dev only). Read at renderer construction, not
@@ -61,15 +50,6 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   // D14: the scene had NO anti-aliasing of any kind, which the user reported as
   // "planets look really pixelated at the edges until I get pretty close".
   antialias: true,
-  // ⚠⚠ DEFAULT OFF — MEASURED +4.19 ms AND IT FIXED NOTHING WE HAD REPORTED.
-  // Across all 12 sweep scenarios enabling SMAA moved `5 post` by +3.51 … +4.80 ms
-  // (mean +4.19), consistently, i.e. ~24% of the earth_8 frame budget. It was added
-  // for a REAL effect (MSAA's linear-HDR resolve makes its first coverage step 73% of
-  // the output range on a high-contrast edge) — but the aliasing actually complained
-  // about turned out to be atmosphere march banding (D14d), which the jitter fixed.
-  // 🔑 Paying 4 ms for a defect nobody has reported is the wrong trade. The setting
-  // stays so it can be re-judged against a specific artefact rather than a theory.
-  antialiasPost: false,
   fps: false,
   perf: false,
   exposureStops: 0,

@@ -624,6 +624,38 @@ function planck(nm: number, tempK: number): number {
 }
 
 /**
+ * ABSOLUTE luminance of a blackbody at `tempK`, cd/m² — Planck's law integrated
+ * against the photopic response and divided by π for a Lambertian surface:
+ *
+ *     L_v = (683 / π) · ∫ M_λ(T) · V(λ) dλ
+ *
+ * `planck()` returns spectral radiant EXITANCE (its c₁ is 2πhc²), hence the /π.
+ * `yFit` IS V(λ) — the CIE ȳ colour-matching function and the photopic curve are
+ * the same function, so the hue integral above and this one share their kernel
+ * and cannot drift apart.
+ *
+ * ✅ VALIDATED on three anchors this project did not choose: 5772 K → **1.844e9**
+ * against a measured solar disc of ~2.0e9 above the atmosphere; 2800 K → 1.5e7
+ * against a tabulated tungsten filament of 5e6–2e7; 1000 K → 2.7, which is where
+ * "dull red heat" becomes visible. Nine decades, three hits.
+ *
+ * ⚠ Integrated at 1 nm over 360–830 nm rather than the 5 nm / 380–780 nm the hue
+ * integral uses: hue only needs ratios, magnitude needs the tails.
+ *
+ * ⚠⚠ This runs ~T¹² near 1500 K, NOT T⁴ — the Planck peak is sweeping into the
+ * photopic band, so the band-limited integral grows far faster than the total.
+ * A ±200 K uncertainty about a glow is a ±10× uncertainty about its brightness.
+ * See emissivePhotometry.ts, which is built on this.
+ */
+export function blackbodyLuminanceNits(tempK: number): number {
+  if (!(tempK > 0)) return 0;
+  let sum = 0;
+  // dλ = 1 nm expressed in metres, because planck() is per-metre of wavelength.
+  for (let nm = 360; nm <= 830; nm += 1) sum += planck(nm, tempK) * yFit(nm) * 1e-9;
+  return (683 * sum) / Math.PI;
+}
+
+/**
  * Blackbody temperature → linear sRGB, normalised so the **luminance is 1**.
  * That normalisation matters: the star's brightness comes from
  * `SUN_DISC_RADIANCE_GAME`, so this must contribute hue only, never magnitude.
@@ -657,6 +689,73 @@ export function blackbodyLinearSrgb(tempK: number): [number, number, number] {
   ];
   const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   return lum > 0 ? [c[0] / lum, c[1] / lum, c[2] / lum] : [1, 1, 1];
+}
+
+/**
+ * A REFLECTANCE SPECTRUM → linear sRGB, white-balanced against the illuminant.
+ *
+ * `reflectanceAt(nm)` returns the body's reflectance at that wavelength on any
+ * consistent scale. The return is illuminant-INDEPENDENT: a perfect white
+ * reflector (ρ ≡ 1) comes back exactly `[1, 1, 1]` for any star temperature.
+ *
+ * 🔑 THAT NORMALISATION IS THE LOAD-BEARING PART, and it is a von Kries divide by
+ * the illuminant's own linear-sRGB response rather than a luminance divide. The
+ * consumers of this multiply the result by `uSunIlluminance`, which is ALREADY
+ * tinted by `STAR_COLOR_LINEAR` — so if this returned "how the body looks under
+ * this star" the star's hue would be applied twice. A reflectance is a property
+ * of the surface; the illuminant belongs to whoever lights it.
+ *
+ * ⚠ The illuminant still appears INSIDE the integral, and must: the CMFs are
+ * broad, so which wavelengths dominate each channel depends on where the star
+ * puts its photons. An M-dwarf weights a body's red end far more than Sol does.
+ * Dividing the result out afterwards removes the star's overall CAST while
+ * keeping that spectral weighting — which is the physically correct split.
+ *
+ * Shares `planck()` and the CIE CMF fits with `blackbodyLinearSrgb` and
+ * `blackbodyLuminanceNits`, so hue, magnitude and reflectance cannot drift apart.
+ */
+export function reflectanceSpectrumToLinearSrgb(
+  reflectanceAt: (nm: number) => number,
+  illuminantTempK: number = STAR_TEMP_K,
+): [number, number, number] {
+  let X = 0;
+  let Y = 0;
+  let Z = 0;
+  let Xw = 0;
+  let Yw = 0;
+  let Zw = 0;
+  for (let nm = 360; nm <= 830; nm += 5) {
+    const s = planck(nm, illuminantTempK);
+    const x = xFit(nm);
+    const y = yFit(nm);
+    const z = zFit(nm);
+    Xw += s * x;
+    Yw += s * y;
+    Zw += s * z;
+    const r = s * Math.max(0, reflectanceAt(nm));
+    X += r * x;
+    Y += r * y;
+    Z += r * z;
+  }
+  const toRgb = (
+    xx: number,
+    yy: number,
+    zz: number,
+  ): [number, number, number] => [
+    3.2406 * xx - 1.5372 * yy - 0.4986 * zz,
+    -0.9689 * xx + 1.8758 * yy + 0.0415 * zz,
+    0.0557 * xx - 0.204 * yy + 1.057 * zz,
+  ];
+  const body = toRgb(X, Y, Z);
+  const white = toRgb(Xw, Yw, Zw);
+  return [
+    // ⚠ Clamped at 0: a measured spectrum interpolated through band averages can
+    // put a channel slightly out of the sRGB gamut, and a negative reflectance is
+    // an energy violation rather than a dark colour.
+    Math.max(0, body[0] / (white[0] || 1)),
+    Math.max(0, body[1] / (white[1] || 1)),
+    Math.max(0, body[2] / (white[2] || 1)),
+  ];
 }
 
 /**

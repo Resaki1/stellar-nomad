@@ -7,6 +7,8 @@ import { useStore } from "jotai";
 import { wrecksAtom, collectWreckAtom, isDeadAtom } from "@/store/death";
 import { cargoRemainingUnitsAtom, addCargoAtom } from "@/store/cargo";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { emitterColor } from "@/components/space/emissivePhotometry";
+import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 
 // ── Tuning ───────────────────────────────────────────────────────────
 /** Beam locks on when ship is within this range (km). */
@@ -27,15 +29,40 @@ const WRECK_MAT = new THREE.MeshStandardMaterial({
   color: new THREE.Color(0.35, 0.35, 0.38),
   roughness: 0.85,
   metalness: 0.2,
-  emissive: new THREE.Color(0.08, 0.08, 0.1),
-  emissiveIntensity: 0.4,
+  // ⚠⚠ EMISSIVE REMOVED — LIGHTING_PLAN D26 step 1, and it derives to zero.
+  // This was `(0.08, 0.08, 0.1) × 0.4` = **197 cd/m²** of hull self-emission. A
+  // wrecked hull holding 600 K of residual heat emits **6.0e-7 cd/m²**, i.e.
+  // 3.3e8× less; and there is no temperature that glows visibly without also
+  // being visibly molten (1000 K, where "dull red heat" appears, is 2.7 cd/m²
+  // and still invisible on screen). So the old value was not a dim glow, it was
+  // ambient light smuggled in as emission — the exact defect D26 is about.
+  //
+  // 🔑 A cold object in space is lit by the sun and the sky, and both of those
+  // are now real: `SunLight` is distance-correct (Phase 3a) and the sky is an
+  // actual SH probe over the star catalogue (D29). If wrecks turn out to be hard
+  // to FIND, that is a navigation-marker problem, not a material problem — do
+  // not put the glow back.
+  emissiveIntensity: 0,
 });
 
+// Salvage tractor beam. Design value, but now a STATED one: 3,972 cd/m² at the
+// material and 2,383 cd/m² rendered through the 0.6 opacity below — matching the
+// authored (0.4, 0.7, 1.0) exactly. Sci-fi tech has no physical referent to
+// derive from; what matters is that it sits on the same scale as everything else
+// and that it is pre-exposed. See emissivePhotometry.ts.
 const BEAM_MAT = new THREE.LineBasicMaterial({
-  color: new THREE.Color(0.4, 0.7, 1.0),
+  color: emitterColor("wreck_beam"),
   transparent: true,
   opacity: 0.6,
 });
+
+// D25: session-lifetime singleton, so one registration. ⚠ Only the BEAM is
+// registered — `WRECK_MAT` no longer emits, and registering a black `emissive`
+// would add a permanent zero row to the audit for nothing. If a wreck ever
+// gains a real emissive (running lights, a reactor breach), register it then:
+// the registry auto-targets `emissive` on a lit material and `color` on an unlit
+// one, because scaling a lit material's `color` would pre-expose its REFLECTANCE.
+registerPreExposedEmissive(BEAM_MAT);
 
 // Beam line geometry — 2 points, updated every frame
 const BEAM_GEO = new THREE.BufferGeometry();
