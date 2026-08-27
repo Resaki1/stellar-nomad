@@ -11,8 +11,13 @@ import {
 } from "@/components/space/atmospherePass";
 import {
   publishDirectSunState,
+  sunOccluderCenterKm,
   sunVisibility,
 } from "@/components/space/sunOcclusion";
+import {
+  refractedLimbIlluminance,
+  type RefractedLimb,
+} from "@/components/space/refractedLimbLight";
 import {
   STAR_COLOR_LINEAR,
   getPreExposure,
@@ -34,6 +39,11 @@ type SunLightProps = {
 };
 
 const _dir = new THREE.Vector3();
+// D28 scratch — refracted-limb geometry, resolved on the CPU once per frame.
+const _toPlanet = new THREE.Vector3();
+const _antiSun = new THREE.Vector3();
+const _limbColor = new THREE.Color();
+let _lastLimb: RefractedLimb | null = null;
 // Direct sunlight actually reaching the hull: base star colour × atmospheric
 // transmittance × geometric eclipse visibility. Drives BOTH lights (see below).
 const _directColor = new THREE.Color();
@@ -83,6 +93,7 @@ const SunLight = ({
 }: SunLightProps) => {
   const ref = useRef<THREE.DirectionalLight>(null!);
   const fillRef = useRef<THREE.AmbientLight>(null!);
+  const limbRef = useRef<THREE.DirectionalLight>(null!);
   const worldOrigin = useWorldOrigin();
   // ── Key-light colour: the STAR's blackbody hue, not white (defect D18) ──────
   // This was hardcoded `"white"`, so the ship and asteroids were lit by a D65
@@ -156,6 +167,108 @@ const SunLight = ({
     );
     if (visibility < 1) _directColor.multiplyScalar(visibility);
 
+    // ── D28: REFRACTED LIMB LIGHT — the atmosphere as a lens ─────────────────
+    // Closing D27 raised the question "should an eclipsed ship be black?", and
+    // physically the answer is no: sunlight refracted through the ring of air at
+    // the planet's limb reddens and bends into the shadow. It is why a totally
+    // eclipsed Moon is coppery instead of invisible, and it is ~3,400× starlight.
+    //
+    // ⚠ Only the DOMINANT atmosphere body. That is the one whose shadow the
+    // player actually flies into, it is the only one whose `params` are to hand,
+    // and it is the body `sunVisibility` deliberately skips (its shadow belongs
+    // to the atmosphere pass) — so this adds a term to that body rather than
+    // double-counting one already handled geometrically above.
+    _lastLimb = null;
+    _limbColor.setRGB(0, 0, 0);
+    let limbIntensity = 0;
+    const atmoBody = getDominantAtmosphereBody();
+    // How deep in shadow are we? The atmosphere pass has already zeroed
+    // `sunTransmittance` inside the umbra, so its complement IS the shadow ramp.
+    // Reusing it keeps the two terms exactly complementary through the penumbra
+    // instead of cross-fading two independently-shaped ramps — the
+    // one-owner-per-body rule sunOcclusion.ts documents.
+    const shadow = lighting.active
+      ? 1 -
+        Math.max(
+          lighting.sunTransmittance.r,
+          Math.max(lighting.sunTransmittance.g, lighting.sunTransmittance.b),
+        )
+      : 0;
+    // ⚠⚠ FRAME DISCIPLINE, and this is where my first version was wrong.
+    // `atmoBody.centerScaled` is SCALED-WORLD while `shipPosKm` is km, so
+    // subtracting them yields a vector with the right direction and a
+    // meaningless magnitude. Worse, the shortcut I reached for instead —
+    // dotting the ship→sun direction against the planet→sun direction — is ≈1
+    // for ANY ship near the planet (both point at the same distant star), so it
+    // reported "on the shadow axis" ALWAYS, which is the one answer that is
+    // wrong close in. `sunOccluderCenterKm` gives the absolute km centre that
+    // every CelestialBody already registers, in one consistent frame.
+    const limbCenterKm = atmoBody ? sunOccluderCenterKm(atmoBody.id) : null;
+    if (atmoBody && limbCenterKm && shadow > 1e-3) {
+      _toPlanet.copy(worldOrigin.shipPosKm).sub(limbCenterKm);
+      _antiSun.copy(atmoBody.sunDir).negate().normalize();
+      // Depth along the anti-sun axis, and perpendicular offset from it. BOTH
+      // are needed — refractedLimbLight.ts explains why one is not enough.
+      const depthKm = _toPlanet.dot(_antiSun);
+      const offsetKm = Math.sqrt(
+        Math.max(0, _toPlanet.lengthSq() - depthKm * depthKm),
+      );
+      if (depthKm > atmoBody.params.groundRadiusKm) {
+        const starAng = Math.asin(
+          Math.min(1, STAR_RADIUS_KM / Math.max(atmoBody.starDistanceKm, 1)),
+        );
+        // ⚠⚠ RECOMPUTED, NOT READ FROM THE RECORD. `rec.sunIlluminance` is
+        // `illum × getPreExposure() × starTint` (D25), so passing it in and then
+        // multiplying the result by `preExp` below applies pre-exposure TWICE —
+        // the rendered light comes out wrong by **p²**, which in a dark scene is
+        // 10⁴–10⁶×. Symptom on device: a blazing red hull, and a `__lum.umbra()`
+        // table whose values changed with where the ship was standing.
+        //
+        // 🔑🔑 THIS IS EXACTLY THE D09c TRAP, in the same field, and I had read
+        // that entry earlier the same day: "`expected()` took
+        // `rec.sunIlluminance.x`, which `atmospherePass` sets to
+        // `illum × getPreExposure() × starTint[0]`". ⇒ **`sunIlluminance` on
+        // `AtmosphereBodyRecord` is PRE-EXPOSED. Anything on the CPU that wants
+        // absolute game units must recompute from `starDistanceKm`.**
+        const illumRaw = sunIlluminanceAt(
+          atmoBody.starDistanceKm,
+          atmoBody.params.starLuminositySun,
+        );
+        const limb = refractedLimbIlluminance(
+          depthKm,
+          offsetKm,
+          atmoBody.params,
+          [
+            illumRaw * STAR_COLOR_LINEAR[0],
+            illumRaw * STAR_COLOR_LINEAR[1],
+            illumRaw * STAR_COLOR_LINEAR[2],
+          ],
+          starAng,
+        );
+        _lastLimb = limb;
+        const [lr, lg, lb] = limb.illuminance;
+        const maxC = Math.max(lr, lg, lb);
+        if (maxC > 0) {
+          // three.js multiplies colour × intensity, so the MAGNITUDE lives in
+          // `intensity` and the colour stays normalised — the hidden-multiplier
+          // trap D26h found in the exhaust light.
+          _limbColor.setRGB(lr / maxC, lg / maxC, lb / maxC);
+          // × preExposure (D25), like every other light in the project.
+          limbIntensity = maxC * shadow * preExp;
+        }
+      }
+    }
+    limbRef.current.color.copy(_limbColor);
+    limbRef.current.intensity = limbIntensity;
+    // ⚠ Points FROM the planet TOWARD the ship: the refracting ring surrounds
+    // the planet's disc, so its centroid direction is the planet's. A ring is
+    // wider than a directional light implies — a hull facet facing away from the
+    // planet would catch some of it in reality and catches none here. Acceptable
+    // while the ring is small, which is exactly when this term is largest
+    // (beyond the focus); revisit if close-in umbra views become common.
+    limbRef.current.position.copy(_antiSun).negate();
+    limbRef.current.visible = limbIntensity > 0;
+
     // Both lights carry the same occluded, tinted direct sunlight: the key IS
     // that light, and the fill is that light bounced off the hull. (The fill was
     // previously left at three.js's default white, so it also ignored the star's
@@ -169,6 +282,7 @@ const SunLight = ({
       illuminance,
       lighting.active ? lighting.sunTransmittance : _WHITE,
       fillRef.current.intensity / preExp,
+      _lastLimb,
     );
   });
 
@@ -180,6 +294,8 @@ const SunLight = ({
     <>
       <directionalLight ref={ref} intensity={0} />
       <ambientLight ref={fillRef} intensity={0} />
+      {/* D28 refracted limb light — off until the ship is inside a shadow. */}
+      <directionalLight ref={limbRef} intensity={0} visible={false} />
     </>
   );
 };

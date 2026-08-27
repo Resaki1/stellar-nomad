@@ -48,6 +48,13 @@ const G_GRAV = 6.674e-11; // gravitational constant, m³/(kg·s²)
 const EARTH_PRESSURE_BAR = 1.01325;
 const EARTH_TEMPERATURE_K = 288;
 const RAYLEIGH_EARTH: Vec3Tuple = [5.802e-6, 13.558e-6, 33.1e-6];
+// Refractivity (n − 1) of Earth air at the SAME reference state as RAYLEIGH_EARTH
+// (1.01325 bar / 288 K), ~550 nm. D28's atmospheric-lens term scales off this.
+// ✅ Cross-check: a ray passing tangentially through the whole atmosphere bends by
+// `(n−1)·√(2πR/H)` = 2.77e-4 × 70.7 = **1.13°**, which is twice the standard 34′
+// of horizon refraction — the textbook value for a grazing through-ray, and the
+// number lunar-eclipse geometry is built on.
+const REFRACTIVITY_AIR_REF = 2.77e-4;
 const RAYLEIGH_SCALE_HEIGHT_EARTH_KM = 8.0;
 const MIE_SCATTER_EARTH = 3.996e-6; // clear-sky aerosol baseline (haze = 1)
 const MIE_ABSORB_EARTH = 4.4e-6;
@@ -211,6 +218,15 @@ export function deriveAtmosphere(
     atmosphereHeightKm: TOP_SCALE_HEIGHTS * scaleHeightKm,
     rayleighScattering,
     rayleighScaleHeightKm: scaleHeightKm,
+    // D28: refractivity is LINEAR in number density, while Rayleigh scattering
+    // goes as (n−1)². `rayleighRel` is defined as ((n−1)_g/(n−1)_air)²·(F_g/F_air)
+    // (see its comment above), so √rayleighRel recovers the per-molecule
+    // refractivity ratio and `nRel` carries the density. ⚠ Strictly, mixture
+    // refractivity is Σxᵢ(n−1)ᵢ while √(Σxᵢ(n−1)ᵢ²) is what this gives — they
+    // differ only for mixtures of very dissimilar gases, and for Earth air
+    // (rayleighRel ≈ 1.0) it is exact. Good to ~1% everywhere it matters.
+    surfaceRefractivity:
+      REFRACTIVITY_AIR_REF * nRel * Math.sqrt(Math.max(rayleighRel, 0)),
     mieScattering,
     mieAbsorption,
     mieScaleHeightKm:

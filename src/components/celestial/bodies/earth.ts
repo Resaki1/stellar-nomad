@@ -231,6 +231,52 @@ const eclipseFn = Fn(
 // Shared Earth fragment node builder
 // ─────────────────────────────────────────────────────────────────────
 
+// ── D23 — CLOSED BY MEASUREMENT, NO CODE. Read this before touching the ocean.
+//
+// D23 said: *"the day texture's dark end is crushed — deep Pacific 0.0014 vs a
+// real 0.03–0.06, ocean 21–43× too dark."* Both halves of that were wrong, and
+// the fix that followed from it was removed after it measured as a no-op. The
+// whole investigation is in docs/LIGHTING_PLAN.md D23 / D23b / D23c; the parts
+// worth having in front of you while editing this shader:
+//
+// **1. The 21–43× was a UNITS ERROR** — a visible-band, luminance-weighted
+// texture value compared against a BROADBAND (NIR-inclusive) albedo. Water and
+// chlorophyll have near-zero visible reflectance and a huge NIR plateau, so a
+// broadband figure is mostly light an RGB texture cannot carry. ⚠ The tell was in
+// D23's own results: the two regions that "passed" were sand and snow — the two
+// with FLAT spectra. Re-measured, the day map's global cos-weighted mean is
+// **0.08934 = 0.993×** an independent cloud-free surface albedo of 0.0900.
+//
+// **2. Acting on it would have DOUBLE-COUNTED.** Deep ocean's ~0.06 broadband
+// albedo is mostly specular sky reflection, which this shader already adds below
+// (Schlick + sky-blue reflection + sun glint). Putting it in the DIFFUSE map
+// counts it twice — the violation D22 had just removed from these same lines.
+//
+// **3. The real per-pixel defect is small and INVISIBLE.** The texture's ocean is
+// 88% one flat value that is 4.0× too dark and 3.0× too red. A physical fix was
+// implemented (diffuse = water-leaving reflectance + the texture's excess) and
+// MEASURED on device in three geometries with `__lum.probe()`:
+//
+//       orbit 15,000 km   +0.295%   (0.0042 stops)
+//       250 km, terminator +0.022%
+//       8 km,  terminator  +0.019%
+//
+//   Extracting the attenuation `A = sunT · nDotL · T(surf→cam)` gives 6.4e-3 at
+//   orbit and ~1e-4 at the terminator, so even at the BEST possible geometry —
+//   sun overhead, nadir, clear — the term is **4.6% of the pixel, 0.064 stops**.
+//   🔑🔑 **The ocean's diffuse albedo is not a visible parameter at any geometry.
+//   NEVER chase Earth's ocean appearance through the day map.** The code was
+//   removed rather than left as dead cost; a `D23_DEBUG_VIZ` that painted the
+//   mask magenta confirmed the path was correct before it was deleted.
+//
+// **4. ⇒ WHERE THE OCEAN'S LOOK ACTUALLY LIVES, with a number.** That orbital
+// pixel read **0.119 game units** where a physical clear-ocean column (reflectance
+// ~0.10 at 1 AU) is **0.675** — **5.7× too dark**, and 99.9% of it is the
+// atmosphere pass, not this texture. Its B/R was 5.68: Rayleigh, neither water
+// nor cloud. **That 5.7× is the live defect and it belongs to
+// `atmospherePass.ts`** — LIGHTING_PLAN open item 4b. ⚠ Measure before building:
+// the older "clear sky 0.044 vs ~0.12" figure predates several atmosphere fixes.
+
 function buildEarthFragmentNode(opts: {
   texDay: THREE.Texture;
   texNight: THREE.Texture;
@@ -252,6 +298,7 @@ function buildEarthFragmentNode(opts: {
   uSunRadius: any;
   // Atmosphere transmittance LUT (Phase 3b surface coupling). Bound at graph-
   // build time; sampled per-pixel for physical sun colour. Optional: when absent
+
   // (toggle off) the surface keeps its hand-tuned terminator tint.
   transmittanceLUT?: THREE.Texture;
 }) {
@@ -522,6 +569,7 @@ function buildEarthFragmentNode(opts: {
     if (SHADOW_DEBUG) {
       return vec4(mix(vec3(1, 0, 1), col, groundShadowLight), 1);
     }
+
 
     // Apply terminator warmth -- reduced for mid LOD where the smooth geometric
     // normal makes the band bleed across the entire day side. Phase 3b: skipped

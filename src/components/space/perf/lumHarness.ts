@@ -44,6 +44,12 @@ import solSystem from "@/sim/systems/sol.json";
 import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
+import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
+import {
+  atmosphericFocalLengthKm,
+  grazingDeflectionDeg,
+  refractedLimbIlluminance,
+} from "@/components/space/refractedLimbLight";
 import {
   blackbodyAnchors,
   emitterAudit,
@@ -85,6 +91,7 @@ import {
 } from "../exposureMeter";
 import {
   NITS_PER_GAME_UNIT,
+  STAR_COLOR_LINEAR,
   SUN_ILLUM_GAME_1AU,
   discRadianceAtZeroPhase,
   subSolarRadianceLambert,
@@ -2416,6 +2423,139 @@ export class LumHarness {
         "      Cross-check with `await __lum.preExposure(8)`: anything MISSING here moves.",
       ].join("\n"),
     );
+  }
+
+  /**
+   * D28 — refracted limb light: the atmosphere as a LENS.
+   *
+   * Prints, for the dominant atmosphere body: the grazing deflection, the
+   * atmosphere's FOCAL LENGTH, and the illuminance delivered across a ladder of
+   * shadow positions. Then the live value if the ship is currently in shadow.
+   *
+   * 🔑 The focal length is the number to read first. Surface-grazing rays only
+   * reach the shadow AXIS at `R/ω(0)`; closer than that the refracted light is a
+   * RING hugging the umbra's edge and the axis is dark. Earth: 310,600 km, and
+   * the Moon at 384,400 km sits just past it — which is exactly why an eclipsed
+   * Moon is lit at all.
+   *
+   * ✅ Two independent checks are asserted for Earth: grazing deflection ≈ 1.13°
+   * (twice the textbook 34′ of horizon refraction, because a grazing ray crosses
+   * the atmosphere twice) and ~1.1 lux on the axis at the Moon's distance (the
+   * measured brightness of a typical total lunar eclipse). Neither number was
+   * chosen by this project.
+   */
+  umbra(bodyId?: string): void {
+    const rec = bodyId ? getAtmosphereBody(bodyId) : getDominantAtmosphereBody();
+    if (!rec) {
+      console.log(
+        "[lum] no atmosphere body in range. Fly near one, or pass an id: __lum.umbra(\"earth\").",
+      );
+      return;
+    }
+    const p = rec.params;
+    const R = p.groundRadiusKm;
+    const focal = atmosphericFocalLengthKm(p);
+    console.log(
+      [
+        `[lum] ${rec.id}: refracted limb light (D28)`,
+        `  grazing deflection ω(0) = ${grazingDeflectionDeg(p).toFixed(3)}°` +
+          (rec.id === "earth" ? "   (expect ~1.13 = 2 × 34′ horizon refraction)" : ""),
+        `  surface refractivity    = ${p.surfaceRefractivity.toExponential(3)}`,
+        `  atmospheric FOCAL LENGTH = ${Math.round(focal).toLocaleString()} km = ${(focal / R).toFixed(1)} R`,
+        "  ⇒ closer than that, the refracted light is a RING near the umbra's edge",
+        "    and the shadow AXIS is dark. Beyond it, the light fills the axis.",
+      ].join("\n"),
+    );
+
+    const starAng = Math.asin(
+      Math.min(1, STAR_RADIUS_KM / Math.max(rec.starDistanceKm, 1)),
+    );
+    // ⚠⚠ RECOMPUTED. `rec.sunIlluminance` is PRE-EXPOSED (D25), so reading it
+    // here made this whole table scale with the exposure of whatever scene the
+    // ship happened to be in — measured on device: the 2.0 R row read 972,000 /
+    // 1,110,000 / 272,000 / 66,200 / 48,500 lux from five different vantage
+    // points, for a ladder that is supposed to be fixed. 🔑 Same trap as D09c,
+    // same field. A diagnostic that varies with the observer is reporting the
+    // observer, not the thing.
+    const illumRaw = sunIlluminanceAt(
+      rec.starDistanceKm,
+      rec.params.starLuminositySun,
+    );
+    const illum: [number, number, number] = [
+      illumRaw * STAR_COLOR_LINEAR[0],
+      illumRaw * STAR_COLOR_LINEAR[1],
+      illumRaw * STAR_COLOR_LINEAR[2],
+    ];
+    const rows: Record<string, Record<string, string | number>> = {};
+    const uLen = (R * rec.starDistanceKm) / STAR_RADIUS_KM;
+    for (const mult of [2, 3, 5, 10, 20, focal / R, 60.3]) {
+      const d = mult * R;
+      if (d <= R) continue;
+      const umbraR = Math.max(0, R * (1 - d / uLen));
+      // Sweep the offset and keep the brightest — that IS the ring's radius.
+      let best = { E: -1, off: 0, band: 0 };
+      for (let i = 0; i <= 40; i++) {
+        const off = (i / 40) * umbraR;
+        const r = refractedLimbIlluminance(d, off, p, illum, starAng);
+        const L = r.illuminance[0] * 0.2126 + r.illuminance[1] * 0.7152 + r.illuminance[2] * 0.0722;
+        if (L > best.E) best = { E: L, off, band: r.bandAltitudeKm };
+      }
+      const onAxis = refractedLimbIlluminance(d, 0, p, illum, starAng);
+      const axisL =
+        onAxis.illuminance[0] * 0.2126 +
+        onAxis.illuminance[1] * 0.7152 +
+        onAxis.illuminance[2] * 0.0722;
+      rows[`${mult.toFixed(1)} R`] = {
+        "d (km)": Math.round(d),
+        "umbra radius (km)": Math.round(umbraR),
+        "on axis (lux)": Number((axisL * NITS_PER_GAME_UNIT).toPrecision(3)),
+        "brightest (lux)": Number((best.E * NITS_PER_GAME_UNIT).toPrecision(3)),
+        "at offset (% umbra)": umbraR > 0 ? Number(((100 * best.off) / umbraR).toFixed(0)) : "—",
+        "through h (km)": Number(best.band.toFixed(1)),
+      };
+    }
+    console.table(rows);
+    console.log(
+      [
+        "[lum] 'brightest' sweeps the offset from the axis out to the umbra edge. The",
+        "      refracted light fills an ANNULUS whose INNER edge marches inward with depth",
+        "      and reaches the axis at the focal length — that migration is D28's geometry.",
+        "      ⚠ The brightest point stays at the RIM (fed by rays grazing high in a thin",
+        "      atmosphere, so brighter and less red); watch the 'on axis' column instead,",
+        "      which is 0 until the focal length and then climbs.",
+        "      ⚠⚠ This table is the RAW model. In the renderer it is multiplied by the",
+        "      shadow ramp (1 − sunTransmittance), so the large near-rim values do NOT",
+        "      double-count the attenuated direct sun the atmosphere pass already delivers",
+        "      there — that ramp goes to 0 exactly where the direct sun survives.",
+        "      ⚠ ONE anchored constant in this model (CLEAR_ANNULUS_FRACTION = 0.321, for the",
+        "      cloud + boundary-layer aerosol AtmosphereParams does not carry). Everything",
+        "      else is derived, so the geometry scales to any planet. Real eclipses swing",
+        "      ±2 magnitudes with volcanic aerosol — treat the level as a central value.",
+      ].join("\n"),
+    );
+
+    const live = sunOcclusionStatus().limb;
+    if (live) {
+      const L =
+        live.illuminance[0] * 0.2126 +
+        live.illuminance[1] * 0.7152 +
+        live.illuminance[2] * 0.0722;
+      console.log(
+        [
+          `[lum] LIVE — the ship is in ${rec.id}'s shadow:`,
+          `  depth ${Math.round(live.depthKm).toLocaleString()} km, offset ${Math.round(live.offsetKm).toLocaleString()} km from the axis`,
+          `  refracted illuminance ${(L * NITS_PER_GAME_UNIT).toPrecision(3)} lux, through h = ${live.bandAltitudeKm.toFixed(1)} km`,
+          `  hull radiance at albedo 0.333 = ${((L * 0.333) / Math.PI * NITS_PER_GAME_UNIT).toPrecision(3)} cd/m²`,
+          "  🔑 A totally eclipsed Moon is ~1.1 lux / 0.11 cd/m². If this reads far under",
+          "     that, check the offset against the ring radius in the table above.",
+        ].join("\n"),
+      );
+    } else {
+      console.log(
+        "[lum] not currently in a planet's shadow, so no live value. Fly into the umbra\n" +
+          "      (anti-sunward of the body) and re-run.",
+      );
+    }
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

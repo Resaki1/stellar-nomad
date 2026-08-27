@@ -13,6 +13,22 @@ export type AtmosphereParams = {
   atmosphereHeightKm: number;
   rayleighScattering: Vec3Tuple;
   rayleighScaleHeightKm: number;
+  /**
+   * Surface refractivity `n − 1` of the gas mixture at this body's own surface
+   * density, dimensionless. ~2.77e-4 for Earth air.
+   *
+   * 🔑 The ONE quantity the rest of `AtmosphereParams` cannot supply, and the
+   * only thing needed to turn this atmosphere into a LENS. `refractedLimbLight.ts`
+   * uses it for defect D28 — sunlight bent through the limb into the umbra, i.e.
+   * why a totally eclipsed Moon is coppery instead of invisible.
+   *
+   * ⚠ Derived, not authored: refractivity is linear in number density and
+   * `rayleighRel` is DEFINED as `((n−1)_g/(n−1)_air)²·(F_g/F_air)`, so
+   * `(n−1) = (n−1)_air · nRel · √rayleighRel` — see `deriveAtmosphere`. Both
+   * factors are already computed there for the Rayleigh coefficient; this reuses
+   * them rather than adding a table.
+   */
+  surfaceRefractivity: number;
   // Per-RGB Mie (Phase 5): coloured aerosols — e.g. Mars dust absorbs blue
   // (butterscotch sky, blue sunset). Earth's aerosol is spectrally flat.
   mieScattering: Vec3Tuple;

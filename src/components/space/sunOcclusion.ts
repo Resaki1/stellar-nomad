@@ -51,6 +51,8 @@
 
 import * as THREE from "three";
 
+import type { RefractedLimb } from "./refractedLimbLight";
+
 // =============================================================================
 // Registry
 // =============================================================================
@@ -92,6 +94,21 @@ export function setSunOccluder(
 
 export function clearSunOccluder(id: string): void {
   occluders.delete(id);
+}
+
+/**
+ * A registered occluder's ABSOLUTE km centre, or null.
+ *
+ * 🔑 Exposed for D28, which needs the ship's position relative to a planet in ONE
+ * consistent frame. `AtmosphereBodyRecord.centerScaled` is scaled-world while
+ * `worldOrigin.shipPosKm` is km, and subtracting them silently yields a vector
+ * whose direction is right and whose magnitude is meaningless — which is exactly
+ * the bug this getter exists to prevent (it produced "always on the shadow axis",
+ * the one answer that is wrong close in). Every `CelestialBody` registers here
+ * unconditionally in absolute km, so this is the frame-safe source.
+ */
+export function sunOccluderCenterKm(id: string): THREE.Vector3 | null {
+  return occluders.get(id)?.centerKm ?? null;
 }
 
 // =============================================================================
@@ -238,18 +255,22 @@ const _directSun = {
   transmittance: [1, 1, 1] as [number, number, number],
   /** Ambient-fill intensity the hull self-bounce was driven at, game units. */
   fillIntensity: 0,
+  /** D28 refracted limb light resolved this frame, or null when not in shadow. */
+  limb: null as RefractedLimb | null,
 };
 
 export function publishDirectSunState(
   illuminance: number,
   transmittance: THREE.Color,
   fillIntensity: number,
+  limb: RefractedLimb | null = null,
 ): void {
   _directSun.illuminance = illuminance;
   _directSun.transmittance[0] = transmittance.r;
   _directSun.transmittance[1] = transmittance.g;
   _directSun.transmittance[2] = transmittance.b;
   _directSun.fillIntensity = fillIntensity;
+  _directSun.limb = limb;
 }
 
 /** Last frame's occlusion state — read by `__lum.sun()`, never by rendering. */
@@ -260,6 +281,7 @@ export function sunOcclusionStatus(): {
   illuminance: number;
   transmittance: [number, number, number];
   fillIntensity: number;
+  limb: RefractedLimb | null;
 } {
   return {
     visibility: _lastVisibility,
@@ -268,5 +290,6 @@ export function sunOcclusionStatus(): {
     illuminance: _directSun.illuminance,
     transmittance: _directSun.transmittance,
     fillIntensity: _directSun.fillIntensity,
+    limb: _directSun.limb,
   };
 }
