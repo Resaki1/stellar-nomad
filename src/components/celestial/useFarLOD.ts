@@ -93,6 +93,9 @@ export function useFarLOD(
   uFarFade: any,
   farConfig: FarBillboardConfig,
   bodyId: string,
+  /** D34: star-disc visibility at the body's centre, [0,1]. See the note below. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uEclipseVis: any,
 ) {
   const sizeMultiplier = farConfig.sizeMultiplier ?? 2.1;
 
@@ -159,8 +162,17 @@ export function useFarLOD(
       // also wrote depth it OCCLUDED the billboard: measured flux fell 20× the instant
       // the point appeared. A crossfade needs both halves to move — one fading in
       // while the other fades out — or it is just an overdraw.
+      // ── D34: body-on-body eclipse, as a SCALAR at the body's centre ───────
+      // The near/mid tiers evaluate eclipse visibility PER PIXEL (a solar-eclipse
+      // spot is far smaller than the planet). This tier is a billboard a few
+      // pixels across, so a per-pixel test would resolve nothing — and it could
+      // not use the same code anyway: `positionLocal` here is a QUAD, not a
+      // sphere, so `normalize(positionLocal) · radius` would be meaningless.
+      // ⇒ one uniform, computed by the same circle-overlap maths on the CPU.
       return vec4(
-        surfaceRadiance(refl.xyz, uSunIlluminance).mul(uFarFade),
+        surfaceRadiance(refl.xyz, uSunIlluminance)
+          .mul(uFarFade)
+          .mul(uEclipseVis),
         refl.w,
       );
     })();
@@ -172,6 +184,7 @@ export function useFarLOD(
     uSpF,
     uSunIlluminance,
     uFarFade,
+    uEclipseVis,
     scaledRadius,
     farConfig,
     sizeMultiplier,

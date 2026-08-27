@@ -57,7 +57,7 @@ import type { RefractedLimb } from "./refractedLimbLight";
 // Registry
 // =============================================================================
 
-type SunOccluder = {
+export type SunOccluder = {
   id: string;
   /** Body centre in ABSOLUTE km (the same frame as `config.positionKm`). */
   centerKm: THREE.Vector3;
@@ -65,6 +65,10 @@ type SunOccluder = {
 };
 
 const occluders = new Map<string, SunOccluder>();
+// Cached iteration view. A Map iterator allocates; this is read once per body
+// per frame, so with ~13 bodies that is ~170 iterations a frame — worth caching.
+let _list: SunOccluder[] = [];
+let _listDirty = true;
 
 /**
  * Register/update a body as a sun occluder for this frame. Cheap enough to call
@@ -83,6 +87,7 @@ export function setSunOccluder(
   if (!rec) {
     rec = { id, centerKm: new THREE.Vector3(), radiusKm };
     occluders.set(id, rec);
+    _listDirty = true;
   }
   if (Array.isArray(centerKm)) {
     rec.centerKm.set(centerKm[0], centerKm[1], centerKm[2]);
@@ -93,7 +98,24 @@ export function setSunOccluder(
 }
 
 export function clearSunOccluder(id: string): void {
-  occluders.delete(id);
+  if (occluders.delete(id)) _listDirty = true;
+}
+
+/**
+ * Every registered occluder, for iteration. ⚠ The live array — do not mutate.
+ *
+ * 🔑 Exposed for D34 (body-on-body eclipses). The registry is written by every
+ * `CelestialBody` unconditionally in ABSOLUTE km, which is exactly the data an
+ * eclipse needs, so no second registry is warranted. Rebuilt only when the set
+ * of bodies changes, not per frame.
+ */
+export function sunOccluderList(): readonly SunOccluder[] {
+  if (_listDirty) {
+    _list = [];
+    occluders.forEach((o) => _list.push(o));
+    _listDirty = false;
+  }
+  return _list;
 }
 
 /**

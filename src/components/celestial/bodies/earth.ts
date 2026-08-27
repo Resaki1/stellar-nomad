@@ -1,7 +1,7 @@
 import * as THREE from "three";
+import { eclipseVisibilityNode } from "../bodyEclipse";
 import {
   Fn,
-  If,
   uniform,
   texture,
   uv,
@@ -21,13 +21,8 @@ import {
   clamp,
   pow,
   exp,
-  acos,
-  asin,
-  sin,
   reflect,
   length,
-  sub,
-  PI,
   smoothstep,
   Discard,
   int,
@@ -35,11 +30,9 @@ import {
 import {
   PLANET_POSITION_KM,
   PLANET_RADIUS_KM,
-  LUNA_POSITION_KM,
-  LUNA_RADIUS_KM,
   STAR_RADIUS_KM,
 } from "@/sim/celestialConstants";
-import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
+import { kmToScaledUnits } from "@/sim/units";
 import type { CelestialBodyConfig } from "../types";
 import { buildEarthClouds } from "./earthClouds";
 import {
@@ -167,65 +160,10 @@ const SHELL_FADE_FULL_ALT_KM = 28; // full above this altitude
 const VOLUMETRIC_BLEND_START_ALT_KM = 700;
 const VOLUMETRIC_BLEND_FULL_ALT_KM = 250;
 
-// ── Scratch vectors for onFrame ──
-const _moonScaled = new THREE.Vector3();
-const _earthRelKm = new THREE.Vector3();
-
-// ---------- TSL: Eclipse function ----------
-const eclipseFn = Fn(
-  ([
-    angleBetween,
-    angleLight,
-    angleOcc,
-  ]: [
-    ReturnType<typeof float>,
-    ReturnType<typeof float>,
-    ReturnType<typeof float>,
-  ]) => {
-    const r2 = pow(angleOcc.div(angleLight), float(2));
-    const v = float(1.0).toVar();
-
-    If(
-      angleBetween
-        .greaterThan(angleLight.sub(angleOcc))
-        .and(angleBetween.lessThan(angleLight.add(angleOcc))),
-      () => {
-        If(angleBetween.lessThan(angleOcc.sub(angleLight)), () => {
-          v.assign(0.0);
-        }).Else(() => {
-          const x = float(0.5)
-            .div(angleBetween)
-            .mul(
-              angleBetween
-                .mul(angleBetween)
-                .add(angleLight.mul(angleLight))
-                .sub(angleOcc.mul(angleOcc))
-            );
-          const thL = acos(x.div(angleLight));
-          const thO = acos(angleBetween.sub(x).div(angleOcc));
-          v.assign(
-            float(1.0)
-              .div(PI)
-              .mul(
-                sub(PI, thL)
-                  .add(float(0.5).mul(sin(thL.mul(2))))
-                  .sub(thO.mul(r2))
-                  .add(float(0.5).mul(r2).mul(sin(thO.mul(2))))
-              )
-          );
-        });
-      }
-    )
-      .ElseIf(angleBetween.greaterThan(angleLight.add(angleOcc)), () => {
-        v.assign(1.0);
-      })
-      .Else(() => {
-        v.assign(float(1.0).sub(r2));
-      });
-
-    return clamp(v, 0, 1);
-  }
-);
+// ── TSL eclipse function: PROMOTED to ../bodyEclipse.ts (D34) ──────────────
+// The circle-circle overlap that used to live here now serves every body, in
+// both directions, driven by the sun-occluder registry rather than a hardcoded
+// `uMoonPos`. It is imported as `eclipseVisibilityNode`.
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared Earth fragment node builder
@@ -291,9 +229,9 @@ function buildEarthFragmentNode(opts: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uMoonPos: any;
+  eclipseU: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  uMoonRadius: any;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRadius: any;
   // Atmosphere transmittance LUT (Phase 3b surface coupling). Bound at graph-
@@ -304,7 +242,7 @@ function buildEarthFragmentNode(opts: {
 }) {
   const {
     texDay, texNight, texClouds, texNormal, texSpec,
-    uSunRel, uSunIlluminance, uMoonPos, uMoonRadius, uSunRadius, transmittanceLUT,
+    uSunRel, uSunIlluminance, eclipseU, uSunRadius, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -366,22 +304,21 @@ function buildEarthFragmentNode(opts: {
     // block after the cloud-shadow section.
     const cosSunEff = cosSunToGeomNormal.toVar();
 
-    // ── Eclipse calculation ──
+    // ── Eclipse coverage (D34) ──
+    // ⚠⚠ WAS HARDCODED TO LUNA: this read `uMoonPos`/`uMoonRadius`, so Earth
+    // could only ever be eclipsed by one named body. Now it consumes the SHARED
+    // occluder slots every `CelestialBody` fills from the sun-occluder registry,
+    // so any body — or a procedurally generated moon — casts a real shadow here.
+    //
+    // 🔑 Earth keeps its OWN call rather than taking `CelestialBody`'s generic
+    // per-pixel multiply (`config.ownEclipse = true`), because coverage feeds
+    // `sunVis` below, which additionally switches CITY LIGHTS ON inside a total
+    // eclipse and gates the ocean specular and the terminator band. A flat
+    // multiply on the finished fragment cannot do any of that. ⚠ Taking both
+    // would square the shadow.
     const surfacePosW = positionWorld;
     const distEarthToSun = length(uSunRel);
-    const moonToSurf = sub(uMoonPos, surfacePosW);
-    const distSurfToMoon = length(moonToSurf);
-
-    const cosSunMoon = dot(sunDir, normalize(moonToSurf));
-    const angSunMoon = acos(clamp(cosSunMoon, -1, 1));
-    const angSunDisk = asin(
-      clamp(uSunRadius.div(distEarthToSun), 0, 1)
-    );
-    const angMoonDisk = asin(
-      clamp(uMoonRadius.div(distSurfToMoon), 0, 1)
-    );
-
-    const eclipseAmount = eclipseFn(angSunMoon, angSunDisk, angMoonDisk);
+    const eclipseAmount = eclipseVisibilityNode(eclipseU);
 
     // ── Detail-dependent: normal mapping + cloud shadow ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -698,6 +635,10 @@ const EARTH_FAR_ALBEDO = new THREE.Color(0.38, 0.42, 0.80);
 
 export const earthConfig: CelestialBodyConfig = {
   id: "earth",
+  // D34: Earth applies eclipse coverage inside its OWN shader (it threads it
+  // through `sunVis`, which also switches city lights on and gates the ocean
+  // specular), so `CelestialBody` must not multiply it again.
+  ownEclipse: true,
   positionKm: PLANET_POSITION_KM,
   radiusKm: PLANET_RADIUS_KM,
   rotation: EARTH_ROTATION,
@@ -758,8 +699,6 @@ export const earthConfig: CelestialBodyConfig = {
   },
 
   createUniforms: () => ({
-    uMoonPos: uniform(new THREE.Vector3(1e9, 0, 0)),
-    uMoonRadius: uniform(kmToScaledUnits(LUNA_RADIUS_KM)),
     uSunRadius: uniform(kmToScaledUnits(STAR_RADIUS_KM)),
     // Volumetric crossfade (0 = far / shell only, 1 = volumetric near field).
     // Driven from camera ALTITUDE in onFrame; gates the whole marcher pipeline
@@ -783,7 +722,7 @@ export const earthConfig: CelestialBodyConfig = {
     ),
   }),
 
-  onFrame: ({ uniforms, worldOrigin, distKm }) => {
+  onFrame: ({ uniforms,  distKm }) => {
     // Live sun illuminance for the cloud shell (1/r² on Earth's real distance to
     // the star). `setAtmosphereBody` runs earlier in the same CelestialBody
     // useFrame, so this is same-frame fresh. Left unchanged if Earth isn't
@@ -792,12 +731,10 @@ export const earthConfig: CelestialBodyConfig = {
     const atmoRec = getAtmosphereBody("earth");
     if (atmoRec) uniforms.uSunIlluminance.value.copy(atmoRec.sunIlluminance);
 
-    // Update moon position in scaled coords
-    const moonKm = LUNA_POSITION_KM;
-    _earthRelKm.set(moonKm[0], moonKm[1], moonKm[2]);
-    _earthRelKm.sub(worldOrigin.worldOriginKm);
-    toScaledUnitsKm(_earthRelKm, _moonScaled);
-    uniforms.uMoonPos.value.copy(_moonScaled);
+    // ⚠ D34: the per-frame Luna position that used to live here is GONE. Earth's
+    // eclipse now reads the shared occluder slots `CelestialBody` fills from the
+    // sun-occluder registry, so it is no longer coupled to one named moon — and
+    // `LUNA_POSITION_KM` no longer has to be imported by a planet.
 
     // Volumetric/flat cloud crossfade — ALTITUDE-based (see the
     // VOLUMETRIC_BLEND_*_ALT_KM constants for rationale + history). 0 above
@@ -829,7 +766,7 @@ export const earthConfig: CelestialBodyConfig = {
     );
   },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, tier }) => {
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, eclipseU, tier }) => {
     return buildEarthFragmentNode({
       texDay: textures.day,
       texNight: textures.night,
@@ -838,8 +775,7 @@ export const earthConfig: CelestialBodyConfig = {
       texSpec: textures.spec ?? null,
       uSunRel,
       uSunIlluminance,
-      uMoonPos: uniforms.uMoonPos,
-      uMoonRadius: uniforms.uMoonRadius,
+      eclipseU,
       uSunRadius: uniforms.uSunRadius,
       // Phase 3b: bind the shared transmittance LUT (baked by SpaceRenderer's
       // atmosphere pass) so the surface shader reads per-pixel sun colour.

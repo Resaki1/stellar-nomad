@@ -10,7 +10,9 @@ import SimGroup from "../space/SimGroup";
 import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
+import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM,
+  STAR_RADIUS_KM,
+} from "@/sim/celestialConstants";
 import {
   STAR_COLOR_LINEAR,
   getPreExposure,
@@ -30,6 +32,12 @@ import {
   clearAtmosphereBody,
 } from "../space/atmospherePass";
 import { setSunOccluder, clearSunOccluder } from "@/components/space/sunOcclusion";
+import {
+  createEclipseUniforms,
+  eclipseVisibilityNode,
+  updateEclipseUniforms,
+  type EclipseUniforms,
+} from "./bodyEclipse";
 import type { CelestialBodyConfig, ExtraMeshDef } from "./types";
 
 // ── Shared scratch vectors (safe: useFrame is sequential) ──
@@ -75,6 +83,8 @@ type TexturedLODsProps = {
   nearReadyState: { current: number };
   /** 0 = not loaded, 1 = compiling, 2 = ready */
   midReadyState: { current: number };
+  /** D34 eclipse uniforms, owned by the parent. */
+  eclipseU: EclipseUniforms;
 };
 
 function TexturedLODs({
@@ -91,6 +101,7 @@ function TexturedLODs({
   shouldLoadNear,
   nearReadyState,
   midReadyState,
+  eclipseU,
 }: TexturedLODsProps) {
   const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
 
@@ -117,6 +128,16 @@ function TexturedLODs({
   // disagreed about its own mean would otherwise give a body two different albedos
   // at two distances, which is the LOD step D09 exists to remove.
   const uAlbedoScale = useMemo(() => albedoScaleUniform(config.id), [config.id]);
+  // ── D34: body-on-body eclipses ───────────────────────────────────────────
+  // ⚠ The uniforms are created and updated by the PARENT (`CelestialBody`),
+  // because the per-frame update needs the body's absolute km position and the
+  // FAR tier needs the scalar twin — this component only consumes them.
+  // ⚠ Earth OPTS OUT of the wrapper multiply: its own shader already threads
+  // eclipse coverage through `sunVis`, which additionally gates city lights, the
+  // ocean specular and the terminator band — richer than a flat multiply. Doing
+  // both would SQUARE the shadow. Earth consumes the same shared occluder
+  // uniforms instead, so it is no longer hardcoded to Luna either.
+  const ownEclipse = config.ownEclipse === true;
   useMemo(() => {
     if (!midTex) return;
     // `color` is the convention; Earth calls its colour map `day`.
@@ -175,9 +196,19 @@ function TexturedLODs({
         // `.toVar()` so the body's subgraph — including any `Discard` — is emitted
         // once rather than duplicated by reading `.xyz` and `.w` separately.
         const c = vec4(node).toVar();
-        return vec4(c.xyz.mul(uAlbedoScale), c.w);
+        // ── D34: per-pixel eclipse ──────────────────────────────────────────
+        // ⚠ This multiplies the WHOLE fragment, emissive terms included. For an
+        // eclipse that is harmless and arguably right: city lights are gated by
+        // their own `nightMask` (sun-above-horizon), so inside a DAYTIME
+        // solar-eclipse spot they are already off. A body whose emissive should
+        // survive being eclipsed would need the multiply moved inside its
+        // shader, as Earth does — hence `ownEclipse`.
+        const lit = ownEclipse
+          ? c.xyz
+          : c.xyz.mul(eclipseVisibilityNode(eclipseU));
+        return vec4(lit.mul(uAlbedoScale), c.w);
       })(),
-    [uAlbedoScale],
+    [uAlbedoScale, eclipseU, ownEclipse],
   );
 
   const nearMat = useMemo(() => {
@@ -185,37 +216,37 @@ function TexturedLODs({
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.fragmentNode = wrapAlbedo(
-      config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" }),
+      config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" }),
     );
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
+      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" });
     }
     return m;
-  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo]);
+  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU]);
 
   const midMat = useMemo(() => {
     if (!midTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.fragmentNode = wrapAlbedo(
-      config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" }),
+      config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" }),
     );
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
+      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" });
     }
     return m;
-  }, [midTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo]);
+  }, [midTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU]);
 
   // ── Extra meshes (Saturn ring, etc.) ──
   const nearExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !nearTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uSunIlluminance, uniforms, tier: "near" });
-  }, [config, scaledRadius, nearTex, uSunRel, uSunIlluminance, uniforms]);
+    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" });
+  }, [config, scaledRadius, nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU]);
 
   const midExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !midTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uSunIlluminance, uniforms, tier: "mid" });
-  }, [config, scaledRadius, midTex, uSunRel, uSunIlluminance, uniforms]);
+    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" });
+  }, [config, scaledRadius, midTex, uSunRel, uSunIlluminance, uniforms, eclipseU]);
 
   // Allow partial rendering: tiers load independently as they become ready.
   // Far billboard (always available) covers until the first textured tier loads.
@@ -337,6 +368,15 @@ type CelestialBodyProps = {
 
 function CelestialBody({ config }: CelestialBodyProps) {
   const positionKm = config.positionKm;
+  // ── D34: body-on-body eclipse uniforms ───────────────────────────────────
+  // Owned here rather than per body config, for the same reason `uAlbedoScale`
+  // is: there are 13 body modules, and a rule each has to remember is a rule the
+  // 14th will forget. `eclipseU` drives the PER-PIXEL near/mid path;
+  // `uEclipseVis` is the same maths evaluated once at the body's centre for the
+  // far/point tiers, which are too few pixels to resolve a shadow edge.
+  const eclipseU = useMemo(() => createEclipseUniforms(), []);
+  const uEclipseVis = useMemo(() => uniform(1), []);
+
   const sunPositionKm = config.sunPositionKm ?? STAR_POSITION_KM;
   const radiusKm = config.radiusKm;
 
@@ -436,6 +476,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
     uFarFade,
     config.far,
     config.id,
+    uEclipseVis,
   );
 
   // ── Refs for LOD meshes ──
@@ -526,6 +567,21 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // the body is worth drawing: Neptune's runs 165 M km against a 12 M km LOD
     // gate. Gating this is precisely the bug. See space/sunOcclusion.ts.
     setSunOccluder(config.id, positionKm, radiusKm);
+
+    // ── D34: which bodies are eclipsing THIS one, this frame ────────────────
+    // ⚠ AFTER `setSunOccluder` above, deliberately: the registry must contain
+    // this frame's positions for every body before any body reads it. Bodies
+    // update in mount order, so a reader running first would see one stale
+    // frame — harmless for a shadow that moves slowly, but the ordering is free
+    // here and a stale eclipse would be a miserable thing to chase.
+    uEclipseVis.value = updateEclipseUniforms(
+      eclipseU,
+      config.id,
+      positionKm,
+      radiusKm,
+      sunPositionKm,
+      STAR_RADIUS_KM,
+    );
 
     // ── Prefetch texture loading triggers (one-shot per tier) ──
     if (distKm < prefetchFarDist) setLoadMid(true);
@@ -672,6 +728,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
             shouldLoadNear={loadNear}
             nearReadyState={nearReadyState}
             midReadyState={midReadyState}
+            eclipseU={eclipseU}
           />
         </group>
       ) : (
@@ -689,6 +746,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
           shouldLoadNear={loadNear}
           nearReadyState={nearReadyState}
           midReadyState={midReadyState}
+          eclipseU={eclipseU}
         />
       )}
       <mesh

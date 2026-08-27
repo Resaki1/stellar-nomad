@@ -41,10 +41,19 @@ import { Matrix4, Quaternion, Vector3 } from "three";
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 
 import solSystem from "@/sim/systems/sol.json";
-import { STAR_LUMINOSITY_SUN } from "@/sim/celestialConstants";
+/** Scratch uniforms for `__lum.eclipse()` — never rendered with. */
+const _eclipseProbeU = createEclipseUniforms();
+
+import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
 import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
+import { sunOccluderList } from "@/components/space/sunOcclusion";
+import {
+  MAX_ECLIPSE_OCCLUDERS,
+  createEclipseUniforms,
+  updateEclipseUniforms,
+} from "@/components/celestial/bodyEclipse";
 import {
   atmosphericFocalLengthKm,
   grazingDeflectionDeg,
@@ -2556,6 +2565,80 @@ export class LumHarness {
           "      (anti-sunward of the body) and re-run.",
       );
     }
+  }
+
+  /**
+   * D34 — body-on-body eclipses: which bodies are shadowing which, right now.
+   *
+   * ⚠ Distinct from `await __lum.eclipse(id)`, which WARPS THE SHIP into a
+   * body's umbra to check what the ship sees (D27). This one is synchronous and
+   * reports what the BODIES see — no warp, no frames needed.
+   *
+   * Prints, for every registered body: the star-disc visibility at its CENTRE
+   * and the occluders biting into it, with the angular geometry. A total eclipse
+   * reads visibility 0; a partial reads between; annular transits read
+   * `1 − (r_occ/r_star)²`.
+   *
+   * 🔑 The centre value is what the FAR/POINT tiers use. The near/mid tiers
+   * evaluate the same maths PER PIXEL, so a solar-eclipse spot much smaller than
+   * the planet still resolves — a per-centre test would miss it entirely. If a
+   * row shows visibility 1 while you can see a shadow on the surface, that is
+   * the per-pixel path working and the scalar correctly reporting the centre.
+   */
+  eclipses(): void {
+    const list = sunOccluderList();
+    if (list.length === 0) {
+      console.log(
+        "[lum] no bodies registered yet — CelestialBody registers unconditionally\n" +
+          "      every frame, so this is only empty before the scene mounts.",
+      );
+      return;
+    }
+    const star = STAR_POSITION_KM;
+    const rows: Record<string, Record<string, string | number>> = {};
+    let anyEclipse = false;
+    for (const body of list) {
+      const vis = updateEclipseUniforms(
+        _eclipseProbeU,
+        body.id,
+        [body.centerKm.x, body.centerKm.y, body.centerKm.z],
+        body.radiusKm,
+        star,
+        STAR_RADIUS_KM,
+      );
+      const occs: string[] = [];
+      for (let i = 0; i < MAX_ECLIPSE_OCCLUDERS; i++) {
+        const v = _eclipseProbeU.occ[i].value;
+        if (v.w <= 0) continue;
+        const d = Math.hypot(v.x, v.y, v.z);
+        occs.push(
+          `${(Math.asin(Math.min(1, v.w / d)) * 180 / Math.PI).toFixed(3)}° @ ${Math.round(d).toLocaleString()} km`,
+        );
+      }
+      if (vis < 0.9999 || occs.length > 0) anyEclipse = true;
+      rows[body.id] = {
+        "centre visibility": Number(vis.toPrecision(4)),
+        "stops lost": vis > 0 ? Number((-Math.log2(vis)).toFixed(2)) : "∞",
+        occluders: occs.length > 0 ? occs.join(" | ") : "—",
+      };
+    }
+    console.table(rows);
+    console.log(
+      [
+        `[lum] ${list.length} bodies. ` +
+          (anyEclipse
+            ? "At least one is being eclipsed right now."
+            : "Nothing is eclipsing anything — geometry, not a bug."),
+        "      ⚠ `centre visibility` drives the FAR/POINT tiers only. Near/mid run the",
+        "      same circle-overlap PER PIXEL, so a solar-eclipse spot smaller than the",
+        "      planet resolves there while this column still reads ~1.",
+        "      🔑 Both directions come from one function: an occluder whose shadow is",
+        "      bigger than the body gives a lunar eclipse, smaller gives a solar one.",
+        "      ⚠ An eclipsed body with an ATMOSPHERE-bearing occluder should not be pure",
+        "      black — D28's refracted limb light is what makes it coppery, and it",
+        "      currently reaches the SHIP only (see `__lum.umbra()`).",
+      ].join("\n"),
+    );
   }
 
   /** Snap adaptation to the current scene — no slow fade after a warp. */

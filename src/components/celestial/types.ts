@@ -117,6 +117,17 @@ export type FragmentNodeContext = {
   uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uniforms: Record<string, any>;
+  /**
+   * Shared body-on-body eclipse uniforms (defect D34), owned by
+   * `CelestialBody`. Pass to `eclipseVisibilityNode()` for per-pixel star-disc
+   * visibility.
+   *
+   * ⚠ Only bodies with `ownEclipse: true` should read this — every other body
+   * gets the multiply applied for it by `CelestialBody`'s fragment wrapper, and
+   * doing both would SQUARE the shadow.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  eclipseU: any;
   tier: "near" | "mid";
 };
 
@@ -140,6 +151,13 @@ export type ExtraMeshContext = {
   uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uniforms: Record<string, any>;
+  /**
+   * Shared eclipse uniforms (D34). ⚠ Extra meshes are NOT wrapped by
+   * `CelestialBody`'s fragment wrapper, so a mesh that wants eclipse coverage —
+   * the cloud shell, a ring — must apply `eclipseVisibilityNode()` itself.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  eclipseU: any;
   tier: "near" | "mid";
 };
 
@@ -189,6 +207,19 @@ export type CelestialBodyConfig = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createUniforms?: () => Record<string, any>;
   onFrame?: (ctx: OnFrameContext) => void;
+
+  /**
+   * Set when the body's OWN fragment shader already applies eclipse coverage
+   * (defect D34). `CelestialBody` then skips its generic per-pixel multiply for
+   * this body, so the shadow is not applied twice.
+   *
+   * ⚠ Only `earth.ts` sets this today, and for a reason worth keeping: Earth
+   * threads coverage through `sunVis`, which also switches city lights on inside
+   * a total eclipse and gates the ocean specular and terminator band. A flat
+   * multiply cannot do that, so Earth keeps its richer path and consumes the
+   * same shared occluder uniforms.
+   */
+  ownEclipse?: boolean;
 
   billboardMode?: "camera-space" | "world-space";
   onTexturesLoaded?: (tier: "near" | "mid", textures: Record<string, THREE.Texture>) => void;
