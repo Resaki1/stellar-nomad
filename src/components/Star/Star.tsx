@@ -20,8 +20,9 @@ import {
   smoothstep,
   max,
   varying,
-  log2,
+  cameraNear,
   cameraFar,
+  viewZToLogarithmicDepth,
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
@@ -38,6 +39,7 @@ import {
   getPreExposure,
 } from "@/components/space/photometry";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { sunVisibility } from "@/components/space/sunOcclusion";
 
 export { STAR_POSITION_KM };
 
@@ -117,6 +119,32 @@ function Star({ bloom: _bloom }: StarProps) {
   // Disc radiance, game units. Physical (SUN_DISC_RADIANCE_GAME) while the disc
   // resolves; flux-conserving below DISC_PX_FLOOR — see the constant.
   const uCoreRadiance = useMemo(() => uniform(SUN_DISC_RADIANCE_GAME), []);
+  // ── Eclipse gating (D34c) ────────────────────────────────────────────────
+  // Fraction of the star's disc the EYE can see, from the same occluder registry
+  // every body fills. Two uniforms, not one, because the disc and the glow are
+  // occluded by different mechanisms:
+  //
+  // 🔑 THE DISC IS ALREADY OCCLUDED GEOMETRICALLY and must NOT be multiplied
+  // here — occluders write depth into the same buffer this billboard is
+  // depth-tested against, so a 50% eclipse multiplied as well would render 25%.
+  // `uDiscVis` is therefore 1.0 whenever the disc is drawn at its true size, and
+  // only departs from 1 in the sub-pixel branch below, where the disc is
+  // deliberately drawn LARGER than it is and per-pixel depth is meaningless.
+  //
+  // ⚠⚠ THE GLOW IS THE ACTUAL BUG. 87.5% of the billboard's radius is glow
+  // (GLOW_PAD = 8), so no occluder the size of the disc can ever cover it: a
+  // total eclipse left a saturated white blob ~25 px across with a ~11 px dark
+  // core, which reads as "the sun is still fully visible". The glow is the
+  // disc's flux spread over an 8× footprint, so it has to scale with the flux
+  // that SURVIVES — a per-pixel depth test structurally cannot do that.
+  //
+  // ⚠ `skipId` is null here, unlike SunLight's call: that skip exists because
+  // the atmosphere pass owns the dominant body's shadow FOR LIGHTING. Nothing
+  // lights the rendered disc, so nothing else attenuates it. No double count
+  // with the atmosphere composite either — `sceneColor·T + L` is view-ray
+  // EXTINCTION, a different physical term from occlusion.
+  const uStarVis = useMemo(() => uniform(1), []);
+  const uDiscVis = useMemo(() => uniform(1), []);
   // Blackbody hue from the primary's T_eff, luminance-normalised so it carries
   // colour ONLY — the magnitude is uCoreRadiance's job.
   const uStarColor = useMemo(() => {
@@ -135,8 +163,18 @@ function Star({ bloom: _bloom }: StarProps) {
 
     const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
 
-    // Varying to forward clip W to the fragment shader for log depth.
-    const vLogZ = varying(float(1.0), "v_starLogZ");
+    // Varying to forward VIEW-SPACE Z to the fragment shader for log depth.
+    // ⚠⚠ WAS `clip.w + 1` FED INTO THE WEBGL-1 FORMULA
+    // `log2(w+1)·2/log2(far+1)·0.5`, which is NOT what three's WebGPU backend
+    // writes: `NodeMaterial.setupDepth` uses
+    // `viewZToLogarithmicDepth(positionView.z, near, far)` =
+    // `log2(−viewZ/near)/log2(far/near)` (ViewportDepthNode.js:279-282). The two
+    // agree only at the far plane. MEASURED consequence: the sun's disc was
+    // depth-tested as if it sat at **0.29 AU** instead of 1 AU, so ANY occluder
+    // beyond ~0.29 AU from the camera silently failed to occlude it — a Mercury
+    // or Venus transit seen from Earth sits right on that boundary. Luna is far
+    // inside it, so this was not the eclipse bug, but it is the same code.
+    const vViewZ = varying(float(-1.0), "v_starViewZ");
 
     // ── Vertex: screen-aligned billboard ──
     m.vertexNode = Fn(() => {
@@ -150,14 +188,16 @@ function Star({ bloom: _bloom }: StarProps) {
         ),
       );
       const clip = cameraProjectionMatrix.mul(viewPos);
-      vLogZ.assign(clip.w.add(1.0));
+      vViewZ.assign(viewPos.z);
       return clip;
     })();
 
-    // Explicit logarithmic depth — custom vertexNode scaling means
-    // the renderer's internal log depth doesn't match our clip output.
-    const logDepthBufFC = float(2.0).div(log2(cameraFar.add(1.0)));
-    m.depthNode = log2(vLogZ).mul(logDepthBufFC).mul(0.5);
+    // Explicit logarithmic depth — the custom vertexNode means the renderer's
+    // own `positionView` does not describe this billboard's actual geometry, so
+    // the depth has to be written by hand. 🔑 Written with three's OWN function
+    // so the convention cannot drift from what every other material in the
+    // scaled scene writes.
+    m.depthNode = viewZToLogarithmicDepth(vViewZ, cameraNear, cameraFar);
 
     // ── Fragment: star disc + baked glow ──
     m.fragmentNode = Fn(() => {
@@ -171,7 +211,7 @@ function Star({ bloom: _bloom }: StarProps) {
         max(uCoreRatio.sub(uCoreRatio.mul(0.15)), float(0)),
         dist,
       );
-      const disc = discEdge.mul(uCoreRadiance);
+      const disc = discEdge.mul(uCoreRadiance).mul(uDiscVis);
 
       // Inner glow: bright halo just beyond the disc. Falls off with
       // distance² for a concentrated luminous feel.
@@ -179,12 +219,14 @@ function Star({ bloom: _bloom }: StarProps) {
       const innerFalloff = clamp(innerR.sub(dist).div(innerR), 0, 1);
       const innerGlow = pow(innerFalloff, float(2.5)).mul(
         uCoreRadiance.mul(float(INNER_GLOW_FRAC)),
-      );
+      ).mul(uStarVis);
 
       // Outer glow: wide soft halo extending to billboard edge.
       // Stays above bloom threshold (1.0) for the inner half.
       const outerFalloff = clamp(float(1.0).sub(dist), 0, 1);
-      const outerGlow = pow(outerFalloff, float(3.5)).mul(float(OUTER_GLOW_ABS));
+      const outerGlow = pow(outerFalloff, float(3.5))
+        .mul(float(OUTER_GLOW_ABS))
+        .mul(uStarVis);
 
       // ⚠ CLAMP THE WRITE. 265,000 exceeds RGBA16F's 65,504 finite max, so an
       // unclamped disc stores `Inf` — and Inf survives every filter downstream
@@ -209,7 +251,7 @@ function Star({ bloom: _bloom }: StarProps) {
     })();
 
     return m;
-  }, [uScale, uCoreRatio, uCoreRadiance, uStarColor]);
+  }, [uScale, uCoreRatio, uCoreRadiance, uStarColor, uStarVis, uDiscVis]);
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
@@ -258,8 +300,20 @@ function Star({ bloom: _bloom }: StarProps) {
     // write. With pre-exposure on, a frame containing the sun meters at exposure
     // ~0.05, so 265,000 × 0.05 = 13,250 — comfortably inside range and no longer
     // clipped. The clamp stays as a guard, not as the mechanism.
+    // Eclipse coverage from the occluder registry. The eye/ship offset is ~1e-6
+    // rad at lunar range, four orders below the 5e-3 rad disc, so the ship
+    // position is the right observer.
+    const starVis = sunVisibility(
+      worldOrigin.shipPosKm,
+      STAR_POSITION_KM,
+      STAR_RADIUS_KM,
+      null,
+    );
+    uStarVis.value = starVis;
+
     const preExp = getPreExposure();
     const discPx = (RADIUS_KM * 2 / distKm / fovRad) * screenH;
+    uDiscVis.value = discPx < DISC_PX_FLOOR ? starVis : 1;
     if (discPx < DISC_PX_FLOOR) {
       uCoreRatio.value = (DISC_PX_FLOOR / 2 / screenH) * fovRad
         * distScaled / halfExtent;

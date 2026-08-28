@@ -76,6 +76,7 @@ import {
   normalize,
   pow,
   positionLocal,
+  modelWorldMatrix,
   sin,
   sub,
   uniform,
@@ -90,6 +91,30 @@ import { sunOccluderList } from "@/components/space/sunOcclusion";
  * two Galilean shadows can land at once. ⚠ Unrolled in the shader, so raising
  * this costs GPU time on every lit pixel of every body.
  */
+// ⚠⚠ **fp32 PRECISION HERE IS LOAD-BEARING AND WAS THE CAUSE OF A VISIBLE
+// ARTEFACT** — sheared parallelogram tiles across Earth's eclipse shadow.
+// Confirmed by A/B on the flag below. TWO compounding faults:
+//
+//   1. THE SHAPE. `starRelKm − surf` cancels: the ULP of 1.496e8 is **16 km**, so
+//      `starDir` is bit-identical across 16 km cells that are AXIS-ALIGNED IN THE
+//      ECLIPTIC FRAME. That is why the tiles were sheared parallelograms and not
+//      rings around the shadow axis.
+//   2. THE AMPLITUDE. `acos(dot(a, b))` with the directions ~0.005 rad apart:
+//      dθ/d(dot) = −1/sin θ = **200×**, so each lattice crossing became a
+//      **0.128% hard STEP** in coverage — 0.64% relative at coverage 0.2 and
+//      **2.56% at 0.05**, then amplified again by exposure adaptation.
+//
+// 🔑🔑 **THE LESSON: the error's MAGNITUDE (0.020% mean) said "invisible" and was
+// the wrong question. Its STRUCTURE — a spatially coherent step on a world-aligned
+// lattice — is what the eye sees. When an artefact has geometric structure, ask
+// what is quantised and on what lattice.**
+//
+// ⚠ The cancellation in (1) is still present. The chord form below makes its
+// consequence 4000× smaller, which is why it stopped mattering — not because it
+// went away. If a future body sits far closer to or further from its star, or the
+// scene unit changes, re-measure before assuming it is still harmless.
+const ECLIPSE_STABLE_ANGLE = true;
+
 export const MAX_ECLIPSE_OCCLUDERS = 4;
 
 /**
@@ -329,25 +354,89 @@ function discOverlapCpu(aStar: number, bOcc: number, cSep: number): number {
  * Per-pixel fraction of the star's disc visible at this surface point, after
  * every occluder in `u`. Multiply any sun-driven term by this.
  *
- * ⚠ The surface point is taken as `normalize(positionLocal) · bodyRadiusKm`,
- * i.e. the body is treated as a sphere. Displacement and normal mapping are
- * metres against a shadow geometry that varies over thousands of km, so this
- * is exact to far better than a pixel.
+ * ⚠ The body is treated as a SPHERE: the surface point is the radial direction
+ * times `bodyRadiusKm`. Displacement and normal mapping are metres against a
+ * shadow geometry that varies over thousands of km, so this is exact to far
+ * better than a pixel.
+ *
+ * ⚠⚠ **THE RADIAL DIRECTION MUST BE TAKEN IN WORLD SPACE, NOT OBJECT SPACE.**
+ * This read `normalize(positionLocal)` — the OBJECT-space direction — while
+ * `starRelKm` and every occluder slot are WORLD-space (ecliptic) km. The two
+ * differ by the body's entire orientation, so the shadow was painted on the
+ * wrong side of the planet by up to 180°.
+ *
+ * 🔑 It was INVISIBLE AS A BUG because it still drew a plausible-looking shadow,
+ * just in the wrong place: with Earth's old static `Euler(0, 0.15π, 0.8π)` the
+ * displaced shadow happened to land on the sunlit side, and the 2024-04-08 test
+ * showed it over the Sahara — which was read as an ORBITAL error and was
+ * genuinely one too (see `sim/ephemeris.ts`). Fixing the orientation moved the
+ * displaced shadow onto the night side and the shadow "disappeared", which is
+ * what finally exposed it. **MEASURED at the same moment: `__lum.eclipses()`
+ * reported Earth's centre visibility at 0.3101 — the CPU path, which is
+ * world-space throughout, was right the whole time.**
+ *
+ * ⚠ `modelWorldMatrix.mul(vec4(positionLocal, 0))` and not `normalWorld`: the
+ * `w = 0` makes it a pure direction transform (no translation to cancel), and
+ * unlike a normal it stays correct for a mesh whose normals are not radial —
+ * a ring, or the cloud shell — as long as its local origin is the body centre.
+ *
+ * 🔑 D28c and D34's own note both say "keep one frame". They meant the
+ * TRANSLATION, which was unified (occluder slots are body-relative km). The
+ * ROTATION was never checked. **"Same frame" is two questions, not one.**
  */
 export function eclipseVisibilityNode(u: EclipseUniforms): U {
+  return eclipseVisibilityAtNode(
+    u,
+    normalize(modelWorldMatrix.mul(vec4(positionLocal, 0)).xyz).mul(u.bodyRadiusKm),
+  );
+}
+
+/**
+ * The same question — *what fraction of the star's disc is visible?* — asked at
+ * an ARBITRARY point rather than on the body's surface.
+ *
+ * `posKm` must be **body-centric km on world (ecliptic) axes**, which is exactly
+ * the frame `u.occ` and `u.starRelKm` live in, and exactly the frame
+ * `atmospherePass.ts` marches in (its `cloudShadowAtPlanetKm` applies `invModel`
+ * to leave it, which is the proof).
+ *
+ * 🔑 Split out rather than reimplemented for the atmosphere pass, because the
+ * one thing D34 already got bitten by is this maths existing twice — the CPU
+ * `discCoveredFraction` and the old hardcoded `eclipseFn` had diverged, and the
+ * port silently lost the annular branch. One implementation, two callers.
+ */
+export function eclipseVisibilityAtNode(u: EclipseUniforms, posKm: U): U {
   return Fn(() => {
-    const surf = normalize(positionLocal).mul(u.bodyRadiusKm);
-    const toStar = vec3(u.starRelKm).sub(surf).toVar();
+    const p = vec3(posKm).toVar();
+    const toStar = vec3(u.starRelKm).sub(p).toVar();
     const distStar = length(toStar).max(1e-6);
     const angStar = asin(clamp(u.starRadiusKm.div(distStar), 0, 1)).toVar();
     const starDir = toStar.div(distStar).toVar();
     const vis = float(1.0).toVar();
     for (let i = 0; i < MAX_ECLIPSE_OCCLUDERS; i++) {
       const o = vec4(u.occ[i]);
-      const toOcc = o.xyz.sub(surf).toVar();
+      const toOcc = o.xyz.sub(p).toVar();
       const distOcc = length(toOcc).max(1e-6);
       const angOcc = asin(clamp(o.w.div(distOcc), 0, 1));
-      const angSep = acos(clamp(dot(starDir, toOcc.div(distOcc)), -1, 1));
+      // ⚠⚠ NOT `acos(dot(a, b))`. These two directions are ~0.005 rad apart, deep
+      // in the regime where acos is catastrophically ill-conditioned: `dot` lands
+      // at 1 − 1.25e-5, fp32's ULP near 1.0 is 6e-8, and dθ/d(dot) = −1/sin θ =
+      // −200, so the rounding is amplified 200×.
+      // **MEASURED in float32 against a float64 reference, over a scan across the
+      // penumbra: median error 1.85e-6 rad = 0.020% of the coverage ramp for the
+      // acos form, 4.5e-10 rad for the chord form below — a 4131× improvement.**
+      // The chord form `2·asin(|a − b| / 2)` is exact in the small-angle limit
+      // because the subtraction of two nearly-equal unit vectors is where the
+      // information actually lives.
+      // ⚠ It is NOT the cause of the visible tiling (0.02% cannot be seen); it is
+      // the fine grain that showed up under `TERM_DEBUG`'s 60× gain. Fixed here
+      // because a 200× error amplifier in the middle of an analytic function is
+      // wrong on its own terms, not because it closes that defect.
+      // ⚠ Build const so the two forms can be A/B'd in one reload — see the
+      // ATTRIBUTION note at the top of this file.
+      const angSep = ECLIPSE_STABLE_ANGLE
+        ? asin(clamp(length(starDir.sub(toOcc.div(distOcc))).div(2), 0, 1)).mul(2)
+        : acos(clamp(dot(starDir, toOcc.div(distOcc)), -1, 1));
       // `o.w = 0` ⇒ angOcc = 0 ⇒ this returns exactly 1.0. Branchless.
       vis.mulAssign(eclipseCoveredFraction(angSep, angStar, angOcc));
     }

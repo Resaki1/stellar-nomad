@@ -52,6 +52,7 @@ import { sunOccluderList } from "@/components/space/sunOcclusion";
 import {
   AU_KM,
   bodyOrientation,
+  createBodyOrientation,
   jdFromUTC,
   jdFromUnixMs,
   moonGeocentric,
@@ -2631,6 +2632,7 @@ export class LumHarness {
         "centre visibility": Number(vis.toPrecision(4)),
         "stops lost": vis > 0 ? Number((-Math.log2(vis)).toFixed(2)) : "∞",
         occluders: occs.length > 0 ? occs.join(" | ") : "—",
+        ...shadowLandingPoint(body, star, jdFromUnixMs(this.store.get(simEpochMsAtom))),
       };
     }
     console.table(rows);
@@ -2648,6 +2650,14 @@ export class LumHarness {
         "      ⚠ An eclipsed body with an ATMOSPHERE-bearing occluder should not be pure",
         "      black — D28's refracted limb light is what makes it coppery, and it",
         "      currently reaches the SHIP only (see `__lum.umbra()`).",
+        "      🔑🔑 `umbra lat/lon` IS THE FRAME GATE — where the shadow AXIS hits the body,",
+        "      in the body's OWN geographic coordinates, so it tests the whole chain:",
+        "      ephemeris → orientation → the frame the per-pixel shader shades in.",
+        "      2024-04-08 18:17 UTC must read ≈ 25° N, 104° W (northwest Mexico);",
+        "      2027-08-02 10:07 UTC ≈ 25° N, 33° E (Luxor).",
+        "      ⚠ EVERY OTHER COLUMN HERE IS COMPUTED WITHOUT THE BODY'S ROTATION and so",
+        "      stayed correct while the rendered shadow was painted up to 180° away.",
+        "      A centre visibility of 0.31 with no visible shadow is exactly that.",
       ].join("\n"),
     );
   }
@@ -2713,17 +2723,66 @@ export class LumHarness {
     const jdNow = jdFromUnixMs(this.store.get(simEpochMsAtom));
     const jdRendered = solvedEphemerisJD();
     const solved = solveSystem(allBodyDefs(), jdNow);
+    const _orient = createBodyOrientation();
     const live: Record<string, Record<string, string | number>> = {};
+    const starPos = solved.get(allBodyDefs()[0].id) ?? [0, 0, 0];
     solved.forEach((p, id) => {
       const def = allBodyDefs().find((b) => b.id === id);
-      const o = def?.rotation ? bodyOrientation(def, jdNow) : null;
+      const o = def?.rotation ? bodyOrientation(def, jdNow, _orient) : null;
+      // ── SUB-STELLAR POINT: the column the old gate was missing ─────────────
+      // ⚠⚠ Greatest-eclipse TIME and γ both passed while the sub-solar LONGITUDE
+      // was 93° wrong (the 2024 umbra landed in the Sahara instead of Mexico),
+      // because neither depends on the body's own rotation. Latitude and
+      // longitude of the point the star is overhead is the ONLY quantity here
+      // that tests the orientation chain end to end.
+      let subLat: string | number = "—";
+      let subLon: string | number = "—";
+      if (o) {
+        const sx = starPos[0] - p[0];
+        const sy = starPos[1] - p[1];
+        const sz = starPos[2] - p[2];
+        const sl = Math.hypot(sx, sy, sz) || 1;
+        const ux = sx / sl, uy = sy / sl, uz = sz / sl;
+        // World → object: project onto the body's own axes (X = prime meridian,
+        // Y = pole, Z = X × Y = 90° west of the prime meridian).
+        const zx = o.meridian[1] * o.pole[2] - o.meridian[2] * o.pole[1];
+        const zy = o.meridian[2] * o.pole[0] - o.meridian[0] * o.pole[2];
+        const zz = o.meridian[0] * o.pole[1] - o.meridian[1] * o.pole[0];
+        const ox = ux * o.meridian[0] + uy * o.meridian[1] + uz * o.meridian[2];
+        const oy = ux * o.pole[0] + uy * o.pole[1] + uz * o.pole[2];
+        const oz = ux * zx + uy * zy + uz * zz;
+        subLat = Number((Math.asin(Math.max(-1, Math.min(1, oy))) * (180 / Math.PI)).toFixed(2));
+        subLon = Number((Math.atan2(-oz, ox) * (180 / Math.PI)).toFixed(2));
+      }
       live[id] = {
         "dist from origin (AU)": Number((Math.hypot(p[0], p[1], p[2]) / AU_KM).toPrecision(4)),
         "spin (°)": o ? Number(o.spinDeg.toFixed(1)) : "—",
         "tilt (°)": o ? Number(o.tiltDeg.toFixed(2)) : "—",
+        "sub-stellar lat (°)": subLat,
+        "sub-stellar lon (°)": subLon,
       };
     });
     console.table(live);
+    const eref = live["earth"];
+    if (eref && typeof eref["sub-stellar lon (°)"] === "number") {
+      // Reference values for the DEFAULT epoch only (2024-04-08 18:17 UTC),
+      // computed independently from GMST + the sun's apparent RA/dec. At other
+      // dates this line is meaningless, hence the guard.
+      const isDefaultEpoch = Math.abs(jdNow - 2460409.26181) < 1e-4;
+      const dLat = (eref["sub-stellar lat (°)"] as number) - 7.593;
+      const dLon = (eref["sub-stellar lon (°)"] as number) - -93.841;
+      console.log(
+        isDefaultEpoch
+          ? `[lum] Earth sub-solar point: expect lat +7.59, lon −93.84 — got lat ` +
+            `${eref["sub-stellar lat (°)"]}, lon ${eref["sub-stellar lon (°)"]} ` +
+            `(Δ ${dLat.toFixed(2)}° / ${dLon.toFixed(2)}°) ` +
+            `${Math.abs(dLat) < 0.5 && Math.abs(dLon) < 0.5 ? "✅" : "❌"}\n` +
+            `      🔑 The 2024-04-08 umbra must land on NORTHWEST MEXICO. On the Sahara means the\n` +
+            `      orientation chain is broken even though the eclipse TIME and γ above still pass.`
+          : `[lum] Earth sub-solar point: lat ${eref["sub-stellar lat (°)"]}, ` +
+            `lon ${eref["sub-stellar lon (°)"]} (no reference — not the default epoch)`,
+      );
+    }
 
     // ── Anchored positions ───────────────────────────────────────────────────
     // The spawn point and every asteroid field are FIXED OFFSETS from a body,
@@ -3355,3 +3414,73 @@ export function getLumHarness(store: Store): LumHarness {
   if (!_harness) _harness = new LumHarness(store);
   return _harness;
 }
+
+/**
+ * Where the shadow AXIS hits `body`, in the body's own geographic coordinates.
+ *
+ * The axis is the ray from the star's centre through the occluder's centre; the
+ * landing point is its near intersection with the body's sphere. Converting that
+ * to lat/lon needs the body's ORIENTATION, which is exactly why this is the
+ * gate — `centre visibility` and the occluder columns are computed without any
+ * rotation at all and stay correct even when the rendered shadow is painted on
+ * the wrong side of the planet.
+ *
+ * Returns `—` when nothing eclipses the body, or when the axis misses it (a
+ * partial eclipse: the penumbra touches but the umbral axis passes by).
+ */
+function shadowLandingPoint(
+  body: { id: string; centerKm: Vector3; radiusKm: number },
+  star: readonly [number, number, number],
+  jd: number,
+): Record<string, string | number> {
+  const none = { "umbra lat (°)": "—", "umbra lon (°)": "—" };
+  const def = allBodyDefs().find((b) => b.id === body.id);
+  if (!def?.rotation) return none;
+
+  // Whichever occluder's shadow axis passes closest to the body's centre.
+  let hit: [number, number, number] | null = null;
+  let bestMiss = Infinity;
+  for (const occ of sunOccluderList()) {
+    if (occ.id === body.id) continue;
+    const ax = occ.centerKm.x - star[0];
+    const ay = occ.centerKm.y - star[1];
+    const az = occ.centerKm.z - star[2];
+    const al = Math.hypot(ax, ay, az) || 1;
+    const dx = ax / al, dy = ay / al, dz = az / al;
+    const rx = body.centerKm.x - occ.centerKm.x;
+    const ry = body.centerKm.y - occ.centerKm.y;
+    const rz = body.centerKm.z - occ.centerKm.z;
+    const t = rx * dx + ry * dy + rz * dz;
+    if (t <= 0) continue; // the body is on the star's side of this occluder
+    const miss = Math.hypot(rx - t * dx, ry - t * dy, rz - t * dz);
+    if (miss >= bestMiss) continue;
+    bestMiss = miss;
+    const h2 = body.radiusKm * body.radiusKm - miss * miss;
+    hit =
+      h2 < 0
+        ? null
+        : [
+            occ.centerKm.x + dx * (t - Math.sqrt(h2)) - body.centerKm.x,
+            occ.centerKm.y + dy * (t - Math.sqrt(h2)) - body.centerKm.y,
+            occ.centerKm.z + dz * (t - Math.sqrt(h2)) - body.centerKm.z,
+          ];
+  }
+  if (!hit) return none;
+
+  const o = bodyOrientation(def, jd, _orientGate);
+  const l = Math.hypot(hit[0], hit[1], hit[2]) || 1;
+  const ux = hit[0] / l, uy = hit[1] / l, uz = hit[2] / l;
+  const zx = o.meridian[1] * o.pole[2] - o.meridian[2] * o.pole[1];
+  const zy = o.meridian[2] * o.pole[0] - o.meridian[0] * o.pole[2];
+  const zz = o.meridian[0] * o.pole[1] - o.meridian[1] * o.pole[0];
+  const gx = ux * o.meridian[0] + uy * o.meridian[1] + uz * o.meridian[2];
+  const gy = ux * o.pole[0] + uy * o.pole[1] + uz * o.pole[2];
+  const gz = ux * zx + uy * zy + uz * zz;
+  return {
+    "umbra lat (°)": Number((Math.asin(Math.max(-1, Math.min(1, gy))) * 180 / Math.PI).toFixed(2)),
+    "umbra lon (°)": Number((Math.atan2(-gz, gx) * 180 / Math.PI).toFixed(2)),
+  };
+}
+
+const _orientGate = createBodyOrientation();
+

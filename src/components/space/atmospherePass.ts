@@ -50,6 +50,13 @@ import {
   cloudShadowAtPlanetKm,
   getShipCloudShadowT,
 } from "./cloudShadowMap";
+import {
+  createEclipseUniforms,
+  eclipseVisibilityAtNode,
+  updateEclipseUniforms,
+} from "@/components/celestial/bodyEclipse";
+import { sunOccluderCenterKm } from "./sunOcclusion";
+import { STAR_POSITION_KM, STAR_RADIUS_KM } from "@/sim/celestialConstants";
 
 // =============================================================================
 // Physically-based atmospheric scattering — Hillaire 2020 (the Unreal model).
@@ -329,6 +336,58 @@ const GODRAY_STRENGTH = 0.6;
 // survives (light leaks around the clouds), so shadow it only partially.
 // 0 = unshadowed ambient, 1 = fully shadowed. Frostbite-style middle ground.
 const MS_CLOUD_SHADOW = 0.5;
+
+// ── D34h: BODY-ON-BODY ECLIPSES IN THE ATMOSPHERE ───────────────────────────
+//
+// Without this the sky above a total solar eclipse is lit as if the sun were
+// fully out: `eclipseVisibilityNode` reached the SURFACE shaders only, so the
+// composite `sceneColor·T + L` carried the eclipse in `sceneColor` and not in
+// `L`.
+//
+// 🔑🔑 NOT A POLISH ITEM — IT IS THE WHOLE EFFECT OVER WATER. D23 measured
+// **~99.9% of an orbital ocean pixel as this pass's in-scatter** (the ocean's own
+// diffuse term is one part in a thousand), so an eclipse over ocean is invisible
+// until `L` carries it. That is exactly what was reported: the 2024-04-08 umbra
+// over the Pacific could not be found, while the same eclipse over land could.
+//
+// The shadow is a CYLINDER through the atmosphere, so coverage is evaluated PER
+// MARCH SAMPLE, not once per pixel — the whole point is that the column above the
+// umbra is dark while the column beside it is not.
+//
+// ⚠ Applied to the DIRECT term in full and to the isotropic multi-scatter term
+// only PARTIALLY, for the same reason `MS_CLOUD_SHADOW` exists: the umbral sky is
+// dark but NOT black, because it is fed by light scattered in horizontally from
+// the sunlit atmosphere around it. Attenuating `ms` in full would make the umbra
+// unphysically black — and it is the residual `ms` that gives the from-orbit
+// umbra its characteristic dark grey rather than a hole.
+//
+// ⚠ THE ONE NON-DERIVED NUMBER HERE, and its basis: the Rayleigh scattering mean
+// free path at sea level is ~1/β ≈ 83 km at 550 nm, against a lunar umbra radius
+// of ~100 km. The reservoir feeding a point in the umbra therefore draws from a
+// neighbourhood comparable to the umbra's own size ⇒ roughly half of it is still
+// lit. Landing on the same 0.5 as the cloud term is a coincidence of two
+// separate arguments, not a shared fudge. **Worth measuring against DSCOVR / ISS
+// umbra imagery**, which gives the umbra/surroundings ratio directly.
+const MS_ECLIPSE_SHADOW = 0.5;
+// Build const so the whole term — uniforms, per-step ALU, ms toning — compiles
+// away for an A/B. `__lum.probe()` a pixel inside the umbra with it on and off.
+const ATMO_ECLIPSE = true;
+
+// ── ATMO_BYPASS: pass-level bisection for the ground-tiling artefact ────────
+// Forces `uActive = 0`, i.e. the whole pass becomes a passthrough (`scene`
+// unchanged, no march, no LUT reads, no composite).
+//
+// 🔑 THE POINT IS TO SPLIT THE PIPELINE IN HALF, not to test a term. Term-level
+// probing has now cost two wrong hypotheses, and `TERM_DEBUG` in earth.ts turned
+// out to be confounded (a screen-space derivative of ANY function of an
+// interpolated attribute carries a per-triangle-constant Jacobian, so it
+// manufactures facet tiles for every term). This toggle has no such ambiguity:
+// tiles gone ⇒ the artefact is in this pass; tiles remain ⇒ it is in the surface
+// shader. Nothing else changes.
+//
+// ⚠ Expect the planet to look WRONG with this on (no aerial perspective, no
+// limb, no sky) — that is the pass being absent, not a second bug.
+const ATMO_BYPASS = false;
 // Force the per-pixel march for SKY rays at low altitude (uSkyViewBlend → 1) so
 // sky-side shafts render crisp per-pixel instead of quantized to the Sky-View
 // LUT lattice. Measured at −10–20% fps — the candidate QUALITY TIER if the
@@ -1381,6 +1440,23 @@ export function setupAtmospherePass(
   // ~2 screen pixels.
   const uSilhouetteHalfWidthKm = uniform(0);
   const uSunDir = uniform(new THREE.Vector3(0, 0, 1)); // normalised, planet frame
+
+  // ── Eclipse occluders for THIS body (D34h) ───────────────────────────────
+  // The same slot layout every `CelestialBody` fills, filled here for whichever
+  // body's atmosphere is being rendered. ⚠ Slots are body-centric km on WORLD
+  // (ecliptic) axes, which is precisely the frame this pass marches in — the
+  // proof is that `cloudShadowAtPlanetKm` has to apply `invModel` to LEAVE it.
+  // So no transform is needed, and the frame question is closed for both the
+  // origin and the axes (getting only the origin right is what put the surface
+  // shadow 180° out of place — see bodyEclipse.ts).
+  const eclipseU = createEclipseUniforms();
+  // Per-frame gate: 0 whenever nothing is eclipsing this body, which is almost
+  // always. ⚠ Same recipe as `uRingOpacity` below and the BSM strength gate:
+  // this pass calls `directSunOcclusion` ONCE PER MARCH STEP, so an ungated
+  // eclipse block would spend ~12 transcendentals × 16 steps on every pixel for
+  // a guaranteed no-op. A per-frame uniform makes the branch coherent across the
+  // whole draw.
+  const uEclipseActive = uniform(0);
   const uActive = uniform(0); // 0 = passthrough, 1 = march
   // AP froxel far plane (km). Static for now; a per-frame uniform so a future
   // altitude-adaptive depth (Phase 4 tuning) needs no graph rebuild.
@@ -1535,6 +1611,23 @@ export function setupAtmospherePass(
       ringKeep.assign(float(1).sub(ringOpacityAt(ring.rHit).mul(ring.hitF)));
     });
     return earthShadow.mul(ringKeep);
+  };
+
+  /**
+   * Fraction of the star's disc reaching `P` past every other body (D34h).
+   * 1 when nothing is eclipsing this one.
+   *
+   * ⚠ Gated on a per-frame uniform, not on the slot radii: the slots are already
+   * branchless (`radius = 0` ⇒ exactly 1.0), but "branchless" here means the ALU
+   * still runs. This is per march step, so the gate is what makes it free.
+   */
+  const eclipseKeep = (P: Node): Node => {
+    if (!ATMO_ECLIPSE) return float(1);
+    const keep = float(1).toVar();
+    If(uEclipseActive.greaterThan(0), () => {
+      keep.assign(eclipseVisibilityAtNode(eclipseU, P));
+    });
+    return keep;
   };
 
   // Medium scattering/extinction (km^-1) at position P (planet-centred km).
@@ -1817,10 +1910,15 @@ export function setupAtmospherePass(
     Tsun: Node,
     phaseScat: Node,
     msContrib: Node,
+    // D34h. ⚠ `earthShadow` already carries this for the DIRECT term (the caller
+    // multiplies it in); it is passed separately only so the ms term can be
+    // toned PARTIALLY rather than fully — see MS_ECLIPSE_SHADOW.
+    eclipseT: Node,
   ): Node => {
+    const msEclipse = mix(float(1), eclipseT, float(MS_ECLIPSE_SHADOW));
     if (!GODRAYS) {
       return uSunIlluminance.mul(
-        earthShadow.mul(Tsun).mul(phaseScat).add(msContrib),
+        earthShadow.mul(Tsun).mul(phaseScat).add(msContrib.mul(msEclipse)),
       );
     }
     // .toVar(): consumed by both the direct and ms terms — evaluate (and tap
@@ -1836,7 +1934,11 @@ export function setupAtmospherePass(
         .mul(Tsun)
         .mul(cloudT)
         .mul(phaseScat)
-        .add(msContrib.mul(mix(float(1), cloudT, float(MS_CLOUD_SHADOW)))),
+        .add(
+          msContrib
+            .mul(mix(float(1), cloudT, float(MS_CLOUD_SHADOW)))
+            .mul(msEclipse),
+        ),
     );
   };
 
@@ -2065,7 +2167,8 @@ export function setupAtmospherePass(
             const sampleT = expVec3(m.extinction.mul(dt).negate());
 
             const Tsun = getSunTransmittance(P, uSunDir);
-            const earthShadow = directSunOcclusion(P);
+            const eclipseT = eclipseKeep(P).toVar();
+            const earthShadow = directSunOcclusion(P).mul(eclipseT);
             const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
             // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
             // is broadly uniform and (unlike single scattering) is not shadowed,
@@ -2089,7 +2192,7 @@ export function setupAtmospherePass(
               .mul(sunVis)
               .mul(uMsScale);
             // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
-            const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
+            const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
             const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
             L.addAssign(throughput.mul(Sint));
             throughput.mulAssign(sampleT);
@@ -2205,7 +2308,8 @@ export function setupAtmospherePass(
         const m = sampleMedium(P);
         const sampleT = expVec3(m.extinction.mul(dt).negate());
         const Tsun = getSunTransmittance(P, uSunDir);
-        const earthShadow = directSunOcclusion(P);
+        const eclipseT = eclipseKeep(P).toVar();
+        const earthShadow = directSunOcclusion(P).mul(eclipseT);
         const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
         const rP = length(P);
         const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
@@ -2215,7 +2319,7 @@ export function setupAtmospherePass(
         const sunVis = smoothstep(cosHorizonP.sub(0.05), cosHorizonP.add(0.05), cosSunZenP);
         const msContrib = getMultipleScattering(P, uSunDir).mul(m.scattering).mul(sunVis).mul(uMsScale);
         // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
-        const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
+        const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
         const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
         L.addAssign(throughput.mul(Sint));
         throughput.mulAssign(sampleT);
@@ -2288,7 +2392,8 @@ export function setupAtmospherePass(
           const m = sampleMedium(P);
           const sampleT = expVec3(m.extinction.mul(dt).negate());
           const Tsun = getSunTransmittance(P, uSunDir);
-          const earthShadow = directSunOcclusion(P);
+          const eclipseT = eclipseKeep(P).toVar();
+          const earthShadow = directSunOcclusion(P).mul(eclipseT);
           const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
           const rP = length(P);
           const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
@@ -2306,7 +2411,7 @@ export function setupAtmospherePass(
           // additive near-field delta didn't cure it and cost more). Revisit
           // only with proper in-engine bisection; candidates: GODRAYS_SKY_MARCH
           // as a quality tier, higher LUT res, froxel-carried sky shadow.
-          const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib);
+          const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
           const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
           L.addAssign(throughput.mul(Sint));
           throughput.mulAssign(sampleT);
@@ -2471,7 +2576,7 @@ export function setupAtmospherePass(
     // LESSON: when gpu/frame > 1.15, ABLATE. Do not do arithmetic on reported per-pass
     // numbers, however self-consistent the model looks. One ablation settled in a single
     // sweep what three rounds of curve-fitting got wrong. See docs/PERF_MEASUREMENT.md.
-    uActive.value = 1;
+    uActive.value = ATMO_BYPASS ? 0 : 1;
     // Per-frame sun illuminance (1/r² on the LIVE body→star distance). Must be
     // written before bakeSkyView(), which multiplies it into the LUT.
     uSunIlluminance.value.copy(dominant.sunIlluminance);
@@ -2505,6 +2610,33 @@ export function setupAtmospherePass(
         SILHOUETTE_AA_MARCH_PX * tanPerMarchPx * tangentKm;
     }
     uSunDir.value.copy(dominant.sunDir);
+
+    // ── D34h: fill this body's eclipse occluder slots ────────────────────────
+    // ⚠ `sunOccluderCenterKm` and not `dominant.centerScaled`: the record's
+    // centre is SCALED-world while the slots are km. That exact substitution is
+    // the D28c frame-mixing bug, and the getter exists because of it.
+    const eclipseCenter = sunOccluderCenterKm(dominant.id);
+    if (eclipseCenter) {
+      updateEclipseUniforms(
+        eclipseU,
+        dominant.id,
+        [eclipseCenter.x, eclipseCenter.y, eclipseCenter.z],
+        uBottomRadius.value as number,
+        STAR_POSITION_KM,
+        STAR_RADIUS_KM,
+      );
+      // ⚠ Gate on SLOT OCCUPANCY, not on the returned centre visibility: a solar
+      // eclipse spot smaller than the planet leaves the centre at ~1.0 while the
+      // per-pixel shadow is exactly what we are here to draw. Centre visibility
+      // is the far/point-tier quantity.
+      let active = 0;
+      for (let i = 0; i < eclipseU.occ.length; i++) {
+        if (eclipseU.occ[i].value.w > 0) { active = 1; break; }
+      }
+      uEclipseActive.value = active;
+    } else {
+      uEclipseActive.value = 0;
+    }
 
     // Sky-View crossfade (sky rays): pure LUT at/below FULL_ALT (march skipped),
     // pure per-pixel march at/above MARCH_ALT (the LUT degenerates from space).

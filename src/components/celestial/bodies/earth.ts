@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { eclipseVisibilityNode } from "../bodyEclipse";
 import {
+  fract,
   Fn,
   uniform,
   texture,
@@ -46,7 +47,6 @@ import {
 } from "./atmosphereData";
 import { getAtmosphereBody } from "@/components/space/atmospherePass";
 import { surfaceRadiance,
-  uPreExposure,
 } from "@/components/space/photometry";
 import {
   getAtmosphereLUTs,
@@ -75,6 +75,51 @@ const GRAZE_HI = 0.15;
 // Debug overlay: tint shadowed ground magenta to inspect cloud-shadow ↔ cloud
 // registration (see the SHADOW_DEBUG block in the fragment). Off = zero cost.
 const SHADOW_DEBUG = false;
+
+// ── TERM_DEBUG: an EDGE DETECTOR on one term at a time ──────────────────────
+//
+// For the "mosaic / sheared-parallelogram tiles on the ground" artefact. Two
+// hypotheses have already been wrong about it (the aerial-perspective march, then
+// the night-lights map), so this stops guessing and bisects instead.
+//
+// ⚠⚠ **THE FIRST VERSION OF THIS INSTRUMENT WAS CONFOUNDED AND ITS RESULTS ARE
+// VOID.** It showed `|∂term/∂x| + |∂term/∂y|`, on the reasoning that hard edges
+// bloom and smooth gradients stay black. **But a screen-space derivative of ANY
+// function of an interpolated vertex attribute carries a PER-TRIANGLE-CONSTANT
+// JACOBIAN** — `dFdx(uv)` and `dFdx(positionLocal)` are constant within a
+// triangle and jump at its edges — so the derivative image is flat-shaded
+// parallelograms *for every term*, whether or not that term has anything to do
+// with the artefact. Measured consequence: `eclipse`, `cloudShadow`, `fakeCloud`,
+// `specMask`, `normalCos` and `sunT` ALL showed the tiling, and `eclipse` showed
+// it strongest simply because it has the steepest spatial gradient of the six.
+// 🔑 **An instrument that responds to every input is not measuring the input.**
+//
+// So this now shows `fract(term · TERM_DEBUG_BANDS)` — iso-contours of the term
+// itself, no derivative. A smooth term gives smooth curved bands; a term carrying
+// a texel lattice, a compression block or a facet gives bands with visible KINKS
+// or stair-steps at exactly those boundaries. Contours also make a 1/N change
+// legible without a gain, which is what the greyscale version could not do.
+//
+// ⚠ Pair it with `ATMO_BYPASS` in atmospherePass.ts — otherwise the atmosphere
+// composites `scene·T + L` over the viz and its in-scatter dominates the image.
+//
+// Method: set to a term, reload, and look for CONTOUR BANDS THAT KINK. Smoothly
+// curved bands exonerate the term; staircased or lattice-aligned bands convict
+// it.
+type TermDebug =
+  | "off"
+  | "final"       // the finished reflectance — the instrument's own sanity check
+  | "eclipse"     // D34 per-pixel star occlusion
+  | "cloudShadow" // groundShadowLight: BSM ⊕ the legacy fake, after grazeFade
+  | "fakeCloud"   // just the legacy texClouds-at-an-offset term
+  | "specMask"    // earth_specular (2048×1024, lossy) — ocean/land mask
+  | "dayTex"      // earth_day (5400×2700, lossy 4:2:0)
+  | "normalCos"   // cosSunEff, i.e. the normal map's effect on N·L
+  | "sunT";       // the transmittance-LUT sun tint
+const TERM_DEBUG: TermDebug = "off";
+// Contour density. 100 bands across a [0,1] term; raise it to resolve a finer
+// structure, lower it if the bands alias into moire.
+const TERM_DEBUG_BANDS = 100.0;
 
 const EARTH_ROTATION = new THREE.Euler(0.0, 0.15 * Math.PI, 0.8 * Math.PI);
 
@@ -217,7 +262,6 @@ const VOLUMETRIC_BLEND_FULL_ALT_KM = 250;
 
 function buildEarthFragmentNode(opts: {
   texDay: THREE.Texture;
-  texNight: THREE.Texture;
   texClouds: THREE.Texture;
   /** Pass null to skip normal mapping (mid LOD). */
   texNormal: THREE.Texture | null;
@@ -230,7 +274,7 @@ function buildEarthFragmentNode(opts: {
   uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   eclipseU: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunRadius: any;
@@ -241,7 +285,7 @@ function buildEarthFragmentNode(opts: {
   transmittanceLUT?: THREE.Texture;
 }) {
   const {
-    texDay, texNight, texClouds, texNormal, texSpec,
+    texDay, texClouds, texNormal, texSpec,
     uSunRel, uSunIlluminance, eclipseU, uSunRadius, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
@@ -251,7 +295,6 @@ function buildEarthFragmentNode(opts: {
     const sunDir = normalize(uSunRel);
 
     const dayCol = texture(texDay, uvCoord).rgb;
-    const nightCol = texture(texNight, uvCoord).rgb.mul(float(0.35));
 
     // Geometric normal in world space
     const nGeom = normalize(normalWorld);
@@ -324,6 +367,9 @@ function buildEarthFragmentNode(opts: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let nMapped: any = nGeom;
     const cloudShadowVal = float(0).toVar();
+    // TERM_DEBUG captures. Zero cost when TERM_DEBUG is "off" — these are plain
+    // vars the dead-code pass removes along with the debug return below.
+    const dbgSpecMask = float(0).toVar();
     // The ground cloud-shadow lit factor (1 = lit, <1 = shadowed), captured for
     // the SHADOW_DEBUG overlay below.
     const groundShadowLight = float(1).toVar();
@@ -466,34 +512,48 @@ function buildEarthFragmentNode(opts: {
     // Phase 2 — the cloud shell carries the far field now. texClouds is still
     // sampled above for the ground cloud-shadow (cloudShadowVal).)
 
-    // Night mask (sharper city-light cutoff). Driven by sun VISIBILITY, not by
-    // the Lambert cosine — on a cosine, `1 − dayAmount` would be 0.5 at 30° sun
-    // elevation and city lights would glow through mid-morning.
-    const nightMask = smoothstep(float(0.15), float(0), sunVis);
-    // Sun-lit day albedo is tinted by the atmospheric transmittance (Phase 3b);
-    // the night-light emission (city lights) is NOT — it's not sunlit.
+    // ── NIGHT LIGHTS REMOVED (2026-08-28) ────────────────────────────────────
+    // Earth carried an 8K/2K `earth_night` emissive map for city lights. Gone,
+    // for two independent reasons.
     //
-    // ⚠ THE NIGHT TERM IS DELIBERATELY HELD OUT OF `col` (lighting Phase 2).
-    // `col` accumulates REFLECTANCE — day albedo, ocean specular, fresnel — and
-    // is converted to radiance at the return by × sunIlluminance/π. City lights
-    // are EMISSIVE, so scaling them by the solar illuminance would be wrong
-    // (they do not get brighter when Earth is nearer the sun). They are added
-    // back after the conversion, unchanged, which keeps the night side exactly as
-    // it renders today. Giving them a real absolute luminance (~1–10 cd/m², i.e.
-    // ~1.6e-4–1.6e-3 game units) is the night-side phase's job — see
-    // docs/LIGHTING_PLAN.md §3.8.
+    // 1. **THE SETTING.** The game is post-apocalyptic: there is nobody left to
+    //    switch a light on. If city lights ever come back they should come from
+    //    the settlement/faction state that actually exists in the sim, not from a
+    //    baked 2001-era photograph of a populated Earth — then a rebuilt city
+    //    lights up and an abandoned one does not.
     //
-    // This reproduces the old `mix()` exactly: mix(n, d, a) = n·(1−a) + d·a.
-    // × uPreExposure (D25): city lights are EMISSIVE, so they are NOT carried by
-    // the × sunIlluminance/π conversion that pre-exposes every reflective term —
-    // they need it applied directly. MEASURED as a missing site by
-    // `__lum.preExposure(8)`: the night side darkened 8×. Their ABSOLUTE level is
-    // still the old uncalibrated one (§3.8's job); pre-exposure and calibration
-    // are orthogonal, and this fixes only the former.
-    const nightEmissive = nightCol
-      .mul(nightMask)
-      .mul(float(1.0).sub(sunVis))
-      .mul(uPreExposure);
+    // 2. 🐛 **IT WAS WIRED TO THE WRONG QUANTITY, AND `CelestialBody.tsx` SAID SO
+    //    WITHOUT CHECKING.** The mask was `smoothstep(0.15, 0, sunVis)`, but
+    //    `sunVis` has the eclipse multiplied into it a dozen lines above
+    //    (`sunVis.mulAssign(occlusion)`). So a body passing in front of the sun
+    //    switched the city lights ON — in broad daylight, in a few minutes, which
+    //    no real city does. The D34 note in `CelestialBody.tsx` asserts the
+    //    opposite invariant — *"city lights are gated by their own nightMask
+    //    (sun-above-horizon), so inside a DAYTIME solar-eclipse spot they are
+    //    already off"* — and that was simply not true of this code.
+    //    🔑 A night mask is a HORIZON question (`cosSunEff`), never a
+    //    sun-visibility question. Occlusion and elevation are not the same thing.
+    //
+    // 3. It is a genuinely bad asset, though ⚠⚠ **NOT the eclipse-shadow artefact
+    //    I claimed it was — the tiling survived its removal.** `earth_night_8k` is
+    //    a lossy VP8 4:2:0 WebP re-encoded into UASTC, and MEASURED on the decoded
+    //    source its dark regions are DC-flat 8×8-texel tiles — zero variation
+    //    inside a tile in both axes, stepping ~8% at the boundaries. At 4.89
+    //    km/texel that is a 39 km hard-edged mosaic inside 78 km macroblocks, and
+    //    inside the umbra `nightMask → 1` made that map the only ground term. All
+    //    true, and all beside the point.
+    //    ⚠⚠ THE TRAP, worth more than the measurement: "an Io transit on Jupiter
+    //    is clean, and Earth is the only body with a night texture" is CONSISTENT
+    //    WITH that hypothesis and does not TEST it — every other Earth-only input
+    //    (day map, normal map, specular mask, the BSM, the whole cloud pipeline)
+    //    explains it equally well. 🔑 A discriminating test is one the RIVAL
+    //    hypotheses fail. Reasons 1 and 2 are why this stays removed.
+    //
+    // ⇒ Earth's night side is now unlit: black bounded by the atmosphere's
+    // twilight limb, which is what an uninhabited planet looks like. Moonlight is
+    // the physically correct thing to add next (~0.1 lux ⇒ ~1e-6 game units off a
+    // 0.3 albedo, so it needs the scotopic/Purkinje work to be visible at all) —
+    // docs/LIGHTING_PLAN.md Phase 7 and §3.8.
     const col = dayCol.mul(sunT).mul(nDotL).toVar();
 
     // ── SHADOW_DEBUG: cloud-shadow / cloud registration overlay ──
@@ -523,6 +583,7 @@ function buildEarthFragmentNode(opts: {
 
     if (texSpec) {
       const specMask = texture(texSpec, uvCoord).r;
+      dbgSpecMask.assign(specMask);
       // ⚠ GEOMETRIC normal, not `nMapped` — D21 again, in the glint this time.
       // `earth_normal` carries LAND relief; its ocean is a uniform
       // (128,128,255), so every wrinkle it has over water is quantisation noise
@@ -588,11 +649,27 @@ function buildEarthFragmentNode(opts: {
     // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
     // Earth's ground was ~6.37× too dark without this, which is what made the
     // cloud tops read ~35× brighter than the ocean beneath them (physically the
-    // ratio is 3–12×). The emissive city lights are added AFTER, unscaled.
-    return vec4(
-      surfaceRadiance(col, uSunIlluminance).add(nightEmissive),
-      1.0,
-    );
+    // ratio is 3–12×). ⚠ Nothing is added after this any more — the emissive
+    // city-light term that used to be (see the NIGHT LIGHTS REMOVED note above)
+    // was the only reason this was not a bare `surfaceRadiance`.
+    if (TERM_DEBUG !== "off") {
+      const term = (() => {
+        switch (TERM_DEBUG) {
+          case "final": return col.r.add(col.g).add(col.b).div(3);
+          case "eclipse": return eclipseAmount;
+          case "cloudShadow": return groundShadowLight;
+          case "fakeCloud": return cloudShadowVal;
+          case "specMask": return dbgSpecMask;
+          case "dayTex": return dayCol.r.add(dayCol.g).add(dayCol.b).div(3);
+          case "normalCos": return cosSunEff;
+          default: return sunT.r.add(sunT.g).add(sunT.b).div(3);
+        }
+      })();
+      // Iso-contours of the term. Kinked/staircased bands convict it; smoothly
+      // curved bands exonerate it. No derivative, so no per-triangle Jacobian.
+      return vec4(vec3(fract(term.mul(TERM_DEBUG_BANDS))), 1.0);
+    }
+    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
   })();
 }
 
@@ -648,7 +725,6 @@ export const earthConfig: CelestialBodyConfig = {
   near: {
     textures: {
       day: "/textures/earth_day_8k.ktx2",
-      night: "/textures/earth_night_8k.ktx2",
       clouds: "/textures/earth_clouds_8k.ktx2",
       normal: "/textures/earth_normal.ktx2",
       spec: "/textures/earth_specular.ktx2",
@@ -663,7 +739,6 @@ export const earthConfig: CelestialBodyConfig = {
   mid: {
     textures: {
       day: "/textures/earth_day_2k.ktx2",
-      night: "/textures/earth_night_2k.ktx2",
       clouds: "/textures/earth_clouds_2k.ktx2",
       spec: "/textures/earth_specular.ktx2",
       ...(REAL_WEATHER_MAP ? { weatherV2: REAL_WEATHER_MAP_PATH } : {}),
@@ -676,6 +751,24 @@ export const earthConfig: CelestialBodyConfig = {
   extraMeshes: buildEarthClouds,
 
   onTexturesLoaded: (tier, textures) => {
+    // ── ANISOTROPY ON THE SURFACE MAPS ───────────────────────────────────────
+    // ⚠ MEASURED AS MISSING: only `clouds` and `weatherV2` were ever given a
+    // value, so day/normal/spec ran at `Texture.DEFAULT_ANISOTROPY = 1`.
+    // At a grazing ground view — flying low, which is exactly where the
+    // mosaic-looking terrain was reported — isotropic mip selection takes the
+    // MAJOR axis derivative for both axes and drops several mip levels, so a
+    // 7.4 km/texel day map is sampled as if it were ~60 km/texel.
+    //
+    // ⚠ This does NOT fix the block structure baked into the assets themselves
+    // (they are lossy VP8 `yuv420p` WebP re-encoded into UASTC, so 4:2:0 chroma
+    // cells and DC-flat 8×8 macroblocks are IN the pixels at 4.9–19.6 km/texel).
+    // Anisotropy stops us making it worse; the asset fix is a lossless source.
+    for (const key of ["day", "normal", "spec"] as const) {
+      const t = textures[key];
+      if (!t) continue;
+      t.anisotropy = tier === "near" ? 8 : 4;
+      t.needsUpdate = true;
+    }
     if (tier === "near" && textures.clouds) {
       textures.clouds.anisotropy = 8;
       // Shell ray-march samples across the atan2 seam; wrap to avoid a visible line.
@@ -769,7 +862,6 @@ export const earthConfig: CelestialBodyConfig = {
   buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, eclipseU, tier }) => {
     return buildEarthFragmentNode({
       texDay: textures.day,
-      texNight: textures.night,
       texClouds: textures.clouds,
       texNormal: tier === "near" ? textures.normal : null,
       texSpec: textures.spec ?? null,

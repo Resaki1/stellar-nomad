@@ -34,7 +34,7 @@ import {
 } from "../space/atmospherePass";
 import { setSunOccluder, clearSunOccluder } from "@/components/space/sunOcclusion";
 import { allBodyDefs, updateEphemerisPositions } from "@/sim/celestialConstants";
-import { bodyOrientation, jdFromUnixMs } from "@/sim/ephemeris";
+import { bodyOrientation, createBodyOrientation, jdFromUnixMs } from "@/sim/ephemeris";
 import { simEpochMsAtom } from "@/store/simTime";
 import {
   createEclipseUniforms,
@@ -52,11 +52,15 @@ const _relativeKm = new THREE.Vector3();
 const _farFadeBuf = new THREE.Vector2();
 const _shipToBody = new THREE.Vector3();
 // ── Ephemeris orientation scratch (no per-frame allocation) ──
-const _poleDir = new THREE.Vector3();
-const _localY = new THREE.Vector3(0, 1, 0);
-const DEG2RAD = Math.PI / 180;
-const _qTilt = new THREE.Quaternion();
-const _qSpin = new THREE.Quaternion();
+// Live body orientation (ephemeris). ⚠ A BASIS, not an Euler/quaternion pair:
+// `bodyOrientation` returns the pole and the prime meridian, and three vectors
+// with a fixed column order have neither an order nor a roll convention left to
+// get wrong. See sim/ephemeris.ts for the 93° Sahara-vs-Mexico error that the
+// previous `setFromUnitVectors` + spin formulation produced.
+const _axX = new THREE.Vector3();
+const _axY = new THREE.Vector3();
+const _axZ = new THREE.Vector3();
+const _basis = new THREE.Matrix4();
 
 /** Prefetch multiplier: start loading textures at this factor × LOD threshold */
 const PREFETCH_MULT = 1.5;
@@ -384,6 +388,8 @@ function CelestialBody({ config }: CelestialBodyProps) {
   // held as a reference on purpose; copying it would freeze the body in space.
   const simEpochMs = useAtomValue(simEpochMsAtom);
   const orientRef = useRef<THREE.Group>(null);
+  // Reused every frame — `bodyOrientation` fills it rather than allocating.
+  const orientState = useRef(createBodyOrientation());
   // The body's own definition, for orbit/rotation. ⚠ Looked up by id rather than
   // carried on `CelestialBodyConfig`, so `sol.json` stays the single source of
   // truth for physical data and the render config stays about rendering.
@@ -609,20 +615,17 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // what makes an eclipse land on the correct part of the planet, so it is the
     // point rather than a side effect.
     if (orientRef.current && bodyDef?.rotation) {
-      const o = bodyOrientation(bodyDef, jd);
-      // Pole direction in the ecliptic frame: tilted `tiltDeg` from +Y, leaning
-      // toward ecliptic longitude `tiltNodeDeg`. ⚠ Built with
-      // `setFromUnitVectors` rather than an Euler triple on purpose — Euler
-      // ORDER is exactly the kind of silent convention mismatch that produces a
-      // mirrored or 90°-off planet, and this formulation has no order to get
-      // wrong.
-      const t = o.tiltDeg * DEG2RAD;
-      const n = o.tiltNodeDeg * DEG2RAD;
-      _poleDir.set(Math.sin(t) * Math.cos(n), Math.cos(t), -Math.sin(t) * Math.sin(n));
-      _qTilt.setFromUnitVectors(_localY, _poleDir);
-      _qSpin.setFromAxisAngle(_localY, o.spinDeg * DEG2RAD);
-      // Spin first (about the body's own axis), then tilt that axis into place.
-      orientRef.current.quaternion.copy(_qTilt).multiply(_qSpin);
+      const o = bodyOrientation(bodyDef, jd, orientState.current);
+      // Object-space axes: +Y = north pole, +X = the prime meridian on the
+      // equator, +Z = 90° WEST of it. That last one is `X × Y` — verified
+      // against the sphere's own UV mapping, where `uv.x = 0.5` (Greenwich on a
+      // standard equirectangular map) lands on object +X and longitude
+      // increases eastward, i.e. as a positive rotation about +Y.
+      _axX.set(o.meridian[0], o.meridian[1], o.meridian[2]);
+      _axY.set(o.pole[0], o.pole[1], o.pole[2]);
+      _axZ.crossVectors(_axX, _axY);
+      _basis.makeBasis(_axX, _axY, _axZ);
+      orientRef.current.quaternion.setFromRotationMatrix(_basis);
     }
 
     setSunOccluder(config.id, positionKm, radiusKm);

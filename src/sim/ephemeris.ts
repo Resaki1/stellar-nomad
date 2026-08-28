@@ -409,28 +409,152 @@ export function solveSystem(
 // ── Rotation ────────────────────────────────────────────────────────
 
 /**
- * A body's orientation at `jdUTC`: the spin angle about its own axis, and the
- * axis direction in the ecliptic frame.
+ * Obliquity of the ecliptic at J2000, degrees (IAU 2006). The ONE constant that
+ * links the EQUATORIAL frame the IAU publishes pole directions in to the
+ * ECLIPTIC frame every position in this file lives in.
+ */
+const OBLIQUITY_J2000_DEG = 23.4392911;
+const COS_OBL = Math.cos(OBLIQUITY_J2000_DEG * D2R);
+const SIN_OBL = Math.sin(OBLIQUITY_J2000_DEG * D2R);
+
+/**
+ * A body's orientation at an instant, as an ORTHONORMAL PAIR rather than a
+ * triple of Euler-ish angles.
+ *
+ * 🔑🔑 WHY A BASIS AND NOT ANGLES. The previous version returned
+ * `{ spinDeg, tiltDeg, tiltNodeDeg }` and let the renderer assemble them with
+ * `Quaternion.setFromUnitVectors(+Y, pole)` followed by a spin about local +Y.
+ * That avoids Euler ORDER mistakes — which is why it was chosen — but it
+ * silently invents a ROLL convention: `setFromUnitVectors` is the *minimal*
+ * rotation, so where the prime meridian ends up depends on the tilt direction in
+ * a way no published convention matches. **MEASURED: it put the 2024-04-08
+ * umbra at 22.0° N, 0.5° W — the central Sahara — against a published
+ * 25.3° N, 104.1° W.** Returning the pole AND the prime meridian removes the
+ * ambiguity: two orthonormal vectors define a rotation with nothing left over.
+ */
+export type BodyOrientation = {
+  /** Body's north pole, unit vector, ecliptic-J2000 (+Y = ecliptic north). */
+  pole: [number, number, number];
+  /** Where the body's PRIME MERIDIAN crosses its equator, unit, same frame. */
+  meridian: [number, number, number];
+  /** IAU `W` for this instant, degrees. Diagnostics only. */
+  spinDeg: number;
+  /** Angle between `pole` and the ecliptic pole, degrees. Diagnostics only. */
+  tiltDeg: number;
+  /** Ecliptic longitude `pole` leans toward, degrees. Diagnostics only. */
+  tiltNodeDeg: number;
+};
+
+/** A reusable `BodyOrientation`. Callers own one; `bodyOrientation` fills it. */
+export function createBodyOrientation(): BodyOrientation {
+  return { pole: [0, 1, 0], meridian: [1, 0, 0], spinDeg: 0, tiltDeg: 0, tiltNodeDeg: 0 };
+}
+
+/** Equatorial J2000 → the ecliptic game frame (+Y = ecliptic north, λ: +X → −Z). */
+function eqToGame(x: number, y: number, z: number, out: [number, number, number]): void {
+  out[0] = x;
+  out[1] = -y * SIN_OBL + z * COS_OBL;
+  out[2] = -(y * COS_OBL + z * SIN_OBL);
+}
+
+/**
+ * Fill `out` with `body`'s orientation at `jdUTC`.
  *
  * ⚠ `spinDeg` follows the IAU convention `W = W₀ + Ẇ·d` with `d` in days from
  * J2000 — for Earth that is `190.147 + 360.9856235·d`, i.e. SIDEREAL rotation,
  * not 360°/day. Using 360 would drift a full turn per year and put the eclipse
  * on the wrong side of the planet.
+ *
+ * 🔑🔑 **`W` IS MEASURED FROM THE IAU NODE `Q`, AT RIGHT ASCENSION `α₀ + 90°`** —
+ * not from the equinox, and not from wherever the tilt happens to leave the
+ * body's +X axis. Dropping that `+90°` is a 90° longitude error on every body,
+ * and it is 90° of the 93° that put the 2024 umbra in the Sahara. The rest was
+ * the pole direction: `tiltNodeDeg` was authored as the longitude of the
+ * equator's NODE but read as the longitude of the POLE, a further 90° that also
+ * threw the sub-solar LATITUDE out by 14.4°.
+ *
+ * ⚠ THE AUTHORED `tiltDeg`/`tiltNodeDeg` PAIR IS NOT RELIABLY CONVERTIBLE and
+ * that is why `poleRaDeg`/`poleDecDeg` exist. MEASURED: Earth's authored node
+ * (0°) is the ASCENDING node while Mars's (82.9°) is the DESCENDING one, so no
+ * single sign recovers both — round-tripping Mars through the pair gives
+ * α₀ = 216.4° against its true 317.7°. The IAU pair has no such ambiguity.
+ *
+ * ✅ VALIDATED: with `α₀ = 0, δ₀ = 90` (definitional for Earth, since the ICRF
+ * IS the mean equator of J2000) the sub-solar point comes out at
+ * **+7.5931° / −93.605°** on 2024-04-08 18:17 UTC against an independently
+ * computed +7.5931° / −93.841°, and **+11.8628° / −95.565°** vs
+ * +11.8628° / −95.745° on 2017-08-21 — latitude exact to 4 decimals, longitude
+ * within 0.24° (~26 km) on two dates seven years apart. The residual is the
+ * 3-decimal rounding of `W₀` plus GMST-vs-GAST, not a convention error.
  */
 export function bodyOrientation(
   body: CelestialBodyDef,
   jdUTC: number,
-): { spinDeg: number; tiltDeg: number; tiltNodeDeg: number } {
+  out: BodyOrientation,
+): BodyOrientation {
   const rot = body.rotation;
-  if (!rot) return { spinDeg: 0, tiltDeg: 0, tiltNodeDeg: 0 };
+  if (!rot) {
+    out.pole[0] = 0; out.pole[1] = 1; out.pole[2] = 0;
+    out.meridian[0] = 1; out.meridian[1] = 0; out.meridian[2] = 0;
+    out.spinDeg = 0; out.tiltDeg = 0; out.tiltNodeDeg = 0;
+    return out;
+  }
+
   const d = jdUTC + DELTA_T_SECONDS / 86400 - JD_J2000;
   const rate = rot.spinDegPerDay ?? (rot.periodHours ? 360 / (rot.periodHours / 24) : 0);
-  return {
-    spinDeg: norm360((rot.primeMeridianDeg ?? 0) + rate * d),
-    tiltDeg: rot.tiltDeg ?? 0,
-    tiltNodeDeg: rot.tiltNodeDeg ?? 0,
-  };
+  const W = norm360((rot.primeMeridianDeg ?? 0) + rate * d);
+  out.spinDeg = W;
+
+  // ── 1. The pole, in the game frame ──────────────────────────────────────
+  if (rot.poleRaDeg !== undefined && rot.poleDecDeg !== undefined) {
+    const a = rot.poleRaDeg * D2R;
+    const dl = rot.poleDecDeg * D2R;
+    eqToGame(Math.cos(dl) * Math.cos(a), Math.cos(dl) * Math.sin(a), Math.sin(dl), out.pole);
+  } else {
+    // FALLBACK for a body described only by a tilt — e.g. a procedurally
+    // generated one. `tiltNodeDeg` is taken as the ecliptic longitude of the
+    // equator's ascending node, so the pole sits 90° ahead of it.
+    // ⚠ Self-consistent but NOT interchangeable with the IAU pair (see above),
+    // and a `primeMeridianDeg` transcribed from the IAU report will be off by a
+    // body-specific constant on this path. Only bodies with `poleRaDeg` are
+    // trustworthy in longitude.
+    const t = (rot.tiltDeg ?? 0) * D2R;
+    const n = (rot.tiltNodeDeg ?? 0) * D2R;
+    out.pole[0] = -Math.sin(t) * Math.sin(n);
+    out.pole[1] = Math.cos(t);
+    out.pole[2] = -Math.sin(t) * Math.cos(n);
+  }
+
+  // ── 2. The IAU node Q, from the pole's own right ascension ──────────────
+  // Round-tripping the pole back to (α₀, δ₀) means BOTH paths above end up on
+  // the one W convention, so there is no second origin to get wrong. The
+  // round trip is exact for a pole that came from (α₀, δ₀) in step 1.
+  const ex = out.pole[0];
+  const ey = -out.pole[2];               // game → ecliptic (z-up)
+  const ez = out.pole[1];
+  const qx = ex;                         // ecliptic → equatorial
+  const qy = ey * COS_OBL - ez * SIN_OBL;
+  const alpha0 = Math.atan2(qy, qx);
+  eqToGame(-Math.sin(alpha0), Math.cos(alpha0), 0, _node);
+
+  // ── 3. Rotate Q by W about the pole → the prime meridian ────────────────
+  // Rodrigues, simplified because Q ⟂ pole: m = Q·cos W + (pole × Q)·sin W.
+  const bx = out.pole[1] * _node[2] - out.pole[2] * _node[1];
+  const by = out.pole[2] * _node[0] - out.pole[0] * _node[2];
+  const bz = out.pole[0] * _node[1] - out.pole[1] * _node[0];
+  const cw = Math.cos(W * D2R);
+  const sw = Math.sin(W * D2R);
+  out.meridian[0] = _node[0] * cw + bx * sw;
+  out.meridian[1] = _node[1] * cw + by * sw;
+  out.meridian[2] = _node[2] * cw + bz * sw;
+
+  // Diagnostics, derived rather than authored.
+  out.tiltDeg = Math.acos(Math.max(-1, Math.min(1, out.pole[1]))) * R2D;
+  out.tiltNodeDeg = norm360(Math.atan2(-out.pole[2], out.pole[0]) * R2D);
+  return out;
 }
+
+const _node: [number, number, number] = [0, 0, 0];
 
 // ── Diagnostics ─────────────────────────────────────────────────────
 

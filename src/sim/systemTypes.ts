@@ -280,11 +280,40 @@ export type RotationDef = {
   periodHours?: number;
   /** Explicit spin rate, deg/day (IAU `Ẇ`). Overrides `periodHours`. */
   spinDegPerDay?: number;
-  /** Prime-meridian angle at J2000, degrees (IAU `W₀`). */
+  /**
+   * Prime-meridian angle at J2000, degrees (IAU `W₀`).
+   *
+   * ⚠ Measured from the IAU node `Q` at right ascension `α₀ + 90°`, so it is
+   * only meaningful alongside `poleRaDeg`/`poleDecDeg`. On the tilt-only
+   * fallback path it lands on a different origin — see `bodyOrientation`.
+   */
   primeMeridianDeg?: number;
-  /** Axial tilt from the ecliptic pole, degrees. */
+  /**
+   * IAU pole right ascension α₀, degrees, equatorial J2000.
+   *
+   * 🔑 THE PREFERRED WAY TO ORIENT A BODY. `(α₀, δ₀, W₀, Ẇ)` is the one
+   * unambiguous published quadruple, and it is what the WGCCRE report gives for
+   * every solar-system body. Earth's is definitional: the ICRF *is* the mean
+   * equator of J2000, so `α₀ = 0, δ₀ = 90`.
+   */
+  poleRaDeg?: number;
+  /** IAU pole declination δ₀, degrees, equatorial J2000. Pairs with `poleRaDeg`. */
+  poleDecDeg?: number;
+  /**
+   * Axial tilt from the ecliptic pole, degrees.
+   *
+   * ⚠ SUPERSEDED by `poleRaDeg`/`poleDecDeg` when those are present (the tilt is
+   * then DERIVED from the pole). Kept as the fallback for a body described only
+   * by a tilt, such as a procedurally generated one.
+   */
   tiltDeg?: number;
-  /** Ecliptic longitude the pole leans toward, degrees. */
+  /**
+   * Ecliptic longitude of the ascending node of the body's equator, degrees.
+   *
+   * ⚠⚠ MEASURED NOT RELIABLY CONVERTIBLE to an IAU pole: Earth's authored 0° is
+   * the ASCENDING node while Mars's 82.9° is the DESCENDING one, so no single
+   * sign recovers both. Prefer `poleRaDeg`/`poleDecDeg`.
+   */
   tiltNodeDeg?: number;
 };
 

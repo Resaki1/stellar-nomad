@@ -29,7 +29,7 @@
   "celestialBodies": [
     {
       "id": "sol",
-      "rotation": { "periodHours": 609.12, "tiltDeg": 7.25, "tiltNodeDeg": 75.6 },
+      "rotation": { "poleRaDeg": 286.13, "poleDecDeg": 63.87, "periodHours": 609.12, "tiltDeg": 7.25, "tiltNodeDeg": 75.6 },
       "name": "Sol",
       "type": "star",
       "positionKm": [0, 0, 0],
@@ -40,7 +40,7 @@
     {
       "id": "mercury",
       "orbit": { "model": "jpl", "aKm": 57909050, "periodDays": 87.9691 },
-      "rotation": { "periodHours": 1407.6, "tiltDeg": 0.034 },
+      "rotation": { "poleRaDeg": 281.0103, "poleDecDeg": 61.4155, "periodHours": 1407.6, "tiltDeg": 0.034 },
       "name": "Mercury",
       "type": "planet",
       "positionKm": [58000000, 0, 0],
@@ -50,7 +50,7 @@
     {
       "id": "venus",
       "orbit": { "model": "jpl", "aKm": 108208000, "periodDays": 224.701 },
-      "rotation": { "periodHours": -5832.6, "tiltDeg": 177.36 },
+      "rotation": { "poleRaDeg": 272.76, "poleDecDeg": 67.16, "periodHours": -5832.6, "tiltDeg": 177.36 },
       "name": "Venus",
       "type": "planet",
       "positionKm": [108060000, 0, 0],
@@ -72,7 +72,7 @@
     {
       "id": "earth",
       "orbit": { "model": "jpl", "aKm": 149598023, "periodDays": 365.256363 },
-      "rotation": { "spinDegPerDay": 360.9856235, "primeMeridianDeg": 190.147, "tiltDeg": 23.4392911, "tiltNodeDeg": 0 },
+      "rotation": { "poleRaDeg": 0.0, "poleDecDeg": 90.0, "spinDegPerDay": 360.9856235, "primeMeridianDeg": 190.147, "tiltDeg": 23.4392911, "tiltNodeDeg": 0 },
       "name": "Earth",
       "type": "planet",
       "positionKm": [-129995000, 0, -65015000],
@@ -99,7 +99,7 @@
     {
       "id": "mars",
       "orbit": { "model": "jpl", "aKm": 227939200, "periodDays": 686.98 },
-      "rotation": { "spinDegPerDay": 350.891982443297, "primeMeridianDeg": 176.63, "tiltDeg": 25.19, "tiltNodeDeg": 82.9 },
+      "rotation": { "poleRaDeg": 317.68143, "poleDecDeg": 52.8865, "spinDegPerDay": 350.891982443297, "primeMeridianDeg": 176.63, "tiltDeg": 25.19, "tiltNodeDeg": 82.9 },
       "name": "Mars",
       "type": "planet",
       "positionKm": [-197500000, 0, -114000000],
@@ -121,7 +121,7 @@
     {
       "id": "uranus",
       "orbit": { "model": "jpl", "aKm": 2872460000, "periodDays": 30688.5 },
-      "rotation": { "spinDegPerDay": -501.1600928, "primeMeridianDeg": 203.81, "tiltDeg": 97.77, "tiltNodeDeg": 257.31 },
+      "rotation": { "poleRaDeg": 257.311, "poleDecDeg": -15.175, "spinDegPerDay": -501.1600928, "primeMeridianDeg": 203.81, "tiltDeg": 97.77, "tiltNodeDeg": 257.31 },
       "name": "Uranus",
       "type": "planet",
       "positionKm": [2870000000, 0, 0],
@@ -140,7 +140,7 @@
     {
       "id": "neptune",
       "orbit": { "model": "jpl", "aKm": 4495060000, "periodDays": 60195 },
-      "rotation": { "spinDegPerDay": 536.3128492, "primeMeridianDeg": 253.18, "tiltDeg": 28.32, "tiltNodeDeg": 299.36 },
+      "rotation": { "poleRaDeg": 299.36, "poleDecDeg": 43.46, "spinDegPerDay": 536.3128492, "primeMeridianDeg": 253.18, "tiltDeg": 28.32, "tiltNodeDeg": 299.36 },
       "name": "Neptune",
       "type": "planet",
       "positionKm": [4500000000, 0, 0],
@@ -159,7 +159,7 @@
     {
       "id": "saturn",
       "orbit": { "model": "jpl", "aKm": 1433530000, "periodDays": 10759.22 },
-      "rotation": { "spinDegPerDay": 810.7939024, "primeMeridianDeg": 38.9, "tiltDeg": 26.73, "tiltNodeDeg": 40.59 },
+      "rotation": { "poleRaDeg": 40.589, "poleDecDeg": 83.537, "spinDegPerDay": 810.7939024, "primeMeridianDeg": 38.9, "tiltDeg": 26.73, "tiltNodeDeg": 40.59 },
       "name": "Saturn",
       "type": "planet",
       "positionKm": [1430000000, 0, 0],
@@ -180,7 +180,7 @@
     {
       "id": "jupiter",
       "orbit": { "model": "jpl", "aKm": 778570000, "periodDays": 4332.589 },
-      "rotation": { "spinDegPerDay": 870.536, "primeMeridianDeg": 284.95, "tiltDeg": 3.13, "tiltNodeDeg": 268.06 },
+      "rotation": { "poleRaDeg": 268.056595, "poleDecDeg": 64.495303, "spinDegPerDay": 870.536, "primeMeridianDeg": 284.95, "tiltDeg": 3.13, "tiltNodeDeg": 268.06 },
       "name": "Jupiter",
       "type": "planet",
       "positionKm": [90000000, 0, -779000000],
@@ -201,7 +201,7 @@
     {
       "id": "europa",
       "orbit": { "aKm": 671100, "periodDays": 3.551181, "e": 0.0094, "iDeg": 0.466, "meanAnomalyAtEpochDeg": 0 },
-      "rotation": { "periodHours": 85.228344, "tiltDeg": 0.1 },
+      "rotation": { "poleRaDeg": 268.08, "poleDecDeg": 64.51, "periodHours": 85.228344, "tiltDeg": 0.1 },
       "name": "Europa",
       "type": "moon",
       "parent": "jupiter",
@@ -212,7 +212,7 @@
     {
       "id": "io",
       "orbit": { "aKm": 421800, "periodDays": 1.769138, "e": 0.0041, "iDeg": 0.036, "meanAnomalyAtEpochDeg": 0 },
-      "rotation": { "periodHours": 42.4593069, "tiltDeg": 0 },
+      "rotation": { "poleRaDeg": 268.05, "poleDecDeg": 64.5, "periodHours": 42.4593069, "tiltDeg": 0 },
       "name": "Io",
       "type": "moon",
       "parent": "jupiter",
@@ -223,7 +223,7 @@
     {
       "id": "callisto",
       "orbit": { "aKm": 1882700, "periodDays": 16.689017, "e": 0.0074, "iDeg": 0.192, "meanAnomalyAtEpochDeg": 0 },
-      "rotation": { "periodHours": 400.5364, "tiltDeg": 0.3 },
+      "rotation": { "poleRaDeg": 268.72, "poleDecDeg": 64.83, "periodHours": 400.5364, "tiltDeg": 0.3 },
       "name": "Callisto",
       "type": "moon",
       "parent": "jupiter",
@@ -234,7 +234,7 @@
     {
       "id": "ganymede",
       "orbit": { "aKm": 1070400, "periodDays": 7.154553, "e": 0.0013, "iDeg": 0.177, "meanAnomalyAtEpochDeg": 0 },
-      "rotation": { "periodHours": 171.709, "tiltDeg": 0.2 },
+      "rotation": { "poleRaDeg": 268.2, "poleDecDeg": 64.57, "periodHours": 171.709, "tiltDeg": 0.2 },
       "name": "Ganymede",
       "type": "moon",
       "parent": "jupiter",
