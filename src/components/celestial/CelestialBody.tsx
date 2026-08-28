@@ -1,9 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
+import { useAtomValue } from "jotai";
 import { NodeMaterial } from "three/webgpu";
 import { Fn, uniform, vec4 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
@@ -32,6 +33,9 @@ import {
   clearAtmosphereBody,
 } from "../space/atmospherePass";
 import { setSunOccluder, clearSunOccluder } from "@/components/space/sunOcclusion";
+import { allBodyDefs, updateEphemerisPositions } from "@/sim/celestialConstants";
+import { bodyOrientation, jdFromUnixMs } from "@/sim/ephemeris";
+import { simEpochMsAtom } from "@/store/simTime";
 import {
   createEclipseUniforms,
   eclipseVisibilityNode,
@@ -47,6 +51,12 @@ const _sunRelative = new THREE.Vector3();
 const _relativeKm = new THREE.Vector3();
 const _farFadeBuf = new THREE.Vector2();
 const _shipToBody = new THREE.Vector3();
+// ── Ephemeris orientation scratch (no per-frame allocation) ──
+const _poleDir = new THREE.Vector3();
+const _localY = new THREE.Vector3(0, 1, 0);
+const DEG2RAD = Math.PI / 180;
+const _qTilt = new THREE.Quaternion();
+const _qSpin = new THREE.Quaternion();
 
 /** Prefetch multiplier: start loading textures at this factor × LOD threshold */
 const PREFETCH_MULT = 1.5;
@@ -368,6 +378,19 @@ type CelestialBodyProps = {
 
 function CelestialBody({ config }: CelestialBodyProps) {
   const positionKm = config.positionKm;
+  // ── Ephemeris (2026-08-27) ────────────────────────────────────────────────
+  // ⚠ `positionKm` above is a LIVE array that `updateEphemerisPositions()`
+  // rewrites in place — see the header of `sim/celestialConstants.ts`. It is
+  // held as a reference on purpose; copying it would freeze the body in space.
+  const simEpochMs = useAtomValue(simEpochMsAtom);
+  const orientRef = useRef<THREE.Group>(null);
+  // The body's own definition, for orbit/rotation. ⚠ Looked up by id rather than
+  // carried on `CelestialBodyConfig`, so `sol.json` stays the single source of
+  // truth for physical data and the render config stays about rendering.
+  const bodyDef = useMemo(
+    () => allBodyDefs().find((b) => b.id === config.id),
+    [config.id],
+  );
   // ── D34: body-on-body eclipse uniforms ───────────────────────────────────
   // Owned here rather than per body config, for the same reason `uAlbedoScale`
   // is: there are 13 body modules, and a rule each has to remember is a rule the
@@ -566,6 +589,42 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // registration below. A body's umbra is far longer than the range at which
     // the body is worth drawing: Neptune's runs 165 M km against a 12 M km LOD
     // gate. Gating this is precisely the bug. See space/sunOcclusion.ts.
+    // ── Solve the ephemeris for this frame ──────────────────────────────────
+    // ⚠ Called by EVERY body; `updateEphemerisPositions` caches on the Julian
+    // Date so the first caller does the work. That is why there is no ordering
+    // requirement between this and the bodies that read the result.
+    const jd = jdFromUnixMs(simEpochMs);
+    updateEphemerisPositions(jd);
+
+    // ── Live orientation: axial tilt ∘ spin ────────────────────────────────
+    // ⚠⚠ THIS SUPERSEDES `config.rotation` for any body with ephemeris rotation
+    // data. The four bodies that had one (Earth, Mars, Saturn, Jupiter) were
+    // hand-applying their axial TILT as a static Euler — Saturn's was literally
+    // `26.7°` about Z. The magnitudes agree with sol.json's (26.73 etc.), so the
+    // change is that the tilt now has a real DIRECTION (`tiltNodeDeg`) and the
+    // spin is live.
+    //
+    // 🔑 Expect continents to sit somewhere different: the prime meridian is now
+    // wherever the DATE puts it, not an arbitrary constant. That is precisely
+    // what makes an eclipse land on the correct part of the planet, so it is the
+    // point rather than a side effect.
+    if (orientRef.current && bodyDef?.rotation) {
+      const o = bodyOrientation(bodyDef, jd);
+      // Pole direction in the ecliptic frame: tilted `tiltDeg` from +Y, leaning
+      // toward ecliptic longitude `tiltNodeDeg`. ⚠ Built with
+      // `setFromUnitVectors` rather than an Euler triple on purpose — Euler
+      // ORDER is exactly the kind of silent convention mismatch that produces a
+      // mirrored or 90°-off planet, and this formulation has no order to get
+      // wrong.
+      const t = o.tiltDeg * DEG2RAD;
+      const n = o.tiltNodeDeg * DEG2RAD;
+      _poleDir.set(Math.sin(t) * Math.cos(n), Math.cos(t), -Math.sin(t) * Math.sin(n));
+      _qTilt.setFromUnitVectors(_localY, _poleDir);
+      _qSpin.setFromAxisAngle(_localY, o.spinDeg * DEG2RAD);
+      // Spin first (about the body's own axis), then tilt that axis into place.
+      orientRef.current.quaternion.copy(_qTilt).multiply(_qSpin);
+    }
+
     setSunOccluder(config.id, positionKm, radiusKm);
 
     // ── D34: which bodies are eclipsing THIS one, this frame ────────────────
@@ -712,8 +771,12 @@ function CelestialBody({ config }: CelestialBodyProps) {
 
   return (
     <SimGroup space="scaled" positionKm={positionKm}>
-      {config.rotation ? (
-        <group rotation={config.rotation}>
+      {/* ⚠ ALWAYS a group now, and always with the ref: the frame loop writes a
+          live quaternion into it when the body has ephemeris rotation data. The
+          `config.rotation` fallback only applies to bodies without any, so
+          nothing regresses for a body that has not been given orbital data. */}
+      {bodyDef?.rotation || config.rotation ? (
+        <group ref={orientRef} rotation={bodyDef?.rotation ? undefined : config.rotation}>
           <TexturedLODs
             config={config}
             scaledRadius={scaledRadius}

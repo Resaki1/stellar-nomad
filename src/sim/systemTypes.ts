@@ -233,6 +233,61 @@ export type AtmosphereDef = {
   groundAlbedo?: [number, number, number];
 };
 
+/**
+ * A body's orbit about its `parent` (or about the system primary when there is
+ * none). See `sim/ephemeris.ts` for the frame and the accuracy story.
+ *
+ * 🔑 THE UNIVERSAL FORM IS KEPLERIAN, on purpose: a procedurally generated
+ * system emits these six numbers and gets correct motion with no special
+ * casing. `model` opts a body into a higher-accuracy series where real data
+ * exists — which is exactly the two-layer split LIGHTING_PLAN §3.0 asks for
+ * ("no per-system fine-tuning").
+ */
+export type OrbitDef = {
+  /**
+   * Which model computes this body's position.
+   * • omitted — generic Keplerian from the elements below.
+   * • `"jpl"` — JPL's approximate-positions table (elements + per-century
+   *   rates), keyed by the body's `id`. Sol's eight planets only.
+   * • `"meeus-moon"` — abridged ELP2000-82B. ⚠ Required for Luna: pure Kepler
+   *   is >1° off and the solar umbra is ~0.5° wide, so two-body elements do not
+   *   misplace a solar eclipse, they MISS it.
+   */
+  model?: "jpl" | "meeus-moon";
+  /** Semi-major axis, km. Ignored by the named models. */
+  aKm: number;
+  /** Orbital period, days. Drives the mean motion for the generic path. */
+  periodDays: number;
+  e?: number;
+  /** Inclination to the ecliptic, degrees. */
+  iDeg?: number;
+  /** Longitude of the ascending node, degrees. */
+  nodeDeg?: number;
+  /** Longitude of periapsis (ϖ = Ω + ω), degrees. */
+  periDeg?: number;
+  /** Mean anomaly at `epochJD`, degrees. */
+  meanAnomalyAtEpochDeg?: number;
+  /** Epoch for `meanAnomalyAtEpochDeg`. Defaults to J2000. */
+  epochJD?: number;
+};
+
+/** A body's spin. See `bodyOrientation()`. */
+export type RotationDef = {
+  /**
+   * Sidereal rotation period, hours. ⚠ SIDEREAL, not solar — Earth is
+   * 23.9344696 h, not 24. Using 24 drifts a full turn per year.
+   */
+  periodHours?: number;
+  /** Explicit spin rate, deg/day (IAU `Ẇ`). Overrides `periodHours`. */
+  spinDegPerDay?: number;
+  /** Prime-meridian angle at J2000, degrees (IAU `W₀`). */
+  primeMeridianDeg?: number;
+  /** Axial tilt from the ecliptic pole, degrees. */
+  tiltDeg?: number;
+  /** Ecliptic longitude the pole leans toward, degrees. */
+  tiltNodeDeg?: number;
+};
+
 export type CelestialBodyDef = {
   id: string;
   name: string;
@@ -243,6 +298,13 @@ export type CelestialBodyDef = {
   radiusKm: number;
   /** Optional parent body ID (e.g. moon orbiting a planet). */
   parent?: string;
+  /**
+   * Orbital elements. ⚠ When present, `positionKm` becomes a FALLBACK only —
+   * `sim/ephemeris.ts` computes the live position from these instead.
+   */
+  orbit?: OrbitDef;
+  /** Spin. Omit for a body whose orientation does not matter yet. */
+  rotation?: RotationDef;
   marker?: POIMarkerConfig;
   /** Body mass (kg) — surface gravity, scale heights. Required for `atmosphere`. */
   massKg?: number;
@@ -258,7 +320,22 @@ export type AsteroidFieldDef = {
   seed: number | string;
   enabled?: boolean;
   frame?: "system";
+  /**
+   * The field's absolute centre, km.
+   *
+   * ⚠⚠ DERIVED, NOT AUTHORED, when `anchorBody` is set: the ephemeris rewrites
+   * this in place every frame from `anchorBody` + `anchorOffsetKm`. Authoring an
+   * absolute anchor made the fields stay put while their planet orbited away —
+   * the belt meant to sit 15,800 km from Earth ended up 380,000 km from it.
+   */
   anchorKm: [number, number, number];
+  /**
+   * Body this field orbits with. When set, `anchorKm` is recomputed each frame
+   * as `body.positionKm + anchorOffsetKm`, so the field travels with its planet.
+   */
+  anchorBody?: string;
+  /** Fixed offset from `anchorBody`'s centre, km. Requires `anchorBody`. */
+  anchorOffsetKm?: [number, number, number];
   shape: FieldShape;
   population: PopulationDef;
   size: SizeDef;
@@ -278,8 +355,18 @@ export type SystemConfigV1 = {
   schemaVersion: 1;
   systemId: string;
   units: UnitsSpec;
-  /** Default spawn position for new players (km). */
+  /**
+   * Default spawn position for new players (km).
+   *
+   * ⚠ LIVE: rewritten in place by `updateEphemerisPositions()` when
+   * `startingBody`/`startingOffsetKm` are set, so the spawn follows its planet
+   * instead of being an absolute point the planet has since orbited away from.
+   */
   startingPositionKm: [number, number, number];
+  /** Body the spawn point is fixed relative to. Without it the spawn is absolute. */
+  startingBody?: string;
+  /** Fixed offset from `startingBody`'s centre (km) — the authored spawn geometry. */
+  startingOffsetKm?: [number, number, number];
   /** Default spawn rotation for new players (quaternion [x, y, z, w]). */
   startingRotationQuat: [number, number, number, number];
   resources?: SystemResources;

@@ -1,4 +1,10 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import {
+  ECLIPSE_2024_04_08_MS,
+  formatSimTime,
+  simEpochMsAtom,
+  simRateAtom,
+} from "@/store/simTime";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
@@ -183,6 +189,8 @@ const renderSubMenu = (
     case SubMenu.Dev:
       return (
         <>
+          <SimTimeControls />
+
           <SettingsCheckbox
             active={settings.fps}
             onChange={() =>
@@ -220,6 +228,122 @@ const renderSubMenu = (
       );
   }
 };
+
+// ---------------------------------------------------------------------------
+// Sim time (ephemeris) — see store/simTime.ts
+// ---------------------------------------------------------------------------
+
+/** `YYYY-MM-DDTHH:MM:SS` in UTC, which is what a `datetime-local` input wants. */
+const toDateTimeInput = (ms: number): string =>
+  new Date(ms).toISOString().slice(0, 19);
+
+/** Slider notch → rate: 0 = frozen, then decades 1×, 10× … 1e5×. */
+const NOTCH_TO_RATE = (notch: number): number => (notch === 0 ? 0 : 10 ** (notch - 1));
+const RATE_TO_NOTCH = (rate: number): number =>
+  rate === 0 ? 0 : Math.round(Math.log10(rate)) + 1;
+
+/**
+ * Date + rate for the ephemeris. One scalar drives every body's position and
+ * orientation; the default rate is 0, so orbits are FROZEN and gameplay is
+ * unchanged. Set a date to reach a specific configuration, or a rate to watch
+ * one evolve.
+ *
+ * 🔑 The default date is the 2024-04-08 total solar eclipse at greatest eclipse,
+ * the case `__lum.ephemeris()` validates against published values — so "does the
+ * eclipse system work" is answerable from a fresh session.
+ *
+ * ⚠ Its OWN component, reading the atoms directly, and that is the fix for a
+ * shipped bug: these were passed down through `devHandlers`, a `useMemo` whose
+ * dependency array listed neither `simRate` nor `simEpochMs`. The atoms updated
+ * but the props did not, so the date field and the rate slider both appeared
+ * DEAD — they only caught up when an unrelated dependency (the max-speed
+ * override) invalidated the memo. Reading state where it is rendered has no
+ * dependency array to get wrong.
+ *
+ * The date is UNCONTROLLED + an explicit apply, not applied on change: a
+ * `datetime-local` fires `onChange` on every keystroke, and a half-typed value
+ * parses to `NaN` (or to the year 0002 while you type "2026"), so a controlled
+ * input that wrote straight through was impossible to type into. `key` on the
+ * epoch remounts it when the date changes from elsewhere (the eclipse button, or
+ * time actually running) — cheaper than a draft-plus-effect and it has no
+ * cascading render.
+ */
+function SimTimeControls() {
+  const [simEpochMs, setSimEpochMs] = useAtom(simEpochMsAtom);
+  const [simRate, setSimRate] = useAtom(simRateAtom);
+  const dateRef = useRef<HTMLInputElement>(null);
+
+  const applyDate = useCallback(() => {
+    const raw = dateRef.current?.value;
+    if (!raw) return;
+    // The UA drops ":SS" when it is zero, which `Date.parse` accepts either way.
+    const ms = Date.parse(raw + "Z");
+    if (Number.isFinite(ms)) setSimEpochMs(ms);
+  }, [setSimEpochMs]);
+
+  return (
+    <>
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">sim date (utc)</div>
+        <div className="dev-controls__row">
+          <input
+            key={simEpochMs}
+            ref={dateRef}
+            className="dev-controls__input dev-controls__input--datetime"
+            type="datetime-local"
+            step={1}
+            defaultValue={toDateTimeInput(simEpochMs)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") applyDate();
+            }}
+          />
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={applyDate}
+          >
+            apply
+          </button>
+        </div>
+        <div className="dev-controls__row">
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={() => setSimEpochMs(ECLIPSE_2024_04_08_MS)}
+          >
+            jump to 2024-04-08 solar eclipse
+          </button>
+        </div>
+        <div className="dev-controls__hint">
+          applied: <code>{formatSimTime(simEpochMs)}</code>
+        </div>
+      </div>
+
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">
+          time rate {simRate === 0 ? "frozen" : `${simRate.toLocaleString()}× real`}
+        </div>
+        <div className="dev-controls__row">
+          {/* ⚠ Log steps: the useful range spans five decades — an eclipse
+              transit needs ~1e4 to be watchable, orbital motion ~1e5. */}
+          <input
+            className="dev-controls__range"
+            type="range"
+            min={0}
+            max={6}
+            step={1}
+            value={RATE_TO_NOTCH(simRate)}
+            onChange={(e) => setSimRate(NOTCH_TO_RATE(Number(e.target.value)))}
+          />
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={() => setSimRate(0)}
+          >
+            freeze
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Body / scenario warps — see docs/PERF_MEASUREMENT.md

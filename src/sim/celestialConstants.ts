@@ -4,6 +4,7 @@
 
 import solSystem from "@/sim/systems/sol.json";
 import type { CelestialBodyDef } from "@/sim/systemTypes";
+import { DEFAULT_SIM_EPOCH_MS, jdFromUnixMs, solveSystem } from "@/sim/ephemeris";
 
 const bodies = solSystem.celestialBodies as CelestialBodyDef[];
 
@@ -12,6 +13,25 @@ function findBody(id: string): CelestialBodyDef {
   if (!body) throw new Error(`[celestialConstants] body "${id}" not found in sol.json`);
   return body;
 }
+
+// ── ⚠⚠ THESE POSITION EXPORTS ARE LIVE, NOT CONSTANT (ephemeris, 2026-08-27) ──
+//
+// Every `*_POSITION_KM` below is a MUTABLE array that `updateEphemerisPositions()`
+// rewrites IN PLACE from `sim/ephemeris.ts`. Body configs hold a reference to it
+// (`positionKm: PLANET_POSITION_KM`), so they and every downstream consumer see
+// the live value with no code change — which is the only reason adding real
+// orbits did not have to touch ~70 read sites at once.
+//
+// ⚠⚠ THE HAZARD THIS CREATES, stated plainly: anything that COPIES one of these
+// arrays, or memoises a value derived from one, freezes at whatever the value was
+// at that moment. That is defect D17's exact failure mode (a static
+// `sunIlluminance` baked into a shader literal). **Read them per frame; never
+// spread, destructure or `useMemo` them.** A `useMemo` keyed on the array will
+// also never re-run, because the reference is deliberately stable.
+//
+// 🔑 The names are kept SCREAMING_CASE despite being mutable because renaming
+// them is the ~70-site migration this approach exists to defer. When that
+// migration happens, replace them with `bodyPositionKm(id)`.
 
 const sol = findBody("sol");
 const mercury = findBody("mercury");
@@ -122,3 +142,113 @@ export const STARTING_POSITION_KM = solSystem.startingPositionKm as [number, num
 
 /** Default spawn rotation as quaternion [x, y, z, w] (from sol.json). */
 export const STARTING_ROTATION_QUAT = solSystem.startingRotationQuat as [number, number, number, number];
+
+
+// ── Live ephemeris wiring ────────────────────────────────────────────────────
+
+let _solvedJD = Number.NaN;
+
+/**
+ * Rewrite every body's `positionKm` IN PLACE for Julian Date `jdUTC`.
+ *
+ * ⚠⚠ **MUTATES THE ARRAYS INSIDE `sol.json` ITSELF, and that is the point.**
+ * The first version of this wrote into private copies, which silently created
+ * TWO sets of positions: body render configs (which reference the
+ * `*_POSITION_KM` exports) went live, while everything reading
+ * `systemConfigAtom` — POI markers, the dev warp resolver, ship collision —
+ * kept the static originals. Symptoms on device: markers in the wrong place,
+ * the ship crashing into nothing, and warps landing where planets used to be.
+ *
+ * 🔑 **The fix is to have ONE set of arrays, not to add a second updater.**
+ * `celestialConstants` and `store/system.ts` import the same JSON module, so ES
+ * module caching means they hold the same objects — writing here reaches every
+ * consumer that holds a REFERENCE.
+ *
+ * ⚠ It does NOT reach a consumer that copied the NUMBERS out (e.g. into a flat
+ * collider struct). Those must re-read per frame; grep for `positionKm[0]`.
+ *
+ * ⚠ IDEMPOTENT AND CACHED ON `jdUTC`: every `CelestialBody` calls this from its
+ * own frame loop, so the first one does the work and the rest are a float
+ * compare. That removes R3F callback ORDERING as a concern entirely.
+ */
+export function updateEphemerisPositions(jdUTC: number): void {
+  if (jdUTC === _solvedJD) return;
+  _solvedJD = jdUTC;
+  const solved = solveSystem(bodies, jdUTC);
+  for (const body of bodies) {
+    const pos = solved.get(body.id);
+    if (!pos || !body.positionKm) continue;
+    body.positionKm[0] = pos[0];
+    body.positionKm[1] = pos[1];
+    body.positionKm[2] = pos[2];
+  }
+  updateAsteroidFieldAnchors();
+  updateSpawnAnchor();
+}
+
+/**
+ * Re-anchor every asteroid field to its `anchorBody`.
+ *
+ * ⚠ A field's `anchorKm` was an ABSOLUTE position, so the fields stayed put
+ * while their planets moved — the belt near Earth ended up 380,000 km from it.
+ * With `anchorBody` set, `anchorOffsetKm` is the (fixed) offset from that body
+ * and `anchorKm` becomes the derived absolute position, rewritten in place here
+ * so every existing `anchorKm` reader keeps working.
+ */
+function updateAsteroidFieldAnchors(): void {
+  const fields = solSystem.asteroidFields as
+    | { id: string; anchorKm: number[]; anchorBody?: string; anchorOffsetKm?: number[] }[]
+    | undefined;
+  if (!fields) return;
+  for (const f of fields) {
+    if (!f.anchorBody || !f.anchorOffsetKm) continue;
+    const parent = bodies.find((b) => b.id === f.anchorBody);
+    if (!parent) continue;
+    f.anchorKm[0] = parent.positionKm[0] + f.anchorOffsetKm[0];
+    f.anchorKm[1] = parent.positionKm[1] + f.anchorOffsetKm[1];
+    f.anchorKm[2] = parent.positionKm[2] + f.anchorOffsetKm[2];
+  }
+}
+
+/**
+ * Re-anchor the spawn point to its `startingBody`.
+ *
+ * ⚠ Same defect the asteroid fields had: `startingPositionKm` was an ABSOLUTE
+ * point authored next to Earth's static position, so once Earth started orbiting
+ * the spawn (and the `belt` perf scenario, which uses this exact array) pointed
+ * at empty space 1 AU from anything. `startingOffsetKm` is the fixed, authored
+ * geometry — 16,746 km from Earth's centre, inside the origin belt — and the
+ * absolute value is derived from it here, in place, so `STARTING_POSITION_KM`
+ * and `solSystem.startingPositionKm` readers keep working.
+ */
+function updateSpawnAnchor(): void {
+  const sys = solSystem as {
+    startingPositionKm: number[];
+    startingBody?: string;
+    startingOffsetKm?: number[];
+  };
+  if (!sys.startingBody || !sys.startingOffsetKm) return;
+  const parent = bodies.find((b) => b.id === sys.startingBody);
+  if (!parent) return;
+  sys.startingPositionKm[0] = parent.positionKm[0] + sys.startingOffsetKm[0];
+  sys.startingPositionKm[1] = parent.positionKm[1] + sys.startingOffsetKm[1];
+  sys.startingPositionKm[2] = parent.positionKm[2] + sys.startingOffsetKm[2];
+}
+
+/** The Julian Date the live positions currently represent. */
+export const solvedEphemerisJD = (): number => _solvedJD;
+
+/** Every body definition, for code that needs orbits or rotation. */
+export const allBodyDefs = (): readonly CelestialBodyDef[] => bodies;
+
+// ── Solve once at module load ────────────────────────────────────────────────
+// ⚠⚠ WITHOUT THIS, EVERY POSITION IS THE AUTHORED STATIC ONE UNTIL THE FIRST
+// `CelestialBody` FRAME LOOP RUNS. Anything that reads earlier — a `useMemo`
+// building POI markers, the dev warp resolver, ship collider setup — captures
+// launch-day coordinates and never recovers, which is exactly the class of bug
+// this file's header warns about.
+//
+// 🔑 Not a violation of "nothing baked at module load": this establishes the
+// INITIAL value of a live quantity, which `updateEphemerisPositions` then
+// rewrites every frame. Baking would be computing it once and never again.
+updateEphemerisPositions(jdFromUnixMs(DEFAULT_SIM_EPOCH_MS));

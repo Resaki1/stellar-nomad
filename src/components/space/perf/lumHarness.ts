@@ -50,6 +50,17 @@ import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
 import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
 import { sunOccluderList } from "@/components/space/sunOcclusion";
 import {
+  AU_KM,
+  bodyOrientation,
+  jdFromUTC,
+  jdFromUnixMs,
+  moonGeocentric,
+  solveSystem,
+  sunMoonSeparationDeg,
+} from "@/sim/ephemeris";
+import { allBodyDefs, solvedEphemerisJD } from "@/sim/celestialConstants";
+import { formatSimTime, simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import {
   MAX_ECLIPSE_OCCLUDERS,
   createEclipseUniforms,
   updateEclipseUniforms,
@@ -2637,6 +2648,143 @@ export class LumHarness {
         "      ⚠ An eclipsed body with an ATMOSPHERE-bearing occluder should not be pure",
         "      black — D28's refracted limb light is what makes it coppery, and it",
         "      currently reaches the SHIP only (see `__lum.umbra()`).",
+      ].join("\n"),
+    );
+  }
+
+  /**
+   * The ephemeris, checked against published eclipse data.
+   *
+   * 🔑 Why eclipses are the gate: γ (the miss distance of the shadow axis from
+   * Earth's centre, in Earth radii) and the time of greatest eclipse depend on
+   * the Sun AND Moon positions TOGETHER, including the frame handling. No
+   * synthetic self-consistency check can catch a frame mismatch; this one did —
+   * see the precession note in `ephemeris.ts`, worth 0.34° and 33 minutes.
+   */
+  ephemeris(): void {
+    const cases = [
+      { label: "2024-04-08", y: 2024, mo: 4, d: 8, h: 18, mi: 17, gamma: 0.3435 },
+      { label: "2017-08-21", y: 2017, mo: 8, d: 21, h: 18, mi: 26, gamma: 0.4367 },
+    ];
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const c of cases) {
+      let best = { sep: 1e9, mins: 0, dist: 0 };
+      for (let mins = -300; mins <= 300; mins++) {
+        const jd = jdFromUTC(c.y, c.mo, c.d, c.h, c.mi, 0) + mins / 1440;
+        const sep = sunMoonSeparationDeg(jd);
+        if (sep < best.sep) {
+          best = { sep, mins, dist: moonGeocentric(jd).distKm };
+        }
+      }
+      const tot = c.h * 60 + c.mi + best.mins;
+      const earthAngDeg =
+        (Math.asin(6371 / best.dist) * 180) / Math.PI;
+      const gamma = best.sep / earthAngDeg;
+      rows[c.label] = {
+        "greatest (mine)": `${String(Math.floor(tot / 60)).padStart(2, "0")}:${String(((tot % 60) + 60) % 60).padStart(2, "0")} UTC`,
+        "published": `${String(c.h).padStart(2, "0")}:${String(c.mi).padStart(2, "0")} UTC`,
+        "Δt (min)": best.mins,
+        "γ (mine)": Number(gamma.toFixed(4)),
+        "γ (published)": c.gamma,
+        "γ error": `${(100 * (gamma / c.gamma - 1)).toFixed(1)}%`,
+      };
+    }
+    console.table(rows);
+
+    // Earth's orbit, independent of the Moon.
+    const peri = jdFromUTC(2024, 1, 3);
+    const aphe = jdFromUTC(2024, 7, 5);
+    const dist = (jd: number): number => {
+      const m = solveSystem(allBodyDefs(), jd).get("earth");
+      return m ? Math.hypot(m[0], m[1], m[2]) / AU_KM : NaN;
+    };
+    console.log(
+      [
+        `[lum] Earth heliocentric distance: perihelion ${dist(peri).toFixed(5)} AU (expect 0.98330),`,
+        `      aphelion ${dist(aphe).toFixed(5)} AU (expect 1.01671)`,
+      ].join("\n"),
+    );
+
+    // Live state.
+    // ⚠ Derived from the sim-time ATOM, not from `solvedEphemerisJD()`. The
+    // solved JD is NaN until a `CelestialBody` frame loop has run at least once,
+    // and a diagnostic that reports NaN because the renderer has not ticked yet
+    // is reporting the renderer, not the ephemeris.
+    const jdNow = jdFromUnixMs(this.store.get(simEpochMsAtom));
+    const jdRendered = solvedEphemerisJD();
+    const solved = solveSystem(allBodyDefs(), jdNow);
+    const live: Record<string, Record<string, string | number>> = {};
+    solved.forEach((p, id) => {
+      const def = allBodyDefs().find((b) => b.id === id);
+      const o = def?.rotation ? bodyOrientation(def, jdNow) : null;
+      live[id] = {
+        "dist from origin (AU)": Number((Math.hypot(p[0], p[1], p[2]) / AU_KM).toPrecision(4)),
+        "spin (°)": o ? Number(o.spinDeg.toFixed(1)) : "—",
+        "tilt (°)": o ? Number(o.tiltDeg.toFixed(2)) : "—",
+      };
+    });
+    console.table(live);
+
+    // ── Anchored positions ───────────────────────────────────────────────────
+    // The spawn point and every asteroid field are FIXED OFFSETS from a body,
+    // with the absolute value derived in place by `updateEphemerisPositions`.
+    // This table is the diagnostic for the E0 staleness class: each row compares
+    // the live distance-from-parent against the AUTHORED offset magnitude. A
+    // consumer that froze a copy disagrees by ~1 AU, not by rounding.
+    const anchorSys = solSystem as unknown as {
+      startingPositionKm: number[];
+      startingBody?: string;
+      startingOffsetKm?: number[];
+      asteroidFields?: {
+        id: string;
+        anchorKm: number[];
+        anchorBody?: string;
+        anchorOffsetKm?: number[];
+      }[];
+    };
+    const anchorRow = (
+      absolute: number[],
+      parentId: string | undefined,
+      offset: number[] | undefined,
+    ): Record<string, string | number> => {
+      const parent = allBodyDefs().find((b) => b.id === parentId);
+      if (!parent || !offset) return { parent: "— (absolute)", "live |Δ| (km)": "—" };
+      const live = Math.hypot(
+        absolute[0] - parent.positionKm[0],
+        absolute[1] - parent.positionKm[1],
+        absolute[2] - parent.positionKm[2],
+      );
+      const authored = Math.hypot(offset[0], offset[1], offset[2]);
+      return {
+        parent: parentId ?? "—",
+        "live |Δ| (km)": Number(live.toPrecision(6)),
+        "authored |Δ| (km)": Number(authored.toPrecision(6)),
+        ok: Math.abs(live - authored) < 1 ? "✅" : "❌ STALE",
+      };
+    };
+    const anchorTable: Record<string, Record<string, string | number>> = {
+      spawn: anchorRow(
+        anchorSys.startingPositionKm,
+        anchorSys.startingBody,
+        anchorSys.startingOffsetKm,
+      ),
+    };
+    for (const f of anchorSys.asteroidFields ?? []) {
+      anchorTable[f.id] = anchorRow(f.anchorKm, f.anchorBody, f.anchorOffsetKm);
+    }
+    console.table(anchorTable);
+
+    console.log(
+      [
+        `[lum] sim time = ${formatSimTime(this.store.get(simEpochMsAtom))}  (JD ${jdNow.toFixed(5)})`,
+        `      renderer last solved: ${Number.isFinite(jdRendered) ? "JD " + jdRendered.toFixed(5) : "never (no frame has run)"}`,
+        `      rate = ${this.store.get(simRateAtom)}× real time (0 = frozen)`,
+        "      ⚠ Galilean moons: their ELEMENTS are real but `meanAnomalyAtEpochDeg`",
+        "      is a PLACEHOLDER 0, so their orbital PHASE is wrong. Io transits",
+        "      Jupiter at the right INTERVAL but not at the right TIME. Needs a",
+        "      cited epoch longitude per moon.",
+        "      🔑 Everything is referred to the FIXED J2000 ecliptic, +Y = ecliptic",
+        "      north. Mixing in an equinox-of-date quantity is a 1.4°/century error.",
       ].join("\n"),
     );
   }

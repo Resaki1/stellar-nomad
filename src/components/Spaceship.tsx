@@ -103,12 +103,29 @@ const SpaceShip = memo(() => {
 
   // ── Camera shake state ──────────────────────────────────────────────
   const shakeIntensity = useRef(0);
+  /** Live position arrays backing `celestialColliders`, in the same order. */
+  const colliderSources = useRef<readonly (readonly number[])[]>([]);
 
-  // ── Celestial colliders (built once from the active system) ────────
+  // ── Celestial colliders ───────────────────────────────────────────
   // Flat numeric layout avoids array-of-arrays indirection in the hot path.
+  //
+  // ⚠⚠ THE STRUCT IS ALLOCATED ONCE BUT REFRESHED EVERY FRAME. It used to be
+  // built once, behind the comment "systemConfigAtom is effectively static in
+  // the current codebase" — which the ephemeris made false. Because this copies
+  // the position NUMBERS out rather than holding the array, mutating
+  // `body.positionKm` in place does not reach it, so it kept the launch-day
+  // positions. Symptom on device: **the ship crashed into empty space** where a
+  // planet used to be.
+  //
+  // 🔑 The general rule the ephemeris imposes: aliasing reaches consumers that
+  // hold a REFERENCE; anything that copied the scalars has to re-read. Grep for
+  // `positionKm[0]`.
   const celestialColliders = useMemo<CelestialCollider[]>(() => {
     const system = store.get(systemConfigAtom);
     const bodies = system.celestialBodies ?? [];
+    // Keep a parallel handle on the live arrays so the refresh below is a copy,
+    // not a lookup.
+    colliderSources.current = bodies.map((b) => b.positionKm);
     return bodies.map((b) => ({
       id: b.id,
       x: b.positionKm[0],
@@ -116,7 +133,6 @@ const SpaceShip = memo(() => {
       z: b.positionKm[2],
       r: b.radiusKm,
     }));
-    // systemConfigAtom is effectively static in the current codebase.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -358,6 +374,14 @@ const SpaceShip = memo(() => {
       // Transit can push the ship >100,000 km per step; a point test would
       // tunnel through planets between frames. Sweep from prev-step position
       // to this-step position and trigger death at the entry point.
+      // Refresh from the live ephemeris arrays — 14 bodies × 3 writes.
+      for (let i = 0; i < celestialColliders.length; i++) {
+        const src = colliderSources.current[i];
+        if (!src) continue;
+        celestialColliders[i].x = src[0];
+        celestialColliders[i].y = src[1];
+        celestialColliders[i].z = src[2];
+      }
       if (celestialColliders.length > 0) {
         const hit = sweptSphereCollide(
           prevPosKm.current.x, prevPosKm.current.y, prevPosKm.current.z,

@@ -23,13 +23,16 @@
  *     1–16 km  inside the cloud band                             cloudShared CLOUD_INNER/OUTER_ALTITUDE_KM
  *
  * ── Determinism ─────────────────────────────────────────────────────────────
- * This works because the sim has no time: planet positions are static constants
- * from `sol.json`, sun direction is pure geometry, nothing rotates, and
- * `SHIP_MAX_SPEED_KMPS` is 0 so a warped ship does not drift. The only moving
- * parts are the temporal accumulators, which the runner waits out.
+ * This works because sim time is FROZEN by default (`simRateAtom` = 0): body
+ * positions come from the ephemeris at a fixed epoch, sun direction is pure
+ * geometry, and `SHIP_MAX_SPEED_KMPS` is 0 so a warped ship does not drift. The
+ * only moving parts are the temporal accumulators, which the runner waits out.
+ * ⚠ Comparing runs across different `simEpochMsAtom` values is NOT like for
+ * like — phase angle and sub-solar longitude both change.
  *
- * Positions are derived, never hard-coded: `altitudeKm` above a body from
- * `sol.json`, along a fixed approach direction, looking at the body's centre.
+ * Positions are derived, never hard-coded: `altitudeKm` above a body's LIVE
+ * centre, along a fixed approach direction, looking at that centre. Every
+ * resolver reads `positionKm` at call time for that reason — do not hoist.
  */
 
 import { Matrix4, Quaternion, Vector3 } from "three";
@@ -53,6 +56,12 @@ function body(id: string): CelestialBodyDef {
  * that would under-report cost.
  */
 const APPROACH_DIR = (() => {
+  // ⚠ From `startingOffsetKm`, the FIXED authored spawn geometry — not from
+  // `startingPositionKm − earth.positionKm`. Both of those are now live arrays
+  // rewritten by the ephemeris, and this runs at module load, so differencing
+  // them would depend on whether `celestialConstants` had solved yet.
+  const off = solSystem.startingOffsetKm as [number, number, number] | undefined;
+  if (off) return new Vector3(off[0], off[1], off[2]).normalize();
   const earth = body("earth");
   const start = solSystem.startingPositionKm as [number, number, number];
   return new Vector3(
@@ -99,7 +108,11 @@ export const SCENARIOS: readonly Scenario[] = [
     id: "belt",
     what: "Asteroid streaming active, no atmosphere — CPU-side chunk cost",
     bodyId: null,
-    // The default spawn point, which sits inside the origin belt.
+    // The default spawn point, which sits inside the origin belt. ⚠ A REFERENCE
+    // to the live array, not a copy: the spawn is anchored to Earth
+    // (`startingBody`/`startingOffsetKm`), so this tracks the belt as Earth
+    // orbits. Copying it here is what sent the belt warp to a 2024-epoch
+    // position after the ephemeris landed.
     positionKm: solSystem.startingPositionKm as [number, number, number],
     lookAtBodyId: "earth",
   },

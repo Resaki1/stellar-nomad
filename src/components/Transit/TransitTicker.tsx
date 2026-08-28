@@ -96,9 +96,14 @@ function slerpDirection(from: Vector3, to: Vector3, t: number, out: Vector3) {
 
 type BrakeCollider = {
   id: string;
-  x: number;
-  y: number;
-  z: number;
+  /**
+   * The body's LIVE position array (`positionKm`), held by reference.
+   *
+   * ⚠ Not `x/y/z` scalars: `sim/ephemeris.ts` rewrites `positionKm` in place, so
+   * a snapshot would auto-brake against launch-day positions. Reading `pos[0]`
+   * in the hot path is one index; a stale standoff is a collision.
+   */
+  pos: readonly number[];
   /** Body radius + safety standoff (km). */
   safeR: number;
 };
@@ -111,6 +116,11 @@ export default function TransitTicker() {
   const brakeColliders = useMemo<BrakeCollider[]>(() => {
     const system = store.get(systemConfigAtom);
     const bodies = system.celestialBodies ?? [];
+    // ⚠ `pos` holds the LIVE array, not copied scalars. Bodies move now
+    // (sim/ephemeris.ts rewrites `positionKm` in place), so an `x/y/z` snapshot
+    // taken here would auto-brake against where planets were on launch day —
+    // the same defect that made the ship crash into empty space. Reading
+    // `pos[0]` in the hot path is one index; a stale standoff is a collision.
     return bodies.map((b) => {
       const standoff = Math.max(
         b.radiusKm * AUTO_BRAKE_STANDOFF_FRAC,
@@ -118,13 +128,10 @@ export default function TransitTicker() {
       );
       return {
         id: b.id,
-        x: b.positionKm[0],
-        y: b.positionKm[1],
-        z: b.positionKm[2],
+        pos: b.positionKm,
         safeR: b.radiusKm + standoff,
       };
     });
-    // systemConfigAtom is effectively static in the current codebase.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -338,9 +345,9 @@ export default function TransitTicker() {
             const c = brakeColliders[i];
             if (c.id === targetBodyId) continue; // autopilot handles its target
 
-            const tx = c.x - sx;
-            const ty = c.y - sy;
-            const tz = c.z - sz;
+            const tx = c.pos[0] - sx;
+            const ty = c.pos[1] - sy;
+            const tz = c.pos[2] - sz;
             const along = tx * vdx + ty * vdy + tz * vdz;
             if (along <= 0) continue; // behind the ship
 

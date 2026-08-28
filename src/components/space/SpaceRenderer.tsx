@@ -25,7 +25,8 @@ import {
   NeutralToneMapping,
   NoToneMapping,
 } from "three";
-import { useAtomValue } from "jotai/react";
+import { useAtomValue, useSetAtom } from "jotai/react";
+import { advanceSimTimeAtom } from "@/store/simTime";
 import { settingsAtom } from "@/store/store";
 import {
   getActiveCloudPipeline,
@@ -543,6 +544,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     () => new RenderPipeline(gl as unknown as WebGPURenderer),
     [gl]
   );
+  // ONE tick site for sim time — see the call in the frame loop below.
+  const advanceSimTime = useSetAtom(advanceSimTimeAtom);
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
@@ -721,6 +724,12 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Must be the first thing in the frame: every radiance source multiplies by
     // it, and a frame where some sources used the old value is an internally
     // inconsistent image. See photometry.ts's setPreExposure note.
+    // ── Advance sim time (ephemeris) ────────────────────────────────────────
+    // ONE tick site, here, because every `CelestialBody` READS the clock and
+    // exactly one thing may advance it. No-op while `simRateAtom` is 0, which is
+    // the default — see store/simTime.ts.
+    advanceSimTime(delta);
+
     updatePreExposureForFrame();
     // Plain (non-TSL) emissive materials can't read a uniform — rescale them from
     // their authored colours now that this frame's factor is chosen.
