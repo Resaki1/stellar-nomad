@@ -274,6 +274,9 @@ function buildEarthFragmentNode(opts: {
   uSunIlluminance: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   eclipseU: any;
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any;
    
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -286,7 +289,7 @@ function buildEarthFragmentNode(opts: {
 }) {
   const {
     texDay, texClouds, texNormal, texSpec,
-    uSunRel, uSunIlluminance, eclipseU, uSunRadius, transmittanceLUT,
+    uSunRel, uSunIlluminance, eclipseU, skyAmbient, uSunRadius, transmittanceLUT,
   } = opts;
   const detailed = texNormal !== null;
 
@@ -669,7 +672,13 @@ function buildEarthFragmentNode(opts: {
       // curved bands exonerate it. No derivative, so no per-triangle Jacobian.
       return vec4(vec3(fract(term.mul(TERM_DEBUG_BANDS))), 1.0);
     }
-    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
+    // ⚠ `null` for the star-visibility argument: Earth is `ownEclipse: true` and has
+    // already folded `eclipseAmount` into `nDotL` and `sunVis` above, because its
+    // coverage also has to gate the ocean specular and the terminator band. Passing
+    // it again here would SQUARE the shadow.
+    // 🔑 `dayCol`, not `col`, as the diffuse albedo: `col` carries nDotL, the sun
+    // transmittance, the glint and the fresnel. The sky lights the DIFFUSE surface.
+    return vec4(surfaceRadiance(col, uSunIlluminance, dayCol, skyAmbient, null), 1.0);
   })();
 }
 
@@ -859,7 +868,7 @@ export const earthConfig: CelestialBodyConfig = {
     );
   },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, eclipseU, tier }) => {
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, tier }) => {
     return buildEarthFragmentNode({
       texDay: textures.day,
       texClouds: textures.clouds,
@@ -868,6 +877,7 @@ export const earthConfig: CelestialBodyConfig = {
       uSunRel,
       uSunIlluminance,
       eclipseU,
+      skyAmbient,
       uSunRadius: uniforms.uSunRadius,
       // Phase 3b: bind the shared transmittance LUT (baked by SpaceRenderer's
       // atmosphere pass) so the surface shader reads per-pixel sun colour.

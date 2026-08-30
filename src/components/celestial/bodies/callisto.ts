@@ -21,6 +21,6 @@ export const callistoConfig: CelestialBodyConfig = {
   far: { albedo: new THREE.Color(0.30, 0.28, 0.25) },
   stellarPoint: { geometricAlbedo: 0.22, color: [0.68, 0.65, 0.60] },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
-    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, 0.10),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility }) =>
+    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, skyAmbient, starVisibility, 0.10),
 };

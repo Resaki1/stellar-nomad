@@ -168,6 +168,7 @@ export function farCloudLit({
   sunCos,
   daylight,
   selfShadow,
+  skyIrradiance,
 }: {
   sunIlluminance: Node;
   sunT: Node;
@@ -175,6 +176,15 @@ export function farCloudLit({
   sunCos: Node;
   daylight: Node;
   selfShadow: Node;
+  /**
+   * Phase 9: real sky IRRADIANCE at the cloud top, game units, pre-exposed —
+   * starlight + the Milky Way, from the shared SH probe. `null` to omit.
+   *
+   * ⚠⚠ NOT the same thing as `skyColor`. `skyColor` is a DAYTIME blue-sky proxy
+   * and is correctly gated to zero by `daylight`; this one must NOT be, because at
+   * night it is the only light there is.
+   */
+  skyIrradiance?: Node | null;
 }): Node {
   const shadow = mix(float(FAR_SHADOW_FLOOR), float(1), clamp(selfShadow, 0, 1));
   const direct = sunIlluminance
@@ -183,7 +193,27 @@ export function farCloudLit({
     .mul(shadow)
     .mul(clamp(sunCos, 0, 1));
   const ambient = skyColor.mul(float(CLOUD_SKY_SCALE)).mul(float(FAR_AMBIENT_FRAC));
-  return direct.add(ambient).mul(clamp(daylight, 0, 1));
+  const day = direct.add(ambient).mul(clamp(daylight, 0, 1));
+  if (!skyIrradiance) return day;
+  // ── Phase 9: the NIGHT term, deliberately OUTSIDE the `daylight` gate ──────
+  // 🔑🔑 `clamp(daylight, 0, 1)` — a smoothstep on the sun's elevation — multiplied
+  // EVERYTHING here to exactly zero on the night side. So the cloud shell drew
+  // `vec4(0, alpha)` over the ground and, being `transparent`, ATTENUATED the
+  // sky-lit surface behind it by (1 − alpha): a thick deck is alpha ≈ 0.998, i.e.
+  // it removed ~600× of the only light the night side had. Clouds cover ~67% of
+  // Earth, so "the night side is completely black" was mostly this.
+  //
+  // ⚠ Starlight does not switch off at night — it IS the night. Gating this by
+  // `daylight` would reproduce the bug exactly.
+  //
+  // Convention matched to `CLOUD_SUN_SCALE = albedo/π = 0.223` (measured, above),
+  // NOT to `surfaceRadiance`'s `×3/2/π`: a cloud's 0.70 is already a Lambert
+  // reflectance, not a geometric albedo, so the 3/2 would double-count it.
+  //
+  // No meaningful double count with `ambient`: that term is the daytime sky and is
+  // zero wherever this one matters. On the DAY side this adds ~1.2e-8 game units
+  // to a cloud at ~0.5 — 2.4e-8 relative, i.e. nothing.
+  return day.add(skyIrradiance.mul(uCloudSunScale));
 }
 
 // ── Coverage → apparent opacity ──

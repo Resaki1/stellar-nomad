@@ -1713,6 +1713,7 @@ function buildCloudShellMesh({
   uSunRel,
   uShellOpacity,
   uSunIlluminance,
+  skyAmbient,
 }: {
   tier: "near" | "mid";
   weatherMap: THREE.Texture;
@@ -1726,6 +1727,13 @@ function buildCloudShellMesh({
   uSunRel: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uShellOpacity: any;
+  /**
+   * Phase 9: pre-exposed sky irradiance at this fragment (game units). Without it
+   * the shell is BLACK on the night side and, being `transparent`, hides the
+   * sky-lit ground behind it — see the note in `farCloudLit`.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any;
   /** Per-frame sun illuminance (game units) from the atmosphere record. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any;
@@ -1887,6 +1895,7 @@ function buildCloudShellMesh({
       sunCos,
       daylight,
       selfShadow,
+      skyIrradiance: skyAmbient,
     });
     // Premultiplied output (rgb × alpha, alpha).
     return vec4(lit.mul(alpha), alpha);
@@ -1960,6 +1969,7 @@ export function buildEarthClouds(ctx: ExtraMeshContext): ExtraMeshDef[] {
     uSunRel: ctx.uSunRel,
     uShellOpacity: ctx.uniforms.uShellOpacity,
     uSunIlluminance: ctx.uniforms.uSunIlluminance,
+    skyAmbient: ctx.skyAmbient,
   });
 
   // Mid (and any non-near) tier: ONLY the shell. The volumetric marcher + its

@@ -96,6 +96,17 @@ export function useFarLOD(
   /** D34: star-disc visibility at the body's centre, [0,1]. See the note below. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uEclipseVis: any,
+  /**
+   * Phase 9: the DIRECTION-AVERAGED sky irradiance, pre-exposed.
+   *
+   * ⚠ The average (SH band 0), not `skyIrradianceNode(n)` — for exactly the reason
+   * `uEclipseVis` is a centre scalar here: `normalWorld` on this tier is the QUAD's
+   * normal, not the sphere's, so a per-normal evaluation would shade the billboard
+   * as if it were a flat card facing the camera. A body a few pixels across has no
+   * resolvable hemispherical gradient anyway.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbientAverage: any,
 ) {
   const sizeMultiplier = farConfig.sizeMultiplier ?? 2.1;
 
@@ -140,11 +151,13 @@ export function useFarLOD(
     // `illum × getPreExposure() × starColour`), so this single change fixes D04 and
     // that missed half of D25 together — and it is why the `.mul(uPreExposure)` had to
     // come OUT of the default fragment: keeping both would double-count it.
+    const farAlbedoColor = derivedFarAlbedo(bodyId, farConfig.albedo);
+    const farAlbedo = vec3(farAlbedoColor.r, farAlbedoColor.g, farAlbedoColor.b);
     const reflectance = buildFrag({
       // ── D09: luminance AND hue derived from bodyPhotometry ────────────────
       // Wrapped for the same reason `surfaceRadiance` below is wrapped — see
       // `derivedFarAlbedo`. Without it this tier carried an 8.7× per-body spread.
-      albedo: derivedFarAlbedo(bodyId, farConfig.albedo),
+      albedo: farAlbedoColor,
       uSpR,
       uSpU,
       uSpF,
@@ -169,10 +182,15 @@ export function useFarLOD(
       // not use the same code anyway: `positionLocal` here is a QUAD, not a
       // sphere, so `normalize(positionLocal) · radius` would be meaningless.
       // ⇒ one uniform, computed by the same circle-overlap maths on the CPU.
+      // ⚠ The ambient half is NOT multiplied by `uEclipseVis`: an eclipse blocks
+      // the STAR, not the sky. A fully eclipsed body still sees the whole star
+      // field, which is precisely why it should not go black.
       return vec4(
-        surfaceRadiance(refl.xyz, uSunIlluminance)
-          .mul(uFarFade)
-          .mul(uEclipseVis),
+        surfaceRadiance(refl.xyz, uSunIlluminance, null, null, uEclipseVis)
+          .add(
+            surfaceRadiance(vec3(0), uSunIlluminance, farAlbedo, skyAmbientAverage, null),
+          )
+          .mul(uFarFade),
         refl.w,
       );
     })();

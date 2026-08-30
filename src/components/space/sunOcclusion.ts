@@ -203,17 +203,30 @@ let _lastVisibility = 1;
  * transiting the same star simultaneously is a curiosity, and the error is
  * conservative: slightly too dark).
  */
-export function sunVisibility(
+/**
+ * Fraction of the star's disc visible from `observerKm`, WITHOUT recording
+ * anything.
+ *
+ * ⚠⚠ `sunVisibility()` below is the same computation but ALSO writes
+ * `_lastVisibility` / `_lastDetails`, which `sunOcclusionStatus()` and
+ * `__lum.sun()` read back as "what is shadowing the SHIP". A second caller using
+ * it for a different observer would silently overwrite that — the ship's
+ * diagnostic would report whatever body was queried last. Hence this split:
+ * `planetshine.ts` asks "is this EMITTER in shadow?" many times a frame and must
+ * not disturb the ship's record.
+ *
+ * 🔑 Extracted rather than duplicated. D34 shipped a bug because the same
+ * disc-overlap maths existed twice and the copies diverged; `sunVisibility`
+ * delegates here so there is exactly one implementation.
+ */
+export function starVisibilityAt(
   observerKm: THREE.Vector3,
   starPosKm: readonly [number, number, number],
   starRadiusKm: number,
   skipId: string | null = null,
+  details: SunOcclusionDetail[] | null = null,
 ): number {
-  _lastDetails = [];
-  if (occluders.size === 0) {
-    _lastVisibility = 1;
-    return 1;
-  }
+  if (occluders.size === 0) return 1;
 
   _toStar.set(
     starPosKm[0] - observerKm.x,
@@ -221,16 +234,12 @@ export function sunVisibility(
     starPosKm[2] - observerKm.z,
   );
   const distStar = _toStar.length();
-  if (distStar < 1e-6) {
-    _lastVisibility = 1;
-    return 1;
-  }
+  if (distStar < 1e-6) return 1;
   const angStar = Math.asin(Math.min(1, starRadiusKm / distStar));
 
   let visibility = 1;
   occluders.forEach((occ) => {
     if (occ.id === skipId) return;
-
     _toOcc.copy(occ.centerKm).sub(observerKm);
     // Cheap rejections before any trig, in order of how much they cull:
     //  • behind us relative to the star (half the sky, most frames)
@@ -248,7 +257,7 @@ export function sunVisibility(
     if (covered <= 0) return;
 
     visibility *= 1 - covered;
-    _lastDetails.push({
+    details?.push({
       id: occ.id,
       angOccDeg: (angOcc * 180) / Math.PI,
       angSepDeg: (angSep * 180) / Math.PI,
@@ -256,7 +265,23 @@ export function sunVisibility(
       distKm: distOcc,
     });
   });
+  return visibility;
+}
 
+export function sunVisibility(
+  observerKm: THREE.Vector3,
+  starPosKm: readonly [number, number, number],
+  starRadiusKm: number,
+  skipId: string | null = null,
+): number {
+  _lastDetails = [];
+  const visibility = starVisibilityAt(
+    observerKm,
+    starPosKm,
+    starRadiusKm,
+    skipId,
+    _lastDetails,
+  );
   _lastVisibility = visibility;
   return visibility;
 }

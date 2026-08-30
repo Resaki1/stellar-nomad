@@ -21,6 +21,6 @@ export const ganymedeConfig: CelestialBodyConfig = {
   far: { albedo: new THREE.Color(0.45, 0.43, 0.40) },
   stellarPoint: { geometricAlbedo: 0.43, color: [0.78, 0.76, 0.72] },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
-    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, 0.10),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility }) =>
+    buildRockyFragmentNode(textures.color, uSunRel, uSunIlluminance, skyAmbient, starVisibility, 0.10),
 };

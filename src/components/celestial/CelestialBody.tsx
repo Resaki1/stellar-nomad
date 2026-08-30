@@ -6,7 +6,7 @@ import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { useAtomValue } from "jotai";
 import { NodeMaterial } from "three/webgpu";
-import { Fn, uniform, vec4 } from "three/tsl";
+import { Fn, float, normalWorld, normalize, uniform, vec4 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import StellarPoint from "../space/StellarPoint";
 import { kmToScaledUnits, toScaledUnitsKm } from "@/sim/units";
@@ -42,6 +42,18 @@ import {
   updateEclipseUniforms,
   type EclipseUniforms,
 } from "./bodyEclipse";
+import {
+  createSkyShUniforms,
+  skyIrradianceAverageNode,
+  skyIrradianceNode,
+  updateSkyShUniforms,
+} from "@/components/space/skyIrradiance";
+import {
+  createShineUniforms,
+  shineIrradianceAverageNode,
+  shineIrradianceNode,
+  updateShineUniforms,
+} from "./planetshine";
 import type { CelestialBodyConfig, ExtraMeshDef } from "./types";
 
 // ── Shared scratch vectors (safe: useFrame is sequential) ──
@@ -99,6 +111,11 @@ type TexturedLODsProps = {
   midReadyState: { current: number };
   /** D34 eclipse uniforms, owned by the parent. */
   eclipseU: EclipseUniforms;
+  /** Pre-exposed sky irradiance node at the fragment's normal (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any;
 };
 
 function TexturedLODs({
@@ -116,6 +133,8 @@ function TexturedLODs({
   nearReadyState,
   midReadyState,
   eclipseU,
+  skyAmbient,
+  starVisibility,
 }: TexturedLODsProps) {
   const { camera, gl } = useThree((s) => ({ camera: s.camera, gl: s.gl }));
 
@@ -210,16 +229,18 @@ function TexturedLODs({
         // `.toVar()` so the body's subgraph — including any `Discard` — is emitted
         // once rather than duplicated by reading `.xyz` and `.w` separately.
         const c = vec4(node).toVar();
-        // ── D34: per-pixel eclipse ──────────────────────────────────────────
-        // ⚠ This multiplies the WHOLE fragment, emissive terms included. For an
-        // eclipse that is harmless and arguably right: city lights are gated by
-        // their own `nightMask` (sun-above-horizon), so inside a DAYTIME
-        // solar-eclipse spot they are already off. A body whose emissive should
-        // survive being eclipsed would need the multiply moved inside its
-        // shader, as Earth does — hence `ownEclipse`.
-        const lit = ownEclipse
-          ? c.xyz
-          : c.xyz.mul(eclipseVisibilityNode(eclipseU));
+        // ── D34: the eclipse is NO LONGER APPLIED HERE ──────────────────────
+        // ⚠⚠ It used to be `c.xyz.mul(eclipseVisibilityNode(eclipseU))` — a
+        // multiply on the FINISHED fragment. That was defensible while sunlight
+        // was the only term, but Phase 9 added a sky-light term, and multiplying
+        // the whole fragment would eclipse the SKY too: a body inside an umbra
+        // would still render black however well the night side is lit. **An
+        // eclipse blocks the star, not the star field.**
+        // ⇒ the factor now goes to `surfaceRadiance()`'s `directVisibility`
+        // argument, which applies it to the direct term alone. Every body module
+        // passes `starVisibility` from its fragment context; it is a REQUIRED
+        // argument, so a module that drops it is a compile error.
+        const lit = c.xyz;
         return vec4(lit.mul(uAlbedoScale), c.w);
       })(),
     [uAlbedoScale, eclipseU, ownEclipse],
@@ -230,37 +251,37 @@ function TexturedLODs({
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.fragmentNode = wrapAlbedo(
-      config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" }),
+      config.buildFragmentNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "near" }),
     );
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" });
+      m.positionNode = config.buildPositionNode({ textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "near" });
     }
     return m;
-  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU]);
+  }, [nearTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU, skyAmbient, starVisibility]);
 
   const midMat = useMemo(() => {
     if (!midTex) return null;
     const m = new NodeMaterial();
     m.side = THREE.FrontSide;
     m.fragmentNode = wrapAlbedo(
-      config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" }),
+      config.buildFragmentNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "mid" }),
     );
     if (config.buildPositionNode) {
-      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" });
+      m.positionNode = config.buildPositionNode({ textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "mid" });
     }
     return m;
-  }, [midTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU]);
+  }, [midTex, uSunRel, uSunIlluminance, uniforms, config, wrapAlbedo, eclipseU, skyAmbient, starVisibility]);
 
   // ── Extra meshes (Saturn ring, etc.) ──
   const nearExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !nearTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "near" });
-  }, [config, scaledRadius, nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU]);
+    return config.extraMeshes({ scaledRadius, textures: nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "near" });
+  }, [config, scaledRadius, nearTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility]);
 
   const midExtras = useMemo((): ExtraMeshDef[] => {
     if (!config.extraMeshes || !midTex) return [];
-    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, tier: "mid" });
-  }, [config, scaledRadius, midTex, uSunRel, uSunIlluminance, uniforms, eclipseU]);
+    return config.extraMeshes({ scaledRadius, textures: midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility, tier: "mid" });
+  }, [config, scaledRadius, midTex, uSunRel, uSunIlluminance, uniforms, eclipseU, skyAmbient, starVisibility]);
 
   // Allow partial rendering: tiers load independently as they become ready.
   // Far billboard (always available) covers until the first textured tier loads.
@@ -404,6 +425,42 @@ function CelestialBody({ config }: CelestialBodyProps) {
   // `uEclipseVis` is the same maths evaluated once at the body's centre for the
   // far/point tiers, which are too few pixels to resolve a shadow edge.
   const eclipseU = useMemo(() => createEclipseUniforms(), []);
+  // Phase 9 night side. Owned here for the same reason `eclipseU` and
+  // `uAlbedoScale` are: 13 body modules, and a rule each must remember is a rule
+  // the 14th forgets. The SH itself is ONE system-wide probe — the star catalogue
+  // summed analytically plus the Milky Way panorama projected (S4/D29) — so this
+  // is per-body plumbing around shared, already-calibrated data.
+  const skyU = useMemo(() => createSkyShUniforms(), []);
+  // Evaluated at the fragment's own world normal, so a sphere gets a real
+  // hemispherical gradient rather than a flat fill. ⚠ `normalWorld` is in world
+  // (ecliptic) axes, which is the frame the SH was accumulated in — the axes half
+  // of the "same frame" question that D34g got wrong by checking only the origin.
+  // Phase 9 step 2: planetshine. ⚠ Owned here alongside `skyU` and `eclipseU`,
+  // and filled from the SAME occluder registry the eclipse uses — this is the
+  // eclipse problem inverted, so it is a second consumer of existing machinery.
+  const shineU = useMemo(() => createShineUniforms(), []);
+  // 🔑 ADDED INTO `skyAmbient` rather than threaded as a 6th argument: all 14
+  // `surfaceRadiance()` sites already consume "ambientIrradiance", so enriching
+  // what is IN it reaches every body, the cloud shell and the far tier with no
+  // further call-site churn. Both terms are irradiance in game units, pre-exposed
+  // at their source, so the sum is well-formed.
+  const skyAmbient = useMemo(
+    () =>
+      skyIrradianceNode(skyU, normalize(normalWorld)).add(
+        shineIrradianceNode(shineU, normalize(normalWorld), float(config.radiusKm)),
+      ),
+    [skyU, shineU, config.radiusKm],
+  );
+  const skyAmbientAverage = useMemo(
+    () => skyIrradianceAverageNode(skyU).add(shineIrradianceAverageNode(shineU)),
+    [skyU, shineU],
+  );
+  // D34 star-disc visibility, per pixel. `null` for a body that folds it in
+  // itself (`ownEclipse`), so it cannot be applied twice and square the shadow.
+  const starVisibility = useMemo(
+    () => (config.ownEclipse ? null : eclipseVisibilityNode(eclipseU)),
+    [config.ownEclipse, eclipseU],
+  );
   const uEclipseVis = useMemo(() => uniform(1), []);
 
   const sunPositionKm = config.sunPositionKm ?? STAR_POSITION_KM;
@@ -506,6 +563,7 @@ function CelestialBody({ config }: CelestialBodyProps) {
     config.far,
     config.id,
     uEclipseVis,
+    skyAmbientAverage,
   );
 
   // ── Refs for LOD meshes ──
@@ -636,6 +694,26 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // update in mount order, so a reader running first would see one stale
     // frame — harmless for a shadow that moves slowly, but the ordering is free
     // here and a stale eclipse would be a miserable thing to chase.
+    // ⚠⚠ PRE-EXPOSED AT THE COPY. `uSunIlluminance` is pre-exposed (D25), so a sky
+    // term that was not would be wrong by the exposure factor — 10⁴–10⁶× in a dark
+    // scene, which is the D09c/D28 trap and precisely the scene this term exists
+    // for. Cheap: 9 vector copies per body per frame, and the SH is static unless
+    // the star field changes.
+    updateSkyShUniforms(skyU, getPreExposure());
+    // ⚠ AFTER `setSunOccluder` below would be too late — but the registry is
+    // populated by every body's PREVIOUS frame, and planetshine geometry moves
+    // by metres per frame, so a one-frame-stale emitter set is invisible. The
+    // eclipse cannot afford that (its shadow is ~200 km wide); this can.
+    updateShineUniforms(
+      shineU,
+      config.id,
+      positionKm,
+      sunPositionKm,
+      STAR_LUMINOSITY_SUN,
+      getPreExposure(),
+      STAR_RADIUS_KM,
+    );
+
     uEclipseVis.value = updateEclipseUniforms(
       eclipseU,
       config.id,
@@ -795,6 +873,8 @@ function CelestialBody({ config }: CelestialBodyProps) {
             nearReadyState={nearReadyState}
             midReadyState={midReadyState}
             eclipseU={eclipseU}
+            skyAmbient={skyAmbient}
+            starVisibility={starVisibility}
           />
         </group>
       ) : (
@@ -813,6 +893,8 @@ function CelestialBody({ config }: CelestialBodyProps) {
           nearReadyState={nearReadyState}
           midReadyState={midReadyState}
           eclipseU={eclipseU}
+          skyAmbient={skyAmbient}
+          starVisibility={starVisibility}
         />
       )}
       <mesh

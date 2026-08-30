@@ -45,6 +45,12 @@ function buildNeptuneFragmentNode(
   uSunRel: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any,
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any,
+  /** D34 star-disc visibility — scales the DIRECT term only (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -77,7 +83,7 @@ function buildNeptuneFragmentNode(
     // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
     // Without this a body's brightness ignores its distance to the star —
     // measured 12.9× too bright on Neptune (defect D02/D03b).
-    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
+    return vec4(surfaceRadiance(col, uSunIlluminance, albedo, skyAmbient, starVisibility), 1.0);
   })();
 }
 
@@ -123,6 +129,6 @@ export const neptuneConfig: CelestialBodyConfig = {
   far: { albedo: NEPTUNE_ALBEDO, buildFragment: neptuneBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.442, color: [0.42, 0.52, 0.90] },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
-    buildNeptuneFragmentNode(textures.color, uSunRel, uSunIlluminance),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility }) =>
+    buildNeptuneFragmentNode(textures.color, uSunRel, uSunIlluminance, skyAmbient, starVisibility),
 };

@@ -128,6 +128,32 @@ export type FragmentNodeContext = {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   eclipseU: any;
+  /**
+   * Sky irradiance arriving at THIS fragment, game units, already PRE-EXPOSED —
+   * the night-side term (Phase 9). Owned and evaluated by `CelestialBody` from the
+   * shared SH-L2 sky probe (`skyIrradiance.ts`), so every body gets the same
+   * calibrated sky with no per-body data.
+   *
+   * ⚠ Pass it, with the body's raw DIFFUSE albedo, as the 3rd and 4th arguments of
+   * `surfaceRadiance()`. Both are REQUIRED there so a module that forgets the
+   * night side is a COMPILE ERROR rather than a body that renders pure black.
+   *
+   * 🔑 Free for procedurally generated bodies, and for Titan/Pluto whenever they
+   * are added: the sky is a property of the SYSTEM, not of the body.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any;
+  /**
+   * Fraction of the STAR's disc visible at this fragment (D34), as a node.
+   *
+   * ⚠ Pass it as `surfaceRadiance()`'s 5th argument — it must scale the DIRECT
+   * term only. `CelestialBody` no longer multiplies the finished fragment by it,
+   * because that would eclipse the sky-light term too and put an eclipsed body
+   * back at pure black (defect D34c).
+   * ⚠ `null` for a body with `ownEclipse: true`, which folds it in itself.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any;
   tier: "near" | "mid";
 };
 
@@ -158,6 +184,32 @@ export type ExtraMeshContext = {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   eclipseU: any;
+  /**
+   * Sky irradiance arriving at THIS fragment, game units, already PRE-EXPOSED —
+   * the night-side term (Phase 9). Owned and evaluated by `CelestialBody` from the
+   * shared SH-L2 sky probe (`skyIrradiance.ts`), so every body gets the same
+   * calibrated sky with no per-body data.
+   *
+   * ⚠ Pass it, with the body's raw DIFFUSE albedo, as the 3rd and 4th arguments of
+   * `surfaceRadiance()`. Both are REQUIRED there so a module that forgets the
+   * night side is a COMPILE ERROR rather than a body that renders pure black.
+   *
+   * 🔑 Free for procedurally generated bodies, and for Titan/Pluto whenever they
+   * are added: the sky is a property of the SYSTEM, not of the body.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any;
+  /**
+   * Fraction of the STAR's disc visible at this fragment (D34), as a node.
+   *
+   * ⚠ Pass it as `surfaceRadiance()`'s 5th argument — it must scale the DIRECT
+   * term only. `CelestialBody` no longer multiplies the finished fragment by it,
+   * because that would eclipse the sky-light term too and put an eclipsed body
+   * back at pure black (defect D34c).
+   * ⚠ `null` for a body with `ownEclipse: true`, which folds it in itself.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any;
   tier: "near" | "mid";
 };
 

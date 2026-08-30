@@ -52,6 +52,12 @@ function buildMarsFragmentNode(
   uSunRel: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any,
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any,
+  /** D34 star-disc visibility — scales the DIRECT term only (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -85,7 +91,7 @@ function buildMarsFragmentNode(
     // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
     // Without this a body's brightness ignores its distance to the star —
     // measured 12.9× too bright on Neptune (defect D02/D03b).
-    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
+    return vec4(surfaceRadiance(col, uSunIlluminance, albedo, skyAmbient, starVisibility), 1.0);
   })();
 }
 
@@ -144,6 +150,6 @@ export const marsConfig: CelestialBodyConfig = {
   far: { albedo: MARS_ALBEDO, buildFragment: marsBillboardFragment },
   stellarPoint: { geometricAlbedo: 0.170, color: [1.0, 0.36, 0.20] },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
-    buildMarsFragmentNode(textures.color, uSunRel, uSunIlluminance),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility }) =>
+    buildMarsFragmentNode(textures.color, uSunRel, uSunIlluminance, skyAmbient, starVisibility),
 };

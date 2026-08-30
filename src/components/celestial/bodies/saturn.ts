@@ -93,6 +93,12 @@ function buildRingFragmentNode(
   uPlanetRadius: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any,
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any,
+  /** D34 star-disc visibility — scales the DIRECT term only (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -134,7 +140,7 @@ function buildRingFragmentNode(
     // Rings reflect sunlight like any other surface — same reflectance → radiance
     // conversion. Ring photometry proper (optical depth, opposition effect) is
     // out of scope here; see docs/LIGHTING_PLAN.md §3.6.
-    return vec4(surfaceRadiance(col, uSunIlluminance), alpha);
+    return vec4(surfaceRadiance(col, uSunIlluminance, albedo, skyAmbient, starVisibility), alpha);
   })();
 }
 
@@ -148,6 +154,12 @@ function buildSaturnFragmentNode(
   uSunRel: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any,
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any,
+  /** D34 star-disc visibility — scales the DIRECT term only (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -180,7 +192,7 @@ function buildSaturnFragmentNode(
     // Reflectance → RADIANCE: × sunIlluminance/π (docs/LIGHTING_PLAN.md §3.6).
     // Without this a body's brightness ignores its distance to the star —
     // measured 12.9× too bright on Neptune (defect D02/D03b).
-    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
+    return vec4(surfaceRadiance(col, uSunIlluminance, albedo, skyAmbient, starVisibility), 1.0);
   })();
 }
 
@@ -261,7 +273,7 @@ export const saturnConfig: CelestialBodyConfig = {
     uPlanetRadius: uniform(kmToScaledUnits(SATURN_RADIUS_KM)),
   }),
 
-  extraMeshes: ({ scaledRadius, textures, uSunRel, uSunIlluminance, uniforms, tier }) => {
+  extraMeshes: ({ scaledRadius, textures, uSunRel, uSunIlluminance, uniforms, skyAmbient, starVisibility, tier }) => {
     const innerRing = kmToScaledUnits(RING_INNER_RADIUS_KM);
     const outerRing = kmToScaledUnits(RING_OUTER_RADIUS_KM);
     const ringGeo = createRingGeometry(innerRing, outerRing, tier === "near" ? 128 : 64);
@@ -270,11 +282,11 @@ export const saturnConfig: CelestialBodyConfig = {
     ringMat.side = THREE.DoubleSide;
     ringMat.transparent = true;
     ringMat.depthWrite = false;
-    ringMat.fragmentNode = buildRingFragmentNode(textures.ring, uSunRel, uniforms.uPlanetRadius, uSunIlluminance);
+    ringMat.fragmentNode = buildRingFragmentNode(textures.ring, uSunRel, uniforms.uPlanetRadius, uSunIlluminance, skyAmbient, starVisibility);
 
     return [{ key: `ring-${tier}`, geometry: ringGeo, material: ringMat, tier }];
   },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance }) =>
-    buildSaturnFragmentNode(textures.color, uSunRel, uSunIlluminance),
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility }) =>
+    buildSaturnFragmentNode(textures.color, uSunRel, uSunIlluminance, skyAmbient, starVisibility),
 };

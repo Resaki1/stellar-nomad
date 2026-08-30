@@ -27,6 +27,11 @@ import {
   STAR_LUMINOSITY_SUN,
   STAR_RADIUS_KM,
 } from "@/sim/celestialConstants";
+import {
+  publishHullShine,
+  shineLightsAt,
+  type ShineLight,
+} from "@/components/celestial/planetshine";
 
 type SunLightProps = {
   sunPositionKm?: [number, number, number];
@@ -47,6 +52,11 @@ let _lastLimb: RefractedLimb | null = null;
 // Direct sunlight actually reaching the hull: base star colour × atmospheric
 // transmittance × geometric eclipse visibility. Drives BOTH lights (see below).
 const _directColor = new THREE.Color();
+const _shineColor = new THREE.Color();
+const _shineLights: ShineLight[] = [
+  { id: "", distKm: 0, dirX: 0, dirY: 0, dirZ: 1, r: 0, g: 0, b: 0 },
+  { id: "", distKm: 0, dirX: 0, dirY: 0, dirZ: 1, r: 0, g: 0, b: 0 },
+];
 const _WHITE = new THREE.Color(1, 1, 1);
 
 // ── Bounce/zodiacal fill, as a FRACTION of the star's illuminance ────────────
@@ -93,6 +103,12 @@ const SunLight = ({
 }: SunLightProps) => {
   const ref = useRef<THREE.DirectionalLight>(null!);
   const fillRef = useRef<THREE.AmbientLight>(null!);
+  // Phase 9 (P9e): planetshine on the HULL. Two lights, because the emitter
+  // ranking falls off a cliff — Jupiter delivers 385,000× the starlight floor to
+  // a ship off Io and the next contributor is a rounding error — but two covers a
+  // ship between a planet and a large moon.
+  const shineARef = useRef<THREE.DirectionalLight>(null!);
+  const shineBRef = useRef<THREE.DirectionalLight>(null!);
   const limbRef = useRef<THREE.DirectionalLight>(null!);
   const worldOrigin = useWorldOrigin();
   // ── Key-light colour: the STAR's blackbody hue, not white (defect D18) ──────
@@ -269,6 +285,64 @@ const SunLight = ({
     limbRef.current.position.copy(_antiSun).negate();
     limbRef.current.visible = limbIntensity > 0;
 
+    // ── P9e: PLANETSHINE ON THE HULL ─────────────────────────────────────────
+    // Physically the same term the planet surfaces got in P9d, and a real one:
+    // Apollo photographed the CSM lit by earthshine, and a ship off Io sits in
+    // ~60 lux of reflected Jupiter (EV100 −6, brighter than a moonlit landscape).
+    //
+    // ⚠⚠ THE SKIP IS THE LOAD-BEARING PART. `AtmosphereSkyLight` already delivers
+    // the DOMINANT atmosphere body's ground-bounce to the hull, as the "ground"
+    // half of its hemisphere light — so adding this on top would count the same
+    // photons twice, and worst exactly where it is largest: low over a day side.
+    // 🔑 Same ownership rule, and the same `getDominantAtmosphereBody()` call,
+    // that `sunVisibility()` above uses for that body's shadow. One owner per
+    // body. ⚠ Conditioned on `lighting.active`: out of atmosphere range the
+    // hemisphere light contributes nothing, so the skip must lift or a ship near
+    // Luna would lose earthshine entirely.
+    // ⚠⚠ `skyIntensity > 0`, NOT `lighting.active`. MEASURED FAILURE from the
+    // first version, which skipped on `active` alone: `_lighting.active` is true
+    // whenever ANY atmosphere body is in LOD range — millions of km — while
+    // `skyIntensity = SKY_AMBIENT_MAX_INTENSITY · densityAtCam · dayFactor` is
+    // zero unless the camera is actually INSIDE that atmosphere on its day side.
+    // So the skip fired essentially everywhere and deleted the term it was meant
+    // to protect. On device: a ship at Luna's dark side lost EARTHSHINE entirely
+    // (17.4 lux → black), and at Io the only surviving emitter was Io itself —
+    // "the light looks like it comes from Io, not Jupiter", which is exactly what
+    // a skipped Jupiter leaves behind.
+    // 🔑 A guard for "someone else already owns this" must test whether that
+    // owner is DELIVERING, not whether it exists.
+    const shineSkip =
+      lighting.active && lighting.skyIntensity > 0
+        ? (getDominantAtmosphereBody()?.id ?? null)
+        : null;
+    const shipPos = worldOrigin.shipPosKm;
+    const shineCount = shineLightsAt(
+      [shipPos.x, shipPos.y, shipPos.z],
+      sunPositionKm,
+      STAR_LUMINOSITY_SUN,
+      shineSkip,
+      _shineLights,
+      STAR_RADIUS_KM,
+    );
+    for (let i = 0; i < 2; i++) {
+      const light = (i === 0 ? shineARef : shineBRef).current;
+      const sl = i < shineCount ? _shineLights[i] : null;
+      // ⚠ Colour NORMALISED, magnitude in `intensity` — the D26h hidden-multiplier
+      // trap. A tinted colour AND a magnitude in the same value cannot be audited.
+      const lum = sl ? 0.2126 * sl.r + 0.7152 * sl.g + 0.0722 * sl.b : 0;
+      if (!sl || lum <= 0) {
+        light.intensity = 0;
+        light.visible = false;
+        continue;
+      }
+      _shineColor.setRGB(sl.r / lum, sl.g / lum, sl.b / lum);
+      light.color.copy(_shineColor);
+      light.intensity = lum * preExp;
+      light.position.set(sl.dirX, sl.dirY, sl.dirZ);
+      light.visible = true;
+    }
+    publishHullShine(_shineLights, shineCount, shineSkip, preExp);
+
     // Both lights carry the same occluded, tinted direct sunlight: the key IS
     // that light, and the fill is that light bounced off the hull. (The fill was
     // previously left at three.js's default white, so it also ignored the star's
@@ -296,6 +370,9 @@ const SunLight = ({
       <ambientLight ref={fillRef} intensity={0} />
       {/* D28 refracted limb light — off until the ship is inside a shadow. */}
       <directionalLight ref={limbRef} intensity={0} visible={false} />
+      {/* P9e planetshine — earthshine on the hull, Jupiter over Io. */}
+      <directionalLight ref={shineARef} intensity={0} visible={false} />
+      <directionalLight ref={shineBRef} intensity={0} visible={false} />
     </>
   );
 };

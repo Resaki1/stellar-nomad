@@ -57,6 +57,7 @@ import {
   float,
   normalize,
   texture as tslTexture,
+  uniform,
   uv,
   vec3,
   vec4,
@@ -395,6 +396,31 @@ function fromHalf(h: number): number {
  * own constants. Used by the gate so it compares against the SHIPPING evaluator
  * rather than a second implementation of it.
  */
+/**
+ * Ramamoorthi-Hanrahan irradiance weights — the ONE copy.
+ *
+ * 🔑 Exported and shared by the CPU evaluator below and the TSL evaluator in
+ * `skyIrradianceNode()`, deliberately: D34 shipped a bug because the same
+ * circle-overlap maths existed twice (a CPU copy and a TSL copy) and the port
+ * silently dropped a branch. Two evaluators are unavoidable here — one lights
+ * the ship on the CPU, one lights planet surfaces on the GPU — but they can at
+ * least not disagree about the numbers.
+ */
+export const SH_IRRADIANCE_W = {
+  /** Band 0 (DC). `sh[0] · W0` is the direction-averaged irradiance. */
+  l0: 0.886227,
+  /** Band 1, ×2 folded in. */
+  l1: 2.0 * 0.511664,
+  /** Band 2 off-diagonal, ×2 folded in. */
+  l2: 2.0 * 0.429043,
+  /** Band 2, the z² term. */
+  l2zz: 0.743125,
+  /** Band 2, the z² constant. */
+  l2c: 0.247708,
+  /** Band 2, the (x²−y²) term. */
+  l2xy: 0.429043,
+} as const;
+
 export function evaluateShIrradiance(
   sh: ShCoefficients,
   nx: number,
@@ -407,14 +433,113 @@ export function evaluateShIrradiance(
     out[1] += c.y * w;
     out[2] += c.z * w;
   };
-  add(sh[0], 0.886227);
-  add(sh[1], 2.0 * 0.511664 * ny);
-  add(sh[2], 2.0 * 0.511664 * nz);
-  add(sh[3], 2.0 * 0.511664 * nx);
-  add(sh[4], 2.0 * 0.429043 * nx * ny);
-  add(sh[5], 2.0 * 0.429043 * ny * nz);
-  add(sh[6], 0.743125 * nz * nz - 0.247708);
-  add(sh[7], 2.0 * 0.429043 * nx * nz);
-  add(sh[8], 0.429043 * (nx * nx - ny * ny));
+  const W = SH_IRRADIANCE_W;
+  add(sh[0], W.l0);
+  add(sh[1], W.l1 * ny);
+  add(sh[2], W.l1 * nz);
+  add(sh[3], W.l1 * nx);
+  add(sh[4], W.l2 * nx * ny);
+  add(sh[5], W.l2 * ny * nz);
+  add(sh[6], W.l2zz * nz * nz - W.l2c);
+  add(sh[7], W.l2 * nx * nz);
+  add(sh[8], W.l2xy * (nx * nx - ny * ny));
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// GPU side: the same irradiance, as TSL, for planet surfaces
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Phase 9. Until now nothing lit a planet's NIGHT side, so a body with no
+// sunlit pixels rendered PURE BLACK — measured on device against a visible
+// Milky Way and starlight on the ship's hull, which is the calibration argument
+// that makes it obviously wrong.
+//
+// 🔑🔑 WHY THIS IS THE RIGHT SOURCE, AND WHY IT IS FREE FOR EVERY BODY: the sky
+// is a property of the SYSTEM, not of the body. One SH set — the star catalogue
+// summed analytically plus the Milky Way panorama projected (S4/D29, already
+// calibrated) — is the correct night-side irradiance for Earth, for Titan, for
+// Pluto and for any procedurally generated body, with ZERO per-body data. The
+// only per-body input is albedo, which `albedoCalibration` already measures at
+// runtime from the loaded texture.
+//
+// Magnitude, for scale: the moonless night sky delivers ~0.002 lux, so a 0.30
+// albedo surface sits at 1.9e-4 cd/m² = 3.2e-8 game units — **1.5× the Milky
+// Way's bright band (1.25e-4) and 191× the dark-adapted eye's floor.** It is a
+// very dark grey, not black.
+//
+// ⚠ Sol is NOT in this SH (the catalogue builder excludes it — it is drawn by
+// Star.tsx from the system description), so there is no double count with the
+// direct sun term. Planetshine and airglow are separate, larger terms and are
+// NOT here yet — see docs/LIGHTING_PLAN.md Phase 9.
+
+export type SkyShUniforms = {
+  /** 9 vec3 uniforms, PRE-EXPOSED (see updateSkyShUniforms). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sh: any[];
+};
+
+/** Nine zeroed vec3 uniforms. Owned by `CelestialBody`, one set per body. */
+export function createSkyShUniforms(): SkyShUniforms {
+  return { sh: Array.from({ length: 9 }, () => uniform(new THREE.Vector3())) };
+}
+
+/**
+ * Copy the live sky SH into `u`, scaled by the current pre-exposure.
+ *
+ * ⚠⚠ **PRE-EXPOSURE IS APPLIED HERE, AT THE SOURCE.** That is not a convenience:
+ * `uSunIlluminance` is pre-exposed the same way (D25), so a sky term that was not
+ * would be wrong by the exposure factor — 10⁴–10⁶× in a dark scene, which is
+ * exactly the D09c/D28 trap and exactly the scene this term exists for. Doing it
+ * at the copy means there is one site rather than one per consumer.
+ *
+ * ⚠ Does NOT mutate the shared SH — `SkyLight.tsx` and `__lum` read the raw
+ * coefficients and must keep seeing absolute units.
+ *
+ * 🔑 Cached on `getSkyShVersion()` × the pre-exposure, so a static sky costs one
+ * float compare per body per frame.
+ */
+export function updateSkyShUniforms(u: SkyShUniforms, preExposure: number): void {
+  const sh = getSkySh();
+  if (!sh) return;
+  for (let i = 0; i < 9; i++) {
+    u.sh[i].value.copy(sh[i]).multiplyScalar(preExposure);
+  }
+}
+
+/**
+ * Irradiance arriving at a surface whose normal is `n`, game units, pre-exposed.
+ *
+ * ⚠ `n` must be in the SAME AXES the SH was accumulated in — world/ecliptic, via
+ * `equatorialToGame`. Directions have no origin, so unlike the eclipse slots only
+ * the axes matter here; but "same frame" is still two questions and this is the
+ * one that applies. Pass `normalize(normalWorld)`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function skyIrradianceNode(u: SkyShUniforms, n: any): any {
+  const W = SH_IRRADIANCE_W;
+  const nx = n.x, ny = n.y, nz = n.z;
+  return vec3(u.sh[0])
+    .mul(W.l0)
+    .add(vec3(u.sh[1]).mul(ny.mul(W.l1)))
+    .add(vec3(u.sh[2]).mul(nz.mul(W.l1)))
+    .add(vec3(u.sh[3]).mul(nx.mul(W.l1)))
+    .add(vec3(u.sh[4]).mul(nx.mul(ny).mul(W.l2)))
+    .add(vec3(u.sh[5]).mul(ny.mul(nz).mul(W.l2)))
+    .add(vec3(u.sh[6]).mul(nz.mul(nz).mul(W.l2zz).sub(W.l2c)))
+    .add(vec3(u.sh[7]).mul(nx.mul(nz).mul(W.l2)))
+    .add(vec3(u.sh[8]).mul(nx.mul(nx).sub(ny.mul(ny)).mul(W.l2xy)))
+    .max(0); // SH-L2 of a high-contrast sky can ring slightly negative
+}
+
+/**
+ * The direction-AVERAGED sky irradiance (band 0 only), pre-exposed.
+ *
+ * For the far/point LOD tiers, where the body is a billboard a few pixels across
+ * and `normalWorld` is the QUAD's normal rather than the sphere's — the same
+ * reason `updateEclipseUniforms` returns a centre scalar for those tiers.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function skyIrradianceAverageNode(u: SkyShUniforms): any {
+  return vec3(u.sh[0]).mul(SH_IRRADIANCE_W.l0).max(0);
 }

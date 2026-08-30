@@ -17,6 +17,8 @@
  *   __lum.aim(17.7611, -29.0078)     // aim at a sky coordinate (orientation check)
  *   await __lum.skyAlign()           // GATE: is the Milky Way panorama aligned?
  *   __lum.skyProbe()                 // GATE: is the sky lighting the hull? (D29)
+ *   __lum.nightSide()                // GATE: is the sky lighting PLANETS? (Phase 9)
+ *   __lum.hull()                     // GATE: what is lighting the SHIP? (P9e)
  *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
  *   __lum.units()                     // print the unit convention
  *
@@ -60,6 +62,12 @@ import {
   sunMoonSeparationDeg,
 } from "@/sim/ephemeris";
 import { allBodyDefs, solvedEphemerisJD } from "@/sim/celestialConstants";
+import {
+  createShineUniforms,
+  updateShineUniforms,
+} from "@/components/celestial/planetshine";
+import { bodyReflectanceRgb } from "@/components/celestial/bodyColour";
+import { hullShineStatus } from "@/components/celestial/planetshine";
 import { formatSimTime, simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import {
   MAX_ECLIPSE_OCCLUDERS,
@@ -2848,6 +2856,262 @@ export class LumHarness {
     );
   }
 
+  /**
+   * Phase 9: the night-side floor every body now gets from the sky.
+   *
+   * 🔑 The calibration argument, and it is the user's: if the Milky Way's
+   * nebulosity and starlight on the hull are visible, a planet's night side CANNOT
+   * be black — it is lit by the same sky. This prints the two side by side.
+   */
+  nightSide(): void {
+    const sh = getSkySh();
+    if (!sh) {
+      console.log("[lum] sky SH not baked yet — needs StarField parsed + one panorama bake");
+      return;
+    }
+    const MW_BAND_NITS = 1.25e-4; // 150 S10 in the galactic plane; see §8
+    const EYE_FLOOR_NITS = 1e-6; // dark-adapted absolute threshold
+    const rows: Record<string, Record<string, string | number>> = {};
+    // Six normals: the SH gives a real hemispherical gradient, so a body's night
+    // side is not one number.
+    const dirs: Array<[string, [number, number, number]]> = [
+      ["+X", [1, 0, 0]], ["-X", [-1, 0, 0]],
+      ["+Y (ecl. north)", [0, 1, 0]], ["-Y", [0, -1, 0]],
+      ["+Z", [0, 0, 1]], ["-Z", [0, 0, -1]],
+    ];
+    for (const [name, d] of dirs) {
+      const e = evaluateShIrradiance(sh, d[0], d[1], d[2]);
+      const lux = ((e[0] + e[1] + e[2]) / 3) * NITS_PER_GAME_UNIT;
+      // Lambert albedo = 3/2 × geometric, then L = A·E/π — the same conversion
+      // `surfaceRadiance` applies, so this table and the shader cannot disagree.
+      const nits = (0.3 * 1.5 * lux) / Math.PI;
+      rows[name] = {
+        "sky E (lux)": Number(lux.toPrecision(3)),
+        "L at albedo 0.30 (cd/m²)": Number(nits.toPrecision(3)),
+        "vs Milky Way band": Number((nits / MW_BAND_NITS).toPrecision(3)),
+        "vs eye floor": Number((nits / EYE_FLOOR_NITS).toPrecision(3)),
+      };
+    }
+    console.table(rows);
+
+    // ── Planetshine, per body, from the same registry the eclipse uses ──────
+    // 🔑 Every row here is DERIVED — geometry from the sun-occluder registry,
+    // albedo from `bodyReflectanceRgb` (D09e band spectra), the emitter's solar
+    // illuminance from its live star distance. So a body added to sol.json, or
+    // generated, appears here with no new data.
+    const shineRows: Record<string, Record<string, string | number>> = {};
+    const star = STAR_POSITION_KM;
+    for (const body of sunOccluderList()) {
+      const strongest = updateShineUniforms(
+        _shineProbeU,
+        body.id,
+        [body.centerKm.x, body.centerKm.y, body.centerKm.z],
+        star,
+        STAR_LUMINOSITY_SUN,
+        1, // pre-exposure 1 ⇒ absolute game units, so this table is observer-free
+        STAR_RADIUS_KM,
+      );
+      if (strongest <= 0) continue;
+      // The strongest slot, as the sub-emitter-point irradiance and the resulting
+      // surface luminance at that body's own albedo.
+      const refl = bodyReflectanceRgb(body.id);
+      const p = refl ? 0.2126 * refl.r + 0.7152 * refl.g + 0.0722 * refl.b : 0.3;
+      const lux = strongest * NITS_PER_GAME_UNIT;
+      const nits = (p * 1.5 * lux) / Math.PI;
+      shineRows[body.id] = {
+        "E from brightest emitter (lux)": Number(lux.toPrecision(3)),
+        "night L at own albedo (cd/m²)": Number(nits.toPrecision(3)),
+        "× the sky-light floor": Number((nits / 4.7e-5).toPrecision(3)),
+        "EV100 for middle grey": Number(
+          Math.log2(1 / (1.2 * (0.18 / (nits / NITS_PER_GAME_UNIT)))).toFixed(1),
+        ),
+      };
+    }
+    console.table(shineRows);
+    console.log(
+      [
+        "[lum] PLANETSHINE (Phase 9 step 2) — the DOMINANT night-side term wherever a",
+        "      companion exists, and the eclipse problem inverted: same occluder",
+        "      registry, same 4 branchless slots, same per-pixel / far-scalar split.",
+        "      🔑 `EV100 for middle grey` is the column that matters: EV_MIN = -18, so a",
+        "      row at or above -18 WILL be visible and a row below it will not. The",
+        "      starlight-only floor needs -25.2 (7.2 stops below the clamp) which is why",
+        "      it renders black; moonlit Earth lands at exactly -18.0.",
+        "      ✅ VALIDATED ON DEVICE 2026-08-28, and the sharpest check is the PHASE",
+        "      REVERSAL: at full moon Earth reads 0.334 lux (EV −14.2, visible) while Luna",
+        "      reads 1.86e-4 (EV −26.7, black); at the 2024-04-08 eclipse — a NEW moon —",
+        "      they swap, Luna 17.4 lux (EV −10.2) and Earth 9.4e-5 (EV −26.0). 🔑 Earth",
+        "      and Luna MUST anti-correlate, because a full Earth seen from the Moon is a",
+        "      new Moon seen from Earth. If they ever move together, Φ(g) is broken.",
+        "      Predicted 0.355 lux for a full moon vs 0.334 measured: 6%.",
+        "      ⚠ Lambert phase function, so the Moon reads 1.42× high against a MEASURED",
+        "      0.25 lux (0.355 modelled) — it has a strong opposition surge no Lambert model",
+        "      reproduces. Do NOT trim its albedo to hide this: the day side is calibrated",
+        "      on that same value.",
+        "      ⚠ NOT modelled: an emitter that is itself eclipsed, and interreflection.",
+        "      🔑 EMERGENT and correct: Jupiter's own night side is lit by the Galileans to",
+        "      EV −18.1, right at the clamp; Mercury and Venus are lit by Earth at ~0.3–1.5×",
+        "      the starlight floor. Nothing configured that — it falls out of the registry.",
+      ].join("\n"),
+    );
+
+    // ── The live chain, so "correctly dim" can be told from "never arrived" ──
+    // ⚠ Deliberately observer-DEPENDENT, unlike the table above, and labelled as
+    // such: the question this answers is what the BUFFER holds, which depends on
+    // this frame's exposure. Mixing the two into one number is what made the D28
+    // umbra ladder unreadable.
+    const preExp = getPreExposure();
+    const worst = 3.2e-5 / NITS_PER_GAME_UNIT; // dimmest normal, game units
+    const buffered = worst * preExp;
+    const FP16_SUBNORMAL = 2 ** -24;
+    const FP16_NORMAL = 2 ** -14;
+    console.log(
+      [
+        `[lum] exposure ${getExposure().toPrecision(4)}  ·  pre-exposure ${preExp.toPrecision(4)}  (EV_MIN allows up to ${(1 / (1.2 * 2 ** -18)).toPrecision(4)})`,
+        `      dimmest night-side radiance ${worst.toExponential(2)} game units → buffer holds ${buffered.toExponential(2)}`,
+        `      half-float floors: subnormal ${FP16_SUBNORMAL.toExponential(2)}, normal ${FP16_NORMAL.toExponential(2)}`,
+        `      ⇒ ${
+          buffered < FP16_SUBNORMAL
+            ? "❌ FLUSHES TO ZERO — the term cannot survive the buffer at this exposure"
+            : buffered < FP16_NORMAL
+              ? "⚠ subnormal — survives, but with only a few bits of mantissa"
+              : "✅ inside half-float normals — the term is representable"
+        }`,
+        "      🔑 If this says ✅ and the night side still looks black, the term is",
+        "      arriving and is simply DIM — see the reference below. Probe it:",
+        "      __lum.probe(x, y) on a night-side pixel gives the absolute value.",
+      ].join("\n"),
+    );
+
+    console.log(
+      [
+        "[lum] ── WHAT TO EXPECT, and ⚠⚠ A CORRECTION TO AN EARLIER CLAIM IN THIS GATE ──",
+        "      This gate used to say \"expect ~0.002 lux ⇒ 1.9e-4 cd/m² ≈ 1.5× the Milky",
+        "      Way band\". **BOTH HALVES WERE WRONG.** Decomposed against Leinert et al.",
+        "      1998 (visual, zenith, S10 units; 1 S10 = 8.34e-7 cd/m²):",
+        "",
+        "        airglow              145 S10   NOT modelled",
+        "        zodiacal light        60 S10   NOT modelled",
+        "        integrated starlight 100 S10   ✅ in this SH (catalogue)",
+        "        diffuse galactic      25 S10   ✅ in this SH (panorama)",
+        "        ─────────────────────────────",
+        "        real total           330 S10 → 8.65e-4 lux",
+        "        modelled             125 S10 → 3.28e-4 lux   = 38% of the real sky",
+        "",
+        "      🔑 So the SH is CORRECT for what it contains — the measured 2.2e-4..5.1e-4",
+        "      lux brackets 3.28e-4. The old 0.002 lux reference was 2.3× too high AND",
+        "      ignored that airglow + zodiacal are 62% of the real night sky.",
+        "",
+        "      🔑🔑 AND THE 1.5× CONCLUSION WAS STRUCTURALLY IMPOSSIBLE: a 30%-albedo",
+        "      DIFFUSE surface lit by the WHOLE sky must be dimmer than the BRIGHTEST",
+        "      PATCH of that sky. The Milky Way band is that brightest patch. Correct",
+        "      targets: 0.38× the band from the modelled sky, 0.99× with airglow and",
+        "      zodiacal added. A night side dimmer than the galaxy is EXPECTED.",
+        "",
+        "      ── WHAT A NIGHT-SIDE PIXEL SHOULD PROBE AS (modelled sky, ~3.0e-4 lux) ──",
+        "      ⚠⚠ USE THE TEXTURE'\''S value, NOT a published albedo. The shader multiplies",
+        "      the sky irradiance by `dayCol` — the actual texel — so the reference is what",
+        "      D23 MEASURED on Earth'\''s day map, linearised, not a broadband figure:",
+        "        cloud deck        7.3e-5 cd/m²   E × CLOUD_SUN_SCALE 0.223",
+        "        land (mean 0.296) 4.3e-5 cd/m²   E × dayCol × 1.5/π",
+        "        ocean (mean .0062) 8.9e-7 cd/m²",
+        "        ocean (the flat value 0.00178, = 88% of all ocean) 2.6e-7 cd/m²",
+        "      🔑 OCEAN IS ~165× DARKER THAN LAND HERE, not 5× as a broadband albedo",
+        "      (0.06 vs 0.30) would suggest. Earth'\''s day texture holds 0.00178 over open",
+        "      water — visible-band water-leaving reflectance, which is genuinely near",
+        "      zero; 0.06 is BROADBAND and mostly NIR the texture does not and must not",
+        "      carry. **This gate previously quoted 9.4e-6 for ocean from that 0.06 — 34×",
+        "      too high, and it is the exact D23 error repeated.**",
+        "      🔑 CLOUDS ARE THE BRIGHTEST PART of a night side — higher reflectance than",
+        "      land — so a cloudy night limb reading DARKER than a clear one is a bug.",
+        "      ⚠ FIXED 2026-08-28: `farCloudLit` multiplied everything by",
+        "      `clamp(daylight,0,1)`, so the cloud shell drew vec4(0, alpha) at night and,",
+        "      being `transparent`, hid the sky-lit ground behind it by (1−alpha) — a thick",
+        "      deck is alpha≈0.998, i.e. ~600× of the only light there was, over ~67% of",
+        "      Earth. A probe reading ~1e-7 instead of ~5e-5 was that.",
+        "      ⚠ STILL OPEN: the VOLUMETRIC marcher has the same gate",
+        "      (`skyColorS = uAtmoSkyColor × daylightS`, earthClouds.ts ~3535) and so is",
+        "      still black at night. It only runs below 700 km, so it does not affect an",
+        "      orbital view — but a low pass over the night side will still be dark.",
+        "",
+        "      ⇒ What makes a night side visible, and where it stands:",
+        "        • PLANETSHINE — ✅ LANDED (P9d). MEASURED on device against this floor:",
+        "          Moon→Earth 1,470× (full moon), Earth→Luna 24,000×, Ganymede 7,250–35,200×,",
+        "          Jupiter→Io 315,000–385,000×. It is the whole visible night side.",
+        "        • airglow (+~2.4×) — ⚠ still open, and the ONE term that is NOT free",
+        "          generically: Earth's is O₂/OH chemistry, so it needs an AtmosphereParams",
+        "          field rather than a derivation.",
+        "        • zodiacal light (+~1.5×) — still open, but IS generic: forward-scattered",
+        "          starlight off interplanetary dust, from star luminosity + ecliptic angle.",
+        "        ⇒ Neither remaining term rescues a MOONLESS night side: together they are",
+        "        3.9×, and the starlight floor is 7.2 stops below the exposure clamp.",
+        "",
+        "      ⚠ Sol is NOT in this SH (the catalogue builder excludes it), so there is",
+        "      no double count with the direct sun term.",
+        "      ⚠ At these levels the eye is SCOTOPIC (desaturated, blue-shifted). Phase 7",
+        "      owns that; do not hand-tune the night side's colour before it lands.",
+      ].join("\n"),
+    );
+  }
+
+  /**
+   * What is actually lighting the HULL right now (P9e).
+   *
+   * 🔑 Answers "is that light coming from Jupiter or from Io?", which a frame
+   * cannot: two emitters a few degrees apart light a hull almost identically, and
+   * the one that is WRONG is the one that got silently skipped. This NAMES each
+   * emitter, gives its irradiance and direction, and prints the skip.
+   */
+  hull(): void {
+    const st = hullShineStatus();
+    const occ = sunOcclusionStatus();
+    if (st.lights.length === 0) {
+      console.log(
+        "[lum] no planetshine on the hull. Either nothing is in range, or the\n" +
+          "      dominant-atmosphere skip removed the only emitter — check `skipped` below.",
+      );
+    } else {
+      const rows: Record<string, Record<string, string | number>> = {};
+      for (const l of st.lights) {
+        rows[l.id] = {
+          "distance (km)": Number(l.distKm.toPrecision(6)),
+          "irradiance (lux)": Number(l.lux.toPrecision(4)),
+          "hull L at ρ=0.3 (cd/m²)": Number(((0.3 * l.lux) / Math.PI).toPrecision(3)),
+          "EV100 for middle grey": Number(
+            Math.log2(
+              1 / (1.2 * (0.18 / (((0.3 * l.lux) / Math.PI) / NITS_PER_GAME_UNIT))),
+            ).toFixed(1),
+          ),
+          direction: l.dir.map((v) => Number(v.toFixed(3))).join(", "),
+        };
+      }
+      console.table(rows);
+    }
+    console.log(
+      [
+        `[lum] planetshine skipped for: ${st.skippedId ?? "— (nothing)"}`,
+        "      ⚠ A skip is CORRECT only while `AtmosphereSkyLight` is delivering that",
+        "      body's ground-bounce, i.e. the ship is INSIDE its atmosphere on the day",
+        "      side. Anywhere else it must read \"— (nothing)\".",
+        "      🔑🔑 THE FIRST VERSION SKIPPED ON `lighting.active` ALONE, which is true",
+        "      whenever any atmosphere body is in LOD RANGE — millions of km. That deleted",
+        "      earthshine at Luna (17.4 lux → black) and left Io lighting the ship instead",
+        "      of Jupiter. **A guard for \"someone else owns this\" must test whether that",
+        "      owner is DELIVERING, not whether it exists.**",
+        "",
+        `      direct sun visibility ${occ.visibility.toPrecision(3)}  ·  D28 limb ${
+          occ.limb
+            ? occ.limb.illuminance
+                .map((v) => Number(v.toPrecision(3)))
+                .join("/") + " lux (RGB)"
+            : "none"
+        }`,
+        "      ⇒ Cross-check the DIRECTION column against where the emitter actually is:",
+        "      it is a unit vector from the ship toward that body, in world axes.",
+      ].join("\n"),
+    );
+  }
+
   /** Snap adaptation to the current scene — no slow fade after a warp. */
   snapExposure(): void {
     resetExposureAdaptation();
@@ -3483,4 +3747,5 @@ function shadowLandingPoint(
 }
 
 const _orientGate = createBodyOrientation();
+const _shineProbeU = createShineUniforms();
 

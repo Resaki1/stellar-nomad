@@ -50,6 +50,12 @@ function buildLunaFragmentNode(
   uSunRel: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   uSunIlluminance: any,
+  /** Pre-exposed sky irradiance at this fragment — the night-side term (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  skyAmbient: any,
+  /** D34 star-disc visibility — scales the DIRECT term only (Phase 9). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  starVisibility: any,
 ) {
   return Fn(() => {
     const uvCoord = uv();
@@ -113,7 +119,7 @@ function buildLunaFragmentNode(
     // The earthshine term rides along correctly: it is modelled as a FRACTION of
     // the same solar illuminance (Earth sits at the same distance from the star),
     // so it scales with it rather than being an independent emissive.
-    return vec4(surfaceRadiance(col, uSunIlluminance), 1.0);
+    return vec4(surfaceRadiance(col, uSunIlluminance, albedo, skyAmbient, starVisibility), 1.0);
   })();
 }
 
@@ -166,10 +172,10 @@ export const lunaConfig: CelestialBodyConfig = {
   // it is the argument for fixing the scale rather than tuning against it.
   stellarPoint: { geometricAlbedo: 0.136, color: [0.85, 0.82, 0.78] },
 
-  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, tier }) => {
+  buildFragmentNode: ({ textures, uSunRel, uSunIlluminance, skyAmbient, starVisibility, tier }) => {
     const bumpStrength = tier === "near" ? 0.8 : 0.6;
     const texelSize = tier === "near" ? 1 / 4096 : 1 / 1024;
-    return buildLunaFragmentNode(textures.color, textures.displacement, bumpStrength, texelSize, uSunRel, uSunIlluminance);
+    return buildLunaFragmentNode(textures.color, textures.displacement, bumpStrength, texelSize, uSunRel, uSunIlluminance, skyAmbient, starVisibility);
   },
 
   buildPositionNode: ({ textures }) => {

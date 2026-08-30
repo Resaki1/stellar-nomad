@@ -273,8 +273,48 @@ export function subSolarRadianceLambert(
  */
 export const LAMBERT_SUBSOLAR_OVER_GEOMETRIC = 1.5;
 
+/**
+ * A TSL node. ⚠ One aliased `any` with ONE disable, rather than a disable per
+ * parameter: `surfaceRadiance` grew from 2 args to 5 and the single
+ * `eslint-disable-next-line` above it silently stopped covering the new ones,
+ * which turned into 6 lint ERRORS that a `pnpm lint | tail` was reading past.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function surfaceRadiance(reflectance: any, uSunIlluminanceNode: any): any {
+type TslNode = any;
+
+export function surfaceRadiance(
+  reflectance: TslNode,
+  uSunIlluminanceNode: TslNode,
+  // ── Phase 9: the night side ──────────────────────────────────────────────
+  // `diffuseAlbedo` is the surface's DIFFUSE reflectance alone — no `nDotL`, no
+  // specular, no fresnel — and `ambientIrradiance` is the sky irradiance arriving
+  // at this point (game units, PRE-EXPOSED; `skyIrradianceNode()` gives it).
+  //
+  // ⚠⚠ BOTH ARE REQUIRED, and that is the point. Until now nothing lit a body's
+  // night side, so a body with no sunlit pixels rendered PURE BLACK. Making these
+  // parameters mandatory turns "every body module must remember to add ambient"
+  // into a COMPILE ERROR — the 14th module cannot forget what tsc will not let it
+  // omit. Pass `null` only for a surface that genuinely has no diffuse term.
+  //
+  // 🔑 The same `× 3/2 / π` applies to both halves: the 3/2 is a GEOMETRIC →
+  // LAMBERT albedo conversion, a property of the SURFACE, so it is independent of
+  // which direction the light came from. The 1/π is the Lambertian BRDF.
+  diffuseAlbedo: TslNode,
+  ambientIrradiance: TslNode,
+  /**
+   * Fraction of the STAR's disc visible at this point — the D34 eclipse term —
+   * or `null` if the caller already folded it into `reflectance`.
+   *
+   * ⚠⚠ IT APPLIES TO THE DIRECT TERM ONLY, AND THAT IS THE WHOLE REASON IT MOVED
+   * HERE. `CelestialBody`'s fragment wrapper used to multiply the finished
+   * fragment by it, which was harmless while the only term was sunlight — but with
+   * an ambient term present it would eclipse the SKY as well, so a body inside an
+   * umbra would still render black. An eclipse blocks the star; the star field is
+   * still up. That difference is exactly defect D34c ("an eclipsed body is black,
+   * not coppery"), so getting it wrong here would silently re-open it.
+   */
+  directVisibility: TslNode,
+): TslNode {
   // ── × 3/2: GEOMETRIC albedo → LAMBERT albedo ────────────────────────────────
   // ⚠ Every albedo this project feeds in — the `far.albedo` constants, the body
   // textures, `bodyPhotometry.geometricAlbedo` — is a GEOMETRIC albedo, the published
@@ -300,9 +340,11 @@ export function surfaceRadiance(reflectance: any, uSunIlluminanceNode: any): any
   // were all too dark by this factor. The mid tier's REMAINING deficit after this
   // (~1.45×) is D09 — texture mean albedo versus the disc-averaged reference — which
   // is a different defect with a different fix.
-  return reflectance
-    .mul(uSunIlluminanceNode)
-    .mul(float(LAMBERT_SUBSOLAR_OVER_GEOMETRIC / Math.PI));
+  const k = float(LAMBERT_SUBSOLAR_OVER_GEOMETRIC / Math.PI);
+  let direct = reflectance.mul(uSunIlluminanceNode).mul(k);
+  if (directVisibility) direct = direct.mul(directVisibility);
+  if (!diffuseAlbedo || !ambientIrradiance) return direct;
+  return direct.add(diffuseAlbedo.mul(ambientIrradiance).mul(k));
 }
 
 // ── Global exposure state ────────────────────────────────────────────
