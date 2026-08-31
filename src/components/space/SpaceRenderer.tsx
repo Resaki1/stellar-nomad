@@ -13,7 +13,6 @@ import {
   screenCoordinate,
   hash,
 } from "three/tsl";
-import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import {
   LOCAL_TO_SCALED_FROM_LOCAL_UNITS,
   SCALED_UNITS_PER_KM,
@@ -45,6 +44,7 @@ import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import { localExposureNode, updateExposureMeter } from "./exposureMeter";
 import { scotopicNode } from "./scotopic";
+import { glareNode, setGlareUserScale, updateGlare } from "./glarePass";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -334,7 +334,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const scaledCamera = useMemo(() => localCamera.clone(), [localCamera]);
 
   // Offscreen render target — both scenes render here with depth-clear
-  // compositing, then the pipeline reads from it for bloom + tonemapping.
+  // compositing, then the pipeline reads from it for glare + tonemapping.
   // ── D14: MSAA, ON THIS TARGET ONLY ────────────────────────────────────────
   // The scene had no anti-aliasing of any kind (`antialias:false`, no TAA), which
   // the user reported as "planets look really pixelated at the edges until I get
@@ -550,7 +550,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
-  // Rebuild the node graph when bloom / toneMapping / RT changes
+  // Rebuild the node graph when toneMapping / RT changes
   useEffect(() => {
     // Post pipeline reads the final composited target: `rtB` when the
     // atmosphere pass routes through it, otherwise `rt`.
@@ -563,23 +563,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Phase 0 pins it at 1.0, so this is a bit-exact no-op; Phase 1 hangs a
     // manual EV slider off it and Phase 5 the auto-exposure histogram.
     //
-    // Applied BEFORE bloom deliberately: bloom's threshold (1.0) is a
-    // display-referred "brighter than white" test, so it has to see
-    // post-exposure values or it means something different at every exposure.
-    //
     // NOT done via `renderer.toneMappingExposure` — three's ToneMappingNode
-    // defaults its exposure to a renderer reference for that property, so using
-    // it would apply exposure AFTER bloom (wrong side of the threshold) and risk
-    // double-counting. Left at its default 1.0; `uExposure` is the one hook.
+    // defaults its exposure to a renderer reference for that property, so using it
+    // would apply exposure at the wrong point in the chain and risk double-counting.
+    // Left at its default 1.0; `uExposure` is the one hook.
     // `uPostExposure` = exposure / preExposure (photometry.ts). Before D25 went
     // live that is just the exposure; with pre-exposure on it is ~1.0, because
     // the buffer already carries the exposure the sources applied. Using the
     // ratio rather than either term means the two can never double-count.
     // ── LOCAL EXPOSURE (D33/D33b, UE5.1's Local Exposure) ────────────────────
-    // Multiplied in HERE, alongside the global exposure and BEFORE bloom, for the
-    // same reason the global term is: bloom's threshold is a display-referred
-    // "brighter than white" test, so it must see the final display-linear value or
-    // it means something different in every region of the frame.
+    // Multiplied in HERE, alongside the global exposure: both are display-mapping
+    // terms and belong on the same side of the tone curve.
     //
     // 🔑 WHY THIS EXISTS AT ALL. A global scalar cannot be right: D33 measured
     // `rendered ∝ coverage^(−k)`, so the same planet renders up to 5.4 stops brighter
@@ -590,29 +584,38 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Bit-exact 1.0 while the map is unbuilt or `__lum.localExposure(false)` is set,
     // so it can be A/B'd without a reload. Its strength is DERIVED (= ADAPTATION_K),
     // not authored.
-    const exposed = sceneTexture.mul(uPostExposure).mul(localExposureNode());
-
-    // Bloom is added in linear HDR (pre-tonemap), as before.
+    // ── VEILING GLARE (Phase 8, glarePass.ts) ────────────────────────────────
+    // The eye's point-spread function, applied to the RAW scene in absolute game
+    // units and BEFORE the exposure multiply.
     //
-    // ⚠ BLOOM IS NOT A PERF TARGET — measured, 2026-08-26. `5 post` reading ~11 ms
-    // flat across every scenario looked like a fixed bloom cost; it is not. That pass
-    // is LAST, so its span absorbs the vsync wait and the cross-frame pipeline bubble,
-    // and it moves INVERSELY to the rest of the frame. The A/B: bloom OFF measured
-    // HIGHER post than bloom ON (21.66 vs 15.53 ms), and quartering the chain's pixels
-    // saved 0.41 ms. 🔑 Flatness across scenarios means a pass is absorbing IDLE, not
-    // doing fixed work. A half-res-bloom setting was built for this and REMOVED — see
-    // docs/PERF_MEASUREMENT.md. `__bench` now warns on the terminal-pass artefact.
-    let hdr: typeof pipeline.outputNode = exposed;
-    if (settings.bloom) {
-      hdr = exposed.add(bloom(exposed, 0.001, 0, 1));
-    }
+    // 🔑 WHY IT SITS IN FRONT OF EXPOSURE, WHERE THE BLOOM IT REPLACED COULD NOT.
+    // Bloom's threshold (1.0) was a display-referred "brighter than white" test, so it
+    // had to see post-exposure values or it meant something different at every
+    // exposure — which forced it behind the exposure multiply. **A
+    // physical PSF has no threshold** — the eye scatters all light — so that
+    // constraint simply disappears, and the correct place is the earliest one:
+    // scattering happens in the ocular media, before any adaptation.
+    //
+    //     glared = (1 − k)·scene + k·PSF(scene)      k = integrated straylight
+    //
+    // `mix`, not `add`: scattered light is REMOVED from where it was aimed and put
+    // somewhere else. That is what lets it be strong enough to actually veil.
+    const glared = glareNode(sceneTexture);
 
-    // Tone-map IN-GRAPH (the SAME call renderOutput() would make), then add an
-    // output DITHER before the pipeline's sRGB encode + 8-bit write. This is the
-    // Unreal/Frostbite fix for 8-bit banding on smooth gradients (the atmosphere
-    // sky) — which the Sky-View LUT resolution work alone can't remove because the
-    // raymarch sky bands at quantization too. TPDF (difference of two per-pixel
-    // hashes) is flat, distortion-free dither; scaled to ~OUTPUT_DITHER_LSB.
+    const exposed = glared.mul(uPostExposure).mul(localExposureNode());
+
+    // ⚠⚠ BLOOM IS GONE, DELETED 2026-08-31, AND THIS NOTE EXISTS SO IT IS NOT
+    // REINTRODUCED. `bloom(exposed, 0.001, 0, 1)` was retained through Phase 8 purely
+    // as the A/B baseline for judging the PSF against; that judgement is done and it
+    // shipped as a strict downgrade on every axis:
+    //   • physically wrong — ADDITIVE (invents energy), THRESHOLDED (the eye scatters
+    //     all light, not "brighter than white"), and its mip factors
+    //     [1, 0.8, 0.6, 0.4, 0.2] sum to 3.0 rather than 1;
+    //   • ~5.8 ms of GPU measured, vs 0.9–1.3 ms for the whole PSF pyramid;
+    //   • and DOUBLE-COUNTED the halo whenever it ran alongside the glare.
+    // 🔑 The A/B it existed for is now `__lum.glare(false)`, which is strictly better:
+    // it isolates one variable instead of swapping two implementations.
+    const hdr = exposed;
     // ── RETINA (Phase 7, scotopic.ts) ────────────────────────────────────────
     // Rod/cone mix + Purkinje shift, applied to the veiled image and BEFORE the
     // display transform, because that is where the retina sits: ocular media →
@@ -623,7 +626,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     //
     // Bit-exact no-op until `__lum.scotopic(true)` raises the strength uniform, so
     // this costs one uniform multiply and no shader recompile while it is off.
-    const retina = scotopicNode(hdr, sceneTexture);
+    // ⚠ The driver is `glared`, NOT `sceneTexture`. scotopic.ts deliberately read
+    // the pre-glare value and said so: "veiling glare genuinely does raise the
+    // retinal light floor and SHOULD feed the driver… but today's bloom is a mip
+    // chain with an authored strength, not a calibrated PSF." That is no longer
+    // true, so the coupling is made — the retina now sees the veiled image, which
+    // is the physically correct input.
+    const retina = scotopicNode(hdr, glared);
 
     const toneMode = settings.toneMapping ? AgXToneMapping : NeutralToneMapping;
     const toneMapped = retina.toneMapping(toneMode);
@@ -654,7 +663,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     return () => {
       pipeline.needsUpdate = true;
     };
-  }, [settings.bloom, settings.toneMapping, pipeline, rt, rtB, gl]);
+  }, [settings.toneMapping, pipeline, rt, rtB, gl]);
 
   // Camera setup
   useEffect(() => {
@@ -764,7 +773,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
         _nodes: { nodeFrame: { update: () => void; frameId: number } };
       }
     )._nodes.nodeFrame;
-    // Advance the node frame so BloomNode's updateBefore runs each frame.
+    // Advance the node frame so any node's `updateBefore` runs each frame.
     nodeFrame.update();
     // `info.frame` is readonly in the typings because the renderer's own loop
     // normally owns it. It is baked into every timestamp-query UID (`…:f<frame>`)
@@ -805,7 +814,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     scaledCamera.quaternion.copy(localCamera.quaternion);
 
     // ── Render both scenes into the offscreen RT in linear HDR ──
-    // Disable tone mapping so HDR values stay above 1.0 for bloom threshold.
+    // Disable tone mapping so HDR values stay in absolute game units.
     // RenderPipeline applies tone mapping + color space at the end.
     const savedToneMapping = renderer.toneMapping;
     const savedColorSpace = renderer.outputColorSpace;
@@ -1154,7 +1163,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
     // Publish the final PRE-TONEMAP target for `__lum` (photometric probing).
     // Must be here — after everything has composited into it, before the post
-    // chain applies exposure/bloom/tonemapping — because game units only exist
+    // chain applies exposure/glare/tonemapping — because game units only exist
     // on this side of the tone curve. Two reference writes; no-op when unchanged.
     // `scaledCamera` rides along so `__lum.disc()` can turn a body's angular
     // radius into a pixel radius analytically, instead of thresholding on
@@ -1173,8 +1182,23 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // light↔object interaction, so it un-lit the ship, and excluding the ship
     // only moved the problem to a blown exhaust. The root cause is that the
     // emissives are not on the photometric scale.
+    // ⚠ The meter reads the PRE-GLARE target, i.e. it does not see the veil, and
+    // that is a stated limitation rather than an oversight. The veil is
+    // mean-preserving by construction, so the LINEAR field average the meter is
+    // built around is unchanged by it exactly; only the log-mean would shift, and
+    // reaching the composited value would mean metering a node-graph result rather
+    // than a render target. Revisit if the shift is ever measured to matter.
+    // ⚠ The player's glare setting is pushed HERE, per frame, not through the node
+    // graph's `useEffect` deps — it must scale a uniform, never trigger a shader
+    // recompile (WebGPU compilation stutter is a known problem in this project).
+    // `?? 1` because atomWithStorage returns `undefined` for a key added after the
+    // player's settings blob was first written.
+    // ⚠⚠ `setGlareUserScale`, NOT `setGlare` — a per-frame writer must not share a
+    // setter with the debug override, or `__lum.glare(false)` is undone every frame.
+    setGlareUserScale(settings.glare ?? 1);
+    updateGlare(renderer, (rtB ?? rt).texture);
     updateExposureMeter(renderer, (rtB ?? rt).texture, delta);
-    // ── Apply postprocessing (bloom, tonemapping) and blit to canvas ──
+    // ── Apply postprocessing (glare, retina, tonemapping) and blit to canvas ──
     pipelineRef.current.render();
 
     // Advance the ping-pong parity so next frame writes the *other* history

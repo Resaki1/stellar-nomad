@@ -22,7 +22,7 @@
  * Passes are identified by `scene.name` / `computeNode.name` — which is why
  * every scene and compute node gets an explicit name (see `PASS` below and its
  * use in `SpaceRenderer.tsx`). Anything unnamed that shows up in `renders[]` is
- * bucketed as post-processing (the `RenderPipeline` bloom chain and the output
+ * bucketed as post-processing (the `RenderPipeline` tone-map + output
  * blit render internal `QuadMesh`es we don't own); anything unnamed in
  * `computes[]` is the asteroid-batch culling dispatch (its compute node is an
  * array, so it has no single name).
@@ -60,7 +60,8 @@ export const PASS = {
   reconstruct: "2c reconstruction",
   composite: "3 cloud composite",
   local: "4 local scene",
-  post: "5 post (bloom+out)",
+  glare: "5a glare PSF",
+  post: "5 post (output)",
   miscCompute: "misc compute",
 } as const;
 
@@ -81,6 +82,7 @@ export const PASS_ORDER: readonly PassLabel[] = [
   PASS.reconstruct,
   PASS.composite,
   PASS.local,
+  PASS.glare,
   PASS.post,
   PASS.miscCompute,
 ];

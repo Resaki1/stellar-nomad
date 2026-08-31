@@ -11,7 +11,6 @@ export type Movement = {
 
 export type Settings = {
   invertPitch: boolean;
-  bloom: boolean;
   toneMapping: boolean;
   /**
    * MSAA on the scaled-scene target (defect D14). 4× when on.
@@ -35,17 +34,32 @@ export type Settings = {
    * "exposure" section of Settings → Dev. 0 = the calibrated neutral.
    */
   exposureStops: number;
+  /**
+   * Veiling-glare strength as a MULTIPLE of the physical straylight fraction
+   * (`GLARE_STRAYLIGHT_FRACTION` = 0.03, "a few percent of all light entering the
+   * eye is scattered"). 1 = physically calibrated, 0 = off.
+   *
+   * 🔑 A PLAYER SETTING BY REQUEST, and it is the right one to expose: glare is
+   * what makes the sun punishing to look at, which is deliberate feel — but it
+   * also veils asteroids and targets, so how much is tolerable is a matter of
+   * taste and of what the player is doing. The SHAPE stays derived
+   * (`glarePass.ts`); this scales only the amount.
+   *
+   * ⚠ Feeds a UNIFORM, never the post graph's `useEffect` deps — a settings
+   * change here must not recompile shaders (WebGPU compilation stutter).
+   */
+  glare: number;
   initial: boolean;
 };
 
 export const settingsAtom = atomWithStorage<Settings>("settings", {
   invertPitch: false,
-  // Both default ON as of the Phase 1 lighting work (docs/LIGHTING_PLAN.md §5.3).
   // `toneMapping: false` selects Khronos PBR Neutral, which crushes everything
-  // above linear ≈4 — wrong for a scene whose own reference white is ~20 and
-  // whose sun disc is ~1e5. AgX is the correct default, and bloom is currently
-  // the only cue that anything is brighter than white.
-  bloom: true,
+  // above linear ≈4 — wrong for a scene whose own reference white is ~20 and whose
+  // sun disc is ~1e5. AgX is the correct default.
+  // ⚠ `bloom` used to live here and was DELETED with Phase 8 (glarePass.ts replaced
+  // it). A stale `bloom` key may still sit in a returning player's saved blob; it is
+  // simply ignored, and `atomWithStorage` needs no migration for a removed key.
   toneMapping: true,
   // D14: the scene had NO anti-aliasing of any kind, which the user reported as
   // "planets look really pixelated at the edges until I get pretty close".
@@ -53,6 +67,9 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   fps: false,
   perf: false,
   exposureStops: 0,
+  // 1 = the physically derived straylight fraction. Phase 8 landed as the
+  // replacement for additive bloom, so this is on by default at its physical value.
+  glare: 1,
   initial: true,
 });
 

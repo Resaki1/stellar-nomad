@@ -96,16 +96,6 @@ const renderSubMenu = (
             label="anti-aliasing (4× MSAA)"
           />
           <SettingsCheckbox
-            active={settings.bloom}
-            onChange={() =>
-              setSettings((prev) => ({
-                ...prev,
-                bloom: !prev.bloom,
-              }))
-            }
-            label="bloom"
-          />
-          <SettingsCheckbox
             active={settings.toneMapping}
             onChange={() =>
               setSettings((prev) => ({
@@ -136,6 +126,37 @@ const renderSubMenu = (
                 setSettings((prev) => ({
                   ...prev,
                   exposureStops: Number(e.target.value),
+                }))
+              }
+            />
+          </label>
+          {/* ── VEILING GLARE (Phase 8, glarePass.ts) ──────────────────────────
+              Scales the physical straylight fraction (0.03 = "a few percent of all
+              light entering the eye is scattered"). 1.0× is the calibrated value.
+
+              🔑 Exposed on request, and it is the right knob: glare is what makes
+              staring at the sun punishing — deliberate feel — but it also veils
+              asteroids and targets, so the tolerable amount depends on taste and on
+              what the player is doing. The SHAPE stays derived; this scales only the
+              amount, so no setting can make it unphysical in KIND.
+
+              ⚠ `?? 1` throughout — atomWithStorage replaces defaults with the saved
+              blob, so a key added after first run reads `undefined`. */}
+          <label className="dev-controls__label">
+            veiling glare {((settings.glare ?? 1) * 100).toFixed(0)}%
+            {(settings.glare ?? 1) === 1 ? " (physical)" : ""}
+            {(settings.glare ?? 1) === 0 ? " (off)" : ""}
+            <input
+              type="range"
+              className="dev-controls__range"
+              min={0}
+              max={2}
+              step={0.1}
+              value={settings.glare ?? 1}
+              onChange={(e) =>
+                setSettings((prev) => ({
+                  ...prev,
+                  glare: Number(e.target.value),
                 }))
               }
             />
@@ -945,17 +966,26 @@ const SettingsMenu = () => {
       localStorage.getItem("settings") ?? '{"initial": true}'
     );
     if (storedSettings.initial === true) {
-      // Both bloom and AgX now default ON (store.ts), so this first-run pass only
-      // has to STEP DOWN on weak hardware. Bloom is a real cost — a 15-context mip
-      // chain measured at 1.8–2.0 ms (docs/PERF_MEASUREMENT.md) — so drop it below
-      // tier 2. Tone mapping is NOT stepped down: swapping AgX for Neutral is not a
+      // This first-run pass only STEPS DOWN on weak hardware.
+      //
+      // ⚠⚠ `bloom: gpu.tier >= 2` used to live here and was a DEAD WRITE after bloom
+      // was deleted — TypeScript cannot catch it, because an excess property on a
+      // spread object literal is not an error. Grep, do not trust the compiler, when
+      // removing a settings key.
+      //
+      // ⚠ VEILING GLARE IS DELIBERATELY *NOT* TIER-GATED, and the reason is that a
+      // tier gate would not buy anything: reducing the glare STRENGTH saves no time
+      // at all — the pyramid still runs — and only strength 0 skips the passes. So
+      // the only available step-down is "off entirely", which trades the calibrated
+      // eye model for 0.9–1.3 ms. Bloom was decoration costing 5.8 ms; glare is
+      // physics costing a fifth of that. Not the same trade.
+      //
+      // Tone mapping is NOT stepped down either: swapping AgX for Neutral is not a
       // perf win (same single curve evaluation), it just picks a worse curve.
       setSettings((prev) => ({
         ...prev,
-        bloom: gpu.tier >= 2,
         // D14: MSAA costs a 4× colour+depth allocation on the scaled-scene target
-        // plus coverage fill, so a low-tier GPU should not pay it by default. Same
-        // tier gate as bloom.
+        // plus coverage fill, so a low-tier GPU should not pay it by default.
         antialias: gpu.tier >= 2,
         initial: false,
       }));

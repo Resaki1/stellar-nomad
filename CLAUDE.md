@@ -308,6 +308,18 @@ const health = useAtomValue(shipHealthAtom);
 If you're touching code in any of these areas, open the linked file first. It
 captures past debugging journeys whose lessons are not visible in the code:
 
+- **Lighting / photometry / the eye model** (`photometry.ts`, `exposureMeter.ts`,
+  `scotopic.ts`, `glarePass.ts`, `planetshine.ts`, `skyIrradiance.ts`):
+  See [`docs/LIGHTING_PLAN.md`](docs/LIGHTING_PLAN.md) — in particular its numbered
+  defect/finding rows (D-series, P7*, P8*), which record what was measured and what
+  turned out to be wrong. The recurring traps: **units** (game-unit EV vs EV100 differ
+  by 12.56 stops; 1 game unit = 6037.7 cd/m²), **pre-exposure** (D25 — every radiance
+  source is pre-multiplied, so anything reading a buffer must divide it out),
+  **artistic gains** that lie to physically-anchored thresholds, and **published
+  formulae that are wrong in magnitude, in shape, or both**. Validate with the
+  `__lum` console harness (`__lum.units()` lists the gates) and never quote an
+  eye-balled brightness as a before/after.
+
 - **Cloud rendering** (`earthClouds.ts`, `cloudFullscreenPass.ts`, `noiseVolumes.ts`):
   See [`docs/CLOUD_DEBUGGING_LESSONS.md`](docs/CLOUD_DEBUGGING_LESSONS.md). Slab-
   midpoint optimisations degenerate when the camera is inside the cloud band —

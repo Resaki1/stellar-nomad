@@ -605,7 +605,7 @@ export const SUN_DISC_RADIANCE_GAME =
 /**
  * Largest value safe to WRITE into an RGBA16F target. Half-float's max finite
  * is 65,504; leaving headroom means an additive blend of disc + glow cannot tip
- * to `Inf`, which would poison every filter downstream (bloom's mip chain, TAA,
+ * to `Inf`, which would poison every filter downstream (the glare pyramid, TAA,
  * the half-res AP upsample) with NaN — the "one bad texel poisons a whole
  * square" failure mode.
  *

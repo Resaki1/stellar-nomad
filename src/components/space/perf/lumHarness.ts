@@ -21,6 +21,7 @@
  *   __lum.hull()                     // GATE: what is lighting the SHIP? (P9e)
  *   await __lum.scotopic()            // GATE: rods/cones + Purkinje (Phase 7)
  *   await __lum.scotopic(true)        // ...turn the retina stage on (runtime A/B)
+ *   __lum.glare()                     // GATE: the eye's PSF — SHAPE, not strength (Ph 8)
  *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
  *   __lum.units()                     // print the unit convention
  *
@@ -128,6 +129,14 @@ import {
   setScotopic,
   spectralSpRatio,
 } from "../scotopic";
+import {
+  cieGlareSpreadFunction,
+  glareStatus,
+  setGlare,
+} from "../glarePass";
+
+/** Stiles–Holladay `s` — mirrored for the gate's printout only. */
+const GLARE_STRAYLIGHT_S_DOC = 10;
 import {
   NITS_PER_GAME_UNIT,
   STAR_COLOR_LINEAR,
@@ -3067,6 +3076,150 @@ export class LumHarness {
   }
 
 
+
+  /**
+   * GATE: veiling glare — the eye's point-spread function (Phase 8).
+   *
+   * 🔑 WHAT THIS ANSWERS: is the glare the right SHAPE? Strength is one number you
+   * can see; shape is six numbers you cannot. The PSF's whole job is a power-law
+   * tail, and the difference between θ⁻² and θ⁻³ (or a Gaussian, which has no tail
+   * at all) is invisible in a screenshot but decides whether a bright source veils
+   * the frame or just haloes.
+   *
+   * ⚠ THE SHAPE CHECK IS THE REAL TEST, not the strength. It re-derives the octave
+   * weights from the CIE GSF and asserts the ratios sit near 0.5 — which is the
+   * signature of the θ⁻³ falloff. If a future edit swaps in a Gaussian or
+   * mis-normalises the pyramid, the ratios move and this says so.
+   */
+  glare(
+    enable?: boolean,
+    strength?: number,
+    crossoverDeg?: number,
+  ): Record<string, unknown> {
+    if (enable !== undefined) {
+      setGlare(enable, strength, crossoverDeg);
+      console.log(
+        `[lum] glare ${enable ? "ON" : "OFF"} — strength ${glareStatus().strength}`,
+      );
+    }
+    const st = glareStatus();
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (let i = 0; i < st.weights.length; i++) {
+      const lo = 0.05 * 2 ** i;
+      rows[`mip ${i}`] = {
+        "octave (deg)": `${lo.toFixed(3)}–${(lo * 2).toFixed(2)}`,
+        "GSF energy share": Number(st.weights[i].toFixed(4)),
+        "ratio to previous": i === 0 ? "—" : Number(st.octaveRatios[i - 1].toFixed(3)),
+        "target size": st.mipSizes[i] ?? "—",
+      };
+    }
+    console.table(rows);
+
+    // The GSF's own slope, sampled — this is the quantity the weights encode.
+    const slopes: Record<string, Record<string, string | number>> = {};
+    let prev: [number, number] | null = null;
+    for (const th of [0.03, 0.1, 0.3, 1, 3, 10, 30]) {
+      const v = cieGlareSpreadFunction(th);
+      slopes[`${th}°`] = {
+        "GSF (1/sr)": v.toExponential(3),
+        "slope d(logP)/d(logθ)": prev
+          ? Number(
+              (
+                (Math.log(v) - Math.log(prev[1])) /
+                (Math.log(th) - Math.log(prev[0]))
+              ).toFixed(2),
+            )
+          : "—",
+      };
+      prev = [th, v];
+    }
+    console.table(slopes);
+
+    const meanRatio =
+      st.octaveRatios.reduce((a, b) => a + b, 0) / Math.max(st.octaveRatios.length, 1);
+    const sum = st.weights.reduce((a, b) => a + b, 0);
+    console.log(
+      [
+        `[lum] VEILING GLARE — the eye's PSF (Phase 8, replaces mip bloom)`,
+        `      stage ${st.enabled && st.strength > 0 ? "✅ ON" : "⬜ OFF (bit-exact passthrough, passes skipped)"}`,
+        `      straylight fraction k = ${st.strength}  (derived default ${st.derivedStrength}${st.overridden ? ", OVERRIDDEN" : ""})`,
+        `      ⚠ k is the ONE authored number: "in normal eyes, a few percent of all light`,
+        `        entering the eye is scattered". It REDISTRIBUTES — out = (1−k)·scene + k·PSF —`,
+        `        so it cannot brighten the image, only move contrast into the veil.`,
+        `      ${st.mipCount} octaves, ${st.passesLastFrame} passes last frame, pyramid ${st.ready ? "built" : "NOT BUILT YET"}`,
+        // ⚠⚠ REACH IS A SEPARATE QUESTION FROM SHAPE, and shipping without it cost a
+        // visible defect: at MIP_COUNT 6 the weights described a correct θ⁻³ falloff
+        // while the pyramid could only carry light 2.7°, so the veil ended in a STEP
+        // against black. The author saw it; no number in this gate did.
+        `      angular reach ~${st.reachDeg.toFixed(1)}°  (coarsest mip ${st.mipSizes[st.mipSizes.length - 1] ?? "—"})`,
+        st.reachDeg >= 30
+          ? "      ✅ reaches the whole frame — the far veil exists, which is the half that"
+          : `      ❌ ONLY ${st.reachDeg.toFixed(1)}° — beyond that the glare is EXACTLY ZERO, so the veil ends in`,
+        st.reachDeg >= 30
+          ? "         actually makes stars vanish. Weights carry the shape; reach carries the effect."
+          : "         a hard edge. Raise MIP_COUNT until the coarsest mip is ~2 px wide.",
+        // ⚠⚠ THE HMR SPLIT-BRAIN GUARD. `strength` and `passesLastFrame` are written by
+        // the SAME module in the SAME function, so they cannot disagree — unless the
+        // harness and the render graph are holding DIFFERENT instances of glarePass.ts,
+        // which is exactly what Fast Refresh does after the file is edited. That
+        // silently invalidated a whole 14-scenario ablation: `__lum.glare(false)` hit
+        // the harness's copy while the renderer kept running the old one, so both
+        // sweeps timed an identical 0.9 ms and the A/B measured nothing.
+        (st.strength > 0) !== (st.passesLastFrame > 0)
+          ? `      ❌❌ SPLIT BRAIN: strength ${st.strength} but ${st.passesLastFrame} passes/frame. The module this\n` +
+            `         gate talks to is NOT the one rendering — Fast Refresh duplicated it.\n` +
+            `         **RELOAD THE PAGE before believing any A/B or timing.**`
+          : `      ✅ strength and pass count agree — this gate and the render graph share one module.`,
+        `      weights sum ${sum.toFixed(6)}  ${Math.abs(sum - 1) < 1e-4 ? "✅ mean-preserving ⇒ the mix composite is energy-exact" : "❌ NOT NORMALISED — the composite invents or destroys energy"}`,
+        `      PSF = ${(GLARE_STRAYLIGHT_S_DOC * st.crossoverDeg).toFixed(1)}/θ³ + ${GLARE_STRAYLIGHT_S_DOC}/θ²   (crossover ${st.crossoverDeg.toFixed(2)}°)`,
+        `      aureole (≤0.4°) ${(100 * st.aureoleShare).toFixed(1)}%   ·   far veil (≥3.2°) ${(100 * st.farVeilShare).toFixed(1)}%`,
+        // ⚠⚠ BOTH HALVES HAVE TO BE HEALTHY AND TWO SINGLE-EXPONENT VERSIONS PROVED IT
+        // by failing in opposite directions: n=3 gave far 1.5% ("does not veil the whole
+        // screen"), n=2 gave near 30% ("weird halo around the ship" — a starved near
+        // field makes the glow PLATEAU instead of decaying, which reads as fog).
+        // Runtime: __lum.glare(true, undefined, 1.0)  ← smaller = broader/hazier
+        st.farVeilShare < 0.03
+          ? `      ❌ far veil only ${(100 * st.farVeilShare).toFixed(1)}% — a compact glow, not a veil.`
+          : st.aureoleShare < 0.55
+            ? `      ❌ aureole only ${(100 * st.aureoleShare).toFixed(1)}% — the near field is starved, so the glow will`
+            : `      ✅ both halves healthy: a tight aureole AND a frame-wide veil.`,
+        st.aureoleShare < 0.55 && st.farVeilShare >= 0.03
+          ? "         PLATEAU rather than decay and read as detached fog. Raise the crossover."
+          : "",
+        `      mean octave ratio ${meanRatio.toFixed(3)} (measured from the shipped weights)`,
+        // ⚠ This check USED to assert "ratio ≈ 0.5 ✅ the θ⁻³ signature" — i.e. it
+        // certified the very defect the author reported. A gate that hard-codes one
+        // value of a disputed parameter cannot detect that the parameter is wrong; it
+        // can only confirm the code matches the last guess. Now it reports and lets
+        // the physics be argued, and only flags the case that is unambiguously broken
+        // (a vanishing far veil).
+        `      🔑 The PSF is a SUM of a steep core and a shallow tail, not one power law:`,
+        `        no single exponent gives both an aureole and a veil. Local slope runs`,
+        `        −2.89 near the core to −2.08 far out, which is how the eye's GSF is`,
+        `        described (steeper inside ~1°, θ⁻² over 1–30°). s=10 is the CIE`,
+        `        straylight parameter, verified; the crossover is the one authored number.`,
+        "      ⚠ KNOWN UNDER-DRIVE: the scene buffer clamps at HALF_FLOAT_WRITE_MAX = 60,000",
+        "        while the sun disc is SUN_DISC_RADIANCE_GAME ≈ 2.65e5, so the SUN's glare is",
+        "        4.4× (2.1 stops) too weak. Everything else in the frame is represented right.",
+        "      A/B: __lum.glare(false) vs __lum.glare(true). Compare against bloom by",
+        "        toggling `bloom` in Settings → it is retained as the baseline, not the path.",
+      ].join("\n"),
+    );
+    return {
+      enabled: st.enabled,
+      strength: st.strength,
+      mipCount: st.mipCount,
+      passesLastFrame: st.passesLastFrame,
+      weightsSum: Number(sum.toFixed(6)),
+      crossoverDeg: st.crossoverDeg,
+      aureoleSharePct: Number((100 * st.aureoleShare).toFixed(1)),
+      farVeilSharePct: Number((100 * st.farVeilShare).toFixed(1)),
+      meanOctaveRatio: Number(meanRatio.toFixed(4)),
+      weights: st.weights.map((v) => Number(v.toFixed(4))),
+      ready: st.ready,
+    };
+  }
+
   /**
    * GATE: the retina — scotopic/mesopic vision + the Purkinje shift (Phase 7).
    *
@@ -3257,13 +3410,38 @@ export class LumHarness {
         "      out are the two things whose luminance is not physical:",
         `        Milky Way band   physical ${skyPhysical.toExponential(2)} cd/m² → s = ${rodConeBlend(skyPhysical).toFixed(4)}  (SCOTOPIC ✅)`,
         `                         buffered ${skyBuffered.toExponential(2)} cd/m² → s = ${rodConeBlend(skyBuffered).toFixed(4)}  (${rodConeBlend(skyBuffered) > 0.99 ? "PHOTOPIC ❌" : "mesopic ⚠"})`,
-        `      That is ${(Math.log2(SKY_ARTISTIC_GAIN)).toFixed(0)} stops, and it is the difference between the Milky Way`,
-        "      rendering GREY (right) and keeping its colour (wrong).",
-        "      🔑 This is not a bug in this file — it is the plan's own Phase 7 line item",
-        '      ("fix the skybox absolute luminance") arriving as a measurement. The gains',
-        "      exist because a physically-dim sky was invisible; a scotopic model is what",
-        "      makes a dim grey sky legible, so they can now be wound down. ⚠ Do it in ONE",
-        "      commit with a re-measure — half-done it reads as a 10-stop brightness bug.",
+        `      That is ${(Math.log2(SKY_ARTISTIC_GAIN)).toFixed(0)} stops of lift on the sky's luminance.`,
+        `      driver sees the band as ${rodConeBlend(skyBuffered) < 0.05 ? "SCOTOPIC ✅ — it will render GREY, which is right" : rodConeBlend(skyBuffered) < 0.2 ? "nearly scotopic ⚠" : "PHOTOPIC ❌ — it will keep its colour, which is wrong"}`,
+        "",
+        // ── How much gain does THIS pose actually need? ────────────────────────
+        // 🔑 THE POINT OF THIS BLOCK. `SKY_ARTISTIC_GAIN` is the one constant that
+        // has to satisfy two constraints at once — the driver must read the sky as
+        // scotopic, and the sky must clear AgX's black floor so the player can
+        // orient. Both are computable per pose, so the value stays MEASURED instead
+        // of decaying into folklore the next time someone finds space too dark.
+        ...(() => {
+          const AGX_FLOOR = 2 ** -12.47393;
+          const physDisplay =
+            (skyPhysical / NITS_PER_GAME_UNIT) * getExposure();
+          const margin = physDisplay / AGX_FLOOR;
+          const needed = Math.max(1, 8 / margin);
+          const supplied = SKY_ARTISTIC_GAIN;
+          return [
+            `      AT THIS POSE'S EXPOSURE (${getExposure().toExponential(2)}):`,
+            `        the PHYSICAL band would render at ${physDisplay.toExponential(2)} display-linear = ${margin.toFixed(2)}× AgX's black floor`,
+            `        gain needed for an 8× legibility margin: ${needed <= 1.01 ? "NONE — physical is already legible here" : "×" + needed.toPrecision(3)}`,
+            `        gain supplied: ×${supplied}   ⇒ ${
+              needed <= 1.01
+                ? "the lift is pure headroom in this pose"
+                : supplied >= needed
+                  ? `✅ ${(supplied / needed).toPrecision(2)}× more than needed`
+                  : `❌ SHORT by ${(needed / supplied).toPrecision(2)}× — the sky will crush to black here`
+            }`,
+            "      ⚠ A pose with a sunlit planet filling the frame is SUPPOSED to be hopeless:",
+            "        you cannot see the Milky Way next to a sunlit planet, and no gain that",
+            "        fixes that would leave the driver honest. Judge this on DARK poses only.",
+          ];
+        })(),
       ].join("\n"),
     );
 

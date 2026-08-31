@@ -123,10 +123,10 @@ const Scene = () => {
         <Europa />
         <Ganymede />
         <Io />
-        <Star bloom={settings.bloom} />
+        <Star />
       </>
     ),
-    [settings.bloom],
+    [],
   );
 
   const localContent = useMemo(

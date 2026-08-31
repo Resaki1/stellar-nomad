@@ -43,10 +43,6 @@ import { sunVisibility } from "@/components/space/sunOcclusion";
 
 export { STAR_POSITION_KM };
 
-type StarProps = {
-  bloom: boolean;
-};
-
 // From the system description (was a duplicated 696_340 literal) so a generated
 // system's primary gets its own radius — Phase 3b / §3.0.
 const RADIUS_KM = STAR_RADIUS_KM;
@@ -108,7 +104,7 @@ const DISC_PX_FLOOR = 2.5;
 const INNER_GLOW_FRAC = 0.3;
 const OUTER_GLOW_ABS = 8.0;
 
-function Star({ bloom: _bloom }: StarProps) {
+function Star() {
   const worldOrigin = useWorldOrigin();
   const camera = useThree((s) => s.camera);
 

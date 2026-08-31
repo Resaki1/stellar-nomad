@@ -95,22 +95,25 @@
 //   scene radiance → [eye optics: intraocular scatter] → RETINA (here) → tone curve
 //
 // The retina is downstream of the ocular media and upstream of any display model,
-// so the stage goes AFTER bloom and immediately BEFORE `.toneMapping()`
+// so the stage goes AFTER the glare PSF and immediately BEFORE `.toneMapping()`
 // (SpaceRenderer.tsx). Putting it after the tone curve would desaturate display
 // code values and fight AgX's own Rec.2020 inset/outset chroma path; putting it
-// before bloom would let glare re-introduce colour the rods cannot see.
+// before the glare would let scatter re-introduce colour the rods cannot see.
 //
-// ⚠ THE DRIVER IS DELIBERATELY READ PRE-BLOOM. Veiling glare genuinely does raise
-// the retinal light floor and SHOULD feed the driver (§3.9c is the same argument).
-// But today's bloom is a mip chain with an authored strength, not a calibrated
-// PSF — feeding an uncalibrated quantity into a physically-anchored threshold is
-// how a derived constant quietly becomes a tuned one. Phase 8 replaces it with a
-// real PSF; couple them THEN, in the commit that makes glare physical.
+// ✅ THE DRIVER READS THE VEILED IMAGE, as of Phase 8. This note used to say the
+// opposite and explain why: *"veiling glare genuinely does raise the retinal light
+// floor and SHOULD feed the driver, but today's bloom is a mip chain with an
+// authored strength, not a calibrated PSF — feeding an uncalibrated quantity into a
+// physically-anchored threshold is how a derived constant quietly becomes a tuned
+// one."* `glarePass.ts` is that calibrated PSF, so the coupling is now made and the
+// retina sees what the ocular media actually delivered.
 //
-// 🔑 The side benefit is that the driver is then bit-identical to what
-// `lumHarness`'s `decodeRgb` computes on the CPU (`buffer / preExposure`), so
-// `__lum.probe()`'s `nits` IS the number this shader thresholds on. The gate and
-// the shader cannot disagree about the input.
+// ⚠ The consequence is that `__lum.probe()`'s `nits` is no longer bit-identical to
+// the driver — probe reads the pre-glare target, the driver reads
+// `(1−k)·scene + k·PSF(scene)`. With `k = 0.03` they agree to within a few percent
+// away from bright sources and diverge inside a veil, which is exactly where the
+// veil is doing its job. Do not treat a small probe/driver mismatch near the sun as
+// a bug.
 // ─────────────────────────────────────────────────────────────────────
 
 import * as THREE from "three";
@@ -337,10 +340,10 @@ function rodConeBlendNode(nits: U): U {
 /**
  * The retina stage.
  *
- * @param hdr      post-bloom, post-exposure colour (vec4) — what the eye receives
+ * @param hdr      post-glare, post-exposure colour (vec4) — what the eye receives
  * @param sceneRad the RAW composited scene texture (vec4), still carrying the
  *                 frame's pre-exposure. Used ONLY to recover absolute cd/m² for
- *                 the threshold; see the header on why this is the pre-bloom read.
+ *                 the threshold, in absolute game units.
  *
  * Returns vec4 — `.toneMapping()` returns `vec4(fn(rgb), a)` and everything
  * downstream (dither, sRGB encode, 8-bit write) is vec4, so dropping alpha here

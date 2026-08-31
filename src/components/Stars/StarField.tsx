@@ -130,6 +130,53 @@ const PSF_SIGMA_PX = 0.85;
  * magnitude→illuminance conversion. Mixing art into the physical layer is how a
  * calibrated system quietly stops being calibrated — and the star gate would then
  * happily certify the art instead of the physics.
+ *
+ * ── ⚠⚠ P7d, 2026-08-30 — REDUCED TO 64, THEN REVERTED. THE REASON MATTERS. ──
+ *
+ * It was cut to 64 to keep Phase 7's scotopic driver honest, on the argument that a
+ * gain inside the written radiance is a lie about luminance. ❌ The author caught it
+ * immediately, with the sharpest possible counter-example:
+ *
+ *   "In real life, from Earth's ground, I can start to see the first bright stars
+ *    during sunset and can definitely see multiple stars at twilight. But now I have
+ *    to get to the completely dark side of Earth to start seeing stars."
+ *
+ * That is a REAL physical anchor and the render was failing it. Checked: at nautical
+ * twilight the sky is ~0.1 cd/m² and the eye concentrates a mag-2 star into roughly
+ * 1 arcmin², giving ~4.75 cd/m² effective — a **47× contrast, obviously visible.**
+ *
+ * 🔑🔑 **A GAIN ON A POINT SOURCE IS NOT THE SAME KIND OF THING AS A GAIN ON THE
+ * SKY, AND CONFLATING THEM WAS THE MISTAKE.** An UNRESOLVED point source has no
+ * surface brightness in this renderer: its peak pixel value is entirely a
+ * consequence of how many pixels the sprite is spread over. The eye concentrates a
+ * star into ~1 arcmin²; we spread it over a sprite whose footprint is set by σ and
+ * the display. At 50° over 1080 px **one pixel is already 7.7 arcmin²**:
+ *
+ *     sprite footprint    solid angle    dilution vs the eye
+ *      1 px²                8 arcmin²          8×   (2.9 stops)
+ *      4 px²               31 arcmin²         31×   (4.9 stops)
+ *     10 px²               77 arcmin²         77×   (6.3 stops)
+ *     25 px²              193 arcmin²        193×   (7.6 stops)
+ *
+ * So a large part of this gain is not "art" at all — it is **compensation for a
+ * concentration the renderer physically cannot reproduce**, and `__lum.star()` is
+ * blind to it because flux IS conserved; it is the *peak* that is diluted.
+ *
+ * ⚠ 1024 (10 stops) exceeds the ~6 stops of pure dilution. The remainder covers the
+ * adaptation gap — a sunlit hull drags global exposure down far enough to bury a
+ * correctly-concentrated star too. Both terms are display-condition-dependent, which
+ * is exactly why a fixed constant is crude and why the author's empirically tuned
+ * value beats any estimate this comment could offer. **Reverted to 1024.**
+ *
+ * ⚠⚠ **DO NOT re-couple this to `SKY_ARTISTIC_GAIN`.** A previous note here said to
+ * "move them together, their ratio is the calibrated `CATALOGUE_FLUX_SHARE` split" —
+ * **that was wrong.** `CATALOGUE_FLUX_SHARE` partitions the sky's FLUX for the SH
+ * irradiance bake and has nothing to do with a display-side lift. The sky gain lifts
+ * a surface that has a real surface brightness; this one substitutes for a PSF.
+ *
+ * 🔑 THE PRINCIPLED REPLACEMENT IS PHASE 8, not Phase 7. A real Spencer PSF
+ * concentrates a star's flux the way the eye does, at which point the dilution term
+ * here goes to 1 by construction. Phase 7 changes hue, not level, and cannot help.
  */
 export const STAR_ARTISTIC_GAIN = 1024.0;
 

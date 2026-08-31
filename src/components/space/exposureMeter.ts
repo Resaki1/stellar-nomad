@@ -730,8 +730,9 @@ function build(renderer: WebGPURenderer): void {
 
 /**
  * Per-pixel local-exposure gain, to be multiplied into the composite ALONGSIDE the
- * global exposure and BEFORE bloom — bloom's threshold is a display-referred
- * "brighter than white" test, so it has to see the final display-linear value.
+ * global exposure. Both are display-mapping terms and belong on the same side of
+ * the tone curve. (This used to say "BEFORE bloom, because bloom's threshold is a
+ * display-referred test" — bloom is gone and a physical PSF has no threshold.)
  *
  * Returns 1.0 exactly while `uLocalStrength` is 0 (map not yet built, or disabled),
  * so wiring it up is a bit-exact no-op until it has something to say.

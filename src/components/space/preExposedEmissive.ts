@@ -97,7 +97,7 @@ export function registerPreExposedEmissive(
 
 /**
  * ⚠⚠ CLAMPED, and the clamp is load-bearing. The scene renders into RGBA16F, so
- * a channel above 65504 becomes Inf and then NaN through the bloom chain — one
+ * a channel above 65504 becomes Inf and then NaN through the glare pyramid — one
  * blown emissive takes out the whole frame.
  *
  * Pre-exposure reaches `1/(1.2·2^EV_MIN)` ≈ 2.2e5 in a fully dark-adapted scene,

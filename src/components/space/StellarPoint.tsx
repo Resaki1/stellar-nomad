@@ -9,7 +9,7 @@
 // distances to both the sun and the camera.
 //
 // Rendering: small opaque billboard with alphaHash and minimum screen
-// size. The bright HDR core triggers the bloom pipeline for a natural
+// size. The bright HDR core feeds the glare PSF for a natural
 // glow halo. Uses opaque + alphaHash + depthWrite for correct depth
 // occlusion by nearby planet geometry.
 //

@@ -94,6 +94,56 @@ const SKY_TEXTURE_MEAN_LINEAR = 0.035450;
  * SKY_TARGET_NITS instead. Those are measurements; changing them to chase a look
  * destroys the ability to tell whether the sky is calibrated, and raising
  * SKY_TARGET_NITS specifically recreates the original 189,000×-too-bright error.
+ *
+ * ── ⚠⚠ P7d, 2026-08-30 — WOUND DOWN TO 64, THEN REVERTED. READ THIS BEFORE
+ *    TOUCHING IT AGAIN. ─────────────────────────────────────────────────────
+ *
+ * Phase 7 made this gain look measurable, because the scotopic driver reads
+ * absolute luminance off this buffer and a gain applied inside the written
+ * radiance is a lie about luminance. It was reduced 1024 → 64, chosen as the
+ * largest value for which the driver still reads the **Milky Way band** as
+ * scotopic (band s = 0.013 at ×64 vs 0.454 at ×1024).
+ *
+ * ❌ **THAT OPTIMISED THE WRONG QUANTITY, AND THE AUTHOR CAUGHT IT ON DEVICE:**
+ * "I can barely see the ship illuminate at all on a dark setting where the Milky
+ * Way is visible really bright."
+ *
+ * 🔑 **THE BAND IS NOT THE DIMMEST THING THAT MUST STAY VISIBLE — THE HULL IS.**
+ * Measured (`__lum.skyProbe`): the sky delivers 2.2e-4 … 5.1e-4 lux to the hull,
+ * so an albedo-0.30 Lambert surface sits at **5.0e-5 cd/m² = 2.49× BELOW the
+ * band's 1.25e-4**. Against AgX's hard black floor at the galactic-centre pose:
+ *
+ *     gain    band s     hull × AgX floor    band × AgX floor
+ *     ×64     0.013            3.7                 9.3        hull CRUSHED
+ *     ×128    0.076            7.4                18.5        hull CRUSHED
+ *     ×256    0.178           14.9                37.1        hull visible
+ *     ×512    0.308           29.7                74.2        hull visible
+ *     ×1024   0.454           59.5               148.3        hull visible ← author's value
+ *
+ * An 8× margin on the HULL needs **×138**, so ×64 left it at 3.7× — inside the
+ * bottom 1.9 stops of the curve, i.e. crushed. The band had its margin; the thing
+ * lit BY the band did not. ⇒ **Reverted to 1024**, the author's empirically tuned
+ * value. ×256 / ×512 are the measured middle options if the Milky Way's residual
+ * colour matters more than hull contrast; that is a look call, and the table above
+ * is what it costs either way.
+ *
+ * ⚠⚠ **AND THE "KEEP THIS EQUAL TO `STAR_ARTISTIC_GAIN`" CLAIM WAS WRONG.** It
+ * justified itself with `CATALOGUE_FLUX_SHARE`, which governs how the sky's FLUX is
+ * partitioned for the SH irradiance bake — nothing to do with a display-side lift.
+ * **The two gains answer different questions and must be tuned separately:** this
+ * one lifts a surface with a real, well-defined surface brightness (so it IS a lie
+ * about a physical quantity), while the star gain stands in for the eye's PSF
+ * concentration of an UNRESOLVED point source, which has no surface brightness in
+ * this renderer at all. See `STAR_ARTISTIC_GAIN` for that derivation.
+ *
+ * ⚠ Phase 7 does NOT reduce the need for this gain, and an earlier note claiming it
+ * would was wrong: desaturation adds no level, and our sky is warm (measured
+ * S/P 0.79–0.84), so full scotopic makes the Milky Way 0.3–0.5 stops DIMMER.
+ *
+ * 🔑 THE ACTUAL FIX is a per-pixel sky mask so the gain can move after the retina
+ * stage — see P7d-ii in docs/LIGHTING_PLAN.md for why alpha, depth and `(1 − s)`
+ * all fail. Until then this gain is a KNOWN, BOUNDED lie: `__lum.scotopic()` prints
+ * exactly what it costs the driver, every run.
  */
 export const SKY_ARTISTIC_GAIN = 1024.0;
 
