@@ -19,6 +19,8 @@
  *   __lum.skyProbe()                 // GATE: is the sky lighting the hull? (D29)
  *   __lum.nightSide()                // GATE: is the sky lighting PLANETS? (Phase 9)
  *   __lum.hull()                     // GATE: what is lighting the SHIP? (P9e)
+ *   await __lum.scotopic()            // GATE: rods/cones + Purkinje (Phase 7)
+ *   await __lum.scotopic(true)        // ...turn the retina stage on (runtime A/B)
  *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
  *   __lum.units()                     // print the unit convention
  *
@@ -119,8 +121,18 @@ import {
   setLocalExposure,
 } from "../exposureMeter";
 import {
+  deriveScotopicWeights,
+  rodConeBlend,
+  scotopicMixCpu,
+  scotopicStatus,
+  setScotopic,
+  spectralSpRatio,
+} from "../scotopic";
+import {
   NITS_PER_GAME_UNIT,
   STAR_COLOR_LINEAR,
+  evFromNits,
+  planck,
   SUN_ILLUM_GAME_1AU,
   discRadianceAtZeroPhase,
   subSolarRadianceLambert,
@@ -3052,6 +3064,278 @@ export class LumHarness {
         "      owns that; do not hand-tune the night side's colour before it lands.",
       ].join("\n"),
     );
+  }
+
+
+  /**
+   * GATE: the retina — scotopic/mesopic vision + the Purkinje shift (Phase 7).
+   *
+   * 🔑 WHAT THIS ANSWERS, which no screenshot can: **is the frame actually in the
+   * luminance range where rods take over, or does it merely LOOK dark?** Those are
+   * completely different failures. A night side that renders black because it is
+   * 7 stops below the exposure clamp is not a scotopic scene — it is a missing
+   * one — and the eye model cannot fix it. This prints the regime split of the
+   * real frame so the two can never be confused again.
+   *
+   * ⚠ THE `s` COLUMN IS PREDICTED, NOT OBSERVED, and that is a real limitation:
+   * the retina stage runs AFTER the target `probe()` reads, so no readback can see
+   * its output. The defence against the self-agreement trap is narrower than
+   * usual and worth stating: the prediction calls `scotopicMixCpu`, which reads
+   * the SAME live uniforms the shader samples and the same `rodConeBlend` — so a
+   * wrong CONSTANT cannot hide here. What this cannot catch is the stage being
+   * unwired entirely. For that, A/B it: `__lum.scotopic(false)` vs `(true)`.
+   */
+  async scotopic(
+    enable?: boolean,
+    opts?: { strength?: number; cctK?: number; derive?: boolean },
+  ): Promise<Record<string, unknown> | void> {
+    if (enable !== undefined) {
+      setScotopic(enable, opts);
+      console.log(
+        `[lum] scotopic ${enable ? "ON" : "OFF"} — strength ${scotopicStatus().strength}, Purkinje ${scotopicStatus().purkinjeCctK} K`,
+      );
+    }
+    const st = scotopicStatus();
+
+    // ── 1. The model, as the shader currently holds it ──────────────────────
+    console.log(
+      [
+        `[lum] RETINA — rods, cones and the Purkinje shift (Phase 7)`,
+        `      stage ${st.enabled ? "✅ ON" : "⬜ OFF (bit-exact passthrough)"}   strength ${st.strength.toFixed(2)}`,
+        `      scotopic V′ weights  [${st.weights.map((v) => v.toFixed(4)).join(", ")}]  (sum ${st.weights.reduce((a, b) => a + b, 0).toFixed(4)})`,
+        `      photopic  V  weights  [${st.photopicWeights.map((v) => v.toFixed(4)).join(", ")}]`,
+        `      ⇒ Purkinje per channel  R ×${(st.weights[0] / st.photopicWeights[0]).toFixed(3)}   G ×${(st.weights[1] / st.photopicWeights[1]).toFixed(3)}   B ×${(st.weights[2] / st.photopicWeights[2]).toFixed(3)}`,
+        `      Purkinje tint  ${st.purkinjeCctK} K → [${st.purkinjeTint.map((v) => v.toFixed(3)).join(", ")}]  ⚠ the ONE authored number (rods carry no hue)`,
+        `      mesopic band  ${st.mesopicLoNits} … ${st.mesopicHiNits} cd/m²  (CIE 191:2010, ${(Math.log2(st.mesopicHiNits / st.mesopicLoNits)).toFixed(2)} stops, smoothstep in LOG L)`,
+        `      adapting luminance ${st.adaptNits.toExponential(3)} cd/m²  ⚠ DIAGNOSTIC ONLY — not an input`,
+        `        (a global bleaching floor of s ≥ ${st.adaptBlendIfGlobal.toFixed(3)} was built here and REMOVED; see scotopic.ts)`,
+      ].join("\n"),
+    );
+
+    // ── 2. The ladder — where the transition actually sits ───────────────────
+    // Reference luminances this project has already measured elsewhere, so the
+    // band can be judged against the scenes it will be seen in rather than
+    // against its own definition.
+    const ladder: Array<[string, number]> = [
+      ["sunlit cloud top (the exposure anchor)", 19146],
+      ["sunlit Earth ground", 3000],
+      ["full moon disc", 3000],
+      ["Jupiter sunlit disc", 1216],
+      ["Uranus sunlit disc", 81],
+      ["deep twilight", 1],
+      ["moonlit ground (Phase 9 measured)", 0.069],
+      ["Milky Way band, PHYSICAL", 1.25e-4],
+      ["planet night side, sky-lit floor", 3.2e-5],
+      ["airglow", 1e-4],
+      ["scotopic absolute threshold", 1e-6],
+    ];
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const [name, nits] of ladder) {
+      const s = rodConeBlend(nits);
+      rows[name] = {
+        "cd/m²": Number(nits.toPrecision(3)),
+        "EV100": Number(evFromNits(nits).toFixed(1)),
+        "s (1=photopic)": Number(s.toFixed(4)),
+        regime: s > 0.99 ? "photopic" : s < 0.01 ? "SCOTOPIC" : "mesopic",
+      };
+    }
+    console.table(rows);
+
+    // ── 3. The live frame: what regime is the player actually in? ────────────
+    if (!_source) {
+      console.error("[lum] no render target registered — is the scene mounted?");
+      return;
+    }
+    const { renderer, target } = _source;
+    const N = 32; // 32×32 = 1024 samples of the real frame
+    const stepX = Math.max(1, Math.floor(target.width / N));
+    const stepY = Math.max(1, Math.floor(target.height / N));
+    const buf = await renderer.readRenderTargetPixelsAsync(
+      target,
+      0,
+      0,
+      target.width,
+      target.height,
+    );
+    const isHalf = buf instanceof Uint16Array;
+    const isByte = buf instanceof Uint8Array;
+    const a = buf as unknown as ArrayLike<number>;
+    const stride = rowStrideElements(target.width, isHalf ? 2 : isByte ? 1 : 4);
+
+    let scot = 0;
+    let meso = 0;
+    let phot = 0;
+    let satBefore = 0;
+    let satAfter = 0;
+    let satGrey = 0;
+    let counted = 0;
+    let brightest = { nits: 0, rgb: [0, 0, 0] as [number, number, number] };
+    for (let y = 0; y < target.height; y += stepY) {
+      for (let x = 0; x < target.width; x += stepX) {
+        const rgb = decodeRgb(a, y * stride + x * 4, isHalf, isByte);
+        const luma =
+          REC709[0] * rgb[0] + REC709[1] * rgb[1] + REC709[2] * rgb[2];
+        const nits = luma * NITS_PER_GAME_UNIT;
+        const s = rodConeBlend(nits);
+        if (s > 0.99) phot++;
+        else if (s < 0.01) scot++;
+        else meso++;
+        if (nits > brightest.nits) brightest = { nits, rgb };
+        // Saturation as max-min over max — crude, but it is the quantity the
+        // complaint is about ("too colourful for the luminance") and it survives
+        // the scale-invariance the mix has.
+        const sat = (c: readonly number[]) => {
+          const mx = Math.max(c[0], c[1], c[2]);
+          return mx > 0 ? (mx - Math.min(c[0], c[1], c[2])) / mx : 0;
+        };
+        satBefore += sat(rgb);
+        satAfter += sat(scotopicMixCpu(rgb, nits).out);
+        // Desaturation ALONE, with the tint forced neutral. 🔑 Reported separately
+        // because the two halves of this stage pull in OPPOSITE directions on the
+        // chroma metric, and the first tint default was wrong by 4.9× precisely
+        // because one aggregate number hid that.
+        const { s: sPix, rod } = scotopicMixCpu(rgb, nits);
+        satGrey += sat([
+          rod * (1 - sPix) + rgb[0] * sPix,
+          rod * (1 - sPix) + rgb[1] * sPix,
+          rod * (1 - sPix) + rgb[2] * sPix,
+        ]);
+        counted++;
+      }
+    }
+    const pct = (n: number) => Number(((100 * n) / counted).toFixed(1));
+    console.log(
+      [
+        `[lum] THIS FRAME — ${counted} samples of the composited scene`,
+        `      photopic ${pct(phot)}%   mesopic ${pct(meso)}%   SCOTOPIC ${pct(scot)}%`,
+        `      mean chroma  ${(satBefore / counted).toFixed(4)} → ${(satAfter / counted).toFixed(4)}  (${st.enabled ? "DELIVERED" : "would be, if enabled"})`,
+        `        of which: desaturation alone → ${(satGrey / counted).toFixed(4)}   the Purkinje tint adds ${((satAfter - satGrey) / counted >= 0 ? "+" : "") + ((satAfter - satGrey) / counted).toFixed(4)}`,
+        // ⚠⚠ THE TEST IS AGAINST `satBefore`, NOT AGAINST `satGrey`. An earlier version
+        // warned whenever the tint exceeded the desaturation, which fires on any
+        // already-neutral frame (deep space) where the tint is most of a SMALL
+        // residual — chroma 0.229 → 0.103 is a 2.2× DRAIN even though the tint is 74%
+        // of what is left. The only failure worth a warning is net chroma going UP.
+        satAfter > satBefore
+          ? `        ❌ NET CHROMA WENT UP (${(satBefore / counted).toFixed(4)} → ${(satAfter / counted).toFixed(4)}). The stage is PAINTING the frame`
+          : `        ✅ net drain ${(satBefore / satAfter).toFixed(2)}× — the stage is removing colour, not adding it.`,
+        satAfter > satBefore
+          ? "        blue rather than draining it. Lower PURKINJE_CCT_K toward 6504 K."
+          : `        (tint is ${((100 * (satAfter - satGrey)) / Math.max(satAfter, 1e-9)).toFixed(0)}% of the RESIDUAL, which is fine — judge the drain, not the split.)`,
+        `      brightest sample ${brightest.nits.toExponential(3)} cd/m²  rgb [${brightest.rgb.map((v) => v.toExponential(2)).join(", ")}]`,
+      ].join("\n"),
+    );
+
+    // ── 4. The centre pixel, in full ────────────────────────────────────────
+    const p = await this.probe();
+    if (p) {
+      const before = p.units;
+      const { out, s, rod } = scotopicMixCpu(before, p.nits);
+      const spPixel = p.luma > 0 ? rod / p.luma : 0;
+      console.log(
+        [
+          `[lum] CENTRE PIXEL  ${p.nits.toExponential(3)} cd/m²  (EV100 ${p.ev.toFixed(2)})`,
+          `      linear rgb   [${before.map((v) => v.toExponential(3)).join(", ")}]`,
+          `      photopic luma ${p.luma.toExponential(3)}   rod luma ${rod.toExponential(3)}   S/P ${spPixel.toFixed(3)}`,
+          `      s = ${s.toFixed(4)}  ⇒  ${s > 0.99 ? "photopic — full colour, this stage is a no-op here" : s < 0.01 ? "SCOTOPIC — fully achromatic" : "mesopic — partial colour"}`,
+          `      after retina [${out.map((v) => v.toExponential(3)).join(", ")}]`,
+          `      🔑 S/P is the Purkinje shift for THIS pixel: >1 means the rods see it`,
+          `         brighter than the cones do (blue/green), <1 dimmer (red).`,
+        ].join("\n"),
+      );
+    }
+
+    // ── 5. ⚠⚠ The contamination that will make this look broken ─────────────
+    // 150 S10 in the galactic plane — the same figure `nightSide()` uses, so the
+    // two gates cannot quote different Milky Ways.
+    const skyPhysical = 1.25e-4;
+    const skyBuffered = skyPhysical * SKY_ARTISTIC_GAIN;
+    console.log(
+      [
+        "[lum] ⚠⚠ THE SKY AND STARS ARE LYING TO THIS STAGE, AND BY A KNOWN FACTOR.",
+        `      SKY_ARTISTIC_GAIN = ${SKY_ARTISTIC_GAIN}, STAR_ARTISTIC_GAIN = ${STAR_ARTISTIC_GAIN}, both applied`,
+        "      INSIDE the written radiance — so the two things Phase 7 exists to grey",
+        "      out are the two things whose luminance is not physical:",
+        `        Milky Way band   physical ${skyPhysical.toExponential(2)} cd/m² → s = ${rodConeBlend(skyPhysical).toFixed(4)}  (SCOTOPIC ✅)`,
+        `                         buffered ${skyBuffered.toExponential(2)} cd/m² → s = ${rodConeBlend(skyBuffered).toFixed(4)}  (${rodConeBlend(skyBuffered) > 0.99 ? "PHOTOPIC ❌" : "mesopic ⚠"})`,
+        `      That is ${(Math.log2(SKY_ARTISTIC_GAIN)).toFixed(0)} stops, and it is the difference between the Milky Way`,
+        "      rendering GREY (right) and keeping its colour (wrong).",
+        "      🔑 This is not a bug in this file — it is the plan's own Phase 7 line item",
+        '      ("fix the skybox absolute luminance") arriving as a measurement. The gains',
+        "      exist because a physically-dim sky was invisible; a scotopic model is what",
+        "      makes a dim grey sky legible, so they can now be wound down. ⚠ Do it in ONE",
+        "      commit with a re-measure — half-done it reads as a 10-stop brightness bug.",
+      ].join("\n"),
+    );
+
+    // ── 6. Optional: re-derive the constant instead of trusting it ───────────
+    if (opts?.derive) {
+      const d = deriveScotopicWeights();
+      const shipped = st.shippedWeights;
+      const drift = Math.max(...d.weights.map((v, i) => Math.abs(v - shipped[i])));
+      console.log(
+        [
+          `[lum] RE-DERIVED from photometry.ts's own CMFs + CIE 1951 V′(λ):`,
+          `      [${d.weights.map((v) => v.toFixed(4)).join(", ")}]  over ${d.samples} in-gamut spectra, RMS ${d.rmsStops.toFixed(4)} stops`,
+          `      shipped  [${shipped.map((v) => v.toFixed(4)).join(", ")}]   max drift ${drift.toFixed(4)}`,
+          `      implied D65 S/P ${d.d65SpRatio.toFixed(4)}  vs published daylight 2.4–2.5`,
+          `      hold-out (never fitted): Sol 5772 K S/P ${spectralSpRatio((nm) => planck(nm, 5772)).toFixed(3)} (published ≈2.3),`,
+          `                               CIE A 2856 K S/P ${spectralSpRatio((nm) => planck(nm, 2856)).toFixed(3)} (published ≈1.4)`,
+          drift < 0.04
+            ? "      ✅ the shipped constant reproduces from first principles"
+            : `      ❌ DRIFT ${drift.toFixed(4)} — the pasted constant no longer matches the derivation`,
+        ].join("\n"),
+      );
+    }
+
+    // ── 7. The RETURN VALUE: only what varies with the pose ─────────────────
+    //
+    // ⚠⚠ WHY THIS EXISTS. The first version of this gate printed everything and
+    // returned void. The author sent back five scenarios' worth of `console.table`
+    // output and **every table was byte-identical** — because the table is the
+    // LADDER, a pure function of the constants, while the pose-dependent numbers
+    // were in `console.log` prose that is impractical to copy. A gate whose
+    // copy-pasteable output is constant across scenarios cannot validate anything.
+    //
+    // 🔑 So: print the interpretation, RETURN the measurement. What varies with the
+    // pose is small enough to paste, and DevTools renders a returned object as one
+    // expandable line. Applies to any gate meant for a human to relay.
+    const summary: Record<string, unknown> = {
+      enabled: st.enabled,
+      purkinjeCctK: st.purkinjeCctK,
+      pctPhotopic: pct(phot),
+      pctMesopic: pct(meso),
+      pctScotopic: pct(scot),
+      chromaBefore: Number((satBefore / counted).toPrecision(3)),
+      chromaAfter: Number((satAfter / counted).toPrecision(3)),
+      chromaDesatOnly: Number((satGrey / counted).toPrecision(3)),
+      tintAdds: Number(((satAfter - satGrey) / counted).toPrecision(3)),
+      brightestNits: Number(brightest.nits.toPrecision(3)),
+      adaptNits: Number(st.adaptNits.toPrecision(3)),
+    };
+    if (p) {
+      const { s: sPix, rod } = scotopicMixCpu(p.units, p.nits);
+      summary.centreNits = Number(p.nits.toPrecision(3));
+      summary.centreEV100 = Number(p.ev.toFixed(2));
+      summary.centreS = Number(sPix.toFixed(4));
+      summary.centreSpRatio = Number((p.luma > 0 ? rod / p.luma : 0).toFixed(3));
+    }
+
+    // ── 8. Verdict ──────────────────────────────────────────────────────────
+    const anyRod = scot + meso > 0;
+    console.log(
+      [
+        anyRod
+          ? `[lum] ✅ ${pct(scot + meso)}% of this frame is at or below the mesopic ceiling — the eye model has something to do here.`
+          : "[lum] ⬜ this frame is entirely photopic. The stage is correctly doing nothing; point at a night side or deep space.",
+        st.enabled
+          ? "      A/B it with __lum.scotopic(false) — if nothing changes, the stage is not wired."
+          : "      Turn it on with __lum.scotopic(true).",
+        "      ⚠ BEFORE concluding 'it does nothing': AgX crushes everything below",
+        "      display-linear 1.76e-4 to EXACTLY zero, and the sky-lit night floor sits",
+        "      ~0.4 stops above it. Check against NeutralToneMapping first.",
+      ].join("\n"),
+    );
+    return summary;
   }
 
   /**

@@ -44,6 +44,7 @@ import {
 import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import { localExposureNode, updateExposureMeter } from "./exposureMeter";
+import { scotopicNode } from "./scotopic";
 import {
   setupAtmospherePass,
   getDominantAtmosphereBody,
@@ -612,8 +613,20 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // sky) — which the Sky-View LUT resolution work alone can't remove because the
     // raymarch sky bands at quantization too. TPDF (difference of two per-pixel
     // hashes) is flat, distortion-free dither; scaled to ~OUTPUT_DITHER_LSB.
+    // ── RETINA (Phase 7, scotopic.ts) ────────────────────────────────────────
+    // Rod/cone mix + Purkinje shift, applied to the veiled image and BEFORE the
+    // display transform, because that is where the retina sits: ocular media →
+    // receptors → neural → display. `sceneTexture` is passed separately so the
+    // threshold can be taken in ABSOLUTE cd/m²; the exposed value cannot be used
+    // for it (that would make the rod/cone balance a function of exposure, i.e. a
+    // feedback loop that settles at the tone curve's fixed point).
+    //
+    // Bit-exact no-op until `__lum.scotopic(true)` raises the strength uniform, so
+    // this costs one uniform multiply and no shader recompile while it is off.
+    const retina = scotopicNode(hdr, sceneTexture);
+
     const toneMode = settings.toneMapping ? AgXToneMapping : NeutralToneMapping;
-    const toneMapped = hdr.toneMapping(toneMode);
+    const toneMapped = retina.toneMapping(toneMode);
 
     // ⚠ NO post-process AA here, and that was measured too. Post-tonemap SMAA was
     // built (MSAA resolves in linear HDR with the tone curve after, so on a

@@ -80,11 +80,13 @@ import {
 import {
   EV_MAX,
   EV_MIN,
+  NITS_PER_GAME_UNIT,
   evFromGameUnits,
   getPreExposure,
   isManualExposure,
   setMeteredEV,
 } from "./photometry";
+import { updateScotopicUniforms } from "./scotopic";
 
 // ── Sampling ────────────────────────────────────────────────────────────────
 // 64×64 = 4096 samples of the frame. Statistically ample for a scalar exposure
@@ -895,6 +897,24 @@ export function updateExposureMeter(
     _localEnabled && _localMapReady
       ? (_localStrengthOverride ?? ADAPTATION_K)
       : 0;
+
+  // ── The retina's GLOBAL term: rod bleaching (Phase 7, scotopic.ts) ─────────
+  // ⚠ SET ABOVE THE PIN, for the same reason the local map renders above it: every
+  // gate written to validate Phase 7 pins exposure, and a term frozen below this
+  // return would silently hold the previous pose's value while being measured.
+  //
+  // ⚠⚠ `_adaptedEV` is NOT the adapting luminance. It is the PARTIALLY-adapted
+  // display EV — deliberately only (1 − k) = 15% of the real scene variation. Rod
+  // bleaching depends on the light the eye actually RECEIVED, so the compression
+  // has to be inverted. The inversion is exact because the follower is a linear
+  // low-pass of an affine function: lowpass(A + k·m) = A + k·lowpass(m), so
+  //     sceneEV = ANCHOR_EV + (_adaptedEV − ANCHOR_EV) / ADAPTATION_K
+  // ⚠ GAME-UNIT EV throughout this file, log2(units·8) — 12.56 stops off the cd/m²
+  // EV100 the `__lum` tables print. Confusing them here is a 6,038× error.
+  updateScotopicUniforms(
+    (2 ** (ANCHOR_EV + (_adaptedEV - ANCHOR_EV) / ADAPTATION_K) / 8) *
+      NITS_PER_GAME_UNIT,
+  );
 
   if (isManualExposure()) return; // global exposure is pinned by `__lum` / `__bench`
 

@@ -642,13 +642,17 @@ export function subPixelFluxScale(truePx: number, renderedPx: number): number {
 // has to get its colour from its temperature or every generated system looks
 // like Sol (§3.0). Analytic CMF fits: Wyman, Sloan & Shirley, JCGT 2013.
 
-const xFit = (w: number) =>
+// ⚠ `xFit/yFit/zFit` and `planck` are EXPORTED so `scotopic.ts` can integrate the
+// CIE 1951 scotopic curve V′(λ) against the SAME kernel this file uses for V(λ)
+// (`yFit` IS V(λ)). Two vision curves derived from two different CMF tables would
+// drift apart silently, and the Purkinje shift is precisely their RATIO.
+export const xFit = (w: number) =>
   1.056 * g(w, 599.8, 37.9, 31.0) +
   0.362 * g(w, 442.0, 16.0, 26.7) -
   0.065 * g(w, 501.1, 20.4, 26.2);
-const yFit = (w: number) =>
+export const yFit = (w: number) =>
   0.821 * g(w, 568.8, 46.9, 40.5) + 0.286 * g(w, 530.9, 16.3, 31.1);
-const zFit = (w: number) =>
+export const zFit = (w: number) =>
   1.217 * g(w, 437.0, 11.8, 36.0) + 0.681 * g(w, 459.0, 26.0, 13.8);
 
 /** Piecewise-Gaussian lobe: different falloff either side of the peak. */
@@ -658,7 +662,7 @@ function g(x: number, mu: number, s1: number, s2: number): number {
 }
 
 /** Spectral radiance of a blackbody at wavelength `nm`, arbitrary scale. */
-function planck(nm: number, tempK: number): number {
+export function planck(nm: number, tempK: number): number {
   const l = nm * 1e-9;
   const c1 = 3.7418e-16; // 2πhc²
   const c2 = 1.4388e-2; // hc/k
