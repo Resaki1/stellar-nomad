@@ -40,6 +40,8 @@ import {
 } from "@/components/space/photometry";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { sunVisibility } from "@/components/space/sunOcclusion";
+import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
+import { starLodStatus as _status } from "@/components/space/starLodStatus";
 
 export { STAR_POSITION_KM };
 
@@ -50,6 +52,7 @@ const RADIUS = kmToScaledUnits(RADIUS_KM); // 696.34 scaled units
 
 // ── Reusable vectors ──
 const _shipToStar = new THREE.Vector3();
+const _bufSize = new THREE.Vector2();
 
 // ─────────────────────────────────────────────────────────────────────
 // Rendered as a single view-space billboard at all distances.
@@ -83,7 +86,18 @@ const GLOW_PAD = 8;
 
 // Minimum angular coverage in pixels (diameter). Ensures the billboard
 // is large enough from the outer solar system for stable rendering.
+// ⚠ CSS pixels — an authored look knob, unlike DISC_PX_FLOOR below which is a
+// rasterisation question and uses drawing-buffer pixels.
 const MIN_SCREEN_PX = 60;
+
+// ── Shell clamp (R1, docs/STAR_RENDERING_PLAN.md) ────────────────────────────
+// Beyond this range the billboard is pulled along the camera→star ray so it sits
+// inside the far plane; without it the star is culled/clipped past `far / cos θ`
+// (13.37 AU at frame centre, ~18 AU at the corner) — the sun vanishing past
+// Saturn. DERIVED from the far plane so the two cannot drift apart.
+const SHELL_CLAMP_FRACTION = 0.6;
+const SHELL_CLAMP_SCALED = SCALED_CAMERA_FAR * SHELL_CLAMP_FRACTION;
+
 
 // ── Disc radiance (Phase 3b) ─────────────────────────────────────────────────
 // Was `CORE_HDR = 4096`, justified as "above bloom threshold but moderate enough
@@ -107,6 +121,7 @@ const OUTER_GLOW_ABS = 8.0;
 function Star() {
   const worldOrigin = useWorldOrigin();
   const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
 
   // Billboard half-extent in view-space units. Updated each frame.
   const uScale = useMemo(() => uniform(RADIUS * GLOW_PAD), []);
@@ -115,6 +130,8 @@ function Star() {
   // Disc radiance, game units. Physical (SUN_DISC_RADIANCE_GAME) while the disc
   // resolves; flux-conserving below DISC_PX_FLOOR — see the constant.
   const uCoreRadiance = useMemo(() => uniform(SUN_DISC_RADIANCE_GAME), []);
+  // Shell clamp: 1.0 inside SHELL_CLAMP_SCALED, else SHELL_CLAMP_SCALED/dist.
+  const uShellScale = useMemo(() => uniform(1), []);
   // ── Eclipse gating (D34c) ────────────────────────────────────────────────
   // Fraction of the star's disc the EYE can see, from the same occluder registry
   // every body fills. Two uniforms, not one, because the disc and the glow are
@@ -183,8 +200,13 @@ function Star() {
           float(0),
         ),
       );
-      const clip = cameraProjectionMatrix.mul(viewPos);
-      vViewZ.assign(viewPos.z);
+      // 🔑 A uniform scale about the camera origin is a PROJECTIVE NO-OP — view
+      // space puts the camera at the origin, so this slides the whole billboard
+      // along the camera→star ray and the perspective divide cancels it. The
+      // image is unchanged; only the written depth moves, which is the point.
+      const shell = vec4(viewPos.xyz.mul(uShellScale), 1.0);
+      const clip = cameraProjectionMatrix.mul(shell);
+      vViewZ.assign(shell.z);
       return clip;
     })();
 
@@ -247,7 +269,7 @@ function Star() {
     })();
 
     return m;
-  }, [uScale, uCoreRatio, uCoreRadiance, uStarColor, uStarVis, uDiscVis]);
+  }, [uScale, uCoreRatio, uCoreRadiance, uStarColor, uStarVis, uDiscVis, uShellScale]);
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
@@ -260,45 +282,32 @@ function Star() {
     const distKm = _shipToStar.length();
     const distScaled = distKm * 0.001;
 
-    // Physical billboard size: star radius + glow padding.
-    const physicalHalf = RADIUS * GLOW_PAD;
-
-    // Minimum billboard size for screen-pixel stability.
-    // We want at least MIN_SCREEN_PX pixels across. At view-space depth
-    // `distScaled`, the billboard needs half-extent:
-    //   minHalf = distScaled * tan(minAngle / 2)
-    // where minAngle = MIN_SCREEN_PX / screenHeightPx * fov.
+    // ── Screen-space geometry ────────────────────────────────────────────────
+    // Two pixel conventions, deliberately: MIN_SCREEN_PX is an authored glow-canvas
+    // size in CSS px, DISC_PX_FLOOR is a rasterisation limit in drawing-buffer px.
+    // Both end up as view-space lengths, so they compose.
     const cam = camera as THREE.PerspectiveCamera;
     const fovRad = cam.fov * (Math.PI / 180);
-    const screenH = cam.getFilmHeight()
-      ? Math.max(window.innerHeight, 1)
-      : 1080;
-    const minAngle = (MIN_SCREEN_PX / screenH) * fovRad;
-    const minHalf = distScaled * Math.tan(minAngle * 0.5);
+    const cssH = Math.max(window.innerHeight, 1);
+    const bufferH = Math.max(gl.getDrawingBufferSize(_bufSize).y, 1);
+    // ⚠ Tangent per pixel, NOT the small-angle `fov/height` — that form is 6.9%
+    // low at fov 50 and has been the same bug three times in this repo
+    // (StellarPoint.tsx:406). Canonical version: StarField.tsx:759.
+    const tanPerBufferPx = (2 * Math.tan(fovRad / 2)) / bufferH;
 
-    const halfExtent = Math.max(physicalHalf, minHalf);
-
-    uScale.value = halfExtent * 2; // PlaneGeometry goes ±0.5, so ×2
+    const minAngle = (MIN_SCREEN_PX / cssH) * fovRad;
+    const halfExtent = Math.max(RADIUS * GLOW_PAD, distScaled * Math.tan(minAngle * 0.5));
+    uScale.value = halfExtent * 2; // PlaneGeometry spans ±0.5
     uCoreRatio.value = RADIUS / halfExtent;
 
-    // ── Sub-pixel flux conservation (Phase 3b) ───────────────────────────────
-    // uCoreRatio above keeps the disc at its TRUE angular size at every range —
-    // MIN_SCREEN_PX only enlarges the glow canvas — so from the outer system the
-    // disc genuinely goes sub-pixel (Neptune: the Sun is ~0.4 px). At the
-    // physical 265,000 that would strobe: one fragment sample decides whether
-    // the frame gets a 265,000 core or nothing.
-    //
-    // So below DISC_PX_FLOOR, draw the core at the floor and scale its radiance
-    // by the area ratio. Integrated flux is preserved, the star stays a steady
-    // point, and nothing above the floor is touched.
-    // × preExposure (D25). This is the site the half-float CEILING bit: at the
-    // physical 265,000 the disc had to be clamped to HALF_FLOAT_WRITE_MAX on
-    // write. With pre-exposure on, a frame containing the sun meters at exposure
-    // ~0.05, so 265,000 × 0.05 = 13,250 — comfortably inside range and no longer
-    // clipped. The clamp stays as a guard, not as the mechanism.
-    // Eclipse coverage from the occluder registry. The eye/ship offset is ~1e-6
-    // rad at lunar range, four orders below the 5e-3 rad disc, so the ship
-    // position is the right observer.
+    // Shell clamp — see SHELL_CLAMP_SCALED. Exactly 1 inside it.
+    const shellScale =
+      distScaled > SHELL_CLAMP_SCALED ? SHELL_CLAMP_SCALED / distScaled : 1;
+    uShellScale.value = shellScale;
+
+    // Eclipse coverage from the occluder registry. The eye/ship offset is ~1e-6 rad
+    // at lunar range, four orders below the 5e-3 rad disc, so the ship is the right
+    // observer.
     const starVis = sunVisibility(
       worldOrigin.shipPosKm,
       STAR_POSITION_KM,
@@ -307,17 +316,41 @@ function Star() {
     );
     uStarVis.value = starVis;
 
+    // ── Sub-pixel flux conservation (Phase 3b) ───────────────────────────────
+    // uCoreRatio keeps the disc at its TRUE angular size (MIN_SCREEN_PX only
+    // enlarges the glow canvas), so from the outer system it goes genuinely
+    // sub-pixel and at 265,000 would strobe — one fragment sample deciding the
+    // whole frame. Below the floor, draw at the floor and divide radiance by the
+    // area ratio: flux preserved, shape approximate.
     const preExp = getPreExposure();
-    const discPx = (RADIUS_KM * 2 / distKm / fovRad) * screenH;
-    uDiscVis.value = discPx < DISC_PX_FLOOR ? starVis : 1;
-    if (discPx < DISC_PX_FLOOR) {
-      uCoreRatio.value = (DISC_PX_FLOOR / 2 / screenH) * fovRad
-        * distScaled / halfExtent;
+    const discPx = (RADIUS * 2) / distScaled / tanPerBufferPx;
+    const subPixel = discPx < DISC_PX_FLOOR;
+
+    // ⚠ Once clamped, depth order against a body BEYOND the clamp is no longer
+    // trustworthy (it would sort behind the pulled-in star), so hand occlusion to
+    // the analytic registry. Strictly better than a depth test on a ≤2.5 px disc.
+    uDiscVis.value = subPixel || shellScale < 1 ? starVis : 1;
+
+    if (subPixel) {
+      uCoreRatio.value =
+        (distScaled * (DISC_PX_FLOOR / 2) * tanPerBufferPx) / halfExtent;
       uCoreRadiance.value =
         SUN_DISC_RADIANCE_GAME * subPixelFluxScale(discPx, DISC_PX_FLOOR) * preExp;
     } else {
       uCoreRadiance.value = SUN_DISC_RADIANCE_GAME * preExp;
     }
+
+    _status.distAu = distKm / 149_597_870.7;
+    _status.distScaled = distScaled;
+    _status.discPx = discPx;
+    _status.tier = subPixel ? "point" : "disc";
+    _status.shellScale = shellScale;
+    _status.drawnAtScaled = distScaled * shellScale;
+    _status.coreRadianceGame = uCoreRadiance.value / Math.max(preExp, 1e-30);
+    _status.starVis = starVis;
+    _status.clampScaled = SHELL_CLAMP_SCALED;
+    _status.farScaled = SCALED_CAMERA_FAR;
+    _status.ran = true;
   });
 
   return (
@@ -326,6 +359,12 @@ function Star() {
         ref={(m) => { meshRef.current = m; }}
         geometry={geo}
         material={mat}
+        // ⚠ The bounding sphere is PlaneGeometry(1,1)'s 0.707 units at the star
+        // centre, but the shader inflates the quad to `uScale` (a 5,570-unit
+        // half-extent near the sun). Three culls on the sphere, so the glow
+        // popped out whole the moment the centre left the frustum. Same reason
+        // StarField and MilkyWaySkybox disable it.
+        frustumCulled={false}
       />
     </SimGroup>
   );

@@ -71,17 +71,14 @@ import {
   hasPendingCloudBakes,
 } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { PASS, perf, type GateState } from "./perf/perfProfiler";
+import {
+  LOCAL_CAMERA_FAR,
+  LOCAL_CAMERA_NEAR,
+  SCALED_CAMERA_FAR,
+  SCALED_CAMERA_NEAR,
+} from "./cameraPlanes";
 
-const LOCAL_CAMERA_NEAR = 0.01;
-// 20,000 km expressed in local meters
-const LOCAL_CAMERA_FAR = 20_000 * 1000;
-// 0.1 scaled units = 100 km. The closest geometry in the scaled scene
-// is a planet surface at ~30+ scaled units (with floating origin), so
-// this is safe. A tighter near plane gives far better depth precision
-// at medium distances — fixes z-fighting on Saturn's rings at ~1.4M km.
-// (Don't use logarithmicDepthBuffer — it breaks depth for custom vertexNode.)
-const SCALED_CAMERA_NEAR = 0.001;
-const SCALED_CAMERA_FAR = 2_000_000;
+// Camera planes live in ./cameraPlanes so Star.tsx can share SCALED_CAMERA_FAR.
 
 // ── Atmosphere pass (docs/ATMOSPHERE_PLAN.md) ────────────────────────────────
 // A physically-based scattering post-pass (Hillaire 2020) inserted right after

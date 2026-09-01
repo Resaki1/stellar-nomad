@@ -68,6 +68,7 @@ const _eclipseProbeU = createEclipseUniforms();
 
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
+import { starLodStatus } from "@/components/space/starLodStatus";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
 import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
 import { sunOccluderList } from "@/components/space/sunOcclusion";
@@ -3799,6 +3800,54 @@ export class LumHarness {
       curve: getDisplayCurve(),
       midGreyDisplayLinear: Number(displayTransformNeutralCpu(0.18).toFixed(5)),
       pivotT: Number(PIVOT_X.toFixed(5)),
+    };
+  }
+
+  /**
+   * STAR LOD / SHELL-CLAMP GATE (R1, docs/STAR_RENDERING_PLAN.md).
+   *
+   * The primary is drawn at its true scaled position until `clampScaled`, then
+   * projected onto a shell so it stays inside the far plane. ⚠ The far plane is
+   * FLAT, so an unclamped star is culled past `far / cos θ` — furthest at the
+   * frame corner, which is why the sun used to be visible at the screen edge and
+   * invisible in the centre. `clipped` here is the centre case; if it ever reads
+   * true the clamp is not doing its job.
+   */
+  starLod(): Record<string, unknown> {
+    const st = starLodStatus;
+    if (!st.ran) {
+      console.log("[lum] no star status yet — Star has not run a frame.");
+      return {};
+    }
+    const AU = 149_597_870.7 * 0.001; // scaled units per AU
+    const clipped = st.drawnAtScaled > st.farScaled;
+    const wouldClip = st.distScaled > st.farScaled;
+    console.log(
+      `[lum] star ${st.distAu.toFixed(2)} AU — tier ${st.tier} (${st.discPx.toFixed(2)} px disc), ` +
+        `shellScale ${st.shellScale.toFixed(4)}${st.shellScale < 1 ? " (CLAMPED)" : " (no-op)"}. ` +
+        `Drawn at ${st.drawnAtScaled.toExponential(3)} scaled vs far ${st.farScaled.toExponential(3)} ` +
+        `(${(st.farScaled / AU).toFixed(2)} AU at frame centre).`,
+    );
+    console.log(
+      clipped
+        ? "[lum] ❌ CLIPPED — the star is past the far plane and will not draw."
+        : wouldClip
+          ? "[lum] ✅ inside the far plane; WITHOUT the clamp this pose would have been culled."
+          : "[lum] ✅ inside the far plane, clamp not needed at this range.",
+    );
+    return {
+      distAu: Number(st.distAu.toFixed(3)),
+      tier: st.tier,
+      discPx: Number(st.discPx.toFixed(3)),
+      shellScale: Number(st.shellScale.toFixed(5)),
+      drawnAtScaled: st.drawnAtScaled,
+      clampScaled: st.clampScaled,
+      farScaled: st.farScaled,
+      centreLimitAu: Number((st.farScaled / AU).toFixed(3)),
+      clipped,
+      rescuedByClamp: wouldClip && !clipped,
+      coreRadianceGame: Number(st.coreRadianceGame.toPrecision(4)),
+      starVis: Number(st.starVis.toFixed(4)),
     };
   }
 
