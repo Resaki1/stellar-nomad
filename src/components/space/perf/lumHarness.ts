@@ -69,6 +69,19 @@ const _eclipseProbeU = createEclipseUniforms();
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import { starLodStatus } from "@/components/space/starLodStatus";
+import {
+  SUN_ABS_MAG_BOL,
+  SUN_ABS_MAG_V,
+  SUN_RADIUS_KM,
+  SUN_TEMP_K,
+  bolometricCorrectionV,
+  discLuminanceNits,
+  discRadianceGame,
+  discSolidAngle,
+  illuminanceGameAt,
+  radiusKmFromCatalogue,
+  temperatureFromBV,
+} from "@/components/space/starPhysics";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
 import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
 import { sunOccluderList } from "@/components/space/sunOcclusion";
@@ -3849,6 +3862,144 @@ export class LumHarness {
       coreRadianceGame: Number(st.coreRadianceGame.toPrecision(4)),
       starVis: Number(st.starVis.toFixed(4)),
     };
+  }
+
+  /**
+   * STAR PHYSICS GATE (R2, docs/STAR_RENDERING_PLAN.md §8).
+   *
+   * Proves the one identity the whole star LOD rests on: the CATALOGUE route
+   * (magnitude → illuminance) and the DISC route (radiance × solid angle) must
+   * describe the same star. If they diverge, no crossfade between the tiers can
+   * be continuous, however carefully it is authored.
+   *
+   * ⚠ The `rTrue` column is VALIDATION DATA ONLY — published radii for stars whose
+   * angular diameter has been measured. Nothing in the renderer reads it; the
+   * radii it is checked against are derived from `(absMagV, B−V)` alone.
+   */
+  starPhysics(): Record<string, unknown> {
+    const AU = 1.495979e8;
+    const out: Record<string, unknown> = {};
+
+    // ── 1. the identity, three routes to the Sun's illuminance at 1 AU ──
+    const omega = discSolidAngle(SUN_RADIUS_KM, AU);
+    const nits = discLuminanceNits(1, SUN_RADIUS_KM);
+    const viaDisc = (nits * omega) / NITS_PER_GAME_UNIT;
+    const viaAnchor = illuminanceGameAt(1, AU);
+    const magSun = -26.74;
+    const viaMag = starIlluminanceGame(magSun);
+    const discVsAnchor = viaDisc / viaAnchor;
+    const magVsAnchor = viaMag / viaAnchor;
+    console.log(
+      `[lum] Sun illuminance at 1 AU — disc route ${viaDisc.toFixed(4)}, anchor ` +
+        `${viaAnchor.toFixed(4)}, magnitude(${magSun}) route ${viaMag.toFixed(4)} game units.`,
+    );
+    console.log(
+      `[lum] disc/anchor ${discVsAnchor.toFixed(6)} (${Math.abs(Math.log2(discVsAnchor)).toFixed(4)} stops) ` +
+        `${Math.abs(Math.log2(discVsAnchor)) < 1e-6 ? "✅ EXACT by construction" : "❌ the derivation is broken"}`,
+    );
+    console.log(
+      `[lum] mag/anchor  ${magVsAnchor.toFixed(6)} (${Math.log2(magVsAnchor).toFixed(4)} stops) ` +
+        `${Math.abs(Math.log2(magVsAnchor)) < 0.05 ? "✅ T0 and T1 agree" : "❌ tiers disagree"} ` +
+        `— residual is the accepted m_sun vs the 128,000 lux anchor, not a code error.`,
+    );
+    out.discOverAnchor = Number(discVsAnchor.toPrecision(8));
+    out.magOverAnchorStops = Number(Math.log2(magVsAnchor).toFixed(4));
+    out.sunDiscNits = Number(nits.toPrecision(5));
+    out.sunDiscRadianceGame = Number(discRadianceGame(1, SUN_RADIUS_KM).toPrecision(6));
+    // The constant this replaced, for the record.
+    out.oldHardcodedNits = 1.6e9;
+    out.oldWasDimByStops = Number(Math.log2(1.6e9 / nits).toFixed(4));
+
+    // ── 2. bolometric correction self-check ──
+    const bcSun = bolometricCorrectionV(SUN_TEMP_K);
+    const bcImplied = SUN_ABS_MAG_BOL - SUN_ABS_MAG_V;
+    console.log(
+      `[lum] BC_V(${SUN_TEMP_K} K) = ${bcSun.toFixed(4)} vs ${bcImplied.toFixed(2)} implied by ` +
+        `Mbol☉−MV☉ — ${Math.abs(bcSun - bcImplied) < 0.03 ? "✅" : "❌"} (${Math.abs(bcSun - bcImplied).toFixed(4)} mag)`,
+    );
+    out.bcSun = Number(bcSun.toFixed(4));
+
+    // ── 3. radii derived from (absMagV, B−V) vs measured radii ──
+    // [name, absMagV, B−V, published R/R☉]
+    const REF: [string, number, number, number][] = [
+      ["Sun", SUN_ABS_MAG_V, 0.653, 1.0],
+      ["Sirius A", 1.43, 0.0, 1.713],
+      ["Vega", 0.58, -0.001, 2.362],
+      ["Arcturus", -0.3, 1.23, 25.4],
+      ["Betelgeuse", -5.85, 1.85, 764],
+      ["Rigel", -6.98, -0.03, 78.9],
+      ["Proxima", 15.6, 1.807, 0.1542],
+    ];
+    const rows: Record<string, Record<string, number | string>> = {};
+    let worstWarm = 1;
+    let worstWarmName = "";
+    let worstCool = 1;
+    for (const [name, absMagV, bv, rTrue] of REF) {
+      const rKm = radiusKmFromCatalogue(absMagV, bv);
+      const ratio = rKm / SUN_RADIUS_KM / rTrue;
+      // ⚠ Split at B−V 1.5. Above it the colour index is DEGENERATE: Betelgeuse
+      // (1.85) and Proxima (1.807) are the same colour with T_eff 3600 K vs
+      // 3042 K, because B−V cannot see luminosity class and reddening bites
+      // hardest at the red end. That is a data limit, not an arithmetic one.
+      if (bv < 1.5) {
+        if (Math.abs(Math.log2(ratio)) > Math.abs(Math.log2(worstWarm))) {
+          worstWarm = ratio;
+          worstWarmName = name;
+        }
+      } else if (Math.abs(Math.log2(ratio)) > Math.abs(Math.log2(worstCool))) {
+        worstCool = ratio;
+      }
+      rows[name] = {
+        "T_eff from B−V": Math.round(temperatureFromBV(bv)),
+        "R derived": Number((rKm / SUN_RADIUS_KM).toPrecision(4)),
+        "R published": rTrue,
+        ratio: Number(ratio.toFixed(3)),
+      };
+    }
+    console.table(rows);
+    console.log(
+      `[lum] radius error: worst ${worstWarm.toFixed(3)}× on ${worstWarmName} for B−V < 1.5, ` +
+        `worst ${worstCool.toFixed(3)}× for cool stars (B−V ≥ 1.5, where B−V is degenerate). ` +
+        (Math.abs(Math.log2(worstWarm)) < 0.2 ? "✅" : "❌ check the BC branch"),
+    );
+    out.worstRadiusRatioWarm = Number(worstWarm.toFixed(3));
+    out.worstRadiusStarWarm = worstWarmName;
+    out.worstRadiusRatioCool = Number(worstCool.toFixed(3));
+
+    // ── 3b. …and why that error does not matter ──
+    // 🔑 flux = radiance × solid angle, radiance ∝ 1/R², Ω ∝ R². They cancel
+    // EXACTLY, so a wrong radius cannot change how bright a star looks — only the
+    // range at which its disc stops being sub-pixel. This is the assertion that
+    // makes a ±2× radius acceptable, so it is checked rather than argued.
+    const fluxAt = (rMul: number) => {
+      const r = SUN_RADIUS_KM * rMul;
+      return (
+        (discLuminanceNits(1, r) * discSolidAngle(r, AU)) / NITS_PER_GAME_UNIT
+      );
+    };
+    const fluxSpread = [0.5, 1, 2, 10].map(fluxAt);
+    const fluxDev = Math.max(...fluxSpread) / Math.min(...fluxSpread) - 1;
+    console.log(
+      `[lum] flux invariance under radius ×0.5…×10: spread ${fluxDev.toExponential(2)} ` +
+        `${fluxDev < 1e-9 ? "✅ EXACT — a radius error changes angular size only, never brightness" : "❌ radius leaks into brightness"}`,
+    );
+    out.fluxInvarianceSpread = Number(fluxDev.toPrecision(3));
+
+    // ── 4. T0↔T1 continuity at the handover, for the primary ──
+    // The tiers must agree at EVERY range, so sample a few decades.
+    let maxStops = 0;
+    for (const dAu of [0.4, 1, 5.2, 9.6, 19.2, 30, 100]) {
+      const d = dAu * AU;
+      const t1 = (discLuminanceNits(1, SUN_RADIUS_KM) * discSolidAngle(SUN_RADIUS_KM, d)) / NITS_PER_GAME_UNIT;
+      const t0 = illuminanceGameAt(1, d);
+      maxStops = Math.max(maxStops, Math.abs(Math.log2(t1 / t0)));
+    }
+    console.log(
+      `[lum] T0↔T1 flux agreement across 0.4–100 AU: worst ${maxStops.toExponential(2)} stops ` +
+        `${maxStops < 1e-6 ? "✅ continuous by construction" : "❌ not continuous"}`,
+    );
+    out.t0t1WorstStops = Number(maxStops.toPrecision(3));
+    return out;
   }
 
   /** Print the unit convention and the current exposure. */

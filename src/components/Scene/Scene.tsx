@@ -39,6 +39,14 @@ import Ganymede from "../Ganymede/Ganymede";
 import Io from "../Io/Io";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
+// 🔑 The primary is passed IN, not read from inside Star — that is the seam a
+// generated system (or a catalogue star flown to) plugs into. STAR_RENDERING_PLAN §8.
+import {
+  STAR_POSITION_KM,
+  STAR_RADIUS_KM,
+  STAR_TEMP_K,
+  STAR_LUMINOSITY_SUN,
+} from "@/sim/celestialConstants";
 import SunLight from "../Star/SunLight";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
@@ -131,7 +139,12 @@ const Scene = () => {
         <Europa />
         <Ganymede />
         <Io />
-        <Star />
+        <Star
+          positionKm={STAR_POSITION_KM}
+          radiusKm={STAR_RADIUS_KM}
+          tempK={STAR_TEMP_K}
+          luminositySun={STAR_LUMINOSITY_SUN}
+        />
       </>
     ),
     [],

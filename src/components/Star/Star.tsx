@@ -26,18 +26,14 @@ import {
 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
 import { kmToScaledUnits } from "@/sim/units";
-import {
-  STAR_POSITION_KM,
-  STAR_RADIUS_KM,
-  STAR_TEMP_K,
-} from "@/sim/celestialConstants";
+import { STAR_POSITION_KM } from "@/sim/celestialConstants";
 import {
   blackbodyLinearSrgb,
   HALF_FLOAT_WRITE_MAX,
-  SUN_DISC_RADIANCE_GAME,
   subPixelFluxScale,
   getPreExposure,
 } from "@/components/space/photometry";
+import { discRadianceGame } from "@/components/space/starPhysics";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { sunVisibility } from "@/components/space/sunOcclusion";
 import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
@@ -45,10 +41,21 @@ import { starLodStatus as _status } from "@/components/space/starLodStatus";
 
 export { STAR_POSITION_KM };
 
-// From the system description (was a duplicated 696_340 literal) so a generated
-// system's primary gets its own radius — Phase 3b / §3.0.
-const RADIUS_KM = STAR_RADIUS_KM;
-const RADIUS = kmToScaledUnits(RADIUS_KM); // 696.34 scaled units
+/**
+ * One star, from data. R2: nothing here is Sol-specific, so the same component
+ * renders a catalogue star (`starParamsFromCatalogue`) or a generated primary
+ * (`starParamsFromSystem`). See docs/STAR_RENDERING_PLAN.md §8.
+ */
+export type StarProps = {
+  positionKm: readonly [number, number, number];
+  radiusKm: number;
+  /** Effective temperature, K — drives the blackbody hue only. */
+  tempK: number;
+  /** VISUAL luminosity in solar units (not bolometric — see starPhysics). */
+  luminositySun: number;
+  /** Publish `starLodStatus` for `__lum.starLod()`. One star may claim it. */
+  primary?: boolean;
+};
 
 // ── Reusable vectors ──
 const _shipToStar = new THREE.Vector3();
@@ -102,7 +109,7 @@ const SHELL_CLAMP_SCALED = SCALED_CAMERA_FAR * SHELL_CLAMP_FRACTION;
 // ── Disc radiance (Phase 3b) ─────────────────────────────────────────────────
 // Was `CORE_HDR = 4096`, justified as "above bloom threshold but moderate enough
 // that sub-pixel drift doesn't cause visible bloom flicker". The physical value
-// is SUN_DISC_RADIANCE_GAME ≈ 265,000 — **65× higher** — and it is
+// is ≈311,000 game units (starPhysics.discRadianceGame) — **76× higher** — and it is
 // distance-INDEPENDENT, because a surface's radiance does not fall off with
 // range (only its solid angle does).
 //
@@ -118,18 +125,31 @@ const DISC_PX_FLOOR = 2.5;
 const INNER_GLOW_FRAC = 0.3;
 const OUTER_GLOW_ABS = 8.0;
 
-function Star() {
+function Star({
+  positionKm,
+  radiusKm,
+  tempK,
+  luminositySun,
+  primary = true,
+}: StarProps) {
   const worldOrigin = useWorldOrigin();
   const camera = useThree((s) => s.camera);
   const gl = useThree((s) => s.gl);
 
+  const RADIUS = kmToScaledUnits(radiusKm);
+  // Derived, never stated — see starPhysics.discLuminanceNits for why.
+  const discRadiance = useMemo(
+    () => discRadianceGame(luminositySun, radiusKm),
+    [luminositySun, radiusKm],
+  );
+
   // Billboard half-extent in view-space units. Updated each frame.
-  const uScale = useMemo(() => uniform(RADIUS * GLOW_PAD), []);
+  const uScale = useMemo(() => uniform(RADIUS * GLOW_PAD), [RADIUS]);
   // Fraction of billboard radius that is the star disc [0..0.5].
   const uCoreRatio = useMemo(() => uniform(1 / GLOW_PAD), []);
-  // Disc radiance, game units. Physical (SUN_DISC_RADIANCE_GAME) while the disc
-  // resolves; flux-conserving below DISC_PX_FLOOR — see the constant.
-  const uCoreRadiance = useMemo(() => uniform(SUN_DISC_RADIANCE_GAME), []);
+  // Disc radiance, game units. Physical while the disc resolves; flux-conserving
+  // below DISC_PX_FLOOR.
+  const uCoreRadiance = useMemo(() => uniform(discRadiance), [discRadiance]);
   // Shell clamp: 1.0 inside SHELL_CLAMP_SCALED, else SHELL_CLAMP_SCALED/dist.
   const uShellScale = useMemo(() => uniform(1), []);
   // ── Eclipse gating (D34c) ────────────────────────────────────────────────
@@ -161,9 +181,9 @@ function Star() {
   // Blackbody hue from the primary's T_eff, luminance-normalised so it carries
   // colour ONLY — the magnitude is uCoreRadiance's job.
   const uStarColor = useMemo(() => {
-    const [r, g, b] = blackbodyLinearSrgb(STAR_TEMP_K);
+    const [r, g, b] = blackbodyLinearSrgb(tempK);
     return uniform(new THREE.Color(r, g, b));
-  }, []);
+  }, [tempK]);
 
   const geo = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
 
@@ -252,7 +272,7 @@ function Star() {
       // texel poisons a whole neighbourhood. Clipping is invisible: any exposure
       // that renders 60,000 as other than flat white renders 265,000 the same.
       // ⚠ NOTHING may infer the star's flux from this buffer — read
-      // SUN_DISC_RADIANCE_GAME instead (Phase 8's glare depends on that).
+      // the star's own flux uniform instead (Phase 8's glare depends on that).
       const brightness = disc
         .add(innerGlow)
         .add(outerGlow)
@@ -273,11 +293,17 @@ function Star() {
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
+  // SimGroup wants a mutable tuple; the prop is readonly.
+  const posArray = useMemo(
+    () => [positionKm[0], positionKm[1], positionKm[2]] as [number, number, number],
+    [positionKm],
+  );
+
   useFrame(() => {
     _shipToStar.set(
-      STAR_POSITION_KM[0] - worldOrigin.shipPosKm.x,
-      STAR_POSITION_KM[1] - worldOrigin.shipPosKm.y,
-      STAR_POSITION_KM[2] - worldOrigin.shipPosKm.z,
+      positionKm[0] - worldOrigin.shipPosKm.x,
+      positionKm[1] - worldOrigin.shipPosKm.y,
+      positionKm[2] - worldOrigin.shipPosKm.z,
     );
     const distKm = _shipToStar.length();
     const distScaled = distKm * 0.001;
@@ -290,9 +316,9 @@ function Star() {
     const fovRad = cam.fov * (Math.PI / 180);
     const cssH = Math.max(window.innerHeight, 1);
     const bufferH = Math.max(gl.getDrawingBufferSize(_bufSize).y, 1);
-    // ⚠ Tangent per pixel, NOT the small-angle `fov/height` — that form is 6.9%
-    // low at fov 50 and has been the same bug three times in this repo
-    // (StellarPoint.tsx:406). Canonical version: StarField.tsx:759.
+    // ⚠ Tangent per pixel, NOT the small-angle `fov/height` — 6.9% low at fov 50,
+    // and the fourth occurrence of that bug here (StellarPoint.tsx:406).
+    // Canonical version: StarField.tsx:759.
     const tanPerBufferPx = (2 * Math.tan(fovRad / 2)) / bufferH;
 
     const minAngle = (MIN_SCREEN_PX / cssH) * fovRad;
@@ -310,8 +336,8 @@ function Star() {
     // observer.
     const starVis = sunVisibility(
       worldOrigin.shipPosKm,
-      STAR_POSITION_KM,
-      STAR_RADIUS_KM,
+      positionKm,
+      radiusKm,
       null,
     );
     uStarVis.value = starVis;
@@ -319,9 +345,9 @@ function Star() {
     // ── Sub-pixel flux conservation (Phase 3b) ───────────────────────────────
     // uCoreRatio keeps the disc at its TRUE angular size (MIN_SCREEN_PX only
     // enlarges the glow canvas), so from the outer system it goes genuinely
-    // sub-pixel and at 265,000 would strobe — one fragment sample deciding the
-    // whole frame. Below the floor, draw at the floor and divide radiance by the
-    // area ratio: flux preserved, shape approximate.
+    // sub-pixel and at ~3.1e5 units would strobe — one fragment sample deciding
+    // the whole frame. Below the floor, draw at the floor and divide radiance by
+    // the area ratio: flux preserved, shape approximate.
     const preExp = getPreExposure();
     const discPx = (RADIUS * 2) / distScaled / tanPerBufferPx;
     const subPixel = discPx < DISC_PX_FLOOR;
@@ -335,26 +361,28 @@ function Star() {
       uCoreRatio.value =
         (distScaled * (DISC_PX_FLOOR / 2) * tanPerBufferPx) / halfExtent;
       uCoreRadiance.value =
-        SUN_DISC_RADIANCE_GAME * subPixelFluxScale(discPx, DISC_PX_FLOOR) * preExp;
+        discRadiance * subPixelFluxScale(discPx, DISC_PX_FLOOR) * preExp;
     } else {
-      uCoreRadiance.value = SUN_DISC_RADIANCE_GAME * preExp;
+      uCoreRadiance.value = discRadiance * preExp;
     }
 
-    _status.distAu = distKm / 149_597_870.7;
-    _status.distScaled = distScaled;
-    _status.discPx = discPx;
-    _status.tier = subPixel ? "point" : "disc";
-    _status.shellScale = shellScale;
-    _status.drawnAtScaled = distScaled * shellScale;
-    _status.coreRadianceGame = uCoreRadiance.value / Math.max(preExp, 1e-30);
-    _status.starVis = starVis;
-    _status.clampScaled = SHELL_CLAMP_SCALED;
-    _status.farScaled = SCALED_CAMERA_FAR;
-    _status.ran = true;
+    if (primary) {
+      _status.distAu = distKm / 149_597_870.7;
+      _status.distScaled = distScaled;
+      _status.discPx = discPx;
+      _status.tier = subPixel ? "point" : "disc";
+      _status.shellScale = shellScale;
+      _status.drawnAtScaled = distScaled * shellScale;
+      _status.coreRadianceGame = uCoreRadiance.value / Math.max(preExp, 1e-30);
+      _status.starVis = starVis;
+      _status.clampScaled = SHELL_CLAMP_SCALED;
+      _status.farScaled = SCALED_CAMERA_FAR;
+      _status.ran = true;
+    }
   });
 
   return (
-    <SimGroup space="scaled" positionKm={STAR_POSITION_KM}>
+    <SimGroup space="scaled" positionKm={posArray}>
       <mesh
         ref={(m) => { meshRef.current = m; }}
         geometry={geo}

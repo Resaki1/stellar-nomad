@@ -79,6 +79,9 @@ import {
   blackbodyLinearSrgb,
   uPreExposure,
 } from "@/components/space/photometry";
+// Shared with Star.tsx so the sprite tier and the disc tier cannot disagree about
+// a star's temperature (R2 — docs/STAR_RENDERING_PLAN.md §8).
+import { temperatureFromBV } from "@/components/space/starPhysics";
 
 // Radius the sprites sit at, scaled units. Just inside the panorama's 1e6 so
 // stars read in front of the nebulosity, and well inside SCALED_CAMERA_FAR
@@ -299,10 +302,6 @@ const COMPRESSION_ANCHOR_ILLUM =
   (LUX_AT_MAG_0 * Math.pow(10, -0.4 * STAR_COMPRESSION_ANCHOR_MAG)) /
   NITS_PER_GAME_UNIT;
 
-/** Ballesteros (2012): B−V → effective temperature. */
-function temperatureFromBV(bv: number): number {
-  return 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62));
-}
 
 // ── Equatorial J2000 → the game's frame (plan §8.2 gap 2) ───────────────────
 // The catalogue is in HYG's equatorial J2000 axes: +x to the vernal equinox,

@@ -587,34 +587,17 @@ export function setManualExposure(manual: boolean): void {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Mean luminance of the Sun's photosphere, cd/m². Distance-INDEPENDENT: a
- * surface's radiance does not fall off with range (only its solid angle does),
- * so this is the value the disc should carry from Mercury to Neptune alike.
- */
-export const SUN_DISC_LUMINANCE_NITS = 1.6e9;
-
-/**
- * The disc's radiance in game units — ≈265,000, i.e. **4.0× over RGBA16F's
- * 65,504 ceiling**. This is why the write clamp below is a NUMERICAL
- * requirement rather than an aesthetic one, and why `Star.tsx`'s old
- * `CORE_HDR = 4096` was 65× short of physical.
- */
-export const SUN_DISC_RADIANCE_GAME =
-  SUN_DISC_LUMINANCE_NITS / NITS_PER_GAME_UNIT;
-
-/**
- * Largest value safe to WRITE into an RGBA16F target. Half-float's max finite
- * is 65,504; leaving headroom means an additive blend of disc + glow cannot tip
- * to `Inf`, which would poison every filter downstream (the glare pyramid, TAA,
- * the half-res AP upsample) with NaN — the "one bad texel poisons a whole
- * square" failure mode.
+ * ⚠ MOVED. The Sun's photosphere luminance and disc radiance now live in
+ * `starPhysics.ts`, **derived** from `SOLAR_ILLUMINANCE_1AU_LUX` and the star's own
+ * solid angle rather than stated. The hardcoded `SUN_DISC_LUMINANCE_NITS = 1.6e9`
+ * that used to sit here was 0.851× (0.233 stops) too dim against this file's own
+ * anchor — see STAR_RENDERING_PLAN §8.1. They cannot disagree any more, and it
+ * generalises to a star of any temperature.
  *
- * ⚠ Clipping here is invisible and that is the point: any exposure that renders
- * 60,000 as anything but flat white also renders 265,000 as flat white. Nothing
- * downstream may INFER the star's flux from this buffer — read
- * `SUN_DISC_RADIANCE_GAME` (or a per-star uniform) instead. Phase 8's glare
- * depends on that distinction.
+ * The direction of the dependency matters: `starPhysics` imports the anchors from
+ * here, never the reverse.
  */
+
 export const HALF_FLOAT_WRITE_MAX = 60_000;
 
 /**

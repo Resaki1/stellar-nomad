@@ -120,7 +120,7 @@ the file:
 | distance | `\|xyz\|` |
 | absolute magnitude | `M = m − 5·log₁₀(d_pc/10)` |
 | luminosity | `L/L☉ = 10^(−0.4(M − 4.83))` |
-| **radius** | **Stefan–Boltzmann: `R = R☉·√(L/L☉)·(T☉/T)²`** |
+| **radius** | **Stefan–Boltzmann: `R = R☉·√(L_bol/L☉)·(T☉/T)²`** |
 
 🔑 **Every catalogue star's radius is derivable — no table, nothing baked at module load.** One
 renderer parameterised by `(position, T_eff, R)` covers Sol, all 8,920 catalogue stars, and any
@@ -130,9 +130,18 @@ Stellarium lineage all drive one parameterised star from `(T_eff, R, L)` with a 
 catalogue sprite → PSF point → limb-darkened disc → photosphere with granulation, plus the corona as
 a separate layer.
 
-⚠ Honest error sources, all acceptable because `L` comes from *measured* magnitude + distance (so
-giants come out correctly large): interstellar extinction, `B−V → T_eff` being crude at the extremes,
-and unresolved binaries.
+⚠⚠ **TWO LUMINOSITIES, AND THE FIRST DRAFT OF THIS SECTION CONFLATED THEM.** Measured in §8.1:
+- **Radius** needs the **bolometric** luminosity, so it needs a bolometric correction `BC_V(T_eff)`.
+  Omitting it puts Proxima's radius **6.4× low** and Betelgeuse's **2.3× low**.
+- **Brightness** (lux, cd/m²) needs the **visual** luminosity and must NOT apply `BC_V`: a 3000 K star
+  radiates mostly in the IR, so its bolometric output badly over-states what the eye receives.
+  Magnitudes already *are* a luminous scale, so `absMagV` goes straight in.
+
+⚠ Remaining error sources: interstellar extinction, unresolved binaries, and — the dominant one —
+**`B−V` is degenerate for cool stars.** Betelgeuse (B−V 1.85) and Proxima (B−V 1.807) are the same
+colour with T_eff 3600 K and 3042 K, because `B−V` cannot see luminosity class and reddening bites
+hardest at the red end. `stars_nearby.json` carries a `spectral` string that would break the
+degeneracy; unused so far because §8.1 shows it does not matter yet.
 
 ---
 
@@ -159,7 +168,8 @@ not from an authored `pow(falloff, 3.5)`.
 |---|---|---|---|
 | **R0** | Measure | confirm the 13.37 AU centre threshold (§1.1) before touching code | none |
 | **R1** | Shell clamp | `uShellScale` + `frustumCulled={false}`; bit-exact no-op inside the clamp radius. Fixes R-A and §1.2 | low |
-| **R2** | Unify | one star renderer parameterised by `(position, T_eff, R)`; derived radius (§4); T0–T1 continuous; the primary stops being special-cased | medium |
+| **R2** ✅ | Unify | one star renderer parameterised by `(position, T_eff, R)`; derived radius (§4); T0↔T1 continuity **proven to 1.6e-16 stops**; the primary stops being special-cased. §8 | medium |
+| **R2b** | Promote | mount a *catalogue* star through the same component on approach; needs `S5` parallax from STAR_CATALOGUE_PLAN | medium |
 | **R3** | **P8d + corona** | glare driven from the star-flux uniform; delete `INNER_GLOW_FRAC` / `OUTER_GLOW_ABS` / `GLOW_PAD` and the D25 bug with them | medium |
 | **R4** | T2 limb darkening | the "flat white circle" fix | low |
 | **R5** | T3 photosphere | granulation, spicules, chromosphere shell | medium |
@@ -242,3 +252,73 @@ geometrically), and there is no airless body past 13.37 AU to stand behind, so e
 harness can reach sits on an atmosphere-bearing planet's shadow ray. The remaining check is the §1.1
 threshold, flown: **the sun should now stay visible in the frame centre through 13.37 AU and beyond**,
 where before it vanished there.
+
+
+---
+
+## 8. R2 as built (2026-09-01)
+
+**[`space/starPhysics.ts`](../src/components/space/starPhysics.ts)** — one parameterised star. Pure
+functions, no state, nothing baked at module load. `starParamsFromSystem(...)` and
+`starParamsFromCatalogue(...)` return the **same struct**, which is what lets one renderer serve Sol,
+a catalogue star and a generated primary.
+
+**[`Star.tsx`](../src/components/Star/Star.tsx)** now takes `StarProps`
+(`positionKm, radiusKm, tempK, luminositySun, primary?`). The primary is passed in from
+[`Scene.tsx`](../src/components/Scene/Scene.tsx) — that mount site *is* the procedural-systems seam,
+and it is now visible instead of hidden behind module constants. `temperatureFromBV` de-duplicated
+out of `StarField.tsx` so the sprite tier and the disc tier cannot disagree about a temperature.
+
+### 8.1 Measured — `__lum.starPhysics()`
+
+🐛 **DEFECT FOUND AND FIXED: `SUN_DISC_LUMINANCE_NITS = 1.6e9` was 0.851× (−0.233 stops) too dim.**
+It was stated independently while `SOLAR_ILLUMINANCE_1AU_LUX = 128,000` plus the Sun's own solid angle
+imply **1.8805e9**. Two numbers for one physical quantity, and the disc lost. Now derived:
+
+```
+E(d) = L·π(R/d)²  and  E(d) = E☉(1 AU)·Lv·(AU/d)²   ⇒   L = E☉(1 AU)·Lv·AU²/(π R²)
+```
+
+`d` cancels, as it must for a radiance. Disc radiance went **265,000 → 311,454 game units**.
+
+| gate | result |
+|---|---|
+| disc route vs anchor at 1 AU | both **21.2000** game units — **0.0000 stops**, exact by construction ✅ |
+| magnitude route (m = −26.74) vs anchor | **−0.0212 stops** ✅ (residual is the accepted m☉ vs the 128,000 lux anchor, not code) |
+| **T0↔T1 flux, 0.4–100 AU** | worst **1.6e-16 stops** ✅ machine epsilon |
+| `BC_V(5772 K)` | **−0.0810** vs −0.09 implied by `Mbol☉ − MV☉` — 0.009 mag ✅ |
+| radius, B−V < 1.5 | worst **1.076×** (Arcturus); Sun 0.998, Sirius 0.989, Rigel 0.995, Vega 1.06 ✅ |
+| radius, B−V ≥ 1.5 | worst **0.452×** (Proxima) — the `B−V` degeneracy in §4, not arithmetic |
+| **flux invariance under radius ×0.5…×10** | spread **0.00e+0** ✅ EXACT |
+
+🔑🔑 **That last row is why a ±2× radius is acceptable, and it is asserted rather than argued.**
+Radiance ∝ 1/R² and solid angle ∝ R², so they cancel *exactly*: **a wrong radius cannot change how
+bright a star looks — only the range at which its disc stops being sub-pixel.** Betelgeuse's radius is
+2.03× too large, so its disc would resolve at 2× the correct distance; you would only ever see it
+resolved from inside its own system. Nothing else is affected.
+
+⚠ The radius numbers are *worse* than a first offline pass, and the reason is worth keeping: that pass
+fed the **published** `T_eff`, while the gate derives `T_eff` from `B−V` as the renderer must. The
+extra error is entirely the colour-index conversion, not the Stefan–Boltzmann chain.
+
+⚠ `Star.tsx` still publishes `starLodStatus` only when `primary` is true, so `__lum.starLod()` stays
+unambiguous once R2b mounts a second star.
+
+### 8.2 Knock-on for R3
+
+The glare under-drive P8d records grows with the corrected disc: the scene buffer still clamps at
+`HALF_FLOAT_WRITE_MAX = 60,000`, so the shortfall is now **311,454 / 60,000 = 5.19× (2.38 stops)**,
+not the 4.4× (2.14 stops) LIGHTING_PLAN quotes.
+
+### 8.3 Not done in R2, deliberately
+
+Catalogue stars do **not** yet grow into discs on approach. That is R2b, and it depends on `S5`
+(parallax / live 3D directions) in [`STAR_CATALOGUE_PLAN.md`](STAR_CATALOGUE_PLAN.md), which is
+unimplemented — within one system the sprites are correctly a fixed-direction shell. What R2 delivers
+is that the *parameters* for any such star are derivable and the two tiers are photometrically
+continuous, so R2b is a mounting problem rather than a physics problem.
+
+⚠ **Not yet observed in the running scene.** The gate is pure CPU and fully green, `tsc` is clean and
+`pnpm lint` holds at 0 errors, but the dev server's WebGPU init had degraded to ~2 minutes after this
+session's repeated reloads, so the scene tree never mounted for a visual check. The sun should now be
+**0.233 stops brighter**; a dev-server restart is enough to confirm.
