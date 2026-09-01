@@ -11,6 +11,7 @@ import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
 import {
   SetAtom,
   Settings,
+  hdrCalibrationOpenAtom,
   settingsAtom,
   settingsIsOpenAtom,
 } from "@/store/store";
@@ -44,6 +45,11 @@ import {
   resolveBodyWarp,
   resolveScenario,
 } from "@/components/space/perf/scenarios";
+import {
+  displaySupportsHdr,
+  displaySupportsP3,
+  hdrCanvasStatus,
+} from "@/components/space/hdrOutput";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -105,6 +111,7 @@ const renderSubMenu = (
             }
             label="AgX tone mapping"
           />
+          <HdrOutputSetting settings={settings} setSettings={setSettings} />
           {/* Player-facing brightness. Rides on TOP of auto-exposure rather than
               replacing it: `exposureStops` is the compensation term, which
               composes with the metered EV (photometry.ts) exactly the way
@@ -114,7 +121,10 @@ const renderSubMenu = (
           <label className="dev-controls__label">
             brightness {settings.exposureStops > 0 ? "+" : ""}
             {(settings.exposureStops ?? 0).toFixed(1)} stops
-            {(settings.exposureStops ?? 0) === 0 ? " (default)" : ""}
+            {/* ⚠ No conditional " (default)" suffix here. It reflows the label when the
+                value leaves its default, which moves the slider out from under the
+                cursor mid-drag — the author hit exactly that on the HDR headroom
+                slider and had to strip it. Same bug, same fix. */}
             <input
               type="range"
               className="dev-controls__range"
@@ -559,6 +569,104 @@ function PerfSweepButton() {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * Phase 6a — the HDR output toggle plus a read-back of what the canvas actually became.
+ *
+ * No hooks and no effect: this subtree is unreachable until the player has opened the
+ * menu AND picked Graphics (`isOpen && activeSubMenu`), both of which start false/null,
+ * so it can never be part of the server render or of hydration. That means the
+ * browser-only probes can simply be read during render — and the status is then fresh
+ * every time the panel is opened instead of frozen at mount.
+ *
+ * 🔑 The status line reports `toneMapping.mode` from the canvas's own
+ * `getConfiguration()`, not a media query. That is the only test that interrogates the
+ * pipeline we actually render through — a browser that accepts `outputType` but ignores
+ * the tone-mapping option shows up here and nowhere else.
+ */
+const HdrOutputSetting = ({
+  settings,
+  setSettings,
+}: {
+  settings: Settings;
+  setSettings: SetAtom<[SetStateAction<Settings>], void>;
+}) => {
+  // ⚠ Hooks ARE allowed here even though the rest of this subtree deliberately avoids
+  // them: the component is only reachable after two clicks (menu open, Graphics picked),
+  // so it is never part of the server render or of hydration.
+  const setCalOpen = useSetAtom(hdrCalibrationOpenAtom);
+  const setSettingsOpen = useSetAtom(settingsIsOpenAtom);
+  const st = hdrCanvasStatus();
+  const capable = displaySupportsHdr();
+  const p3 = displaySupportsP3();
+  // ⚠ `?? false` — `atomWithStorage` REPLACES the defaults with the saved blob rather
+  // than merging, so for a returning player this key is `undefined` and `!undefined`
+  // would make the first click a no-op. Same trap as `antialias` above.
+  const on = settings.hdrOutput ?? false;
+
+  return (
+    <>
+      <SettingsCheckbox
+        active={on}
+        onChange={() =>
+          setSettings((prev) => ({ ...prev, hdrOutput: !(prev.hdrOutput ?? false) }))
+        }
+        label="HDR output (reload)"
+      />
+      {st.active && (
+        /* ── HDR headroom (Phase 6c) ─────────────────────────────────────────
+           How far above reference white the display transform is allowed to go.
+           MEASURED on an XDR: 2 stops makes the sun's core punch out; 3 stops adds
+           very little, because past the panel's real headroom the compositor clips
+           and extra stops only compress more scene range into the same visible span.
+           So the point where raising this stops helping IS your display's headroom —
+           which is exactly what a calibration screen would measure. Mid-tones do not
+           move (the transform's pivot is pinned to middle grey), so the thing to
+           watch while dragging this is the SUN, not the ground. */
+        <label className="dev-controls__label">
+          HDR headroom {(settings.hdrPeakStops ?? 2).toFixed(2)} stops (
+          {Math.pow(2, settings.hdrPeakStops ?? 2).toFixed(1)}× white)
+          <input
+            type="range"
+            className="dev-controls__range"
+            min={0}
+            max={3}
+            step={0.25}
+            value={settings.hdrPeakStops ?? 2}
+            onChange={(e) =>
+              setSettings((prev) => ({
+                ...prev,
+                hdrPeakStops: Number(e.target.value),
+              }))
+            }
+          />
+        </label>
+      )}
+      {st.active && (
+        <button
+          className="settings-menu__button"
+          onClick={() => {
+            setCalOpen(true);
+            setSettingsOpen(false);
+          }}
+        >
+          calibrate HDR…
+        </button>
+      )}
+      <div className="dev-controls__label">
+        {st.active
+          ? `active — ${st.format}. \u26a0 costs a fixed ~2 ms per frame (browser compositing, measured), which hurts most at high frame rates. Raise the headroom until the sun stops getting brighter — that point is your display's real limit.`
+          : on
+            ? st.toneMappingMode === null
+              ? "enabled — reload to apply."
+              : `enabled, but this browser reported "${st.toneMappingMode}" — HDR is not active.`
+            : capable
+              ? `your display reports HDR${p3 ? " and P3" : ""}. \u26a0 costs a fixed ~2 ms per frame, and panels that advertise HDR at low peak brightness can look worse with it on — try both.`
+              : "no HDR display detected — this will have no effect."}
+      </div>
+    </>
+  );
+};
+
 // Dev-only controls (position teleport + max speed override)
 // ---------------------------------------------------------------------------
 

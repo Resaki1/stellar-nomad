@@ -22,6 +22,10 @@
  *   await __lum.scotopic()            // GATE: rods/cones + Purkinje (Phase 7)
  *   await __lum.scotopic(true)        // ...turn the retina stage on (runtime A/B)
  *   __lum.glare()                     // GATE: the eye's PSF — SHAPE, not strength (Ph 8)
+ *   __lum.hdr()                       // GATE: is the canvas extended-range? (Phase 6a)
+ *   __lum.tonecurve()                 // GATE: the display transform (Phase 6b)
+ *   __lum.tonecurve("poly")           // ...A/B against three's fixed AgX polynomial
+ *   __lum.hdrPeak(8)                  // set the display peak in LINEAR multiples of white
  *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
  *   __lum.units()                     // print the unit convention
  *
@@ -46,6 +50,19 @@ import { Matrix4, Quaternion, Vector3 } from "three";
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 
 import solSystem from "@/sim/systems/sol.json";
+import { hdrCanvasStatus, probeHdrCanvas } from "@/components/space/hdrOutput";
+import {
+  MAX_CODE_DELTA_VS_POLY,
+  PIVOT_X,
+  agxPolynomial,
+  contrastCpu,
+  displayTransformNeutralCpu,
+  displayTransformStatus,
+  getDisplayCurve,
+  setDisplayCurve,
+  setDisplayPeak,
+  srgbEncode,
+} from "@/components/space/displayTransform";
 /** Scratch uniforms for `__lum.eclipse()` — never rendered with. */
 const _eclipseProbeU = createEclipseUniforms();
 
@@ -3580,6 +3597,209 @@ export class LumHarness {
     console.log(
       `[lum] adaptation snapped to ${adaptationTarget(exposureMeterStatus().meteredEV).toFixed(2)} EV`,
     );
+  }
+
+  /**
+   * GATE (Phase 6a) — did we actually get an extended-range canvas, and what does a
+   * number in it mean?
+   *
+   * Re-probes `getConfiguration()` each call, so this is live rather than a cached
+   * startup value. Prints the reference-white convention next to it because the single
+   * most expensive mistake available here is assuming 1.0 is the display's PEAK: it is
+   * HDR **Reference White**, and everything above it is headroom.
+   */
+  hdr(): Record<string, unknown> {
+    // Re-probe when a render target is registered (the normal case in-game) so this is
+    // live rather than the value captured at startup; fall back to the cached status
+    // otherwise, e.g. when called before the first frame.
+    if (_source) probeHdrCanvas(_source.renderer);
+    const st = hdrCanvasStatus();
+
+    // What the SDR ceiling costs us, in this scene, right now. `EV_MAX`-independent:
+    // AgX's own window ends at scene-linear 2^4.026069 = 16.29, and everything above
+    // that is currently mapped to exactly 1.0 — i.e. thrown away.
+    const AGX_WHITE_CLIP_LINEAR = 2 ** 4.026069;
+    console.log(
+      [
+        `[lum] HDR OUTPUT (Phase 6a — canvas only)`,
+        `      canvas          ${st.active ? "✅ EXTENDED RANGE" : "⬜ SDR"}${st.reason ? ` — ${st.reason}` : ""}`,
+        `      format          ${st.format ?? "unknown"}   colorSpace ${st.colorSpace ?? "unknown"}   toneMapping "${st.toneMappingMode ?? "unset"}"`,
+        `      alphaMode       ${st.alphaMode ?? "unknown"}${st.alphaMode === "premultiplied" ? "  ⚠ compositor must BLEND this over the page — try ?opaque" : ""}`,
+        `      display         dynamic-range ${st.displaySupportsHdr ? "high" : "standard"}, gamut ${st.displaySupportsP3 ? "p3" : "srgb"}`,
+        `      headroom API    ${st.headroomStops === null ? "not exposed (EXPECTED — deliberately withheld as a tracking vector)" : st.headroomStops.toFixed(2) + " stops"}`,
+        ``,
+        `      🔑 A value of 1.0 in this canvas is HDR REFERENCE WHITE (~203 cd/m²), NOT the`,
+        `         display's peak. Headroom = log2(peak / 203), in stops. Values are sRGB-`,
+        `         ENCODED (the CSS 'srgb' space), not linear, and three's OETF already`,
+        `         extends above 1.0 without clamping — so the encode side needs no work.`,
+        ``,
+        `      ⚠ THE IMAGE IS EXPECTED TO BE IDENTICAL AT THIS STEP, and that is the gate.`,
+        `        'extended' is specified to match 'standard' inside [0,1], and AgX still ends`,
+        `        in clamp(0,1), so nothing we emit today exceeds 1.0. If the image DOES change,`,
+        `        something else is wrong — that is the whole point of landing 6a alone.`,
+        ``,
+        `      What the ceiling currently costs: AgX maps everything above scene-linear`,
+        `      ${AGX_WHITE_CLIP_LINEAR.toFixed(2)} to exactly 1.0. Phase 6b/6c replace that clamp with a`,
+        `      peak-parameterised shoulder; at 3 stops of headroom scene-linear 1e5 reaches`,
+        `      ~6.8 of 8 instead of 1.0.`,
+        ``,
+        `      ⚠ OPEN QUESTION for the XDR: OUTPUT_DITHER_LSB (SpaceRenderer) exists to break`,
+        `        8-bit banding. An RGBA16F canvas has no 8-bit step — but the COMPOSITOR still`,
+        `        quantises to the panel, and whether it dithers is unknown. So the dither is`,
+        `        deliberately LEFT ON here rather than assumed redundant. A/B it on device.`,
+      ].join("\n"),
+    );
+    return {
+      active: st.active,
+      format: st.format,
+      colorSpace: st.colorSpace,
+      toneMappingMode: st.toneMappingMode,
+      alphaMode: st.alphaMode,
+      requested: st.requested,
+      displayHdr: st.displaySupportsHdr,
+      displayP3: st.displaySupportsP3,
+      headroomStops: st.headroomStops,
+      agxWhiteClipSceneLinear: Number(AGX_WHITE_CLIP_LINEAR.toFixed(3)),
+    };
+  }
+
+  /**
+   * GATE (Phase 6b) — the display transform: does the parametric AgX curve still deliver
+   * the look three's polynomial did, and is it safe with the upper clamp removed?
+   *
+   * `__lum.tonecurve("poly")` / `("parametric")` swaps the curve live (recompiles the post
+   * graph) so the 2.4-code difference can be looked at rather than argued about.
+   */
+  tonecurve(curve?: "parametric" | "poly"): Record<string, unknown> {
+    if (curve) setDisplayCurve(curve);
+    const st = displayTransformStatus();
+
+    // ⚠ THE METRIC IS DELIVERED 8-BIT CODE VALUES, not sigmoid units. |Δy| over-states the
+    // error near black by two decades — y = 0.009 there is display-linear 3.2e-5, i.e.
+    // code 0.12 — and under-states it in the mid-tones, which is where the eye is.
+    const code = (y: number): number =>
+      srgbEncode(Math.min(Math.max(Math.pow(Math.max(y, 0), 2.2), 0), 1)) * 255;
+    let worst = 0;
+    let worstT = 0;
+    let nonMonotonic = 0;
+    let nan = 0;
+    let prev = -Infinity;
+    const N = 4000;
+    for (let i = 0; i <= N; i++) {
+      // Deliberately sweeps OUTSIDE [0,1]: the parametric form has no clamp on t, so its
+      // behaviour past the window is part of what has to be correct.
+      const t = -0.3 + (i / N) * 2.1;
+      const y = contrastCpu(t, 1);
+      if (!Number.isFinite(y)) nan++;
+      if (y < prev - 1e-12) nonMonotonic++;
+      prev = y;
+      if (t >= 0 && t <= 1) {
+        const d = Math.abs(code(y) - code(agxPolynomial(t)));
+        if (d > worst) {
+          worst = d;
+          worstT = t;
+        }
+      }
+    }
+
+    // Middle grey must be EXACT and invariant in the peak — that is the whole design.
+    const greyRows: Record<string, Record<string, number | string>> = {};
+    const savedPeak = st.peak;
+    for (const H of [1, 2, 4, 8]) {
+      setDisplayPeak(H);
+      const row: Record<string, number | string> = {};
+      for (const scene of [0.18, 1, 4, 16.29, 256, 1e5]) {
+        row[String(scene)] = Number(displayTransformNeutralCpu(scene).toFixed(4));
+      }
+      greyRows[`peak ${H}x (${Math.log2(H).toFixed(0)} stops)`] = row;
+    }
+    setDisplayPeak(savedPeak);
+
+    const greyValues = [1, 2, 4, 8].map((H) => {
+      setDisplayPeak(H);
+      const v = displayTransformNeutralCpu(0.18);
+      return v;
+    });
+    setDisplayPeak(savedPeak);
+    const greySpread = Math.max(...greyValues) - Math.min(...greyValues);
+
+    console.log(
+      [
+        `[lum] DISPLAY TRANSFORM (Phase 6b — AgX with the peak as a PARAMETER)`,
+        `      curve           ${st.curve === "parametric" ? "✅ parametric (peak-parameterised)" : "⬜ three's fixed polynomial (SDR only)"}`,
+        `      peak            ${st.peak.toFixed(3)}x reference white = ${st.peakStops.toFixed(2)} stops of headroom  (1 = SDR)`,
+        `      pivot           t=${st.pivotX.toFixed(5)} -> y=${st.pivotY.toFixed(5)}   = scene-linear ${st.pivotSceneLinear.toFixed(4)}`,
+        `      shape           slope ${st.slope} · toe^${st.toePower} · shoulder^${st.shoulderPower}`,
+        `      AgX window      ${st.windowStops.toFixed(2)} stops, white clip at scene-linear ${st.windowWhiteClip.toFixed(2)}`,
+        ``,
+        `      ── the three things that must hold ──`,
+        `      1. LOOK PRESERVED   max |Δ| vs three's polynomial = ${worst.toFixed(3)} of 255 code values`,
+        `                          (${((100 * worst) / 255).toFixed(2)}%) at t=${worstT.toFixed(4)}   ${worst <= MAX_CODE_DELTA_VS_POLY + 0.15 ? "✅ within the fitted " + MAX_CODE_DELTA_VS_POLY : "❌ REGRESSED — re-fit or revert"}`,
+        `      2. MID-GREY FIXED   scene 0.18 across peak 1x..8x spreads ${greySpread.toExponential(2)}`,
+        `                          ${greySpread < 1e-4 ? "✅ invariant — auto-exposure, the scotopic driver and EXPOSURE_BIAS_STOPS keep their meaning" : "❌ the pivot is moving with the peak; highlights are not the only thing changing"}`,
+        `      3. SAFE            ${nan} non-finite, ${nonMonotonic} non-monotonic samples over t ∈ [−0.3, 1.8]  ${nan === 0 && nonMonotonic === 0 ? "✅" : "❌"}`,
+        ``,
+        `      🔑 THE CLAMP IS THE WHOLE POINT. three's agxToneMapping ends in`,
+        `         clamp(colortone, 0, 1) — headroom is destroyed INSIDE the tone mapper, so`,
+        `         Phase 6a's extended canvas was inert until this became a uniform. Only the`,
+        `         UPPER clamp is gone; the lower max(0,·) stays or the outset + Rec2020→sRGB`,
+        `         matrices' negatives reach pow(negative, 0.41666) = NaN and poison the glare`,
+        `         pyramid next frame.`,
+        ``,
+        `      ⚠ A tone curve is still mandatory: deep space to sun disc is 43.9 stops and`,
+        `        3 stops of headroom takes "compress 34 away" to "compress 31 away".`,
+        ``,
+        `      ⚠ STILL UNPROVEN: that extended values are DELIVERED. Chromium clips an`,
+        `        HDR layer that fails overlay promotion, and until now nothing emitted a`,
+        `        value above white. Run __lum.hdrPeak(4) with HDR output on and LOOK at the`,
+        `        sun — that is the first real proof, and it is Phase 6c's gate.`,
+      ].join("\n"),
+    );
+    console.table(greyRows);
+
+    return {
+      curve: st.curve,
+      peak: st.peak,
+      peakStops: Number(st.peakStops.toFixed(3)),
+      maxCodeDeltaVsPoly: Number(worst.toFixed(3)),
+      atT: Number(worstT.toFixed(4)),
+      budget: MAX_CODE_DELTA_VS_POLY,
+      lookPreserved: worst <= MAX_CODE_DELTA_VS_POLY + 0.15,
+      midGreyInvariant: greySpread < 1e-4,
+      midGreySpread: greySpread,
+      nonFinite: nan,
+      nonMonotonic,
+      pivotSceneLinear: Number(st.pivotSceneLinear.toFixed(5)),
+    };
+  }
+
+  /**
+   * Set the display peak, in display-LINEAR multiples of reference white. 1 = SDR.
+   *
+   * ⚠ Phase 6c owns this properly (a calibration screen writes it). Exposed now because it
+   * is the only way to prove the extended-range canvas actually DELIVERS: with HDR output
+   * on, `__lum.hdrPeak(4)` should make the sun and the engine plumes punch visibly above
+   * the HUD's white. If they do not, the canvas is reporting `extended` while the
+   * compositor clips it.
+   */
+  hdrPeak(peak: number): Record<string, unknown> {
+    setDisplayPeak(peak);
+    const st = displayTransformStatus();
+    const canvas = hdrCanvasStatus();
+    console.log(
+      `[lum] display peak = ${st.peak.toFixed(3)}x reference white (${st.peakStops.toFixed(2)} stops). ` +
+        `Canvas: ${canvas.active ? "extended ✅" : "SDR ⬜ — values above 1.0 will be CLAMPED by the compositor, so this will do nothing visible"}. ` +
+        `White clip moves scene-linear ${st.windowWhiteClip.toFixed(1)} -> ~${(st.windowWhiteClip * st.peak).toFixed(0)}. ` +
+        `Mid-grey is unchanged by design — look at the SUN, not the ground.`,
+    );
+    return {
+      peak: st.peak,
+      peakStops: Number(st.peakStops.toFixed(3)),
+      canvasExtended: canvas.active,
+      curve: getDisplayCurve(),
+      midGreyDisplayLinear: Number(displayTransformNeutralCpu(0.18).toFixed(5)),
+      pivotT: Number(PIVOT_X.toFixed(5)),
+    };
   }
 
   /** Print the unit convention and the current exposure. */

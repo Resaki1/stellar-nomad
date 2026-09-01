@@ -1,0 +1,104 @@
+@use '../../../styles' as s;
+
+// Phase 6d — controls for the HDR calibration wedge.
+//
+// Bottom-anchored on purpose: the wedge itself is rendered into the canvas in the middle
+// of the screen (see space/hdrCalibration.ts), so a centred modal would cover the thing
+// being measured. Position and chrome follow AINameOverlay / CommsOverlay.
+
+.hdr-cal {
+  position: fixed;
+  bottom: s.$space-7;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: s.$z-modal;
+  pointer-events: auto;
+  width: min(620px, calc(100vw - #{s.$space-7}));
+}
+
+.hdr-cal__panel {
+  background: rgba(8, 12, 24, 0.92);
+  border: 1px solid rgba(80, 160, 255, 0.3);
+  border-radius: 10px;
+  backdrop-filter: blur(s.$blur-md);
+  padding: s.$space-4 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hdr-cal__title {
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(140, 190, 255, 0.95);
+}
+
+.hdr-cal__steps {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: rgba(215, 230, 250, 0.9);
+
+  strong {
+    color: rgba(255, 255, 255, 0.98);
+    font-weight: 600;
+  }
+}
+
+.hdr-cal__label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.75rem;
+  // ⚠ Tabular figures and a fixed min-height: the readout changes width as the value
+  // changes, and the author lost a slider to exactly that reflow — a label that grows or
+  // wraps moves the slider out from under the cursor mid-drag.
+  font-variant-numeric: tabular-nums;
+  min-height: 2.4rem;
+  color: rgba(200, 220, 245, 0.9);
+}
+
+.hdr-cal__range {
+  width: 100%;
+  accent-color: rgba(90, 165, 255, 0.95);
+}
+
+.hdr-cal__note {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(200, 215, 240, 0.75);
+
+  strong {
+    color: rgba(255, 230, 180, 0.95);
+  }
+}
+
+.hdr-cal__note--dim {
+  color: rgba(180, 195, 220, 0.5);
+}
+
+.hdr-cal__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hdr-cal__button {
+  background: rgba(40, 90, 165, 0.35);
+  border: 1px solid rgba(90, 165, 255, 0.45);
+  border-radius: 6px;
+  color: rgba(230, 242, 255, 0.95);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 16px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(50, 105, 185, 0.5);
+  }
+}

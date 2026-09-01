@@ -20,13 +20,12 @@ import {
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
   HalfFloatType,
-  AgXToneMapping,
   NeutralToneMapping,
   NoToneMapping,
 } from "three";
 import { useAtomValue, useSetAtom } from "jotai/react";
 import { advanceSimTimeAtom } from "@/store/simTime";
-import { settingsAtom } from "@/store/store";
+import { hdrCalibrationOpenAtom, settingsAtom } from "@/store/store";
 import {
   getActiveCloudPipeline,
   getEarthMatrixWorldRef,
@@ -43,6 +42,13 @@ import {
 import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
 import { localExposureNode, updateExposureMeter } from "./exposureMeter";
+import {
+  displayTransformNode,
+  setDisplayCurveRebuildHook,
+  setDisplayPeak,
+} from "./displayTransform";
+import { hdrCalibrationNode } from "./hdrCalibration";
+import { isHdrCanvasActive } from "./hdrOutput";
 import { scotopicNode } from "./scotopic";
 import { glareNode, setGlareUserScale, updateGlare } from "./glarePass";
 import {
@@ -318,6 +324,8 @@ export type SpaceRendererProps = {
 
 const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const settings = useAtomValue(settingsAtom);
+  // Phase 6d: the calibration wedge replaces the output node, so the post graph has to know.
+  const calibrating = useAtomValue(hdrCalibrationOpenAtom);
   const gl = useThree((state) => state.gl);
   const size = useThree((state) => state.size);
   const localCamera = useThree(
@@ -634,8 +642,28 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // is the physically correct input.
     const retina = scotopicNode(hdr, glared);
 
-    const toneMode = settings.toneMapping ? AgXToneMapping : NeutralToneMapping;
-    const toneMapped = retina.toneMapping(toneMode);
+    // ── DISPLAY TRANSFORM (Phase 6b, displayTransform.ts) ────────────────────
+    // ⚠⚠ NO LONGER `retina.toneMapping(AgXToneMapping)`, and the reason is one line of
+    // three's source: `agxToneMapping` ends in `clamp(colortone, 0.0, 1.0)`. Headroom is
+    // destroyed INSIDE the tone mapper, so no canvas configuration can recover it —
+    // Phase 6a's extended-range canvas is inert until this clamp becomes a parameter.
+    //
+    // `displayTransformNode` is three's AgX with the peak as a uniform instead of a
+    // constant: same inset/outset matrices, same 16.5-stop log window, same `pow(·,2.2)`
+    // tail, and a parametric sigmoid in place of the fixed 6th-order polynomial so the
+    // shoulder's asymptote can move. **Peak 1 = SDR**, which is where it ships until 6c.
+    //
+    // 🔑 The pivot is PINNED to middle grey, so mid-tones are invariant in the peak by
+    // construction — that is what keeps auto-exposure (Phase 5), the scotopic driver
+    // (Phase 7) and `EXPOSURE_BIAS_STOPS` meaningful when the peak moves. Only highlights
+    // change. Cost of the swap: 2.429 of 255 delivered code values, measured.
+    //
+    // Khronos PBR Neutral stays on three's node: it has no peak parameter and is a
+    // debug/comparison option, not a candidate for the HDR path (it crushes above
+    // linear ≈4, which is worse with more range to fill, not better).
+    const toneMapped = settings.toneMapping
+      ? displayTransformNode(retina)
+      : retina.toneMapping(NeutralToneMapping);
 
     // ⚠ NO post-process AA here, and that was measured too. Post-tonemap SMAA was
     // built (MSAA resolves in linear HDR with the tone curve after, so on a
@@ -652,18 +680,44 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     const dither = hash(px.x.add(px.y.mul(1000)))
       .sub(hash(px.y.add(px.x.mul(1000))))
       .mul(OUTPUT_DITHER_LSB / 255);
-    pipeline.outputNode = OUTPUT_DITHER_LSB > 0 ? mapped.add(dither) : mapped;
+    // ⚠⚠ PHASE 6a — `.max(0)` IS LOAD-BEARING ON THE HDR PATH, AND WAS FREE BEFORE IT.
+    // AgX ends at display-linear [0,1], and the dither is added AFTER it, so a black
+    // pixel can leave here at −1/255. On the SDR canvas (`toneMapping: 'standard'`) the
+    // compositor clamped that to 0 and nobody noticed. An extended-range canvas does NOT
+    // clamp: a negative channel is a legal out-of-gamut colour, and a gamut mapper is
+    // entitled to render it as a faintly COLOURED dark pixel rather than black — which is
+    // the worst possible place for it, since deep space is most of our frame. Clamping
+    // the floor in-shader is behaviour-identical on SDR and removes the class entirely.
+    // 🔑 Only the FLOOR is clamped. The ceiling is what Phase 6b/6c exist to remove.
+    const dithered = OUTPUT_DITHER_LSB > 0 ? mapped.add(dither).max(0) : mapped;
+
+    // ── HDR CALIBRATION (Phase 6d, hdrCalibration.ts) ────────────────────────
+    // ⚠ Replaces the whole output, tone curve included, and that is the point: the wedge
+    // measures the DISPLAY's headroom, so routing it through AgX's shoulder would make the
+    // reading about our curve instead of the panel. Values are display-linear multiples of
+    // reference white — the same units as `Settings.hdrPeakStops`. The pipeline still
+    // applies the sRGB encode after this, exactly as it does for the normal path.
+    pipeline.outputNode = calibrating ? hdrCalibrationNode() : dithered;
     pipeline.needsUpdate = true;
 
     // Tonemapping is now done in-graph → the pipeline's renderOutput() must NOT
-    // re-apply it (it still does the sRGB colour-space encode + 8-bit write).
+    // re-apply it (it still does the sRGB colour-space encode + the canvas write —
+    // 8-bit on the SDR path, RGBA16F extended-range when Phase 6a's HDR output is on).
     const renderer = gl as unknown as WebGPURenderer;
     renderer.toneMapping = NoToneMapping;
 
+    // `__lum.tonecurve("poly")` bakes a different curve into the graph, so it needs a
+    // recompile — the peak does not (it is a uniform). Registered here because this effect
+    // is what owns the graph.
+    setDisplayCurveRebuildHook(() => {
+      pipeline.needsUpdate = true;
+    });
+
     return () => {
+      setDisplayCurveRebuildHook(null);
       pipeline.needsUpdate = true;
     };
-  }, [settings.toneMapping, pipeline, rt, rtB, gl]);
+  }, [settings.toneMapping, calibrating, pipeline, rt, rtB, gl]);
 
   // Camera setup
   useEffect(() => {
@@ -1196,6 +1250,19 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // ⚠⚠ `setGlareUserScale`, NOT `setGlare` — a per-frame writer must not share a
     // setter with the debug override, or `__lum.glare(false)` is undone every frame.
     setGlareUserScale(settings.glare ?? 1);
+    // ── DISPLAY PEAK (Phase 6c) ───────────────────────────────────────────────
+    // Only meaningful when the compositor is actually accepting extended values; on the
+    // SDR path anything above 1.0 is clamped, so asking for headroom there would compress
+    // highlights for nothing. `isHdrCanvasActive()` is the read-back of the canvas's own
+    // `getConfiguration()`, not a media query — see hdrOutput.ts.
+    //
+    // ⚠ Written per frame ON PURPOSE: macOS/EDR headroom shrinks as screen brightness
+    // rises, so this is a runtime quantity. It is a uniform write, so it costs nothing and
+    // never recompiles. `__lum.hdrPeak(H)` overrides it until the next frame, which is why
+    // the gate tells you to look immediately.
+    setDisplayPeak(
+      isHdrCanvasActive() ? Math.pow(2, settings.hdrPeakStops ?? 2) : 1,
+    );
     updateGlare(renderer, (rtB ?? rt).texture);
     updateExposureMeter(renderer, (rtB ?? rt).texture, delta);
     // ── Apply postprocessing (glare, retina, tonemapping) and blit to canvas ──

@@ -589,6 +589,35 @@ export function isPerfEnabled(): boolean {
 }
 
 /**
+ * `?dpr=N` — pin the render resolution for a measurement, overriding `Scene.tsx`'s
+ * `dpr={[0.5, 1.5]}` clamp. Returns `null` when absent.
+ *
+ * 🔑 **This exists to partition ONE hypothesis space.** Phase 6a measured the HDR canvas
+ * costing +1.9–2.1 ms of frame time *outside* every render context we issue
+ * (`docs/HDR_OUTPUT_PLAN.md` §5.2). A compositor cost is either **per-pixel** (an extra
+ * texture copy / colour-conversion pass — which is what Chrome documents for a
+ * non-preferred canvas format) or **fixed per frame** (a mode switch, a synchronisation).
+ * Halving the pixels separates them without needing to know the cause: a per-pixel cost
+ * roughly halves, a fixed one does not move.
+ *
+ * Useful beyond that: every resolution-bound pass in the sweep should scale with this and
+ * every fixed-size one (shadow map, froxel, sky-view LUT) should not, which is a
+ * specificity check on the whole profiler.
+ */
+export function dprOverride(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = new URLSearchParams(window.location.search).get("dpr");
+    if (raw === null) return null;
+    const v = Number(raw);
+    // Refuse nonsense rather than silently rendering a 1-pixel or 8K canvas.
+    return Number.isFinite(v) && v >= 0.25 && v <= 4 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The renderer surface this module touches. Typed structurally and loosely
  * because `trackTimestamp` lives on the backend, which `@types/three` models as
  * an opaque `Backend`.

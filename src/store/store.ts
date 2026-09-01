@@ -49,6 +49,36 @@ export type Settings = {
    * change here must not recompile shaders (WebGPU compilation stutter).
    */
   glare: number;
+  /**
+   * Phase 6a — request an extended-range (HDR) drawing buffer.
+   *
+   * ⚠ Needs a RELOAD, like `perf`: the canvas pixel format is fixed when the
+   * `GPUCanvasContext` is configured, which happens once inside a caching getter in
+   * three's `WebGPUBackend`. So this is read from localStorage at renderer construction
+   * (`isHdrOutputRequested()`), not from this atom.
+   *
+   * 🔑 OFF by default even when `(dynamic-range: high)` is true, deliberately. That
+   * media query is a *capability* test, not a headroom test — it is true for a ~400-nit
+   * "HDR400" panel with no local dimming (≈1 stop of real headroom), where HDR usually
+   * looks WORSE than SDR. Auto-enabling would degrade the game on hardware that
+   * advertises the feature. See docs/HDR_OUTPUT_PLAN.md §6.1.
+   */
+  hdrOutput: boolean;
+  /**
+   * HDR headroom actually used, in STOPS above reference white. Only has an effect when
+   * the extended-range canvas is active; ignored on the SDR path.
+   *
+   * 🔑 DEFAULT 2 STOPS (4× reference white), and that is a MEASUREMENT, not a guess.
+   * On the XDR, peak 4× (2 stops) makes the sun's core visibly punch out; peak 8× (3 stops)
+   * adds "a small difference too but not much". That saturation point IS the display's real
+   * headroom — beyond it the compositor clips, so extra stops only compress more scene range
+   * into the same visible span. `log2(1600/203)` = 2.98 is the XDR's theoretical maximum and
+   * it falls as screen brightness rises, so ~2 is the honest conservative default.
+   *
+   * ⚠ Feeds a UNIFORM (`setDisplayPeak`), never the post graph's `useEffect` deps — changing
+   * it must not recompile shaders.
+   */
+  hdrPeakStops: number;
   initial: boolean;
 };
 
@@ -70,10 +100,25 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   // 1 = the physically derived straylight fraction. Phase 8 landed as the
   // replacement for additive bloom, so this is on by default at its physical value.
   glare: 1,
+  // Opt-in; see the doc comment on `Settings.hdrOutput` for why detection is not enough.
+  hdrOutput: false,
+  // 2 stops = 4x reference white. See the doc comment: measured as where the benefit
+  // saturates on an XDR panel, and conservative for anything dimmer.
+  hdrPeakStops: 2,
   initial: true,
 });
 
 export const settingsIsOpenAtom = atom(false);
+
+/**
+ * Phase 6d — the HDR calibration screen is open.
+ *
+ * ⚠ Read by `SpaceRenderer`'s post-graph effect, not just by the HUD: the test pattern
+ * REPLACES `pipeline.outputNode`, because HTML cannot exceed reference white and so cannot
+ * measure headroom. Toggling this rebuilds the post graph (a one-off shader compile on a
+ * modal screen, which is an acceptable place for it).
+ */
+export const hdrCalibrationOpenAtom = atom(false);
 
 export const movementAtom = atom<Movement>({
   yaw: 0,

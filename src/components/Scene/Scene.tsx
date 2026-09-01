@@ -8,11 +8,18 @@ import { useAtomValue } from "jotai";
 import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import * as THREE from "three/webgpu";
 import {
+  dprOverride,
   hasGpuTimestamps,
   installPerfInspector,
   isPerfEnabled,
   perf,
 } from "../space/perf/perfProfiler";
+import {
+  canvasAlphaRequested,
+  hdrOutputType,
+  logHdrCanvas,
+  probeHdrCanvas,
+} from "../space/hdrOutput";
 
 import AsteroidField from "../Asteroids/AsteroidField";
 import MilkyWaySkybox from "../Skybox/MilkyWaySkybox";
@@ -98,6 +105,7 @@ const Scene = () => {
   // Read once and independently of the atom: the `gl` factory below decides
   // `trackTimestamp` from the same value, and the two must not disagree.
   const perfOn = useMemo(() => isPerfEnabled(), []);
+  const dprPinned = useMemo(() => dprOverride(), []);
   const isSafari =
     typeof window !== "undefined" && navigator
       ? /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
@@ -162,7 +170,9 @@ const Scene = () => {
       style={{ background: "black" }}
       camera={{ near: 0.01, far: 20_000 }}
       frameloop={settingsIsOpen ? "never" : "always"}
-      dpr={[0.5, 1.5]}
+      // `?dpr=N` pins the resolution for a measurement; otherwise the usual clamp
+      // (1.5 on a Retina M-series). See dprOverride() for what it is for.
+      dpr={dprPinned ?? [0.5, 1.5]}
       gl={(defaultProps) => {
           // Profiling must be decided here: `trackTimestamp` allocates the GPU
           // query pool at construction and cannot be turned on later. See
@@ -173,6 +183,16 @@ const Scene = () => {
             powerPreference: "high-performance",
             logarithmicDepthBuffer: true,
             trackTimestamp: perf.enabled,
+            // Phase 6a. `HalfFloatType` → an RGBA16F canvas configured with
+            // `toneMapping: { mode: 'extended' }`, i.e. values above display white are
+            // no longer clamped by the compositor. `undefined` keeps the device's own
+            // preferred format. Same reload constraint as `trackTimestamp`, and the same
+            // reason it reads localStorage rather than the atom. See space/hdrOutput.ts.
+            outputType: hdrOutputType(),
+            // ⚠ MEASUREMENT KNOB, default unchanged (three's own default is `true`).
+            // `?opaque` flips the canvas to `alphaMode: 'opaque'` so the HDR frame-time cost
+            // (§5.2) can be A/B'd against a compositor blend. See space/hdrOutput.ts.
+            alpha: canvasAlphaRequested(),
           });
           installPerfInspector(renderer);
 
@@ -194,6 +214,13 @@ const Scene = () => {
               "[perf] WebGPU renderer.init() done",
               performance.measure("webgpu-init", "webgpu-init-start", "webgpu-init-end").duration.toFixed(0) + "ms",
             );
+            // The canvas context is created lazily by three's `context` getter, so the
+            // read-back has to wait for a frame. `requestAnimationFrame` is enough and
+            // keeps this off the init critical path.
+            requestAnimationFrame(() => {
+              probeHdrCanvas(renderer);
+              logHdrCanvas();
+            });
             if (perf.enabled) {
               // `trackTimestamp` is silently downgraded when the adapter lacks
               // the `timestamp-query` feature, so report what we actually got.

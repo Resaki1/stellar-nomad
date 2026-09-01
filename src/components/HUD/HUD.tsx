@@ -22,6 +22,7 @@ import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
+import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 import PerfHUD from "./PerfHUD/PerfHUD";
@@ -127,6 +128,9 @@ export default function HUD() {
       <ToastDisplay />
       <AINameOverlay />
       <CommsOverlay />
+      {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
+          chain's output node, because HTML cannot exceed reference white. */}
+      <HdrCalibration />
       <GameCommsTriggers />
       <DeathScreen />
       <Hotbar />
