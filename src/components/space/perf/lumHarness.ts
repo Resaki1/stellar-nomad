@@ -71,6 +71,8 @@ import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import {
   getStarCoronaScale,
   getStarGlareFlipY,
+  getStarLimbScale,
+  setStarLimbScale,
   getStarPointGlareEnabled,
   setStarCoronaScale,
   setStarGlareFlipY,
@@ -91,6 +93,7 @@ import {
   discRadianceGame,
   discSolidAngle,
   illuminanceGameAt,
+  limbDarkeningRgb,
   radiusKmFromCatalogue,
   temperatureFromBV,
 } from "@/components/space/starPhysics";
@@ -4042,7 +4045,10 @@ export class LumHarness {
     // this is the channel test, not a luminance test. A luminance test passed
     // while the red channel was +Inf.
     const budget = 65_504;
-    const tint = st.writeBudget > 0 ? 60_000 / st.writeBudget : 1;
+    // ⚠ `writeBudget` is now HALF_FLOAT_WRITE_MAX itself (the shader clamps the
+    // assembled vec3 per channel), so the old `60000 / writeBudget` tint back-out
+    // no longer applies. `writtenPeak` IS the brightest channel.
+    const tint = st.drawnPeak > 0 ? st.writtenPeak / st.drawnPeak : 1;
     // ⚠ THREE different peaks, and printing the wrong pair is a mistake this gate
     // has now made four times. `unspreadPeak / cap` is NOT the clip ratio once the
     // pixel floor has spread the disc — that conflates flux-conserving spread with
@@ -4063,14 +4069,14 @@ export class LumHarness {
           ? ` (÷${(st.unspreadPeak / Math.max(st.drawnPeak, 1e-30)).toFixed(1)} by the ` +
             `flux-conserving spread — no flux lost there)`
           : "") +
-        `, cap ${st.writeBudget.toExponential(3)} ⇒ clipped ${Math.max(1, clipRatio).toFixed(2)}×.`,
+        `, cap ${st.writeBudget.toExponential(3)} (per channel).`,
     );
     console.log(
       st.writtenPeak >= 65_520
         ? `[lum] ❌ brightest CHANNEL ${st.writtenPeak.toExponential(3)} rounds to +Inf in ` +
           `half-float. That poisons the whole glare pyramid and drops the sun from metering.`
-        : `[lum] ✅ ×${tint.toFixed(4)} for the brightest colour channel ⇒ ` +
-          `${st.writtenPeak.toExponential(3)} in the buffer, no overflow (< ${budget}). ` +
+        : `[lum] ✅ brightest CHANNEL ${st.writtenPeak.toExponential(3)} (${tint.toFixed(3)}× the ` +
+          `scalar, from the tint × the limb centre boost), no overflow (< ${budget}). ` +
           `⚠ Says nothing about flux — that is the next line.`,
     );
     console.log(
@@ -4171,6 +4177,122 @@ export class LumHarness {
           : "Expect the frame to wash out where the sun is in view inside ~5 AU."),
     );
     return { veilFeedback: getVeilFeedback(), pedestal: ped };
+  }
+
+  /**
+   * LIMB DARKENING GATE (R4, docs/STAR_RENDERING_PLAN.md §11).
+   *
+   * The profile is DERIVED from `T_eff` alone through an Eddington grey atmosphere
+   * — no table, no fitted coefficients — so the things worth checking are that it
+   * reproduces the Sun, that it conserves flux, and that it moves the right way
+   * with temperature.
+   */
+  limbDarkening(): Record<string, unknown> {
+    const st = starLodStatus;
+    const out: Record<string, unknown> = {};
+
+    // ── 1. does it reproduce the Sun? ──
+    const sun = limbDarkeningRgb(5772);
+    // Published solar I(limb)/I(centre) ≈ 0.3 at 550 nm (Allen/Cox), i.e. u₂ 0.93,
+    // v₂ −0.23. The G channel is the closest single comparison.
+    const pubG = 0.3;
+    const okSun = Math.abs(sun.limbRatio[1] - pubG) < 0.1;
+    console.log(
+      `[lum] Sol I(limb)/I(centre): R ${sun.limbRatio[0].toFixed(3)}, ` +
+        `G ${sun.limbRatio[1].toFixed(3)}, B ${sun.limbRatio[2].toFixed(3)} — ` +
+        `published ~${pubG} at 550 nm ${okSun ? "✅" : "❌"}`,
+    );
+    console.log(
+      `[lum] limb reddening R/B = ${(sun.limbRatio[0] / Math.max(sun.limbRatio[2], 1e-9)).toFixed(2)}× ` +
+        `— the limb is genuinely redder, and that falls out of the physics rather ` +
+        `than being authored.`,
+    );
+
+    // ── 2. flux conservation ──
+    // The shader multiplies the profile by 1/discMeanNorm, so the disc-mean must be
+    // exactly 1 or limb darkening would change the star's luminosity. Check by
+    // numerically integrating the profile the shader actually evaluates.
+    let worstMean = 0;
+    for (let ch = 0; ch < 3; ch++) {
+      const a = sun.a[ch];
+      const b = sun.b[ch];
+      const gain = 1 / sun.discMeanNorm[ch];
+      const N = 4000;
+      let mean = 0;
+      for (let i = 0; i < N; i++) {
+        const mu = (i + 0.5) / N;
+        const om = 1 - mu;
+        mean += 2 * Math.max(0, (1 - a * om - b * om * om) * gain) * mu * (1 / N);
+      }
+      worstMean = Math.max(worstMean, Math.abs(mean - 1));
+    }
+    console.log(
+      `[lum] disc-mean of the rendered profile deviates ${(worstMean * 100).toFixed(3)}% ` +
+        `from 1 ${worstMean < 0.01 ? "✅ flux conserved" : "❌ limb darkening is changing the star's luminosity"}`,
+    );
+
+    // ── 3. temperature trend ──
+    const rows: Record<string, Record<string, number>> = {};
+    for (const T of [3000, 4500, 5772, 10000, 30000]) {
+      const l = limbDarkeningRgb(T);
+      rows[`${T} K`] = {
+        "a_G": Number(l.a[1].toFixed(3)),
+        "b_G": Number(l.b[1].toFixed(3)),
+        "I_limb/I_centre (G)": Number(l.limbRatio[1].toFixed(3)),
+        "limb R/B": Number((l.limbRatio[0] / Math.max(l.limbRatio[2], 1e-9)).toFixed(2)),
+        "centre/mean (G)": Number((1 / l.discMeanNorm[1]).toFixed(3)),
+      };
+    }
+    console.table(rows);
+    console.log(
+      "[lum] 🔑 cool stars are strongly limb-darkened and strongly limb-reddened, hot " +
+        "stars are nearly flat discs. None of that is authored — it is how sensitive " +
+        "B_λ is to temperature at visible wavelengths.",
+    );
+
+    // ── 4. can it be SEEN? ──
+    // ⚠ On the Sun, no — and that is correct.
+    const stopsOverWhite =
+      st.ran && st.drawnPeak > 0 ? Math.log2(st.drawnPeak / 16.29) : NaN;
+    if (st.ran) {
+      console.log(
+        `[lum] at this pose the disc is ${stopsOverWhite.toFixed(1)} stops above display ` +
+          `white, and the limb is ${(stopsOverWhite + Math.log2(Math.max(st.limbRatio[1], 1e-9) / Math.max(1 / 1.273, 1e-9))).toFixed(1)} ` +
+          `stops above it — so ${stopsOverWhite > 1 ? "BOTH clip to pure white and limb darkening is INVISIBLE. That is physically correct: the naked eye cannot see solar limb darkening either (photographs use heavy ND)." : "the profile should be visible."}`,
+      );
+      console.log(
+        `[lum] limb AA half-width ${st.edgeAaPx.toFixed(2)} px (was ±15% of the radius ` +
+          `= 15.8 px on a 105 px disc, 418× too soft). The photosphere is 0.038 px ` +
+          `thick at that size, so a sharp limb is the physical answer and all apparent ` +
+          `softness belongs to glarePass's PSF.`,
+      );
+    }
+
+    out.solLimbRatio = sun.limbRatio.map((v) => Number(v.toFixed(4)));
+    out.solA = sun.a.map((v) => Number(v.toFixed(4)));
+    out.solB = sun.b.map((v) => Number(v.toFixed(4)));
+    out.solCentreOverMean = sun.discMeanNorm.map((v) => Number((1 / v).toFixed(4)));
+    out.discMeanErrorPct = Number((worstMean * 100).toPrecision(3));
+    out.reddeningRoverB = Number(
+      (sun.limbRatio[0] / Math.max(sun.limbRatio[2], 1e-9)).toFixed(3),
+    );
+    out.stopsAboveWhite = Number.isFinite(stopsOverWhite)
+      ? Number(stopsOverWhite.toFixed(2))
+      : null;
+    out.limbScale = getStarLimbScale();
+    return out;
+  }
+
+  /** A/B the derived limb-darkening profile. 1 = on, 0 = flat disc. */
+  starLimb(scale = 1): Record<string, unknown> {
+    setStarLimbScale(scale);
+    console.log(
+      `[lum] limb darkening ×${scale}. ⚠ Expect NO visible change on the Sun — the ` +
+        `disc is ~10 stops above display white, so centre and limb both clip. Look ` +
+        `instead at the SHARPNESS of the limb (that is the R4 change you can see) ` +
+        `and re-run __lum.limbDarkening() for the numbers.`,
+    );
+    return { limbScale: getStarLimbScale() };
   }
 
   /**

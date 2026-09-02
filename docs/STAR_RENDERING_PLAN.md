@@ -173,7 +173,7 @@ not from an authored `pow(falloff, 3.5)`.
 | **R2b** | Promote | mount a *catalogue* star through the same component on approach; needs `S5` parallax from STAR_CATALOGUE_PLAN | medium |
 | **R3** ✅ | **corona + half-float ceiling** | corona gated off (it carried 5.3× the star's flux); flux conserved where the disc is sub-pixel. §9, §9.7 | medium |
 | **R3b** ✅ | **P8d proper** | analytic point-source glare + veil→adaptation feedback; retired the ceiling spread. §9.8–§9.10 | medium |
-| **R4** | T2 limb darkening | the "flat white circle" fix | low |
+| **R4** ✅ | T2 limb darkening + sharp limb | derived from `T_eff` alone; the visible half is the LIMB, not the gradient. §11 | low |
 | **R5** | T3 photosphere | granulation, spicules, chromosphere shell | medium |
 | **R6** | `HOT_COMPRESS_EXPONENT` | make staring at the sun punishing — a *look* knob, so it goes last, once the sun renders correctly | low |
 
@@ -774,3 +774,173 @@ claimed** — tinted vs untinted peak, "no flux discarded" that meant "no channe
 a peak ratio, and now true-size vs drawn-size peak. Every one was a plausible neighbour that happened to
 be easier to reach. **A gate is only as good as the identity between its label and its expression, and
 that identity needs checking as deliberately as the physics does.**
+
+
+---
+
+## 11. R4 as built — limb darkening derived, and the limb made sharp
+
+### 11.1 🔑 The visible defect was the EDGE, not the gradient — measured first
+
+| | value |
+|---|---|
+| disc mean radiance at 0.1 AU (author's reading) | 15,736 pre-exposed |
+| display white clip (AgX scene-linear) | 16.29 |
+| disc is above white by | **966× = 9.9 stops** |
+| limb (0.42× the mean) is above white by | 406× |
+| exposure reduction needed to reveal the gradient | **8.7 stops** |
+
+⚠⚠ **So limb darkening is NOT visible on the Sun, and that is correct** — the naked eye cannot see
+solar limb darkening either; photographs of it use heavy neutral density. The flat white disc in the
+author's close-up screenshot is the right answer. What was *wrong*:
+
+| | value |
+|---|---|
+| photosphere thickness / R☉ | 500 km / 696,340 km = 0.07% |
+| ⇒ true limb sharpness on a 105 px disc | **0.038 px** |
+| previous ±15%-of-radius smoothstep | **15.8 px** |
+| too soft by | **418×** |
+
+🔑 And all apparent softness *should* come from the eye's PSF, which `glarePass` calibrates — a shader
+blur double-counts it, exactly as the hand-authored corona did in R3. So the limb is now antialiased
+over `EDGE_AA_PX = 0.7 px` and nothing else.
+
+### 11.2 The profile is derived from `T_eff` alone
+
+Eddington grey atmosphere, `T(τ)⁴ = ¾·T_eff⁴·(τ + ⅔)`, with the emergent intensity
+
+```
+I_λ(μ) = ∫₀^∞ B_λ(T(τ))·e^(−τ/μ)·dτ/μ
+```
+
+evaluated per wavelength and integrated against the **same** `planck`/`xFit`/`yFit`/`zFit` kernel
+`blackbodyLinearSrgb` uses, then least-squares fitted to `I/I(1) = 1 − a(1−μ) − b(1−μ)²` per
+linear-sRGB channel. **No table, no fitted constants, nothing per-star.**
+
+⚠ Substituting `τ = μ·s` makes the integral `∫B(T(μs))e^(−s)ds`, well-behaved at every μ including 0.
+A first draft integrated in τ and returned exactly 0 at the limb for every wavelength — a pure
+step-size artefact that read as infinitely strong limb darkening.
+
+✅ **Validated against published solar limb darkening with nothing fitted:**
+
+| λ | derived `u` | measured (solar) | ratio |
+|---|---|---|---|
+| 400 nm | 0.790 | ~0.90 | 0.88 |
+| 550 nm | **0.662** | ~0.70 | **0.95** |
+| 700 nm | 0.569 | ~0.55 | 1.03 |
+| frequency-integrated | **0.600** | 0.600 (classic Eddington) | **1.000** — algebra check |
+
+### 11.3 🔑 Why it generalises: the wavelength dependence is physical
+
+Limb darkening is set by how sensitive `B_λ` is to temperature at that wavelength, so it becomes
+stronger for cooler stars and toward the blue automatically:
+
+| T_eff | `I_limb/I_centre` (G) | limb reddening R/B | centre/mean (G) |
+|---|---|---|---|
+| 3000 K | **0.082** | **3.8×** | 1.604 |
+| 4500 K | 0.226 | 2.1× | 1.367 |
+| 5772 K | 0.333 | 1.6× | 1.273 |
+| 10000 K | 0.538 | 1.25× | 1.155 |
+| 30000 K | **0.737** | 1.05× | 1.078 |
+
+A hot star is nearly a flat disc; an M dwarf has a dramatic edge and a visibly redder limb. **None of
+that is authored.** ⚠ Grey-atmosphere limits (convection, molecular opacity worst for M dwarfs, NLTE)
+are accepted: the alternative is Claret-style per-`(T_eff, log g, band)` tables — exactly the baked
+per-star data this project forbids — for a few percent in the visible.
+
+### 11.4 Flux conservation
+
+The shader multiplies the profile by `1/discMeanNorm` where `discMeanNorm = 1 − a/3 − b/6`, so the
+disc-mean is exactly 1 and limb darkening **cannot change the star's luminosity** — which matters
+because `discLuminanceNits` derives the disc-MEAN radiance from the star's total flux. ✅ The closed
+form matches a numeric integration of the exact profile to **0.03%** (R 1.00031, G 0.99987, B 0.99904).
+
+### 11.5 🔑 The clamp moved to the assembled vec3, and that retires a whole class of bug
+
+R4 adds a **second** per-channel gain (the limb centre boost, up to 1.60× at 3000 K) on top of the
+blackbody tint. The R3 fix — a scalar budget of `60,000 / max(r,g,b)` — would have had to track both,
+and would go stale the next time a per-channel term appears.
+
+⇒ The shader now clamps the **assembled colour** per channel at `HALF_FLOAT_WRITE_MAX`, which is
+correct for any combination of tint and profile by construction. `uWriteBudget` is gone; `writeBudget`
+survives only as the CPU-side cap for the deficit integral, and is simply 60,000.
+
+⚠ `discChannelFlux` replaced `discProfileFlux` for the same reason: the clamp is per pixel **and per
+channel**, so the clipped flux is redder or bluer than the star depending on which channel saturated
+hardest, and R3b's analytic PSF now carries that colour rather than re-tinting a scalar.
+
+### 11.6 Predicted readings (falsify these)
+
+| range | disc true → drawn | brightest channel | clips | `fluxKept` | R3b carries |
+|---|---|---|---|---|---|
+| 0.1 AU | 122.6 → 122.6 px | 2.15e4 | no | 1.000 | idle |
+| 1 AU | 12.8 → 12.8 px | 6.00e4 | yes | 0.503 | 7.76e6 |
+| 5 AU | 2.57 → 2.57 px | 6.00e4 | yes | 0.144 | 3.40e6 |
+| 30 AU | 0.43 → 2.50 px | 6.00e4 | yes | 0.510 | 3.48e5 |
+
+`fluxKept` drops slightly against R3b's numbers — expected, because the limb's centre boost raises the
+peak into the cap. Gates: `__lum.limbDarkening()`, `__lum.starLimb(0|1)`.
+
+### 11.7 ⚠⚠ RETRACTED: a visor is NOT required — the threshold is `d/R★ ≈ 3`, for every star
+
+The first draft of this section claimed surface detail needs ~8–9 stops of deliberate attenuation and
+so has to wait for a filter/visor. **That was wrong, and the author's own measurement refuted it:** at
+**0.01 AU the Sol disc reads −1.43 stops, i.e. BELOW display white**, and the gate correctly says the
+profile should be visible.
+
+**The rule, from this repo's own measured exposure law** (`project_exposure_coverage_law`: rendered
+brightness ∝ coverage^(−`ADAPTATION_K`), K = 0.85):
+
+```
+rendered peak  ∝  discRadiance^0.15 · coverage^(−0.85)
+```
+
+🔑🔑 **Surface brightness enters only as the 0.15 power — it barely matters. Coverage dominates, and
+coverage is set by angular size 2R/d, so the visibility threshold is a RATIO of stellar radii and is
+almost the same for every star.** Measured against the author's two readings (11.03 stops per decade of
+distance): Sol's disc reaches display white at **0.0135 AU = 2.90 R☉**, where it subtends **39.6°** —
+i.e. the disc has to fill most of the frame.
+
+| star | T_eff | R (R☉) | surface lum vs Sol | threshold distance |
+|---|---|---|---|---|
+| Sun (G2V) | 5772 | 1 | 1.00 | 2.0e6 km (**2.9 R★**) — a sungrazer |
+| Proxima (M5.5V) | 3042 | 0.154 | 1.8e−2 | 0.44e6 km (4.1 R★) |
+| Sirius A (A1V) | 9940 | 1.71 | 7.1 | 2.9e6 km (2.4 R★) |
+| Arcturus (K1.5III) | 4286 | 25.4 | 0.21 | **0.39 AU** (3.3 R★) |
+| Antares (M1.5Iab) | 3660 | 680 | 7.6e−2 | **11.5 AU** (3.6 R★) |
+| Betelgeuse (M1-2Ia) | 3600 | 764 | 6.7e−2 | **13.1 AU** (3.7 R★) |
+
+🔑 **So giants are where this is free.** "Three stellar radii" is a lethal 2 million km at the Sun but a
+completely comfortable **13 AU** at Betelgeuse — and red supergiants are exactly the stars with the most
+dramatic profile: `I_limb/I_centre` = **0.084** at 3600 K against Sol's 0.332, with **3.9×** limb
+reddening against 1.6×. A supergiant seen from 13 AU fills ~40° of sky with a bright centre fading to a
+deep orange-red limb, naked-eye, no equipment. It will work automatically once R2b mounts catalogue
+stars, because the whole profile is derived from `T_eff`.
+
+⇒ **R5 (granulation, spicules) does NOT need to wait for a visor** — it shares this threshold exactly.
+A visor would only extend the effect to stars you are *not* nearly touching.
+
+### 11.8 ✅ Checked and NOT a problem: the flat billboard at close range
+
+The visible regime is the *close* regime, where a flat billboard is a poor model of a sphere — the
+shader's `μ = √(1 − ρ²)` is the orthographic limit, while the true value for an observer at `D = d/R` is
+`μ = (D cos α − 1)/√(D² − 2D cos α + 1)` with the silhouette at `cos α = 1/D`. Measured error in the
+rendered intensity:
+
+| `d/R` | worst error over the disc |
+|---|---|
+| 10 | 0.1% |
+| 5 | 0.3% |
+| **2.9** (visibility threshold) | **0.8%** |
+| 1.5 (grazing the photosphere) | 3.7% |
+
+Negligible where it matters, so the orthographic form stays. Recorded because "the approximation breaks
+exactly where the feature becomes visible" was a plausible worry that turned out to be false — and
+without the check it would have looked like a reason to build spherical geometry.
+
+### 11.9 ⓘ Two different flux-conservation numbers, both correct
+
+`__lum.limbDarkening()` reports the disc-mean deviating **0.0000011%** from 1, while §11.4 quotes
+**0.03%**. They measure different things and neither is wrong: the gate checks the *analytic identity*
+`1 − a/3 − b/6` against a numeric integral of the **fitted** law (exact by construction, so ~0), while
+§11.4 compares the fitted law against the **exact Eddington** profile (0.03% — the fit residual).

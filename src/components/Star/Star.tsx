@@ -6,6 +6,8 @@ import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
   Fn,
+  sqrt,
+  vec3,
   uniform,
   uv,
   positionGeometry,
@@ -33,13 +35,17 @@ import {
   subPixelFluxScale,
   getPreExposure,
 } from "@/components/space/photometry";
-import { discRadianceGame } from "@/components/space/starPhysics";
+import {
+  discRadianceGame,
+  limbDarkeningRgb,
+} from "@/components/space/starPhysics";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { sunVisibility } from "@/components/space/sunOcclusion";
 import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
 import {
   getStarCoronaScale,
   getStarGlareFlipY,
+  getStarLimbScale,
   getStarPointGlareEnabled,
   starLodStatus as _status,
 } from "@/components/space/starLodStatus";
@@ -72,61 +78,57 @@ const _shipToStar = new THREE.Vector3();
 const _bufSize = new THREE.Vector2();
 const _view = new THREE.Vector3();
 const _camQuat = new THREE.Quaternion();
+/** Per-channel clipped flux. Module scratch — useFrame must not allocate. */
+const _deficitRgb: [number, number, number] = [0, 0, 0];
+
+/** Antialiasing half-width of the limb, in drawing-buffer pixels. */
+const EDGE_AA_PX = 0.7;
 
 /**
- * ∫ min(S(r)·peak, cap) · 2πr dr over the rendered disc, where `S` is the SAME
- * smoothstep edge the fragment shader uses (1 inside 0.85 R, 0 outside 1.15 R).
+ * Flux of ONE channel of the rendered disc, `∫ min(value(x), cap)·2πx dx · R²`,
+ * integrating the exact profile the fragment shader writes: the smoothstep limb,
+ * the limb-darkening law, the per-channel gain and the tint.
  *
- * 🔑 Numeric, and deliberately so: the shader clips PER PIXEL, so the flux that
- * survives is not `cap × area` — the soft edge is partly under the cap. Modelling
- * the identical profile means the deficit handed to the glare pass cannot
- * disagree with what was actually written, which closed-form algebra on an
- * assumed hard disc would. 64 samples, once per frame.
+ * 🔑 Numeric and shader-identical on purpose. The clamp is PER PIXEL and PER
+ * CHANNEL, so the surviving flux is not `cap × area` — the soft limb and the
+ * darkened limb are both partly under the cap. Closed-form algebra on a flat hard
+ * disc disagreed with what was actually written; this cannot.
+ *
+ * `x` is r/R, so the AA band extends to `1 + aaFracR`.
  */
-function discProfileFlux(peak: number, cap: number, radiusPx: number): number {
-  const N = 64;
-  const rMax = 1.15 * radiusPx;
-  const dr = rMax / N;
+function discChannelFlux(
+  peakScalar: number,
+  tint: number,
+  a: number,
+  b: number,
+  gain: number,
+  limbScale: number,
+  cap: number,
+  radiusPx: number,
+  aaFracR: number,
+): number {
+  const N = 96;
+  const xMax = 1 + Math.max(aaFracR, 0);
+  const dx = xMax / N;
   let acc = 0;
   for (let i = 0; i < N; i++) {
-    const r = (i + 0.5) * dr;
-    const t = (1.15 * radiusPx - r) / (0.3 * radiusPx);
-    const sm = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
-    acc += Math.min(sm * peak, cap) * 2 * Math.PI * r * dr;
+    const x = (i + 0.5) * dx;
+    let sm: number;
+    if (aaFracR <= 1e-9) {
+      sm = x <= 1 ? 1 : 0;
+    } else {
+      const t = (1 + aaFracR - x) / (2 * aaFracR);
+      sm = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+    }
+    const xc = Math.min(x, 1);
+    const mu = Math.sqrt(Math.max(0, 1 - xc * xc));
+    const om = 1 - mu;
+    const prof = Math.max(0, (1 - a * om - b * om * om) * gain);
+    const limb = 1 + (prof - 1) * limbScale;
+    acc += Math.min(tint * peakScalar * sm * limb, cap) * 2 * Math.PI * x * dx;
   }
-  return acc;
+  return acc * radiusPx * radiusPx;
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// A single view-space billboard at all distances, carrying ONLY the disc. The
-// corona is not drawn here — it is produced by the eye's PSF in glarePass.ts,
-// which is calibrated straylight rather than an authored falloff.
-//
-// 🔑 THE DISC'S RENDERED SIZE IS `max` OF THREE LIMITS, and its radiance is
-// always `trueFlux / renderedArea`, so flux is conserved by construction in all
-// three regimes:
-//   1. its TRUE angular size                       — the normal case
-//   2. DISC_PX_FLOOR, the rasterisation floor      — below ~2 px a fragment
-//      either samples the disc or misses it, so a physical radiance strobes
-//   3. the HALF-FLOAT CEILING                      — `radiance × preExposure`
-//      must stay under 60,000 or the write becomes Inf → NaN downstream
-// Limit 3 is what the old `HALF_FLOAT_WRITE_MAX` clamp used to handle by
-// DISCARDING flux (P8d: the glare read a clipped buffer). Spreading instead of
-// clipping keeps the flux, so the glare is driven correctly with no separate
-// splat path. Only the disc's apparent SIZE is approximate, and only in a regime
-// where it was already clipping to a flat white blob.
-// ─────────────────────────────────────────────────────────────────────
-
-const LEGACY_GLOW_PAD = 8;
-
-// ⚠⚠ LEGACY, GATED OFF (starLodStatus.getStarCoronaScale). These four constants
-// are the hand-authored corona from the bloom era. Phase 8 replaced bloom with a
-// calibrated eye PSF (glarePass.ts) and nobody deleted the fake corona it made
-// redundant. MEASURED: beyond ~5 AU it carries 5.3× the star's entire physical
-// flux, because MIN_SCREEN_PX pins the billboard at ~42 buffer px while the disc
-// shrinks to the 2.5 px floor — so it lied to the glare pass AND the exposure
-// meter. Kept only for the runtime A/B; delete once judged.
-const LEGACY_MIN_SCREEN_PX = 60;
 
 // ── Shell clamp (R1, docs/STAR_RENDERING_PLAN.md) ────────────────────────────
 // Beyond this range the billboard is pulled along the camera→star ray so it sits
@@ -136,32 +138,29 @@ const LEGACY_MIN_SCREEN_PX = 60;
 const SHELL_CLAMP_FRACTION = 0.6;
 const SHELL_CLAMP_SCALED = SCALED_CAMERA_FAR * SHELL_CLAMP_FRACTION;
 
-
-// ── Disc radiance (Phase 3b) ─────────────────────────────────────────────────
-// Was `CORE_HDR = 4096`, justified as "above bloom threshold but moderate enough
-// that sub-pixel drift doesn't cause visible bloom flicker". The physical value
-// is ≈311,000 game units (starPhysics.discRadianceGame) — **76× higher** — and it is
-// distance-INDEPENDENT, because a surface's radiance does not fall off with
-// range (only its solid angle does).
-//
-// The old comment's worry was real, and it is handled properly now rather than
-// by under-writing the number: below PX_FLOOR the disc is sub-pixel and cannot be
-// rasterised honestly (a fragment either samples it or misses → violent
-// flicker), so it is drawn at the floor size with its radiance divided by the
-// area ratio. Flux is conserved; only the shape is approximate. Same trick
-// StellarPoint already uses.
-const DISC_PX_FLOOR = 2.5;
-// Glow magnitudes stay RELATIVE to the disc, as before (0.3 / a fixed 8), so the
-// star's shape is unchanged — only its absolute level is corrected.
+// ⚠⚠ LEGACY, GATED OFF (starLodStatus.getStarCoronaScale). The hand-authored
+// corona from the bloom era. MEASURED: beyond ~5 AU it carried 5.3× the star's
+// entire physical flux, so it lied to the glare pass AND the exposure meter.
+// Kept only for the runtime A/B; delete once judged.
+const LEGACY_GLOW_PAD = 8;
+const LEGACY_MIN_SCREEN_PX = 60;
 const LEGACY_INNER_GLOW_FRAC = 0.3;
 const LEGACY_OUTER_GLOW_ABS = 8.0;
 
 /**
- * Quad radius as a multiple of the rendered disc radius — just an antialiasing
- * margin now that the corona is gone, so `uCoreRatio` is the constant `1/PAD`
- * whenever the corona is off. Must exceed the smoothstep's outer edge (1.15).
+ * Quad radius as a multiple of the rendered disc radius — an antialiasing margin
+ * now that the corona is gone, so `uCoreRatio` is the constant `1/PAD` whenever
+ * the corona is off. Must exceed the limb's AA ramp.
  */
 const DISC_AA_PAD = 1.4;
+
+/**
+ * Below this many drawing-buffer pixels a disc cannot be rasterised honestly — a
+ * fragment either samples it or misses, so a physical radiance strobes. Drawn at
+ * the floor with the radiance divided by the area ratio: flux preserved, shape
+ * approximate.
+ */
+const DISC_PX_FLOOR = 2.5;
 
 function Star({
   positionKm,
@@ -228,31 +227,60 @@ function Star({
     return uniform(new THREE.Color(r, g, b));
   }, [tempK]);
   /**
-   * 🐛🐛 THE WRITE BUDGET IS PER-CHANNEL, NOT PER-LUMINANCE.
+   * ⚠⚠ THE CAP IS NOW PER-CHANNEL IN THE SHADER, which is what makes it safe.
    *
-   * `uStarColor` is LUMINANCE-normalised, so its brightest channel exceeds 1:
-   * Sol (5772 K) is [1.1103, 0.9761, 0.9119]. Capping the scalar brightness at
-   * 60,000 and *then* multiplying wrote R = 66,618 — above half-float's 65,504
-   * finite max, so the disc's interior stored **+Inf**. That is the exact trap
-   * `preExposedEmissive.ts` documents: an absolute cap applied BEFORE a scale is
-   * not a cap at all. Worse for other temperatures: 3000 K needs 37,332 and
-   * 30,000 K needs 33,082 (its overflow is in BLUE).
+   * An earlier revision capped the SCALAR brightness and then multiplied by the
+   * tint, so Sol's red channel (`uStarColor.r` = 1.1103) wrote 66,618 — above
+   * half-float's 65,504 — and the disc stored **+Inf**, poisoning the whole glare
+   * pyramid and dropping the sun from metering. That was patched with a scalar
+   * budget of `60,000 / max(r,g,b)`, but R4's limb profile adds a SECOND
+   * per-channel gain on top (the centre is ~1.27× the disc mean), so a scalar
+   * budget would have to track both and would silently go stale the next time a
+   * per-channel term is added.
    *
-   * ⚠ It only became reachable when the hardcoded `vec3(1, 0.95, 0.9)` (max 1.0)
-   * was replaced by the blackbody, and it became the *designed* steady state when
-   * the half-float ceiling started parking the write at exactly the cap.
-   * Consequences were not cosmetic: glarePass has no threshold and its 13-tap
-   * pyramid propagates Inf to every mip, so `mix(scene, PSF, k)` returns Inf for
-   * the WHOLE frame; and exposureMeter rejects non-finite tiles, so the sun was
-   * silently dropped from metering.
-   *
-   * One uniform feeds both the CPU sizing and the GPU guard so they cannot drift.
+   * 🔑 Clamping the assembled vec3 instead is correct for ANY combination of tint
+   * and profile, by construction. `writeBudget` survives only as the CPU-side cap
+   * for the R3b deficit integral, where it is now simply HALF_FLOAT_WRITE_MAX.
    */
-  const writeBudget = useMemo(() => {
-    const [r, g, b] = blackbodyLinearSrgb(tempK);
-    return HALF_FLOAT_WRITE_MAX / Math.max(r, g, b, 1e-6);
-  }, [tempK]);
-  const uWriteBudget = useMemo(() => uniform(writeBudget), [writeBudget]);
+  const writeBudget = HALF_FLOAT_WRITE_MAX;
+
+  /**
+   * Limb darkening, derived from T_eff alone — see starPhysics.limbDarkeningRgb.
+   * ⚠ ~70k `exp` calls, so memoised on `tempK` and never touched per frame.
+   */
+  const limb = useMemo(() => limbDarkeningRgb(tempK), [tempK]);
+  const uLimbA = useMemo(
+    () => uniform(new THREE.Vector3(...limb.a)),
+    [limb],
+  );
+  const uLimbB = useMemo(
+    () => uniform(new THREE.Vector3(...limb.b)),
+    [limb],
+  );
+  /** 1 / discMeanNorm per channel — multiply, so the disc-mean stays exactly 1. */
+  const uLimbGain = useMemo(
+    () =>
+      uniform(
+        new THREE.Vector3(
+          1 / limb.discMeanNorm[0],
+          1 / limb.discMeanNorm[1],
+          1 / limb.discMeanNorm[2],
+        ),
+      ),
+    [limb],
+  );
+  /** A/B: 0 = flat disc, 1 = the derived profile. */
+  const uLimbScale = useMemo(() => uniform(1), []);
+  /**
+   * Half-width of the limb's antialiasing ramp, in `dist` units.
+   *
+   * 🔑 The photosphere is ~500 km on a 696,340 km radius, so the true limb is
+   * sharp to **0.038 px** on a 105 px disc. The previous ±15%-of-radius ramp blurred
+   * it over **15.8 px — 418× too soft**. All apparent softness must come from the
+   * eye's PSF in glarePass, which is calibrated; a shader blur double-counts it,
+   * exactly as the hand-authored corona did.
+   */
+  const uEdgeAA = useMemo(() => uniform(0.01), []);
   // Linear-sRGB blackbody triple, for tinting the analytic glare (R3b).
   const starRgb = useMemo(() => blackbodyLinearSrgb(tempK), [tempK]);
 
@@ -313,15 +341,30 @@ function Star({
       const p = uv().mul(2).sub(1);
       const dist = length(p);
 
-      // Edge at ±15% of the disc radius — relative, matching the previous
-      // behaviour exactly. ⚠ R4 (limb darkening) should make this a fixed PIXEL
-      // width; at a resolved 32 px disc this softens ~4.8 px.
+      // 🔑 A SHARP limb, antialiased over ~1 px (uEdgeAA) instead of the old
+      // ±15%-of-radius ramp. See uEdgeAA for why the softness belongs to the PSF.
       const discEdge = smoothstep(
-        uCoreRatio.add(uCoreRatio.mul(0.15)),
-        max(uCoreRatio.sub(uCoreRatio.mul(0.15)), float(0)),
+        uCoreRatio.add(uEdgeAA),
+        max(uCoreRatio.sub(uEdgeAA), float(0)),
         dist,
       );
       const disc = discEdge.mul(uCoreRadiance).mul(uDiscVis);
+
+      // ── Limb darkening (R4) ──────────────────────────────────────────────
+      // μ = cos θ = √(1 − (r/R)²) on a sphere; clamped so the AA band outside the
+      // disc holds the limb value rather than going imaginary.
+      const rNorm = dist.div(max(uCoreRatio, float(1e-6))).min(float(1.0));
+      const mu = sqrt(max(float(1.0).sub(rNorm.mul(rNorm)), float(0)));
+      const om = float(1.0).sub(mu);
+      // I(μ)/I(1) = 1 − a(1−μ) − b(1−μ)², then ×(1/discMeanNorm) so the DISC MEAN
+      // is exactly 1 and limb darkening cannot change the star's luminosity.
+      const profile = vec3(1.0)
+        .sub(uLimbA.mul(om))
+        .sub(uLimbB.mul(om).mul(om))
+        .mul(uLimbGain)
+        .max(vec3(0.0));
+      // uLimbScale = 0 collapses it to a flat disc for the A/B.
+      const limbRgb = vec3(1.0).add(profile.sub(vec3(1.0)).mul(uLimbScale));
 
       // ⚠⚠ LEGACY CORONA — dead at uCoronaScale = 0, the default. Reproduced
       // verbatim INCLUDING its D25 bug (LEGACY_OUTER_GLOW_ABS carries no
@@ -339,17 +382,18 @@ function Star({
         .mul(uStarVis);
       const corona = innerGlow.add(outerGlow).mul(uCoronaScale);
 
-      // 🔑 A GUARD, not the mechanism: the CPU spreads the disc so `uCoreRadiance`
-      // already fits. ⚠ Capped at `uWriteBudget`, NOT at HALF_FLOAT_WRITE_MAX —
-      // the colour multiply below scales this by up to 1.98, so a luminance cap
-      // would overflow a channel. See uWriteBudget.
-      const brightness = disc.add(corona).min(uWriteBudget);
+      const brightness = disc.add(corona);
 
-      // Blackbody colour from the primary's T_eff (was a hardcoded G2V tint).
-      const color = uStarColor.mul(brightness);
+      // 🔑 PER-CHANNEL clamp on the ASSEMBLED colour — the tint and the limb
+      // profile are both per-channel gains, so this is the only place a cap is
+      // correct. See the note on `writeBudget`.
+      const color = uStarColor
+        .mul(brightness)
+        .mul(limbRgb)
+        .min(vec3(HALF_FLOAT_WRITE_MAX));
 
-      // Alpha ramps to zero at billboard edge so additive blending
-      // doesn't add light where there's no glow.
+      // Alpha ramps to zero at the quad edge so additive blending adds nothing
+      // where the disc is not.
       const alpha = clamp(brightness.mul(0.5), 0, 1);
 
       return vec4(color, alpha);
@@ -358,7 +402,7 @@ function Star({
     return m;
   }, [
     uScale, uCoreRatio, uCoreRadiance, uStarColor, uStarVis, uDiscVis,
-    uShellScale, uCoronaScale, uWriteBudget,
+    uShellScale, uCoronaScale, uLimbA, uLimbB, uLimbGain, uLimbScale, uEdgeAA,
   ]);
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
@@ -455,6 +499,12 @@ function Star({
       uCoreRatio.value = 1 / DISC_AA_PAD;
     }
     uScale.value = halfExtent * 2; // PlaneGeometry spans ±0.5
+    // Limb AA in `dist` units: derived from the QUAD's pixel radius so it is right
+    // in both the normal and the legacy-corona branch.
+    const quadRadiusPx = halfExtent / distScaled / tanPerBufferPx;
+    uEdgeAA.value = EDGE_AA_PX / Math.max(quadRadiusPx, 1e-6);
+    const limbScale = getStarLimbScale();
+    uLimbScale.value = limbScale;
 
     // ── Occlusion hand-off ────────────────────────────────────────────────────
     // ⚠⚠ TWO MECHANISMS ATTENUATE THIS DISC AND THEY MULTIPLY. `depthTest` is on
@@ -486,17 +536,36 @@ function Star({
     // the eye's PSF in closed form. Zero whenever nothing is clipped, so this is a
     // no-op in the sub-pixel regime where flux is already conserved.
     const rDrawPx = renderPx * 0.5;
-    const trueFlux = discProfileFlux(uCoreRadiance.value, Infinity, rDrawPx);
-    const writtenFlux = discProfileFlux(uCoreRadiance.value, writeBudget, rDrawPx);
-    // ⚠ A FLUX ratio, from the integrals — not `writeBudget / peak`. The peak ratio
-    // reads 0.1244 at 1 AU where the true flux fraction is 0.1518, because part of
-    // the soft edge sits below the cap and is not clipped. Third instance in this
-    // phase of a gate reporting a neighbouring quantity; measure what you name.
+    const aaFracR = uEdgeAA.value / Math.max(uCoreRatio.value, 1e-6);
+    // ⚠ PER CHANNEL, because both the clamp and the limb profile are per channel:
+    // the clipped flux is redder or bluer than the star depending on which channel
+    // saturated hardest, and the analytic PSF has to carry that colour.
+    let trueFlux = 0;
+    let writtenFlux = 0;
+    for (let ch = 0; ch < 3; ch++) {
+      const t = discChannelFlux(
+        uCoreRadiance.value, starRgb[ch], limb.a[ch], limb.b[ch],
+        1 / limb.discMeanNorm[ch], limbScale, Infinity, rDrawPx, aaFracR,
+      );
+      const w = discChannelFlux(
+        uCoreRadiance.value, starRgb[ch], limb.a[ch], limb.b[ch],
+        1 / limb.discMeanNorm[ch], limbScale, writeBudget, rDrawPx, aaFracR,
+      );
+      // × starVis: an occluded star scatters less. ⚠ The ONLY attenuation available
+      // here — the analytic term is not depth-tested, so unlike the disc it cannot
+      // be occluded geometrically.
+      _deficitRgb[ch] = Math.max(0, t - w) * starVis;
+      trueFlux += t;
+      writtenFlux += w;
+    }
+    // ⚠ A FLUX ratio from the integrals, NOT `writeBudget / peak`. The peak ratio
+    // read 0.1244 at 1 AU where the true flux fraction was 0.1518, because part of
+    // the soft limb sits under the cap. Measure what you name.
     const fluxKept = trueFlux > 0 ? Math.min(1, writtenFlux / trueFlux) : 1;
-    // × starVis: an occluded star scatters less. ⚠ This is the ONLY attenuation
-    // available here — the analytic term is not depth-tested, so unlike the disc
-    // it cannot be occluded geometrically.
-    const deficitFlux = Math.max(0, trueFlux - writtenFlux) * starVis;
+    // Luminance-weighted, because this is what the exposure meter's pedestal and
+    // the status readout want as a single number.
+    const deficitFlux =
+      0.2126 * _deficitRgb[0] + 0.7152 * _deficitRgb[1] + 0.0722 * _deficitRgb[2];
 
     // View-space direction → NDC. Only fov/aspect are needed, and `discPx` above
     // already validates them against measurement.
@@ -519,13 +588,14 @@ function Star({
       // ω_px = tanPerPx² sr/px, so deficit(value·px²) × ω_px / ∫PdΩ(PSF·sr) is a
       // buffer value once multiplied by the raw PSF. The straylight fraction is
       // applied in the shader so this obeys the player's glare setting.
+      // ⚠ No `starRgb` multiply here — `_deficitRgb` already carries the star's
+      // colour AND the limb profile's own reddening of the clipped part.
       const k =
-        (deficitFlux * tanPerBufferPx * tanPerBufferPx) /
-        Math.max(getGlarePsfEnergy(), 1e-30);
+        (tanPerBufferPx * tanPerBufferPx) / Math.max(getGlarePsfEnergy(), 1e-30);
       setStarPointGlare(
         uvX,
         uvY,
-        [starRgb[0] * k, starRgb[1] * k, starRgb[2] * k],
+        [_deficitRgb[0] * k, _deficitRgb[1] * k, _deficitRgb[2] * k],
         tanPerBufferPx,
         bufferW,
         bufferH,
@@ -551,15 +621,28 @@ function Star({
       _status.sizedBy = renderPx <= discPx * 1.000001 ? "true" : "pixelFloor";
       _status.fluxKept = fluxKept;
       _status.preExposure = preExp;
-      // ⚠ The TINTED peak — the quantity that actually has to fit in half-float.
-      // Reporting the scalar made the gate print "inside half-float range" while
-      // the red channel was +Inf.
-      _status.writtenPeak =
-        Math.min(uCoreRadiance.value, writeBudget) *
-        (HALF_FLOAT_WRITE_MAX / writeBudget);
+      // ⚠ The brightest CHANNEL the shader can write — which now carries TWO
+      // per-channel gains, the blackbody tint AND the limb profile's centre boost
+      // (~1.27× the disc mean). Reusing the old `scalar × tint` form here would be
+      // a fifth instance of this gate naming one quantity and printing its
+      // neighbour, and it would under-report exactly where overflow was the risk.
+      let peakChannel = 0;
+      for (let ch = 0; ch < 3; ch++) {
+        const centreGain = 1 + (1 / limb.discMeanNorm[ch] - 1) * limbScale;
+        peakChannel = Math.max(
+          peakChannel,
+          Math.min(uCoreRadiance.value * starRgb[ch] * centreGain, writeBudget),
+        );
+      }
+      _status.writtenPeak = peakChannel;
       _status.writeBudget = writeBudget;
       _status.unspreadPeak = unspreadPeak;
       _status.drawnPeak = uCoreRadiance.value;
+      _status.limbRatio[0] = limb.limbRatio[0];
+      _status.limbRatio[1] = limb.limbRatio[1];
+      _status.limbRatio[2] = limb.limbRatio[2];
+      _status.limbScale = limbScale;
+      _status.edgeAaPx = EDGE_AA_PX;
       _status.coronaScale = legacyCorona;
       _status.starVis = starVis;
       _status.clampScaled = SHELL_CLAMP_SCALED;

@@ -43,6 +43,12 @@ export type StarLodStatus = {
   fluxKept: number;
   /** Clipped flux handed to the analytic PSF (R3b), in buffer value · px². */
   pointGlareFlux: number;
+  /** R4: `I(limb)/I(centre)` per channel, derived from T_eff. */
+  limbRatio: [number, number, number];
+  /** R4: limb-darkening A/B scale in force (1 = derived profile). */
+  limbScale: number;
+  /** R4: half-width of the limb's AA ramp, in drawing-buffer pixels. */
+  edgeAaPx: number;
   /** What the peak WOULD have been at the disc's true size. */
   unspreadPeak: number;
   /**
@@ -78,6 +84,9 @@ export const starLodStatus: StarLodStatus = {
   writeBudget: 60_000,
   fluxKept: 1,
   pointGlareFlux: 0,
+  limbRatio: [1, 1, 1],
+  limbScale: 1,
+  edgeAaPx: 0,
   unspreadPeak: 0,
   drawnPeak: 0,
   coronaScale: 0,
@@ -114,6 +123,22 @@ let _pointGlare = true;
 export const getStarPointGlareEnabled = (): boolean => _pointGlare;
 export function setStarPointGlareEnabled(on: boolean): void {
   _pointGlare = on;
+}
+
+/**
+ * R4: limb-darkening strength, for the A/B. 1 = the derived profile, 0 = flat.
+ *
+ * ⚠ On the SUN it is not expected to be visible: the disc sits ~9.9 stops above
+ * display white, so centre (1.27× mean) and limb (0.42× mean) both clip to pure
+ * white. That is correct — the naked eye cannot see solar limb darkening either.
+ * It becomes visible only with ~8.7 stops of extra attenuation (a visor), and it
+ * matters now because it is the substrate for R5's granulation and because it is
+ * dramatic on cool stars (I_limb/I_centre = 0.08 in G at 3000 K).
+ */
+let _limbScale = 1;
+export const getStarLimbScale = (): number => _limbScale;
+export function setStarLimbScale(scale: number): void {
+  _limbScale = Number.isFinite(scale) && scale >= 0 ? scale : 1;
 }
 
 /**
