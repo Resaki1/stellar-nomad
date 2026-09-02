@@ -87,6 +87,8 @@ import {
   setMeteredEV,
 } from "./photometry";
 import { updateScotopicUniforms } from "./scotopic";
+// One direction only: glarePass does not import this module.
+import { starPointGlarePedestal } from "./glarePass";
 
 // ── Sampling ────────────────────────────────────────────────────────────────
 // 64×64 = 4096 samples of the frame. Statistically ample for a scalar exposure
@@ -526,6 +528,16 @@ let _lastEvPooled = ANCHOR_EV;
 let _lastPoolCells = 0;
 
 /** Diagnostics for `__lum.exposure()`. */
+/**
+ * Whether the eye's own veiling glare feeds back into adaptation (R3b).
+ * A/B via `__lum.veilFeedback(false)`. Default on — see the note at the call site.
+ */
+let _veilFeedback = true;
+export const getVeilFeedback = (): boolean => _veilFeedback;
+export function setVeilFeedback(on: boolean): void {
+  _veilFeedback = on;
+}
+
 export function exposureMeterStatus() {
   return {
     meteredEV: _lastMeteredEV,
@@ -971,6 +983,24 @@ export function updateExposureMeter(
         for (const [ev, w] of samples) {
           totalFlux += Math.pow(2, ev) * 0.125 * w;
           den += w;
+        }
+
+        // ── The eye's own straylight is part of the retinal image (R3b) ────────
+        // 🔑🔑 The star's clipped flux is re-added as a veil in the POST chain, so
+        // this meter — which reads the SCENE buffer — could not see it. MEASURED at
+        // 1 AU: the veil's frame mean was 10× middle grey while this reported EV
+        // −3.47, and the frame washed out to uniform milk. A real eye adapts to the
+        // straylight too.
+        //
+        // Added to `totalFlux` BEFORE the hot-tail split, so it lands in `restFlux`
+        // — correct, because the veil is spatially BROAD and must not be treated as
+        // a compressible hot feature. Uniform pedestal × `den` is the weighted-sum
+        // equivalent of adding it to every sample.
+        //
+        // Negative feedback, so it converges: more veil ⇒ brighter reading ⇒ higher
+        // EV ⇒ lower preExposure ⇒ smaller clipped deficit ⇒ less veil.
+        if (_veilFeedback) {
+          totalFlux += starPointGlarePedestal() * den;
         }
 
         // ── HOT-TAIL CAP (defect D26) ─────────────────────────────────────────

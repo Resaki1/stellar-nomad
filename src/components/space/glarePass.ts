@@ -103,7 +103,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import * as THREE from "three";
-import { mix, texture, uniform, uv, vec2, vec4 } from "three/tsl";
+import { atan, float, length, mix, texture, uniform, uv, vec2, vec4 } from "three/tsl";
 import { NodeMaterial, RenderTarget } from "three/webgpu";
 import type { WebGPURenderer } from "three/webgpu";
 import { PASS } from "./perf/perfProfiler";
@@ -270,10 +270,13 @@ export function glarePsf(thetaDeg: number, crossoverDeg = _crossover): number {
  * per-octave ratio, which is exactly the point — the ratio varies across the
  * pyramid, tight near the source and flat far from it.
  */
-export function deriveGlareWeights(
-  mipCount = MIP_COUNT,
-  crossoverDeg = _crossover,
-  theta0Deg = 0.05,
+/** Finest angle the pyramid models, degrees — the inner edge of octave 0. */
+export const GLARE_THETA_MIN_DEG = 0.05;
+
+function octaveEnergies(
+  mipCount: number,
+  crossoverDeg: number,
+  theta0Deg: number,
 ): number[] {
   const D2R = Math.PI / 180;
   const e: number[] = [];
@@ -294,8 +297,34 @@ export function deriveGlareWeights(
     }
     e.push(acc);
   }
+  return e;
+}
+
+export function deriveGlareWeights(
+  mipCount = MIP_COUNT,
+  crossoverDeg = _crossover,
+  theta0Deg = GLARE_THETA_MIN_DEG,
+): number[] {
+  const e = octaveEnergies(mipCount, crossoverDeg, theta0Deg);
   const sum = e.reduce((x, y) => x + y, 0);
   return e.map((v) => v / sum);
+}
+
+/**
+ * ∫P dΩ over the modelled range [0.05°, 51.2°], in (PSF units · sr).
+ *
+ * 🔑 Dividing the raw PSF by this gives a **density that integrates to 1 over the
+ * same range the pyramid covers**, which is what lets an analytic point source
+ * (R3b) and the pyramid be added together without double-counting or a scale
+ * mismatch. Shares `octaveEnergies` with the weights on purpose — two copies of
+ * this integral would be two chances to disagree.
+ */
+export function glarePsfEnergyTotal(
+  crossoverDeg = _crossover,
+  mipCount = MIP_COUNT,
+  theta0Deg = GLARE_THETA_MIN_DEG,
+): number {
+  return octaveEnergies(mipCount, crossoverDeg, theta0Deg).reduce((x, y) => x + y, 0);
 }
 
 // ── Uniforms ────────────────────────────────────────────────────────────────
@@ -306,6 +335,27 @@ export function deriveGlareWeights(
 const uGlareStrength = /*#__PURE__*/ uniform(0);
 const _glareTex = /*#__PURE__*/ texture(new THREE.Texture());
 
+// ── R3b: analytic point-source glare ────────────────────────────────────────
+// The pyramid can only scatter what is IN the scene buffer, and a star's disc is
+// clipped there (half-float). This adds the CLIPPED flux back as a closed-form
+// PSF about the star's screen position.
+//
+// 🔑 Why not splat it into the pyramid, which is what P8d proposed: the pyramid is
+// half-float too. At 1 AU the deficit is ~8.5e7 (value·px²) and one `down[0]` texel
+// holds 4 px², so a single-texel splat needs 2.1e7 and overflows. Spreading it to
+// fit needs a 21×21 texel block = 42×42 full-res px — wider than the sun's own
+// 11 px disc — so the "point source" would be a flat blob and the aureole's shape
+// would be destroyed. Levels 0–4 would all need Float32. Analytically it is a
+// handful of ALU ops, exact at every octave, and cannot overflow.
+const uStarGlareRgb = /*#__PURE__*/ uniform(new THREE.Vector3(0, 0, 0));
+const uStarUv = /*#__PURE__*/ uniform(new THREE.Vector2(-10, -10));
+const uStarBufferPx = /*#__PURE__*/ uniform(new THREE.Vector2(1, 1));
+const uStarTanPerPx = /*#__PURE__*/ uniform(1);
+const uStarPsfA = /*#__PURE__*/ uniform(GLARE_STRAYLIGHT_S * GLARE_CORE_CROSSOVER_DEG);
+const uStarPsfB = /*#__PURE__*/ uniform(GLARE_STRAYLIGHT_S);
+/** deficitFlux ÷ frame pixels — see starPointGlarePedestal. */
+let _pointPedestal = 0;
+
 let _enabled = true;
 // ⚠ Initialised FROM the exported constant, not a duplicated literal — the two
 // drifted apart once already (the constant moved to 2.3 while this stayed 1.5, so
@@ -314,6 +364,14 @@ let _crossover = GLARE_CORE_CROSSOVER_DEG;
 let _userScale = 1;
 let _strengthOverride: number | null = null;
 let _weights = deriveGlareWeights();
+/**
+ * Cached ∫P dΩ. ⚠ `glarePsfEnergyTotal()` runs a 10 × 1024 numeric integral, so it
+ * must NOT be called per frame — recomputed only where `_crossover` changes.
+ */
+let _psfEnergy = glarePsfEnergyTotal();
+
+/** Cached ∫P dΩ over the modelled range. Safe to call every frame. */
+export const getGlarePsfEnergy = (): number => _psfEnergy;
 let _initialised = false;
 let _ready = false;
 let _lastPasses = 0;
@@ -560,7 +618,103 @@ export function updateGlare(
  * Returns `scene` bit-exactly while the strength uniform is 0.
  */
 export function glareNode(scene: U): U {
-  return mix(scene, vec4(_glareTex.sample(uv()).rgb, scene.a), uGlareStrength);
+  const veiled = mix(scene, vec4(_glareTex.sample(uv()).rgb, scene.a), uGlareStrength);
+
+  // ── R3b: the star's clipped flux, added analytically ──
+  // Radially symmetric in ANGLE, so the pixel offset has to go through the real
+  // tangent-per-pixel and an `atan` — the small-angle form is 6.9% low at fov 50
+  // and this term reaches tens of degrees.
+  const d = uv().sub(uStarUv);
+  const rPx = length(vec2(d.x.mul(uStarBufferPx.x), d.y.mul(uStarBufferPx.y)));
+  const thetaDeg = atan(rPx.mul(uStarTanPerPx))
+    .mul(180 / Math.PI)
+    .max(float(GLARE_THETA_MIN_DEG));
+  const psf = uStarPsfA
+    .div(thetaDeg.mul(thetaDeg).mul(thetaDeg))
+    .add(uStarPsfB.div(thetaDeg.mul(thetaDeg)));
+  // ⚠ × uGlareStrength so this obeys the player's glare setting and vanishes with
+  // it, exactly like the pyramid. `uStarGlareRgb` is 0 whenever nothing is
+  // clipped, which makes the whole term a no-op without a branch.
+  const point = uStarGlareRgb.mul(psf).mul(uGlareStrength);
+  return vec4(veiled.rgb.add(point), veiled.a);
+}
+
+/**
+ * Publish a star's clipped flux for the analytic term.
+ *
+ * `rgbScale` must already be `deficitFlux · ω_px / glarePsfEnergyTotal() · starColour`
+ * — i.e. everything except the straylight fraction, which the shader applies.
+ * Units: `deficitFlux` in (buffer value · px²), `ω_px = tanPerPx²` sr/px, so the
+ * product is a buffer value. Pass `[0,0,0]` to disable.
+ */
+export function setStarPointGlare(
+  uvX: number,
+  uvY: number,
+  rgbScale: readonly [number, number, number],
+  tanPerBufferPx: number,
+  bufferW: number,
+  bufferH: number,
+  deficitFlux: number,
+): void {
+  _pointPedestal =
+    Number.isFinite(deficitFlux) && deficitFlux > 0
+      ? deficitFlux / Math.max(bufferW * bufferH, 1)
+      : 0;
+  const ok =
+    Number.isFinite(uvX) &&
+    Number.isFinite(uvY) &&
+    rgbScale.every((v) => Number.isFinite(v) && v >= 0);
+  if (!ok) {
+    uStarGlareRgb.value.set(0, 0, 0);
+    return;
+  }
+  uStarUv.value.set(uvX, uvY);
+  uStarBufferPx.value.set(bufferW, bufferH);
+  uStarTanPerPx.value = tanPerBufferPx;
+  uStarPsfA.value = GLARE_STRAYLIGHT_S * _crossover;
+  uStarPsfB.value = GLARE_STRAYLIGHT_S;
+  uStarGlareRgb.value.set(rgbScale[0], rgbScale[1], rgbScale[2]);
+}
+
+export function clearStarPointGlare(): void {
+  uStarGlareRgb.value.set(0, 0, 0);
+  _pointPedestal = 0;
+}
+
+/**
+ * Mean pre-exposed value the analytic term adds across the frame — what the
+ * EXPOSURE METER has to see.
+ *
+ * 🔑🔑 WHY THIS EXISTS. The analytic veil is added in the POST chain, but the meter
+ * reads the SCENE buffer, so it never saw the veil it was creating. MEASURED at
+ * 1 AU: the veil's frame mean was **10× middle grey** while the meter reported EV
+ * −3.47, i.e. "this scene is dark" — and the frame washed out to uniform milk with
+ * the ship barely visible. In a real eye the straylight IS part of the retinal
+ * image adaptation responds to, so this is a modelling gap, not a tuning problem.
+ *
+ * Closing it is negative feedback and therefore self-limiting: more veil ⇒ brighter
+ * meter ⇒ higher EV ⇒ lower preExposure ⇒ smaller clipped deficit ⇒ less veil.
+ *
+ * ⚠ Approximation: uses the WHOLE deficit, though the PSF reaches 51° while the
+ * frame is ±25°, so some of that energy lands off-screen. Over-counting raises the
+ * metered EV, i.e. errs DARK — the safe direction for a washout.
+ */
+export function starPointGlarePedestal(): number {
+  return _pointPedestal * (uGlareStrength.value as number);
+}
+
+/** Live state for `__lum.starGlare()`. */
+export function starPointGlareStatus(): {
+  uv: [number, number];
+  rgb: [number, number, number];
+  psfEnergyTotal: number;
+} {
+  const g = uStarGlareRgb.value;
+  return {
+    uv: [uStarUv.value.x, uStarUv.value.y],
+    rgb: [g.x, g.y, g.z],
+    psfEnergyTotal: glarePsfEnergyTotal(),
+  };
 }
 
 /**
@@ -592,6 +746,7 @@ export function setGlare(
   if (crossoverDeg !== undefined && crossoverDeg > 0) {
     _crossover = crossoverDeg;
     _weights = deriveGlareWeights();
+    _psfEnergy = glarePsfEnergyTotal();
   }
 }
 

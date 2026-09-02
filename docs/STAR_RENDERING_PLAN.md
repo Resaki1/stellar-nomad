@@ -171,7 +171,8 @@ not from an authored `pow(falloff, 3.5)`.
 | **R1** | Shell clamp | `uShellScale` + `frustumCulled={false}`; bit-exact no-op inside the clamp radius. Fixes R-A and §1.2 | low |
 | **R2** ✅ | Unify | one star renderer parameterised by `(position, T_eff, R)`; derived radius (§4); T0↔T1 continuity **proven to 1.6e-16 stops**; the primary stops being special-cased. §8 | medium |
 | **R2b** | Promote | mount a *catalogue* star through the same component on approach; needs `S5` parallax from STAR_CATALOGUE_PLAN | medium |
-| **R3** ✅ | **P8d + corona** | flux conserved instead of clipped (no splat path needed); corona gated off behind a runtime A/B. §9 | medium |
+| **R3** ✅ | **corona + half-float ceiling** | corona gated off (it carried 5.3× the star's flux); flux conserved where the disc is sub-pixel. §9, §9.7 | medium |
+| **R3b** ✅ | **P8d proper** | analytic point-source glare + veil→adaptation feedback; retired the ceiling spread. §9.8–§9.10 | medium |
 | **R4** | T2 limb darkening | the "flat white circle" fix | low |
 | **R5** | T3 photosphere | granulation, spicules, chromosphere shell | medium |
 | **R6** | `HOT_COMPRESS_EXPONENT` | make staring at the sun punishing — a *look* knob, so it goes last, once the sun renders correctly | low |
@@ -509,3 +510,267 @@ range-dependent, so R4 must integrate the limb profile properly rather than just
 ⚠ Guard added while checking degenerate inputs: `renderHalfView` evaluates to exactly `RADIUS` at any
 distance where the true size wins (verified down to 1e-3 scaled units), but at `distScaled === 0` it is
 `0 × Infinity = NaN` and one NaN vertex removes the whole quad. `distScaled` is now floored at 1e-6.
+
+
+---
+
+## 9.7 ⚠⚠ MEASURED IN PLAY: the ceiling bound EVERYWHERE, and that was the eclipse bug
+
+§9.2 derived the threshold correctly (the clamp bites below metered EV 2.11 at 1 AU) and then
+**guessed the wrong side of it.** I assumed a frame with the sun in it meters high. Measured:
+
+| pose | metered EV (game-unit) | preExposure | unspread peak | disc true → drawn |
+|---|---|---|---|---|
+| Earth's belt, 1 AU | **−1.87** | 3.05 | 9.51e5 | 10.97 px → **45.99 px (4.19×)** |
+| Neptune, 30 AU | **−5.84** | 47.5 | 1.48e7 | 0.37 px → 6.08 px (16.5×) |
+
+Not +4…+6 as assumed — **−0.3 to −1.9**, because `exposureMeter`'s hot-tail compressor deliberately
+holds the meter down when the sun is in frame. So `sizedBy` read `"halfFloatCeiling"` at *every* range,
+i.e. the regime I told the author to report as exceptional was the only regime.
+
+🔑🔑 **AND THAT IS THE REPORTED ECLIPSE BUG.** At 1 AU the sun's true disc is ~11 px and Luna's is
+~11 px, but the sun was *drawn* at 46 px — so an eclipsed sun rendered a 4.2×-too-wide white disc with a
+small black Luna inside it, exactly as photographed. *"Grows very large as the exposure adjusts"* is the
+§9.4 feedback loop, observed: eclipse darkens the frame → EV falls → `preExposure` rises →
+`ceilingPx` rises → the disc grows. *"Flying out of the shadow resolves it"* closes the loop the other
+way. The model reproduces the measurements to 0.4% (predicted 45.99 px vs measured 45.992).
+
+⚠ Lesson, and it is the same one twice in this plan: **deriving a threshold is not measuring which side
+of it you are on.** §9.2 has the right table and the wrong conclusion, and only a `__lum` reading in
+the actual game settled it.
+
+### 9.7a The fix: the ceiling may only spend size that is already fiction
+
+```ts
+const resolved = discPx >= DISC_PX_FLOOR;
+const ceilingPx = resolved ? 0 : discPx * Math.sqrt(Math.max(1, unspreadPeak / writeBudget));
+```
+
+**A resolved disc's angular size is a real observable and must not be spent on flux conservation. A
+sub-pixel disc's size is already a rasterisation fiction — that is what `DISC_PX_FLOOR` is — so
+spending it there costs nothing.** And the deficit is largest exactly where the disc is smallest
+(246× at 30 AU), so the two regimes want opposite things and the split gives each what it needs:
+
+| range | disc px | resolved | renderPx | flux kept | residual P8d |
+|---|---|---|---|---|---|
+| 1 AU | 12.88 | yes | **12.88** (true) | 5.7% | **17.6× (4.14 stops)** |
+| 5 AU | 2.58 | yes | 2.58 (true) | 3.7% | 27.2× (4.76 stops) |
+| 30 AU | 0.43 | no | 7.12 | **100%** | none |
+| 300 AU | 0.04 | no | 2.50 (floor) | **100%** | none |
+
+Plus **fast-attack / slow-release smoothing** on `renderPx` (`SIZE_RELEASE_TAU = 0.6 s`): growth is
+instant so the write budget is never exceeded, shrinking is damped so the §9.4 loop cannot ring. That
+is aimed at the reported flicker in the sun at 300 AU, which is the loop ringing where `ceilingPx`
+hovers near `DISC_PX_FLOOR`.
+
+### 9.7b R3b — the remaining P8d deficit, and why a splat is still the wrong shape
+
+Inside ~5 AU the guard now clips **17–27× (4.1–4.8 stops)** of the sun's flux, so P8d is real again in
+the resolved regime. `__lum.starGlare()` reports it as `residualDeficitStops` rather than hiding it.
+
+⚠ P8d's original prescription — splat the deficit into the glare pyramid — **cannot work**, and this is
+worth recording before anyone tries it. The pyramid is half-float too. At 1 AU the deficit is ~8.5e7
+(value × px²); one `_down[0]` texel holds 4 full-res px², so a single-texel splat needs 2.1e7 and
+overflows. Spreading it to fit needs a **21×21 texel block = 42×42 full-res px**, which is wider than
+the sun's own 11 px disc — so the "point source" would be a 42 px flat blob and the aureole's inner
+shape would be destroyed. Levels 0–4 would all need Float32 (~24 MB and the bandwidth) to avoid it.
+
+🔑 **R3b should instead add the deficit's glare ANALYTICALLY in the composite.** The glare of a point
+source of known flux at a known screen position is closed-form — `glarePsf(θ)` already exists — so:
+
+```
+glare += k · F_deficit · PSF(θ) / ∫PSF dΩ      θ = angle from the sun's screen position
+```
+
+A handful of ALU ops in the existing composite, no new render target, no overflow (the flux is a
+float32 uniform), exact PSF shape at every octave, and occlusion comes from `starVis` rather than a
+depth test. That is what *"drive the glare from the star-flux uniform"* should have meant all along.
+
+
+---
+
+## 9.8 R3b as built — the analytic point-source glare
+
+`glareNode` now adds, on top of the pyramid:
+
+```
+out += uGlareStrength · starRgb · (deficitFlux · ω_px / ∫P dΩ) · P(θ)
+```
+
+with `θ = atan(r_px · tanPerPx)` in degrees about the star's screen position, `ω_px = tanPerPx²`, and
+`P(θ) = a/θ³ + b/θ²` — the **same** two-term PSF the pyramid's weights come from.
+
+**Why this and not P8d's splat:** the pyramid is half-float too. At 1 AU the deficit is ~3.5e7
+(value·px²) and one `down[0]` texel holds 4 px², so a single-texel splat needs ~9e6 and overflows.
+Spreading it to fit needs a **21×21 texel = 42×42 px block, wider than the sun's own 11 px disc** — the
+"point source" would be a flat blob and the aureole's shape would be destroyed. Levels 0–4 would all
+need Float32 (~24 MB + bandwidth). Analytically it is ~10 ALU ops in a pass that already runs, exact at
+every octave, and cannot overflow because the flux is a float32 uniform.
+
+### 9.8a Verified numerically
+
+| check | result |
+|---|---|
+| ∫(normalised PSF) dΩ over [0.05°, 51.2°] | **1.000000** ✅ |
+| `∫P dΩ` shares `octaveEnergies` with `deriveGlareWeights` | ✅ one integral, not two |
+| deficit at 1 AU (from the author's measurement) | 3.509e7 of 4.137e7 total = **5.59× the written flux** |
+| analytic term vs the pyramid's own star contribution at 1° | **5.6×**, as it must be |
+
+🔑 The energy identity: `∫ value dA_px = k · deficitFlux`, because
+`∫ P_norm · ω_px dA_px = ∫ P_norm dΩ = 1`. So the analytic term and the pyramid are on the same scale
+by construction, and adding them cannot double-count — the pyramid carries `writtenFlux`, this carries
+`trueFlux − writtenFlux`.
+
+⚠ `∫P dΩ` is a 10 × 1024 numeric integral, so it is **cached** (`getGlarePsfEnergy()`) and recomputed
+only where `_crossover` changes. Calling `glarePsfEnergyTotal()` per frame would be 10,240 iterations of
+`sin` in the frame loop.
+
+### 9.8b 🐛 A third mislabelled quantity, same class as the other two
+
+`fluxKept` was `writeBudget / peak` — a **peak** ratio reported as a flux fraction. At 1 AU it read
+0.1244 where the true flux fraction is **0.1518**, because part of the soft edge sits below the cap and
+is never clipped. Now derived from the same profile integrals the deficit uses.
+
+🔑 That is **three** instances in this phase of a gate reporting a *neighbouring* quantity to the one it
+named: the tinted-vs-untinted peak (§9.4b), the "no flux is discarded" line that meant "no channel
+overflow", and this. The pattern is always the same — a plausible nearby number is easier to reach than
+the one the label claims. **Measure what you name.**
+
+### 9.8c The deficit is computed by integrating the shader's own profile
+
+`discProfileFlux(peak, cap, radiusPx)` integrates `min(S(r)·peak, cap)·2πr dr` with `S` the identical
+smoothstep the fragment shader applies. Closed-form algebra on an assumed hard disc would disagree with
+what was actually written, because clipping happens **per pixel** and the soft edge is partly under the
+cap. 64 samples, once per frame.
+
+### 9.8d ⚠ Two things to check on device
+
+1. **Y orientation.** `uv()` in the post chain and NDC do not agree about Y across three's backends, and
+   this repo has lost time to exactly that before (`screenUV.y increases DOWNWARD` in `hdrCalibration`).
+   Rather than guess, it is a runtime toggle: put the sun well off-centre vertically, and if the glare
+   is centred on the opposite side, call **`__lum.starGlareFlipY(true)`**.
+2. **Magnitude.** At 1 AU the term reaches ~21 game units at 1° from the sun (pre-exposed), i.e. ~92,000
+   cd/m² absolute. ⓘ For reference, Stiles–Holladay's absolute veil formula (`10·E/θ²`) would give
+   1.28e6 cd/m² there — ~12× more. That is *not* evidence of a bug here: `glarePass`'s header records
+   that the CIE/Vos–van den Berg formula is not trusted for magnitude, and the pass is normalised
+   instead by the integrated straylight fraction `k = 0.03`. But it does mean **`k` is the knob** if the
+   veil still reads too weak after R3b — not this term's scale.
+
+### 9.8e A/B
+
+```
+__lum.starPointGlare(false)   // pre-R3b: the clipped flux is discarded (P8d)
+__lum.starPointGlare(true)    // R3b
+__lum.starGlareFlipY(true)    // only if the glare is centred on the wrong side
+```
+
+Only the **veil and aureole** move; the disc is identical either way, so watch the space *around* the
+sun and whether nearby stars wash out. `__lum.starGlare()` reports `pointGlareFlux`, `pointGlareUv` and
+`psfEnergyTotal`; the term is idle wherever nothing is clipped (0.1 AU, and everything beyond ~5 AU).
+
+
+---
+
+## 9.9 R3b on device — three findings, one of them the real defect
+
+### 9.9a 🐛 The Y default was wrong
+
+`__lum.starGlareFlipY(true)` fixed it, so the default is now `true`. `uv()` in the post chain runs Y
+opposite to NDC on this backend. Left as a toggle for the next backend.
+
+### 9.9b 🔑🔑 The frame washed out to uniform grey at 1 AU — and it is an EXPOSURE bug
+
+Measured with the author's own uniforms at 1 AU (`pointGlareRgb` 409.6, `preExposure` 9.206):
+
+| θ from the sun | our veil | Stiles–Holladay `10·E/θ²` | ratio |
+|---|---|---|---|
+| 1° | 1.61e5 cd/m² | 1.28e6 | **0.13** |
+| 5° | 3.87e3 | 5.12e4 | 0.08 |
+| 25° | 1.34e2 | 2.05e3 | 0.07 |
+
+🔑 **The veil's absolute luminance is 7–13× BELOW Stiles–Holladay, so its scale is not the problem.**
+The problem is that its frame mean was **10× middle grey** while the meter reported EV **−3.47** — "this
+scene is dark".
+
+⚠⚠ **Because the analytic veil is added in the POST chain and `exposureMeter` reads the SCENE buffer,
+the meter could not see the veil it was creating.** In a real eye the straylight *is* part of the
+retinal image adaptation responds to, so this is a modelling gap, not a tuning problem. Fixed by adding
+the veil's mean as a pedestal to `totalFlux` **before** the hot-tail split — it belongs in `restFlux`
+because the veil is spatially broad and must not be treated as a compressible hot feature.
+
+**Solved fixed point at 1 AU** (calibrated from the author's reading):
+
+| | before | after |
+|---|---|---|
+| preExposure | 9.206 | **0.810** |
+| metered EV | −3.47 | **+0.04** |
+| veil pedestal | 10.0× mid-grey | **0.71× mid-grey** |
+
+⚠ **Stability is real but not generous.** The loop gain is `g′ = −1.271`, so naive iteration would
+diverge; the adaptation low-pass is what stabilises it (multiplier 0.854 at 60 fps, 0.926 at 120 fps —
+so a *faster* follower is *less* stable). If the brightness visibly breathes on a ~1 s period with the
+sun in view, that is this loop, and the fix is a longer adaptation time constant or damping the
+pedestal — not reducing the veil.
+
+### 9.9c 🔑🔑 R3b makes the half-float ceiling spread obsolete — deleted
+
+With the clipped flux carried analytically, size never has to be traded for flux:
+
+- **geometry** → `renderPx = max(discPx, DISC_PX_FLOOR)`, nothing else;
+- **flux** → the disc keeps what fits, the eye's PSF carries the rest.
+
+That deletes, in one change: the adaptation-dependent disc size, the §9.4 breathing, the ringing (the
+reported 300 AU flicker), the `SIZE_RELEASE_TAU` follower needed to damp it, and the `sizedBy`
+misreporting the author's data exposed (`"releasing"` at 5/8/30 AU where the ceiling was in fact the
+dominant limit, its 0.6% release residual notwithstanding). The measured inflations it removes: **0.37 px
+→ 11.8 px at 30 AU (32×)** and **2.2 px → 34.2 px at 5 AU (15.5×)**.
+
+⇒ `sizedBy` is now only `"true"` or `"pixelFloor"`, and the residual P8d deficit is expected
+**everywhere the disc clips**, not only where it is resolved — which is what R3b is for.
+
+
+---
+
+## 9.10 R3 + R3b verified on device — CLOSED
+
+The veil→adaptation loop was solved before measuring, so this is a prediction check, not a fit:
+
+| at 1 AU | predicted (§9.9b) | measured |
+|---|---|---|
+| metered EV | +0.04 | **+1.09** |
+| preExposure | 0.810 | 0.392 |
+| brightness breathing | stable (loop multiplier 0.854–0.926) | **stable, none observed** ✅ |
+
+1.05 stops out, from a fixed point calibrated on a single earlier reading — direction and magnitude
+right, and the washout is gone. Stability held, which was the open risk.
+
+Final measured behaviour, `sizedBy` now only ever `"true"` or `"pixelFloor"`:
+
+| range | disc true → drawn | clip ratio at the drawn size | R3b carries |
+|---|---|---|---|
+| 0.1 AU | 105.3 → 105.3 px | none | idle |
+| 1 AU | 10.97 → 10.97 px | 2.26× | 5.80e6 |
+| 5 AU | 2.20 → 2.50 px | 11.4× | 2.72e6 |
+| 30 AU | 0.37 → 2.50 px | 2.06× | 2.53e5 |
+
+ⓘ The clipping is worst around **3–6 AU**, where the disc sits just below `DISC_PX_FLOOR` so the
+flux-conserving spread barely helps while the exposure is still fairly open. Inherent, and harmless:
+R3b carries it, and the disc renders saturated white either way.
+
+### 9.10a 🐛 The fourth mislabelled quantity in this phase
+
+The gate printed *"wanted 5.171e+6, written 5.404e+4"* at 30 AU, implying **95.7×** of clipping. The
+real clip ratio is **2.06×** — `unspreadPeak` is the peak at the disc's TRUE size while the written
+value is at its DRAWN size, so the printed ratio conflated the *flux-conserving spread* (which loses
+nothing) with *clipping* (which does). Now prints all three peaks with the spread factor called out, and
+`drawnPeak` / `clipRatio` are published.
+
+The historical `oldClampLossFactor` was removed rather than fixed: the sizing changed twice during R3, so
+"what the old clamp would have discarded" no longer names a well-defined configuration. `fluxKept` and
+`clipRatio` describe the present, which is what a gate is for.
+
+🔑🔑 **FOUR instances in one phase of this gate reporting a quantity ADJACENT to the one its label
+claimed** — tinted vs untinted peak, "no flux discarded" that meant "no channel overflow", `fluxKept` as
+a peak ratio, and now true-size vs drawn-size peak. Every one was a plausible neighbour that happened to
+be easier to reach. **A gate is only as good as the identity between its label and its expression, and
+that identity needs checking as deliberately as the physics does.**

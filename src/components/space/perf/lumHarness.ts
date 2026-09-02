@@ -70,9 +70,17 @@ import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants"
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
 import {
   getStarCoronaScale,
+  getStarGlareFlipY,
+  getStarPointGlareEnabled,
   setStarCoronaScale,
+  setStarGlareFlipY,
+  setStarPointGlareEnabled,
   starLodStatus,
 } from "@/components/space/starLodStatus";
+import {
+  starPointGlarePedestal,
+  starPointGlareStatus,
+} from "@/components/space/glarePass";
 import {
   SUN_ABS_MAG_BOL,
   SUN_ABS_MAG_V,
@@ -149,6 +157,8 @@ import {
 import { setCloudSunScale } from "@/components/celestial/bodies/cloudCommon";
 import {
   adaptationTarget,
+  getVeilFeedback,
+  setVeilFeedback,
   exposureMeterStatus,
   resetExposureAdaptation,
   localExposureStatus,
@@ -4027,42 +4037,62 @@ export class LumHarness {
       return {};
     }
     const ev = getMeteredEV();
+    const pg = starPointGlareStatus();
     // ⚠ 65,504 is half-float's finite max; `writtenPeak` is the TINTED peak, so
     // this is the channel test, not a luminance test. A luminance test passed
     // while the red channel was +Inf.
     const budget = 65_504;
-    // What P8d's fix was worth: the flux the OLD clamp would have discarded.
-    // ⚠ Against 60,000 — the old `HALF_FLOAT_WRITE_MAX` clamp's own value, not the
-    // per-channel budget, because that is the number the old code actually used.
-    const oldClampLoss = Math.max(1, st.unspreadPeak / 60_000);
+    const tint = st.writeBudget > 0 ? 60_000 / st.writeBudget : 1;
+    // ⚠ THREE different peaks, and printing the wrong pair is a mistake this gate
+    // has now made four times. `unspreadPeak / cap` is NOT the clip ratio once the
+    // pixel floor has spread the disc — that conflates flux-conserving spread with
+    // clipping (95.7× vs a real 2.06× at 30 AU). The clip ratio is `drawnPeak/cap`.
+    const clipRatio = st.drawnPeak > 0 ? st.drawnPeak / st.writeBudget : 1;
     console.log(
       `[lum] star ${st.distAu.toFixed(2)} AU — metered EV ${ev.toFixed(2)} (game-unit), ` +
         `preExposure ${st.preExposure.toExponential(3)}.`,
     );
     console.log(
       `[lum] disc true ${st.discPx.toFixed(2)} px, drawn ${st.renderPx.toFixed(2)} px ` +
-        `(sizedBy "${st.sizedBy}"). Peak at true size would be ` +
-        `${st.unspreadPeak.toExponential(3)}; written ${st.writtenPeak.toExponential(3)}.`,
+        `(sizedBy "${st.sizedBy}").`,
+    );
+    console.log(
+      `[lum] peak radiance (scalar): at TRUE size ${st.unspreadPeak.toExponential(3)}, ` +
+        `at DRAWN size ${st.drawnPeak.toExponential(3)}` +
+        (st.renderPx > st.discPx * 1.000001
+          ? ` (÷${(st.unspreadPeak / Math.max(st.drawnPeak, 1e-30)).toFixed(1)} by the ` +
+            `flux-conserving spread — no flux lost there)`
+          : "") +
+        `, cap ${st.writeBudget.toExponential(3)} ⇒ clipped ${Math.max(1, clipRatio).toFixed(2)}×.`,
     );
     console.log(
       st.writtenPeak >= 65_520
         ? `[lum] ❌ brightest CHANNEL ${st.writtenPeak.toExponential(3)} rounds to +Inf in ` +
           `half-float. That poisons the whole glare pyramid and drops the sun from metering.`
-        : `[lum] ✅ brightest channel ${st.writtenPeak.toExponential(3)} is inside half-float ` +
-          `(cap ${st.writeBudget.toExponential(3)} scalar), so no flux is discarded and the ` +
-          `glare pyramid sees the star's true flux.`,
+        : `[lum] ✅ ×${tint.toFixed(4)} for the brightest colour channel ⇒ ` +
+          `${st.writtenPeak.toExponential(3)} in the buffer, no overflow (< ${budget}). ` +
+          `⚠ Says nothing about flux — that is the next line.`,
     );
     console.log(
-      oldClampLoss > 1.05
-        ? `[lum] 🔑 P8d IS REAL AT THIS POSE: the old clamp would have discarded ` +
-          `${oldClampLoss.toFixed(2)}× (${Math.log2(oldClampLoss).toFixed(2)} stops) of the sun's flux.`
-        : `[lum] 🔑 P8d IS NOT REAL AT THIS POSE: ${st.unspreadPeak.toExponential(2)} < ${budget}, ` +
-          `so the old clamp never engaged here — pre-exposure had already solved it. ` +
-          `P8d's "4.4× too weak" was measured before source pre-exposure landed.`,
+      st.fluxKept >= 0.999
+        ? `[lum] ✅ 100% of the star's flux reaches the glare pyramid at this pose.`
+        : `[lum] ⚠ the guard clips ${(1 / st.fluxKept).toFixed(1)}× ` +
+          `(${Math.log2(1 / st.fluxKept).toFixed(2)} stops) of the disc's flux. That is EXPECTED ` +
+          `and is exactly what R3b's analytic PSF carries — see the R3b line below. It is not a ` +
+          `deficit in the final image, only in the scene buffer.`,
+    );
+    console.log(
+      st.pointGlareFlux > 0
+        ? `[lum] R3b analytic glare ${getStarPointGlareEnabled() ? "ON" : "OFF"}: carrying ` +
+          `${st.pointGlareFlux.toExponential(3)} (value·px²) of clipped flux at screen UV ` +
+          `(${pg.uv[0].toFixed(3)}, ${pg.uv[1].toFixed(3)}). ⚠ If the glare is centred ` +
+          `ABOVE/BELOW the star, call __lum.starGlareFlipY(true).`
+        : `[lum] R3b analytic glare idle — nothing is being clipped at this pose, so the ` +
+          `pyramid already has all of the star's flux.`,
     );
     console.log(
       `[lum] legacy corona ${st.coronaScale > 0 ? `ON ×${st.coronaScale}` : "OFF"} — ` +
-        `A/B with __lum.starCorona(1) / __lum.starCorona(0).`,
+        `A/B: __lum.starCorona(0|1), __lum.starPointGlare(true|false).`,
     );
     return {
       distAu: Number(st.distAu.toFixed(3)),
@@ -4072,11 +4102,18 @@ export class LumHarness {
       renderPx: Number(st.renderPx.toFixed(3)),
       sizedBy: st.sizedBy,
       unspreadPeak: Number(st.unspreadPeak.toPrecision(5)),
+      drawnPeak: Number(st.drawnPeak.toPrecision(5)),
+      clipRatio: Number(Math.max(1, clipRatio).toPrecision(4)),
       writtenPeakChannel: Number(st.writtenPeak.toPrecision(5)),
       writeBudgetScalar: Number(st.writeBudget.toPrecision(5)),
       clipping: st.writtenPeak >= 65_520,
-      oldClampLossFactor: Number(oldClampLoss.toPrecision(4)),
-      oldClampLossStops: Number(Math.log2(oldClampLoss).toFixed(3)),
+      fluxKept: Number(st.fluxKept.toPrecision(4)),
+      pointGlareFlux: Number(st.pointGlareFlux.toPrecision(4)),
+      pointGlareEnabled: getStarPointGlareEnabled(),
+      pointGlareUv: pg.uv.map((v) => Number(v.toFixed(4))),
+      pointGlareRgb: pg.rgb.map((v) => Number(v.toPrecision(4))),
+      psfEnergyTotal: Number(pg.psfEnergyTotal.toPrecision(5)),
+      residualDeficitStops: Number(Math.log2(1 / Math.max(st.fluxKept, 1e-9)).toFixed(3)),
       coronaScale: st.coronaScale,
       starVis: Number(st.starVis.toFixed(4)),
     };
@@ -4100,6 +4137,56 @@ export class LumHarness {
             "close in AND the sun's size in the outer system."),
     );
     return { coronaScale: getStarCoronaScale() };
+  }
+
+  /** A/B R3b's analytic point-source glare. */
+  starPointGlare(on = true): Record<string, unknown> {
+    setStarPointGlareEnabled(on);
+    console.log(
+      `[lum] analytic point-source glare ${on ? "ON" : "OFF"}. ` +
+        (on
+          ? "The star's CLIPPED flux is added as a closed-form eye PSF. Watch the veil and " +
+            "the aureole, not the disc — the disc is identical either way."
+          : "The star's clipped flux is discarded, i.e. the pre-R3b behaviour (P8d)."),
+    );
+    return { pointGlareEnabled: getStarPointGlareEnabled() };
+  }
+
+  /**
+   * A/B whether the eye's own veiling glare feeds back into ADAPTATION.
+   *
+   * ⚠ This is what stops the sun washing the frame to uniform grey at 1 AU. The
+   * analytic veil is added in the post chain, so without this the meter cannot see
+   * it: MEASURED, the veil's frame mean was 10× middle grey while the meter read
+   * EV −3.47 ("this scene is dark"). Off = the pre-fix behaviour.
+   */
+  veilFeedback(on = true): Record<string, unknown> {
+    setVeilFeedback(on);
+    const ped = starPointGlarePedestal();
+    console.log(
+      `[lum] veil→adaptation feedback ${on ? "ON" : "OFF"}. Current pedestal ` +
+        `${ped.toExponential(3)} pre-exposed (${(ped / 0.18).toFixed(1)}× mid-grey). ` +
+        (on
+          ? "Give adaptation ~1 s to settle; the loop is negative so it converges."
+          : "Expect the frame to wash out where the sun is in view inside ~5 AU."),
+    );
+    return { veilFeedback: getVeilFeedback(), pedestal: ped };
+  }
+
+  /**
+   * Flip the analytic term's screen-space Y.
+   *
+   * ⚠ `uv()` in the post chain and NDC do not agree about Y across three's
+   * backends, and this repo has lost time to exactly that before. If the glare is
+   * centred above/below the star by twice its offset from screen centre, flip it.
+   */
+  starGlareFlipY(on = true): Record<string, unknown> {
+    setStarGlareFlipY(on);
+    console.log(
+      `[lum] star glare Y flip ${on ? "ON" : "OFF"}. Put the sun well off-centre ` +
+        `vertically and check the glare is concentric with it.`,
+    );
+    return { flipY: getStarGlareFlipY() };
   }
 
   /** Print the unit convention and the current exposure. */

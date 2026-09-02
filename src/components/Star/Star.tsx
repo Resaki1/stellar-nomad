@@ -39,8 +39,15 @@ import { sunVisibility } from "@/components/space/sunOcclusion";
 import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
 import {
   getStarCoronaScale,
+  getStarGlareFlipY,
+  getStarPointGlareEnabled,
   starLodStatus as _status,
 } from "@/components/space/starLodStatus";
+import {
+  clearStarPointGlare,
+  getGlarePsfEnergy,
+  setStarPointGlare,
+} from "@/components/space/glarePass";
 
 export { STAR_POSITION_KM };
 
@@ -63,6 +70,32 @@ export type StarProps = {
 // ── Reusable vectors ──
 const _shipToStar = new THREE.Vector3();
 const _bufSize = new THREE.Vector2();
+const _view = new THREE.Vector3();
+const _camQuat = new THREE.Quaternion();
+
+/**
+ * ∫ min(S(r)·peak, cap) · 2πr dr over the rendered disc, where `S` is the SAME
+ * smoothstep edge the fragment shader uses (1 inside 0.85 R, 0 outside 1.15 R).
+ *
+ * 🔑 Numeric, and deliberately so: the shader clips PER PIXEL, so the flux that
+ * survives is not `cap × area` — the soft edge is partly under the cap. Modelling
+ * the identical profile means the deficit handed to the glare pass cannot
+ * disagree with what was actually written, which closed-form algebra on an
+ * assumed hard disc would. 64 samples, once per frame.
+ */
+function discProfileFlux(peak: number, cap: number, radiusPx: number): number {
+  const N = 64;
+  const rMax = 1.15 * radiusPx;
+  const dr = rMax / N;
+  let acc = 0;
+  for (let i = 0; i < N; i++) {
+    const r = (i + 0.5) * dr;
+    const t = (1.15 * radiusPx - r) / (0.3 * radiusPx);
+    const sm = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+    acc += Math.min(sm * peak, cap) * 2 * Math.PI * r * dr;
+  }
+  return acc;
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // A single view-space billboard at all distances, carrying ONLY the disc. The
@@ -220,6 +253,8 @@ function Star({
     return HALF_FLOAT_WRITE_MAX / Math.max(r, g, b, 1e-6);
   }, [tempK]);
   const uWriteBudget = useMemo(() => uniform(writeBudget), [writeBudget]);
+  // Linear-sRGB blackbody triple, for tinting the analytic glare (R3b).
+  const starRgb = useMemo(() => blackbodyLinearSrgb(tempK), [tempK]);
 
   const geo = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
 
@@ -334,6 +369,7 @@ function Star({
     [positionKm],
   );
 
+
   useFrame(() => {
     _shipToStar.set(
       positionKm[0] - worldOrigin.shipPosKm.x,
@@ -381,20 +417,22 @@ function Star({
     // What the peak would be if drawn at its true size. Radiance is
     // distance-independent, so this only moves with adaptation.
     const unspreadPeak = discRadiance * preExp;
-    // 🔑 Limit 3, the half-float ceiling. `value × px²` is the flux, so the size
-    // needed to keep the peak in range is `discPx · √(peak / budget)`. This is
-    // what replaces P8d's flux-discarding clamp.
-    const ceilingPx = discPx * Math.sqrt(Math.max(1, unspreadPeak / writeBudget));
-    const renderPx = Math.max(discPx, DISC_PX_FLOOR, ceilingPx);
-    // ⚠ NEW ARTEFACT, ACCEPTED: while limit 3 binds, `renderPx` tracks
-    // `preExposure`, so the disc's SIZE breathes during an adaptation transient
-    // (∝ √preExp). The behaviour it replaces pumped the disc's FLUX instead —
-    // worse, because flux feeds back into the exposure meter. `sizedBy` reports
-    // which limit won, so `__lum.starGlare()` will say if this ever binds in
-    // normal play; if it does, revisit rather than tolerating the breathing.
+    // 🔑🔑 THE DISC IS NEVER SPREAD ANY MORE. R3b carries the clipped flux
+    // analytically, so size no longer has to be traded for flux at all:
+    //   • geometry  → `max(trueSize, DISC_PX_FLOOR)`, nothing else
+    //   • flux      → the disc keeps what fits; the rest goes to the eye's PSF
+    // An earlier revision spread the disc to fit the half-float budget. MEASURED,
+    // that bound at EVERY range (metered EV with the sun in frame is −0.3…−7.7,
+    // not the +4…+6 assumed), inflating an 11 px disc to 46 px at 1 AU — which is
+    // what made an eclipsed sun render 4.2× wider than Luna — and 0.37 px to
+    // 11.8 px at 30 AU. It also made the rendered size a function of adaptation,
+    // which rang (flicker at 300 AU) and needed a release follower to damp.
+    // Removing it deletes the breathing, the ringing, the follower and the
+    // adaptation coupling in one go.
+    const renderPx = Math.max(discPx, DISC_PX_FLOOR);
 
-    // Flux conservation: radiance ÷ the area ratio. Returns exactly 1 when
-    // renderPx === discPx, so the normal case is untouched.
+    // Flux conservation: radiance ÷ the area ratio. Exactly 1 when renderPx ===
+    // discPx, so the resolved case is untouched.
     uCoreRadiance.value = unspreadPeak * subPixelFluxScale(discPx, renderPx);
 
     // ── Quad size ─────────────────────────────────────────────────────────────
@@ -442,7 +480,63 @@ function Star({
         ? starVis
         : starVis / Math.max(1e-6, 1 - (1 - starVis) * trueAreaShare);
 
+    // ── R3b: hand the CLIPPED flux to the glare pass analytically ─────────────
+    // The shader's guard discards everything above `writeBudget`, which the
+    // pyramid therefore never sees. Reconstruct exactly how much and give it to
+    // the eye's PSF in closed form. Zero whenever nothing is clipped, so this is a
+    // no-op in the sub-pixel regime where flux is already conserved.
+    const rDrawPx = renderPx * 0.5;
+    const trueFlux = discProfileFlux(uCoreRadiance.value, Infinity, rDrawPx);
+    const writtenFlux = discProfileFlux(uCoreRadiance.value, writeBudget, rDrawPx);
+    // ⚠ A FLUX ratio, from the integrals — not `writeBudget / peak`. The peak ratio
+    // reads 0.1244 at 1 AU where the true flux fraction is 0.1518, because part of
+    // the soft edge sits below the cap and is not clipped. Third instance in this
+    // phase of a gate reporting a neighbouring quantity; measure what you name.
+    const fluxKept = trueFlux > 0 ? Math.min(1, writtenFlux / trueFlux) : 1;
+    // × starVis: an occluded star scatters less. ⚠ This is the ONLY attenuation
+    // available here — the analytic term is not depth-tested, so unlike the disc
+    // it cannot be occluded geometrically.
+    const deficitFlux = Math.max(0, trueFlux - writtenFlux) * starVis;
+
+    // View-space direction → NDC. Only fov/aspect are needed, and `discPx` above
+    // already validates them against measurement.
+    camera.getWorldQuaternion(_camQuat);
+    _view
+      .set(_shipToStar.x, _shipToStar.y, _shipToStar.z)
+      .multiplyScalar(0.001)
+      .applyQuaternion(_camQuat.invert());
+    const forward = -_view.z; // the camera looks down −z
+    const tanHalf = Math.tan(fovRad / 2);
+    const bufferW = Math.max(_bufSize.x, 1);
+    const aspect = bufferW / bufferH;
+    // ⚠ `primary` only: one uniform holds one star, so with a second star mounted
+    // (R2b) the last writer would win. Gate it rather than leave that racy.
+    if (primary && deficitFlux > 0 && forward > 0 && getStarPointGlareEnabled()) {
+      const ndcX = _view.x / forward / (tanHalf * aspect);
+      const ndcY = _view.y / forward / tanHalf;
+      const uvX = (ndcX + 1) * 0.5;
+      const uvY = getStarGlareFlipY() ? (1 - ndcY) * 0.5 : (ndcY + 1) * 0.5;
+      // ω_px = tanPerPx² sr/px, so deficit(value·px²) × ω_px / ∫PdΩ(PSF·sr) is a
+      // buffer value once multiplied by the raw PSF. The straylight fraction is
+      // applied in the shader so this obeys the player's glare setting.
+      const k =
+        (deficitFlux * tanPerBufferPx * tanPerBufferPx) /
+        Math.max(getGlarePsfEnergy(), 1e-30);
+      setStarPointGlare(
+        uvX,
+        uvY,
+        [starRgb[0] * k, starRgb[1] * k, starRgb[2] * k],
+        tanPerBufferPx,
+        bufferW,
+        bufferH,
+        deficitFlux,
+      );
+    } else if (primary) {
+      clearStarPointGlare();
+    }
+
     if (primary) {
+      _status.pointGlareFlux = deficitFlux;
       _status.distAu = distKm / 149_597_870.7;
       _status.distScaled = distScaled;
       _status.discPx = discPx;
@@ -454,12 +548,8 @@ function Star({
       _status.drawnAtScaled = distScaled * shellScale;
       _status.coreRadianceGame = uCoreRadiance.value / Math.max(preExp, 1e-30);
       _status.renderPx = renderPx;
-      _status.sizedBy =
-        renderPx === discPx
-          ? "true"
-          : ceilingPx >= DISC_PX_FLOOR
-            ? "halfFloatCeiling"
-            : "pixelFloor";
+      _status.sizedBy = renderPx <= discPx * 1.000001 ? "true" : "pixelFloor";
+      _status.fluxKept = fluxKept;
       _status.preExposure = preExp;
       // ⚠ The TINTED peak — the quantity that actually has to fit in half-float.
       // Reporting the scalar made the gate print "inside half-float range" while
@@ -469,6 +559,7 @@ function Star({
         (HALF_FLOAT_WRITE_MAX / writeBudget);
       _status.writeBudget = writeBudget;
       _status.unspreadPeak = unspreadPeak;
+      _status.drawnPeak = uCoreRadiance.value;
       _status.coronaScale = legacyCorona;
       _status.starVis = starVis;
       _status.clampScaled = SHELL_CLAMP_SCALED;
