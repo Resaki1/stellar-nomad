@@ -1,7 +1,8 @@
 # Star rendering plan — one parameterised star, continuous LOD
 
 Closes the reported defects **R-A** (the sun vanishes past ~13 AU) and **R-B** (no star LOD), and
-absorbs **P8d** from [`LIGHTING_PLAN.md`](LIGHTING_PLAN.md) (the sun's glare is 4.4× too weak).
+absorbs **P8d** from [`LIGHTING_PLAN.md`](LIGHTING_PLAN.md) — whose premise turned out to be only
+*sometimes* true (§9.2).
 
 Companion to [`STAR_CATALOGUE_PLAN.md`](STAR_CATALOGUE_PLAN.md), which owns the *catalogue* (data,
 magnitudes, sky irradiance). This doc owns *how a star is drawn* at every range, from a 174 KB
@@ -170,7 +171,7 @@ not from an authored `pow(falloff, 3.5)`.
 | **R1** | Shell clamp | `uShellScale` + `frustumCulled={false}`; bit-exact no-op inside the clamp radius. Fixes R-A and §1.2 | low |
 | **R2** ✅ | Unify | one star renderer parameterised by `(position, T_eff, R)`; derived radius (§4); T0↔T1 continuity **proven to 1.6e-16 stops**; the primary stops being special-cased. §8 | medium |
 | **R2b** | Promote | mount a *catalogue* star through the same component on approach; needs `S5` parallax from STAR_CATALOGUE_PLAN | medium |
-| **R3** | **P8d + corona** | glare driven from the star-flux uniform; delete `INNER_GLOW_FRAC` / `OUTER_GLOW_ABS` / `GLOW_PAD` and the D25 bug with them | medium |
+| **R3** ✅ | **P8d + corona** | flux conserved instead of clipped (no splat path needed); corona gated off behind a runtime A/B. §9 | medium |
 | **R4** | T2 limb darkening | the "flat white circle" fix | low |
 | **R5** | T3 photosphere | granulation, spicules, chromosphere shell | medium |
 | **R6** | `HOT_COMPRESS_EXPONENT` | make staring at the sun punishing — a *look* knob, so it goes last, once the sun renders correctly | low |
@@ -322,3 +323,189 @@ continuous, so R2b is a mounting problem rather than a physics problem.
 `pnpm lint` holds at 0 errors, but the dev server's WebGPU init had degraded to ~2 minutes after this
 session's repeated reloads, so the scene tree never mounted for a visual check. The sun should now be
 **0.233 stops brighter**; a dev-server restart is enough to confirm.
+
+
+---
+
+## 9. R3 as built (2026-09-01)
+
+### 9.1 🐛 The unambiguous defect: the corona carried 5.3× the star's flux
+
+Integrated the billboard's three terms as flux (value × px²) at each range, before touching code:
+
+| range | quad radius | disc flux | innerGlow | outerGlow | **corona / disc** |
+|---|---|---|---|---|---|
+| 0.4 AU | 129 px | 2.54e8 | 7.57e7 | 3.37e4 | **0.30** |
+| 1 AU | 52 px | 4.06e7 | 1.21e7 | 5.39e3 | **0.30** |
+| 5.2 AU | 42 px | 1.50e6 | 7.95e6 | 3.60e3 | **5.30** |
+| 9.6 AU | 42 px | 4.40e5 | 2.33e6 | 3.60e3 | **5.31** |
+| 19.2 AU | 42 px | 1.10e5 | 5.83e5 | 3.60e3 | **5.33** |
+| 30 AU | 42 px | 4.51e4 | 2.39e5 | 3.60e3 | **5.38** |
+
+🔑🔑 **Beyond ~5 AU the hand-authored corona emitted 5.3× the star's entire physical flux**, because
+`MIN_SCREEN_PX = 60` pinned the quad at ~42 buffer px while the disc shrank to the 2.5 px floor —
+`innerGlow` is `0.3 × coreRadiance` over a 14.7 px footprint against a 1.25 px disc. That flux fed
+**both** the glare pyramid and the exposure meter, so the star was lying to two physically anchored
+systems at once. Deleted (gated to 0).
+
+⚠ Plus the D25 bug §3 already recorded: `outerGlow` carried no pre-exposure, so its *absolute*
+radiance swung with adaptation.
+
+### 9.2 ⚠⚠ P8d's premise was only sometimes true, and nobody had checked which
+
+P8d: *"the buffer clamps at `HALF_FLOAT_WRITE_MAX` = 60,000 while the disc is ~3.1e5, so the sun's
+glare is 5.19× too weak."* But `Star.tsx` writes `discRadiance × preExposure`, so **the clamp bites
+only below a metered EV that depends on range**:
+
+| range | disc px | sub-pixel scale | peak ÷ preExposure | clamp bites when EV < |
+|---|---|---|---|---|
+| 1 AU | 12.88 | 1.0 | 311,454 | **2.11** |
+| 5.2 AU | 2.48 | 0.981 | 305,586 | 2.09 |
+| 9.6 AU | 1.34 | 0.288 | 89,660 | 0.32 |
+| 19.2 AU | 0.67 | 0.072 | 22,415 | −1.68 |
+| 30 AU | 0.43 | 0.029 | 9,181 | **−2.97** |
+
+So P8d is **not a constant 5.19×** — it is zero whenever the eye is adapted to a frame with the sun
+in it, and largest when dark-adapted. `__lum.starGlare()` prints which regime the current pose is in
+and says so explicitly. ⚠ **Do not quote P8d's number again without running it.**
+
+⚠ And it was *anti-correlated* with §9.1: at exactly the ranges P8d thought the glare was
+under-driven, the corona was over-driving it by a similar factor. Two opposite-signed errors partly
+cancelling — the "Venus-trim cancellation trap" from LIGHTING_PLAN §2.2, which is why §3.1 was right
+that the halves had to land together.
+
+### 9.3 🔑 The fix needed no splat path
+
+P8d's proposed fix was to drive the glare from a star-flux uniform via a separate splat render path.
+That is unnecessary. The disc's flux is `value × px²`, so instead of *clipping* the value, **spread
+the disc**:
+
+```ts
+const unspreadPeak = discRadiance * preExp;
+const ceilingPx = discPx * Math.sqrt(Math.max(1, unspreadPeak / HALF_FLOAT_WRITE_MAX));
+const renderPx  = Math.max(discPx, DISC_PX_FLOOR, ceilingPx);
+uCoreRadiance.value = unspreadPeak * subPixelFluxScale(discPx, renderPx);
+```
+
+**One `max` of three limits, with the radiance always `trueFlux / renderedArea`:**
+
+1. the disc's **true** angular size — the normal case, `subPixelFluxScale` returns exactly 1;
+2. `DISC_PX_FLOOR` — the rasterisation floor that already existed;
+3. the **half-float ceiling** — new, and what replaces P8d.
+
+Flux is conserved by construction in all three, so the glare pass reads the star's true flux straight
+out of the buffer and `.min(HALF_FLOAT_WRITE_MAX)` becomes a *guard* rather than the mechanism. The
+extra render path, the screen-space projection and the per-level splat amplitude all disappear.
+
+Worked example at 30 AU, dark-adapted (preExposure 26.67): the old path wrote 244,800 → clipped to
+60,000, discarding **4.08×** of the flux. The new path draws the disc at 5.06 px instead of 0.43 px
+and writes 59,970 — nothing discarded. Only the disc's apparent *size* is approximate, and only in a
+regime where it was already clipping to a flat white blob whose apparent size is set by the glare
+anyway.
+
+### 9.4 ⚠ One new artefact — and my first justification for it was wrong
+
+While limit 3 binds, `renderPx ∝ √preExposure`, so the disc's **size breathes during an adaptation
+transient**. `starLodStatus.sizedBy` reports which limit won, so `__lum.starGlare()` says whether the
+ceiling binds in normal play.
+
+⚠⚠ **The original justification here — "what it replaces pumped the disc's FLUX instead, which is
+worse because flux feeds back into the exposure meter" — does not survive review, and the reason is
+worth keeping.** It assumes the meter is a pure function of flux. It is not: `exposureMeter`'s hot-tail
+cap keys off the flux's spatial **extent** (its weight share, `HOT_WEIGHT_FRACTION`), so growing
+`renderPx` migrates the sun's flux out of the *compressed* hot tail into *uncompressed* `restFlux`.
+That closes the same loop through a different term. **Two variables, one of which I had not
+considered, so "size-only is safe" was not established.**
+
+What *is* true, on tracing the sign: the loop is **negative**. Larger `renderPx` → more of the sun
+counted uncompressed → higher metered EV → smaller `preExposure` → smaller `ceilingPx` → smaller
+`renderPx`. So it is self-limiting rather than runaway, but it can **ring** depending on the
+adaptation time constants, and ringing in the sun's apparent size is exactly the sort of thing the
+eye locks onto. Watch for it whenever `sizedBy` reports `"halfFloatCeiling"`.
+
+### 9.4b 🐛🐛 Two HIGH defects the adversarial review caught (both mine)
+
+**(1) The half-float cap was applied to LUMINANCE, then multiplied by a colour channel > 1.**
+`uStarColor` is luminance-normalised, so its brightest channel exceeds 1 — Sol (5772 K) is
+`[1.1103, 0.9761, 0.9119]`. Capping the scalar at 60,000 and *then* tinting wrote **R = 66,618**,
+above half-float's 65,504 finite max, so the disc's interior stored **+Inf**:
+
+| T_eff | max channel | written at cap 60,000 | safe scalar budget |
+|---|---|---|---|
+| 5772 K | 1.1103 (red) | 66,618 / 58,566 / 54,714 | **58,996** |
+| 3000 K | 1.7546 (red) | 105,276 / 50,958 / 16,266 | **37,332** |
+| 30,000 K | 1.9800 (blue) | 43,158 / 59,070 / 118,800 | **33,082** |
+
+This is the exact trap [`preExposedEmissive.ts`](../src/components/space/preExposedEmissive.ts)
+documents — *"an absolute cap applied before a scale is not a cap at all"* — and that file's comment
+even claims it clamps after the multiply *"exactly as Star.tsx does"*. Star.tsx did the opposite.
+
+⚠ Provenance: **R2 created the hazard** by replacing the hardcoded `vec3(1, 0.95, 0.9)` (max 1.0,
+always safe) with the blackbody; **R3 made it the designed steady state**, because the ceiling parks
+the write at exactly the cap across the whole regime the feature exists for; and **R3's own gate
+reported it as safe**, because it printed the untinted scalar. Consequences were not cosmetic:
+`glarePass` has no threshold and its 13-tap pyramid propagates Inf to every mip, so
+`mix(scene, PSF, k)` returns Inf for the *entire frame*; and `exposureMeter` rejects non-finite tiles,
+so the sun was silently dropped from metering. Fixed with one `uWriteBudget = HALF_FLOAT_WRITE_MAX /
+max(r,g,b)` uniform feeding both the CPU sizing and the GPU guard, so they cannot drift.
+
+**(2) The inflated disc was analytically occluded AND still depth-tested, so the two multiplied.**
+Only `depthWrite` was off; `depthTest` defaults to on, so occluders that wrote depth already remove
+fragments — and `uDiscVis = starVis` on top double-counts, which is the failure the D34c comment in
+that file says must not happen. It was also a **binary switch on `renderPx > discPx`, i.e. on the
+adaptation state**, so a transit's brightness jumped by `1/starVis` between frames.
+
+🔑 Fixed with the exact hand-off. An occluder covering fraction `c` of the true disc covers ≈ `c·f` of
+the drawn disc, where `f = (discPx/renderPx)²`; depth therefore already delivers `(1 − c·f)`, so the
+factor still needed is
+
+```
+uDiscVis = (1 − c) / (1 − c·f) = starVis / (1 − (1 − starVis)·f)
+```
+
+Continuous in `f`, exact under that approximation, never exceeds 1 (since `1 − c·f ≥ 1 − c = starVis`),
+and it reduces correctly at both ends: `f → 1` gives 1 (depth owns occlusion), `f → 0` gives `starVis`
+(analytic owns it). Beyond the shell clamp the analytic factor is still applied whole, because an
+occluder past the clamp radius is not depth-ordered against the pulled-in star at all.
+
+**Also fixed:** `starLodStatus.tier` keyed off "did any limit inflate the draw", which reported
+`"point"` at 1 AU whenever the ceiling bound — an adaptation-dependent lie. It now keys off
+`discPx < DISC_PX_FLOOR`, and `writtenPeak` is the **tinted** peak channel.
+
+### 9.5 How to verify
+
+Both halves change the sun at once, so a runtime A/B is the only honest way to judge it:
+
+```
+__lum.starGlare()      // the numbers at this pose — read `sizedBy` and `clipping`
+__lum.starCorona(1)    // the shipped pre-R3 look, bug included
+__lum.starCorona(0)    // R3
+__lum.starLod()        // tier / shell clamp, unchanged from R1
+```
+
+⚠ Wait ~1 s between corona toggles: the corona changes the frame's flux, so the meter moves and an
+immediate comparison measures the adaptation transient rather than the change.
+
+Judgements needed, at 1 AU and out past Saturn:
+1. **Is the aureole still convincing close in?** The glare's `k = 0.03` straylight fraction now has to
+   carry it alone. If it reads too weak, that is a `GLARE_STRAYLIGHT_FRACTION` / crossover
+   conversation, not a reason to bring the corona back.
+2. **Is the sun's size right in the outer system?** It should be a small, very bright point with
+   glare around it — not a 60 px blob. This is the biggest visible change.
+3. **Does anything pump or flicker** as the eye adapts with the sun entering frame.
+4. ⚠ **With glare turned off** (`__lum.glare(false)`) the sun is now a bare disc with no halo at all.
+   That is the honest consequence of the corona having been the eye model all along, but confirm it
+   is acceptable as a settings extreme.
+
+### 9.6 Still open after R3
+
+`HOT_COMPRESS_EXPONENT` (R6) is untouched, and the code says **0.5** where LIGHTING_PLAN says 0.25.
+R4 (limb darkening) should also replace the disc's ±15% *relative* soft edge with a fixed pixel
+width — at a resolved 32 px disc it currently softens ~4.8 px. ⚠ But note what the relative edge buys:
+measured, it adds only **+0.45% flux (0.0065 stops)** versus a hard step, and because the width is
+relative that bias is **constant at every range**. A fixed *pixel* width would make it
+range-dependent, so R4 must integrate the limb profile properly rather than just narrowing the ramp.
+
+⚠ Guard added while checking degenerate inputs: `renderHalfView` evaluates to exactly `RADIUS` at any
+distance where the true size wins (verified down to 1e-3 scaled units), but at `distScaled === 0` it is
+`0 × Infinity = NaN` and one NaN vertex removes the whole quad. `distScaled` is now floored at 1e-6.

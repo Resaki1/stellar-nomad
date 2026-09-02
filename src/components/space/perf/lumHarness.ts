@@ -68,7 +68,11 @@ const _eclipseProbeU = createEclipseUniforms();
 
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
 import { devTeleportAtom, type DevWarp } from "@/store/dev";
-import { starLodStatus } from "@/components/space/starLodStatus";
+import {
+  getStarCoronaScale,
+  setStarCoronaScale,
+  starLodStatus,
+} from "@/components/space/starLodStatus";
 import {
   SUN_ABS_MAG_BOL,
   SUN_ABS_MAG_V,
@@ -180,6 +184,7 @@ import {
   getExposure,
   getPreExposure,
   getExposureCompensation,
+  getMeteredEV,
   setExposureEV,
   setManualExposure,
   setPreExposureOverride,
@@ -3229,9 +3234,9 @@ export class LumHarness {
         `        −2.89 near the core to −2.08 far out, which is how the eye's GSF is`,
         `        described (steeper inside ~1°, θ⁻² over 1–30°). s=10 is the CIE`,
         `        straylight parameter, verified; the crossover is the one authored number.`,
-        "      ⚠ KNOWN UNDER-DRIVE: the scene buffer clamps at HALF_FLOAT_WRITE_MAX = 60,000",
-        "        while the sun disc is SUN_DISC_RADIANCE_GAME ≈ 2.65e5, so the SUN's glare is",
-        "        4.4× (2.1 stops) too weak. Everything else in the frame is represented right.",
+        "      ✅ P8d's under-drive is RESOLVED (R3): Star.tsx now spreads the disc instead",
+        "        of clipping it, so the buffer carries the star's true flux. Its premise was",
+        "        also only sometimes true — check with __lum.starGlare(), not from memory.",
         "      A/B: __lum.glare(false) vs __lum.glare(true). Compare against bloom by",
         "        toggling `bloom` in Settings → it is retained as the baseline, not the path.",
       ].join("\n"),
@@ -4000,6 +4005,101 @@ export class LumHarness {
     );
     out.t0t1WorstStops = Number(maxStops.toPrecision(3));
     return out;
+  }
+
+  /**
+   * STAR GLARE / HALF-FLOAT CEILING GATE (R3, docs/STAR_RENDERING_PLAN.md §9).
+   *
+   * Settles **P8d** empirically. P8d claimed the sun's glare is under-driven
+   * because the scene buffer clamps at `HALF_FLOAT_WRITE_MAX` while the disc's
+   * radiance is far above it. ⚠ But `Star.tsx` writes `discRadiance ×
+   * preExposure`, so whether the clamp bites at all depends on the METERED EV —
+   * which P8d never checked. This prints the actual numbers at the current pose.
+   *
+   * Read `sizedBy`: `"true"` = the disc is at its real angular size and nothing
+   * is being spread or discarded. `"halfFloatCeiling"` = the ceiling binds here,
+   * which is the regime P8d was about.
+   */
+  starGlare(): Record<string, unknown> {
+    const st = starLodStatus;
+    if (!st.ran) {
+      console.log("[lum] no star status yet — Star has not run a frame.");
+      return {};
+    }
+    const ev = getMeteredEV();
+    // ⚠ 65,504 is half-float's finite max; `writtenPeak` is the TINTED peak, so
+    // this is the channel test, not a luminance test. A luminance test passed
+    // while the red channel was +Inf.
+    const budget = 65_504;
+    // What P8d's fix was worth: the flux the OLD clamp would have discarded.
+    // ⚠ Against 60,000 — the old `HALF_FLOAT_WRITE_MAX` clamp's own value, not the
+    // per-channel budget, because that is the number the old code actually used.
+    const oldClampLoss = Math.max(1, st.unspreadPeak / 60_000);
+    console.log(
+      `[lum] star ${st.distAu.toFixed(2)} AU — metered EV ${ev.toFixed(2)} (game-unit), ` +
+        `preExposure ${st.preExposure.toExponential(3)}.`,
+    );
+    console.log(
+      `[lum] disc true ${st.discPx.toFixed(2)} px, drawn ${st.renderPx.toFixed(2)} px ` +
+        `(sizedBy "${st.sizedBy}"). Peak at true size would be ` +
+        `${st.unspreadPeak.toExponential(3)}; written ${st.writtenPeak.toExponential(3)}.`,
+    );
+    console.log(
+      st.writtenPeak >= 65_520
+        ? `[lum] ❌ brightest CHANNEL ${st.writtenPeak.toExponential(3)} rounds to +Inf in ` +
+          `half-float. That poisons the whole glare pyramid and drops the sun from metering.`
+        : `[lum] ✅ brightest channel ${st.writtenPeak.toExponential(3)} is inside half-float ` +
+          `(cap ${st.writeBudget.toExponential(3)} scalar), so no flux is discarded and the ` +
+          `glare pyramid sees the star's true flux.`,
+    );
+    console.log(
+      oldClampLoss > 1.05
+        ? `[lum] 🔑 P8d IS REAL AT THIS POSE: the old clamp would have discarded ` +
+          `${oldClampLoss.toFixed(2)}× (${Math.log2(oldClampLoss).toFixed(2)} stops) of the sun's flux.`
+        : `[lum] 🔑 P8d IS NOT REAL AT THIS POSE: ${st.unspreadPeak.toExponential(2)} < ${budget}, ` +
+          `so the old clamp never engaged here — pre-exposure had already solved it. ` +
+          `P8d's "4.4× too weak" was measured before source pre-exposure landed.`,
+    );
+    console.log(
+      `[lum] legacy corona ${st.coronaScale > 0 ? `ON ×${st.coronaScale}` : "OFF"} — ` +
+        `A/B with __lum.starCorona(1) / __lum.starCorona(0).`,
+    );
+    return {
+      distAu: Number(st.distAu.toFixed(3)),
+      meteredEV: Number(ev.toFixed(3)),
+      preExposure: st.preExposure,
+      discPx: Number(st.discPx.toFixed(3)),
+      renderPx: Number(st.renderPx.toFixed(3)),
+      sizedBy: st.sizedBy,
+      unspreadPeak: Number(st.unspreadPeak.toPrecision(5)),
+      writtenPeakChannel: Number(st.writtenPeak.toPrecision(5)),
+      writeBudgetScalar: Number(st.writeBudget.toPrecision(5)),
+      clipping: st.writtenPeak >= 65_520,
+      oldClampLossFactor: Number(oldClampLoss.toPrecision(4)),
+      oldClampLossStops: Number(Math.log2(oldClampLoss).toFixed(3)),
+      coronaScale: st.coronaScale,
+      starVis: Number(st.starVis.toFixed(4)),
+    };
+  }
+
+  /**
+   * A/B the deleted hand-authored corona. `1` = the shipped pre-R3 look
+   * (including its D25 bug), `0` = R3, where the corona is the eye's PSF.
+   *
+   * ⚠ Give adaptation a second between toggles: the corona changes the frame's
+   * flux, so the meter moves and an immediate comparison measures the transient.
+   */
+  starCorona(scale = 1): Record<string, unknown> {
+    setStarCoronaScale(scale);
+    console.log(
+      `[lum] legacy star corona ${scale > 0 ? `ON ×${scale}` : "OFF"}. ` +
+        (scale > 0
+          ? "This is the pre-R3 look. MEASURED: beyond ~5 AU it carries 5.3× the star's " +
+            "entire physical flux, so it lied to both the glare pass and the exposure meter."
+          : "R3: the corona is now glarePass's calibrated eye PSF. Compare the aureole " +
+            "close in AND the sun's size in the outer system."),
+    );
+    return { coronaScale: getStarCoronaScale() };
   }
 
   /** Print the unit convention and the current exposure. */

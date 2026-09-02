@@ -81,13 +81,25 @@
 // frame across all 13 `__bench` scenarios**. ⚠ §6 estimated bloom at "1.8–2.0 ms";
 // it was ~5.8 ms. Another entry in that doc's "estimates are 0 for N" ledger.
 //
-// ⚠ KNOWN UNDER-DRIVE, MEASURED, NOT FIXED HERE. The scene buffer clamps to
-// `HALF_FLOAT_WRITE_MAX` = 60,000, but the sun disc's true radiance is
-// `SUN_DISC_RADIANCE_GAME` ≈ 2.65e5 game units — so reading the buffer
-// under-represents the sun by **4.4× (2.1 stops)** and its glare is that much too
-// weak. The plan's fix is to drive the glare from the star-flux uniform rather than
-// the buffer (§3.6). Deliberately deferred: it needs a separate splat path, and
-// everything else in the frame is represented correctly.
+// ✅ THE P8d UNDER-DRIVE IS RESOLVED, AND NOT THE WAY P8d PROPOSED. R3,
+// docs/STAR_RENDERING_PLAN.md §9. P8d said: the buffer clamps at 60,000 while the
+// sun disc is ~3.1e5 game units, so reading the buffer under-drives the sun's
+// glare; fix it with a star-flux splat path.
+//
+// ⚠⚠ THE PREMISE WAS ONLY SOMETIMES TRUE, AND NOBODY CHECKED WHICH. `Star.tsx`
+// writes `discRadiance × preExposure`, so the clamp bites only below a metered EV
+// that varies with range (EV 2.11 in the inner system, −2.97 at Neptune). Verify
+// at a pose with `__lum.starGlare()` before quoting a number.
+//
+// 🔑 THE FIX NEEDED NO SPLAT PATH. `Star.tsx` now SPREADS the disc instead of
+// clipping it — `renderPx = max(trueSize, pixelFloor, halfFloatCeiling)` with the
+// radiance divided by the area ratio — so the flux is conserved and this pass reads
+// the star's true flux straight out of the buffer. One `max` replaced a whole extra
+// render path.
+//
+// ⚠ What WAS unambiguously wrong: the star's hand-authored corona injected **5.3×
+// the star's entire physical flux** beyond ~5 AU, so this pass was over-driven at
+// the very ranges P8d thought it was under-driven. Deleted in R3.
 // ─────────────────────────────────────────────────────────────────────
 
 import * as THREE from "three";
