@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
@@ -37,11 +37,17 @@ import {
 } from "@/components/space/photometry";
 import {
   discRadianceGame,
+  illuminanceGameAt,
   limbDarkeningRgb,
 } from "@/components/space/starPhysics";
+// ⚠ ONE implementation of the magnitude compression, shared with the sprite tier —
+// R7f makes the two tiers' agreement load-bearing at every distance, not just at
+// the catalogue distance.
+import { starCompressionForIlluminance } from "@/components/Stars/StarField";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { sunVisibility } from "@/components/space/sunOcclusion";
 import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
+import { getStarLift } from "@/components/space/starVisibility";
 import {
   getStarCoronaScale,
   getStarGlareFlipY,
@@ -71,6 +77,23 @@ export type StarProps = {
   luminositySun: number;
   /** Publish `starLodStatus` for `__lum.starLod()`. One star may claim it. */
   primary?: boolean;
+  /**
+   * Apply the global star display lift (`starVisibility.getStarLift()`) while the
+   * disc is unresolved. Default false — the primary never gets one.
+   *
+   * ⚠⚠ READ PER FRAME FROM THE MODULE, NOT PASSED AS A NUMBER. It used to be a
+   * scalar `unresolvedGain` prop, and that was a real bug found by three
+   * independent reviewers: the caller evaluated `getStarLift()` during React
+   * render, and `NearbyStarDisc` only re-renders when the promoted star CHANGES —
+   * so the disc's lift froze at whatever it was on the frame the star was selected.
+   * Promoted in deep space (lift 1) then flying to a sunlit hull (lift ~338) left
+   * the promoted star as the ONE star in the sky that did not brighten — and its
+   * sprite is suppressed, so it simply vanished.
+   *
+   * 🔑 The lift is GLOBAL, so reading it here is also the architecturally right
+   * place; only the per-star half needs to be a prop.
+   */
+  applyDisplayLift?: boolean;
 };
 
 // ── Reusable vectors ──
@@ -168,6 +191,7 @@ function Star({
   tempK,
   luminositySun,
   primary = true,
+  applyDisplayLift = false,
 }: StarProps) {
   const worldOrigin = useWorldOrigin();
   const camera = useThree((s) => s.camera);
@@ -181,13 +205,20 @@ function Star({
   );
 
   // Billboard half-extent in view-space units. Updated each frame.
-  const uScale = useMemo(() => uniform(RADIUS * DISC_AA_PAD), [RADIUS]);
+  // ── R7a: EVERY uniform object here is created ONCE, with `[]` deps ──────────
+  // 🔑 Per-star values are written to `.value`, never baked into a new uniform. The
+  // material's `useMemo` lists these objects, so a stable identity means the
+  // NodeMaterial is built exactly once per mount — and therefore that a fixed-size
+  // POOL slot (§13.1) can change which star it holds with a uniform write instead of
+  // a shader recompile. Before this, `uScale`/`uStarColor`/`uLimb*` were keyed on
+  // `radiusKm`/`tempK`, so re-pointing a slot rebuilt the graph and stuttered.
+  const uScale = useMemo(() => uniform(1), []);
   // Fraction of the quad's radius that is the disc. Constant `1/DISC_AA_PAD`
   // while the corona is off; the legacy path drives it per frame.
   const uCoreRatio = useMemo(() => uniform(1 / DISC_AA_PAD), []);
   // Disc radiance, game units. Physical while the disc resolves; flux-conserving
   // below DISC_PX_FLOOR.
-  const uCoreRadiance = useMemo(() => uniform(discRadiance), [discRadiance]);
+  const uCoreRadiance = useMemo(() => uniform(1), []);
   // Shell clamp: 1.0 inside SHELL_CLAMP_SCALED, else SHELL_CLAMP_SCALED/dist.
   const uShellScale = useMemo(() => uniform(1), []);
   // Legacy corona multiplier. 0 = off (the shipped R3 behaviour). Gated on a
@@ -222,10 +253,7 @@ function Star({
   const uDiscVis = useMemo(() => uniform(1), []);
   // Blackbody hue from the primary's T_eff, luminance-normalised so it carries
   // colour ONLY — the magnitude is uCoreRadiance's job.
-  const uStarColor = useMemo(() => {
-    const [r, g, b] = blackbodyLinearSrgb(tempK);
-    return uniform(new THREE.Color(r, g, b));
-  }, [tempK]);
+  const uStarColor = useMemo(() => uniform(new THREE.Color(1, 1, 1)), []);
   /**
    * ⚠⚠ THE CAP IS NOW PER-CHANNEL IN THE SHADER, which is what makes it safe.
    *
@@ -249,26 +277,10 @@ function Star({
    * ⚠ ~70k `exp` calls, so memoised on `tempK` and never touched per frame.
    */
   const limb = useMemo(() => limbDarkeningRgb(tempK), [tempK]);
-  const uLimbA = useMemo(
-    () => uniform(new THREE.Vector3(...limb.a)),
-    [limb],
-  );
-  const uLimbB = useMemo(
-    () => uniform(new THREE.Vector3(...limb.b)),
-    [limb],
-  );
+  const uLimbA = useMemo(() => uniform(new THREE.Vector3()), []);
+  const uLimbB = useMemo(() => uniform(new THREE.Vector3()), []);
   /** 1 / discMeanNorm per channel — multiply, so the disc-mean stays exactly 1. */
-  const uLimbGain = useMemo(
-    () =>
-      uniform(
-        new THREE.Vector3(
-          1 / limb.discMeanNorm[0],
-          1 / limb.discMeanNorm[1],
-          1 / limb.discMeanNorm[2],
-        ),
-      ),
-    [limb],
-  );
+  const uLimbGain = useMemo(() => uniform(new THREE.Vector3(1, 1, 1)), []);
   /** A/B: 0 = flat disc, 1 = the derived profile. */
   const uLimbScale = useMemo(() => uniform(1), []);
   /**
@@ -283,6 +295,19 @@ function Star({
   const uEdgeAA = useMemo(() => uniform(0.01), []);
   // Linear-sRGB blackbody triple, for tinting the analytic glare (R3b).
   const starRgb = useMemo(() => blackbodyLinearSrgb(tempK), [tempK]);
+
+  // Per-star values → existing uniforms. An effect, not a render-time write, so a
+  // re-render cannot mutate a uniform mid-frame.
+  useEffect(() => {
+    uStarColor.value.setRGB(starRgb[0], starRgb[1], starRgb[2]);
+    uLimbA.value.set(limb.a[0], limb.a[1], limb.a[2]);
+    uLimbB.value.set(limb.b[0], limb.b[1], limb.b[2]);
+    uLimbGain.value.set(
+      1 / limb.discMeanNorm[0],
+      1 / limb.discMeanNorm[1],
+      1 / limb.discMeanNorm[2],
+    );
+  }, [starRgb, limb, uStarColor, uLimbA, uLimbB, uLimbGain]);
 
   const geo = useMemo(() => new THREE.PlaneGeometry(1, 1), []);
 
@@ -475,9 +500,63 @@ function Star({
     // adaptation coupling in one go.
     const renderPx = Math.max(discPx, DISC_PX_FLOOR);
 
+    const fluxScale = subPixelFluxScale(discPx, renderPx);
+    // 🔑 BOTH halves sampled HERE, inside useFrame, so both track the live state.
+    // ⚠⚠ R7f: the compression is computed from the LIVE illuminance, not passed in
+    // as a constant from the star's catalogue magnitude. It used to be a prop, and
+    // that was correct only while the sprite field also used a Sol-referenced value.
+    // Now that the sprites compress their live illuminance (StarField's vertex
+    // node), a constant here would put the two tiers on DIFFERENT rules and the
+    // promotion handover would step. `starCompressionForIlluminance` is the one
+    // implementation both call.
+    const unresolvedGain = applyDisplayLift
+      ? getStarLift() *
+        starCompressionForIlluminance(illuminanceGameAt(luminositySun, distKm))
+      : 1;
+    // ── Display gain for an unresolved disc — see `applyDisplayLift` ───────────
+    // 🐛 A first version tapered it with a smoothstep in `discPx` over [0, floor].
+    // That is NON-MONOTONIC IN DISTANCE: the physical part grows as discPx² while
+    // the taper falls by the whole gain over the same interval, so the product
+    // peaks mid-way and then DROPS — 3.6 stops for α Cen A, 9.4 for Proxima. The
+    // star would visibly dim as you flew toward it.
+    //
+    // 🔑 Cap instead of taper: the gain may never make a pixel brighter than the
+    // star's OWN SURFACE. `1/fluxScale` gives exactly that, because
+    // `unspreadPeak · fluxScale · (1/fluxScale)` is `unspreadPeak` — the resolved
+    // radiance.
+    //
+    // ⚠⚠ AND THE GAIN IS RAISED TO `1 − fluxScale`, WHICH IS NOT COSMETIC. A plain
+    // `min(G, 1/fluxScale)` is only safe while G > 1, and R7f's live compression
+    // makes G ≪ 1 for any star bright enough to be resolved: C ∝ d^0.8, so
+    // approaching α Cen A at the lift floor gives G = 4.1e-3 at 1 AU and 1.8e-4 at
+    // 0.02 AU. MEASURED: the plain form would DIM that resolved disc by 7.92 and
+    // 12.43 stops — the 0.02 AU pose is the one the author already validated limb
+    // darkening at. The sun is worse still: 7.66 stops at 1 AU.
+    //
+    // ⚠ A `max(1, G)` floor was the obvious fix and it is WRONG, because it applies
+    // to the promoted catalogue star too and so reinstates exactly the cross-tier
+    // mismatch R2b exists to prevent: MEASURED 2.86 stops at the α Cen A/B
+    // promotion swap (80 AU) and 3.46 stops with the lift off — the latter being,
+    // to three digits, the historic figure `starVisibility` records as the cost of
+    // wiring only one of the two gains.
+    //
+    // `pow(G, 1 − fluxScale)` is the resolution-gated form and it is exactly 1 where
+    // it has to be: `fluxScale = 1` iff the disc is resolved, so the exponent is 0
+    // and the gain is 1 whatever G is; `fluxScale → 0` gives the sprite's own G, so
+    // the tiers agree. MEASURED: monotone in rendered FLUX across a 1.25×-step
+    // ladder from 0.5 AU to 6 ly at lift ∈ {1, 1024, 65536}, and the 80 AU swap step
+    // collapses from 2.86 stops to 0.016.
+    const gain =
+      unresolvedGain === 1
+        ? 1
+        : Math.min(
+            Math.pow(unresolvedGain, 1 - fluxScale),
+            1 / Math.max(fluxScale, 1e-30),
+          );
+
     // Flux conservation: radiance ÷ the area ratio. Exactly 1 when renderPx ===
     // discPx, so the resolved case is untouched.
-    uCoreRadiance.value = unspreadPeak * subPixelFluxScale(discPx, renderPx);
+    uCoreRadiance.value = unspreadPeak * fluxScale * gain;
 
     // ── Quad size ─────────────────────────────────────────────────────────────
     const legacyCorona = getStarCoronaScale();
@@ -542,7 +621,12 @@ function Star({
     // saturated hardest, and the analytic PSF has to carry that colour.
     let trueFlux = 0;
     let writtenFlux = 0;
-    for (let ch = 0; ch < 3; ch++) {
+    // ⚠ `primary` ONLY. Every consumer of the result below is already gated on
+    // `primary` (one uniform holds one star), so for a promoted disc this was 3
+    // channels × 2 integrals × 96 steps = 576 iterations computed and discarded
+    // every frame — and R7d's pool of 2 doubled that. Wire the second slot before
+    // removing this guard, not after.
+    for (let ch = 0; primary && ch < 3; ch++) {
       const t = discChannelFlux(
         uCoreRadiance.value, starRgb[ch], limb.a[ch], limb.b[ch],
         1 / limb.discMeanNorm[ch], limbScale, Infinity, rDrawPx, aaFracR,
@@ -600,6 +684,14 @@ function Star({
         bufferW,
         bufferH,
         deficitFlux,
+        // 🔑 The star's OWN angular radius, in degrees — the PSF must not be
+        // evaluated inside the source. `atan`, not the small-angle form: at 0.1 AU
+        // Sol subtends 2.67°, where the two differ.
+        (Math.atan(RADIUS / distScaled) * 180) / Math.PI,
+        // Scalar luminance the disc actually wrote — the reference the occlusion
+        // probe compares the composited frame against. `uStarColor` is
+        // luminance-normalised, so the colour multiply does not change this.
+        Math.min(uCoreRadiance.value, writeBudget),
       );
     } else if (primary) {
       clearStarPointGlare();
@@ -616,7 +708,13 @@ function Star({
       _status.tier = discPx < DISC_PX_FLOOR ? "point" : "disc";
       _status.shellScale = shellScale;
       _status.drawnAtScaled = distScaled * shellScale;
-      _status.coreRadianceGame = uCoreRadiance.value / Math.max(preExp, 1e-30);
+      // ⚠ ALSO divide out `fluxScale · gain`, not just pre-exposure. R7f made the
+      // gain ≠ 1 for the primary beyond ~769 AU, so dividing out only pre-exposure
+      // would have made this field silently stop being a radiance out there —
+      // exactly the "measure what you name" failure this file has been bitten by.
+      _status.coreRadianceGame =
+        uCoreRadiance.value /
+        Math.max(preExp * fluxScale * gain, 1e-30);
       _status.renderPx = renderPx;
       _status.sizedBy = renderPx <= discPx * 1.000001 ? "true" : "pixelFloor";
       _status.fluxKept = fluxKept;
@@ -642,6 +740,7 @@ function Star({
       _status.limbRatio[1] = limb.limbRatio[1];
       _status.limbRatio[2] = limb.limbRatio[2];
       _status.limbScale = limbScale;
+      _status.unresolvedGain = gain;
       _status.edgeAaPx = EDGE_AA_PX;
       _status.coronaScale = legacyCorona;
       _status.starVis = starVis;

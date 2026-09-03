@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
@@ -16,16 +16,25 @@ import {
 } from "three/tsl";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useKTX2 } from "@/hooks/useKTX2";
-import { bakePanoramaSh } from "@/components/space/skyIrradiance";
+import {
+  bakePanoramaSh,
+  getPanoramaMeanRadiance,
+} from "@/components/space/skyIrradiance";
+import { uStarLift } from "@/components/space/starVisibility";
+import { uSkyCaptureScale } from "@/components/space/skyCaptureEncode";
 import {
   SKY_CAPTURE_LAYER,
+  SKY_CUBE_SIZE,
   captureSkyCube,
+  isSkyCubeCaptured,
 } from "@/components/space/skySpecular";
 import {
   getStarPsfInputs,
   getStarPsfNorm,
+  publishStarFieldObserverKm,
   withStarCaptureResolution,
 } from "@/components/Stars/StarField";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 import { panoramaUvFromGameDir } from "./skyPanoramaMapping";
 import {
   NITS_PER_GAME_UNIT,
@@ -55,6 +64,20 @@ const SKY_TARGET_NITS = 1e-4;
 // along with diffuse galactic light and zodiacal light.
 const CATALOGUE_FLUX_SHARE = 0.195;
 export const SKY_DIFFUSE_TARGET_NITS = SKY_TARGET_NITS * (1 - CATALOGUE_FLUX_SHARE);
+
+/**
+ * The panorama's mean radiance in GAME UNITS, by construction — `SKY_RADIANCE_SCALE`
+ * is defined to make it so. Feeds the sky cube's encode scale (§15) before
+ * `getPanoramaMeanRadiance()`'s bake has measured it.
+ *
+ * 🔑 Using this as the fallback (rather than an authored constant, and rather than
+ * making the capture WAIT for the bake) keeps the cube independent of whether an
+ * async readback succeeded: coupling reflections to the SH bake would mean one
+ * failure kills two systems. The measured value still wins when it arrives, because
+ * it is the one that would reveal a stale `SKY_TEXTURE_MEAN_LINEAR`.
+ */
+export const SKY_TARGET_MEAN_RADIANCE =
+  SKY_DIFFUSE_TARGET_NITS / NITS_PER_GAME_UNIT;
 
 // Solid-angle-weighted mean linear luminance of 8k_milkyway_diffuse.ktx2, measured.
 // ⚠ Re-measure if the panorama is ever replaced; this is a property of the asset.
@@ -145,6 +168,13 @@ const SKY_TEXTURE_MEAN_LINEAR = 0.035450;
  * all fail. Until then this gain is a KNOWN, BOUNDED lie: `__lum.scotopic()` prints
  * exactly what it costs the driver, every run.
  */
+/**
+ * ⚠⚠ RETIRED (R7b/§15) — NOTHING READS THIS ANY MORE. The band, the sprites, the
+ * promoted disc, the sky probe and the cube capture all go through
+ * `starVisibility`'s single `uStarLift`, whose FLOOR is this value: the table above
+ * is the measurement that justifies it, which is why the constant is kept here
+ * rather than deleted. Change `STAR_LIFT_FLOOR`, not this.
+ */
 export const SKY_ARTISTIC_GAIN = 1024.0;
 
 const SKY_RADIANCE_SCALE =
@@ -156,6 +186,52 @@ type Props = {
 
 /** Reused mask for the capture camera; allocated once, never per frame. */
 const _captureLayers = new THREE.Layers();
+
+// ── The panorama's mip LOD, and its capture override ─────────────────────────
+// Published at module scope for the same reason `StarField`'s PSF override is: the
+// sky capture cannot wait for the next `useFrame`, and the LOD it needs is a
+// property of the CUBE FACE, not of the screen.
+let _setSkyLodFor: ((fovDeg: number, bufferH: number) => void) | null = null;
+const _skyLodOnScreen = { fovDeg: 75, bufferH: 1080 };
+/** `uSkyLod` as the shader saw it during the last capture — the witness. */
+let _captureSkyLod = -1;
+
+/**
+ * Run `body()` with the panorama's LOD rebuilt for one `faceSize` cube face at 90°.
+ *
+ * ⚠⚠ MANDATORY FOR THE SKY CAPTURE, and it was missing. `uSkyLod` is derived from
+ * `log2(tanPerPx / radPerTexel)`; on screen that is 0.140 (75° over 1816 px against
+ * an 8192-wide equirect) while a 256² face at 90° wants 3.35. Capturing without this
+ * samples the band **3.21 mips too sharp** — 9.2× undersampled per axis, 85× in solid
+ * angle, numerically the same ratio as the star path's 85.5× flux trap but appearing
+ * as ALIASING rather than as brightness.
+ *
+ * ⚠ It was invisible while the capture was one-shot: one fixed alias pattern nobody
+ * could compare against. R7f re-captures periodically, so each set re-samples the
+ * galactic band at a different sub-texel phase and the reflected Milky Way crawls on
+ * the hull at the re-capture rate.
+ */
+export function withSkyCaptureLod<T>(faceSize: number, body: () => T): T {
+  const set = _setSkyLodFor;
+  if (!set) return body();
+  try {
+    set(90, faceSize);
+    return body();
+  } finally {
+    set(_skyLodOnScreen.fovDeg, _skyLodOnScreen.bufferH);
+  }
+}
+
+/** `uSkyLod` during the last capture, and what it should have been. */
+export const skyCaptureLodStatus = (): {
+  captureSkyLod: number;
+  expectedForFace: number;
+} => ({
+  captureSkyLod: _captureSkyLod,
+  expectedForFace: _expectedFaceLod,
+});
+
+let _expectedFaceLod = -1;
 
 /**
  * Renders the star panorama as a large inverted sphere instead of scene.background.
@@ -327,7 +403,18 @@ export default function MilkyWaySkybox({
           .mul(float(SKY_RADIANCE_SCALE))
           .mul(uPreExposure)
           // Artistic gain LAST, so everything before it is physical.
-          .mul(float(SKY_ARTISTIC_GAIN)),
+          // ⚠ R7b: the same adaptation-driven lift the star sprites read, so the
+          // band and the star population cannot drift apart — and so the band also
+          // stops being lifted at all once the sky is genuinely visible.
+          // 🐛 An earlier attempt at this edit was LOST (the script aborted before
+          // writing) and left the import dead while this line kept the flat 1024×,
+          // which sank the whole star population ~10 stops relative to the
+          // nebulosity it sits on. Verify with `grep uStarLift` after editing.
+          .mul(uStarLift)
+          // 1.0 on screen. During a sky-cube capture this divides the pre-exposure
+          // and the lift back out and substitutes a fixed encode scale, so the cube
+          // is not frozen at the capture frame's adaptation — skyCaptureEncode.ts.
+          .mul(uSkyCaptureScale),
         1,
       );
     })();
@@ -360,48 +447,91 @@ export default function MilkyWaySkybox({
   // sky, and a silently-black probe is the hardest kind of bug to notice.
   const camera = useThree((s2) => s2.camera as THREE.PerspectiveCamera);
   const size = useThree((s2) => s2.size);
-  useFrame(() => {
+  // ⚠ ONE derivation, two consumers (on-screen and capture) — the same structure
+  // `StarField` uses for `uQuadWorld`/`uPsfNorm`, and for the same reason: a second
+  // copy of this formula is how the two paths silently drift apart.
+  useEffect(() => {
     const texW = (tex.image as { width?: number } | undefined)?.width ?? 8192;
-    // Same `tanPerPx` shape StarField uses — the projection is linear in tan(angle).
-    const tanPerPx =
-      (2 * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(size.height, 1);
     const radPerTexel = (2 * Math.PI) / texW;
-    uSkyLod.value = Math.max(0, Math.log2(tanPerPx / radPerTexel));
+    _setSkyLodFor = (fovDeg: number, bufferH: number) => {
+      const tanPerPx =
+        (2 * Math.tan((fovDeg * Math.PI) / 360)) / Math.max(bufferH, 1);
+      uSkyLod.value = Math.max(0, Math.log2(tanPerPx / radPerTexel));
+    };
+    _expectedFaceLod = Math.max(
+      0,
+      Math.log2(
+        ((2 * Math.tan((90 * Math.PI) / 360)) / SKY_CUBE_SIZE) / radPerTexel,
+      ),
+    );
+    return () => {
+      _setSkyLodFor = null;
+    };
+  }, [tex, uSkyLod]);
+
+  useFrame(() => {
+    _skyLodOnScreen.fovDeg = camera.fov;
+    _skyLodOnScreen.bufferH = Math.max(size.height, 1);
+    _setSkyLodFor?.(camera.fov, Math.max(size.height, 1));
   });
 
   const renderer = useThree((s2) => s2.gl);
   const scaledScene = useThree((s2) => s2.scene);
+  // ⚠ The SCALED-SCENE origin, which is what the sprite shell is centred on — see
+  // `publishStarFieldObserverKm` for why it is not the ship's raw position.
+  const worldOrigin = useWorldOrigin();
 
-  const bakeState = useRef({ frames: 0, done: false });
+  const bakeState = useRef({ frames: 0, shKicked: false });
   useFrame(() => {
     const st = bakeState.current;
-    if (st.done) return;
     if (st.frames++ < 4) return;
-    st.done = true;
-    // ⚠ `SKY_RADIANCE_SCALE` ONLY — NOT × SKY_ARTISTIC_GAIN. The gain is applied
-    // once, on `LightProbe.intensity` in `SkyLight.tsx`. Multiplying it in here as
-    // well double-counts it (1024² = 1.05e6×), and it would be invisible: the hull
-    // would just look "too bright" in a scene where nothing else is a reference.
-    // This is the same cancellation trap as the Venus trim in LIGHTING_PLAN — two
-    // places applying one factor is always one place too many.
-    void bakePanoramaSh(renderer as never, tex, SKY_RADIANCE_SCALE).then((ok) => {
-      if (!ok) st.done = false;
-    });
+    if (!st.shKicked) {
+      st.shKicked = true;
+      // ⚠ `SKY_RADIANCE_SCALE` ONLY — NOT × SKY_ARTISTIC_GAIN. The gain is applied
+      // once, on `LightProbe.intensity` in `SkyLight.tsx`. Multiplying it in here as
+      // well double-counts it (1024² = 1.05e6×), and it would be invisible: the hull
+      // would just look "too bright" in a scene where nothing else is a reference.
+      // This is the same cancellation trap as the Venus trim in LIGHTING_PLAN — two
+      // places applying one factor is always one place too many.
+      void bakePanoramaSh(renderer as never, tex, SKY_RADIANCE_SCALE).then((ok) => {
+        if (!ok) st.shKicked = false;
+      });
+    }
 
     // ── S4b: capture the sky into the environment cube ─────────────────────
-    // Same one-shot trigger, and from here because `useThree` inside this portal
-    // resolves to the SCALED scene — the one that holds the panorama and the
-    // starfield. The camera renders only SKY_CAPTURE_LAYER, so the planets that
-    // share this scene stay out of the reflections (they move; the sky does not).
-    _captureLayers.set(SKY_CAPTURE_LAYER);
-    captureSkyCube({
-      renderer: renderer as never,
-      scene: scaledScene,
-      layers: _captureLayers,
-      withCaptureResolution: withStarCaptureResolution,
-      readPsfInputs: getStarPsfInputs,
-      readPsfNorm: getStarPsfNorm,
-    });
+    // From here because `useThree` inside this portal resolves to the SCALED scene
+    // — the one that holds the panorama and the starfield. The camera renders only
+    // SKY_CAPTURE_LAYER, so the planets that share this scene stay out of the
+    // reflections (they move; the sky does not).
+    //
+    // 🔑 Gated on `isSkyCubeCaptured()`, not a local one-shot, so
+    // `invalidateSkyCube()` re-captures over the following frames with no further
+    // wiring — the interstellar-jump path. That is only safe BECAUSE the encode is
+    // decoupled: a re-capture used to bake in whatever adaptation happened to be
+    // live. Called EVERY frame while incomplete, because the capture is amortised to
+    // one face per frame (skySpecular's FACES_PER_CALL).
+    if (!isSkyCubeCaptured()) {
+      _captureLayers.set(SKY_CAPTURE_LAYER);
+      captureSkyCube({
+        renderer: renderer as never,
+        scene: scaledScene,
+        layers: _captureLayers,
+        withCaptureResolution: withStarCaptureResolution,
+        withCaptureLod: withSkyCaptureLod,
+        readPsfInputs: getStarPsfInputs,
+        readPsfNorm: getStarPsfNorm,
+        // Measured if the bake has landed, else the calibration target it is
+        // scaled to — see SKY_TARGET_MEAN_RADIANCE for why not "wait for the bake".
+        readSkyMeanRadiance: () =>
+          getPanoramaMeanRadiance() || SKY_TARGET_MEAN_RADIANCE,
+        // ⚠ The observer, re-published from the SAME derivation the on-screen path
+        // uses. This useFrame is priority 0 and the on-screen writer is priority 1,
+        // so without this the cube is a frame behind the sprites it contains.
+        refreshObserver: () =>
+          publishStarFieldObserverKm(worldOrigin.worldOriginKm),
+      });
+      _captureSkyLod = uSkyLod.value as number;
+    }
   });
 
   // ⚠ ENABLE, not set: the mesh must stay on layer 0 for the on-screen render and

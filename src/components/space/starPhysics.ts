@@ -38,9 +38,36 @@ export const SUN_ABS_MAG_V = 4.83;
 /** Sol's absolute bolometric magnitude (IAU 2015 nominal). */
 export const SUN_ABS_MAG_BOL = 4.74;
 
-/** Ballesteros (2012): B−V → effective temperature, K. */
+/**
+ * Ballesteros (2012): B−V → effective temperature, K.
+ *
+ * ⚠⚠ THE INPUT IS CLAMPED TO THE FIT'S PUBLISHED DOMAIN, AND THAT IS NOT COSMETIC.
+ * Ballesteros fits main-sequence colours over roughly −0.4 ≤ B−V ≤ 2.0. Outside it
+ * the two-pole form keeps returning finite numbers, which is exactly what makes
+ * extrapolation dangerous: 25 rows of `stars_visual.bin` carry B−V > 2.0 and were
+ * being assigned 2213–2600 K, which then drove `bolometricCorrectionV` far below ITS
+ * domain and produced derived radii up to **1.1e13 R☉** — larger than the observable
+ * universe. Those rows sorted to the TOP of the disc pool's `R/d` ranking, ten orders
+ * of magnitude above α Centauri.
+ *
+ * 🔑 Clamping to the domain is strictly better than extrapolating, because outside it
+ * the polynomial carries no information at all — it is not "less accurate", it is
+ * unrelated to the star. And the bound is DERIVED (from the papers), not authored.
+ *
+ * MEASURED effect of clamping both this and the BC polynomial: rows with an
+ * implausible derived radius fall from 10 to 0, the largest derived radius falls from
+ * 2801 to 1297 R☉ (physical — the largest known star is ~2150 R☉), and the top of the
+ * angular-diameter ranking becomes **Antares, Betelgeuse, Aldebaran, Gacrux,
+ * Arcturus** — five of the largest angular-diameter stars in the real sky, in nearly
+ * the right order, with radii within 0.56–1.68× of published values. That is an
+ * independent validation: the identifications use nothing the derivation touched.
+ */
+export const BV_FIT_MIN = -0.4;
+export const BV_FIT_MAX = 2.0;
+
 export function temperatureFromBV(bv: number): number {
-  return 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62));
+  const c = Math.min(BV_FIT_MAX, Math.max(BV_FIT_MIN, bv));
+  return 4600 * (1 / (0.92 * c + 1.7) + 1 / (0.92 * c + 0.62));
 }
 
 /**
@@ -51,9 +78,18 @@ export function temperatureFromBV(bv: number): number {
  * `SUN_ABS_MAG_BOL − SUN_ABS_MAG_V`. Torres' paper exists because Flower's
  * original table was published with coefficients that do not reproduce his own
  * figures — do not substitute another copy without re-running `__lum.starPhysics()`.
+ *
+ * ⚠⚠ `log₁₀(T)` IS CLAMPED TO [3.5, 4.6] — Torres' stated validity range, i.e.
+ * 3162 K to 39,811 K. Below it the coolest branch diverges violently: MEASURED, this
+ * returns −3.885 at the 3162 K edge (physical for an M dwarf) and **−17.14 at
+ * 2213 K**, which is a factor of 7.19e6 on the bolometric luminosity and hence 2680×
+ * on the radius. See `temperatureFromBV` for what that did to the disc pool.
  */
 export function bolometricCorrectionV(teffK: number): number {
-  const x = Math.log10(Math.max(teffK, 1));
+  const x = Math.min(
+    4.6,
+    Math.max(3.5, Math.log10(Math.max(teffK, 1))),
+  );
   const c =
     x < 3.7
       ? [-1.90537291496456e4, 1.55144866764412e4, -4.21278819301717e3, 3.81476328422343e2]
@@ -156,6 +192,39 @@ export function discSolidAngle(radiusKm: number, distKm: number): number {
 }
 
 /** Everything a renderer needs for one star. */
+/**
+ * Is a catalogue row's derived physics usable at all?
+ *
+ * 🔑 A row can be perfectly fine as a SPRITE (which needs only `magV` and `B−V`) and
+ * still be unusable as a disc or a light (which need a radius and a luminosity, and
+ * therefore a trustworthy DISTANCE). `stars_visual.bin` is an apparent-magnitude
+ * catalogue, so it contains 206 rows at HYG's 326,156 ly "parallax unknown" sentinel
+ * — for which every derived quantity is meaningless.
+ *
+ * ⚠ The radius bound is a plausibility test, not a fit: the largest known star is
+ * ~2150 R☉ (Stephenson 2-18) and the smallest main-sequence dwarf ~0.08 R☉, so
+ * anything outside [0.005, 3000] R☉ means the derivation failed for that row rather
+ * than that the star is exotic. With both formulae clamped to their domains, this
+ * rejects **0** rows of 8,920 — it is a guard against future data, not a filter that
+ * is doing work today. 206 sentinel rows are still rejected on distance.
+ *
+ * MEASURED: 8,714 of 8,920 rows (97.7%) are promotable.
+ */
+export const STAR_SENTINEL_DIST_LY = 5e4;
+const R_PLAUSIBLE_MIN = 0.005 * SUN_RADIUS_KM;
+const R_PLAUSIBLE_MAX = 3000 * SUN_RADIUS_KM;
+
+export function starParamsUsable(radiusKm: number, distLy: number): boolean {
+  return (
+    Number.isFinite(radiusKm) &&
+    radiusKm >= R_PLAUSIBLE_MIN &&
+    radiusKm <= R_PLAUSIBLE_MAX &&
+    Number.isFinite(distLy) &&
+    distLy > 0 &&
+    distLy < STAR_SENTINEL_DIST_LY
+  );
+}
+
 export type StarParams = {
   radiusKm: number;
   tempK: number;

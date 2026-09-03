@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useAtomValue, useStore } from "jotai";
@@ -8,6 +8,24 @@ import { useAtomValue, useStore } from "jotai";
 import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import {
+  STAR_MARKER_MAX_LY,
+  STAR_MARKER_NEAREST,
+  revealAllStarMarkersAtom,
+  revealedStarMarkerIdsAtom,
+  starMarkersEnabledAtom,
+} from "@/store/starMarkers";
+import { loadNearbyStars } from "@/sim/nearbyStars";
+import {
+  nearestStarCandidates,
+  type NearestCandidate,
+} from "@/components/space/starCandidates";
+import {
+  makeTierGate,
+  tierNeedsReselect,
+  tierSelected,
+} from "@/components/space/starTierGate";
+import { LY_IN_KM } from "@/sim/units";
 import { wrecksAtom } from "@/store/death";
 import {
   targetedPOIAtom,
@@ -40,9 +58,82 @@ const CELESTIAL_BODY_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 500_000 };
  */
 const WRECK_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 100_000 };
 
+/**
+ * Stars are marked at ANY range — a marker you can only see once you are already
+ * there is useless for navigation, which is the whole point of these. 1e15 km is
+ * ~106 ly, past `STAR_MARKER_MAX_LY`.
+ */
+const STAR_MARKER_MAX_DISTANCE_KM = 1e15;
+
+/** Arrival stand-off for a star: 5 stellar radii, so autopilot stops outside it. */
+const STAR_ARRIVAL_RADII = 5;
+
+/**
+ * The nearest stars to the SHIP, re-selected only when the ship has moved far enough
+ * for the answer to change.
+ *
+ * ⚠ Rides the same movement gate as the disc and light pools (space/starTierGate.ts):
+ * one pass over 8,848 candidates every ~2,673 AU of travel in the solar system, not
+ * every frame. It writes React state, so the gate is doing double duty — it also
+ * keeps this from re-rendering the HUD 120 times a second.
+ */
+function useNearestStars(): NearestCandidate[] {
+  const worldOrigin = useWorldOrigin();
+  const [nearest, setNearest] = useState<NearestCandidate[]>([]);
+  const gate = useRef(makeTierGate());
+
+  useFrame(() => {
+    const sx = worldOrigin.shipPosKm.x;
+    const sy = worldOrigin.shipPosKm.y;
+    const sz = worldOrigin.shipPosKm.z;
+    if (!tierNeedsReselect(gate.current, sx, sy, sz)) return;
+    const picked = nearestStarCandidates(
+      sx,
+      sy,
+      sz,
+      STAR_MARKER_NEAREST,
+      STAR_MARKER_MAX_LY * LY_IN_KM,
+      LY_IN_KM,
+    );
+    // ⚠ Advance the gate even on an EMPTY result, or a pose with nothing inside the
+    // safety cap would re-run this 8,848-candidate pass every single frame. Fall back
+    // to the cap itself as the budget, which is the right scale for "nothing nearby".
+    tierSelected(
+      gate.current,
+      sx,
+      sy,
+      sz,
+      picked.length > 0 ? picked[0].distKm : STAR_MARKER_MAX_LY * LY_IN_KM,
+    );
+    if (picked.length === 0) {
+      setNearest((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    setNearest((prev) =>
+      prev.length === picked.length &&
+      prev.every((p, i) => p.id === picked[i].id)
+        ? prev
+        : picked,
+    );
+  });
+
+  return nearest;
+}
+
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
+  const starsOn = useAtomValue(starMarkersEnabledAtom);
+  const revealAll = useAtomValue(revealAllStarMarkersAtom);
+  const revealed = useAtomValue(revealedStarMarkerIdsAtom);
+  // The nearest stars to the SHIP, gated — see useNearestStars.
+  const nearestStars = useNearestStars();
+  // Kick the nearby catalogue's fetch: `starCandidates` needs it to build the union,
+  // and nothing else in this component does.
+  useEffect(() => {
+    void loadNearbyStars();
+  }, []);
+
   return useMemo(() => {
     const pois: POIDef[] = [];
 
@@ -85,8 +176,47 @@ function usePOIDefs(): POIDef[] {
       });
     }
 
+    // ── Stars ────────────────────────────────────────────────────────────────
+    // ⚠ Includes the PRIMARY, which the celestial-body loop above deliberately
+    // skips (`type === "star"`). Without it there is no way to find your way home
+    // once you have left, which is the one marker that matters most.
+    if (starsOn) {
+      const revealedSet = new Set(revealed);
+      const star = system.celestialBodies?.find((b) => b.type === "star");
+      if (star) {
+        pois.push({
+          id: `star:sol`,
+          name: star.name,
+          positionKm: star.positionKm,
+          minDistanceKm: 0,
+          maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM,
+          arrivalOffsetKm: star.radiusKm * STAR_ARRIVAL_RADII,
+        });
+      }
+      // ⚠⚠ THE NEAREST STARS TO THE SHIP, from the same candidate union the disc
+      // and light pools promote from — so a marker, its disc, its light, its collider
+      // and the warp target are all the same position, to the last bit. The previous
+      // rule filtered on `distLy` (the catalogue distance FROM SOL) over the 166-star
+      // nearby list, which both went wrong the moment the player left the system and
+      // could never mark any of the other 8,682 stars.
+      for (const s of nearestStars) {
+        if (!revealAll && !revealedSet.has(s.id)) continue;
+        pois.push({
+          id: `star:${s.id}`,
+          name: s.name,
+          positionKm: s.positionKm,
+          minDistanceKm: 0,
+          maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM,
+          // 🔑 Derived from the star's own radius (Stefan–Boltzmann via
+          // starPhysics), so autopilot stops outside a supergiant as readily as
+          // outside a red dwarf without a per-star number anywhere.
+          arrivalOffsetKm: s.radiusKm * STAR_ARRIVAL_RADII,
+        });
+      }
+    }
+
     return pois;
-  }, [system, wrecks]);
+  }, [system, wrecks, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**

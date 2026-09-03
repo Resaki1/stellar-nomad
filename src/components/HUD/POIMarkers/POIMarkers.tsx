@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from "react";
 import { poiBuffer } from "@/store/poi";
-import { formatDistance } from "@/sim/units";
+import { formatDistance, formatDuration } from "@/sim/units";
 
 import "./POIMarkers.scss";
 
@@ -80,7 +80,7 @@ export default function POIMarkers() {
           if (distEl) {
             let text = formatDistance(poi.distanceKm);
             if (isTargeted && poiBuffer.targetedEtaS != null) {
-              text += ` · ~${Math.ceil(poiBuffer.targetedEtaS)}s transit`;
+              text += ` · ~${formatDuration(poiBuffer.targetedEtaS)} transit`;
             }
             distEl.textContent = text;
           }

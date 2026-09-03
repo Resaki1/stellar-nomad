@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { getPreExposure } from "@/components/space/photometry";
-import { SKY_ARTISTIC_GAIN } from "@/components/Skybox/MilkyWaySkybox";
+import { getStarLift } from "@/components/space/starVisibility";
 import { getSkySh, getSkyShVersion } from "@/components/space/skyIrradiance";
 import { getSkyEnvironmentNode } from "@/components/space/skySpecular";
 
@@ -37,12 +37,13 @@ import { getSkyEnvironmentNode } from "@/components/space/skySpecular";
  *     Without pre-exposure this light would round to EXACTLY ZERO and the umbra
  *     would stay black for a completely different reason than before. A dark frame
  *     carries a pre-exposure of order 1e5, which lifts it into range.
- *   • `SKY_ARTISTIC_GAIN` — the hull must be lit by the sky the player can SEE. If
- *     the panorama renders 1024× physical and the probe used 1×, a stunning Milky
- *     Way would sit above a hull it visibly fails to illuminate.
+ *   • the display lift (`starVisibility.getStarLift()`, was `SKY_ARTISTIC_GAIN`) —
+ *     the hull must be lit by the sky the player can SEE. If the panorama renders
+ *     1024× physical and the probe used 1×, a stunning Milky Way would sit above a
+ *     hull it visibly fails to illuminate.
  *
  * 🔑 Keeping both OUT of the coefficients is what lets `__lum.skyProbe()` gate the
- * physics — the same discipline as `STAR_ARTISTIC_GAIN` and the star gate.
+ * physics — the same discipline as the star gate.
  *
  * ⚠ `LightProbeNode.update()` reads `light.sh.coefficients[i] × light.intensity`
  * every frame, so writing the coefficients once and then only touching `intensity`
@@ -96,9 +97,21 @@ const SkyLight = () => {
     //
     // 🔑 To go back to SH-driven diffuse (option B), this is the line to change,
     // together with suppressing `EnvironmentNode`'s `iblIrradiance` write.
-    probe.intensity = envAssigned.current
-      ? 0
-      : SKY_ARTISTIC_GAIN * getPreExposure();
+    // ⚠⚠ R7b: `getStarLift()`, NOT `SKY_ARTISTIC_GAIN`. This file's own header states
+    // the invariant — "the hull must be lit by the sky the player can SEE" — and the
+    // band moved to the adaptation-driven lift, so leaving 1024 here would light the
+    // hull by a sky 1024× brighter than the one on screen. Keeping them on one
+    // symbol also makes `__lum.starLift('legacy')` a true one-switch revert across
+    // sprites, band, promoted disc AND hull.
+    //
+    // ⚠ An earlier revision of this note warned that "auto" would drop the hull's
+    // sky fill ~1024× in deep space. It does not any more: `STAR_LIFT_FLOOR` holds
+    // the lift at the value `SKY_ARTISTIC_GAIN`'s hull-contrast table measured, so
+    // deep space is unchanged from what shipped and the lift only ever ADDS. P7d —
+    // whether real starlight alone keeps a hull visible — is now a question you can
+    // ask deliberately with `__lum.starLift('off')` rather than one the default
+    // answers for you.
+    probe.intensity = envAssigned.current ? 0 : getStarLift() * getPreExposure();
   });
 
   return <lightProbe ref={ref} intensity={0} />;

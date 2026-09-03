@@ -19,6 +19,15 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { loadShipState, saveShipState } from "@/sim/shipPersistence";
 import { STARTING_POSITION_KM, STARTING_ROTATION_QUAT } from "@/sim/celestialConstants";
 import { sweptSphereCollide, type CelestialCollider } from "@/sim/celestialCollision";
+import { starDiscPool } from "@/components/space/starLodStatus";
+
+/**
+ * Collider slots reserved for promoted stars (§19). Must be ≥ the disc pool's size;
+ * unused slots carry r = 0 and are skipped by the sweep.
+ */
+const STAR_COLLIDER_SLOTS = 4;
+/** Index of the first star slot in `celestialColliders`. */
+let _starColliderBase = 0;
 
 // ── Module-level temps (reused every frame, never GC'd) ──────────────
 const _quat = new Quaternion();
@@ -126,13 +135,28 @@ const SpaceShip = memo(() => {
     // Keep a parallel handle on the live arrays so the refresh below is a copy,
     // not a lookup.
     colliderSources.current = bodies.map((b) => b.positionKm);
-    return bodies.map((b) => ({
+    const list: CelestialCollider[] = bodies.map((b) => ({
       id: b.id,
       x: b.positionKm[0],
       y: b.positionKm[1],
       z: b.positionKm[2],
       r: b.radiusKm,
     }));
+    // ── §19: A COLLIDER TAIL FOR THE PROMOTED STARS ────────────────────────
+    // 🔑 The system config only ever held Sol and its bodies, so **every other star
+    // in the catalogue could be flown straight through** — the author's report. The
+    // tail is fixed-size and allocated here, mirroring the fixed-pool rule that keeps
+    // promotion a set of writes rather than a mount; the refresh below fills it from
+    // whatever the disc pool currently holds.
+    //
+    // ⚠ `r = 0` marks an unused slot and `sweptSphereCollide` skips those — a slot
+    // left at radius 0 but position (0,0,0) would otherwise be a hull-sized sphere
+    // sitting exactly where Sol is.
+    for (let i = 0; i < STAR_COLLIDER_SLOTS; i++) {
+      list.push({ id: `star-slot-${i}`, x: 0, y: 0, z: 0, r: 0 });
+    }
+    _starColliderBase = bodies.length;
+    return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -381,6 +405,23 @@ const SpaceShip = memo(() => {
         celestialColliders[i].x = src[0];
         celestialColliders[i].y = src[1];
         celestialColliders[i].z = src[2];
+      }
+      // §19: refresh the promoted-star tail. Same discipline as the ephemeris
+      // refresh above — copy the SCALARS, because the pool's slots are replaced
+      // wholesale when a star is promoted rather than mutated in place.
+      for (let i = 0; i < STAR_COLLIDER_SLOTS; i++) {
+        const c = celestialColliders[_starColliderBase + i];
+        const s = starDiscPool[i];
+        if (!c) continue;
+        if (!s) {
+          c.r = 0;
+          continue;
+        }
+        c.id = s.id;
+        c.x = s.positionKm[0];
+        c.y = s.positionKm[1];
+        c.z = s.positionKm[2];
+        c.r = s.radiusKm;
       }
       if (celestialColliders.length > 0) {
         const hit = sweptSphereCollide(

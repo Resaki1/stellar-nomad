@@ -18,6 +18,8 @@ import {
   SCALED_UNITS_PER_KM,
 } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { LY_IN_KM } from "@/sim/units";
+import { updateSkyParallax } from "@/components/space/skyParallax";
 import {
   HalfFloatType,
   NeutralToneMapping,
@@ -35,12 +37,20 @@ import {
 import { SPARSE_DIVISOR } from "./cloudReconstructionPass";
 import { BSM_MAX_ALT_KM, setCloudShadowStrength } from "./cloudShadowMap";
 import {
+  getPreExposure,
   setExposureCompensation,
   updatePreExposureForFrame,
   uPostExposure,
 } from "./photometry";
 import { updatePreExposedEmissives } from "./preExposedEmissive";
 import { clearLumSource, setLumSource } from "./perf/lumHarness";
+import {
+  getStarPsfNorm,
+  publishStarFieldObserverKm,
+  starCompressionFactor,
+  starIlluminanceGame,
+} from "@/components/Stars/StarField";
+import { STAR_ANCHOR_MAG, updateStarLift } from "./starVisibility";
 import { localExposureNode, updateExposureMeter } from "./exposureMeter";
 import {
   displayTransformNode,
@@ -1247,6 +1257,29 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // ⚠⚠ `setGlareUserScale`, NOT `setGlare` — a per-frame writer must not share a
     // setter with the debug override, or `__lum.glare(false)` is undone every frame.
     setGlareUserScale(settings.glare ?? 1);
+    // ── R7b: the star field's display lift ────────────────────────────────────
+    // ⚠ ONCE per frame and BEFORE anything renders, for the same reason
+    // `updatePreExposureForFrame` is: sprites, the Milky Way band and a promoted
+    // disc all read it, and a split-brain frame where they disagree is an
+    // internally inconsistent sky.
+    updateStarLift(
+      getPreExposure(),
+      getStarPsfNorm(),
+      starIlluminanceGame(STAR_ANCHOR_MAG) * starCompressionFactor(STAR_ANCHOR_MAG),
+    );
+    // ── R7f: the observer's position, which places the whole sprite field ─────
+    // ⚠ HERE, in the same once-per-frame-before-anything-renders block as the
+    // pre-exposure and the lift, and for the same reason: the sprite field, the
+    // promoted discs and the sky-cube capture all place stars from this, and a frame
+    // where they disagree is an internally inconsistent sky. Writing it from
+    // StarField's own useFrame would make the ordering against MilkyWaySkybox's
+    // capture depend on mount order.
+    publishStarFieldObserverKm(worldOrigin.worldOriginKm);
+    // Re-capture the environment cube and re-bake the sky probe when the parallax
+    // has moved far enough to matter. Both thresholds are derived — skyParallax.ts.
+    // ⚠ Reads the uniform this just wrote rather than taking coordinates, so the
+    // km→ly derivation exists in exactly one place.
+    updateSkyParallax();
     // ── DISPLAY PEAK (Phase 6c) ───────────────────────────────────────────────
     // Only meaningful when the compositor is actually accepting extended values; on the
     // SDR path anything above 1.0 is clamped, so asking for headroom there would compress

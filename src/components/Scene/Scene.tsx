@@ -39,6 +39,7 @@ import Ganymede from "../Ganymede/Ganymede";
 import Io from "../Io/Io";
 import SpaceShip from "../Spaceship";
 import Star from "../Star/Star";
+import NearbyStarDisc from "../Star/NearbyStarDisc";
 // 🔑 The primary is passed IN, not read from inside Star — that is the seam a
 // generated system (or a catalogue star flown to) plugs into. STAR_RENDERING_PLAN §8.
 import {
@@ -48,6 +49,7 @@ import {
   STAR_LUMINOSITY_SUN,
 } from "@/sim/celestialConstants";
 import SunLight from "../Star/SunLight";
+import StarLights from "../Star/StarLights";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
 import SpaceRenderer from "../space/SpaceRenderer";
@@ -144,7 +146,21 @@ const Scene = () => {
           radiusKm={STAR_RADIUS_KM}
           tempK={STAR_TEMP_K}
           luminositySun={STAR_LUMINOSITY_SUN}
+          // ⚠⚠ R7f: THE PRIMARY GETS THE DISPLAY LIFT TOO, and it has to. Once you
+          // are 4 ly out, Sol is a magnitude 0.44 star — one of the brighter things
+          // in that sky — and every star around it carries `lift × compression`.
+          // Without this the one star you came from would render ~110× (6.8 stops)
+          // dimmer than its catalogue neighbours of the same apparent magnitude.
+          //
+          // ⚠ Safe at 1 AU only because of `Star`'s resolution-gated gain: the
+          // exponent `1 − fluxScale` is exactly 0 for a resolved disc, so the gain is
+          // exactly 1 and the sun is untouched. MEASURED: the plain
+          // `min(G, 1/fluxScale)` form would have DIMMED it 7.66 stops here, because
+          // the live compression drives G to 5e-3 for a magnitude −26.8 object.
+          applyDisplayLift
         />
+        {/* R2b/R7d: a fixed pool of catalogue stars rendered as discs, not sprites. */}
+        <NearbyStarDisc />
       </>
     ),
     [],
@@ -156,6 +172,9 @@ const Scene = () => {
         {/* SunLight owns BOTH the key light and the bounce fill now — they
             must scale together with star distance (Phase 3 / D03). */}
         <SunLight />
+        {/* R7e: catalogue stars as lights. A fixed pool, selected by illuminance at
+            the ship — so arriving at α Cen actually lights the hull. */}
+        <StarLights />
         <AtmosphereSkyLight />
         {/* The sky itself as a light — SH-L2 from the panorama + catalogue (S4,
             closes D29). This is the only thing lighting the hull inside an

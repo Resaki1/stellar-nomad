@@ -54,6 +54,11 @@ export function sweptSphereCollide(
 
   for (let i = 0; i < colliders.length; i++) {
     const c = colliders[i];
+    // ⚠ An EMPTY POOL SLOT, not a degenerate body. The star colliders are a
+    // fixed-size tail (see Spaceship) whose unused slots carry r = 0, and without
+    // this they would still present as a sphere of the hull's own radius sitting at
+    // whatever stale position the slot held — most likely the origin, i.e. Sol.
+    if (c.r <= 0) continue;
     const r = c.r + hullRadiusKm;
     const fx = p0x - c.x;
     const fy = p0y - c.y;

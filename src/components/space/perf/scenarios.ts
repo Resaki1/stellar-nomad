@@ -36,6 +36,7 @@
  */
 
 import { Matrix4, Quaternion, Vector3 } from "three";
+import { getNearbyStar } from "@/sim/nearbyStars";
 import type { DevWarp } from "@/store/dev";
 import solSystem from "@/sim/systems/sol.json";
 import type { CelestialBodyDef } from "@/sim/systemTypes";
@@ -341,6 +342,41 @@ export function resolveLookDirectionWarp(
   // A point far enough along the direction that lookAt is numerically stable at
   // interplanetary scale; the star itself is effectively at infinity.
   _target.copy(_eye).addScaledVector(dirGame, 1e9);
+  _lookMatrix.lookAt(_eye, _target, _up);
+  _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
+  return {
+    positionKm: [_eye.x, _eye.y, _eye.z],
+    quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
+  };
+}
+
+/**
+ * "Stand `distanceKm` short of a nearby star, looking at it" — the R2b dev warp.
+ *
+ * ⚠ Uses the SAME look-at + `_flipY` convention as every other resolver here, so
+ * "centre of frame" means the same thing as in a benchmark pose. Returns null if
+ * the catalogue has not loaded or the id is unknown.
+ *
+ * ⚠ `distanceKm` is a stand-off from the star's CENTRE, not its surface — at
+ * interstellar range the difference is meaningless, and near the star the caller
+ * wants the number they typed. `nearbyStars` exposes `params.radiusKm` for
+ * anyone who needs radii instead.
+ */
+export function resolveStarWarp(
+  starId: string,
+  distanceKm: number,
+): DevWarp | null {
+  const star = getNearbyStar(starId);
+  if (!star) return null;
+  const d = Math.max(distanceKm, 1);
+  // Approach from the Sol side, so the journey out and the warp agree.
+  _eye
+    .set(star.positionKm[0], star.positionKm[1], star.positionKm[2])
+    .addScaledVector(
+      new Vector3(star.dirGame[0], star.dirGame[1], star.dirGame[2]),
+      -d,
+    );
+  _target.set(star.positionKm[0], star.positionKm[1], star.positionKm[2]);
   _lookMatrix.lookAt(_eye, _target, _up);
   _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
   return {

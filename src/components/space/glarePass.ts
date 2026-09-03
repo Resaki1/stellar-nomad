@@ -103,7 +103,9 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import * as THREE from "three";
-import { atan, float, length, mix, texture, uniform, uv, vec2, vec4 } from "three/tsl";
+import {
+  atan, float, length, luminance, mix, saturate, texture, uniform, uv, vec2, vec4,
+} from "three/tsl";
 import { NodeMaterial, RenderTarget } from "three/webgpu";
 import type { WebGPURenderer } from "three/webgpu";
 import { PASS } from "./perf/perfProfiler";
@@ -353,6 +355,49 @@ const uStarBufferPx = /*#__PURE__*/ uniform(new THREE.Vector2(1, 1));
 const uStarTanPerPx = /*#__PURE__*/ uniform(1);
 const uStarPsfA = /*#__PURE__*/ uniform(GLARE_STRAYLIGHT_S * GLARE_CORE_CROSSOVER_DEG);
 const uStarPsfB = /*#__PURE__*/ uniform(GLARE_STRAYLIGHT_S);
+/**
+ * Inner cutoff for the analytic PSF, degrees — **the star's own angular radius**,
+ * never a fixed constant.
+ *
+ * 🐛 It WAS the fixed `GLARE_THETA_MIN_DEG = 0.05°`, and that manufactured a bright
+ * disc INSIDE the star. The PSF goes as θ⁻³, so evaluating it at 0.05° when Sol's
+ * angular radius is 2.665° (at 0.1 AU) over-brightens the core by **43,383×**; at
+ * 1 AU it is 126×. Because the veil is composited AFTER the local scene, that core
+ * was drawn over the ship — which is the reported "smaller reddish disc at the
+ * centre that is not occluded", tinted reddish by the star's own blackbody colour
+ * and visible only in HDR (SDR clips it to white along with the real disc).
+ *
+ * 🔑 Physically the PSF describes light scattered AWAY from the source, so inside
+ * the source's own silhouette it has no meaning — and the light that belongs there
+ * is already drawn, by the disc. Flattening at the limb both removes the artefact
+ * and stops double-counting the disc's own flux.
+ */
+const uStarThetaMinDeg = /*#__PURE__*/ uniform(GLARE_THETA_MIN_DEG);
+
+/**
+ * Occlusion of the analytic veil — **the fix for "the sun shines through the ship".**
+ *
+ * 🔑 The veil is composited AFTER the local scene, so it paints over the ship and
+ * asteroids, and its only attenuation was `starVis` — the *celestial* occluder
+ * registry. Physically the veil SHOULD cover the ship (straylight is added after the
+ * retinal image forms), but its AMPLITUDE must fall with the fraction of the source
+ * that is blocked.
+ *
+ * 🔑🔑 `updateGlare` is handed the FULLY COMPOSITED target — ship and asteroids
+ * included — so `_down[0]` (this pyramid's own half-res level) already answers the
+ * question. Sampling it at the star's screen position and comparing against the
+ * radiance the star is KNOWN to have written gives a graded visibility in ONE tap:
+ * the disc is ≥ `DISC_PX_FLOOR` = 2.5 px, so it always fills a half-res texel, which
+ * is why no footprint correction is needed. The 13-tap downsample averages a ~5×5
+ * neighbourhood, so partial coverage grades rather than snapping.
+ *
+ * ⚠ A colour test, not a depth test — but it needs no depth attachment (`rt` has a
+ * depth *renderbuffer*, not a sampleable texture) and it sees everything the frame
+ * drew, which is exactly what a depth test would have given.
+ */
+const _occTex = /*#__PURE__*/ texture(new THREE.Texture());
+/** Scalar luminance the star's disc wrote this frame. 0 disables the test. */
+const uStarExpectedLum = /*#__PURE__*/ uniform(0);
 /** deficitFlux ÷ frame pixels — see starPointGlarePedestal. */
 let _pointPedestal = 0;
 
@@ -604,6 +649,8 @@ export function updateGlare(
 
   renderer.setRenderTarget(prevTarget);
   _glareTex.value = _up[0].texture;
+  // The occlusion probe reads the half-res reduction of the COMPOSITED frame.
+  _occTex.value = _down[0].texture;
   _ready = true;
   _lastPasses = passes;
 }
@@ -628,14 +675,29 @@ export function glareNode(scene: U): U {
   const rPx = length(vec2(d.x.mul(uStarBufferPx.x), d.y.mul(uStarBufferPx.y)));
   const thetaDeg = atan(rPx.mul(uStarTanPerPx))
     .mul(180 / Math.PI)
-    .max(float(GLARE_THETA_MIN_DEG));
+    .max(uStarThetaMinDeg);
   const psf = uStarPsfA
     .div(thetaDeg.mul(thetaDeg).mul(thetaDeg))
     .add(uStarPsfB.div(thetaDeg.mul(thetaDeg)));
   // ⚠ × uGlareStrength so this obeys the player's glare setting and vanishes with
   // it, exactly like the pyramid. `uStarGlareRgb` is 0 whenever nothing is
   // clipped, which makes the whole term a no-op without a branch.
-  const point = uStarGlareRgb.mul(psf).mul(uGlareStrength);
+  // ⚠ Graded occlusion — see `_occTex`. `uStarExpectedLum` of 0 means "no star to
+  // test", and `saturate` then yields 0, so the term vanishes rather than dividing.
+  const seen = luminance(_occTex.sample(uStarUv).rgb);
+  const tested = saturate(seen.div(uStarExpectedLum.max(float(1e-20))));
+  // ⚠ Only test when the star is ON screen. Off screen, `sample` clamps to an edge
+  // texel — usually dark — which would read as "occluded" and kill the veil from a
+  // star just outside the frame. That veil is real (it is why you squint before the
+  // sun enters your field of view) and the author noticed it working, so an
+  // untestable star is treated as unoccluded rather than hidden.
+  const onScreen = uStarUv.x
+    .greaterThanEqual(0.0)
+    .and(uStarUv.x.lessThanEqual(1.0))
+    .and(uStarUv.y.greaterThanEqual(0.0))
+    .and(uStarUv.y.lessThanEqual(1.0));
+  const vis = onScreen.select(tested, float(1.0));
+  const point = uStarGlareRgb.mul(psf).mul(uGlareStrength).mul(vis);
   return vec4(veiled.rgb.add(point), veiled.a);
 }
 
@@ -655,6 +717,8 @@ export function setStarPointGlare(
   bufferW: number,
   bufferH: number,
   deficitFlux: number,
+  thetaMinDeg: number,
+  expectedLum: number,
 ): void {
   _pointPedestal =
     Number.isFinite(deficitFlux) && deficitFlux > 0
@@ -673,12 +737,19 @@ export function setStarPointGlare(
   uStarTanPerPx.value = tanPerBufferPx;
   uStarPsfA.value = GLARE_STRAYLIGHT_S * _crossover;
   uStarPsfB.value = GLARE_STRAYLIGHT_S;
+  uStarThetaMinDeg.value = Math.max(
+    GLARE_THETA_MIN_DEG,
+    Number.isFinite(thetaMinDeg) ? thetaMinDeg : GLARE_THETA_MIN_DEG,
+  );
+  uStarExpectedLum.value =
+    Number.isFinite(expectedLum) && expectedLum > 0 ? expectedLum : 0;
   uStarGlareRgb.value.set(rgbScale[0], rgbScale[1], rgbScale[2]);
 }
 
 export function clearStarPointGlare(): void {
   uStarGlareRgb.value.set(0, 0, 0);
   _pointPedestal = 0;
+  uStarExpectedLum.value = 0;
 }
 
 /**

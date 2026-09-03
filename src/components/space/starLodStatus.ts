@@ -49,6 +49,8 @@ export type StarLodStatus = {
   limbScale: number;
   /** R4: half-width of the limb's AA ramp, in drawing-buffer pixels. */
   edgeAaPx: number;
+  /** R2b: display gain in force. 1 = physical; >1 = the inherited sprite gain. */
+  unresolvedGain: number;
   /** What the peak WOULD have been at the disc's true size. */
   unspreadPeak: number;
   /**
@@ -87,6 +89,7 @@ export const starLodStatus: StarLodStatus = {
   limbRatio: [1, 1, 1],
   limbScale: 1,
   edgeAaPx: 0,
+  unresolvedGain: 1,
   unspreadPeak: 0,
   drawnPeak: 0,
   coronaScale: 0,
@@ -109,6 +112,102 @@ export const starLodStatus: StarLodStatus = {
  * the 2.5 px floor.
  */
 let _coronaScale = 0;
+
+/**
+ * What the promoted-disc pool holds, published by `NearbyStarDisc` (R7d).
+ *
+ * 🔑 A leaf slot rather than a component export, for the reason in this file's
+ * header — and it exists because the suppression has now failed silently TWICE
+ * (a cosine that rounded to 1.0f, then a cross-walk tolerance 100× too tight) and
+ * both times the only visible symptom was photometric, somewhere else entirely.
+ * "Which stars are promoted, and did their sprite rows resolve" is the single most
+ * diagnostic pair of facts in the star system, and nothing reported it.
+ */
+export type StarDiscSlot = {
+  id: string;
+  name: string;
+  /** Angular radius R/d — the promotion selector. */
+  solid: number;
+  distLy: number;
+  /** Visual-catalogue row its sprite was suppressed at, or −1 if unresolved. */
+  spriteRow: number;
+  /** Absolute position, km, game frame — so the ship can COLLIDE with it. */
+  positionKm: readonly [number, number, number];
+  /** Physical radius, km — the collider's radius. */
+  radiusKm: number;
+  /**
+   * Apparent V magnitude from Sol. ⚠ The discriminator for `spriteRow === -1`:
+   * fainter than V 6.5 means the star legitimately has no sprite (Proxima, Barnard's),
+   * brighter means the suppression failed and the star is drawn twice.
+   */
+  magV: number;
+};
+
+export const starDiscPool: StarDiscSlot[] = [];
+
+/**
+ * What the LIGHT pool holds, published by `StarLights` (R7e).
+ *
+ * ⚠ A DIFFERENT set from `starDiscPool`, and that is the design: the disc tier
+ * selects on angular size and the light tier on illuminance at the ship. Both are
+ * needed by `rebakeCatalogueShFor`'s exclusion set — a star rendered by any explicit
+ * tier must come out of the diffuse aggregate or its flux is counted twice.
+ */
+export type StarLightSlot = {
+  id: string;
+  name: string;
+  /** Sprite row, or −1 when the star is fainter than the sprite catalogue's limit. */
+  spriteRow: number;
+  /** Illuminance at the ship, game units — the light tier's selector. */
+  illumGame: number;
+  distLy: number;
+  tempK: number;
+};
+
+export const starLightPool: StarLightSlot[] = [];
+
+export function setStarLightPool(slots: readonly StarLightSlot[]): void {
+  starLightPool.length = 0;
+  for (const s of slots) starLightPool.push(s);
+}
+
+/**
+ * Visual-catalogue rows the LIGHT pool holds — the exclusion set the SH bake needs.
+ *
+ * 🔑 ONLY the light pool, not the disc pool. A disc is rendered geometry: you SEE it,
+ * but it does not light the hull, so it correctly stays in the diffuse sum. A star
+ * that is also a directional light is delivering its flux twice unless it comes out.
+ *
+ * ⚠ Published as row indices rather than directions so the bake's inner loop stays a
+ * single integer test per star instead of a dot product against every pool member.
+ * A leaf array because `skyIrradiance`/`StarField` must not import a component.
+ */
+export const starLightExcludedRows: number[] = [];
+
+/** Re-selection gate counters, published by both tiers for `__lum.starTiers()`. */
+export const starTierGateStats: Record<
+  string,
+  { runs: number; skipped: number; budgetKm: number }
+> = {};
+
+export function setStarTierGateStat(
+  tier: string,
+  runs: number,
+  skipped: number,
+  budgetKm: number,
+): void {
+  starTierGateStats[tier] = { runs, skipped, budgetKm };
+}
+
+export function setStarLightExcludedRows(rows: readonly number[]): void {
+  starLightExcludedRows.length = 0;
+  for (const r of rows) if (r >= 0) starLightExcludedRows.push(r);
+}
+
+export function setStarDiscPool(slots: readonly StarDiscSlot[]): void {
+  starDiscPool.length = 0;
+  for (const s of slots) starDiscPool.push(s);
+}
 
 export const getStarCoronaScale = (): number => _coronaScale;
 

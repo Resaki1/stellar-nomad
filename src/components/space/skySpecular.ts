@@ -45,20 +45,37 @@
  * This is the same resolution-dependence D31 was about, and the reason
  * `__lum.star()` gates on flux rather than peak.
  *
- * ── ⚠ WHY THE GAIN IS BAKED IN HERE (unlike everywhere else) ─────────────────
- * The captured cube is a half-float texture, and the physical sky is ~1e-8 game
- * units against RGBA16F's smallest subnormal of 2⁻²⁴ = 5.96e-8 — so a physical
- * capture underflows to black, exactly as the SH bake did before it was fixed. The
- * capture therefore stores gained radiance. `uPreExposure` stays OUT of the texture
- * and is applied per frame through the environment node, because it drifts with
- * adaptation and a stale value would desynchronise the reflections from every other
- * radiance source in the frame.
+ * ── ⚠ THE CUBE HAS ITS OWN NUMERIC SCALE, AND IT IS NOT A DISPLAY GAIN (§15) ──
+ * The captured cube is a half-float texture, and the physical sky is ~1.3e-8 game
+ * units against RGBA16F's smallest subnormal of 2⁻²⁴ = 5.96e-8 — so a capture at
+ * unit scale stores BLACK, exactly as the SH bake did before it was fixed. This used
+ * to lean on `STAR_ARTISTIC_GAIN = 1024` for that headroom, which quietly made a
+ * player-facing look knob load-bearing for a storage format: when R7b replaced the
+ * flat gain with an adaptation-driven lift that is correctly 1.0 in deep space, the
+ * cube went dark and R7b had to be parked.
+ *
+ * 🔑 Both live display factors are now divided out at capture time and a FIXED,
+ * derived `skyCaptureScaleFor(mean)` substituted, then divided straight back out by
+ * `uSkyEnvDecode` on read. `skyCaptureEncode.ts` holds the derivation, the measured
+ * half-float margins, and the pre-exposure-squared defect this also fixed.
+ *
+ * ⚠ So the environment node applies BOTH per-frame factors — `uPreExposure` because
+ * it drifts with adaptation and a stale value desynchronises the reflections from
+ * every other radiance source, and `uStarLift` because `SkyLight`'s invariant is
+ * that the hull must be lit by the sky the player can SEE.
  */
 
 import * as THREE from "three";
 import { CubeRenderTarget } from "three/webgpu";
 import { pmremTexture } from "three/tsl";
-import { uPreExposure } from "@/components/space/photometry";
+import { getPreExposure, uPreExposure } from "@/components/space/photometry";
+import { getStarLift, uStarLift } from "@/components/space/starVisibility";
+import {
+  commitSkyCaptureScale,
+  skyCaptureScaleFor,
+  uSkyEnvDecode,
+  withSkyCaptureEncode,
+} from "@/components/space/skyCaptureEncode";
 
 /**
  * Layer carrying ONLY the sky (panorama + starfield), so the capture camera can
@@ -81,9 +98,29 @@ export const SKY_CAPTURE_LAYER = 3;
  */
 export const SKY_CUBE_SIZE = 256;
 
+/**
+ * Cube faces drawn per `captureSkyCube` call.
+ *
+ * 🔑 THE CAPTURE IS AMORTISED, WHICH IS HOW THE ENGINES DO IT. Unreal's SkyLight
+ * "Real Time Capture" and Unity HDRP's dynamic ambient probe both re-capture the sky
+ * on a rolling schedule and time-slice the convolution rather than rebuilding it in
+ * one frame — because a sky that changes (an interstellar transit) needs re-capturing
+ * *continuously*, and a 6-face burst is a visible hitch every time.
+ *
+ * ⚠ Mixed old/new faces are INVISIBLE while the sequence runs, and that is not luck:
+ * materials sample the PMREM, which is a separate texture regenerated only once the
+ * sixth face lands. The double-buffering the amortisation needs already existed.
+ *
+ * 1 costs ~6 frames of latency (100 ms at 60 fps) for a jump nobody can see, and
+ * turns a continuous re-capture from a ~5 ms/frame tax into ~0.8 ms.
+ */
+const FACES_PER_CALL = 1;
+
 let _cube: CubeRenderTarget | null = null;
 let _captured = false;
 let _captureCount = 0;
+/** Next face to draw, and the scale the in-flight sequence started with. */
+const _pending = { face: 0, scale: 0 };
 /** PSF state observed DURING the last capture — the 85.5× trap's witness. */
 const _capturePsf = { fovDeg: 0, bufferH: 0, psfNorm: 0 };
 
@@ -91,10 +128,27 @@ const _capturePsf = { fovDeg: 0, bufferH: 0, psfNorm: 0 };
 export const getSkyCube = (): THREE.Texture | null =>
   _cube ? _cube.texture : null;
 
+/**
+ * Whether a valid capture is standing. The CALLER drives capture off this rather
+ * than its own one-shot, so `invalidateSkyCube()` re-captures with no other wiring.
+ */
+export const isSkyCubeCaptured = (): boolean => _captured;
+
+/**
+ * The cube RENDER TARGET, for `__lum.skyCapture()`'s readback.
+ *
+ * ⚠ Diagnostic only. Rendering must go through `getSkyEnvironmentNode()`, which is
+ * the one place the decode is applied — a second reader of the raw texture is a
+ * second place to forget it.
+ */
+export const getSkyCubeTarget = (): CubeRenderTarget | null => _cube;
+
 export function skySpecularStatus(): {
   captured: boolean;
   faceSize: number;
   captures: number;
+  /** Faces still to draw in the in-flight sequence; 0 means idle. */
+  pendingFace: number;
   /** FOV StarField used while the faces were drawn. Must be 90. */
   capturePsfFovDeg: number;
   /** Buffer height StarField used while the faces were drawn. Must be SKY_CUBE_SIZE. */
@@ -106,6 +160,7 @@ export function skySpecularStatus(): {
     captured: _captured,
     faceSize: SKY_CUBE_SIZE,
     captures: _captureCount,
+    pendingFace: _pending.face,
     capturePsfFovDeg: _capturePsf.fovDeg,
     capturePsfBufferH: _capturePsf.bufferH,
     capturePsfNorm: _capturePsf.psfNorm,
@@ -126,7 +181,12 @@ export const captureTanPerPx = (): number =>
 
 /** Factored out purely so TypeScript can infer the node's type for the cache. */
 const buildEnvNode = (tex: THREE.Texture) =>
-  pmremTexture(tex).mul(uPreExposure);
+  pmremTexture(tex)
+    // Undo the encode scale FIRST, so what follows is physical radiance. A power of
+    // two, so this is bit-exact — see skyCaptureEncode.ts.
+    .mul(uSkyEnvDecode)
+    .mul(uPreExposure)
+    .mul(uStarLift);
 
 let _envNode: ReturnType<typeof buildEnvNode> | null = null;
 
@@ -185,6 +245,40 @@ export type SkyCaptureDeps = {
    * gate unless the override truly reached the GPU-side value.
    */
   readPsfNorm: () => number;
+  /**
+   * The panorama's MEASURED mean radiance in game units, which sets the cube's
+   * encode scale (§15).
+   *
+   * ⚠ Injected for the same reason as everything else here: it lives in
+   * `skyIrradiance`, whose bake is what measures it, and importing it would give
+   * this module an opinion about which sky is loaded. Returns 0 before the bake
+   * resolves — `captureSkyCube` then refuses rather than guessing a scale.
+   */
+  readSkyMeanRadiance: () => number;
+  /**
+   * Runs `body()` with the PANORAMA's mip LOD rebuilt for `faceSize`, restoring it
+   * afterwards. MANDATORY, for exactly the reason `withCaptureResolution` is.
+   *
+   * ⚠ The panorama has the same resolution dependence the stars do and had no
+   * override: `uSkyLod` is written from the ON-SCREEN camera, which for an 8192-wide
+   * equirect is 0.140, while a 256² 90° face wants 3.35 — so the cube sampled the
+   * band **3.21 mips too sharp**, i.e. 9.2× undersampled per axis. Numerically the
+   * same ratio the star path's 85.5× trap was, appearing as aliasing rather than as
+   * flux. Static and invisible while the capture was one-shot; once R7f re-captures
+   * periodically, every set re-samples the galactic band at a different sub-texel
+   * phase and the reflected Milky Way CRAWLS on the hull at the re-capture rate.
+   */
+  withCaptureLod: <T>(faceSize: number, body: () => T) => T;
+  /**
+   * Re-publish the observer position the star field places sprites from.
+   *
+   * ⚠ MANDATORY. The capture runs in a priority-0 `useFrame` while the on-screen
+   * writer is at priority 1, so without this the cube is built from a ONE-FRAME-OLD
+   * observer — 0.23° at the dev 1 ly/s override, and 0.68° of seam between face 0
+   * and face 5 of a 6-frame set. Same lesson as `_setPsfForBuffer`: a capture cannot
+   * wait for the next useFrame.
+   */
+  refreshObserver: () => void;
 };
 
 const _camera = new THREE.PerspectiveCamera(90, 1, 0.1, 2e6);
@@ -208,12 +302,14 @@ const FACES: Array<{ dir: THREE.Vector3; up: THREE.Vector3 }> = [
 const _target = new THREE.Vector3();
 
 /**
- * Capture the sky into the environment cube. One-shot; call again only on an
- * interstellar jump, when the star directions actually change.
+ * Draw up to `FACES_PER_CALL` faces of the environment cube. **Call every frame
+ * while `isSkyCubeCaptured()` is false** — the sequence spans several frames.
  *
- * Returns false if the capture could not run, so the caller can retry rather than
- * latch a black environment — a silently black IBL is invisible until someone
- * notices the hull has no reflections, which could be weeks.
+ * Returns true only on the call that COMPLETES a set (all six faces fresh and the
+ * PMREM invalidated); false while a sequence is still running, and also false if it
+ * could not start. The caller therefore retries rather than latching a black
+ * environment — a silently black IBL is invisible until someone notices the hull has
+ * no reflections, which could be weeks.
  */
 export function captureSkyCube(deps: SkyCaptureDeps): boolean {
   const {
@@ -223,7 +319,23 @@ export function captureSkyCube(deps: SkyCaptureDeps): boolean {
     withCaptureResolution,
     readPsfInputs,
     readPsfNorm,
+    readSkyMeanRadiance,
+    withCaptureLod,
+    refreshObserver,
   } = deps;
+  refreshObserver();
+  // ⚠ THE SCALE IS FROZEN WHEN THE SEQUENCE STARTS, not re-derived per face. Six
+  // faces at six different encodings is a cube with seams the decode cannot undo,
+  // and it would only appear once the sky's mean starts moving (procedural systems).
+  if (_pending.face === 0) {
+    // ⚠ Refuse rather than fall back to an authored scale. A wrong encode scale is
+    // silent — the hull just looks "too bright" or loses its reflections — and the
+    // caller retries every frame, so waiting one more frame costs nothing.
+    const derived = skyCaptureScaleFor(readSkyMeanRadiance());
+    if (derived <= 0) return false;
+    _pending.scale = derived;
+  }
+  const scale = _pending.scale;
   if (!_cube) {
     _cube = new CubeRenderTarget(SKY_CUBE_SIZE, {
       type: THREE.HalfFloatType,
@@ -234,42 +346,76 @@ export function captureSkyCube(deps: SkyCaptureDeps): boolean {
   }
   const cube = _cube;
 
-  // ⚠ MANDATORY resolution override — the 85.5× star-flux trap in the header.
-  return withCaptureResolution(SKY_CUBE_SIZE, () => {
-    // Witness the override actually took effect. Recording it (rather than trusting
-    // it) is what lets `__lum.skyProbe()` assert against the 85.5× trap instead of
-    // hoping someone remembered to wire `withCaptureResolution`.
-    const psf = readPsfInputs();
-    _capturePsf.fovDeg = psf.fovDeg;
-    _capturePsf.bufferH = psf.bufferH;
-    _capturePsf.psfNorm = readPsfNorm();
-    _camera.fov = 90;
-    _camera.aspect = 1;
-    // The sky sits on a shell at the scaled origin, so the capture camera stands at
-    // the origin. Any offset would introduce a parallax the sky does not have.
-    _camera.position.set(0, 0, 0);
-    if (layers) _camera.layers.mask = layers.mask;
-    _camera.near = 0.1;
-    _camera.far = 2e6;
-    _camera.updateProjectionMatrix();
+  // ⚠ TWO MANDATORY OVERRIDES, both of which would present as a look problem:
+  //   • resolution — the 85.5× star-flux trap in the header;
+  //   • encode — without it the cube freezes this frame's adaptation and
+  //     pre-exposure is applied twice (§15).
+  //
+  // 🔑 The display factor is read PER CALL while the scale is frozen per sequence,
+  // and that asymmetry is what makes the amortisation exposure-safe: each face
+  // divides out the adaptation that was live when IT was drawn, so all six still
+  // store `radiance × scale` even if the player turned toward the sun mid-sequence.
+  return withCaptureResolution(SKY_CUBE_SIZE, () =>
+    withCaptureLod(SKY_CUBE_SIZE, () =>
+      withSkyCaptureEncode(scale, getPreExposure() * getStarLift(), () => {
+        // Witness the override actually took effect. Recording it (rather than trusting
+        // it) is what lets `__lum.skyProbe()` assert against the 85.5× trap instead of
+        // hoping someone remembered to wire `withCaptureResolution`.
+        const psf = readPsfInputs();
+        _capturePsf.fovDeg = psf.fovDeg;
+        _capturePsf.bufferH = psf.bufferH;
+        _capturePsf.psfNorm = readPsfNorm();
+        _camera.fov = 90;
+        _camera.aspect = 1;
+        // The sky sits on a shell at the scaled origin, so the capture camera stands at
+        // the origin. Any offset would introduce a parallax the sky does not have.
+        _camera.position.set(0, 0, 0);
+        if (layers) _camera.layers.mask = layers.mask;
+        _camera.near = 0.1;
+        _camera.far = 2e6;
+        _camera.updateProjectionMatrix();
 
-    for (let i = 0; i < 6; i++) {
-      const f = FACES[i];
-      _target.copy(_camera.position).add(f.dir);
-      _camera.up.copy(f.up);
-      _camera.lookAt(_target);
-      _camera.updateMatrixWorld(true);
-      renderer.setRenderTarget(cube, i);
-      renderer.render(scene, _camera);
-    }
-    renderer.setRenderTarget(null);
-    _captured = true;
-    _captureCount++;
-    return true;
-  });
+        const last = Math.min(_pending.face + FACES_PER_CALL, 6);
+        for (let i = _pending.face; i < last; i++) {
+          const f = FACES[i];
+          _target.copy(_camera.position).add(f.dir);
+          _camera.up.copy(f.up);
+          _camera.lookAt(_target);
+          _camera.updateMatrixWorld(true);
+          renderer.setRenderTarget(cube, i);
+          renderer.render(scene, _camera);
+        }
+        renderer.setRenderTarget(null);
+        _pending.face = last;
+        if (last < 6) return false;
+        _pending.face = 0;
+        // ⚠ The decode and the PMREM invalidation must land in the SAME step: until
+        // this line the materials are still sampling the previous set of faces, so a
+        // decode published earlier would pair a new scale with old texels.
+        commitSkyCaptureScale(scale);
+        // ⚠ MANDATORY ON A RE-CAPTURE. `PMREMNode` regenerates its mip chain only when
+        // `texture.pmremVersion` changes, and only the `needsPMREMUpdate` setter bumps
+        // it — so without this an interstellar re-capture writes six fresh faces that
+        // the roughness lookup never sees, and the hull keeps reflecting the old sky.
+        // It is ALSO what makes the amortisation invisible: the PMREM the materials
+        // sample stays on the previous set until this line runs.
+        cube.texture.needsPMREMUpdate = true;
+        _captured = true;
+        _captureCount++;
+        return true;
+      }),
+    ),
+  );
 }
 
-/** Drop the capture so the next frame re-takes it (interstellar jump). */
+/**
+ * Drop the capture so the following frames re-take it (interstellar jump).
+ *
+ * ⚠ No black frame: the materials keep sampling the PMREM built from the previous
+ * set until the new one completes. Resets `_pending.face` so an invalidate landing
+ * mid-sequence restarts cleanly rather than finishing a half-stale set.
+ */
 export function invalidateSkyCube(): void {
   _captured = false;
+  _pending.face = 0;
 }

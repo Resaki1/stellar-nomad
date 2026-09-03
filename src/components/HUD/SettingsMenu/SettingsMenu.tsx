@@ -29,7 +29,14 @@ import { useDetectGPU } from "@react-three/drei";
 import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
 import { clearShipState, loadShipState } from "@/sim/shipPersistence";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, devSpeedUnitAtom } from "@/store/dev";
-import { type SpeedUnit, SPEED_UNIT_TO_MPS } from "@/sim/units";
+import {
+  type SpeedUnit,
+  SPEED_UNIT_TO_MPS,
+  SPEED_UNITS,
+  type DistanceUnit,
+  DISTANCE_UNIT_TO_KM,
+  DISTANCE_UNITS,
+} from "@/sim/units";
 import { addAssaySamplesAtom, researchAtom } from "@/store/research";
 import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
@@ -44,7 +51,13 @@ import {
   findScenario,
   resolveBodyWarp,
   resolveScenario,
+  resolveStarWarp,
 } from "@/components/space/perf/scenarios";
+import {
+  loadNearbyStars,
+  notableNearbyStars,
+  type NearbyStar,
+} from "@/sim/nearbyStars";
 import {
   displaySupportsHdr,
   displaySupportsP3,
@@ -401,7 +414,25 @@ function BodyWarpControls() {
   const setIsOpen = useSetAtom(settingsIsOpenAtom);
   const [bodyId, setBodyId] = useState<string>("earth");
   const [altKm, setAltKm] = useState(String(DEFAULT_ALT_KM));
+  const [altUnit, setAltUnit] = useState<DistanceUnit>("km");
   const [scenarioId, setScenarioId] = useState<string>(SCENARIOS[0].id);
+  // ── R2b: interstellar warp targets ──
+  const [stars, setStars] = useState<NearbyStar[]>([]);
+  const [starId, setStarId] = useState<string>("");
+  const [starDist, setStarDist] = useState("2");
+  const [starDistUnit, setStarDistUnit] = useState<DistanceUnit>("AU");
+  useEffect(() => {
+    let alive = true;
+    void loadNearbyStars().then(() => {
+      if (!alive) return;
+      const list = notableNearbyStars(12);
+      setStars(list);
+      setStarId((cur) => cur || list[0]?.id || "");
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const warpTo = useCallback(
     (warp: ReturnType<typeof resolveBodyWarp>) => {
@@ -414,8 +445,15 @@ function BodyWarpControls() {
   const handleBodyWarp = useCallback(() => {
     const alt = parseFloat(altKm);
     if (!Number.isFinite(alt)) return;
-    warpTo(resolveBodyWarp(bodyId, alt));
-  }, [bodyId, altKm, warpTo]);
+    warpTo(resolveBodyWarp(bodyId, alt * DISTANCE_UNIT_TO_KM[altUnit]));
+  }, [bodyId, altKm, altUnit, warpTo]);
+
+  const handleStarWarp = useCallback(() => {
+    const d = parseFloat(starDist);
+    if (!Number.isFinite(d) || !starId) return;
+    const warp = resolveStarWarp(starId, d * DISTANCE_UNIT_TO_KM[starDistUnit]);
+    if (warp) warpTo(warp);
+  }, [starId, starDist, starDistUnit, warpTo]);
 
   const handleScenarioWarp = useCallback(() => {
     const s = findScenario(scenarioId);
@@ -450,16 +488,84 @@ function BodyWarpControls() {
           <input
             className="dev-controls__input dev-controls__input--wide"
             type="number"
-            placeholder="km"
+            placeholder="distance"
             value={altKm}
             onChange={(e) => setAltKm(e.target.value)}
           />
+          <select
+            className="dev-controls__select"
+            value={altUnit}
+            onChange={(e) => setAltUnit(e.target.value as DistanceUnit)}
+          >
+            {DISTANCE_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
+          </select>
           <button
             className="settings-menu__button settings-menu__button--subtle"
             onClick={handleBodyWarp}
           >
             warp
           </button>
+        </div>
+      </div>
+
+      <div className="dev-controls__section">
+        <div className="dev-controls__label">
+          warp to star — stand-off from its centre (R2b)
+        </div>
+        <div className="dev-controls__row dev-controls__row--wrap">
+          <select
+            className="dev-controls__select dev-controls__select--wide"
+            value={starId}
+            onChange={(e) => setStarId(e.target.value)}
+          >
+            {stars.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} — {s.distLy.toFixed(2)} ly {s.spectral}
+              </option>
+            ))}
+          </select>
+          <input
+            className="dev-controls__input dev-controls__input--wide"
+            type="number"
+            placeholder="distance"
+            value={starDist}
+            onChange={(e) => setStarDist(e.target.value)}
+          />
+          <select
+            className="dev-controls__select"
+            value={starDistUnit}
+            onChange={(e) => setStarDistUnit(e.target.value as DistanceUnit)}
+          >
+            {DISTANCE_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
+          </select>
+          <button
+            className="settings-menu__button settings-menu__button--subtle"
+            onClick={handleStarWarp}
+            disabled={!starId}
+          >
+            warp
+          </button>
+        </div>
+        <div className="dev-controls__hint">
+          {(() => {
+            const s = stars.find((x) => x.id === starId);
+            if (!s) return "loading catalogue…";
+            const rSun = s.params.radiusKm / 696_340;
+            return (
+              `T_eff ${Math.round(s.params.tempK)} K · R ${rSun.toFixed(3)} R☉ · ` +
+              `magV ${s.magV.toFixed(2)} · derived, nothing authored. ` +
+              `Limb darkening becomes visible inside ~3 R★ = ` +
+              `${(s.params.radiusKm * 3 * 2 > 1e8 ? `${((s.params.radiusKm * 3) / 1.496e8).toFixed(2)} AU` : `${((s.params.radiusKm * 3) / 1e6).toFixed(2)}e6 km`)}.`
+            );
+          })()}
         </div>
       </div>
 
@@ -862,9 +968,11 @@ function DevControls({
             value={speedUnit}
             onChange={(e) => handleUnitChange(e.target.value as SpeedUnit)}
           >
-            <option value="m/s">m/s</option>
-            <option value="km/s">km/s</option>
-            <option value="AU/s">AU/s</option>
+            {SPEED_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
           </select>
           <button
             className="settings-menu__button settings-menu__button--subtle"

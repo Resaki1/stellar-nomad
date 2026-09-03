@@ -27,6 +27,14 @@
  *   __lum.tonecurve("poly")           // ...A/B against three's fixed AgX polynomial
  *   __lum.hdrPeak(8)                  // set the display peak in LINEAR multiples of white
  *   await __lum.lod("jupiter")       // GATE: do the 3 LOD tiers agree? (Phase 4)
+ *   __lum.starLift()                  // GATE: the star display lift (R7b)
+ *   await __lum.skyCapture()          // GATE: is the sky cube adaptation-free? (§15)
+ *   await __lum.parallax()            // GATE: is the sky a 3D field? (R7f, §16)
+ *   __lum.starPool()                  // GATE: promoted stars + sprite suppression
+ *   __lum.starLights()                // GATE: which stars light the hull (R7e)
+ *   __lum.starTiers()                 // how often the star pools re-rank (§18)
+ *   __lum.starRows()                  // GATE: is every catalogue star promotable? (§19)
+ *   __lum.skyParallax(false)          // ...freeze the cube/probe re-bakes (A/B)
  *   __lum.units()                     // print the unit convention
  *
  * ── WHAT IS MEASURED ────────────────────────────────────────────────────────
@@ -83,6 +91,14 @@ import {
   starPointGlarePedestal,
   starPointGlareStatus,
 } from "@/components/space/glarePass";
+import {
+  STAR_LIFT_LEGACY,
+  getStarLift,
+  getStarLiftMode,
+  setStarLiftMode,
+  starLiftStatus,
+  type StarLiftMode,
+} from "@/components/space/starVisibility";
 import {
   SUN_ABS_MAG_BOL,
   SUN_ABS_MAG_V,
@@ -199,7 +215,9 @@ import {
   getExposureCompensation,
   getMeteredEV,
   setExposureEV,
+  isManualExposure,
   setManualExposure,
+  getPreExposureOverride,
   setPreExposureOverride,
   sunIlluminanceAt,
 } from "../photometry";
@@ -212,17 +230,21 @@ import {
   starPositionKm,
 } from "./scenarios";
 import {
-  STAR_ARTISTIC_GAIN,
   STAR_PSF_SIGMA_PX,
+  getStarFieldCamPosLy,
+  getStarRowPhysics,
   starCompressionFactor,
+  starFieldSkipStatus,
+  STAR_SPRITE_MAG_LIMIT,
+  starCompressionForIlluminance,
   equatorialToGame,
   getStarPsfInputs,
   getStarPsfNorm,
   starIlluminanceGame,
 } from "@/components/Stars/StarField";
 import {
-  SKY_ARTISTIC_GAIN,
   SKY_DIFFUSE_TARGET_NITS,
+  skyCaptureLodStatus,
 } from "@/components/Skybox/MilkyWaySkybox";
 import {
   bodyIlluminanceAtCamera,
@@ -230,8 +252,24 @@ import {
 import {
   SKY_CUBE_SIZE,
   captureTanPerPx,
+  getSkyCubeTarget,
+  invalidateSkyCube,
+  isSkyCubeCaptured,
   skySpecularStatus,
 } from "@/components/space/skySpecular";
+import { skyCaptureEncodeStatus } from "@/components/space/skyCaptureEncode";
+import { starCandidatesStatus } from "@/components/space/starCandidates";
+import {
+  setSkyParallaxUpdates,
+  skyParallaxStatus,
+} from "@/components/space/skyParallax";
+import { LY_IN_KM } from "@/sim/units";
+import {
+  starDiscPool,
+  starLightExcludedRows,
+  starLightPool,
+  starTierGateStats,
+} from "@/components/space/starLodStatus";
 import {
   accumulatePointSource,
   evaluateShIrradiance,
@@ -989,8 +1027,15 @@ export class LumHarness {
     // Measure from deep inside Neptune's umbra: the darkest sky available, no sun
     // in frame, and the panorama's diffuse floor at its least intrusive.
     const dark = resolveUmbraWarp("neptune", radiiBehind);
-    equatorialToGame(_starDir, star.posEqLy[0], star.posEqLy[1], star.posEqLy[2]);
-    _starDir.normalize();
+    // ⚠ The un-normalised POSITION first — R7f needs the distance, and normalising
+    // in place is what discarded it. `_starDir` stays the Sol-referenced direction.
+    equatorialToGame(
+      _starPosLy,
+      star.posEqLy[0],
+      star.posEqLy[1],
+      star.posEqLy[2],
+    );
+    _starDir.copy(_starPosLy).normalize();
     this.store.set(
       devTeleportAtom,
       resolveLookDirectionWarp(_starDir, dark.positionKm),
@@ -998,7 +1043,23 @@ export class LumHarness {
     await sleepFrames(150);
 
     const psfNorm = getStarPsfNorm();
-    const illum = starIlluminanceGame(star.magV);
+    // ⚠⚠ R7f: BOTH the expected illuminance and the compression divided out below
+    // must be the LIVE ones, not the catalogue's. The renderer places and brightens
+    // every sprite from `aPosLy − uCamPosLy`, so a gate that assumes the Sol-
+    // referenced value silently becomes a gate on "am I still at Sol". It happens to
+    // agree to 0.02% at this gate's own pose (Neptune's umbra is 4.7e-4 ly from Sol
+    // against a 4.24 ly nearest star) — which is exactly how it would have survived
+    // being wrong.
+    const camLy = getStarFieldCamPosLy();
+    const dCat = _starPosLy.length() || 1e-12;
+    const dLive =
+      Math.hypot(
+        _starPosLy.x - camLy[0],
+        _starPosLy.y - camLy[1],
+        _starPosLy.z - camLy[2],
+      ) || 1e-12;
+    const parallaxScale = (dCat / dLive) ** 2;
+    const illum = starIlluminanceGame(star.magV) * parallaxScale;
     // ⚠ COMPARE FLUX, NOT PEAK. The first version of this gate compared the peak
     // and reported 0.7087× for Sirius, Vega AND Betelgeuse — identical to four
     // figures across three magnitudes and two very different colours, i.e. a
@@ -1030,8 +1091,11 @@ export class LumHarness {
     // constant cannot undo it. Miss this and the gate reads 1.0 only for stars at
     // the anchor magnitude and drifts smoothly with brightness everywhere else —
     // which would look exactly like a photometric bug in the renderer.
-    const lookGain =
-      STAR_ARTISTIC_GAIN * starCompressionFactor(star.magV);
+    // ⚠ R7b: the flat term is no longer a CONSTANT — `getStarLift()` is derived
+    // from this frame's adaptation and is 1.0 whenever the sky is already visible.
+    // Reading `STAR_ARTISTIC_GAIN` here would make this gate wrong by up to 1024×
+    // the moment the renderer stopped applying it.
+    const lookGain = getStarLift() * starCompressionForIlluminance(illum);
     // ⚠ Subtract the sky from the PEAK too, or the σ solve below inherits the bias.
     // `probeMax` reads a raw pixel; the background estimate comes from probeFlux's
     // annulus, which is the only place it is measured.
@@ -1053,10 +1117,11 @@ export class LumHarness {
       "sky was % of raw sum": Number(
         (100 * (1 - f.sumLuma / Math.max(f.sumLumaRaw, 1e-30))).toPrecision(3),
       ),
-      "artistic gain (divided out)": STAR_ARTISTIC_GAIN,
+      "display lift (divided out)": Number(getStarLift().toPrecision(4)),
       "mag compression (divided out)": Number(
-        starCompressionFactor(star.magV).toPrecision(4),
+        starCompressionForIlluminance(illum).toPrecision(4),
       ),
+      "parallax brightening (dCat/dLive)²": Number(parallaxScale.toPrecision(6)),
       "total look gain (divided out)": Number(lookGain.toPrecision(4)),
       "FLUX measured / expected": Number(ratio.toPrecision(4)),
       "— peak, for reference —": "",
@@ -1343,7 +1408,8 @@ export class LumHarness {
       }
       lumas.sort((x, y) => x - y);
       const median = lumas[Math.floor(lumas.length / 2)];
-      const physical = median / Math.max(SKY_ARTISTIC_GAIN, 1e-12);
+      // ⚠ R7b: divide out the LIVE lift, not the retired constant.
+      const physical = median / Math.max(getStarLift(), 1e-12);
       const nits = physical * NITS_PER_GAME_UNIT;
       measured.set(`${m.l},${m.b}`, nits);
       const sunAng =
@@ -1571,7 +1637,8 @@ export class LumHarness {
       );
       return;
     }
-    const gain = SKY_ARTISTIC_GAIN;
+    // ⚠ R7b: the live lift (1.0 when nothing is faked), not the retired constant.
+    const gain = getStarLift();
     const rows: Record<string, Record<string, string | number>> = {};
     for (const [name, n] of NORMALS) {
       const e = evaluateShIrradiance(sh, n[0], n[1], n[2]);
@@ -1672,6 +1739,24 @@ export class LumHarness {
         `[lum] uPsfNorm during capture ${sp.capturePsfNorm.toPrecision(6)} vs ` +
           `expected ${expectedNorm.toPrecision(6)} → ${normRatio.toPrecision(4)}×`,
       );
+      // ── The PANORAMA's own capture-resolution override (R7f) ──────────────
+      // 🔑 Same discipline, second quantity. The stars had a resolution-dependent
+      // FLUX and got an override; the panorama has a resolution-dependent LOD and
+      // had none — it was sampled 3.21 mips too sharp in every capture. Invisible
+      // while the capture was one-shot (one fixed alias pattern), a crawling
+      // shimmer on the hull once R7f re-captures.
+      const lodSt = skyCaptureLodStatus();
+      console.log(
+        `[lum] uSkyLod during capture ${lodSt.captureSkyLod.toPrecision(4)} vs ` +
+          `expected ${lodSt.expectedForFace.toPrecision(4)} for a ${SKY_CUBE_SIZE}² face`,
+      );
+      if (Math.abs(lodSt.captureSkyLod - lodSt.expectedForFace) > 0.05) {
+        console.error(
+          "[lum] ❌ the capture sampled the panorama at the ON-SCREEN LOD. Each mip\n" +
+            "      is 2× per axis, so the difference above is the undersampling in\n" +
+            "      stops — check that `withSkyCaptureLod` is wired into captureSkyCube.",
+        );
+      }
       if (Math.abs(normRatio - 1) < 1e-4) {
         console.log(
           `[lum] ✅ capture used the cube-face PSF (90° over ${SKY_CUBE_SIZE} px) —\n` +
@@ -3450,16 +3535,16 @@ export class LumHarness {
     // 150 S10 in the galactic plane — the same figure `nightSide()` uses, so the
     // two gates cannot quote different Milky Ways.
     const skyPhysical = 1.25e-4;
-    const skyBuffered = skyPhysical * SKY_ARTISTIC_GAIN;
+    const skyBuffered = skyPhysical * getStarLift();
     console.log(
       [
         "[lum] ⚠⚠ THE SKY AND STARS ARE LYING TO THIS STAGE, AND BY A KNOWN FACTOR.",
-        `      SKY_ARTISTIC_GAIN = ${SKY_ARTISTIC_GAIN}, STAR_ARTISTIC_GAIN = ${STAR_ARTISTIC_GAIN}, both applied`,
+        `      display lift (R7b) = ${getStarLift().toPrecision(4)}× — 1.0 means nothing is faked`,
         "      INSIDE the written radiance — so the two things Phase 7 exists to grey",
         "      out are the two things whose luminance is not physical:",
         `        Milky Way band   physical ${skyPhysical.toExponential(2)} cd/m² → s = ${rodConeBlend(skyPhysical).toFixed(4)}  (SCOTOPIC ✅)`,
         `                         buffered ${skyBuffered.toExponential(2)} cd/m² → s = ${rodConeBlend(skyBuffered).toFixed(4)}  (${rodConeBlend(skyBuffered) > 0.99 ? "PHOTOPIC ❌" : "mesopic ⚠"})`,
-        `      That is ${(Math.log2(SKY_ARTISTIC_GAIN)).toFixed(0)} stops of lift on the sky's luminance.`,
+        `      That is ${Math.log2(Math.max(getStarLift(), 1)).toFixed(1)} stops of lift on the sky's luminance (0 = none).`,
         `      driver sees the band as ${rodConeBlend(skyBuffered) < 0.05 ? "SCOTOPIC ✅ — it will render GREY, which is right" : rodConeBlend(skyBuffered) < 0.2 ? "nearly scotopic ⚠" : "PHOTOPIC ❌ — it will keep its colour, which is wrong"}`,
         "",
         // ── How much gain does THIS pose actually need? ────────────────────────
@@ -3474,7 +3559,7 @@ export class LumHarness {
             (skyPhysical / NITS_PER_GAME_UNIT) * getExposure();
           const margin = physDisplay / AGX_FLOOR;
           const needed = Math.max(1, 8 / margin);
-          const supplied = SKY_ARTISTIC_GAIN;
+          const supplied = getStarLift();
           return [
             `      AT THIS POSE'S EXPOSURE (${getExposure().toExponential(2)}):`,
             `        the PHYSICAL band would render at ${physDisplay.toExponential(2)} display-linear = ${margin.toFixed(2)}× AgX's black floor`,
@@ -4180,6 +4265,914 @@ export class LumHarness {
   }
 
   /**
+   * STAR DISPLAY LIFT GATE (R7b, docs/STAR_RENDERING_PLAN.md §14).
+   *
+   * The lift exists for a gameplay reason — "always see at least some stars to
+   * orientate by" — and R7b's point is that it now costs nothing when the sky is
+   * ALREADY visible. `faking: false` is the good case and should hold in deep space.
+   *
+   * `mode`: "auto" (derived, default), "legacy" (the old flat 1024) or "off" (fully
+   * physical — the pitch-black sky the gain was originally added to fix).
+   */
+  starLift(mode?: StarLiftMode): Record<string, unknown> {
+    if (mode) setStarLiftMode(mode);
+    const st = starLiftStatus();
+    console.log(
+      `[lum] star display lift: mode "${st.mode}", lift ${st.lift.toFixed(1)}× ` +
+        `${st.faking ? "⚠ FAKING" : "✅ 1.0 — nothing faked, the sky is already visible"}`,
+    );
+    console.log(
+      `[lum] anchor mag ${st.anchorMag} renders at ${st.anchorPeakPhysical.toExponential(3)} ` +
+        `physically, ${st.anchorPeakLifted.toExponential(3)} after the lift ` +
+        `(target ${st.target}, mid-grey 0.18).`,
+    );
+    // 🔑 `needed` vs `lift` is the honest read. The rule can only do its job where
+    // neither bound binds; "ceiling" means the anchor is rendering BELOW the target
+    // and the aid is not actually working in this pose (which is what a MAX of 4096
+    // did against a sunlit hull), "floor" means adaptation asked for less than the
+    // gameplay minimum and the minimum won.
+    console.log(
+      `[lum] rule asked for ${st.needed > 0 ? "×" + st.needed.toPrecision(4) : "n/a"}; ` +
+        `bounds [${st.floor}, ${st.max}] ⇒ clamped by ${st.clampedBy}` +
+        (st.clampedBy === "ceiling"
+          ? `  ❌ anchor lands at ${(st.target * (st.lift / st.needed)).toExponential(2)}, ` +
+            `${(st.needed / st.max).toPrecision(3)}× short of the target`
+          : st.clampedBy === "floor"
+            ? "  ✅ the gameplay minimum is carrying it (deep space / dark frame)"
+            : "  ✅ the anchor rule is in charge"),
+    );
+    console.log(
+      st.mode === "auto"
+        ? "[lum] A/B: __lum.starLift('legacy') for the flat 1024× this replaced, " +
+          "__lum.starLift('off') for fully physical (an empty sky beside a lit hull)."
+        : "[lum] __lum.starLift('auto') to return to the derived lift.",
+    );
+    return {
+      mode: st.mode,
+      lift: Number(st.lift.toPrecision(5)),
+      needed: Number(st.needed.toPrecision(5)),
+      clampedBy: st.clampedBy,
+      floor: st.floor,
+      max: st.max,
+      faking: st.faking,
+      anchorMag: st.anchorMag,
+      target: st.target,
+      anchorPeakPhysical: Number(st.anchorPeakPhysical.toPrecision(4)),
+      anchorPeakLifted: Number(st.anchorPeakLifted.toPrecision(4)),
+      legacyWouldBe: STAR_LIFT_LEGACY,
+    };
+  }
+
+  /**
+   * PARALLAX GATE (R7f, docs/STAR_RENDERING_PLAN.md §16).
+   *
+   *     await __lum.parallax()            // Sirius, 1 ly perpendicular offset
+   *     await __lum.parallax("Vega", 2)
+   *
+   * 🔑 THIS IS A FALSIFICATION TEST, NOT A MEASUREMENT, and that is deliberate: the
+   * failure mode R7f can have is a WRONG FRAME OR SIGN, and no self-consistent
+   * measurement catches that — `project_sky_orientation` records four independent
+   * checks that all passed while the panorama was mirrored. So the gate aims the
+   * camera at two different directions and asserts which one the star is in.
+   *
+   * It offsets the ship PERPENDICULAR to the star's Sol-referenced direction, which
+   * is what maximises the parallax (offsetting along it changes nothing), then:
+   *   1. aims at `normalize(posLy − camPosLy)` — the star must be at the centre;
+   *   2. aims at the SOL-referenced direction — the star must NOT be there.
+   * A renderer that ignored `uCamPosLy` passes (2) and fails (1); one with a sign
+   * error fails both. Only a correct one passes both.
+   *
+   * It also reports the photometric half — the `(dCat/dLive)²` brightening the
+   * sprite gets — and `skyParallaxStatus()`, so the cube/probe re-bake cadence is
+   * visible at the same pose.
+   *
+   * ⚠ Moves the ship. It does not put it back.
+   */
+  async parallax(
+    name = "Sirius",
+    offsetLy = 1,
+  ): Promise<Record<string, unknown> | null> {
+    if (!_namedStars) {
+      const res = await fetch("/data/stars_named.json");
+      if (!res.ok) {
+        console.error(`[lum] no /data/stars_named.json (${res.status})`);
+        return null;
+      }
+      _namedStars = (await res.json()) as NamedStar[];
+    }
+    const key = name.trim().toLowerCase();
+    const star =
+      _namedStars.find((s2) => s2.name.toLowerCase() === key) ??
+      _namedStars.find((s2) => s2.name.toLowerCase().startsWith(key));
+    if (!star) {
+      console.error(`[lum] "${name}" not found.`);
+      return null;
+    }
+
+    equatorialToGame(
+      _starPosLy,
+      star.posEqLy[0],
+      star.posEqLy[1],
+      star.posEqLy[2],
+    );
+    const dCat = _starPosLy.length() || 1e-12;
+    _starDir.copy(_starPosLy).divideScalar(dCat);
+
+    // A unit vector perpendicular to the star's direction. Cross with whichever
+    // axis is least parallel, so the result is never degenerate.
+    const ax =
+      Math.abs(_starDir.x) < 0.9
+        ? new Vector3(1, 0, 0)
+        : new Vector3(0, 1, 0);
+    const perp = ax.cross(_starDir).normalize();
+    const eyeKm: [number, number, number] = [
+      perp.x * offsetLy * LY_IN_KM,
+      perp.y * offsetLy * LY_IN_KM,
+      perp.z * offsetLy * LY_IN_KM,
+    ];
+    const eyeLy = [
+      perp.x * offsetLy,
+      perp.y * offsetLy,
+      perp.z * offsetLy,
+    ] as const;
+    const live = new Vector3(
+      _starPosLy.x - eyeLy[0],
+      _starPosLy.y - eyeLy[1],
+      _starPosLy.z - eyeLy[2],
+    );
+    const dLive = live.length() || 1e-12;
+    live.divideScalar(dLive);
+    const sepRad = Math.acos(
+      Math.max(-1, Math.min(1, live.dot(_starDir))),
+    );
+
+    // ── 1. Aim where parallax says the star IS ────────────────────────────────
+    this.store.set(devTeleportAtom, resolveLookDirectionWarp(live, eyeKm));
+    await sleepFrames(150);
+    // ⚠⚠ PIN EXPOSURE BEFORE MEASURING — this gate broke the harness's own RULE 1
+    // ("exposure is PINNED while sweeping; auto-exposure is frame-to-frame state, so
+    // an unpinned sweep measures a function of the previous frame"). The display lift
+    // is DERIVED from pre-exposure, so an unpinned lift is still drifting after 90
+    // settling frames: MEASURED, the lift moved 0.497× between this gate's two aims,
+    // and the residual drift during the flux window is what left the ratio at 0.846×
+    // once the cruder 2.007× bookkeeping error was fixed.
+    const wasManual = isManualExposure();
+    setManualExposure(true);
+    await sleepFrames(30);
+    const atLive = await this.probeMax(9);
+    const fluxLive = await this.probeFlux(15);
+    // 🐛 SAMPLE THE LIFT HERE, NOT AFTER THE SECOND WARP. The first version read
+    // `getStarLift()` at the end of the gate, i.e. after re-aiming at empty sky and
+    // settling 90 frames — and the lift is adaptation-driven, so it had fallen
+    // towards its floor. MEASURED: the gate reported a flux ratio of 2.007×, which
+    // reads exactly like the historic 2× double-draw and was entirely the gate's own
+    // bookkeeping. Reported alongside the second reading so a divergence is visible
+    // rather than inferred.
+    const liftAtMeasure = getStarLift();
+
+    // ── 2. Aim where it would be if parallax were ignored ─────────────────────
+    this.store.set(devTeleportAtom, resolveLookDirectionWarp(_starDir, eyeKm));
+    await sleepFrames(90);
+    const atCat = await this.probeMax(9);
+    const liftAtEnd = getStarLift();
+    setManualExposure(wasManual);
+
+    if (!atLive || !atCat || !fluxLive) {
+      console.error("[lum] probe failed — is the scene rendering?");
+      return null;
+    }
+
+    const parallaxScale = (dCat / dLive) ** 2;
+    const lookGain =
+      liftAtMeasure *
+      starCompressionForIlluminance(
+        starIlluminanceGame(star.magV) * parallaxScale,
+      );
+    const psfNorm = getStarPsfNorm();
+    const expectedFlux =
+      starIlluminanceGame(star.magV) *
+      parallaxScale *
+      psfNorm *
+      2 *
+      Math.PI *
+      STAR_PSF_SIGMA_PX *
+      STAR_PSF_SIGMA_PX;
+    const measuredFlux = fluxLive.sumLuma / Math.max(lookGain, 1e-12);
+    const fluxRatio = measuredFlux / Math.max(expectedFlux, 1e-30);
+    const contrast = atLive.luma / Math.max(atCat.luma, 1e-30);
+
+    console.table({
+      star: star.name,
+      "offset (ly, perpendicular)": offsetLy,
+      "distance from Sol (ly)": Number(dCat.toPrecision(5)),
+      "distance from here (ly)": Number(dLive.toPrecision(5)),
+      "parallax angle (deg)": Number(((sepRad * 180) / Math.PI).toPrecision(4)),
+      "parallax angle (px)": Number(
+        (() => {
+          const i = getStarPsfInputs();
+          // ⚠ tan, not the angle — the projection is linear in tan (the same trap
+          // as the `fov/height` bug), and this row is the one that says whether the
+          // two aims are even distinguishable.
+          const t =
+            (2 * Math.tan((i.fovDeg * Math.PI) / 360)) / Math.max(i.bufferH, 1);
+          return Math.tan(sepRad) / t;
+        })().toPrecision(4),
+      ),
+      "peak aiming at LIVE dir": atLive.luma.toExponential(3),
+      "peak aiming at SOL dir": atCat.luma.toExponential(3),
+      "contrast (live / sol)": Number(contrast.toPrecision(4)),
+      "flux measured / expected": Number(fluxRatio.toPrecision(4)),
+      "(dCat/dLive)²": Number(parallaxScale.toPrecision(5)),
+      "lift at measurement": Number(liftAtMeasure.toPrecision(5)),
+      "lift after re-aim": Number(liftAtEnd.toPrecision(5)),
+      "exposure pinned": true,
+      "psfNorm used": Number(getStarPsfNorm().toPrecision(6)),
+      "preExposure at measurement": Number(getPreExposure().toPrecision(6)),
+      // The background the flux probe subtracted, as a share of the raw window sum —
+      // a lifted sky is a large pedestal at these poses and an over-subtraction would
+      // read exactly like a photometric error in the sprite.
+      "sky was % of raw sum": Number(
+        (
+          (100 * (fluxLive.sumLumaRaw - fluxLive.sumLuma)) /
+          Math.max(fluxLive.sumLumaRaw, 1e-30)
+        ).toPrecision(3),
+      ),
+    });
+    if (Math.abs(liftAtEnd / Math.max(liftAtMeasure, 1e-30) - 1) > 0.05) {
+      console.log(
+        `[lum] ⓘ the display lift moved ${(liftAtEnd / liftAtMeasure).toPrecision(3)}× between the two aims ` +
+          "(adaptation).\n      The flux ratio uses the value from the measurement frame, which is " +
+          "the correct one.",
+      );
+    }
+
+    if (sepRad < 3e-3) {
+      console.warn(
+        `[lum] ⚠ INCONCLUSIVE — the parallax angle is only ${((sepRad * 180) / Math.PI).toPrecision(3)}°,\n` +
+          "      which is inside a few pixels, so the two aims cannot be told apart.\n" +
+          "      Raise `offsetLy` or pick a nearer star.",
+      );
+    } else if (contrast > 30) {
+      console.log(
+        `[lum] ✅ PARALLAX IS LIVE AND IN THE RIGHT FRAME: at a ${((sepRad * 180) / Math.PI).toFixed(2)}° offset the\n` +
+          `      star is ${contrast.toPrecision(3)}× brighter where 3D parallax says it is than where a\n` +
+          "      Sol-referenced sky would have put it. A frozen sky would invert this; a\n" +
+          "      sign or frame error would fail both aims.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ the star is NOT where parallax says it is (contrast ${contrast.toPrecision(3)}×).\n` +
+          `      Peak at the live direction ${atLive.luma.toExponential(2)} vs ${atCat.luma.toExponential(2)} at the\n` +
+          "      Sol direction. If the SOL aim is the bright one, `uCamPosLy` is not\n" +
+          "      reaching the shader — check that SpaceRenderer calls\n" +
+          "      setStarFieldCamPosLy() before anything renders. If NEITHER is bright,\n" +
+          "      the frame rotation is wrong: `equatorialToGame` must be applied to the\n" +
+          "      POSITION before the subtraction, never after.",
+      );
+    }
+    if (Math.abs(fluxRatio - 1) > 0.15) {
+      console.error(
+        `[lum] ❌ the photometric half is off by ${fluxRatio.toPrecision(3)}×. The direction can\n` +
+          "      be right while the brightness is not: the sprite must scale by\n" +
+          "      (dCat/dLive)², and the gate divides out the LIVE compression, so a\n" +
+          "      catalogue-referenced compression anywhere would show up here.",
+      );
+    }
+    console.table(skyParallaxStatus());
+    return {
+      star: star.name,
+      offsetLy,
+      distFromSolLy: Number(dCat.toPrecision(5)),
+      distFromHereLy: Number(dLive.toPrecision(5)),
+      parallaxDeg: Number(((sepRad * 180) / Math.PI).toPrecision(4)),
+      contrast: Number(contrast.toPrecision(4)),
+      fluxRatio: Number(fluxRatio.toPrecision(4)),
+      parallaxScale: Number(parallaxScale.toPrecision(5)),
+      pass: sepRad >= 3e-3 && contrast > 30 && Math.abs(fluxRatio - 1) <= 0.15,
+    };
+  }
+
+  /**
+   * DISC POOL GATE (R7d) — which stars are promoted, and did their sprites get
+   * suppressed?
+   *
+   *     __lum.starPool()
+   *
+   * 🔑 THE ONE NUMBER THAT MATTERS IS `spriteRow`. A slot holding a mounted disc with
+   * `spriteRow: -1` is a star being drawn TWICE — additive sprite plus additive disc,
+   * 2× flux — and the suppression has failed silently that way twice already:
+   * first from `Math.cos(1e-4)` rounding to exactly 1.0f against a strict `>`, then
+   * from a cross-walk position tolerance 100× too tight. Neither had any symptom
+   * except a photometric one somewhere else entirely (a stored max of 57,163 against
+   * a 65,504 ceiling in `__lum.skyCapture()`, 100 AU from α Cen).
+   */
+  starPool(): Record<string, unknown> {
+    const skips = starFieldSkipStatus();
+    if (starDiscPool.length === 0) {
+      console.log(
+        "[lum] no disc slots filled yet — the nearby catalogue lands a few frames " +
+          "after the scene mounts.",
+      );
+    }
+    // ⚠ `spriteRow === -1` is only a defect for a star that SHOULD have a sprite.
+    // The sprite catalogue is V ≤ 6.5 apparent, so Proxima (11.01), Barnard's (9.54)
+    // and 133 other nearby stars legitimately have none — and they are exactly the
+    // stars a player flies to. Treating −1 as a double-draw would report the fix for
+    // §20 as a bug.
+    const expectsSprite = (s: { magV: number }) => s.magV <= STAR_SPRITE_MAG_LIMIT;
+    console.table(
+      starDiscPool.map((s) => ({
+        star: s.name,
+        "dist (ly)": Number(s.distLy.toPrecision(5)),
+        magV: Number(s.magV.toPrecision(4)),
+        "angular radius R/d": s.solid.toExponential(3),
+        "sprite row": s.spriteRow,
+        suppressed:
+          s.spriteRow >= 0
+            ? "✅"
+            : expectsSprite(s)
+              ? "❌ DOUBLE-DRAWN"
+              : "— no sprite (fainter than V 6.5)",
+      })),
+    );
+    console.table(skips);
+    const unresolved = starDiscPool.filter(
+      (s) => s.spriteRow < 0 && expectsSprite(s),
+    );
+    if (unresolved.length > 0) {
+      console.error(
+        `[lum] ❌ ${unresolved.length} promoted star(s) have no suppressed sprite: ` +
+          `${unresolved.map((s) => s.name).join(", ")}.\n` +
+          "      Each is drawn twice (2× flux, 1.0 stop) and its sprite is not\n" +
+          "      clamped by the disc tier's flux hand-off, so it can also saturate\n" +
+          "      the sky cube. Check findStarFieldIndexForStar's tolerances against\n" +
+          "      the measured table in its doc comment.",
+      );
+    } else if (starDiscPool.length > 0) {
+      const withSprite = starDiscPool.filter((s) => s.spriteRow >= 0).length;
+      console.log(
+        `[lum] ✅ ${withSprite}/${starDiscPool.length} promoted stars have a sprite and it ` +
+          "is suppressed by exact row index; the rest are fainter than V 6.5 and " +
+          "correctly have none.",
+      );
+    }
+    return {
+      pool: starDiscPool.map((s) => ({
+        name: s.name,
+        distLy: Number(s.distLy.toPrecision(5)),
+        spriteRow: s.spriteRow,
+      })),
+      skipSlots: skips,
+      allSuppressed: unresolved.length === 0,
+    };
+  }
+
+  /**
+   * STAR LIGHT POOL GATE (R7e, §17) — is anything actually lighting the hull, and is
+   * its flux being counted twice?
+   *
+   *     __lum.starLights()
+   *
+   * 🔑 The load-bearing pair is `illumGame` against the SKY's total flux. A slot held
+   * by a star delivering less than the whole sky put together is a slot that should
+   * be empty — the SH probe already carries it, and better. And `excludedRow: -1` on
+   * a filled slot is a DOUBLE COUNT: the star is delivering its flux as a
+   * directional light AND still summed into the SH-L2 probe, where a dominant point
+   * source gives 17/16 at the source and 1/16 at the antipode. A sun with no
+   * terminator.
+   */
+  starLights(): Record<string, unknown> {
+    const skyFlux = (4 * Math.PI * 1e-4) / NITS_PER_GAME_UNIT;
+    if (starLightPool.length === 0) {
+      console.log(
+        "[lum] no star lights — correct anywhere in the solar system: the nearest\n" +
+          `      catalogue star delivers ~4e-10 game units against the sky's own\n` +
+          `      ${skyFlux.toExponential(3)}, so a directional light would add nothing the SH\n` +
+          "      probe is not already delivering. Warp to a star and re-run.",
+      );
+    }
+    console.table(
+      starLightPool.map((s, i) => ({
+        slot: i,
+        star: s.name,
+        "dist (ly)": Number(s.distLy.toPrecision(5)),
+        "illuminance (game)": s.illumGame.toExponential(3),
+        "illuminance (lux)": (s.illumGame * NITS_PER_GAME_UNIT).toExponential(3),
+        "× the whole sky's flux": Number(
+          (s.illumGame / skyFlux).toPrecision(4),
+        ),
+        "T_eff (K)": Math.round(s.tempK),
+        // ⚠ Membership, not index alignment: the excluded list drops the −1s (stars
+        // with no sprite are not in the SH to begin with), so slot i does not map to
+        // entry i.
+        "in SH exclusion": starLightExcludedRows.length > 0 ? "see below" : "n/a",
+      })),
+    );
+    console.log(
+      `[lum] SH rows excluded: [${starLightExcludedRows.join(", ") || "none"}] — a star ` +
+        "fainter than V 6.5 has no sprite row and was never in the catalogue SH, so an\n" +
+        "      empty list is correct whenever every lit star is a faint nearby one.",
+    );
+    // Can only check the ones that HAVE a sprite row; the rest are not in the SH.
+    const missing = starLightPool.filter(
+      (s) => s.spriteRow >= 0 && !starLightExcludedRows.includes(s.spriteRow),
+    );
+    if (starLightPool.length > 0 && missing.length > 0) {
+      console.error(
+        `[lum] ❌ ${missing.length} star light(s) may not be excluded from the SH probe: ` +
+          `${missing.map((s) => s.name).join(", ")}.\n` +
+          "      Their flux is counted twice — once as a directional light, once as a\n" +
+          "      low-pass point source in the SH, which has no terminator. Check\n" +
+          "      findStarFieldIndexForStar: a star outside the V ≤ 6.5 visual catalogue\n" +
+          "      has no row and is legitimately −1, so compare against its magV first.",
+      );
+    } else if (starLightPool.length > 0) {
+      console.log(
+        `[lum] ✅ ${starLightPool.length} star light(s), all excluded from the SH probe — ` +
+          "no double count.",
+      );
+    }
+    console.log(
+      "[lum] then look: the hull should have a TERMINATOR from the promoted star, not\n" +
+        "      a soft all-over glow. Two lit stars should give two shadows of\n" +
+        "      different colour (α Cen A is 5568 K, B is 4996 K).",
+    );
+    return {
+      slots: starLightPool.map((s, i) => ({
+        name: s.name,
+        illumGame: Number(s.illumGame.toPrecision(4)),
+        overSkyFlux: Number((s.illumGame / skyFlux).toPrecision(4)),
+        shRowExcluded: starLightExcludedRows[i] ?? -1,
+      })),
+      skyTotalFluxGame: Number(skyFlux.toPrecision(4)),
+      noDoubleCount: starLightPool.length === 0 || missing.length === 0,
+    };
+  }
+
+  /**
+   * TIER GATE (§18) — how often do the star pools actually re-rank?
+   *
+   *     __lum.starTiers()
+   *
+   * The author's observation, and it was right: the pools were ranking all 166 nearby
+   * stars every frame to answer a question that changes on the scale of HOURS. Both
+   * tiers now re-select only once the ship has moved 1% of the distance to the
+   * nearest candidate — 2,673 AU of travel anywhere in the solar system, 1 AU at
+   * 100 AU from α Cen. This prints the hit rate so the claim is measured rather than
+   * asserted.
+   *
+   * ⚠ `skipped/(runs+skipped)` is the number that matters. Near 1.0 in steady flight
+   * is the design working; near 0 means the budget is being blown every frame and
+   * something is wrong with the derivation (or you are warping continuously, which is
+   * the one regime where re-ranking every frame IS correct).
+   */
+  starTiers(): Record<string, unknown> {
+    const rows: Record<string, Record<string, string | number>> = {};
+    for (const [tier, g] of Object.entries(starTierGateStats)) {
+      const total = g.runs + g.skipped;
+      rows[tier] = {
+        "selections run": g.runs,
+        "frames skipped": g.skipped,
+        "skip rate": total > 0 ? Number((g.skipped / total).toPrecision(4)) : 0,
+        "movement budget (AU)": Number((g.budgetKm / AU_KM).toPrecision(4)),
+        "movement budget (ly)": Number((g.budgetKm / LY_IN_KM).toPrecision(4)),
+      };
+    }
+    if (Object.keys(rows).length === 0) {
+      console.log(
+        "[lum] no tier has selected yet — both pools run their first selection on " +
+          "the frame the nearby catalogue lands.",
+      );
+      return { tiers: {} };
+    }
+    console.table(rows);
+    console.log(
+      "[lum] the budget is 1% of the distance to the NEAREST candidate, which is\n" +
+        "      strictly finer than the hysteresis it gates (the disc pool needs a 5%\n" +
+        "      margin to swap, the light pool a 4× band), so a skipped frame cannot\n" +
+        "      hide a decision either pool would have made.\n" +
+        "      ⚠ Selection only. A held star's direction and intensity are still\n" +
+        "      written every frame — that is O(slots) and must not be gated.",
+    );
+    return { tiers: rows };
+  }
+
+  /**
+   * CATALOGUE PHYSICS GATE (§19) — can EVERY star be promoted, and are the derived
+   * radii physical?
+   *
+   *     __lum.starRows()
+   *
+   * 🔑 The author's expectation was that the system "would automatically work for all
+   * stars in the catalogue". It did not: the pools ranked the 166 rows of
+   * `stars_nearby.json`, so 8,754 of the 8,920 rendered stars could never become a
+   * disc, a light or a collider. `absMagV` follows from `magV` and the distance —
+   * both already in the file — so nothing new was needed.
+   *
+   * ⚠⚠ WHAT THIS GATE IS REALLY FOR is the failure that made it non-trivial. Both
+   * `temperatureFromBV` (Ballesteros, valid −0.4 ≤ B−V ≤ 2.0) and
+   * `bolometricCorrectionV` (Torres, valid 3.5 ≤ log₁₀T ≤ 4.6) return finite numbers
+   * far outside their fits. 25 rows carry B−V > 2 and were assigned 2213–2600 K,
+   * which drove BC_V to −17.14 and produced derived radii up to **1.1e13 R☉** — those
+   * rows then sorted to the TOP of the angular-diameter ranking, ten orders of
+   * magnitude above α Centauri. Extrapolating a fit is not "less accurate"; outside
+   * the domain the polynomial is unrelated to the star.
+   *
+   * The top of the ranking is the check that matters, and it is independent: with
+   * both formulae clamped it comes out **Antares, Betelgeuse, Aldebaran, Gacrux,
+   * Arcturus** — five of the largest angular-diameter stars in the real sky, in
+   * nearly the right order, with radii within 0.56–1.68× of published values. Nothing
+   * in the derivation knows those names.
+   */
+  starRows(topN = 8): Record<string, unknown> {
+    const phys = getStarRowPhysics();
+    if (!phys) {
+      console.log("[lum] catalogue not parsed yet — reload and retry.");
+      return { count: 0 };
+    }
+    const { count, rows, rowStride, params, paramStride } = phys;
+    let usable = 0;
+    let maxRsun = 0;
+    let maxRow = -1;
+    const cands: Array<{
+      row: number;
+      distLy: number;
+      magV: number;
+      tempK: number;
+      rSun: number;
+      solid: number;
+    }> = [];
+    for (let i = 0; i < count; i++) {
+      const p = i * paramStride;
+      const o = i * rowStride;
+      const distLy = Math.sqrt(
+        rows[o] * rows[o] + rows[o + 1] * rows[o + 1] + rows[o + 2] * rows[o + 2],
+      );
+      const rSun = params[p] / SUN_RADIUS_KM;
+      if (params[p + 3] >= 0.5) {
+        usable++;
+        if (rSun > maxRsun) {
+          maxRsun = rSun;
+          maxRow = i;
+        }
+        cands.push({
+          row: i,
+          distLy,
+          // Invert `starIlluminanceGame` rather than re-stating LUX_AT_MAG_0: the
+          // zero point lives in StarField and a second copy is how a validated
+          // conversion drifts out of validation.
+          magV:
+            -2.5 *
+            Math.log10(
+              Math.max(rows[o + 3], 1e-30) / starIlluminanceGame(0),
+            ),
+          tempK: params[p + 2],
+          rSun,
+          solid: params[p] / (distLy * LY_IN_KM),
+        });
+      }
+    }
+    console.log(
+      `[lum] ${usable}/${count} rows have usable derived physics (${(
+        (100 * usable) /
+        count
+      ).toFixed(1)}%). The rest sit at HYG's 326,156 ly parallax sentinel, where\n` +
+        "      every derived quantity is meaningless — correctly not promotable.",
+    );
+    // ── §20: the PROMOTABLE SET is the union, not this catalogue ─────────────
+    const cs = starCandidatesStatus();
+    console.table(cs);
+    if (!cs.built) {
+      console.log(
+        "[lum] the candidate union has not been built yet — it needs the nearby " +
+          "catalogue's fetch to land.",
+      );
+    } else if (cs.fromNearby === 0) {
+      console.error(
+        "[lum] ❌ 0 candidates from the nearby catalogue. 135 of its 166 stars are\n" +
+          "      fainter than V 6.5 and therefore have NO sprite row — including\n" +
+          "      Proxima Centauri, the nearest star to the Sun. If this is 0 the union\n" +
+          "      collapsed back to the visual catalogue and those stars cannot be\n" +
+          "      promoted, lit or collided with (§20).",
+      );
+    } else {
+      console.log(
+        `[lum] ✅ ${cs.count} promotable candidates = ${cs.fromVisual} visual rows + ` +
+          `${cs.fromNearby} nearby stars with no sprite.\n` +
+          "      🔑 Neither catalogue is a superset: stars_visual.bin is V ≤ 6.5\n" +
+          "      APPARENT (bright, mostly distant) and stars_nearby.json is\n" +
+          "      distance-limited (close, mostly faint). Proxima is in exactly one.",
+      );
+    }
+    cands.sort((a, b) => b.solid - a.solid);
+    console.table(
+      cands.slice(0, topN).map((c) => ({
+        row: c.row,
+        "dist (ly)": Number(c.distLy.toPrecision(5)),
+        magV: Number(c.magV.toPrecision(3)),
+        "T_eff (K)": Math.round(c.tempK),
+        "R (R☉)": Number(c.rSun.toPrecision(4)),
+        "angular radius (rad)": c.solid.toExponential(3),
+        "angular diameter (arcsec)": Number(
+          (2 * c.solid * 206264.806).toPrecision(3),
+        ),
+      })),
+    );
+    console.log(
+      `[lum] largest derived radius ${maxRsun.toFixed(0)} R☉ (row ${maxRow}).`,
+    );
+    if (maxRsun > 3000 || !Number.isFinite(maxRsun)) {
+      console.error(
+        `[lum] ❌ ${maxRsun.toFixed(0)} R☉ is not a star — the largest known is ~2150 ` +
+          "(Stephenson 2-18).\n" +
+          "      Suspect a formula being evaluated outside its published domain:\n" +
+          "      temperatureFromBV clamps B−V to [-0.4, 2.0], bolometricCorrectionV\n" +
+          "      clamps log10(T) to [3.5, 4.6]. Removing either clamp reproduces\n" +
+          "      radii up to 1.1e13 R☉.",
+      );
+    } else {
+      console.log(
+        "[lum] ✅ every derived radius is physical (≤ 3000 R☉).\n" +
+          "      🔑 Sanity-check the table by NAME, which the derivation never sees:\n" +
+          "      the top rows should be Antares, Betelgeuse, Aldebaran, Gacrux and\n" +
+          "      Arcturus — the largest angular diameters in the real sky.",
+      );
+    }
+    return {
+      count,
+      usable,
+      usableFraction: Number((usable / count).toPrecision(4)),
+      largestRadiusRsun: Number(maxRsun.toPrecision(5)),
+      top: cands.slice(0, topN).map((c) => ({
+        row: c.row,
+        distLy: Number(c.distLy.toPrecision(5)),
+        magV: Number(c.magV.toPrecision(3)),
+        tempK: Math.round(c.tempK),
+        rSun: Number(c.rSun.toPrecision(4)),
+      })),
+      allRadiiPhysical: maxRsun <= 3000 && Number.isFinite(maxRsun),
+    };
+  }
+
+  /** `__lum.skyParallax(false)` — freeze the cube/probe re-bakes for an A/B. */
+  skyParallax(enabled: boolean): void {
+    setSkyParallaxUpdates(enabled);
+    console.log(
+      `[lum] sky parallax updates ${enabled ? "ON" : "FROZEN"} — ` +
+        "the sprite field still moves; only the environment cube and the SH probe " +
+        "stop tracking it.",
+    );
+    console.table(skyParallaxStatus());
+  }
+
+  /**
+   * SKY CAPTURE GATE (§15) — is the environment cube encoded independently of
+   * adaptation, and does it sit inside half-float?
+   *
+   * 🔑 THIS IS THE CHECK THE CAPTURE NEVER HAD. `skyProbe()` validates the capture's
+   * INPUTS (that `uPsfNorm` was retargeted to the cube face) and says so explicitly;
+   * nothing looked at its OUTPUT. Two defects lived in that gap:
+   *
+   *  • the display lift was load-bearing for half-float headroom, so a correct lift
+   *    of 1.0 in deep space captured a BLACK environment;
+   *  • `uPreExposure` was applied in the sky graphs AND again on the environment
+   *    node — pre-exposure SQUARED. Invisible at startup, because the capture runs
+   *    before the exposure follower's first readback lands and `preExposure ≈ 1`.
+   *
+   * ── WHAT IT DOES ────────────────────────────────────────────────────────────
+   * 1. reports the encode scale and asserts the round trip is EXACTLY 1 (the scale
+   *    is a power of two, so it must be);
+   * 2. reads back all six faces and reports where the stored texels sit against
+   *    half-float's limits — including how many underflowed to zero, which is the
+   *    failure mode that started all of this;
+   * 3. RE-CAPTURES under a deliberately absurd pre-exposure and with the lift off,
+   *    and asserts the texels are unchanged. That is a falsification test of exactly
+   *    the property being claimed, and it needs no flux model to interpret.
+   *
+   * ⚠ Takes ~1 s and re-captures the cube three times. The sky goes dark on screen
+   * for a few frames while the lift is forced off; the frame itself does not change
+   * brightness, because the post chain divides the pre-exposure override back out.
+   */
+  async skyCapture(): Promise<Record<string, unknown> | null> {
+    if (!_source) {
+      console.error("[lum] no probe source registered — reload the page.");
+      return null;
+    }
+    const { renderer } = _source;
+    const rt = getSkyCubeTarget();
+    if (!rt || !isSkyCubeCaptured()) {
+      console.error(
+        "[lum] no sky cube yet. It starts a few frames after MilkyWaySkybox mounts\n" +
+          "      and is AMORTISED to one face per frame, so a full set needs ~6 more.\n" +
+          "      Reload and retry; if it never appears, skySpecularStatus().pendingFace\n" +
+          "      will show whether a sequence is stuck part-way.",
+      );
+      return null;
+    }
+
+    const N = SKY_CUBE_SIZE;
+    /** Smallest half-float with a full mantissa. Below this, precision degrades. */
+    const HALF_MIN_NORMAL = 2 ** -14;
+    const HALF_MAX = 65504;
+
+    // ⚠ NOT `decodeRgb` — it divides by `getPreExposure()`, which is right for the
+    // scene buffer and WRONG here. The whole point of §15 is that these texels carry
+    // no pre-exposure, so dividing it out would reintroduce the very dependence the
+    // falsification test below is trying to disprove.
+    const readCube = async () => {
+      let wSum = 0;
+      let wLum = 0;
+      let max = 0;
+      let minNonZero = Infinity;
+      let zeros = 0;
+      let subnormals = 0;
+      let nonFinite = 0;
+      for (let f = 0; f < 6; f++) {
+        const raw = await renderer.readRenderTargetPixelsAsync(rt, 0, 0, N, N, 0, f);
+        const isHalf = raw instanceof Uint16Array;
+        const buf = raw as unknown as ArrayLike<number>;
+        const stride = rowStrideElements(N, isHalf ? 2 : 4);
+        for (let y = 0; y < N; y++) {
+          const v = (2 * (y + 0.5)) / N - 1;
+          for (let x = 0; x < N; x++) {
+            const u = (2 * (x + 0.5)) / N - 1;
+            // ⚠ dΩ ∝ (1 + u² + v²)^(−3/2). A cube face's texels do NOT subtend equal
+            // solid angles — a corner texel subtends 3^(−3/2) = 0.192× a centre one —
+            // so an unweighted mean over-counts the corners and cannot be compared
+            // against a whole-sky radiance.
+            const w = (1 + u * u + v * v) ** -1.5;
+            const b = y * stride + x * 4;
+            const d = (k: number) => {
+              const t = buf[b + k] ?? 0;
+              return isHalf ? halfToFloat(t) : t;
+            };
+            const lum = REC709[0] * d(0) + REC709[1] * d(1) + REC709[2] * d(2);
+            if (!Number.isFinite(lum)) {
+              nonFinite++;
+              continue;
+            }
+            wSum += w;
+            wLum += w * lum;
+            if (lum > max) max = lum;
+            if (lum === 0) zeros++;
+            else {
+              if (lum < minNonZero) minNonZero = lum;
+              if (lum < HALF_MIN_NORMAL) subnormals++;
+            }
+          }
+        }
+      }
+      return {
+        mean: wLum / Math.max(wSum, 1e-30),
+        max,
+        minNonZero: Number.isFinite(minNonZero) ? minNonZero : 0,
+        zeros,
+        subnormals,
+        nonFinite,
+        texels: 6 * N * N,
+      };
+    };
+
+    // ── 1. The encoding ──────────────────────────────────────────────────────
+    const enc = skyCaptureEncodeStatus();
+    console.log(
+      `[lum] encode scale ×${enc.scale.toExponential(4)} (2^${Math.log2(enc.scale).toFixed(2)}), ` +
+        `decode ×${enc.decode.toExponential(4)} → round trip ${enc.roundTrip}`,
+    );
+    if (enc.roundTrip === 1) {
+      console.log(
+        "[lum] ✅ round trip is EXACTLY 1 — the scale is a power of two, so " +
+          "decoupling the encode adds no photometric error at all.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ round trip is ${enc.roundTrip}, not 1. skyCaptureScaleFor must ` +
+          "return a power of two or the decode is lossy.",
+      );
+    }
+    if (enc.liveCaptureScale !== 1) {
+      console.error(
+        `[lum] ❌ uSkyCaptureScale is ${enc.liveCaptureScale}, not 1, OUTSIDE a ` +
+          "capture. The sky is being drawn to screen at the encode scale — " +
+          "withSkyCaptureEncode's finally did not run.",
+      );
+    }
+
+    // ── 2. Where the texels sit in half-float ────────────────────────────────
+    const before = await readCube();
+    const panoMean = getPanoramaMeanRadiance();
+    console.table({
+      "stored mean (Ω-weighted)": before.mean.toExponential(4),
+      "stored max": before.max.toExponential(4),
+      "stored min (non-zero)": before.minNonZero.toExponential(4),
+      "headroom to 65504": `${(HALF_MAX / Math.max(before.max, 1e-30)).toExponential(2)}× (${Math.log2(HALF_MAX / Math.max(before.max, 1e-30)).toFixed(1)} stops)`,
+      "margin over smallest normal": `${(before.minNonZero / HALF_MIN_NORMAL).toExponential(2)}× (${Math.log2(Math.max(before.minNonZero, 1e-30) / HALF_MIN_NORMAL).toFixed(1)} stops)`,
+      // ⚠ Zeros are NOT automatically underflow: the starless panorama has genuinely
+      // black texels away from the galactic plane, and 0 stores exactly. The
+      // discriminator is the min-non-zero margin above — an underflowing capture has
+      // no small-but-representable values at all, just zeros and a few bright stars.
+      "texels stored as exactly 0": `${before.zeros} / ${before.texels}`,
+      "texels in the subnormals": `${before.subnormals} / ${before.texels}`,
+      "non-finite texels": before.nonFinite,
+    });
+    if (before.nonFinite > 0) {
+      console.error(
+        `[lum] ❌ ${before.nonFinite} texels are Inf/NaN. The encode scale is too ` +
+          "large for the brightest star in the field, and PMREM will smear them " +
+          "across the whole mip chain.",
+      );
+    }
+    if (before.max > HALF_MAX * 0.5) {
+      console.error("[lum] ❌ within 1 stop of the half-float ceiling.");
+    }
+    // The implied PHYSICAL whole-sky mean. Expected a little ABOVE the panorama's
+    // own mean: the cube also holds the star sprites, which carry ~19.5% of the
+    // sky's flux — though `starCompressionFactor` dims every catalogued star (it is
+    // ≤ 1 for every m ≤ 6.5), so the excess is smaller than 1/0.805 = 1.242.
+    const impliedPhysical = before.mean / Math.max(enc.scale, 1e-30);
+    console.log(
+      `[lum] implied physical sky mean ${impliedPhysical.toExponential(4)} game units ` +
+        `vs panorama-only ${panoMean.toExponential(4)} → ${(impliedPhysical / Math.max(panoMean, 1e-30)).toFixed(3)}×`,
+    );
+    console.log(
+      "[lum] ⚠ expect between 1.0 and 1.24: the cube carries the panorama PLUS the\n" +
+        "      star sprites (19.5% of sky flux at full strength, less after the\n" +
+        "      magnitude compression). ≈0 → the capture underflowed, which is the\n" +
+        "      defect this whole section exists to prevent. ≫1.24 → a resolution or\n" +
+        "      encode error; run __lum.skyProbe() for the input-side check.",
+    );
+
+    // ── 3. THE FALSIFICATION TEST ────────────────────────────────────────────
+    // Re-capture with both per-frame display factors deliberately wrong. If the
+    // decoupling works the texels cannot move, whatever adaptation is doing.
+    const savedOverride = getPreExposureOverride();
+    const savedMode = getStarLiftMode();
+    const factorBefore = enc.captureDisplayFactor;
+    setPreExposureOverride((getPreExposure() || 1) * 997);
+    setStarLiftMode("off");
+    await sleepFrames(3);
+    invalidateSkyCube();
+    // ⚠ 12, not 6: the capture is amortised to one face per frame, so a full set
+    // needs 6 frames plus slack. Reading early would compare a HALF-REPLACED cube
+    // and report a bogus ratio that looks like a real defect.
+    await sleepFrames(12);
+    const enc2 = skyCaptureEncodeStatus();
+    const after = await readCube();
+    setPreExposureOverride(savedOverride);
+    setStarLiftMode(savedMode);
+    await sleepFrames(2);
+    invalidateSkyCube();
+    await sleepFrames(12);
+
+    const factorRatio = enc2.captureDisplayFactor / Math.max(factorBefore, 1e-30);
+    const meanRatio = after.mean / Math.max(before.mean, 1e-30);
+    console.log(
+      `[lum] display factor at capture: ${factorBefore.toExponential(3)} → ` +
+        `${enc2.captureDisplayFactor.toExponential(3)} (${factorRatio.toExponential(3)}× different)`,
+    );
+    console.log(
+      `[lum] stored mean: ${before.mean.toExponential(5)} → ${after.mean.toExponential(5)} ` +
+        `→ ${meanRatio.toFixed(6)}×`,
+    );
+    const invariant = Math.abs(meanRatio - 1) < 5e-3;
+    if (Math.abs(factorRatio - 1) < 0.01) {
+      console.warn(
+        "[lum] ⚠ INCONCLUSIVE — the display factor barely moved, so nothing was " +
+          "tested. Pre-exposure is probably pinned; call __lum.auto() and retry.",
+      );
+    } else if (invariant) {
+      console.log(
+        `[lum] ✅ the cube is ADAPTATION-FREE: the display factor changed by ` +
+          `${factorRatio.toExponential(2)}× and the stored texels did not move ` +
+          "(within half-float rounding). A re-capture on an interstellar jump is " +
+          "therefore safe at any exposure — which it was not before §15.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ the cube still depends on adaptation: ${meanRatio.toExponential(3)}× ` +
+          `against a ${factorRatio.toExponential(3)}× change in the display factor.\n` +
+          `      ${Math.abs(Math.log(meanRatio) / Math.log(factorRatio) - 1) < 0.2 ? "The ratios track, so a display factor is NOT being divided out — check that BOTH sky graphs end in .mul(uSkyCaptureScale)." : "The ratios do not track; suspect a THIRD factor in one of the two sky graphs."}`,
+      );
+    }
+
+    return {
+      scale: enc.scale,
+      roundTrip: enc.roundTrip,
+      storedMean: Number(before.mean.toPrecision(5)),
+      storedMax: Number(before.max.toPrecision(5)),
+      storedMinNonZero: Number(before.minNonZero.toPrecision(5)),
+      zeros: before.zeros,
+      subnormals: before.subnormals,
+      nonFinite: before.nonFinite,
+      impliedPhysicalMean: Number(impliedPhysical.toPrecision(5)),
+      panoramaMean: Number(panoMean.toPrecision(5)),
+      displayFactorRatio: Number(factorRatio.toPrecision(5)),
+      storedMeanRatio: Number(meanRatio.toPrecision(6)),
+      adaptationFree: invariant,
+    };
+  }
+
+  /**
    * LIMB DARKENING GATE (R4, docs/STAR_RENDERING_PLAN.md §11).
    *
    * The profile is DERIVED from `T_eff` alone through an Eddington grey atmosphere
@@ -4861,6 +5854,8 @@ type NamedStar = {
 };
 let _namedStars: NamedStar[] | null = null;
 const _starDir = new Vector3();
+/** The star's 3D position, game frame, light-years. Scratch — never allocate. */
+const _starPosLy = new Vector3();
 
 let _harness: LumHarness | null = null;
 

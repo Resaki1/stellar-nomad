@@ -151,8 +151,19 @@ export function accumulatePointSource(
  * blob — the same pass that builds the instance buffer, so this costs one extra
  * multiply-add per star and no extra iteration.
  *
- * Recomputed on an interstellar jump for free, because a jump re-derives every
- * star's DIRECTION from its stored 3D position (plan §3.1) and therefore re-parses.
+ * ⚠⚠ THIS COMMENT USED TO CLAIM the interstellar case was "recomputed on a jump for
+ * free, because a jump re-derives directions and therefore re-parses". It was false
+ * in both halves: nothing re-parsed (the parse runs from a `useEffect` keyed on a
+ * url that never changes) and a re-parse would not be free (the per-star
+ * blackbody×CMF integral is ~88 ms of the ~89 ms parse). `StarField`'s
+ * `rebakeCatalogueShFor` is the real path — it re-runs only the ~0.84 ms
+ * accumulation, reading the colours back out of the parsed rows — and
+ * `space/skyParallax.ts` decides when.
+ *
+ * ⚠ Stores the array BY REFERENCE, and this is the ONLY thing that sets
+ * `_combinedDirty`. So a caller that mutates the array it already handed over
+ * leaves `getSkySh()` returning the previous sum for ever. Always accumulate into a
+ * fresh array and publish it here.
  */
 export function setCatalogueSh(sh: ShCoefficients | null): void {
   _catalogueSh = sh;
@@ -477,11 +488,19 @@ export type SkyShUniforms = {
   /** 9 vec3 uniforms, PRE-EXPOSED (see updateSkyShUniforms). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sh: any[];
+  /** `getSkyShVersion()` these uniforms were filled from. −1 = never. */
+  version: number;
+  /** Pre-exposure they were filled with, so a moving exposure still refreshes. */
+  preExposure: number;
 };
 
 /** Nine zeroed vec3 uniforms. Owned by `CelestialBody`, one set per body. */
 export function createSkyShUniforms(): SkyShUniforms {
-  return { sh: Array.from({ length: 9 }, () => uniform(new THREE.Vector3())) };
+  return {
+    sh: Array.from({ length: 9 }, () => uniform(new THREE.Vector3())),
+    version: -1,
+    preExposure: NaN,
+  };
 }
 
 /**
@@ -497,11 +516,20 @@ export function createSkyShUniforms(): SkyShUniforms {
  * coefficients and must keep seeing absolute units.
  *
  * 🔑 Cached on `getSkyShVersion()` × the pre-exposure, so a static sky costs one
- * float compare per body per frame.
+ * compare per body per frame instead of nine `Vector3` copies.
+ *
+ * ⚠ The comment above claimed that cache before this line existed — it was copying
+ * unconditionally for every body, every tier, every frame. Worth fixing rather than
+ * deleting the claim now that R7f makes the version ACTUALLY change: a stale-cache
+ * bug would present as a planet's night side frozen at the previous system.
  */
 export function updateSkyShUniforms(u: SkyShUniforms, preExposure: number): void {
   const sh = getSkySh();
   if (!sh) return;
+  const v = getSkyShVersion();
+  if (u.version === v && u.preExposure === preExposure) return;
+  u.version = v;
+  u.preExposure = preExposure;
   for (let i = 0; i < 9; i++) {
     u.sh[i].value.copy(sh[i]).multiplyScalar(preExposure);
   }
