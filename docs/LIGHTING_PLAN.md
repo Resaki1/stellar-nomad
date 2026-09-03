@@ -87,7 +87,10 @@ Closed defects: D01, D02, D03, D03b, D05, D08, D10, D11, D15, D17, D18, D22, D24
   and position** change means a genuine nonlinearity in the shell path. Candidates: the AP target's
   `(L, Tmean)` split, the extra half-float hops through the sparse/history RTs, the opacity LUT. Needs
   `SHELL_DEBUG_VIZ`, not speculation — see `CLOUD_DEBUGGING_LESSONS.md`.
-- **`HOT_COMPRESS_EXPONENT = 0.25` is an artistic knob**, not a derived constant. With the sun in frame
+- **`HOT_COMPRESS_EXPONENT` is an artistic knob**, not a derived constant. ⚠ **DOC DRIFT
+  RESOLVED 2026-09-02: the code says `0.5`** ([`exposureMeter.ts:141`](../src/components/space/exposureMeter.ts:141)),
+  not the `0.25` this line used to state. The code is the authority; 0.25 was never in it.
+  With the sun in frame
   the hot tail is 98% of flux and the compressor holds back 4.4 stops, lifting the reading only 1.27.
   Raise the exponent toward 1.0 to make staring at the sun genuinely punishing.
 
@@ -1163,10 +1166,10 @@ ordered so the risky look-changing work happens only after the measurement tools
 | **3b** ✅ | `CORE_HDR` 4096 → **`SUN_DISC_RADIANCE_GAME` ≈ 265,000** (derived, distance-independent) + `HALF_FLOAT_WRITE_MAX` clamp + **sub-pixel flux conservation**; star radius and **blackbody T_eff colour** from the system description | the sun disc becomes physically bright; steady (not strobing) in the outer system | medium |
 | **4** ✅ | **CLOSED, measured 0.29 stops worst / 0.32 stops worst jump.** Unified impostor radiance across all three LOD tiers; lunar-Lambert phase; delete `REFERENCE_HDR`/`JUPITER_REF_FLUX`/`fade`/the `500` clamp/`mars.ts:109`'s `12.0`; PSF splat for sub-pixel bodies | Moon, Venus and Mars finally read correctly | medium |
 | **5** ✅ | **Auto-exposure / eye adaptation**: centre-weighted log-average metering, **PARTIAL** adaptation (Stevens' ⅓), asymmetric cone/rod time constants, + the **skybox rescaled to absolute luminance** (measured 189,000× hot) | the "eye" arrives; stars become visible in deep space and vanish when the sun enters frame | medium |
-| **6** ⛔ | **HDR display output + calibration screen; P3 path.** Validate on the M2 Pro XDR panel | HDR displays gain real headroom | low |
+| **6** ✅ | **HDR display output** — LANDED (confirmed on device by the author, 2026-09-02). ⚠ Two sub-goals were investigated and CLOSED NEGATIVE rather than built: the **P3 path** (stars measured 100% in-gamut, so wide gamut buys nothing here) and the **C1-continuous headroom extension** past AgX's clamp (measured unreachable). The remaining AgX clamp is the documented limit, not an open task | HDR displays gain real headroom | low |
 | **7** ✅ | Scotopic/mesopic vision model + Purkinje shift (§3.9b) — LANDED. ⚠⚠ The second half, "fix the skybox's absolute luminance", was ATTEMPTED AND REVERTED — see P7d/a/b. It is **not a Phase 7 task at all**: most of the star gain is PSF-concentration compensation, which is Phase 8's job | deep space becomes night-vision quiet, not underexposed daylight | low |
-| **8** ✅ | PSF glare replacing mip-chain bloom, energy-conserving — LANDED. ⚠ The "driven by the star-flux uniform" half is NOT done: the buffer clamps at 60,000 while the sun disc is 2.65e5, so the SUN's glare is 4.4× (2.1 stops) too weak. See P8d | the sun becomes blinding; stars veil correctly | medium |
-| **9** ⛔ | Night-side stack: city lights at absolute luminance, moonlight, airglow, aurora | night side becomes quietly alive | low |
+| **8** ✅ | PSF glare replacing mip-chain bloom, energy-conserving — LANDED. ✅ **P8d CLOSED 2026-09-01 by STAR_RENDERING_PLAN §9.8 (R3b)**: an ANALYTIC point-source glare term, fed the star's per-channel clipped-flux deficit, replaced the "read it back from a clamped buffer" approach entirely — so the 4.4× shortfall is gone rather than reduced. The pyramid path still handles everything that is not the primary star. | the sun becomes blinding; stars veil correctly | medium |
+| **9** 🔶 | Night-side stack. ✅ **Step 1 (P9a)**: every body's night side is lit by the real sky from the SH-L2 probe, generic for procedural bodies, validated against the Leinert decomposition. ✅ **Moonlight** exists. ⛔ **City lights: CANCELLED BY SETTING** — this is post-apocalyptic, and the texture was removed deliberately; do not put it back. ⛔ Remaining: **airglow** and **aurora**. 🔑 Airglow is the bigger of the two by a distance: it is **145 of the 330 S10** in Leinert's decomposition — **44% of Earth's night sky, its single largest component** — so a night side is currently missing its dominant illuminant. Aurora needs a magnetospheric oval model and is a much larger piece | night side becomes quietly alive | low |
 
 **Per-phase on-device checks** are the corresponding `__lum.sweep()` rows plus a look pass at:
 ground / low orbit / high orbit / deep space / sunrise / night side / Neptune / looking at the sun.

@@ -43,10 +43,7 @@ import NearbyStarDisc from "../Star/NearbyStarDisc";
 // 🔑 The primary is passed IN, not read from inside Star — that is the seam a
 // generated system (or a catalogue star flown to) plugs into. STAR_RENDERING_PLAN §8.
 import {
-  STAR_POSITION_KM,
-  STAR_RADIUS_KM,
-  STAR_TEMP_K,
-  STAR_LUMINOSITY_SUN,
+  systemStars,
 } from "@/sim/celestialConstants";
 import SunLight from "../Star/SunLight";
 import StarLights from "../Star/StarLights";
@@ -109,6 +106,15 @@ function PerfProbe() {
   return null;
 }
 
+/**
+ * The active system's stars, resolved once.
+ *
+ * ⚠ Module scope on purpose. The list's IDENTITY must be stable so the `useMemo`
+ * below does not rebuild the scaled scene, and its `positionKm` arrays are the live
+ * ephemeris references — so resolving once costs nothing and freezes nothing.
+ */
+const SYSTEM_STARS = systemStars();
+
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
@@ -141,24 +147,42 @@ const Scene = () => {
         <Europa />
         <Ganymede />
         <Io />
-        <Star
-          positionKm={STAR_POSITION_KM}
-          radiusKm={STAR_RADIUS_KM}
-          tempK={STAR_TEMP_K}
-          luminositySun={STAR_LUMINOSITY_SUN}
-          // ⚠⚠ R7f: THE PRIMARY GETS THE DISPLAY LIFT TOO, and it has to. Once you
-          // are 4 ly out, Sol is a magnitude 0.44 star — one of the brighter things
-          // in that sky — and every star around it carries `lift × compression`.
-          // Without this the one star you came from would render ~110× (6.8 stops)
-          // dimmer than its catalogue neighbours of the same apparent magnitude.
-          //
-          // ⚠ Safe at 1 AU only because of `Star`'s resolution-gated gain: the
-          // exponent `1 − fluxScale` is exactly 0 for a resolved disc, so the gain is
-          // exactly 1 and the sun is untouched. MEASURED: the plain
-          // `min(G, 1/fluxScale)` form would have DIMMED it 7.66 stops here, because
-          // the live compression drives G to 5e-3 for a magnitude −26.8 object.
-          applyDisplayLift
-        />
+        {/* ── R7c: ONE `<Star>` PER STAR OF THE ACTIVE SYSTEM ────────────────
+            🔑 Was a single hardcoded mount reading four `STAR_*` module constants.
+            `systemStars()` is now the only place the system's stars are chosen, so a
+            binary destination renders both suns with no change here — which is what
+            R7g is blocked on.
+
+            ⚠ `positionKm` is passed by REFERENCE, deliberately: it is the live array
+            the ephemeris rewrites in place, so a component's orbit around a
+            barycentre reaches `Star` with no per-frame prop churn. Spreading or
+            copying it here would freeze the star where it was at mount. */}
+        {SYSTEM_STARS.map((s) => (
+          <Star
+            key={s.id}
+            positionKm={s.positionKm}
+            radiusKm={s.radiusKm}
+            tempK={s.tempK}
+            luminositySun={s.luminositySun}
+            // ⚠⚠ R7f: THE PRIMARY GETS THE DISPLAY LIFT TOO, and it has to. Once you
+            // are 4 ly out, Sol is a magnitude 0.44 star — one of the brighter things
+            // in that sky — and every star around it carries `lift × compression`.
+            // Without this the one star you came from would render ~110× (6.8 stops)
+            // dimmer than its catalogue neighbours of the same apparent magnitude.
+            //
+            // ⚠ Safe at 1 AU only because of `Star`'s resolution-gated gain: the
+            // exponent `1 − fluxScale` is exactly 0 for a resolved disc, so the gain
+            // is exactly 1 and the sun is untouched. MEASURED: the plain
+            // `min(G, 1/fluxScale)` form would have DIMMED it 7.66 stops here,
+            // because the live compression drives G to 5e-3 for a magnitude −26.8
+            // object.
+            applyDisplayLift
+            // ⚠ Only `stars[0]` owns `starLodStatus` and the R3b point-glare uniform:
+            // they hold ONE star, so a second sun would make `__lum.starGlare()`
+            // report whichever component ran last in the frame.
+            primary={s.id === SYSTEM_STARS[0].id}
+          />
+        ))}
         {/* R2b/R7d: a fixed pool of catalogue stars rendered as discs, not sprites. */}
         <NearbyStarDisc />
       </>

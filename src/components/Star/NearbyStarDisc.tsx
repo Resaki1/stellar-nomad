@@ -20,6 +20,7 @@ import {
 } from "@/components/space/starLodStatus";
 import {
   makeTierGate,
+  safeMoveDistance,
   tierNeedsReselect,
   tierSelected,
 } from "@/components/space/starTierGate";
@@ -102,7 +103,7 @@ export type PromotedStar = {
   magV: number;
 };
 
-type Slot = { row: number; solid: number };
+type Slot = { row: number; solid: number; distKm: number };
 
 function NearbyStarDisc() {
   const worldOrigin = useWorldOrigin();
@@ -111,10 +112,15 @@ function NearbyStarDisc() {
     Array.from({ length: POOL }, () => null),
   );
   const poolRef = useRef<Slot[]>(
-    Array.from({ length: POOL }, () => ({ row: -1, solid: 0 })),
+    Array.from({ length: POOL }, () => ({ row: -1, solid: 0, distKm: 0 })),
   );
-  /** Scratch, allocated once to the catalogue's length and mutated. */
-  const scratch = useRef<Slot[]>([]);
+  /**
+   * The running top-(POOL+1), allocated once. ⚠ Not a scratch array over the whole
+   * candidate list — see the note at the scan. That is the point.
+   */
+  const topRef = useRef<Slot[]>(
+    Array.from({ length: POOL + 1 }, () => ({ row: -1, solid: 0, distKm: 0 })),
+  );
   const gate = useRef(makeTierGate());
 
   useEffect(() => {
@@ -141,8 +147,52 @@ function NearbyStarDisc() {
     if (!tierNeedsReselect(gate.current, sx, sy, sz)) return;
 
     const { count, data, stride } = cand;
-    const ranked = scratch.current;
-    while (ranked.length < count) ranked.push({ row: -1, solid: 0 });
+    const pool = poolRef.current;
+
+    // ── The incumbents' LIVE values, read directly by row ────────────────────
+    // Their rows are known before the scan, so there is nothing to search for.
+    for (let i = 0; i < POOL; i++) {
+      const row = pool[i].row;
+      if (row < 0 || row >= count) {
+        pool[i].solid = 0;
+        pool[i].distKm = 0;
+        continue;
+      }
+      const o = row * stride;
+      const dx = data[o] * LY_IN_KM - sx;
+      const dy = data[o + 1] * LY_IN_KM - sy;
+      const dz = data[o + 2] * LY_IN_KM - sz;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      pool[i].solid = data[o + 3] / d;
+      pool[i].distKm = d;
+    }
+
+    // ── 🐛🐛 A RUNNING TOP-(POOL+1), NOT A FULL SORT ─────────────────────────
+    // This was `ranked.slice(0, count).sort((a, b) => b.solid - a.solid)` — an
+    // n·log n JS-comparator sort of every candidate, plus a fresh n-pointer array,
+    // on every selection. MEASURED (V8, same code shape, scan split from sort):
+    //
+    //     N        scan only   slice+sort   running top-4
+    //     8,848    0.047 ms    1.781 ms     0.034 ms     52×
+    //     30,000   0.126 ms    7.234 ms     0.117 ms     62×
+    //
+    // The sort was 96.4% of the selection's cost and the only superlinear term in
+    // the whole star path — and at 30,000 candidates the replacement is 15× cheaper
+    // than the sort was at 8,848.
+    //
+    // ⚠⚠ AND IT WAS ALREADY COSTING FRAMES, because the movement gate provably
+    // cannot fire at interstellar speed: `safeMoveDistance` is hard-capped at
+    // `d_nearest` by construction, and E[d_nearest] at the local stellar density is
+    // ~3.6 ly against 8.3 ly of travel per frame at 1000 ly/s. So above ~100 ly/s
+    // every selection ran every frame and the measured 0.9983 skip rate was a
+    // parked-in-the-solar-system property.
+    //
+    // 🔑 `POOL + 1` is exactly enough and not a guess: at most POOL entries can be
+    // held, so a top-(POOL+1) always contains at least one unheld challenger — which
+    // is the only thing the swap logic needs. The marker tier already does this.
+    const TOP = POOL + 1;
+    const top = topRef.current;
+    let topN = 0;
     let nearestKm = Infinity;
     for (let i = 0; i < count; i++) {
       const o = i * stride;
@@ -151,11 +201,19 @@ function NearbyStarDisc() {
       const dz = data[o + 2] * LY_IN_KM - sz;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
       if (d < nearestKm) nearestKm = d;
-      ranked[i].row = i;
-      ranked[i].solid = data[o + 3] / d;
+      const solid = data[o + 3] / d;
+      // Skip the common case in one compare: not better than the weakest kept.
+      if (topN === TOP && solid <= top[TOP - 1].solid) continue;
+      let j = topN < TOP ? topN++ : TOP - 1;
+      for (; j > 0 && top[j - 1].solid < solid; j--) {
+        top[j].row = top[j - 1].row;
+        top[j].solid = top[j - 1].solid;
+        top[j].distKm = top[j - 1].distKm;
+      }
+      top[j].row = i;
+      top[j].solid = solid;
+      top[j].distKm = d;
     }
-    const head = ranked.slice(0, count).sort((a, b) => b.solid - a.solid);
-    tierSelected(gate.current, sx, sy, sz, nearestKm);
     setStarTierGateStat(
       "disc",
       gate.current.runs,
@@ -163,27 +221,33 @@ function NearbyStarDisc() {
       Math.sqrt(gate.current.budgetSq),
     );
 
-    const pool = poolRef.current;
-    // 🐛 Hysteresis compares against the incumbent's angular size RIGHT NOW. An
-    // earlier version compared against the value the incumbent had WHEN IT WON,
-    // which is stale the moment you move: after warping to Sirius, nothing could
-    // ever beat the recorded value again and the promotion stuck on Sirius for
-    // ever. That was the reported "some stars only show up if I warp to 1e-4 AU"
-    // and its mirror "once loaded it stays visible when I warp away".
-    const liveSolid = (row: number): number =>
-      row < 0 ? 0 : head.find((r) => r.row === row)?.solid ?? 0;
-    for (let i = 0; i < POOL; i++) pool[i].solid = liveSolid(pool[i].row);
-
+    // 🐛 Hysteresis compares against the incumbent's angular size RIGHT NOW — read
+    // above, directly by row. An earlier version compared against the value the
+    // incumbent had WHEN IT WON, which is stale the moment you move: after warping to
+    // Sirius, nothing could ever beat the recorded value again and the promotion
+    // stuck on Sirius for ever. That was the reported "some stars only show up if I
+    // warp to 1e-4 AU" and its mirror "once loaded it stays visible when I warp away".
+    //
     // Commit at most ONE swap: the best challenger not already in the pool takes the
     // weakest slot, and only if it beats it by the margin. One at a time converges in
     // a few selections and cannot oscillate between two orderings.
     let changed = false;
     const isHeld = (row: number) => pool.some((p) => p.row === row);
     const emptySlot = pool.findIndex((p) => p.row < 0 || p.solid === 0);
-    const challenger = head.find((r) => !isHeld(r.row));
+    let challenger: Slot | undefined;
+    for (let i = 0; i < topN; i++) {
+      if (!isHeld(top[i].row)) {
+        challenger = top[i];
+        break;
+      }
+    }
     if (challenger) {
       if (emptySlot >= 0) {
-        pool[emptySlot] = { row: challenger.row, solid: challenger.solid };
+        pool[emptySlot] = {
+          row: challenger.row,
+          solid: challenger.solid,
+          distKm: challenger.distKm,
+        };
         changed = true;
       } else {
         let weakest = 0;
@@ -191,11 +255,57 @@ function NearbyStarDisc() {
           if (pool[i].solid < pool[weakest].solid) weakest = i;
         }
         if (challenger.solid > pool[weakest].solid * SWAP_MARGIN) {
-          pool[weakest] = { row: challenger.row, solid: challenger.solid };
+          pool[weakest] = {
+            row: challenger.row,
+            solid: challenger.solid,
+            distKm: challenger.distKm,
+          };
           changed = true;
         }
       }
     }
+    // ── The movement budget, from the MARGIN rather than from a distance ──────
+    // 🔑 The pool cannot change until the weakest member's `R/d` crosses the best
+    // challenger's, so that margin is what bounds a safe move — not how far away the
+    // nearest star happens to be. See `safeMoveDistance`; k = 1 because the disc
+    // tier's selector is R/d.
+    let weakest = 0;
+    for (let i = 1; i < POOL; i++) {
+      if (pool[i].solid < pool[weakest].solid) weakest = i;
+    }
+    // The best challenger AFTER the swap — recomputed because the swap changed
+    // membership, and the budget must bound the NEW pool, not the old one.
+    let chall: Slot | undefined;
+    for (let i = 0; i < topN; i++) {
+      if (!isHeld(top[i].row)) {
+        chall = top[i];
+        break;
+      }
+    }
+    tierSelected(
+      gate.current,
+      sx,
+      sy,
+      sz,
+      nearestKm,
+      chall && pool[weakest].solid > 0
+        ? safeMoveDistance(
+            pool[weakest].solid / chall.solid,
+            // ⚠ The GLOBAL nearest, not min(dW, dC) — see safeMoveDistance. Using the
+            // pair's own distances reported a 164.7 ly budget on device and froze
+            // this pool for an entire journey.
+            nearestKm,
+            1,
+            SWAP_MARGIN,
+          )
+        : 0,
+    );
+    setStarTierGateStat(
+      "disc",
+      gate.current.runs,
+      gate.current.skipped,
+      Math.sqrt(gate.current.budgetSq),
+    );
     if (!changed) return;
 
     const next: (PromotedStar | null)[] = pool.map((p) => {

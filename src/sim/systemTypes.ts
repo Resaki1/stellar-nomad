@@ -380,6 +380,32 @@ export type SystemAssets = {
   asteroidModels?: AsteroidModelDef[];
 };
 
+/**
+ * A star of the active system (R7c).
+ *
+ * 🔑 THIS IS THE SEAM R2 NAMED AND NEVER CUT. Until now the primary was four module
+ * constants derived from `sol.json` — `STAR_POSITION_KM`, `STAR_RADIUS_KM`,
+ * `STAR_LUMINOSITY_SUN`, `STAR_TEMP_K` — read at 35 sites across 12 files. That is
+ * fine for one hardcoded system and cannot express two suns, which is what a
+ * destination system needs and what R7g is blocked on.
+ *
+ * ⚠ `positionKm` carries the SAME live-mutation contract as every `*_POSITION_KM` in
+ * `celestialConstants`: it is a mutable array the ephemeris rewrites in place, so
+ * consumers must read it per frame and must never spread, destructure or `useMemo`
+ * it. A binary's components orbit their barycentre, so this will matter.
+ */
+export type StarDef = {
+  id: string;
+  name: string;
+  /** ⚠ LIVE — rewritten in place by the ephemeris. Read per frame. */
+  positionKm: [number, number, number];
+  radiusKm: number;
+  /** Visual luminosity, solar units. Drives `sunIlluminanceAt`. */
+  luminositySun: number;
+  /** Effective temperature, K. Drives the blackbody colour and limb darkening. */
+  tempK: number;
+};
+
 export type SystemConfigV1 = {
   schemaVersion: 1;
   systemId: string;
@@ -401,6 +427,19 @@ export type SystemConfigV1 = {
   resources?: SystemResources;
   defaults?: SystemDefaults;
   assets?: SystemAssets;
+  /**
+   * The system's stars, primary first (R7c).
+   *
+   * ⚠ OPTIONAL, AND `sol.json` DELIBERATELY DOES NOT SET IT. When absent, the stars
+   * are DERIVED from `celestialBodies` where `type === "star"` — see
+   * `systemStars()`. Declaring Sol in both places would be two sources of truth for
+   * one star, which is the exact class of defect §18.5 and §21 were both about
+   * (46.8 AU and 2.26e6 km of disagreement respectively, from precisely that).
+   *
+   * Set it when a system has a star that is NOT a celestial body — a companion with
+   * no ephemeris, or a star whose bodies have not been generated yet.
+   */
+  stars?: StarDef[];
   celestialBodies?: CelestialBodyDef[];
   asteroidFields: AsteroidFieldDef[];
 };

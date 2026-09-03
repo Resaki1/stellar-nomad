@@ -14,7 +14,10 @@
  * construction:
  *
  *     stars_visual.bin    V ≤ 6.5 APPARENT   → bright, mostly distant (the naked-eye sky)
- *     stars_nearby.json   within ~50 ly      → close, mostly FAINT
+ *     stars_nearby.json   within 24.97 ly    → close, mostly FAINT
+ *
+ * ⚠ MEASURED from the file: its furthest star is at **24.97 ly**, not the ~50 ly four
+ * sites in this repo claimed. That matters for §26's suppression rule 2 — see the plan.
  *
  * MEASURED: only **31 of 166** nearby stars have a sprite row. The other 135 are all
  * fainter than V 6.5 — and they are exactly the stars a player would fly to:

@@ -50,6 +50,7 @@ import {
   starCompressionFactor,
   starIlluminanceGame,
 } from "@/components/Stars/StarField";
+import { markSystemFrame } from "@/sim/systemRegistry";
 import { STAR_ANCHOR_MAG, updateStarLift } from "./starVisibility";
 import { localExposureNode, updateExposureMeter } from "./exposureMeter";
 import {
@@ -1262,6 +1263,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // `updatePreExposureForFrame` is: sprites, the Milky Way band and a promoted
     // disc all read it, and a split-brain frame where they disagree is an
     // internally inconsistent sky.
+    // Lets `setActiveSystem` refuse a switch after startup — see systemRegistry.
+    markSystemFrame();
     updateStarLift(
       getPreExposure(),
       getStarPsfNorm(),

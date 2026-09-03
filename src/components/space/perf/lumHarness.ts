@@ -34,6 +34,8 @@
  *   __lum.starLights()                // GATE: which stars light the hull (R7e)
  *   __lum.starTiers()                 // how often the star pools re-rank (§18)
  *   __lum.starRows()                  // GATE: is every catalogue star promotable? (§19)
+ *   __lum.starSystem()                // GATE: the active system's stars (R7c)
+ *   __lum.population()                // GATE: the generated stellar population (§26)
  *   __lum.skyParallax(false)          // ...freeze the cube/probe re-bakes (A/B)
  *   __lum.units()                     // print the unit convention
  *
@@ -57,7 +59,7 @@ import type { createStore } from "jotai";
 import { Matrix4, Quaternion, Vector3 } from "three";
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 
-import solSystem from "@/sim/systems/sol.json";
+import { activeSystem } from "@/sim/systemRegistry";
 import { hdrCanvasStatus, probeHdrCanvas } from "@/components/space/hdrOutput";
 import {
   MAX_CODE_DELTA_VS_POLY,
@@ -114,7 +116,7 @@ import {
   temperatureFromBV,
 } from "@/components/space/starPhysics";
 import { BODY_PHOTOMETRY, bodyPhotometry } from "@/data/bodyPhotometry";
-import { STAR_RADIUS_KM } from "@/sim/celestialConstants";
+import { STAR_RADIUS_KM, STAR_TEMP_K, systemStars } from "@/sim/celestialConstants";
 import { sunOccluderList } from "@/components/space/sunOcclusion";
 import {
   AU_KM,
@@ -259,6 +261,13 @@ import {
 } from "@/components/space/skySpecular";
 import { skyCaptureEncodeStatus } from "@/components/space/skyCaptureEncode";
 import { starCandidatesStatus } from "@/components/space/starCandidates";
+import {
+  absMagVFromMass,
+  bolometricLuminositySunFromMass,
+  sampleStellarMass,
+  stellarPopulationStatus,
+  tempKFromMass,
+} from "@/components/space/stellarPopulation";
 import {
   setSkyParallaxUpdates,
   skyParallaxStatus,
@@ -422,7 +431,7 @@ const _flipY = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
 
 /** A body's authored record from the system description. */
 function authoredBody(bodyId: string) {
-  const bodies = solSystem.celestialBodies as unknown as Array<{
+  const bodies = activeSystem().celestialBodies as unknown as Array<{
     id: string;
     radiusKm?: number;
     positionKm?: number[];
@@ -475,7 +484,7 @@ function subSolarPose(bodyId: string, altitudeKm?: number): DevWarp | null {
  * fallback.
  */
 function authoredStarDistanceKm(bodyId: string): number | null {
-  const bodies = solSystem.celestialBodies as unknown as Array<{
+  const bodies = activeSystem().celestialBodies as unknown as Array<{
     id: string;
     positionKm?: number[];
   }>;
@@ -2953,7 +2962,7 @@ export class LumHarness {
     // This table is the diagnostic for the E0 staleness class: each row compares
     // the live distance-from-parent against the AUTHORED offset magnitude. A
     // consumer that froze a copy disagrees by ~1 AU, not by rounding.
-    const anchorSys = solSystem as unknown as {
+    const anchorSys = activeSystem() as unknown as {
       startingPositionKm: number[];
       startingBody?: string;
       startingOffsetKm?: number[];
@@ -4747,12 +4756,20 @@ export class LumHarness {
     }
     console.table(rows);
     console.log(
-      "[lum] the budget is 1% of the distance to the NEAREST candidate, which is\n" +
-        "      strictly finer than the hysteresis it gates (the disc pool needs a 5%\n" +
-        "      margin to swap, the light pool a 4× band), so a skipped frame cannot\n" +
-        "      hide a decision either pool would have made.\n" +
-        "      ⚠ Selection only. A held star's direction and intensity are still\n" +
-        "      written every frame — that is O(slots) and must not be gated.",
+      [
+        "[lum] The budget is max(1% of the nearest candidate's distance, the",
+        "      margin-derived safe move) — §22 and §24 superseded the plain 1% rule twice.",
+        "      ⚠ Selection only. A held star's direction and intensity are still written",
+        "      every frame — that is O(slots) and must not be gated.",
+        "",
+        "      ⚠ THE BUDGET IS HARD-CAPPED AT d_nearest BY CONSTRUCTION, so the skip rate",
+        "      falls as speed rises. MEASURED: 0.971 at 100 ly/s with a 17.99 ly budget,",
+        "      which predicts ~0.54 at 1000 ly/s and ~0.07 at 1000 ly/s and 60 fps.",
+        "      ⚠⚠ It goes to ZERO once a procedural field makes the candidate density",
+        "      local-like everywhere: E[d_nearest] would be ~3.6 ly against 8.3 ly of",
+        "      travel per frame. That is why the disc tier's full sort had to go (§27) —",
+        "      the fix for cruise is cheap selections, not a tighter bound.",
+      ].join("\n"),
     );
     return { tiers: rows };
   }
@@ -4911,6 +4928,232 @@ export class LumHarness {
         rSun: Number(c.rSun.toPrecision(4)),
       })),
       allRadiiPhysical: maxRsun <= 3000 && Number.isFinite(maxRsun),
+    };
+  }
+
+  /**
+   * SYSTEM STARS GATE (R7c) — is the primary still exactly what the singletons said,
+   * and which reads would NOT follow a system switch?
+   *
+   *     __lum.starSystem()
+   *
+   * 🔑 R7c is a refactor, so its correctness criterion is **bit-identity**: routing
+   * the primary through `systemStars()` must not move a single number for Sol. That
+   * is a falsification test, which is the only kind worth having for a change with no
+   * visible effect — a screenshot cannot tell you whether a refactor was neutral.
+   *
+   * ⚠ It also PRINTS THE RESIDUAL SEAM. The four legacy `STAR_*` exports are now
+   * views onto `stars[0]`, but three reads bake them at MODULE LOAD and would keep
+   * Sol's values after a switch. Listing them here rather than in a comment is
+   * deliberate: a list in a gate gets read every time someone runs the gate, and a
+   * list in a comment rots.
+   */
+  starSystem(): Record<string, unknown> {
+    const stars = systemStars();
+    console.table(
+      stars.map((s, i) => ({
+        slot: i,
+        id: s.id,
+        name: s.name,
+        "radius (km)": s.radiusKm,
+        "L_v (solar)": s.luminositySun,
+        "T_eff (K)": s.tempK,
+        "position (km)": `[${s.positionKm.join(", ")}]`,
+      })),
+    );
+    const p = stars[0];
+    const checks: Array<[string, unknown, unknown]> = [
+      ["STAR_RADIUS_KM", STAR_RADIUS_KM, p?.radiusKm],
+      ["STAR_LUMINOSITY_SUN", STAR_LUMINOSITY_SUN, p?.luminositySun],
+      ["STAR_TEMP_K", STAR_TEMP_K, p?.tempK],
+      // ⚠ REFERENCE identity, not value equality: the ephemeris rewrites this array
+      // in place, so a COPY would read correctly right now and freeze at the next
+      // tick. That is defect D17's exact failure mode.
+      [
+        "STAR_POSITION_KM (same array reference)",
+        STAR_POSITION_KM === p?.positionKm,
+        true,
+      ],
+    ];
+    const bad = checks.filter(([, a, b]) => a !== b);
+    console.table(
+      checks.map(([name, legacy, derived]) => ({
+        export: name,
+        legacy: String(legacy),
+        "from stars[0]": String(derived),
+        match: legacy === derived ? "✅" : "❌",
+      })),
+    );
+    if (bad.length === 0) {
+      console.log(
+        `[lum] ✅ all ${checks.length} legacy STAR_* exports are bit-identical to ` +
+          "stars[0], including the live-array reference — R7c moved no numbers.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ ${bad.length} export(s) diverged from stars[0]: ` +
+          `${bad.map(([n]) => n).join(", ")}. R7c was supposed to be neutral.`,
+      );
+    }
+    console.log(
+      [
+        "[lum] ⚠ RESIDUAL SEAM — these bake the primary at MODULE LOAD and would keep",
+        "      Sol's values after a system switch. Each needs a per-frame uniform",
+        "      write, i.e. shader plumbing rather than a constant swap:",
+        "        celestial/bodies/earth.ts   uniform(kmToScaledUnits(STAR_RADIUS_KM))",
+        "        space/photometry.ts         blackbodyLinearSrgb(STAR_TEMP_K)",
+        "        space/photometry.ts         default illuminantTempK parameter",
+        `      Stars declared by this system: ${stars.length}. R7g (a planet's sky lit`,
+        "      by N stars) is what needs more than one, and it is deferred until there",
+        "      are planets outside Sol to validate it against.",
+      ].join("\n"),
+    );
+    return {
+      count: stars.length,
+      primary: p
+        ? { id: p.id, radiusKm: p.radiusKm, luminositySun: p.luminositySun, tempK: p.tempK }
+        : null,
+      legacyExportsMatch: bad.length === 0,
+      loadTimeBakedReads: 3,
+    };
+  }
+
+  /**
+   * STELLAR POPULATION GATE (§26) — does the generated population match the real one?
+   *
+   *     __lum.population()
+   *
+   * 🔑 This gate can be trusted more than most in this file, because it validates
+   * against numbers the model never sees: the observed local spectral-class fractions,
+   * and the absolute V magnitudes of four named stars. Nothing in the mass function or
+   * the mass–luminosity relation knows what an M dwarf is or who Proxima is.
+   *
+   * ⚠⚠ IT EXISTS BECAUSE TWO ERRORS ALREADY GOT THIS FAR, both of which would have
+   * looked fine on screen:
+   *  1. sampling Chabrier's IMF directly instead of the present-day mass function —
+   *     **29.6× too many B stars, 8,954× too many O stars**, i.e. a sky strewn with
+   *     blue giants. Beautiful and wrong.
+   *  2. feeding a BOLOMETRIC luminosity into the VISUAL zero point — Proxima at
+   *     M_V 11.68 against a real 15.60, **36× too bright**. Self-defeating, because
+   *     §26's suppression rule rejects anything brighter than V 6.5 from Sol, so it
+   *     would have rejected the very population the phase exists to add.
+   */
+  population(samples = 200_000): Record<string, unknown> {
+    const st = stellarPopulationStatus();
+    console.log(
+      `[lum] density ${st.densityPerPc3.toPrecision(5)} stars/pc³ ` +
+        `(${st.densityPerLy3.toExponential(4)} per ly³) ⇒ ` +
+        `${st.starsIn10pc.toFixed(0)} in the 10 pc sphere.\n` +
+        "      ⚠ The RECONS census finds ~370 there and is known incomplete for the\n" +
+        "      faintest M dwarfs, so being ~1.4× above it is the expected direction.",
+    );
+
+    // ── Sample through the inverse CDF, so this tests the SAMPLER, not the integral ──
+    // A second integration would just re-run the same arithmetic and agree with itself.
+    const bins: Array<[string, number, number, number]> = [
+      ["M", 0.08, 0.45, 76],
+      ["K", 0.45, 0.8, 12],
+      ["G", 0.8, 1.04, 7.6],
+      ["F", 1.04, 1.4, 3],
+      ["A", 1.4, 2.1, 0.6],
+      ["B", 2.1, 16, 0.13],
+    ];
+    const counts = new Map<string, number>(bins.map(([n]) => [n, 0]));
+    // A deterministic LCG, so the gate's own numbers are reproducible run to run.
+    let seed = 12345;
+    const rnd = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    for (let i = 0; i < samples; i++) {
+      const m = sampleStellarMass(rnd());
+      for (const [n, a, b] of bins) {
+        if (m >= a && m < b) {
+          counts.set(n, (counts.get(n) ?? 0) + 1);
+          break;
+        }
+      }
+    }
+    let worst = 1;
+    let worstClass = "";
+    console.table(
+      bins.map(([n, , , obs]) => {
+        const pct = (100 * (counts.get(n) ?? 0)) / samples;
+        const ratio = pct / obs;
+        const dev = ratio > 1 ? ratio : 1 / ratio;
+        if (dev > worst) {
+          worst = dev;
+          worstClass = n;
+        }
+        return {
+          class: n,
+          "sampled %": Number(pct.toPrecision(4)),
+          "observed %": obs,
+          ratio: Number(ratio.toPrecision(3)),
+        };
+      }),
+    );
+    if (worst < 3) {
+      console.log(
+        `[lum] ✅ every spectral class within ${worst.toPrecision(3)}× of the observed ` +
+          `local population (worst: ${worstClass}).\n` +
+          "      🔑 The raw IMF gives 29.6× on B and 8,954× on O — if this table starts\n" +
+          "      showing those, the survival factor min(1, τ_MS/τ_disk) has been lost\n" +
+          "      and the sky is being generated from the BIRTH mass function.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ class ${worstClass} is ${worst.toPrecision(3)}× the observed fraction. ` +
+          "If the massive classes are the ones off, suspect the survival factor.",
+      );
+    }
+
+    // ── The absolute anchors: four named stars the model has never heard of ──
+    const anchors: Array<[string, number, number]> = [
+      ["Sol", 1.0, 4.83],
+      ["Proxima Centauri", 0.122, 15.6],
+      ["Sirius A", 2.06, 1.43],
+      ["Barnard's Star", 0.144, 13.21],
+    ];
+    console.table(
+      anchors.map(([name, m, realMv]) => ({
+        star: name,
+        "mass (M☉)": m,
+        "L_bol (L☉)": Number(bolometricLuminositySunFromMass(m).toPrecision(4)),
+        "T_eff (K)": Math.round(tempKFromMass(m)),
+        "M_V derived": Number(absMagVFromMass(m).toPrecision(4)),
+        "M_V real": realMv,
+        "Δmag": Number((absMagVFromMass(m) - realMv).toPrecision(3)),
+      })),
+    );
+    const solErr = Math.abs(absMagVFromMass(1) - 4.83);
+    const proximaErr = Math.abs(absMagVFromMass(0.122) - 15.6);
+    if (solErr < 0.05 && proximaErr < 0.5) {
+      console.log(
+        `[lum] ✅ Sol to ${solErr.toFixed(3)} mag and Proxima to ${proximaErr.toFixed(2)} mag ` +
+          "— the bolometric correction is being applied.\n" +
+          "      🔑 Proxima is the load-bearing anchor: WITHOUT the correction it reads\n" +
+          "      M_V 11.68 against a real 15.60 (36× too bright), and Sol still reads\n" +
+          "      correctly because BC_V(5772 K) is only −0.081. **A Sol-only check\n" +
+          "      cannot detect this class of error.** Barnard's at ~1.9 mag is expected:\n" +
+          "      it is metal-poor and old, and the relation assumes solar metallicity.",
+      );
+    } else {
+      console.error(
+        `[lum] ❌ Sol off by ${solErr.toFixed(3)} mag, Proxima by ${proximaErr.toFixed(2)}. ` +
+          "If Proxima is ~3.9 mag too BRIGHT while Sol is fine, a bolometric luminosity " +
+          "is being fed into the visual zero point (see bolometricLuminositySunFromMass).",
+      );
+    }
+    return {
+      densityPerPc3: Number(st.densityPerPc3.toPrecision(5)),
+      densityPerLy3: Number(st.densityPerLy3.toPrecision(5)),
+      starsIn10pc: Math.round(st.starsIn10pc),
+      worstClassRatio: Number(worst.toPrecision(4)),
+      worstClass,
+      solMagErr: Number(solErr.toPrecision(3)),
+      proximaMagErr: Number(proximaErr.toPrecision(3)),
+      pass: worst < 3 && solErr < 0.05 && proximaErr < 0.5,
     };
   }
 

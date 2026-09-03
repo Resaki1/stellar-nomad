@@ -17,6 +17,7 @@ import {
 } from "@/components/space/starLodStatus";
 import {
   makeTierGate,
+  safeMoveDistance,
   tierNeedsReselect,
   tierSelected,
 } from "@/components/space/starTierGate";
@@ -144,8 +145,11 @@ function StarLights() {
   const held = useRef<Array<LitStar | null>>(
     Array.from({ length: SLOTS }, () => null),
   );
-  /** Scratch, allocated once and mutated — useFrame must not allocate. */
-  const scratch = useRef<Array<{ row: number; illum: number }>>([]);
+  /** The running top-(SLOTS+1) and the hoisted held set. Allocated once. */
+  const topRef = useRef<Array<{ row: number; illum: number; distKm: number }>>(
+    Array.from({ length: SLOTS + 1 }, () => ({ row: -1, illum: 0, distKm: 0 })),
+  );
+  const heldIdxRef = useRef<Int32Array>(new Int32Array(SLOTS));
   const published = useRef<StarLightSlot[]>(
     Array.from({ length: SLOTS }, () => ({
       id: "",
@@ -178,10 +182,23 @@ function StarLights() {
     // solar system the ship must cross 2,673 AU before a re-rank could differ. See
     // space/starTierGate.ts for the derivation.
     if (tierNeedsReselect(gate.current, sx, sy, sz)) {
-      const ranked = scratch.current;
-      while (ranked.length < count) ranked.push({ row: -1, illum: 0 });
+      // ── A RUNNING TOP-(SLOTS+1), and the held set HOISTED ────────────────────
+      // 🐛 Both were per-candidate costs in a scan this file's own header calls
+      // allocation-free: `ranked.slice(0, n).sort(...)` allocated and sorted, and
+      // `held.current.some((h) => h?.candidate === i)` allocated a closure and a loop
+      // context PER CANDIDATE. The disc tier's equivalent sort measured 1.78 ms at
+      // 8,848 candidates against 0.034 ms for a running top-N — 52×.
+      //
+      // 🔑 `SLOTS + 1` is exactly enough: at most SLOTS entries are held, so the
+      // top-(SLOTS+1) always contains the best unheld challenger, which is all the
+      // budget derivation needs.
+      const heldIdx = heldIdxRef.current;
+      for (let i = 0; i < SLOTS; i++) heldIdx[i] = held.current[i]?.candidate ?? -1;
+      const top = topRef.current;
+      const TOP = SLOTS + 1;
       let n = 0;
       let nearestKm = Infinity;
+      let bestBelow = 0;
       for (let i = 0; i < count; i++) {
         const o = i * stride;
         const dx = data[o] * LY_IN_KM - sx;
@@ -194,17 +211,33 @@ function StarLights() {
         // holding a slot keeps it down to EXIT, a newcomer needs ENTER. Ranking with
         // a margin instead would let two stars either side of the band swap places
         // on every re-selection, and each swap is a light-direction discontinuity.
-        const isHeld = held.current.some((h) => h?.candidate === i);
+        let isHeld = false;
+        for (let k = 0; k < SLOTS; k++) {
+          if (heldIdx[k] === i) {
+            isHeld = true;
+            break;
+          }
+        }
         if (illum >= (isHeld ? EXIT : ENTER)) {
-          ranked[n].row = i;
-          ranked[n].illum = illum;
-          n++;
+          if (n === TOP && illum <= top[TOP - 1].illum) continue;
+          let j = n < TOP ? n++ : TOP - 1;
+          for (; j > 0 && top[j - 1].illum < illum; j--) {
+            top[j].row = top[j - 1].row;
+            top[j].illum = top[j - 1].illum;
+            top[j].distKm = top[j - 1].distKm;
+          }
+          top[j].row = i;
+          top[j].illum = illum;
+          top[j].distKm = d;
+        } else if (illum > bestBelow) {
+          // The closest any non-qualifier is to crossing ENTER — the OTHER thing that
+          // can change this pool, and the only one when it has empty slots.
+          bestBelow = illum;
         }
       }
-      // Sort only the qualifying prefix — n is 0 anywhere in the solar system.
-      const head = ranked.slice(0, n).sort((a, b) => b.illum - a.illum);
+      const head = top;
       for (let i = 0; i < SLOTS; i++) {
-        const pick = head[i];
+        const pick = i < n ? head[i] : undefined;
         if (!pick) {
           held.current[i] = null;
           continue;
@@ -221,7 +254,47 @@ function StarLights() {
           tempK: data[o + 5],
         };
       }
-      tierSelected(gate.current, sx, sy, sz, nearestKm);
+      // ── The movement budget, from the MARGIN (see safeMoveDistance) ────────
+      // 🔑 k = 2 here, because the light tier's selector is L/d² — a given move
+      // changes it twice as fast in log terms as the disc tier's R/d, so the same
+      // dominance buys a shorter safe move. The hysteresis band is the ENTER/EXIT
+      // ratio, which is the "margin" a newcomer has to beat.
+      // ── TWO things can change this pool, and BOTH must bound the budget ──────
+      // 🔑 With the pool full, a qualifier can overtake the weakest member — the
+      // dominance form. But a NON-qualifier crossing ENTER also changes it, and when
+      // the pool has empty slots that is the ONLY thing that can. Missing it is why
+      // the measured skip rate was 0.8169 near a single star (9,063 selections): with
+      // one qualifier and four slots there was no `chall`, so the budget fell back to
+      // the floor, which near a star is tiny.
+      //
+      // Same `u = δ/d_nearest` bound: every non-qualifier's `L/d²` grows by at most
+      // `(1/(1−u))²`, so it stays below ENTER while `(1−u)² > bestBelow/ENTER`
+      //   ⇒ δ ≤ d_nearest · (1 − √(bestBelow/ENTER)).
+      const enterBudget =
+        bestBelow > 0 && bestBelow < ENTER
+          ? nearestKm * (1 - Math.sqrt(bestBelow / ENTER))
+          : Infinity;
+      const weakest = n >= SLOTS ? head[SLOTS - 1] : undefined;
+      const chall = n > SLOTS ? head[SLOTS] : undefined;
+      const overtakeBudget =
+        weakest && chall && chall.illum > 0
+          ? safeMoveDistance(
+              weakest.illum / chall.illum,
+              // ⚠ The GLOBAL nearest — see safeMoveDistance's unsoundness note.
+              nearestKm,
+              2,
+              ENTER / EXIT,
+            )
+          : Infinity;
+      const safe = Math.min(enterBudget, overtakeBudget);
+      tierSelected(
+        gate.current,
+        sx,
+        sy,
+        sz,
+        nearestKm,
+        Number.isFinite(safe) ? safe : 0,
+      );
       setStarTierGateStat(
         "light",
         gate.current.runs,

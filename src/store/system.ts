@@ -1,11 +1,17 @@
 import { atom } from "jotai";
-import solSystem from "@/sim/systems/sol.json";
+import { activeSystem } from "@/sim/systemRegistry";
 import type { SystemConfigV1 } from "@/sim/systemTypes";
 
 /**
- * Phase 1: a single active system config loaded from JSON at build-time.
- * Later, you can extend this to support loading/switching systems dynamically.
+ * The active system, as a Jotai atom for React consumers.
+ *
+ * ⚠ `systemRegistry` is the authority; this is a view. Anything running outside React
+ * — `celestialConstants`, the ephemeris, the perf harnesses — must read
+ * `activeSystem()` directly, because they evaluate before any store exists.
+ *
+ * ⚠ Holds the SAME object the registry returns, not a copy: body configs hold
+ * references into its `positionKm` arrays, which the ephemeris rewrites in place.
  */
 export const systemConfigAtom = atom<SystemConfigV1>(
-  solSystem as unknown as SystemConfigV1
+  activeSystem() as unknown as SystemConfigV1,
 );

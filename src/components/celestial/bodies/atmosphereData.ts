@@ -25,7 +25,7 @@
 // absorber riding the Rayleigh profile); ozone is a tent layer.
 // ─────────────────────────────────────────────────────────────────────
 
-import solSystem from "@/sim/systems/sol.json";
+import { activeSystem } from "@/sim/systemRegistry";
 import type { AtmosphereGasId, CelestialBodyDef } from "@/sim/systemTypes";
 import { sunIlluminanceAt } from "@/components/space/photometry";
 import type { AtmosphereParams, Vec3Tuple } from "../types";
@@ -260,7 +260,7 @@ function authoredStarDistanceKm(body: CelestialBodyDef, star: CelestialBodyDef):
 
 // ── Sol-system presets (derived from sol.json descriptions) ─────────────
 
-const bodies = solSystem.celestialBodies as CelestialBodyDef[];
+const bodies = activeSystem().celestialBodies as CelestialBodyDef[];
 
 function findBody(id: string): CelestialBodyDef {
   const body = bodies.find((b) => b.id === id);

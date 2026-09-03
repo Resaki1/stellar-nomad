@@ -2,11 +2,11 @@
 // Derived from sol.json (single source of truth) to avoid circular imports
 // between component modules.
 
-import solSystem from "@/sim/systems/sol.json";
-import type { CelestialBodyDef } from "@/sim/systemTypes";
+import { activeSystem } from "@/sim/systemRegistry";
+import type { CelestialBodyDef, StarDef } from "@/sim/systemTypes";
 import { DEFAULT_SIM_EPOCH_MS, jdFromUnixMs, solveSystem } from "@/sim/ephemeris";
 
-const bodies = solSystem.celestialBodies as CelestialBodyDef[];
+const bodies = activeSystem().celestialBodies as CelestialBodyDef[];
 
 function findBody(id: string): CelestialBodyDef {
   const body = bodies.find((b) => b.id === id);
@@ -33,7 +33,6 @@ function findBody(id: string): CelestialBodyDef {
 // them is the ~70-site migration this approach exists to defer. When that
 // migration happens, replace them with `bodyPositionKm(id)`.
 
-const sol = findBody("sol");
 const mercury = findBody("mercury");
 const venus = findBody("venus");
 const earth = findBody("earth");
@@ -48,28 +47,90 @@ const io = findBody("io");
 const callisto = findBody("callisto");
 const ganymede = findBody("ganymede");
 
-/** Sun position in km (system coordinates). */
-export const STAR_POSITION_KM = sol.positionKm as [number, number, number];
-/** Sun radius in km. */
-export const STAR_RADIUS_KM = sol.radiusKm;
+// ── R7c: THE SYSTEM'S STARS ──────────────────────────────────────────────────
+//
+// 🔑 DERIVED FROM `celestialBodies`, NOT DUPLICATED INTO A `stars[]` LITERAL. The
+// star is already a body in `sol.json` (`type: "star"`), with a position the
+// ephemeris owns and a rotation the surface shader reads. Adding a parallel
+// `stars[]` entry for it would be two sources of truth for one star — the exact
+// class of defect §18.5 and §21 were both about (46.8 AU and 2.26e6 km of
+// disagreement, each from a star having two positions). So `SystemConfig.stars` is
+// an OPTIONAL override, for a star that is not a body, and the derivation is the
+// default path.
+//
+// ⚠ The derived objects hold the SAME array reference for `positionKm`, so the
+// live-mutation contract at the top of this file carries through unchanged: a
+// binary's components will orbit correctly for free, exactly as the planets did.
+
 /**
- * Star luminosity in solar units. Drives every body's sun illuminance via
- * `sunIlluminanceAt()` — see docs/LIGHTING_PLAN.md §3.0.
+ * The active system's stars, primary first.
  *
- * ⚠ This is the primary star of the CURRENTLY HARDCODED system. When procedural
- * systems land it must come from the active system's description, not a module
- * constant — that is the seam.
+ * ⚠ Reads `sol.json` directly rather than the `systemConfigAtom`, because this module
+ * is imported by things that run before any store exists and must not depend on React.
+ * When systems become switchable this is the ONE function to route through the atom —
+ * that is the whole point of it being a function rather than four constants.
  */
-export const STAR_LUMINOSITY_SUN = sol.luminositySun ?? 1;
+export function systemStars(): StarDef[] {
+  const declared = (activeSystem() as { stars?: StarDef[] }).stars;
+  if (declared && declared.length > 0) return declared;
+  return bodies
+    .filter((b) => b.type === "star")
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      // ⚠ The SAME reference, not a copy — see the live-mutation note above.
+      positionKm: b.positionKm as [number, number, number],
+      radiusKm: b.radiusKm,
+      luminositySun: b.luminositySun ?? 1,
+      tempK: (b as { tempK?: number }).tempK ?? 5772,
+    }));
+}
+
+/** The primary. Throws rather than guess — a system with no star is a data error. */
+export function primaryStar(): StarDef {
+  const stars = systemStars();
+  if (stars.length === 0) {
+    throw new Error(
+      "[celestialConstants] the active system declares no star: set `stars[]` or " +
+        'give a celestialBody `type: "star"`',
+    );
+  }
+  return stars[0];
+}
+
+const _primary = primaryStar();
+
+// ── The legacy singletons, now VIEWS onto `stars[0]` ─────────────────────────
+//
+// 🔑 Kept, rather than migrated across 35 read sites, for the same reason the
+// `*_POSITION_KM` arrays were kept mutable: the migration is not what buys anything.
+// What buys something is `systemStars()` existing, being the only place the primary
+// is chosen, and returning N. `Scene` already mounts one `<Star>` per entry.
+//
+// ⚠⚠ THE RESIDUAL SEAM, STATED PRECISELY. Three reads bake these at MODULE LOAD and
+// would not follow a system switch:
+//   • `celestial/bodies/earth.ts` — `uniform(kmToScaledUnits(STAR_RADIUS_KM))`
+//   • `space/photometry.ts` — `blackbodyLinearSrgb(STAR_TEMP_K)` and the default
+//     `illuminantTempK` parameter
+// Each needs a per-frame uniform write instead, which is a change to shader plumbing
+// rather than to this file. `__lum.starSystem()` lists them so the list cannot rot.
+
+/** Primary position in km (system coordinates). ⚠ LIVE — read per frame. */
+export const STAR_POSITION_KM = _primary.positionKm;
+/** Primary radius in km. */
+export const STAR_RADIUS_KM = _primary.radiusKm;
+/**
+ * Primary luminosity in solar units. Drives every body's sun illuminance via
+ * `sunIlluminanceAt()` — see docs/LIGHTING_PLAN.md §3.0.
+ */
+export const STAR_LUMINOSITY_SUN = _primary.luminositySun;
 
 /**
  * Effective temperature of the primary, K. Drives the star's blackbody COLOUR
  * (`blackbodyLinearSrgb`), replacing Star.tsx's hardcoded G2V `vec3(1,.95,.9)` —
- * without this a generated M-dwarf or B-star renders Sol-coloured (§3.0). Same
- * procedural-systems seam as STAR_LUMINOSITY_SUN. Default 5772 = Sol.
+ * without this a generated M-dwarf or B-star renders Sol-coloured (§3.0).
  */
-export const STAR_TEMP_K: number =
-  (sol as { tempK?: number }).tempK ?? 5772;
+export const STAR_TEMP_K: number = _primary.tempK;
 
 /** Mercury position in km. */
 export const MERCURY_POSITION_KM = mercury.positionKm as [number, number, number];
@@ -138,10 +199,10 @@ export const GANYMEDE_RADIUS_KM = ganymede.radiusKm;
 
 // ── Starting position & rotation ─────────────────────────────────────
 /** Default spawn / starting position in km (from sol.json). */
-export const STARTING_POSITION_KM = solSystem.startingPositionKm as [number, number, number];
+export const STARTING_POSITION_KM = activeSystem().startingPositionKm as [number, number, number];
 
 /** Default spawn rotation as quaternion [x, y, z, w] (from sol.json). */
-export const STARTING_ROTATION_QUAT = solSystem.startingRotationQuat as [number, number, number, number];
+export const STARTING_ROTATION_QUAT = activeSystem().startingRotationQuat as [number, number, number, number];
 
 
 // ── Live ephemeris wiring ────────────────────────────────────────────────────
@@ -196,7 +257,7 @@ export function updateEphemerisPositions(jdUTC: number): void {
  * so every existing `anchorKm` reader keeps working.
  */
 function updateAsteroidFieldAnchors(): void {
-  const fields = solSystem.asteroidFields as
+  const fields = activeSystem().asteroidFields as
     | { id: string; anchorKm: number[]; anchorBody?: string; anchorOffsetKm?: number[] }[]
     | undefined;
   if (!fields) return;
@@ -219,10 +280,10 @@ function updateAsteroidFieldAnchors(): void {
  * at empty space 1 AU from anything. `startingOffsetKm` is the fixed, authored
  * geometry — 16,746 km from Earth's centre, inside the origin belt — and the
  * absolute value is derived from it here, in place, so `STARTING_POSITION_KM`
- * and `solSystem.startingPositionKm` readers keep working.
+ * and `activeSystem().startingPositionKm` readers keep working.
  */
 function updateSpawnAnchor(): void {
-  const sys = solSystem as {
+  const sys = activeSystem() as {
     startingPositionKm: number[];
     startingBody?: string;
     startingOffsetKm?: number[];

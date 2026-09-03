@@ -167,15 +167,18 @@ not from an authored `pow(falloff, 3.5)`.
 
 | # | phase | deliverable | risk |
 |---|---|---|---|
-| **R0** | Measure | confirm the 13.37 AU centre threshold (§1.1) before touching code | none |
-| **R1** | Shell clamp | `uShellScale` + `frustumCulled={false}`; bit-exact no-op inside the clamp radius. Fixes R-A and §1.2 | low |
+| **R0** ✅ | Measure | confirm the 13.37 AU centre threshold (§1.1) before touching code | none |
+| **R1** ✅ | Shell clamp | `uShellScale` + `frustumCulled={false}`; bit-exact no-op inside the clamp radius. Fixes R-A and §1.2. §7 | low |
 | **R2** ✅ | Unify | one star renderer parameterised by `(position, T_eff, R)`; derived radius (§4); T0↔T1 continuity **proven to 1.6e-16 stops**; the primary stops being special-cased. §8 | medium |
 | **R2b** ✅ | Promote | one catalogue star rendered as a disc; dev warp, distance/speed units, interstellar POI markers. §12 |
 | **R3** ✅ | **corona + half-float ceiling** | corona gated off (it carried 5.3× the star's flux); flux conserved where the disc is sub-pixel. §9, §9.7 | medium |
 | **R3b** ✅ | **P8d proper** | analytic point-source glare + veil→adaptation feedback; retired the ceiling spread. §9.8–§9.10 | medium |
 | **R4** ✅ | T2 limb darkening + sharp limb | derived from `T_eff` alone; the visible half is the LIMB, not the gradient. §11 | low |
-| **R5** | T3 photosphere | granulation, spicules, chromosphere shell | medium |
+| **R5** | T3 photosphere | granulation, spicules, chromosphere shell. ⚠ No longer visor-blocked — §11.7's claim was retracted | medium |
 | **R6** | `HOT_COMPRESS_EXPONENT` | make staring at the sun punishing — a *look* knob, so it goes last, once the sun renders correctly | low |
+
+**Interstellar phases (R7), tracked in §13.4.** R7a–R7f are done; R7c is next and R7g is deliberately
+deferred until there are planets outside Sol to validate it against (§13.4).
 
 ⚠ Doc drift to reconcile at R6: `LIGHTING_PLAN` says `HOT_COMPRESS_EXPONENT = 0.25`; the code says
 **0.5** ([`exposureMeter.ts:139`](../src/components/space/exposureMeter.ts:139)).
@@ -1112,15 +1115,35 @@ Staging that keeps each step shippable:
 |---|---|
 | **R7a** ✅ | Stabilise `Star`'s uniforms (§13.1) — done, §14.1 |
 | **R7b** ✅ | ~~Retire~~ **REPLACE** both artistic gains — §13.2's framing was wrong, see §14.2 |
-| **R7c** | `stars[]` in the system description; `STAR_*` singletons in `celestialConstants` become `stars[0]`. This is the seam R2 named and never cut |
-| **R7d** | Disc pool of 4 + occluder pool — pure rendering, no lighting change |
-| **R7e** | Light pool of 4 for the LOCAL scene (ship, asteroids). Atmosphere stays single-dominant-star — a second sun in a planet's sky is a much bigger piece |
-| **R7f** | Sky parallax (§13.3) |
-| **R7g** | Atmosphere/sky-irradiance for N stars — the genuinely large one |
+| **R7c** ✅ | `stars[]` in the system description; `STAR_*` singletons in `celestialConstants` become `stars[0]`. This is the seam R2 named and never cut. §23 |
+| **R7d** ✅ | Disc pool + occluder/collider pool — pure rendering, no lighting change. §16.4, §19.6 |
+| **R7e** ✅ | Light pool for the LOCAL scene (ship, asteroids). Atmosphere stays single-dominant-star. §17 |
+| **R7f** ✅ | Sky parallax (§13.3) — as built in §16 |
+| **R7g** ⬅ **NEXT** | Atmosphere/sky-irradiance for N stars — the genuinely large one. **Deliberately deferred**: there are no planets outside Sol yet, so there is nothing to validate it against, and every phase in this document was closed by a measured gate. It unblocks after R7c |
 
-⚠ **R7e's boundary is the honest compromise:** a binary companion would light your hull and the
-asteroids correctly, but a planet's sky would still be lit by one star. Worth doing in that order
-because R7e is bounded and R7g is not.
+⚠ **R7e's boundary is the honest compromise:** a binary companion lights your hull and the asteroids
+correctly, but a planet's sky is still lit by one star. Worth doing in that order because R7e is
+bounded and R7g is not.
+
+⚠ **The phases did not land in the planned order, and the ordering assumption was wrong.** R7d/R7e/R7f
+went in before R7c because none of them needed it: the pools select from the star CATALOGUE, not from
+the system description. What R7c actually unblocks is a *destination system having bodies* — which is
+R7g's prerequisite, not the pools'.
+
+### 13.6 What each phase actually cost, in defects found after it shipped
+
+Worth recording because the pattern is consistent — every one was found by flying somewhere, not by
+review:
+
+| phase | defect it shipped with | found by |
+|---|---|---|
+| R7f | sprite suppression could not fire (`cos(1e-4)` → 1.0f) | §16.3, a review lens |
+| R7f | cross-walk tolerance 100× too tight ⇒ 2× flux, saturated sky cube | §16.3b, `__lum.skyCapture()` max 57,163 |
+| §18 | two positions per star, 46.8 AU apart ⇒ "three bright stars in a line" | author, at 100 AU |
+| §19 | both formulae evaluated outside their published domains ⇒ 1.1e13 R☉ | measured before shipping |
+| §20 | only the visual catalogue promotable ⇒ Proxima unreachable | author, at 11 km |
+| §21 | candidate positions in f32 ly ⇒ marker 90° off its star | author, screenshot |
+| §22 | movement budget shrinks to 1,496 km close in | author, `__lum.starTiers()` |
 
 ### 13.5 What this buys, physically
 
@@ -2478,7 +2501,7 @@ no candidate — no disc, no light, no collider.
 
 ```
 stars_visual.bin    V ≤ 6.5 APPARENT   → bright, mostly distant  (the naked-eye sky)
-stars_nearby.json   within ~50 ly      → close, mostly FAINT
+stars_nearby.json   within 24.97 ly    → close, mostly FAINT
 ```
 
 MEASURED: only **31 of 166** nearby stars have a sprite row. The other 135 are all fainter than V 6.5,
@@ -2639,3 +2662,634 @@ pose with nothing inside the cap would re-run the 8,848-candidate pass every fra
   (134, not 135: one of the 166 fails `starParamsUsable`.)
 * `__lum.starLights()` at Proxima — SH exclusion list empty, and correct: a V 11.01 star was never in
   the catalogue SH.
+
+---
+
+## 22. 🐛 The movement budget approximated the wrong quantity
+
+**Status: built 2026-09-02. Not verified on device by me.** Gate: `__lum.starTiers()`.
+
+The author's `__lum.starTiers()` near Gl 244B read a **movement budget of 0.00001 AU = 1,496 km** —
+against a reported skip rate of 0.9983, which was high only because the ship was parked.
+
+§18's budget was `1% × (distance to the nearest candidate)`, and that has a cliff: it shrinks
+**linearly** with how close you are to a star, so the gate stops helping exactly when the player is
+manoeuvring close in. At 0.5 ly/s a frame covers 3.9e10 km, so any budget below that re-ranks all 8,848
+candidates every frame.
+
+| nearest star | old budget |
+|---|---|
+| 1 AU | 1.5e6 km |
+| 0.1 AU | 1.5e5 km |
+| 0.01 AU | 1.5e4 km |
+| 0.001 AU | **1,496 km** |
+
+🔑 **The gate exists to skip work when the ANSWER cannot change, and the answer changes when the
+weakest pool member's selector crosses the best challenger's. That is a question about the MARGIN
+between them, not about how far away the nearest star happens to be.** §18 approximated the right idea
+with the wrong variable.
+
+For a selector `s ∝ d^−k` (k = 1 for the disc tier's `R/d`, k = 2 for the light tier's `L/d²`), with
+the weakest member at `dW`, the best challenger at `dC` and dominance `ρ = sW/sC`:
+
+```
+ρ' = ρ · ( (1 − δ/dC) / (1 + δ/dW) )^k  ≥  ρ · ( (1−u)/(1+u) )^k ,   u = δ/min(dW,dC)
+safe while ρ' ≥ margin      ⇒      q = (margin/ρ)^(1/k)     δ_safe = min(dW,dC) · (1−q)/(1+q)
+```
+
+* **ρ ≫ 1 ⇒ δ → min(dW, dC)** — you can move essentially all the way to the nearer of the two before
+  anything can flip. At the Gl 244B pose the dominance is ~3e4 (Sirius B over the third-ranked star),
+  so the budget goes from 1,496 km to **~8 AU** — five orders of magnitude.
+* **ρ → margin ⇒ δ → 0** — correct for a near tie (α Cen A/B), and §18's 1%-of-nearest survives as the
+  **floor** so a tie cannot thrash. Hysteresis is what stops a tie from actually flapping.
+* It is deliberately **conservative**: bounding both `δ/dC` and `δ/dW` by the same `u` assumes the worst
+  geometry. A tighter bound needs the actual directions and would buy nothing, because the budget
+  already exceeds the distances involved.
+
+⚠ The two tiers pass different exponents and different margins — `SWAP_MARGIN` (1.05) for the disc
+pool, `ENTER/EXIT` (4×) for the light pool. Using one number for both would be wrong in the direction
+that matters: the light tier's `L/d²` moves twice as fast in log terms, so the same dominance buys a
+shorter safe move.
+
+---
+
+## 23. R7c as built — `stars[]`, the seam R2 named and never cut
+
+**Status: built 2026-09-02.** Gate: `__lum.starSystem()`.
+
+### 23.1 What the seam was
+
+The primary was four module constants derived from `sol.json`, read at **35 sites across 12 files**:
+
+```
+STAR_POSITION_KM   STAR_RADIUS_KM   STAR_LUMINOSITY_SUN   STAR_TEMP_K
+```
+
+Fine for one hardcoded system, and unable to express two suns — which is what a destination system
+needs and what R7g is blocked on.
+
+### 23.2 🔑 Derived, not duplicated
+
+`StarDef` and an optional `SystemConfig.stars[]` now exist, and **`sol.json` deliberately does not set
+it.** When absent, the stars are derived from `celestialBodies` where `type === "star"`.
+
+That is the load-bearing decision. Sol is *already* a body in `sol.json`, with a position the ephemeris
+owns and a rotation the surface shader reads. Adding a parallel `stars[]` entry for it would be **two
+sources of truth for one star** — the exact class of defect §18.5 and §21 were both about, at 46.8 AU
+and 2.26e6 km of disagreement respectively, each arising from precisely that. So `stars[]` is an
+*override* for a star that is not a body (a companion with no ephemeris, or a star whose planets have
+not been generated), and derivation is the default path.
+
+⚠ The derived objects hold the **same array reference** for `positionKm`, so the live-mutation contract
+at the top of `celestialConstants` carries through unchanged — a binary's components will orbit their
+barycentre for free, exactly as the planets did when the ephemeris landed.
+
+### 23.3 Why the 35 reads were NOT migrated
+
+The legacy exports are now *views* onto `stars[0]`. Migrating them would have been the visible work and
+would have bought nothing: what buys something is that **`systemStars()` exists, is the only place the
+system's stars are chosen, and returns N.** `Scene` now mounts one `<Star>` per entry, so a binary
+destination renders both suns with no change there.
+
+⚠ Only `stars[0]` gets `primary`, because `starLodStatus` and the R3b point-glare uniform each hold ONE
+star — a second sun would make `__lum.starGlare()` report whichever component ran last in the frame.
+
+This is the same judgement `celestialConstants` already recorded for the `*_POSITION_KM` arrays: keep
+the names, change what they point at, and defer the ~70-site rename until it actually buys something.
+
+### 23.4 ⚠⚠ The residual seam, stated precisely
+
+Three reads bake the primary at **module load** and would keep Sol's values after a system switch:
+
+| site | read |
+|---|---|
+| `celestial/bodies/earth.ts` | `uniform(kmToScaledUnits(STAR_RADIUS_KM))` |
+| `space/photometry.ts` | `blackbodyLinearSrgb(STAR_TEMP_K)` |
+| `space/photometry.ts` | the default `illuminantTempK` parameter |
+
+Each needs a per-frame uniform write — shader plumbing, not a constant swap. `__lum.starSystem()`
+**prints this list**, deliberately: a list in a gate is read every time someone runs the gate, and a
+list in a comment rots. This document has three separate defects traceable to exactly that (§14.5's
+third role, §20's D8 premise, §16's false "recomputed on a jump" comment).
+
+### 23.5 The gate
+
+R7c is a refactor, so its correctness criterion is **bit-identity**: routing the primary through
+`systemStars()` must not move a single number for Sol. `__lum.starSystem()` asserts all four exports
+against `stars[0]` — and asserts `STAR_POSITION_KM` by **reference identity**, not value, because the
+ephemeris rewrites that array in place and a copy would read correctly now and freeze at the next tick.
+That is defect D17's exact failure mode.
+
+🔑 A falsification test is the only kind worth having for a change with no visible effect. A screenshot
+cannot tell you whether a refactor was neutral.
+
+### 23.6 What R7g now needs
+
+R7c unblocks it but does not shorten it. R7g is *a planet's sky lit by N stars*, and it stays deferred
+for the reason the author gave and this document's own discipline requires: **there are no planets
+outside Sol yet, so there is nothing to validate it against**, and every phase here was closed by a
+measured gate. The order is: procedural bodies in a destination system → then R7g.
+
+---
+
+## 24. 🐛🐛 Two gate defects, one of them UNSOUND — markers with no star
+
+**Status: built 2026-09-02. Not verified on device by me.** Gate: `__lum.starTiers()` (now three tiers).
+
+The author reported a cluster that looked like several bugs and was two:
+
+* *"Loading the game near another star than Sol does not show any markers other than Sol. I first need
+  to warp to another star for the markers to show up, but that only seems to work sometimes."*
+* *"Markers appear but without a star attached. It does seem to have a light source though… the ship
+  got brighter but no disc appeared and I could fly straight through it."*
+* *"Loading near Proxima does not show its marker directly, but the collision works there anyway."*
+
+Their `__lum.starTiers()` reading is what decoded it:
+
+| tier | budget | skip rate | selections |
+|---|---|---|---|
+| disc | **164.7 ly** | 0.9965 | 105 |
+| light | **3.7e-14 ly = 35 cm** | 0.8169 | 9,063 |
+
+### 24.1 🐛 Defect A — the marker gate took a 30 ly budget while the data was still loading
+
+`getStarCandidates()` builds the union on the first frame after the nearby catalogue's **fetch**
+resolves, so on early frames it returns null and `nearestStarCandidates` returns `[]`. §21's gate
+advanced anyway, using the safety cap as the budget — committing a **30 ly** movement budget before any
+candidate existed. Nothing re-selected until the ship had travelled 30 ly.
+
+🔑 **"Not loaded yet" and "loaded, nothing in range" are different states, and I collapsed them.** Only
+the second justifies taking a budget. Every reported symptom follows:
+
+* markers absent at load anywhere but Sol — Sol's marker comes from `celestialBodies`, not the union;
+* *"only sometimes"* — whether the fetch happened to land before the first frame;
+* *flying at 1 ly/s makes them appear* — you eventually cross 30 ly;
+* **collision worked near Proxima with no marker** — the disc pool checks `getStarCandidates()` before
+  its gate, so it selected correctly on frame 1. Two tiers, one loaded and one not: exactly the split
+  the author saw.
+
+Fixed by returning before the gate when the union does not exist. The empty-but-loaded case now takes
+**1% of the cap** rather than the cap: the nearest candidate is then beyond 30 ly, so moving 0.3 ly
+cannot bring one inside.
+
+### 24.2 🐛 Defect B — `safeMoveDistance` was UNSOUND, not merely loose
+
+§22 scaled `u` by `min(dW, dC)`. That bounds only how fast the **current best challenger** can gain on
+the weakest member — but *any* non-member can gain, and the one that constrains you is the **nearest
+candidate of all**, because `δ/d_j` is largest for the smallest `d_j`. A distant pair with a huge
+dominance therefore bought a budget of **164.7 ly**: the disc pool could not re-rank across an entire
+interstellar journey.
+
+⇒ **That is the "marker with no star, but with a light" report.** The marker tier had re-selected, the
+light tier's budget was tiny so it had too, and the disc tier was frozen — no disc, and no collider,
+because the collider tail is fed from `starDiscPool`.
+
+**Sound bound: `u = δ / d_nearest` over the WHOLE candidate list.** Then `δ/d_j ≤ u` for every j, so
+every non-member's selector grows by at most `(1/(1−u))^k` while the weakest member's shrinks by at most
+`(1/(1+u))^k`, and the current best challenger stays the binding one:
+
+```
+q = (margin/ρ)^(1/k)        δ_safe = d_nearest · (1 − q)/(1 + q)
+```
+
+MEASURED against the two poses the author sampled:
+
+| pose | ρ | old (unsound) | new | floor |
+|---|---|---|---|---|
+| Gl 244B | ~3e4 | 164.7 ly | **1.0e-3 AU** (100× the floor) | 1.0e-5 AU |
+| near Earth (Antares/Betelgeuse/Aldebaran) | 1.11 | — | **7,606 AU** (2.8× the floor) | 2,675 AU |
+
+🔑 The honest reading: §22's claim of "five orders of magnitude" was a symptom of the unsoundness, not a
+win. The real number is 100× at close range and 2.8× at a near tie — and `δ → d_nearest` is the
+intuitive ceiling, because moving past a star changes everything.
+
+⚠ **The failure mode of a too-loose gate is invisible and severe**, which is the argument for being
+conservative here rather than tightening the bound with actual directions.
+
+### 24.3 The light tier had a second constraint I had missed entirely
+
+Skip rate 0.8169 over 9,063 selections, with a 35 cm budget. Two causes: the ship was *inside* a star
+(no collider, so `d_nearest → 0`), and — the real one — **two different things can change that pool**:
+
+1. a qualifier overtaking the weakest member (the dominance form), and
+2. a **non-qualifier crossing `ENTER`** — which is the *only* thing that can change it when the pool
+   has empty slots, and near a single star it always does.
+
+With one qualifier and four slots there was no `chall`, so the budget fell back to the floor. The same
+`u` bound covers it: a non-qualifier's `L/d²` grows by at most `(1/(1−u))²`, so it stays below `ENTER`
+while `(1−u)² > bestBelow/ENTER`, giving `δ ≤ d_nearest · (1 − √(bestBelow/ENTER))`. The budget is now
+the **min of both constraints**.
+
+### 24.4 The pattern across §18, §22 and §24
+
+Three passes at one gate, each wrong in a different way:
+
+| | what it bounded | why it was wrong |
+|---|---|---|
+| §18 | 1% of the nearest distance | approximated the right idea with the wrong variable; cliff close in |
+| §22 | the current pair's margin | **unsound** — ignored every other candidate |
+| §24 | the global nearest, both constraints | — |
+
+🔑 The lesson worth keeping: **a cache-invalidation bound must be derived from what can change the
+answer, enumerated exhaustively — and "what can change the answer" is the step that is easy to get
+wrong quietly.** §22 felt more principled than §18 and was more dangerous, because a loose invalidation
+bound produces stale state that looks like a completely unrelated rendering bug three subsystems away.
+`__lum.starTiers()` now reports all three tiers, so a frozen one is visible as a budget, not as a
+missing star.
+
+---
+
+## 25. `systemRegistry` — one owner for the system description
+
+**Status: built 2026-09-02.**
+
+`sol.json` was imported directly by **five unrelated modules**: the Jotai atom, the derived constants,
+both perf harnesses, and the atmosphere presets. Each is a hard-coded assumption that there is exactly
+one system and it is Sol, and each is *invisible* — nothing about
+`import solSystem from ".../sol.json"` says "this blocks procedural systems".
+
+🔑 The value is not the indirection. It is that **there is now one grep result to change**, and one
+place that states what a system switch would break. Same judgement R7c made about `systemStars()`:
+routing the choice through one function buys something; renaming call sites does not.
+
+⚠ `setActiveSystem` **refuses after the first rendered frame** rather than half-working. A scene with
+Sol's radii and a new system's positions is far harder to diagnose than a refusal, and the thrown error
+names the reason. `markSystemFrame()` in `SpaceRenderer` is what makes "at startup" mean something.
+
+### 25.1 The exhaustive blocker list, which is the real deliverable
+
+| # | blocker | size |
+|---|---|---|
+| 1 | `celestialConstants` derives module-level constants at load. The `*_POSITION_KM` arrays would follow a switch (the ephemeris rewrites them in place); the **scalars** would not | mechanical |
+| 2 | Three reads bake the primary into a shader at load — `earth.ts`'s `uniform(kmToScaledUnits(STAR_RADIUS_KM))` and two in `photometry.ts` (§23.4) | mechanical |
+| 3 | `atmosphereData` builds its presets at module load from body descriptions | mechanical |
+| 4 | **The body components are one module per body** — `earth.ts`, `jupiter.ts`, … — each with its own textures and shader graph. A generated system needs a PARAMETERISED body renderer | **the real work** |
+
+⇒ Items 1–3 are mechanical. **Item 4 is what "procedural systems" mostly means**, and it is a much
+larger piece than any of this. This module exists so that when item 4 is done, items 1–3 are an
+enumerated list rather than an archaeology exercise.
+
+⚠ A static map, not a dynamic `import()`. `celestialConstants` derives its exports at
+module-evaluation time and is imported by code that runs before any async work can complete, so the
+active system must be available synchronously. A *generated* system arrives from a seed rather than a
+file, so it will not need a fetch either — the async path is for **assets** (textures, meshes), not for
+the description.
+
+---
+
+## 26. §26a — the local stellar population, generated
+
+**Status: the physics is built 2026-09-02 and validated offline. The streaming half is
+under design review.** Gate: `__lum.population()`.
+
+### 26.1 The wall
+
+The shipped catalogues are two thin slices: `stars_visual.bin` is **V ≤ 6.5 apparent**
+(8,920 stars, bright and mostly distant) and `stars_nearby.json` is **distance-limited**
+(166 stars, ~50 ly). So:
+
+* beyond the catalogue the sky is **empty** — the author flew out of it at 1000 ly/s and
+  photographed the boundary;
+* inside it, **M dwarfs — ~75% of all stars — barely exist** past 50 ly. Fly to 100 ly and
+  you pass through space that should hold dozens of red dwarfs within a few light-years
+  and see nothing.
+
+🔑 One sampled quantity fixes both: draw a **stellar mass**, derive everything else.
+Luminosity, radius and temperature come from published main-sequence relations, and
+colour, limb darkening and disc radiance then come from the existing `starPhysics` with
+no new code. Nothing to author, nothing to tune.
+
+### 26.2 ⚠⚠ The IMF is the BIRTH function and a sky is a SNAPSHOT
+
+This nearly shipped. Sampling Chabrier (2003) directly gives:
+
+| class | raw IMF vs observed | with survival | observed |
+|---|---|---|---|
+| M | 0.96× | **1.03×** | 76% |
+| K | 1.08× | 1.16× | 12% |
+| G | 0.54× | 0.57× | 7.6% |
+| F | 1.10× | 0.78× | 3% |
+| A | **4.80×** | 1.46× | 0.6% |
+| B | **29.62×** | 1.84× | 0.13% |
+| O | **8953.71×** | 3.55× | 3e-5% |
+
+Massive stars die: an O star lives ~3 Myr against a ~10 Gyr disk. Multiplying by
+`min(1, τ_MS(m)/τ_disk)` with `τ_MS = 10 Gyr · m^−2.5` converts the IMF into the
+**present-day mass function** and brings every class within ~2×, with no per-class
+tuning.
+
+⚠ **It would have looked spectacular** — a sky strewn with blue giants — which is exactly
+why "the sky looks great" is not a test. G at 0.57× is a known feature of Chabrier's
+log-normal near 1 M☉ and is not something to fudge.
+
+⚠ `min(1, τ/τ_disk)` assumes a constant star-formation rate. The real history is not flat,
+but the correction is small against the factor-of-2 agreement above and would add a free
+parameter with nothing in this project to fit it against.
+
+### 26.3 🐛 …and the second error, which was self-defeating
+
+The mass–luminosity relation gives **bolometric** luminosity. The first version fed it
+straight into the **visual** zero point:
+
+| star | M_V without BC | M_V with BC | real |
+|---|---|---|---|
+| Sol | 4.82 | 4.82 | 4.83 |
+| **Proxima** | **11.68** | **15.47** | **15.60** |
+| Sirius A | 1.80 | 1.80 | 1.43 |
+| Barnard's | 15.06 | 15.06 | 13.21 |
+
+For an M dwarf almost all the light is infrared, so `BC_V ≈ −3.9` — a **36×** error.
+
+🔑 And it was **self-defeating**: §26.4's suppression rule rejects a procedural star
+brighter than V 6.5 from Sol, so an M dwarf reported 3.9 mag too bright fails that test.
+The bug would have **rejected exactly the faint population the phase exists to add**, and
+the symptom would have read as "procedural stars are mysteriously sparse" — three
+inferences from the cause.
+
+⚠⚠ **This is the same two-luminosities distinction §4 established for the catalogue path**
+(radius needs bolometric, brightness needs visual) and I repeated the error the plan
+already documents. `starPhysics` owns the correction; there is no second copy of it.
+
+🔑 Note what the anchors do here: **Sol reads correctly either way**, because
+`BC_V(5772 K) = −0.081`. A Sol-only check cannot detect this class of error at all —
+Proxima is the load-bearing anchor. Barnard's residual of 1.9 mag is expected and stated:
+it is metal-poor and old, and the relation assumes solar metallicity.
+
+### 26.4 The suppression rule, and why it falls out of §20
+
+Each real catalogue has a **selection function**, and each suppresses generation only in
+the volume *it* covers:
+
+1. reject a procedural star whose **apparent V from Sol** would be ≤ 6.5 — the visual
+   catalogue would already contain it;
+2. reject anything within ~50 ly of Sol — the nearby catalogue owns that volume
+   regardless of magnitude.
+
+That is §20's insight ("the two catalogues are orthogonal selections") applied to
+generation rather than to promotion.
+
+🔑 **Rule 1 also makes omitting giants self-consistent rather than a gap.** A giant is
+luminous, so at any distance where it would be generated it is *also* brighter than V 6.5
+from Sol — so rule 1 rejects it, and the visual catalogue supplies it instead (Antares and
+Betelgeuse are in the shipped data, §19.3). The procedural population is faint by
+construction, and faint means main-sequence.
+
+⚠ **White dwarfs are a real omission**, ~5% of the local population (~20 of the ~370
+objects in the 10 pc census). Faint enough that the visual cost is nil, but they are
+missing *destinations*, and they need a cooling track rather than a main-sequence
+relation — a separate branch, not a tweak.
+
+### 26.5 Determinism, and where it has to be exact
+
+Positions and existence will come from **integer hashing only**. Masses come from an
+inverse-CDF table built with `Math.exp`/`Math.pow`, which ECMAScript does **not** require
+to be bit-identical across engines.
+
+🔑 The split is deliberate: **exact reproducibility is needed for what is observable —
+which star exists and where — and that is integer arithmetic. The twelfth decimal of a
+temperature is not observable.** So: never derive a star's position or its existence from
+a transcendental function.
+
+### 26.6 ⚠⚠ THE REVIEW CAME BACK: THE PHYSICS IS VALIDATED AND MY PREMISE WAS INVERTED
+
+Three independent confirmations of the physics chain, from a lens that rebuilt it:
+
+| check | model | reference | ratio |
+|---|---|---|---|
+| naked-eye stars inside 31.4 pc | 649 | **623** measured in `stars_visual.bin` inside 31.3 pc | 1.04× |
+| total integrated starlight (300 pc scale height) | 1.225e-3 lux | 1.2566e-3 authored in this repo | 0.975× |
+| the same, in S10 | 117 | **100** (Leinert et al. 1998) | 1.17× |
+
+Two published functions and one lifetime scaling, agreeing three ways with things they
+never saw. Both traps above (§26.2, §26.3) were confirmed real and correctly diagnosed.
+
+🔑🔑 **AND THE MOTIVATION IN §26.1 IS WRONG — NOT IMPRECISE, INVERTED.** *"M dwarfs are
+~75% of all stars and essentially none exist in the game"* is a correct **volume-limited
+census** statement, and I used it to justify a **magnitude-limited product**. Malmquist
+bias makes those almost disjoint populations. MEASURED on the shipped catalogue (8,714
+non-sentinel rows, M_V from the file's own magnitude and distance):
+
+| | |
+|---|---|
+| rows fainter than the Sun (M_V > 4.83) | **90 = 1.03%** |
+| rows that are M-dwarf-like (M_V > 8) | **1 = 0.011%** |
+| median distance | **396 ly** (mean 525) |
+| outermost non-sentinel row | **3,198 ly** |
+
+⇒ **The sky does not end because M dwarfs are missing. It ends because the catalogue's
+VOLUME ends, at 3,198 ly.** That is the wall in the author's screenshot.
+
+And the design would have made it worse. At 16,384 instances and 3.62e-3 stars/ly³, a
+whole-cell fill is a **102.6 ly** sphere holding 16,310 stars of which **649 (3.98%)** are
+above the naked-eye limit — a sky **13× sparser than Earth's**, with no bright stars at
+all (72% of naked-eye stars are > 3 M☉, whose nearest instance is ~525 ly away and
+outside every active cell). **96% of the instance budget spent on stars the player cannot
+see, and the wall moved from 3,198 ly to 103 ly.**
+
+⚠ `r(V = 6.5)` spans **four decades** across the sampled mass range — 0.3 ly at 0.08 M☉,
+70.7 ly at 1.0, 3,242 ly at 20. **No single active radius can be right.**
+
+### 26.7 The redesign the review forces, which is smaller than the design it replaces
+
+🔑 **Make the field magnitude-limited, not volume-limited.** Everything else follows:
+
+1. **The active radius becomes a function of the sampled mass**:
+   `r_max(m) = 10 pc · 10^(0.2(V_lim − M_V(m)))`, and `absMagVFromMass` already exists.
+2. **Per-mass-band grids.** A 14 ly cell is right for M dwarfs and 200× too fine for a B
+   star, so each band gets its own cell size and each holds O(10) stars. The bands are
+   statistically independent, so Poisson-sampling each from its own sub-stream is *exact*,
+   not an approximation.
+3. **The budget then buys the right thing**: complete to V_lim needs 1.04e4 sprites at
+   V 6.5, 2.08e4 at 7.0, 4.14e4 at 7.5. **16,384 buys V_lim ≈ 6.9 — Earth's naked-eye
+   sky — if the instances go to visible stars.** Spent on whole cells it buys V_lim ≈ 3.5.
+4. **`CATALOGUE_FLUX_SHARE` stops being authored** and becomes
+   `fieldFluxLux(V_lim) / TOTAL_STARLIGHT_LUX` — one more module-load integral, of the
+   same kind as `STELLAR_DENSITY_PER_PC3` and justified the same way. The model says
+   V_lim 6.96 gives **19.96%** against the shipped **19.5%**: the authored constant was
+   already nothing but an encoding of a magnitude limit.
+5. **Procedural stars must never enter the candidate union.** Measured tier reach: the
+   light tier's ENTER is crossed at 50 AU for an M dwarf and 1.60 ly for the brightest
+   star rule 1 permits; the disc tier needs 5.8e-3 ly (M dwarf) to 0.051 ly (A0); the
+   marker tier's expected 6th-nearest is 7.33 ly. ⇒ a 3×3×3 block of 14 ly cells covers
+   every tier with 17× margin and holds ~270 stars. Keep `getStarCandidates()` immutable
+   and cached exactly as it is, add a small procedural near-list with **cell-derived
+   keys**, re-rank it every frame with no gate (270·log₂270 ≈ 0.02 ms), and merge at the
+   top-N level. The 16,384-instance field becomes render-only: no candidate, no index
+   identity, no gate.
+6. **The SH contribution must be analytic, not a per-star sum** — 0.12–2.3% of the sky
+   budget, 0.060 stops of anisotropy at N = 16,384 against a 0.14-stop tolerance, and
+   translation-invariant, so it never re-bakes.
+7. **One sprite field with a live `count`, not two.** Confirmed from three's source:
+   `object.count` is read live in `getDrawParameters` and appears in none of the cache
+   keys, so changing it costs one property write. Two fields would break five verified
+   module-singleton couplings for nothing.
+
+### 26.8 The majors, recorded rather than fixed
+
+* ⚠ **My "omitting giants is self-consistent" argument in §26.4 is FALSE beyond 516 ly.**
+  Giants are 0.195% of stars (one in 513) but **42.85% of the naked-eye sky and 35.50% of
+  its flux**. The branching ratio is already computable from `min(1, τ/T)`'s complement.
+  This also explains the model's 19% flux shortfall against the catalogue.
+* ⚠ **`min(1, τ_MS/τ_disk)` is not an approximation to a star-formation-history
+  convolution — it IS the constant-SFR case**, and the correction is a single
+  mass-independent 0.58 above 3 M☉, fittable against two observables this repo already
+  holds. Both halves of §26.2's dismissal were wrong.
+* ⚠ **Uniform density is 10% wrong at 103 ly and 50% at 678 ly** — 0.1 s into interstellar
+  flight. The vertical term dominates the radial by 9×, and the shipped catalogue already
+  shows a measured **1.96× count / 2.5× flux** plane-to-pole anisotropy. 🔑 The panorama
+  question and the uniform-density question are **one question**: subtracting an isotropic
+  field from an anisotropic image drives the residual negative toward the poles.
+* ✅ **Kinematics: closed, do not build it.** At the game's max 1e5× sim rate (11.4 years
+  per real hour) the nearest star moves **0.016°**. The real kinematic input is `h_z(m)`,
+  because σ_z is age-dependent and the naked-eye population sits in a 4× thinner layer
+  than the field it lives in.
+* 🐛 **Factual error, now fixed in four places**: `stars_nearby.json` reaches **24.97 ly**,
+  not ~50. Suppression rule 2 at 50 ly would blank a 25–50 ly shell where the model
+  expects 1,661 stars and 115 exist — **6.9% complete** — reproducing §26.1's own opening
+  complaint inside the volume the rule declares covered, and in the one place the field's
+  M dwarfs would actually be visible.
+
+---
+
+## 27. 🐛🐛 A LATENT SHIPPED DEFECT the review found on the way past: the disc tier's sort
+
+**Status: fixed 2026-09-02.** This has nothing to do with §26 — it is costing frames
+**today**, at the speeds the author is already flying.
+
+### 27.1 Two facts that compose into a hard failure
+
+**(1) The sort.** `NearbyStarDisc` ranked every candidate with
+`ranked.slice(0, count).sort((a, b) => b.solid - a.solid)` — an n·log n JS-comparator
+sort plus a fresh n-element pointer array, on every selection. MEASURED (V8, the same
+code shape, scan split from sort):
+
+| N | scan only | slice+sort | running top-4 | speedup |
+|---|---|---|---|---|
+| 8,848 (today) | 0.047 ms | **1.781 ms** | 0.034 ms | **52×** |
+| 30,000 | 0.126 ms | 7.234 ms | 0.117 ms | 62× |
+
+The sort was **96.4%** of the selection's cost and the only superlinear term in the whole
+star path. At 30,000 candidates the replacement is 15× cheaper than the sort was at 8,848.
+
+**(2) 🔑 The movement gate provably cannot fire at interstellar speed.**
+`safeMoveDistance` returns `nearestDistKm · (1−q)/(1+q)` with `q > 0` strictly, so the
+budget is **hard-capped at `d_nearest` by construction** — §24 states that as a property.
+At the local stellar density `E[d_nearest] = 0.893/(4πn/3)^⅓ ≈ 3.6 ly`, against **8.3 ly
+of travel per frame at 1000 ly/s** (16.7 ly at 60 fps).
+
+### 27.1b ⚠ …and I OVERSTATED it. The author's measurement settles it.
+
+MEASURED on device at **100 ly/s**: disc budget **17.99 ly**, skip rate **0.9709**. The
+gate fires, comfortably. Predicted from that budget:
+
+| speed | ly / frame | predicted skip |
+|---|---|---|
+| 100 ly/s @ 120 fps | 0.83 | 0.954 (measured **0.971**) |
+| 1000 ly/s @ 120 fps | 8.33 | 0.537 |
+| 1000 ly/s @ 60 fps | 16.67 | 0.074 |
+
+🔑 The review computed `E[d_nearest] = 3.6 ly` **from the post-S6 procedural density**
+(0.126 stars/pc³). Today only 8,848 catalogue stars exist, spread over ~3,200 ly, so away
+from Sol the candidate density is orders of magnitude lower and `d_nearest` is *tens* of
+light-years — hence a 17.99 ly budget rather than a 3.6 ly ceiling.
+
+⇒ **The claim is conditional on S6 landing, and I repeated it without that condition.**
+Today the sort cost 1.78 ms on ~3% of frames (≈0.05 ms amortised), not every frame. The
+fix is still right — it is 52×, it removes the only superlinear term in the star path, and
+it is precisely what makes S6 affordable — but the shipped build was not on fire.
+
+⚠ The lesson is the one this document keeps relearning: **a reviewer's arithmetic inherits
+the reviewer's assumed world.** The density it used was the design's, not the build's, and
+I did not check which.
+
+### 27.2 The fix, and why `POOL + 1` is exact rather than a guess
+
+`head` was used for exactly three things: the two incumbents' live `solid`, and the best
+challenger. So:
+
+* the **incumbents are read directly by row** — their rows are known before the scan
+  starts, so there was never anything to search for;
+* the **challenger comes from a running top-(POOL+1)** maintained in the existing scan.
+
+🔑 `POOL + 1` is exactly enough and provably so: at most `POOL` entries can be held, so a
+top-`(POOL+1)` always contains at least one unheld candidate — which is all the swap logic
+needs. **The marker tier already did this**; the disc tier was the outlier.
+
+The light tier got the same treatment plus one more: `held.current.some((h) => h?.candidate === i)`
+inside its scan allocated **a closure and a loop context per candidate**, in a scan this
+module's own header calls allocation-free. The held set is now hoisted into a fixed
+`Int32Array` before the loop.
+
+### 27.3 🔑 What this says about the gate
+
+The gate is still right — it is what makes the solar system free — but §18/§22/§24 were
+all attempts to make *expensive* work rare, and this is the complementary move: **make the
+work cheap enough that firing every frame is fine.** At 0.034 ms a selection, the disc tier
+no longer needs the gate to be correct about anything. That is a better place to be than a
+tighter bound, because a bound can be unsound (§24.2) and a cheap loop cannot.
+
+⚠ `__lum.starTiers()`'s explanatory text still says the budget is "1% of the distance to
+the nearest candidate", which §22 and §24 superseded twice. Worth correcting when next in
+that file.
+
+---
+
+## 28. Interstellar work CLOSED — and S6's entry conditions
+
+**Status: 2026-09-02.** The author is pivoting to local gameplay. This section is the
+handover, so S6 can be picked up cold.
+
+### 28.1 What is done, and what the last measurement round confirmed
+
+R1–R4, R2b, R7a–R7f, R7c, §15–§25, §27 are all closed and gated. The final on-device round:
+
+| gate | result |
+|---|---|
+| `__lum.population()` | ✅ every class within **1.91×** (worst B); Sol **0.009 mag**, Proxima **0.127 mag** |
+| `__lum.starTiers()` parked | disc/light/marker skip **0.9963** |
+| `__lum.starTiers()` at 100 ly/s | disc **0.9709** (17.99 ly budget), light **0.9968** (83.62 ly), marker **0.9112** |
+| `__lum.starRows()` | 8,714/8,920 usable, all radii physical, top table = Antares/Betelgeuse/Aldebaran/Gacrux/Arcturus |
+| `__lum.starPool()`, `starLights()`, `starSystem()`, `parallax()`, `skyCapture()` | ✅ |
+
+⚠ The `population()` output is byte-identical parked and at 100 ly/s, which is correct — it
+is a pure function of the model and has no positional input at all.
+
+⚠ The marker tier's 0.9112 is the lowest, because it is the one tier with **no
+margin-derived bound** — only the 1% floor. Giving it the 6th-vs-7th-nearest gap would lift
+it to ~0.99 and save ~0.004 ms/frame. Not worth the risk today; worth doing if S6 lands,
+because then it fires every frame.
+
+### 28.2 S6 is PARKED, not abandoned. Its entry conditions:
+
+1. **Rebuild it magnitude-limited** per §26.7 — `r_max(m)` per sampled mass, per-mass-band
+   grids. The volume-limited version makes the sky 13× sparser than Earth's (§26.6).
+2. **Derive `CATALOGUE_FLUX_SHARE`** from the same integral (§26.7 item 4) *before* any
+   procedural star reaches the SH bake or the sky cube, or the double-count lands on P9a's
+   validated night-side floor and passes the gate that exists.
+3. **Add giants and a scale height** (§26.8) — they are not optional refinements: giants are
+   42.85% of the naked-eye sky, and the panorama's anisotropy makes the flux subtraction go
+   negative toward the poles without `h_z`.
+4. **Procedural stars must never enter the candidate union** (§26.7 item 5). The union's
+   index identity took three iterations to get right; a dynamic tail re-binds held slots and
+   the disc tier's dedup makes that failure permanent and silent.
+5. **Clamp the tier budget by the streaming horizon** — `safeMoveDistance`'s quantifier does
+   not range over stars that do not exist yet. Treat the nearest inactive cell boundary as a
+   virtual candidate, which keeps the bound a bound instead of depending on an invalidation
+   event.
+
+🔑 What is already built and reusable: the whole physics (`stellarPopulation.ts`, validated
+three ways), the suppression rule's shape, `__lum.population()`, and §27's cheap selections
+— which is what makes a denser field affordable at all.
+
+### 28.3 What is left in star rendering, and my recommendation
+
+| item | state |
+|---|---|
+| **R5** — granulation, spicules, chromosphere | open, pure polish. ⚠ No longer visor-blocked (§11.7 retracted). Only visible within ~0.01 AU of a star |
+| **R6** — `HOT_COMPRESS_EXPONENT` | ✅ the doc drift is resolved: the code is `0.5`, LIGHTING_PLAN said `0.25` and was wrong. The remaining "make staring at the sun punishing" is a look knob |
+| **S6** — procedural stars | parked, §28.2 |
+| marker tier's margin bound | open, ~0.004 ms/frame |
+
+⇒ **Nothing here needs doing before local gameplay.** R5 and R6 are look knobs on a star the
+player is rarely close to; S6 is a redesign that only pays off once there are systems to
+visit. The foundation is closed and gated, which is the point of stopping here.

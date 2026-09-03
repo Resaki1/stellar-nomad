@@ -38,10 +38,10 @@
 import { Matrix4, Quaternion, Vector3 } from "three";
 import { getNearbyStar } from "@/sim/nearbyStars";
 import type { DevWarp } from "@/store/dev";
-import solSystem from "@/sim/systems/sol.json";
+import { activeSystem } from "@/sim/systemRegistry";
 import type { CelestialBodyDef } from "@/sim/systemTypes";
 
-const bodies = solSystem.celestialBodies as CelestialBodyDef[];
+const bodies = activeSystem().celestialBodies as CelestialBodyDef[];
 
 function body(id: string): CelestialBodyDef {
   const b = bodies.find((x) => x.id === id);
@@ -61,10 +61,10 @@ const APPROACH_DIR = (() => {
   // `startingPositionKm − earth.positionKm`. Both of those are now live arrays
   // rewritten by the ephemeris, and this runs at module load, so differencing
   // them would depend on whether `celestialConstants` had solved yet.
-  const off = solSystem.startingOffsetKm as [number, number, number] | undefined;
+  const off = activeSystem().startingOffsetKm as [number, number, number] | undefined;
   if (off) return new Vector3(off[0], off[1], off[2]).normalize();
   const earth = body("earth");
-  const start = solSystem.startingPositionKm as [number, number, number];
+  const start = activeSystem().startingPositionKm as [number, number, number];
   return new Vector3(
     start[0] - earth.positionKm[0],
     start[1] - earth.positionKm[1],
@@ -114,7 +114,7 @@ export const SCENARIOS: readonly Scenario[] = [
     // (`startingBody`/`startingOffsetKm`), so this tracks the belt as Earth
     // orbits. Copying it here is what sent the belt warp to a 2024-epoch
     // position after the ephemeris landed.
-    positionKm: solSystem.startingPositionKm as [number, number, number],
+    positionKm: activeSystem().startingPositionKm as [number, number, number],
     lookAtBodyId: "earth",
   },
 

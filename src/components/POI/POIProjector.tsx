@@ -17,9 +17,11 @@ import {
 } from "@/store/starMarkers";
 import { loadNearbyStars } from "@/sim/nearbyStars";
 import {
+  getStarCandidates,
   nearestStarCandidates,
   type NearestCandidate,
 } from "@/components/space/starCandidates";
+import { setStarTierGateStat } from "@/components/space/starLodStatus";
 import {
   makeTierGate,
   tierNeedsReselect,
@@ -83,6 +85,18 @@ function useNearestStars(): NearestCandidate[] {
   const gate = useRef(makeTierGate());
 
   useFrame(() => {
+    // 🐛🐛 DO NOT ADVANCE THE GATE BEFORE THE CANDIDATES EXIST. The union is built on
+    // the first frame after the nearby catalogue's FETCH resolves, so on early frames
+    // `getStarCandidates()` is null. The first version advanced the gate anyway, with
+    // the safety cap as the budget — committing a **30 ly** movement budget while the
+    // data was still loading. Symptom on device: load anywhere but Sol and no star
+    // markers appear at all until you have travelled 30 ly, "and that only seems to
+    // work sometimes" — the sometimes being whether the fetch happened to land before
+    // the first frame.
+    //
+    // 🔑 "Not loaded yet" and "loaded, nothing in range" are different states and I
+    // collapsed them. Only the second one justifies taking a budget.
+    if (!getStarCandidates()) return;
     const sx = worldOrigin.shipPosKm.x;
     const sy = worldOrigin.shipPosKm.y;
     const sz = worldOrigin.shipPosKm.z;
@@ -95,15 +109,24 @@ function useNearestStars(): NearestCandidate[] {
       STAR_MARKER_MAX_LY * LY_IN_KM,
       LY_IN_KM,
     );
-    // ⚠ Advance the gate even on an EMPTY result, or a pose with nothing inside the
-    // safety cap would re-run this 8,848-candidate pass every single frame. Fall back
-    // to the cap itself as the budget, which is the right scale for "nothing nearby".
+    // ⚠ Advance the gate even when nothing is in RANGE, or a genuinely empty pose
+    // would re-run this 8,848-candidate pass every frame. 1% of the cap, not the cap:
+    // the nearest candidate is then beyond the cap, so moving 1% of it cannot bring
+    // one inside — and a full-cap budget is what caused the defect above.
     tierSelected(
       gate.current,
       sx,
       sy,
       sz,
-      picked.length > 0 ? picked[0].distKm : STAR_MARKER_MAX_LY * LY_IN_KM,
+      picked.length > 0
+        ? picked[0].distKm
+        : 0.01 * STAR_MARKER_MAX_LY * LY_IN_KM,
+    );
+    setStarTierGateStat(
+      "marker",
+      gate.current.runs,
+      gate.current.skipped,
+      Math.sqrt(gate.current.budgetSq),
     );
     if (picked.length === 0) {
       setNearest((prev) => (prev.length === 0 ? prev : []));
