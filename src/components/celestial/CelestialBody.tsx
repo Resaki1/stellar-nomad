@@ -5,6 +5,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
 import { useAtomValue } from "jotai";
+
+import { devSegmentsOverrideAtom } from "@/store/dev";
 import { NodeMaterial } from "three/webgpu";
 import { Fn, float, normalWorld, normalize, uniform, vec4 } from "three/tsl";
 import SimGroup from "../space/SimGroup";
@@ -188,20 +190,28 @@ function TexturedLODs({
 
   // ── Geometry ──
   // ⚠ EVERY PLANET WAS RENDERING MIRRORED UNTIL THIS FLIP. See the helper.
+  //
+  // `segOverride` (0 = off) forces the segment count for the limb-silhouette
+  // experiment — see devSegmentsOverrideAtom. It is in the deps deliberately so the
+  // geometry rebuilds live; changing it disposes and replaces a sphere per body, which
+  // is fine for a diagnostic and is why it is not a shipping setting.
+  const segOverride = useAtomValue(devSegmentsOverrideAtom);
   const nearGeo = useMemo(() => {
     if (!config.near) return null;
-    const g = new THREE.SphereGeometry(scaledRadius, config.near.segments, config.near.segments);
+    const seg = segOverride > 0 ? segOverride : config.near.segments;
+    const g = new THREE.SphereGeometry(scaledRadius, seg, seg);
     flipGeometryV(g); // MUST precede computeTangents — tangents are derived from uv
     if (config.near.computeTangents) g.computeTangents();
     return g;
-  }, [scaledRadius, config.near]);
+  }, [scaledRadius, config.near, segOverride]);
 
   const midGeo = useMemo(() => {
-    const g = new THREE.SphereGeometry(scaledRadius, config.mid.segments, config.mid.segments);
+    const seg = segOverride > 0 ? segOverride : config.mid.segments;
+    const g = new THREE.SphereGeometry(scaledRadius, seg, seg);
     flipGeometryV(g);
     if (config.mid.computeTangents) g.computeTangents();
     return g;
-  }, [scaledRadius, config.mid]);
+  }, [scaledRadius, config.mid, segOverride]);
 
   // ── Materials ──
   // ── D09: ONE albedo-scale multiply wrapping EVERY body's fragment ──────────

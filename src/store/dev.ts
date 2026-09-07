@@ -30,6 +30,29 @@ export type DevWarp = {
 export const devTeleportAtom = atom<DevWarp | null>(null);
 
 /**
+ * Override every body's sphere tessellation, or 0 for the per-tier authored value.
+ *
+ * ⚠ EXISTS AS A CONTROLLED EXPERIMENT, not a setting. The limb-bead investigation's
+ * candidate is the sphere's POLYGONAL SILHOUETTE, and the only in-game way to change
+ * the segment count was to cross a LOD threshold — which also swaps the texture tier
+ * and the camera distance at the same time. Three variables at once cannot answer a
+ * one-variable question. This moves the segment count on its own.
+ *
+ * 🔑 Sagitta (how far a regular N-gon's edge falls inside the true circle) is
+ * `R(1 − cos(π/N))` ∝ 1/N², so 48 → 128 is a 7.1× change with nothing else moving.
+ */
+export const devSegmentsOverrideAtom = atom<number>(0);
+
+/**
+ * Override `AP_RES_SCALE` for the aerial-perspective march target, or 0 for the
+ * authored 0.5. Changing it rebuilds the whole atmosphere pass, which is exactly what
+ * makes it safe — every uniform derived from the march height is rebuilt with it.
+ *
+ * ⚠ Diagnostic. 1.0 costs 4x the marched pixels, 2.0 costs 16x.
+ */
+export const devApResScaleAtom = atom<number>(0);
+
+/**
  * Max speed override in m/s. When non-null, replaces SHIP_MAX_SPEED_KMPS.
  * null = use default (400 m/s).
  */

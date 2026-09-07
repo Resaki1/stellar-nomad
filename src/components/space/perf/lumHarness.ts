@@ -77,7 +77,10 @@ import {
 const _eclipseProbeU = createEclipseUniforms();
 
 import { STAR_LUMINOSITY_SUN, STAR_POSITION_KM } from "@/sim/celestialConstants";
-import { devTeleportAtom, type DevWarp } from "@/store/dev";
+import { devTeleportAtom, type DevWarp,
+  devSegmentsOverrideAtom,
+  devApResScaleAtom,
+} from "@/store/dev";
 import {
   getStarCoronaScale,
   getStarGlareFlipY,
@@ -165,6 +168,14 @@ import {
   getLodThresholds,
 } from "@/components/celestial/lodState";
 import {
+  atmosphereViewOccluderStatus,
+  setShadowSplit,
+  setLimbRadialSamples,
+  limbRadialStatus,
+  setAtmoJitter,
+  setAtmoSteps,
+  setAtmoBypass,
+  setAtmoSpectralT,
   getAtmosphereBody,
   getDominantAtmosphereBody,
   setFmsMax,
@@ -2749,6 +2760,770 @@ export class LumHarness {
           "      (anti-sunward of the body) and re-run.",
       );
     }
+  }
+
+  /**
+   * LIMB RING SCAN — with a CONTROL, which is what all four earlier versions lacked.
+   *
+   *     await __lum.limbScan()        // planet roughly centred
+   *
+   * ⚠⚠⚠ FOUR SUCCESSIVE VERSIONS OF THIS PROBE REPORTED CONFIDENT NUMBERS THAT WERE
+   * MEASURING SOMETHING ELSE, and every one failed the same way — **no null
+   * measurement**:
+   *   1. spread over a jitter the scheme under test SET deterministically ⇒ 0.000 by
+   *      construction, not by accuracy.
+   *   2. a radial-continuity aggregate dominated by relative noise where the signal
+   *      collapses to 1e-10, i.e. where nothing is visible.
+   *   3. a tangential walk that drifted off a curved crest, so "amplitude" was
+   *      ring-vs-background contrast and "chroma" was ring-hue-vs-starfield.
+   *   4. a circle fit that maximised brightness and, on a DAY-LIT Jupiter, settled at
+   *      77% of the geometric limb radius — measuring a chord across the cloud bands
+   *      and reporting its harmonics as if they were the artefact.
+   *
+   * 🔑🔑 A CONTROL WOULD HAVE CAUGHT ALL FOUR IN ONE READING. So this version scans a
+   * second circle out in empty sky at 1.25x the limb radius and reports the identical
+   * statistics for it. **If the control's ripple is comparable to the limb's, the
+   * measurement is dominated by whatever is in the sky, not by the limb** — and no
+   * amount of interpretation of the limb column means anything.
+   *
+   * It also refuses to report at all when the fitted radius disagrees with the radius
+   * geometry demands, rather than silently measuring the wrong circle (failure 4).
+   *
+   * ── THE SHAPE OF THE DISTRIBUTION IS THE DISCRIMINATOR ───────────────────
+   * 🔑 A LATTICE (pixel grid, MSAA coverage, half-res upsample, mip pyramid) produces a
+   * bounded, roughly symmetric ripple: `max/sigma` around 3 for ~1400 samples, low
+   * skew, and its power concentrated in a few harmonics.
+   * 🔑 SPARSE POINT SOURCES produce a strongly positive-skewed distribution with an
+   * extreme upper tail and a BROADBAND spectrum — because a point source is a delta,
+   * and a delta has flat power.
+   * ⇒ `max/sigma`, `skew` and `top-6 power share` together separate the two without any
+   * theory in between. The author's first reading was max +10.42 stops at rms 1.232
+   * (8.5 sigma, where 3.2 is expected) with 11.8% in the top six harmonics.
+   */
+  async limbScan(): Promise<Record<string, unknown>> {
+    if (!_source) {
+      console.log("[lum] no probe target registered — reload if SpaceRenderer just changed.");
+      return { ok: false };
+    }
+    const { renderer, target, camera } = _source;
+    const rec = getDominantAtmosphereBody();
+    if (!rec || !camera) {
+      console.log("[lum] need a dominant atmosphere body and a registered camera.");
+      return { ok: false };
+    }
+    const CONTROL_SCALE = 1.25;
+    const tanPerPx = (2 * Math.tan((camera.fov * Math.PI) / 180 / 2)) / target.height;
+    const rgKm = rec.params.groundRadiusKm;
+    const rtopKm = rgKm + rec.params.atmosphereHeightKm;
+    const dKm = Math.max(rec.distanceKm, rgKm * 1.0001);
+    const rPxGround = Math.tan(Math.asin(Math.min(0.9999, rgKm / dKm))) / tanPerPx;
+    const rPxTop = Math.tan(Math.asin(Math.min(0.9999, rtopKm / dKm))) / tanPerPx;
+    // Room for the control circle too, or it cannot be read.
+    const side = Math.min(
+      1400,
+      Math.min(target.width, target.height),
+      Math.ceil(2.2 * CONTROL_SCALE * rPxTop) + 8,
+    );
+    if (side < 32 || CONTROL_SCALE * rPxTop > side / 2 - 3) {
+      console.log(
+        `[lum] disc is ~${(2 * rPxTop).toFixed(0)} px across and the control circle at ` +
+          `${CONTROL_SCALE}x would not fit in the readable region. Move further away or closer.`,
+      );
+      return { ok: false };
+    }
+    const ox = Math.max(0, Math.round((target.width - side) / 2));
+    const oy = Math.max(0, Math.round((target.height - side) / 2));
+    const buf = await renderer.readRenderTargetPixelsAsync(target, ox, oy, side, side);
+    const isHalf = buf instanceof Uint16Array;
+    const isByte = buf instanceof Uint8Array;
+    const raw = buf as unknown as ArrayLike<number>;
+    const stride = rowStrideElements(side, isHalf ? 2 : isByte ? 1 : 4);
+    const CR = new Float64Array(side * side);
+    const CB = new Float64Array(side * side);
+    const Y = new Float64Array(side * side);
+    for (let row = 0; row < side; row++) {
+      for (let col = 0; col < side; col++) {
+        const [r, g, b] = decodeRgb(raw, row * stride + col * 4, isHalf, isByte);
+        const i = row * side + col;
+        CR[i] = r; CB[i] = b;
+        Y[i] = REC709[0] * r + REC709[1] * g + REC709[2] * b;
+      }
+    }
+    const tap = (ch: Float64Array, px: number, py: number): number => {
+      const x0 = Math.floor(px), y0 = Math.floor(py);
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= side || y0 + 1 >= side) return NaN;
+      const fx = px - x0, fy = py - y0;
+      const at = (xx: number, yy: number) => ch[yy * side + xx];
+      return (
+        at(x0, y0) * (1 - fx) * (1 - fy) + at(x0 + 1, y0) * fx * (1 - fy) +
+        at(x0, y0 + 1) * (1 - fx) * fy + at(x0 + 1, y0 + 1) * fx * fy
+      );
+    };
+    const ringMean = (cx: number, cy: number, r: number): number => {
+      const n = Math.max(64, Math.round(2 * Math.PI * r));
+      let acc = 0, cnt = 0;
+      for (let k = 0; k < n; k++) {
+        const th = (2 * Math.PI * k) / n;
+        const v = tap(Y, cx + r * Math.cos(th), cy + r * Math.sin(th));
+        if (Number.isFinite(v)) { acc += Math.log2(Math.max(v, 1e-20)); cnt++; }
+      }
+      return cnt > 0 ? acc / cnt : -Infinity;
+    };
+    // ⚠ The radius is CONSTRAINED to the band geometry allows. Letting it float is
+    // exactly how v4 ended up measuring Jupiter's cloud bands.
+    const rLo = rPxGround * 0.97, rHi = rPxTop * 1.03;
+    let bcx = side / 2, bcy = side / 2, br = 0.5 * (rLo + rHi);
+    for (const step of [6, 2, 0.7, 0.25]) {
+      const span = step * 6;
+      let best = -Infinity, nx = bcx, ny = bcy, nr = br;
+      for (let dx = -span; dx <= span; dx += step) {
+        for (let dy = -span; dy <= span; dy += step) {
+          for (let dr = -span; dr <= span; dr += step) {
+            const r = Math.min(rHi, Math.max(rLo, br + dr));
+            const v = ringMean(bcx + dx, bcy + dy, r);
+            if (v > best) { best = v; nx = bcx + dx; ny = bcy + dy; nr = r; }
+          }
+        }
+      }
+      bcx = nx; bcy = ny; br = nr;
+    }
+    const offCentre = Math.hypot(bcx - side / 2, bcy - side / 2);
+    if (offCentre > 0.25 * br) {
+      console.log(
+        `[lum] the fitted centre is ${offCentre.toFixed(0)} px off the read region's centre ` +
+          `(> 25% of r). Centre the planet on screen and retry — an off-centre fit is not the limb.`,
+      );
+      return { ok: false, fitted: { cx: bcx, cy: bcy, rPx: br } };
+    }
+    // One circle -> the residual and its statistics.
+    const scan = (r: number) => {
+      const N = Math.max(64, Math.round(2 * Math.PI * r));
+      const y: number[] = [], rr: number[] = [], bb: number[] = [];
+      for (let k = 0; k < N; k++) {
+        const th = (2 * Math.PI * k) / N;
+        const px = bcx + r * Math.cos(th), py = bcy + r * Math.sin(th);
+        y.push(tap(Y, px, py)); rr.push(tap(CR, px, py)); bb.push(tap(CB, px, py));
+      }
+      if (!y.every(Number.isFinite)) return null;
+      const W = Math.max(3, Math.round(N / 24)) | 1;
+      const detrend = (v: number[]) => {
+        const out: number[] = [];
+        for (let i = 0; i < N; i++) {
+          let acc = 0;
+          for (let j = -(W >> 1); j <= (W >> 1); j++) acc += v[(i + j + N * 2) % N];
+          out.push(v[i] - acc / W);
+        }
+        return out;
+      };
+      const lg = y.map((v) => Math.log2(Math.max(v, 1e-20)));
+      const res = detrend(lg);
+      const lgRB = rr.map((v, i) => Math.log2(Math.max(v, 1e-20) / Math.max(bb[i], 1e-20)));
+      const resRB = detrend(lgRB);
+      const rms = Math.sqrt(res.reduce((p, q) => p + q * q, 0) / N);
+      const rmsRB = Math.sqrt(resRB.reduce((p, q) => p + q * q, 0) / N);
+      // Robust sigma from the MAD, so a handful of point sources cannot inflate the
+      // yardstick they are being measured against.
+      const srt = res.slice().sort((x, z) => x - z);
+      const med = srt[N >> 1];
+      const madSrt = res.map((v) => Math.abs(v - med)).sort((x, z) => x - z);
+      const sigma = Math.max(1e-9, 1.4826 * madSrt[N >> 1]);
+      const maxAbs = Math.max(...res.map(Math.abs));
+      const maxSigma = maxAbs / sigma;
+      const m3 = res.reduce((p, q) => p + Math.pow(q - med, 3), 0) / N;
+      const skew = m3 / Math.pow(sigma, 3);
+      const spikes = res.filter((v) => v > 4 * sigma).length;
+      // Angular power spectrum of the residual.
+      let total = 0;
+      const power: { k: number; p: number }[] = [];
+      for (let k = 4; k <= Math.floor(N / 2); k++) {
+        let re = 0, im = 0;
+        for (let i = 0; i < N; i++) {
+          const ph = (-2 * Math.PI * k * i) / N;
+          re += res[i] * Math.cos(ph); im += res[i] * Math.sin(ph);
+        }
+        const pw = (re * re + im * im) / (N * N);
+        power.push({ k, p: pw }); total += pw;
+      }
+      const top = power.sort((x, z) => z.p - x.p).slice(0, 6);
+      const share = total > 0 ? top.reduce((p, t) => p + t.p, 0) / total : 0;
+      return { N, rms, rmsRB, sigma, maxAbs, maxSigma, skew, spikes, top, share, res };
+    };
+    const limb = scan(br);
+    const ctrl = scan(CONTROL_SCALE * br);
+    if (!limb || !ctrl) {
+      console.log("[lum] a scan circle left the read region — centre the planet and retry.");
+      return { ok: false };
+    }
+    // Expected max/sigma for N Gaussian samples, for the classifier below.
+    const expMax = Math.sqrt(2 * Math.log(limb.N));
+    const rows: Record<string, Record<string, string | number>> = {
+      "rms ripple (stops)": { limb: +limb.rms.toFixed(3), "CONTROL (empty sky)": +ctrl.rms.toFixed(3) },
+      "robust sigma (stops)": { limb: +limb.sigma.toFixed(3), "CONTROL (empty sky)": +ctrl.sigma.toFixed(3) },
+      "max |residual| (stops)": { limb: +limb.maxAbs.toFixed(2), "CONTROL (empty sky)": +ctrl.maxAbs.toFixed(2) },
+      "max / robust sigma": { limb: +limb.maxSigma.toFixed(1), "CONTROL (empty sky)": +ctrl.maxSigma.toFixed(1) },
+      skew: { limb: +limb.skew.toFixed(2), "CONTROL (empty sky)": +ctrl.skew.toFixed(2) },
+      "spikes > 4 sigma": { limb: limb.spikes, "CONTROL (empty sky)": ctrl.spikes },
+      "top-6 harmonic share": { limb: `${(100 * limb.share).toFixed(1)}%`, "CONTROL (empty sky)": `${(100 * ctrl.share).toFixed(1)}%` },
+      "R/B structure (stops rms)": { limb: +limb.rmsRB.toFixed(3), "CONTROL (empty sky)": +ctrl.rmsRB.toFixed(3) },
+    };
+    console.log(
+      [
+        `[lum] limb RING scan + CONTROL — PRE-TONEMAP ${target.width}x${target.height}, read ${side}px at (${ox},${oy})`,
+        `      body ${rec.id}, camera→centre ${Math.round(rec.distanceKm).toLocaleString()} km`,
+        `      fitted limb r = ${br.toFixed(1)} px   (geometry allows ${rLo.toFixed(1)}..${rHi.toFixed(1)}; ground ${rPxGround.toFixed(1)}, top ${rPxTop.toFixed(1)})`,
+        `      centre (${bcx.toFixed(1)}, ${bcy.toFixed(1)}), ${offCentre.toFixed(1)} px off the read centre`,
+        `      limb ${limb.N} samples, CONTROL circle at ${CONTROL_SCALE}x r = ${(CONTROL_SCALE * br).toFixed(1)} px, ${ctrl.N} samples`,
+        `      for ${limb.N} GAUSSIAN samples, max/sigma would be about ${expMax.toFixed(1)}`,
+      ].join("\n"),
+    );
+    console.table(rows);
+    const ratio = limb.rms / Math.max(ctrl.rms, 1e-9);
+    const pointish = limb.maxSigma > 2.2 * expMax && limb.skew > 0.8 && limb.share < 0.25;
+    console.log(
+      [
+        "      ── how to read it, in order ──",
+        `      1. CONTROL vs LIMB rms ratio = ${ratio.toFixed(2)}x.`,
+        ratio < 2
+          ? "         ⚠⚠ UNDER 2x: the ripple is NOT specific to the limb. Whatever is in the\n" +
+            "            sky is producing most of it, and nothing else in this table is evidence\n" +
+            "            about the limb. Ablate the sky (see 4) before reading further."
+          : "         Over 2x: the ripple IS specific to the limb, so the rest of the table is\n" +
+            "            about the limb.",
+        `      2. SHAPE: max/sigma ${limb.maxSigma.toFixed(1)} vs ${expMax.toFixed(1)} expected, skew ${limb.skew.toFixed(2)}, top-6 share ${(100 * limb.share).toFixed(1)}%.`,
+        pointish
+          ? "         ⇒ SPARSE POINT SOURCES. A delta has flat power, hence the broadband\n" +
+            "            spectrum and the one-sided tail. This is NOT a lattice and no\n" +
+            "            resolution/coverage/quantisation fix can address it."
+          : "         ⇒ consistent with a LATTICE (bounded, symmetric, power in few harmonics).\n" +
+            "            Read the harmonic table: 128/48 = sphere tessellation, circumference/2\n" +
+            "            = AP_RES_SCALE, circumference/2^N = a mip pyramid.",
+        "      3. Point sources in this scene means the STAR FIELD, which no ablation so far",
+        "         has touched — not glare, scotopic, the tone curve, spectral T, MSAA, or",
+        "         bypassing the atmosphere.",
+        "      4. DECISIVE, one command, no reload:   __lum.starLift(\"off\")",
+        "         That drops the gameplay star-visibility gain to 1.0, making the field",
+        "         roughly a thousand times dimmer. If the beads go with it, they were stars.",
+      ].join("\n"),
+    );
+    return {
+      ok: true,
+      bodyId: rec.id,
+      fitted: { cx: bcx, cy: bcy, rPx: br, offCentrePx: offCentre },
+      geometryRPx: { ground: rPxGround, top: rPxTop, allowed: [rLo, rHi] },
+      expectedMaxSigmaIfGaussian: expMax,
+      controlToLimbRmsRatio: ratio,
+      classifiedAsPointSources: pointish,
+      limb: {
+        samples: limb.N, rmsStops: limb.rms, robustSigmaStops: limb.sigma,
+        maxStops: limb.maxAbs, maxOverSigma: limb.maxSigma, skew: limb.skew,
+        spikes: limb.spikes, top6Share: limb.share, chromaRmsStops: limb.rmsRB,
+        topHarmonics: limb.top.map((t) => ({ k: t.k, arcPx: (2 * Math.PI * br) / t.k })),
+      },
+      control: {
+        samples: ctrl.N, rmsStops: ctrl.rms, robustSigmaStops: ctrl.sigma,
+        maxStops: ctrl.maxAbs, maxOverSigma: ctrl.maxSigma, skew: ctrl.skew,
+        spikes: ctrl.spikes, top6Share: ctrl.share, chromaRmsStops: ctrl.rmsRB,
+      },
+    };
+  }
+
+  /**
+   * D14g — the fix, and its ablation. Radial sub-samples of the limb per march pixel.
+   *
+   *     __lum.limbSuper()      // report the derived K, no change
+   *     __lum.limbSuper(1)     // ABLATE: back to the pre-D14g single centre sample
+   *     __lum.limbSuper(4)     // force 4
+   *     __lum.limbSuper(0)     // release the override
+   *
+   * ── WHAT IT DOES AND WHY THIS SHAPE ─────────────────────────────────────
+   * The AP pass is rendered K times with the ray rotated RADIALLY by a stratified
+   * sub-texel offset, additively at weight 1/K. It supersamples **only the axis the
+   * limb varies along** — impact parameter — and leaves the tangential axis alone.
+   *
+   * 🔑 K radial samples for K× the cost, where raising `AP_RES_SCALE` buys the same K
+   * for **K²**. MEASURED: one AP-pass-worth of pixels costs 0.15 ms at a far pose
+   * (derived two ways from the author's +0.50 ms at 4× and +2.20 ms at 16×, agreeing to
+   * 12%), so K=3 costs ~+0.30 ms against `apRes(1)`'s +0.50 ms for fewer radial samples.
+   *
+   * 🔑🔑 AND THE ECONOMICS ARE WHY IT IS SAFE. K is derived from the ring's width in
+   * march texels and is **1 whenever the ring is already resolved** — every close pose.
+   * The expensive case (12.95 ms in the cloud band) is BIT-IDENTICAL to before and pays
+   * nothing, which a global `AP_RES_SCALE` bump could never be: that would charge 4× on
+   * the whole screen precisely where the pass is most expensive and the ring needs no
+   * help at all.
+   *
+   * ⚠ `apRes(2)` is the GROUND TRUTH to judge against — it is the brute-force version
+   * of the same supersampling. If K=3 does not look close to `apRes(2)`, the offset
+   * geometry is wrong, not the idea.
+   * ⚠ K saturates at LIMB_RADIAL_MAX, so far enough out the artefact returns. By then
+   * the body is a handful of pixels and the far/billboard tier takes over — but that is
+   * an assumption I have not measured, so check it if you see dashes on a tiny disc.
+   */
+  limbSuper(k?: number): Record<string, unknown> {
+    if (k !== undefined) setLimbRadialSamples(k);
+    const st = limbRadialStatus();
+    const rec = getDominantAtmosphereBody();
+    console.log(
+      [
+        `[lum] D14g limb resolution — body ${rec ? rec.id : "(none)"}`,
+        `      ring width      = ${st.ringScreenPx.toFixed(2)} screen px`,
+        `      AP scale rung   = ${st.apScale}  ⇒  ${st.ringMarchPx.toFixed(2)} march texels`,
+        `      radial samples  = ${st.active}${st.override > 0 ? " (FORCED)" : " (derived)"} ⇒ ${(st.ringMarchPx * st.active).toFixed(2)} effective`,
+        "",
+        st.ringMarchPx >= 2
+          ? "      ✅ the ring is RESOLVED in the AP target (≥ 2 texels), which is the"
+          : "      ⚠ the ring is still UNDER-RESOLVED — the ladder is capped at 2.0, so",
+        st.ringMarchPx >= 2
+          ? "         defect that mattered. Radial samples only remove residual aliasing."
+          : "         radial supersampling is carrying the rest. Expect some softness.",
+        "",
+        "      ⚠ TWO DEFECTS, and they need different levers:",
+        "        • RECONSTRUCTION — a ring stored in < 2 texels cannot be recovered at",
+        "          any sample count. Only the AP scale fixes this. MEASURED dominant:",
+        "          0.5 + K=3 → 109 fps, 1.2 + K=1 → 107 fps and noticeably better.",
+        "        • SAMPLING — point-sampling each texel. Radial samples fix this, and",
+        "          are only worth spending once resolution has run out.",
+        "      A/B: __lum.limbSuper(1) drops radial samples; __lum.apRes(s) forces a rung.",
+      ].join("\n"),
+    );
+    return { ...st, effectiveSamples: st.ringMarchPx * st.active };
+  }
+
+
+  /**
+   * Override `AP_RES_SCALE` live, rebuilding the atmosphere pass.
+   *
+   *     __lum.apRes(1)      // full-res march  (4x the marched pixels)
+   *     __lum.apRes(2)      // supersampled    (16x — expect a big frame-time hit)
+   *     __lum.apRes(0)      // back to the authored 0.5
+   *
+   * ── WHY THIS IS THE TEST THAT FITS THE DESCRIPTION ───────────────────────
+   * The author's own words: "always a straight line a few pixels wide with the whole
+   * sky colour gradient, then a hard step with a new line with the same gradient
+   * again." That is not a brightness modulation — the ring is **radially DISPLACED in
+   * steps**, and each straight segment carries the full orange→blue gradient intact.
+   *
+   * 🔑🔑 That is the exact signature of a feature NARROWER THAN ONE TEXEL being
+   * reconstructed BILINEARLY. Bilinear reconstruction of a sub-texel feature snaps its
+   * apparent position toward texel centres, and the iso-contours of a bilinear patch
+   * are straight lines within a texel with slope breaks at texel boundaries ⇒ straight
+   * segments, hard steps, gradient preserved.
+   *
+   * MEASURED at the author's pose: the limb ring spans ground r = 111.7 px to top
+   * r = 113.5 px, i.e. **1.8 screen px = 0.9 MARCH px at AP_RES_SCALE 0.5**. The whole
+   * atmosphere is thinner than one march texel. It cannot be represented there.
+   *
+   * 🔑 AND IT RETRODICTS EVERY NULL RESULT IN THIS INVESTIGATION, which no earlier
+   * hypothesis did: an upsampling artefact is indifferent to the march's internals
+   * (`atmoSteps`, `atmoJitter` — both null), to geometry (`segments` — null), to the
+   * sky (`starLift` — null), to MSAA (a fullscreen pass has no coverage — null), and
+   * to everything downstream (`glare`, `scotopic`, `tonecurve`, `spectralT` — all
+   * null). And it is chromatic for free, because the AP target's rgb is per-channel L
+   * whose hue varies radially across the very feature being smeared.
+   *
+   * ── THE PREDICTION IS A SCALING LAW, NOT A BINARY ────────────────────────
+   * If this is it, the step SPACING is locked to the march texel grid, so:
+   *   0.5 → authored          steps at the current scale
+   *   1.0 → **half the spacing**, half the radial displacement
+   *   2.0 → quartered, and the ring should look essentially clean
+   * A binary "it changed" proves little; **the spacing halving as the scale doubles is
+   * the discriminating observation.** If the spacing does NOT track the grid, this is
+   * dead too and the AP target is exonerated.
+   *
+   * ⚠ Note `AP_RES_SCALE = 1.0` was tried during D14d and recorded as "only helped a
+   * bit (finer terraces, same terraces)" — consistent with this: at 1.0 the ring is
+   * still only 1.8 march px, so it is better but still marginal. That earlier note is
+   * evidence FOR the mechanism, not against it.
+   * ⚠ Rebuilds the pass: expect a one-off shader-compile hitch.
+   */
+  apRes(scale = 0): Record<string, unknown> {
+    const v = Math.max(0, Math.min(2, scale));
+    this.store.set(devApResScaleAtom, v);
+    const rec = getDominantAtmosphereBody();
+    let ringPx = NaN;
+    if (rec && _source?.camera && _source?.target) {
+      const R = rec.params.groundRadiusKm;
+      const Rt = R + rec.params.atmosphereHeightKm;
+      const d = Math.max(rec.distanceKm, Rt * 1.0001);
+      const tanPerPx =
+        (2 * Math.tan((_source.camera.fov * Math.PI) / 180 / 2)) / _source.target.height;
+      ringPx =
+        (Math.tan(Math.asin(Math.min(0.9999, Rt / d))) -
+          Math.tan(Math.asin(Math.min(0.9999, R / d)))) /
+        tanPerPx;
+    }
+    const eff = v > 0 ? v : 0.5;
+    console.log(
+      [
+        `[lum] AP_RES_SCALE override: ${v > 0 ? v : "OFF (authored 0.5)"}`,
+        Number.isFinite(ringPx)
+          ? `      limb ring is ${ringPx.toFixed(2)} screen px = ${(ringPx * eff).toFixed(2)} MARCH px at this scale`
+          : "      no dominant atmosphere body — fly near one",
+        Number.isFinite(ringPx) && ringPx * eff < 1
+          ? "      ⚠⚠ UNDER ONE MARCH TEXEL: the atmosphere cannot be represented in the\n" +
+            "         AP target at all, and bilinear reconstruction of a sub-texel feature\n" +
+            "         displaces it toward texel centres — straight segments, hard steps."
+          : "      Over one march texel, so the ring is at least representable.",
+        "",
+        "      ⚠ Judge the STEP SPACING, not just 'did it change'. Doubling the scale",
+        "        should HALVE the spacing. If the spacing does not track the grid, the",
+        "        AP target is exonerated and this hypothesis is dead too.",
+      ].join("\n"),
+    );
+    return { apResScale: v, ringScreenPx: ringPx, ringMarchPx: ringPx * eff };
+  }
+
+  /**
+   * D14d ablation — the ONE knob this whole investigation never turned.
+   *
+   *     __lum.atmoJitter(false)   // every march pixel shares one sample lattice
+   *     __lum.atmoJitter(true)    // interleaved-gradient noise per march pixel
+   *
+   * ⚠⚠ It was a BUILD CONST (`ATMO_MARCH_JITTER`), so testing it meant a reload, and
+   * a reload throws away the pose the artefact lives in. Six hypotheses were tested
+   * around it while it sat untested.
+   *
+   * 🔑 D14d's own comment predicts what you are about to see: "Static blue-ish noise at
+   * half res, bilinearly upsampled by the apply pass, reads as VERY FINE GRAIN." The
+   * Uranus screenshot shows exactly that grain across the whole disc — so the march
+   * demonstrably varies per march pixel EVERYWHERE, not only at the limb. At a limb the
+   * same per-pixel decorrelation lands on an integrand that is many stops steep across
+   * two pixels, and grain becomes dashes.
+   *
+   * ⚠ OFF IS NOT A FIX. The jitter exists because a shared lattice TERRACES the limb —
+   * that was D14d. If the beads go with it, the answer is more samples (see
+   * `__lum.atmoSteps`), not less jitter.
+   */
+  atmoJitter(on = true): Record<string, unknown> {
+    setAtmoJitter(on);
+    console.log(
+      `[lum] march jitter (D14d): ${on ? "ON (IGN per march pixel)" : "OFF (shared lattice)"}\n` +
+        "      OFF should replace grain with TERRACES if the march is what you are seeing.\n" +
+        "      Neither grain nor terraces changing ⇒ the march is not producing it.",
+    );
+    return { jitter: on };
+  }
+
+  /**
+   * Runtime march step count. 0 restores the authored `MAIN_STEPS` (16).
+   *
+   *     __lum.atmoSteps(64)   // 4x the samples
+   *     __lum.atmoSteps(0)    // back to authored
+   *
+   * 🔑 Only possible now because D14e turned the `Loop` bound into a NODE; before that
+   * the step count was fixed at shader build time and could only be A/B'd across a
+   * reload. An override also forces the plain uniform lattice, so this asks exactly one
+   * question: **is the artefact quadrature noise?**
+   *
+   * If 64 steps visibly cleans the limb while 16 does not, it is the integral, and the
+   * fix is a better-conditioned march. If 64 changes nothing, the march is exonerated
+   * outright and the cause is in the scaled scene.
+   * ⚠ Costs roughly linearly in the marched pixels; expect a frame-time hit at 64.
+   */
+  atmoSteps(n = 0): Record<string, unknown> {
+    const v = Math.max(0, Math.min(256, Math.round(n)));
+    setAtmoSteps(v);
+    console.log(
+      `[lum] march steps: ${v > 0 ? v + " (uniform lattice; D14e split disabled)" : "authored (16, D14e split active)"}`,
+    );
+    return { steps: v };
+  }
+
+  /**
+   * Force every body's sphere tessellation, for the limb-silhouette experiment.
+   *
+   *     __lum.segments(48)    // Earth's MID tier count
+   *     __lum.segments(128)   // Earth's NEAR tier count
+   *     __lum.segments(384)   // far beyond either (capped; see the note)
+   *     __lum.segments(0)     // back to the per-tier authored values
+   *
+   * Live, no reload, no flying.
+   *
+   * ── WHY THIS AND NOT "FLY ACROSS THE LOD BOUNDARY" ───────────────────────
+   * The candidate for the limb beads is the sphere's POLYGONAL SILHOUETTE. Until now
+   * the only way to change the segment count in-game was to cross a LOD threshold,
+   * which swaps the TEXTURE tier and changes the CAMERA DISTANCE at the same moment.
+   * 🔑 Three variables moving at once cannot answer a one-variable question — the same
+   * mistake that made four versions of `limbScan` measure the wrong thing. This moves
+   * the segment count alone.
+   *
+   * ── THE PREDICTION, WITH A NUMBER ────────────────────────────────────────
+   * A regular N-gon's edge falls inside the true circle by its sagitta,
+   * `R(1 − cos(π/N))` ≈ `Rπ²/(2N²)`, so the wobble scales as **1/N²**:
+   *
+   *   Earth, N = 48  (mid tier)   sagitta 13.64 km = 0.46 screen px at 35,570 km
+   *   Earth, N = 128 (near tier)  sagitta  1.92 km = 0.065 px      ⇒ 7.1× less
+   *
+   * ⚠ Sub-pixel, and that is not a reason to dismiss it: the limb is an **11.5-stop
+   * edge** (measured 1.2e-2 against 4e-6), and this repo has already measured that
+   * MSAA's first coverage step is 73% of the output range on exactly such an edge. A
+   * half-pixel of geometric wobble is a large brightness modulation there, and four
+   * MSAA coverage levels cannot fix it — which is why turning AA off changed nothing
+   * visible.
+   *
+   * ⚠⚠ AND IT IS A DIFFERENT CLASS FROM EVERY FIX THAT HAS ALREADY FAILED. MSAA,
+   * SMAA, `AP_RES_SCALE = 1.0` and D14b all change how a GIVEN silhouette is sampled.
+   * This changes the silhouette itself. That distinction is the whole reason the
+   * hypothesis is still alive after five coverage-flavoured fixes measured null.
+   *
+   * What to look for: `48` vs `128` at a fixed pose. If the dashes go ~7× fainter and
+   * ~2.7× more numerous, it is the tessellation. If `384` does not visibly clean the
+   * limb up, the tessellation is dead and I was wrong again.
+   */
+  segments(n = 0): Record<string, unknown> {
+    // ⚠ Capped at 384: the memo builds BOTH the near and mid sphere for every mounted
+    // body, so N segments costs ~2·N²·2 triangles × ~13 bodies. 384 is already ~7.7 M
+    // triangles and a visible hitch; 2048 would be 220 M and would wedge the tab.
+    const seg = Math.max(0, Math.min(384, Math.round(n)));
+    this.store.set(devSegmentsOverrideAtom, seg);
+    const rec = getDominantAtmosphereBody();
+    const rows: Record<string, Record<string, string | number>> = {};
+    if (rec) {
+      const R = rec.params.groundRadiusKm;
+      const d = Math.max(rec.distanceKm, R * 1.0001);
+      const cam = _source?.camera;
+      const tgt = _source?.target;
+      const kmPerPx =
+        cam && tgt
+          ? ((2 * Math.tan((cam.fov * Math.PI) / 180 / 2)) / tgt.height) *
+            Math.sqrt(Math.max(0, d * d - R * R))
+          : NaN;
+      for (const N of [48, 128, seg > 0 ? seg : 0].filter((v) => v > 0)) {
+        const sag = R * (1 - Math.cos(Math.PI / N));
+        rows[`N = ${N}`] = {
+          "sagitta (km)": Number(sag.toPrecision(4)),
+          "sagitta (screen px)": Number.isFinite(kmPerPx)
+            ? Number((sag / kmPerPx).toPrecision(3))
+            : "n/a",
+          "vs N=128": Number((sag / (R * (1 - Math.cos(Math.PI / 128)))).toPrecision(3)),
+        };
+      }
+    }
+    console.log(
+      [
+        `[lum] sphere tessellation override: ${seg > 0 ? seg + " segments (all bodies)" : "OFF (per-tier authored)"}`,
+        rec
+          ? `      dominant body ${rec.id}, R = ${rec.params.groundRadiusKm} km, camera→centre ${Math.round(rec.distanceKm).toLocaleString()} km`
+          : "      no dominant atmosphere body in range",
+        "",
+        "      Silhouette sagitta = R(1 − cos(π/N)), i.e. how far the polygon's edge",
+        "      falls inside the true circle. Scales as 1/N².",
+      ].join("\n"),
+    );
+    if (Object.keys(rows).length > 0) console.table(rows);
+    console.log(
+      [
+        "      ⚠ A/B at a FIXED POSE: __lum.segments(48) then __lum.segments(128).",
+        "        Do not fly to compare — crossing the LOD boundary changes the texture",
+        "        tier and the distance at the same time.",
+        "      ⚠ Then __lum.segments(384): if the limb does not visibly clean up, the",
+        "        tessellation hypothesis is dead.",
+        "      ⚠ Costs a geometry rebuild per body per call. Diagnostic only.",
+      ].join("\n"),
+    );
+    return { segments: seg, sagitta: rows };
+  }
+
+  /**
+   * Runtime ablation of the ENTIRE atmosphere contribution (`uActive = 0`).
+   *
+   *     __lum.atmoBypass(true)    // apply pass becomes `scene*1 + 0`
+   *
+   * ⚠ `ATMO_BYPASS` already existed as a BUILD const, which is useless for this
+   * question: the artefact lives in one geometry that takes a flight to reach, and
+   * a reload loses it. Both passes still run and both targets are unchanged, so
+   * this isolates the atmosphere's CONTRIBUTION, not its cost.
+   */
+  atmoBypass(on = true): Record<string, unknown> {
+    setAtmoBypass(on);
+    console.log(
+      `[lum] atmosphere contribution: ${on ? "BYPASSED (scene*1 + 0)" : "active"}\n` +
+        "      If the limb beads SURVIVE this, the atmosphere is not producing them —\n" +
+        "      look at the planet mesh, the MSAA resolve, the glare pyramid or post.",
+    );
+    return { atmoBypass: on };
+  }
+
+  /**
+   * Runtime ablation of the per-channel transmittance reconstruction in the apply
+   * pass: `pow(a, uTSpectralK)` → `vec3(a)`.
+   *
+   *     __lum.atmoSpectralT(false)
+   *
+   * 🔑 This is the only place in the atmosphere chain that applies a PER-CHANNEL
+   * NONLINEARITY to a BILINEARLY INTERPOLATED value, so it is the only one that can
+   * turn a smooth half-res edge into channel-dependent structure. `pow` is convex,
+   * so `pow(lerp(a))` ≠ `lerp(pow(a))`, and the gap grows with both the exponent
+   * spread (Earth: ~0.33 red vs ~1.9 blue) and the local variation of `a` — which
+   * is maximal at the limb. The apply pass's own comment already notes bilinear
+   * filtering can hand it a negative base next to a sharp edge in L.
+   *
+   * ⚠ Turning it off is NOT a fix — long paths genuinely redden, and this is what
+   * carries that. It is a bisection step: if the CHROMA number from `limbScan`
+   * collapses with it off, the reconstruction needs to move before the interpolation
+   * (store per-channel T, or reconstruct at full res) rather than be deleted.
+   */
+  atmoSpectralT(on = true): Record<string, unknown> {
+    setAtmoSpectralT(on);
+    console.log(
+      `[lum] AP spectral transmittance: ${on ? "ON (pow per channel)" : "OFF (grey mean)"}\n` +
+        "      Re-run await __lum.limbScan() and compare the CHROMA figure.",
+    );
+    return { spectralT: on };
+  }
+
+  /**
+   * D14e ablation — the BACK-LIT LIMB beading ("the ring breaks into dashes").
+   *
+   *     __lum.atmoSplit(false)   // shipped-before: uniform 16-step lattice
+   *     __lum.atmoSplit(true)    // split the march at the shadow boundary
+   *
+   * Live, no reload — deliberately, because the artefact only exists in one
+   * geometry (observer inside the planet's shadow, looking at the sunlit ring) and
+   * getting there takes a flight. A build-time flag would make the A/B useless.
+   *
+   * ── WHAT THE ARTEFACT ACTUALLY IS ────────────────────────────────────────
+   * MEASURED offline against an 8192-step reference, as the per-pixel spread over
+   * the D14d jitter — which IS the dash amplitude, since the jitter decorrelates
+   * per pixel:
+   *
+   *   front-lit limb   0.01 stops   ← D14d already solved this
+   *   back-lit limb    0.82 stops   ← a 1.77x swing between neighbouring pixels
+   *
+   * 🔑🔑 The cause is NOT the shadow's hard 0/1 edge — it is SAMPLE STARVATION on
+   * the lobe that edge leaves. For a distant back-lit observer the tangent point
+   * sits essentially on the terminator, so `directSunOcclusion` cuts the density
+   * Gaussian near its centre and the surviving one-sided lobe is ~82 km wide
+   * against a 139 km step: **1.0-1.2 samples land in it**, versus 4.4-7.4 front-lit.
+   * The jitter then slides that one sample along a steep exponential.
+   *
+   * ⚠ This is why MSAA, SMAA, D14b's analytic silhouette band and `AP_RES_SCALE=1`
+   * all did nothing: every one of them addresses COVERAGE, and this is quadrature.
+   *
+   * ⚠⚠ Two fixes I was confident in MEASURED WORSE THAN DOING NOTHING, both by
+   * starving the SHADOWED leg — which adds nothing to the direct term but holds the
+   * tangent point and so nearly all the extinction, making the throughput noisy:
+   * importance-warping toward the lit lobe 0.82 -> 1.56-1.90, splitting 4/12 in the
+   * lit piece's favour 0.82 -> 2.57. And integrating the shadow edge analytically
+   * per segment fixed the BIAS to 0.99x while leaving the spread at 0.820 — which is
+   * the proof that the 0/1 sampling was never the mechanism.
+   *
+   * ✅ 12/12 split at the boundary, 24 steps: **0.022 stops**, better than 40 uniform
+   * steps (0.034) for 8 extra. Rays with no crossing keep the 16-step lattice
+   * bit-identically, and at the reported pose only 0.31% of the march target
+   * crosses.
+   *
+   * What to look for: park in the planet's shadow with the full ring lit, then
+   * toggle. `false` should restore the dashes; `true` should give a smooth ring.
+   * ⚠ If BOTH look identical, the pixels are not taking the split path — the ray
+   * has to cross the terminator INSIDE the atmosphere for it to engage.
+   */
+  atmoSplit(on = true): Record<string, unknown> {
+    setShadowSplit(on);
+    console.log(
+      [
+        `[lum] D14e shadow-boundary march split: ${on ? "ON (24 steps on crossing rays)" : "OFF (uniform 16)"}`,
+        "      Measured worst per-pixel spread on Earth's back-lit limb at 29,618 km:",
+        "        uniform 16 (off)  0.820 stops     <- the dashes",
+        "        uniform 32        0.062",
+        "        12/12 split (on)  0.022 stops",
+        "      ⚠ Only rays crossing the terminator inside the atmosphere are affected;",
+        "        everything else is bit-identical either way.",
+      ].join("\n"),
+    );
+    return { shadowSplit: on };
+  }
+
+  /**
+   * §29 — VIEW OCCLUDERS: is the atmosphere's occlusion pool actually populated?
+   *
+   *     __lum.atmoOcc()
+   *
+   * The reported bug is "Earth's atmosphere is visible through Luna" / "Jupiter's
+   * through Io". The atmosphere is a FULLSCREEN pass (`depthTest = false`, targets
+   * `depthBuffer: false`), so it has no hardware depth to test and instead clamps its
+   * march to a small pool of view occluders chosen on the CPU.
+   *
+   * 🔑🔑 THIS GATE EXISTS BECAUSE §29 SHIPPED ONCE AS A COMPLETE NO-OP. The shader
+   * was right; the CPU selector built its camera → occluder vector with the wrong
+   * SIGN (`oRel + ro` instead of `oRel − ro`) and so rejected every candidate. From
+   * the outside that is indistinguishable from "the shader does nothing", and it cost
+   * a full round trip. **A fixed pool whose occupancy cannot be read cannot be
+   * debugged** — so read it.
+   *
+   * What to look for, parked with a moon in front of its planet:
+   *   • `dominant body` = the planet whose atmosphere is drawn (the NEAREST body with
+   *     one — Io has no atmosphere, so near Io the dominant body is Jupiter).
+   *   • the moon present in a slot, with `dist` ≈ your distance to it and NOT ≈ twice
+   *     your distance to the planet. ⚠ That factor of two is the whole original bug:
+   *     `oRel` and `ro` are nearly parallel and nearly equal, so the sign error is
+   *     invisible in the expression and total in effect. **Check a frame conversion
+   *     by MAGNITUDE against a distance you know, never by reading it.**
+   *   • `ang radius` > `min (march px)`, else the selector culls it deliberately.
+   *   • `candidates` > 0. If it is 0 while a body is plainly in the way, compare
+   *     `dist − r` against `reach`: that cull is a slot budget, not a correctness
+   *     test, and it is where the sign error surfaced.
+   */
+  atmoOcc(): Record<string, unknown> {
+    const st = atmosphereViewOccluderStatus();
+    if (!st.bodyId) {
+      console.log(
+        "[lum] no dominant atmosphere body — the pass is inactive and nothing is\n" +
+          "      occluded because nothing is drawn. Fly near a body with an atmosphere.",
+      );
+      return { bodyId: null };
+    }
+    const rows: Record<string, Record<string, string | number>> = {};
+    let occupied = 0;
+    for (let i = 0; i < st.slots.length; i++) {
+      const sl = st.slots[i];
+      if (!sl.id) {
+        rows[`slot ${i}`] = { occluder: "— empty —" };
+        continue;
+      }
+      occupied++;
+      rows[`slot ${i}`] = {
+        occluder: sl.id,
+        "radius (km)": Math.round(sl.radiusKm),
+        "dist (km)": Math.round(sl.distKm),
+        "ang radius (deg)": Number(sl.angRadiusDeg.toPrecision(4)),
+        "ang radius (march px)": Number(sl.marchPx.toPrecision(4)),
+      };
+    }
+    console.log(
+      [
+        `[lum] §29 view occluders for the dominant atmosphere body`,
+        `      dominant body    = ${st.bodyId}`,
+        `      camera → centre  = ${Math.round(st.camDistKm).toLocaleString()} km`,
+        `      march reach      = ${Math.round(st.reachKm).toLocaleString()} km (camDist + Rtop)`,
+        `      bodies registered= ${st.registered}`,
+        `      passed selector  = ${st.candidates}  (slots filled: ${occupied}/${st.slots.length})`,
+        `      min ang radius   = ${st.minMarchPxTan.toPrecision(4)} (tan units = 1 march px)`,
+      ].join("\n"),
+    );
+    console.table(rows);
+    console.log(
+      [
+        "",
+        "      ⚠ `dist` is CAMERA → occluder. If it reads ~2× your distance to the",
+        "        dominant body, the frame conversion has the sign error back.",
+        "      ⚠ An occluder BEHIND the body is harmless and may legitimately hold a",
+        "        slot: the shader's tCut then exceeds tEnd and min() keeps the ground",
+        "        value. The pool is a superset, not a decision.",
+        "      🔑 Occlusion clamps the march ENDPOINT rather than killing the pixel, so",
+        "        air in FRONT of the occluder still scatters — you SHOULD still see the",
+        "        planet's limb haze in front of a moon. A hard cut there would be the bug.",
+      ].join("\n"),
+    );
+    return {
+      bodyId: st.bodyId,
+      camDistKm: st.camDistKm,
+      reachKm: st.reachKm,
+      registered: st.registered,
+      candidates: st.candidates,
+      occupied,
+      slots: st.slots.filter((sl) => sl.id).map((sl) => ({ ...sl })),
+    };
   }
 
   /**

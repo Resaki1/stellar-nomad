@@ -26,6 +26,8 @@ import {
   NoToneMapping,
 } from "three";
 import { useAtomValue, useSetAtom } from "jotai/react";
+
+import { devApResScaleAtom } from "@/store/dev";
 import { advanceSimTimeAtom } from "@/store/simTime";
 import { hdrCalibrationOpenAtom, settingsAtom } from "@/store/store";
 import {
@@ -426,6 +428,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // the composite-mesh pattern — textures are bound at build time, never
   // reassigned (the WebGPU bind-group cache doesn't reliably honour that). The
   // LUT RTs persist across resize, so their baked content stays valid.
+  // Diagnostic override of AP_RES_SCALE. In the dep list, so flipping it rebuilds the
+  // pass exactly as a window resize does — see the parameter's note in atmospherePass.
+  const apResOverride = useAtomValue(devApResScaleAtom);
   const atmospherePass = useMemo(
     () =>
       ATMOSPHERE_PASS_ENABLED && atmosphereLUTs
@@ -439,9 +444,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
             // rebuilds both together.
             Math.floor(size.width * gl.getPixelRatio()),
             Math.floor(size.height * gl.getPixelRatio()),
+            apResOverride,
           )
         : null,
-    [rt, atmosphereLUTs, gl, size.width, size.height]
+    [rt, atmosphereLUTs, gl, size.width, size.height, apResOverride]
   );
   useEffect(() => () => { atmospherePass?.dispose(); }, [atmospherePass]);
 

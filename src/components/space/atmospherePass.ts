@@ -23,6 +23,7 @@ import {
   sqrt,
   abs,
   max,
+  min,
   clamp,
   sin,
   cos,
@@ -55,8 +56,106 @@ import {
   eclipseVisibilityAtNode,
   updateEclipseUniforms,
 } from "@/components/celestial/bodyEclipse";
-import { sunOccluderCenterKm } from "./sunOcclusion";
+import { sunOccluderCenterKm, sunOccluderList } from "./sunOcclusion";
 import { STAR_POSITION_KM, STAR_RADIUS_KM } from "@/sim/celestialConstants";
+
+// =============================================================================
+// View occluders (§29) — the atmosphere is a fullscreen pass with no depth test
+// =============================================================================
+
+/**
+ * View-occluder slots for the atmosphere march.
+ *
+ * 4 covers every realistic case: the pass runs for ONE dominant body, and the
+ * bodies that can be in front of it from a camera near it are its own moons plus,
+ * rarely, another planet in transit. Fixed size keeps promotion a uniform write.
+ */
+const MAX_VIEW_OCCLUDERS = 4;
+
+/**
+ * Angular radius, in march pixels, below which a body is not worth a slot.
+ *
+ * 🔑 DERIVED, not authored: one march pixel. A body smaller than that cannot remove
+ * a whole pixel of atmosphere, and the silhouette ramp would be wider than the body
+ * itself — so including it would blur a sub-pixel dot into a soft hole rather than
+ * occlude anything. Compared against the live `tanPerMarchPx` each frame.
+ */
+const VIEW_OCC_MIN_MARCH_PX = 1;
+
+type ViewOccluderCandidate = {
+  id: string;
+  /** Centre in the dominant body's frame, km — the frame the march works in. */
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  /** CAMERA → occluder distance, km. */
+  distKm: number;
+  /** Angular radius from the camera, radians. `Infinity` = camera is inside it. */
+  ang: number;
+};
+
+/**
+ * Reusable candidate records. 16 is above any plausible body count in one system's
+ * neighbourhood, and pre-allocating keeps the per-frame selector allocation-free.
+ */
+const _viewOccPool: ViewOccluderCandidate[] = Array.from(
+  { length: 16 },
+  () => ({ id: "", x: 0, y: 0, z: 0, r: 0, distKm: 0, ang: 0 }),
+);
+
+export type ViewOccluderStatus = {
+  /** Dominant atmosphere body the slots are relative to, or null if none. */
+  bodyId: string | null;
+  /** Camera → that body's centre, km. */
+  camDistKm: number;
+  /** How far the march can reach (`camDistKm + Rtop`), km — the selector's cull. */
+  reachKm: number;
+  /** Bodies in the occluder registry this frame. */
+  registered: number;
+  /** How many passed the selector (before the 4-slot cut). */
+  candidates: number;
+  /** The live one-march-pixel threshold, in tan units. */
+  minMarchPxTan: number;
+  slots: {
+    id: string | null;
+    radiusKm: number;
+    distKm: number;
+    angRadiusDeg: number;
+    /** Angular radius in march pixels — the quantity the selector gates on. */
+    marchPx: number;
+  }[];
+};
+
+const _viewOccStatus: ViewOccluderStatus = {
+  bodyId: null,
+  camDistKm: 0,
+  reachKm: 0,
+  registered: 0,
+  candidates: 0,
+  minMarchPxTan: 0,
+  slots: Array.from({ length: MAX_VIEW_OCCLUDERS }, () => ({
+    id: null as string | null,
+    radiusKm: 0,
+    distKm: 0,
+    angRadiusDeg: 0,
+    marchPx: 0,
+  })),
+};
+
+/**
+ * Live view-occluder pool state, for `__lum.atmoOcc()`.
+ *
+ * 🔑 Exists because §29 shipped once as a complete no-op — the shader was correct
+ * and the CPU selector rejected every candidate, which is indistinguishable by eye
+ * from "the shader does nothing". A pool whose occupancy cannot be read is a pool
+ * that cannot be debugged.
+ *
+ * ⚠ The live object — do not mutate.
+ */
+export function atmosphereViewOccluderStatus(): ViewOccluderStatus {
+  return _viewOccStatus;
+}
 
 // =============================================================================
 // Physically-based atmospheric scattering — Hillaire 2020 (the Unreal model).
@@ -183,6 +282,90 @@ export function setMsScale(scale: number): void {
   invalidateAtmosphereLUTs();
 }
 
+/**
+ * D14e ablation: 1 = split the march at the shadow boundary, 0 = shipped-before
+ * uniform 16-step lattice.
+ *
+ * ⚠ Needs NO LUT invalidation and no reload — the split is decided per pixel from
+ * this uniform, so `__lum.atmoSplit()` A/Bs the fix on a live frame. That is the
+ * point: the artefact it targets is only visible in one geometry, and reaching that
+ * geometry takes a flight, so a build-time flag would make the comparison useless.
+ */
+export const uShadowSplit = uniform(1);
+
+export function setShadowSplit(on: boolean): void {
+  uShadowSplit.value = on ? 1 : 0;
+}
+
+/**
+ * Runtime override of `ATMO_BYPASS` — deletes the atmosphere's CONTRIBUTION
+ * (`uActive = 0` ⇒ the apply pass becomes `scene·1 + 0`) while both passes and
+ * both targets stay exactly as they are.
+ *
+ * ⚠ `ATMO_BYPASS` is a build const, which cannot answer a question about an
+ * artefact that only exists in one hard-to-reach geometry: a reload loses the pose.
+ * Isolation, not a perf lever — see `ATMO_BYPASS` for the measured cost.
+ */
+let _bypassOverride = false;
+
+export function setAtmoBypass(on: boolean): void {
+  _bypassOverride = on;
+}
+
+/**
+ * Runtime ablation of the per-channel transmittance reconstruction in the apply
+ * pass (`AP_SPECTRAL_TRANSMITTANCE`): 1 = `pow(a, uTSpectralK)`, 0 = `vec3(a)`.
+ *
+ * 🔑 The only place in this chain that applies a PER-CHANNEL NONLINEARITY to a
+ * BILINEARLY INTERPOLATED value, and therefore the only one that can turn a smooth
+ * half-res edge into channel-dependent structure: `pow` is convex, so
+ * `pow(lerp(a)) ≠ lerp(pow(a))`, and the gap grows with both the exponent spread
+ * (Earth ≈ 0.33 red vs ≈ 1.9 blue) and the local variation of `a`, which peaks at
+ * the limb. Costs one `select` — the `pow` it selects against is already computed.
+ */
+export const uSpectralTOn = uniform(1);
+
+export function setAtmoSpectralT(on: boolean): void {
+  uSpectralTOn.value = on ? 1 : 0;
+}
+
+/**
+ * Runtime ablation of D14d's per-pixel march jitter. 1 = interleaved-gradient noise,
+ * 0 = the fixed `SAMPLE_SEGMENT_T` bias every pixel shared before D14d.
+ *
+ * ⚠⚠ `ATMO_MARCH_JITTER` is a BUILD CONST, and that is why this knob has never been
+ * turned in the whole limb investigation — the artefact lives in a pose a reload
+ * throws away. D14d's own comment predicts what this dial tests, verbatim: "Static
+ * blue-ish noise at half res, bilinearly upsampled by the apply pass, reads as very
+ * fine grain."
+ *
+ * 🔑 The jitter decorrelates the sample lattice PER MARCH PIXEL, so neighbouring march
+ * pixels integrate slightly different lattices. Where the integrand is gentle that is
+ * invisible grain; at a limb, where it is many stops steep across a couple of pixels,
+ * the same decorrelation is a large brightness difference between neighbours.
+ * ⚠ Turning it off is not a fix — it exists because a shared lattice TERRACES the limb
+ * (D14d). If the beads go with it, the answer is more samples, not less jitter.
+ */
+export const uMarchJitter = uniform(1);
+
+export function setAtmoJitter(on: boolean): void {
+  uMarchJitter.value = on ? 1 : 0;
+}
+
+/**
+ * Runtime override of the march step count. 0 = the authored `MAIN_STEPS`.
+ *
+ * 🔑 Only possible because D14e made the `Loop` bound a NODE. A dynamic bound was not
+ * available before, which is why step count could only ever be A/B'd across a reload.
+ * ⚠ An override forces the plain uniform lattice (D14e's shadow split is disabled), so
+ * this dial answers exactly one question: is the artefact quadrature noise?
+ */
+export const uMarchSteps = uniform(0);
+
+export function setAtmoSteps(n: number): void {
+  uMarchSteps.value = Math.max(0, Math.min(256, Math.round(n)));
+}
+
 /** Clamp F_ms before the geometric series. Forces a LUT re-bake. */
 export function setFmsMax(maxFms: number): void {
   uFmsMax.value = maxFms;
@@ -266,6 +449,150 @@ const SAMPLE_SEGMENT_T = 0.3; // reference midpoint bias for the screen march
 // slightly denser/brighter. That is a bug fix, not a tuning change — but it is
 // visible, hence the flag.
 const ATMO_MARCH_JITTER = true;
+
+// ── D14e: SPLIT THE MARCH AT THE SHADOW BOUNDARY ────────────────────────────
+//
+// 🔑🔑 D14d FIXED THE FRONT-LIT LIMB AND LEFT THE BACK-LIT ONE UNTOUCHED. The
+// author's report localised it: "most pronounced when I'm in the planet's shadow
+// and the sun illuminates the whole ring". MEASURED, per-pixel spread over the
+// jitter — which IS the visible dash amplitude, because the jitter decorrelates
+// per pixel:
+//
+//   front-lit limb   0.01 stops   ← D14d works; nothing to do
+//   back-lit limb    0.82 stops   ← a 1.77x swing between neighbouring pixels
+//
+// ⚠⚠ THE CAUSE IS NOT THE DISCONTINUITY, IT IS SAMPLE STARVATION ON THE LOBE THE
+// DISCONTINUITY LEAVES BEHIND, and the difference decides the fix. For a distant
+// back-lit observer the ray's tangent point sits essentially ON the terminator, so
+// `directSunOcclusion`'s hard 0/1 step cuts the density Gaussian near its centre.
+// The surviving lobe is a one-sided exponential ~82 km wide against a 139 km step:
+// **~1 sample lands in it**, so the jitter moves that one sample along a steep
+// exponential instead of averaging a resolved profile. MEASURED effective samples
+// in the lobe: 1.0-1.2 back-lit vs 4.4-7.4 front-lit.
+//
+// 🔑 This is why every previous attempt failed, and each failure was diagnostic:
+// 4x MSAA, post-tonemap SMAA and D14b's analytic silhouette band all target
+// COVERAGE, and `AP_RES_SCALE = 1.0` only made "finer terraces, same terraces"
+// (see D14d). None of them adds a sample to the lobe. It is a quadrature defect.
+//
+// ⚠ TWO OF MY OWN CANDIDATE FIXES MEASURED WORSE THAN DOING NOTHING, both because
+// they starved the SHADOWED leg — which contributes nothing to the direct term but
+// contains the tangent point and therefore almost all of the extinction, so its
+// throughput went noisy and multiplied the whole result:
+//   importance-warping toward the lit lobe (exp CDF)  0.82 -> 1.56-1.90 stops
+//   splitting 4/12 in favour of the lit piece         0.82 -> 2.57 stops
+// And integrating the shadow edge analytically per segment (the D14b trick applied
+// to the shadow instead of the limb) fixed the BIAS to 0.99x but left the spread at
+// 0.820 — proof the 0/1 sampling was never the aliasing mechanism.
+//
+// ✅ WHAT WORKS: put a segment boundary on the shadow crossing and give BOTH pieces
+// enough samples. MEASURED worst spread across the annulus:
+//
+//   shipped, 16 uniform                     0.820 stops
+//   24 uniform                              0.221
+//   32 uniform                              0.062
+//   40 uniform                              0.034
+//   **12/12 split at the boundary, 24**     **0.022**   ← better than 40 uniform
+//   16/16 split, 32                         0.016
+//
+// So the split buys more than 16 extra uniform steps would, for 8. Gated per pixel
+// on a shadow crossing actually falling inside the march, which at the reported pose
+// is **0.31% of the march target** (the annulus is 2 march px wide on a 128 px disc)
+// — and rays with no crossing keep the 16-step uniform lattice BIT-IDENTICALLY.
+const SHADOW_SPLIT_STEPS = 12;
+
+// ── D14g: RADIAL SUPERSAMPLING OF THE LIMB ──────────────────────────────────
+//
+// 🔑🔑 ROOT CAUSE, confirmed 2026-09-04 by a scaling law: **the atmosphere's limb ring
+// is thinner than one march texel.** MEASURED on Earth at 53,578 km — the ring spans
+// ground→top **2.26 screen px = 1.13 march px** at AP_RES_SCALE 0.5, i.e. below
+// Nyquist. Bilinear reconstruction of a sub-texel feature snaps its apparent position
+// toward texel centres, which is exactly what the author described: "always a straight
+// line a few pixels wide with the whole sky colour gradient, then a hard step with a
+// new line with the same gradient again" — the ring DISPLACED in steps, not modulated
+// in brightness.
+//
+// ✅ `__lum.apRes()` confirmed it: 0.5 → 1.13 march px (heavy dashing), 1.0 → 2.26
+// (greatly reduced), 2.0 → 4.51 (reduced further).
+//
+// ⚠⚠ RESOLUTION IS THE WRONG LEVER. ring-in-texels = ringScreenPx × apScale and
+// ringScreenPx ∝ 1/distance, so the scale needed grows LINEARLY with distance while
+// its cost grows as the SQUARE. And it charges the whole screen for a defect confined
+// to a ring.
+//
+// 🔑 THE ECONOMICS ARE THE DESIGN. The ring is sub-texel only when the body is far,
+// and a far body covers ~1–5% of the screen, so almost every AP texel exits at the
+// `atmo.tFar <= 0` test. MEASURED at that pose: one AP-pass-worth of pixels costs
+// **0.15 ms** (derived two ways from +0.50 ms at 4× and +2.20 ms at 16×, agreeing to
+// 12%). ⇒ **The regime that needs the fix is the regime where the pass is cheap.**
+//
+// So: render the AP pass K times with the ray rotated RADIALLY by a sub-texel offset,
+// additively at weight 1/K. That supersamples the axis the feature varies along and
+// leaves the tangential axis alone — K× the cost for K radial samples, where raising
+// the resolution costs K² for the same K.
+//
+// ⚠ K is derived per frame and is **1 whenever the ring is already resolved**, so the
+// close-in case — the expensive one, 12.95 ms in the cloud band — is BIT-IDENTICAL to
+// before and pays nothing. That is the whole safety argument.
+const LIMB_RADIAL_TARGET_SAMPLES = 3;
+const LIMB_RADIAL_MAX = 4;
+
+/**
+ * Resolution rungs for the aerial-perspective target, as multiples of the drawing
+ * buffer. Chosen per frame so the limb ring spans at least
+ * `LIMB_TARGET_MARCH_PX` texels.
+ *
+ * ⚠⚠ RESOLUTION, NOT SUPERSAMPLING, IS THE PRIMARY LEVER — MEASURED, and the opposite
+ * of what I first built. There are TWO defects and K only fixes one: point-sampling
+ * each texel (aliasing, K fixes it) and storing the ring in fewer than two texels
+ * (reconstruction, K CANNOT fix it, because Nyquist applies to the stored signal).
+ * MEASURED back to back at the same pose: `apRes 0.5 + K=3` → 109 fps, `apRes 1.2 +
+ * K=1` → 107 fps and "noticeably better". +0.18 ms bought the better image, so
+ * reconstruction dominates.
+ *
+ * 🔑 Fine rungs matter: the cost is quadratic in scale, so rounding 1.16 up to 1.5
+ * would cost 1.7x what 1.25 does for no visible gain.
+ */
+const AP_SCALE_LADDER = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as const;
+
+/** Ring width, in march texels, the scale ladder aims for. Below ~2 it aliases. */
+const LIMB_TARGET_MARCH_PX = 3.0;
+
+/**
+ * Live D14g state. Module scope, matching `_viewOccStatus`: there is one pass instance
+ * at a time (it is rebuilt on resize), and `__lum` needs to read this without holding a
+ * handle on the pass.
+ */
+let _limbDerivedK = 1;
+let _limbKOverride = 0;
+let _limbTanPerMarchPx = 0;
+let _limbApScale = 0.5;
+let _limbRingScreenPx = 0;
+
+/** Force the radial sub-sample count. 0 = the per-frame derived value. */
+export function setLimbRadialSamples(k: number): void {
+  _limbKOverride = Math.max(0, Math.min(16, Math.round(k)));
+}
+
+export function limbRadialStatus(): {
+  active: number;
+  derived: number;
+  override: number;
+  tanPerMarchPx: number;
+  apScale: number;
+  ringScreenPx: number;
+  ringMarchPx: number;
+} {
+  return {
+    active: _limbKOverride > 0 ? _limbKOverride : _limbDerivedK,
+    derived: _limbDerivedK,
+    override: _limbKOverride,
+    tanPerMarchPx: _limbTanPerMarchPx,
+    apScale: _limbApScale,
+    ringScreenPx: _limbRingScreenPx,
+    ringMarchPx: _limbRingScreenPx * _limbApScale,
+  };
+}
 
 // ── Aerial-perspective froxel (Phase 4) ──
 // A camera-frustum volume: (x,y) = screen tile, z = depth slice. Stores the
@@ -1348,6 +1675,7 @@ export type AtmospherePass = {
   }) => void;
   /** Render the two static LUTs into their RTs (transmittance first). */
   bakeLUTs: (renderer: WebGPURenderer) => void;
+
   /** Bake the aerial-perspective froxel for this frame (after updateUniforms). */
   bakeFroxel: (renderer: WebGPURenderer) => void;
   /** Bake the Sky-View LUT for this frame (after updateUniforms + bakeLUTs). */
@@ -1373,6 +1701,17 @@ export function setupAtmospherePass(
   multiScatterLUT: RenderTarget,
   widthPx: number,
   heightPx: number,
+  /**
+   * Overrides `AP_RES_SCALE` for this instance. 0 / omitted = the authored value.
+   *
+   * ⚠ A PARAMETER, not a mutable module const: the caller already rebuilds this whole
+   * pass on resize, so routing the override through the same path means the AP target,
+   * every uniform derived from `apHeight` (the D14b silhouette band, the view-occluder
+   * cull) and the shader are all rebuilt together. A module const flipped at runtime
+   * would leave those stale — the exact ordering trap `uSilhouetteHalfWidthKm` already
+   * carries a warning about.
+   */
+  apResScaleOverride = 0,
 ): AtmospherePass {
   // ── Uniforms ──────────────────────────────────────────────────────────────
   // Static (per-atmosphere; km / km^-1) — set in setAtmosphere().
@@ -1439,6 +1778,44 @@ export function setupAtmospherePass(
   // one-march-pixel ramp, which the apply pass's bilinear upsample then spreads over
   // ~2 screen pixels.
   const uSilhouetteHalfWidthKm = uniform(0);
+
+  /**
+   * One march pixel of angle (in tan units) times `SILHOUETTE_AA_MARCH_PX`.
+   *
+   * The scalar half of `uSilhouetteHalfWidthKm`'s formula, without the tangent
+   * length — so a shader can finish it with ITS OWN geometry. View occluders need
+   * that: each is at a different distance, and `uSilhouetteHalfWidthKm` bakes in
+   * this body's.
+   */
+  const uAaTanPerMarchPx = uniform(0);
+
+  /** Radial ray offset for this AP sub-pass, in radians (D14g). 0 = pixel centre. */
+  const uApRadialOffset = uniform(0);
+  /** 1/K, so the K additively-blended sub-passes average rather than accumulate. */
+  const uApWeight = uniform(1);
+
+  // ── §29: VIEW OCCLUDERS — the atmosphere is a fullscreen pass with no depth ──
+  //
+  // 🔑🔑 ONE ROOT CAUSE, TWO REPORTED SYMPTOMS. The march runs on a fullscreen quad
+  // with `depthTest = false` and targets created `depthBuffer: false`, so it
+  // composites over whatever is already in the framebuffer. That is why "Earth's
+  // atmosphere is visible through Luna", and it is the same architectural fact that
+  // makes ~80% of the pass's shading wasted at mid distance.
+  //
+  // ⚠⚠ AND `eclipseU.occ` CANNOT BE REUSED FOR IT, despite having exactly the right
+  // shape (a fixed pool of `vec4(centre relative to this body, radius)` in the same
+  // body-relative km frame the march works in). `updateEclipseUniforms` selects
+  // STAR-WARD: it keeps only bodies between this body and the star, inside the
+  // shadow cone (`along <= 0 → skip`, `angSep > angStar + angOcc + slack → skip`).
+  // So Luna occupies a slot ONLY DURING AN ECLIPSE — exactly when the bug is not
+  // what anyone is looking at. Right shape, wrong selection function; the same trap
+  // §20 recorded for the two star catalogues.
+  //
+  // ⇒ Its own pool with its own selector: bodies in front of this one ALONG THE VIEW
+  // RAY. Fixed size, so promotion is a uniform write and never a recompile.
+  const uViewOcc = Array.from({ length: MAX_VIEW_OCCLUDERS }, () =>
+    uniform(new THREE.Vector4(0, 0, 0, 0)),
+  );
   const uSunDir = uniform(new THREE.Vector3(0, 0, 1)); // normalised, planet frame
 
   // ── Eclipse occluders for THIS body (D34h) ───────────────────────────────
@@ -1478,17 +1855,25 @@ export function setupAtmospherePass(
   // pass is a fullscreen quad with depthTest off, and the march finds its own
   // endpoint analytically via raySphere — it never reads a depth buffer).
   // LinearFilter is what makes the apply pass's upsample a free bilinear tap.
-  const apWidth = Math.max(1, Math.round(widthPx * AP_RES_SCALE));
-  const apHeight = Math.max(1, Math.round(heightPx * AP_RES_SCALE));
-  const apRT = new RenderTarget(apWidth, apHeight, {
-    type: THREE.HalfFloatType,
-    depthBuffer: false,
-  });
-  apRT.texture.minFilter = THREE.LinearFilter;
-  apRT.texture.magFilter = THREE.LinearFilter;
-  apRT.texture.wrapS = THREE.ClampToEdgeWrapping;
-  apRT.texture.wrapT = THREE.ClampToEdgeWrapping;
-  apRT.texture.generateMipmaps = false;
+  //
+  // ── D14g: ONE TARGET PER SCALE, BUILT LAZILY ──────────────────────────────
+  // 🔑 Only `applyFragment` binds this target; the MARCH shader never samples it and
+  // is resolution-agnostic. So a scale ladder costs one extra RenderTarget and one
+  // extra one-tap apply shader per rung — the expensive march shader is compiled once
+  // and shared. That is what makes adaptive resolution affordable here at all.
+  // ⚠ Lazy: a rung is only allocated the first time it is chosen, so a session that
+  // never leaves low orbit pays exactly the 0.5 target it always paid.
+  type ApVariant = {
+    scale: number;
+    rt: RenderTarget;
+    scene: THREE.Scene;
+    mat: NodeMaterial;
+    height: number;
+  };
+  const _apVariants: (ApVariant | null)[] = AP_SCALE_LADDER.map(() => null);
+  const forcedScale = apResScaleOverride > 0 ? apResScaleOverride : 0;
+  let _apIdx = Math.max(0, AP_SCALE_LADDER.indexOf(AP_RES_SCALE));
+  let _apHeightPx = Math.max(1, Math.round(heightPx * AP_SCALE_LADDER[_apIdx]));
 
   // ── Shared TSL helpers (plain functions → inlined into each graph) ──────────
 
@@ -1584,6 +1969,68 @@ export function setupAtmospherePass(
   // Shared by the main march, the froxel bake and the sky-view bake — the ring
   // term is what paints the rings' shadow band into the atmosphere. The
   // multi-scatter term stays un-ring-shadowed (it is a soft angular average).
+  /**
+   * Where the view ray crosses the planet's shadow boundary (D14e).
+   *
+   * `directSunOcclusion` tests `raySphereNearest(P, sunDir, Rg) > 0`, which is
+   * exactly "inside the cylinder of radius Rg about the sun axis, behind the
+   * planet". So the crossing is that cylinder's intersection with the ray, clipped
+   * to the anti-sun half-space — a quadratic, solved ONCE per pixel here instead of
+   * being rediscovered by 16 point samples.
+   *
+   * Returns the crossing relative to `tStart`, and whether it is worth splitting on.
+   * ⚠ The 2%/98% guard is not cosmetic: without it a crossing at the very edge of
+   * the march gives one piece a ~0 length and its `dt` divides by ~0.
+   */
+  const shadowBoundary = (ro: Node, rd: Node, tStart: Node, tMax: Node) => {
+    const sd = uSunDir;
+    const ros = dot(ro, sd).toVar();
+    const rds = dot(rd, sd).toVar();
+    const a = float(1).sub(rds.mul(rds)).toVar();
+    const b = dot(ro, rd).sub(ros.mul(rds)).mul(2).toVar();
+    const c = dot(ro, ro).sub(ros.mul(ros)).sub(uBottomRadius.mul(uBottomRadius));
+    const disc = b.mul(b).sub(a.mul(c).mul(4)).toVar();
+    const sq = disc.max(0).sqrt();
+    const inv = float(0.5).div(a.max(1e-12));
+    // Clip to `dot(P, sunDir) < 0`. ⚠ When the ray is perpendicular to the sun axis
+    // the plane is never crossed; the 1e-9 floor then sends tPlane to ±huge, which
+    // correctly keeps the whole ray on the side `ros` picks.
+    const rdsSafe = select(rds.abs().lessThan(1e-9), float(1e-9), rds);
+    const tPlane = ros.negate().div(rdsSafe).toVar();
+    const towardSun = rds.greaterThan(0);
+    const t0 = select(
+      towardSun,
+      b.negate().sub(sq).mul(inv),
+      max(b.negate().sub(sq).mul(inv), tPlane),
+    ).toVar();
+    const t1 = select(
+      towardSun,
+      min(b.negate().add(sq).mul(inv), tPlane),
+      b.negate().add(sq).mul(inv),
+    ).toVar();
+    // Score each root by distance to the TANGENT POINT — where the density, and so
+    // the integrand, peaks — and reject roots outside the march with a big score.
+    // (Avoids a boolean `.not()` chain; `min(s0,s1) < 1e11` is then "either is in".)
+    const tEndAbs = tStart.add(tMax);
+    const tTan = dot(ro, rd).negate();
+    const OUT = float(1e12);
+    const inRange = (t: Node) =>
+      t.greaterThan(tStart).and(t.lessThan(tEndAbs)).and(t1.greaterThan(t0));
+    const s0 = select(inRange(t0), t0.sub(tTan).abs(), OUT).toVar();
+    const s1 = select(inRange(t1), t1.sub(tTan).abs(), OUT).toVar();
+    const tB = select(s1.lessThan(s0), t1, t0);
+    const rel = tB.sub(tStart).toVar();
+    const frac = rel.div(tMax.max(1e-6));
+    const split = uShadowSplit
+      .greaterThan(0.5)
+      .and(disc.greaterThan(0))
+      .and(a.greaterThan(1e-12))
+      .and(min(s0, s1).lessThan(1e11))
+      .and(frac.greaterThan(0.02))
+      .and(frac.lessThan(0.98));
+    return { rel, split };
+  };
+
   const directSunOcclusion = (P: Node): Node => {
     const earthShadow = select(
       raySphereNearest(
@@ -2007,8 +2454,24 @@ export function setupAtmospherePass(
       const ndcX = screenUV.x.mul(2).sub(1);
       const ndcY = float(1).sub(screenUV.y.mul(2));
       const rdView = vec3(ndcX.mul(uAspect).mul(uTanHalfFov), ndcY.mul(uTanHalfFov), float(-1));
-      const rd = normalize(uCameraMatrixWorld.mul(vec4(rdView, 0)).xyz);
+      const rdPixel = normalize(uCameraMatrixWorld.mul(vec4(rdView, 0)).xyz).toVar();
       const ro = uCameraPlanetKm;
+
+      // ── D14g: rotate the ray RADIALLY by this sub-pass's sub-texel offset ──
+      // The impact parameter is the axis the limb varies along, and `db/dθ` is the
+      // tangent length, so a rotation within the (ro, rd) plane moves the sample
+      // purely radially — no tangential blur, which is the axis that needs nothing.
+      // ⚠ `ro − rd(ro·rd)` VANISHES for a ray through the body's centre, where the
+      // radial direction is genuinely undefined. Falling back to zero offset there is
+      // correct and not merely safe: that pixel is nowhere near the limb.
+      const rPerp = ro.sub(rdPixel.mul(dot(ro, rdPixel))).toVar();
+      const rPerpLen = length(rPerp);
+      const radialDir = select(
+        rPerpLen.greaterThan(1e-3),
+        rPerp.div(rPerpLen.max(1e-6)),
+        vec3(0),
+      );
+      const rd = normalize(rdPixel.sub(radialDir.mul(uApRadialOffset)));
 
       const atmo = raySphere2(ro, rd, uTopRadius);
       const tGround = raySphereNearest(ro, rd, uBottomRadius);
@@ -2078,8 +2541,53 @@ export function setupAtmospherePass(
             bPerp,
           ),
         );
-        const tEnd = mix(tGroundCont, atmo.tFar, groundCoverage);
-        const tMax = tEnd.sub(tStart);
+        // ── §29: cut the march where a nearer BODY blocks the view ───────────
+        // 🔑 Clamping `tEnd` rather than zeroing the pixel is the physically right
+        // move AND the cheaper one: air in FRONT of the occluder still scatters
+        // (you do see Earth's limb haze in front of the Moon), only the column
+        // behind it is removed. It reuses `tEnd`, so D14b's sub-pixel silhouette
+        // ramp applies to the occluder's edge for free — one mechanism, two
+        // silhouettes: this body's own ground, and any body in front of it.
+        const tOcc = float(1e12).toVar();
+        for (let i = 0; i < MAX_VIEW_OCCLUDERS; i++) {
+          const o = uViewOcc[i];
+          const oc = o.xyz.sub(ro).toVar();
+          const tca = dot(oc, rd);
+          const dOcc2 = dot(oc, oc).toVar();
+          const d2 = dOcc2.sub(tca.mul(tca)).max(0);
+          const bOcc = d2.sqrt();
+          // ⚠⚠ PER-OCCLUDER half-width, NOT `uSilhouetteHalfWidthKm`. That uniform is
+          // `dθ·√(rCam² − Rg²)`: the tangent length at THIS BODY. An occluder sits at
+          // its own distance, so the same derivation gives `dθ·√(d² − r²)` for it, and
+          // the two differ by the distance ratio — near Luna with Earth dominant the
+          // body's value is ~770× too wide, smearing the Moon's edge over ±317 km of a
+          // 1,737 km radius. Same formula, own geometry.
+          // ⚠ `max(1e-3)`: a degenerate smoothstep (e0 == e1) divides by zero, and a
+          // NaN in L propagates into the glare pyramid and takes the frame with it.
+          const hw = dOcc2
+            .sub(o.w.mul(o.w))
+            .max(0)
+            .sqrt()
+            .mul(uAaTanPerMarchPx)
+            .max(1e-3);
+          // 1 = outside the silhouette (no cut), 0 = inside. Same units as the ground
+          // ramp (km of impact parameter), so the two edges cannot alias differently.
+          const cov = smoothstep(o.w.sub(hw), o.w.add(hw), bOcc);
+          const thc = o.w.mul(o.w).sub(d2).max(0).sqrt();
+          // ⚠ `max(0)`: a camera INSIDE the occluder has a negative near hit, and
+          // the answer there is "everything is blocked", not "march backwards".
+          const tCut = mix(tca.sub(thc).max(0), float(1e12), cov);
+          // ⚠⚠ THE `w > 0` GUARD IS LOAD-BEARING, not defensive. An unused slot is
+          // (0,0,0,0) — the BODY'S OWN CENTRE — so a ray pointing straight at the
+          // planet would have `bOcc = 0`, coverage 0, and cut the march to zero.
+          // Every pixel of the disc would lose its atmosphere.
+          tOcc.assign(
+            select(o.w.greaterThan(0).and(tca.greaterThan(0)), min(tOcc, tCut), tOcc),
+          );
+        }
+        const tEnd = min(mix(tGroundCont, atmo.tFar, groundCoverage), tOcc);
+        // ⚠ `max(0)`: an occluder in front of the shell entry gives tEnd < tStart.
+        const tMax = tEnd.sub(tStart).max(0);
         // ── Ring occlusion of the atmosphere in-scatter (Phase 5) ──
         // Rings render into the scaled scene transparent + depthWrite:false, so
         // the pass can't depth-test them and would paint the atmosphere GLOW
@@ -2139,64 +2647,106 @@ export function setupAtmospherePass(
           // ⚠ `screenCoordinate` here is the AP TARGET's pixel, not the screen's,
           // which is what we want: the lattice must decorrelate per MARCH pixel.
           const jitter = ATMO_MARCH_JITTER
-            ? screenCoordinate.x
-                .mul(0.06711056)
-                .add(screenCoordinate.y.mul(0.00583715))
-                .fract()
-                .mul(52.9829189)
-                .fract()
+            ? // ⚠ `mix` on a per-frame uniform so __lum.atmoJitter() can ablate D14d
+              // live. The pose this matters in cannot survive a reload.
+              mix(
+                float(SAMPLE_SEGMENT_T),
+                screenCoordinate.x
+                  .mul(0.06711056)
+                  .add(screenCoordinate.y.mul(0.00583715))
+                  .fract()
+                  .mul(52.9829189)
+                  .fract(),
+                uMarchJitter,
+              )
             : float(SAMPLE_SEGMENT_T);
 
-          Loop(MAIN_STEPS, ({ i: s }: { i: Node }) => {
-            const tNew = tMax.mul(float(s).add(jitter).div(MAIN_STEPS));
-            // .toVar() MATERIALISES dt = tNew - t_old HERE, before t is
-            // reassigned below. Without it, `dt` is a live node referencing the
-            // variable `t`; since `t.assign(tNew)` runs before dt is consumed,
-            // dt would evaluate to tNew - tNew = 0 → sampleT=1 → Sint=0 → the
-            // entire in-scatter integral collapses to zero (the invisible-
-            // atmosphere bug).
-            // ⚠ FIXED segment length, so ∑dt = tMax exactly and the jitter cannot
-            // modulate total optical depth (see ATMO_MARCH_JITTER). The legacy path
-            // keeps the old sample-position-as-segment-end scheme bit-exact.
-            const dt = (
-              ATMO_MARCH_JITTER ? tMax.div(float(MAIN_STEPS)) : tNew.sub(t)
-            ).toVar();
-            t.assign(tNew);
-            const P = ro.add(rd.mul(tStart.add(t)));
-            const m = sampleMedium(P);
-            const sampleT = expVec3(m.extinction.mul(dt).negate());
+          // ── D14e: two-piece lattice, split on the shadow boundary ─────────
+          // ⚠⚠ WHEN THERE IS NO CROSSING THIS IS BIT-IDENTICAL TO THE SHIPPED
+          // LATTICE, and that is the whole safety argument: `nA = nTotal =
+          // MAIN_STEPS` and `tSplit = tMax`, so `dtA` is exactly `tMax/MAIN_STEPS`
+          // and `s` never reaches `nA`. Every front-lit, in-atmosphere and
+          // day-side pixel takes the same 16 samples at the same positions as
+          // before. Only rays that actually cross the terminator inside the
+          // atmosphere pay 24 steps — 0.31% of the march target at the pose in the
+          // report (a 2-march-px annulus on a 128-px disc).
+          const shadow = shadowBoundary(ro, rd, tStart, tMax);
+          // An explicit step override forces the plain uniform lattice, so
+          // __lum.atmoSteps() answers one question and not two.
+          const overridden = uMarchSteps.greaterThan(0.5);
+          const nBase = select(overridden, int(uMarchSteps), int(MAIN_STEPS)).toVar();
+          const splitOn = shadow.split.and(overridden.not());
+          const nA = select(splitOn, int(SHADOW_SPLIT_STEPS), nBase).toVar();
+          const nTotal = select(splitOn, int(SHADOW_SPLIT_STEPS * 2), nBase);
+          const tSplit = select(splitOn, shadow.rel, tMax).toVar();
+          const dtA = tSplit.div(float(nA)).toVar();
+          // Zero when not split, and never read there. The 2%/98% guard in
+          // shadowBoundary is what keeps both pieces off zero length when it is.
+          const dtB = tMax.sub(tSplit).div(float(SHADOW_SPLIT_STEPS)).toVar();
 
-            const Tsun = getSunTransmittance(P, uSunDir);
-            const eclipseT = eclipseKeep(P).toVar();
-            const earthShadow = directSunOcclusion(P).mul(eclipseT);
-            const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
-            // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
-            // is broadly uniform and (unlike single scattering) is not shadowed,
-            // so without this it glows blue across the planet's night side. The
-            // night atmosphere sits in the planet's shadow — no direct sun to
-            // multi-scatter — so fade it out as the sun drops below the local
-            // (altitude-depressed) horizon: cosHorizon = -sqrt(1 - (Rg/r)^2).
-            // The ±0.05 band is the terminator softness (tune to taste).
-            const rP = length(P);
-            const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
-            const cosHorizonP = sqrt(
-              max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
-            ).negate();
-            const sunVis = smoothstep(
-              cosHorizonP.sub(0.05),
-              cosHorizonP.add(0.05),
-              cosSunZenP,
-            );
-            const msContrib = getMultipleScattering(P, uSunDir)
-              .mul(m.scattering)
-              .mul(sunVis)
-              .mul(uMsScale);
-            // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
-            const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
-            const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
-            L.addAssign(throughput.mul(Sint));
-            throughput.mulAssign(sampleT);
-          });
+          // ⚠ The object form, not `Loop(nTotal, ...)`: only this overload accepts
+          // a NODE bound, which is what makes the step count per-pixel.
+          Loop(
+            { start: int(0), end: nTotal, type: "int", condition: "<" },
+            ({ i: s }: { i: Node }) => {
+              const inA = s.lessThan(nA);
+              const tNew = select(
+                inA,
+                float(s).add(jitter).mul(dtA),
+                tSplit.add(float(s).sub(float(nA)).add(jitter).mul(dtB)),
+              ).toVar();
+              // .toVar() MATERIALISES dt = tNew - t_old HERE, before t is
+              // reassigned below. Without it, `dt` is a live node referencing the
+              // variable `t`; since `t.assign(tNew)` runs before dt is consumed,
+              // dt would evaluate to tNew - tNew = 0 → sampleT=1 → Sint=0 → the
+              // entire in-scatter integral collapses to zero (the invisible-
+              // atmosphere bug).
+              // ⚠ FIXED segment length WITHIN EACH PIECE, so ∑dt = tMax exactly and
+              // the jitter still cannot modulate total optical depth — the D14d
+              // invariant survives the split. ⚠ The legacy
+              // (`ATMO_MARCH_JITTER = false`) path's segment ends are now piecewise
+              // too; it still ablates the jitter, which is what it is for, but it is
+              // no longer bit-exact against pre-D14e.
+              const dt = (
+                ATMO_MARCH_JITTER ? select(inA, dtA, dtB) : tNew.sub(t)
+              ).toVar();
+              t.assign(tNew);
+              const P = ro.add(rd.mul(tStart.add(t)));
+              const m = sampleMedium(P);
+              const sampleT = expVec3(m.extinction.mul(dt).negate());
+
+              const Tsun = getSunTransmittance(P, uSunDir);
+              const eclipseT = eclipseKeep(P).toVar();
+              const earthShadow = directSunOcclusion(P).mul(eclipseT);
+              const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
+              // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
+              // is broadly uniform and (unlike single scattering) is not shadowed,
+              // so without this it glows blue across the planet's night side. The
+              // night atmosphere sits in the planet's shadow — no direct sun to
+              // multi-scatter — so fade it out as the sun drops below the local
+              // (altitude-depressed) horizon: cosHorizon = -sqrt(1 - (Rg/r)^2).
+              // The ±0.05 band is the terminator softness (tune to taste).
+              const rP = length(P);
+              const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
+              const cosHorizonP = sqrt(
+                max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
+              ).negate();
+              const sunVis = smoothstep(
+                cosHorizonP.sub(0.05),
+                cosHorizonP.add(0.05),
+                cosSunZenP,
+              );
+              const msContrib = getMultipleScattering(P, uSunDir)
+                .mul(m.scattering)
+                .mul(sunVis)
+                .mul(uMsScale);
+              // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
+              const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
+              const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
+              L.addAssign(throughput.mul(Sint));
+              throughput.mulAssign(sampleT);
+            },
+          );
 
           // Occlude the glow behind a near-side ring (ringGlowKeep=1 when none).
           // Background (sceneColor) already has the ring composited in Pass 1
@@ -2254,7 +2804,9 @@ export function setupAtmospherePass(
       });
     });
 
-    return out;
+    // ⚠ K sub-passes blend additively, so each contributes 1/K. `uApWeight` is 1 when
+    // K = 1, making the single-pass path bit-identical to before D14g.
+    return out.mul(uApWeight);
   });
 
   // ── Aerial-perspective froxel bake (compute) ───────────────────────────────
@@ -2432,17 +2984,25 @@ export function setupAtmospherePass(
   // edge in the scaled scene (terrain silhouette, the planet's limb against
   // space, stars) keeps its own pixel. Only L and T — both smooth by
   // construction — carry the upsample.
-  const applyFragment = Fn(() => {
+  const makeApplyFragment = (rt: RenderTarget) =>
+    Fn(() => {
     const sceneColor = texture(inputTexture, screenUV).rgb;
-    const apSample = texture(apRT.texture, screenUV).toVar();
+    const apSample = texture(rt.texture, screenUV).toVar();
     const T = AP_SPECTRAL_TRANSMITTANCE
       ? // Exact at a = 1 and for a grey atmosphere. max() keeps pow away from a
         // negative base, which bilinear filtering of an HDR target can produce
         // next to a sharp edge in L.
-        powVec3(apSample.a.max(0), uTSpectralK)
+        // ⚠ `select` on a per-frame uniform so `__lum.atmoSpectralT()` can ablate
+        // this live — the artefact under investigation only exists in a pose that a
+        // reload throws away. The `pow` is computed either way, so this is one op.
+        select(
+          uSpectralTOn.greaterThan(0.5),
+          powVec3(apSample.a.max(0), uTSpectralK),
+          vec3(apSample.a),
+        )
       : vec3(apSample.a);
     return vec4(sceneColor.mul(T).add(apSample.rgb), 1);
-  });
+    });
 
   // ── Materials / scenes ──────────────────────────────────────────────────
   const quad = new THREE.PlaneGeometry(2, 2);
@@ -2463,11 +3023,39 @@ export function setupAtmospherePass(
     return { scene, mat };
   };
 
+  /** Get (or lazily build) the AP target + apply pass for a ladder rung. */
+  const apVariant = (i: number): ApVariant => {
+    const existing = _apVariants[i];
+    if (existing) return existing;
+    const scale = AP_SCALE_LADDER[i];
+    const w = Math.max(1, Math.round(widthPx * scale));
+    const h = Math.max(1, Math.round(heightPx * scale));
+    const rt = new RenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+    });
+    // ⚠ LinearFilter is what makes the apply pass's upsample a free bilinear tap, and
+    // ClampToEdge stops the limb wrapping across the screen edge. Per variant, since
+    // each rung owns its own texture.
+    rt.texture.minFilter = THREE.LinearFilter;
+    rt.texture.magFilter = THREE.LinearFilter;
+    rt.texture.wrapS = THREE.ClampToEdgeWrapping;
+    rt.texture.wrapT = THREE.ClampToEdgeWrapping;
+    rt.texture.generateMipmaps = false;
+    const made = makeScene(makeApplyFragment(rt));
+    made.scene.name = PASS.atmoApply;
+    const v: ApVariant = { scale, rt, scene: made.scene, mat: made.mat, height: h };
+    _apVariants[i] = v;
+    return v;
+  };
+
   const transmittanceBake = makeScene(transmittanceBakeFragment);
   const multiScatterBake = makeScene(multiScatterBakeFragment);
   const skyViewBake = makeScene(skyViewBakeFragment);
+  // D14g: two variants of the SAME fragment. `apFirst` overwrites (sub-pass 0),
+  // `ap` adds (sub-passes 1..K-1). Built here so both are compiled at setup.
+  const apFirst = makeScene(apFragment);
   const ap = makeScene(apFragment);
-  const apply = makeScene(applyFragment);
 
   // Pass names for the per-pass GPU profiler (perf/perfProfiler.ts): three's
   // inspector hook reports each render context under its scene's name, and each
@@ -2476,8 +3064,23 @@ export function setupAtmospherePass(
   transmittanceBake.scene.name = PASS.atmoLUT;
   multiScatterBake.scene.name = PASS.atmoLUT;
   skyViewBake.scene.name = PASS.skyView;
+  // D14g: the K radial sub-passes accumulate, so this material blends ADD(One, One)
+  // on colour AND alpha. ⚠ Alpha explicitly: three's stock AdditiveBlending multiplies
+  // colour by srcAlpha, and this target's alpha is `Tmean` — a transmittance, not a
+  // coverage. Using it as a blend weight would silently attenuate in-scatter by the
+  // transmittance. With K = 1 the target is cleared to zero first, so `dst = src` and
+  // the single-pass path is bit-identical to NoBlending.
+  ap.mat.transparent = true;
+  ap.mat.blending = THREE.CustomBlending;
+  ap.mat.blendEquation = THREE.AddEquation;
+  ap.mat.blendSrc = THREE.OneFactor;
+  ap.mat.blendDst = THREE.OneFactor;
+  ap.mat.blendEquationAlpha = THREE.AddEquation;
+  ap.mat.blendSrcAlpha = THREE.OneFactor;
+  ap.mat.blendDstAlpha = THREE.OneFactor;
+
+  apFirst.scene.name = PASS.atmosphere;
   ap.scene.name = PASS.atmosphere;
-  apply.scene.name = PASS.atmoApply;
   froxelBake.name = PASS.froxel;
 
   // ── API ──────────────────────────────────────────────────────────────────
@@ -2557,6 +3160,8 @@ export function setupAtmospherePass(
   }) => {
     if (!dominant) {
       uActive.value = 0;
+      _viewOccStatus.bodyId = null;
+      _viewOccStatus.candidates = 0;
       return;
     }
     // Restored to 1 after the 2026-08-13 ground-truth march ablation.
@@ -2576,7 +3181,7 @@ export function setupAtmospherePass(
     // LESSON: when gpu/frame > 1.15, ABLATE. Do not do arithmetic on reported per-pass
     // numbers, however self-consistent the model looks. One ablation settled in a single
     // sweep what three rounds of curve-fitting got wrong. See docs/PERF_MEASUREMENT.md.
-    uActive.value = ATMO_BYPASS ? 0 : 1;
+    uActive.value = ATMO_BYPASS || _bypassOverride ? 0 : 1;
     // Per-frame sun illuminance (1/r² on the LIVE body→star distance). Must be
     // written before bakeSkyView(), which multiplies it into the LUT.
     uSunIlluminance.value.copy(dominant.sunIlluminance);
@@ -2589,6 +3194,54 @@ export function setupAtmospherePass(
       .sub(dominant.centerScaled)
       .multiplyScalar(1 / SCALED_UNITS_PER_KM);
     uCameraPlanetKm.value.copy(_camToPlanet);
+    // ── D14g: choose this frame's AP resolution rung ────────────────────────
+    // 🔑 The limb ring spans `atmosphereHeightKm` of impact parameter, and one screen
+    // pixel spans `tanPerScreenPx · tangentLength` of it. That ratio — the ring's width
+    // in pixels — falls as 1/distance, and when it drops below ~2 texels the AP target
+    // can no longer represent the ring at all. Pick the cheapest rung that keeps it
+    // above `LIMB_TARGET_MARCH_PX`.
+    //
+    // ⚠⚠ THE COST IS PAID ONLY WHERE IT IS CHEAP, and that is the whole design. A thin
+    // ring means a distant body, a distant body covers 1-5% of the screen, and almost
+    // every AP texel then exits at the shell test. MEASURED at such a pose: one
+    // AP-pass-worth of pixels costs 0.15 ms. Close in — the 12.95 ms cloud-band case —
+    // the ring is already many texels wide, this picks rung 0, and the frame is
+    // BIT-IDENTICAL to before D14g.
+    {
+      const rCamSel = _camToPlanet.length();
+      const rgSel = dominant.params.groundRadiusKm;
+      const tangentSel = Math.sqrt(Math.max(rCamSel * rCamSel - rgSel * rgSel, 0));
+      const tanPerScreenPx = (2 * uTanHalfFov.value) / Math.max(heightPx, 1);
+      const ringScreenPx =
+        dominant.params.atmosphereHeightKm /
+        Math.max(tanPerScreenPx * tangentSel, 1e-9);
+      const need = LIMB_TARGET_MARCH_PX / Math.max(ringScreenPx, 1e-6);
+      if (forcedScale > 0) {
+        let best = 0;
+        for (let i = 1; i < AP_SCALE_LADDER.length; i++) {
+          if (
+            Math.abs(AP_SCALE_LADDER[i] - forcedScale) <
+            Math.abs(AP_SCALE_LADDER[best] - forcedScale)
+          )
+            best = i;
+        }
+        _apIdx = best;
+      } else {
+        // ⚠ Asymmetric thresholds. Stepping up the instant it is needed but down only
+        // at a 15% margin stops the rung oscillating frame to frame when the ring sits
+        // on a boundary — which would swap render targets every frame and pop.
+        while (
+          _apIdx < AP_SCALE_LADDER.length - 1 &&
+          AP_SCALE_LADDER[_apIdx] < need
+        )
+          _apIdx++;
+        while (_apIdx > 0 && AP_SCALE_LADDER[_apIdx - 1] >= need * 1.15) _apIdx--;
+      }
+      _apHeightPx = Math.max(1, Math.round(heightPx * AP_SCALE_LADDER[_apIdx]));
+      _limbApScale = AP_SCALE_LADDER[_apIdx];
+      _limbRingScreenPx = ringScreenPx;
+    }
+
     // ── D14b: ground-silhouette AA band, in km of impact parameter ───────────
     // ⚠⚠ MUST BE AFTER `_camToPlanet` IS POPULATED. This block first sat ~10 lines
     // EARLIER, before the copy below it — so frame 1 read a zero vector
@@ -2605,11 +3258,130 @@ export function setupAtmospherePass(
       const rCam = _camToPlanet.length();
       const rg = uBottomRadius.value;
       const tangentKm = Math.sqrt(Math.max(rCam * rCam - rg * rg, 0));
-      const tanPerMarchPx = (2 * uTanHalfFov.value) / Math.max(apHeight, 1);
-      uSilhouetteHalfWidthKm.value =
-        SILHOUETTE_AA_MARCH_PX * tanPerMarchPx * tangentKm;
+      const tanPerMarchPx = (2 * uTanHalfFov.value) / Math.max(_apHeightPx, 1);
+      uAaTanPerMarchPx.value = SILHOUETTE_AA_MARCH_PX * tanPerMarchPx;
+      uSilhouetteHalfWidthKm.value = uAaTanPerMarchPx.value * tangentKm;
+      // ── D14g: how many RADIAL sub-samples does the limb need this frame? ──
+      // The ring spans `atmosphereHeightKm` of impact parameter and one march pixel
+      // spans `tanPerMarchPx · tangentKm` of it, so this is the ring's width in march
+      // texels — the quantity that went below 1 and produced the artefact.
+      // ⚠ K = 1 whenever the ring is already resolved, which is every close pose. The
+      // expensive case therefore pays exactly nothing and is bit-identical.
+      _limbTanPerMarchPx = tanPerMarchPx;
+      const ringMarchPx =
+        dominant.params.atmosphereHeightKm /
+        Math.max(tanPerMarchPx * tangentKm, 1e-9);
+      _limbDerivedK = Math.max(
+        1,
+        Math.min(
+          LIMB_RADIAL_MAX,
+          Math.ceil(LIMB_RADIAL_TARGET_SAMPLES / Math.max(ringMarchPx, 1e-6)),
+        ),
+      );
     }
     uSunDir.value.copy(dominant.sunDir);
+
+    // ── §29: fill the VIEW occluder slots ───────────────────────────────────
+    // Selector: bodies that can block the view of THIS body's atmosphere, ranked by
+    // angular radius. ⚠ Deliberately NOT `eclipseU.occ`'s star-ward selector — see
+    // the note at `uViewOcc`. Same shape, different question.
+    {
+      const bodyCentre = sunOccluderCenterKm(dominant.id);
+      const rCam = _camToPlanet.length();
+      const tanPerMarchPx = (2 * uTanHalfFov.value) / Math.max(_apHeightPx, 1);
+      // The march never reaches past the far shell, at most `rCam + Rtop` away, so an
+      // occluder whose near side is beyond that cannot cut anything. ⚠ This is a SLOT
+      // BUDGET, not a correctness test: an occluder behind the body yields
+      // `tCut > tEnd` and `min` keeps the ground value anyway. Being generous is safe;
+      // being tight silently deletes occlusions, which is how this arrived here.
+      const reach = rCam + uTopRadius.value;
+      let n = 0;
+      if (bodyCentre) {
+        const list = sunOccluderList();
+        for (let i = 0; i < list.length && n < _viewOccPool.length; i++) {
+          const o = list[i];
+          if (o.id === dominant.id) continue;
+          // Occluder centre in THIS BODY's frame — the frame the march works in, and
+          // the same packing `eclipseU.occ` uses.
+          const ox = o.centerKm.x - bodyCentre.x;
+          const oy = o.centerKm.y - bodyCentre.y;
+          const oz = o.centerKm.z - bodyCentre.z;
+          // ⚠⚠ CAMERA → OCCLUDER, so `_camToPlanet` is SUBTRACTED, not added.
+          // `_camToPlanet` is planet-centre → camera (it IS the shader's `ro`), so
+          // camera → occluder is `oRel − ro`. Adding it is the bug that made this
+          // whole section a no-op: near Luna, `oRel` and `ro` are both ~367,000 km
+          // AND NEARLY PARALLEL, so the sum has ~2× the magnitude instead of the true
+          // ~1,800 km — and the reach test then rejected the Moon on every frame, so
+          // the pool sat empty and no pixel was ever occluded.
+          // 🔑 The two vectors being nearly equal is exactly what makes this sign
+          // error invisible to inspection (both sides "look like a position near the
+          // Moon") and total in effect. A frame conversion has to be checked by
+          // MAGNITUDE against a known distance, not by reading the expression.
+          const dx = ox - _camToPlanet.x;
+          const dy = oy - _camToPlanet.y;
+          const dz = oz - _camToPlanet.z;
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          const inside = dist <= o.radiusKm;
+          if (!inside) {
+            if (dist - o.radiusKm >= reach) continue;
+            // Worth a slot? One march pixel of angular radius. Below that the body
+            // cannot remove a whole pixel of atmosphere and its own AA ramp is wider
+            // than it is, so including it blurs a speck into a soft hole.
+            if (o.radiusKm / dist < VIEW_OCC_MIN_MARCH_PX * tanPerMarchPx) continue;
+          }
+          const c = _viewOccPool[n++];
+          c.id = o.id;
+          c.x = ox;
+          c.y = oy;
+          c.z = oz;
+          c.r = o.radiusKm;
+          c.distKm = dist;
+          // Rank by ANGULAR radius: with 4 slots and a dozen bodies, registry order
+          // could spend them all on specks and drop the one body in the way. A camera
+          // INSIDE an occluder outranks everything — it blocks the whole hemisphere.
+          c.ang = inside
+            ? Infinity
+            : Math.asin(Math.min(1, o.radiusKm / Math.max(dist, 1e-6)));
+        }
+      }
+      // Partial selection of the top MAX_VIEW_OCCLUDERS by angular radius. n ≤ 16 and
+      // the slot count is 4, so this is ≤ 64 comparisons and allocates nothing —
+      // cheaper than a full sort and it never runs the comparator on garbage.
+      for (let slot = 0; slot < MAX_VIEW_OCCLUDERS; slot++) {
+        let best = -1;
+        for (let i = slot; i < n; i++) {
+          if (best < 0 || _viewOccPool[i].ang > _viewOccPool[best].ang) best = i;
+        }
+        if (best < 0) {
+          // ⚠ Zeroing the tail is mandatory, not tidiness: a stale slot occludes a
+          // body that has since moved (the ephemeris-aliasing class that once made
+          // the ship crash into empty space), and `w = 0` is what the shader's
+          // load-bearing guard tests.
+          uViewOcc[slot].value.set(0, 0, 0, 0);
+          _viewOccStatus.slots[slot].id = null;
+          continue;
+        }
+        if (best !== slot) {
+          const t = _viewOccPool[slot];
+          _viewOccPool[slot] = _viewOccPool[best];
+          _viewOccPool[best] = t;
+        }
+        const c = _viewOccPool[slot];
+        uViewOcc[slot].value.set(c.x, c.y, c.z, c.r);
+        const st = _viewOccStatus.slots[slot];
+        st.id = c.id;
+        st.radiusKm = c.r;
+        st.distKm = c.distKm;
+        st.angRadiusDeg = Number.isFinite(c.ang) ? (c.ang * 180) / Math.PI : 90;
+        st.marchPx = Number.isFinite(c.ang) ? c.ang / Math.max(tanPerMarchPx, 1e-12) : Infinity;
+      }
+      _viewOccStatus.bodyId = dominant.id;
+      _viewOccStatus.camDistKm = rCam;
+      _viewOccStatus.reachKm = reach;
+      _viewOccStatus.candidates = n;
+      _viewOccStatus.registered = sunOccluderList().length;
+      _viewOccStatus.minMarchPxTan = VIEW_OCC_MIN_MARCH_PX * tanPerMarchPx;
+    }
 
     // ── D34h: fill this body's eclipse occluder slots ────────────────────────
     // ⚠ `sunOccluderCenterKm` and not `dominant.centerScaled`: the record's
@@ -2708,12 +3480,29 @@ export function setupAtmospherePass(
   // costs cache locality on `apRT` — the apply wants it while it is still warm. Do
   // not re-litigate without reading that section.
   const render = (renderer: WebGPURenderer, target: RenderTarget) => {
-    renderer.setRenderTarget(apRT);
-    renderer.autoClear = true;
-    renderer.render(ap.scene, camera);
+    const K = _limbKOverride > 0 ? _limbKOverride : _limbDerivedK;
+    uApWeight.value = 1 / K;
+    const variant = apVariant(_apIdx);
+    renderer.setRenderTarget(variant.rt);
+    // ⚠⚠ THE FIRST SUB-PASS OVERWRITES, THE REST ADD, and that is deliberate rather
+    // than clearing first: the sub-passes blend One/One, so anything left in the
+    // renderer's clear colour would be ADDED to the result — an alpha of 1 would add a
+    // whole transmittance to every pixel. Writing the first pass with NoBlending makes
+    // the result independent of the clear state entirely, and needs no save/restore of
+    // caller state. Both variants compile at setup, so K rising mid-flight cannot
+    // trigger a shader compile (the stutter class in feedback_webgpu_perf).
+    for (let k = 0; k < K; k++) {
+      // Stratified across the pixel's angular footprint, symmetric about the centre,
+      // so K = 1 reduces to exactly the old centre sample.
+      uApRadialOffset.value =
+        K === 1 ? 0 : ((k + 0.5) / K - 0.5) * _limbTanPerMarchPx;
+      renderer.autoClear = k === 0;
+      renderer.render(k === 0 ? apFirst.scene : ap.scene, camera);
+    }
+    uApRadialOffset.value = 0;
     renderer.setRenderTarget(target);
     renderer.autoClear = true;
-    renderer.render(apply.scene, camera);
+    renderer.render(variant.scene, camera);
     renderer.setRenderTarget(null);
   };
 
@@ -2722,9 +3511,13 @@ export function setupAtmospherePass(
     transmittanceBake.mat.dispose();
     multiScatterBake.mat.dispose();
     skyViewBake.mat.dispose();
+    apFirst.mat.dispose();
     ap.mat.dispose();
-    apply.mat.dispose();
-    apRT.dispose();
+    for (const v of _apVariants) {
+      if (!v) continue;
+      v.mat.dispose();
+      v.rt.dispose();
+    }
   };
 
   return {

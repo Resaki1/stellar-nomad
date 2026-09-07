@@ -3293,3 +3293,157 @@ three ways), the suppression rule's shape, `__lum.population()`, and §27's chea
 ⇒ **Nothing here needs doing before local gameplay.** R5 and R6 are look knobs on a star the
 player is rarely close to; S6 is a redesign that only pays off once there are systems to
 visit. The foundation is closed and gated, which is the point of stopping here.
+
+---
+
+## 29. Atmosphere occlusion — the fullscreen pass finally gets a depth test, analytically
+
+**Status: built 2026-09-02, and it shipped as a COMPLETE NO-OP. Two bugs found and
+fixed 2026-09-03 after the author reported "the atmosphere occlusion bug is not fixed"
+— see §29.5, which is the part of this section worth reading.**
+
+The author reported *"atmospheres are visible through other bodies"* and *"they look heavily
+aliased from a distance"* as separate bugs. They are two symptoms of one architectural fact
+already diagnosed in `project_atmosphere_fullscreen_rootcause`: **the atmosphere is a
+fullscreen post pass**, drawn on a quad with `depthTest = false` into targets created
+`depthBuffer: false`. It composites over whatever is in the framebuffer, because it has no
+depth to test against.
+
+⚠ The aliasing half is **already fixed** — D14b's analytic ground-silhouette coverage ramp
+(`tEnd = mix(tGroundCont, atmo.tFar, groundCoverage)`) is in the code. If it still reads as
+aliased, the next thing to measure is whether the ramp's half-width, sized in *march*
+pixels at `AP_RES_SCALE`, survives the upsample — not to add MSAA, which provably cannot see
+an internal per-pixel branch.
+
+### 29.1 🔑 The fix: clamp `tEnd`, don't kill the pixel
+
+```
+tEnd = min( mix(tGroundCont, atmo.tFar, groundCoverage),  tOcc )
+tMax = max(0, tEnd − tStart)
+```
+
+Clamping the march endpoint rather than zeroing the pixel is both **more correct and
+cheaper**: air *in front of* the occluder still scatters — you do see Earth's limb haze in
+front of the Moon — and only the column behind it is removed. And because it reuses `tEnd`,
+**D14b's sub-pixel silhouette ramp applies to the occluder's edge for free.** One mechanism,
+two silhouettes: the body's own ground, and any body in front of it, in the same units (km
+of impact parameter) so the two edges cannot alias differently.
+
+### 29.2 ⚠⚠ The trap: `eclipseU.occ` has the right SHAPE and the wrong SELECTION FUNCTION
+
+`bodyEclipse`'s occluder pool is a fixed array of `vec4(centre relative to this body,
+radius)` in **exactly** the body-relative km frame the march works in. It looked like a free
+win.
+
+It is not usable. `updateEclipseUniforms` selects **star-ward**: it keeps only bodies
+between this body and the star, inside the shadow cone (`along <= 0 → skip`,
+`angSep > angStar + angOcc + slack → skip`). ⇒ **Luna occupies a slot only during an
+eclipse** — precisely when nobody is looking at the reported bug.
+
+🔑 Same lesson §20 recorded for the two star catalogues, and §29 is the third instance:
+**two sets with the same shape and different selection functions are not
+interchangeable.** So the view occluders get their own pool with their own selector, exactly
+as the light pool got one separate from the disc pool.
+
+Selector: bodies in front of this one along the view direction, ranked by angular size,
+rejected when
+* they are the dominant body itself;
+* `dist − r_occ ≥ rCam + R_top` — the march never reaches past the far shell, so nothing
+  beyond that can cut it. ⚠ *The body's own far side*, not "nearer than the body": a moon
+  between the camera and the planet's **limb** occludes atmosphere the planet's own ground
+  does not, which is the reported symptom. ⚠⚠ And it is a **slot budget, not a correctness
+  test** — an occluder behind the body yields `tCut > tEnd` and `min` keeps the ground value
+  anyway. Being generous costs a slot; being tight *silently deletes occlusions*, which is
+  how bug 1 in §29.5 stayed invisible;
+* their angular radius is under **one march pixel** — derived from the live
+  `tanPerMarchPx`, not authored. Below that the silhouette ramp would be wider than the body
+  and it would blur a sub-pixel dot into a soft hole rather than occlude anything.
+
+### 29.3 Two guards that are load-bearing, not defensive
+
+* **`o.w > 0`** in the shader. An unused slot is `(0,0,0,0)` — **the body's own centre** — so
+  a ray pointing straight at the planet would have `bOcc = 0`, coverage 0, and cut the march
+  to nothing. **Every pixel of the disc would lose its atmosphere.** This is the same
+  `r <= 0` skip §19.6 needed for the collider tail, and for the same reason: an empty slot
+  in a fixed pool is a *point at the origin*, and the origin is never harmless.
+* **Zeroing the tail on the CPU** each frame. A stale slot occludes a body that has moved —
+  the ephemeris-aliasing class of bug that once made the ship "crash into empty space".
+
+### 29.5 ⚠⚠ IT SHIPPED AS A NO-OP. Two bugs, each independently fatal.
+
+The author flew to Luna and to Io and reported the artefact unchanged. Both bugs were on the
+CPU side; **the shader was correct from the start**, which is exactly what made this
+expensive — a correct shader fed an empty pool is indistinguishable, by eye, from a shader
+that does nothing.
+
+#### Bug 1 — the camera→occluder vector had the wrong SIGN. This one is the whole no-op.
+
+```
+const dx = o.centerKm.x - bodyCentre.x + _camToPlanet.x;   // ✗ shipped
+const dx = o.centerKm.x - bodyCentre.x - _camToPlanet.x;   // ✓ fixed
+```
+
+`_camToPlanet` is planet-centre → camera — it *is* the shader's `ro`. So camera → occluder
+is `oRel − ro`, and the code added it. The comment one line above even said *"negate for
+camera → centre"*; the code did not.
+
+🔑🔑 **Why it was invisible on inspection and total in effect: near Luna, `oRel` and `ro`
+are both ≈367,000 km AND NEARLY PARALLEL.** Both the right answer and the wrong one "look
+like a position near the Moon". The wrong one has ~2× the magnitude (≈734,000 km) instead of
+the true ≈1,800 km, so the reach cull `dist ≥ rCam + Rg` (373,499 km) rejected the Moon on
+**every frame**. The same arithmetic rejected Io with Jupiter dominant. The pool was empty
+always, in both reported scenes.
+
+⇒ **A frame conversion must be checked by MAGNITUDE against a distance you already know,
+never by reading the expression.** Same family as D28c (`centerScaled` where km was wanted),
+where the direction was right and the magnitude meaningless — and now the second time a sign
+or scale error in this exact conversion has survived review.
+
+#### Bug 2 — the silhouette ramp used the DOMINANT BODY's tangent length
+
+`uSilhouetteHalfWidthKm` is `dθ·√(rCam² − Rg²)`: the half-width at *this body's* silhouette.
+An occluder is at its own distance, so its ramp is `dθ·√(d² − r²)`. Reusing the body's value
+near Luna is **~770× too wide** — a ±317 km smoothstep band across a 1,737 km radius, i.e. a
+mushy rim covering a third of the Moon's disc. Not the no-op, but it would have been the next
+bug report.
+
+Fixed by publishing the *scalar* half of the formula (`uAaTanPerMarchPx = AA_MARCH_PX ·
+tanPerMarchPx`) and letting the shader finish it with its own geometry:
+`hw = uAaTanPerMarchPx · √(max(0, |oc|² − r²))` — both quantities already in hand, so free.
+⚠ Clamped `max(1e-3)`: `smoothstep(e, e, x)` divides by zero, and a NaN in `L` propagates
+into the glare pyramid and takes the frame with it.
+
+#### The gate that should have existed first: `__lum.atmoOcc()`
+
+Reports the dominant body, camera distance, the reach, how many candidates passed, and each
+slot's occluder with its distance and angular radius in **march pixels** — the quantity the
+selector actually gates on. The decisive read is one number: **if a slot's `dist` is ≈2× the
+distance to the dominant body rather than your distance to the moon, bug 1 is back.**
+
+🔑 **A fixed pool whose occupancy cannot be read cannot be debugged.** Every other fixed pool
+in this document got a gate at build time (`starPool`, `starLights`, `starTiers`); this one
+did not, and it is the only one that shipped broken. Not a coincidence: writing the gate is
+what forces you to name the observable separating "populated but ineffective" from "never
+populated" — and those two have identical pixels.
+
+#### Also fixed while in there
+
+* **Ranked by angular radius.** The code took the first 4 candidates in *registry order*
+  while the comment claimed it ranked them. With 4 slots and ~13 bodies it could spend every
+  slot on specks and drop the body actually in the way. Now a partial selection of the top 4
+  (≤64 comparisons, allocation-free — §27's lesson about not sorting a candidate list holds
+  at any size).
+* **Allocation-free**: a pre-allocated 16-record pool instead of per-frame object literals.
+  (`bodyEclipse`'s `_cands` still allocates; left alone.)
+* Constants moved out from between two `import` statements, where they had been wedged.
+
+### 29.4 What this does NOT do
+
+⚠ It does not save the wasted shading (~80% of the pass at mid distance, and the pass
+measures 1.5–12.95 ms). That needs the shell-mesh rewrite, which is a bigger change and
+interacts with the half-res aerial-perspective split — a shell mesh at half-res needs a
+half-res depth buffer that matches the scene. **This fix deliberately buys the correctness
+without touching the architecture.**
+
+⚠ Only *registered* bodies occlude. The ship does not need to: the local scene draws into
+`rtB` after these passes with `clearDepth()`, so it is unconditionally on top already.
