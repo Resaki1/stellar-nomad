@@ -3271,13 +3271,20 @@ export function setupAtmospherePass(
       const ringMarchPx =
         dominant.params.atmosphereHeightKm /
         Math.max(tanPerMarchPx * tangentKm, 1e-9);
-      _limbDerivedK = Math.max(
-        1,
-        Math.min(
-          LIMB_RADIAL_MAX,
-          Math.ceil(LIMB_RADIAL_TARGET_SAMPLES / Math.max(ringMarchPx, 1e-6)),
-        ),
+      // ⚠ HYSTERESIS ON K TOO, matching the rung's. A bare `ceil` here was an
+      // unguarded threshold: where the ladder caps out at 2.0 the ring width drifts
+      // continuously, so K flipped 1↔2 between frames and the limb visibly flickered.
+      // K=1 point-samples and K=2 averages, so the flip is a real image change, not a
+      // rounding wobble — it needs the same asymmetric guard the rung has (step up
+      // immediately, step down only at a 15% margin).
+      const clampK = (v: number) =>
+        Math.max(1, Math.min(LIMB_RADIAL_MAX, Math.ceil(v)));
+      const needUp = clampK(LIMB_RADIAL_TARGET_SAMPLES / Math.max(ringMarchPx, 1e-6));
+      const needDown = clampK(
+        (LIMB_RADIAL_TARGET_SAMPLES * 0.87) / Math.max(ringMarchPx, 1e-6),
       );
+      if (needUp > _limbDerivedK) _limbDerivedK = needUp;
+      else if (needDown < _limbDerivedK) _limbDerivedK = needDown;
     }
     uSunDir.value.copy(dominant.sunDir);
 

@@ -55,6 +55,16 @@
  *    image.
  */
 
+import {
+  EARTH_ATMOSPHERE,
+  VENUS_ATMOSPHERE,
+  MARS_ATMOSPHERE,
+  JUPITER_ATMOSPHERE,
+  SATURN_ATMOSPHERE,
+  URANUS_ATMOSPHERE,
+  NEPTUNE_ATMOSPHERE,
+} from "@/components/celestial/bodies/atmosphereData";
+import type { AtmosphereParams } from "@/components/celestial/types";
 import type { createStore } from "jotai";
 import { Matrix4, Quaternion, Vector3 } from "three";
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
@@ -2979,30 +2989,43 @@ export class LumHarness {
     console.table(rows);
     const ratio = limb.rms / Math.max(ctrl.rms, 1e-9);
     const pointish = limb.maxSigma > 2.2 * expMax && limb.skew > 0.8 && limb.share < 0.25;
+    const latticeish = !pointish && limb.share >= 0.25;
     console.log(
       [
         "      ── how to read it, in order ──",
-        `      1. CONTROL vs LIMB rms ratio = ${ratio.toFixed(2)}x.`,
+        `      1. LIMB vs CONTROL rms = ${ratio.toFixed(2)}x.`,
         ratio < 2
-          ? "         ⚠⚠ UNDER 2x: the ripple is NOT specific to the limb. Whatever is in the\n" +
-            "            sky is producing most of it, and nothing else in this table is evidence\n" +
-            "            about the limb. Ablate the sky (see 4) before reading further."
-          : "         Over 2x: the ripple IS specific to the limb, so the rest of the table is\n" +
+          ? "         ⚠⚠ UNDER 2x: the ripple is NOT limb-specific. Something in the sky\n" +
+            "            is producing most of it and nothing below is evidence about the limb."
+          : "         Over 2x: the ripple IS limb-specific, so the rest of the table is\n" +
             "            about the limb.",
         `      2. SHAPE: max/sigma ${limb.maxSigma.toFixed(1)} vs ${expMax.toFixed(1)} expected, skew ${limb.skew.toFixed(2)}, top-6 share ${(100 * limb.share).toFixed(1)}%.`,
+        // ⚠⚠ THREE outcomes, not two. This printed a FALSE DICHOTOMY until 2026-09-04
+        // — anything that was not "point sources" was reported as "a lattice", so a
+        // broadband ripple with a 12% top-6 share was labelled a lattice and sent the
+        // reader to a harmonic table that could not explain it. Neither is a real
+        // answer, and saying so is more useful than picking one.
         pointish
-          ? "         ⇒ SPARSE POINT SOURCES. A delta has flat power, hence the broadband\n" +
-            "            spectrum and the one-sided tail. This is NOT a lattice and no\n" +
-            "            resolution/coverage/quantisation fix can address it."
-          : "         ⇒ consistent with a LATTICE (bounded, symmetric, power in few harmonics).\n" +
-            "            Read the harmonic table: 128/48 = sphere tessellation, circumference/2\n" +
-            "            = AP_RES_SCALE, circumference/2^N = a mip pyramid.",
-        "      3. Point sources in this scene means the STAR FIELD, which no ablation so far",
-        "         has touched — not glare, scotopic, the tone curve, spectral T, MSAA, or",
-        "         bypassing the atmosphere.",
-        "      4. DECISIVE, one command, no reload:   __lum.starLift(\"off\")",
-        "         That drops the gameplay star-visibility gain to 1.0, making the field",
-        "         roughly a thousand times dimmer. If the beads go with it, they were stars.",
+          ? "         ⇒ SPARSE POINT SOURCES: a delta has flat power, hence the broadband\n" +
+            "            spectrum and the one-sided tail. No resolution or coverage fix applies."
+          : latticeish
+            ? "         ⇒ A LATTICE: bounded, roughly symmetric, power concentrated in a few\n" +
+              "            harmonics. Read the arc spacing below against the grids in play."
+            : "         ⇒ NEITHER. Not spiky enough for point sources, not concentrated\n" +
+              "            enough for a lattice (a lattice puts >25% in the top 6). A broad,\n" +
+              "            bounded ripple like this is what an UNDER-RESOLVED smooth feature\n" +
+              "            looks like — check `__lum.limbSuper()` for the ring's width in\n" +
+              "            march texels before reading anything into the harmonics.",
+        `      3. CHROMA ${limb.rmsRB.toFixed(2)} stops vs ${ctrl.rmsRB.toFixed(2)} in the control.`,
+        limb.rmsRB > 4 * Math.max(ctrl.rmsRB, 1e-6)
+          ? "         Well above the control ⇒ the ripple genuinely moves the channels\n" +
+            "            apart, so the mechanism is PER-CHANNEL. Pure geometry and pure\n" +
+            "            coverage are achromatic and cannot do this."
+          : "         Comparable to the control ⇒ no per-channel signature.",
+        "",
+        "      ⚠ This gate localises; it does not diagnose. The ablations are what decide:",
+        "        __lum.limbSuper() / apRes() (AP resolution), atmoBypass(), glare(false),",
+        "        scotopic(false), tonecurve(\"poly\"), atmoJitter(false), atmoSteps(n).",
       ].join("\n"),
     );
     return {
@@ -3025,6 +3048,151 @@ export class LumHarness {
         spikes: ctrl.spikes, top6Share: ctrl.share, chromaRmsStops: ctrl.rmsRB,
       },
     };
+  }
+
+  /**
+   * ATMOSPHERE SPECTRUM GATE — is each atmosphere the right OPACITY and COLOUR?
+   *
+   *     __lum.atmoSpectrum()          // every body with an atmosphere
+   *     __lum.atmoSpectrum("mars")    // one body, with the full breakdown
+   *
+   * 🔑 ONE QUANTITY ANSWERS MOST COLOUR/OPACITY QUESTIONS: the **vertical optical
+   * depth** from the surface to space, per channel. It decides whether the daytime sky
+   * hides the stars, how strongly the limb reddens, and what colour a body casts into
+   * its own shadow. It is `beta x scaleHeight` for an exponential profile — a pure CPU
+   * calculation off the shipped `AtmosphereParams`, so this gate needs no GPU, no pose
+   * and no settling, and cannot be contaminated the way a pixel probe can.
+   *
+   * Also reported:
+   * • **TANGENTIAL (limb) optical depth** = vertical x sqrt(2*pi*R/H), the airmass of a
+   *   grazing ray. This is what reddens a backlit limb and colours an eclipse.
+   * • **limb transmission** e^-tau per channel ⇒ the colour of light refracted through
+   *   the limb, i.e. what a totally eclipsed moon should look like.
+   * • **published anchors** where a defensible one exists, with the ratio.
+   *
+   * ⚠ CONFIDENCE IS MARKED PER ANCHOR and the low-confidence ones are labelled. This
+   * repo has been burned repeatedly by published values that were wrong in magnitude,
+   * in shape, or both — treat an unmarked ratio as a prompt to check the source, not as
+   * a verdict.
+   * ⚠ It measures the DERIVATION, not the render. A body can have perfect optical depths
+   * and still look wrong for rendering reasons — the limb ring being sub-pixel, for
+   * instance (D14g). Use `__lum.limbSuper()` for that half.
+   */
+  atmoSpectrum(bodyId?: string): Record<string, unknown> {
+    const ALL: [string, AtmosphereParams][] = [
+      ["venus", VENUS_ATMOSPHERE],
+      ["earth", EARTH_ATMOSPHERE],
+      ["mars", MARS_ATMOSPHERE],
+      ["jupiter", JUPITER_ATMOSPHERE],
+      ["saturn", SATURN_ATMOSPHERE],
+      ["uranus", URANUS_ATMOSPHERE],
+      ["neptune", NEPTUNE_ATMOSPHERE],
+    ];
+    const list = bodyId ? ALL.filter(([id]) => id === bodyId) : ALL;
+    if (list.length === 0) {
+      console.log(`[lum] no atmosphere for "${bodyId}". Known: ${ALL.map((x) => x[0]).join(", ")}`);
+      return { ok: false };
+    }
+    // Vertical optical depth of an exponential layer is beta*H; coefficients are m^-1
+    // and H is km, hence the 1000. The ozone tent of full width W integrates to W/2.
+    const vert = (p: AtmosphereParams) => {
+      const ray = p.rayleighScattering.map((b) => b * p.rayleighScaleHeightKm * 1000);
+      const mie = p.mieScattering.map(
+        (b, i) => (b + p.mieAbsorption[i]) * p.mieScaleHeightKm * 1000,
+      );
+      const oz = p.ozoneAbsorption.map((b) => b * (p.ozoneWidthKm * 0.5) * 1000);
+      const gas = p.gasAbsorption.map((b) => b * p.rayleighScaleHeightKm * 1000);
+      const tot = ray.map((v, i) => v + mie[i] + oz[i] + gas[i]);
+      return { ray, mie, oz, gas, tot };
+    };
+    // Grazing-ray airmass for an exponential atmosphere on a sphere.
+    const airmass = (p: AtmosphereParams) =>
+      Math.sqrt((2 * Math.PI * p.groundRadiusKm) / p.rayleighScaleHeightKm);
+
+
+    const rows: Record<string, Record<string, string | number>> = {};
+    const out: Record<string, unknown> = {};
+    for (const [id, p] of list) {
+      const v = vert(p);
+      const am = airmass(p);
+      const limbTau = v.tot.map((t) => t * am);
+      const limbT = limbTau.map((t) => Math.exp(-t));
+      const f3 = (a: number[]) => a.map((x) => x.toPrecision(3)).join(" / ");
+      // 🔑 SINGLE-SCATTER ALBEDO is the column that catches a mis-slotted coefficient.
+      // scattering / (scattering + absorption): near 0.9 for real atmospheric aerosol,
+      // ~1.0 for cloud. Anything near 0.5 is a grey neutral-density filter, not an
+      // aerosol — that is how the MIE_ABSORB_EARTH defect below was found.
+      const ssa = p.mieScattering.map(
+        (sc, i) => sc / Math.max(sc + p.mieAbsorption[i], 1e-30),
+      );
+      // Published DENSITY scale heights, for the D36 effective-gravity check. These are
+      // the observable the gravity input is really responsible for.
+      const H_PUB: Record<string, number> = {
+        venus: 15.9, earth: 8.0, mars: 11.1,
+        jupiter: 27.0, saturn: 59.5, uranus: 27.7, neptune: 19.7,
+      };
+      const hRef = H_PUB[id];
+      rows[id] = {
+        "H (km)": +p.rayleighScaleHeightKm.toFixed(2),
+        "H vs published": hRef
+          ? `${(p.rayleighScaleHeightKm / hRef).toFixed(3)}x of ${hRef}`
+          : "n/a",
+        "top (km)": Math.round(p.atmosphereHeightKm),
+        "tau vert R/G/B": f3(v.tot),
+        "  of which Rayleigh": f3(v.ray),
+        "  of which aerosol": f3(v.mie),
+        "aerosol SSA (G)": +ssa[1].toFixed(3),
+        "limb airmass": Math.round(am),
+        "limb transmission R/G/B": limbT.map((x) => x.toExponential(1)).join(" / "),
+      };
+      out[id] = {
+        scaleHeightKm: p.rayleighScaleHeightKm,
+        atmosphereTopKm: p.atmosphereHeightKm,
+        mieScaleHeightKm: p.mieScaleHeightKm,
+        verticalTau: v,
+        limbAirmass: am,
+        limbTau,
+        limbTransmission: limbT,
+        aerosolSingleScatterAlbedo: ssa,
+      };
+    }
+    console.table(rows);
+    // ⚠ DELIBERATELY TERSE. The reference values, their provenance, the confidence
+    // markers and the known defects all live in this method's doc comment and in
+    // docs/LIGHTING_PLAN.md D35/D36 — printing them on every call buried the table
+    // they were meant to annotate.
+    // ⚠⚠ EVERY MODEL-SIDE FIGURE HERE IS COMPUTED LIVE, never hardcoded. The first
+    // version of this block quoted the shipped values inline and went stale the moment
+    // D37 fixed them — it kept reporting Earth's SSA as 0.476 after it became 0.900 and
+    // still listed the Mie defect as open. A gate that can lie about the thing it
+    // measures is worse than no gate.
+    const cmp = (id: string, got: number, ref: number, what: string) =>
+      `      ${id.padEnd(8)} ${what.padEnd(22)} ${got.toPrecision(3).padStart(8)} vs ${ref}  = ${(got / ref).toFixed(2)}x`;
+    const line: string[] = ["", "      ── vs reference (model / reference) ──"];
+    const E = out.earth as { verticalTau: { ray: number[] }; aerosolSingleScatterAlbedo: number[] } | undefined;
+    if (E) {
+      line.push(cmp("earth", E.verticalTau.ray[1], 0.0971, "Rayleigh tau@550"));
+      line.push(cmp("earth", E.aerosolSingleScatterAlbedo[1], 0.9, "aerosol SSA"));
+    }
+    const M = out.mars as { verticalTau: { mie: number[] }; aerosolSingleScatterAlbedo: number[] } | undefined;
+    if (M) {
+      line.push(cmp("mars", M.verticalTau.mie[1], 0.5, "dust tau@550"));
+      line.push(cmp("mars", M.aerosolSingleScatterAlbedo[1], 0.9, "dust SSA"));
+    }
+    const J = out.jupiter as { verticalTau: { ray: number[] } } | undefined;
+    if (J) line.push(cmp("jupiter", J.verticalTau.ray[1], 0.091, "Rayleigh tau@550"));
+    const S = out.saturn as { verticalTau: { ray: number[] } } | undefined;
+    if (S) line.push(cmp("saturn", S.verticalTau.ray[1], 0.27, "Rayleigh tau@550"));
+    line.push(
+      "      open: CH4 is one shared constant tuned for URANUS (saturn wants /14.5,",
+      "            jupiter /2.2); saturn's haze sits below 57% of its blue Rayleigh so no",
+      "            tint can fix it; jupiter has no cloud deck (needs tau >= 7.8, has 0.02).",
+      "      ⚠ earth's aerosol tau is Hillaire's clean-sky 0.0053, ~10-30x below real",
+      "        AOD 0.05-0.15 — a deliberate choice to revisit, not a defect.",
+      "      see atmoSpectrum()'s doc comment and LIGHTING_PLAN D35-D37.",
+    );
+    console.log(line.join("\n"));
+    return out;
   }
 
   /**

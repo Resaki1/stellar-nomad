@@ -231,6 +231,35 @@ export type AtmosphereDef = {
   mieG?: number | [number, number, number];
   /** Mean surface albedo for multi-scatter ground bounce. Default [0.3, 0.3, 0.3]. */
   groundAlbedo?: [number, number, number];
+  /**
+   * Per-body multiplier on the DERIVED well-mixed gas absorption (CH4 today).
+   * Scalar or per-RGB. Default 1 — i.e. omitting it reproduces the shared value
+   * exactly, which is why introducing this changed nothing (D38).
+   *
+   * ── WHY A PER-BODY KNOB IS NEEDED AT ALL ─────────────────────────────────
+   * 🔑 `GASES.ch4.absorption` is a single BAND-AVERAGED grey coefficient, and its
+   * magnitude is self-declared (atmosphereData.ts) as set so URANUS reaches red
+   * optical depth ~2. It was never checked against anything else, and it cannot be:
+   * a band-averaged coefficient is only meaningful together with the PATH LENGTH the
+   * photons actually travel, and that is set by the REFLECTING LEVEL.
+   *
+   * ⚠⚠ The model reflects off `groundRadiusKm`, i.e. the 1-BAR level, because it has
+   * no cloud deck. Real gas giants turn photons around at a bright cloud far above
+   * that — Jupiter/Saturn's ammonia at ~0.5-0.6 bar, the ice giants' methane at
+   * ~1.3-1.5 bar. MEASURED consequence: the column above the real reflecting level
+   * accounts for Jupiter's whole discrepancy (1.32x of what the band albedos want)
+   * but only part of Saturn's (7.24x remains).
+   *
+   * 🔑🔑 SO DO NOT TUNE THIS UNTIL THE REFLECTING LEVEL IS RIGHT. The requirement
+   * itself is unknowable beforehand: Saturn's "needed tau_R = 0.033" was fit against
+   * photons bouncing off a 1-bar Lambert deck, which is neither the right depth nor
+   * the right brightness. Fitting now would bake a compensation that the volumetric
+   * cloud work then has to unpick — the Venus-trim cancellation trap, one layer up.
+   * This exists so that the fit CAN be per-body once that lands, because Jupiter and
+   * Uranus will still need different values: their reflecting levels differ ~2.6x in
+   * pressure even with clouds.
+   */
+  gasAbsorptionScale?: number | [number, number, number];
 };
 
 /**
@@ -323,8 +352,30 @@ export type CelestialBodyDef = {
   type: "star" | "planet" | "moon";
   /** Position in km (system coordinates). */
   positionKm: [number, number, number];
-  /** Radius in km. */
+  /**
+   * VOLUMETRIC MEAN radius in km — the standard published figure.
+   *
+   * ⚠ Not the equatorial radius. For an oblate body the two differ by the cube
+   * root of `1 − flattening`, which matters for the atmosphere's scale height:
+   * see `flattening`.
+   */
   radiusKm: number;
+  /**
+   * Geometric flattening `(R_eq − R_pol)/R_eq`. Omit (or 0) for a sphere.
+   *
+   * 🔑 EXISTS FOR THE ATMOSPHERE'S SCALE HEIGHT, not for the mesh. `deriveAtmosphere`
+   * needs the EFFECTIVE gravity at the 1-bar equator, and `GM/r_mean²` overstates it
+   * badly on a fast-rotating oblate giant: Saturn's scale height came out 44.15 km
+   * against a published 59.5 (0.74×) until this was taken into account, and Jupiter's
+   * 22.30 against 27.0 (0.83×). MEASURED after: 0.94× on both, with Earth pinned and
+   * nothing regressed (docs/LIGHTING_PLAN.md D36).
+   *
+   * ⚠ The equatorial radius is RECOVERED, not authored: `R_eq = r_mean/(1−f)^(1/3)`,
+   * since `r_mean = (R_eq²·R_pol)^(1/3)`. That reproduces the published equatorial
+   * radii exactly — Jupiter 71492, Saturn 60268, Earth 6378 — which is also a check
+   * that the flattening and the mean radius came from the same source.
+   */
+  flattening?: number;
   /** Optional parent body ID (e.g. moon orbiting a planet). */
   parent?: string;
   /**

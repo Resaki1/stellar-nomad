@@ -920,3 +920,72 @@ Changes from A11, with reasons:
 | 8 | Clouds → aerial perspective | **new** (X7) |
 | 9 | Cirrus layer | cheaper than assumed (X8) |
 | 10 | Cloud-area instrumentation, height-graded detail | unchanged |
+
+---
+
+# X10. TO DO ALONGSIDE THIS WORK: an aerosol LAYER profile (from LIGHTING_PLAN D38)
+
+Added 2026-09-06. This is atmosphere work, but it is listed here because it must be
+**designed together with** the volumetric cloud deck rather than before it — the split
+between "haze layer" and "cloud deck" is the design decision, and fitting either alone
+bakes in a compensation the other then has to unpick.
+
+## X10.1 The structural gap
+
+`AtmosphereParams` can only place aerosol as an **exponential from the surface**
+(`mieScaleHeightKm`). **Ozone is the only term with a tent profile**
+(`ozoneCenterKm` / `ozoneWidthKm`, `sampleMedium` in `atmospherePass.ts`).
+
+Every remaining planetary-colour defect is a **layer-at-ALTITUDE** problem:
+
+| body | what is missing | why the exponential cannot express it |
+|---|---|---|
+| Saturn | gold photochemical haze | it is stratospheric (0.01–0.05 bar ≈ 130–200 km up), i.e. **above** the Rayleigh column |
+| Jupiter | same, milder | same |
+| Uranus / Neptune | stratospheric haze | their `mieScaleHeightKm` defaults to 0.15 × H = 4.0 / 2.9 km, hugging the 1-bar level |
+| Venus | cloud deck | opacity currently carried by **Rayleigh** (τ_B 44.4) instead of a high bright cloud (real τ 25–40) |
+
+MEASURED consequence for Saturn: at `hazeScaleHeightKm: 25` against its own 55.6 km gas
+scale height, **56.8% of the blue Rayleigh optical depth sits ABOVE the haze**, where no
+haze absorption can reach it. As blue haze absorption → ∞ the blue reflectance
+asymptotes to a **floor of 0.2624 against a target of 0.2592**.
+⇒ **No value of `hazeAbsorptionTint` can produce Saturn's measured colour at that scale
+height.** A fit that ignores this returns tint_B ≈ 30, which is fiction — the haze being
+asked to absorb light it never sees.
+
+## X10.2 Why it belongs with the cloud work, not before it
+
+🔑🔑 **The CH₄ defect and the missing cloud deck are the same defect** (D38). A
+band-averaged grey absorption coefficient is only meaningful together with the PATH
+LENGTH photons travel, and that is set by the **reflecting level**. The model reflects off
+`groundRadiusKm` — the **1-bar level** — because there is no deck. Real gas giants turn
+photons around far above that: Jupiter/Saturn ammonia ~0.5–0.6 bar, ice giants' methane
+~1.3–1.5 bar.
+
+MEASURED: scaling each CH₄ column to its real reflecting level accounts for **Jupiter's
+entire discrepancy (1.32×)** and part of Saturn's (**7.24× remains**).
+
+⚠⚠ And the requirement itself is unknowable beforehand: Saturn's "needed τ_R = 0.033"
+was fit against photons bouncing off a 1-bar Lambert deck of albedo 0.57 — neither the
+right depth nor the right brightness.
+
+## X10.3 What to build
+
+1. **A second aerosol mode with a tent profile**, mirroring ozone exactly:
+   `hazeLayerCenterKm`, `hazeLayerWidthKm`, plus its own scattering/absorption/`g`.
+   Default zero width ⇒ the term collapses to nothing, so it ships as a **provable
+   no-op** until a body authors it. Ozone already pays ~5 ALU per march step for the
+   same shape, so the cost precedent exists.
+2. **An explicit reflecting level** (cloud-top pressure, or a radius) so the gas
+   absorption column and the cloud deck agree on where photons turn around. The hook for
+   the per-body half already landed: `AtmosphereDef.gasAbsorptionScale`, default 1.
+3. **Only then** re-fit, in ONE commit: CH₄ per body, Saturn's haze, Jupiter's deck. The
+   targets in LIGHTING_PLAN D36 were all computed against the pre-D37 optical depths and
+   a 1-bar reflecting level; **treat them as superseded, not as inputs.**
+
+## X10.4 Gate
+
+`__lum.atmoSpectrum()` prints vertical τ per channel, aerosol single-scatter albedo and
+limb transmission, all as a pure CPU read of the shipped params — no GPU, no pose. It is
+how the mis-slotted `MIE_ABSORB_EARTH` was caught (three bodies reported SSA identical to
+16 digits). Re-measure with it before and after any of the above.

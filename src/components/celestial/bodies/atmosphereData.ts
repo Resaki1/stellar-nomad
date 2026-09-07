@@ -57,8 +57,33 @@ const RAYLEIGH_EARTH: Vec3Tuple = [5.802e-6, 13.558e-6, 33.1e-6];
 const REFRACTIVITY_AIR_REF = 2.77e-4;
 const RAYLEIGH_SCALE_HEIGHT_EARTH_KM = 8.0;
 const MIE_SCATTER_EARTH = 3.996e-6; // clear-sky aerosol baseline (haze = 1)
-const MIE_ABSORB_EARTH = 4.4e-6;
+// 🐛🐛 WAS 4.4e-6, WHICH IS BRUNETON'S MIE **EXTINCTION** IN THE ABSORPTION SLOT (D35).
+// Two exact four-significant-figure fingerprints establish it without needing the paper:
+//   3.996 / 4.44 = 0.900000  → the scattering constant exists only as 0.9 × 4.44e-6,
+//                              i.e. the source model's Mie SSA of 0.9 BY CONSTRUCTION
+//   4.44e-6 × 1200 m = 5.328e-3 → exactly Bruneton's kMieAngstromBeta
+// and the shipped value fails the same test: 3.996 / 4.4 = 0.9082, not 0.9.
+// ⇒ absorption = extinction − scattering = 4.44e-6 − 3.996e-6.
+//
+// 🔑 HOW IT WAS FOUND, because the method generalises: `__lum.atmoSpectrum()` prints
+// aerosol single-scatter albedo, and Earth, Uranus and Neptune all reported
+// 0.4759409242496427 — identical to 16 digits. A per-body physical property cannot be
+// bit-identical across three bodies, so that is a shared constant leaking through.
+// **Add the column that would expose a mis-slotted coefficient as a shared value.**
+//
+// ⚠ Effect: Earth's aerosol extinction τ falls 0.0101 → 0.00533 (= 4.44e-6 × 1.2 km,
+// exactly the source table, so the header's "ozone/Mie exact" claim is finally true)
+// and its SSA rises 0.476 → 0.900. A near-half-absorbing aerosol was a grey
+// neutral-density filter, not an aerosol.
+// ⚠⚠ EVERY `haze` IN sol.json WAS ART-DIRECTED AGAINST THE WRONG UNIT, so this could
+// not land alone — Mars' block moves with it in this commit. Jupiter's and Saturn's
+// aerosols also thin by ~2x here; both are pending their own fits (LIGHTING_PLAN D36).
+const MIE_ABSORB_EARTH = 4.44e-7;
 const MIE_SCALE_HEIGHT_EARTH_KM = 1.2;
+// ⚠ `haze` MULTIPLIES A CLEAN-SKY BASELINE, so Earth's 15 is a NORMAL DAY, not 15×
+// hazy: AOD(550) = 4.44e-6 × 1.2 km × haze ⇒ haze 1 = 0.0053 (Bruneton's pristine
+// value — Koschmieder visual range 3.912/β = 217 km, which no real Earth atmosphere
+// achieves), haze 15 = 0.080 = the median clear-sky column, V = 49 km (D39).
 const OZONE_EARTH: Vec3Tuple = [0.65e-6, 1.881e-6, 0.085e-6];
 const OZONE_O2_REF = 0.209; // Earth's O2 mole fraction → OZONE_EARTH
 const OZONE_CENTER_EARTH_KM = 25;
@@ -66,7 +91,13 @@ const OZONE_WIDTH_EARTH_KM = 30;
 // Ideal-gas H = RT/(Mg) uses the SURFACE temperature, but the column cools
 // with altitude; this effective-column factor calibrates Earth (288 K,
 // 28.96 g/mol, 9.82 m/s²) to exactly Hillaire's 8.0 km density scale height.
-const COLUMN_TEMP_FACTOR = 0.9502;
+// ⚠⚠ RE-PINNED from 0.9502 when D36 switched to the effective gravity. This factor
+// exists ONLY to land Earth on Hillaire's exactly-8.000 km, so it has to move whenever
+// the gravity it divides does — otherwise the anchor body silently drifts off its own
+// reference. Fixing the gravity and leaving this alone would have moved Earth to
+// 8.046 km, which is the same two-sided-cancellation trap as the Venus trim.
+// Solved as 8.0 km × (M_air · g_eff,Earth) / (R · T_Earth) with g_eff = 9.7642 m/s².
+const COLUMN_TEMP_FACTOR = 0.944837;
 // Atmosphere top = this many Rayleigh scale heights (density ~e⁻¹²·⁵ ≈ 4e-6
 // of surface — visually nothing above). Earth: 12.5 × 8 km = the canonical 100.
 const TOP_SCALE_HEIGHTS = 12.5;
@@ -151,9 +182,46 @@ export function deriveAtmosphere(
     if (id === "o2") xO2 = xn;
   }
 
-  // Surface gravity + density scale height H = RT/(Mg) (× column calibration).
-  const radiusM = body.radiusKm * 1000;
-  const gravity = (G_GRAV * body.massKg) / (radiusM * radiusM);
+  // ── EFFECTIVE gravity at the 1-bar equator, not GM/r_mean² (D36) ──────────
+  //
+  // 🔑🔑 `GM/r_mean²` OVERSTATES THE GRAVITY THAT SETS A SCALE HEIGHT on any oblate,
+  // fast-rotating body, and the error is large: Saturn's H came out 44.15 km against a
+  // published 59.5 (0.74×) and Jupiter's 22.30 against 27.0 (0.83×). Both are the
+  // "atmosphere looks far too thin" report. MEASURED after this fix: **0.94× on both**,
+  // Venus 0.945, Mars 0.925, Uranus 0.964, Neptune 0.992, Earth pinned exactly — nothing
+  // regressed. The residual few percent is the isothermal approximation, which is
+  // precisely what COLUMN_TEMP_FACTOR absorbs.
+  //
+  // Two corrections, both needed:
+  //   1. OBLATENESS — the 1-bar level sits further out at the equator, so
+  //      `R_eq = r_mean/(1−f)^(1/3)` (from `r_mean = (R_eq²·R_pol)^(1/3)`).
+  //      ⚠ This RECOVERS the published equatorial radii exactly (Jupiter 71492,
+  //      Saturn 60268, Earth 6378), which doubles as a check that `flattening` and
+  //      `radiusKm` came from the same source.
+  //   2. CENTRIFUGAL — Saturn turns in 10.66 h, and `ω²R_eq` removes 1.6 m/s² there.
+  //      Ignoring it is over half of Saturn's error on its own.
+  //
+  // ⚠ Bodies without `flattening`/`rotation` fall back to the sphere, so an airless or
+  // newly-added body behaves exactly as before.
+  const flattening = body.flattening ?? 0;
+  const radiusM =
+    (body.radiusKm * 1000) / Math.cbrt(Math.max(1e-6, 1 - flattening));
+  const rot = body.rotation;
+  // ⚠ Both spellings are live in the data: most bodies author `spinDegPerDay` (IAU Ẇ)
+  // while Venus authors a negative `periodHours`. `abs` because retrograde spin still
+  // throws mass outward.
+  const spinRadPerSec = rot
+    ? rot.spinDegPerDay !== undefined
+      ? (Math.abs(rot.spinDegPerDay) * Math.PI) / 180 / 86400
+      : rot.periodHours
+        ? (2 * Math.PI) / Math.abs(rot.periodHours * 3600)
+        : 0
+    : 0;
+  const gravity = Math.max(
+    1e-6,
+    (G_GRAV * body.massKg) / (radiusM * radiusM) -
+      spinRadPerSec * spinRadPerSec * radiusM,
+  );
   const scaleHeightKm =
     (COLUMN_TEMP_FACTOR * R_GAS * atm.surfaceTemperatureK) /
     (molarKgPerMol * gravity) /
@@ -169,10 +237,16 @@ export function deriveAtmosphere(
     RAYLEIGH_EARTH[1] * nRel * rayleighRel,
     RAYLEIGH_EARTH[2] * nRel * rayleighRel,
   ];
+  // ⚠ `gasAbsorptionScale` defaults to 1, so every body reproduces the shared value
+  // exactly until one opts out. See its note in systemTypes.ts for why the shared
+  // constant cannot be tuned before the reflecting level is right.
+  const gScaleIn = atm.gasAbsorptionScale ?? 1;
+  const gScale: Vec3Tuple =
+    typeof gScaleIn === "number" ? [gScaleIn, gScaleIn, gScaleIn] : gScaleIn;
   const gasAbsorption: Vec3Tuple = [
-    gasAbs[0] * nRel,
-    gasAbs[1] * nRel,
-    gasAbs[2] * nRel,
+    gasAbs[0] * nRel * gScale[0],
+    gasAbs[1] * nRel * gScale[1],
+    gasAbs[2] * nRel * gScale[2],
   ];
 
   // Ozone proxy: photochemical O3 needs free O2, so scale Earth's layer by the

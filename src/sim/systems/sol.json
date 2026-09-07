@@ -55,6 +55,7 @@
       "type": "planet",
       "positionKm": [108060000, 0, 0],
       "radiusKm": 6052,
+      "flattening": 0,
       "massKg": 4.8675e24,
       "atmosphere": {
         "surfacePressureBar": 92,
@@ -77,8 +78,10 @@
       "type": "planet",
       "positionKm": [-129995000, 0, -65015000],
       "radiusKm": 6371,
+      "flattening": 0.003353,
       "massKg": 5.9722e24,
       "atmosphere": {
+        "haze": 15,
         "surfacePressureBar": 1.01325,
         "surfaceTemperatureK": 288,
         "composition": { "n2": 0.781, "o2": 0.209, "ar": 0.0093, "co2": 0.0004 }
@@ -104,14 +107,15 @@
       "type": "planet",
       "positionKm": [-197500000, 0, -114000000],
       "radiusKm": 3390,
+      "flattening": 0.005886,
       "massKg": 6.4171e23,
       "atmosphere": {
         "surfacePressureBar": 0.00636,
         "surfaceTemperatureK": 210,
         "composition": { "co2": 0.95, "n2": 0.028, "ar": 0.021 },
-        "haze": 1.6,
-        "hazeTint": [1.0, 0.63, 0.36],
-        "hazeAbsorptionTint": [0.9, 1.5, 2.4],
+        "haze": 11.2613,
+        "hazeTint": [0.96, 1.0, 0.7944],
+        "hazeAbsorptionTint": [0.36, 1.0, 3.85],
         "hazeScaleHeightKm": 10,
         "mieG": 0.75,
         "groundAlbedo": [0.25, 0.16, 0.1]
@@ -126,6 +130,7 @@
       "type": "planet",
       "positionKm": [2870000000, 0, 0],
       "radiusKm": 25559,
+      "flattening": 0.02293,
       "massKg": 8.681e25,
       "atmosphere": {
         "surfacePressureBar": 1,
@@ -145,6 +150,7 @@
       "type": "planet",
       "positionKm": [4500000000, 0, 0],
       "radiusKm": 24622,
+      "flattening": 0.01708,
       "massKg": 1.02413e26,
       "atmosphere": {
         "surfacePressureBar": 1,
@@ -164,6 +170,7 @@
       "type": "planet",
       "positionKm": [1430000000, 0, 0],
       "radiusKm": 58232,
+      "flattening": 0.09796,
       "massKg": 5.6834e26,
       "atmosphere": {
         "surfacePressureBar": 1,
@@ -185,6 +192,7 @@
       "type": "planet",
       "positionKm": [90000000, 0, -779000000],
       "radiusKm": 69911,
+      "flattening": 0.06487,
       "massKg": 1.8982e27,
       "atmosphere": {
         "surfacePressureBar": 1,
