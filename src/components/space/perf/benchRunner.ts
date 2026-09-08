@@ -41,9 +41,12 @@ import {
   type SeriesStats,
 } from "./perfProfiler";
 import {
+  BENCH_PHASE_DEG,
+  BENCH_POSE_EPOCH,
   SCENARIOS,
   findScenario,
   resolveScenario,
+  scenarioIllumination,
   type Scenario,
 } from "./scenarios";
 
@@ -85,8 +88,20 @@ export type ScenarioResult = {
   settleFrames: number;
   /** False = frame times never stabilised; treat the numbers with suspicion. */
   settled: boolean;
-  /** Derived from the MEDIAN frame time, not the mean — spikes don't hide here. */
+  /**
+   * From the MEAN frame time. 🐛 Was the MEDIAN, on the reasoning that spikes cannot
+   * hide in it — true for outliers, false for a BIMODAL split, which is what GPU
+   * backpressure produces (see `frameMs` in perfProfiler). The median then reports the
+   * submission cadence: it read **120.5 fps at earth_8 while the GPU was doing 41 ms of
+   * work per frame**. Cross-check with `bimodality` before quoting either.
+   */
   fps: number;
+  /**
+   * `frameMs.mean / frameMs.p50`. ≈1.0 = clean. >1.1 = the GPU is behind and the
+   * median is meaningless; the mean is still honest because total wall time is
+   * conserved however the stalls are distributed.
+   */
+  bimodality: number;
   frameMs: SeriesStats;
   cpuTotalMs: SeriesStats;
   cpuRenderMs: SeriesStats;
@@ -109,6 +124,12 @@ export type BenchReport = {
     userAgent: string;
     canvasPx: string;
     devicePixelRatio: number;
+    /**
+     * Which pose epoch produced these numbers (`scenarios.ts` BENCH_POSE_EPOCH).
+     * ⚠ Comparing per-pass ms across epochs is not like for like — v1 ran the whole
+     * Earth ladder at ~91° phase (half-lit) and v2 runs it at 35° (91% lit).
+     */
+    poseEpoch: string;
     gpuTimings: boolean;
     /**
      * Smallest non-zero GPU delta observed, ms. 0.1 means Chrome's timestamp
@@ -279,7 +300,9 @@ function toResult(
     droppedFrames: snap.droppedFrames,
     settleFrames,
     settled,
-    fps: snap.frameMs.p50 > 0 ? 1000 / snap.frameMs.p50 : 0,
+    fps: snap.frameMs.mean > 0 ? 1000 / snap.frameMs.mean : 0,
+    bimodality:
+      snap.frameMs.p50 > 0 ? snap.frameMs.mean / snap.frameMs.p50 : 1,
     frameMs: snap.frameMs,
     cpuTotalMs: snap.cpuTotalMs,
     cpuRenderMs: snap.cpuRenderMs,
@@ -366,7 +389,12 @@ export class BenchRunner {
 
     if (!settled) {
       console.warn(
-        `[bench] ${scenario.id}: frame times never stabilised — numbers are noisy.`,
+        `[bench] ${scenario.id}: frame times never stabilised. ` +
+          `bimodality (mean/p50) = ${(snap.frameMs.mean / Math.max(snap.frameMs.p50, 1e-9)).toFixed(2)}×. ` +
+          `⚠ ABOVE ~1.1 THIS IS NOT A WARM-UP FAILURE — it is GPU backpressure, and the ` +
+          `run can never settle because the slow mode is 4-6× the median by construction. ` +
+          `The MEAN is still valid (wall time is conserved); p50, p95 and the per-pass ` +
+          `table are not. At or below 1.1, suspect loading or a hitch instead.`,
       );
     }
     return toResult(scenario, snap, frames, settled);
@@ -380,6 +408,7 @@ export class BenchRunner {
       userAgent: navigator.userAgent,
       canvasPx: canvas ? `${canvas.width}x${canvas.height}` : "unknown",
       devicePixelRatio: window.devicePixelRatio,
+      poseEpoch: BENCH_POSE_EPOCH,
       gpuTimings: perf.gpuTimingAvailable,
       gpuResolutionMs: perf.snapshot().gpuResolutionMs,
       unlabeledPasses: unlabeled,
@@ -401,6 +430,33 @@ export class BenchRunner {
       env: this.buildEnv(),
       results,
     };
+    // ⚠⚠ START-STATE DRIFT ACROSS RUNS IN ONE SESSION — warn, do not just print it.
+    // The header has always SHOWN `startedFrom`, and that was not enough: on 2026-09-07 a
+    // five-point `atmoSteps` ladder was run with resident textures drifting 72 → 70 → 63
+    // and two earlier arms started from a different body altogether, and the mismatch was
+    // only caught while writing up a result that had already been reasoned about. LOD
+    // tiers never unload, so a run with more resident content is measuring a different
+    // scene. Comparing across a mismatch is not like for like.
+    const prev = this.last?.env.startedFrom;
+    const now = report.env.startedFrom;
+    if (prev) {
+      const drift: string[] = [];
+      if (prev.body !== now.body) drift.push(`body ${prev.body ?? "none"} → ${now.body ?? "none"}`);
+      if (prev.textures !== now.textures) drift.push(`textures ${prev.textures} → ${now.textures}`);
+      if (prev.geometries !== now.geometries)
+        drift.push(`geometries ${prev.geometries} → ${now.geometries}`);
+      if (Math.abs(prev.altitudeKm - now.altitudeKm) > 1)
+        drift.push(
+          `start altitude ${Math.round(prev.altitudeKm)} → ${Math.round(now.altitudeKm)} km`,
+        );
+      if (drift.length > 0) {
+        console.warn(
+          `[bench] ⚠ START STATE DRIFTED since the previous run: ${drift.join(", ")}.\n` +
+            "        This run is NOT comparable with it. Reload between arms of an A/B, and\n" +
+            "        start every arm from the same place — LOD tiers never unload.",
+        );
+      }
+    }
     this.last = report;
     this.lastJson = JSON.stringify(report, null, 4);
     printReport(report);
@@ -636,11 +692,24 @@ function printReport(report: BenchReport): void {
       `line matches — LOD tiers never unload, so reload the page for a clean baseline.`,
   );
 
+  // ⚠⚠ POSE EPOCH — the second comparability check, and the one whose absence let a
+  // whole sweep move to the night side unnoticed when the real ephemeris landed. v1
+  // aimed the ladder along a world-fixed axis that measured 1.28° from the terminator,
+  // so its illumination was an accident of the epoch; v2 pins the phase angle instead.
+  console.log(
+    `[bench] pose epoch ${report.env.poseEpoch} — body-relative poses sit at ` +
+      `${BENCH_PHASE_DEG}° phase (${Math.round((50 * (1 + Math.cos((BENCH_PHASE_DEG * Math.PI) / 180))))}% lit), ` +
+      `except the explicit *_night pairs. ⚠ Numbers from a different pose epoch are NOT ` +
+      `comparable: v1 ran this ladder half-lit.`,
+  );
+
   console.table(
     report.results.map((r) => ({
       scenario: r.scenario,
       "alt km": Math.round(r.gates.altitudeKm),
       fps: f2(r.fps),
+      // ⚠ >1.1 ⇒ p50/p95 and every per-pass number in this row are unusable.
+      "bi": f2(r.bimodality),
       "frame p50": f2(r.frameMs.p50),
       "frame p95": f2(r.frameMs.p95),
       "gpu ms": f2(r.gpuTotalMs.mean),
@@ -654,6 +723,16 @@ function printReport(report: BenchReport): void {
       // Resident-resource count: if this drifts across a sweep, later scenarios
       // are not comparable with earlier ones.
       "tex": r.counters.textures,
+      // ⚠ Illumination, in the table, on purpose: a v1 sweep silently moved to the
+      // night side when the ephemeris landed and nothing in the output said so.
+      lit: (() => {
+        const sc = findScenario(r.scenario);
+        if (!sc) return "?";
+        const il = scenarioIllumination(sc);
+        if (!Number.isFinite(il.phaseDeg)) return "-";
+        // ⚠ marks an epoch-DEPENDENT phase angle (measured, not pinned) — see `belt`.
+        return `${Math.round(100 * il.litFraction)}% ${il.side}${il.epochStable ? "" : " ⚠"}`;
+      })(),
       clouds: r.gates.cloudsVisible ? "Y" : "-",
       froxel: r.gates.froxelBaked ? "Y" : "-",
       bsm: r.gates.bsmBaked ? "Y" : "-",
@@ -678,6 +757,48 @@ function printReport(report: BenchReport): void {
   if (matrix.length > 0) {
     console.log("[bench] per-pass GPU ms (mean):");
     console.table(matrix);
+  }
+
+  // ── Day/night diff pairs ──────────────────────────────────────────────────
+  // 🔑 Printed as a DIFF, never as two absolute rows, for the same reason the froxel
+  // gate is measured as 4100 − 3900: the interesting quantity is the delta, and a
+  // reader comparing two absolute numbers by eye across a 15-column table will not.
+  // The per-pass breakdown is included because "the day side is more expensive" is
+  // only actionable if you know WHICH pass pays for it.
+  for (const night of report.results) {
+    if (!night.scenario.endsWith("_night")) continue;
+    const day = report.results.find(
+      (r) => r.scenario === night.scenario.replace(/_night$/, ""),
+    );
+    if (!day) continue;
+    const dFrame = day.frameMs.p50 - night.frameMs.p50;
+    const worst = PASS_ORDER.map((label) => {
+      const d = day.passes.find((x) => x.label === label)?.meanMs ?? 0;
+      const n = night.passes.find((x) => x.label === label)?.meanMs ?? 0;
+      return { label, delta: d - n };
+    })
+      .filter((x) => Math.abs(x.delta) >= 0.05)
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+      .slice(0, 5);
+    console.log(
+      [
+        `[bench] DAY − NIGHT at ${day.scenario}: frame p50 ${f2(dFrame)} ms ` +
+          `(${f2(day.frameMs.p50)} day vs ${f2(night.frameMs.p50)} night), ` +
+          `gpu ${f2(day.gpuTotalMs.mean - night.gpuTotalMs.mean)} ms.`,
+        dFrame > 0
+          ? "        ⇒ the DAY side costs more, as expected. The passes paying for it:"
+          : "        ⚠ the NIGHT side costs MORE here — that inverts the assumption " +
+            "the *_night pairs were added to test. Read the pass list first.",
+        ...worst.map(
+          (x) => `          ${x.label.padEnd(24)} ${x.delta >= 0 ? "+" : ""}${f2(x.delta)} ms`,
+        ),
+        worst.length === 0
+          ? "          (no pass differs by ≥0.05 ms — illumination is not a cost driver here)"
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
   }
 
   for (const r of report.results) {

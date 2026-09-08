@@ -210,12 +210,55 @@ skipped entirely (`cloudsVisible = getVolumetricBlend() > 0.001`). Compare
 `earth_12629` → `earth_6629` → `earth_4100`: if those already drop, the cost is
 the atmosphere pass, the planet surface shader, or CPU. Do not assume clouds.
 
+### ⚠⚠ POSE EPOCH v2 (2026-09-07) — EVERY NUMBER BELOW THIS LINE'S DATE IS VOID
+
+**All baselines and optimisation results recorded before 2026-09-07 were measured at a
+different camera pose and are no longer comparable.** Not by a little: the whole Earth
+ladder moved from a half-lit disc to a 91%-lit one.
+
+🔑 **The root cause is worth keeping, because it is a class of bug and not a typo.** v1
+derived the approach axis from `startingOffsetKm`, a constant authored in `sol.json`. That
+is fixed in the **scene** frame, while the sun direction is not — so the illumination of
+every pose was a function of `simEpochMsAtom`, which nothing in the output reported.
+MEASURED against the authored epoch, that axis came out at:
+
+| quantity | v1 (world-fixed) | v2 (sun-relative) |
+|---|---|---|
+| phase angle | **91.28°** | 35° (fixed) |
+| lit fraction of the disc | **0.489** | 0.910 |
+| distance from the terminator | **1.28°** | 55° |
+| epoch-dependent? | **yes** | no |
+
+⚠ **The ladder was one coin-flip wide.** Earth's heliocentric longitude advances ~1°/day,
+so a pose 1.28° from the terminator flips sides within days of epoch drift. When the E0
+ephemeris landed (real orbits, rotations and positions), the sweep moved to the **night
+side** and kept printing numbers. Restoring "the old day side" would have re-armed the
+identical trap 1.3° away, which is why the fix is a sun-relative axis, not a new constant.
+
+**What v2 guarantees, and what it does not.** Illumination is now epoch-independent, which
+is strictly stronger than v1 ever was, even before it broke. Sub-camera **longitude** is
+not: the body spins under a sun-locked axis, so the terrain and cloud field beneath the
+camera still vary across epochs. One axis cannot pin both, and illumination is the one that
+governs GPU cost.
+
+**Day/night is now measured, not assumed.** `earth_650_night` and `earth_8_night` are
+straddle pairs at 145° phase, read exactly like the froxel gate's 4100/3900 pair: the
+sweep prints `DAY − NIGHT` as a frame-time delta plus the five passes that account for it.
+An absolute night-side row on its own means nothing.
+
+**How to tell.** `BENCH_POSE_EPOCH` is printed in the sweep header and stored on
+`report.env.poseEpoch`, and every scenario row carries a `lit` column (`91% day`,
+`18% night`, or `terminator` inside a deliberate 10° dead band — because v1's failure was
+a pose 1.28° from the flip being reported as if it were a side).
+
 ### What makes it reproducible
 
-The sim has **no time**: planet positions are static constants from `sol.json`,
-sun direction is pure geometry, nothing rotates, and `SHIP_MAX_SPEED_KMPS` is 0
-so a warped ship does not drift. That leaves four things to control, and the
-runner handles all of them:
+The sim has **no time** while frozen: planet positions come from the ephemeris at a fixed
+epoch, sun direction is pure geometry, and `SHIP_MAX_SPEED_KMPS` is 0 so a warped ship does
+not drift. That leaves five things to control, and the runner handles all of them:
+
+0. **Illumination.** The approach axis is sun-relative at `BENCH_PHASE_DEG` — see the pose
+   epoch section above for why this is item zero and not a footnote.
 
 1. **Pose.** `devTeleportAtom` now carries an optional quaternion and zeroes
    throttle, steering rates, `movementAtom` and the transit drive. Throttle
@@ -297,6 +340,396 @@ per-pass GPU ms (mean):
 | pass | ... |
 |---|---|
 -->
+
+### 🔶 RESULT — `MARCH_UNROLL_2`: works, control flat, **but ~4× smaller than predicted**
+
+Frame **mean**, all six runs settled with `bimodality` 0.98–1.005, reload between arms.
+
+| scenario | unroll ON | OFF | Δ | % frame | % of the 3.95 ms step work |
+|---|---|---|---|---|---|
+| earth_8 | 18.658 | 18.982 | **−0.324 ms** | −1.7% | **8%** |
+| earth_horizon_8 | 19.487 | 19.719 | **−0.231 ms** | −1.2% | **6%** |
+| deep_space (control) | 8.3327 | 8.3348 | −0.002 ms | −0.03% | ✅ **FLAT** |
+
+✅ **The control held to 0.002 ms**, so there is no leakage and the attribution is sound: the change
+moved only the rows that march. Both marching scenarios agree in sign and magnitude.
+
+⚠⚠ **BUT THE PREDICTION WAS 10–30% OF STEP WORK AND IT DELIVERED 6–8%** — 4× under the top of the
+range, and only just clearing the bottom. And the honest caveat: **the effect (0.324 ms) is SMALLER
+than the harness's own cross-session spread on an identical config** — earth_8 measured 18.560 at
+12:16 and 18.982 at 14:31, both effectively unroll-off, a 0.422 ms gap. Direction is established by
+the paired same-session runs plus the flat control; **magnitude is not, and should not be quoted
+without repeats.**
+
+✅ **QUALITY IS NEUTRAL, and `limbScan` in PAIRED mode is what showed it.** Same pose, both arms:
+
+| | OFF | ON | rel. change |
+|---|---|---|---|
+| limb rms ripple | 1.0267836 | 1.0262920 | 0.048% |
+| limb robust σ | 0.1866566 | 0.1843257 | 1.25% |
+| limb max residual | 8.5757205 | 8.5752413 | 0.006% |
+| **control** rms | 1.4186825 | 1.4187123 | 0.002% |
+
+Fitted radius **identical to 13 digits**, `topHarmonics` identical in both k and arc length. So the
+output is **not bit-identical but agrees to 4–5 significant figures**, and the control circle moved
+by a comparable relative amount — i.e. this is floating-point reassociation, exactly the sub-ulp
+FMA-contraction caveat recorded in advance, not a change in the rendered physics. The author reports
+no visible difference. 🔑 Note the gate's *absolute* verdict on this pose is "inconclusive"
+(`controlToLimbRmsRatio` 0.72, `unlitArcSuspected` true) — that does not matter for a **paired** A/B
+at a fixed pose, where the difference is the measurement. Useful pattern to reuse.
+
+### 🔑🔑 THE MODEL WAS WRONG: THIS MARCH IS ALU-BOUND, NOT LATENCY-BOUND
+
+The 4× shortfall is the informative part, and it invalidates the premise the change was built on —
+"16 steps is a ~48-deep dependent fetch chain, so overlap two steps' fetches." Two reasons, both
+checkable without another measurement:
+
+1. **GPUs hide memory latency with THREAD-level parallelism, not instruction-level.** With enough
+   concurrent simdgroups a stalled thread is covered by other threads' work, so ILP tricks like
+   unrolling only pay when occupancy is too low to cover the latency. That is the textbook reason
+   this optimisation underperforms on a GPU, and it applies here.
+2. **Two of the three "dependent fetches" are cache-resident and were never expensive.** The
+   transmittance LUT is 256×64 half-float = **128 KB** and the multi-scatter LUT 32×32 = **8 KB**.
+   Both sit comfortably in cache, so those fetches cost tens of cycles, not the hundreds of a DRAM
+   miss. Only the Beer shadow map (512², ~2 MB) is big enough to miss. There was far less latency to
+   hide than the chain-depth framing implied.
+
+⚠ The original evidence for "latency-bound" (§"THE MARCH IS NOW LATENCY-BOUND": the half-res split
+quartered pixels but bought only 2.7–3.4×, and per-step-eval rate fell 7.4 → 5.1 G/s) shows that
+*something* does not scale with pixel count. It does **not** establish that per-thread memory
+latency is the bottleneck, and I over-read it as if it did.
+
+⇒ **Corrected model: the per-step cost is dominated by ALU, and specifically by transcendentals.**
+Counting the current body: `sampleMedium` issues 2 `exp()` and `expVec3` issues 3 more — **5 `exp()`
+per step, 80 per pixel at 16 steps** — plus ~4 divides, a `sqrt`, a `smoothstep`, and the
+transmittance-LUT uv mapping. (`hgPhase`'s `pow` is already hoisted out of the loop.)
+
+**Decision: KEEP the unroll and KEEP the toggle.** It is free quality-wise, positive in both
+marching scenarios with a flat control, and it deleted the running-`t` footgun that once caused the
+invisible-atmosphere bug. The toggle stays because the corrected model says the win is
+hardware-dependent — a different GPU or driver could move it either way.
+
+### ❌ RESULT — step count is NOT a lever, and the 0.247 ms/step model is FALSIFIED
+
+Five-point ladder at earth_8, `__lum.atmoSteps(n)`, frame **mean**:
+
+| n | frame mean | settled | bi | `1.5 atmosphere` | pose-identical? | limb σ/control |
+|---|---|---|---|---|---|---|
+| 16 | 18.129 | **NO** | **1.95** | 8.57 | ✅ | 0.2615 |
+| 12 | 18.882 | Y | 1.015 | 6.99 | ✅ | 0.2789 (+6.7%) |
+| 10 | **17.905** | Y | 1.006 | 6.20 | ✅ | 0.2968 (+13.5%) |
+| 8 | 18.855 | Y | 1.003 | 6.41 | ⚠ drifted | 0.3082 |
+| 6 | 18.660 | Y | 0.998 | 5.97 | ⚠ drifted | 0.2999 |
+
+**Frame time over n = 12…6 spans 17.905–18.882 ms with NO trend** — a 0.98 ms spread that is pure
+noise. Halving the steps (12 → 6) moved the frame **−0.222 ms**, where 0.247 ms/step predicts
+**−1.48 ms**. ⇒ **Model falsified by 6.7×.**
+
+⚠⚠ **AND THE WAY IT WAS BUILT IS THE LESSON: A 3-POINT FIT OF A 3-PARAMETER MODEL AGREED TO 0.00 ms,
+AND THAT AGREEMENT CARRIED ZERO INFORMATION.** The previous entry called that consistency "clean" —
+but 3 points fit 3 unknowns *exactly* by construction, so a perfect fit was guaranteed whatever the
+truth was. The 0.247 ms/step slope came from just two of those points (16 and 2). Five points in
+between show the curve is flat there. This is the second wrong cost model for this pass in two
+rounds, and the third in the project's history. **Take ≥5 points before fitting, and never treat a
+saturated fit as evidence** — the memory already said "a self-consistent model is NOT evidence:
+inflated numbers can be consistently inflated," and this is the same failure with too few points
+rather than inflated ones.
+
+🔑 **What actually happens: the atmosphere PASS shrinks and the FRAME does not.** `1.5 atmosphere`
+falls 6.99 → 5.97 (n = 12 → 6) while the frame moves 0.22 ms. So at earth_8 the frame is **not
+bounded by the march's step work**, and reducing it just buys idle in that pass.
+
+⚠ The earlier `atmoSteps(2)` = 15.10 and `atmoBypass` = 13.74 **cannot be compared to this ladder**:
+they started from earth_8 / 120 km while every ladder run started from earth_12629, and resident
+textures drifted 72 → 70 → 63 across the ladder itself. LOD tiers never unload, so those are
+different scenes. The bypass *total* (~4.5–4.8 ms, three poses) still stands as a same-session
+paired result; its **decomposition into step work + fixed cost does not.**
+
+⚠ The author also reported the fans spinning up during the ladder, so thermal drift is a confound.
+It cannot rescue the model though: masking a 1.48 ms win would require ~1.5 ms of drift in four
+minutes, and the sequence is non-monotonic in *both* directions (12 → 18.88, 10 → 17.91, 8 → 18.86).
+Any real per-step lever here is under ~0.1 ms/step.
+
+✅ **QUALITY COSTS ARE REAL AND MEASURABLE — this ladder's one solid product.** On the three
+pose-identical rows (fitted radius identical to 13 digits, same 2567 samples, same harmonic set),
+`robustSigmaOverControl` rises **monotonically**: 0.2615 → 0.2789 → 0.2968 for n = 16 → 12 → 10,
+i.e. **+6.7% and +13.5%**. 🔑 That is the first sensitive, *controlled* quality metric this march has
+had — use `robustSigmaOverControl` from a paired `limbScan` at a fixed pose as the gate for any
+future march change. ⚠ n = 8 and n = 6 must be discarded: their fitted radius, sample count and
+`geometryRPx` all changed, and at n = 6 the **control's own rms jumped 24%** — the camera had
+drifted, so those two rows measure the pose, not the step count.
+
+⇒ **DECISION: `MAIN_STEPS` stays at 16.** Fewer steps cost measurable quality and buy no frame time.
+The author's eye agrees with the numbers ("no difference between 16 and 12, barely any between 16
+and 10") — and the point is that the *frame* shows no difference either, so there is nothing to buy.
+
+**Harness fix from this round:** the bench now **warns** when `startedFrom` drifts between runs in a
+session (body, resident textures/geometries, start altitude). The header always *showed* it, and that
+was not enough — the drift here was only caught while writing up a result that had already been
+reasoned about.
+
+### ⇒ NEXT: stop optimising the atmosphere; ablate the cloud pipeline the same way
+
+The atmosphere levers are now all measured and all small or void:
+
+| lever | result |
+|---|---|
+| step count | ❌ **no frame effect**, measurable quality cost |
+| `MARCH_UNROLL_2` | 🔶 −0.23…−0.32 ms, below the harness's own spread |
+| `atmoSpectralT` | ❌ null, signs disagree |
+| shell coverage | 🔑 the real driver, but coverage is ~100% at low altitude — nothing to cull |
+| whole subsystem (bypass) | **4.5–4.8 ms of an 18.6 ms frame = ~25% ceiling** |
+
+Even a perfect atmosphere caps out at a quarter of the frame, and the three cloud passes report more
+than the atmosphere pair does. The protocol that worked is now established and transferable: **an
+ablation read on frame mean, with a control scenario that must stay flat, plus a paired `limbScan`
+for quality.** Point it at the cloud pipeline next.
+
+### 2026-09-07 13:12–13:22 — 🐛 THE `fps` NUMBER WAS WRONG, AND FIXING IT RECOVERED THE "BROKEN" RUNS
+
+The author noticed the overlay reporting **135–140 fps on a 120 Hz display** at `earth_up_120`, and
+"sometimes twice" three's own monitor. That is impossible for presented frames, and chasing it
+explained every `settled: false` run at once.
+
+🔑🔑 **`frameMs` is the interval between renderer SUBMISSIONS, not between presents.** When the GPU
+falls behind, the CPU keeps submitting at display cadence until the swapchain runs dry, so the
+samples split into a **fast mode at the vsync interval and a slow mode 4–6× longer**. Both `PerfHUD`
+and `BenchReport.fps` derived FPS from `frameMs.p50` — chosen so outlier spikes could not hide in it,
+which is right for outliers and **wrong for a bimodal split**. The median then reports the submission
+cadence and nothing else.
+
+MEASURED, `mean / p50` across all 14 runs — **perfect separation, no overlap**:
+
+| | mean/p50 | worst `fps` overstatement |
+|---|---|---|
+| every clean run (9) | **1.00–1.01** | none |
+| every `settled: false` run (5) | **1.18–1.82** | 120.5 fps reported at `earth_8` while the GPU did 41 ms/frame |
+
+⇒ **`settled: false` at a bimodality above ~1.1 is NOT a warm-up failure.** It is GPU backpressure,
+and such a run can *never* settle, because the settle test asks that no recent frame exceed 3× the
+median while the slow mode is 4–6× it by construction. Re-running it, cooling the laptop and
+reloading cannot help — the author tried all three.
+
+🔑 **And the MEAN stays honest**, because total wall time is conserved however the stalls are
+distributed. That recovers the five "lost" runs: their means line up with the equivalent clean run's
+p50 to within 0.5–1.5 ms in every case. **Fixed:** `fps` now comes from the mean everywhere, a
+`bimodality` field is on the report, a `bi` column is in the summary table, `PerfHUD` shows
+`⚠ BIMODAL n×` and colours its budget from the mean, and the settle warning now names backpressure
+as the likely cause and says which statistics survive (mean yes; p50, p95 and the whole per-pass
+table no).
+
+⚠ **`earth_up_120` cannot measure anything.** Baseline mean 8.53 ms against the 8.33 ms vsync floor,
+so switching the atmosphere *off* reads +0.94 ms slower. Keep it as a coverage probe (it produced the
+5.9× shell-coverage result) and never as a perf scenario — §6 already warns that only a scenario
+which MISSES vsync can measure a saving.
+
+### 2026-09-07 13:21 — ✅✅ THE ATMOSPHERE DECOMPOSED, 3-POINT, SELF-CONSISTENT TO 0.00 ms
+
+All three points are settled runs read on frame **mean** at `earth_8`:
+
+| | frame mean |
+|---|---|
+| 16 steps (shipped) | 18.56 |
+| `__lum.atmoSteps(2)` | 15.10 |
+| `__lum.atmoBypass(true)` | 13.74 |
+
+```
+per-step cost   = (18.56 − 15.10) / 14   = 0.247 ms/step
+step work @16   = 16 × 0.247             = 3.95 ms   ← 82% of the atmosphere
+march fixed     = 15.10 − 13.74 − 2×0.247 = 0.87 ms   ← 18%
+predicted total = 4.82 ms   vs   bypass-measured 4.82 ms   ✅ agreement 0.000 ms
+```
+
+Cross-checked against two more poses (bypass delta on mean): `earth_horizon_8` **−4.45 ms**,
+`earth_up_8` **−3.87 ms**. Three poses, 3.9–4.8 ms.
+
+⚠⚠ **THIS OVERTURNS THE PREVIOUS ENTRY'S CONCLUSION, AND THE WAY IT WAS REACHED IS THE LESSON.** That
+entry called `1.6 atmo apply` the next lever because the per-pass table showed it at 1.05–1.46× the
+march in **9 out of 9 runs**, and argued a *ratio* is robust to inflation even where absolutes are
+not. **It is not.** The ablation puts step work at 82% and the apply's own math below the noise
+floor. That is the third time in this project that per-pass arithmetic produced a wrong conclusion
+about this pass's cost structure — after the 2.44→3.50 ms "fixed cost" fit and the flush-stall
+hypothesis. **The rule has no exception for ratios: if `gpu/frame` > 1.15, the only usable numbers
+are ablations on frame mean.**
+
+⇒ It also refutes the older "**~3.50 ms FIXED COST — 55% of the pass**" note in §7: measured fixed
+cost is **0.87 ms, 18%**.
+
+**`__lum.atmoSpectralT(false)` — NULL, and the disagreement in sign is the evidence:**
+
+| arm | Δ frame mean |
+|---|---|
+| earth_8 @ 16 steps (settled/settled) | **+0.56 ms** |
+| earth_8 @ 2 steps | −1.41 ms |
+| earth_horizon_8 @ 16 steps | −1.39 ms |
+
+Three arms, two signs, spread ±1.4 ms — inside the documented 5–25% run variance. The only
+settled-vs-settled arm says *slower*. Not a lever; do not spend quality on it.
+
+**⇒ THE LEVER IS STEP WORK, AT 0.247 ms/STEP.** 16 → 12 saves 0.99 ms (5.3% of the frame), 16 → 8
+saves 1.98 ms (11%). Two directions, and the second is the better one:
+1. **Fewer, better-placed steps.** D14e already showed a 12/12 boundary split beating 40 uniform
+   steps on the metric that mattered, so quality-per-step is improvable. ⚠ But two importance-warping
+   attempts measured *worse* than doing nothing (0.82 → 1.56–1.90 stops) by starving the shadowed
+   leg — re-read D14e before trying again.
+2. 🔑 **Software-pipeline the loop — the fix that costs no quality at all.** §"THE MARCH IS NOW
+   LATENCY-BOUND" measured this loop as latency- not throughput-bound: each step issues 2–3
+   *dependent* texture fetches (`getSunTransmittance`, `getMultipleScattering`,
+   `cloudShadowAtPlanetKm`), so 16 steps is a 32–48-deep dependent chain. Unrolling two steps and
+   issuing both steps' fetches before consuming either halves the chain depth at identical sample
+   count and identical output. That is the standard answer for a latency-bound march and the
+   measurement now says it is aimed at 82% of the cost rather than at 18%.
+
+### 2026-09-07 12:26–12:34 — ✅ THE ATMOSPHERE'S TRUE COST, BY ABLATION — and two hypotheses killed
+
+`__lum.atmoBypass(true)` deletes the march while leaving both passes and both targets intact, so
+the frame-p50 delta is the subsystem's whole cost with no per-pass arithmetic involved.
+
+**⚠ Only two of the four pairs are usable — 3 of 4 baselines reported `settled: false`.** Those
+three are wildly bimodal (`earth_8` baseline: p50 10.80 but p95 47.80, mean 17.48) and their p50
+sits in the fast mode, which is why `earth_up_120` appears to get *slower* when the atmosphere is
+switched off. That is the settle guard working, not a measurement.
+
+| pair | atmo ON | atmo OFF | **Δ frame p50** | share of frame |
+|---|---|---|---|---|
+| earth_horizon_8 (both settled) | 19.40 | 14.90 | **−4.50 ms** | **23.2%** |
+| earth_8 (sweep row as baseline) | 18.50 | 13.60 | **−4.90 ms** | **26.5%** |
+
+⇒ **The atmosphere is ~4.5–4.9 ms, about a quarter of the frame, at low altitude.** First
+trustworthy figure for it; every earlier per-pass number was inflated 2.5–3×.
+
+🔑🔑 **KILLED HYPOTHESIS 1 — it is NOT sky-chord length.** `earth_horizon_8` was built to be the
+march's worst case by construction: a level ray has the longest possible chord (grazing airmass
+≈ 71 for Earth's Rayleigh column). It costs **4.50 ms against looking-down's 4.90** — no worse, if
+anything marginally better. So neither "cheaper per step" nor "cull long sky rays" is aimed at the
+real cost.
+
+🔑🔑 **CONFIRMED DRIVER — shell COVERAGE.** `earth_up_120` (120 km, looking away from Earth, so most
+pixels miss the shell) reports `1.5 atmosphere` **1.40 ms against earth_8's 8.27 — 5.9× cheaper**
+at identical resolution and step count. The pass already early-outs on misses; what it cannot avoid
+is that at 8 km altitude *every* pixel is inside the atmosphere. ⚠ **Consequence for the planned
+shell-mesh rewrite: it buys ~nothing at low altitude** (nothing to cull) and pays only at mid
+distance, where the disc covers a minority of the screen — which is also where the frame is already
+at 96–108 fps. Re-scope it or drop it.
+
+🔑 **`1.6 atmo apply` COSTS MORE THAN THE MARCH IT APPLIES — in 9 out of 9 runs**, ratio 1.05–1.46×
+(earth_8 1.06×, up_120 1.29×, deep_space 1.39×). The apply does **no marching at all**: one bilinear
+tap of the AP target, a per-channel `pow` (AP_SPECTRAL_TRANSMITTANCE), a multiply-add against the
+scene, one fullscreen write. It runs at 4× the march's pixel count (AP_RES_SCALE 0.5), so per pixel
+it is ~3.6× cheaper — the half-res split is working as designed — but it is still **half the
+atmosphere budget**, and that half is a bandwidth/ALU problem, not a quadrature one. This is the
+next lever, and it is not the one anyone was aiming at.
+
+⚠⚠ **THE LEAKAGE IS THE PROOF THAT THE PER-PASS TABLE IS QUEUE DEPTH.** Bypassing the atmosphere
+also "saved" **11.45 ms** (horizon) and **11.64 ms** (earth_8) across `2a cloud marcher`,
+`2c reconstruction` and `3 cloud composite` — passes the ablation does not touch. Impossible as a
+cost; it is every pass's reported span shrinking with the frame. Per §6's prediction discipline,
+leakage of that size falsifies the attribution, not the change.
+
+⚠ **NEW LEAD ON THE SETTLE FAILURES, from a perfect separation across all 9 runs:**
+
+| | `1b beer shadow map` p95 |
+|---|---|
+| every `settled: true` run (6) | 1.25, 1.44, 1.64, 1.70, 2.10, 2.16 — **max 2.16** |
+| every `settled: false` run (3) | **3.47, 8.06, 10.29** — min 3.47 |
+
+6/6 and 3/3, no overlap. An 8–10 ms BSM span is 4–5× anything in the settled sweep, and the BSM is a
+*bake* — so it is re-baking on some frames with a static camera, which is exactly the shape of a
+bimodal frame time. ⚠ Correlation across 9 runs, not a mechanism: do not act on it before
+reproducing it. Note the individual runs warp pose-to-pose while the sweep runs the ladder in one
+session, which is the obvious difference to test first.
+
+**Protocol for the next round** (frame p50 only, fresh reload, one run at a time):
+1. Re-run the three broken baselines — `earth_up_8`, `earth_up_120`, `earth_8` — and confirm
+   `settled: true` before using anything.
+2. `__lum.atmoSpectralT(false)` at `earth_8` + `earth_horizon_8`. Isolates the apply's per-channel
+   `pow`. A real drop ⇒ the apply is ALU-bound and cheapening it is a code change; no drop ⇒ it is
+   the fullscreen read-modify-write itself, and the only fix is to stop doing a separate one.
+   ⚠ Before proposing a merge, re-read §"❌ RESULT 2026-08-11 18:51" — moving work into the
+   march→apply gap measured 0.3–0.7 ms **slower** on every scenario, including the control.
+3. `__lum.atmoSteps(2)` at `earth_8`. With the bypass total already known (4.90 ms), this splits it
+   three ways: step work = p50(16) − p50(2); the remainder is march fixed cost + apply.
+
+### 2026-09-07 — ⭐ **POSE EPOCH v2 BASELINE** — M2 Pro, Chromium 152, **2438×1816** px, DPR 1.8
+
+**Use this, not anything above it.** First sweep on the sun-relative axis (35° phase, 91% lit).
+`gpuResolutionMs` 0.0655 so GPU numbers are un-quantised. All rows `settled: true` except `belt`.
+
+| scenario | frame p50 | fps | gpu mean | **gpu/frame** |
+|---|---|---|---|---|
+| deep_space | 8.40 | 119 | 8.58 | 1.02 |
+| belt ⚠ | 9.10 | 110 | 10.95 | 1.20 |
+| earth_12629 | 9.30 | 108 | 12.23 | 1.32 |
+| earth_6629 | 10.40 | 96 | 15.22 | 1.46 |
+| earth_4100 | 11.90 | 84 | 18.81 | 1.58 |
+| earth_3900 | 12.30 | 81 | 19.38 | 1.58 |
+| earth_2100 | 14.10 | 71 | 23.51 | 1.67 |
+| earth_1900 | 15.00 | 67 | 25.90 | 1.73 |
+| earth_750 | 14.30 | 70 | 24.50 | 1.71 |
+| earth_650 | 15.90 | 63 | 47.58 | **2.99** |
+| earth_650_night | 15.40 | 65 | 43.97 | 2.85 |
+| earth_250 | 17.10 | 58 | 51.59 | **3.02** |
+| earth_120 | 18.50 | 54 | 56.96 | **3.08** |
+| earth_30 | 18.90 | 53 | 58.75 | **3.11** |
+| earth_8 | 18.50 | 54 | 55.91 | **3.02** |
+| earth_8_night | 17.30 | 58 | 50.23 | 2.90 |
+
+⚠⚠ **THE `gpu/frame` COLUMN INVALIDATES THE PER-PASS BREAKDOWN ON EVERY EARTH ROW.** The rule
+in §2 says ≈1 → trust it, >1.15 → ablate. **The lowest Earth row is 1.32 and the cloud rows are
+~3.0.** At `earth_8` the passes sum to **55.91 ms against an 18.50 ms frame (3.02×)**, with five
+separate passes each reporting 8–12 ms:
+
+| pass | reported at earth_8 |
+|---|---|
+| 3 cloud composite | 11.54 |
+| 2c reconstruction | 10.48 |
+| 1.6 atmo apply | 8.84 |
+| 2a cloud marcher | 8.68 |
+| 1.5 atmosphere | 8.31 |
+
+Five passes doing very different work cannot all cost the same 8–12 ms in an 18.5 ms frame.
+**They are measuring queue depth, not work.** Do not rank optimisation targets from this table —
+that is the 2026-08-13 mistake (three rounds fitting a "fixed cost" that a single ablation showed
+did not exist). Straddles and ablations on **frame p50** are the only trustworthy figures here:
+
+| gate | straddle | Δ frame p50 |
+|---|---|---|
+| AP froxel bake | 4100 → 3900 | **+0.40 ms** |
+| Beer shadow map | 2100 → 1900 | **+0.90 ms** |
+| whole cloud pipeline | 750 → 650 | **+1.60 ms** |
+
+🔑 **`5 post (output)` is confirmed to be absorbing idle, and the day/night pair is what proves it.**
+It falls monotonically as the frame gets busier — 4.40 (deep_space) → 3.08 (earth_8) → **2.01
+(earth_8_night)** — i.e. it is *cheapest* where the GPU is *busiest*, which no real workload does.
+Treat it as a residual, never as a cost.
+
+### ✅ DAY vs NIGHT — the assumption is CONFIRMED, and it is small
+
+| pair | day p50 | night p50 | **Δ** | Δ% |
+|---|---|---|---|---|
+| earth_650 | 15.90 | 15.40 | **+0.50 ms** | +3.2% |
+| earth_8 | 18.50 | 17.30 | **+1.20 ms** | +6.9% |
+
+The day side costs more, as expected, and the effect roughly doubles inside the cloud deck. ⚠ But
+the GPU-mean deltas (+3.61 and +5.68 ms) are ~4× the frame deltas, which is the 3.0× inflation
+again — **quote the frame numbers**. Excluding the idle-absorbing `5 post`, the day surcharge lands
+on the three cloud passes at a consistent **1.12–1.15×** and on the atmosphere pair at 1.07–1.09×.
+That ordering is plausible (lit clouds do more light-march work) but is *not* established by these
+numbers; establishing it needs an ablation.
+
+⚠ **`belt` did not settle** (1056 settle frames = the cap; p50 9.10 but mean 10.56, p95 15.10 —
+bimodal). Asteroid streaming was still churning. Its numbers should not be quoted, and its `lit`
+column carries `⚠` because its phase angle is epoch-dependent by necessity.
+
+⚠ `skyViewBaked: false` on every row is CORRECT, not a bug — `USE_SKYVIEW = false` since
+2026-08-11. The `earth_30` label claiming a sky-view bake was stale and has been fixed.
+
+**Still-open gap now closed in code, not yet measured:** `earth_up_8`, `earth_horizon_8` and
+`earth_up_120` were added on 2026-09-07 (`lookMode: "up" | "horizon"`). Every scenario in the
+table above looks AT the planet, so sky pixels are a minority in all of them and the atmosphere
+march — the largest item in the frame — is measured on the wrong pixels. `earth_horizon_8` is the
+march's worst case by construction: a level ray has the longest chord through the atmosphere
+(grazing airmass ≈ 71 for Earth's Rayleigh column).
 
 ### 2026-08-11 — baseline — M2 Pro, Chromium, **2783×1816** px, DPR 1.5, **on mains**
 
@@ -1821,8 +2254,11 @@ directly — worth taking before investing in a custom replacement chain.
 Enabling post-tonemap SMAA moved `5 post` by **+3.51 … +4.80 ms (mean +4.19)** across all 12 scenarios, ~24% of
 the earth_8 budget. Its `render:RTT` blit is the giveaway in `env.unlabeledPasses`. It was added for a real
 effect — MSAA resolves in linear HDR with the tone curve after, so on a high-contrast edge its first coverage
-step measures **73% of the whole output range** — but the aliasing actually reported was atmosphere march
-banding (D14d), fixed by a jitter for ~0 ms.
+step measures **73% of the whole output range** — but the aliasing actually reported was not a coverage
+problem at all. ⚠ **AMENDED 2026-09-07:** it was not march banding either. D14d attributed it to the march
+and added a jitter; D14g then root-caused it to the limb ring being thinner than one march texel, and the
+jitter was deleted after its own ablation came back null in both directions (LIGHTING_PLAN D40). MSAA's
+removal stands on its own +4.19 ms; the aliasing fix was D14h's adaptive AP resolution.
 
 ### ⚠ Reading `gpuTotalMs` vs `frameMs`
 

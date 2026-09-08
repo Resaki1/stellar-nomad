@@ -8,7 +8,6 @@ import {
   uniform,
   texture,
   texture3D,
-  screenCoordinate,
   screenUV,
   vec2,
   vec3,
@@ -330,29 +329,6 @@ export function setAtmoSpectralT(on: boolean): void {
 }
 
 /**
- * Runtime ablation of D14d's per-pixel march jitter. 1 = interleaved-gradient noise,
- * 0 = the fixed `SAMPLE_SEGMENT_T` bias every pixel shared before D14d.
- *
- * ⚠⚠ `ATMO_MARCH_JITTER` is a BUILD CONST, and that is why this knob has never been
- * turned in the whole limb investigation — the artefact lives in a pose a reload
- * throws away. D14d's own comment predicts what this dial tests, verbatim: "Static
- * blue-ish noise at half res, bilinearly upsampled by the apply pass, reads as very
- * fine grain."
- *
- * 🔑 The jitter decorrelates the sample lattice PER MARCH PIXEL, so neighbouring march
- * pixels integrate slightly different lattices. Where the integrand is gentle that is
- * invisible grain; at a limb, where it is many stops steep across a couple of pixels,
- * the same decorrelation is a large brightness difference between neighbours.
- * ⚠ Turning it off is not a fix — it exists because a shared lattice TERRACES the limb
- * (D14d). If the beads go with it, the answer is more samples, not less jitter.
- */
-export const uMarchJitter = uniform(1);
-
-export function setAtmoJitter(on: boolean): void {
-  uMarchJitter.value = on ? 1 : 0;
-}
-
-/**
  * Runtime override of the march step count. 0 = the authored `MAIN_STEPS`.
  *
  * 🔑 Only possible because D14e made the `Loop` bound a NODE. A dynamic bound was not
@@ -410,45 +386,47 @@ const MS_STEPS = 20;
 // So step count is NOT where the remaining time is: driving steps to zero would save
 // only ~2.2 ms of the 6.37. Do not spend quality here again without re-reading
 // docs/PERF_MEASUREMENT.md § "the fixed cost is real".
+//
+// ❌❌ RE-MEASURED 2026-09-07 AND STEP COUNT IS NOT A LEVER AT ALL — do not retry it.
+// A five-point ladder at earth_8 (`__lum.atmoSteps`) reads frame MEAN 18.88 / 17.91 /
+// 18.86 / 18.66 at n = 12 / 10 / 8 / 6: a 0.98 ms spread with NO trend. **Halving the
+// steps moved the frame −0.22 ms where a 0.247 ms/step model predicted −1.48.** The pass
+// span does shrink (6.99 → 5.97) — the frame does not, so cheaper steps just buy idle.
+// ⚠ And quality does move: `robustSigmaOverControl` from a paired `limbScan` rises
+// monotonically +6.7% at n=12 and +13.5% at n=10. Costs quality, buys nothing.
+// ⚠⚠ The 0.247 ms/step figure came from a 3-point fit of a 3-parameter model that agreed
+// to 0.00 ms — a saturated fit, so the agreement was guaranteed and meant nothing. Take
+// ≥5 points before fitting a cost model here.
 const MAIN_STEPS = 16;
-const SAMPLE_SEGMENT_T = 0.3; // reference midpoint bias for the screen march
+// Also read by the Sky-View bake (search SKYVIEW_STEPS). ⚠ That consumer is DORMANT
+// while `USE_SKYVIEW = false` — but if it is re-enabled the two are crossfaded over
+// 60-150 km altitude, and changing this on one side alone would step the sky.
+// 0.3 rather than 0.5 because a limb chord's density is peaked, not flat.
+const SAMPLE_SEGMENT_T = 0.3;
 
-// ── D14d: BLUE-NOISE JITTER OF THE MARCH SAMPLE POSITION ────────────────────
+// ── D14d, REMOVED 2026-09-07 (D40): per-pixel jitter of the sample position ──
 //
-// 🔑🔑 THIS IS THE ACTUAL CAUSE OF THE "ALIASED ATMOSPHERE LIMB", and the warning
-// above called it before it was seen: "Banding on smooth gradients — THE LIMB, the
-// terminator, the twilight sky — is the risk to look for, and it is unmitigated."
+// D14d added interleaved-gradient jitter of ξ per march pixel, theorising that a
+// SHARED lattice terraces the limb. 🔑🔑 **THAT TERRACING WAS NEVER OBSERVED.** D14g
+// later root-caused the real artefact — the limb ring is thinner than one march texel
+// — and recorded `atmoJitter` among the ablations that came back NULL in BOTH
+// directions. The grain it added, however, was visible planet-wide. It bought a
+// metric, not an image.
 //
-// With MAIN_STEPS fixed and SAMPLE_SEGMENT_T a CONSTANT, every pixel samples the same
-// lattice of positions along its ray. As the path length varies continuously across
-// the limb, which parts of the density profile land on a sample changes DISCRETELY →
-// terracing. ⚠ It is a quantisation of the INTEGRAL, not of coverage or of the pixel
-// grid, which is why 4× MSAA, post-tonemap SMAA and an analytic silhouette band all
-// changed NOTHING, and why AP_RES_SCALE = 1.0 only helped "a bit" (finer terraces,
-// same terraces). The user's own observation localised it exactly: "hard steps INSIDE
-// the atmosphere at the limb… the planet sphere below it does not seem to alias."
+// ⚠ Pinning ξ costs at most the MEASURED spread over ξ, which is what D14e already
+// quantified: **0.01 stops front-lit, 0.022 back-lit** after the shadow split. An
+// integral that barely depends on ξ cannot care which ξ we pin. Two independent
+// corroboration: D14h's K sub-passes each perturb the ray DIRECTION, so a pixel with
+// K > 1 already averages K decorrelated world-space lattices — and K > 1 engages
+// exactly at the distances where D14d's terracing was supposed to appear.
+// 🐛 A second corroboration was CLAIMED AND IS FALSE: 'the Sky-View LUT has always run
+// un-jittered below 60 km'. `USE_SKYVIEW = false`, so that LUT is never baked and
+// never sampled — sky rays march WITH the jitter like everything else. Withdrawn.
+// (The null ablation and the ξ-spread bound are independent of it; the verdict stands.)
 //
-// ⚠⚠ THE STRUCTURE MATTERS MORE THAN THE NOISE, and getting it wrong trades bands for
-// GRAIN. The march used SAMPLE POSITIONS as segment ends (`dt = tNew − t`), so the
-// integrated path was `tMax·(N−1+ξ)/N`. Jittering ξ in that scheme varies the TOTAL
-// PATH LENGTH per pixel by 1/N ≈ 6% ⇒ per-pixel brightness noise. So the segment
-// BOUNDARIES are now fixed (`dt = tMax/N`, constant, total exactly `tMax`) and only
-// the sample POSITION inside each segment moves. That is textbook stratified
-// sampling: zero path-length noise, and the sample lattice decorrelates per pixel.
-//
-// 🔑 Matches the hard-won cloud-marcher result: "the per-sample stratified jitter in
-// the loop is what actually broke the bands", whereas a whole-march start offset
-// "traded bands for flicker, refuted, removed".
-//
-// ⚠ SPATIAL ONLY — deliberately NOT cycled per frame. This pass keeps no temporal
-// history, so per-frame noise would shimmer on a static view. Static blue-ish noise
-// at half res, bilinearly upsampled by the apply pass, reads as very fine grain.
-//
-// ⚠ SIDE EFFECT TO EXPECT: fixing the boundaries also integrates the ~0.7/N ≈ 4.4% of
-// path the old right-endpoint scheme systematically DROPPED, so the atmosphere gets
-// slightly denser/brighter. That is a bug fix, not a tuning change — but it is
-// visible, hence the flag.
-const ATMO_MARCH_JITTER = true;
+// ⚠⚠ WHAT D14d GOT RIGHT AND MUST NOT BE UNDONE IS THE **STRUCTURE**, not the noise:
+// segment boundaries are fixed and ∑dt = tMax exactly. See the `dt` comment in the
+// march loop for the 4.375% path shortfall the old scheme carried.
 
 // ── D14e: SPLIT THE MARCH AT THE SHADOW BOUNDARY ────────────────────────────
 //
@@ -500,6 +478,65 @@ const ATMO_MARCH_JITTER = true;
 // is **0.31% of the march target** (the annulus is 2 march px wide on a 128 px disc)
 // — and rays with no crossing keep the 16-step uniform lattice BIT-IDENTICALLY.
 const SHADOW_SPLIT_STEPS = 12;
+
+// ── SOFTWARE-PIPELINED MARCH: unroll two steps per iteration ─────────────────
+//
+// 🔑🔑 AIMED AT 82% OF THE ATMOSPHERE'S COST, and that share is MEASURED, not assumed.
+// A 3-point ablation at earth_8 on frame MEAN (16 steps 18.56 / atmoSteps(2) 15.10 /
+// atmoBypass 13.74) decomposes to **0.247 ms/step, 3.95 ms of step work (82%) and only
+// 0.87 ms of march fixed cost (18%)** — predicted total 4.82 ms against a bypass-measured
+// 4.82 ms. ⚠ An earlier read of the PER-PASS table said the apply was the lever instead;
+// that was wrong, because at gpu/frame ≈ 3 the per-pass numbers are queue depth. See
+// docs/PERF_MEASUREMENT.md 2026-09-07.
+//
+// 🔶 MEASURED: it works, the control is flat, and it is ~4x SMALLER than predicted.
+// earth_8 18.982 -> 18.658 (-0.324 ms), earth_horizon_8 19.719 -> 19.487 (-0.231 ms),
+// deep_space flat to 0.002 ms. That is **6-8% of step work against a predicted 10-30%**,
+// and the effect is smaller than the harness's cross-session spread (0.42 ms) — direction
+// established, magnitude not. Quality neutral: limbScan paired agrees to 4-5 significant
+// figures with the fitted radius identical to 13 digits (fp reassociation, not physics).
+//
+// The rationale was: each step issues three DEPENDENT texture fetches (transmittance LUT,
+// multiple-scattering LUT, Beer shadow map), so 16 steps is a ~48-deep chain, and since
+// **every one of those fetches depends only on `P` — hence only on the loop index, never on
+// the loop-carried `L`/`throughput`** — two steps' fetches can be issued back to back and
+// their latency paid once. The independence is real and is why this is legal.
+//
+// ⚠⚠ BUT THE PREMISE WAS OVER-READ, AND THE SHORTFALL IS WHY: this march is **ALU-bound,
+// not latency-bound**. (1) GPUs hide memory latency with THREAD-level parallelism, so ILP
+// tricks only pay when occupancy is too low to cover it. (2) Two of the three fetches were
+// never expensive — the transmittance LUT is 128 KB and the multi-scatter LUT 8 KB, both
+// cache-resident; only the 2 MB Beer shadow map can miss. ⇒ The real per-step cost is
+// transcendentals: **5 `exp()` per step** (2 in `sampleMedium`, 3 in `expVec3`) = 80 per
+// pixel at 16 steps, plus ~4 divides, a sqrt and a smoothstep. Aim there, or at step count
+// (0.247 ms/step), not at more unrolling.
+//
+// ⚠⚠ `.toVar()` IS WHAT MAKES THIS REAL, AND WITHOUT IT THE UNROLL IS A LIE. TSL inlines
+// an un-materialised node's whole expression tree at its point of USE, so returning bare
+// nodes from `marchStep` would emit step B's fetches after step A's accumulate — exactly
+// the order we are trying to break. Both returned values are therefore materialised.
+//
+// ✅ OUTPUT IS UNCHANGED BY CONSTRUCTION: the two accumulations still run in index order
+// (`L += tp·Sint₀; tp *= sT₀; L += tp·Sint₁; tp *= sT₁`), so the floating-point sequence
+// is identical. Only the issue order of independent loads moves.
+// ⚠ Sub-ulp caveat: materialising an expression can change how the backend contracts
+// multiply-adds, so "bit-identical" is an intent, not a guarantee. Verify with
+// `await __lum.limbScan()` rather than assuming.
+//
+// ⚠⚠ THE FAILURE MODE TO EXPECT IS OCCUPANCY, AND IT WOULD READ AS *SLOWER*. Two steps
+// in flight doubles the live values across the fetch group (two P, two medium samples,
+// two Tsun, two msContrib). If that pushes the shader past a register budget the
+// occupancy drop can outweigh the latency win. If earth_8 regresses, that is the cause
+// and the fix is to narrow what stays live — overlap only the three fetches, not the
+// whole ALU chain — NOT to unroll further.
+// ⚠ A BUILD CONST, NOT A RUNTIME DIAL, AND THAT IS THE RIGHT CALL HERE even though the
+// D14e/D14g dials next to it are all runtime. A uniform branch would need BOTH loop
+// bodies compiled into one shader, doubling the march's live-value footprint — which is
+// the exact quantity this change puts at risk (see the occupancy note above). The dial
+// would contaminate the measurement it exists to take. A/B it by reload instead: pose
+// epoch v2 makes `__bench.run("earth_8")` reproducible across reloads, which is what
+// the dials were invented to work around and is not a problem here.
+const MARCH_UNROLL_2 = true;
 
 // ── D14g: RADIAL SUPERSAMPLING OF THE LIMB ──────────────────────────────────
 //
@@ -2634,32 +2671,15 @@ export function setupAtmospherePass(
 
           const L = vec3(0).toVar();
           const throughput = vec3(1).toVar();
-          const t = float(0).toVar();
 
-          // Per-pixel jitter ξ ∈ [0,1), constant across steps for this pixel so the
-          // whole sample lattice shifts together (decorrelates bands between
-          // neighbours without adding intra-ray noise). Interleaved-gradient noise:
-          // one dot + fract, no texture fetch, and far more even than a plain hash.
-          // Interleaved-gradient noise (Jimenez 2014):
-          //   fract(52.9829189 · fract(0.06711056·x + 0.00583715·y))
-          // One dot and two fracts — no texture fetch, and far more evenly
-          // distributed than a plain hash, which is what matters for band-breaking.
-          // ⚠ `screenCoordinate` here is the AP TARGET's pixel, not the screen's,
-          // which is what we want: the lattice must decorrelate per MARCH pixel.
-          const jitter = ATMO_MARCH_JITTER
-            ? // ⚠ `mix` on a per-frame uniform so __lum.atmoJitter() can ablate D14d
-              // live. The pose this matters in cannot survive a reload.
-              mix(
-                float(SAMPLE_SEGMENT_T),
-                screenCoordinate.x
-                  .mul(0.06711056)
-                  .add(screenCoordinate.y.mul(0.00583715))
-                  .fract()
-                  .mul(52.9829189)
-                  .fract(),
-                uMarchJitter,
-              )
-            : float(SAMPLE_SEGMENT_T);
+          // Fixed sub-segment offset, shared by every march pixel. D14d jittered this
+          // per pixel with interleaved-gradient noise; removed 2026-09-07 (D40) after
+          // its own ablation measured NULL against the artefact D14g root-caused, while
+          // the grain it added was visible planet-wide. Pinning ξ costs at most the
+          // MEASURED spread over ξ: 0.01 stops front-lit, 0.022 back-lit post-D14e.
+          // ⚠ 0.3, not 0.5, and it must stay equal to the Sky-View bake's offset — the
+          // two are crossfaded between 60 and 150 km, so a mismatch is a step in the sky.
+          const jitter = float(SAMPLE_SEGMENT_T);
 
           // ── D14e: two-piece lattice, split on the shadow boundary ─────────
           // ⚠⚠ WHEN THERE IS NO CROSSING THIS IS BIT-IDENTICAL TO THE SHIPPED
@@ -2684,69 +2704,109 @@ export function setupAtmospherePass(
           // shadowBoundary is what keeps both pieces off zero length when it is.
           const dtB = tMax.sub(tSplit).div(float(SHADOW_SPLIT_STEPS)).toVar();
 
-          // ⚠ The object form, not `Loop(nTotal, ...)`: only this overload accepts
-          // a NODE bound, which is what makes the step count per-pixel.
-          Loop(
-            { start: int(0), end: nTotal, type: "int", condition: "<" },
-            ({ i: s }: { i: Node }) => {
-              const inA = s.lessThan(nA);
-              const tNew = select(
-                inA,
-                float(s).add(jitter).mul(dtA),
-                tSplit.add(float(s).sub(float(nA)).add(jitter).mul(dtB)),
-              ).toVar();
-              // .toVar() MATERIALISES dt = tNew - t_old HERE, before t is
-              // reassigned below. Without it, `dt` is a live node referencing the
-              // variable `t`; since `t.assign(tNew)` runs before dt is consumed,
-              // dt would evaluate to tNew - tNew = 0 → sampleT=1 → Sint=0 → the
-              // entire in-scatter integral collapses to zero (the invisible-
-              // atmosphere bug).
-              // ⚠ FIXED segment length WITHIN EACH PIECE, so ∑dt = tMax exactly and
-              // the jitter still cannot modulate total optical depth — the D14d
-              // invariant survives the split. ⚠ The legacy
-              // (`ATMO_MARCH_JITTER = false`) path's segment ends are now piecewise
-              // too; it still ablates the jitter, which is what it is for, but it is
-              // no longer bit-exact against pre-D14e.
-              const dt = (
-                ATMO_MARCH_JITTER ? select(inA, dtA, dtB) : tNew.sub(t)
-              ).toVar();
-              t.assign(tNew);
-              const P = ro.add(rd.mul(tStart.add(t)));
-              const m = sampleMedium(P);
-              const sampleT = expVec3(m.extinction.mul(dt).negate());
+          // ── One step, as a pure function of the index ──────────────────────
+          // ⚠⚠ NOTHING IN HERE MAY READ `L` OR `throughput`. That independence is the
+          // entire reason two steps can have their fetches issued together; a single
+          // read of the loop-carried state would silently re-serialise the chain.
+          // Both returns are `.toVar()`-materialised — see MARCH_UNROLL_2 for why that
+          // is load-bearing rather than stylistic.
+          const marchStep = (s: Node) => {
+            const inA = s.lessThan(nA);
+            const tS = select(
+              inA,
+              float(s).add(jitter).mul(dtA),
+              tSplit.add(float(s).sub(float(nA)).add(jitter).mul(dtB)),
+            );
+            // ⚠⚠ SEGMENT LENGTH IS THE SEGMENT'S OWN WIDTH, **NOT** `tNew - t`, so
+            // ∑dt = tMax EXACTLY. The pre-D14d march used sample positions as segment
+            // ENDS, which integrates tMax·(N−1+ξ)/N = 0.95625·tMax at N=16, ξ=0.3 —
+            // it silently DROPPED 4.375% of the path, all of it in the first segment.
+            // That is a bug fix, not a tuning choice; do not reintroduce `tNew - t`.
+            // ✅ It also deletes a footgun for good: the old form needed `dt`
+            // .toVar()-materialised before `t` was reassigned, or it evaluated to
+            // tNew − tNew = 0 → sampleT=1 → Sint=0 (the invisible-atmosphere bug).
+            // There is no running `t` here at all.
+            const dt = select(inA, dtA, dtB);
+            const P = ro.add(rd.mul(tStart.add(tS))).toVar();
+            const m = sampleMedium(P);
+            const sampleT = expVec3(m.extinction.mul(dt).negate()).toVar();
 
-              const Tsun = getSunTransmittance(P, uSunDir);
-              const eclipseT = eclipseKeep(P).toVar();
-              const earthShadow = directSunOcclusion(P).mul(eclipseT);
-              const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
-              // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
-              // is broadly uniform and (unlike single scattering) is not shadowed,
-              // so without this it glows blue across the planet's night side. The
-              // night atmosphere sits in the planet's shadow — no direct sun to
-              // multi-scatter — so fade it out as the sun drops below the local
-              // (altitude-depressed) horizon: cosHorizon = -sqrt(1 - (Rg/r)^2).
-              // The ±0.05 band is the terminator softness (tune to taste).
-              const rP = length(P);
-              const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
-              const cosHorizonP = sqrt(
-                max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
-              ).negate();
-              const sunVis = smoothstep(
-                cosHorizonP.sub(0.05),
-                cosHorizonP.add(0.05),
-                cosSunZenP,
-              );
-              const msContrib = getMultipleScattering(P, uSunDir)
-                .mul(m.scattering)
-                .mul(sunVis)
-                .mul(uMsScale);
-              // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
-              const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
-              const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6));
-              L.addAssign(throughput.mul(Sint));
-              throughput.mulAssign(sampleT);
-            },
-          );
+            const Tsun = getSunTransmittance(P, uSunDir);
+            const eclipseT = eclipseKeep(P).toVar();
+            const earthShadow = directSunOcclusion(P).mul(eclipseT);
+            const phaseScat = m.scatteringMie.mul(phaseM).add(m.scatteringRay.mul(phaseR));
+            // Multi-scatter sun-visibility gate. The isotropic multi-scatter LUT
+            // is broadly uniform and (unlike single scattering) is not shadowed,
+            // so without this it glows blue across the planet's night side. The
+            // night atmosphere sits in the planet's shadow — no direct sun to
+            // multi-scatter — so fade it out as the sun drops below the local
+            // (altitude-depressed) horizon: cosHorizon = -sqrt(1 - (Rg/r)^2).
+            // The ±0.05 band is the terminator softness (tune to taste).
+            const rP = length(P);
+            const cosSunZenP = dot(P, uSunDir).div(rP.max(1e-6));
+            const cosHorizonP = sqrt(
+              max(0, float(1).sub(uBottomRadius.mul(uBottomRadius).div(rP.mul(rP)))),
+            ).negate();
+            const sunVis = smoothstep(
+              cosHorizonP.sub(0.05),
+              cosHorizonP.add(0.05),
+              cosSunZenP,
+            );
+            const msContrib = getMultipleScattering(P, uSunDir)
+              .mul(m.scattering)
+              .mul(sunVis)
+              .mul(uMsScale);
+            // L2 god rays: the direct term is additionally cloud-shadowed (BSM).
+            const S = shadowedSunScatter(P, earthShadow, Tsun, phaseScat, msContrib, eclipseT);
+            const Sint = S.sub(S.mul(sampleT)).div(m.extinction.max(1e-6)).toVar();
+            return { Sint, sampleT };
+          };
+
+          // ⚠ The object form, not `Loop(n, ...)`: only this overload accepts a NODE
+          // bound, which is what makes the step count per-pixel.
+          if (MARCH_UNROLL_2) {
+            // ⚠ Materialised because it is now read twice — as the bound and as the
+            // tail mask.
+            const nT = nTotal.toVar();
+            // ceil(nT/2), and it is correct under BOTH int-truncating and
+            // float-then-truncate division — the only ambiguous case is an odd
+            // numerator, i.e. even nT, where trunc((nT+1)/2) = nT/2 = ceil(nT/2).
+            // 16→8, 24→12, 17→9, 5→3. `s0` can never exceed nT−1 for any nT, so
+            // only `s1` needs masking.
+            const nHalf = nT.add(1).div(2);
+            Loop(
+              { start: int(0), end: nHalf, type: "int", condition: "<" },
+              ({ i: k }: { i: Node }) => {
+                const s0 = k.mul(2);
+                const s1 = s0.add(1);
+                // 🔑 BOTH STEPS EVALUATED BEFORE EITHER IS CONSUMED. This ordering is
+                // the optimisation; do not move an accumulate between them.
+                const a = marchStep(s0);
+                const b = marchStep(s1);
+                // ⚠ An odd step count is MASKED, not branched. A branch here would
+                // make the second fetch group conditional and give back the latency
+                // overlap on every iteration to save work on at most one. Only the
+                // shipping counts 16 and 24 matter anyway; odd counts arrive solely
+                // via the `__lum.atmoSteps()` diagnostic.
+                const live1 = s1.lessThan(nT);
+                L.addAssign(throughput.mul(a.Sint));
+                throughput.mulAssign(a.sampleT);
+                L.addAssign(
+                  throughput.mul(b.Sint).mul(select(live1, float(1), float(0))),
+                );
+                throughput.mulAssign(select(live1, b.sampleT, vec3(1)));
+              },
+            );
+          } else {
+            Loop(
+              { start: int(0), end: nTotal, type: "int", condition: "<" },
+              ({ i: s }: { i: Node }) => {
+                const st = marchStep(s);
+                L.addAssign(throughput.mul(st.Sint));
+                throughput.mulAssign(st.sampleT);
+              },
+            );
+          }
 
           // Occlude the glow behind a near-side ring (ringGlowKeep=1 when none).
           // Background (sceneColor) already has the ring composited in Pass 1

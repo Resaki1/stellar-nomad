@@ -36,12 +36,37 @@ const BUDGET_WARN_MS = 1000 / 60;
 
 const ms = (v: number) => v.toFixed(2).padStart(6);
 
+/**
+ * Bimodality: mean / p50. ⚠⚠ 1.0 IS NORMAL AND ANYTHING OVER ~1.1 MEANS THE MEDIAN IS
+ * LYING. MEASURED across 14 runs on 2026-09-07: every clean run sat at 1.00–1.01 and
+ * every GPU-oversubscribed one at 1.18–1.82, with no overlap.
+ *
+ * 🔑 The mechanism, because it decides which statistic to trust: `deltaTime` is the
+ * interval between renderer SUBMISSIONS, not presents. When the GPU falls behind, the
+ * CPU keeps submitting at display cadence until the swapchain runs dry, so the samples
+ * split into a fast mode at the vsync interval and a slow mode 4–6× longer. The MEDIAN
+ * then describes the submission cadence and nothing else — it reported **138 fps on a
+ * 120 Hz display**, which is impossible for presented frames — while total wall time is
+ * conserved, so the MEAN stays honest.
+ */
+const BIMODAL_RATIO = 1.1;
+
 function headline(snap: PerfSnapshot): string {
   const p50 = snap.frameMs.p50;
-  const fps = p50 > 0 ? 1000 / p50 : 0;
+  // ⚠ FROM THE MEAN, NOT p50. p50 is robust to a few outlier spikes, which is why it
+  // was chosen — but it is NOT robust to a bimodal split, and GPU backpressure produces
+  // exactly that. Under backpressure p50 reports the fast mode as if it were the frame
+  // rate, overstating it by up to 2×.
+  const mean = snap.frameMs.mean;
+  const fps = mean > 0 ? 1000 / mean : 0;
+  const bimodal = p50 > 0 && mean / p50 > BIMODAL_RATIO;
   return (
     `${fps.toFixed(1).padStart(5)} fps   ` +
-    `frame ${ms(p50)} p50 /${ms(snap.frameMs.p95)} p95\n` +
+    `frame ${ms(mean)} mean /${ms(p50)} p50 /${ms(snap.frameMs.p95)} p95` +
+    (bimodal
+      ? `  ⚠ BIMODAL ${(mean / p50).toFixed(2)}× — GPU behind, p50 is submission cadence`
+      : "") +
+    "\n" +
     `gpu ${ms(snap.gpuTotalMs.mean)}   ` +
     `cpu ${ms(snap.cpuTotalMs.mean)} (submit ${ms(snap.cpuRenderMs.mean)})` +
     // Only shown when it happens — see PerfProfiler.droppedFrames.
@@ -114,9 +139,11 @@ export default function PerfHUD() {
           : "__bench.sweep()";
       }
       if (rootRef.current) {
-        const p50 = snap.frameMs.p50;
+        // ⚠ Mean, matching the headline: under backpressure p50 would paint this
+        // "good" while the GPU is 4× over budget.
+        const f = snap.frameMs.mean || snap.frameMs.p50;
         rootRef.current.dataset.budget =
-          p50 <= BUDGET_GOOD_MS ? "good" : p50 <= BUDGET_WARN_MS ? "warn" : "bad";
+          f <= BUDGET_GOOD_MS ? "good" : f <= BUDGET_WARN_MS ? "warn" : "bad";
       }
     };
 

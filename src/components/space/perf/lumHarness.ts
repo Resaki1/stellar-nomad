@@ -182,7 +182,6 @@ import {
   setShadowSplit,
   setLimbRadialSamples,
   limbRadialStatus,
-  setAtmoJitter,
   setAtmoSteps,
   setAtmoBypass,
   setAtmoSpectralT,
@@ -2988,17 +2987,73 @@ export class LumHarness {
     );
     console.table(rows);
     const ratio = limb.rms / Math.max(ctrl.rms, 1e-9);
-    const pointish = limb.maxSigma > 2.2 * expMax && limb.skew > 0.8 && limb.share < 0.25;
-    const latticeish = !pointish && limb.share >= 0.25;
+    // ⚠⚠ EVERY THRESHOLD HERE IS CONTROL-RELATIVE, and three of them were not until
+    // 2026-09-07. `share >= 0.25` was an ABSOLUTE constant with the control sitting
+    // right there unused — and a star field alone measures 17.7% top-6 share, so the
+    // sky gets you two-thirds of the way to a "lattice" verdict before the limb
+    // contributes anything. Same for `skew > 0.8` against a control skew of +7.96.
+    // That is the identical no-control failure that made four earlier versions of this
+    // probe report confident numbers about the wrong thing.
+    const classify = (m: typeof limb, exp: number) => {
+      const pt = m.maxSigma > 2.2 * exp && m.skew > 0.8 && m.share < 0.25;
+      return { pointish: pt, latticeish: !pt && m.share >= 0.25 };
+    };
+    const cLimb = classify(limb, expMax);
+    const cCtrl = classify(ctrl, Math.sqrt(2 * Math.log(ctrl.N)));
+    // A lattice verdict now needs the limb's harmonic concentration to CLEARLY beat
+    // the sky's, not merely clear a fixed bar the sky nearly clears on its own.
+    const shareOverCtrl = limb.share / Math.max(ctrl.share, 1e-9);
+    const pointish = cLimb.pointish && !cCtrl.pointish;
+    const latticeish = !pointish && limb.share >= 0.25 && shareOverCtrl >= 1.5;
+    // 🔑 A strongly NEGATIVE skew is a POSE, not a defect: on a terminator view the ring
+    // is lit on one arc and unlit on the other, and no smooth angular fit can absorb
+    // that step, so the dark arc lands in the residuals as a huge one-sided negative
+    // tail. Read `robust sigma` (MAD-based, outlier-proof) instead of rms there.
+    const unlitArc = limb.skew < -3;
+    // ⚠ From the RENDER path, not recomputed here: these are the very numbers the AP
+    // rung and K decision used this frame, so they cannot disagree with what was drawn.
+    const lr = limbRadialStatus();
+    const ringPx = lr.ringScreenPx;
+    const ringMarchPx = lr.ringMarchPx;
     console.log(
       [
         "      ── how to read it, in order ──",
+        // 🔑 STEP 0 EXISTS BECAUSE THE POSE DECIDES WHETHER THE READING CAN MEAN
+        // ANYTHING. The sub-texel limb defect (D14g) needs the ring under ~2 march
+        // texels; D14h now keeps it near 3 by raising the AP rung, so at most poses
+        // the artefact is DESIGNED to be absent and a clean scan proves nothing about
+        // it. The old text sent the reader to `limbSuper()` for this number — print it.
+        `      0. POSE: ring ${ringPx.toFixed(2)} screen px = ${ringMarchPx.toFixed(2)} march px ` +
+          `at AP rung ${lr.apScale}, K = ${lr.active}.`,
+        ringMarchPx > 2
+          ? "         Above ~2 march texels ⇒ the ring is RESOLVED and the D14g sub-texel\n" +
+            "            artefact cannot appear here. A clean scan is expected, not evidence.\n" +
+            "            To probe that defect, fly out until this drops toward 1."
+          : "         ⚠ At or under ~2 march texels the ring is BELOW NYQUIST in the AP\n" +
+            "            target — this is the regime D14g root-caused. Cross-check `apRes()`.",
         `      1. LIMB vs CONTROL rms = ${ratio.toFixed(2)}x.`,
         ratio < 2
           ? "         ⚠⚠ UNDER 2x: the ripple is NOT limb-specific. Something in the sky\n" +
             "            is producing most of it and nothing below is evidence about the limb."
           : "         Over 2x: the ripple IS limb-specific, so the rest of the table is\n" +
             "            about the limb.",
+        // ⚠ rms is outlier-driven; robust sigma is the MAD, so it survives stars and an
+        // unlit arc. When the two disagree it is the robust one that describes the
+        // TYPICAL pixel, which is what "does the limb look smooth" actually asks.
+        `      1b. ROBUST sigma ${limb.sigma.toFixed(3)} vs ${ctrl.sigma.toFixed(3)} control = ` +
+          `${(limb.sigma / Math.max(ctrl.sigma, 1e-9)).toFixed(2)}x.`,
+        limb.sigma < ctrl.sigma
+          ? "         ✅ BELOW the control: the typical limb pixel varies LESS than empty\n" +
+            "            sky. Whatever inflates rms above is outliers, not limb texture."
+          : "         At or above the control ⇒ the limb genuinely carries more\n" +
+            "            pixel-to-pixel structure than the sky does.",
+        unlitArc
+          ? `      1c. ⚠ skew ${limb.skew.toFixed(1)} is strongly NEGATIVE — that is a POSE, not a\n` +
+            "            defect: on a terminator view one arc of the ring is unlit and no smooth\n" +
+            "            angular fit can absorb the step, so the dark arc becomes a one-sided\n" +
+            "            negative tail. Ignore rms/max/skew here and read 1b. For a clean\n" +
+            "            reading, re-run on a fully lit or fully unlit limb."
+          : "",
         `      2. SHAPE: max/sigma ${limb.maxSigma.toFixed(1)} vs ${expMax.toFixed(1)} expected, skew ${limb.skew.toFixed(2)}, top-6 share ${(100 * limb.share).toFixed(1)}%.`,
         // ⚠⚠ THREE outcomes, not two. This printed a FALSE DICHOTOMY until 2026-09-04
         // — anything that was not "point sources" was reported as "a lattice", so a
@@ -3012,21 +3067,32 @@ export class LumHarness {
             ? "         ⇒ A LATTICE: bounded, roughly symmetric, power concentrated in a few\n" +
               "            harmonics. Read the arc spacing below against the grids in play."
             : "         ⇒ NEITHER. Not spiky enough for point sources, not concentrated\n" +
-              "            enough for a lattice (a lattice puts >25% in the top 6). A broad,\n" +
-              "            bounded ripple like this is what an UNDER-RESOLVED smooth feature\n" +
-              "            looks like — check `__lum.limbSuper()` for the ring's width in\n" +
-              "            march texels before reading anything into the harmonics.",
+              "            enough for a lattice (needs >25% in the top 6 AND >=1.5x the\n" +
+              "            control). A broad, bounded ripple like this is what an\n" +
+              "            UNDER-RESOLVED smooth feature looks like — read step 0 first.",
+        `      2b. top-6 share is ${shareOverCtrl.toFixed(2)}x the control's ` +
+          `(${(100 * ctrl.share).toFixed(1)}%), and the CONTROL alone classifies as ` +
+          `${cCtrl.pointish ? "POINT SOURCES" : cCtrl.latticeish ? "A LATTICE" : "NEITHER"}.`,
+        cCtrl.pointish
+          ? "         A star field in the control is normal and is the usual source of a\n" +
+            "            near-1x rms ratio in step 1."
+          : "",
         `      3. CHROMA ${limb.rmsRB.toFixed(2)} stops vs ${ctrl.rmsRB.toFixed(2)} in the control.`,
         limb.rmsRB > 4 * Math.max(ctrl.rmsRB, 1e-6)
           ? "         Well above the control ⇒ the ripple genuinely moves the channels\n" +
             "            apart, so the mechanism is PER-CHANNEL. Pure geometry and pure\n" +
             "            coverage are achromatic and cannot do this."
           : "         Comparable to the control ⇒ no per-channel signature.",
-        "",
+        "\u200b",
         "      ⚠ This gate localises; it does not diagnose. The ablations are what decide:",
         "        __lum.limbSuper() / apRes() (AP resolution), atmoBypass(), glare(false),",
-        "        scotopic(false), tonecurve(\"poly\"), atmoJitter(false), atmoSteps(n).",
-      ].join("\n"),
+        "        scotopic(false), tonecurve(\"poly\"), atmoSteps(n).",
+        // ⚠ filter AFTER building: the conditional rows above emit "" when they do not
+        // apply, and a run of blank lines makes the verdict harder to read than the
+        // numbers it is explaining.
+      ]
+        .filter(Boolean)
+        .join("\n"),
     );
     return {
       ok: true,
@@ -3035,7 +3101,18 @@ export class LumHarness {
       geometryRPx: { ground: rPxGround, top: rPxTop, allowed: [rLo, rHi] },
       expectedMaxSigmaIfGaussian: expMax,
       controlToLimbRmsRatio: ratio,
+      robustSigmaOverControl: limb.sigma / Math.max(ctrl.sigma, 1e-9),
+      top6ShareOverControl: shareOverCtrl,
       classifiedAsPointSources: pointish,
+      controlClassifiedAsPointSources: cCtrl.pointish,
+      unlitArcSuspected: unlitArc,
+      pose: {
+        ringScreenPx: ringPx,
+        ringMarchPx,
+        apScale: lr.apScale,
+        radialK: lr.active,
+        canShowSubTexelArtefact: ringMarchPx <= 2,
+      },
       limb: {
         samples: limb.N, rmsStops: limb.rms, robustSigmaStops: limb.sigma,
         maxStops: limb.maxAbs, maxOverSigma: limb.maxSigma, skew: limb.skew,
@@ -3283,7 +3360,8 @@ export class LumHarness {
    *
    * 🔑 AND IT RETRODICTS EVERY NULL RESULT IN THIS INVESTIGATION, which no earlier
    * hypothesis did: an upsampling artefact is indifferent to the march's internals
-   * (`atmoSteps`, `atmoJitter` — both null), to geometry (`segments` — null), to the
+   * (`atmoSteps`, `atmoJitter` — both null; that null is why the jitter was later
+   * deleted outright, D40), to geometry (`segments` — null), to the
    * sky (`starLift` — null), to MSAA (a fullscreen pass has no coverage — null), and
    * to everything downstream (`glare`, `scotopic`, `tonecurve`, `spectralT` — all
    * null). And it is chromatic for free, because the AP target's rgb is per-channel L
@@ -3339,37 +3417,6 @@ export class LumHarness {
       ].join("\n"),
     );
     return { apResScale: v, ringScreenPx: ringPx, ringMarchPx: ringPx * eff };
-  }
-
-  /**
-   * D14d ablation — the ONE knob this whole investigation never turned.
-   *
-   *     __lum.atmoJitter(false)   // every march pixel shares one sample lattice
-   *     __lum.atmoJitter(true)    // interleaved-gradient noise per march pixel
-   *
-   * ⚠⚠ It was a BUILD CONST (`ATMO_MARCH_JITTER`), so testing it meant a reload, and
-   * a reload throws away the pose the artefact lives in. Six hypotheses were tested
-   * around it while it sat untested.
-   *
-   * 🔑 D14d's own comment predicts what you are about to see: "Static blue-ish noise at
-   * half res, bilinearly upsampled by the apply pass, reads as VERY FINE GRAIN." The
-   * Uranus screenshot shows exactly that grain across the whole disc — so the march
-   * demonstrably varies per march pixel EVERYWHERE, not only at the limb. At a limb the
-   * same per-pixel decorrelation lands on an integrand that is many stops steep across
-   * two pixels, and grain becomes dashes.
-   *
-   * ⚠ OFF IS NOT A FIX. The jitter exists because a shared lattice TERRACES the limb —
-   * that was D14d. If the beads go with it, the answer is more samples (see
-   * `__lum.atmoSteps`), not less jitter.
-   */
-  atmoJitter(on = true): Record<string, unknown> {
-    setAtmoJitter(on);
-    console.log(
-      `[lum] march jitter (D14d): ${on ? "ON (IGN per march pixel)" : "OFF (shared lattice)"}\n` +
-        "      OFF should replace grain with TERRACES if the march is what you are seeing.\n" +
-        "      Neither grain nor terraces changing ⇒ the march is not producing it.",
-    );
-    return { jitter: on };
   }
 
   /**

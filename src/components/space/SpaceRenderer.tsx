@@ -683,8 +683,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // built (MSAA resolves in linear HDR with the tone curve after, so on a
     // high-contrast edge its first coverage step is 73% of the output range) and
     // REMOVED: it cost **+4.19 ms mean across all 12 scenarios** and fixed nothing
-    // that had been reported — the aliasing actually complained about was atmosphere
-    // march banding (D14d), fixed by a jitter for ~0 ms. See docs/LIGHTING_PLAN.md.
+    // that had been reported. ⚠ AMENDED: the follow-up attribution here was also wrong.
+    // It was NOT march banding (D14d) — D14g root-caused it to the limb ring being
+    // thinner than one march texel, and the jitter D14d added was later deleted after
+    // its own ablation measured null (D40). MSAA's removal still stands on its own
+    // +4.19 ms. See docs/LIGHTING_PLAN.md rows D14d/D14g/D14h/D40.
     const mapped = toneMapped;
 
     const px = screenCoordinate;

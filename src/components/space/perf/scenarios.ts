@@ -27,12 +27,22 @@
  * positions come from the ephemeris at a fixed epoch, sun direction is pure
  * geometry, and `SHIP_MAX_SPEED_KMPS` is 0 so a warped ship does not drift. The
  * only moving parts are the temporal accumulators, which the runner waits out.
- * ⚠ Comparing runs across different `simEpochMsAtom` values is NOT like for
- * like — phase angle and sub-solar longitude both change.
  *
  * Positions are derived, never hard-coded: `altitudeKm` above a body's LIVE
- * centre, along a fixed approach direction, looking at that centre. Every
- * resolver reads `positionKm` at call time for that reason — do not hoist.
+ * centre, along the approach direction, looking at that centre. Every resolver
+ * reads `positionKm` at call time for that reason — do not hoist.
+ *
+ * ⚠⚠ THE APPROACH DIRECTION IS SUN-RELATIVE (`BENCH_PHASE_DEG`), NOT WORLD-FIXED,
+ * and that changed on 2026-09-07 — see the comment on that constant for the
+ * measurement that forced it. Consequence for anyone reading old numbers:
+ * **every per-pass figure recorded before pose epoch v2 is void**, because the
+ * v1 ladder ran at ~91° phase (half-lit, and epoch-dependent) while v2 runs at
+ * 35° (91% lit). `BENCH_POSE_EPOCH` is on the report so a stale comparison is
+ * visible rather than silent.
+ * ⚠ Illumination is now epoch-independent; sub-camera LONGITUDE is not, since the
+ * body spins under a sun-locked axis. Terrain and cloud cover beneath the camera
+ * still vary across epochs. One axis cannot pin both, and illumination is the one
+ * that governs GPU cost.
  */
 
 import { Matrix4, Quaternion, Vector3 } from "three";
@@ -50,27 +60,100 @@ function body(id: string): CelestialBodyDef {
 }
 
 /**
- * The approach direction used for every body-relative scenario: the unit vector
- * from Earth's centre toward the game's default spawn point. Using the real
- * spawn axis means the benchmark sees the same terrain, the same sun angle, and
- * the same cloud cover the player sees flying in — not an arbitrary pole-on view
- * that would under-report cost.
+ * ── POSE EPOCH: bump this whenever a resolver changes where the camera lands ──
+ * Printed in the sweep header and stored on the report, because a baseline from a
+ * different pose epoch is not comparable and nothing else in the numbers says so.
+ *   v1 — world-fixed approach axis from `startingOffsetKm` (pre-2026-09-07)
+ *   v2 — sun-relative approach axis at a fixed phase angle (below)
  */
-const APPROACH_DIR = (() => {
-  // ⚠ From `startingOffsetKm`, the FIXED authored spawn geometry — not from
-  // `startingPositionKm − earth.positionKm`. Both of those are now live arrays
-  // rewritten by the ephemeris, and this runs at module load, so differencing
-  // them would depend on whether `celestialConstants` had solved yet.
+export const BENCH_POSE_EPOCH = "v2-sun-relative";
+
+/**
+ * Phase angle of every body-relative benchmark pose, degrees: the angle AT THE BODY
+ * between the camera and the star. 0 = camera at the sub-solar point (fully lit disc,
+ * sun behind the camera), 90 = terminator edge-on, 180 = camera in the umbra.
+ *
+ * ⚠⚠ **THIS REPLACED A WORLD-FIXED AXIS, AND THE REASON IS THE WHOLE POINT.** v1 derived
+ * the approach direction from `startingOffsetKm`, a constant authored in sol.json. That
+ * is fixed in the SCENE frame while the sun direction is not, so the illumination of
+ * every pose was an accident of `simEpochMsAtom`. MEASURED against the authored epoch it
+ * came out at **phase 91.28°, 48.9% lit — 1.28° from the terminator**. Earth's
+ * heliocentric longitude advances ~1°/day, so the ladder was one coin-flip wide: when the
+ * real ephemeris (E0) landed, the whole sweep moved to the NIGHT side and every stored
+ * per-pass number silently stopped being comparable. Restoring the old day side would
+ * have re-armed the same trap 1.3° away.
+ *
+ * 🔑 Sun-relative makes illumination EPOCH-INDEPENDENT, which is strictly stronger than
+ * what v1 had even before it broke: baselines now survive ephemeris changes.
+ *
+ * ⚠ What it does NOT fix, stated so nobody assumes it: the sub-camera LONGITUDE still
+ * drifts with the epoch, because the body keeps spinning under a sun-locked axis. So the
+ * terrain and cloud field beneath the camera still vary run to run at different epochs.
+ * You cannot pin both with one axis. Illumination is the one that governs GPU cost and
+ * the one that broke, so it is the one that is pinned.
+ *
+ * Why 35° and not 0°: the disc is **91.0% lit** (`(1+cos g)/2`), so lit-content work is
+ * near its maximum, while the terminator is still inside the frame at orbital altitudes
+ * — that band carries the longest optical paths in the atmosphere march. At surface
+ * altitudes it puts the sun **55° above the horizon** (a normal daytime elevation)
+ * instead of the degenerate overhead-noon case a 0° pose would measure.
+ */
+export const BENCH_PHASE_DEG = 35;
+
+/**
+ * Fallback approach axis for `bodyId: null` scenarios that also have no look target.
+ * Kept world-fixed on purpose: with no body there is no sun-relative frame to speak of.
+ */
+const ABSOLUTE_FALLBACK_DIR = (() => {
   const off = activeSystem().startingOffsetKm as [number, number, number] | undefined;
-  if (off) return new Vector3(off[0], off[1], off[2]).normalize();
-  const earth = body("earth");
-  const start = activeSystem().startingPositionKm as [number, number, number];
-  return new Vector3(
-    start[0] - earth.positionKm[0],
-    start[1] - earth.positionKm[1],
-    start[2] - earth.positionKm[2],
-  ).normalize();
+  return off
+    ? new Vector3(off[0], off[1], off[2]).normalize()
+    : new Vector3(0, 0, 1);
 })();
+
+const _sunDir = new Vector3();
+const _lookUp = new Vector3();
+const _sunLevel = new Vector3();
+const _perp = new Vector3();
+const _approach = new Vector3();
+const _ecliptic = new Vector3(0, 1, 0);
+const _fallbackPerp = new Vector3(0, 0, 1);
+
+/**
+ * Unit vector from `bodyId`'s centre to the camera, at `phaseDeg` from the sub-solar
+ * direction. Reads LIVE positions — never hoist this to module scope, which is exactly
+ * what v1 did.
+ *
+ * The offset is taken in the ecliptic plane (`up × sunDir`), so the camera lands at a
+ * mid-latitude on the morning side rather than over a pole. Using the body's own spin
+ * axis would be marginally more principled but would couple this file to the rotation
+ * solver for a ~23° difference.
+ *
+ * ⚠ Returns a SHARED scratch vector — copy it before the next call.
+ */
+export function approachDirFor(bodyId: string, phaseDeg: number): Vector3 {
+  const b = body(bodyId);
+  const star = bodies[0]; // sol — index 0 by convention in sol.json
+  _sunDir
+    .set(
+      star.positionKm[0] - b.positionKm[0],
+      star.positionKm[1] - b.positionKm[1],
+      star.positionKm[2] - b.positionKm[2],
+    )
+    .normalize();
+  _perp.crossVectors(_ecliptic, _sunDir);
+  // Degenerate only if the body sits on the ecliptic pole from the star, which no
+  // body in sol.json does — but a procedural system could, and a zero-length axis
+  // would silently collapse the pose onto the sub-solar point.
+  if (_perp.lengthSq() < 1e-8) _perp.crossVectors(_fallbackPerp, _sunDir);
+  _perp.normalize();
+  const g = (phaseDeg * Math.PI) / 180;
+  return _approach
+    .copy(_sunDir)
+    .multiplyScalar(Math.cos(g))
+    .addScaledVector(_perp, Math.sin(g))
+    .normalize();
+}
 
 export type Scenario = {
   /** Stable id used by `__bench.run(id)`. Never rename — baselines cite it. */
@@ -85,6 +168,25 @@ export type Scenario = {
   positionKm?: [number, number, number];
   /** What to point at: a body id, or `null` to face along the approach axis. */
   lookAtBodyId?: string | null;
+  /**
+   * Where to point when the target is not a body centre. `"body"` (default) looks at
+   * `lookAtBodyId`; `"up"` looks straight away from the body along the approach axis;
+   * `"horizon"` looks level, toward the sun-ward horizon.
+   *
+   * ⚠⚠ EXISTS TO CLOSE A DOCUMENTED MEASUREMENT GAP, not for variety. Every other
+   * scenario looks AT the planet, so sky pixels are a minority in all of them — which
+   * systematically UNDER-measures the atmosphere march, whose cost lives in long sky
+   * chords. docs/PERF_MEASUREMENT.md recorded this as an open gap when `USE_SKYVIEW`
+   * was turned off ("judge quality by looking up from low altitude by hand").
+   */
+  lookMode?: "body" | "up" | "horizon";
+  /**
+   * Phase angle at the body, degrees; defaults to `BENCH_PHASE_DEG`. Only set it to
+   * build a day/night DIFF PAIR — an absolute night-side number on its own says
+   * nothing, the same way an absolute froxel number says nothing without its
+   * straddle partner.
+   */
+  phaseDeg?: number;
 };
 
 /**
@@ -167,6 +269,22 @@ export const SCENARIOS: readonly Scenario[] = [
     bodyId: "earth",
     altitudeKm: 650,
   },
+  // ── Day/night diff pairs ────────────────────────────────────────────────
+  // 🔑 These exist so "the day side is more taxing" stops being a belief. Same
+  // altitude, same axis, phase flipped past the terminator — the diff against
+  // their day partner IS the illumination cost, isolated the same way the
+  // 4100/3900 pair isolates the froxel bake. Two altitudes because the answer can
+  // differ: at 650 km the cloud pipeline is fully on and viewed from outside,
+  // while inside the deck the marcher's own lit-path work dominates.
+  // ⚠ 145°, not 180°: at 180° the camera is in the umbra and `earth_8` would sit
+  // inside an eclipsed cloud deck, which is a different scenario, not a control.
+  {
+    id: "earth_650_night",
+    what: "earth_650 past the terminator — diff = illumination cost, clouds on",
+    bodyId: "earth",
+    altitudeKm: 650,
+    phaseDeg: 145,
+  },
   {
     id: "earth_250",
     what: "Volumetric blend fully in (eye-balled ~30 fps region)",
@@ -181,7 +299,7 @@ export const SCENARIOS: readonly Scenario[] = [
   },
   {
     id: "earth_30",
-    what: "Above the deck, Sky-View LUT baking, looking down at cloud tops",
+    what: "Above the deck, looking down at cloud tops (⚠ NO sky-view bake: USE_SKYVIEW=false)",
     bodyId: "earth",
     altitudeKm: 30,
   },
@@ -190,6 +308,44 @@ export const SCENARIOS: readonly Scenario[] = [
     what: "Inside the 1–16 km cloud band — the worst case",
     bodyId: "earth",
     altitudeKm: 8,
+  },
+  {
+    id: "earth_8_night",
+    what: "earth_8 past the terminator — diff = illumination cost inside the deck",
+    bodyId: "earth",
+    altitudeKm: 8,
+    phaseDeg: 145,
+  },
+
+  // ── Sky-ray coverage ──────────────────────────────────────────────────────
+  // ⚠⚠ THE LADDER ABOVE MEASURES THE ATMOSPHERE MARCH ON THE WRONG PIXELS. Every
+  // scenario looks AT the planet, so ground rays dominate and sky pixels are a
+  // minority everywhere — and `1.5 atmosphere` + `1.6 atmo apply` are the largest
+  // items in the whole frame. PERF_MEASUREMENT.md recorded this as an open gap when
+  // USE_SKYVIEW was switched off; these are the three scenarios it named.
+  // 🔑 `horizon` is the one to watch: a level ray has the longest possible chord
+  // through the atmosphere (grazing airmass √(2πR/H) ≈ 71 for Earth's Rayleigh
+  // column), so it is the march's worst case by construction, not by guess.
+  {
+    id: "earth_up_8",
+    what: "Inside the cloud band looking STRAIGHT UP — sky rays fill the frame",
+    bodyId: "earth",
+    altitudeKm: 8,
+    lookMode: "up",
+  },
+  {
+    id: "earth_horizon_8",
+    what: "Inside the cloud band looking LEVEL sun-ward — longest sky chords",
+    bodyId: "earth",
+    altitudeKm: 8,
+    lookMode: "horizon",
+  },
+  {
+    id: "earth_up_120",
+    what: "Low orbit looking away from Earth — sky march with no ground rays",
+    bodyId: "earth",
+    altitudeKm: 120,
+    lookMode: "up",
   },
 ];
 
@@ -221,9 +377,42 @@ export function resolveScenario(scenario: Scenario): DevWarp {
     const b = body(scenario.bodyId);
     const alt = scenario.altitudeKm ?? 0;
     _eye
-      .copy(APPROACH_DIR)
+      .copy(approachDirFor(scenario.bodyId, scenario.phaseDeg ?? BENCH_PHASE_DEG))
       .multiplyScalar(b.radiusKm + alt)
       .add(new Vector3(b.positionKm[0], b.positionKm[1], b.positionKm[2]));
+  }
+
+  const mode = scenario.lookMode ?? "body";
+  if (mode !== "body" && scenario.bodyId) {
+    const up = _lookUp.copy(
+      approachDirFor(scenario.bodyId, scenario.phaseDeg ?? BENCH_PHASE_DEG),
+    );
+    if (mode === "up") {
+      _target.copy(_eye).addScaledVector(up, 1e6);
+    } else {
+      // Level, toward the SUN-WARD horizon: the sun's direction with the local
+      // vertical projected out. That is the longest-chord, brightest-sky quadrant, so
+      // it is the worst case for the march rather than an average one.
+      const b2 = body(scenario.bodyId);
+      const star2 = bodies[0];
+      _sunLevel
+        .set(
+          star2.positionKm[0] - b2.positionKm[0],
+          star2.positionKm[1] - b2.positionKm[1],
+          star2.positionKm[2] - b2.positionKm[2],
+        )
+        .normalize();
+      _sunLevel.addScaledVector(up, -_sunLevel.dot(up));
+      // Degenerate at phase 0 (sun exactly overhead): fall back to any level vector.
+      if (_sunLevel.lengthSq() < 1e-8) _sunLevel.crossVectors(up, _fallbackPerp);
+      _target.copy(_eye).addScaledVector(_sunLevel.normalize(), 1e6);
+    }
+    _lookMatrix.lookAt(_eye, _target, _up);
+    _quat.setFromRotationMatrix(_lookMatrix).multiply(_flipY);
+    return {
+      positionKm: [_eye.x, _eye.y, _eye.z],
+      quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
+    };
   }
 
   const lookId =
@@ -232,8 +421,15 @@ export function resolveScenario(scenario: Scenario): DevWarp {
     const lb = body(lookId);
     _target.set(lb.positionKm[0], lb.positionKm[1], lb.positionKm[2]);
   } else {
-    // No target — face along the approach axis (i.e. away from Earth).
-    _target.copy(_eye).add(APPROACH_DIR);
+    // No target — face along the approach axis (i.e. away from the body). For an
+    // absolute pose there is no body to be sun-relative to, hence the fallback.
+    _target
+      .copy(_eye)
+      .add(
+        scenario.bodyId
+          ? approachDirFor(scenario.bodyId, scenario.phaseDeg ?? BENCH_PHASE_DEG)
+          : ABSOLUTE_FALLBACK_DIR,
+      );
   }
 
   _lookMatrix.lookAt(_eye, _target, _up);
@@ -266,10 +462,11 @@ export function bodyRadiusKm(id: string): number {
  */
 /**
  * A body's centre in scene km, and the star's. Exported for `__lum.lod()`, which must
- * compute the real PHASE ANGLE: `resolveScenario` places the eye along a fixed
- * `APPROACH_DIR`, NOT along the sub-solar direction, so a gate that assumed full
- * illumination (Φ = 1) would be comparing against the wrong reference and would read
- * as a renderer error.
+ * compute the real PHASE ANGLE: `resolveScenario` places the eye at `BENCH_PHASE_DEG`
+ * from the sub-solar direction, NOT at 0, so a gate that assumed full illumination
+ * (Φ = 1) would be comparing against the wrong reference and would read as a renderer
+ * error. ⚠ It is a fixed 35° now rather than an epoch-dependent ~91°, so a gate that
+ * hard-coded the old value is wrong by ~56°.
  */
 export function bodyPositionKm(id: string): [number, number, number] {
   const b = body(id);
@@ -383,6 +580,79 @@ export function resolveStarWarp(
     positionKm: [_eye.x, _eye.y, _eye.z],
     quaternion: [_quat.x, _quat.y, _quat.z, _quat.w],
   };
+}
+
+/**
+ * The illumination a scenario actually lands in — printed by the sweep so a table can
+ * never again be read without knowing which side of the terminator it came from.
+ *
+ * `litFraction` is the illuminated fraction of the disc as seen from the camera,
+ * `(1 + cos g)/2`; `sunElevationDeg` is the sun's elevation at the point directly
+ * beneath the camera, `90 − g`, which is the number that means something at surface
+ * altitudes. Both are pure geometry, so this needs no GPU and no settled frame.
+ */
+export function scenarioIllumination(scenario: Scenario): {
+  phaseDeg: number;
+  litFraction: number;
+  sunElevationDeg: number;
+  side: "day" | "night" | "terminator";
+  /** False when the phase angle still depends on `simEpochMsAtom`. See `belt`. */
+  epochStable: boolean;
+} {
+  const g = phaseDegOf(scenario);
+  const lit = (1 + Math.cos((g * Math.PI) / 180)) / 2;
+  return {
+    phaseDeg: g,
+    litFraction: lit,
+    sunElevationDeg: 90 - g,
+    // ⚠ A 10° dead band, because v1's whole failure was a pose 1.28° from the flip
+    // being reported as if it were a side. Anything this close should read as
+    // "terminator" and be treated as unreliable, not rounded to a side.
+    side: !Number.isFinite(g)
+      ? "day"
+      : Math.abs(g - 90) < 10
+        ? "terminator"
+        : g < 90
+          ? "day"
+          : "night",
+    epochStable: scenario.bodyId !== null,
+  };
+}
+
+const _camRel = new Vector3();
+const _sunRel = new Vector3();
+
+/**
+ * Phase angle of a scenario, degrees. Body-relative poses know it by construction;
+ * ⚠ ABSOLUTE poses have it MEASURED from their live geometry instead, because it is
+ * epoch-dependent and hiding that behind a "-" is the exact reporting gap that let v1
+ * drift to the night side unnoticed. `belt` is the case that matters: it must stay
+ * pinned to `startingPositionKm` to remain inside the asteroid field, so its
+ * illumination cannot be pinned and the sweep should say so rather than omit it.
+ */
+function phaseDegOf(scenario: Scenario): number {
+  if (scenario.bodyId !== null) return scenario.phaseDeg ?? BENCH_PHASE_DEG;
+  if (!scenario.positionKm) return Number.NaN;
+  const refId = scenario.lookAtBodyId ?? "earth";
+  const b = bodies.find((x) => x.id === refId);
+  if (!b) return Number.NaN;
+  const star = bodies[0];
+  _camRel
+    .set(...(scenario.positionKm as [number, number, number]))
+    .sub(new Vector3(b.positionKm[0], b.positionKm[1], b.positionKm[2]));
+  _sunRel.set(
+    star.positionKm[0] - b.positionKm[0],
+    star.positionKm[1] - b.positionKm[1],
+    star.positionKm[2] - b.positionKm[2],
+  );
+  if (_camRel.lengthSq() < 1e-6 || _sunRel.lengthSq() < 1e-6) return Number.NaN;
+  return (
+    (Math.acos(
+      Math.min(1, Math.max(-1, _camRel.normalize().dot(_sunRel.normalize()))),
+    ) *
+      180) /
+    Math.PI
+  );
 }
 
 /** Distance from the given scenario's eye point to Earth's centre, km. */

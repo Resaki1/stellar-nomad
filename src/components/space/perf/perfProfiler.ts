@@ -202,7 +202,15 @@ export type PerfSnapshot = {
   frames: number;
   /** Frames discarded for a corrupt GPU timestamp. See `droppedFrames`. */
   droppedFrames: number;
-  /** Wall-clock frame period, ms. `1000 / frameMs.p50` is the honest FPS. */
+  /**
+   * Wall-clock period between renderer SUBMISSIONS, ms — not between presents.
+   * 🐛 This said "`1000 / frameMs.p50` is the honest FPS". It is not, whenever the GPU
+   * falls behind: submissions keep going out at display cadence until the swapchain
+   * runs dry, so the samples split bimodally and p50 reports only the fast mode (it
+   * read 138 fps on a 120 Hz display). **Use `1000 / frameMs.mean`**, and treat
+   * `mean / p50 > 1.1` as "the GPU is behind" — MEASURED clean 1.00–1.01 vs
+   * oversubscribed 1.18–1.82 across 14 runs, no overlap.
+   */
   frameMs: SeriesStats;
   /** Total JS time per frame across every `useFrame` (all priorities). */
   cpuTotalMs: SeriesStats;
