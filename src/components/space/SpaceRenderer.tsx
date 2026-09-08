@@ -45,7 +45,11 @@ import {
   uPostExposure,
 } from "./photometry";
 import { updatePreExposedEmissives } from "./preExposedEmissive";
-import { clearLumSource, setLumSource } from "./perf/lumHarness";
+import {
+  clearLumSource,
+  setCloudStatsSource,
+  setLumSource,
+} from "./perf/lumHarness";
 import {
   getStarPsfNorm,
   publishStarFieldObserverKm,
@@ -129,6 +133,30 @@ const BSM_FADE_BAND_KM = 400;
 // really are free. Per docs/PERF_MEASUREMENT.md § "the METHODOLOGICAL LESSON", do not
 // substitute arithmetic on reported per-pass numbers for an ablation like this.
 const BSM_ABLATE_DIAGNOSTIC = false;
+
+// ⚠⚠ TEMPORARY DIAGNOSTIC — MUST be false. All volumetric clouds disappear when true.
+//
+// **THE WHOLE cloud pipeline, which `__lum.cloudMarch(false)` is NOT.** It forces the
+// inactive branch below, so the marcher, the reconstruction and (once both history RTs
+// are cleared) the composite are all skipped. Frame-mean delta against this = the cloud
+// system's real share of the frame.
+//
+// 🔑🔑 WHY A SECOND ABLATION EXISTS AT ALL: the reconstruction and composite passes have
+// **zero data-dependent control flow**, so a march-loop bypass leaves them at full cost.
+// MEASURED tap budget at 2438×1816 — composite 25 taps × 4.43 Mpx = **110.7 M**,
+// reconstruction 12 × 1.97 Mpx = **23.6 M**, against the loop's 88–199 M. ⇒ **~134 M taps
+// survive a march-only bypass**, so reading its delta as "the clouds are cheap" would
+// repeat the error CLOUD_REVIEW §1 already made once off the 750/650 straddle.
+//
+// ⚠ ALSO WHY THE STRADDLE IS NOT A SUBSTITUTE: at 650 km the pipeline runs in its
+// CHEAPEST configuration — `uVolumetricBlend` 0.111, `uLodMinSamples` 16 (vs 60 at
+// earth_8, 3.75×), `uVolumeWeight` 0 so the light-volume bake is skipped at BOTH ends,
+// and `uShipOccluderOn` 0. It is a floor, not a cost.
+// ⚠ Controls that must NOT move: `deep_space` (holds to 0.002 ms) and `earth_750`
+// (clouds provably off above 700 km). If `1c AP froxel`, `1b beer shadow map`,
+// `2c reconstruction` or `3 cloud composite` moves under the MARCH-only bypass, that
+// ablation is dirty — check before trusting either number.
+const CLOUD_ABLATE_DIAGNOSTIC = false;
 
 // ⚠⚠ TEMPORARY DIAGNOSTIC — MUST be false. Cloud shadows disappear when true.
 //
@@ -1054,6 +1082,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
 
     const writeIdx = frameParity.current;
     const sparseColorRt = sparseCloudRts[writeIdx];
+    // ⚠ Published every frame, and it MUST be per-frame: the sparse RTs ping-pong on
+    // `frameParity`, so a cached handle would read the frame the marcher did NOT just
+    // write. `__lum.cloudIters()` reads raw counters out of this one.
+    setCloudStatsSource(renderer, sparseColorRt);
     const historyWriteRt = historyRts[writeIdx];
     const historyReadRt = historyRts[writeIdx ^ 1];
     const writeCompositeMesh = compositeMeshes[writeIdx];
@@ -1077,7 +1109,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     frameGates.cloudsVisible = cloudsVisible;
     frameGates.lightVolume = USE_LIGHT_VOLUME && cloudsVisible;
 
-    if (pipelineHandle && earthMesh && cloudsVisible) {
+    if (pipelineHandle && earthMesh && cloudsVisible && !CLOUD_ABLATE_DIAGNOSTIC) {
       clearedHistoryCount.current = 0;
       // Bayer schedule pick for this frame. Sub-pixel slot (0..N-1, 0..N-1)
       // marks which full-res pixel within every N×N tile is fresh this frame.
@@ -1209,7 +1241,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // + autoClear state, so those are set unconditionally.
     renderer.setRenderTarget(finalTarget);
     gl.autoClear = false;
-    if (cloudsVisible || clearedHistoryCount.current < 2) {
+    if (
+      (cloudsVisible && !CLOUD_ABLATE_DIAGNOSTIC) ||
+      clearedHistoryCount.current < 2
+    ) {
       if (mountedCompositeMesh.current !== writeCompositeMesh) {
         if (mountedCompositeMesh.current) {
           compositeScene.remove(mountedCompositeMesh.current);

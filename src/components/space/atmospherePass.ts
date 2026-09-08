@@ -536,6 +536,12 @@ const SHADOW_SPLIT_STEPS = 12;
 // would contaminate the measurement it exists to take. A/B it by reload instead: pose
 // epoch v2 makes `__bench.run("earth_8")` reproducible across reloads, which is what
 // the dials were invented to work around and is not a problem here.
+// ✅ CLEARED 2026-09-08 after being suspected of a +4.20 ms regression at `earth_750`.
+// It was THERMAL, not this const: from a cold machine `earth_750` reads 14.39 ms against
+// the pre-unroll baseline's 14.30, and its atmosphere pair 14.63 against 14.57 — inside
+// 0.06 ms. The occupancy failure mode above has NOT been observed. ⚠ The lesson is about
+// the measurement, not the code: a warm-up sweep run to "avoid throttling mid-test" put
+// the machine at its hottest for the arm that mattered, and the spread is 28.6%.
 const MARCH_UNROLL_2 = true;
 
 // ── D14g: RADIAL SUPERSAMPLING OF THE LIMB ──────────────────────────────────

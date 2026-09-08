@@ -37,6 +37,468 @@ have already been caught lying about shipped values — `CLOUD_VS_TAKRAM.md` §5
 
 ---
 
+## 1g. ❌ LEVER B (tap reuse) DROPPED — refuted by its own texel arithmetic
+
+I pitched it on "the same two taps are re-fetched ~65× for essentially one texel". Checked
+before building, and that is **only true for the exact centre pixel**. Both taps depend on
+direction only, so radial motion is projected out and the sampled point moves along an arc
+of `Rg × sweep`, with `sweep ≈ slabLen · b / r²` (b = impact parameter):
+
+| pose | arc swept | **meso** texels (488 m) | **weather** texels (19.5 km @2k) |
+|---|---|---|---|
+| earth_8, centre px | 0 m | **0** | 0 |
+| earth_8, frame edge | 4.5–5.4 km | **9–11** | 0.23 |
+| earth_horizon_8 | 319 km | **654** | 16.3 |
+
+🔑 **The expensive tap is the un-hoistable one.** `mesoTap` is a `texture3D` on 100% of
+steps with **488 m** texels — it crosses 9–11 of them at the earth_8 frame edge and 654 at
+the horizon. `wTap` *is* hoistable at earth_8 (≤1 texel across the whole frame, at 2k or
+8k) but it is the cheap `texture2D`. ⇒ **B can only remove the cheap tap, on one pose
+class.** Dropped.
+
+⚠ Direction *quantisation* — my original phrasing — is worse than a hoist and buys nothing:
+the fetch instruction still executes, and neighbouring texels are already cache-warm. The
+only thing quantising changes is a hit that was already hitting.
+
+🔑 **What the arithmetic DOES leave on the table:** at earth_8 the skip step is 113–151 m
+against a 488 m meso texel, so **the field is oversampled 3–4× at nadir** (and undersampled
+~8× at the horizon, where the step is 3.7 km). Reuse across ~3 steps, bounded by the texel
+size, is the only "cheaper steps" variant the geometry supports — and it is pose-limited to
+exactly the poses where the pyramid also wins, so it is a strictly smaller version of A.
+
+### ⇒ DECISION: build A (the 2D min/max skip pyramid). It is the only lever with a MEASURED ceiling.
+
+| lever | ceiling | basis |
+|---|---|---|
+| **A — skip pyramid** | **2.06–2.96 ms (11–16% of frame)** | steps_removed × **measured** 0.0605 ms/step |
+| B — tap hoist/quantise | ~0 | ❌ refuted above |
+| B′ — meso reuse across 3 steps | unmeasured, ⊂ A | strictly smaller than A, same poses |
+| step count (`uLodMinSamples`) | **spent** | 60 → 40 landed, −0.675 ms; 40 is a quality floor |
+
+**A also subsumes the only surviving B variant**, because every step it removes drops that
+step's `mesoTap` too — the one thing no reuse scheme can hoist.
+
+**What A needs, all of it already known rather than assumed:**
+1. A conservative 2D pyramid of `(min base, max top, max coverage)` over the weather map.
+   Inputs exist: coverage in R, topHeight in B, `columnBaseN` for the base.
+2. An analytic skip distance from it — **zero 3D taps**, which is the point.
+3. ⚠⚠ **It MUST bypass `min(1 + t·LOD_STEP_GROWTH, lodCap)`.** Otherwise the skip distance
+   is clamped straight back to `slabLen/(dtSkip · uLodMinSamples)` and the feature measures
+   as nothing. This is the single most likely way a correct implementation still fails.
+4. Dilate the pyramid's bounds by anything that displaces the sample position, or the skip
+   can jump over cloud. (`TAKRAM_ENVELOPE_WARP` is false today, so there is nothing to
+   dilate by — but that is a build const, so the dilation has to be derived, not omitted.)
+5. Gate: `__lum.cloudIters()` for the step count (pure-skip 54 → ?) and
+   `__bench.run("earth_8"|"earth_horizon_8")` for the frame, thermometer both ends.
+
+⚠ This is a multi-day feature, unlike everything else in §1b–§1g. It should be started
+deliberately, not on the back of a measurement round.
+
+---
+
+## 1f. 🐛 CORRECTION — "only 8.1% of steps pay 3D taps" was WRONG. It is 100%.
+
+I read `probeIters` as the 3D-tap rate. It is not. It counts steps passing the
+`profile > 0.01` gate, i.e. steps paying the **cheap probe** — but two taps already happen
+on **every** step, before that gate. Enumerated with each guard resolved against its live
+build const:
+
+| site | what | guard | emitted? |
+|---|---|---|---|
+| `earthClouds.ts:2977` | `convGate` texture2D | `TAKRAM_SHAPE && TAKRAM_ENVELOPE_WARP` | ❌ both false |
+| `:2983` | `placeGate` texture3D | same | ❌ |
+| `:2988` | `warpTap` texture3D | same | ❌ |
+| **`:3032`** | **`wTap` weather texture2D** | **unconditional** | **✅ every step** |
+| **`:3045`** | **`mesoTap` texture3D into `baseVolume`** | **`WEATHER_V2 \|\| MESOSCALE_TEST`, WEATHER_V2 = true** | **✅ every step** |
+| `:3122` | `colTap` texture3D | `else` of `if (WEATHER_V2)` | ❌ |
+
+⇒ **Every march step pays one `texture3D` + one `texture2D` + an equirect `atan/asin`
+before the gate.** So `wasted / probed = 18.6%` bounds the **cheap probe** only; it does
+**not** bound what a skip structure would remove, because a removed step also removes its
+unconditional `mesoTap`, `wTap` and transcendentals. `cloudIters` now says so in its own
+output, and the misleading `probed (paid 3D taps)` label is renamed
+`cheap-probe steps`.
+
+✅ **What this does NOT change: the pyramid's ceiling.** §1e derived 2.06–2.96 ms from the
+MEASURED 0.0605 ms/step (3.925 ms / 64.9 steps), which already includes whatever each step
+spends its time on. **The arithmetic is unaffected; only my explanation of it was wrong.**
+And the case is if anything stronger — each skipped step avoids a 3D volume fetch, not just
+2D work.
+
+### ⇒ The per-step breakdown ablation is CANCELLED. It is confounded and not decision-relevant.
+
+I proposed forcing `profile` (or the taps) to constants to price the per-step 2D work.
+Dropping it, for two reasons:
+
+1. **Not decision-relevant.** The pyramid's value is `steps_removed × 0.0605 ms/step`. What
+   a step spends its time on does not enter that product.
+2. **Every variant is confounded.** `coverage` drives the skip advance
+   (`dtSkipInBand`, the detection cap), and `mesoTap` feeds coverage placement — so
+   constant-ing either changes the **step count**, which changes the cost through the very
+   proportionality being measured. The confound is the same size as the signal.
+
+### 🔑 But it surfaced a genuinely new candidate lever: TAP REUSE on near-radial rays
+
+`mesoTap` is sampled at `dirP · uInnerRadius · MESO_SCALE` — it depends on the **direction
+only**, not on radius. Its own comment says so: *"World-anchored (projected to the inner
+shell → a 2D pattern on the sphere, not volume noise)."* Same for `wTap`, whose UV comes
+from `equirectDirToUv(dirP)`.
+
+⇒ **On a near-radial ray the direction barely changes, so the same two taps are re-fetched
+~65 times for essentially the same texel.** At `earth_8` (nadir, 7 km chord) the swept
+direction is a small fraction of a weather texel. ⚠ At `earth_horizon_8` the direction
+sweeps far more, so this cannot be hoisted unconditionally — it needs a "re-tap only when
+the direction has moved more than one texel" test, which is itself a per-step branch.
+
+**Two candidate levers now share the same measured ceiling** (both remove per-step work
+priced at 0.0605 ms/step):
+- **A: 2D min/max skip pyramid** — fewer steps. Ceiling 2.06–2.96 ms. ⚠ Must bypass the
+  `min(1 + t·LOD_STEP_GROWTH, lodCap)` clamp or it is pinned.
+- **B: direction-quantised tap reuse** — cheaper steps. Ceiling unmeasured, but bounded by
+  the same 3.925 ms loop, and it is a much smaller change than a pyramid. ⚠ Its win is
+  pose-dependent in the opposite direction to A's: best on nadir rays, worst at the horizon.
+
+⚠ Neither is measured yet, and **B is the cheaper experiment** — quantise `dirP` to a
+weather-texel grid for the tap only (not for the geometry) and see what the loop costs.
+That is a contained change and a genuine A/B, unlike the cancelled one.
+
+---
+
+## 1e. ✅✅ CLOSED — the march loop is 3.93 ms (20.5% of frame) and is PURE STEP WORK
+
+One session, all cold, thermometer **14.415 → 14.684 = +0.27 ms of drift** (against 0.76
+last time — this is a tight measurement):
+
+| | frame mean | GPU |
+|---|---|---|
+| `earth_8`, lod 60 | 19.103 | 55.53 |
+| `__lum.cloudMarch(false)` | 15.178 | 38.85 |
+| **⇒ march loop** | **3.925 ms = 20.5% of frame** | |
+
+🔑🔑 **STEP WORK ACCOUNTS FOR THE ENTIRE LOOP.** The ladder's slope (0.051–0.071 ms/step)
+× 64.9 steps = **3.3–4.6 ms** against a measured loop of **3.93 ms**. And a purely
+proportional model reproduces the whole ladder:
+
+| | steps | predicted | measured |
+|---|---|---|---|
+| lod 40 | 53.2 (−18.0%) | −0.708 ms | **−0.675 ms** |
+| lod 24 | 48.8 (−24.8%) | −0.974 ms | **−0.818 ms** |
+
+⇒ **The loop has no meaningful fixed cost. Cost ∝ step count.**
+
+### ⚠⚠ TWO CORRECTIONS, BOTH MINE, BOTH ABOUT THERMAL RESCALING
+
+**1. "Step count is not the march's cost" (§1d) was WRONG.** It compared the ladder slope
+against a loop cost of 8.18 ms taken in the HOT 3-arm session and thermally rescaled by
+1.286 to 6.36 ms. The direct cold measurement is **3.93 ms** — the scaled estimate was
+**62% high**. ⇒ **Never thermally rescale an ablation delta. Re-measure cold.** A single
+whole-frame factor does not transfer to a subsystem delta.
+
+**2. "The shares are thermal-invariant" was also WRONG.** March share is **30.6% hot**
+(8.18/26.70) and **20.5% cold** (3.93/19.10). Throttling clocks down the *latency-bound*
+marcher — many dependent 3D fetches — harder than the bandwidth-bound fullscreen passes, so
+it changes the **relative** cost of passes, not just the absolute. ⇒ The earlier
+"33–38% of frame" headline for the whole pipeline is a HOT figure; the cold pipeline is
+nearer **~24%**, and a cold `CLOUD_ABLATE_DIAGNOSTIC` run is still owed to pin it.
+
+### ✅ LANDED: `LOD_MIN_SAMPLES_NEAR` 60 → 40
+
+−0.675 ms (3.4% of frame) with the dense cloud sample count **unchanged at 6.8/ray**. 24
+measured better (−0.818) but the author saw quality degradation at some distances below 40,
+so **40 is a quality floor, not a perf one** — the remaining headroom in this constant is
+~0.14 ms and it is spent.
+
+### 🔑🔑 AND EMPTY-SPACE SKIPPING IS BACK — RE-AIMED, with a quantified ceiling
+
+§1b demoted it because its *stated* mechanism (skip steps paying 4–6 `texture3D` taps to
+find nothing) is 1.5% of steps. That refutation stands. But the decomposition now shows the
+right target, and it is large:
+
+| steps at earth_8, lod 60 | |
+|---|---|
+| total | 64.9 |
+| dense (full cloud sample) | 6.8 |
+| any 3D tap ("probed") | 10.9 |
+| **pure-skip, NO 3D tap at all** | **54.0 = 83% of steps** |
+
+Those 54 steps each still pay position maths, an equirect `atan/asin`, and the
+weather-map / coverage / heightProfile evaluation. **The cost is the 2D per-step work, not
+the 3D probes** — and since the loop is pure step work, removing steps converts 1:1:
+
+| pure-skip 54 → | steps | loop | saving |
+|---|---|---|---|
+| 20 | 30.9 (−52%) | 1.87 ms | **2.06 ms = 10.8% of frame** |
+| 10 | 20.9 (−68%) | 1.26 ms | **2.66 ms = 13.9%** |
+| 5 | 15.9 (−76%) | 0.96 ms | **2.96 ms = 15.5%** |
+
+So a conservative 2D min/max pyramid over the weather map — one coarse tap answering "no
+cloud between t₀ and t₁" instead of N fine evaluations — is worth **~2–3 ms, 11–16% of
+frame**. That is the Nubis³-shaped win, reached through the correct mechanism.
+
+⚠⚠ **Two hard design constraints, both discovered rather than assumed:**
+1. **It must BYPASS the `min(1 + t·LOD_STEP_GROWTH, lodCap)` clamp.** Otherwise the skip
+   distance is pinned straight back to `slabLen/(dtSkip · uLodMinSamples)` and the feature
+   does nothing. This is why the naive version would have underperformed.
+2. **The ceiling above assumes the structure reduces pure-skip steps to 5–20.** That is an
+   assumption, not a measurement. ⚠ Before building the pyramid, price the per-step 2D work
+   directly: ablate the weather/profile evaluation (force `profile` constant) and see how
+   much of the 3.93 ms it is. If it is a small share, the cost is loop overhead and
+   position maths instead, and a skip structure still helps — but the ceiling moves.
+
+---
+
+## 1d. ✅ TIMED — the step-count lever is worth 4–6% of frame, and it SATURATES at lod 24
+
+`earth_8`, frame **mean**, all settled, `bi` ≤ 1.012, thermometer at both ends:
+
+| | frame | vs lod 60 | GPU | steps/ray |
+|---|---|---|---|---|
+| `earth_750` thermometer | **14.69** | — | 24.96 | — (cold ✅) |
+| lod 60 (authored) | 19.751 | — | 57.12 | 64.9 |
+| lod 40 | 19.076 | −0.675 | 55.48 | 53.2 |
+| lod 24 | 18.933 | **−0.818** | 54.48 | 48.8 |
+| lod 8 | 18.928 | **−0.823** | 54.80 | 48.8 |
+| `earth_750` thermometer | **15.45** | — | 25.71 | — (+0.76 drift) |
+
+⚠⚠ **THE THERMAL DRIFT (+0.76 ms) IS THE SAME SIZE AS THE WHOLE EFFECT (0.82 ms).** The
+thermometer earned its place on its first real use — without it this would have been
+written up as a solid −0.82 ms. And the drift *opposes* the ladder (later runs are hotter
+and lower-lod), so the true effect is **larger**: interpolating the two reads gives
+**−1.14 ms at lod 24**. ⚠ That is a 2-point drift model whose correction is the size of the
+signal, so the honest statement is **the saving is 0.8–1.3 ms, i.e. 4–6% of frame**
+(50.6 → 52.8 fps).
+
+✅🔑 **THE SATURATION MECHANISM IS CONFIRMED WITH A SHARP THRESHOLD.** lod 24 → 8 moves the
+frame by **−0.005 ms** — nothing. Predicted and verified: the cap only binds while
+`1 + t·LOD_STEP_GROWTH` is below it, and over earth_8's 7 km chord
+
+| lod | `lodCap` | growth reaches the cap at |
+|---|---|---|
+| 60 | 1.17 | 0.42 km |
+| 40 | 1.75 | 1.89 km |
+| 24 | 2.92 | 4.81 km |
+| 8 | 8.77 | **19.44 km — beyond the chord, so the cap NEVER binds** |
+
+⇒ **Below lod ≈ 24 the dial is inert by construction.** `lod 24` is the whole available
+win, and the 0.005 ms repeat between two runs at identical step counts also tells us the
+harness resolves to ~0.005 ms on a repeat.
+
+🔑🔑 **AND STEP COUNT IS NOT THE MARCH'S COST HERE EITHER: −24.8% steps buys 4–6% of frame.**
+On a steps x-axis the slope is **0.051 ms/step raw / 0.071 corrected** (64.9 → 48.8 steps
+for 0.818 → 1.138 ms; the middle point predicts within 14%). ⚠ Three distinct points, and
+the atmosphere's *analogous* slope was falsified by a five-point ladder — treat it as a
+bound, not a model. But the bound is decisive on its own: extrapolating to zero steps gives
+**3.3–4.6 ms**, while `cloudMarch(false)` measured the whole loop at **8.18 ms**. ⇒ **Roughly
+half the march loop's cost does not scale with step count at all.**
+
+**That is the second step-count lever in a week to come back small** (the atmosphere's
+`atmoSteps` was flat outright), and it redirects the search: the remaining cost is per-ray
+setup or per-step FIXED work — the position maths, the equirect `atan/asin` conversion and
+the weather-map/coverage/heightProfile evaluation that **all** ~65 steps pay, versus the 3D
+taps that only 8.1% of them reach.
+
+**⇒ Two recommendations.**
+1. **`LOD_MIN_SAMPLES_NEAR` 60 → 24 is worth taking if the image holds.** 4–6% of frame for
+   one constant, with the dense (cloud) sample count **invariant** at 6.8/ray. ⚠ The one
+   thing to check is cloud-FRONT localisation, not interiors: `probed` falls 10.9 → 10.1
+   and the skip→dense rewind is `dtSkipInBand × 0.5`, so edges can shift by up to half a
+   skip step. Look at cloud silhouettes against the sky.
+2. **The next measurement is a same-session `cloudMarch(false)`** to close the
+   decomposition. If the loop really is ~8 ms while its step work is ~4 ms, the other ~4 ms
+   is fixed per-ray/per-step work and that is where the remaining 30%+ of the frame lives.
+   ⚠ Take the thermometer before AND after — this session showed 0.76 ms of drift in under
+   three minutes, which is larger than most of what we are now chasing.
+
+---
+
+## 1c. The `uLodMinSamples` ladder — MEASURED at both poses, 2026-09-08
+
+`__lum.cloudLod(n)` at `earth_8` and `earth_horizon_8`:
+
+| pose | lod | primary | vs 60 | **dense** | skip | probed | wasted |
+|---|---|---|---|---|---|---|---|
+| earth_horizon_8 | 60 | 86.4 | — | **4.2** | 82.2 | 7.0 | 1.3 |
+| | 40 | 78.4 | −9.3% | **4.1** | 74.3 | 6.7 | 1.0 |
+| | 24 | 75.2 | **−13.0%** | **4.0** | 71.1 | 6.6 | 0.9 |
+| earth_8 | 60 | 64.9 | — | **6.8** | 58.1 | 10.9 | 2.3 |
+| | 40 | 53.2 | −18.0% | **6.8** | 46.3 | 10.3 | 1.5 |
+| | 24 | 48.8 | **−24.8%** | **6.8** | 42.0 | 10.1 | 1.0 |
+
+✅🔑 **THE QUALITY WORRY IS MEASURED AWAY: the DENSE (actual cloud) sample count is
+INVARIANT.** 6.8 / 6.8 / 6.8 at earth_8, 4.2 / 4.1 / 4.0 at the horizon. Every step saved
+comes out of EMPTY skip traversal (58.1 → 42.0). ⇒ **This is not the sample-count trade it
+looked like**, and the earlier blanket warning that it "WILL change the image" was too
+pessimistic. ⚠ What can still move is cloud-FRONT localisation — a coarser skip step
+detects the front later and the rewind is `dtSkipInBand × 0.5`, so edges may shift by up to
+half a skip step, and `probed` falls slightly (10.9 → 10.1). **Check edges, not interiors.**
+
+⚠⚠ **BUT THE DIAL IS FAR WEAKER THAN ITS RATIO: 2.5× fewer requested samples buys only
+1.33× fewer steps at earth_8 and 1.15× at the horizon.** Because the other arm of
+`min(1 + t·LOD_STEP_GROWTH, lodCap)` takes over the moment the cap lifts.
+
+🔑🔑 **SO `uLodMinSamples` IS NOT "THE STEP COUNT" — `dtSkip · lodScale` IS, AND IT HAS A
+FLOOR OF `dtSkip` = `SKIP_STEP_SCALED` = 100 m.** The arithmetic closes exactly:
+
+- earth_8, lod 60: `lodCap` = 1.17 ⇒ step ≈ 117 m ⇒ 7.35 km / 0.117 = **63 steps**,
+  measured **64.9**. ✓
+- earth_8, lod 24: mean step 151 m ⇒ mean `lodScale` **1.51**, i.e. still near the floor —
+  over a 7 km chord `LOD_STEP_GROWTH = 400` reaches only 1 + 0.007·400 = 3.8 at the far
+  end and averages far less.
+- earth_horizon_8: mean step **3.70 km** ⇒ mean `lodScale` **37**, so the horizon is
+  already deep in the growth-limited regime and the cap barely bites — which is exactly
+  why the same dial moves it only 13%.
+
+⇒ **The two controlling constants are `SKIP_STEP_SCALED` (100 m) and `LOD_STEP_GROWTH`
+(400).** `uLodMinSamples` only lifts the cap off them. Any future step-count work targets
+that product, not the sample floor.
+
+⚠⚠ **NO TIMING WAS TAKEN, so the ms value of this is still UNKNOWN — and step count does
+not imply frame time here.** The precedent is one week old and unambiguous: the
+atmosphere's five-point `atmoSteps` ladder moved the *pass* span 6.99 → 5.97 ms while the
+FRAME stayed flat within 0.98 ms of noise, falsifying a 0.247 ms/step model by 6.7×. **Do
+not assume −25% steps is −25% of the march.**
+
+**Next, and it is three commands per pose:**
+```bash
+# DEBUG_VIZ back to "off" and reload FIRST — in "stats" mode the marcher skips its whole
+# colour assembly, so the frame cost is not the shipping cost.
+await __bench.run("earth_750")                       # thermometer: under ~15 ms = cold
+__lum.cloudLod(0);  await __bench.run("earth_8")
+__lum.cloudLod(40); await __bench.run("earth_8")
+__lum.cloudLod(24); await __bench.run("earth_8")
+```
+then the same at `earth_horizon_8`. Read frame **mean**, check `bi` ≤ 1.1. If the frame is
+flat across the ladder — as the atmosphere's was — then step count is not the cloud
+march's cost either, and the next thing to price is the per-step work rather than the
+number of steps.
+
+---
+
+## 1b. ❌ EMPTY-SPACE SKIPPING IS DEMOTED — MEASURED 2026-09-08
+
+X4 calls it "the highest-confidence structural item". **Measured, it is worth ~0.1 ms.**
+`await __lum.cloudIters()` at the cloud deck, over 262,144 marching pixels:
+
+| | per ray |
+|---|---|
+| primary steps | **86.4** (p50 81, p95 128, max 231) |
+| dense steps (real cloud samples) | **4.2** |
+| skip steps | 82.2 |
+| steps paying any 3D tap | **7.0 — i.e. 8.1% of steps** |
+| **wasted probes** | **1.3 → 18.6% of probes, 1.5% of ALL steps** |
+| rays at the 256-step budget | **0.0%** |
+| exit reason | budget 0.0% · **slab 93.0%** · opaque 7.0% |
+
+🔑🔑 **THE REVIEW'S STATED MECHANISM IS REFUTED.** §1 says *"every skip step whose column
+has `profile > 0.01` still pays the probe: ~4–6 `texture3D` taps just to discover there is
+nothing there."* Only **8.1% of steps** pass that gate at all — the existing
+`profile > 0.01` test already eliminates **91.9%** of the 3D work — and only **1.5% of all
+steps** are wasted probes. A distance field removes that 1.5%. On a ~7.3 ms march that is
+**~0.11 ms**, not the 3.2× Nubis³ reports.
+
+🔑🔑 **AND THE REAL FINDING IS BIGGER THAN THE ONE WE WERE LOOKING FOR: 86.4 STEPS TO
+PRODUCE 4.2 CLOUD SAMPLES — 95% TRAVERSAL OVERHEAD.** The march is not slow because it
+struggles to find cloud. It is slow because it takes ~86 steps per ray by construction:
+`lodCap = slabLen/(dtSkip · uLodMinSamples)` **binds** (1.17 at the nadir), so the step
+count is pinned to roughly `LOD_MIN_SAMPLES_NEAR = 60`. **Those 86 steps are a sample-count
+floor we asked for, not a search cost.**
+
+⚠⚠ **This also explains why a distance field would have underperformed even if built well.**
+`lodScale = min(1 + t·LOD_STEP_GROWTH, lodCap)`. A perfect analytic skip distance still
+gets clamped straight back down to `slabLen/(dtSkip · 60)` unless the floor moves with it.
+**Empty-space skipping cannot beat a cap it does not bypass** — the nested-knob problem
+with a concrete mechanism.
+
+⚠ `93% of rays exit at the slab boundary` — they traverse the entire chord (up to 736 km at
+the horizon) and only 7% terminate on opacity. Nothing is cap-bound, so there is no hidden
+budget starvation; the rays are simply walking a long way to gather very little.
+
+**⇒ Revised order.** `__lum.cloudLod(n)` now overrides `uLodMinSamples` at runtime (applied
+after the per-frame altitude lerp, which would otherwise overwrite it). That dial *is* the
+step count, so it is the first thing to A/B: 60 → 40 → 24 at both `earth_horizon_8` and
+`earth_8`, with `cloudIters` confirming the step count actually moved. ⚠ It trades samples
+for speed and **will** change the image — thin cloud and cloud edges first, where 4.2
+samples are already marginal — so it needs the quality gate that does not exist yet. Do not
+spend it blind; that is how four degenerate `limbScan` versions happened.
+
+⚠ Not yet run at the second pose. `lodCap` is 1.17 at the nadir and **53.3** at the
+horizon, so this dial binds hard at one and weakly at the other, and a single-pose reading
+cannot generalise. Also unrecorded: which pose the numbers above came from.
+
+---
+
+## 1a. ⚠⚠ §1 IS SUPERSEDED (2026-09-08) — read this before acting on anything below it
+
+§1's whole decision tree rests on two numbers that **cannot be reconciled** with the
+current baseline, and on one that was produced by a statistic since found to be wrong.
+Nothing below it should be actioned as written.
+
+**Do not quote "+2.35 ms whole cloud pipeline", "12.80 ms deck" or "78 fps" again.**
+
+🔑🔑 **"+2.35 ms" is a floor of a floor, not a cost.** It came from a 750→650 gate
+straddle, and at 650 km the pipeline runs in its **cheapest** configuration, every term
+verified in code: `uVolumetricBlend` = 0.111; `uLodMinSamples` = 16 against **60** at
+earth_8 (3.75× fewer samples); `uVolumeWeight` = 0, so the light-volume bake is skipped
+at *both* ends and contributes nothing to the delta; `uShipOccluderOn` = 0. All four are
+at maximum inside the band. And it was measured at 91° phase / on the night side, where
+the marcher's entire lighting block — sun march, light-volume tap, dual-lobe phase,
+powder, multi-scatter — sits inside `If(daylightS > 0.001)`. The v2 straddle gives
+**+1.60 ms** by the same method; both are floors.
+
+⚠ **The 12.80 ms deck frame cannot be reconciled with today's 18.6 ms.** Accounting:
+pose epoch v1→v2 is at most **+1.20 ms** (the measured day−night delta), the canvas got
+**12.4% smaller** (5.05 → 4.43 Mpx, which *widens* the gap), and only `5a glare PSF`
+≈ 1.0 ms of new work is itemised. ~1.2 ms of a ~5.7 ms move is explained; the rest sits
+partly in **build state that was recorded on neither side**. Both baselines were taken
+on dirty trees. `BenchReport.env` now carries `gitState` (`sha-dirty`) and `simEpochMs`
+for exactly this reason.
+
+⚠ **X4's "highest-confidence structural item" rests on a null that was guaranteed.** Case
+#22 raised `LOD_STEP_GROWTH` 400→4000, saw "FPS moved by zero", and concluded the rays
+are `lodCap`-bound. But at earth_8 `lodCap` = **1.17**, so `lodScale` saturates 0.42 km
+into the ray and `LOD_STEP_GROWTH` **cannot bind** — 4000 only moves the crossover to
+0.042 km. The experiment could not have produced anything else at that pose. It also
+used `fps` from `frameMs.p50`, the statistic that reported 138 fps on a 120 Hz display.
+Empty-space skipping may well still be right; **its evidence has to be rebuilt.**
+
+⚠ **§1's `DETAIL_FADE_NEAR/FAR` row is not a perf knob**, and the A/B order it
+recommends produces nulls: the four knobs are **nested**, not independent. At earth_120
+the r=2 composite has already attenuated the finest octave (356 m) by **−4.78 stops**
+before the distance fade reaches it, and past 160 km that octave is above the cloud RT's
+Nyquist and structurally absent. So `DETAIL_FADE_FAR` 100→250 km there is a predicted
+null — the opposite of §1 calling it "the risky one".
+
+🔑 **`earth_8` is not the cloud worst case; it ranks third.** `earth_horizon_8` 19.40 ms,
+`earth_30` 18.90, `earth_8` 18.50. Looking down from 8 km is the **shortest** chord
+through the 1–16 km band (7.0–7.7 km) while a level ray spans 319.6 km centrally and up
+to 736.3 km — a **42–96× longer in-slab path** at identical gates. `earth_horizon_25` was
+added for the above-deck grazing regime nothing covered.
+
+**What landed instead of a measurement (2026-09-08):** the ablation surface this needed
+and did not have.
+- `__lum.cloudMarch(false)` — prices the **march loop**, clean by construction (only the
+  loop's exit test sees the modified `tExit`, so `lodCap`, `dtSkip`, all three
+  weather-map taps and the STBN dither are bit-identical across arms).
+- `CLOUD_ABLATE_DIAGNOSTIC` (SpaceRenderer) — prices the **whole pipeline**. ⚠⚠ Two
+  ablations, not one, because the reconstruction and composite passes have **zero
+  data-dependent control flow** and run at full cost in a march-only bypass:
+  composite 25 taps × 4.43 Mpx = **110.7 M**, reconstruction 12 × 1.97 Mpx = **23.6 M**,
+  i.e. **~134 M taps survive** against the loop's 88–199 M. A march-only delta read as
+  "the clouds are cheap" is the error §1 already made once.
+- `CLOUD_TEMPORAL_CYCLE` is now **derived** from `SPARSE_DIVISOR` and
+  `STBN_FRAME_MODULUS` rather than a hard-coded 252 with a comment asking to keep it in
+  sync. Raising `SPARSE_DIVISOR` to 4 makes the true cycle **1008**, and the runner would
+  have kept measuring 252 — the two arms then sampling different jitter subsets.
+- ⚠ **Still missing, and it blocks pricing any step-budget knob:** a numeric readback of
+  `primaryIters`/`whyStop`. `DEBUG_VIZ` has `'iters'`, `'lod'` and `'whyStop'` but they
+  emit **colour, not numbers**, which is why case #22's null had no diagnosis.
+- ⚠ **Also unresolved:** exposure adaptation is the one accumulator the settle window does
+  not wait out (τ_darken 2.0 s cone / 6.0 s rod against a 5.58 s settle ⇒ 6.1% of the
+  step remaining by day, **39.5% on the night rows**). Frame-time A/Bs are safe — nothing
+  gates GPU work on exposure — but absolute-level quality metrics are not.
+
+---
+
 ## 1. Performance — the premise needs re-testing before anything is spent on it
 
 **The last ground-truth measurement says the clouds are not the problem.**

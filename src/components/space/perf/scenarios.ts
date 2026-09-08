@@ -304,8 +304,15 @@ export const SCENARIOS: readonly Scenario[] = [
     altitudeKm: 30,
   },
   {
+    // ⚠⚠ NOT THE WORST CASE, despite what this said until 2026-09-08. The v2 baseline
+    // ranks it THIRD: earth_horizon_8 19.40 ms, earth_30 18.90, earth_8 18.50 — and the
+    // reason is geometric. Looking DOWN from 8 km is the SHORTEST possible chord through
+    // the 1–16 km band (7.0–7.7 km across the whole frame) while a level ray at the same
+    // altitude spans 319.6 km centrally and up to 736.3 km, a 42–96× longer in-slab path
+    // at identical gate settings. Keep it — it is the reference row every baseline cites
+    // — but read `earth_horizon_8` as the worst case.
     id: "earth_8",
-    what: "Inside the 1–16 km cloud band — the worst case",
+    what: "Inside the 1–16 km band looking DOWN (shortest chord; NOT the worst case)",
     bodyId: "earth",
     altitudeKm: 8,
   },
@@ -346,6 +353,20 @@ export const SCENARIOS: readonly Scenario[] = [
     bodyId: "earth",
     altitudeKm: 120,
     lookMode: "up",
+  },
+  {
+    // 🔑 THE ABOVE-DECK GRAZING REGIME, which nothing else covers. Between the cloud
+    // band's 16 km top and the 31 km ship-occluder gate, a level ray still crosses the
+    // whole deck at grazing incidence — the longest in-slab path available with the
+    // camera OUTSIDE the band, so the marcher runs long chords while the near-field
+    // gates differ from earth_horizon_8's. ⚠ 25 km is deliberately 6 km clear of that
+    // 31 km gate (uOuterRadius 16 + SHIP_OCCLUDER_MAX_ALT_KM 15); earth_30 sits only
+    // 1 km inside it, so any change to either constant silently flips that row.
+    id: "earth_horizon_25",
+    what: "Above the deck at 25 km, looking LEVEL — grazing chords, occluder gate clear",
+    bodyId: "earth",
+    altitudeKm: 25,
+    lookMode: "horizon",
   },
 ];
 

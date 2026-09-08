@@ -31,6 +31,9 @@ import type { createStore } from "jotai";
 
 import { benchModeAtom, devTeleportAtom } from "@/store/dev";
 import { commsQueueAtom } from "@/store/comms";
+import { simEpochMsAtom } from "@/store/simTime";
+import { SPARSE_DIVISOR } from "@/components/space/cloudReconstructionPass";
+import { STBN_FRAME_MODULUS } from "@/components/space/cloudFullscreenPass";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { isStbnLoaded } from "@/components/celestial/bodies/stbnTexture";
 import {
@@ -53,11 +56,24 @@ import {
 type Store = ReturnType<typeof createStore>;
 
 /**
- * The cloud pipeline's temporal cycle length: BAYER.length (4) ×
- * STBN_FRAME_MODULUS (63). Mirrored from `SpaceRenderer.tsx`'s
- * `cloudFrameIndex` wrap — if either constant changes there, change it here.
+ * The cloud pipeline's temporal cycle length — DERIVED, not mirrored.
+ *
+ * `BAYER` has exactly `SPARSE_DIVISOR²` entries (asserted in SpaceRenderer), and
+ * `cloudFrameIndex` wraps at `BAYER.length × STBN_FRAME_MODULUS`, so over one cycle
+ * every pixel is marched the same number of times and sees each STBN slice exactly once.
+ *
+ * ⚠⚠ WAS A HARD-CODED 252 WITH A COMMENT ASKING THE NEXT PERSON TO KEEP IT IN SYNC —
+ * which is not a mechanism. `SPARSE_DIVISOR` is a live perf knob we are about to A/B:
+ * raising it 2 → 4 makes the true cycle `lcm(16, 63) = 1008` while the runner would have
+ * kept measuring 252, so the two arms would sample different subsets of the marcher's
+ * jitter. That is the exact failure the measure-window note in
+ * docs/PERF_MEASUREMENT.md warns about, armed and waiting.
  */
-const CLOUD_TEMPORAL_CYCLE = 252;
+const CLOUD_TEMPORAL_CYCLE = (() => {
+  const bayerLen = SPARSE_DIVISOR * SPARSE_DIVISOR;
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  return (bayerLen * STBN_FRAME_MODULUS) / gcd(bayerLen, STBN_FRAME_MODULUS);
+})();
 
 export type BenchOptions = {
   /** Frames to discard after warping. Default one temporal cycle + slack. */
@@ -68,10 +84,25 @@ export type BenchOptions = {
   measureFrames?: number;
 };
 
+// ⚠ The profiler's ring buffers keep `HISTORY = 512` frames (perfProfiler.ts), so a
+// measure window longer than that would silently discard its own oldest samples. Today
+// the cycle is 252 and there is 2× headroom, but raising `SPARSE_DIVISOR` to 4 makes it
+// 1008 — so this shouts instead of quietly measuring a partial cycle, which would put
+// the two arms of an A/B on different subsets of the marcher's jitter.
+const PROFILER_HISTORY = 512;
+if (CLOUD_TEMPORAL_CYCLE > PROFILER_HISTORY) {
+  console.warn(
+    `[bench] ⚠⚠ the cloud temporal cycle is now ${CLOUD_TEMPORAL_CYCLE} frames but the ` +
+      `profiler keeps only ${PROFILER_HISTORY}. Measuring a PARTIAL cycle biases which ` +
+      `jitter subset each run samples — raise HISTORY in perfProfiler.ts before trusting ` +
+      `any number from this build.`,
+  );
+}
+
 const DEFAULTS: Required<BenchOptions> = {
   settleFrames: CLOUD_TEMPORAL_CYCLE + 48,
   maxSettleFrames: 900,
-  measureFrames: CLOUD_TEMPORAL_CYCLE,
+  measureFrames: Math.min(CLOUD_TEMPORAL_CYCLE, PROFILER_HISTORY),
 };
 
 export type ScenarioResult = {
@@ -130,6 +161,23 @@ export type BenchReport = {
      * Earth ladder at ~91° phase (half-lit) and v2 runs it at 35° (91% lit).
      */
     poseEpoch: string;
+    /**
+     * Short git SHA, suffixed `-dirty` when the tree had uncommitted changes at BUILD
+     * time (stamped by next.config.mjs), or "unknown".
+     * ⚠⚠ RECORDED BECAUSE THE SAME FAILURE HAPPENED TWICE: both the 2026-09-05 and
+     * 2026-09-07 baselines were taken on a dirty tree with hundreds of uncommitted lines
+     * in the very file under test, and neither said so. A baseline without build state
+     * is an anecdote. ⚠ It is the BUILD's state, so a dev-server hot reload after an edit
+     * does not refresh it — for a baseline, restart the dev server.
+     */
+    gitState: string;
+    /**
+     * The frozen sim epoch, ms. Body positions, and therefore illumination AND the cloud
+     * field under the camera, are functions of this. Pose epoch v2 pins the phase angle
+     * but not the sub-camera longitude, so two runs at different epochs see different
+     * terrain and different cloud cover.
+     */
+    simEpochMs: number;
     gpuTimings: boolean;
     /**
      * Smallest non-zero GPU delta observed, ms. 0.1 means Chrome's timestamp
@@ -409,6 +457,8 @@ export class BenchRunner {
       canvasPx: canvas ? `${canvas.width}x${canvas.height}` : "unknown",
       devicePixelRatio: window.devicePixelRatio,
       poseEpoch: BENCH_POSE_EPOCH,
+      gitState: process.env.NEXT_PUBLIC_GIT_STATE ?? "unknown",
+      simEpochMs: this.store.get(simEpochMsAtom),
       gpuTimings: perf.gpuTimingAvailable,
       gpuResolutionMs: perf.snapshot().gpuResolutionMs,
       unlabeledPasses: unlabeled,
@@ -701,6 +751,13 @@ function printReport(report: BenchReport): void {
       `${BENCH_PHASE_DEG}° phase (${Math.round((50 * (1 + Math.cos((BENCH_PHASE_DEG * Math.PI) / 180))))}% lit), ` +
       `except the explicit *_night pairs. ⚠ Numbers from a different pose epoch are NOT ` +
       `comparable: v1 ran this ladder half-lit.`,
+  );
+  console.log(
+    `[bench] build ${report.env.gitState}, sim epoch ${report.env.simEpochMs}` +
+      (report.env.gitState.endsWith("-dirty")
+        ? "  ⚠ DIRTY TREE — this is an anecdote, not a baseline. Commit, restart the dev\n" +
+          "        server, and re-run before recording it anywhere."
+        : ""),
   );
 
   console.table(

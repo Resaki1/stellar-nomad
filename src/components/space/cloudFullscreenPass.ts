@@ -40,7 +40,6 @@ import {
 // both 16 (N=4) and 4 (N=2), so a pixel sees all 63 slices → maximal temporal
 // variance reduction. Skipping slice 63 occasionally is invisible (adjacent
 // slices have similar blue-noise statistics).
-export const STBN_FRAME_MODULUS = 63;
 import {
   setupCloudReconstructionPass,
   SPARSE_DIVISOR,
@@ -51,6 +50,50 @@ import {
   type CloudLightVolume,
 } from "./cloudLightVolume";
 import { createCloudShadowMap } from "./cloudShadowMap";
+
+export const STBN_FRAME_MODULUS = 63;
+
+/**
+ * ── `__lum.cloudLod(n)` override for `uLodMinSamples`. 0 = the authored lerp. ──
+ *
+ * 🔑🔑 THIS IS THE MEASURED LEVER, and `__lum.cloudIters()` is what identified it.
+ * At earth_8 the march takes **86.4 primary steps per ray to produce 4.2 dense cloud
+ * samples** — 95% traversal overhead — and `lodCap = slabLen/(dtSkip · uLodMinSamples)`
+ * BINDS there (1.17), so the step count is pinned by construction to roughly this value.
+ * The 86 steps are not the cost of *discovering* empty space; they are a sample-count
+ * floor we asked for.
+ *
+ * ⚠⚠ AND IT IS WHY A DISTANCE FIELD WOULD HAVE UNDERPERFORMED: `lodScale` is a
+ * `min(growth, lodCap)`, so a perfect analytic skip distance gets clamped straight back
+ * down to `slabLen/(dtSkip · 60)` unless this floor moves with it. Empty-space skipping
+ * cannot beat a cap it does not bypass — see docs/PERF_MEASUREMENT.md 2026-09-08 and
+ * CLOUD_REVIEW §1a/X4.
+ */
+let _lodMinOverride = 0;
+export function setCloudLodMinSamples(n: number): void {
+  _lodMinOverride = Math.max(0, n);
+}
+
+/**
+ * The value actually in force this frame — override if set, else the altitude lerp.
+ * Returns 0 before the first frame has run (see `_sharedLodMinSamples`).
+ */
+export function cloudLodMinSamplesLive(): number {
+  return _lodMinOverride > 0 ? _lodMinOverride : _sharedLodMinSamples;
+}
+
+/**
+ * Mirror of the last value written to the uniform, so the getter needs no handle.
+ *
+ * 🐛 MUST NOT be initialised from `LOD_MIN_SAMPLES_NEAR`. This module and `earthClouds.ts`
+ * import from each other, so at module-evaluation time that binding is still in its
+ * temporal dead zone and reading it throws `Cannot access 'LOD_MIN_SAMPLES_NEAR' before
+ * initialization` before the first frame ever renders. ⚠ `tsc` cannot see module-eval
+ * order across an import cycle and passes clean — this class of crash is only findable by
+ * running the app. 0 until `update()` writes the real value on frame 1, which the getter
+ * reports honestly rather than inventing a default.
+ */
+let _sharedLodMinSamples = 0;
 
 // =============================================================================
 // Phase D — Cloud pipeline (two-pass architecture, MRT marcher)
@@ -599,6 +642,10 @@ export function setupCloudPipeline(
       LOD_MIN_SAMPLES_FAR,
       altT,
     );
+    // ⚠ AFTER the lerp, because the lerp runs every frame and would overwrite a
+    // uniform written from the console. Same shape as the atmosphere's K override.
+    _sharedLodMinSamples = shared.uLodMinSamples.value;
+    if (_lodMinOverride > 0) shared.uLodMinSamples.value = _lodMinOverride;
 
     // ── L4 ship→cloud occluder: position (ship ≈ camera, earth-model — the
     // tmpEarthCam just computed above) + the near-slab uniform gate. ──

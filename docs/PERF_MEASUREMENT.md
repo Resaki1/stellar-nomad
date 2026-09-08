@@ -409,6 +409,184 @@ marching scenarios with a flat control, and it deleted the running-`t` footgun t
 invisible-atmosphere bug. The toggle stays because the corrected model says the win is
 hardware-dependent — a different GPU or driver could move it either way.
 
+### 2026-09-08 — `__lum.cloudIters()`: the numeric march readback, to SIZE empty-space skipping
+
+Built before the feature, because the feature's evidence is void. `CLOUD_REVIEW` X4 calls
+empty-space skipping "the highest-confidence structural item" on the strength of case #22
+(`LOD_STEP_GROWTH` 400→4000 "moved FPS by zero" ⇒ rays are `lodCap`-bound). At earth_8
+`lodCap` = **1.17**, so `lodScale` saturates 0.42 km in and growth **cannot bind** — the
+null was guaranteed by the pose — and it used the `p50` fps that read 138 fps on a 120 Hz
+display. ⇒ **No measurement of wasted empty-space work has ever existed.**
+
+**Usage:** set `DEBUG_VIZ = "stats"` in `earthClouds.ts`, reload, then `await
+__lum.cloudIters()`. Reports per-ray primary / dense / skip steps, probes paid, **probes
+wasted**, the exit-reason split, and the fraction of rays pinned at the 256-step budget.
+
+Design points that matter:
+- 🔑 **RAW counts, not normalised.** The sparse RT is RGBA16F, whose 11 significant bits
+  hold every integer to 2048 exactly; the max packed value is 1026. **Verified lossless
+  across all 771 `wastedProbes·4 + exitReason` combinations** (and 2049 is the first
+  integer fp16 loses, confirming the headroom). The existing `"iters"` viz divides by
+  `MAX_PRIMARY_STEPS` and throws the number away — which is exactly why case #22 had no
+  diagnosis.
+- ⚠ **Reads the SPARSE RT, not the composite target.** The counters are written by the
+  marcher; the temporal reconstruction blends them against history, the composite runs a
+  25-tap Gaussian over them, and the tone curve is nonlinear. Raw integers have to be read
+  where they are written, so the harness gained a second source (`setCloudStatsSource`,
+  republished every frame because the sparse RTs ping-pong on frame parity).
+- ⚠ **A build const, not a uniform.** The two new counters sit in the hot march loop;
+  gating them in JS keeps the shipped shader byte-identical so the measurement cannot
+  perturb what it measures. Reload-only is fine — pose epoch v2 makes `__bench.run`
+  reproducible across reloads.
+- ✅ **It refuses to report** when >1% of samples are non-integers, which can only mean the
+  wrong RT / wrong mode / a filtered copy. That is the null measurement the four
+  degenerate `limbScan` versions all lacked.
+
+**The decision rule, written down before the data arrives:**
+
+| `wasted / probed` | reading |
+|---|---|
+| > 50% | build the distance field — this is what Nubis³ turned into 4.2 → 1.3 ms |
+| 25–50% | worth doing, but expect well under 3.2×; check `at budget` first |
+| < 25% | **aimed at the wrong thing** — read the exit reasons and the step cap instead |
+
+⚠ And if >10% of rays are pinned at the 256-step budget, a skip win partly converts into
+*extra sampling* rather than frame time, so **quality will change too** — plan for that
+rather than discovering it.
+⚠ Run at **both** `earth_horizon_8` and `earth_8`: `lodCap` is 1.17 at the nadir and 53.3
+at the horizon, so the two arms of the LOD `min()` swap between them and a single pose
+cannot generalise.
+
+### ✅✅ RESULT 2026-09-08 — THE CLOUD PIPELINE IS 33–38% OF THE FRAME, 4–6× the review's figure
+
+Three arms, one session, one build (`a6293ca-dirty`), same epoch, frame **mean**, all
+`settled: true`, all `bi` ≤ 1.02. Both controls flat on GPU.
+
+| scenario | baseline | `cloudMarch(false)` | `CLOUD_ABLATE` | **march** | **recon+comp** | **PIPELINE** | share |
+|---|---|---|---|---|---|---|---|
+| `earth_horizon_8` | 27.25 | 17.74 | 16.76 | **9.50** | 0.99 | **10.49** | **38.5%** |
+| `earth_8` | 26.70 | 18.52 | 17.09 | **8.18** | 1.43 | **9.62** | **36.0%** |
+| `earth_horizon_25` | 24.10 | 18.38 | 16.16 | **5.72** | 2.22 | **7.94** | **32.9%** |
+| `earth_750` (control) | 18.50 | 18.31 | 18.64 | — | — | **+0.14** | ✅ flat |
+| `deep_space` (control) | 9.84 | 10.01 | 11.31 | — | — | +1.47 ⚠ CPU | ✅ GPU flat |
+
+**Control GPU spread across arms: `deep_space` 2.0%, `earth_750` 3.6%.** The ablations are
+clean. Verified structurally too: in the pipeline arm the `2a cloud marcher` and
+`2c reconstruction` labels **disappear from the pass list entirely**, and `earth_750` shows
+the 2D shell only, exactly as designed.
+
+⇒ **The review's "+2.35 ms" and the v2 straddle's "+1.60 ms" were floors of a floor, as
+predicted.** The real cost is **4–6× larger**. And `earth_horizon_8` is confirmed the worst
+case (27.25 > 26.70 > 24.10) with the largest cloud cost, consistent with its 42–96×
+longer in-slab path.
+
+⚠⚠ **THE 134 M-TAP PREDICTION WAS WRONG IN MAGNITUDE — recon+composite is only 9–28% of
+the pipeline, not the majority.** The design pass argued from tap counts (composite 110.7 M
++ reconstruction 23.6 M against the loop's 88–199 M) that a march-only bypass would leave
+most of the cost running. Measured: the **march loop is 72–91%**. The prediction did carry
+its own caveat ("taps are not milliseconds — the BSM was mis-ranked this way twice"), and
+that caveat was the accurate part. 🔑 **But building two dials was still the right call for
+the right reason** — not because the tap argument was correct, but because it turned the
+split from an assumption into a measurement. Had we built one dial we would now be quoting
+either 9.6 ms or 8.2 ms as "the clouds" with no way to tell which.
+
+🔑 The march share *falls* with altitude (90.6% → 85.1% → 72.0% from horizon_8 → earth_8 →
+horizon_25) while recon+composite rises in absolute terms (0.99 → 1.43 → 2.22 ms). The two
+fullscreen passes are resolution-bound and roughly fixed; the loop is path-length bound.
+So the higher you go, the more the *fixed* half dominates — which is where `CLOUD_MAX_DPR`
+and `CLOUD_DENOISE_RADIUS` would pay, and where the march-budget knobs would not.
+
+### ✅ RESOLVED — the "regression" was THERMAL, and `earth_750` is now the thermometer
+
+Re-run from a cold machine, same build:
+
+| | pre-unroll v2 baseline | hot (arms 1–3) | **cold** |
+|---|---|---|---|
+| `earth_750` frame mean | 14.30 | 18.50 | **14.39** (+0.09) |
+| `earth_750` atmosphere pair | 14.57 | 19.73 | **14.63** (+0.06) |
+| `deep_space` frame mean | 8.33 | 9.84 | **8.34** (+0.01) |
+
+⇒ **`MARCH_UNROLL_2` is cleared**; the atmosphere lands within 0.06 ms of a baseline taken
+before it existed. The CPU drift (3.4 → 6.3 ms) was thermal too — cold `cpuTotalMs` is
+3.21/3.42. Not a leak.
+
+🔑🔑 **THE CLOUD RESULT SURVIVES INTACT, AND THE CONTROL IS WHY.** `earth_750` reads
+**18.50 / 18.31 / 18.64** across the three arms — spread **1.8%** — so the machine was
+equally hot for all three and did not cool between them. The deltas were all taken at one
+thermal state.
+
+⚠ **A correction to how the previous entry reasoned:** it said "two flat controls argue
+against thermal carrying 8 ms." Wrong. Flat controls *across arms* prove the **ablation**
+is clean; they say nothing about the **absolute level**. Within-session comparability and
+absolute validity are different properties and were conflated. The cold re-run separated
+them.
+
+**Thermal factor: 18.50/14.39 = 1.286 on frame, 32.47/24.83 = 1.308 on GPU.** Roughly a
+uniform clock scaling on GPU-bound work, so the *shares* are thermal-invariant and 33–38%
+stands. The absolutes are hot and divide down:
+
+| scenario | cloud cost, hot | cold estimate |
+|---|---|---|
+| `earth_horizon_8` | 10.49 | ~8.1 ms |
+| `earth_8` | 9.62 | ~7.4 ms |
+| `earth_horizon_25` | 7.94 | ~6.1 ms |
+
+⚠ A second, independent estimate disagrees: yesterday's cold clouds-on baseline (18.56)
+minus today's clouds-off scaled to cold (13.1) gives **~5.5 ms**. So the cold cloud cost is
+**5.5–7.5 ms** and ÷1.286 is not precise enough to settle it. Still **2.3–3.2×** the
+review's +2.35 ms either way. Re-run the three arms cold to pin it.
+
+🔑 **`earth_750` IS A THERMOMETER — use it as one.** 14.39 cold vs 18.5 throttled is a clean
+4 ms separation on a scenario with no clouds and no ambiguity. **Run it FIRST in every arm:
+under ~15 ms = cold enough to trust, over ~16 = throttled, stop and wait.** ⚠⚠ And do NOT
+run a warm-up sweep to "avoid throttling mid-test" — it does the opposite, putting the
+machine at its hottest for the first arm, and the spread it introduces (28.6%) is larger
+than most effects being chased.
+
+### ⚠ SUPERSEDED — the regression hypothesis this replaced (kept for the reasoning)
+
+**`earth_750` — a clouds-OFF control — is +4.20 ms slower than the v2 baseline** (18.50 vs
+14.30), and its atmosphere passes account for it almost exactly: `1.5 atmosphere` +
+`1.6 atmo apply` went **14.56 → 19.73 ms (+5.17)**. `deep_space` is +1.51 ms. The whole GPU
+baseline is up: `earth_750` GPU mean 24.50 → **32.47 (+33%)** on a scenario with no clouds
+at all.
+
+🔑 **The suspect is concrete and I predicted this exact failure mode.** The v2 baseline
+sweep (09-07 12:16) **predates `MARCH_UNROLL_2`**, which was written that afternoon and is
+in `a6293ca`. Its comment warns: *"the failure mode to expect is occupancy, and it would
+read as SLOWER … two steps in flight doubles the live values across the fetch group."* The
+09-07 A/B measured it at **−0.23…−0.32 ms** — but only at `earth_8` and `earth_horizon_8`,
+**never at a mid-altitude pose**, and `earth_750` is where the atmosphere is the dominant
+consumer.
+
+⚠ The alternative is thermal: the author ran a full warm-up sweep immediately *before* arm
+1, so arm 1 ran on the hottest machine. Two things argue against it carrying 8 ms — both
+controls' GPU is flat *within* the session, and thermal drift would not spare
+`deep_space`'s GPU (8.31/8.48/8.33) while costing `earth_750` 33%.
+
+**The decisive test, and it is cheap — do this before any cloud optimisation:**
+```bash
+# from a COLD machine, no warm-up sweep, fresh reload
+await __bench.run("earth_750"); await __bench.run("deep_space")
+```
+If `earth_750` returns to ~14.30 it was thermal and the commit is clean. If it stays near
+18.50, flip `MARCH_UNROLL_2` to `false`, reload, and re-run it — that either clears the
+unroll or convicts it. ⚠ Until this is settled, **today's absolute ms belong to today's
+session only.** The cloud *shares* (33–38%) survive either way, because they are
+within-session ratios with flat controls.
+
+🔑 **The sharpest single piece of evidence that a session-level term exists:** today's
+`earth_8` with the **whole cloud pipeline off** is **17.09 ms**, which is *faster* than
+yesterday's baseline **with clouds on** (18.56). If clouds cost 9.62 ms, yesterday's
+clouds-on frame would have had to be ≥ 26.7 ms. It was 18.56. Both cannot be true of the
+same machine and build.
+
+⚠ **CPU drift, second-order but real:** `cpuTotalMs` rises monotonically across the arms
+(+0.38 to +2.43 ms), which is why `deep_space`'s frame moved 9.84 → 11.31 while its GPU
+stayed at 8.3. The cloud rows are GPU-bound (GPU ≫ frame) so their deltas are safe, and the
+drift biases them **against** finding a saving — the true cloud cost is ≥ what is tabled.
+Worth a look on its own: 3.4 → 6.3 ms of JS per frame across three reloads is not nothing.
+
 ### ❌ RESULT — step count is NOT a lever, and the 0.247 ms/step model is FALSIFIED
 
 Five-point ladder at earth_8, `__lum.atmoSteps(n)`, frame **mean**:

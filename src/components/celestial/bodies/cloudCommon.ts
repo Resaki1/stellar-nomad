@@ -126,6 +126,41 @@ export const CLOUD_SUN_SCALE = 0.223; // = albedo/π. × sunIlluminance × T(clo
 // Runtime-only in BOTH consumers (farCloudLit here and the marcher's dense
 // branch), nothing baked, so a plain uniform keeps near and far in lockstep.
 export const uCloudSunScale = uniform(CLOUD_SUN_SCALE);
+
+/**
+ * ── PERF ABLATION: the primary march loop (`__lum.cloudMarch(false)`) ────────
+ * 1 = march, 0 = the loop breaks on iteration 1.
+ *
+ * ⚠⚠ THIS PRICES THE MARCH LOOP, **NOT** THE CLOUD PIPELINE, and conflating the two is
+ * the mistake this dial exists to make impossible. The reconstruction and composite
+ * passes have **zero data-dependent control flow** — `cloudReconstructionPass.ts` has no
+ * `If`/`Loop`/`Discard` at all, and `buildCompositeFetch` unrolls its (2r+1)² taps at
+ * graph-build time — so both run at full cost in the bypass arm. Tap budget at
+ * 2438×1816: composite 25 × 4.43 Mpx = **110.7 M**, reconstruction 12 × 1.97 Mpx =
+ * **23.6 M**, against the loop's 88–199 M. For the whole pipeline use
+ * `CLOUD_ABLATE_DIAGNOSTIC` in SpaceRenderer instead.
+ *
+ * ✅ MEASURED 2026-09-08, and the tap argument was WRONG IN MAGNITUDE: the surviving
+ * passes are only **9–28%** of the pipeline (0.99 / 1.43 / 2.22 ms at horizon_8 / earth_8 /
+ * horizon_25), not the majority. The loop is **72–91%**. Keeping both dials was still the
+ * right call — it turned the split into a measurement instead of an assumption — but do
+ * not re-derive a ranking from tap counts. That has now been wrong three times here.
+ * ⚠ Taps are not milliseconds — the loop's are 3D fetches into 128³/64³ volumes with
+ * poor locality, the composite's a coherent 2D RGBA16F neighbourhood. The BSM was
+ * mis-ranked this way twice, 3× wrong both times. Ablate; do not weigh taps.
+ *
+ * 🔑 Consumed as `mix(tStart − 1, tExit, uCloudActive)` at the loop's exit test ONLY.
+ * `tExit` has three readers (`slabLen`/`lodCap`, the `pFar` coverage tap, and that exit
+ * test); leaving the first two on the original keeps `lodCap`, `dtSkip`, all three
+ * weather-map taps and the STBN dither BIT-IDENTICAL across arms. It is pure arithmetic
+ * on an existing scalar, so it needs no new scope — and a `uniform.and(...)` in the
+ * condition would have been WRONG: TSL `and` compiles to WGSL `&&`, which short-circuits,
+ * so it would have skipped the hoisted coverage taps and silently changed the baseline.
+ */
+export const uCloudActive = uniform(1);
+export function setCloudMarchActive(on: boolean): void {
+  uCloudActive.value = on ? 1 : 0;
+}
 export function setCloudSunScale(scale: number): void {
   uCloudSunScale.value = scale;
 }

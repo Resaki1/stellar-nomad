@@ -97,6 +97,7 @@ import {
 import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
   uCloudSunScale,
+  uCloudActive,
   CLOUD_SKY_SCALE,
   CLOUD_SKY_AMBIENT,
   COVERAGE_GAMMA,
@@ -437,7 +438,17 @@ const LOD_STEP_GROWTH = 400;
 // lever). FAR_ALT 800 → 200 so the floor is reached across the valley; FAR
 // floor 24 → 8 (sweet spot by eye: no visible cloud loss, ~69 → ~87 fps). NEAR
 // stays 60 for detection (Issue ④). Going below 8 risks thin-cloud detection.
-export const LOD_MIN_SAMPLES_NEAR = 60;
+// ⬇ 60 → 40 on 2026-09-08 from a measured ladder + an author quality check. MEASURED at
+// earth_8 (cold, thermometer both ends): frame 19.751 → 19.076 = **−0.675 ms, 3.4% of
+// frame**, with the DENSE (actual cloud) sample count unchanged at 6.8/ray — the saving
+// comes entirely out of empty skip traversal, not out of cloud sampling.
+// ⚠ 40 is a QUALITY floor, not a perf one: 24 measured better still (−0.818 ms) but the
+// author saw degradation at some distances below 40. The remaining perf headroom in this
+// constant is ~0.14 ms and it is spent.
+// ⚠ Below ~24 the dial is inert anyway — `lodCap` stops binding because
+// `1 + t·LOD_STEP_GROWTH` reaches it beyond the 7 km chord (verified: lod 24 → 8 moves the
+// frame −0.005 ms). See docs/CLOUD_REVIEW_2026-09.md §1c/§1d.
+export const LOD_MIN_SAMPLES_NEAR = 40;
 // 8 → 16 (2026-07-12, damascus-rings transition-band insurance): with the
 // shell hand-off now at 250–700 km (SHELL_HANDOFF_*), the volumetric is only
 // partially visible in that band, but 8 samples/slab there still let its lit
@@ -1170,7 +1181,21 @@ const DEBUG_VIZ:
   | "detailShadow"
   | "weatherRaw"
   | "convType"
-  | "shipShadow" = "off";
+  | "shipShadow"
+  // ⚠⚠ "stats" IS NOT A VISUALISATION — it is a NUMERIC readback, and the screen is
+  // garbage while it is on. It packs RAW counter values (not normalised) into the sparse
+  // cloud RT for `__lum.cloudIters()` to read back and aggregate.
+  //
+  // 🔑 IT EXISTS BECAUSE `"iters"`, `"lod"` AND `"whyStop"` EMIT COLOUR AND NOTHING ELSE,
+  // and that is precisely why case #22's `LOD_STEP_GROWTH` 400→4000 null had no diagnosis
+  // (docs/CLOUD_REVIEW_2026-09.md X4, and see §1a). You cannot size empty-space skipping
+  // from a red-vs-green picture.
+  //
+  // ⚠ A BUILD CONST, NOT A UNIFORM, ON PURPOSE: the two extra counters sit in the hot
+  // march loop, so gating them in JS means the shipped shader is byte-identical and the
+  // measurement cannot perturb the thing it measures. Reload-only is acceptable —
+  // pose epoch v2 makes `__bench.run` reproducible across reloads.
+  | "stats" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
 // truth for the marcher, the far shell, and the light-volume bake.
@@ -2660,6 +2685,15 @@ export function marchCloudVolume({
     // these stay 0, which correctly reads as "march never engaged".
     const primaryIters = float(0).toVar();
     const denseIters = float(0).toVar();
+    // ── DEBUG_VIZ "stats" counters — emitted ONLY in that mode (see the union) ──
+    // `probeIters`  = iterations that passed the `profile > 0.01` gate and therefore paid
+    //                 the cheap 3D probe (~4-6 texture3D taps).
+    // `wastedProbes`= those of them, in SKIP mode, that found no cloud. 🔑 THIS IS THE
+    //                 QUANTITY EMPTY-SPACE SKIPPING WOULD DELETE, and nothing has ever
+    //                 measured it — the review's confidence in that feature rests instead
+    //                 on a null that was guaranteed by `lodCap = 1.17` at earth_8.
+    const probeIters = float(0).toVar();
+    const wastedProbes = float(0).toVar();
     // Why the march ended (DEBUG_VIZ='whyStop'): 0 = ran out of the 96-step
     // budget (cutoff), 1 = exited the slab (saw the whole path), 2 = went
     // opaque (blocked by cloud — correct). Default 0 = budget. Function-scope
@@ -2806,8 +2840,20 @@ export function marchCloudVolume({
       const t = tStart.toVar();
       const emptyStreak = float(0).toVar();
 
+      // ── PERF ABLATION: `uCloudActive` = 0 breaks the loop on iteration 1 ──────
+      // 🔑 SUBSTITUTED HERE AND NOWHERE ELSE. `tExit` has three readers — `slabLen`
+      // (hence `lodCap`, `:2403`), the `pFar` coverage tap (`:2549`) and this exit test.
+      // Leaving the first two on the raw `tExit` keeps `lodCap`, `dtSkip`, all three
+      // weather-map taps and the STBN dither BIT-IDENTICAL across arms, so the delta is
+      // the loop and only the loop. Pure arithmetic on an existing scalar: no new scope,
+      // and deliberately NOT `cond.and(uniform)` — TSL `and` is WGSL `&&`, which
+      // short-circuits, and would have skipped the hoisted coverage taps.
+      // ⚠ Bypass-arm outputs stay well-defined: T stays 1 ⇒ alpha 0, firstHitT stays −1,
+      // the premultiply yields vec4(0), the MRT write is unchanged, composite blends
+      // transparent. See uCloudActive for why this is NOT a whole-pipeline ablation.
+      const tExitMarch = mix(tStart.sub(float(1)), tExit, uCloudActive);
       Loop(MAX_PRIMARY_STEPS, () => {
-        If(t.greaterThan(tExit), () => {
+        If(t.greaterThan(tExitMarch), () => {
           exitReason.assign(1);
           Break();
         });
@@ -2996,6 +3042,23 @@ export function marchCloudVolume({
           // World-anchored (projected to the inner shell → a 2D pattern on
           // the sphere, not volume noise). ONE fetch, four consumers: coverage
           // placement (below), topAlt jitter, turret mask, anvil skirt.
+          // ⚠⚠ THE MOST EXPENSIVE THING EVERY MARCH STEP PAYS, and it is NOT hoistable.
+          // It is a texture3D on 100% of steps (this block is live: WEATHER_V2 = true),
+          // unlike the cheap probe's taps which only 17% of steps reach. MEASURED texel
+          // scale: the 62.5 km tile over a 128³ volume = **488 m of arc** on the inner
+          // shell, and it depends on DIRECTION only, so radial motion is projected out.
+          // Arc swept by one ray, hence texels crossed:
+          //   earth_8 centre px    0 m       0 texels  ← the only hoistable case
+          //   earth_8 frame edge   4.5–5.4 km   9–11
+          //   earth_horizon_8      319 km       654
+          // ⇒ A per-ray hoist buys only the near-axial pixel; direction quantisation
+          // buys nothing (the fetch instruction still executes, and neighbouring texels
+          // are already cache-warm). Both were considered and dropped — see
+          // docs/CLOUD_REVIEW_2026-09.md §1g.
+          // 🔑 What IS left on the table: at earth_8 the skip step is 113–151 m against a
+          // 488 m texel, so this field is OVERSAMPLED 3–4× at nadir (and undersampled ~8×
+          // at the horizon, where the step is 3.7 km). Reuse across ~3 steps, bounded by
+          // the texel size, is the only version of "cheaper steps" the geometry supports.
           mesoTap = texture3D(
             baseVolume,
             dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
@@ -3128,6 +3191,10 @@ export function marchCloudVolume({
         // outer fringes of the slab (above/below the active cloud-type band)
         // skip 3D taps entirely.
         If(profile.greaterThan(0.01), () => {
+          // ⚠ Gated in JS, so this emits NOTHING unless DEBUG_VIZ === "stats" — the
+          // shipped shader must stay byte-identical or the counter changes the cost it
+          // is there to measure.
+          if ((DEBUG_VIZ as string) === "stats") probeIters.addAssign(1);
           // ── Cheap probe: Schneider macro shape (no detail erosion) ──
           // Used by both modes. In skip mode it's the only volume sample
           // taken; in dense mode it feeds into the detail-erosion pipeline.
@@ -4392,6 +4459,21 @@ export function marchCloudVolume({
         // dense mode, count it. After EMPTY_THRESHOLD empties, drop back to
         // skip mode. Skip mode never increments the streak (no need —
         // already at the cheap rate).
+        if ((DEBUG_VIZ as string) === "stats") {
+          // 🔑 A SKIP-MODE STEP THAT PAID THE PROBE AND FOUND NOTHING = pure waste, and
+          // the exact work a distance field would remove. Conditions: no hit this step,
+          // in skip mode, and `profile > 0.01` so the probe was actually paid — a step
+          // below that gate already costs no 3D taps and is NOT waste.
+          If(
+            hitThisStep
+              .lessThan(0.5)
+              .and(stepMode.lessThan(0.5))
+              .and(profile.greaterThan(0.01)),
+            () => {
+              wastedProbes.addAssign(1);
+            },
+          );
+        }
         If(hitThisStep.lessThan(0.5), () => {
           If(stepMode.greaterThan(0.5), () => {
             emptyStreak.addAssign(1);
@@ -4579,6 +4661,30 @@ export function marchCloudVolume({
         .clamp(0, 1);
       return {
         rgba: vec4(primaryNorm, denseNorm, float(0), float(1)),
+        tFront: float(0),
+      };
+    }
+    if ((DEBUG_VIZ as string) === "stats") {
+      // ── RAW counters for `__lum.cloudIters()`. NOT a picture. ──────────────
+      // 🔑 RAW, not normalised, and that is the whole point: the sparse cloud RT is
+      // RGBA16F, whose 11 significant bits hold every integer up to 2048 EXACTLY. Every
+      // value here is ≤ 1026, so the readback is lossless and the harness gets counts,
+      // not colours. The existing "iters" mode divides by MAX_PRIMARY_STEPS and throws
+      // the number away — that is why it could never diagnose anything.
+      //
+      // A packs two values because all four channels are spoken for:
+      //   A = wastedProbes·4 + exitReason,  exitReason ∈ {0 budget, 1 slab, 2 opaque}
+      // Decode: wasted = floor(A/4), reason = A − 4·wasted. Max 256·4 + 2 = 1026 < 2048.
+      //
+      // ⚠ Returned BEFORE the premultiply and the `uVolumetricBlend`/`farFade` scaling at
+      // the bottom of this function — those would silently scale the counts.
+      return {
+        rgba: vec4(
+          primaryIters,
+          denseIters,
+          probeIters,
+          wastedProbes.mul(4).add(exitReason),
+        ),
         tFront: float(0),
       };
     }

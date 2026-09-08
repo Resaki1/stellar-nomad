@@ -195,7 +195,14 @@ import {
   setErosionScale,
   setShellOpticalPath,
 } from "@/components/celestial/bodies/earthClouds";
-import { setCloudSunScale } from "@/components/celestial/bodies/cloudCommon";
+import {
+  setCloudSunScale,
+  setCloudMarchActive,
+} from "@/components/celestial/bodies/cloudCommon";
+import {
+  cloudLodMinSamplesLive,
+  setCloudLodMinSamples,
+} from "@/components/space/cloudFullscreenPass";
 import {
   adaptationTarget,
   getVeilFeedback,
@@ -350,6 +357,25 @@ export function setLumSource(
 
 export function clearLumSource(): void {
   _source = null;
+}
+
+/**
+ * The marcher's own sparse output RT, for `__lum.cloudIters()`.
+ *
+ * ⚠⚠ A SECOND SOURCE IS NEEDED BECAUSE `_source` IS THE POST-COMPOSITE TARGET. The
+ * cloud counters are written by the marcher into the sparse RT and would be destroyed by
+ * everything after it — the temporal reconstruction blends them against history, the
+ * composite runs a 25-tap Gaussian over them, and the tone curve is nonlinear. Reading
+ * raw integers requires reading them where they are written.
+ */
+let _cloudStatsRt: { renderer: WebGPURenderer; target: RenderTarget } | null = null;
+
+export function setCloudStatsSource(
+  renderer: WebGPURenderer,
+  target: RenderTarget,
+): void {
+  if (_cloudStatsRt?.renderer === renderer && _cloudStatsRt.target === target) return;
+  _cloudStatsRt = { renderer, target };
 }
 
 /**
@@ -3417,6 +3443,273 @@ export class LumHarness {
       ].join("\n"),
     );
     return { apResScale: v, ringScreenPx: ringPx, ringMarchPx: ringPx * eff };
+  }
+
+  /**
+   * NUMERIC cloud march-step statistics — the readback that `DEBUG_VIZ = 'iters'` and
+   * `'whyStop'` never had.
+   *
+   *     await __lum.cloudIters()
+   *
+   * ⚠⚠ REQUIRES `DEBUG_VIZ = "stats"` in earthClouds.ts AND A RELOAD, and the screen is
+   * garbage while it is set. It is a build const on purpose: the two extra counters live
+   * in the hot march loop, so gating them in JS keeps the shipped shader byte-identical
+   * and stops the measurement perturbing what it measures.
+   *
+   * 🔑🔑 WHAT IT IS FOR: sizing empty-space skipping BEFORE building it. That feature is
+   * called "the highest-confidence structural item" in CLOUD_REVIEW X4, but its evidence
+   * is void — case #22 raised `LOD_STEP_GROWTH` 400→4000, saw "FPS moved by zero", and
+   * concluded the rays are `lodCap`-bound. At earth_8 `lodCap` = **1.17**, so `lodScale`
+   * saturates 0.42 km into the ray and growth CANNOT bind; the null was guaranteed by the
+   * pose. It also used the `p50`-derived fps that read 138 fps on a 120 Hz display.
+   *
+   * The number that decides the design is **wasted / probed**: a skip-mode step that
+   * passed the `profile > 0.01` gate, paid ~4-6 `texture3D` taps, and found nothing. High
+   * ⇒ build the distance field (Nubis³ got 4.2 → 1.3 ms this way). Low, with
+   * `atBudget` high ⇒ the rays are step-cap bound and the lever is the step schedule and
+   * `MAX_PRIMARY_STEPS` instead, not a distance field.
+   *
+   * ⚠ Reads the SPARSE RT, where the marcher writes — not the composite target, whose
+   * temporal blend, 25-tap Gaussian and tone curve would destroy integers.
+   * ⚠ Aggregates only pixels that actually marched (`primary > 0`); a pixel that missed
+   * the slab breaks on iteration 1 and would drag every mean toward zero.
+   */
+  async cloudIters(): Promise<Record<string, unknown>> {
+    const src = _cloudStatsRt;
+    if (!src) {
+      console.log("[lum] no cloud stats RT registered — is a cloud pipeline active?");
+      return { ok: false };
+    }
+    const { renderer, target } = src;
+    const W = Math.min(target.width, 512);
+    const H = Math.min(target.height, 512);
+    const ox = Math.max(0, Math.floor((target.width - W) / 2));
+    const oy = Math.max(0, Math.floor((target.height - H) / 2));
+    const buf = (await renderer.readRenderTargetPixelsAsync(
+      target,
+      ox,
+      oy,
+      W,
+      H,
+    )) as unknown as Uint16Array;
+    const stride = rowStrideElements(W, 2);
+
+    const primary: number[] = [];
+    let dense = 0;
+    let probed = 0;
+    let wasted = 0;
+    let atBudget = 0;
+    const reasons = [0, 0, 0];
+    let marched = 0;
+    let nonInteger = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * stride + x * 4;
+        const p = halfToFloat(buf[i]);
+        if (!(p > 0)) continue;
+        marched++;
+        // ⚠ THE DEGENERACY CHECK. Every packed value is an integer ≤ 1026, which RGBA16F
+        // stores exactly. A non-integer means we are NOT reading the marcher's counters —
+        // wrong RT, wrong DEBUG_VIZ, or a filtered/blended copy — and every statistic
+        // below would be fiction. This is the null measurement the four degenerate
+        // limbScan versions all lacked.
+        const a = halfToFloat(buf[i + 3]);
+        const d = halfToFloat(buf[i + 1]);
+        const pr = halfToFloat(buf[i + 2]);
+        if (
+          Math.abs(p - Math.round(p)) > 1e-3 ||
+          Math.abs(a - Math.round(a)) > 1e-3
+        ) {
+          nonInteger++;
+        }
+        primary.push(p);
+        dense += d;
+        probed += pr;
+        const w = Math.floor(a / 4);
+        wasted += w;
+        const reason = Math.round(a - 4 * w);
+        if (reason >= 0 && reason <= 2) reasons[reason]++;
+        if (p >= 255.5) atBudget++;
+      }
+    }
+    if (marched === 0) {
+      console.log(
+        "[lum] no marching pixels in the read window. Point at the cloud deck, and\n" +
+          "      confirm DEBUG_VIZ = \"stats\" is set in earthClouds.ts (needs a reload).",
+      );
+      return { ok: false, marched: 0 };
+    }
+    if (nonInteger > marched * 0.01) {
+      console.error(
+        `[lum] ❌ ${nonInteger}/${marched} samples are NOT integers — this is not the\n` +
+          "      marcher's counter output. DEBUG_VIZ must be \"stats\" (and reloaded).\n" +
+          "      Every number below would be fiction; refusing to report.",
+      );
+      return { ok: false, nonInteger, marched };
+    }
+    primary.sort((a2, b2) => a2 - b2);
+    const q = (f: number) => primary[Math.min(primary.length - 1, Math.floor(f * primary.length))];
+    const meanPrimary = primary.reduce((a2, b2) => a2 + b2, 0) / primary.length;
+    const wastedFrac = probed > 0 ? wasted / probed : 0;
+    const skipSteps = meanPrimary - dense / marched;
+    // ⚠ STAMP THE POSE. The first two runs of this gate had to have their pose supplied
+    // by hand afterwards, and the reading depends on it completely — lodCap is 1.17 at the
+    // nadir and 53.3 at the horizon. A diagnostic that does not record its own conditions
+    // is an anecdote (same lesson as `gitState` on the bench report).
+    const rec = getDominantAtmosphereBody();
+    const altKm = rec ? rec.distanceKm - rec.params.groundRadiusKm : Number.NaN;
+    console.log(
+      `[lum] cloud march steps over ${marched.toLocaleString()} marching px ` +
+        `(${W}x${H} of the ${target.width}x${target.height} sparse RT)\n` +
+        `      pose: ${rec?.id ?? "none"} at ${Math.round(altKm)} km alt, ` +
+        `uLodMinSamples = ${cloudLodMinSamplesLive().toFixed(0)}`,
+    );
+    console.table({
+      "primary steps": {
+        mean: +meanPrimary.toFixed(1),
+        p50: q(0.5),
+        p95: q(0.95),
+        max: primary[primary.length - 1],
+      },
+      "dense steps": { mean: +(dense / marched).toFixed(1) },
+      "skip steps (primary − dense)": { mean: +skipSteps.toFixed(1) },
+      "cheap-probe steps": { mean: +(probed / marched).toFixed(1) },
+      "WASTED probes": { mean: +(wasted / marched).toFixed(1) },
+    });
+    console.log(
+      [
+        `      🔑 WASTED / PROBED = ${(100 * wastedFrac).toFixed(1)}%  ` +
+          `(${(wasted / marched).toFixed(1)} of ${(probed / marched).toFixed(1)} probes per ray)`,
+        wastedFrac > 0.5
+          ? "         ⇒ over half of all paid 3D probes find nothing. A distance field\n" +
+            "            removes this work; Nubis³ measured 4.2 → 1.3 ms doing exactly it."
+          : wastedFrac > 0.25
+            ? "         ⇒ a real but not dominant share. Worth doing; expect well under the\n" +
+              "            3.2x Nubis³ reports, and check `at budget` before committing."
+            : "         ⇒ LOW. Empty-space skipping is aimed at the wrong thing at this pose —\n" +
+              "            read `at budget` and the exit reasons instead.",
+        "      ⚠⚠ `cheap-probe steps` IS NOT \"steps that pay 3D taps\". EVERY march step\n" +
+        "         already pays a `mesoTap` texture3D into baseVolume plus a `wTap` weather\n" +
+        "         texture2D plus an equirect atan/asin, all BEFORE this gate — they sit\n" +
+        "         under `if (WEATHER_V2 || MESOSCALE_TEST)`, and WEATHER_V2 is true. So the\n" +
+        "         3D-tap rate is 100%, not this number. (The envelope-warp taps at\n" +
+        "         earthClouds.ts:2977-2988 are NOT emitted — TAKRAM_ENVELOPE_WARP = false.)\n" +
+        "         ⇒ `wasted/probed` bounds the CHEAP PROBE only. It does not bound the cost\n" +
+        "         a skip structure would remove, because a removed step also removes its\n" +
+        "         unconditional mesoTap + wTap + transcendentals.",
+        `      exit reason:  budget ${((100 * reasons[0]) / marched).toFixed(1)}%  ` +
+          `slab ${((100 * reasons[1]) / marched).toFixed(1)}%  ` +
+          `opaque ${((100 * reasons[2]) / marched).toFixed(1)}%`,
+        `      at the ${256}-step budget: ${((100 * atBudget) / marched).toFixed(1)}% of rays`,
+        atBudget > marched * 0.1
+          ? "         ⚠ A tenth or more of rays are CAP-bound, so they never reach the far\n" +
+            "            side of the slab. Skipping empty space frees budget those rays will\n" +
+            "            spend on cloud — expect quality to CHANGE, not just frame time."
+          : "         Few rays are cap-bound, so a skip win should read as frame time rather\n" +
+            "            than as extra sampling.",
+        "      ⚠ Run at BOTH earth_horizon_8 and earth_8 — lodCap is 1.17 at the nadir and\n" +
+          "        53.3 at the horizon, so the two arms of the LOD min() swap between them.",
+      ].join("\n"),
+    );
+    return {
+      ok: true,
+      pose: {
+        body: rec?.id ?? null,
+        altitudeKm: altKm,
+        lodMinSamples: cloudLodMinSamplesLive(),
+      },
+      marched,
+      primary: { mean: meanPrimary, p50: q(0.5), p95: q(0.95), max: primary[primary.length - 1] },
+      densePerRay: dense / marched,
+      probedPerRay: probed / marched,
+      wastedPerRay: wasted / marched,
+      wastedOverProbed: wastedFrac,
+      atBudgetFrac: atBudget / marched,
+      exitReason: {
+        budget: reasons[0] / marched,
+        slab: reasons[1] / marched,
+        opaque: reasons[2] / marched,
+      },
+    };
+  }
+
+  /**
+   * `uLodMinSamples` override — the minimum number of samples the march is asked to take
+   * through the slab. 0 restores the authored altitude lerp (60 near deck → 16 high).
+   *
+   *     __lum.cloudLod(40)   // ask for 40 instead of 60
+   *     __lum.cloudLod(0)    // back to authored
+   *
+   * 🔑🔑 THE MEASURED LEVER. `__lum.cloudIters()` at earth_8 reads **86.4 primary steps
+   * per ray to produce 4.2 dense cloud samples** — 95% traversal overhead — with only
+   * **8.1% of steps paying any 3D tap** and **1.5% of steps being wasted probes**. So the
+   * step count is not the cost of discovering empty space; `lodCap =
+   * slabLen/(dtSkip · uLodMinSamples)` binds (1.17 at the nadir) and pins it to this
+   * value. **This dial is the step count.**
+   *
+   * ✅ MEASURED, AND IT IS NOT THE SAMPLE-COUNT TRADE IT LOOKS LIKE. Across 60 → 40 → 24
+   * the DENSE (actual cloud) sample count is **invariant**: 6.8 / 6.8 / 6.8 at earth_8 and
+   * 4.2 / 4.1 / 4.0 at earth_horizon_8. All of the reduction comes out of EMPTY skip
+   * steps (58.1 → 42.0 at earth_8). So cloud interiors are sampled identically.
+   * ⚠ What can still move is cloud-FRONT localisation: a coarser skip step detects the
+   * front later, and the rewind is `dtSkipInBand × 0.5`, so edges may shift by up to half
+   * a skip step. `probed` falls slightly too (10.9 → 10.1). Check edges, not interiors.
+   *
+   * ⚠⚠ IT IS ALSO MUCH WEAKER THAN THE RATIO SUGGESTS: 60 → 24 is 2.5× fewer requested
+   * samples but only **−25% steps at earth_8 and −13% at earth_horizon_8**, because the
+   * OTHER arm of `min(1 + t·LOD_STEP_GROWTH, lodCap)` takes over. `lodScale` is floored at
+   * 1, i.e. `dtSkip = SKIP_STEP_SCALED = 100 m`, and over earth_8's 7 km chord
+   * `LOD_STEP_GROWTH = 400` barely grows. ⇒ **The effective quantity is `dtSkip · lodScale`
+   * (~117 m at earth_8), and the step count is `slabLen / that`.** Those two constants are
+   * the real controls; this dial only lifts the cap off them.
+   * ⚠ Measure at BOTH poses: lodCap is 1.17 at the nadir and 53.3 at the horizon.
+   * ⚠⚠ AND SET `DEBUG_VIZ` BACK TO `"off"` BEFORE ANY TIMING RUN — in `"stats"` mode the
+   * marcher skips its whole colour assembly, so the frame cost is not the shipping cost.
+   */
+  cloudLod(n = 0): Record<string, unknown> {
+    const v = Math.max(0, Math.min(256, Math.round(n)));
+    setCloudLodMinSamples(v);
+    console.log(
+      `[lum] uLodMinSamples ${v === 0 ? "= AUTHORED lerp (60 near → 16 far)" : `forced to ${v}`}\n` +
+        "      Re-run await __lum.cloudIters() to confirm the step count actually moved —\n" +
+        "      at a pose where lodCap does not bind, this dial is a null by construction.",
+    );
+    return { lodMinSamples: v };
+  }
+
+  /**
+   * Cloud MARCH-LOOP ablation — the cloud analogue of `atmoBypass`, with one crucial
+   * difference spelled out because it is the whole point of the dial.
+   *
+   *     __lum.cloudMarch(false)   // the primary march loop breaks on iteration 1
+   *     __lum.cloudMarch(true)    // restore
+   *
+   * ⚠⚠ THIS IS NOT A CLOUD-PIPELINE ABLATION. `atmoBypass` prices the whole atmosphere
+   * because for the atmosphere the two passes ARE the subsystem. Here they are not: the
+   * reconstruction and composite passes have **zero data-dependent control flow**, so
+   * both keep running at full cost — MEASURED at 2438x1816, composite 25 taps x 4.43 Mpx
+   * = 110.7 M and reconstruction 12 x 1.97 Mpx = 23.6 M, i.e. **~134 M taps survive**,
+   * against the loop's 88-199 M. Reading this delta as "the clouds are cheap" would
+   * repeat the error CLOUD_REVIEW section 1 already made off the 750/650 straddle.
+   * ⇒ For the whole pipeline use the `CLOUD_ABLATE_DIAGNOSTIC` build const in
+   * SpaceRenderer.tsx, which is the true analogue of `BSM_ABLATE_DIAGNOSTIC`.
+   *
+   * 🔑 The ablation is clean by construction: only the loop's exit test reads the
+   * modified `tExit`, so `lodCap`, `dtSkip`, all three weather-map taps and the STBN
+   * dither are bit-identical across arms.
+   * ⚠ Read frame MEAN, check `bimodality` <= 1.1, and verify the controls did not move:
+   * `deep_space` and `earth_750` must be flat, and `2c reconstruction` / `3 cloud
+   * composite` must NOT move under this dial. If they do, the ablation is dirty.
+   */
+  cloudMarch(on = true): Record<string, unknown> {
+    setCloudMarchActive(on);
+    console.log(
+      `[lum] cloud march loop: ${on ? "ON" : "OFF (breaks on iteration 1)"}\n` +
+        "      \u26a0 This prices the MARCH LOOP only \u2014 reconstruction and composite still\n" +
+        "        run at full cost (~134 M taps). For the whole pipeline set\n" +
+        "        CLOUD_ABLATE_DIAGNOSTIC = true in SpaceRenderer.tsx and reload.",
+    );
+    return { cloudMarch: on };
   }
 
   /**
