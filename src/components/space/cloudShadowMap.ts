@@ -325,6 +325,45 @@ export type CloudShadowMap = {
   dispose: () => void;
 };
 
+// ── BSM bake-cache telemetry (DIAGNOSTIC ONLY — read via `__lum.bsm()`) ──
+// ✅ MEASURED 2026-09-09, and the cache HOLDS: 1/312 re-bakes standing still,
+// 381/4695 (8.1%) while flying, and every one of those was `snap` — the camera
+// crossing a texel cell. `trigSun` is 0.
+// ❌ I predicted the opposite and was wrong by 20 orders of magnitude. The
+// argument was: real ephemeris rotates the sun in Earth's body frame at
+// 7.29e-5 rad/s ⇒ 1.22e-6 rad/frame ⇒ |Δdir|² ≈ 1.48e-12 vs the 1e-12 epsilon,
+// so the cache would miss every frame. Measured max |Δdir|² = 1.54e-32, i.e.
+// |Δdir| ≈ 1.5e-16 rad — f64 rounding. ⇒ Earth's rotation does not reach this
+// vector between frames at anything like the sidereal rate. **Do not "fix" this
+// epsilon; it is not the bottleneck.**
+// 🔑 What the BSM_ABLATE_DIAGNOSTIC A/B then priced was NOT the bake (cached
+// ~100% of a stationary bench) but the CONSUMERS + the every-frame 1×1 ship
+// probe: frame mean 14.811 → 13.596 ms at earth_750 (−1.215 ms) and
+// 18.194 → 17.507 at earth_8 (−0.687 ms), ablated arm run second/hotter so the
+// bias is against the delta. Keep these counters: they are what stops the next
+// reader from re-deriving my error.
+export const bsmBakeStats = {
+  calls: 0,
+  rebakes: 0,
+  trigSnap: 0,
+  trigSun: 0,
+  trigUv: 0,
+  trigRadius: 0,
+  trigUnstable: 0,
+  maxSunDeltaSq: 0,
+};
+
+export function resetBsmBakeStats(): void {
+  bsmBakeStats.calls = 0;
+  bsmBakeStats.rebakes = 0;
+  bsmBakeStats.trigSnap = 0;
+  bsmBakeStats.trigSun = 0;
+  bsmBakeStats.trigUv = 0;
+  bsmBakeStats.trigRadius = 0;
+  bsmBakeStats.trigUnstable = 0;
+  bsmBakeStats.maxSunDeltaSq = 0;
+}
+
 export function createCloudShadowMap(
   deps: CloudShadowMapDeps,
 ): CloudShadowMap | null {
@@ -699,13 +738,22 @@ export function createCloudShadowMap(
     // (the floating origin shifts its translation) and that leaves ~1e-12 jitter in
     // the rotation part. 1e-12 on a squared distance ≈ 1e-6 rad — far below
     // anything visible, far below any real sun motion.
-    if (
-      snapX !== _bakedSnapX ||
-      snapY !== _bakedSnapY ||
-      _sunDirEarth.distanceToSquared(_bakedSunDir) > 1e-12 ||
-      !uCloudUvOffset.value.equals(_bakedUvOffset) ||
-      (U.outerRadius.value as number) !== _bakedOuterRadius
-    ) {
+    const _sunDeltaSq = _sunDirEarth.distanceToSquared(_bakedSunDir);
+    const _dSnap = snapX !== _bakedSnapX || snapY !== _bakedSnapY;
+    const _dSun = _sunDeltaSq > 1e-12;
+    const _dUv = !uCloudUvOffset.value.equals(_bakedUvOffset);
+    const _dRadius = (U.outerRadius.value as number) !== _bakedOuterRadius;
+    if (Number.isFinite(_sunDeltaSq)) {
+      bsmBakeStats.maxSunDeltaSq = Math.max(
+        bsmBakeStats.maxSunDeltaSq,
+        _sunDeltaSq,
+      );
+    }
+    if (_dSnap) bsmBakeStats.trigSnap++;
+    if (_dSun) bsmBakeStats.trigSun++;
+    if (_dUv) bsmBakeStats.trigUv++;
+    if (_dRadius) bsmBakeStats.trigRadius++;
+    if (_dSnap || _dSun || _dUv || _dRadius) {
       _bakeDirty = true;
     }
     _pendingSnapX = snapX;
@@ -719,6 +767,9 @@ export function createCloudShadowMap(
     // the existing map is already the exact image they would redraw. See the
     // bake-cache note above. Worth 1.7–2.4 ms.
     const rebake = _bakeDirty || fieldUnstable;
+    bsmBakeStats.calls++;
+    if (rebake) bsmBakeStats.rebakes++;
+    if (fieldUnstable) bsmBakeStats.trigUnstable++;
     if (rebake) {
       renderer.setRenderTarget(bsmRT);
       renderer.render(scene, bakeCamera);

@@ -37,6 +37,45 @@ have already been caught lying about shipped values — `CLOUD_VS_TAKRAM.md` §5
 
 ---
 
+## 1i. ❌❌ EMPTY-SPACE SKIPPING KILLED IN SCOPING — the topAlt jitter blocks it
+
+`jitterTopAlt` adds **±6 km** of top-altitude variation on a **488 m** horizontal scale
+(`TOPALT_JITTER_AMOUNT = 0.8` over a 15 km band, driven by `mesoG` whose texels are 488 m),
+plus up to **+4.5 km** from `TURRET_RISE`. ⇒ **A conservative bound over any footprint is
+nearly the band ceiling** (map B = 0.5: evaluated top 7.83 km, bounded 14.84 km, ceiling
+16.00), so neither a pre-loop clip nor a min/max pyramid can skip much.
+
+🔑🔑 **And the root error in the scope was mine: "80.6% skippable" is NOT "clippable by
+altitude envelope".** The `profile > 0.01` band is 1.42 km while `[base, top]` spans 6.18 km
+— **4.4× wider** — because `heightProfile` tapers *inside* the envelope. Even a perfect
+evaluated clip saves **0.39 ms**, against the plan's own 0.8 ms kill line.
+
+⇒ The 2.18 ms oracle bound stands but needs **inverting the profile LUT**, not clipping the
+envelope — and that still meets the jitter. The clean fix is the one the references actually
+use: **resolve the jitter at BAKE time** so the height field has a tight per-texel min/max.
+Nubis³ builds its distance field over *height data*, not over a coverage map with a runtime
+±6 km jitter on top. Full reasoning: `docs/CLOUD_SKIP_PLAN.md` §3b.
+
+---
+
+## 1h. (superseded by 1i) SCOPED — the plan was Phase-1-clip-first. See docs/CLOUD_SKIP_PLAN.md
+
+The ceiling survived its kill test (a perfect oracle needs **14.2 steps at earth_8 vs 53.2
+today = 36 steps = 2.18 ms**, inside the independently-derived 2.06–2.96 ms), and the
+skippable fraction is larger than anyone assumed: **80.6% of a nadir chord and 91.5% of a
+horizon chord carry no cloud** (`profile ≤ 0.01`).
+
+🔑🔑 **But at nadir poses the ray crosses < 0.3 of a weather texel, so ONE pre-loop tap gets
+almost the whole win.** Phase 1 is therefore a per-ray altitude-envelope clip — no pyramid,
+no bake, no new texture, ~1 day — and the pyramid becomes Phase 2, only for rays whose
+direction sweeps more than a texel.
+
+⚠⚠ And the plan names the trap that would have halved it: clipping `[tEnter, tExit]`
+shortens `slabLen`, which feeds `lodCap = max(1, slabLen/(dtSkip · uLodMinSamples))`, so the
+step *shrinks*. At earth_8 the chord falls 5.2× but the step count only 3.7×.
+
+---
+
 ## 1g. ❌ LEVER B (tap reuse) DROPPED — refuted by its own texel arithmetic
 
 I pitched it on "the same two taps are re-fetched ~65× for essentially one texel". Checked

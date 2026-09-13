@@ -123,10 +123,13 @@ const BSM_FADE_BAND_KM = 400;
 // skipping the block leaves `bsmStrength = 0`, which closes the `strength > 0` gate in the
 // atmosphere march, the planet surface penumbra and the ship lighting alike.
 //
-// ✅ MEASURED 2026-08-13: **the BSM costs 2.8–3.7 ms** (≈2.5–3.4 after backing out the
-// ring-gate confound). earth_8 15.30 → 11.60, earth_30 15.70 → 12.10, earth_650
-// 11.30 → 8.50. Control group perfect: every `bsmStrength = 0` row moved exactly 0.00.
-// **This is the largest single item left in the frame.**
+// ⚠ SUPERSEDED 2026-09-09 — THE BAKE CACHE DEMOTED THIS PASS; do not optimise it.
+// 2026-08-13 (pre-cache, bake ran every frame): 2.8–3.7 ms. earth_8 15.30 → 11.60.
+// 2026-09-09 (post-cache): earth_8 18.194 → 17.507 = **0.687 ms**, earth_750 14.811 →
+// 13.596 = 1.215 ms, frame MEANS, ablated arm run second/hotter so the bias is against
+// the delta. The 5.4× drop is the cache: `__lum.bsm()` measures 0.3% re-bakes standing
+// still, 8.1% flying (all `snap`), so the 1.7–2.4 ms bake is simply not running.
+// ⇒ Bake work left to harvest while flying = 0.081 × 2.4 ≈ **0.19 ms**. Not a lever.
 //
 // It also settled which of three mutually-inconsistent claims was right: the reported
 // `1b beer shadow map` 12.20 ms is a PHANTOM (3.6× inflated), and the per-march taps
@@ -168,8 +171,10 @@ const CLOUD_ABLATE_DIAGNOSTIC = false;
 //
 // ✅ MEASURED 2026-08-13 (earth_8: full 15.30, this 14.00, all-off 11.60):
 //   **consumers 1.1–1.3 ms, BAKE 1.7–2.4 ms — the bake dominates.**
-// So the lever is `bakeCloudShadowMap` in cloudShadowMap.ts (BSM_MARCH_STEPS = 24,
-// BSM_SIZE = 512, or baking on alternate frames), NOT the consumers.
+// ⚠ THAT CONCLUSION INVERTED once the bake cache landed. With the bake cached ~100% of a
+// stationary bench, the 2026-09-09 full ablation reads 0.687 ms at earth_8 — i.e. almost
+// all of what is left IS the consumers. "Bake on alternate frames" is already achieved by
+// the cache; the only bake cost still paid is the 8.1% re-bake rate while flying.
 //
 // ⚠ AND THE THIRD WRONG PREDICTION ON THIS PASS. I predicted the bake at ~0.7 ms from
 // "512² × 24 = 6.29 M step-evals at 8.7 G step-evals/s". Actual: 2.40 ms. The 8.7 G/s

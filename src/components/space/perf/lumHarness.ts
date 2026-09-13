@@ -204,6 +204,11 @@ import {
   setCloudLodMinSamples,
 } from "@/components/space/cloudFullscreenPass";
 import {
+  bsmBakeStats,
+  resetBsmBakeStats,
+  BSM_HALF_EXTENT_KM,
+} from "@/components/space/cloudShadowMap";
+import {
   adaptationTarget,
   getVeilFeedback,
   setVeilFeedback,
@@ -3701,6 +3706,65 @@ export class LumHarness {
    * `deep_space` and `earth_750` must be flat, and `2c reconstruction` / `3 cloud
    * composite` must NOT move under this dial. If they do, the ablation is dirty.
    */
+  /**
+   * Beer-shadow-map bake-cache hit rate.
+   *
+   *     __lum.bsm()        // report since the last reset
+   *     __lum.bsm(true)    // report, then reset the counters
+   *
+   * ✅ ANSWERED 2026-09-09 — KEPT AS A REGRESSION GUARD, NOT AS AN OPEN QUESTION.
+   * The cache HOLDS: 1/312 re-bakes standing still, 381/4695 (8.1%) while flying, all
+   * of them `snap` (camera crossing a 5.86 km texel cell). `trigSun` = 0.
+   *
+   * ❌ I built this expecting the opposite and was wrong by 20 orders of magnitude.
+   * The prediction was that real ephemeris rotates the sun in Earth's body frame at
+   * 7.29e-5 rad/s => 1.22e-6 rad/frame => |Ddir|^2 ~ 1.48e-12 against the 1e-12
+   * epsilon, so the cache would miss EVERY frame. Measured max = 1.54e-32, i.e.
+   * |Ddir| ~ 1.5e-16 rad, which is f64 rounding: Earth's rotation does not reach this
+   * vector between frames. **Do not "fix" the epsilon.**
+   * ⚠ The tell I ignored: `1b beer shadow map` reading 0.60-0.99 ms while `2p noise
+   * bake` read 0.000 proves the pass ENTERED, not that it re-rendered — the cached
+   * path still switches render target for the 1x1 ship probe, and at gpu/frame > 1.15
+   * that number is queue depth anyway. A pass label is not a cache-miss counter.
+   *
+   * 🔑 So what BSM_ABLATE_DIAGNOSTIC prices is the CONSUMERS + the every-frame ship
+   * probe, not the bake: frame mean 14.811 -> 13.596 ms at earth_750 (-1.215 ms, and
+   * clouds are not even visible there) and 18.194 -> 17.507 at earth_8 (-0.687 ms).
+   * ⚠ `trigSnap` is not independent of the sun in principle - the snap basis is derived
+   * FROM the sun direction, so a rotating sun would sweep the |camera| ~ 6379 km lever
+   * arm across texel cells. Measured, that term is inert too.
+   */
+  bsm(reset = false): Record<string, unknown> {
+    const st = { ...bsmBakeStats };
+    const rate = st.calls > 0 ? st.rebakes / st.calls : 0;
+    const texelKm = (2 * BSM_HALF_EXTENT_KM) / 512;
+    // Sun motion needed to trip the current 1e-12 epsilon, as an angle.
+    const epsDeg = (Math.sqrt(1e-12) * 180) / Math.PI;
+    console.log(
+      `[lum] BSM bake cache: ${st.rebakes}/${st.calls} calls re-baked ` +
+        `(${(rate * 100).toFixed(1)}%)\n` +
+        `      triggers  snap=${st.trigSnap}  sun=${st.trigSun}  uv=${st.trigUv}  ` +
+        `radius=${st.trigRadius}  unstable=${st.trigUnstable}\n` +
+        `      max |dSunDir|^2 seen = ${st.maxSunDeltaSq.toExponential(3)} ` +
+        `vs epsilon 1.000e-12 (= ${epsDeg.toFixed(6)} deg of sun motion)\n` +
+        `      texel = ${texelKm.toFixed(2)} km; a 0.25 deg sun error moves a 16 km-top ` +
+        `shadow 70 m = ${((0.07 / texelKm) * 100).toFixed(1)}% of a texel\n` +
+        (rate > 0.5
+          ? "      \u26a0\u26a0 CACHE IS NOT CACHING \u2014 this is a REGRESSION. Baseline is 0.3%\n" +
+            "         standing still and 8.1% flying, all `snap`. Read the trigger counts.\n"
+          : "      \u2705 cache is holding (baseline: 0.3% still, 8.1% flying, all `snap`).\n") +
+        "      \u26a0 Price the pass itself with BSM_ABLATE_DIAGNOSTIC = true in\n" +
+        "        SpaceRenderer.tsx (cold, earth_750 as thermometer first).",
+    );
+    if (reset) resetBsmBakeStats();
+    return {
+      ...st,
+      rebakeRate: rate,
+      texelKm,
+      epsilonSunDeg: epsDeg,
+    };
+  }
+
   cloudMarch(on = true): Record<string, unknown> {
     setCloudMarchActive(on);
     console.log(
