@@ -563,14 +563,6 @@ export function deriveTopAlt(coverage: Node, colSample: Node): Node {
 //    threshold intersects the base on a near-horizontal plane = a CLEANLY
 //    SLICED FLAT TOP. Bending to 1 − x² meets the base on a CURVED locus = an
 //    organic rounded dome.
-// The base the PROFILE actually uses — extracted 2026-09-13 because it was inline here
-// and silently DIFFERENT from `columnBaseN`, which cost a diagnostic a full cycle.
-// ⚠⚠ THE TWO BASES DISAGREE AND BOTH ARE LIVE. `columnBaseN` collapses to the constant
-// CONVECTIVE_BASE_N (BASE_TOPALT_COUPLING = 0); this one still top-tracks at low
-// convectivity, and `.max(0)` drops it BELOW CONVECTIVE_BASE_N once topN < 0.107.
-// MEASURED 2026-09-13 (`__lum.cloudEnvViol`): 4.25% of steps at earth_8 sit below
-// `columnBaseN` yet carry profile > 0.01 — i.e. inside THIS base's support. This one
-// shapes the rendered density; use it for anything reasoning about where cloud can be.
 // ── Conservative UPPER bound on topAlt over a footprint (CLOUD_SKIP_PLAN §5.3) ──
 // Given the MAX of each input over some solid-angle footprint (plus convMin, because the
 // jitter term is decreasing in conv when gMax < 0.5), returns a topAlt that no column in
@@ -578,7 +570,7 @@ export function deriveTopAlt(coverage: Node, colSample: Node): Node {
 // turretMask a product of smoothsteps, finalizeTopAlt slopes 1 then TOPALT_KNEE_SLOPE —
 // so bounding each input bounds the result.
 // ⚠ LOOSE BY DECORRELATION: bMax and gMax are taken independently though the real fields
-// are correlated, so this is valid but not tight. Phase 0b measures exactly that gap.
+// are correlated, so this is valid but not tight. MEASURED cost: 0.5% of retention.
 // ⚠ Mirrors the LIVE branch of deriveColumnV2: ANVIL is false, so riseMask = turretT.
 // If ANVIL is ever re-enabled this must gain the skirt term or it stops being a bound.
 export function topAltBoundFromMaxima(
@@ -603,14 +595,6 @@ export function topAltBoundFromMaxima(
   return finalizeTopAlt(t);
 }
 
-export function profileBaseN(topN: Node, convectivity: Node): Node {
-  return mix(
-    clamp(topN, 0, 1).sub(float(STRATIFORM_THICKNESS_N)),
-    float(CONVECTIVE_BASE_N),
-    clamp(convectivity, 0, 1),
-  ).max(float(0));
-}
-
 export function cloudHeightProfile(
   alt01: Node,
   topAlt: Node,
@@ -628,7 +612,18 @@ export function cloudHeightProfile(
     // Clamp baseN ≥ 0: a low stratiform column (topN < STRATIFORM_THICKNESS_N,
     // now reachable since the topN floor dropped to 0.10) would otherwise place
     // its base below the slab floor → the sheet sits ON the floor instead.
-    const baseN = profileBaseN(topN, convectivity);
+    // ⚠⚠ UNIFIED 2026-09-14 — this used to derive its OWN base inline, and it was a
+    // DIFFERENT base from `columnBaseN`, which the lighting/shape axis (`columnAltNorm`),
+    // the first-dense `lastBaseN` capture and the km-anchored vertical-probability band
+    // all use. So the density and the lighting disagreed about where a column starts.
+    // 🔑 Case #26 set BASE_TOPALT_COUPLING = 0 (a SHARED condensation level, physical:
+    // cloud base is the lifting condensation level, set by the airmass, not by how tall
+    // the cloud grew — which is why fair-weather cumulus have flat bottoms). That fix
+    // reached `columnBaseN` and never reached here, so the RENDERED bases still tracked
+    // each column's own top at low convectivity, jitter and all.
+    // ⚠ At coupling = 1 this is EXACTLY the old inline formula, so the dial spans
+    // "identical to before" → "physical".
+    const baseN = columnBaseN(topAlt, convectivity);
     const span = topN.sub(baseN).max(float(0.001));
     const altNorm = alt01.sub(baseN).div(span);
     return profileLUTRowSample(altNorm, convectivity);
@@ -934,7 +929,13 @@ export function shapeAlteringFunction(heightFraction: Node, bias: Node): Node {
 // TRADE-OFF at 0: stratiform thinness used to come from the thin span, so a
 // low-convectivity region with a HIGH top now reads as a deep slab rather than a
 // high thin sheet. If stratus decks read too thick, raise toward 0.3-0.5.
+// ✅ CONFIRMED BY EYE 2026-09-14 at 0 (flat shared base) after the density path was
+// unified onto this function — see cloudHeightProfile. A temporary uniform was used to
+// compare 0 / 0.4 / 1 and then removed: as a LITERAL 0 both mixes below constant-fold and
+// `columnBaseN` collapses to a constant, which is cheaper than the top-tracking mix the
+// density profile used to evaluate on every march step.
 export const BASE_TOPALT_COUPLING = 0.0;
+
 
 export function columnBaseN(topAltForBase: Node, cloudType: Node): Node {
   const baseRef = clamp(topAltForBase, 0, 1);

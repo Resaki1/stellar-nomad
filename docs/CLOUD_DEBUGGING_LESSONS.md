@@ -2972,3 +2972,56 @@ rather than restoring the full coupling.
   confident one.** The perspective theory was wrong, but it predicted "curvature
   flattens with distance", which took seconds to refute — versus the four earlier
   theories that each cost a full measurement cycle.
+
+---
+
+## Case study #27 — case #26's fix never reached the code that draws the clouds (2026-09-14)
+
+**Symptom: none reported.** This was found sideways, while building a diagnostic for the
+empty-space skip: a counter that tested "is this step below the column base" disagreed with
+the density on **4.25% of steps at earth_8**, in a direction that should have been
+impossible. The tell was a fraction that could not exist, not anything visible.
+
+**Root cause: TWO cloud-base functions, both live, computing different answers.**
+
+| used `columnBaseN` | used its own inline base |
+|---|---|
+| `columnAltNorm` → `altNVar`, the **lighting/shape** axis | `cloudHeightProfile` → the **density** profile |
+| `lastBaseN`, the first-dense base capture | |
+| the km-anchored vertical-probability band | |
+
+⚠ It was NOT a renderer-coherence bug — marcher, far shell, BSM bake and light volume all
+call `cloudHeightProfile`, so they agreed with each other. The split was INSIDE the
+marcher: **the lighting and the density disagreed about where a column starts.**
+
+🔑 Case #26 set `BASE_TOPALT_COUPLING = 0` — a shared condensation level, and the physical
+answer: cloud base is the LIFTING CONDENSATION LEVEL, set by the airmass's temperature and
+humidity, not by how tall a cloud grew. (It is why fair-weather cumulus have famously flat
+bottoms and wildly varied tops.) That change reached `columnBaseN`. It never reached
+`cloudHeightProfile`, which kept deriving `(topN − STRATIFORM_THICKNESS_N)` inline — so
+**the RENDERED bases still tracked each column's own top at low convectivity, jitter and
+all.** Case #26's measured "field-wide base spread 10.74 km → 0.00 km" was true of the
+function it edited and inert for what you actually saw.
+
+**Fix:** `cloudHeightProfile` now calls `columnBaseN`; the inline duplicate is deleted.
+✅ Verified by algebra before shipping: at coupling = 1 the unified path is EXACTLY the old
+inline formula, term for term — so the change spans "provably identical to before" →
+"physical", and the trade-off can be dialled rather than argued. Confirmed by eye at 0.
+✅ Cheaper, too: as a literal 0 both mixes constant-fold and `columnBaseN` collapses to a
+constant, replacing a top-tracking mix the density evaluated on every march step.
+
+### Lessons
+
+- 🔑 **A fix is not landed until it reaches the code that DRAWS.** Case #26 edited a
+  function, measured that function, and recorded a number that was real for the function
+  and meaningless for the image. Before claiming a fix, follow the value to the pixel.
+- 🔑 **Duplicated derivations diverge silently and asymmetrically.** The two bases agreed
+  for convective columns (both `CONVECTIVE_BASE_N`) and disagreed only for stratiform —
+  so anything spot-checked on cumulus looked fine. Call the shared function; do not
+  re-derive a formula that already exists, even when it is three lines.
+- ⚠ **An "impossible" fraction is a better bug report than a visual complaint.** Nobody
+  had reported ragged stratiform bases. A control that said `outside ⊆ empty` must hold,
+  and then measured 4.25% of steps violating it, found this without anyone looking at it.
+- ⚠ **When a unification changes appearance, find the parameter value that makes it a
+  provable no-op first.** Shipping "unified AND retuned" in one step makes any regression
+  unattributable.

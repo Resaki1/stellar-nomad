@@ -196,6 +196,8 @@ import {
   setShellOpticalPath,
 } from "@/components/celestial/bodies/earthClouds";
 import {
+} from "@/components/celestial/bodies/cloudShared";
+import {
   setCloudSunScale,
   setCloudMarchActive,
   setCloudEmptySkip,

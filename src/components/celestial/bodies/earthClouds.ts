@@ -79,7 +79,6 @@ import {
   takramDensity,
   columnAltNorm,
   columnBaseN,
-  profileBaseN,
   topAltBoundFromMaxima,
   SLAB_SPAN_KM,
   TAKRAM_SHAPE_TAP_SCALE,
@@ -3329,10 +3328,11 @@ export function marchCloudVolume({
         // the taper INSIDE the envelope that §3b found, and it is not recoverable by
         // ANY altitude bound — measuring it decides the whole feature.
         if ((DEBUG_VIZ as string) === "envstats") {
-          // ⚠ `profileBaseN`, NOT `columnBaseN` — MEASURED 2026-09-13: the two differ,
-          // and using columnBaseN over-counted "below base" by 4.25% of steps at earth_8
-          // (they sit below it but still inside the profile's support).
-          const baseN = profileBaseN(topAlt, profileConv);
+          // ✅ Since the 2026-09-14 unification `cloudHeightProfile` derives its base from
+          // this same `columnBaseN`, so the diagnostic and the density agree by
+          // construction. (Before that they differed and this over-counted "below base"
+          // by 4.25% of steps at earth_8 — the tell that found the split.)
+          const baseN = columnBaseN(topAlt, profileConv);
           If(altitude01.greaterThan(topAlt), () => {
             aboveTopIters.addAssign(1);
           });
