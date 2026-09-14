@@ -4,6 +4,7 @@
  * See `docs/PERF_MEASUREMENT.md`. Exposed on `window.__bench` by `DevTools.tsx`.
  *
  *   await __bench.run("earth_650")   // one scenario → stats object
+ *   await __bench.runMany([ids])     // a CHOSEN set → ONE report object
  *   await __bench.sweep()            // every scenario, printed as a table
  *   __bench.lastJson                 // copy-pasteable JSON of the last run
  *   __bench.warp("earth_8")          // just fly there and stay
@@ -536,6 +537,61 @@ export class BenchRunner {
       const result = await this.measure(scenario, opts);
       return this.finish(id, [result]);
     } finally {
+      this.endSession();
+      this.running = false;
+    }
+  }
+
+  /**
+   * Measure a CHOSEN set of scenarios and return ONE report containing all of them.
+   *
+   *     await __bench.runMany(["earth_750", "earth_8", "earth_horizon_8"])
+   *     await __bench.runMany([...], "skip-on")   // label the arm
+   *
+   * 🔑 Why this exists: chaining `await __bench.run(a); await __bench.run(b)` in one
+   * console line prints only the LAST object, so an A/B of N poses meant N paste steps per
+   * arm. This yields a single object (and a single `__bench.lastJson`) per arm.
+   * ⚠ Every id is validated BEFORE anything runs — a typo in the 5th id should not be
+   * discovered after four minutes of benching.
+   * ⚠ Scenarios run in the order given, and warp order affects the start state (see the
+   * drift warning in `finish`). Keep the order identical across the arms of an A/B.
+   */
+  async runMany(
+    ids: string[],
+    label = "selection",
+    options: BenchOptions = {},
+  ): Promise<BenchReport | null> {
+    const scenarios = ids.map((id) => findScenario(id));
+    const missing = ids.filter((_, i) => !scenarios[i]);
+    if (missing.length) {
+      console.error(
+        `[bench] unknown scenario(s): ${missing.join(", ")}. Try __bench.list()`,
+      );
+      return null;
+    }
+    if (!scenarios.length) {
+      console.error("[bench] runMany needs at least one scenario id.");
+      return null;
+    }
+    if (!this.guard()) return null;
+    const opts = { ...DEFAULTS, ...options };
+    this.running = true;
+    this.beginSession();
+    const results: ScenarioResult[] = [];
+    benchProgress.running = true;
+    benchProgress.total = scenarios.length;
+    try {
+      for (let i = 0; i < scenarios.length; i++) {
+        const sc = scenarios[i]!;
+        benchProgress.index = i + 1;
+        benchProgress.scenario = sc.id;
+        console.log(`[bench] (${i + 1}/${scenarios.length}) ${sc.id} — ${sc.what}`);
+        results.push(await this.measure(sc, opts));
+      }
+      return this.finish(label, results);
+    } finally {
+      benchProgress.running = false;
+      benchProgress.phase = "";
       this.endSession();
       this.running = false;
     }

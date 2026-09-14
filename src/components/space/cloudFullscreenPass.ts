@@ -50,6 +50,17 @@ import {
   type CloudLightVolume,
 } from "./cloudLightVolume";
 import { createCloudShadowMap } from "./cloudShadowMap";
+import { setCloudSkipJitterAuto } from "@/components/celestial/bodies/cloudCommon";
+
+// ── Empty-space-skip ring dither (docs/CLOUD_SKIP_PLAN.md §5) ──
+// Altitude band over which the dither ramps. Tuned by eye 2026-09-14 while descending;
+// the artifact lives roughly 6785 → 6380 km from Earth's centre (≈414 → 9 km altitude).
+// ⚠ It costs ~j/2 of the skip's reach and the skip is worth MOST at altitude (longest
+// empty traverse), so this ramps rather than pinning 0.5 everywhere.
+const SKIP_JITTER_NEAR = 0.25; // at/below SKIP_JITTER_NEAR_ALT_KM
+const SKIP_JITTER_FAR = 0.5; // at/above SKIP_JITTER_FAR_ALT_KM
+const SKIP_JITTER_NEAR_ALT_KM = 30;
+const SKIP_JITTER_FAR_ALT_KM = 250;
 
 export const STBN_FRAME_MODULUS = 63;
 
@@ -646,6 +657,23 @@ export function setupCloudPipeline(
     // uniform written from the console. Same shape as the atmosphere's K override.
     _sharedLodMinSamples = shared.uLodMinSamples.value;
     if (_lodMinOverride > 0) shared.uLodMinSamples.value = _lodMinOverride;
+
+    // ── Empty-space-skip ring dither, altitude-adaptive (see uSkipJitter) ──
+    // 🔑 WHY IT SCALES WITH ALTITUDE: the rings are the `dtFoot` clamp, and the number of
+    // footprint-capped skips a ray takes before reaching the deck scales with the DISTANCE
+    // to the cloud band — i.e. with altitude. More capped segments ⇒ more ring boundaries
+    // ⇒ more dither needed to break them. MEASURED by eye while descending: 0.25 suffices
+    // low, 0.5 is needed high.
+    const jitT = THREE.MathUtils.clamp(
+      (altScaled - kmToScaledUnits(SKIP_JITTER_NEAR_ALT_KM)) /
+        (kmToScaledUnits(SKIP_JITTER_FAR_ALT_KM) -
+          kmToScaledUnits(SKIP_JITTER_NEAR_ALT_KM)),
+      0,
+      1,
+    );
+    setCloudSkipJitterAuto(
+      THREE.MathUtils.lerp(SKIP_JITTER_NEAR, SKIP_JITTER_FAR, jitT),
+    );
 
     // ── L4 ship→cloud occluder: position (ship ≈ camera, earth-model — the
     // tmpEarthCam just computed above) + the near-slab uniform gate. ──

@@ -14,6 +14,7 @@ import {
   positionWorld,
   cameraPosition,
   normalWorld,
+  cross,
   normalize,
   vec2,
   vec3,
@@ -39,6 +40,8 @@ import { PLANET_RADIUS_KM } from "@/sim/celestialConstants";
 import type { ExtraMeshContext, ExtraMeshDef } from "../types";
 import {
   getGpuCloudBaseVolume,
+  getGpuMesoMaxMip1,
+  MESO_MAX_RADIUS_KM,
   getGpuCloudDetailVolume,
   getGpuCloudDetailMip1,
   queueCloudBake,
@@ -76,6 +79,8 @@ import {
   takramDensity,
   columnAltNorm,
   columnBaseN,
+  profileBaseN,
+  topAltBoundFromMaxima,
   SLAB_SPAN_KM,
   TAKRAM_SHAPE_TAP_SCALE,
   TAKRAM_DETAIL_TAP_SCALE,
@@ -98,6 +103,11 @@ import { getSyntheticWeatherMapV2 } from "./weatherMapV2";
 import {
   uCloudSunScale,
   uCloudActive,
+  uEmptySkip,
+  uSkipFootScale,
+  uSkipJitter,
+  uSkipJitterFinalOnly,
+  uEnvProbeKm,
   CLOUD_SKY_SCALE,
   CLOUD_SKY_AMBIENT,
   COVERAGE_GAMMA,
@@ -1195,6 +1205,19 @@ const DEBUG_VIZ:
   // march loop, so gating them in JS means the shipped shader is byte-identical and the
   // measurement cannot perturb the thing it measures. Reload-only is acceptable —
   // pose epoch v2 makes `__bench.run` reproducible across reloads.
+  // ── Phase 0 of the bake-time max-topAlt field (docs/CLOUD_SKIP_PLAN.md §5.6) ──
+  // Counts, per ray: steps ABOVE the evaluated topAlt, steps BELOW the column base, and
+  // steps whose `profile <= 0.01`. Zero extra taps — every quantity is already computed.
+  // 🔑 Answers the ONE question that killed the previous scope: does the mechanism's own
+  // predicate (altitude vs envelope) actually bracket the empty steps, at ZERO slack?
+  | "envstats"
+  // Companion to "envstats": isolates the steps that VIOLATE `outside ⊆ empty`, which
+  // that mode's control flagged on 77% of px at earth_8. Packs the two violating
+  // populations separately so the culprit term is identified, not inferred.
+  | "envviol"
+  // Phase 0b (CLOUD_SKIP_PLAN §5.6): the CONSERVATIVE bound vs the exact test. Takes 4
+  // offset taps at `__lum.envProbe(km)` arc-radius to stand in for a max-mip query.
+  | "envslack"
   | "stats" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
@@ -2694,6 +2717,22 @@ export function marchCloudVolume({
     //                 on a null that was guaranteed by `lodCap = 1.17` at earth_8.
     const probeIters = float(0).toVar();
     const wastedProbes = float(0).toVar();
+    // DEBUG_VIZ "envstats" counters (CLOUD_SKIP_PLAN §5.6 Phase 0). Incremented only
+    // under a JS gate, so the shipped shader is byte-identical.
+    const aboveTopIters = float(0).toVar();
+    const belowBaseIters = float(0).toVar();
+    const emptyProfileIters = float(0).toVar();
+    // "envviol": steps OUTSIDE the envelope that nonetheless carry profile > 0.01.
+    const violAboveIters = float(0).toVar();
+    const violBelowIters = float(0).toVar();
+    // "envslack": steps the EXACT vs the CONSERVATIVE top test would each skip.
+    const exactAboveIters = float(0).toVar();
+    const boundAboveIters = float(0).toVar();
+    // The dilated MAX-reduction of the base volume — the conservative `mesoG` bound the
+    // empty-space skip queries. ⚠ Now fetched UNCONDITIONALLY: Phase 2 uses it in the
+    // shipped path, so calling this allocates the 64³ texture and queues its one-shot
+    // bake. Gate PASSED exact (0 of 67,108,864 child comparisons non-conservative).
+    const mesoMaxVolume = getGpuMesoMaxMip1();
     // Why the march ended (DEBUG_VIZ='whyStop'): 0 = ran out of the 96-step
     // budget (cutoff), 1 = exited the slab (saw the whole path), 2 = went
     // opaque (blocked by cloud — correct). Default 0 = budget. Function-scope
@@ -3181,6 +3220,209 @@ export function marchCloudVolume({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const profile: any = coverage.mul(heightProfile);
         maxProfile.assign(maxProfile.max(profile));
+
+        // ── CONSERVATIVE EMPTY-SPACE SKIP (docs/CLOUD_SKIP_PLAN.md §5, Phase 2) ──
+        // Bound topAlt over a footprint around this sample; if the ray is ABOVE that
+        // bound, no column in the footprint can hold cloud here, so advance to whichever
+        // comes first: the ray descending to the bound, or the ray leaving the footprint.
+        // MEASURED: this identifies 86% of horizon steps and 100% of straight-up steps as
+        // provably empty, at 98.5% / 100% of what a perfect (zero-slack) test would.
+        const emptySkipDist = float(0).toVar();
+        {
+          // Weather bound, offset in UV SPACE so it costs 4 texture2D taps and ZERO extra
+          // atan/acos — equirectDirToUv's transcendentals are already a per-step cost and
+          // re-projecting 4 directions would triple them. Bilinear attains its max over an
+          // axis-aligned UV box at a CORNER, so 4 corners is EXACT, not a sample.
+          // ⚠ cosLat guards the equirect pole singularity (longitude convergence).
+          const cosLat = float(1).sub(dirP.y.mul(dirP.y)).max(1e-4).sqrt();
+          const dTheta = float(kmToScaledUnits(MESO_MAX_RADIUS_KM)).div(uInnerRadius);
+          const du = dTheta.div(cosLat.mul(float(2 * Math.PI)));
+          const dv = dTheta.div(float(Math.PI));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let bMax: any = wTap.b;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let cMax: any = wTap.g;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let cMin: any = wTap.g;
+          for (const o of [
+            vec2(du, float(0)),
+            vec2(du.negate(), float(0)),
+            vec2(float(0), dv),
+            vec2(float(0), dv.negate()),
+          ]) {
+            const w2 = texture(weatherMap, uvP.add(o)).level(int(0)) as Node;
+            bMax = bMax.max(w2.b);
+            cMax = cMax.max(w2.g);
+            cMin = cMin.min(w2.g);
+          }
+          // ONE NEAREST tap. The reduction is DILATED by a one-voxel halo precisely so a
+          // single tap bounds a guaranteed MESO_MAX_RADIUS_KM around the sample — a plain
+          // 2³ reduction bounds only the block containing it, i.e. radius 0 at a block
+          // edge, which would make every skip distance below unsound.
+          const gMax = (
+            texture3D(
+              mesoMaxVolume,
+              dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
+            ).level(int(0)) as Node
+          ).g;
+          const topBound = topAltBoundFromMaxima(bMax, gMax, cMax, cMin);
+          const rBound = uInnerRadius.add(topBound.div(invSlabThickness));
+          // Ray geometry from THIS sample point. bp<0 ⇒ descending; otherwise the closest
+          // approach is behind us and r only grows.
+          const bp = dot(pEnv, rdEarth);
+          const disc = bp.mul(bp).sub(rEnv.mul(rEnv).sub(rBound.mul(rBound)));
+          const descends = bp.lessThan(0).and(disc.greaterThan(0));
+          // Never descends to the bound ⇒ the whole remaining slab is provably empty.
+          const dtDescend = descends.select(
+            bp.negate().sub(disc.max(0).sqrt()),
+            tExit.sub(t),
+          );
+          // ...and never advance past the radius one tap actually bounds. perp is the
+          // fraction of the step that sweeps ARC; it is ~0 looking straight up/down (no
+          // arc swept ⇒ the footprint never runs out) and ~1 at the horizon.
+          const cosRay = bp.div(rEnv);
+          const perp = float(1).sub(cosRay.mul(cosRay)).max(1e-8).sqrt();
+          const dtFoot = float(kmToScaledUnits(MESO_MAX_RADIUS_KM))
+            .mul(uSkipFootScale)
+            .div(perp.max(1e-4));
+          // ⚠⚠ DITHER THE FOOTPRINT GRID'S PHASE — see uSkipJitter.
+          // MEASURED 2026-09-14: the rings are the `dtFoot` clamp. Traversing empty space
+          // takes ceil(distance·perp / R) clamped skips, and `perp` depends only on the
+          // view ray's ANGLE, so the boundaries are screen-FIXED. `__lum.cloudSkipFoot`
+          // confirmed it: shrinking R moves the rings toward screen centre and tightens
+          // their spacing until they average away.
+          //
+          // 🔑🔑 JITTER WITH `dither`, NOT `stratJitter`, AND THIS IS THE WHOLE FIX.
+          // `stratJitter` is a golden-ratio additive recurrence — a LOW-DISCREPANCY
+          // sequence whose defining property is LOW VARIANCE WHEN SUMMED. Perfect for
+          // integrating density, useless here: the cumulative skip distance converges to
+          // its mean, so the ring boundaries stay put however hard each step is jittered
+          // (measured: still visible at j = 1.0, which already costs ~50% of the reach).
+          // `dither` is the raw per-pixel STBN tap, loop-INVARIANT, so it scales a whole
+          // ray's footprint grid by a per-pixel amount ⇒ neighbouring pixels put ring n at
+          // different radii ⇒ the bands break into blue noise the reconstruction's EMA
+          // removes. It also varies per frame (uStbnFrameSlice), so the EMA sees it move.
+          // ✅ Multiplying by (1 - j*dither) with j, dither in [0,1] can only SHORTEN the
+          // skip, and a shorter skip is always conservative.
+          // Follow-up (uSkipJitterFinalOnly): pay the ray-invariant dither's Jensen cost
+          // ONCE per ray instead of on every skip. Intermediate skips run through provably
+          // empty space where the landing point cannot alias anything; only the FINAL one
+          // — where `dtDescend < dtFoot`, so it lands at the bound rather than at the
+          // footprint edge — sets where stepping resumes before the cloud.
+          const isFinalSkip = dtDescend.lessThan(dtFoot);
+          const jitterFactor = float(1).sub(dither.mul(uSkipJitter));
+          const appliedJitter = uSkipJitterFinalOnly
+            .greaterThan(0.5)
+            .select(isFinalSkip.select(jitterFactor, float(1)), jitterFactor);
+          emptySkipDist.assign(
+            altitude01
+              .greaterThan(topBound)
+              .select(dtDescend.min(dtFoot).max(0), float(0))
+              .mul(appliedJitter)
+              .mul(uEmptySkip),
+          );
+        }
+
+        // ── Phase 0 envelope-vs-profile accounting (JS-gated; see DEBUG_VIZ union) ──
+        // `aboveTop`/`belowBase` = what a ZERO-SLACK altitude test would skip.
+        // `emptyProfile` = what the profile oracle would skip. The gap between them is
+        // the taper INSIDE the envelope that §3b found, and it is not recoverable by
+        // ANY altitude bound — measuring it decides the whole feature.
+        if ((DEBUG_VIZ as string) === "envstats") {
+          // ⚠ `profileBaseN`, NOT `columnBaseN` — MEASURED 2026-09-13: the two differ,
+          // and using columnBaseN over-counted "below base" by 4.25% of steps at earth_8
+          // (they sit below it but still inside the profile's support).
+          const baseN = profileBaseN(topAlt, profileConv);
+          If(altitude01.greaterThan(topAlt), () => {
+            aboveTopIters.addAssign(1);
+          });
+          If(altitude01.lessThan(baseN), () => {
+            belowBaseIters.addAssign(1);
+          });
+          If(profile.lessThanEqual(float(0.01)), () => {
+            emptyProfileIters.addAssign(1);
+          });
+        }
+        if ((DEBUG_VIZ as string) === "envslack") {
+          // Conservative topAlt bound over a footprint of `uEnvProbeKm` arc-radius,
+          // standing in for the mip level a real max-pyramid query would pick.
+          // ⚠⚠ 4 offset taps is a SAMPLED max, not a reduction, so it UNDER-estimates the
+          // true footprint max ⇒ the slack reported here is a LOWER bound and Phase 1 must
+          // re-verify against a real reduction. It is still decisive in the KILL
+          // direction: if this already loses the prize, a true max loses more.
+          // 🔑 PHASE 1b: `gMax` is now a REAL bound — one NEAREST tap of the baked
+          // max-mip, which holds max(mesoG) over its 2³ block = a fixed ~976 m footprint.
+          // No sampling, no ring, no under-estimation. `uEnvProbeKm` now controls ONLY
+          // the WEATHER footprint below.
+          const gMax = (
+            texture3D(
+              mesoMaxVolume,
+              dirP.mul(uInnerRadius).mul(float(MESO_SCALE)),
+            ).level(int(0)) as Node
+          ).g;
+          // Weather bound over the footprint. Bilinear interpolation is linear along each
+          // axis, so its max over an axis-aligned UV box is attained at a CORNER — 4 taps
+          // are an exact bound, not a sample. ⚠ Only approximately axis-aligned on the
+          // sphere, and it degenerates at the poles (equirect longitude convergence).
+          // ⚠ At uEnvProbeKm = 0 the corners collapse to the centre ⇒ EXACT weather,
+          // which is the arm that isolates the meso bound's own cost.
+          const theta = float(kmToScaledUnits(1))
+            .mul(uEnvProbeKm)
+            .div(uInnerRadius);
+          const ref = dirP.y
+            .abs()
+            .lessThan(0.9)
+            .select(vec3(0, 1, 0), vec3(1, 0, 0));
+          const tx = normalize(cross(ref, dirP));
+          const ty = cross(dirP, tx);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let bMax: any = wTap.b;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let cMax: any = wTap.g;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let cMin: any = wTap.g;
+          for (const off of [tx, tx.negate(), ty, ty.negate()]) {
+            const dOff = normalize(dirP.add(off.mul(theta)));
+            const w2 = texture(
+              weatherMap,
+              equirectDirToUv(dOff, uCloudUvOffset),
+            ).level(int(0)) as Node;
+            bMax = bMax.max(w2.b);
+            cMax = cMax.max(w2.g);
+            cMin = cMin.min(w2.g);
+          }
+          const bound = topAltBoundFromMaxima(bMax, gMax, cMax, cMin);
+          If(altitude01.greaterThan(topAlt), () => {
+            exactAboveIters.addAssign(1);
+          });
+          If(altitude01.greaterThan(bound), () => {
+            boundAboveIters.addAssign(1);
+          });
+          If(profile.lessThanEqual(float(0.01)), () => {
+            emptyProfileIters.addAssign(1);
+          });
+        }
+        if ((DEBUG_VIZ as string) === "envviol") {
+          // ⚠ `columnBaseN` is NOT the base `cloudHeightProfile` uses: that one derives
+          // `baseN = mix(topN − STRATIFORM_THICKNESS_N, CONVECTIVE_BASE_N, conv)` INLINE,
+          // while `columnBaseN` collapses to the constant CONVECTIVE_BASE_N because
+          // BASE_TOPALT_COUPLING = 0. Count each side's violations separately.
+          const baseShared = columnBaseN(topAlt, profileConv);
+          const notEmpty = profile.greaterThan(float(0.01));
+          If(altitude01.greaterThan(topAlt), () => {
+            If(notEmpty, () => {
+              violAboveIters.addAssign(1);
+            });
+          });
+          If(altitude01.lessThan(baseShared), () => {
+            If(notEmpty, () => {
+              violBelowIters.addAssign(1);
+            });
+          });
+          If(profile.lessThanEqual(float(0.01)), () => {
+            emptyProfileIters.addAssign(1);
+          });
+        }
 
         // Tracks whether this iteration found cloud (drives empty-streak
         // bookkeeping below). Zero by default; set to 1 inside the cloud
@@ -4497,7 +4739,12 @@ export function marchCloudVolume({
           .select(dtSkipInBand, dtSkipGrown);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const dtThis: any = stepMode.lessThan(0.5).select(dtSkipEff, dtDenseEff);
-        t.addAssign(dtThis);
+        // ⚠ The `max` sits OUTSIDE `min(growth, lodCap)` ON PURPOSE, and that is exactly
+        // the bypass CLOUD_SKIP_PLAN §3b warned about. It is sound HERE and only here:
+        // lodCap is a sampling-QUALITY floor for space that might hold cloud, while this
+        // distance is a PROOF that it does not. Never widen this max to anything not
+        // derived from a validated bound.
+        t.addAssign(dtThis.max(emptySkipDist));
 
         If(T.lessThan(0.01), () => {
           exitReason.assign(2);
@@ -4661,6 +4908,41 @@ export function marchCloudVolume({
         .clamp(0, 1);
       return {
         rgba: vec4(primaryNorm, denseNorm, float(0), float(1)),
+        tFront: float(0),
+      };
+    }
+    if ((DEBUG_VIZ as string) === "envslack") {
+      return {
+        rgba: vec4(
+          primaryIters,
+          exactAboveIters,
+          boundAboveIters,
+          emptyProfileIters,
+        ),
+        tFront: float(0),
+      };
+    }
+    if ((DEBUG_VIZ as string) === "envviol") {
+      return {
+        rgba: vec4(
+          primaryIters,
+          violAboveIters,
+          violBelowIters,
+          emptyProfileIters,
+        ),
+        tFront: float(0),
+      };
+    }
+    if ((DEBUG_VIZ as string) === "envstats") {
+      // RAW counters for `__lum.cloudEnvelope()`. Same losslessness argument as "stats":
+      // RGBA16F holds every integer to 2048 exactly and each value is <= MAX_PRIMARY_STEPS.
+      return {
+        rgba: vec4(
+          primaryIters,
+          aboveTopIters,
+          belowBaseIters,
+          emptyProfileIters,
+        ),
         tFront: float(0),
       };
     }

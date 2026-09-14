@@ -682,6 +682,122 @@ export function createDetailMip1Compute(
   };
 }
 
+/**
+ * Build the MAX-reduced level-1 (64³) of an existing 128³ base volume: each output voxel
+ * is the COMPONENTWISE MAX of the 8 level-0 voxels it covers.
+ *
+ * 🔑🔑 WHY A MAX AND NOT THE USUAL BOX AVERAGE. This is the first max-reduction in the
+ * repo (every other one — createDetailMip1Compute, downsample3DRGBA, glarePass,
+ * exposureMeter — is an average). It exists to make a CONSERVATIVE bound possible: the
+ * cloud marcher needs "no column within this footprint can have a top above X", and only
+ * a max gives that. An average would silently under-report and the marcher would step
+ * through cloud. See docs/CLOUD_SKIP_PLAN.md §5.
+ *
+ * 🔑 EXACT IN BYTE SPACE, which is what makes it verifiable. Each sample is rounded back
+ * to the byte the texture actually stores, the max is taken over those bytes, and the
+ * result divides by 255 — so it re-quantises to exactly that byte. A float max followed
+ * by re-quantisation could round DOWN and break conservatism by 1 LSB.
+ *
+ * ⚠⚠ DILATED BY ONE VOXEL, AND THAT IS A CORRECTNESS REQUIREMENT, NOT A TUNING CHOICE.
+ * A plain 2³ reduction bounds the block CONTAINING the sample — but a sample can sit on a
+ * block boundary, so the guaranteed radius around it is ZERO. That is fine for asking
+ * "is the ray above this block's max" (Phase 1b's measurement) and FATAL for deriving a
+ * skip DISTANCE from it (Phase 2), which is what would make clouds pop wherever a ray
+ * crossed a block edge. With a one-voxel halo the reduction covers base voxels
+ * [2i-1, 2i+2], so any point in the block has >= ONE FULL BASE VOXEL of margin in every
+ * axis direction ⇒ a guaranteed radius of 488 m. The bound is correspondingly looser;
+ * `__lum.cloudEnvSlack()` measures what that costs.
+ *
+ * ⚠ MESO_SCALE makes one base voxel 488 m of arc on the inner shell. ⇒ MESO_MAX_RADIUS_KM
+ * below is the radius a single NEAREST tap of this texture is allowed to justify.
+ */
+/** Guaranteed bound radius of ONE NEAREST tap of the dilated max-mip, in km of arc. */
+export const MESO_MAX_RADIUS_KM = 0.488;
+
+export function createMesoMaxMip1Compute(
+  level0Tex: THREE.Storage3DTexture,
+  withReadbackBuffer = false,
+): CloudBaseVolumeCompute {
+  const N0 = BASE_SIZE; // 128
+  const N1 = BASE_SIZE >> 1; // 64
+  const voxels = N1 * N1 * N1;
+  const inv0 = 1 / N0;
+
+  const tex = new THREE.Storage3DTexture(N1, N1, N1);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType; // rgba8unorm, same as the source
+  // ⚠⚠ NEAREST, AND IT IS LOAD-BEARING — every other storage texture here is Linear.
+  // Interpolating between two block maxima returns a value BELOW one of them, which
+  // destroys the conservative bound this texture exists to provide.
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.wrapR = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.generateMipmaps = false;
+
+  const readbackAttr = withReadbackBuffer
+    ? new StorageInstancedBufferAttribute(voxels, 4)
+    : null;
+  const readbackNode = readbackAttr
+    ? storage(readbackAttr, "vec4", voxels)
+    : null;
+
+  const N1u = uint(N1);
+  const N1HW = uint(N1 * N1);
+
+  const populate = Fn(() => {
+    const i = instanceIndex;
+    const x = i.mod(N1u);
+    const y = i.div(N1u).mod(N1u);
+    const z = i.div(N1HW);
+
+    // Componentwise max over the covering 2³ block PLUS A ONE-VOXEL HALO (4³ = 64
+    // samples), at texel CENTRES ((2i+d+0.5)/128 → the exact texel under LinearFilter on
+    // the SOURCE). RepeatWrapping wraps the halo at the volume edges.
+    // Init 0 is safe: every stored byte is >= 0.
+    //
+    // ⚠⚠ THE OFFSETS MUST BE APPLIED IN FLOAT. `x`/`y`/`z` come from `instanceIndex`, so
+    // they are UINT nodes: `x.mul(2).add(-1)` UNDERFLOWS to ~4.29e9 instead of wrapping to
+    // the far edge, and the halo taps then collapse onto garbage — the GPU maxes over a
+    // SMALLER set than the CPU and silently UNDER-reports. MEASURED 2026-09-13 before this
+    // fix: max|Δ| 114 LSB, 5,562,808 non-conservative comparisons, GPU mean below CPU mean
+    // on every channel. In float, -1 is a real negative and RepeatWrapping does the rest.
+    const xF = float(x).mul(2);
+    const yF = float(y).mul(2);
+    const zF = float(z).mul(2);
+    const acc = vec4(0).toVar();
+    for (let dz = -1; dz < 3; dz++) {
+      for (let dy = -1; dy < 3; dy++) {
+        for (let dx = -1; dx < 3; dx++) {
+          const uvw = vec3(
+            xF.add(dx + 0.5).mul(inv0),
+            yF.add(dy + 0.5).mul(inv0),
+            zF.add(dz + 0.5).mul(inv0),
+          );
+          const s = texture3D(level0Tex, uvw).level(int(0)) as Node;
+          acc.assign(acc.max(floor(s.mul(255).add(0.5)))); // exact byte
+        }
+      }
+    }
+    const out = acc.mul(1 / 255); // re-quantises to exactly that byte
+    const coord = (uvec3 as unknown as (a: Node, b: Node, c: Node) => Node)(x, y, z);
+    textureStore(tex, coord, out).toWriteOnly();
+    if (readbackNode) readbackNode.element(i).assign(out);
+  });
+
+  const computeNode = populate().compute(voxels);
+  computeNode.name = PASS.noiseBake;
+
+  return {
+    tex,
+    computeNode,
+    readbackAttr,
+    dispose: () => tex.dispose(),
+  };
+}
+
 // =============================================================================
 // Game integration — lazy singleton + render-loop dispatch.
 //
@@ -764,6 +880,25 @@ export function getGpuCloudDetailVolume(): THREE.Storage3DTexture {
  */
 export function getGpuCloudDetailMip1(): THREE.Storage3DTexture {
   return ensureDetailGpu().mip1.tex;
+}
+
+let cachedMesoMaxGpu: CloudBaseVolumeCompute | null = null;
+
+/**
+ * The MAX-reduced level-1 (64³) of the base volume — the conservative `mesoG` bound the
+ * cloud marcher's empty-space skip queries. Sample it at level 0 with NEAREST filtering.
+ * ⚠ Queued AFTER the base volume: this kernel READS the base's texture, and dispatch
+ * order is the ONLY ordering guarantee the bake queue provides (same contract as
+ * ensureDetailGpu's l0 → mip1).
+ */
+export function getGpuMesoMaxMip1(): THREE.Storage3DTexture {
+  if (!cachedMesoMaxGpu) {
+    // Force the base to exist and be queued FIRST.
+    const baseTex = getGpuCloudBaseVolume();
+    cachedMesoMaxGpu = createMesoMaxMip1Compute(baseTex, false);
+    pendingBakes.push(cachedMesoMaxGpu);
+  }
+  return cachedMesoMaxGpu.tex;
 }
 
 /**

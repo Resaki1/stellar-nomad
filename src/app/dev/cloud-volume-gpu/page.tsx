@@ -35,6 +35,7 @@ import {
   createCloudBaseVolumeCompute,
   createCloudDetailVolumeCompute,
   createDetailMip1Compute,
+  createMesoMaxMip1Compute,
 } from "@/components/celestial/bodies/cloudVolumeCompute";
 
 const SLICE_PX = 256;
@@ -95,6 +96,27 @@ function quantize(floats: Float32Array): Uint8Array {
   return out;
 }
 
+/**
+ * ⚠ ROUNDING quantiser — NOT the truncating `quantize` above, and the difference is
+ * load-bearing for the max-reduction gate.
+ *
+ * An rgba8unorm texture stores `round(v*255)`, so rounding is how you recover the byte a
+ * texture ACTUALLY holds; `(v*255)|0` recovers one that is up to 1 LSB low. The
+ * max-mip kernel recovers its inputs with `floor(s*255+0.5)` (same as
+ * createDetailMip1Compute), so a reference built with the truncating quantiser maxes
+ * DIFFERENT bytes and reads as a uniform +0.5 LSB bias — which is exactly what the first
+ * run of this gate reported (mean|Δ| 0.4997-0.5008, max 1, 0% >1, GPU mean +0.002 on all
+ * four channels). That was the reference being wrong, not the kernel.
+ */
+function quantizeRound(floats: Float32Array): Uint8Array {
+  const out = new Uint8Array(floats.length);
+  for (let k = 0; k < floats.length; k++) {
+    const v = floats[k];
+    out[k] = v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255);
+  }
+  return out;
+}
+
 // Per-channel mean+std (in 0-255) over an RGBA8 volume — mirrors
 // noiseVolumes.ts channelMoments.
 function cpuMoments(data: Uint8Array): { mean: number[]; std: number[] } {
@@ -138,6 +160,76 @@ function cpuBoxDownsample(src: Uint8Array, srcSize: number): Uint8Array {
         dst[o++] = (acc[3] / 8) | 0;
       }
   return dst;
+}
+
+/**
+ * CPU reference for the MAX reduction: each output voxel is the componentwise MAX of the
+ * 8 level-0 voxels it covers. Deliberately NOT shared with the GPU kernel — an
+ * independent implementation is the whole point of a parity check.
+ */
+function cpuMaxDownsample(src: Uint8Array, n0: number): Uint8Array {
+  const n1 = n0 >> 1;
+  const out = new Uint8Array(n1 * n1 * n1 * 4);
+  const w = (i: number) => ((i % n0) + n0) % n0; // RepeatWrapping, matching the kernel
+  for (let z = 0; z < n1; z++) {
+    for (let y = 0; y < n1; y++) {
+      for (let x = 0; x < n1; x++) {
+        const o = ((z * n1 + y) * n1 + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          let m = 0;
+          // 4³ = the 2³ block PLUS a one-voxel halo — see createMesoMaxMip1Compute.
+          for (let dz = -1; dz < 3; dz++) {
+            for (let dy = -1; dy < 3; dy++) {
+              for (let dx = -1; dx < 3; dx++) {
+                const sx = w(x * 2 + dx);
+                const sy = w(y * 2 + dy);
+                const sz = w(z * 2 + dz);
+                const v = src[((sz * n0 + sy) * n0 + sx) * 4 + c];
+                if (v > m) m = v;
+              }
+            }
+          }
+          out[o + c] = m;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The property that actually matters: the reduced value must be >= EVERY child. Equality
+ * with the CPU reference implies it, but this counts violations directly so a failure
+ * says "not conservative" rather than just "differs".
+ */
+function countNonConservative(
+  src: Uint8Array,
+  reduced: Uint8Array,
+  n0: number,
+): number {
+  const n1 = n0 >> 1;
+  const w = (i: number) => ((i % n0) + n0) % n0;
+  let bad = 0;
+  for (let z = 0; z < n1; z++) {
+    for (let y = 0; y < n1; y++) {
+      for (let x = 0; x < n1; x++) {
+        const o = ((z * n1 + y) * n1 + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          const r = reduced[o + c];
+          for (let dz = -1; dz < 3; dz++) {
+            for (let dy = -1; dy < 3; dy++) {
+              for (let dx = -1; dx < 3; dx++) {
+                const v =
+                  src[((w(z * 2 + dz) * n0 + w(y * 2 + dy)) * n0 + w(x * 2 + dx)) * 4 + c];
+                if (v > r) bad++;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return bad;
 }
 
 function compareVolumes(
@@ -218,6 +310,8 @@ export default function CloudVolumeGpuValidator() {
   const [base, setBase] = useState<VolumeResult | null>(null);
   const [detail, setDetail] = useState<VolumeResult | null>(null);
   const [mip1, setMip1] = useState<VolumeResult | null>(null);
+  const [mesoMax, setMesoMax] = useState<VolumeResult | null>(null);
+  const [mesoMaxVerdict, setMesoMaxVerdict] = useState<string>("");
   const [renormStr, setRenormStr] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
@@ -245,12 +339,13 @@ export default function CloudVolumeGpuValidator() {
         const bakeAndRead = async (
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           comp: { computeNode: any; readbackAttr: any },
-        ): Promise<{ data: Uint8Array; ms: number }> => {
+        ): Promise<{ data: Uint8Array; raw: Float32Array; ms: number }> => {
           const t0 = performance.now();
           await r.computeAsync(comp.computeNode);
           const ms = performance.now() - t0;
           const ab: ArrayBuffer = await r.getArrayBufferAsync(comp.readbackAttr);
-          return { data: quantize(new Float32Array(ab)), ms };
+          const raw = new Float32Array(ab);
+          return { data: quantize(raw), raw, ms };
         };
 
         // ── BASE 128³ ──
@@ -312,6 +407,44 @@ export default function CloudVolumeGpuValidator() {
         drawSlice(mip1CpuRef.current, cpuL1, 32, 16);
         drawSlice(mip1GpuRef.current, gpuMip1.data, 32, 16);
 
+        // ── MESO MAX-MIP 64³ — Phase 1a gate (docs/CLOUD_SKIP_PLAN.md §5.6) ──
+        // The repo's FIRST max-reduction. Unlike every average here, this one has a hard
+        // correctness property rather than a tolerance: it must equal max(8 children)
+        // EXACTLY, because the marcher will treat it as a conservative bound and step
+        // through anything it under-reports.
+        setStatus("baking + validating meso max-mip 64³…");
+        const compMesoMax = createMesoMaxMip1Compute(compBase.tex, true);
+        const gpuMesoMax = await bakeAndRead(compMesoMax);
+        // ⚠ BOTH sides recovered with quantizeRound, not the truncating `quantize` the
+        // other rows use — see quantizeRound's note. Comparing a rounded kernel against a
+        // truncated reference is a guaranteed 0.5-LSB disagreement that says nothing
+        // about the reduction.
+        const baseBytes = quantizeRound(gpuBase.raw);
+        const mesoMaxBytes = quantizeRound(gpuMesoMax.raw);
+        const cpuMesoMax = cpuMaxDownsample(baseBytes, 128);
+        const mesoMaxStats = compareVolumes(cpuMesoMax, mesoMaxBytes, 64 ** 3, [
+          "R",
+          "G(meso)",
+          "B",
+          "A",
+        ]);
+        const nonCons = countNonConservative(baseBytes, mesoMaxBytes, 128);
+        const worstAbs = Math.max(...mesoMaxStats.map((st) => st.maxAbsDiff));
+        setMesoMax({
+          label: "Meso max-mip",
+          size: 64,
+          bakeMs: gpuMesoMax.ms,
+          stats: mesoMaxStats,
+        });
+        setMesoMaxVerdict(
+          worstAbs === 0 && nonCons === 0
+            ? `PASS — exact match with the CPU max over all ${(64 ** 3).toLocaleString()} voxels, and 0 of ${(64 ** 3 * 4 * 64).toLocaleString()} child comparisons non-conservative.`
+            : `FAIL — max |diff| = ${worstAbs} LSB, ${nonCons} non-conservative child comparisons. This texture is NOT a bound; do not wire it into the marcher.`,
+        );
+        console.log("[cloud-volume-gpu] meso max-mip parity:", mesoMaxStats, {
+          nonConservative: nonCons,
+        });
+
         // ── Texture-path check (base storage texture sampled via texture3D) ──
         setStatus("rendering storage-texture slice…");
         const scene = new THREE.Scene();
@@ -349,6 +482,20 @@ export default function CloudVolumeGpuValidator() {
       {base && <StatTable result={base} />}
       {detail && <StatTable result={detail} />}
       {mip1 && <StatTable result={mip1} />}
+      {mesoMax && <StatTable result={mesoMax} />}
+      {mesoMaxVerdict && (
+        <pre
+          style={{
+            background: "#1c1c1c",
+            border: "1px solid #444",
+            padding: 12,
+            color: mesoMaxVerdict.startsWith("PASS") ? "#9f9" : "#f99",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          meso max-mip conservatism gate: {mesoMaxVerdict}
+        </pre>
+      )}
 
       {renormStr && (
         <>

@@ -14,6 +14,7 @@
  *   await __bench.sweep()          — measure every perf scenario (see
  *                                    docs/PERF_MEASUREMENT.md)
  *   await __bench.run("earth_650") — measure one scenario
+ *   await __bench.runMany([a,b,c]) — measure a chosen set → ONE result object
  *   __bench.list()                 — available scenarios
  *   __bench.warp("earth_8")        — fly to a scenario and stay
  *   __bench.report()               — print live per-pass timings

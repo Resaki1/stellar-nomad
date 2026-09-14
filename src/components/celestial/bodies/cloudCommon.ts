@@ -158,6 +158,104 @@ export const uCloudSunScale = uniform(CLOUD_SUN_SCALE);
  * so it would have skipped the hoisted coverage taps and silently changed the baseline.
  */
 export const uCloudActive = uniform(1);
+// Phase 0b probe radius, in KM OF ARC on the inner shell (CLOUD_SKIP_PLAN §5.6).
+// Sets how wide a footprint the conservative topAlt bound is taken over, standing in for
+// the mip level a real max-pyramid query would pick. 0 = exact (no offset taps).
+export const uEnvProbeKm = uniform(0);
+export function setEnvProbeRadiusKm(km: number): void {
+  uEnvProbeKm.value = Math.max(0, km);
+}
+export function cloudEnvProbeKmLive(): number {
+  return uEnvProbeKm.value as number;
+}
+
+/**
+ * Conservative empty-space skip (docs/CLOUD_SKIP_PLAN.md §5). 1 = on, 0 = off.
+ * ⚠ A pure PERF dial with a correctness invariant, NOT a quality dial: the skip only
+ * advances through space a validated bound proves holds no cloud, so toggling it must
+ * leave the image identical. `densePerRay` from `__lum.cloudIters()` is the control
+ * (6.84 / 4.05 / 0 at earth_8 / horizon / up_8) — any drop means the bound leaks.
+ */
+export const uEmptySkip = uniform(1);
+export function setCloudEmptySkip(on: boolean): void {
+  uEmptySkip.value = on ? 1 : 0;
+}
+export function cloudEmptySkipLive(): boolean {
+  return (uEmptySkip.value as number) > 0.5;
+}
+
+/**
+ * Fraction of the empty-space skip that gets dithered away, in [0,1].
+ * ⚠⚠ LOAD-BEARING FOR IMAGE QUALITY, not perf tuning. MEASURED 2026-09-14: the artifact
+ * is the `dtFoot` clamp. Empty space is traversed in ceil(distance·perp / R) capped
+ * skips, and `perp` is a function of the view ray's ANGLE alone ⇒ the integer boundaries
+ * are SCREEN-FIXED concentric rings (6785 -> 6380 km, worst while moving).
+ * 🔑 It must be dithered with a PER-PIXEL, ray-invariant value. Jittering each step with
+ * the golden-ratio `stratJitter` FAILED (still visible at j = 1.0) because a
+ * low-discrepancy sequence is built to have low variance when summed — the cumulative
+ * distance converges to its mean and the boundaries do not move.
+ * ✅ Safe by construction: this can only SHORTEN a skip, and a shorter skip is always
+ * conservative. It costs ~uSkipJitter/2 of the skip's average reach.
+ */
+export const uSkipJitter = uniform(0.5);
+let _skipJitterOverride = -1;
+/** Per-frame altitude lerp (cloudFullscreenPass). Yields to a console override. */
+export function setCloudSkipJitterAuto(f: number): void {
+  uSkipJitter.value = _skipJitterOverride >= 0 ? _skipJitterOverride : f;
+}
+/** `__lum.cloudSkipJitter`. Negative restores the altitude lerp. */
+export function setCloudSkipJitter(f: number): void {
+  _skipJitterOverride = f < 0 ? -1 : Math.max(0, Math.min(1, f));
+  if (_skipJitterOverride >= 0) uSkipJitter.value = _skipJitterOverride;
+}
+export function cloudSkipJitterLive(): number {
+  return uSkipJitter.value as number;
+}
+
+/**
+ * Scales the empty-space skip's FOOTPRINT cap, in (0,1]. Default 1.
+ * 🔑 A DISCRIMINATOR, not a tuning knob, and deliberately one-sided: values below 1 make
+ * `dtFoot` bind HARDER, which is always MORE conservative, so the test can never produce
+ * an unsound skip. If the ring artifact intensifies as this shrinks and fades as it
+ * approaches 1, then `dtFoot` owns the rings — it is the only term in the skip that is a
+ * pure function of VIEW-RAY ANGLE, i.e. of screen position, which is the one thing that
+ * can produce a screen-FIXED pattern while the clouds move past it.
+ */
+export const uSkipFootScale = uniform(1);
+export function setCloudSkipFootScale(f: number): void {
+  uSkipFootScale.value = Math.max(0.01, Math.min(1, f));
+}
+export function cloudSkipFootScaleLive(): number {
+  return uSkipFootScale.value as number;
+}
+
+/**
+ * 1 = dither ONLY the final skip of a ray (the one where `dtDescend < dtFoot`, i.e. the
+ * one that actually lands near the possible-cloud region). 0 = dither every skip.
+ *
+ * 🔑 WHY THIS MIGHT RECOVER THE HORIZON. The ring dither must be RAY-INVARIANT to break
+ * the banding, and a constant per-ray scale `s` makes crossing a gap take `D/(s·dtFoot)`
+ * skips — E[1/s] > 1/E[s] by Jensen, so the cost compounds over EVERY skip. But the
+ * intermediate skips run through provably empty space where the landing point cannot
+ * alias anything; only the last one, which sets where stepping resumes before the cloud,
+ * can. Dithering just that one pays Jensen ONCE per ray.
+ * ❌ MEASURED 2026-09-14 AND REFUTED ON QUALITY — keep this 0. It IS faster (+0.35 /
+ * +0.91 / +0.49 ms at earth_8 / horizon / up_8) and the rings come back clearly.
+ * 🔑 The hypothesis was wrong in a specific way: intermediate skips traverse provably
+ * empty space, so their landing points cannot alias DENSITY — but the rings are the COUNT
+ * of capped segments, `ceil(distance·perp/R)`, and leaving intermediates deterministic
+ * leaves that count deterministic. Dithering the last skip randomizes where stepping
+ * RESUMES, not how many boundaries the ray crossed getting there.
+ * ✅ Kept because it prices the ring fix: **0.91 ms at the worst pose** is what a
+ * STRUCTURAL fix (removing the quantization) could claim. More dither never will.
+ */
+export const uSkipJitterFinalOnly = uniform(0);
+export function setCloudSkipJitterFinalOnly(on: boolean): void {
+  uSkipJitterFinalOnly.value = on ? 1 : 0;
+}
+export function cloudSkipJitterFinalOnlyLive(): boolean {
+  return (uSkipJitterFinalOnly.value as number) > 0.5;
+}
 export function setCloudMarchActive(on: boolean): void {
   uCloudActive.value = on ? 1 : 0;
 }

@@ -563,6 +563,54 @@ export function deriveTopAlt(coverage: Node, colSample: Node): Node {
 //    threshold intersects the base on a near-horizontal plane = a CLEANLY
 //    SLICED FLAT TOP. Bending to 1 − x² meets the base on a CURVED locus = an
 //    organic rounded dome.
+// The base the PROFILE actually uses — extracted 2026-09-13 because it was inline here
+// and silently DIFFERENT from `columnBaseN`, which cost a diagnostic a full cycle.
+// ⚠⚠ THE TWO BASES DISAGREE AND BOTH ARE LIVE. `columnBaseN` collapses to the constant
+// CONVECTIVE_BASE_N (BASE_TOPALT_COUPLING = 0); this one still top-tracks at low
+// convectivity, and `.max(0)` drops it BELOW CONVECTIVE_BASE_N once topN < 0.107.
+// MEASURED 2026-09-13 (`__lum.cloudEnvViol`): 4.25% of steps at earth_8 sit below
+// `columnBaseN` yet carry profile > 0.01 — i.e. inside THIS base's support. This one
+// shapes the rendered density; use it for anything reasoning about where cloud can be.
+// ── Conservative UPPER bound on topAlt over a footprint (CLOUD_SKIP_PLAN §5.3) ──
+// Given the MAX of each input over some solid-angle footprint (plus convMin, because the
+// jitter term is decreasing in conv when gMax < 0.5), returns a topAlt that no column in
+// that footprint can exceed. Every link is monotone — topHeightToTopAlt is a mix,
+// turretMask a product of smoothsteps, finalizeTopAlt slopes 1 then TOPALT_KNEE_SLOPE —
+// so bounding each input bounds the result.
+// ⚠ LOOSE BY DECORRELATION: bMax and gMax are taken independently though the real fields
+// are correlated, so this is valid but not tight. Phase 0b measures exactly that gap.
+// ⚠ Mirrors the LIVE branch of deriveColumnV2: ANVIL is false, so riseMask = turretT.
+// If ANVIL is ever re-enabled this must gain the skirt term or it stops being a bound.
+export function topAltBoundFromMaxima(
+  bMax: Node,
+  gMax: Node,
+  convMax: Node,
+  convMin: Node,
+): Node {
+  const g = clamp(gMax, 0, 1);
+  const cMax = clamp(convMax, 0, 1);
+  const cMin = clamp(convMin, 0, 1);
+  let t: Node = topHeightToTopAlt(bMax);
+  if (TOPALT_JITTER) {
+    const amp = g.sub(0.5).mul(float(TOPALT_JITTER_AMOUNT));
+    t = t
+      .add(amp.mul(g.greaterThanEqual(0.5).select(cMax, cMin)))
+      .clamp(TOPALT_FLOOR, TOPALT_CEIL);
+  }
+  if (TURRETS) {
+    t = t.add(turretMask(g, cMax).mul(float(TURRET_RISE)));
+  }
+  return finalizeTopAlt(t);
+}
+
+export function profileBaseN(topN: Node, convectivity: Node): Node {
+  return mix(
+    clamp(topN, 0, 1).sub(float(STRATIFORM_THICKNESS_N)),
+    float(CONVECTIVE_BASE_N),
+    clamp(convectivity, 0, 1),
+  ).max(float(0));
+}
+
 export function cloudHeightProfile(
   alt01: Node,
   topAlt: Node,
@@ -580,11 +628,7 @@ export function cloudHeightProfile(
     // Clamp baseN ≥ 0: a low stratiform column (topN < STRATIFORM_THICKNESS_N,
     // now reachable since the topN floor dropped to 0.10) would otherwise place
     // its base below the slab floor → the sheet sits ON the floor instead.
-    const baseN = mix(
-      topN.sub(float(STRATIFORM_THICKNESS_N)),
-      float(CONVECTIVE_BASE_N),
-      convectivity,
-    ).max(float(0));
+    const baseN = profileBaseN(topN, convectivity);
     const span = topN.sub(baseN).max(float(0.001));
     const altNorm = alt01.sub(baseN).div(span);
     return profileLUTRowSample(altNorm, convectivity);

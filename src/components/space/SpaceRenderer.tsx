@@ -159,6 +159,16 @@ const BSM_ABLATE_DIAGNOSTIC = false;
 // (clouds provably off above 700 km). If `1c AP froxel`, `1b beer shadow map`,
 // `2c reconstruction` or `3 cloud composite` moves under the MARCH-only bypass, that
 // ablation is dirty — check before trusting either number.
+//
+// ✅ RUN COLD 2026-09-13 at earth_8: frame MEAN 16.842 → 11.960 = **4.882 ms = 29.0% of
+// the frame** (59.4 → 83.6 fps). Control `earth_750` moved −0.035 ms, itself explained by
+// canvasPx growing 2401 → 2415 px between reloads; ablated arm ran second/hotter, so the
+// delta is under-stated both ways. ⇒ With the march at 3.925 ms (`__lum.cloudMarch`),
+// **recon + composite ≈ 0.96 ms, ~20% of the pipeline** — mid-range of the 9–28% estimate,
+// and too small to justify CLOUD_DENOISE_RADIUS 2 → 1 (≤0.3 ms for a grain regression that
+// is exactly why r=2 was chosen). **The march is 80% of the cloud cost; it is the target.**
+// ⚠ The earth_horizon_8 arm of that run was VOID — `settled: false`, bimodality 1.507,
+// and `1b beer shadow map` jumped 0.45 → 1.82 ms in a pass this flag cannot touch.
 const CLOUD_ABLATE_DIAGNOSTIC = false;
 
 // ⚠⚠ TEMPORARY DIAGNOSTIC — MUST be false. Cloud shadows disappear when true.

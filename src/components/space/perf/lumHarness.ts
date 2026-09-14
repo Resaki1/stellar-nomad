@@ -198,6 +198,16 @@ import {
 import {
   setCloudSunScale,
   setCloudMarchActive,
+  setCloudEmptySkip,
+  cloudEmptySkipLive,
+  setCloudSkipJitter,
+  cloudSkipJitterLive,
+  setCloudSkipFootScale,
+  cloudSkipFootScaleLive,
+  setCloudSkipJitterFinalOnly,
+  cloudSkipJitterFinalOnlyLive,
+  setEnvProbeRadiusKm,
+  cloudEnvProbeKmLive,
 } from "@/components/celestial/bodies/cloudCommon";
 import {
   cloudLodMinSamplesLive,
@@ -374,6 +384,7 @@ export function clearLumSource(): void {
  * raw integers requires reading them where they are written.
  */
 let _cloudStatsRt: { renderer: WebGPURenderer; target: RenderTarget } | null = null;
+let _envSlackLast: { km: number; retention: number } | null = null;
 
 export function setCloudStatsSource(
   renderer: WebGPURenderer,
@@ -3504,6 +3515,9 @@ export class LumHarness {
     let probed = 0;
     let wasted = 0;
     let atBudget = 0;
+    let emptyRays = 0;
+    let emptyPrimary = 0;
+    let totalPrimary = 0;
     const reasons = [0, 0, 0];
     let marched = 0;
     let nonInteger = 0;
@@ -3530,6 +3544,15 @@ export class LumHarness {
         primary.push(p);
         dense += d;
         probed += pr;
+        // 🔑 THE WHOLE-RAY CULL PRIZE. `d == 0` means the ray never entered dense mode,
+        // i.e. it found no cloud at all — so every one of its `p` steps is work a perfect
+        // per-ray cull would delete. Summing p over just those rays gives the exact
+        // upper bound on that lever, with no cross-session arithmetic.
+        totalPrimary += p;
+        if (d < 0.5) {
+          emptyRays++;
+          emptyPrimary += p;
+        }
         const w = Math.floor(a / 4);
         wasted += w;
         const reason = Math.round(a - 4 * w);
@@ -3568,6 +3591,17 @@ export class LumHarness {
         `(${W}x${H} of the ${target.width}x${target.height} sparse RT)\n` +
         `      pose: ${rec?.id ?? "none"} at ${Math.round(altKm)} km alt, ` +
         `uLodMinSamples = ${cloudLodMinSamplesLive().toFixed(0)}`,
+    );
+    const emptyRayFrac = emptyRays / marched;
+    const emptyStepFrac = totalPrimary > 0 ? emptyPrimary / totalPrimary : 0;
+    console.log(
+      `      \u{1f511} rays that found NO cloud: ${(emptyRayFrac * 100).toFixed(1)}% of px, ` +
+        `carrying ${(emptyStepFrac * 100).toFixed(1)}% of all primary steps\n` +
+        `         \u21d2 a PERFECT whole-ray cull removes at most ${(emptyStepFrac * 100).toFixed(1)}% ` +
+        `of the march.\n` +
+        "         \u26a0 Upper bound only: a real cull needs a CONSERVATIVE test, and the\n" +
+        "           3-tap `coverageMax > 0.01` gate that tried this was reverted for the\n" +
+        "           \"wireframe outlines / cloud portal\" artifact (earthClouds.ts:2807).",
     );
     console.table({
       "primary steps": {
@@ -3629,6 +3663,8 @@ export class LumHarness {
       probedPerRay: probed / marched,
       wastedPerRay: wasted / marched,
       wastedOverProbed: wastedFrac,
+      emptyRayFrac,
+      emptyStepFrac,
       atBudgetFrac: atBudget / marched,
       exitReason: {
         budget: reasons[0] / marched,
@@ -3706,6 +3742,498 @@ export class LumHarness {
    * `deep_space` and `earth_750` must be flat, and `2c reconstruction` / `3 cloud
    * composite` must NOT move under this dial. If they do, the ablation is dirty.
    */
+  /**
+   * Phase 0 of the bake-time max-topAlt field (docs/CLOUD_SKIP_PLAN.md §5.6).
+   *
+   *     // set DEBUG_VIZ = "envstats" in earthClouds.ts, reload, then:
+   *     await __lum.cloudEnvelope()
+   *
+   * 🔑🔑 THE ONE QUESTION THIS ANSWERS. `__lum.cloudIters()` already measured the ORACLE
+   * prize (steps whose `profile <= 0.01`: 6.0% at earth_8, 54.1% at the horizon, 100%
+   * looking up). But an altitude bound can only skip steps OUTSIDE the [base, top]
+   * envelope, and §3b measured the `profile > 0.01` band at 1.42 km against a 6.18 km
+   * envelope — the profile TAPERS INSIDE it. So the real question is what fraction of
+   * the oracle a PERFECT, zero-slack altitude test can even reach.
+   * ⇒ `envelopeCapture` below. Slack from a real max-mip bound only makes it worse.
+   *
+   * ⚠ KILL GATE, stated before the run: **capture < 50% ⇒ the feature dies here**, with
+   * no bake built and no texture added. This is exactly the check the killed §3b scoping
+   * skipped — it equated "X% is empty" with "X% is removable by mechanism M".
+   * ⚠ Counts only, zero extra taps: every quantity was already computed in the loop.
+   * ⚠ Set DEBUG_VIZ back to "off" before any timing run — this mode skips colour assembly.
+   */
+  async cloudEnvelope(): Promise<Record<string, unknown>> {
+    const src = _cloudStatsRt;
+    if (!src) {
+      console.log("[lum] no cloud stats RT registered — is a cloud pipeline active?");
+      return { ok: false };
+    }
+    const { renderer, target } = src;
+    const W = Math.min(target.width, 512);
+    const H = Math.min(target.height, 512);
+    const ox = Math.max(0, Math.floor((target.width - W) / 2));
+    const oy = Math.max(0, Math.floor((target.height - H) / 2));
+    const buf = (await renderer.readRenderTargetPixelsAsync(
+      target,
+      ox,
+      oy,
+      W,
+      H,
+    )) as unknown as Uint16Array;
+    const stride = rowStrideElements(W, 2);
+
+    let marched = 0;
+    let nonInteger = 0;
+    let steps = 0;
+    let aboveTop = 0;
+    let belowBase = 0;
+    let emptyProfile = 0;
+    let inconsistent = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * stride + x * 4;
+        const p = halfToFloat(buf[i]);
+        if (!(p > 0)) continue;
+        marched++;
+        const a = halfToFloat(buf[i + 1]);
+        const b = halfToFloat(buf[i + 2]);
+        const e = halfToFloat(buf[i + 3]);
+        // Same degeneracy check as cloudIters: these must be exact integers, or we are
+        // not reading the marcher's counters and every number below is fiction.
+        if (
+          Math.abs(p - Math.round(p)) > 1e-3 ||
+          Math.abs(a - Math.round(a)) > 1e-3
+        ) {
+          nonInteger++;
+        }
+        steps += p;
+        aboveTop += a;
+        belowBase += b;
+        emptyProfile += e;
+        // Outside the envelope implies profile 0, so outside can never EXCEED empty.
+        if (a + b > e + 0.5) inconsistent++;
+      }
+    }
+    if (marched === 0) {
+      console.log(
+        "[lum] no marching pixels. Point at the cloud deck and confirm\n" +
+          '      DEBUG_VIZ = "envstats" in earthClouds.ts (needs a reload).',
+      );
+      return { ok: false, marched: 0 };
+    }
+    if (nonInteger > marched * 0.01) {
+      console.error(
+        `[lum] \u274c ${nonInteger}/${marched} samples are NOT integers — this is not the\n` +
+          '      marcher\'s counters. DEBUG_VIZ must be "envstats" (and reloaded).\n' +
+          "      Refusing to report.",
+      );
+      return { ok: false, nonInteger, marched };
+    }
+    const outside = aboveTop + belowBase;
+    const aboveTopFrac = steps > 0 ? aboveTop / steps : 0;
+    const belowBaseFrac = steps > 0 ? belowBase / steps : 0;
+    const outsideFrac = steps > 0 ? outside / steps : 0;
+    const emptyFrac = steps > 0 ? emptyProfile / steps : 0;
+    const envelopeCapture = emptyProfile > 0 ? outside / emptyProfile : 0;
+    const rec = getDominantAtmosphereBody();
+    const altKm = rec ? rec.distanceKm - rec.params.groundRadiusKm : Number.NaN;
+    const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+    console.log(
+      `[lum] cloud ENVELOPE vs PROFILE over ${marched.toLocaleString()} marching px ` +
+        `(${W}x${H} of ${target.width}x${target.height})\n` +
+        `      pose: ${rec?.id ?? "none"} at ${Math.round(altKm)} km alt, ` +
+        `uLodMinSamples = ${cloudLodMinSamplesLive().toFixed(0)}, ` +
+        `${Math.round(steps).toLocaleString()} primary steps\n` +
+        `      steps ABOVE topAlt      ${pct(aboveTopFrac)}\n` +
+        `      steps BELOW columnBase  ${pct(belowBaseFrac)}\n` +
+        `      steps OUTSIDE envelope  ${pct(outsideFrac)}   <- zero-slack altitude test\n` +
+        `      steps with profile<=.01 ${pct(emptyFrac)}   <- the ORACLE\n` +
+        `      \u{1f511} envelopeCapture = ${pct(envelopeCapture)} of the oracle\n` +
+        (envelopeCapture < 0.5
+          ? "      \u274c BELOW THE 50% KILL GATE. A perfect altitude bound cannot reach\n" +
+            "         half the prize, and a real max-mip bound is strictly worse.\n" +
+            "         \u21d2 Stop here. Do not build the bake.\n"
+          : "      \u2705 above the 50% gate at ZERO slack. Phase 0b (the max-mip slack)\n" +
+            "         is now worth doing; it can only reduce this number.\n"),
+    );
+    if (inconsistent > marched * 0.01) {
+      console.warn(
+        `      \u26a0 ${inconsistent} px report MORE outside-envelope steps than empty-profile\n` +
+          "        steps. Outside the envelope implies profile 0, so that should be\n" +
+          "        impossible — the counters or the base derivation disagree. Check\n" +
+          "        before trusting envelopeCapture.",
+      );
+    }
+    return {
+      ok: true,
+      pose: { body: rec?.id ?? null, altitudeKm: altKm },
+      marched,
+      steps,
+      aboveTopFrac,
+      belowBaseFrac,
+      outsideFrac,
+      emptyFrac,
+      envelopeCapture,
+      inconsistentPx: inconsistent,
+    };
+  }
+
+  /**
+   * Companion to `cloudEnvelope()` — isolates the steps that VIOLATE `outside ⊆ empty`.
+   *
+   *     // set DEBUG_VIZ = "envviol" in earthClouds.ts, reload, then:
+   *     await __lum.cloudEnvViol()
+   *
+   * ⚠ WHY: `cloudEnvelope()` returned envelopeCapture 104.4% at earth_8 — impossible,
+   * since outside the envelope the profile is 0 by construction. Its own control flagged
+   * 77% of px. Rather than reason about which term is wrong (four straight wrong
+   * predictions on this subsystem), count each violating population directly.
+   * 🔑 Prime suspect: `columnBaseN` collapses to the CONSTANT `CONVECTIVE_BASE_N`
+   * (BASE_TOPALT_COUPLING = 0), while `cloudHeightProfile` derives its base INLINE as
+   * `mix(topN − STRATIFORM_THICKNESS_N, CONVECTIVE_BASE_N, conv)`. Two different bases.
+   */
+  async cloudEnvViol(): Promise<Record<string, unknown>> {
+    const src = _cloudStatsRt;
+    if (!src) {
+      console.log("[lum] no cloud stats RT registered — is a cloud pipeline active?");
+      return { ok: false };
+    }
+    const { renderer, target } = src;
+    const W = Math.min(target.width, 512);
+    const H = Math.min(target.height, 512);
+    const ox = Math.max(0, Math.floor((target.width - W) / 2));
+    const oy = Math.max(0, Math.floor((target.height - H) / 2));
+    const buf = (await renderer.readRenderTargetPixelsAsync(
+      target, ox, oy, W, H,
+    )) as unknown as Uint16Array;
+    const stride = rowStrideElements(W, 2);
+    let marched = 0, steps = 0, vAbove = 0, vBelow = 0, empty = 0, nonInteger = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * stride + x * 4;
+        const p = halfToFloat(buf[i]);
+        if (!(p > 0)) continue;
+        marched++;
+        if (Math.abs(p - Math.round(p)) > 1e-3) nonInteger++;
+        steps += p;
+        vAbove += halfToFloat(buf[i + 1]);
+        vBelow += halfToFloat(buf[i + 2]);
+        empty += halfToFloat(buf[i + 3]);
+      }
+    }
+    if (marched === 0 || nonInteger > marched * 0.01) {
+      console.error(
+        '[lum] ❌ no marching px, or counters are not integers. DEBUG_VIZ must be\n' +
+          '      "envviol" (and reloaded). Refusing to report.',
+      );
+      return { ok: false, marched, nonInteger };
+    }
+    const rec = getDominantAtmosphereBody();
+    const altKm = rec ? rec.distanceKm - rec.params.groundRadiusKm : Number.NaN;
+    const pct = (v: number) => `${((v / steps) * 100).toFixed(2)}%`;
+    console.log(
+      `[lum] envelope VIOLATIONS at ${rec?.id ?? "none"} ${Math.round(altKm)} km, ` +
+        `${Math.round(steps).toLocaleString()} steps\n` +
+        `      above topAlt  AND profile>0.01 : ${pct(vAbove)}\n` +
+        `      below baseN   AND profile>0.01 : ${pct(vBelow)}\n` +
+        `      profile<=0.01 (reference)      : ${pct(empty)}\n` +
+        (vAbove + vBelow === 0
+          ? "      \u2705 no violations — the envelope test is sound; the 104% came from\n" +
+            "         something else in the aggregation.\n"
+          : vBelow > vAbove * 4
+            ? "      \u21d2 the BASE term owns it. `columnBaseN` is the wrong base to test\n" +
+              "        against; use cloudHeightProfile's inline baseN.\n"
+            : vAbove > vBelow * 4
+              ? "      \u21d2 the TOP term owns it \u2014 profile is NON-ZERO above topAlt, which\n" +
+                "        would be a real artifact, not just a bad metric.\n"
+              : "      \u21d2 both terms violate; the envelope definition itself is wrong.\n"),
+    );
+    return {
+      ok: true,
+      pose: { body: rec?.id ?? null, altitudeKm: altKm },
+      steps,
+      violAboveFrac: vAbove / steps,
+      violBelowFrac: vBelow / steps,
+      emptyFrac: empty / steps,
+    };
+  }
+
+  /**
+   * Phase 0b probe radius, in KM OF ARC on the inner shell (CLOUD_SKIP_PLAN §5.6).
+   *
+   *     __lum.envProbe(2)   // bound taken over a 2 km-radius footprint
+   *     __lum.envProbe(0)   // exact (no offset taps) — should give retention 100%
+   *
+   * ⚠ SINCE PHASE 1b this controls ONLY the WEATHER footprint — the meso bound is a real
+   * max-mip tap at a fixed ~976 m footprint. `envProbe(0)` gives exact weather, isolating
+   * the meso bound's own cost. One weather texel is ~19.6 km of arc, so anything below
+   * that is well inside a single texel.
+   */
+  envProbe(km = 0): Record<string, unknown> {
+    const v = Math.max(0, km);
+    // Reset the monotonicity chain when the sweep restarts at a smaller radius.
+    if (_envSlackLast && v < _envSlackLast.km) _envSlackLast = null;
+    setEnvProbeRadiusKm(v);
+    console.log(
+      `[lum] envelope probe radius = ${v.toFixed(2)} km of arc ` +
+        `(~mip level ${v > 0 ? Math.log2(Math.max(1, (v * 1000) / 488)).toFixed(1) : "0 (exact)"})\n` +
+        "      Re-run await __lum.cloudEnvSlack() to see the retention move.",
+    );
+    return { envProbeKm: v };
+  }
+
+  /**
+   * Phase 0b — how much a CONSERVATIVE footprint bound loses against the exact test.
+   *
+   *     // set DEBUG_VIZ = "envslack" in earthClouds.ts, reload, then:
+   *     __lum.envProbe(1); await __lum.cloudEnvSlack()
+   *
+   * Phase 0a established that a PERFECT altitude test captures 99.1-100% of the oracle.
+   * A real implementation cannot query the exact topAlt — it queries a MAX over the ray's
+   * local footprint, which is always >= the exact value, so it culls less. `retention`
+   * below is what survives. ⚠ KILL GATE per §5.6: **retention < 50% at the footprint a
+   * real query would use ⇒ stop; do not build the bake.**
+   *
+   * ✅ PHASE 1b (2026-09-13): THE BOUND IS NOW REAL, not sampled. `gMax` comes from ONE
+   * NEAREST tap of the baked max-mip (`createMesoMaxMip1Compute`, gate PASSED exact over
+   * 262,144 voxels), holding max(mesoG) over a fixed ~976 m footprint. The weather terms
+   * are bounded by 4 CORNER taps, which is EXACT for bilinear (a bilinear surface attains
+   * its max over an axis-aligned box at a corner), not a sample.
+   * ⇒ `uEnvProbeKm` now controls ONLY the weather footprint; the meso footprint is fixed
+   * by the texture. `envProbe(0)` = exact weather + true meso bound, which isolates the
+   * meso bound's own cost — the number §3b's ±6 km objection was really about.
+   * ⚠ The corner bound approximates a spherical cap by a UV box, so it degrades at large
+   * radii and near the poles (equirect longitude convergence).
+   */
+  async cloudEnvSlack(): Promise<Record<string, unknown>> {
+    // ⚠⚠ CONTROLS ADDED 2026-09-13 AFTER A SWEEP WENT NON-MONOTONE. See the two checks
+    // at the end of this method; without them the 8/16/64 km rows read as valid.
+    const src = _cloudStatsRt;
+    if (!src) {
+      console.log("[lum] no cloud stats RT registered — is a cloud pipeline active?");
+      return { ok: false };
+    }
+    const { renderer, target } = src;
+    const W = Math.min(target.width, 512);
+    const H = Math.min(target.height, 512);
+    const ox = Math.max(0, Math.floor((target.width - W) / 2));
+    const oy = Math.max(0, Math.floor((target.height - H) / 2));
+    const buf = (await renderer.readRenderTargetPixelsAsync(
+      target, ox, oy, W, H,
+    )) as unknown as Uint16Array;
+    const stride = rowStrideElements(W, 2);
+    let marched = 0, steps = 0, exact = 0, bound = 0, empty = 0, nonInteger = 0, over = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * stride + x * 4;
+        const p = halfToFloat(buf[i]);
+        if (!(p > 0)) continue;
+        marched++;
+        if (Math.abs(p - Math.round(p)) > 1e-3) nonInteger++;
+        const e = halfToFloat(buf[i + 1]);
+        const b = halfToFloat(buf[i + 2]);
+        steps += p;
+        exact += e;
+        bound += b;
+        empty += halfToFloat(buf[i + 3]);
+        // The bound is >= the exact topAlt, so it can never skip MORE steps.
+        if (b > e + 0.5) over++;
+      }
+    }
+    if (marched === 0 || nonInteger > marched * 0.01) {
+      console.error(
+        '[lum] ❌ no marching px, or counters are not integers. DEBUG_VIZ must be\n' +
+          '      "envslack" (and reloaded). Refusing to report.',
+      );
+      return { ok: false, marched, nonInteger };
+    }
+    const retention = exact > 0 ? bound / exact : 0;
+    const boundCapture = empty > 0 ? bound / empty : 0;
+    const rec = getDominantAtmosphereBody();
+    const altKm = rec ? rec.distanceKm - rec.params.groundRadiusKm : Number.NaN;
+    const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+    console.log(
+      `[lum] envelope bound SLACK at ${rec?.id ?? "none"} ${Math.round(altKm)} km, ` +
+        `${Math.round(steps).toLocaleString()} steps\n` +
+        `      probe radius            ${(cloudEnvProbeKmLive()).toFixed(2)} km of arc\n` +
+        `      EXACT test skips        ${pct(exact / steps)} of steps\n` +
+        `      BOUND test skips        ${pct(bound / steps)} of steps\n` +
+        `      \u{1f511} retention = ${pct(retention)} of the exact test\n` +
+        `      boundCapture = ${pct(boundCapture)} of the oracle\n` +
+        (retention < 0.5
+          ? "      \u274c BELOW THE 50% KILL GATE at this footprint. And this bound is a\n" +
+            "         5-sample max, so a real reduction is WORSE. \u21d2 Stop.\n"
+          : "      \u2705 passes at this footprint.\n" +
+            "      \u26a0 envProbe(0) is NOT expected to be 100% since Phase 1b \u2014 it is the\n" +
+            "        TRUE meso max-mip bound with exact weather, measured at 99.5% (horizon)\n" +
+            "        and 100% (up_8). Retention must fall MONOTONICALLY as the weather\n" +
+            "        footprint grows; a rise means the bound is not nesting.\n"),
+    );
+    if (over > marched * 0.01) {
+      console.warn(
+        `      \u26a0 ${over} px report the BOUND skipping more steps than the EXACT test.\n` +
+          "        The bound is >= exact by construction, so that is impossible —\n" +
+          "        topAltBoundFromMaxima is not actually bounding. Do not trust these.",
+      );
+    }
+    // ── CONTROL 1: weather-footprint approximation ───────────────────────────
+    // The meso term is a true reduction now, and the 4-corner weather max is EXACT for
+    // bilinear — but only while the footprint is well approximated by an axis-aligned UV
+    // box. One weather texel is ~19.6 km of arc, so past that the corners straddle texels
+    // and the box/cap mismatch starts to matter.
+    const probeKm = cloudEnvProbeKmLive();
+    if (probeKm > 19.6) {
+      console.warn(
+        `      \u26a0 weather footprint ${probeKm} km exceeds one weather texel (19.6 km).\n` +
+          "        The 4-corner bound stops being an exact bilinear max there; treat large\n" +
+          "        radii as indicative only.",
+      );
+    }
+    // ── CONTROL 2: monotonicity ──────────────────────────────────────────────
+    // Retention MUST fall as the radius grows: a larger footprint contains the smaller,
+    // so every max can only rise and the bound can only loosen. A rise is proof the
+    // sampled ring is not nesting — the failure that invalidated the 2026-09-13 sweep.
+    const prev = _envSlackLast;
+    _envSlackLast = { km: probeKm, retention };
+    if (prev && probeKm > prev.km && retention > prev.retention + 0.002) {
+      console.error(
+        `      \u274c NON-MONOTONE: retention ROSE ${(prev.retention * 100).toFixed(1)}% ` +
+          `\u2192 ${(retention * 100).toFixed(1)}% as the radius grew ` +
+          `${prev.km} \u2192 ${probeKm} km.\n` +
+          "        A bigger footprint CONTAINS the smaller one, so this is impossible for a\n" +
+          "        true max. The ring probe is not nesting \u21d2 this row is void, and so is\n" +
+          "        every row at a comparable radius.",
+      );
+    }
+    return {
+      ok: true,
+      pose: { body: rec?.id ?? null, altitudeKm: altKm },
+      probeKm: cloudEnvProbeKmLive(),
+      steps,
+      exactFrac: exact / steps,
+      boundFrac: bound / steps,
+      retention,
+      boundCapture,
+      impossiblePx: over,
+    };
+  }
+
+  /**
+   * Conservative empty-space skip (docs/CLOUD_SKIP_PLAN.md §5, Phase 2).
+   *
+   *     __lum.cloudSkip(false)   // off — the pre-Phase-2 march
+   *     __lum.cloudSkip(true)    // on (default)
+   *
+   * 🔑🔑 THIS IS A PURE PERF DIAL WITH A CORRECTNESS INVARIANT, NOT A QUALITY DIAL. The
+   * skip only advances through space a VALIDATED bound proves holds no cloud, so the two
+   * arms must render the SAME IMAGE. That gives it a control nothing else in this
+   * subsystem has:
+   *
+   *     await __lum.cloudIters()   // densePerRay MUST be invariant across the toggle
+   *
+   * Baseline `densePerRay`: **6.84** at earth_8, **4.05** at earth_horizon_8, **0** at
+   * earth_up_8 (needs DEBUG_VIZ = "stats"). ⚠ Any DROP means the bound leaks and the
+   * marcher is stepping over cloud — a bug, not a tradeoff. Look for thin low decks and
+   * cloud EDGES, not interiors.
+   *
+   * ⚠ The bound costs 5 extra taps per step (1 max-mip + 4 weather corners), so the net
+   * is (far fewer steps) x (slightly dearer steps). Only a frame-mean A/B settles it —
+   * per-pass numbers are queue depth whenever gpu/frame > 1.15.
+   */
+  cloudSkip(on = true): Record<string, unknown> {
+    setCloudEmptySkip(on);
+    console.log(
+      `[lum] conservative empty-space skip: ${on ? "ON" : "OFF"}\n` +
+        "      \u26a0 This must not change the IMAGE \u2014 verify with await __lum.cloudIters()\n" +
+        "        (densePerRay 6.84 / 4.05 / 0) before trusting any timing delta.",
+    );
+    return { emptySkip: cloudEmptySkipLive() };
+  }
+
+  /**
+   * Dither fraction for the empty-space skip's landing point, in [0,1]. Default 0.5.
+   *
+   *     __lum.cloudSkipJitter(0)     // no dither — the rings should REAPPEAR
+   *     __lum.cloudSkipJitter(-1)    // release the override, back to the altitude lerp
+   *
+   * ⚠ SINCE 2026-09-14 the shipped value is an ALTITUDE LERP (0.25 at/below 30 km → 0.50
+   * at/above 250 km, cloudFullscreenPass), because the number of footprint-capped skips
+   * before the deck scales with altitude. This call OVERRIDES that lerp until you pass a
+   * negative value.
+   *
+   * ⚠ Find the SMALLEST value that removes the rings: this costs ~f/2 of the skip's
+   * average reach, so 0.5 gives up ~25% of a win measured at 1.7-2.8 ms.
+   * ⚠ Judge it while MOVING (fly down from ~6785 km toward ~6380 km) — the artifact is
+   * far weaker stationary, because the temporal EMA hides it.
+   */
+  cloudSkipJitter(f = -1): Record<string, unknown> {
+    setCloudSkipJitter(f);
+    console.log(
+      `[lum] skip landing dither = ${f < 0 ? "AUTO (altitude lerp 0.25→0.50)" : cloudSkipJitterLive().toFixed(2)} ` +
+        `(gives up ~${(cloudSkipJitterLive() * 50).toFixed(0)}% of the skip's reach)\n` +
+        "      \u26a0 Judge while FLYING DOWN through ~6785 \u2192 6380 km, not stationary.",
+    );
+    return { skipJitter: cloudSkipJitterLive() };
+  }
+
+  /**
+   * Ring-artifact DISCRIMINATOR for the empty-space skip. Scales the footprint cap in
+   * (0,1]; default 1.
+   *
+   *     __lum.cloudSkipJitter(0)        // dither OFF, so the artifact is unmasked
+   *     __lum.cloudSkipFoot(0.25)       // footprint cap binds 4x harder
+   *     __lum.cloudSkipFoot(1)          // back to normal
+   *
+   * 🔑 `dtFoot = radius / perp` is the ONLY term in the skip that depends purely on the
+   * view ray's ANGLE — i.e. on screen position — so it is the only candidate that can
+   * produce a SCREEN-FIXED pattern while the clouds move past it. Traversing empty space
+   * takes ceil(distance / dtFoot) clamped skips: a DISCRETE count of a SMOOTH RADIAL
+   * quantity, which bands at the integer boundaries. That also explains why dithering the
+   * distance helps but cannot clear it — the dither blurs the boundaries, the COUNT still
+   * quantizes.
+   * ✅ One-sided ON PURPOSE: shrinking only makes the bound MORE conservative, so this can
+   * never produce an unsound skip or a fake artifact of its own.
+   * ⚠ Judge WHILE FLYING DOWN through ~6785 → 6380 km, with the dither at 0.
+   * ⇒ If rings INTENSIFY as this shrinks, dtFoot owns them and the fix is a LARGER
+   * guaranteed radius (a second, coarser dilated reduction), not more dither.
+   * ⇒ If they are UNCHANGED, the cause is elsewhere and this hypothesis is dead.
+   */
+  cloudSkipFoot(f = 1): Record<string, unknown> {
+    setCloudSkipFootScale(f);
+    console.log(
+      `[lum] skip footprint cap x${cloudSkipFootScaleLive().toFixed(2)} ` +
+        `(smaller = binds harder = MORE conservative)\n` +
+        "      \u26a0 Set __lum.cloudSkipJitter(0) first so the dither is not masking it.",
+    );
+    return { skipFootScale: cloudSkipFootScaleLive() };
+  }
+
+  /**
+   * Dither only the FINAL skip of each ray, instead of every skip.
+   *
+   *     __lum.cloudSkipJitterFinal(true)    // the experiment
+   *     __lum.cloudSkipJitterFinal(false)   // shipped behaviour
+   *
+   * 🔑 The ring dither must be RAY-INVARIANT (a per-step low-discrepancy value cannot
+   * break a cumulative quantization). But a constant per-ray scale `s` means crossing a
+   * gap takes `D/(s·dtFoot)` skips, and E[1/s] > 1/E[s] by Jensen — so the cost compounds
+   * over every skip. MEASURED: that is why earth_horizon_8 fell −1.68 → −0.94 ms even at
+   * j = 0.25. Intermediate skips traverse provably empty space where the landing point
+   * cannot alias anything, so dithering only the last one pays Jensen ONCE per ray.
+   *
+   * ⚠⚠ JUDGE THE RINGS FIRST, NOT THE FRAME TIME. If the deterministic intermediate skips
+   * leave the final `dtDescend` small, the dither range shrinks with it and the banding
+   * returns — fly down through ~6785 → 6380 km and look before running any bench.
+   */
+  cloudSkipJitterFinal(on = true): Record<string, unknown> {
+    setCloudSkipJitterFinalOnly(on);
+    console.log(
+      `[lum] skip dither applies to: ${on ? "the FINAL skip only" : "EVERY skip (shipped)"}\n` +
+        "      \u26a0 Check the RINGS while descending before trusting any timing delta.",
+    );
+    return { finalOnly: cloudSkipJitterFinalOnlyLive() };
+  }
+
   /**
    * Beer-shadow-map bake-cache hit rate.
    *
