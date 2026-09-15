@@ -206,8 +206,12 @@ import {
   cloudSkipJitterLive,
   setCloudSkipFootScale,
   cloudSkipFootScaleLive,
-  setCloudSkipJitterFinalOnly,
-  cloudSkipJitterFinalOnlyLive,
+  setCloudRewindFix,
+  cloudRewindFixLive,
+  setCloudDenseStepCapKm,
+  cloudDenseStepCapKmLive,
+  setCloudDenseSearchFix,
+  cloudDenseSearchFixLive,
   setEnvProbeRadiusKm,
   cloudEnvProbeKmLive,
 } from "@/components/celestial/bodies/cloudCommon";
@@ -3677,6 +3681,179 @@ export class LumHarness {
   }
 
   /**
+   * Cloud DETECTION vs ACCUMULATION statistics — the companion `cloudIters()` cannot give.
+   *
+   *     await __lum.cloudDense()
+   *
+   * ⚠⚠ REQUIRES `DEBUG_VIZ = "densestats"` in earthClouds.ts AND A RELOAD.
+   *
+   * 🔑🔑 WHY IT EXISTS. `cloudIters()` reports `densePerRay`, which read **0.78 at 82 km**
+   * against 6.84 at earth_8 — less than one accumulated sample per ray through the whole
+   * deck. But `denseIters` is incremented ONLY in the steady-state dense branch. The
+   * skip→dense transition rewinds and returns WITHOUT incrementing anything, so a ray that
+   * detects a body and then lands past it is indistinguishable, in every "stats" number,
+   * from a ray that found no cloud at all. Both read `dense = 0`, and both are counted in
+   * `emptyRayFrac`. That ambiguity is the entire question, hence a second mode.
+   *
+   * THE DECIDING PAIR is `detect > 0` with `dense == 0`: a ray that found cloud and
+   * accumulated none of it. High ⇒ the transition is dropping detected bodies (suspect
+   * the rewind: it subtracts 0.5·dtSkipInBand, then the advance adds dtDenseEff, which
+   * CLAMPS to dtSkipInBand once `lodCap <= 0.25·(1 + t·LOD_STEP_GROWTH)` — a net move
+   * FORWARD past the detection point, not back before it as the comment claims).
+   * Low ⇒ the deck is genuinely thin at this pose and the sampling is faithful to it.
+   *
+   * ⚠ Same read-window and degeneracy checks as `cloudIters()`; see that doc block.
+   */
+  async cloudDense(): Promise<Record<string, unknown>> {
+    const src = _cloudStatsRt;
+    if (!src) {
+      console.log("[lum] no cloud stats RT registered — is a cloud pipeline active?");
+      return { ok: false };
+    }
+    const { renderer, target } = src;
+    const W = Math.min(target.width, 512);
+    const H = Math.min(target.height, 512);
+    const ox = Math.max(0, Math.floor((target.width - W) / 2));
+    const oy = Math.max(0, Math.floor((target.height - H) / 2));
+    const buf = (await renderer.readRenderTargetPixelsAsync(
+      target,
+      ox,
+      oy,
+      W,
+      H,
+    )) as unknown as Uint16Array;
+    const stride = rowStrideElements(W, 2);
+
+    let marched = 0;
+    let nonInteger = 0;
+    let dense = 0;
+    let detect = 0;
+    let runMaxSum = 0;
+    let detectedZeroDense = 0;
+    let trueEmpty = 0;
+    let covered = 0;
+    let multiDetect = 0;
+    // ⚠ Tightening the dense step is HOW budget death happened historically (see
+    // DENSE_OPACITY_GROWTH). Without these the sweep cannot see itself causing it.
+    let atBudget = 0;
+    const reasons = [0, 0, 0];
+    const runHist = [0, 0, 0, 0, 0, 0];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * stride + x * 4;
+        const p = halfToFloat(buf[i]);
+        if (!(p > 0)) continue;
+        marched++;
+        const d = halfToFloat(buf[i + 1]);
+        const dt = halfToFloat(buf[i + 2]);
+        const a = halfToFloat(buf[i + 3]);
+        if (
+          Math.abs(p - Math.round(p)) > 1e-3 ||
+          Math.abs(dt - Math.round(dt)) > 1e-3 ||
+          Math.abs(a - Math.round(a)) > 1e-3
+        ) {
+          nonInteger++;
+          continue;
+        }
+        const runMax = Math.floor(a / 4);
+        const reason = Math.round(a - 4 * runMax);
+        if (reason >= 0 && reason <= 2) reasons[reason]++;
+        if (p >= 255.5) atBudget++;
+        dense += d;
+        detect += dt;
+        runMaxSum += runMax;
+        if (dt > 0.5) {
+          covered++;
+          if (dt > 1.5) multiDetect++;
+          if (d < 0.5) detectedZeroDense++;
+          runHist[Math.min(5, Math.round(runMax))]++;
+        } else if (d < 0.5) {
+          trueEmpty++;
+        }
+      }
+    }
+    if (marched === 0) {
+      console.log(
+        "[lum] no marching pixels in the read window. Point at the cloud deck, and\n" +
+          "      confirm DEBUG_VIZ = \"densestats\" is set in earthClouds.ts (needs a reload).",
+      );
+      return { ok: false, marched: 0 };
+    }
+    if (nonInteger > marched * 0.01) {
+      console.error(
+        `[lum] ❌ ${nonInteger}/${marched} samples are NOT integers — this is not the\n` +
+          "      marcher's counter output. DEBUG_VIZ must be \"densestats\" (and reloaded).\n" +
+          "      Every number below would be fiction; refusing to report.",
+      );
+      return { ok: false, nonInteger, marched };
+    }
+    const rec = getDominantAtmosphereBody();
+    const altKm = rec ? rec.distanceKm - rec.params.groundRadiusKm : Number.NaN;
+    const dzdFrac = detectedZeroDense / marched;
+    const dzdOfCovered = covered > 0 ? detectedZeroDense / covered : 0;
+    console.log(
+      `[lum] cloud DETECTION vs ACCUMULATION over ${marched.toLocaleString()} marching px\n` +
+        `      pose: ${rec?.id ?? "none"} at ${Math.round(altKm)} km alt, ` +
+        `uLodMinSamples = ${cloudLodMinSamplesLive().toFixed(0)}`,
+    );
+    console.table({
+      "detections / ray": { mean: +(detect / marched).toFixed(3) },
+      "dense samples / ray": { mean: +(dense / marched).toFixed(3) },
+      "dense per DETECTION": { mean: +(detect > 0 ? dense / detect : 0).toFixed(3) },
+      "longest dense run": { mean: +(runMaxSum / marched).toFixed(3) },
+    });
+    console.log(
+      [
+        `      🔑 DETECTED BUT ZERO DENSE = ${(100 * dzdFrac).toFixed(1)}% of marching px ` +
+          `(${(100 * dzdOfCovered).toFixed(1)}% of rays that found cloud)`,
+        dzdFrac >= 0.1
+          ? "         ⇒ ABOVE THE 10% KILL LINE. The skip→dense transition is dropping\n" +
+            "            detected bodies: the march lands PAST the edge it just found."
+          : "         ⇒ BELOW THE 10% KILL LINE ⇒ the rewind-overshoot hypothesis is DEAD.\n" +
+            "            Low densePerRay at this pose means the deck is genuinely thin here.",
+        `      rays that found NO cloud at all (no detection): ${((100 * trueEmpty) / marched).toFixed(1)}%`,
+        `      rays with >1 detection (ping-pong): ${((100 * multiDetect) / marched).toFixed(1)}%`,
+        `      longest-run histogram over COVERED rays (0,1,2,3,4,5+): ` +
+          runHist.map((n) => (covered > 0 ? `${((100 * n) / covered).toFixed(0)}%` : "-")).join(" "),
+        "      ⚠ A run of 1 means the body contributed ONE sample — the entry position IS\n" +
+          "        the sample position, which is what makes a sub-km perturbation visible.",
+        `      exit reason:  budget ${((100 * reasons[0]) / marched).toFixed(1)}%  ` +
+          `slab ${((100 * reasons[1]) / marched).toFixed(1)}%  ` +
+          `opaque ${((100 * reasons[2]) / marched).toFixed(1)}%   ` +
+          `at budget: ${((100 * atBudget) / marched).toFixed(1)}%`,
+        atBudget > marched * 0.02
+          ? "      ⚠⚠ RAYS ARE HITTING THE 256-STEP BUDGET. A finer dense step is exactly\n" +
+            "         what killed the march inside bodies in 2026-06-03. Back the cap off."
+          : "",
+      ].join("\n"),
+    );
+    return {
+      ok: true,
+      pose: {
+        body: rec?.id ?? null,
+        altitudeKm: altKm,
+        lodMinSamples: cloudLodMinSamplesLive(),
+      },
+      marched,
+      detectPerRay: detect / marched,
+      densePerRay: dense / marched,
+      densePerDetection: detect > 0 ? dense / detect : 0,
+      denseRunMaxPerRay: runMaxSum / marched,
+      detectedButZeroDenseFrac: dzdFrac,
+      detectedButZeroDenseOfCovered: dzdOfCovered,
+      trueEmptyRayFrac: trueEmpty / marched,
+      multiDetectFrac: multiDetect / marched,
+      runHistOfCovered: runHist.map((n) => (covered > 0 ? n / covered : 0)),
+      atBudgetFrac: atBudget / marched,
+      exitReason: {
+        budget: reasons[0] / marched,
+        slab: reasons[1] / marched,
+        opaque: reasons[2] / marched,
+      },
+    };
+  }
+
+  /**
    * `uLodMinSamples` override — the minimum number of samples the march is asked to take
    * through the slab. 0 restores the authored altitude lerp (60 near deck → 16 high).
    *
@@ -4193,8 +4370,20 @@ export class LumHarness {
    * quantity, which bands at the integer boundaries. That also explains why dithering the
    * distance helps but cannot clear it — the dither blurs the boundaries, the COUNT still
    * quantizes.
-   * ✅ One-sided ON PURPOSE: shrinking only makes the bound MORE conservative, so this can
-   * never produce an unsound skip or a fake artifact of its own.
+   * ✅ SHRINKING is always sound: it only makes the bound MORE conservative.
+   * ⚠⚠ VALUES >1 ARE UNSOUND and diagnostic-only — `dtFoot` then exceeds the radius one
+   * max-mip tap bounds, so the skip can step OVER cloud. Expect holes/popping. Their one
+   * use is separating the two ring mechanisms:
+   *   A — the COUNT: empty space is crossed in ceil(D·perp/R) capped segments and the
+   *       bands sit at the integer boundaries. Killed by a HUGE dtFoot (never binds).
+   *   B — the LANDING SURFACE: the final skip stops exactly where altitude == topBound,
+   *       a deterministic iso-altitude shell, which from nadir maps to iso-screen-radius.
+   *       NOT affected by dtFoot at all.
+   * ⇒ `cloudSkipJitter(0); cloudSkipFoot(1000)`: rings GONE ⇒ A owns it (fix = finer
+   * bands / cheaper capped skips). Rings REMAIN ⇒ B owns it (fix = randomize the landing,
+   * and the dither is then the only lever, not a workaround).
+   * ⚠ Shrinking suppresses BOTH (the skip barely moves), which is why the earlier
+   * 1 → 0.5 → 0.01 sweep could not tell them apart.
    * ⚠ Judge WHILE FLYING DOWN through ~6785 → 6380 km, with the dither at 0.
    * ⇒ If rings INTENSIFY as this shrinks, dtFoot owns them and the fix is a LARGER
    * guaranteed radius (a second, coarser dilated reduction), not more dither.
@@ -4211,29 +4400,75 @@ export class LumHarness {
   }
 
   /**
-   * Dither only the FINAL skip of each ray, instead of every skip.
+   * Skip→dense REWIND correction (M1). SHIPPED ON 2026-09-14 — pass false for the A/B.
    *
-   *     __lum.cloudSkipJitterFinal(true)    // the experiment
-   *     __lum.cloudSkipJitterFinal(false)   // shipped behaviour
+   *     __lum.cloudRewind(false);  await __lum.cloudDense()
    *
-   * 🔑 The ring dither must be RAY-INVARIANT (a per-step low-discrepancy value cannot
-   * break a cumulative quantization). But a constant per-ray scale `s` means crossing a
-   * gap takes `D/(s·dtFoot)` skips, and E[1/s] > 1/E[s] by Jensen — so the cost compounds
-   * over every skip. MEASURED: that is why earth_horizon_8 fell −1.68 → −0.94 ms even at
-   * j = 0.25. Intermediate skips traverse provably empty space where the landing point
-   * cannot alias anything, so dithering only the last one pays Jensen ONCE per ray.
-   *
-   * ⚠⚠ JUDGE THE RINGS FIRST, NOT THE FRAME TIME. If the deterministic intermediate skips
-   * leave the final `dtDescend` small, the dither range shrinks with it and the banding
-   * returns — fly down through ~6785 → 6380 km and look before running any bench.
+   * 🔑 MEASURED 2026-09-14 with `__lum.cloudDense()`: rays that DETECT a cloud body and
+   * accumulate zero samples from it run 0.4% at earth_8 but **26.4% at 120 km and 39.3%
+   * at 250 km**. The transition rewinds 0.5·dtSkipInBand and the advance then adds
+   * dtDenseEff, which clamps to dtSkipInBand at altitude ⇒ net move FORWARD, past the
+   * edge. This adds the missing dense step to the rewind.
+   * ✅ CONFIRMED: `detectedButZeroDenseOfCovered` at earth_250 fell 39.3% → 17.3%, and at
+   * 120 km 26.3% → 21.8%, while earth_8 stayed at 0.2–0.4%. Frame cost at earth_8 was
+   * +0.068 ms against a +0.103 ms control drift — free.
    */
-  cloudSkipJitterFinal(on = true): Record<string, unknown> {
-    setCloudSkipJitterFinalOnly(on);
+  cloudRewind(on = true): Record<string, unknown> {
+    setCloudRewindFix(on);
     console.log(
-      `[lum] skip dither applies to: ${on ? "the FINAL skip only" : "EVERY skip (shipped)"}\n` +
-        "      \u26a0 Check the RINGS while descending before trusting any timing delta.",
+      `[lum] skip→dense rewind fix ${cloudRewindFixLive() ? "ON" : "OFF"} ` +
+        `— first dense sample lands ${cloudRewindFixLive() ? "AT" : "PAST"} the detected edge`,
     );
-    return { finalOnly: cloudSkipJitterFinalOnlyLive() };
+    return { rewindFix: cloudRewindFixLive() };
+  }
+
+  /**
+   * Hard ceiling on the EFFECTIVE dense step, in km (M2). SHIPPED at 0.25 km 2026-09-14.
+   *
+   *     __lum.cloudDenseCap(-1);  await __lum.cloudDense()   // disable, for the A/B
+   *     __lum.cloudDenseCap(0.25)                            // back to shipped
+   *
+   * 🔑 `DENSE_INTEG_CAP_SCALED` bounds `dtDenseL`, but the budget-death multiplier
+   * `(1 + (1-T)·3 + denseIters/32)` is applied OUTSIDE that min — so the step actually
+   * taken reaches ~1.6 km at 82 km, 2.1× the "validated clean" 750 m, through a deck only
+   * ~1.6 km thick. That is why covered rays measured **1.24 dense samples** at 120 km.
+   * ⚠⚠ DO NOT TIGHTEN IT WITHOUT RE-SWEEPING, and never with `cloudDenseSearch(false)`:
+   * without that fix the response is NON-MONOTONE — `dzdCovered` at 250 km runs 3.4%
+   * (0.375) → 6.3% (0.25) → 21.3% (0.15), the last as bad as no fix at all.
+   * WITH it: 3.2% → 1.3% → 0.3%, and 0.25 km is the measured knee — 0.15 km costs 3× more
+   * (+2.28/+2.71 ms vs +0.68/+0.76) to move 250 km by 1pp, and drops orbit below 50 fps.
+   */
+  cloudDenseCap(km = -1): Record<string, unknown> {
+    setCloudDenseStepCapKm(km);
+    const live = cloudDenseStepCapKmLive();
+    console.log(
+      `[lum] effective dense-step ceiling = ${live >= 1e5 ? "disabled" : live.toFixed(3) + " km"}`,
+    );
+    return { denseStepCapKm: live };
+  }
+
+  /**
+   * Post-transition dense SEARCH extension (M3). Default OFF.
+   *
+   *     __lum.cloudDenseSearch(true);  await __lum.cloudDense()
+   *
+   * 🔑 `EMPTY_THRESHOLD` is a step COUNT doing two jobs: a post-transition SEARCH budget
+   * (scales with `dtSkipInBand` — the detection came from a sample up to
+   * 1.5·dtSkipInBand ahead) and an in-body HOLE tolerance (scales with the dense step).
+   * This adds the distance floor to the search phase only.
+   * ⚠ EXPECT A NO-OP at the shipped 375 m ceiling — it is one-sided, so it does nothing
+   * wherever 5·dtDenseEff already clears 1.5·dtSkipInBand. Its purpose is to make a
+   * TIGHTER ceiling safe, so judge it by re-sweeping `cloudDenseCap`, not on its own.
+   * ⇒ KILL LINE: with it on, `dzdCovered` at earth_250 must be MONOTONE-decreasing over
+   * ceilings 0.375 → 0.25 → 0.15. If 0.15 still regresses to ~20%, the coupling was the
+   * wrong mechanism and this is dead.
+   */
+  cloudDenseSearch(on = true): Record<string, unknown> {
+    setCloudDenseSearchFix(on);
+    console.log(
+      `[lum] dense post-transition search extension ${cloudDenseSearchFixLive() ? "ON" : "OFF"}`,
+    );
+    return { denseSearchFix: cloudDenseSearchFixLive() };
   }
 
   /**

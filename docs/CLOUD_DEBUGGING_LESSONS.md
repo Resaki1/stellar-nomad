@@ -3025,3 +3025,298 @@ constant, replacing a top-tracking mix the density evaluated on every march step
 - ⚠ **When a unification changes appearance, find the parameter value that makes it a
   provable no-op first.** Shipping "unified AND retuned" in one step makes any regression
   unattributable.
+
+---
+
+## Case study #28 — nadir-centred rings from the empty-space skip: FIVE refuted mechanisms, and why the fix's cost is forced (2026-09-14)
+
+**Symptom:** concentric rings in the cloud deck, **centred on the nadir**, **fixed to screen
+position** while the clouds move past, strongest ~6785 → 6400 km from Earth's centre
+(≈400 → 20 km altitude), gone below ~6385 km. Only with the conservative empty-space skip
+enabled.
+
+**The one clue that constrained everything:** screen-FIXED while the world moves can only
+come from a function of view-ray ANGLE. In the skip there is exactly one —
+`dtFoot = R/perp`, the cap that stops a skip leaving the radius one max-mip tap bounds.
+Empty space is therefore crossed in `ceil(D·perp/R)` equal segments, and the bands sit at
+the integer boundaries. Centred on nadir because `perp → 0` there.
+
+### The five refuted mechanisms, in order
+
+| # | hypothesis | killed by |
+|---|---|---|
+| 1 | the skip lands on the deterministic `topBound` surface | `cloudSkipFoot(100)` (dtFoot never binds ⇒ ONE skip) removed the rings; a landing-surface cause would not care |
+| 2 | the sequence's PHASE — dither the FIRST skip | still rings, and "thinner, sharper" — a partial smear |
+| 3 | dither the FINAL skip | still rings; on the final skip `dtDescend` is already tiny, so scaling it moves the entry almost nothing |
+| 4 | skip count leaking into `stratJitter` via `primaryIters` | decoupling the jitter index changed NOTHING |
+| 5 | skip iterations exhausting `MAX_PRIMARY_STEPS` | `atBudgetFrac = 0`, `exitReason.budget = 0.0%` |
+
+### ⚠⚠ TWO OF MY OWN INSTRUMENTS LIED FIRST
+
+- `resumeT` recorded `t + emptySkipDist` — the skip's INTENDED end. The actual advance is
+  `max(dtThis, emptySkipDist)`, so whenever the normal stride was longer it stored a
+  position the ray never visits. It read a confident, clean **flat**.
+- After fixing that it STILL read flat — because the viz normalised by `tExit` (hundreds of
+  km), so a few hundred metres of variation was ~0.001 of the ramp. Recalibrated to a 1 km
+  sawtooth it **ringed immediately**.
+🔑 Both produced tidy null results that were nearly reasoned from. **A null from an
+unvalidated instrument is not evidence.** This file already said "calibrate a debug viz to
+the effect size you are hunting" (case #23) — and the same mistake was made again.
+
+### What it actually is
+
+Every capped skip advances **exactly `dtFoot`**, so the march ENTERS THE CLOUD on a lattice
+of that spacing, phase-locked per screen radius. And `densePerRay = 0.78` at 82 km — **less
+than one dense sample per ray through the whole deck** — so the entry position IS the sample
+position and the lattice renders directly. Below ~14 km, `densePerRay` is 6.8 and the same
+lattice averages away invisibly, which is exactly where the rings disappear.
+
+### The fix, and why its cost is not negotiable
+
+Only dithering EVERY skip works. Perturbing one END of the lattice (modes 1/2/3) merely
+SHIFTS it, and a shifted lattice is still a lattice; only varying the step LENGTHS destroys
+it. And a skip may never exceed the radius one tap bounds, so per-step variation can only
+**shorten** — which is precisely what costs reach.
+⇒ **The 0.91 ms at earth_horizon_8 is the intrinsic price of breaking a lattice whose
+regularity is what makes the skip fast.** Not an implementation inefficiency.
+
+### Lessons
+
+- 🔑 **Ask what the artifact is a function of before asking what causes it.** "Screen-fixed
+  while the world moves" eliminated every world-space candidate in one sentence and was
+  supplied by the user, not derived.
+- 🔑 **A quantity can be the right DRIVER and still not be the right CONSUMER.** The skip
+  count carried the pattern through five wrong consumers before the entry lattice.
+- ⚠ **Validate an instrument before trusting its null.** Two silent instrument bugs cost
+  more here than any of the five wrong hypotheses.
+- ⚠ **An undersampled render makes every perturbation visible.** `densePerRay = 0.78` is the
+  reason a sub-km lattice is a visible artifact at all; at 6.8 it is invisible. When an
+  artifact is altitude-dependent, check the sample count before the mechanism.
+
+### ⚠⚠ THIS CASE'S PREMISE HAS SINCE CHANGED — re-open before quoting its conclusion
+
+"The 0.91 ms is the intrinsic price" was derived from `densePerRay = 0.78`, i.e. from the
+entry position BEING the sample position. Cases #29/#30 raised that to ~1.68 at 250 km and
+~2.15 at 120 km (≈3–4×), so the march now averages over the entry lattice instead of
+point-sampling it. **The conclusion is not wrong, but it is no longer load-bearing:**
+`uSkipJitter` (0.25 near / 0.5 far) was tuned against the undersampled image, and the
+dither costs ~`uSkipJitter/2` of the skip's reach.
+✅ CHASED AND CLOSED, case #31 (2026-09-15). The prize was real — jitter 0 measured
+**−0.92 ms at earth_30 and −0.91 at earth_horizon_8** — but unavailable: **jitter 0 rings
+on its own** at every altitude tested except a narrow band near 197 km, and 0.125 is worse
+again. So this case's conclusion STANDS, for a reason it never identified: not the sample
+count, but that the undithered skip bands by itself. The premise was wrong and the verdict
+was right anyway — remember that before re-opening it a third time.
+What case #31 DID find: the response is non-monotone, and the shipped schedule was parked
+in its trough (0.34–0.42 where 0.5+ is needed), which was the long-standing "rings still
+visible at some altitudes". Fixed above ~250 km for +0.04 ms; forced below.
+- ✅ **A one-sided diagnostic** (a knob that can only make a bound MORE conservative)
+  identifies a mechanism without ever rendering something unsound. Widening it past sound
+  limits is worth it ONLY as a labelled, temporary discriminator.
+
+---
+
+## Case study #29 — the cloud deck was point-sampled at altitude: a rewind that inverted, and a cap that capped the wrong thing (2026-09-14)
+
+**Symptom.** Follow-on from case #28, which closed with `densePerRay = 0.78` at 82 km
+against **6.84** at earth_8 — under one accumulated sample per ray through the whole deck.
+That is why the #28 rings were visible at altitude and vanished below ~14 km: at 0.78
+samples/ray the march's ENTRY position *is* the sample position, so any sub-km
+perturbation renders directly.
+
+### The instrument had to be built first, because the existing one could not see the bug
+
+`__lum.cloudIters()` reports `densePerRay` from `denseIters`, which is incremented **only
+in the steady-state dense branch**. The skip→dense transition rewinds and returns without
+incrementing anything. So a ray that DETECTS a body and then lands past it is
+indistinguishable, in every number that mode emits, from a ray that found no cloud at all
+— both read `dense = 0`, and both sit inside `emptyRayFrac`. That ambiguity *was the entire
+question*. Hence `DEBUG_VIZ = "densestats"` + `__lum.cloudDense()`, emitting detection
+events and the longest single-body dense run.
+
+🔑 **A counter that is only incremented on success cannot measure a failure to start.**
+
+### Two independent mechanisms, both structural, both predicted from the code
+
+**M1 — the rewind INVERTS above ~20 km.** The transition does `t -= 0.5·dtSkipInBand` and
+lets the loop's advance add `dtDenseEff`, which the comment says "resumes one short step
+BEFORE the detection point". That arithmetic assumes `dtDenseEff = 0.25·dtSkipInBand`. But
+
+```
+dtDenseL = min(dtDense·lodScaleDense, dtSkipInBand, DENSE_INTEG_CAP)
+```
+
+clamps to `dtSkipInBand` exactly once `lodCap ≤ 0.25·(1 + t·LOD_STEP_GROWTH)` — the
+"at orbit dense ≈ skip ≈ footprint" regime the design *deliberately creates*. Net move is
+then **forward**: −27 m at earth_8, but **+200 m at 82 km and +281 m at 250 km**.
+
+**M2 — `DENSE_INTEG_CAP` is not a cap.** The budget-death multiplier
+`(1 + (1−T)·3 + denseIters/32)` is applied OUTSIDE the `min(…, 750 m)`, so the step
+actually taken reached **1.6 km at 82 km** — 2.1× the "historically-validated always looked
+clean" value — through a deck only ~1.6 km thick.
+
+### Measured (kill line stated before the run: `detectedButZeroDense < 10%` ⇒ M1 dead)
+
+| pose | dense/ray base → both | `dzdCovered` base → rewind | frame cost (control-corrected) |
+|---|---|---|---|
+| earth_8 | 5.177 → 5.381 | 0.4% → 0.2% | **free** (+0.068 vs +0.103 drift) |
+| earth_120 | 0.573 → 1.422 | 26.3% → 21.8% | +0.83 ms |
+| earth_250 | 0.332 → 1.170 | **39.3% → 17.3%** | +1.19 ms |
+
+The two switches were kept independent, and that paid: the cap moves `dzdCovered` by 0.1pp
+(26.3→26.4, 39.3→39.4) while the rewind's effect is identical with or without it
+(21.8/21.8, 17.3/17.4). **Perfectly separable ⇒ the matrix is readable.** `detect/ray` was
+flat across all twelve rows — the control that says the arms are not interacting.
+
+### 🔑 THE THINGS THAT WOULD NOT BE OBVIOUS FROM THE CODE
+
+- **`lodCap` guarantees `uLodMinSamples` across the SLAB, but cloud occupies ~1.6 km of a
+  15 km slab.** 16 samples over 15 km is 937 m spacing. The sampling floor is a guarantee
+  on the wrong quantity and never notices the deck. This is the root of M2.
+- ⚠⚠ **The ceiling sweep was NOT monotone**, which is what sent the investigation on to
+  the follow-up below. `dzdCovered` at 250 km: 17.5% (off) → 0.9% (0.5) → 3.4% (0.375) →
+  6.3% (0.25) → **21.3% (0.15), as bad as no fix at all.** Cause: skip-mode detection is
+  jittered up to a full `dtSkipInBand` ahead of nominal `t`, so the feature can sit
+  ~1.5·dtSkipInBand past where dense mode resumes — but `EMPTY_THRESHOLD` gives it only
+  `(4+1)·dtDenseEff` to get there. **A step COUNT bounding a distance that scales with a
+  DIFFERENT step.** FIXED by the search extension; the shipped ceiling is now 250 m.
+- **A ceiling does nothing until it drops below `dtDenseL`, which at altitude IS
+  `dtSkipInBand`** — 937 m at 250 km but 478 m at 120 km. 0.5 km is excellent at 250 km
+  (0.9%) and nearly inert at 120 km (16.8%). 375 m is the only rung that binds at both;
+  it is a joint optimum over two poses, not a value to refine by eye at one.
+- **The cost self-scopes.** The ceiling is measurably inert below ~30 km, so the price
+  lands entirely in the orbital band — which is the only band where the artifact lived.
+  No altitude gate was needed; the geometry already provides one.
+
+### ⚠ A prediction of mine that was wrong, and wrong in the useful direction
+
+I predicted the ceiling would start binding at earth_8 around 0.375–0.25 km via the ×12
+multiplier, and warned a single global constant might not serve both regimes. Measured:
+earth_8 is inert to **0.25 km** (5.383 → 5.382, `atBudget` 0 throughout). ×12 needs
+`denseIters = 256`; earth_8 averages **5.4**, so the real multiplier is ~4 and `dtDenseEff`
+stays 100–240 m. 🔑 **Worst-case multipliers are not typical multipliers — check the
+distribution of the term that drives them before reasoning from its bound.**
+
+---
+
+## Case study #30 — `EMPTY_THRESHOLD` was a step COUNT doing a distance's job, which made a quality knob non-monotone (2026-09-14)
+
+**Follow-up to case #29**, which shipped a 375 m dense-step ceiling and recorded an
+unexplained non-monotonicity: tightening the ceiling past 375 m made
+detected-but-never-sampled rays go back UP, to **21.3% at 250 km with a 150 m ceiling —
+exactly as bad as no fix at all.** That is a trap, not a tuning curve: the obvious next
+move (tighten the ceiling further) is the one that destroys the result.
+
+### One counter, two unrelated jobs
+
+`emptyStreak` counts consecutive dense-mode misses and falls back to skip after
+`EMPTY_THRESHOLD`. It is doing two things that scale with **different** quantities:
+
+1. **After a skip→dense transition it is a SEARCH BUDGET.** Detection happened at a
+   *jittered* skip sample, up to `DITHER_FRACTION·dtSkipInBand` ahead of nominal `t`, and
+   dense mode resumes at `t − 0.5·dtSkipInBand`. So the feature can sit **1.5·dtSkipInBand**
+   away — 1406 m at 250 km. Scales with **dtSkipInBand**.
+2. **Once inside a body it is a HOLE TOLERANCE**, the thing it was authored for. Scales with
+   **dtDenseEff**.
+
+A fixed step count cannot serve both. Tightening the dense ceiling shrinks the search
+distance (`5 × dtDenseEff`) while the distance it must cover is unchanged, so the march
+gives up short of the cloud it just detected. At 250 km: 5 × 150 m = 750 m against a
+1406 m requirement.
+
+### The fix, and why it was built one-sided
+
+Pre-hit, the fallback additionally requires `emptyDist > 1.5·dtSkipInBand`. It can only
+**extend** the search, never shorten it, so it is inert wherever the step count already
+clears that distance. ✅ At `uDenseSearchFix = 0` the threshold collapses to
+`emptyDist > 0`, already true after one miss — **the off-arm is byte-equivalent by
+construction, not by measurement.**
+
+### MEASURED — a kill line the hypothesis could have failed
+
+`dzdCovered` at earth_250 across ceilings 0.375 → 0.25 → 0.15 km:
+
+| arm | 0.375 | 0.25 | 0.15 |
+|---|---|---|---|
+| OFF | 3.4% | 6.3% | **21.3%** |
+| **ON** | 3.2% | **1.3%** | **0.3%** |
+
+Monotone. Inert at the shipped ceiling (1.171 vs 1.171 dense/ray) and at earth_8
+(5.383 vs 5.382) — the controls that say nothing else moved. 🔑 **Case #29's mechanism was
+a post-hoc fit; this is the test that made it a finding.** It fit two poses' knees before
+it was ever run, and it would have been just as easy to write it down as an explanation and
+move on.
+
+That unlocked a tighter ceiling: **375 m → 250 m**, taking `dzdCovered` from 4.7%/3.2% to
+**0.2%/1.3%** at 120/250 km for +0.68/+0.76 ms. 150 m costs 3× that (+2.28/+2.71 ms) to
+move 250 km one further point, and drops orbit below 50 fps.
+
+### 🔑 THE THINGS THAT WOULD NOT BE OBVIOUS FROM THE CODE
+
+- ⚠⚠ **250 m is safe ONLY BECAUSE the search extension ships.** With it off, 250 m is worse
+  than 375 m and 150 m is catastrophic. The two constants are coupled; never move one alone.
+- **A step COUNT is a distance in disguise.** Whenever a loop counts iterations to bound a
+  *distance*, ask what the step size is a function of — and whether the thing being bounded
+  scales with the same quantity. Here it did not, and the symptom was a quality knob that
+  reversed direction.
+- ✅ **A prediction model, once validated, is worth stating before the run.** Cost was
+  predicted linear in `densePerRay` at +0.7/+0.7 and +2.0/+2.3 ms; measured +0.68/+0.76 and
+  +2.28/+2.71. Under-predicting the expensive rung by 14–18% is the safe direction for a
+  cost estimate.
+
+---
+
+## Case study #31 — the ring dither's response is NON-MONOTONE, and the shipped schedule was parked in its trough (2026-09-15)
+
+**How it opened.** Cases #29/#30 raised `densePerRay` 3–4× at altitude, which invalidated the
+premise of case #28's closure (*"at `densePerRay = 0.78` the entry position IS the sample
+position"*). That suggested `uSkipJitter` — tuned against the undersampled image, and costing
+~`uSkipJitter/2` of the skip's reach — could come down and pay back the ~2 ms #29/#30 spent.
+
+**First measurement, and the prize was real.** A/B at jitter 0 vs the shipped altitude lerp:
+**−0.92 ms at earth_30, −0.91 at earth_horizon_8, −0.56 at earth_120**, and free at
+earth_250. (My stated kill line had been ≤0.15 ms ⇒ dead. It was 4–6× that.)
+
+### 🔑 THEN THE BY-EYE SWEEP OVERTURNED THE WHOLE MODEL
+
+| altitude | 0 | 0.125 | 0.25 | 0.5 | 0.75 | 1.0 |
+|---|---|---|---|---|---|---|
+| ~30 km and below | rings | **worse** | ✅ clean | — | — | — |
+| 127 km | sharp rings | worse | fewer/weaker | ✅ almost gone | — | — |
+| 197 km | ✅ clean | strong | **strongest** | almost gone | barely | ✅ gone |
+
+**A dither that breaks banding is supposed to be monotone. This one is not**, and the shape
+changes with altitude. The shipped lerp (0.25 near → 0.5 far) delivered **0.34–0.42** across
+the whole band a player flies in — parked just *under* the value that works. That, not a
+residual, was the long-standing "rings still visible at some altitudes".
+
+⚠⚠ **A one-directional by-eye sweep cannot see a non-monotone response.** The original
+tuning comment read *"0.25 suffices low, 0.5 is needed high"* — true as far as it went, from
+a ramp of checks that never tested **0** or anything **above 0.5**.
+
+### The cost schedule was backwards, but only half-fixably
+
+The dither is priced by how much *skip* there is to give back:
+- **Above ~250 km it is FREE** — the skip is neutral there (`tEnter = tOuterNear`, nothing to
+  skip). MEASURED: raising earth_250 from 0.5 to 1.0 cost **+0.04 ms**.
+- **At 8–30 km it costs 0.9 ms**, the most expensive place on the ladder.
+
+✅ So the high leg was nearly free quality: 6550–6800 km was still ringing at 0.5 and now runs
+0.84–1.0 for +0.04 ms (earth_250) and +0.09 ms (earth_120).
+
+❌ The low leg was **tried at 0 and reverted**. The theory — that close in, the approach is too
+short to form ring boundaries — was flagged as unproven, then falsified: rings appeared below
+6420 km and all the way into the deck. 0.125 is worse again. **0.25 is a measured floor.**
+
+### 🔑 THE THINGS THAT WOULD NOT BE OBVIOUS FROM THE CODE
+
+- **Never ramp linearly across a non-monotone response.** Any lerp from 0 to 1.0 lingers in the
+  0.125–0.25 trough. The schedule is deliberately piecewise: a fast low leg and a slow high one.
+- **The dial's cost and its need run in opposite directions with altitude.** It is needed most
+  where rays cross the most footprint-capped skips (high) and costs most where the skip has the
+  most reach to give back (low). Any future tuning must price each leg separately.
+- ✅ **Case #28's verdict survives, for a reason it never identified.** Not the sample count —
+  jitter 0 rings on its own at nearly every altitude. The premise it argued from was wrong and
+  the conclusion was right anyway, which is worth remembering before re-opening it a third time.
+- ⚠ A lead can be worth chasing and still end at zero. This one returned **no** frame time; its
+  value was finding that the shipped schedule sat in the trough.

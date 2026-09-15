@@ -57,9 +57,39 @@ import { setCloudSkipJitterAuto } from "@/components/celestial/bodies/cloudCommo
 // the artifact lives roughly 6785 → 6380 km from Earth's centre (≈414 → 9 km altitude).
 // ⚠ It costs ~j/2 of the skip's reach and the skip is worth MOST at altitude (longest
 // empty traverse), so this ramps rather than pinning 0.5 everywhere.
-const SKIP_JITTER_NEAR = 0.25; // at/below SKIP_JITTER_NEAR_ALT_KM
-const SKIP_JITTER_FAR = 0.5; // at/above SKIP_JITTER_FAR_ALT_KM
-const SKIP_JITTER_NEAR_ALT_KM = 30;
+// ⚠⚠ THE RING RESPONSE IS NON-MONOTONE IN THIS DIAL. Measured by eye 2026-09-15 at
+// 127 km and 197 km: rings are WORST around 0.125–0.25 and fade toward 0.5–1.0. At 0 they
+// are clean at 197 km but return as many sharp rings at 127 km, so NEITHER end is safe.
+// ⇒ 0.5 is the lowest value that works at both. Do not "split the difference" downward;
+// the midpoint is the worst place to be. The old 0.25→0.5 lerp delivered 0.34–0.42
+// across the whole band a player flies in — i.e. parked just under the value that works,
+// which is what "rings still visible at some altitudes" was.
+// ⚠⚠ 0.25 IS A MEASURED FLOOR, NOT A GUESS — both lower rungs were tried at 6400 km and
+// below on 2026-09-15 and both look WORSE: 0 rings all the way down into the deck, and
+// 0.125 is worse still. Setting this to 0 would return 0.91 ms at earth_horizon_8 and
+// 0.79 at earth_30 — that is the size of the temptation, and it is not available.
+// 🔑 jitter 0 is clean at exactly ONE altitude tested (~197 km) and rings at every other.
+// So case #28's "the dither's cost is forced" verdict stands, though not for the reason
+// it gave: not the sample count, but that 0 rings on its own.
+const SKIP_JITTER_NEAR = 0.25;
+// 0.5 is the floor that works at ~110–180 km above the tops, but NOT higher: with a flat
+// 0.5 the author still saw rings from 6550–6800 km (≈180–430 km alt), matching the 197 km
+// by-eye sweep where 0.5 was only "almost gone", 0.75 barely visible and 1.0 gone.
+// 🔑 Going to 1.0 up there is nearly FREE: above ~250 km the skip is neutral
+// (tEnter = tOuterNear — nothing to skip), so the dither has no reach to give back.
+const SKIP_JITTER_MID = 0.5;
+const SKIP_JITTER_FAR = 1.0;
+// 🔑 ALTITUDES ARE ABOVE THE CLOUD TOPS (altScaled subtracts uOuterRadius), so these are
+// ~16 km lower than the HUD reads. 0 below the tops-relative floor because the dither is
+// only worth paying where rings can FORM: ring boundaries are footprint-capped skips, and
+// their count scales with the approach distance to the deck, so close in there is nothing
+// to break. MEASURED: the dither costs 0.91 ms at earth_horizon_8 and 0.92 ms at earth_30
+// — where the author reports no rings at all. It is free at 250 km (skip is neutral there:
+// tEnter = tOuterNear, nothing to skip). The old schedule had it backwards.
+// ⚠ The ramp is DELIBERATELY NARROW: any lerp from 0 to 0.5 crosses the bad 0.125–0.25
+// zone, so it must be crossed low and fast, where the approach is too short to ring.
+const SKIP_JITTER_NEAR_ALT_KM = 15;
+const SKIP_JITTER_MID_ALT_KM = 40;
 const SKIP_JITTER_FAR_ALT_KM = 250;
 
 export const STBN_FRAME_MODULUS = 63;
@@ -659,20 +689,29 @@ export function setupCloudPipeline(
     if (_lodMinOverride > 0) shared.uLodMinSamples.value = _lodMinOverride;
 
     // ── Empty-space-skip ring dither, altitude-adaptive (see uSkipJitter) ──
-    // 🔑 WHY IT SCALES WITH ALTITUDE: the rings are the `dtFoot` clamp, and the number of
-    // footprint-capped skips a ray takes before reaching the deck scales with the DISTANCE
-    // to the cloud band — i.e. with altitude. More capped segments ⇒ more ring boundaries
-    // ⇒ more dither needed to break them. MEASURED by eye while descending: 0.25 suffices
-    // low, 0.5 is needed high.
-    const jitT = THREE.MathUtils.clamp(
+    // 🔑 WHY IT SCALES WITH ALTITUDE: ring boundaries are footprint-capped skips, and their
+    // count scales with the approach distance to the deck — i.e. with altitude. Close in
+    // there are too few to ring, so the dither is pure cost there; high up they are many.
+    // ⚠ See the constants: the response is NON-MONOTONE, 0.5 is a floor not a midpoint.
+    // Piecewise, NOT one lerp: the low leg races 0→0.5 through the bad zone while the
+    // approach is too short to ring, and the high leg climbs 0.5→1.0 where it is free.
+    const midScaled = kmToScaledUnits(SKIP_JITTER_MID_ALT_KM);
+    const jitLowT = THREE.MathUtils.clamp(
       (altScaled - kmToScaledUnits(SKIP_JITTER_NEAR_ALT_KM)) /
-        (kmToScaledUnits(SKIP_JITTER_FAR_ALT_KM) -
-          kmToScaledUnits(SKIP_JITTER_NEAR_ALT_KM)),
+        (midScaled - kmToScaledUnits(SKIP_JITTER_NEAR_ALT_KM)),
+      0,
+      1,
+    );
+    const jitHighT = THREE.MathUtils.clamp(
+      (altScaled - midScaled) /
+        (kmToScaledUnits(SKIP_JITTER_FAR_ALT_KM) - midScaled),
       0,
       1,
     );
     setCloudSkipJitterAuto(
-      THREE.MathUtils.lerp(SKIP_JITTER_NEAR, SKIP_JITTER_FAR, jitT),
+      altScaled < midScaled
+        ? THREE.MathUtils.lerp(SKIP_JITTER_NEAR, SKIP_JITTER_MID, jitLowT)
+        : THREE.MathUtils.lerp(SKIP_JITTER_MID, SKIP_JITTER_FAR, jitHighT),
     );
 
     // ── L4 ship→cloud occluder: position (ship ≈ camera, earth-model — the

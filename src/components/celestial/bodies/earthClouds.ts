@@ -104,8 +104,10 @@ import {
   uCloudActive,
   uEmptySkip,
   uSkipFootScale,
+  uRewindFix,
+  uDenseStepCap,
+  uDenseSearchFix,
   uSkipJitter,
-  uSkipJitterFinalOnly,
   uEnvProbeKm,
   CLOUD_SKY_SCALE,
   CLOUD_SKY_AMBIENT,
@@ -406,6 +408,12 @@ const DENSE_STEP_RATIO = 0.25;
 // a switch — keeps cloud-body holes from triggering ping-pong, but falls
 // back fast enough not to waste short steps on truly-empty post-cloud
 // columns. (Was briefly 12 alongside the step caps; reverted with them.)
+// ⚠⚠ COUPLED TO dtSkipInBand, NOT to the dense step (MEASURED 2026-09-14). Skip-mode
+// detection is jittered up to a full dtSkipInBand ahead of nominal `t`, so the feature
+// can sit ~1.5·dtSkipInBand past where dense mode resumes — but dense mode only gets
+// (EMPTY_THRESHOLD+1)·dtDenseEff to reach it. Shrinking the dense step therefore makes
+// detected-but-never-sampled rays go back UP: at a 150 m ceiling, 250 km regressed to
+// 21.2%, matching no fix at all. A distance-based tolerance would decouple the two.
 const EMPTY_THRESHOLD = 4;
 // ── Distance-adaptive step LOD (Step 1, 2026-05-30) ──
 // Step size grows with camera distance `t` (scaled units, 1 = 1000 km) so the
@@ -526,6 +534,11 @@ const DENSE_ITER_GROWTH = 1 / 32;
 // the practical visible range of km-scale features; the far field there is
 // carried by the thin-coverage 2D overlay.
 const SKIP_DETECT_CAP_SCALED = 0.0015; // 1.5 km
+// ⚠⚠ THIS IS NOT THE STEP THAT GETS TAKEN. It bounds `dtDenseL`, and the budget-death
+// multiplier below is applied OUTSIDE it, so the effective step reached ~1.6 km at 82 km
+// — 2.1× this "validated clean" value, through a deck only ~1.6 km thick. The real
+// ceiling is `DENSE_STEP_CEIL_SCALED` (375 m, cloudCommon.ts), applied to the PRODUCT;
+// it subsumes this one wherever it binds, and this is kept for the history above.
 const DENSE_INTEG_CAP_SCALED = 0.00075; // 750 m
 // ── Data3DTexture mips on the GPU: FIXED by patches/three@0.183.2.patch ──
 // Stock three (≤ r184) allocates mipLevelCount = texture.mipmaps.length but
@@ -1217,6 +1230,12 @@ const DEBUG_VIZ:
   // Phase 0b (CLOUD_SKIP_PLAN §5.6): the CONSERVATIVE bound vs the exact test. Takes 4
   // offset taps at `__lum.envProbe(km)` arc-radius to stand in for a max-mip query.
   | "envslack"
+  // Companion to "stats" for the densePerRay question. "stats" counts denseIters, which
+  // by construction CANNOT see a detection that never accumulated: the skip→dense
+  // transition rewinds and returns without incrementing anything. So a ray that detects a
+  // body and then lands past it reads identically to a ray that found no cloud at all.
+  // This mode emits the detection events and the longest single-body dense run instead.
+  | "densestats"
   | "stats" = "off";
 
 // cloudHeightProfile moved to cloudShared.ts (Phase 0) — single source of
@@ -2727,6 +2746,12 @@ export function marchCloudVolume({
     // "envslack": steps the EXACT vs the CONSERVATIVE top test would each skip.
     const exactAboveIters = float(0).toVar();
     const boundAboveIters = float(0).toVar();
+    // "densestats": skip→dense transitions, and the longest consecutive dense run.
+    // `detectEvents` > 0 with `denseIters` == 0 is a ray that FOUND cloud and then
+    // sampled none of it — the signature `denseIters` alone cannot show.
+    const detectEvents = float(0).toVar();
+    const denseRun = float(0).toVar();
+    const denseRunMax = float(0).toVar();
     // The dilated MAX-reduction of the base volume — the conservative `mesoG` bound the
     // empty-space skip queries. ⚠ Now fetched UNCONDITIONALLY: Phase 2 uses it in the
     // shipped path, so calling this allocates the 64³ texture and queues its one-shot
@@ -2877,6 +2902,11 @@ export function marchCloudVolume({
       const stepMode = float(0).toVar(); // start in skip mode (cheap empty-space reach)
       const t = tStart.toVar();
       const emptyStreak = float(0).toVar();
+      // Search-phase state (see uDenseSearchFix). `emptyDist` is the distance marched
+      // in dense mode since the last hit; `denseSawHit` separates the post-transition
+      // SEARCH from the in-body HOLE tolerance, which need different budgets.
+      const emptyDist = float(0).toVar();
+      const denseSawHit = float(0).toVar();
 
       // ── PERF ABLATION: `uCloudActive` = 0 breaks the loop on iteration 1 ──────
       // 🔑 SUBSTITUTED HERE AND NOWHERE ELSE. `tExit` has three readers — `slabLen`
@@ -2933,11 +2963,16 @@ export function marchCloudVolume({
         // march is the only signal that the budget is being eaten). These
         // multipliers apply ON TOP of the integration cap — they exist to
         // protect the budget, which the cap alone would otherwise spend.
-        const dtDenseEff = dtDenseL.mul(
-          float(1)
-            .add(float(1).sub(T).mul(float(DENSE_OPACITY_GROWTH)))
-            .add(denseIters.mul(float(DENSE_ITER_GROWTH))),
-        );
+        // ⚠ `uDenseStepCap` caps the PRODUCT. DENSE_INTEG_CAP above bounds dtDenseL
+        // only, and this multiplier is applied outside it — so the "validated clean"
+        // 750 m ceiling does not bound the step actually taken (1.6 km at 82 km).
+        const dtDenseEff = dtDenseL
+          .mul(
+            float(1)
+              .add(float(1).sub(T).mul(float(DENSE_OPACITY_GROWTH)))
+              .add(denseIters.mul(float(DENSE_ITER_GROWTH))),
+          )
+          .min(uDenseStepCap);
 
         // Per-sample stratified jitter (Frostbite §5.5.3): offset this sample
         // within its LOCAL step using a per-step low-discrepancy value — a
@@ -3303,21 +3338,22 @@ export function marchCloudVolume({
           // removes. It also varies per frame (uStbnFrameSlice), so the EMA sees it move.
           // ✅ Multiplying by (1 - j*dither) with j, dither in [0,1] can only SHORTEN the
           // skip, and a shorter skip is always conservative.
-          // Follow-up (uSkipJitterFinalOnly): pay the ray-invariant dither's Jensen cost
-          // ONCE per ray instead of on every skip. Intermediate skips run through provably
-          // empty space where the landing point cannot alias anything; only the FINAL one
-          // — where `dtDescend < dtFoot`, so it lands at the bound rather than at the
-          // footprint edge — sets where stepping resumes before the cloud.
-          const isFinalSkip = dtDescend.lessThan(dtFoot);
-          const jitterFactor = float(1).sub(dither.mul(uSkipJitter));
-          const appliedJitter = uSkipJitterFinalOnly
-            .greaterThan(0.5)
-            .select(isFinalSkip.select(jitterFactor, float(1)), jitterFactor);
+          // ⚠⚠ THE DITHER MUST APPLY TO EVERY SKIP. Five alternatives were built and all
+          // five still ring: dithering only the FINAL skip, only the FIRST skip, the final
+          // approach by a whole grid cell, decoupling `stratJitter` from the skip count,
+          // and a budget/landing-surface theory. The lattice exists because every capped
+          // skip is EXACTLY `dtFoot` long; perturbing one END of it merely SHIFTS the
+          // lattice, and a shifted lattice is still a lattice. Only varying the step
+          // LENGTHS destroys it.
+          // 🔑 The cost is forced, not sloppy: a skip may never exceed the radius one
+          // max-mip tap bounds, so per-step variation can only SHORTEN — and shortening is
+          // exactly what costs reach. MEASURED 0.91 ms at earth_horizon_8.
+          // See docs/CLOUD_SKIP_PLAN.md and CLOUD_DEBUGGING_LESSONS.md case #28.
           emptySkipDist.assign(
             altitude01
               .greaterThan(topBound)
               .select(dtDescend.min(dtFoot).max(0), float(0))
-              .mul(appliedJitter)
+              .mul(float(1).sub(dither.mul(uSkipJitter)))
               .mul(uEmptySkip),
           );
         }
@@ -3687,9 +3723,18 @@ export function marchCloudVolume({
               // (Rewind by the IN-BAND skip step — detection only ever
               // happens in the capped regime, so the rewind matches the
               // stride that found the cloud.)
-              t.subAssign(dtSkipInBand.mul(0.5));
+              // ⚠⚠ The `uRewindFix` term is what makes the stated intent TRUE. Without it
+              // the loop's advance adds dtDenseEff, which clamps to dtSkipInBand above
+              // ~20 km — so the "resumes one short step before the detection point"
+              // arithmetic inverts and the march lands PAST the edge instead.
+              t.subAssign(dtSkipInBand.mul(0.5).add(dtDenseEff.mul(uRewindFix)));
               stepMode.assign(1);
               emptyStreak.assign(0);
+              emptyDist.assign(0);
+              denseSawHit.assign(0);
+              if ((DEBUG_VIZ as string) === "densestats") {
+                detectEvents.addAssign(1);
+              }
               // Capture cloud-front depth on first hit (sentinel was -1).
               // Drives TAA reprojection (true cloud-surface depth, not
               // outer-shell approximation) and the 'firstHit' debug viz.
@@ -3699,7 +3744,13 @@ export function marchCloudVolume({
             }).Else(() => {
               // ── Steady-state dense: full sample + accumulate ──
               emptyStreak.assign(0);
+              emptyDist.assign(0);
+              denseSawHit.assign(1);
               denseIters.addAssign(1);
+              if ((DEBUG_VIZ as string) === "densestats") {
+                denseRun.addAssign(1);
+                denseRunMax.assign(denseRunMax.max(denseRun));
+              }
 
               // ── Nubis base-shape composition: REMAP, not multiply ──
               // THE key shape step (2026-05-30). `dimProfile = coverage ×
@@ -4719,9 +4770,24 @@ export function marchCloudVolume({
         If(hitThisStep.lessThan(0.5), () => {
           If(stepMode.greaterThan(0.5), () => {
             emptyStreak.addAssign(1);
-            If(emptyStreak.greaterThan(float(EMPTY_THRESHOLD)), () => {
+            emptyDist.addAssign(dtDenseEff);
+            // Pre-hit, ALSO require the search distance (see uDenseSearchFix). The
+            // `.or` makes this one-sided: it can only extend the search, never cut it.
+            const searchDone = denseSawHit
+              .greaterThan(0.5)
+              .or(
+                emptyDist.greaterThan(
+                  dtSkipInBand.mul(float(0.5 + DITHER_FRACTION)).mul(uDenseSearchFix),
+                ),
+              );
+            If(emptyStreak.greaterThan(float(EMPTY_THRESHOLD)).and(searchDone), () => {
               stepMode.assign(0);
               emptyStreak.assign(0);
+              emptyDist.assign(0);
+              denseSawHit.assign(0);
+              if ((DEBUG_VIZ as string) === "densestats") {
+                denseRun.assign(0);
+              }
             });
           });
         });
@@ -4942,6 +5008,23 @@ export function marchCloudVolume({
           aboveTopIters,
           belowBaseIters,
           emptyProfileIters,
+        ),
+        tFront: float(0),
+      };
+    }
+    if ((DEBUG_VIZ as string) === "densestats") {
+      // ── RAW counters for `__lum.cloudDense()`. NOT a picture. ──────────────
+      // Same losslessness argument as "stats": RGBA16F holds every integer to 2048
+      // exactly and A peaks at 256·4 + 2 = 1026.
+      //   A = denseRunMax·4 + exitReason,  exitReason ∈ {0 budget, 1 slab, 2 opaque}
+      // 🔑 THE PAIR THAT DECIDES: (detectEvents > 0, denseIters == 0) is a ray that
+      // detected a body and accumulated NOTHING from it.
+      return {
+        rgba: vec4(
+          primaryIters,
+          denseIters,
+          detectEvents,
+          denseRunMax.mul(4).add(exitReason),
         ),
         tFront: float(0),
       };

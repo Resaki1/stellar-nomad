@@ -645,8 +645,40 @@ DENSITY, false for the ARTIFACT — the rings are the COUNT of capped segments,
 `ceil(distance·perp/R)`, and leaving intermediates deterministic leaves that count
 deterministic. Dithering the last skip randomizes where stepping RESUMES, not how many
 boundaries the ray crossed to get there.
-✅ **0.91 ms at the worst pose is now a measured price tag on the ring fix.** A STRUCTURAL
-fix (removing the quantization) can claim it; more dither never will.
+✅ **0.91 ms at the worst pose is now a measured price tag on the ring fix.**
+
+### ❌ CLOSED 2026-09-14: the 0.91 ms is NOT recoverable — see CLOUD_DEBUGGING_LESSONS #28
+
+FIVE structural fixes were built and all five still ring: dither the FINAL skip, the FIRST
+skip, the final approach by a whole grid cell, decouple `stratJitter` from the skip count,
+and a budget theory (`atBudgetFrac = 0` killed it).
+🔑 The cause is the ENTRY LATTICE: every capped skip advances exactly `dtFoot`, so the march
+enters the cloud on a lattice of that spacing, phase-locked per screen radius — and at
+`densePerRay = 0.78` (82 km) the entry position IS the sample position. Perturbing one END
+of a lattice merely SHIFTS it; only varying the step LENGTHS destroys it.
+🔑🔑 And the cost is FORCED: a skip may never exceed the radius one max-mip tap bounds, so
+per-step variation can only SHORTEN, and shortening is exactly what costs reach.
+⇒ **Dithering every skip is the fix, and 0.91 ms is its intrinsic price.** All the
+experiment code was stripped back out of the hot loop; the findings live in case #28.
+
+⚠ The remaining lead is NOT the skip: `densePerRay = 0.78` at 82 km (vs 6.8 at earth_8) —
+the deck is point-sampled at altitude, which is why a sub-km lattice is visible there at
+all. That is a QUALITY thread, and probably worth more than the 0.91 ms was.
+
+#### ⚠⚠ RE-OPENED AS A LEAD 2026-09-15 — the premise above has changed
+
+That quality thread was taken (CLOUD_DEBUGGING_LESSONS #29/#30: a skip→dense rewind that
+inverted above ~20 km, a ceiling applied before the growth multiplier, and
+`EMPTY_THRESHOLD` being a step COUNT doing a distance's job). `densePerRay` at 250 km went
+**0.33 → ~1.68**, at 120 km **0.57 → ~2.15**, for ~+1.95 ms / ~+1.5 ms.
+⇒ So "the entry position IS the sample position" — the load-bearing premise of the CLOSED
+verdict above — no longer holds. **The verdict does, though: re-measured and re-closed the
+same day** (CLOUD_DEBUGGING_LESSONS #31). Jitter 0 measured −0.92 ms at earth_30 and
+−0.91 at earth_horizon_8 — a real prize — but **jitter 0 RINGS on its own** everywhere
+except a narrow band near 197 km, and 0.125 is worse again. 0.25 is a measured floor.
+✅ What did land: the ring response is NON-MONOTONE in `uSkipJitter`, the old schedule sat
+in its trough (0.34–0.42 where 0.5+ is needed), and the dither is FREE above ~250 km
+because the skip is neutral there — so the high leg now runs to 1.0 for +0.04 ms.
 
 **2. Above 250 km — NEUTRAL, no altitude gate.** Clean run, bimodality ~1.00, settled:
 earth_750 (control) 13.374 → 13.288 (−0.086), earth_650 15.194 → 15.114 (−0.080),

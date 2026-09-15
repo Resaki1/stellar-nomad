@@ -173,8 +173,10 @@ export function cloudEnvProbeKmLive(): number {
  * Conservative empty-space skip (docs/CLOUD_SKIP_PLAN.md §5). 1 = on, 0 = off.
  * ⚠ A pure PERF dial with a correctness invariant, NOT a quality dial: the skip only
  * advances through space a validated bound proves holds no cloud, so toggling it must
- * leave the image identical. `densePerRay` from `__lum.cloudIters()` is the control
- * (6.84 / 4.05 / 0 at earth_8 / horizon / up_8) — any drop means the bound leaks.
+ * leave the image identical. `densePerRay` is the control — any drop means the bound
+ * leaks. ⚠ Compare the two ARMS within one session, never against a number written
+ * here: earth_8 read 6.84 in 2026-09 and 5.18 after the cloud-base unification, so an
+ * absolute figure ages into a false alarm.
  */
 export const uEmptySkip = uniform(1);
 export function setCloudEmptySkip(on: boolean): void {
@@ -223,39 +225,117 @@ export function cloudSkipJitterLive(): number {
  */
 export const uSkipFootScale = uniform(1);
 export function setCloudSkipFootScale(f: number): void {
-  uSkipFootScale.value = Math.max(0.01, Math.min(1, f));
+  // ⚠⚠ >1 IS DELIBERATELY ALLOWED AND IS UNSOUND. It lets `dtFoot` exceed the radius one
+  // max-mip tap actually bounds, so the skip can step OVER cloud — expect holes/popping,
+  // never ship it. It exists to separate the two ring mechanisms: at a huge value dtFoot
+  // NEVER binds, so mechanism A (the ceil(D·perp/R) segment count) is switched off and
+  // anything left must be mechanism B (landing on the deterministic topBound surface).
+  // Holes and rings look nothing alike, so the arm stays readable despite being unsound.
+  uSkipFootScale.value = Math.max(0.01, Math.min(1000, f));
 }
 export function cloudSkipFootScaleLive(): number {
   return uSkipFootScale.value as number;
 }
+/**
+ * Skip→dense rewind correction. SHIPPED ON 2026-09-14; `__lum.cloudRewind(false)` restores
+ * the old rewind for an A/B. MEASURED FREE: earth_8 moved +0.068 ms against a +0.103 ms
+ * control drift — i.e. below the thermometer.
+ *
+ * 🔑 THE BUG IT FIXES (MEASURED 2026-09-14). The transition does
+ * `t -= 0.5·dtSkipInBand` and lets the loop's advance add `dtDenseEff`, which the code
+ * comment claims "resumes one short step BEFORE the detection point". That arithmetic
+ * silently assumes `dtDenseEff = 0.25·dtSkipInBand`. But `dtDenseL` clamps to
+ * `dtSkipInBand` as soon as `lodCap <= 0.25·(1 + t·LOD_STEP_GROWTH)` — the regime the
+ * "at orbit dense ≈ skip ≈ footprint" design deliberately creates — so above ~20 km the
+ * net move is FORWARD, past the edge the march just found: +200 m at 82 km, +281 m at
+ * 250 km. `__lum.cloudDense()` measured rays that detect a body and accumulate NOTHING
+ * from it at 0.4% (earth_8) → 7.5% (30 km) → 26.4% (120 km) → 39.3% (250 km).
+ * At 1 the rewind also subtracts a dense step, so the first sample lands at the EXPECTED
+ * cloud edge (`t - 0.5·dtSkipInBand`) instead of past it.
+ * ✅ Forward progress is still guaranteed: re-detection needs 5 dense steps, and
+ * `5·dtDenseEff - (0.5·dtSkipInBand + dtDenseEff) > 0` for every ratio the caps allow.
+ */
+export const uRewindFix = uniform(1);
+export function setCloudRewindFix(on: boolean): void {
+  uRewindFix.value = on ? 1 : 0;
+}
+export function cloudRewindFixLive(): boolean {
+  return (uRewindFix.value as number) > 0.5;
+}
 
 /**
- * 1 = dither ONLY the final skip of a ray (the one where `dtDescend < dtFoot`, i.e. the
- * one that actually lands near the possible-cloud region). 0 = dither every skip.
+ * Hard ceiling on the EFFECTIVE dense step, scaled units (1 = 1000 km). SHIPPED at 250 m
+ * 2026-09-14; `__lum.cloudDenseCap(-1)` disables it for an A/B.
  *
- * 🔑 WHY THIS MIGHT RECOVER THE HORIZON. The ring dither must be RAY-INVARIANT to break
- * the banding, and a constant per-ray scale `s` makes crossing a gap take `D/(s·dtFoot)`
- * skips — E[1/s] > 1/E[s] by Jensen, so the cost compounds over EVERY skip. But the
- * intermediate skips run through provably empty space where the landing point cannot
- * alias anything; only the last one, which sets where stepping resumes before the cloud,
- * can. Dithering just that one pays Jensen ONCE per ray.
- * ❌ MEASURED 2026-09-14 AND REFUTED ON QUALITY — keep this 0. It IS faster (+0.35 /
- * +0.91 / +0.49 ms at earth_8 / horizon / up_8) and the rings come back clearly.
- * 🔑 The hypothesis was wrong in a specific way: intermediate skips traverse provably
- * empty space, so their landing points cannot alias DENSITY — but the rings are the COUNT
- * of capped segments, `ceil(distance·perp/R)`, and leaving intermediates deterministic
- * leaves that count deterministic. Dithering the last skip randomizes where stepping
- * RESUMES, not how many boundaries the ray crossed getting there.
- * ✅ Kept because it prices the ring fix: **0.91 ms at the worst pose** is what a
- * STRUCTURAL fix (removing the quantization) could claim. More dither never will.
+ * 🔑 WHY IT IS NEEDED: `DENSE_INTEG_CAP_SCALED` (750 m, the comment's
+ * "historically-validated always looked clean" step) is applied to `dtDenseL` — and then
+ * the budget-death multiplier `(1 + (1-T)·3 + denseIters/32)` is applied OUTSIDE it. So
+ * the cap does not cap the step that is actually taken: at 82 km it reaches 401 m × 4
+ * ≈ 1.6 km, 2.1× the validated ceiling, through a deck only ~1.6 km thick.
+ * ⚠ The multiplier exists to stop the 256-step budget dying inside a big near cloud, and
+ * that must not regress. It does not: MEASURED at earth_8, `densePerRay` is 5.383 with no
+ * ceiling and 5.382 at a 0.25 km one, with `atBudget` 0 throughout. (I predicted it would
+ * bind there via the ×12 multiplier — wrong, because ×12 needs denseIters = 256 and
+ * earth_8 averages 5.4, so the real multiplier is ~4 and dtDenseEff stays 100–240 m.)
+ * 🔑 A ceiling does nothing until it drops BELOW `dtDenseL`, which at altitude IS
+ * `dtSkipInBand` — 937 m at 250 km but 478 m at 120 km. At a 500 m ceiling `dzdCovered`
+ * is 0.9% at 250 km but 16.8% at 120 km, where it is nearly inert. Hence sub-375 m.
+ * ⚠⚠ THE SWEEP WAS NOT MONOTONE until `uDenseSearchFix` landed — with that OFF, 150 m
+ * regresses 250 km to 21.3%, as bad as no fix at all. 250 m is safe ONLY BECAUSE that fix
+ * ships; if it is ever turned off, this must go back to 375 m.
+ * MEASURED (search ON) — `dzdCovered` 120 km / 250 km, and frame cost vs a 375 m ceiling:
+ *     375 m   4.7% / 3.2%    —
+ *     250 m   0.2% / 1.3%    +0.68 / +0.76 ms   ← SHIPPED, the knee
+ *     150 m   0.5% / 0.3%    +2.28 / +2.71 ms   3× the price for 1pp; orbit drops <50 fps
+ * TOTAL vs no fix at all: ~+1.5 ms at 120 km, ~+1.95 ms at 250 km, and FREE at
+ * earth_8/earth_30 — the price self-scopes to the band where the artifact lived.
+ * Authorised 2026-09-14: rings > a few ms.
  */
-export const uSkipJitterFinalOnly = uniform(0);
-export function setCloudSkipJitterFinalOnly(on: boolean): void {
-  uSkipJitterFinalOnly.value = on ? 1 : 0;
+/** 250 m. The EFFECTIVE dense-step ceiling — see uDenseStepCap for why not 750 or 150. */
+export const DENSE_STEP_CEIL_SCALED = 0.00025;
+export const uDenseStepCap = uniform(DENSE_STEP_CEIL_SCALED);
+export function setCloudDenseStepCapKm(km: number): void {
+  uDenseStepCap.value = km < 0 ? 1e3 : Math.max(1e-4, km / 1000);
 }
-export function cloudSkipJitterFinalOnlyLive(): boolean {
-  return (uSkipJitterFinalOnly.value as number) > 0.5;
+export function cloudDenseStepCapKmLive(): number {
+  return (uDenseStepCap.value as number) * 1000;
 }
+
+/**
+ * Post-transition dense SEARCH extension. SHIPPED ON 2026-09-14;
+ * `__lum.cloudDenseSearch(false)` restores the old step-count-only fallback.
+ *
+ * 🔑 WHAT IT SEPARATES. `EMPTY_THRESHOLD` does two unrelated jobs with one counter:
+ *   (a) after a skip→dense transition it is a SEARCH BUDGET — the detection came from a
+ *       jittered skip sample up to `DITHER_FRACTION·dtSkipInBand` ahead of nominal `t`,
+ *       and dense mode resumes at `t - 0.5·dtSkipInBand`, so the feature can sit
+ *       1.5·dtSkipInBand away;
+ *   (b) once inside a body it is a HOLE TOLERANCE, the thing it was authored for.
+ * (a) scales with `dtSkipInBand`; (b) scales with the dense step. A fixed step COUNT
+ * cannot serve both, which is why tightening the dense ceiling makes detected-but-never-
+ * sampled rays go back UP (MEASURED at 250 km: 3.4% at 375 m → 6.2% at 250 m → 21.2% at
+ * 150 m, the last as bad as no fix at all).
+ * At 1, the pre-hit fallback additionally requires `emptyDist > 1.5·dtSkipInBand`.
+ * ✅ MONOTONE BY CONSTRUCTION: it can only EXTEND the search, never shorten it, so it is
+ * provably inert wherever (EMPTY_THRESHOLD+1)·dtDenseEff already clears that distance.
+ * At `uDenseSearchFix = 0` the threshold collapses to `emptyDist > 0`, already true after
+ * one miss — so the off-arm is byte-equivalent by construction, not by measurement.
+ * ✅ CONFIRMED 2026-09-14 against a kill line it could have failed. `dzdCovered` at
+ * earth_250 over ceilings 0.375 / 0.25 / 0.15 km:
+ *     OFF  3.4% → 6.3% → 21.3%   (non-monotone; 150 m is as bad as no fix at all)
+ *     ON   3.2% → 1.3% →  0.3%   (monotone)
+ * and inert at the shipped 375 m ceiling (1.171 vs 1.171 dense/ray) and at earth_8
+ * (5.383 vs 5.382). ⚠ It buys nothing ON ITS OWN — its value is making a TIGHTER
+ * ceiling safe to choose, so judge it by re-sweeping `uDenseStepCap`.
+ */
+export const uDenseSearchFix = uniform(1);
+export function setCloudDenseSearchFix(on: boolean): void {
+  uDenseSearchFix.value = on ? 1 : 0;
+}
+export function cloudDenseSearchFixLive(): boolean {
+  return (uDenseSearchFix.value as number) > 0.5;
+}
+
 export function setCloudMarchActive(on: boolean): void {
   uCloudActive.value = on ? 1 : 0;
 }
