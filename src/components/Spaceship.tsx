@@ -9,6 +9,7 @@ import { lerp } from "three/src/math/MathUtils.js";
 import { useStore } from "jotai";
 import { hudInfoAtom, movementAtom, shipHealthAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
+import { audioShipBuffer } from "@/audio/shipBuffer";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, benchModeAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom } from "@/store/death";
@@ -483,6 +484,13 @@ const SpaceShip = memo(() => {
       exhaustIntensity.current += (thrustDemand - exhaustIntensity.current)
         * Math.min(1, EXHAUST_SMOOTH_RATE * delta);
       if (exhaustIntensity.current < 0.001) exhaustIntensity.current = 0;
+
+      // Hand the smoothed thrust to the audio tick. Plain buffer write, not an
+      // atom: this runs at frame rate and the audio tick reads it at 15 Hz
+      // (docs/AUDIO_PLAN.md A5 — the `transitDriveBuffer` pattern). Reusing
+      // `exhaustIntensity` means the engine SOUND and the engine PLUME are
+      // driven by the same value and cannot disagree.
+      audioShipBuffer.throttle = exhaustIntensity.current;
     }
 
     // ── Interpolation ──────────────────────────────────────────────────

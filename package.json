@@ -7,7 +7,10 @@
     "dev": "next dev -H 0.0.0.0",
     "build": "next build",
     "serve": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:audio": "node scripts/check-audio-manifest.mjs",
+    "gen:audio-placeholders": "node scripts/gen-placeholder-audio.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

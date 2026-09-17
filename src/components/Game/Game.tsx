@@ -5,6 +5,9 @@ import "./Game.scss";
 import Scene from "../Scene/Scene";
 import HUD from "../HUD/HUD";
 import DevTools from "../DevTools";
+import AudioSystem from "../Audio/AudioSystem";
+import GameAudioTriggers from "../Audio/GameAudioTriggers";
+import AudioDevTools from "../Audio/AudioDevTools";
 
 import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
@@ -18,6 +21,12 @@ const Game = () => {
           <HUD />
           <Navigation />
           <DevTools />
+          {/* Outside <Scene> deliberately: the audio engine must not be owned by
+              the R3F tree. `frameloop="never"` while the settings menu is open
+              would otherwise stop the audio tick dead (A1 / A5). */}
+          <AudioSystem />
+          <GameAudioTriggers />
+          <AudioDevTools />
         </div>
       </AsteroidRuntimeProvider>
     </WorldOriginProvider>

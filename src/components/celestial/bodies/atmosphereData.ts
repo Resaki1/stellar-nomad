@@ -116,13 +116,22 @@ const TOP_SCALE_HEIGHTS = 12.5;
 // near-IR bands (620/730/890 nm) are what turn Uranus/Neptune teal-blue.
 // Magnitude is a game anchor (real band integration is overkill), set so
 // Uranus' 2.3% CH4 column reaches red optical depth ≈ 2.
-type GasProps = {
+export type GasProps = {
   molarKgPerMol: number;
   rayleighRel: number;
   absorption?: Vec3Tuple;
 };
 
-const GASES: Record<AtmosphereGasId, GasProps> = {
+/**
+ * ⚠ EXPORTED FOR THE ACOUSTIC MODEL (`src/audio/acoustics.ts`), which needs the
+ * same mean molar mass this table already carries in order to compute a body's
+ * speed of sound and gas density. Exported rather than duplicated: a second
+ * molar-mass table would silently drift from this one.
+ *
+ * The acoustic module adds the properties THIS table has no reason to hold
+ * (heat-capacity ratio, viscosity), so only the molar masses are shared.
+ */
+export const GASES: Record<AtmosphereGasId, GasProps> = {
   n2: { molarKgPerMol: 0.028014, rayleighRel: 1.027 },
   o2: { molarKgPerMol: 0.031999, rayleighRel: 0.907 },
   co2: { molarKgPerMol: 0.04401, rayleighRel: 2.57 },

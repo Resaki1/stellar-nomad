@@ -12,9 +12,24 @@
 
 **Quality gates (run before finishing a task)**
 - `pnpm lint`
+- `pnpm typecheck` (`tsc --noEmit`)
 - `pnpm build`
+- `pnpm check:audio` — when you touch anything under `src/audio/`, `src/data/audioEvents.ts`, or `public/audio/`
 
-> There is currently no dedicated `typecheck` or `test` script. If you add one, update this section.
+> ⚠ Read `pnpm lint`'s **`N problems (X errors, Y warnings)`** summary line, not a
+> positional tail of the output. There is a standing baseline of ~130 warnings
+> (mostly react-compiler advisories, deliberately non-blocking — see
+> `eslint.config.mjs`); the number that must be **0** is *errors*.
+
+**Audio scripts**
+- `pnpm check:audio` — Tier-1 audio contract tests (§10.1 of the audio plan): manifest
+  schema, missing/orphan assets, size budget, mono-where-spatialised, and a grep that
+  no code path bypasses the bus graph. Zero npm dependencies; uses the installed `tsc`
+  plus `ffprobe` when present.
+- `pnpm gen:audio-placeholders` — regenerate the synthetic Phase-0 placeholder SFX.
+  Requires `ffmpeg`. These are meant to be replaced by real assets, not tuned.
+
+> There is still no `test` script. If you add one, update this section.
 
 **Generating LOD1 asteroid models:**
 
@@ -302,6 +317,28 @@ const health = useAtomValue(shipHealthAtom);
 - **All triggers live in `GameCommsTriggers.tsx`.** Do not enqueue messages directly from gameplay components. Instead, use signal atoms (e.g., `asteroidMinedSignalAtom`, `itemCraftedSignalAtom`) or watch existing state atoms from GameCommsTriggers.
 
 ---
+
+## Audio
+
+The audio subsystem's design doc is [`docs/AUDIO_PLAN.md`](docs/AUDIO_PLAN.md). Read it
+before touching `src/audio/` — it carries numbered invariants (A1-A13) and verified
+traps (T1-T17) that the code comments cite rather than repeat.
+
+The three rules most easily broken by accident:
+
+- **Fire a semantic event id, never a filename**: `playAudio('world.impact')`. One-shots
+  use `playAudio`; anything continuous uses `registerEmitter` (a loop needs
+  start/stop/move over a lifetime, which fire-and-forget cannot express).
+- **Never create an `AudioContext` or connect to `ctx.destination` outside
+  `src/audio/engine.ts`.** Any path bypassing the bus graph silently breaks the volume
+  sliders. `pnpm check:audio` greps for this.
+- **Audio does not run on `useFrame`.** The tick is a 15 Hz `setInterval`, because
+  `frameloop="never"` hard-stops the render loop whenever the settings menu opens, and
+  because AudioParam writes get measurably more expensive as their pending event list
+  grows (cancel-then-schedule; see the plan's M1).
+
+Spatialised (`world`-tier) source files **must be mono** — a stereo buffer fed to a
+`PannerNode` silently upmixes and smears the directional cue without erroring.
 
 ## Hard-won lessons (READ before debugging these areas)
 

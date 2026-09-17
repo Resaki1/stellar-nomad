@@ -16,6 +16,7 @@ import {
   settingsIsOpenAtom,
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
+import AudioSettings from "./AudioSettings";
 import KeybindRow from "./KeybindRow/KeybindRow";
 import Panel from "../Shell/Panel";
 import {
@@ -66,6 +67,7 @@ import {
 
 enum SubMenu {
   Graphics = "graphics",
+  Audio = "audio",
   Controls = "controls",
   Dev = "dev",
 }
@@ -186,6 +188,13 @@ const renderSubMenu = (
           </label>
         </>
       );
+    // Audio settings live in their own store module (A9), so this case needs
+    // nothing from `settings`/`setSettings` and is a self-contained component.
+    // ⚠ UNCONDITIONAL — not gated by IS_DEV like SubMenu.Dev (trap T2): the Dev
+    // case cannot render without `devHandlers`, which is undefined in
+    // production. A player-facing submenu must not be threaded through it.
+    case SubMenu.Audio:
+      return <AudioSettings />;
     case SubMenu.Controls: {
       const categories = new Map<KeybindCategory, typeof KEYBIND_ACTIONS>();
       for (const a of KEYBIND_ACTIONS) {

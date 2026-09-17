@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { playAudio } from "@/audio";
 import "./Panel.scss";
 
 export type PanelActionVariant = "primary" | "secondary" | "danger" | "subtle";
@@ -55,7 +56,13 @@ function ActionButton({ action }: { action: PanelAction }) {
     <button
       type="button"
       className={`panel__action panel__action--${variant}`}
-      onClick={action.onClick}
+      onClick={() => {
+        // Fired from the click itself, never from an effect reacting to state
+        // (trap T4): a React render hop can spend the ~20 ms budget in which a
+        // sound still reads as instant.
+        playAudio(variant === "primary" ? "click.hard" : "click.soft");
+        action.onClick();
+      }}
       disabled={action.disabled}
     >
       {action.icon && <span className="panel__action-icon">{action.icon}</span>}
@@ -90,6 +97,34 @@ export default function Panel({
   hideHeader = false,
   children,
 }: PanelProps) {
+  // Panel open/close. Every menu-space surface routes through this component
+  // (style guide §7.7), so this one hook covers settings, inventory, research,
+  // crafting and loadout.
+  //
+  // 🔑 CLOSE IS HANDLED IN THE UNMOUNT CLEANUP, NOT IN `onClose`, and that is
+  // load-bearing: MEASURED, wiring only the close button, the backdrop and Esc
+  // left the common path silent, because `HUD.tsx`'s own hotkey handler closes a
+  // panel by setting its own state — `onClose` is never called and the panel
+  // simply unmounts. Cleanup is the only place that sees every close path.
+  //
+  // ⚠ Both guards below exist because React double-invokes effects in dev
+  // (mount → cleanup → mount). The open guard is a ref; the close guard is a
+  // DURATION test, since StrictMode's synthetic unmount lands within a few ms of
+  // mount while a real panel is open for far longer. A bare cleanup would play a
+  // close sound immediately on every panel open, in dev only — the kind of bug
+  // that gets blamed on the mixer.
+  const openedRef = useRef(false);
+  useEffect(() => {
+    const mountedAt = performance.now();
+    if (!openedRef.current) {
+      openedRef.current = true;
+      playAudio("click.soft");
+    }
+    return () => {
+      if (performance.now() - mountedAt > 250) playAudio("click.soft");
+    };
+  }, []);
+
   useEffect(() => {
     if (!closeOnEsc) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -103,6 +138,8 @@ export default function Panel({
   }, [closeOnEsc, onClose]);
 
   const handleBackdropClick = useCallback(() => {
+    // No sound here: the unmount cleanup above already covers every close path,
+    // and playing one here too would double up on this one.
     if (closeOnBackdrop) onClose();
   }, [closeOnBackdrop, onClose]);
 
