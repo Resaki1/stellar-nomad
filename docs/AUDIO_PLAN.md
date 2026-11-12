@@ -2231,6 +2231,73 @@ layers at once. It is also the single knob for overall wind loudness: the level
 law, `gainDb` and `WIND_RANGE_DB` are all pinned to the cull arithmetic below,
 so trim `peakDb` in the preset and regenerate rather than touching any of them.
 
+**A-WIND-2 — the derived level was not playable raw. FIXED (rate cap).**
+Reported after the rebuild: *"the transition when flying in and out of Earth's
+atmosphere … sounds way too harsh, like one second the wind is full volume and
+then suddenly it drops way too fast to zero. Is it actually calculated by
+atmospheric density?"* It is — ρ is a clean exponential and contributes no step
+at all. The cliff came from the **speed** term and from there being no memory
+anywhere in the chain:
+
+- Level is `30·log10(q)` and `q ∝ v²`, so a speed change of factor *f* moves the
+  bed by **`60·log10(f)`**. MEASURED: 400 → 100 m/s at 5 km is **−28.5 dB**.
+- The only smoothing between `q` and the voice was the 50 ms AudioParam constant
+  in `setVoiceGain` — about 150 ms to settle. Everything else was instantaneous.
+- Transit has **no altitude gate on engaging** (`TransitTicker`), accelerates at
+  800 km/s², and the first frame at 60 fps is already ~13 km/s. A departure from
+  low altitude crosses the entire 40 dB range in under a second.
+- The flight model also produces legitimate instantaneous steps the bed had to
+  swallow: the collision speed dip (`speed.current *= 1 − dip`, up to −27.7 dB
+  in the bed) and transit disengage (up to 500 m/s snapped to 0 in one frame).
+
+🔑 **A RATE CAP, NOT A TIME CONSTANT.** A first-order follower lags in
+proportion to the gap, so it is sluggish exactly when the signal is moving
+legitimately across a wide range. MEASURED in simulation on a throttle release
+at 5 km: a τ = 2 s follower played −17 dB while `q` said −39 — a 22 dB lag
+during ordinary flying. A cap is transparent below it and bites only on the
+cliff. `WIND_RISE_DB_PER_S = 40`, `WIND_FALL_DB_PER_S = 14`, then a
+`WIND_SMOOTH_TAU_S = 0.25 s` one-pole to round the corner where the cap stops
+biting (a bare cap changes slope). Asymmetric for the same reason the eye is
+(`exposureMeter.ts`, TAU_BRIGHTEN 0.25 s against TAU_DARKEN_CONE 2.0 s): an
+onset you should feel arrive, a decay you should not catch happening.
+
+**Measured live** (`__audio.wind()` now reports `targetDb` — what `q` says this
+instant — alongside `levelDb`, the followed value; the gap between them *is* the
+fix). Warped to 8 km, full throttle, q = 39,944 Pa, level 0 dB pinned,
+`ship.wind.high` at gain 1.0. Then a dev warp to 120 km, which removes six
+orders of magnitude of density **and** all velocity in a single frame — the
+hardest step the game can produce:
+
+| t (s) | raw `targetDb` | played `levelDb` |
+|---|---|---|
+| 0.00 | 0 | 0 |
+| 0.31 | −40 | −0.2 |
+| 0.91 | −40 | −6.4 |
+| 1.82 | −40 | −19.1 |
+| 2.43 | −40 | −27.4 |
+| 3.34 | −40 | −38.8 ← voice released |
+| 4.25 | −40 | **−40.0 exactly** |
+
+That is ~13.7 dB/s through the middle, matching the cap. ⚠ **Transparency is
+the other half of the claim**: during ordinary acceleration at 8 km the played
+level lagged the raw by **0.2 dB** (−13.4 against −13.2). The cap does nothing
+in normal flight.
+
+⚠ **`fadeInMs` was 1200 and had to come down to 120.** `setVoiceGain` early-
+returns for the whole attack (`attackEndsAtS`, voices.ts), so a long fade-in
+*freezes* the voice at its promotion gain — ~−34 dBFS, the cull threshold — and
+ignores every update until it expires. On a fast entry the level then jumped up
+to ~30 dB in one 50 ms smoothing constant the instant the freeze lifted. The
+swell now belongs to the dB rate cap, which cannot be frozen; the 120 ms is only
+there to stop a click.
+
+⚠ **The floor is still reached exactly.** The cap subtracts a fixed dB per tick
+rather than approaching asymptotically, so `WIND_RANGE_DB`/`gainDb`/`CULL_EXIT`
+arithmetic is untouched — vacuum is still exactly silent, it just arrives by
+fading over ~3 s instead of instantly. `resetWind()` snaps the follower for
+teleports (respawn, dev warp, a change of dominant body), the same role as
+`resetExposureAdaptation()`.
+
 **Measured, flying Earth at ~390 m/s** (`__audio.wind()`, four bench rungs):
 
 | Altitude | ρ kg/m³ | q Pa | Level | Live voice |
@@ -2245,6 +2312,15 @@ The bed promotes descending at **~27 km** and releases climbing at **~34 km**:
 they exist for. Vacuum is **exactly** silent — `WIND_RANGE_DB = 40` with the
 catalogue's `gainDb: -3` puts the floor at 0.00708, just under the 0.008 exit —
 rather than held at an inaudible constant.
+
+**⚠ Known, not fixed: the plateau.** `q_ref = 30 kPa` against a ship that makes
+98 kPa at sea level at max speed means the bed is **pinned at 0 dB from the
+ground to 9.8 km** at full throttle, and only then begins to fall. The plan
+calls that pinning intended ("which reads as pinned, which is what it would
+be"), and the rate cap removes the harshness it used to produce, but it does
+flatten the first third of the climb. Re-anchoring `q_ref` to the ship's own
+sea-level max-q would spread the range across the whole envelope. That is a
+character decision, not a defect, so it is left as a knob.
 
 🔑 **One law, every body, no per-body authoring.** Thin-Mars entry and
 thick-Venus entry differ because ρ differs, which is the whole argument for

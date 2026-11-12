@@ -61,6 +61,29 @@ beside them. Measured: ACF at 62 Hz 0.578 → −0.002, A-weighted 1.2–8 kHz
 54.2 % → 11.7 %, RMS −22.7 → −26.4 dBFS, gust 10.1 → 4.2 dB. 53 assets,
 40 events, 9.93 MB. Still not auditioned.
 
+**2026-11-12 (e): quieter again, and the transition is no longer a cliff.**
+Second listen: *"way more like wind, but still a bit too loud and harsh"*, and
+the atmosphere transition *"sounds way too harsh, like one second the wind is
+full volume and then suddenly it drops way too fast to zero."* Two separate
+things.
+
+*Loudness and harshness* — another 3 dB off `peakDb` (now −19/−18/−17) and the
+open band's two poles moved down to `430 + brightness²·1500`. A-weighted
+1.2–8 kHz is now **0.7 / 2.7 / 6.2 %** across the three layers, against 1.3 %
+for hull tension (the one noisy sound that was never objected to) and 17.7 % for
+the engine at full thrust. RMS −30.8 / −30.0 / −29.3 dBFS, about 13 dB under the
+engines. `peakDb` remains the single knob if it needs to come down further.
+
+*The transition* — it **is** computed from atmospheric density, and the density
+term is a clean exponential that contributes no step. The cliff was the speed
+term: level is `30·log10(q)` with `q ∝ v²`, so a speed change of factor *f*
+moves the bed by `60·log10(f)`, and nothing in the chain had any memory. Fixed
+with an asymmetric dB/s rate cap (40 up, 14 down) plus a 0.25 s corner-rounding
+pole. Verified live: the hardest step the game can make — a dev warp from 8 km
+to 120 km, removing the atmosphere and all velocity in one frame — now fades
+over 3.3 s and reaches the floor exactly at 4.25 s, while ordinary acceleration
+lags by 0.2 dB. See [AUDIO_PLAN §12.3e](AUDIO_PLAN.md), defect A-WIND-2.
+
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
 Measured, that split the palette perfectly: **A-weighted energy in 1.2–8 kHz was

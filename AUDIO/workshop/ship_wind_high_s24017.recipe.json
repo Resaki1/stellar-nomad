@@ -27,11 +27,11 @@
   "experimental": false,
   "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
   "stats": {
-    "peakDb": -13.999999827421785,
-    "rmsDb": -26.44037810468655,
-    "dc": 5.696717288332587e-10,
-    "seamDelta": 0.002058316022157669,
-    "maxDelta": 0.010515166446566582,
+    "peakDb": -16.99999999789091,
+    "rmsDb": -29.318911560085365,
+    "dc": 3.628439852684206e-10,
+    "seamDelta": 0.0002625398337841034,
+    "maxDelta": 0.0062366994097828865,
     "finite": true,
     "silent": false
   }

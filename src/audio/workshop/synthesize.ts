@@ -78,7 +78,7 @@ function noiseBands(length: number, brightness: number, seed: number, loop: bool
   // how the first two attempts talked themselves out of rolling the top off.
   const grainTop = coefficient(grainHz);
   const airCut = coefficient(430);
-  const airTopCut = coefficient(520 + brightness * brightness * 2400);
+  const airTopCut = coefficient(430 + brightness * brightness * 1500);
   const airHpCut = coefficient(150);
   // Narrow enough that the ear hears pitch, not another band of noise: a Q of 7
   // is wider than a third of an octave and simply disappears into the tilt.
@@ -343,7 +343,7 @@ export function renderSound(input: Recipe): RenderedSound {
         body = noise.low[i] * (0.88 + 0.12 * gust);
         texture = (noise.air[i] * (1 - opening * 0.72) + noise.airTop[i] * opening)
           * (0.86 + 0.14 * gust);
-        detail = noise.airTop[i] * opening * (0.12 + bright * 0.3);
+        detail = noise.airTop[i] * opening * (0.1 + bright * 0.2);
       } else if (preset.family === "jet") {
         body = noise.low[i] * 0.8 + Math.sin(p) * Math.exp(-t * 35) * 0.12;
         texture = noise.wide[i] * 1.2;

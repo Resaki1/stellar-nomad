@@ -32,7 +32,7 @@ import { audioActionCountsAtom, isShipAISpeaker, type AudioAction } from "@/stor
 import { playAlarm, setAlarmsEnabled, stopAllAlarms } from "@/audio/alarms";
 import { registerAlert, updateAlert, unregisterAlert } from "@/audio/alerts";
 import { audioShipBuffer } from "@/audio/shipBuffer";
-import { windLayerGain, windState } from "@/audio/wind";
+import { resetWind, windLayerGain, windState } from "@/audio/wind";
 import { shipHealthAtom, settingsIsOpenAtom } from "@/store/store";
 import { vfxEventsAtom } from "@/store/vfx";
 import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom } from "@/store/mining";
@@ -81,14 +81,23 @@ export default function GameAudioTriggers() {
   // air", and the same code gives Earth, Mars and Venus different answers.
   useEffect(() => {
     if (isDead) return;
+    // ⚠ A respawn is a teleport. Without this the bed would open at whatever
+    // level the wreck was flying at and fade down from there.
+    resetWind();
     const wind = (["ship.wind.low", "ship.wind.mid", "ship.wind.high"] as const)
       .map((event, layer) => registerEmitter({
         event,
-        intensity: () => windLayerGain(layer as 0 | 1 | 2, windState.qPa),
-        // The emitter promotes a layer the moment its product crosses
-        // CULL_ENTER_GAIN, i.e. at -34 dBFS, and the default loop attack is
-        // 25 ms — which is a step, not a swell. Air does not arrive in 25 ms.
-        fadeInMs: 1200,
+        // ⚠ `windState.db`, the FOLLOWED level — never `qPa`. The raw value is
+        // 60·log10(speed ratio) and steps by tens of dB in a frame.
+        intensity: () => windLayerGain(layer as 0 | 1 | 2, windState.db),
+        // ⚠⚠ SHORT ON PURPOSE, AND IT USED TO BE 1200. `setVoiceGain` early-
+        // returns for the whole attack (voices.ts, `attackEndsAtS`), so a long
+        // fade-in freezes the voice at its promotion gain — ~-34 dBFS, the cull
+        // threshold — and ignores every update until it expires. A fast entry
+        // then jumped up to ~30 dB in one 50 ms smoothing constant the instant
+        // the freeze lifted. The swell now belongs to the dB follower in
+        // wind.ts, which cannot be frozen; this is only here to stop a click.
+        fadeInMs: 120,
       }));
     return () => wind.forEach((e) => e.stop());
   }, [isDead]);
