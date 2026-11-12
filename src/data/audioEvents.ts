@@ -593,6 +593,33 @@ export const AUDIO_EVENTS = [
     clusterKey: "station.vent",
     coupling: "air"
   },
+  // Aerodynamic wind, AUDIO_PLAN §12.3. Three brightness layers crossfaded by
+  // dynamic pressure, exactly like the engine beds and for the same reason: a
+  // ship-tier voice has no runtime filter, so brightness is pre-rendered.
+  // ⚠ `syncLoop` is load-bearing here, not decoration. Without it the emitter
+  // starts each loop at a random offset in [0,10) s, and three equal-length
+  // beds at random relative phases comb-filter against each other.
+  // ⚠ `gainDb: -3` is paired with WIND_RANGE_DB in src/audio/wind.ts — together
+  // they put the bed's floor just under the emitter cull, which is what makes
+  // vacuum exactly silent rather than quietly held. Change one, re-read both.
+  {
+    id: "ship.wind.low", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_wind_low_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
+  {
+    id: "ship.wind.mid", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_wind_mid_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
+  {
+    id: "ship.wind.high", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_wind_high_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
   {
     // The one-shot at the moment of destruction. Highest priority in the
     // catalogue: nothing may steal it, because it only ever plays once per run.

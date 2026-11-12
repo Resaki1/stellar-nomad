@@ -15,6 +15,7 @@
 //   __audio.stress(n)          fire n voices at random positions (Gate EA-2/4)
 //   __audio.silence()          stop everything
 //   __audio.listener(mode)     force a listener mode (A2 seam)
+//   __audio.wind()             the q = ½ρv² bed: density, q, per-layer gain
 //   __audio.lastJson           copyable report, like __bench.lastJson
 // ---------------------------------------------------------------------------
 
@@ -57,6 +58,7 @@ import {
   absorptionDbPerM,
   densityAtAltitude,
 } from "@/audio/acoustics";
+import { windDrive, windLayerGain, windState, WIND_Q_REF_PA } from "@/audio/wind";
 import { getDominantAtmosphereBody } from "@/components/space/atmospherePass";
 import { playAlarm, ALARM_TIERS, type AlarmTier } from "@/audio/alarms";
 import {
@@ -81,6 +83,7 @@ type AudioHarness = {
   acoustics(bodyId?: string): unknown;
   absorption(bodyId?: string, altitudeKm?: number, distanceM?: number): unknown;
   here(): unknown;
+  wind(): unknown;
   setAlert(id: string, value01: number): unknown;
   ackAlert(id: string): void;
   silence(): void;
@@ -200,6 +203,36 @@ export default function AudioDevTools() {
             `h.stop() to remove; __audio.emitters() to inspect.`,
         );
         return h;
+      },
+
+      /**
+       * The wind bed's whole chain, measured rather than asserted: what the
+       * atmosphere is, what q comes out, and what each layer is doing with it.
+       * The one harness that proves §12.3 has an audible consumer.
+       */
+      wind() {
+        const layers = ([0, 1, 2] as const).map((layer) => ({
+          layer,
+          event: ["ship.wind.low", "ship.wind.mid", "ship.wind.high"][layer],
+          gain: Math.round(windLayerGain(layer, windState.qPa) * 1e4) / 1e4,
+        }));
+        const out = {
+          body: windState.bodyId ?? "none (vacuum)",
+          altitudeKm: Math.round(windState.altitudeKm * 10) / 10,
+          densityKgM3: windState.densityKgM3.toExponential(3),
+          speedMps: Math.round(windState.speedMps * 10) / 10,
+          qPa: Math.round(windState.qPa * 100) / 100,
+          qRefPa: WIND_Q_REF_PA,
+          levelDb: Math.round(windState.db * 10) / 10,
+          drive: Math.round(windDrive(windState.qPa) * 1e3) / 1e3,
+          layers,
+          // Below CULL_EXIT_GAIN (0.008) on every layer means no voice exists,
+          // which is the difference between quiet and silent.
+          audible: layers.some((l) => l.gain * 10 ** (-3 / 20) > 0.008),
+        };
+        console.log("[__audio]", out);
+        harness.lastJson = JSON.stringify(out, null, 2);
+        return out;
       },
 
       /**

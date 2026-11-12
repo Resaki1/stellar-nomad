@@ -159,6 +159,10 @@ export function renderSound(input: Recipe): RenderedSound {
   const grainHz = preset.family === "motor" ? 420 + tone * 1600
     : preset.family === "cutter" ? 700 + tone * 5200
     : preset.family === "drive" ? 430 + tone * 2600
+    // Wind is the one family that is SUPPOSED to be broadband — air rush has no
+    // fundamental to resonate. Its structure is temporal (the gusts below), not
+    // spectral, so it gets the widest ceiling in the set.
+    : preset.family === "wind" ? 600 + tone * 6400
     : 520 + tone * 4200;
   const noise = noiseBands(n, recipe.brightness, recipe.seed, loop, Math.max(20, base), grainHz);
   const phaseOffset = rng() * TAU;
@@ -277,6 +281,36 @@ export function renderSound(input: Recipe): RenderedSound {
         const shimmer = 0.62 + 0.38 * Math.sin(TAU * periodicHz(base * 1.5) * t + drift);
         texture = noise.grain[i] * (0.8 + drift * 0.18) * shimmer;
         detail = Math.sin(p * 4 + drift * 0.8) * 0.1 + Math.sin(p * 7) * 0.035;
+      } else if (preset.family === "wind") {
+        // Moving air, over the v4 `grain` band rather than `noise.wide`. ⚠ The
+        // `air` and `jet` branches below are the two families v4 never
+        // converted; both still read flat noise, and either would rebuild
+        // exactly the static the renderer was rewritten to remove.
+        //
+        // Two gust LFOs, through `periodicHz` so the loop seam stays sample
+        // exact. ⚠ Pick the rates for what they quantise TO, not what they read
+        // as: 0.23 and 0.61 Hz look unrelated and land on 1 and 4 cycles over a
+        // 6 s loop, a 1:4 lock that gusts audibly in step. 0.5 and 7/6 Hz land
+        // on 3 and 7 — coprime, so the pair never repeats inside the loop.
+        // ⚠ `cos`, with no seed phase, so the loop BEGINS at full airflow. The
+        // workshop asserts that a loop's first and last windows each carry >10%
+        // of a mid-loop window's power, and a gust this deep fails that
+        // whenever the seed happens to drop the seam into a trough — a check
+        // that passes or fails on phase luck is worse than no check. Anchored,
+        // the edges sit at the gust peak and the margin is wide at any depth,
+        // so the depth below is an authoring choice rather than a fit to the
+        // assertion. The emitter starts this loop phase-aligned (`syncLoop`),
+        // so "begins at full airflow" is what the player actually hears.
+        const slow = Math.cos(TAU * periodicHz(0.5) * t);
+        const fast = Math.sin(TAU * periodicHz(7 / 6) * t + phaseOffset + drift);
+        const gust = 0.3 + 0.7 * (0.5 + 0.5 * slow) * (0.55 + 0.45 * fast);
+        // The pressure body breathes with the gust too, or it holds the
+        // envelope flat and the buffeting reads as a filter sweep over a
+        // constant bed instead of as air arriving in pulses.
+        body = noise.low[i] * (0.55 + 0.45 * gust) * 0.95 + Math.sin(p) * 0.08;
+        texture = noise.grain[i] * gust * 1.25;
+        detail = noise.grain[i] * gust * (0.45 + 0.55 * fast) * (0.1 + bright * 0.32)
+          + Math.sin(p * 3 + drift) * 0.025;
       } else if (preset.family === "jet") {
         body = noise.low[i] * 0.8 + Math.sin(p) * Math.exp(-t * 35) * 0.12;
         texture = noise.wide[i] * 1.2;

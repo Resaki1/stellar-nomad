@@ -588,6 +588,18 @@ const SpaceShip = memo(() => {
     const normalSpeedMps = speed.current * hudMaxSpeedKmps * 1000;
     // Benchmark mode skips this write (it re-renders HUD React subtrees) and the
     // persist below (which would overwrite the player's saved position).
+    // ⚠ OUTSIDE the benchMode guard, and deliberately. The guard exists because
+    // `store.set` re-renders HUD React subtrees; writing a field on a plain
+    // object does not, and the wind bed must still be driven during a bench run
+    // or the scenario ladder would measure a silent ship. `speedMps` had been
+    // declared in shipBuffer.ts since Phase 1 with a comment claiming it was
+    // "written alongside throttle" — it never was, and this is that write.
+    //
+    // Same definition as the HUD's speed, transit velocity included, so the bed
+    // can never disagree with the number on screen. Entering an atmosphere
+    // under transit therefore pins the wind at maximum, which is both what the
+    // clamp in `windDb` does and what that manoeuvre would actually sound like.
+    audioShipBuffer.speedMps = Math.max(normalSpeedMps, transitSpeedMps);
     if (!benchMode) {
       store.set(hudInfoAtom, { speed: Math.max(normalSpeedMps, transitSpeedMps) });
     }

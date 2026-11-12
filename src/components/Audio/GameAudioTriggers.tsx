@@ -32,6 +32,7 @@ import { audioActionCountsAtom, isShipAISpeaker, type AudioAction } from "@/stor
 import { playAlarm, setAlarmsEnabled, stopAllAlarms } from "@/audio/alarms";
 import { registerAlert, updateAlert, unregisterAlert } from "@/audio/alerts";
 import { audioShipBuffer } from "@/audio/shipBuffer";
+import { windLayerGain, windState } from "@/audio/wind";
 import { shipHealthAtom, settingsIsOpenAtom } from "@/store/store";
 import { vfxEventsAtom } from "@/store/vfx";
 import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom } from "@/store/mining";
@@ -71,6 +72,25 @@ export default function GameAudioTriggers() {
         intensity: () => engineLayerGain(layer as 0 | 1 | 2, audioShipBuffer.throttle),
       }));
     return () => engines.forEach((e) => e.stop());
+  }, [isDead]);
+
+  // Aerodynamic wind, AUDIO_PLAN §12.3. Registered unconditionally in flight:
+  // the bed is silent in vacuum because `q = ½ρv²` goes to zero there and the
+  // emitter culls itself, NOT because anything here decides when to start it.
+  // That is the point of deriving it — nobody has to author "now you are in
+  // air", and the same code gives Earth, Mars and Venus different answers.
+  useEffect(() => {
+    if (isDead) return;
+    const wind = (["ship.wind.low", "ship.wind.mid", "ship.wind.high"] as const)
+      .map((event, layer) => registerEmitter({
+        event,
+        intensity: () => windLayerGain(layer as 0 | 1 | 2, windState.qPa),
+        // The emitter promotes a layer the moment its product crosses
+        // CULL_ENTER_GAIN, i.e. at -34 dBFS, and the default loop attack is
+        // 25 ms — which is a step, not a swell. Air does not arrive in 25 ms.
+        fadeInMs: 1200,
+      }));
+    return () => wind.forEach((e) => e.stop());
   }, [isDead]);
 
   // Mining audio is cutter hardware aboard our ship, not sound travelling back

@@ -2136,11 +2136,72 @@ Stated plainly, because the model is validated and largely **unconsumed**:
 | Impedance coupling on contact sounds | ✅ live, and correctly a **no-op** — they are contact-coupled |
 | Impedance coupling on air sounds | ✅ live, but **nothing in the game is air-coupled in an atmosphere yet** |
 | Frequency-dependent absorption | ⚠ **live with no consumer.** Needs an air-coupled emitter inside an atmosphere, and there are none |
-| Wind / entry noise from `q = ½ρv²` | ❌ **not built — and this is the one piece with an audible consumer today**, because the player can already fly from Earth's surface to orbit. It is *ship*-tier (heard through the hull), so it needs no world emitters at all |
+| Wind / entry noise from `q = ½ρv²` | ✅ **BUILT AND AUDIBLE, 2026-11-12** — `src/audio/wind.ts`, three crossfaded `ship.wind.*` beds. §12.3 now has a consumer |
 
-**So the next build is the `q = ½ρv²` wind bed**, not more propagation. It is the
-only part of §12.3 that can be heard without content that does not exist yet, and
-it is the surface-to-orbit transition the design already showcases visually.
+**The `q = ½ρv²` wind bed is built** (`src/audio/wind.ts`, 2026-11-12). It was the
+only part of §12.3 that could be heard without content that does not exist yet,
+and it is the surface-to-orbit transition the design already showcases visually.
+
+#### 12.3e The wind bed, as built
+
+**The law.** Flow noise from a body in a stream is a Curle **dipole**: radiated
+intensity ∝ V⁶, i.e. **18.06 dB per doubling of airspeed**. Since `q ∝ V²` that
+is `30·log10(q/q_ref)` — **9.03 dB per doubling of q** — or, in amplitude, the
+tidy `(q/q_ref)^1.5`. ⚠ Lighthill's V⁸ is the **quadrupole** (a free jet) and is
+the wrong law here: a hull is a surface, not a jet.
+
+**The reference.** `WIND_Q_REF_PA = 30 kPa`, anchored to real max-q on ascent
+(Saturn V ≈ 33 kPa, Shuttle ≈ 32 kPa; an airliner cruises nearer 15 kPa) —
+deliberately *not* to a game constant. The ship can exceed it (400 m/s at sea
+level is 98 kPa, 15 dB past the reference) and the level clamps, which reads as
+pinned, which is what it would be.
+
+**Three layers, and the reason is a runtime limit, not a taste.** A `ship`-tier
+voice cannot be filtered: `setVoicePropagation` returns early unless the voice
+is air-coupled, and `connectVoice` leaves the per-voice lowpass disconnected for
+`ship`/`ui`. So brightness is pre-rendered and crossfaded, exactly as the engine
+beds are, with `syncLoop` keeping the three equal-length loops phase-aligned —
+without it the emitter starts each at a random offset in [0,10) s and three
+correlated beds comb-filter against each other. The triangular crossfade sums
+to exactly 1 at every drive, so the layers move brightness without moving level.
+
+**A new `wind` renderer family.** ⚠ The obvious choice, `family: "air"`, is one
+of the two branches (with `jet`) that renderer v4 never converted — both still
+read `noise.wide` directly, and either would have rebuilt precisely the flat
+static that v4 was written to remove. The `wind` branch gusts the v4 `grain`
+band under two loop-quantised LFOs at 3 and 7 cycles per loop. 🔑 **Pick LFO
+rates for what they quantise TO**: 0.23 and 0.61 Hz look unrelated and land on
+1 and 4 cycles over a 6 s loop, a 1:4 lock that gusts audibly in step. Measured
+gust depth 6.5 / 9.3 / 10.1 dB across the three layers, against 1.5 dB for
+`transit.loop` — a genuinely static drone.
+
+**⚠ The loop-edge assertion bounds gust depth, so the gust phase is anchored.**
+The workshop requires a loop's first and last windows to each carry >10% of a
+mid-loop window's power. A deep gust fails that whenever the seed drops the seam
+into a trough — a check that passes or fails on phase luck is worse than no
+check — so the slow LFO is a `cos` with no seed phase and the loop begins at
+full airflow.
+
+**Measured, flying Earth at ~390 m/s** (`__audio.wind()`, four bench rungs):
+
+| Altitude | ρ kg/m³ | q Pa | Level | Live voice |
+|---|---|---|---|---|
+| 5.9 km | 0.591 | 47,322 | **0 dB** (pinned) | `ship.wind.high` @ 0.708 |
+| 27.7 km | 0.0429 | 3,585 | −27.7 dB | none — just under promotion |
+| 118 km | 9.7e-7 | 0.07 | floor | none |
+| 648 km | 4.6e-34 | ~0 | floor | none |
+
+The bed promotes descending at **~27 km** and releases climbing at **~34 km**:
+7 km of hysteresis, which is `CULL_ENTER_GAIN`/`CULL_EXIT_GAIN` doing the job
+they exist for. Vacuum is **exactly** silent — `WIND_RANGE_DB = 40` with the
+catalogue's `gainDb: -3` puts the floor at 0.00708, just under the 0.008 exit —
+rather than held at an inaudible constant.
+
+🔑 **One law, every body, no per-body authoring.** Thin-Mars entry and
+thick-Venus entry differ because ρ differs, which is the whole argument for
+deriving this instead of authoring it — and it closes §11.1's loose end, where
+atmospheric entry was dropped from the signature-sound list for being a
+transition rather than an asset.
 
 The absorption model then waits for a real consumer: a station vent you fly past
 in atmosphere, another player's ship, on-foot surface gameplay, or drones around

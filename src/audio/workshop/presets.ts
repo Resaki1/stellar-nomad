@@ -1,5 +1,5 @@
 /** Authoring data only. Event names are destinations, not new gameplay triggers. */
-export type SoundFamily = "motor" | "cutter" | "drive" | "jet" | "impact" | "creak" | "signal" | "air";
+export type SoundFamily = "motor" | "cutter" | "drive" | "wind" | "jet" | "impact" | "creak" | "signal" | "air";
 export type SoundGesture = "steady" | "rise" | "fall" | "hit" | "confirm" | "reject" | "tick";
 export type Recipe = {
   version: 1;
@@ -65,6 +65,20 @@ export const SOUND_PRESETS: readonly SoundPreset[] = [
   { id: "world.impact.large", name: "Hull / heavy impact", group: "Hull", trigger: "A larger collision makes direct contact with the ship.", character: "A slower low body, multiple plate modes and a brief debris texture.", family: "impact", gesture: "hit", hz: 65, duration: 1.5, variants: 3, bus: "sfxWorld", peakDb: -5, experimental: true },
   { id: "ship.damage.impact", name: "Damaged plating", group: "Hull", trigger: "A damaging hit reaches the ship structure.", character: "Blunt contact, buckling panel noise and loose fasteners; short damped resonances.", family: "impact", gesture: "hit", hz: 105, duration: 0.9, variants: 3, bus: "sfxShip", peakDb: -6, experimental: true, defaults: { brightness: 0.45, detail: 0.4, texture: 1 } },
   { id: "ship.hull.stress", name: "Hull tension", group: "Hull", trigger: "Structural stress; an occasional cue, not a continuous alarm.", character: "Stick-slip friction excites a few bending resonances. Experimental, deliberately sparse.", family: "creak", gesture: "hit", hz: 130, duration: 1.8, variants: 2, bus: "sfxShip", peakDb: -12, experimental: true },
+
+  // ── Aerodynamic wind (AUDIO_PLAN §12.3, the q = ½ρv² bed) ──────────────
+  // ⚠ THREE LAYERS BECAUSE A SHIP-TIER VOICE CANNOT BE FILTERED AT RUNTIME.
+  // `setVoicePropagation` hard-returns unless the voice is air-coupled, and
+  // `connectVoice` leaves the lowpass disconnected for ship/ui, so brightness
+  // has to be pre-rendered and crossfaded — the same reason the engine has
+  // three layers. Equal `duration` + `syncLoop` in the catalogue keeps them
+  // phase-aligned; unequal lengths would comb-filter against each other.
+  // ⚠ Brightness is the ONLY axis that moves across the three. Same family,
+  // same hz, same seed, same gusts: they must read as one airflow getting
+  // harder, not as three different winds.
+  { id: "ship.wind.low", name: "Airflow / thin", group: "Flight", trigger: "Low dynamic pressure: thin air, or slow flight in thick air.", character: "A distant, rounded pressure wash with slow gusting. Almost no top end — this is the layer that survives at altitude.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -9, defaults: { body: 0.85, brightness: 0.2, texture: 0.8, detail: 0.2, motion: 0.45 } },
+  { id: "ship.wind.mid", name: "Airflow / building", group: "Flight", trigger: "Moderate dynamic pressure; blended with the other two.", character: "The same airflow with the hull starting to answer: more edge on the gusts, a harder rush between them.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -8, defaults: { body: 0.7, brightness: 0.47, texture: 0.9, detail: 0.38, motion: 0.5 } },
+  { id: "ship.wind.high", name: "Airflow / max-q", group: "Flight", trigger: "High dynamic pressure: fast and low, or entry into a thick atmosphere.", character: "Full buffeting roar with the top end open. Heard through the hull, so it is pressure and rush rather than whistle.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -7, defaults: { body: 0.72, brightness: 0.66, texture: 1, detail: 0.5, motion: 0.6 } },
 
   // ── Death ──────────────────────────────────────────────────────────────
   // ⚠ peakDb -5, not louder, even though this is the biggest moment in the game.

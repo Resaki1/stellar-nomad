@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.wind.low",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.2,
+    "motion": 0.45,
+    "body": 0.85,
+    "texture": 0.8,
+    "detail": 0.2
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "Low dynamic pressure: thin air, or slow flight in thick air.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -8.999999811573272,
+    "rmsDb": -21.581686479613616,
+    "dc": 2.5964117374617975e-11,
+    "seamDelta": 0.001116231083869934,
+    "maxDelta": 0.00956442579627037,
+    "finite": true,
+    "silent": false
+  }
+}

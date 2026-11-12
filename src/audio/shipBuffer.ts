@@ -20,6 +20,14 @@ export const audioShipBuffer = {
    * engine sound and the engine plume cannot disagree.
    */
   throttle: 0,
-  /** Speed in m/s, for future aero noise. Written alongside throttle. */
+  /**
+   * Speed in m/s — the same quantity the HUD displays, transit velocity
+   * included. Drives the `q = ½ρv²` wind bed (§12.3, src/audio/wind.ts).
+   *
+   * ⚠ Written in `Spaceship.tsx` OUTSIDE its `benchMode` guard, unlike the
+   * `hudInfoAtom` write beside it: the guard is there to avoid React
+   * re-renders, which a plain field assignment does not cause, and a bench run
+   * that silenced the wind would measure the wrong scene.
+   */
   speedMps: 0,
 };

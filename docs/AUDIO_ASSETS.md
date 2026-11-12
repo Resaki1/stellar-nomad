@@ -1,7 +1,7 @@
 # Audio Asset Checklist
 
 **Status:** ✅ **complete and accepted, 2026-11-12** — every row below is ticked.
-This stopped being a shopping list: nothing here was sourced, all 34 rows are
+This stopped being a shopping list: nothing here was sourced, all 37 rows are
 filled by the procedural workshop. Kept as the inventory of what exists and what
 fires it.
 **Companion to:** [`docs/AUDIO_PLAN.md`](AUDIO_PLAN.md) §6.2 / §6.6 / §6.8
@@ -24,6 +24,24 @@ removed from the runtime and palette. Coasting can be silent. Renderer v2 gives
 engines more turbulent low-end and impacts short, damped panel resonances plus
 irregular secondary contacts. Mining sustains begin after ignition, and death
 cancels alarms and their reminders. These supersede the original wishlist rows.
+
+**2026-11-12 (c): Phase 3 — the wind bed.** Three new rows, and they are the
+first assets in this list that no one chose the level of. `ship.wind.low`,
+`ship.wind.mid` and `ship.wind.high` are crossfaded by dynamic pressure
+`q = ½ρv²` from the real local atmospheric density, so how loud and how bright
+the wind is at any moment is derived, not authored. Three layers rather than one
+filter because a `ship`-tier voice cannot be filtered at runtime — the same
+constraint that gives the engine three layers. A new `wind` renderer family:
+⚠ the obvious `air` family is one of the two branches v4 never converted and
+would have rebuilt the static. See [AUDIO_PLAN §12.3e](AUDIO_PLAN.md).
+
+Measured on Earth at ~390 m/s: full bed at 5.9 km (q = 47 kPa, pinned at the
+30 kPa max-q reference), promotes descending at ~27 km, releases climbing at
+~34 km, exactly silent in vacuum. 53 workshop assets, 40 events, 7.87 MB.
+
+⚠ Not auditioned. Verified audible — `ship.wind.high` captured live at gain
+0.708 on the `sfxShip` bus — but whether the gusting reads as air is a listening
+call. Ticked on the same basis as the rest of the list is about to be revisited.
 
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
@@ -168,6 +186,9 @@ when coasting; the legacy `idle` id means low positive thrust, not an always-on 
 | ☑ | `ship.engine.idle` | Low positive thrust | 1 loop | `ship` | Low hum. ⚠⚠ **All three layers must be tuned to a shared pitch reference** or the crossfades will beat and phase audibly — the classic vehicle-audio bug |
 | ☑ | `ship.engine.mid` | ~50% throttle | 1 loop | `ship` | Same source family, more energy |
 | ☑ | `ship.engine.high` | Full throttle | 1 loop | `ship` | Strained, brighter |
+| ☑ | `ship.wind.low` | Low dynamic pressure: thin air, or slow in thick air | 1 loop | `ship` | **Derived, not authored** — level and brightness come from `q = ½ρv²` (§12.3e). Crossfaded with the two below; `syncLoop` keeps them phase-aligned |
+| ☑ | `ship.wind.mid` | Moderate dynamic pressure | 1 loop | `ship` | Same airflow, more edge on the gusts |
+| ☑ | `ship.wind.high` | Max-q: fast and low, or entry into a thick atmosphere | 1 loop | `ship` | Full buffeting. ⚠ Heard *through the hull*, so pressure and rush rather than whistle — brightness is deliberately held back |
 
 ### Transit drive
 

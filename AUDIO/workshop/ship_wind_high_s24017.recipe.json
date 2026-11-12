@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.wind.high",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.66,
+    "motion": 0.6,
+    "body": 0.72,
+    "texture": 1,
+    "detail": 0.5
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "High dynamic pressure: fast and low, or entry into a thick atmosphere.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.000000126534257,
+    "rmsDb": -22.739660031007713,
+    "dc": 4.4781197120850414e-11,
+    "seamDelta": 0.0019529089331626892,
+    "maxDelta": 0.07005127891898155,
+    "finite": true,
+    "silent": false
+  }
+}

@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { updateEmitters } from "./emitters";
+import { updateWind } from "./wind";
 import { pumpAlerts } from "./alerts";
 
 /** 66 ms. Fast enough for positional updates, slow enough to be free. */
@@ -38,6 +39,9 @@ export function startAudioTick(): void {
   handle = window.setInterval(() => {
     const t0 = performance.now();
     try {
+      // Before the emitters, so all three wind layers read one computation of
+      // the atmosphere rather than each repeating the body and density lookup.
+      updateWind();
       updateEmitters();
       // A12's reminder schedule. Must be clock-driven, not value-driven — see
       // the warning on `pumpAlerts`.
