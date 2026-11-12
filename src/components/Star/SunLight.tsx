@@ -332,14 +332,19 @@ const SunLight = ({
       const lum = sl ? 0.2126 * sl.r + 0.7152 * sl.g + 0.0722 * sl.b : 0;
       if (!sl || lum <= 0) {
         light.intensity = 0;
-        light.visible = false;
+        // ⚠ No `visible = false` here: see EngineExhaust.tsx. MEASURED there —
+        // a light entering or leaving the renderer's light list changes the
+        // lights hash, which is part of every lit material's pipeline cache key,
+        // so the whole scene recompiles (10 render pipelines, 18 shader modules,
+        // ~1 s stall). `intensity = 0` above already removes the contribution;
+        // these lights cast no shadows, so a dormant slot costs one loop
+        // iteration per lit fragment and nothing else.
         continue;
       }
       _shineColor.setRGB(sl.r / lum, sl.g / lum, sl.b / lum);
       light.color.copy(_shineColor);
       light.intensity = lum * preExp;
       light.position.set(sl.dirX, sl.dirY, sl.dirZ);
-      light.visible = true;
     }
     publishHullShine(_shineLights, shineCount, shineSkip, preExp);
 

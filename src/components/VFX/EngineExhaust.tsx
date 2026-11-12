@@ -257,7 +257,28 @@ const EngineExhaust = memo(function EngineExhaust({
         // one looks right.
         light.intensity =
           intensity * plumeLightIntensity(configs[i].radius) * getPreExposure();
-        light.visible = intensity > 0.01;
+        // ⚠⚠ NEVER toggle `light.visible` here. It was `intensity > 0.01`, and
+        // that one assignment cost a ~1 SECOND frame stall on every throttle-up
+        // and throttle-down.
+        //
+        // 🔑 MEASURED: a light appearing or disappearing changes the renderer's
+        // lights hash, which is part of every lit material's pipeline cache key —
+        // so the whole scene recompiles, not the plume. Captured from
+        // `GPUDevice.createRenderPipeline`, one throttle cycle rebuilt **10 render
+        // pipelines and 18 shader modules**, identically on every cycle (10/18,
+        // 10/18, 10/18): `Material.003`, `Standard`, `material_0`,
+        // `MeshStandardMaterial`, `LineBasicMaterial` — the ship's own PBR
+        // materials, with 38-41 KB fragment shaders. Worst frame 843-1012 ms
+        // against an 8.7 ms median. The plume's own NodeMaterial never appeared.
+        //
+        // An intensity of 0 costs one loop iteration per lit fragment and changes
+        // nothing on screen. That is the price of the light staying in the hash,
+        // and it is not close.
+        //
+        // SunLight.tsx and StarLights.tsx had the same line and were fixed with
+        // it; both already set `intensity = 0` first, so nothing looked different
+        // there either. Toggling the plume MESH's visibility above is fine —
+        // geometry visibility is not part of any pipeline key.
       }
     }
   });
