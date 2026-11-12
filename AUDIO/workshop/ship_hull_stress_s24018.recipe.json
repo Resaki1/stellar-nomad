@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.hull.stress",
+    "seed": 24018,
+    "duration": 1.8,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Structural stress; an occasional cue, not a continuous alarm.",
+  "bus": "sfxShip",
+  "experimental": true,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -12.000000253286988,
+    "rmsDb": -23.695930471599958,
+    "dc": 1.6565257921547568e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.006758354604244232,
+    "finite": true,
+    "silent": false
+  }
+}

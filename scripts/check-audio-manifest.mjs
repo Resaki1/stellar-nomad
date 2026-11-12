@@ -254,6 +254,18 @@ if (totalMB > TOTAL_SFX_BUDGET_MB)
 // exactly, so this is enforced mechanically rather than left to review. §10.1.
 const ENGINE_FILE = "src/audio/engine.ts";
 
+/**
+ * Files allowed to connect to a context destination.
+ *
+ * ⚠ selftest.ts is here on a NARROW ground, not as a blanket exemption: it only
+ * ever builds isolated `OfflineAudioContext` graphs to render and assert on, and
+ * never touches the live engine or its buses. Connecting to the destination of a
+ * throwaway offline context is the entire mechanism of a Tier-2 test. The
+ * `new AudioContext(` rule still applies to it, so it cannot quietly grow a
+ * second live context.
+ */
+const DESTINATION_ALLOWED = new Set([ENGINE_FILE, "src/audio/selftest.ts"]);
+
 function sourceFiles() {
   return walk(join(ROOT, "src")).filter((p) => /\.tsx?$/.test(p));
 }
@@ -276,7 +288,7 @@ for (const abs of files) {
   )
     fail(`${rel}: constructs an AudioContext — only ${ENGINE_FILE} may (A1)`);
 
-  if (/\.connect\(\s*[\w.]*destination\s*\)/.test(text) && rel !== ENGINE_FILE)
+  if (/\.connect\(\s*[\w.]*destination\s*\)/.test(text) && !DESTINATION_ALLOWED.has(rel))
     fail(
       `${rel}: connects directly to the AudioContext destination — route via a bus`,
     );

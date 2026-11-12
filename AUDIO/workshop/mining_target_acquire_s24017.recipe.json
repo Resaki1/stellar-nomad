@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.target.acquire",
+    "seed": 24017,
+    "duration": 0.075,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.08,
+    "detail": 0.12
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Quiet progress ticks after a target has stayed in focus; pitch rises toward lock.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -22.000000077474585,
+    "rmsDb": -35.37055188870342,
+    "dc": 1.2713409198851346e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.007524920627474785,
+    "finite": true,
+    "silent": false
+  }
+}

@@ -2,6 +2,7 @@
 // Modules / Loadout + Consumables inventory state
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
+import { signalAudioActionAtom } from "./audioSignals";
 import { atomWithStorage } from "jotai/utils";
 import {
   ITEMS,
@@ -206,11 +207,13 @@ export const equipModuleAtom = atom(
 
     const state = get(modulesAtom);
     if (!state.ownedModules.includes(itemId)) return false;
+    if (state.equippedModules[def.slot] === itemId) return true;
 
     set(modulesAtom, {
       ...state,
       equippedModules: { ...state.equippedModules, [def.slot]: itemId },
     });
+    set(signalAudioActionAtom, "module.equip");
     return true;
   },
 );
@@ -231,6 +234,7 @@ export const unequipSlotAtom = atom(
       ...state,
       equippedModules: newEquipped,
     });
+    set(signalAudioActionAtom, "module.equip");
   },
 );
 

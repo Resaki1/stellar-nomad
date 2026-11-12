@@ -26,6 +26,8 @@ export type Toast = {
   durationMs?: number;
   /** Defaults to "info" when omitted. */
   kind?: ToastKind;
+  /** Suppress when a dedicated gameplay cue plays; reject for denied actions. */
+  audio?: "silent" | "reject";
   createdAt: number;
 };
 

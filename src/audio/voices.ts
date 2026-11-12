@@ -59,6 +59,9 @@ type Voice = {
   eventId: string;
   priority: number;
   startedAt: number;
+  startsAtS: number;
+  attackEndsAtS: number;
+  endsAtS: number | null;
   loop: boolean;
   spatial: boolean;
   /** `true` only for world-tier events declared `coupling: "air"`. */
@@ -98,6 +101,9 @@ function buildPool(e: AudioEngine): void {
       eventId: "",
       priority: 0,
       startedAt: 0,
+      startsAtS: 0,
+      attackEndsAtS: 0,
+      endsAtS: null,
       loop: false,
       spatial: false,
       airCoupled: false,
@@ -220,12 +226,23 @@ function stopVoice(v: Voice): void {
 }
 
 export type PlayOptions = {
+  /** Optional handoff envelope, also available to one-shots. */
+  fadeInMs?: number;
+  pitchCents?: number;
+  /** Absolute audio-clock time for a sequenced source. */
+  startAtS?: number;
+  /** Cancellable startup cues must not survive their owner in the unlock queue. */
+  queueOnUnlock?: boolean;
   /** World position in local metres. Required for `world`-tier events. */
   positionM?: Vec3;
   /** Extra dB on top of the event's own `gainDb`. */
   gainDb?: number;
   /** Internal: set by the emitter layer so the voice is not stolen. */
   emitterId?: number;
+  /** Internal: fully evaluated emitter gain, including distance and medium. */
+  initialGain?: number;
+  /** Internal: apply propagation before the first sample, not one tick later. */
+  initialCutoffHz?: number;
   /**
    * Start offset into the buffer, seconds.
    *
@@ -236,6 +253,19 @@ export type PlayOptions = {
    * passes a random offset for every looping instance for exactly this reason.
    */
   offsetS?: number;
+  /**
+   * HARNESS ONLY — bypass `cooldownMs` and `maxInstances`.
+   *
+   * ⚠⚠ EXISTS BECAUSE GATE EA-2 WAS UNMEASURABLE WITHOUT IT. `__audio.stress(96)`
+   * played exactly ONE voice: `world.impact` carries maxInstances 3 and a 40 ms
+   * cooldown, so a synchronous burst is refused by its own per-event guards long
+   * before the pool is touched. The harness was therefore measuring the T3 guard,
+   * not the voice budget it claims to measure — a degenerate benchmark.
+   *
+   * Never set this from gameplay. The guards it skips are the ones that stop one
+   * noisy event starving the mix.
+   */
+  ignoreLimits?: boolean;
 };
 
 /**
@@ -258,7 +288,7 @@ export function playAudio(
   if (!isAudioUnlocked()) {
     // Queued and flushed on unlock, with a TTL so a stale click doesn't fire
     // ten seconds later (T8, engine.ts).
-    queueUntilUnlocked(id);
+    if (!def.loop && opts.emitterId === undefined && opts.queueOnUnlock !== false) queueUntilUnlocked(id);
     return null;
   }
 
@@ -268,13 +298,15 @@ export function playAudio(
 
   const now = performance.now();
 
-  if (def.cooldownMs > 0) {
-    const last = lastPlayedAt.get(def.id) ?? -Infinity;
-    if (now - last < def.cooldownMs) return null;
+  if (!opts.ignoreLimits) {
+    if (def.cooldownMs > 0) {
+      const last = lastPlayedAt.get(def.id) ?? -Infinity;
+      if (now - last < def.cooldownMs) return null;
+    }
+    // Per-event cap, independent of the global budget: without it one noisy event
+    // starves everything else (T3 — a single asteroid hit can fire 3× in a tick).
+    if (countInstances(def.id) >= def.maxInstances) return null;
   }
-  // Per-event cap, independent of the global budget: without it one noisy event
-  // starves everything else (T3 — a single asteroid hit can fire 3× in a tick).
-  if (countInstances(def.id) >= def.maxInstances) return null;
 
   const url = pickVariant(def);
   const buffer = getCachedBuffer(url);
@@ -296,6 +328,7 @@ export function playAudio(
     gain *= dbToGain((Math.random() * 2 - 1) * def.gainJitterDb);
   }
   if (spatial) gain *= gainForDistance(distanceToListener(pos));
+  if (opts.initialGain !== undefined) gain = opts.initialGain;
 
   const src = e.ctx.createBufferSource();
   src.buffer = buffer;
@@ -303,6 +336,7 @@ export function playAudio(
   if (def.pitchJitterCents) {
     src.detune.value = (Math.random() * 2 - 1) * def.pitchJitterCents;
   }
+  if (opts.pitchCents !== undefined) src.detune.value += opts.pitchCents;
 
   v.serial = ++serialCounter;
   v.source = src;
@@ -319,11 +353,21 @@ export function playAudio(
   v.emitterId = opts.emitterId ?? null;
   v.active = true;
 
-  v.gain.gain.value = gain;
+  const startTime = Math.max(e.ctx.currentTime + (def.loop ? 0.012 : 0), opts.startAtS ?? 0);
+  v.startsAtS = startTime;
+  const attackS = Math.max(0, opts.fadeInMs ?? (def.loop ? 25 : 0)) / 1000;
+  v.attackEndsAtS = startTime + attackS;
+  v.endsAtS = def.loop ? null : startTime + buffer.duration / 2 ** (src.detune.value / 1200);
+  v.gain.gain.cancelScheduledValues(e.ctx.currentTime);
+  v.gain.gain.setValueAtTime(attackS > 0 ? 0 : gain, e.ctx.currentTime);
+  if (attackS > 0) {
+    v.gain.gain.setValueAtTime(0, startTime);
+    v.gain.gain.linearRampToValueAtTime(gain, v.attackEndsAtS);
+  }
   // Reset the absorption filter: a voice previously used for a distant, heavily
   // muffled sound would otherwise stay muffled for a near one.
   v.lowpass.frequency.cancelScheduledValues(e.ctx.currentTime);
-  v.lowpass.frequency.value = 20000;
+  v.lowpass.frequency.value = opts.initialCutoffHz ?? 20000;
   connectVoice(e, v, def);
   if (spatial) applyPannerPosition(v.panner, pos);
   src.connect(v.gain);
@@ -334,8 +378,9 @@ export function playAudio(
     if (v.serial === mySerial) stopVoice(v);
   };
 
-  const offset = opts.offsetS ?? 0;
-  src.start(0, offset > 0 ? offset % buffer.duration : 0);
+  // Engine layers share a period and phase even if one is promoted later.
+  const offset = def.syncLoop ? startTime : opts.offsetS ?? 0;
+  src.start(startTime, offset > 0 ? offset % buffer.duration : 0);
 
   lastPlayedAt.set(def.id, now);
   return mySerial;
@@ -394,13 +439,30 @@ export function isVoiceAirCoupled(serial: number): boolean {
 export function setVoiceGain(serial: number, gain: number): void {
   const v = pool.find((x) => x.active && x.serial === serial);
   if (!v) return;
+  // A future sustain's zero/attack envelope must survive the intervening ticks.
+  if ((ensureEngine()?.ctx.currentTime ?? 0) < v.attackEndsAtS) return;
   setParamSmooth(v.gain.gain, gain, 0.05);
+}
+
+/** Continuous loop pitch, smoothed on the audio tick; never retimes one-shots. */
+export function setVoicePitch(serial: number, cents: number): void {
+  const v = pool.find((x) => x.active && x.serial === serial);
+  if (v?.loop && v.source) setParamSmooth(v.source.detune, cents, 0.08);
+}
+
+/** Decoded, pitch-adjusted end time for sequencing a sustain after a one-shot. */
+export function voiceEndTime(serial: number): number | null {
+  return pool.find((v) => v.active && v.serial === serial)?.endsAtS ?? null;
 }
 
 export function activeVoiceCount(): number {
   let n = 0;
   for (const v of pool) if (v.active) n++;
   return n;
+}
+
+export function isVoiceActive(serial: number): boolean {
+  return pool.some((v) => v.active && v.serial === serial);
 }
 
 export type VoiceSnapshot = {

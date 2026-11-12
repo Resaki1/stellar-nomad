@@ -28,12 +28,47 @@ export const BUS_IDS: readonly BusId[] = [
   "ui",
 ];
 
+/**
+ * Soft-clip transfer curve for the output safety stage, tanh-shaped.
+ *
+ * ⚠⚠ THIS EXISTS BECAUSE THE TIER-2 SUITE CAUGHT A REAL DEFECT ON ITS FIRST RUN.
+ * `DynamicsCompressorNode` was described in this file as a "soft brickwall", and
+ * it is not one: it has **no lookahead**, so its 2 ms attack lets the leading
+ * transient straight through. MEASURED — eight simultaneous full-scale sources
+ * through the master limiter peaked at **1.3751**, i.e. +2.8 dB over full scale,
+ * which clips at the output device.
+ *
+ * The compressor still does the useful work (it rides the sustained level down
+ * gracefully); this stage only guarantees the ceiling. tanh is chosen over a hard
+ * `min/max` clamp because hard clipping generates broadband harmonic distortion
+ * on every transient, whereas tanh is gentle near unity and only bends hard
+ * beyond it.
+ */
+export function softClipCurve(samples = 2048): Float32Array<ArrayBuffer> {
+  // ⚠ Explicitly over an ArrayBuffer: TS 5.9 makes Float32Array generic in its
+  // backing buffer, and `WaveShaperNode.curve` requires Float32Array<ArrayBuffer>
+  // specifically (a SharedArrayBuffer-backed one is not assignable).
+  const curve = new Float32Array(new ArrayBuffer(samples * 4));
+  // Drive chosen so |x| <= 1 passes essentially untouched (tanh(1.0)/1.0 ≈ 0.96
+  // at the knee) while |x| = 4 is folded to ~0.999.
+  const k = 1.6;
+  for (let i = 0; i < samples; i++) {
+    // WaveShaper maps the curve across input [-1, 1], so probe a wider input
+    // range and let the node's own clamping handle anything past it.
+    const x = (i / (samples - 1)) * 2 - 1;
+    curve[i] = Math.tanh(k * x) / Math.tanh(k);
+  }
+  return curve;
+}
+
 export type AudioEngine = {
   ctx: AudioContext;
   /** Everything terminates here. Volume sliders write this. */
   master: GainNode;
   /** Soft brickwall after master — insurance against a simultaneous-impact blowout. */
   limiter: DynamicsCompressorNode;
+  /** Final ceiling guarantee. The compressor cannot provide one — see `softClipCurve`. */
+  clipper: WaveShaperNode;
   buses: Record<BusId, GainNode>;
   /**
    * Sub-bus of `sfxShip` with its OWN ceiling, so a full-volume alarm can never
@@ -98,13 +133,24 @@ export function ensureEngine(): AudioEngine | null {
   // ⚠ The limiter sits AFTER master, so the volume sliders operate on signal
   // going INTO it. Putting it before master would let a low master setting
   // sneak past the ceiling and a high one slam into it.
+  //
+  // master → compressor → soft clipper → destination. BOTH stages are needed:
+  // the compressor rides sustained level down musically but has no lookahead, so
+  // a transient passes through it (MEASURED at 1.3751 peak from an 8× overdrive);
+  // the clipper guarantees the ceiling but would distort if asked to do the
+  // level-riding. See `softClipCurve`.
+  const clipper = ctx.createWaveShaper();
+  clipper.curve = softClipCurve();
+  clipper.oversample = "2x"; // suppresses the aliasing the shaper itself creates
+  clipper.connect(ctx.destination);
+
   const limiter = ctx.createDynamicsCompressor();
   limiter.threshold.value = -3;
   limiter.knee.value = 0;
   limiter.ratio.value = 20;
   limiter.attack.value = 0.002;
   limiter.release.value = 0.12;
-  limiter.connect(ctx.destination);
+  limiter.connect(clipper);
 
   const master = ctx.createGain();
   master.gain.value = 0; // raised by the settings sync; silence until then
@@ -123,7 +169,7 @@ export function ensureEngine(): AudioEngine | null {
   alerts.gain.value = 0.7;
   alerts.connect(buses.sfxShip);
 
-  engine = { ctx, master, limiter, buses, alerts, capture: null };
+  engine = { ctx, master, limiter, clipper, buses, alerts, capture: null };
 
   if (process.env.NODE_ENV === "development") {
     console.log(

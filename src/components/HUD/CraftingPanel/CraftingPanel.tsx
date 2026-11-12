@@ -122,17 +122,20 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
     if (item.type === "module") {
       if (autoEquipped) {
         addToast({
+          audio: "silent",
           message: `Crafted & equipped: ${item.name}`,
           durationMs: 3000,
         });
       } else {
         addToast({
+          audio: "silent",
           message: `Crafted: ${item.name} (${SLOT_LABELS[item.slot]} slot in use)`,
           durationMs: 4000,
         });
       }
     } else {
       addToast({
+        audio: "silent",
         message: `Crafted: ${item.name}`,
         durationMs: 3000,
       });

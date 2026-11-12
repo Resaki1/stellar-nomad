@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.laser.stop",
+    "seed": 24017,
+    "duration": 0.42,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "When mining stops or is cancelled.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.00000005838476,
+    "rmsDb": -23.243041928524164,
+    "dc": 2.1651924139168272e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.018138058483600616,
+    "finite": true,
+    "silent": false
+  }
+}

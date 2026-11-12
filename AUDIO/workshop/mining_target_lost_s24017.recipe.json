@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.target.lost",
+    "seed": 24017,
+    "duration": 0.18,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.1,
+    "detail": 0.2
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Looking away from a fully locked asteroid, excluding successful extraction, pause and death.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -18.000000436554874,
+    "rmsDb": -28.81993077436599,
+    "dc": -2.0213134750727444e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.009387683123350143,
+    "finite": true,
+    "silent": false
+  }
+}

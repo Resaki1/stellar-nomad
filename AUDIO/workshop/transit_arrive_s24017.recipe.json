@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "transit.arrive",
+    "seed": 24017,
+    "duration": 0.9,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Transit finishes at the destination.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -8.999999811573272,
+    "rmsDb": -20.96277574461432,
+    "dc": -3.871567016559932e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.012930318713188171,
+    "finite": true,
+    "silent": false
+  }
+}

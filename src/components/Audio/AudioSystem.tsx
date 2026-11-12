@@ -33,7 +33,7 @@ import {
 import { preloadTier } from "@/audio/loader";
 import { startAudioTick, stopAudioTick } from "@/audio/tick";
 
-export default function AudioSystem() {
+export default function AudioSystem({ authoring = false }: { authoring?: boolean }) {
   const settings = useAtomValue(audioSettingsAtom);
 
   // ── 1. Unlock on the first gesture ───────────────────────────────────────
@@ -89,12 +89,14 @@ export default function AudioSystem() {
 
   // ── 4. The A5 tick + tiered preload ──────────────────────────────────────
   useEffect(() => {
+    // The workshop shares player volume/blur controls, but runs no simulation.
+    if (authoring) return;
     startAudioTick();
     // Tier 0 (UI) is tiny and must be warm before the first click, or the first
     // play pays a MEASURED ~6 ms decode and reads as a late sound (T6).
     void preloadTier(0).then(() => preloadTier(1));
     return () => stopAudioTick();
-  }, []);
+  }, [authoring]);
 
   return null;
 }

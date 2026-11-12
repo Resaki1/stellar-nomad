@@ -74,6 +74,7 @@ export default function ResearchTicker() {
         .join(", ");
 
       store.set(addToastAtom, {
+        audio: "silent",
         message: `Research Complete: ${node.name}`,
         detail: unlockedNames ? `Blueprints unlocked: ${unlockedNames}` : undefined,
         durationMs: 5000,

@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "world.impact.large",
+    "seed": 24019,
+    "duration": 1.5,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A larger collision makes direct contact with the ship.",
+  "bus": "sfxWorld",
+  "experimental": true,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -4.999999888090177,
+    "rmsDb": -23.330774184569325,
+    "dc": 2.0981505182430774e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.06911846995353699,
+    "finite": true,
+    "silent": false
+  }
+}

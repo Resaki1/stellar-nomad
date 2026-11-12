@@ -3,6 +3,7 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useMemo, useState } from "react";
 import { Check, Circle, CircleDot, Lock, Microscope } from "lucide-react";
+import { playAudio } from "@/audio";
 
 import {
   researchAtom,
@@ -168,8 +169,9 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
 
   const handleStart = (nodeId: string) => {
     const ok = startResearch(nodeId);
+    if (ok) playAudio("click.hard");
     if (!ok) {
-      addToast({ message: "Cannot start research", durationMs: 2000 });
+      addToast({ audio: "reject", message: "Cannot start research", durationMs: 2000 });
     }
   };
 
@@ -322,7 +324,10 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
                       width: NODE_W,
                       height: NODE_H,
                     }}
-                    onClick={() => setSelectedNodeId(layout.id === selectedNodeId ? null : layout.id)}
+                    onClick={() => {
+                      playAudio("click.soft");
+                      setSelectedNodeId(layout.id === selectedNodeId ? null : layout.id);
+                    }}
                   >
                     <span className="rt-node__icon">
                       <StateIcon state={state} />

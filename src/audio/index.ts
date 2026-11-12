@@ -16,7 +16,7 @@
 // the single most-reported audio complaint in shipped games.
 // ---------------------------------------------------------------------------
 
-export { playAudio, stopVoiceBySerial, type PlayOptions } from "./voices";
+export { playAudio, stopVoiceBySerial, voiceEndTime, type PlayOptions } from "./voices";
 export { registerEmitter, type EmitterHandle } from "./emitters";
 export {
   isAudioUnlocked,

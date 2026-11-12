@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "death.bed",
+    "seed": 24017,
+    "duration": 8,
+    "pitch": 0,
+    "brightness": 0.12,
+    "motion": 0.2,
+    "body": 0.9,
+    "texture": 0.25,
+    "detail": 0.15
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 384000
+  },
+  "trigger": "Held under the death screen.",
+  "bus": "ambience",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -19.99999987057016,
+    "rmsDb": -27.420419823583224,
+    "dc": 3.3813100663859783e-10,
+    "seamDelta": 0.0002717748284339905,
+    "maxDelta": 0.0008372031152248383,
+    "finite": true,
+    "silent": false
+  }
+}

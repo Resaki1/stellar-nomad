@@ -26,8 +26,18 @@
   schema, missing/orphan assets, size budget, mono-where-spatialised, and a grep that
   no code path bypasses the bus graph. Zero npm dependencies; uses the installed `tsc`
   plus `ffprobe` when present.
+- `./scripts/process-audio.sh --sfx3d raw/thing.wav` — the asset pipeline (§6.8).
+  Two-pass ffmpeg `loudnorm` to −16 LUFS, trim + edge fades, Opus encode, and it
+  **force-downmixes `--sfx3d` to mono** (a stereo buffer in a `PannerNode` silently
+  smears the directional cue instead of erroring). Kinds: `--sfx2d --sfx3d --ambience
+  --music --voice`; `--all-in <dir>` for a batch.
 - `pnpm gen:audio-placeholders` — regenerate the synthetic Phase-0 placeholder SFX.
   Requires `ffmpeg`. These are meant to be replaced by real assets, not tuned.
+- **`__audio.selftest()`** in the browser console — Tier-2 offline assertion suite
+  (§10.2). 15 deterministic `OfflineAudioContext` checks in ~20 ms, no listening
+  required. Run it after touching anything in `src/audio/`. It runs in the browser
+  rather than Node because Node has no Web Audio and the alternative is both a new
+  dependency and a different DSP engine.
 
 > There is still no `test` script. If you add one, update this section.
 
@@ -320,7 +330,8 @@ const health = useAtomValue(shipHealthAtom);
 
 ## Audio
 
-The audio subsystem's design doc is [`docs/AUDIO_PLAN.md`](docs/AUDIO_PLAN.md). Read it
+The audio subsystem's design doc is [`docs/AUDIO_PLAN.md`](docs/AUDIO_PLAN.md), and
+the asset shopping list is [`docs/AUDIO_ASSETS.md`](docs/AUDIO_ASSETS.md). Read it
 before touching `src/audio/` — it carries numbered invariants (A1-A13) and verified
 traps (T1-T17) that the code comments cite rather than repeat.
 

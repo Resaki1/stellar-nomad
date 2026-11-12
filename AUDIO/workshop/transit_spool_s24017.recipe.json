@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "transit.spool",
+    "seed": 24017,
+    "duration": 3,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "The transit drive spools up before engagement.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.999999988978489,
+    "rmsDb": -19.263200762925052,
+    "dc": 3.937724977445514e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.014644231647253036,
+    "finite": true,
+    "silent": false
+  }
+}

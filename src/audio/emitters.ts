@@ -22,7 +22,9 @@ import {
   playAudio,
   stopVoiceBySerial,
   setVoiceGain,
+  setVoicePitch,
   updateVoicePosition,
+  isVoiceActive,
 } from "./voices";
 import {
   CULL_ENTER_GAIN,
@@ -43,10 +45,13 @@ export type EmitterHandle = {
   setParam(name: string, value: number): void;
   /** Multiply the emitter's gain, e.g. for a machine idling at 40% load. */
   setIntensity(v: number): void;
-  stop(): void
+  stop(fadeMs?: number): void
 };
 
 type Emitter = {
+  fadeInMs?: number;
+  pitchCents?: () => number;
+  startAtS?: number;
   id: number;
   eventId: string;
   position: Vec3;
@@ -86,6 +91,11 @@ let nextId = 1;
  * range) — that is normal and is resolved by `updateEmitters()` on the A5 tick.
  */
 export function registerEmitter(opts: {
+  fadeInMs?: number;
+  /** Polled at 15 Hz, with audio-thread smoothing. */
+  pitchCents?: () => number;
+  /** Earliest audio-clock start, e.g. the end of the cutter's ignition clip. */
+  startAtS?: number;
   event: AudioEventId;
   positionM?: Vec3;
   /** A number for a fixed level, or a function polled on each audio tick. */
@@ -102,6 +112,9 @@ export function registerEmitter(opts: {
 
   const id = nextId++;
   const em: Emitter = {
+    fadeInMs: opts.fadeInMs,
+    pitchCents: opts.pitchCents,
+    startAtS: opts.startAtS,
     id,
     eventId: def.id,
     position: { ...(opts.positionM ?? { x: 0, y: 0, z: 0 }) },
@@ -133,10 +146,10 @@ export function registerEmitter(opts: {
       em.intensityFn = null;
       em.intensity = Math.max(0, v);
     },
-    stop() {
+    stop(fadeMs = 60) {
       em.stopped = true;
       if (em.voice !== null) {
-        stopVoiceBySerial(em.voice, 60);
+        stopVoiceBySerial(em.voice, fadeMs);
         em.voice = null;
       }
       emitters.delete(id);
@@ -193,12 +206,20 @@ export function updateEmitters(): void {
       cutoffHz = prop.cutoffHz;
     }
     const audible = baseGain(em) * distGain * propGain;
+    const pitch = em.pitchCents?.() ?? 0;
+    const cents = Number.isFinite(pitch) ? Math.max(-1200, Math.min(1200, pitch)) : 0;
+    if (em.voice !== null && !isVoiceActive(em.voice)) em.voice = null;
 
     if (em.voice === null) {
       if (audible >= CULL_ENTER_GAIN) {
         const serial = playAudio(em.eventId, {
           positionM: em.position,
           emitterId: em.id,
+          startAtS: em.startAtS,
+          fadeInMs: em.fadeInMs,
+          pitchCents: cents,
+          initialGain: audible,
+          initialCutoffHz: cutoffHz,
           // Randomised start offset: the coherence fix. Identical buffers
           // started together sum like voltage (+9.5 dB at N=3), not like
           // incoherent sources (+4.8 dB). See PlayOptions.offsetS.
@@ -218,6 +239,7 @@ export function updateEmitters(): void {
     if (em.spatial) updateVoicePosition(em.voice, em.position);
     if (em.airCoupled) setVoicePropagation(em.voice, cutoffHz);
     setVoiceGain(em.voice, audible);
+    if (em.pitchCents) setVoicePitch(em.voice, cents);
   }
 }
 

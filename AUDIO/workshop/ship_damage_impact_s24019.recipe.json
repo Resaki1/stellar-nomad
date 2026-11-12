@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.damage.impact",
+    "seed": 24019,
+    "duration": 0.9,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 1,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A damaging hit reaches the ship structure.",
+  "bus": "sfxShip",
+  "experimental": true,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -6.0000004906757844,
+    "rmsDb": -26.387749399566708,
+    "dc": 3.099519576994318e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.06876954436302185,
+    "finite": true,
+    "silent": false
+  }
+}

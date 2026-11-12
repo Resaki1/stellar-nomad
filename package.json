@@ -10,7 +10,12 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "check:audio": "node scripts/check-audio-manifest.mjs",
-    "gen:audio-placeholders": "node scripts/gen-placeholder-audio.mjs"
+    "gen:audio-placeholders": "node scripts/gen-placeholder-audio.mjs",
+    "gen:audio-workshop": "node scripts/audio-workshop.mjs",
+    "check:audio-workshop": "node scripts/audio-workshop.mjs --check",
+    "integrate:audio-workshop": "node scripts/integrate-workshop-audio.mjs",
+    "check:audio-integrated": "node scripts/integrate-workshop-audio.mjs --check",
+    "check:audio-lifecycle": "node scripts/check-audio-lifecycle.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

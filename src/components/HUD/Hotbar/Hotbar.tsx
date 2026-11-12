@@ -107,13 +107,13 @@ export default function Hotbar() {
 
       // Block heat-related consumables when there's no heat
       if (requiresHeat(def) && miningState.laserHeat <= 0) {
-        addToast({ message: "No heat to reduce", durationMs: 1500 });
+        addToast({ audio: "reject", message: "No heat to reduce", durationMs: 1500 });
         return;
       }
 
       // Block hull repair when at full health
       if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth) {
-        addToast({ message: "Hull already at full integrity", durationMs: 1500 });
+        addToast({ audio: "reject", message: "Hull already at full integrity", durationMs: 1500 });
         return;
       }
 

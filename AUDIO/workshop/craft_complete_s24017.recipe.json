@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "craft.complete",
+    "seed": 24017,
+    "duration": 0.5,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.6,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "An item finishes crafting.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.999999854613165,
+    "rmsDb": -24.630774638403384,
+    "dc": 1.8043880311141106e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.04809874400962144,
+    "finite": true,
+    "silent": false
+  }
+}

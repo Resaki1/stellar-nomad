@@ -1,0 +1,4 @@
+sandbox_mode = "workspace-write"
+
+[mcp_servers.caddie]
+url = "https://cloud.stage.caddie.combin.tech/mcp"

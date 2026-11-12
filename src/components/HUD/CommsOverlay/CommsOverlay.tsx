@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { activeCommsMessageAtom, dismissCommsAtom } from "@/store/comms";
 import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
+import { isShipAISpeaker, signalAudioActionAtom } from "@/store/audioSignals";
 
 import "./CommsOverlay.scss";
 
@@ -16,6 +17,7 @@ function resolveAiName(text: string, name: string | null): string {
 export default function CommsOverlay() {
   const message = useAtomValue(activeCommsMessageAtom);
   const dismiss = useSetAtom(dismissCommsAtom);
+  const signalAudio = useSetAtom(signalAudioActionAtom);
   const aiName = useAtomValue(aiNameAtom) ?? readAiNameFromStorage();
 
   const [pageIndex, setPageIndex] = useState(0);
@@ -32,12 +34,15 @@ export default function CommsOverlay() {
 
   const advance = useCallback(() => {
     if (!message) return;
+    if (isShipAISpeaker(message.speaker)) {
+      signalAudio(isLastPage ? "comms.chirp.dismiss" : "comms.chirp.advance");
+    }
     if (isLastPage) {
       dismiss();
     } else {
       setPageIndex((p) => Math.min(p + 1, pages.length - 1));
     }
-  }, [message, isLastPage, dismiss, pages.length]);
+  }, [message, isLastPage, dismiss, pages.length, signalAudio]);
 
   // Keyboard: Enter or Space to advance / dismiss
   useEffect(() => {
@@ -48,6 +53,7 @@ export default function CommsOverlay() {
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       if (e.key === "Enter" || e.key === " ") {
+        if (e.repeat) return;
         e.preventDefault();
         e.stopPropagation();
         advance();

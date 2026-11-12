@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.idle",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.3,
+    "motion": 0.35,
+    "body": 1,
+    "texture": 0.35,
+    "detail": 0.25
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "Low positive thrust; silent at zero demand.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.00000005838476,
+    "rmsDb": -17.58323076824547,
+    "dc": -2.6212916552421147e-9,
+    "seamDelta": 0.0026017948985099792,
+    "maxDelta": 0.0054114628583192825,
+    "finite": true,
+    "silent": false
+  }
+}

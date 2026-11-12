@@ -4,6 +4,77 @@
 direction change, the future cockpit/VR views, and the Suno-sourced music reality.
 **Scope:** the whole audio subsystem, from `AudioContext` creation to the settings menu.
 
+**2026-10-10 — asset authoring update:** `/dev/audio` now provides a procedural
+workshop; see §6.9 for the implementation, commands and remaining listening work.
+The 32-preset / 48-file pack is now integrated into gameplay for listening tests.
+Phase 1 still needs subjective mix/asset acceptance; music and death assets remain deferred.
+
+**2026-10-10 — listening revision (supersedes earlier cabin/RCS/idle recommendations):**
+- Steering is silent. `ship.rcs.thrust` and `ambience.cockpit` are removed from
+  the gameplay catalogue, shipped files and authoring presets.
+- Engine layers now require positive thrust and fade fully out when coasting.
+  `ship.engine.idle` is retained as the low-load layer id, not an always-on source.
+- Renderer v2 replaces prominent engine sine tones with turbulent bass, saturated
+  mechanical vibration and restrained loaded whirr. Impacts use 28 quickly damped
+  irregular modes, a broadband contact/crunch and delayed fastener/rubble rattles.
+  This is authored synthesis, not a validated physical hull recording.
+- Mining schedules its sustain on the audio clock at the actual decoded startup
+  variant's pitch-adjusted end. Pending gain ramps survive the 15 Hz tick.
+  Cancel/pause/death releases both ignition and the scheduled sustain; cancellable
+  ignition cues never enter the ownerless pre-unlock queue.
+- At zero hull/death, remove the hull alert, stop all scheduled alarm oscillators
+  with a 15 ms release, and inhibit new alarm firings. Respawn re-arms the system.
+  There is no separate death siren.
+
+**2026-10-11 — second listening revision:**
+- The cutter's startup has an authored edge fade: waiting until its end caused a
+  dip despite sample-clock scheduling. Sustain now overlaps only its final 80 ms,
+  with a 65 ms attack protected from tick gain updates. Release blends over 140 ms
+  into a 45 ms tail attack. Cancelled owners still release scheduled sources.
+- Cutter heat drives a smoothed detune from 0 to +350 cents, accelerating above
+  75% heat. Start/release use the current heat pitch; the sustain updates at 15 Hz
+  without restarting or subscribing React to heat changes. This is an instrument
+  cue, not a calibrated physical temperature-to-frequency relation.
+- Acquisition gets up to five quiet progress ticks (first at one-sixth of the
+  focus window), with gently rising pitch. Completed lock retains its own cue.
+  Losing a completed lock plays a short falling acknowledgement. Brief flyovers,
+  successful extraction, pause and death produce no lost-lock cue.
+- Renderer v3 replaces the fan-heavy engine balance with a 38–48 Hz bass body,
+  loaded harmonics and slow uneven chamber modulation. Airflow is subordinate.
+  Shared loop phase, three thrust layers and silent coasting remain intact.
+  Mid-layer measurements (ffmpeg two-pole filters, mean dBFS): below 160 Hz
+  **−30.9 → −17.7**, above 500 Hz **−24.7 → −29.8**, full-band **−22.8 → −17.0**.
+  These are source-file statistics, not a claim about acoustic output on speakers.
+- Research-node selection/deselection uses `click.soft`; successful Start Research
+  uses `click.hard`. Disabled actions remain disabled; failures use the existing
+  rejection toast path without double cues.
+
+The current pack is **32 presets / 48 files / 4.22 MiB** (35 catalogue ids including
+compatibility aliases and the retained vent fixture). Eleven lifecycle regressions
+cover sequencing, cancellation, heat, scanner feedback, coasting and death/respawn.
+The browser suite now includes decoded shipping-clip handoffs at 12 phase/heat/
+variant combinations; a short-window RMS check catches fade-to-silence gaps that
+node doubles cannot. Subjective acceptance still requires listening in gameplay.
+Validation: **1,012 workshop assertions, 48 shipping decodes, 11 lifecycle checks,
+17/17 browser checks**, typecheck and lint (0 errors, 133 baseline warnings).
+The decoded cutter handoff test measured a worst 25 ms dip of **−3.5 dB**, peak
+**0.480**, across its 12 cases. In-game research-node selection was exercised via
+the UI and reached the mixer capture (peak **−24.9 dBFS**). The saved game had no
+assay samples, so the disabled Start Research action was not forced or its save
+modified. Build intentionally skipped per AGENTS instructions.
+
+Previous measurements below describe the first integration, before this revision.
+Reload the game after an asset revision: the decoded-buffer cache is session-long.
+
+Reference direction: CIG's [May 2018 audio report](https://robertsspaceindustries.com/en/comm-link/transmission/16609-Monthly-Studio-Report-May-2018)
+describes separating thruster burn from maneuvering/cockpit feedback. Here we keep
+only the requested thrust experience; no Star Citizen recordings are copied.
+
+Engine-design reference: [CRI Middleware, Designing Spaceship Engines](https://blog.criware.com/index.php/2022/12/12/designing-spaceship-engines/)
+uses separate engine/reactor layers, load crossfades and controlled distortion.
+We use the layering principle with original synthesis; no reference recordings
+are copied and no new runtime DSP nodes are needed for the engine revision.
+
 > ### Revision note — read this first
 >
 > The first draft of this document assumed a **narrative space sim**: a handful of
@@ -861,12 +932,11 @@ Synthesise when the sound is **(a)** simple, periodic and tonal by nature — wh
 what the real hardware is anyway; **(b)** driven by a continuous sim parameter with no
 natural discrete states; or **(c)** needed in unbounded variation.
 
-Sample everything that needs to sound **expensive**: broadband, transient, physical.
-Impacts, debris, metal, hull, mechanical actuation.
-
-Synthesis loses to recordings on broadband/transient realism per engineering-hour, and
-has done for two decades of "are we there yet?" GDC talks. That is not an argument
-against synthesis — it is an argument for *where*.
+Recordings remain a useful reference for complex physical transients: impacts,
+debris, metal and mechanical actuation. The author has requested an independent
+procedural authoring path because suitable assets have been hard to find. §6.9
+implements that path. Its damped-resonance hull sounds are explicitly studies
+until listening establishes whether they are convincing enough.
 
 | Sound | Verdict |
 |---|---|
@@ -874,12 +944,27 @@ against synthesis — it is an argument for *where*.
 | UI blips, confirms, ticks | Synthesise or sample; sample is faster |
 | Mining laser drone | Sample base + synthesised modulation layer (heat) |
 | Engine / RCS / transit drive | **Sampled loops, blended** (§6.5) |
-| Impacts, debris, hull, docking | **Sample.** Non-negotiable |
+| Impacts, debris, hull, docking | Prefer recordings; compare §6.9's procedural material studies |
 | Hull creak, coolant, electrical hum | Synthesise (cheap, endless variation) |
 | Ambience beds | Sample (incl. real plasma-wave sonification, §6.6) |
 | AI chirp | **Sample** — 2-3 short authored files, no voice (§6.7) |
 
-### 6.2 MVP asset list — ~46 files
+### 6.2 MVP asset list
+
+> 📋 **The working checklist lives in [`docs/AUDIO_ASSETS.md`](AUDIO_ASSETS.md)** —
+> every needed file, what triggers it, how many variants, its tier, and sourcing
+> search terms, prioritised P0/P1/P2. That file is derived from the call sites
+> actually wired in the code and is the one to keep current; the table below is
+> the original estimate, kept for the record.
+>
+> Two findings from deriving it, both invisible until the triggers existed:
+> **the mining laser has no sound at all** (nothing is wired to
+> `miningStateAtom.isMining` — the most-heard sound in the game is silence), and
+> **`notify.info` is serving six unrelated meanings** (mining complete, transit
+> engage, transit arrive, craft, research, and every info toast). Those two are
+> what P0 exists to fix. Corrected checklist row total: **52 files**, against the ~46 estimated here.
+
+### 6.2a Original estimate — ~46 files
 
 Counted, so "source audio" is a finishable checklist rather than an open-ended task.
 
@@ -994,6 +1079,115 @@ precedent: `scripts/process-audio.sh`.
 **Download budget:** ≤ 15–25 MB for all SFX/UI/ambience combined. Music **streams per
 track on demand** and is not bundled. Initial page load adds ~0 MB of audio beyond a
 couple of tiny Tier-0 UI sounds.
+
+---
+
+### 6.9 Procedural audio workshop — implemented 2026-10-10
+
+**Quick plan:** (1) author a coherent starter palette from layered synthesis;
+(2) expose repeatable variations, auditioning and export in `/dev/audio`;
+(3) render and check a complete candidate pack automatically. No new dependencies,
+model downloads, paid services, or runtime synthesis load in gameplay.
+
+The page uses the game's existing font families, a slate/navy instrument surface,
+ice-blue waveform and warm numeric values. Layout: searchable preset list → large
+waveform and shaping controls → monitor/export column, stacked on smaller screens.
+The waveform is the main visual instrument, with fixed full-scale amplitude.
+
+**Implemented:** 32 presets / 48 files including variants, covering every P0/P1
+asset in the checklist plus ordinary UI, targeting, module equip.
+Death/destruction and music remain outside this first palette. Each entry includes
+its intended trigger. All 32 presets now have registered events and gameplay/UI
+connections; legacy console ids remain aliases.
+
+| Part | Location / role |
+|---|---|
+| Authoring catalogue | `src/audio/workshop/presets.ts`: names, intended triggers, defaults, bounds, seed and variation count |
+| Pure renderer | `src/audio/workshop/synthesize.ts`: seeded noise, harmonic machinery, shaped electronic cues and excited plate resonances |
+| Background rendering | `src/audio/workshop/render.worker.ts`: debounce on the page, stale-response rejection, transferable mono PCM |
+| Audition | `src/audio/workshop/preview.ts`: one preview, short start/stop ramps, existing singleton/buses/master/settings, stop on blur/unmount/Escape |
+| Export | `src/audio/workshop/export.ts`: 48 kHz / 24-bit mono PCM WAV, RIFF padding, full-buffer `smpl` loop markers, recipe/provenance JSON |
+| Reproducible batch | `scripts/audio-workshop.mjs`: same renderer as the browser, built with the existing TypeScript installation |
+
+```bash
+pnpm gen:audio-workshop              # 48 candidate WAVs + recipes + report.json
+pnpm check:audio-workshop            # deterministic DSP / export checks
+pnpm gen:audio-workshop --recipe /path/to/edited.recipe.json --out /tmp/audio-review
+```
+
+Default output is `AUDIO/workshop/`, separate from the shipped assets. I can edit
+presets or recipe JSON, regenerate the pack, and run QA without operating the UI.
+The page supports a held comparison reference, silent automatic regeneration,
+recipe import/export, a persisted current draft, and the 17 engine checks.
+The dev menu links to it; no scene or WebGPU renderer is required.
+
+**Loop construction:** harmonic carriers and slow modulation complete whole
+cycles. Noise repeats its seeded period, with filter state settled over an extra
+pass. No fade-to-silence is baked into a loop join. Engine idle/mid/high share
+frequency, duration and seed; keep those aligned when designing a throttle set.
+Playback uses ordinary [AudioBufferSourceNode looping](https://developer.mozilla.org/en-US/docs/Web/API/AudioBufferSourceNode/loop).
+
+**Levels:** preset-relative sample-peak targets leave 5–23 dB of headroom. Layer
+controls change the balance; output is scaled to the preset's peak. The monitor
+trim and game volumes never change exports. RMS and peak readouts are dBFS, not
+LUFS, true peak, dB SPL, or a calibrated acoustic source strength. Source sounds
+represent onboard hardware; atmosphere filtering belongs in propagation, not in
+the baked source. A laser beam does not provide a mechanical contact path from a
+distant asteroid back to the ship.
+
+**Automated acceptance:** finite/non-silent PCM, sample headroom, DC, duration,
+one-shot endpoints, loop seam slope and edge energy, seed reproducibility and
+variation, parameter extremes, invalid imports, 24-bit WAV round-trip and exact
+loop markers. These do not establish realism, pleasantness, absence of all audible
+artifacts, or listening fatigue. Audition sustained loops and compare hull studies
+against real metal before treating candidates as final assets.
+
+**Gameplay integration — 2026-10-10:** `pnpm integrate:audio-workshop` promotes the
+pack to `public/audio/workshop/`: 24-bit lossless WAV loops preserve their exact
+periods, and 96 kbit/s mono Opus one-shots preserve authored levels. This deliberately
+skips the generic pipeline's loudness normalization and trimming. The pack is
+4.21 MiB; the retained lazy station-vent fixture brings the catalogue to 4.24 MB.
+`pnpm check:audio-integrated` decodes all 48 shipping files and checks duration,
+finite samples, sample headroom and lossless loop identity against the source.
+It is not a true-peak/loudness certification or a listening judgment.
+`pnpm check:audio-lifecycle` covers locked-context ownership, initial gain/fades,
+phase alignment, pooled-gain reset, culling/re-promotion and vacuum voice culling
+with node doubles; the browser self-test covers actual Web Audio DSP.
+
+`GameAudioTriggers` now owns mining start/sustain/release, completion and target
+lock, three thrust-dependent engine layers, transit
+charge/engage/sustain/deceleration/arrival, collision and damage
+layers, crafting/research completion, inventory action signals and ship-AI chirps.
+Completion toasts suppress their generic cue; rejected research/consumable actions
+use `ui.reject`. The regular menu clicks use the new palette. Non-AI comms are silent.
+Music stays silent. A full destruction sound is still missing.
+
+Engine layers use linear crossfades multiplied by a smooth thrust envelope and a shared audio-clock phase,
+including after culling. Emitters start with their evaluated intensity/propagation
+and a short fade. Locked audio never queues ownerless loops; the registry retries.
+Stopping mining, opening settings or dying releases the cutter; engine sounds
+retain their current thrust in settings, fade to zero when coasting, and stop on death. Transit cues release on phase changes and
+abort; its sustain stops outside active transit. All retain existing bus/blur controls.
+Mining destruction VFX no longer produce a distant contact-coupled impact: a laser
+beam cannot conduct mechanical sound back to the ship. Cutter machinery provides
+the local feedback. Physical collisions retain their contact-coupled sound.
+
+**Initial integration verification (before this listening revision):** typecheck and audio contracts pass; lint has zero
+errors (133 existing warnings). All 50 shipping decodes and six lifecycle checks
+pass. Chrome's gameplay route loaded all 50 files with zero failures (~12 MiB
+resident PCM). Idle engine + cabin occupied two voices from four registered
+emitters; a 0.48 s live mixer capture was non-silent (peak −24.1 dBFS), and all
+16 browser engine checks passed. These verify plumbing, not final sound quality
+or an exhaustive mining/transit/progression playthrough. Build intentionally not
+run per repository instructions.
+
+**Listening pass:** reload the game, click once to unlock, fly at different thrust
+levels, turn, lock/mine/cancel, open settings mid-mining, and engage/cancel transit.
+Compare SFX/UI/ambience sliders and mute-on-blur. Use `__audio.voices()` /
+`__audio.emitters()` to inspect transitions and `__audio.selftest()` for 16 engine
+checks. Hull sounds remain experimental studies; final timbre/levels are not signed
+off. Future ships may select other source sets and parameter curves; these cues do
+not claim a universal physical sound for every drive or atmospheric entry.
 
 ---
 
@@ -1437,37 +1631,77 @@ The point at which the game stops feeling broken.
 - §10.2 Tier-2 offline suite
 - `AudioHUD`
 
-> ### Phase 1 progress — 2026-09-16
+> ### Phase 1 progress — 2026-09-17
 >
-> **The wiring half is done; the content half is not.**
+> **Everything that does not need the author is done.** What remains is content.
 >
 > | Item | State |
 > |---|---|
 > | §5.7 four choke points wired | ✅ `vfxEventsAtom`, `addToastAtom`, `dieAtom`, the `Panel` shell |
-> | §6.3 synthesised alarms | ✅ **finished, not placeholdered** (`alarms.ts`) — three tiers differing by PATTERN, measured audibly distinct: advisory rms 0.0013, caution 0.0028, critical 0.0070 |
-> | A12 shared alert primitive | ✅ `alerts.ts`, hull wired as the proof stat |
-> | §6.5 engine loop on the throttle RTPC | 🟡 one placeholder loop; RTPC verified (intensity 0.304 → gain 0.077 = −12 dB × 0.304). Not yet the 3–5 layer blend |
+> | §6.3 synthesised alarms | ✅ **finished, not placeholdered** (`alarms.ts`) — three tiers differing by PATTERN, measured audibly distinct (rms 0.0013 / 0.0028 / 0.0070) |
+> | A12 shared alert primitive | ✅ `alerts.ts`, hull wired as the proof stat, clock-driven via `pumpAlerts()` |
+> | §6.8 asset pipeline | ✅ `scripts/process-audio.sh` — verified end to end: **−16.0 LUFS on every output**, mono forced for `sfx3d`, stereo kept for `sfx2d`, filenames sanitised |
+> | `CREDITS.md` | ✅ seeded, with the licence traps and the **blocking Suno check** recorded |
+> | §10.2 Tier-2 offline suite | ✅ `selftest.ts` — **15 assertions, all passing, 20 ms**. `__audio.selftest()` |
+> | `AudioHUD` (§9.2) | ✅ `PerfHUD`-shaped, 4 Hz `textContent`, dev-gated via Settings → Audio |
+> | §6.5 engine loops on the throttle RTPC | 🟡 one placeholder loop; RTPC verified (gain 0.077 = −12 dB × 0.304). The 3–5 layer blend needs real assets |
 > | Transit spool/engage/decel/arrive | 🟡 wired to placeholders |
-> | §6.2 real asset pass (~46 files) | ❌ placeholders only — **needs the author** (sourcing, licensing, taste) |
-> | §6.8 `process-audio.sh` + `CREDITS.md` | ❌ |
-> | §10.2 Tier-2 offline suite | ❌ |
-> | `AudioHUD` | ❌ |
+> | §6.2 real asset pass (~46 files) | ❌ **needs the author** — sourcing, licensing, taste. The pipeline is ready for them |
 > | §5.9 build/place feedback | ⏸ blocked — no building system yet |
 >
-> **A12 verified by measurement:** escalation ladder none → advisory (0.4, 25 s gap)
-> → caution (0.2, 9 s) → critical (0.05, 4 s); hysteresis holds `critical` when the
-> value climbs 0.05 → 0.12 and only releases past `exitAbove` 0.16; acknowledge
-> silences and re-arms after recovery.
+> ### 🔑 The Tier-2 suite found a real defect on its first run
 >
-> ⚠⚠ **A bug worth recording, because it was SILENT.** The first wiring called
-> `updateAlert` only from a React effect on the stat's value. A player sitting at a
-> steady 20% hull — value unchanged, so no effect, so no call — would have heard the
-> first alarm and then **nothing, ever**. Reminder scheduling must be clock-driven:
-> `pumpAlerts()` now runs on the A5 tick. Verified by holding a value static and
-> watching the countdown re-arm on its own (3.2 → 0 → 3.2, twice in 11.2 s against a
-> predicted 2 cycles at the 4 s critical gap).
+> **`DynamicsCompressorNode` is not a brickwall limiter.** This file described it
+> as a "soft brickwall"; it has **no lookahead**, so its 2 ms attack lets the
+> leading transient straight through. MEASURED: eight simultaneous full-scale
+> sources peaked at **1.3751**, i.e. **+2.8 dB over full scale**, which clips at
+> the output device.
 >
-> **Gate EA-2 has not been run.** The voice cap is still the unmeasured 24 (L8).
+> Fixed by adding a tanh soft-clip `WaveShaper` after the compressor
+> (`softClipCurve()` in `engine.ts`). Both stages are needed and neither
+> substitutes for the other: the compressor rides sustained level down musically
+> but cannot guarantee a ceiling; the clipper guarantees the ceiling but would
+> distort if asked to do the level-riding. Re-measured at **1.0004** — a −68 dBFS
+> overshoot from the shaper's own 2× oversampling, inaudible.
+>
+> ### ⚠ Four degenerate measurements in this phase, all mine
+>
+> Recorded because the pattern is the lesson, not the individual slips. Each
+> *passed* or *failed* while measuring the wrong thing:
+>
+> | Test | Why it was degenerate | Fix |
+> |---|---|---|
+> | Cull hysteresis | Targeted audible 0.04, *above* the 0.02 enter threshold — a fresh emitter would have entered there too | Target 0.013, strictly between exit and enter, and compare a playing emitter against a fresh one |
+> | Panel click audibility | `peak > baseline × 2` was an arbitrary threshold and read false while sounds plainly fired | Compare distributions: baseline band vs click band over four trials each |
+> | Fade removes a click (×2) | (a) A sine starts at phase 0, so there was no click to remove — both cases measured 0.02880, the sine's own slope. (b) Then the step landed at t=0, *before* the measured window, so it read 0.0000 | `ConstantSourceNode` stepping at t=0.05, inside the buffer. Now `hard=1.0000` vs `faded=0.00347` |
+> | `__audio.stress()` | Played **1 of 96** — `world.impact`'s own `maxInstances: 3` and 40 ms cooldown refused the burst, so it measured the T3 guard rather than the voice pool | `ignoreLimits` harness flag that bypasses per-event guards |
+>
+> **The common thread: a metric that cannot distinguish the defect from its
+> absence is worse than no metric, because it reports success.** Every one of
+> these would have been recorded as a passing gate.
+>
+> ### ✅ Gate EA-2 — voice cap, now actually measured (closes L8)
+>
+> | n | played | refused | active after | µs/call | tick avg |
+> |---|---|---|---|---|---|
+> | 8 | 8 | 0 | 8 | 325 (incl. pool construction) | 0.063 ms |
+> | 24 | 24 | 0 | **24** | 63 | 0.029 ms |
+> | 48 | 48 | 0 | **24** | 67 | 0.024 ms |
+> | 96 | 96 | 0 | **24** | 69 | 0.024 ms |
+>
+> The cap holds at every load, there are zero refusals below it (so stealing is
+> not misfiring), and 96 voices cost **6.6 ms total**. The continuously-running
+> cost — the tick — is **0.024 ms**.
+>
+> ⚠ **Run on a quiet scene, not under GPU load.** The gate as written asks for a
+> dense-asteroid `__bench` scenario, and that half is NOT done. The audio cost is
+> main-thread and largely independent of GPU occupancy, and the per-call figure
+> only applies during a burst — but the gate is not fully discharged, and 24
+> should not be raised on this evidence alone.
+>
+> 🔑 The per-call cost (63–69 µs) is higher than the 24.6 µs measured for a bare
+> voice in §2.2, and the difference is explained: stealing (disconnect, stop,
+> rewire) plus the extra absorption biquad now in every world chain.
 
 **Gate EA-1 — action-coverage audit:** enumerate every core-loop action from the
 signal list in §1.3 and require each to have a wired sound. A silent action reads as a

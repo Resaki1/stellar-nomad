@@ -48,6 +48,7 @@ import {
 } from "@/audio/emitters";
 import { loadStats } from "@/audio/loader";
 import { tickStats } from "@/audio/tick";
+import { reportAudioSelfTest } from "@/audio/selftest";
 import { setListenerMode, type ListenerMode } from "@/audio/spatial";
 import {
   allAcoustics,
@@ -76,6 +77,7 @@ type AudioHarness = {
   capture(ms?: number): Promise<unknown>;
   alarm(tier?: AlarmTier): unknown;
   alerts(): unknown;
+  selftest(): Promise<boolean>;
   acoustics(bodyId?: string): unknown;
   absorption(bodyId?: string, altitudeKm?: number, distanceM?: number): unknown;
   here(): unknown;
@@ -220,6 +222,9 @@ export default function AudioDevTools() {
               y: (Math.random() - 0.5) * 200,
               z: (Math.random() - 0.5) * 200,
             },
+            // Bypass the per-event guards: this measures the POOL, and without
+            // this the burst is refused by cooldown/maxInstances after one voice.
+            ignoreLimits: true,
           });
           if (serial === null) dropped++;
           else played++;
@@ -228,9 +233,9 @@ export default function AudioDevTools() {
         const out = {
           requested: n,
           played,
-          // Expect most of these: `world.impact` has maxInstances 3 and a 40 ms
-          // cooldown, so a synchronous burst is SUPPOSED to be refused. That is
-          // the T3 guard working, not a failure.
+          // With `ignoreLimits` these are pool refusals only — every voice was
+          // busy and outranked the newcomer. A non-zero count at n > cap is
+          // CORRECT; a non-zero count at n <= cap means stealing is misbehaving.
           dropped,
           activeAfter: activeVoiceCount(),
           cap: MAX_VOICES,
@@ -438,6 +443,14 @@ export default function AudioDevTools() {
         console.log("[__audio]", out);
         harness.lastJson = JSON.stringify(out, null, 2);
         return out;
+      },
+
+      /**
+       * Tier-2 offline assertion suite (§10.2). Deterministic, ~instant, and
+       * needs no ears — run it after touching anything in src/audio/.
+       */
+      selftest() {
+        return reportAudioSelfTest();
       },
 
       silence() {

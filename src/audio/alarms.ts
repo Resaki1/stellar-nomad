@@ -77,6 +77,32 @@ const TONES: Record<AlarmTier, ToneSpec> = {
   },
 };
 
+type AlarmPlayback = { out: GainNode; sources: OscillatorNode[]; nodes: AudioNode[] };
+const activeAlarms = new Set<AlarmPlayback>();
+let alarmsEnabled = true;
+
+/** Disable at ship destruction; scheduled oscillators must not survive the ship. */
+export function setAlarmsEnabled(enabled: boolean): void {
+  alarmsEnabled = enabled;
+  if (!enabled) stopAllAlarms();
+}
+
+export function stopAllAlarms(): void {
+  const e = ensureEngine();
+  if (!e) return;
+  for (const alarm of Array.from(activeAlarms)) {
+    const now = e.ctx.currentTime;
+    alarm.out.gain.cancelScheduledValues(now);
+    alarm.out.gain.setValueAtTime(alarm.out.gain.value, now);
+    alarm.out.gain.linearRampToValueAtTime(0, now + 0.015);
+    for (const source of alarm.sources) {
+      try { source.stop(now + 0.015); } catch { /* already ended */ }
+    }
+    // The normal bounded cleanup timer disconnects every node, including LFOs.
+    activeAlarms.delete(alarm);
+  }
+}
+
 /**
  * Fire one alarm. Returns the time in seconds it will occupy, so a caller can
  * schedule a repeat without guessing.
@@ -87,6 +113,7 @@ const TONES: Record<AlarmTier, ToneSpec> = {
  * on an event that fires at most once a second is not worth a pool).
  */
 export function playAlarm(tier: AlarmTier): number {
+  if (!alarmsEnabled) return 0;
   const e = ensureEngine();
   if (!e) return 0;
 
@@ -98,6 +125,8 @@ export function playAlarm(tier: AlarmTier): number {
   const out = ctx.createGain();
   setParamNow(out.gain, spec.gain);
   out.connect(e.alerts);
+  const playback: AlarmPlayback = { out, sources: [], nodes: [out] };
+  activeAlarms.add(playback);
 
   const period = spec.beepS + spec.gapS;
   const total = period * spec.beeps;
@@ -106,23 +135,30 @@ export function playAlarm(tier: AlarmTier): number {
     // Critical: a continuously swept siren. An LFO on the oscillator's
     // frequency, which is a native AudioParam connection — no per-sample JS.
     const osc = ctx.createOscillator();
+    playback.sources.push(osc);
+    playback.nodes.push(osc);
     osc.type = "square";
     setParamNow(osc.frequency, spec.freqHz);
 
     const lfo = ctx.createOscillator();
+    playback.sources.push(lfo);
+    playback.nodes.push(lfo);
     lfo.type = "sine";
     setParamNow(lfo.frequency, 4.5);
     const lfoDepth = ctx.createGain();
+    playback.nodes.push(lfoDepth);
     setParamNow(lfoDepth.gain, spec.warbleHz);
     lfo.connect(lfoDepth);
     lfoDepth.connect(osc.frequency);
 
     // A square wave straight out is harsh on laptop speakers; take the top off.
     const lp = ctx.createBiquadFilter();
+    playback.nodes.push(lp);
     lp.type = "lowpass";
     setParamNow(lp.frequency, 2600);
 
     const env = ctx.createGain();
+    playback.nodes.push(env);
     // 8 ms attack/release: fast enough to feel urgent, slow enough not to click.
     env.gain.setValueAtTime(0, t0);
     env.gain.linearRampToValueAtTime(1, t0 + 0.008);
@@ -144,6 +180,7 @@ export function playAlarm(tier: AlarmTier): number {
         spec.altFreqHz && i % 2 === 1 ? spec.altFreqHz : spec.freqHz;
 
       const env = ctx.createGain();
+      playback.nodes.push(env);
       env.gain.setValueAtTime(0, at);
       env.gain.linearRampToValueAtTime(1, at + 0.006);
       env.gain.setValueAtTime(1, at + spec.beepS - 0.02);
@@ -151,6 +188,8 @@ export function playAlarm(tier: AlarmTier): number {
       env.connect(out);
 
       const osc = ctx.createOscillator();
+      playback.sources.push(osc);
+      playback.nodes.push(osc);
       osc.type = "sine";
       setParamNow(osc.frequency, f);
       osc.connect(env);
@@ -161,9 +200,12 @@ export function playAlarm(tier: AlarmTier): number {
         // A quiet harmonic gives the tone a little edge so it reads as
         // instrumentation rather than a test tone.
         const h = ctx.createOscillator();
+        playback.sources.push(h);
+        playback.nodes.push(h);
         h.type = "sine";
         setParamNow(h.frequency, f * spec.partial);
         const hg = ctx.createGain();
+        playback.nodes.push(hg);
         setParamNow(hg.gain, 0.22);
         h.connect(hg);
         hg.connect(env);
@@ -176,7 +218,8 @@ export function playAlarm(tier: AlarmTier): number {
   // Release the wrapper gain once the tail has passed.
   window.setTimeout(() => {
     try {
-      out.disconnect();
+      for (const node of playback.nodes) node.disconnect();
+      activeAlarms.delete(playback);
     } catch {
       /* already gone */
     }

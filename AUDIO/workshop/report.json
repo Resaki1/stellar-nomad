@@ -1,0 +1,1876 @@
+{
+  "rendererVersion": 4,
+  "assertions": 415,
+  "files": 50,
+  "elapsedMs": 1360,
+  "results": [
+    {
+      "file": "mining_laser_loop_s24017.wav",
+      "renderMs": 65,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.laser.loop",
+        "seed": 24017,
+        "duration": 4,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 192000
+      },
+      "trigger": "While the mining beam is active.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -8.999999811573272,
+        "rmsDb": -20.516609770257933,
+        "dc": -2.0347509869604134e-10,
+        "seamDelta": 0.006128972861915827,
+        "maxDelta": 0.021485790610313416,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_laser_start_s24017.wav",
+      "renderMs": 12,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.laser.start",
+        "seed": 24017,
+        "duration": 0.38,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When the mining beam starts.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -18.887709372577575,
+        "dc": 1.2664105238164625e-9,
+        "seamDelta": 0,
+        "maxDelta": 0.03529464080929756,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_laser_start_s24018.wav",
+      "renderMs": 13,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.laser.start",
+        "seed": 24018,
+        "duration": 0.38,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When the mining beam starts.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -19.392227590424177,
+        "dc": 7.312490346188664e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.027430295944213867,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_laser_stop_s24017.wav",
+      "renderMs": 16,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.laser.stop",
+        "seed": 24017,
+        "duration": 0.42,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When mining stops or is cancelled.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -23.243041928524164,
+        "dc": 2.1651924139168272e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.018138058483600616,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_laser_stop_s24018.wav",
+      "renderMs": 14,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.laser.stop",
+        "seed": 24018,
+        "duration": 0.42,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When mining stops or is cancelled.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -24.461797440507034,
+        "dc": 4.2440963933975714e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.01812721835449338,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_complete_s24017.wav",
+      "renderMs": 21,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.complete",
+        "seed": 24017,
+        "duration": 0.52,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When the asteroid is depleted and extraction finishes.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -22.16134096777766,
+        "dc": 5.235993808900093e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.053935617208480835,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_complete_s24018.wav",
+      "renderMs": 16,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.complete",
+        "seed": 24018,
+        "duration": 0.52,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When the asteroid is depleted and extraction finishes.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -23.093440060176768,
+        "dc": 2.2380973114240803e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.07938140071928501,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "loot_acquire_s24017.wav",
+      "renderMs": 9,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "loot.acquire",
+        "seed": 24017,
+        "duration": 0.2,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.18,
+        "detail": 0.35
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When resources are added to cargo.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -24.686502587168107,
+        "dc": -3.5975147503336524e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.05033843591809273,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "loot_acquire_s24018.wav",
+      "renderMs": 9,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "loot.acquire",
+        "seed": 24018,
+        "duration": 0.2,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.18,
+        "detail": 0.35
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When resources are added to cargo.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -24.789733568481584,
+        "dc": 5.448297876510984e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.04565783217549324,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "loot_acquire_s24019.wav",
+      "renderMs": 2,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "loot.acquire",
+        "seed": 24019,
+        "duration": 0.2,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.18,
+        "detail": 0.35
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "When resources are added to cargo.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -25.005548110175482,
+        "dc": 4.82502387396296e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.05095605552196503,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_engine_idle_s24017.wav",
+      "renderMs": 90,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.engine.idle",
+        "seed": 24017,
+        "duration": 6,
+        "pitch": 0,
+        "brightness": 0.3,
+        "motion": 0.35,
+        "body": 1,
+        "texture": 0.35,
+        "detail": 0.25
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 288000
+      },
+      "trigger": "Low positive thrust; silent at zero demand.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -17.58323076824547,
+        "dc": -2.6212916552421147e-9,
+        "seamDelta": 0.0026017948985099792,
+        "maxDelta": 0.0054114628583192825,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_engine_mid_s24017.wav",
+      "renderMs": 105,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.engine.mid",
+        "seed": 24017,
+        "duration": 6,
+        "pitch": 0,
+        "brightness": 0.5,
+        "motion": 0.5,
+        "body": 1,
+        "texture": 0.55,
+        "detail": 0.45
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 288000
+      },
+      "trigger": "Medium engine thrust; blend with idle and high.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.999999988978489,
+        "rmsDb": -16.542770551581295,
+        "dc": 1.988873695858552e-9,
+        "seamDelta": 0.0017663314938545227,
+        "maxDelta": 0.008825692115351558,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_engine_high_s24017.wav",
+      "renderMs": 88,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.engine.high",
+        "seed": 24017,
+        "duration": 6,
+        "pitch": 0,
+        "brightness": 0.7,
+        "motion": 0.65,
+        "body": 1,
+        "texture": 0.75,
+        "detail": 0.7
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 288000
+      },
+      "trigger": "High engine thrust; blend with the other engine layers.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -16.610035290441076,
+        "dc": 1.6631233783235031e-9,
+        "seamDelta": 0.004062917083501816,
+        "maxDelta": 0.018520943820476532,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "transit_spool_s24017.wav",
+      "renderMs": 39,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "transit.spool",
+        "seed": 24017,
+        "duration": 3,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "The transit drive spools up before engagement.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.999999988978489,
+        "rmsDb": -19.263200762925052,
+        "dc": 3.937724977445514e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.014644231647253036,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "transit_engage_s24017.wav",
+      "renderMs": 36,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "transit.engage",
+        "seed": 24017,
+        "duration": 1.1,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "The charged transit drive engages.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -4.999999888090177,
+        "rmsDb": -19.84290410346353,
+        "dc": 4.180033276494237e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.02716374397277832,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "transit_loop_s24017.wav",
+      "renderMs": 67,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "transit.loop",
+        "seed": 24017,
+        "duration": 6,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 288000
+      },
+      "trigger": "Sustained transit flight.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.999999854613165,
+        "rmsDb": -19.69701565854994,
+        "dc": -5.404033651185753e-10,
+        "seamDelta": 0.004232577979564667,
+        "maxDelta": 0.009988397359848022,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "transit_decel_s24017.wav",
+      "renderMs": 38,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "transit.decel",
+        "seed": 24017,
+        "duration": 2.2,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "The transit drive decelerates.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -8.999999811573272,
+        "rmsDb": -21.027633910954382,
+        "dc": -4.942170797747828e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.014362633228302002,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "transit_arrive_s24017.wav",
+      "renderMs": 56,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "transit.arrive",
+        "seed": 24017,
+        "duration": 0.9,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Transit finishes at the destination.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -8.999999811573272,
+        "rmsDb": -20.96277574461432,
+        "dc": -3.871567016559932e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.012930318713188171,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "click_soft_s24017.wav",
+      "renderMs": 7,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "click.soft",
+        "seed": 24017,
+        "duration": 0.075,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.4,
+        "detail": 0.12
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Ordinary UI activation.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -15.000000078774018,
+        "rmsDb": -29.623662415280947,
+        "dc": 9.899700750517739e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.02114231139421463,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "click_hard_s24017.wav",
+      "renderMs": 6,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "click.hard",
+        "seed": 24017,
+        "duration": 0.12,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A deliberate confirmation or major UI action.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -27.72966344204054,
+        "dc": -1.03388547558935e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.027729440480470657,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "hover_tick_s24017.wav",
+      "renderMs": 2,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "hover.tick",
+        "seed": 24017,
+        "duration": 0.045,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Selected focus changes, used sparingly.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -23.000000432125567,
+        "rmsDb": -37.64627695627317,
+        "dc": 7.633374897967296e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.01499553769826889,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ui_reject_s24017.wav",
+      "renderMs": 31,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ui.reject",
+        "seed": 24017,
+        "duration": 0.28,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "An action is blocked or unaffordable.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -24.211758140352913,
+        "dc": 1.8787778479958012e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.034371921326965094,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ui_reject_s24018.wav",
+      "renderMs": 13,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ui.reject",
+        "seed": 24018,
+        "duration": 0.28,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "An action is blocked or unaffordable.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -25.042397302245938,
+        "dc": -2.3300308467944876e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.08847901015542448,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "notify_info_s24017.wav",
+      "renderMs": 10,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "notify.info",
+        "seed": 24017,
+        "duration": 0.35,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "An ordinary informational notification.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.999999827421785,
+        "rmsDb": -26.74292741566791,
+        "dc": -2.6518007588900914e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.04042479256168008,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "notify_warn_s24017.wav",
+      "renderMs": 7,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "notify.warn",
+        "seed": 24017,
+        "duration": 0.42,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A warning notification, separate from continuous alarms.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.999999854613165,
+        "rmsDb": -24.579331823675822,
+        "dc": 4.751884139338755e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.035747500602155924,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "craft_complete_s24017.wav",
+      "renderMs": 7,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "craft.complete",
+        "seed": 24017,
+        "duration": 0.5,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.6,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "An item finishes crafting.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.999999854613165,
+        "rmsDb": -24.630774638403384,
+        "dc": 1.8043880311141106e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.04809874400962144,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "research_complete_s24017.wav",
+      "renderMs": 25,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "research.complete",
+        "seed": 24017,
+        "duration": 1.3,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.12,
+        "detail": 0.6
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A research node completes.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -10.00000005838476,
+        "rmsDb": -21.448066262717113,
+        "dc": 4.2403058901025056e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.0681847226805985,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_target_acquire_s24017.wav",
+      "renderMs": 1,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.target.acquire",
+        "seed": 24017,
+        "duration": 0.075,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.08,
+        "detail": 0.12
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Quiet progress ticks after a target has stayed in focus; pitch rises toward lock.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -22.000000077474585,
+        "rmsDb": -35.37055188870342,
+        "dc": 1.2713409198851346e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.007524920627474785,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_target_lost_s24017.wav",
+      "renderMs": 2,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.target.lost",
+        "seed": 24017,
+        "duration": 0.18,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.1,
+        "detail": 0.2
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Looking away from a fully locked asteroid, excluding successful extraction, pause and death.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -18.000000436554874,
+        "rmsDb": -28.81993077436599,
+        "dc": -2.0213134750727444e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.009387683123350143,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_target_lock_s24017.wav",
+      "renderMs": 4,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.target.lock",
+        "seed": 24017,
+        "duration": 0.24,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A target lock is confirmed.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -25.56977099690906,
+        "dc": 1.8960331568673715e-12,
+        "seamDelta": 0,
+        "maxDelta": 0.058629849925637245,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_target_lock_s24018.wav",
+      "renderMs": 4,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.target.lock",
+        "seed": 24018,
+        "duration": 0.24,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A target lock is confirmed.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -25.64499625470205,
+        "dc": 5.058106962318257e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.07028605416417122,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "mining_target_lock_s24019.wav",
+      "renderMs": 3,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "mining.target.lock",
+        "seed": 24019,
+        "duration": 0.24,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A target lock is confirmed.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -24.99052279480294,
+        "dc": -4.666948036599076e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.06877926085144281,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "module_equip_s24017.wav",
+      "renderMs": 4,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "module.equip",
+        "seed": 24017,
+        "duration": 0.32,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.7,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A ship module is installed.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -24.298139532598523,
+        "dc": -4.0637895627159585e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.040898535400629044,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "module_equip_s24018.wav",
+      "renderMs": 5,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "module.equip",
+        "seed": 24018,
+        "duration": 0.32,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.7,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A ship module is installed.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -24.731996687476375,
+        "dc": 1.0205645491027926e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.039496831595897675,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "comms_chirp_arrive_s24017.wav",
+      "renderMs": 5,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "comms.chirp.arrive",
+        "seed": 24017,
+        "duration": 0.4,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A ship-AI message appears; no voice required.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -13.000000140032197,
+        "rmsDb": -25.99885474275853,
+        "dc": 4.2861876158528386e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.06617626175284386,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "comms_chirp_advance_s24017.wav",
+      "renderMs": 1,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "comms.chirp.advance",
+        "seed": 24017,
+        "duration": 0.1,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Advance a page of the ship-AI message.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -16.99999999789091,
+        "rmsDb": -31.716696974079134,
+        "dc": 8.768461477159003e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.033487431704998016,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "comms_chirp_dismiss_s24017.wav",
+      "renderMs": 3,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "comms.chirp.dismiss",
+        "seed": 24017,
+        "duration": 0.18,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Dismiss a ship-AI message.",
+      "bus": "ui",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -16.99999999789091,
+        "rmsDb": -29.92547218154577,
+        "dc": 3.2964549612849354e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.045638276264071465,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_small_s24017.wav",
+      "renderMs": 32,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.small",
+        "seed": 24017,
+        "duration": 0.65,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A small object physically strikes the hull.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -23.63810593183789,
+        "dc": -3.278017695365994e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.05256144888699055,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_small_s24018.wav",
+      "renderMs": 13,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.small",
+        "seed": 24018,
+        "duration": 0.65,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A small object physically strikes the hull.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -23.931525828622135,
+        "dc": 2.7562674445456355e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.07982157915830612,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_small_s24019.wav",
+      "renderMs": 12,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.small",
+        "seed": 24019,
+        "duration": 0.65,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A small object physically strikes the hull.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -7.000000126534257,
+        "rmsDb": -25.833632156196103,
+        "dc": 2.7476843477130393e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.047616004943847656,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_large_s24017.wav",
+      "renderMs": 46,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.large",
+        "seed": 24017,
+        "duration": 1.5,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A larger collision makes direct contact with the ship.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -4.999999888090177,
+        "rmsDb": -23.210212256128692,
+        "dc": 1.0376973155293462e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.05979788303375244,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_large_s24018.wav",
+      "renderMs": 62,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.large",
+        "seed": 24018,
+        "duration": 1.5,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A larger collision makes direct contact with the ship.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -4.999999888090177,
+        "rmsDb": -24.57030980342761,
+        "dc": -1.3836260875169556e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.08392471633851528,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "world_impact_large_s24019.wav",
+      "renderMs": 30,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "world.impact.large",
+        "seed": 24019,
+        "duration": 1.5,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A larger collision makes direct contact with the ship.",
+      "bus": "sfxWorld",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -4.999999888090177,
+        "rmsDb": -23.330774184569325,
+        "dc": 2.0981505182430774e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.06911846995353699,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_damage_impact_s24017.wav",
+      "renderMs": 19,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.damage.impact",
+        "seed": 24017,
+        "duration": 0.9,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 1,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A damaging hit reaches the ship structure.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -6.0000004906757844,
+        "rmsDb": -23.79699689008238,
+        "dc": 3.4668950310314154e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.08104157447814941,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_damage_impact_s24018.wav",
+      "renderMs": 19,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.damage.impact",
+        "seed": 24018,
+        "duration": 0.9,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 1,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A damaging hit reaches the ship structure.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -6.0000004906757844,
+        "rmsDb": -25.283519674462433,
+        "dc": -1.7348408622496735e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.11162197589874268,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_damage_impact_s24019.wav",
+      "renderMs": 19,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.damage.impact",
+        "seed": 24019,
+        "duration": 0.9,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 1,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "A damaging hit reaches the ship structure.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -6.0000004906757844,
+        "rmsDb": -26.387749399566708,
+        "dc": 3.099519576994318e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.06876954436302185,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_hull_stress_s24017.wav",
+      "renderMs": 38,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.hull.stress",
+        "seed": 24017,
+        "duration": 1.8,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Structural stress; an occasional cue, not a continuous alarm.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -24.51421291619401,
+        "dc": -1.4546981654241488e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.0075673130340874195,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_hull_stress_s24018.wav",
+      "renderMs": 18,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.hull.stress",
+        "seed": 24018,
+        "duration": 1.8,
+        "pitch": 0,
+        "brightness": 0.45,
+        "motion": 0.35,
+        "body": 0.8,
+        "texture": 0.55,
+        "detail": 0.4
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "Structural stress; an occasional cue, not a continuous alarm.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -12.000000253286988,
+        "rmsDb": -23.695930471599958,
+        "dc": 1.6565257921547568e-10,
+        "seamDelta": 0,
+        "maxDelta": 0.006758354604244232,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_destroyed_s24017.wav",
+      "renderMs": 51,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.destroyed",
+        "seed": 24017,
+        "duration": 2.6,
+        "pitch": 0,
+        "brightness": 0.52,
+        "motion": 0.5,
+        "body": 1,
+        "texture": 0.9,
+        "detail": 0.65
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "The ship is destroyed.",
+      "bus": "sfxShip",
+      "experimental": true,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -4.999999888090177,
+        "rmsDb": -26.017884627708018,
+        "dc": -4.133169797990575e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.08009463548660278,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "death_bed_s24017.wav",
+      "renderMs": 80,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 4,
+      "recipe": {
+        "version": 1,
+        "presetId": "death.bed",
+        "seed": 24017,
+        "duration": 8,
+        "pitch": 0,
+        "brightness": 0.12,
+        "motion": 0.2,
+        "body": 0.9,
+        "texture": 0.25,
+        "detail": 0.15
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 384000
+      },
+      "trigger": "Held under the death screen.",
+      "bus": "ambience",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -19.99999987057016,
+        "rmsDb": -27.420419823583224,
+        "dc": 3.3813100663859783e-10,
+        "seamDelta": 0.0002717748284339905,
+        "maxDelta": 0.0008372031152248383,
+        "finite": true,
+        "silent": false
+      }
+    }
+  ]
+}

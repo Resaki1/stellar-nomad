@@ -1,0 +1,28 @@
+@use '../../../styles' as s;
+
+// Dev diagnostic overlay, sibling of PerfHUD. Same rules (docs/UI_STYLE_GUIDE.md
+// §3.3 / §10): no panel, no border, no backdrop-filter. A null-surface scrim
+// carries legibility against a bright planet limb.
+.audio-hud {
+  position: fixed;
+  // Right side, so it never fights PerfHUD or CargoHUD in the top-left.
+  top: 100px;
+  right: s.$space-2;
+  z-index: s.$z-hud-overlay;
+  pointer-events: none;
+
+  @include s.null-surface;
+  padding: s.$space-2 s.$space-3;
+
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1.45;
+  color: s.$text-secondary;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.9);
+
+  pre {
+    margin: 0;
+    white-space: pre;
+  }
+}

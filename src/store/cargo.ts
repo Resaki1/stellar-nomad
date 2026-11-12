@@ -1,6 +1,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { signalAudioActionAtom } from "./audioSignals";
 
 export type CargoState = {
   /** Maximum cargo capacity in "cargo units". */
@@ -70,6 +71,7 @@ export const addCargoAtom = atom(
         [resourceId]: prev + granted,
       },
     });
+    set(signalAudioActionAtom, "loot.acquire");
   }
 );
 

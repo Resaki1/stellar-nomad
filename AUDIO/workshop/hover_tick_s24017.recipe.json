@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "hover.tick",
+    "seed": 24017,
+    "duration": 0.045,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Selected focus changes, used sparingly.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -23.000000432125567,
+    "rmsDb": -37.64627695627317,
+    "dc": 7.633374897967296e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.01499553769826889,
+    "finite": true,
+    "silent": false
+  }
+}

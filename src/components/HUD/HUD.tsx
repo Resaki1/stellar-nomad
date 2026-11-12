@@ -26,7 +26,9 @@ import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 import PerfHUD from "./PerfHUD/PerfHUD";
+import AudioHUD from "./AudioHUD/AudioHUD";
 import { isPerfEnabled } from "@/components/space/perf/perfProfiler";
+import { audioSettingsAtom } from "@/store/audio";
 
 import "./HUD.scss";
 
@@ -49,6 +51,12 @@ export default function HUD() {
     if (isPerfEnabled()) setPerfForced(true);
   }, []);
   const perfHudOn = useAtomValue(settingsAtom).perf || perfForced;
+  // ⚠ The hook is called UNCONDITIONALLY and the dev gate applied to its RESULT.
+  // Writing `IS_DEV && useAtomValue(...)` short-circuits the hook call, which
+  // breaks the rules of hooks (eslint catches it as an error, correctly — a hook
+  // that sometimes runs desynchronises the whole hook order for the component).
+  const audioHudSetting = useAtomValue(audioSettingsAtom).hud;
+  const audioHudOn = process.env.NODE_ENV === "development" && audioHudSetting;
   const store = useStore();
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
@@ -136,6 +144,7 @@ export default function HUD() {
       <Hotbar />
       <TransitHUD />
       {perfHudOn && <PerfHUD />}
+      {audioHudOn && <AudioHUD />}
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">

@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.destroyed",
+    "seed": 24017,
+    "duration": 2.6,
+    "pitch": 0,
+    "brightness": 0.52,
+    "motion": 0.5,
+    "body": 1,
+    "texture": 0.9,
+    "detail": 0.65
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "The ship is destroyed.",
+  "bus": "sfxShip",
+  "experimental": true,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -4.999999888090177,
+    "rmsDb": -26.017884627708018,
+    "dc": -4.133169797990575e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.08009463548660278,
+    "finite": true,
+    "silent": false
+  }
+}

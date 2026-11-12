@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "ui.reject",
+    "seed": 24018,
+    "duration": 0.28,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "An action is blocked or unaffordable.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -12.000000253286988,
+    "rmsDb": -25.042397302245938,
+    "dc": -2.3300308467944876e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.08847901015542448,
+    "finite": true,
+    "silent": false
+  }
+}

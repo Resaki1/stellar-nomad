@@ -102,6 +102,17 @@ export default function AudioSettings() {
         label="mute all audio"
       />
 
+      {/* Dev-only, and NOT gated through `devHandlers` — that prop is undefined in
+          production and this panel must render without it (trap T2). A plain
+          NODE_ENV check is the right gate for one dev row inside a player panel. */}
+      {process.env.NODE_ENV === "development" && (
+        <SettingsCheckbox
+          active={audio.hud}
+          onChange={() => setAudio({ hud: !audio.hud })}
+          label="audio hud (dev)"
+        />
+      )}
+
       <div className="dev-controls__row">
         <button
           className="settings-menu__button"

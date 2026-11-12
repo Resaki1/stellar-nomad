@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.laser.start",
+    "seed": 24017,
+    "duration": 0.38,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "When the mining beam starts.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.000000126534257,
+    "rmsDb": -18.887709372577575,
+    "dc": 1.2664105238164625e-9,
+    "seamDelta": 0,
+    "maxDelta": 0.03529464080929756,
+    "finite": true,
+    "silent": false
+  }
+}

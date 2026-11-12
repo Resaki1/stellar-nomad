@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { playAudio } from "@/audio";
 import {
   ECLIPSE_2024_04_08_MS,
   formatSimTime,
@@ -268,6 +269,9 @@ const renderSubMenu = (
           />
           <BodyWarpControls />
           <PerfSweepButton />
+          <a className="settings-menu__button" href="/dev/audio" target="_blank" rel="noopener noreferrer">
+            audio workshop
+          </a>
           {devHandlers && <DevControls {...devHandlers} />}
           {onResetWorld && (
             <button
@@ -1286,7 +1290,7 @@ const SettingsMenu = () => {
                   <button
                     key={subMenu}
                     className="settings-menu__button"
-                    onClick={() => setActiveSubMenu(subMenu)}
+                    onClick={() => { playAudio("click.soft"); setActiveSubMenu(subMenu); }}
                   >
                     {subMenu}
                   </button>

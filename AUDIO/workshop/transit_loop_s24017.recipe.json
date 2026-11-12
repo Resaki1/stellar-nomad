@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "transit.loop",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "Sustained transit flight.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.999999854613165,
+    "rmsDb": -19.69701565854994,
+    "dc": -5.404033651185753e-10,
+    "seamDelta": 0.004232577979564667,
+    "maxDelta": 0.009988397359848022,
+    "finite": true,
+    "silent": false
+  }
+}

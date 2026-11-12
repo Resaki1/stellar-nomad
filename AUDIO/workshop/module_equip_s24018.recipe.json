@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "module.equip",
+    "seed": 24018,
+    "duration": 0.32,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.7,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A ship module is installed.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -12.000000253286988,
+    "rmsDb": -24.731996687476375,
+    "dc": 1.0205645491027926e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.039496831595897675,
+    "finite": true,
+    "silent": false
+  }
+}

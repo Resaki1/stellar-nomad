@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 4,
+  "recipe": {
+    "version": 1,
+    "presetId": "comms.chirp.advance",
+    "seed": 24017,
+    "duration": 0.1,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Advance a page of the ship-AI message.",
+  "bus": "ui",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -16.99999999789091,
+    "rmsDb": -31.716696974079134,
+    "dc": 8.768461477159003e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.033487431704998016,
+    "finite": true,
+    "silent": false
+  }
+}

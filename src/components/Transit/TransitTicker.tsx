@@ -362,6 +362,7 @@ export default function TransitTicker() {
               buf.phase = "decelerating";
               store.set(addToastAtom, {
                 message: "TRANSIT DISENGAGED",
+                audio: "silent",
                 detail: `Proximity: ${c.id.toUpperCase()}`,
                 durationMs: 3000,
               });
