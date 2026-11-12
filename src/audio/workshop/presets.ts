@@ -76,9 +76,15 @@ export const SOUND_PRESETS: readonly SoundPreset[] = [
   // ⚠ Brightness is the ONLY axis that moves across the three. Same family,
   // same hz, same seed, same gusts: they must read as one airflow getting
   // harder, not as three different winds.
-  { id: "ship.wind.low", name: "Airflow / thin", group: "Flight", trigger: "Low dynamic pressure: thin air, or slow flight in thick air.", character: "A distant, rounded pressure wash with slow gusting. Almost no top end — this is the layer that survives at altitude.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -9, defaults: { body: 0.85, brightness: 0.2, texture: 0.8, detail: 0.2, motion: 0.45 } },
-  { id: "ship.wind.mid", name: "Airflow / building", group: "Flight", trigger: "Moderate dynamic pressure; blended with the other two.", character: "The same airflow with the hull starting to answer: more edge on the gusts, a harder rush between them.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -8, defaults: { body: 0.7, brightness: 0.47, texture: 0.9, detail: 0.38, motion: 0.5 } },
-  { id: "ship.wind.high", name: "Airflow / max-q", group: "Flight", trigger: "High dynamic pressure: fast and low, or entry into a thick atmosphere.", character: "Full buffeting roar with the top end open. Heard through the hull, so it is pressure and rush rather than whistle.", family: "wind", gesture: "steady", hz: 62, duration: 6, loop: true, variants: 1, bus: "sfxShip", peakDb: -7, defaults: { body: 0.72, brightness: 0.66, texture: 1, detail: 0.5, motion: 0.6 } },
+  // ⚠ peakDb 7 dB below the engine layers, not at parity with them. The bed
+  // plays OVER the engines rather than instead of them, and the crossfade sums
+  // two layers at once; at the first build's -7..-9 it buried everything.
+  // ⚠ duration 11, not 6. The loop's own period was audible ("a repeating
+  // pattern every few seconds"). 11 s is the practical ceiling: durationRange
+  // caps loops at 12, and each second costs 144 kB of 24-bit WAV per layer.
+  { id: "ship.wind.low", name: "Airflow / thin", group: "Flight", trigger: "Low dynamic pressure: thin air, or slow flight in thick air.", character: "A distant, rounded pressure wash with slow gusting. Almost no top end — this is the layer that survives at altitude.", family: "wind", gesture: "steady", hz: 62, duration: 11, loop: true, variants: 1, bus: "sfxShip", peakDb: -16, defaults: { body: 0.9, brightness: 0.16, texture: 0.7, detail: 0.14, motion: 0.4 } },
+  { id: "ship.wind.mid", name: "Airflow / building", group: "Flight", trigger: "Moderate dynamic pressure; blended with the other two.", character: "The same airflow with the hull starting to answer: more edge on the gusts, a harder rush between them.", family: "wind", gesture: "steady", hz: 62, duration: 11, loop: true, variants: 1, bus: "sfxShip", peakDb: -15, defaults: { body: 0.76, brightness: 0.4, texture: 0.82, detail: 0.3, motion: 0.48 } },
+  { id: "ship.wind.high", name: "Airflow / max-q", group: "Flight", trigger: "High dynamic pressure: fast and low, or entry into a thick atmosphere.", character: "Full buffeting roar with the top end open. Heard through the hull, so it is pressure and rush rather than whistle.", family: "wind", gesture: "steady", hz: 62, duration: 11, loop: true, variants: 1, bus: "sfxShip", peakDb: -14, defaults: { body: 0.76, brightness: 0.6, texture: 0.9, detail: 0.42, motion: 0.56 } },
 
   // ── Death ──────────────────────────────────────────────────────────────
   // ⚠ peakDb -5, not louder, even though this is the biggest moment in the game.

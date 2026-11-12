@@ -1,6 +1,6 @@
 {
   "tool": "Stellar Nomad Audio Workshop",
-  "rendererVersion": 4,
+  "rendererVersion": 5,
   "recipe": {
     "version": 1,
     "presetId": "module.equip",

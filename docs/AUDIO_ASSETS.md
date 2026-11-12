@@ -1,6 +1,9 @@
 # Audio Asset Checklist
 
-**Status:** ✅ **complete and accepted, 2026-11-12** — every row below is ticked.
+**Status:** ✅ **complete, 2026-11-12** — every row below has an asset; all but
+the three `ship.wind.*` rows are auditioned and accepted. Those three were
+rejected on first listen and rebuilt (renderer v5, revision (d) below); they
+stay unticked until they are heard again.
 This stopped being a shopping list: nothing here was sourced, all 37 rows are
 filled by the procedural workshop. Kept as the inventory of what exists and what
 fires it.
@@ -37,11 +40,26 @@ would have rebuilt the static. See [AUDIO_PLAN §12.3e](AUDIO_PLAN.md).
 
 Measured on Earth at ~390 m/s: full bed at 5.9 km (q = 47 kPa, pinned at the
 30 kPa max-q reference), promotes descending at ~27 km, releases climbing at
-~34 km, exactly silent in vacuum. 53 workshop assets, 40 events, 7.87 MB.
+~34 km, exactly silent in vacuum. (Asset counts for this entry are superseded by (d).)
 
 ⚠ Not auditioned. Verified audible — `ship.wind.high` captured live at gain
 0.708 on the `sfxShip` bus — but whether the gusting reads as air is a listening
 call. Ticked on the same basis as the rest of the list is about to be revisited.
+
+**2026-11-12 (d): the wind bed, rebuilt (renderer v5).** That listening call
+came back: *"absolutely horrible … like a saw grinding on metal … way too loud
+… a clear repeating pattern every few seconds."* All three measured true. The
+first build fed `wind` the v4 `grain` band — a feedback comb at the preset's
+62 Hz fundamental plus two Q = 24/34 cavities — and `ship.wind.high` came out
+**0.578 periodic at 62 Hz, within 0.01 of the engine at full thrust**. A comb is
+how a *motor* stops sounding like static; air has no fundamental, so the same
+tool is the defect. v5 gives `wind` a pink-tilted band of its own with no comb,
+no cavity and no carrier, moves the gust from the **level** to the **spectrum**
+(a deep level modulation on a loop *is* the loop's signature), stretches the
+loop 6 s → 11 s and drops `peakDb` 7 dB to sit under the engines rather than
+beside them. Measured: ACF at 62 Hz 0.578 → −0.002, A-weighted 1.2–8 kHz
+54.2 % → 11.7 %, RMS −22.7 → −26.4 dBFS, gust 10.1 → 4.2 dB. 53 assets,
+40 events, 9.93 MB. Still not auditioned.
 
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
@@ -186,9 +204,9 @@ when coasting; the legacy `idle` id means low positive thrust, not an always-on 
 | ☑ | `ship.engine.idle` | Low positive thrust | 1 loop | `ship` | Low hum. ⚠⚠ **All three layers must be tuned to a shared pitch reference** or the crossfades will beat and phase audibly — the classic vehicle-audio bug |
 | ☑ | `ship.engine.mid` | ~50% throttle | 1 loop | `ship` | Same source family, more energy |
 | ☑ | `ship.engine.high` | Full throttle | 1 loop | `ship` | Strained, brighter |
-| ☑ | `ship.wind.low` | Low dynamic pressure: thin air, or slow in thick air | 1 loop | `ship` | **Derived, not authored** — level and brightness come from `q = ½ρv²` (§12.3e). Crossfaded with the two below; `syncLoop` keeps them phase-aligned |
-| ☑ | `ship.wind.mid` | Moderate dynamic pressure | 1 loop | `ship` | Same airflow, more edge on the gusts |
-| ☑ | `ship.wind.high` | Max-q: fast and low, or entry into a thick atmosphere | 1 loop | `ship` | Full buffeting. ⚠ Heard *through the hull*, so pressure and rush rather than whistle — brightness is deliberately held back |
+| ☐ | `ship.wind.low` | Low dynamic pressure: thin air, or slow in thick air | 1 loop | `ship` | **Derived, not authored** — level and brightness come from `q = ½ρv²` (§12.3e). Crossfaded with the two below; `syncLoop` keeps them phase-aligned |
+| ☐ | `ship.wind.mid` | Moderate dynamic pressure | 1 loop | `ship` | Same airflow, more edge on the gusts |
+| ☐ | `ship.wind.high` | Max-q: fast and low, or entry into a thick atmosphere | 1 loop | `ship` | Full buffeting. ⚠ Heard *through the hull*, so pressure and rush rather than whistle — brightness is deliberately held back |
 
 ### Transit drive
 

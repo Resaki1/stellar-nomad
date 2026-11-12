@@ -1,7 +1,7 @@
 import { getPreset, parseRecipe, type Recipe } from "./presets";
 
 export const WORKSHOP_SAMPLE_RATE = 48000;
-export const RENDERER_VERSION = 4;
+export const RENDERER_VERSION = 5;
 const TAU = Math.PI * 2;
 
 export type SoundStats = {
@@ -51,6 +51,15 @@ function noiseBands(length: number, brightness: number, seed: number, loop: bool
   const low = new Float32Array(length);
   const wide = new Float32Array(length);
   const grain = new Float32Array(length);
+  // Pink-tilted air, with no comb and no cavity anywhere in its path. Wind's
+  // defect is the OPPOSITE of the motors': the first build fed it `grain` and
+  // measured 0.56 periodic at 62 Hz above 300 Hz — within 0.01 of the engine at
+  // full thrust, and described as a saw grinding on metal. A comb is how a
+  // MOTOR stops sounding like static; air has no fundamental, so the same tool
+  // is the defect here. Pink rather than white because broadband flow noise
+  // falls with frequency; flat noise is the hiss v4 exists to remove.
+  const air = new Float32Array(length);     // dark: the lull between gusts
+  const airTop = new Float32Array(length);  // open: the gust itself
   const coefficient = (hz: number) => 1 - Math.exp(-TAU * hz / WORKSHOP_SAMPLE_RATE);
   const bassCut = coefficient(180);
   const topCut = coefficient(650 + brightness * brightness * 9000);
@@ -68,6 +77,9 @@ function noiseBands(length: number, brightness: number, seed: number, loop: bool
   // 1.3%. Unweighted they look bass-heavy (73-97% sub-300 Hz), which is exactly
   // how the first two attempts talked themselves out of rolling the top off.
   const grainTop = coefficient(grainHz);
+  const airCut = coefficient(430);
+  const airTopCut = coefficient(520 + brightness * brightness * 2400);
+  const airHpCut = coefficient(150);
   // Narrow enough that the ear hears pitch, not another band of noise: a Q of 7
   // is wider than a third of an octave and simply disappears into the tilt.
   const cavities = ([[2.9, 24], [6.7, 34]] as const).map(([ratio, q]) => {
@@ -76,6 +88,7 @@ function noiseBands(length: number, brightness: number, seed: number, loop: bool
     return { a: 2 * r * Math.cos(TAU * hz / WORKSHOP_SAMPLE_RATE), b: r * r, g: 1 - r, y1: 0, y2: 0 };
   });
   let bass = 0, weight = 0, weight2 = 0, top = 0, top2 = 0, dc = 0, damp = 0, write = 0, soft = 0, soft2 = 0;
+  let pink0 = 0, pink1 = 0, pink2 = 0, dark = 0, dark2 = 0, open = 0, open2 = 0, openDc = 0;
   for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
     const rng = random(seed);
     for (let i = 0; i < length; i++) {
@@ -110,14 +123,35 @@ function noiseBands(length: number, brightness: number, seed: number, loop: bool
         resonant += y;
       }
       grain[i] = combed * 0.42 + resonant * 0.5;
+      // Kellet's economy pink filter: -3 dB/oct to ~0.3 dB across the band.
+      pink0 = 0.99765 * pink0 + white * 0.0990460;
+      pink1 = 0.963 * pink1 + white * 0.2965164;
+      pink2 = 0.57 * pink2 + white * 0.1050186;
+      const pink = (pink0 + pink1 + pink2 + white * 0.0848) * 0.25;
+      dark += airCut * (pink - dark);
+      dark2 += airCut * (dark - dark2);
+      air[i] = dark2;
+      // Two poles, not one. Pink already falls at -3 dB/oct, and a single pole
+      // on top of it still left `ship.wind.high` at 33% A-weighted 1.2-8 kHz —
+      // squarely in the 31-64% band every sound the pack called cheap static
+      // measured in. The bed is heard THROUGH a hull; the top has to be shut.
+      open += airTopCut * (pink - open);
+      open2 += airTopCut * (open - open2);
+      openDc += airHpCut * (open2 - openDc);
+      airTop[i] = open2 - openDc;
     }
   }
   // Match the wide band's level, so every family mix coefficient keeps its meaning.
-  let wideSquares = 0, grainSquares = 0;
-  for (let i = 0; i < length; i++) { wideSquares += wide[i] * wide[i]; grainSquares += grain[i] * grain[i]; }
-  const match = grainSquares > 1e-12 ? Math.sqrt(wideSquares / grainSquares) : 0;
-  for (let i = 0; i < length; i++) grain[i] *= match;
-  return { low, wide, grain };
+  const matchTo = (band: Float32Array) => {
+    let wideSquares = 0, bandSquares = 0;
+    for (let i = 0; i < length; i++) { wideSquares += wide[i] * wide[i]; bandSquares += band[i] * band[i]; }
+    const match = bandSquares > 1e-12 ? Math.sqrt(wideSquares / bandSquares) : 0;
+    for (let i = 0; i < length; i++) band[i] *= match;
+  };
+  matchTo(grain);
+  matchTo(air);
+  matchTo(airTop);
+  return { low, wide, grain, air, airTop };
 }
 
 const db = (amplitude: number) => amplitude > 0 ? 20 * Math.log10(amplitude) : -120;
@@ -159,10 +193,8 @@ export function renderSound(input: Recipe): RenderedSound {
   const grainHz = preset.family === "motor" ? 420 + tone * 1600
     : preset.family === "cutter" ? 700 + tone * 5200
     : preset.family === "drive" ? 430 + tone * 2600
-    // Wind is the one family that is SUPPOSED to be broadband — air rush has no
-    // fundamental to resonate. Its structure is temporal (the gusts below), not
-    // spectral, so it gets the widest ceiling in the set.
-    : preset.family === "wind" ? 600 + tone * 6400
+    // `wind` has no entry because it never reads the grain band at all: see the
+    // `air` / `airTop` comment in noiseBands.
     : 520 + tone * 4200;
   const noise = noiseBands(n, recipe.brightness, recipe.seed, loop, Math.max(20, base), grainHz);
   const phaseOffset = rng() * TAU;
@@ -282,35 +314,36 @@ export function renderSound(input: Recipe): RenderedSound {
         texture = noise.grain[i] * (0.8 + drift * 0.18) * shimmer;
         detail = Math.sin(p * 4 + drift * 0.8) * 0.1 + Math.sin(p * 7) * 0.035;
       } else if (preset.family === "wind") {
-        // Moving air, over the v4 `grain` band rather than `noise.wide`. ⚠ The
-        // `air` and `jet` branches below are the two families v4 never
-        // converted; both still read flat noise, and either would rebuild
-        // exactly the static the renderer was rewritten to remove.
+        // Moving air: the pink `air` / `airTop` bands and NOTHING from `grain`
+        // or from a carrier. ⚠ Do not reintroduce `Math.sin(p)` here "for
+        // weight" — 62 Hz against a broadband bed is the saw, not the hull.
         //
-        // Two gust LFOs, through `periodicHz` so the loop seam stays sample
-        // exact. ⚠ Pick the rates for what they quantise TO, not what they read
-        // as: 0.23 and 0.61 Hz look unrelated and land on 1 and 4 cycles over a
-        // 6 s loop, a 1:4 lock that gusts audibly in step. 0.5 and 7/6 Hz land
-        // on 3 and 7 — coprime, so the pair never repeats inside the loop.
-        // ⚠ `cos`, with no seed phase, so the loop BEGINS at full airflow. The
-        // workshop asserts that a loop's first and last windows each carry >10%
-        // of a mid-loop window's power, and a gust this deep fails that
-        // whenever the seed happens to drop the seam into a trough — a check
-        // that passes or fails on phase luck is worse than no check. Anchored,
-        // the edges sit at the gust peak and the margin is wide at any depth,
-        // so the depth below is an authoring choice rather than a fit to the
-        // assertion. The emitter starts this loop phase-aligned (`syncLoop`),
-        // so "begins at full airflow" is what the player actually hears.
-        const slow = Math.cos(TAU * periodicHz(0.5) * t);
-        const fast = Math.sin(TAU * periodicHz(7 / 6) * t + phaseOffset + drift);
-        const gust = 0.3 + 0.7 * (0.5 + 0.5 * slow) * (0.55 + 0.45 * fast);
-        // The pressure body breathes with the gust too, or it holds the
-        // envelope flat and the buffeting reads as a filter sweep over a
-        // constant bed instead of as air arriving in pulses.
-        body = noise.low[i] * (0.55 + 0.45 * gust) * 0.95 + Math.sin(p) * 0.08;
-        texture = noise.grain[i] * gust * 1.25;
-        detail = noise.grain[i] * gust * (0.45 + 0.55 * fast) * (0.1 + bright * 0.32)
-          + Math.sin(p * 3 + drift) * 0.025;
+        // Four gust LFOs at pairwise-coprime cycle counts over the loop, SUMMED
+        // rather than multiplied so there are no deep nulls, and the first a
+        // `cos` with no seed phase so the seam sits on a peak. ⚠ Pick rates for
+        // what they quantise TO, not what they read as: whole cycles per loop is
+        // the only choice available, so 0.23 and 0.61 Hz land on 1 and 4 over a
+        // 6 s loop — a 1:4 lock that gusts audibly in step. ⚠ No single term may
+        // dominate either, or its own rate becomes the pattern the ear locks
+        // onto regardless of the loop length: 0.20/0.16/0.10/0.06 is deliberately
+        // flat, so the swell is never twice the same shape inside the loop.
+        const cycles = (count: number) => count / duration;
+        const gust = Math.min(1, Math.max(0,
+          0.5 + 0.2 * Math.cos(TAU * cycles(3) * t)
+            + 0.16 * Math.sin(TAU * cycles(7) * t + phaseOffset)
+            + 0.1 * Math.sin(TAU * cycles(13) * t + drift)
+            + 0.06 * Math.sin(TAU * cycles(19) * t + phaseOffset * 1.7)));
+        // 🔑 THE GUST IS SPECTRAL, NOT AN AMPLITUDE ENVELOPE. A deep level
+        // modulation on a loop IS the loop's signature — the first build ran
+        // 10.5 dB of it over 6 s and was heard as "a repeating pattern every few
+        // seconds". Opening and closing the band instead reads as air arriving
+        // and leaves the level nearly flat, so the repeat has far less to latch
+        // onto. The remaining level term is ~1.4 dB, for weight, not for shape.
+        const opening = 0.12 + 0.88 * gust;
+        body = noise.low[i] * (0.88 + 0.12 * gust);
+        texture = (noise.air[i] * (1 - opening * 0.72) + noise.airTop[i] * opening)
+          * (0.86 + 0.14 * gust);
+        detail = noise.airTop[i] * opening * (0.12 + bright * 0.3);
       } else if (preset.family === "jet") {
         body = noise.low[i] * 0.8 + Math.sin(p) * Math.exp(-t * 35) * 0.12;
         texture = noise.wide[i] * 1.2;

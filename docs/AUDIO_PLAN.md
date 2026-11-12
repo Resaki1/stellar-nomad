@@ -2168,19 +2168,68 @@ to exactly 1 at every drive, so the layers move brightness without moving level.
 **A new `wind` renderer family.** ⚠ The obvious choice, `family: "air"`, is one
 of the two branches (with `jet`) that renderer v4 never converted — both still
 read `noise.wide` directly, and either would have rebuilt precisely the flat
-static that v4 was written to remove. The `wind` branch gusts the v4 `grain`
-band under two loop-quantised LFOs at 3 and 7 cycles per loop. 🔑 **Pick LFO
-rates for what they quantise TO**: 0.23 and 0.61 Hz look unrelated and land on
-1 and 4 cycles over a 6 s loop, a 1:4 lock that gusts audibly in step. Measured
-gust depth 6.5 / 9.3 / 10.1 dB across the three layers, against 1.5 dB for
-`transit.loop` — a genuinely static drone.
+static that v4 was written to remove. ⚠⚠ The *first* `wind` build went the other
+way and was just as wrong: see A-WIND-1 below.
+
+**A-WIND-1 — the first wind bed was a motor. REBUILT (renderer v5).** The first
+build reached for the v4 `grain` band, on the reasoning that `grain` is how v4
+stopped noise sounding like static. But `grain` is a **feedback comb at the
+preset's fundamental** (0.84 feedback) plus two **Q = 24 / 34 cavities**, and it
+added `sin(p)` at 62 Hz on top. It was described on first listen as *"a saw
+grinding on metal … way too loud … a clear repeating pattern every few
+seconds"*, and all three parts of that measured true:
+
+| | v4 wind | v5 wind | reference |
+|---|---|---|---|
+| ACF at 62 Hz, above 300 Hz | **0.578** | **−0.002** | engine at full thrust 0.556 |
+| A-weighted 1.2–8 kHz share | 54.2 % | 11.6 % | the pack's "cheap static" band is 31–64 % |
+| RMS | −22.7 dBFS | −26.4 dBFS | engines −16.5 to −17.6 |
+| gust depth | 10.1 dB | 4.2 dB | `transit.loop` (static drone) 1.5 dB |
+| loop length | 6 s | 11 s | `durationRange` caps loops at 12 s |
+
+🔑 **A comb is how a MOTOR stops sounding like static. Air has no fundamental,
+so the same tool is the defect.** `ship.wind.high` measured 0.578 periodic at
+62 Hz, *within 0.01 of the engine at full thrust* — it was literally as pitched
+as a motor, which is exactly what "saw on metal" describes. v5 gives `wind` its
+own band: pink-tilted noise (Kellet's economy filter, −3 dB/oct) split into a
+dark `air` (two poles at 430 Hz) and an open `airTop` (two poles at
+`520 + brightness²·2400`, high-passed at 150 Hz). No comb, no cavity, no
+carrier anywhere in the path.
+
+🔑 **The gust is SPECTRAL, not an amplitude envelope.** A deep level modulation
+on a loop *is* the loop's signature — that is what "a repeating pattern every
+few seconds" was. v5 moves the dark↔open balance with the gust and leaves the
+level nearly flat (≈1.4 dB of residual level term, 4.2 dB measured end to end),
+which reads as air arriving and gives the repeat far less to latch onto.
+
+⚠ **Two poles, not one, on the open band.** A single pole on top of pink still
+left `ship.wind.high` at 33 % A-weighted 1.2–8 kHz, squarely inside the band
+every sound the pack called cheap static measured in. The bed is heard *through
+a hull*; the top has to be shut. The three layers now span 1.1 / 4.9 / 11.7 %,
+a 10× brightness range that still sits under the engine's 17.7 %.
+
+🔑 **Pick LFO rates for what they quantise TO**, and let none of them dominate.
+`periodicHz` rounds to whole cycles per loop, so 0.23 and 0.61 Hz — which look
+unrelated — land on 1 and 4 cycles over a 6 s loop, a 1:4 lock that gusts
+audibly in step. v5 uses four pairwise-coprime counts (3, 7, 13, 19) at
+deliberately flat weights (0.20 / 0.16 / 0.10 / 0.06), **summed** rather than
+multiplied so there are no deep nulls: with one dominant term its own rate
+becomes the pattern the ear locks onto however long the loop is.
 
 **⚠ The loop-edge assertion bounds gust depth, so the gust phase is anchored.**
 The workshop requires a loop's first and last windows to each carry >10% of a
 mid-loop window's power. A deep gust fails that whenever the seed drops the seam
 into a trough — a check that passes or fails on phase luck is worse than no
 check — so the slow LFO is a `cos` with no seed phase and the loop begins at
-full airflow.
+full airflow. v5's level modulation is shallow enough that the assertion is no
+longer anywhere near binding, but the anchor stays: it costs nothing and it is
+what keeps the margin independent of the seed.
+
+⚠ **`peakDb` is 7 dB below the engine layers, not at parity.** The bed plays
+*over* the engines rather than instead of them, and the crossfade sums two
+layers at once. It is also the single knob for overall wind loudness: the level
+law, `gainDb` and `WIND_RANGE_DB` are all pinned to the cull arithmetic below,
+so trim `peakDb` in the preset and regenerate rather than touching any of them.
 
 **Measured, flying Earth at ~390 m/s** (`__audio.wind()`, four bench rungs):
 
