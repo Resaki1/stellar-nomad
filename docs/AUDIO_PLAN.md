@@ -1393,8 +1393,14 @@ and laptop speakers are the stated target hardware.
 ### 8.5 Output mode
 
 Stereo (default) / Headphones (HRTF, capped per A4) / **Mono**. Mono downmix is a
-genuine accessibility feature for single-sided deafness and one-earbud listening, and
-costs one `ChannelMerger` stage.
+genuine accessibility feature for single-sided deafness and one-earbud listening.
+
+> **Mono landed (2026-11-13)** as a "mono audio" checkbox, with no `ChannelMerger`
+> needed: `master` is set to `channelCount 1 / "explicit" / "speakers"`, so the graph
+> downmixes to (L+R)/2 there and the destination plays it on both sides. Measured on
+> an `OfflineAudioContext`: a hard-left tone reads L 0.707 / R 0 in stereo and
+> L 0.354 / R 0.354 in mono (−6 dB per side, the standard fold). The limiter and
+> clipper then run on one channel. HRTF output is still open.
 
 ### 8.6 Accessibility
 

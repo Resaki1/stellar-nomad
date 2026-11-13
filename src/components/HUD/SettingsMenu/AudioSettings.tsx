@@ -87,6 +87,12 @@ export default function AudioSettings() {
         label="mute all audio"
       />
 
+      <SettingsCheckbox
+        active={audio.mono}
+        onChange={() => setAudio({ mono: !audio.mono })}
+        label="mono audio"
+      />
+
       {/* Dev-only, and NOT gated through `devHandlers` — that prop is undefined in
           production and this panel must render without it (trap T2). A plain
           NODE_ENV check is the right gate for one dev row inside a player panel. */}

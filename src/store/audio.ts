@@ -29,6 +29,8 @@ export type AudioSettings = {
   ambience: number;
   onBlur: BlurBehaviour;
   muted: boolean;
+  /** Mono output (accessibility). */
+  mono: boolean;
   /** Dev-only live readout (§9.2). Lives here rather than in `settingsAtom`. */
   hud: boolean;
 };
@@ -49,6 +51,7 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   // full volume means blaring into a call. §8.2.
   onBlur: "duck",
   muted: false,
+  mono: false,
   hud: false,
 };
 

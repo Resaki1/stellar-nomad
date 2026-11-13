@@ -29,6 +29,7 @@ import {
   setBusGain,
   setGamePaused,
   setMasterGain,
+  setMonoOutput,
   sliderToGain,
   unlockAudio,
 } from "@/audio/engine";
@@ -79,6 +80,8 @@ export default function AudioSystem({ authoring = false }: { authoring?: boolean
       }
     }
   }, [settings]);
+
+  useEffect(() => setMonoOutput(settings.mono), [settings.mono]);
 
   // ── 3. Tab visibility ────────────────────────────────────────────────────
   useEffect(() => {

@@ -114,6 +114,7 @@ export default function AudioDevTools() {
           : null,
         unlocked: isAudioUnlocked(),
         masterGain: e ? Math.round(e.master.gain.value * 1000) / 1000 : null,
+        output: e ? (e.master.channelCountMode === "explicit" && e.master.channelCount === 1 ? "mono" : "stereo") : null,
         buses: e
           ? Object.fromEntries(
               Object.entries(e.buses).map(([k, g]) => [

@@ -170,6 +170,7 @@ export function ensureEngine(): AudioEngine | null {
   alerts.connect(buses.sfxShip);
 
   engine = { ctx, master, limiter, clipper, buses, alerts, capture: null };
+  setMonoOutput(monoOutput);
 
   if (process.env.NODE_ENV === "development") {
     console.log(
@@ -318,6 +319,22 @@ const busTarget: Partial<Record<BusId, number>> = {};
 let gamePaused = false;
 /** Buses silenced by the pause menu. Music and UI stay: the menu has clicks, and music carries on (as in Minecraft since 1.21.6). */
 const PAUSED_BUSES: readonly BusId[] = ["ambience", "sfxShip", "sfxWorld"];
+
+let monoOutput = false;
+
+/**
+ * Accessibility: fold the mix to mono at `master` ((L+R)/2, the "speakers"
+ * downmix); the destination then plays it on both sides. For one-earbud play
+ * and single-sided hearing, where a hard-panned cue would otherwise vanish.
+ */
+export function setMonoOutput(mono: boolean): void {
+  monoOutput = mono;
+  const e = engine;
+  if (!e) return;
+  e.master.channelCount = mono ? 1 : 2;
+  e.master.channelCountMode = mono ? "explicit" : "max";
+  e.master.channelInterpretation = "speakers";
+}
 
 export function setBusGain(bus: BusId, gain: number): void {
   busTarget[bus] = gain;
