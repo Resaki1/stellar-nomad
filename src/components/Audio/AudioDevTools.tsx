@@ -16,6 +16,7 @@
 //   __audio.silence()          stop everything
 //   __audio.listener(mode)     force a listener mode (A2 seam)
 //   __audio.wind()             the q = ½ρv² bed: density, q, per-layer gain
+//   __audio.music(cmd?, id?)    music director state; play / skip / stop
 //   __audio.lastJson           copyable report, like __bench.lastJson
 // ---------------------------------------------------------------------------
 
@@ -59,6 +60,7 @@ import {
   densityAtAltitude,
 } from "@/audio/acoustics";
 import { windLayerGain, windState } from "@/audio/wind";
+import { musicDebug, playMusicNow, seekMusicToEnd, skipMusic, stopMusic } from "@/audio/music";
 import { getDominantAtmosphereBody } from "@/components/space/atmospherePass";
 import { playAlarm, ALARM_TIERS, type AlarmTier } from "@/audio/alarms";
 import {
@@ -84,6 +86,7 @@ type AudioHarness = {
   absorption(bodyId?: string, altitudeKm?: number, distanceM?: number): unknown;
   here(): unknown;
   wind(): unknown;
+  music(cmd?: "play" | "skip" | "stop" | "end", id?: string): unknown;
   setAlert(id: string, value01: number): unknown;
   ackAlert(id: string): void;
   silence(): void;
@@ -210,6 +213,16 @@ export default function AudioDevTools() {
        * atmosphere is, what q comes out, and what each layer is doing with it.
        * The one harness that proves §12.3 has an audible consumer.
        */
+      /** Music director state; `music("play", id?)`, `music("skip")`, `music("stop")`, `music("end", s)` seeks to s before the end. */
+      music(cmd, id) {
+        if (cmd === "play") playMusicNow(id);
+        else if (cmd === "skip") skipMusic();
+        else if (cmd === "stop") stopMusic();
+        else if (cmd === "end") seekMusicToEnd(Number(id ?? 8));
+        const out = musicDebug();
+        harness.lastJson = JSON.stringify(out, null, 2);
+        return out;
+      },
       wind() {
         const layers = ([0, 1, 2] as const).map((layer) => ({
           layer,

@@ -233,13 +233,37 @@ function walk(dir) {
 }
 
 let totalBytes = 0;
+let musicBytes = 0;
+const musicFiles = new Set();
 for (const abs of walk(join(ROOT, AUDIO_DIR))) {
   const rel = "/" + relative(join(ROOT, PUBLIC_DIR), abs).split("\\").join("/");
-  totalBytes += statSync(abs).size;
   // Music is streamed on demand and intentionally absent from the catalogue.
-  if (rel.startsWith("/audio/music/")) continue;
+  // ⚠ Skip it BEFORE summing: the budget is decoded-in-memory SFX, and an
+  // earlier revision added music to the total despite this very comment.
+  if (rel.startsWith("/audio/music/")) {
+    musicBytes += statSync(abs).size;
+    musicFiles.add(rel);
+    continue;
+  }
+  totalBytes += statSync(abs).size;
   if (!referenced.has(rel))
     warn(`orphan asset not referenced by any event: ${rel}`);
+}
+
+// ── music manifest ↔ shipped files ─────────────────────────────────────────
+const MUSIC_MANIFEST = "src/data/musicTracks.json";
+if (existsSync(join(ROOT, MUSIC_MANIFEST))) {
+  const { tracks } = JSON.parse(readFileSync(join(ROOT, MUSIC_MANIFEST), "utf8"));
+  const listed = new Set();
+  for (const t of tracks) {
+    const file = `/audio/music/${t.id}.opus`;
+    listed.add(file);
+    if (!musicFiles.has(file)) fail(`music track "${t.id}": ${file} missing — run scripts/process-music.mjs`);
+    for (const k of ["durationSec", "startSec", "endSec", "gainDb"])
+      if (typeof t[k] !== "number") fail(`music track "${t.id}": unmeasured ${k} — run scripts/process-music.mjs`);
+    if (!["calm", "explore", "tension", "danger"].includes(t.mood)) fail(`music track "${t.id}": unknown mood "${t.mood}"`);
+  }
+  for (const f of musicFiles) if (!listed.has(f)) warn(`orphan music file not in ${MUSIC_MANIFEST}: ${f}`);
 }
 const totalMB = totalBytes / 1024 / 1024;
 if (totalMB > TOTAL_SFX_BUDGET_MB)
@@ -280,6 +304,12 @@ for (const abs of files) {
     fail(
       `${rel}: uses \`new Audio(\` — every sound must route through the bus ` +
         `graph via playAudio()/registerEmitter(), or the volume sliders lie`,
+    );
+
+  if (/createElement\(\s*["']audio["']\s*\)/.test(text) && rel !== ENGINE_FILE)
+    fail(
+      `${rel}: creates an <audio> element — stream through createStreamSource() ` +
+        `in ${ENGINE_FILE} so it plays via the bus graph (A7)`,
     );
 
   if (
@@ -333,5 +363,6 @@ if (problems.length) {
 console.log(
   `\naudio contract: 0 problems (${EVENTS.length} events, ` +
     `${referenced.size} files, ${totalMB.toFixed(2)} MB of ` +
-    `${TOTAL_SFX_BUDGET_MB} MB budget)`,
+    `${TOTAL_SFX_BUDGET_MB} MB budget; music ${musicFiles.size} streamed files, ` +
+    `${(musicBytes / 1048576).toFixed(1)} MB)`,
 );

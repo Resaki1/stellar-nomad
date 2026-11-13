@@ -31,6 +31,11 @@
   **force-downmixes `--sfx3d` to mono** (a stereo buffer in a `PannerNode` silently
   smears the directional cue instead of erroring). Kinds: `--sfx2d --sfx3d --ambience
   --music --voice`; `--all-in <dir>` for a batch.
+- `pnpm process:music` — process `AUDIO/music/*` (gitignored masters) into
+  `public/audio/music/*.opus` and write the measured fields of
+  `src/data/musicTracks.json` (add a track there first: id, source, title, artist,
+  mood, weight). Opus sources are remuxed losslessly; loudness, edge trim and fades
+  are applied at runtime. Strips all metadata. `pnpm check:music` re-verifies.
 - `pnpm gen:audio-placeholders` — regenerate the synthetic Phase-0 placeholder SFX.
   Requires `ffmpeg`. These are meant to be replaced by real assets, not tuned.
 - **`__audio.selftest()`** in the browser console — Tier-2 offline assertion suite

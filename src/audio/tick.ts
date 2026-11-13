@@ -24,6 +24,7 @@
 import { updateEmitters } from "./emitters";
 import { updateWind } from "./wind";
 import { pumpAlerts } from "./alerts";
+import { pumpMusic } from "./music";
 
 /** 66 ms. Fast enough for positional updates, slow enough to be free. */
 export const AUDIO_TICK_MS = 66;
@@ -46,6 +47,7 @@ export function startAudioTick(): void {
       // A12's reminder schedule. Must be clock-driven, not value-driven — see
       // the warning on `pumpAlerts`.
       pumpAlerts();
+      pumpMusic();
     } catch (err) {
       // A throw here would kill the interval permanently and silence the game
       // with no obvious cause.

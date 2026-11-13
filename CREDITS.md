@@ -70,9 +70,16 @@ Tracks are generated with **Suno AI**.
 > re-generate or drop anything made on the free tier or during a lapse. Verify
 > against Suno's current terms — see L11 in `docs/AUDIO_PLAN.md`.
 
-| Track | Generated | Plan at generation | Mood tag | Cleared |
-|---|---|---|---|---|
-| _(none imported yet)_ | | | | |
+Placeholders until commissioned music replaces them. Generation dates are from
+the `created=` comment Suno embeds in each download (stripped from the shipped
+files by `scripts/process-music.mjs`).
+
+| Track | Artist | Generated | Plan at generation | Mood tag | Cleared |
+|---|---|---|---|---|---|
+| Silence Expands | resaki | 2026-11-13 | _to check_ | explore | ☐ |
+| Vast Empty Horizon | resaki | 2026-11-13 | _to check_ | calm | ☐ |
+| Desolate Survival | resaki | 2026-11-13 | _to check_ | calm | ☐ |
+| Glacial Pads | resaki | 2026-11-13 | _to check_ | calm | ☐ |
 
 ---
 

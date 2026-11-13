@@ -33,6 +33,7 @@ import { playAlarm, setAlarmsEnabled, stopAllAlarms } from "@/audio/alarms";
 import { registerAlert, updateAlert, unregisterAlert } from "@/audio/alerts";
 import { audioShipBuffer } from "@/audio/shipBuffer";
 import { resetWind, windLayerGain, windState } from "@/audio/wind";
+import { setMusicDucked, setMusicSuppressed, setMusicTraveling } from "@/audio/music";
 import { shipHealthAtom, settingsIsOpenAtom } from "@/store/store";
 import { vfxEventsAtom } from "@/store/vfx";
 import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom, pulseCycleBuffer } from "@/store/mining";
@@ -278,6 +279,14 @@ export default function GameAudioTriggers() {
     const emitter = registerEmitter({ event: "transit.loop", intensity: 1 });
     return () => emitter.stop();
   }, [inTransit]);
+
+  // ── Music director inputs (§7) ───────────────────────────────────────────
+  // Travelling makes the NEXT pick "explore"; it never interrupts a track.
+  useEffect(() => { setMusicTraveling(inTransit); }, [inTransit]);
+  useEffect(() => { setMusicSuppressed(isDead); }, [isDead]);
+  const commsActive = useAtomValue(activeCommsMessageAtom) !== null;
+  // Critical hull is where the hull alert sits in its loudest tier.
+  useEffect(() => { setMusicDucked(commsActive || (!isDead && health < 25)); }, [commsActive, health, isDead]);
 
   // Salvage tractor: its field coils hum while any beam holds a wreck.
   useEffect(() => {

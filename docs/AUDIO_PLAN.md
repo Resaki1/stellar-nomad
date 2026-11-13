@@ -1740,6 +1740,46 @@ frame-time regression beyond noise. Only then consider raising the voice cap.
 **Gate M-1:** no audible level jump between any two tracks under repeated random picks;
 mood changes never interrupt a playing track.
 
+> ### ✅ Phase 2 landed — 2026-11-13
+>
+> Four placeholder tracks (`src/data/musicTracks.json`): one `explore`, three
+> `calm`. Director `src/audio/music.ts`, pumped by the 15 Hz audio tick.
+>
+> **Pipeline deviates from §7.4, deliberately.** Suno's "M4A" turned out to be
+> **Opus-in-MP4 at ~145 kbps**, so re-encoding would have been a second lossy
+> generation. `scripts/process-music.mjs` remuxes Opus sources by stream copy
+> into Ogg — MEASURED sample-identical to the source at offset 0 (13.5 ms shorter
+> only in end padding) — and moves the three things a re-encode would have baked
+> in to runtime: **loudness gain** (`gainDb`, to −18 LUFS, never above
+> −1 dBTP: −1.9 to −3.8 dB here, so nothing is ever boosted), **edge-silence
+> trim** (`startSec`/`endSec`), and **fades** (3 s in, 4 s out). All tags are
+> stripped (Suno embeds a generation id and timestamp); `ffprobe` shows none.
+>
+> **Streaming (A7):** `createStreamSource()` in `engine.ts` wraps an `<audio>`
+> element in a `MediaElementAudioSourceNode` into the `music` bus. The contract
+> test now fails any other `createElement("audio")`, and it no longer counts
+> streamed music against the 25 MB in-memory SFX budget (it did, despite its own
+> comment saying it didn't).
+>
+> **Scheduling — decided, since there is no title screen:** the first track
+> starts 20–40 s after the first interaction (the session start plays the role of
+> a title screen, where both Minecraft and No Man's Sky play music immediately),
+> then 5–12 min of silence between tracks, Minecraft-style. Never the same track
+> twice in a row. **Mood:** transit makes the next pick `explore`, held 180 s
+> after arrival; otherwise `calm`. No `tension`/`danger` tracks exist, so those
+> fall back to calm. **Death** fades music out in 2 s and holds it until respawn.
+> **Ducks −9 dB** under comms and critical hull (§7.6). **MediaSession** shows
+> title/artist; pause/stop fade out, next skips, play starts a track.
+>
+> **Verified live:** first track 26 s after the click; edge silence skipped;
+> 3 s fade to exactly the manifest gain (0.666 = −3.53 dB); the real Music slider
+> at 0 gives a captured output peak of exactly 0, restored −23.1 dB; skips never
+> repeat; the end fade lands on the last audible instant (193.8 of 193.83 s), then
+> silence with the next track ~8 min out and MediaSession cleared; transit flips
+> the mood to `explore` and holds it 180 s. **Not live-verified:** ducking and
+> death suppression (no comms/death on demand) — both are a gain ramp and a flag
+> on paths covered above.
+
 ### Phase 3 — Early-access polish
 
 - §8.4 night mode; §8.5 mono + capped HRTF; §8.6 captions for every audio-only cue

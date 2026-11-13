@@ -44,3 +44,7 @@ era5_gibs_*.jpg
 /public/textures/weather/*.png
 
 /public/assets/8k_milkyway_diffuse.png
+
+# Music source masters (Suno downloads). Only the processed public/audio/music/*.opus ships;
+# re-download to regenerate. scripts/process-music.mjs
+AUDIO/music/

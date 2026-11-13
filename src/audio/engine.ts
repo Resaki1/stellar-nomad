@@ -342,6 +342,52 @@ export function applyBlurState(hidden: boolean, behaviour: BlurBehaviour): void 
 }
 
 // ---------------------------------------------------------------------------
+// Streamed sources (A7) — music
+// ---------------------------------------------------------------------------
+
+export type StreamSource = {
+  element: HTMLAudioElement;
+  /** Per-source gain, after the element and before the bus. */
+  gain: GainNode;
+  /** Detach from the graph and release the media resource. */
+  dispose(): void;
+};
+
+/**
+ * A long file streamed through an `<audio>` element INTO the bus graph (A7).
+ * A 3-minute track decoded with `decodeAudioData` is ~60 MB resident; a media
+ * element buffers a few seconds.
+ *
+ * ⚠ The ONLY place an audio element may be created — `pnpm check:audio`
+ * enforces it. Once wrapped in a `MediaElementAudioSourceNode` the element's
+ * own output is silenced and it plays only through `bus`, so the volume
+ * sliders, the limiter and blur ducking all apply to it.
+ */
+export function createStreamSource(url: string, bus: BusId): StreamSource | null {
+  const e = ensureEngine();
+  if (!e) return null;
+  const element = document.createElement("audio");
+  element.preload = "auto";
+  element.src = url;
+  const source = e.ctx.createMediaElementSource(element);
+  const gain = e.ctx.createGain();
+  gain.gain.value = 0;
+  source.connect(gain);
+  gain.connect(e.buses[bus]);
+  return {
+    element,
+    gain,
+    dispose() {
+      element.pause();
+      source.disconnect();
+      gain.disconnect();
+      element.removeAttribute("src");
+      element.load(); // releases the network/decoder resources
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Capture tap (§10.3) — how an agent verifies the real mix without ears
 // ---------------------------------------------------------------------------
 

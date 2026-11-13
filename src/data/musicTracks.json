@@ -1,0 +1,64 @@
+{
+  "tracks": [
+    {
+      "id": "silence_expands",
+      "source": "Silence Expands.m4a",
+      "title": "Silence Expands",
+      "artist": "resaki",
+      "mood": "explore",
+      "weight": 1,
+      "encoded": "remux",
+      "durationSec": 259.687,
+      "startSec": 0.506,
+      "endSec": 259.687,
+      "lufs": -14.2,
+      "truePeakDb": -1.92,
+      "gainDb": -3.8
+    },
+    {
+      "id": "desolate_survival",
+      "source": "Desolate Survival.m4a",
+      "title": "Desolate Survival",
+      "artist": "resaki",
+      "mood": "calm",
+      "weight": 1,
+      "encoded": "remux",
+      "durationSec": 217.607,
+      "startSec": 0.157,
+      "endSec": 217.607,
+      "lufs": -16.09,
+      "truePeakDb": -0.03,
+      "gainDb": -1.91
+    },
+    {
+      "id": "glacial_pads",
+      "source": "Glacial Pads.m4a",
+      "title": "Glacial Pads",
+      "artist": "resaki",
+      "mood": "calm",
+      "weight": 1,
+      "encoded": "remux",
+      "durationSec": 227.567,
+      "startSec": 0.425,
+      "endSec": 226.801,
+      "lufs": -14.47,
+      "truePeakDb": -1.38,
+      "gainDb": -3.53
+    },
+    {
+      "id": "vast_empty_horizon",
+      "source": "Vast Empty Horizon.m4a",
+      "title": "Vast Empty Horizon",
+      "artist": "resaki",
+      "mood": "calm",
+      "weight": 1,
+      "encoded": "remux",
+      "durationSec": 194.247,
+      "startSec": 0.345,
+      "endSec": 193.827,
+      "lufs": -15.6,
+      "truePeakDb": -0.26,
+      "gainDb": -2.4
+    }
+  ]
+}
