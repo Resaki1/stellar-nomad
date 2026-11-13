@@ -110,7 +110,7 @@ overheat, transit key without a drive or while mining, empty or cooling hotbar
 slots), navigation lock/lost reuses the targeting instrument, timed-effect expiry
 chimes, context-menu and hotbar-assign clicks, AI-name confirm. A-weighted
 1.2–8 kHz share on the new assets is 0.2–6 % (the relay click 22 %, as a click
-should be). AUDIO_PLAN §11, Gate EA-1.
+should be). AUDIO_PLAN §11, Gate EA-1. Auditioned and accepted the same day.
 
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
@@ -258,15 +258,15 @@ when coasting; the legacy `idle` id means low positive thrust, not an always-on 
 | ☐ | `ship.wind.low` | Low dynamic pressure: thin air, or slow in thick air | 1 loop | `ship` | **Derived, not authored** — level and brightness come from `q = ½ρv²` (§12.3e). Crossfaded with the two below; `syncLoop` keeps them phase-aligned |
 | ☐ | `ship.wind.mid` | Moderate dynamic pressure | 1 loop | `ship` | Same airflow, more edge on the gusts |
 | ☐ | `ship.wind.high` | Max-q: fast and low, or entry into a thick atmosphere | 1 loop | `ship` | Full buffeting. ⚠ Heard *through the hull*, so pressure and rush rather than whistle — brightness is deliberately held back |
-| ☐ | `mining.heatsink.vent` | Heat Sink Cartridge used | 2 | `ship` | Gate EA-1. Valve seat + structure-borne coolant blowdown (choked → subsonic, spectrum falls as √P) |
-| ☐ | `mining.purge.vent` | Thermal Purge Charge used | 1 | `ship` | Bigger, longer blowdown of the whole loop |
-| ☐ | `mining.laser.ready` | Overheat clears (cooldown or heat sink) | 1 | `ship` | Contactor closes with bounce, magnetising hum swell |
-| ☐ | `module.unequip` | A module is removed | 2 | `ui` | Pawl release, stick-slip slide on rails, cradle stop. Was reusing the equip latch |
-| ☐ | `cargo.jettison` | Resources jettisoned | 2 | `ship` | Door actuator, clamp release, ejector charge, rail drag — then vacuum |
-| ☐ | `ship.hull.repair` | Hull repair consumable used | 2 | `ship` | Applicator, sealant injection, three clamp strikes, panel settle |
-| ☐ | `ship.respawn` | Ship comes back after death | 1 | `ship` | Main contactor, inrush hum, avionics relays, fans spinning up (rpm⁵ fan law) |
-| ☐ | `transit.abort` | Spool released before engaging | 1 | `ship` | Short field collapse; spool used to just cut off |
-| ☐ | `wreck.tractor.loop` | While the salvage tractor holds a wreck | 1 loop | `ship` | Magnetostriction hum at 100 Hz |
+| ☑ | `mining.heatsink.vent` | Heat Sink Cartridge used | 2 | `ship` | Gate EA-1. Valve seat + structure-borne coolant blowdown (choked → subsonic, spectrum falls as √P) |
+| ☑ | `mining.purge.vent` | Thermal Purge Charge used | 1 | `ship` | Bigger, longer blowdown of the whole loop |
+| ☑ | `mining.laser.ready` | Overheat clears (cooldown or heat sink) | 1 | `ship` | Contactor closes with bounce, magnetising hum swell |
+| ☑ | `module.unequip` | A module is removed | 2 | `ui` | Pawl release, stick-slip slide on rails, cradle stop. Was reusing the equip latch |
+| ☑ | `cargo.jettison` | Resources jettisoned | 2 | `ship` | Door actuator, clamp release, ejector charge, rail drag — then vacuum |
+| ☑ | `ship.hull.repair` | Hull repair consumable used | 2 | `ship` | Applicator, sealant injection, three clamp strikes, panel settle |
+| ☑ | `ship.respawn` | Ship comes back after death | 1 | `ship` | Main contactor, inrush hum, avionics relays, fans spinning up (rpm⁵ fan law) |
+| ☑ | `transit.abort` | Spool released before engaging | 1 | `ship` | Short field collapse; spool used to just cut off |
+| ☑ | `wreck.tractor.loop` | While the salvage tractor holds a wreck | 1 loop | `ship` | Magnetostriction hum at 100 Hz |
 
 ### Transit drive
 
