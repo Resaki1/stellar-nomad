@@ -30,7 +30,8 @@
 
 import type { createStore } from "jotai";
 
-import { benchModeAtom, devTeleportAtom } from "@/store/dev";
+import { Vector3 } from "three";
+import { benchModeAtom, devMaxSpeedOverrideAtom, devTeleportAtom } from "@/store/dev";
 import { commsQueueAtom } from "@/store/comms";
 import { simEpochMsAtom } from "@/store/simTime";
 import { SPARSE_DIVISOR } from "@/components/space/cloudReconstructionPass";
@@ -48,7 +49,11 @@ import {
   BENCH_PHASE_DEG,
   BENCH_POSE_EPOCH,
   SCENARIOS,
+  bodyPositionKm,
+  bodyRadiusKm,
   findScenario,
+  resolveBodyWarp,
+  resolveLookDirectionWarp,
   resolveScenario,
   scenarioIllumination,
   type Scenario,
@@ -390,6 +395,32 @@ export class BenchRunner {
     }
     this.store.set(devTeleportAtom, resolveScenario(scenario));
     console.log(`[bench] warped to ${scenario.id} — ${scenario.what}`);
+  }
+
+  /** Warp to any body at an altitude above its surface, e.g. `warpBody("mars", 20)`. */
+  warpBody(bodyId: string, altitudeKm: number): void {
+    this.store.set(devTeleportAtom, resolveBodyWarp(bodyId, altitudeKm));
+  }
+
+  /**
+   * Warp to `altitudeKm` above a body, heading away from it at `pitchDeg` above
+   * the local horizon (90 = straight up). For flying ascent profiles.
+   */
+  warpClimb(bodyId: string, altitudeKm: number, pitchDeg: number): void {
+    const [cx, cy, cz] = bodyPositionKm(bodyId);
+    // An arbitrary radial; the tangent is any vector perpendicular to it.
+    const up = new Vector3(0.3, 1, 0.2).normalize();
+    const tangent = new Vector3(1, 0, 0).cross(up).normalize();
+    const r = bodyRadiusKm(bodyId) + altitudeKm;
+    const eye: [number, number, number] = [cx + up.x * r, cy + up.y * r, cz + up.z * r];
+    const p = (pitchDeg * Math.PI) / 180;
+    const dir = tangent.multiplyScalar(Math.cos(p)).addScaledVector(up, Math.sin(p)).normalize();
+    this.store.set(devTeleportAtom, resolveLookDirectionWarp(dir, eye));
+  }
+
+  /** The dev-panel max-speed override, scriptable. `null` restores 400 m/s. */
+  maxSpeed(mps: number | null): void {
+    this.store.set(devMaxSpeedOverrideAtom, mps);
   }
 
   /** Where the ship was when this session opened. See BenchReport.env.startedFrom. */

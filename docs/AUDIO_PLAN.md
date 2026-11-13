@@ -2311,6 +2311,56 @@ they exist for. Vacuum is **exactly** silent — `WIND_RANGE_DB = 40` with the
 catalogue's `gainDb: -3` puts the floor at 0.00708, just under the 0.008 exit —
 rather than held at an inaudible constant.
 
+**A-WIND-4 — the wrong law. REPLACED (2026-11-13).** ⚠ This supersedes the
+Curle-dipole level law above and A-WIND-3's reference. Reported at 10 km/s (dev
+speed override; later gameplay will not be capped at 400 m/s): the climb still
+plateaued and then cut out, and Earth, Mars and Saturn "sounded all the same".
+
+**Physics.** Curle's V⁶ dipole is sound *radiated to a distant listener* from a
+low-Mach body. The crew hears the **hull**, driven by turbulent-boundary-layer
+wall pressure — Lowson's attached-TBL fit `p_rms = 0.006·q / (1 + 0.14·M²)`.
+Amplitude ∝ q subsonic; above ~Mach 3 the M² cancels the v² and
+`p_rms → ~0.04·γ·P`: on re-entry **pressure dominates, not speed**. Earth sea
+level is +16 dB from 0.4 to 10 km/s, not the +84 dB the old law implied. Caveats:
+separated/shock-oscillation regions run 5–10× higher; the high-altitude laminar
+boundary layer is quieter; the spectrum rises with speed (f ∝ U).
+
+| wall SPL (dB) | 0.4 km/s | 2 km/s | 10 km/s | old model at 10 km/s |
+|---|---|---|---|---|
+| Venus | 183 | 200 | 202 | clamped 0–165 km |
+| Earth | 148 | 162 | 164 | clamped 0–54 km |
+| Saturn (1 bar) | 133 | 156 | 163 | clamped 0–213 km |
+| Mars | 108 | 118 | 119 | clamped 0–23 km |
+
+The clamp explains both symptoms: at 10 km/s q exceeded the reference by 30–80 dB
+on every body, so all of them sat at the identical 0 dB, then spent the whole
+range in the last ~25 km.
+
+**Game mapping** (`wind.ts`), like the eye compresses luminance — three global
+constants, nothing per body:
+- wall SPL → game dB **linearly** at 0.57 dB/dB between `WIND_SPL_FLOOR_DB` 100
+  (silent) and `WIND_SPL_CEILING_DB` 170;
+- a **log knee** above −4 dB, never a clamp. The ceiling sits 6 dB above Earth's
+  hypersonic sea level so Earth never reaches the knee (MEASURED with the
+  ceiling *at* Earth: a 10 km/s climb spent its first 15 km in the knee and
+  changed only 4.6 dB). Venus' lowest ~40 km still compress to ~1 dB;
+- **brightness = Mach**, log-spaced from M 0.3 (low layer) to M 30 (high), on a
+  0.4 s pole. Loudness carries pressure, timbre carries speed;
+- the rate cap (A-WIND-2) is unchanged.
+
+**Verified live**, scripted climbs at 10 km/s via `__bench.warpClimb(body,
+altKm, pitchDeg)` + `__bench.maxSpeed(mps)`:
+
+| | near surface | mid | voice releases | brightness |
+|---|---|---|---|---|
+| Earth | −6.2 dB @ 3 km | −17 @ 23 km, −27 @ 39 km | ~60 km | 1.99 |
+| Saturn | −5.0 @ 2 km | −8.7 @ 45 km, −11.5 @ 71 km | ~300 km (sim) | 1.59 |
+| Mars | −30 @ 1 km | −32.9 @ 8 km | ~10 km | 2.00 |
+
+Earth falls a steady 0.59 dB/km the whole way — no plateau, no cliff. Saturn
+fades at a fifth of that and is duller (c = 858 m/s); Mars is a faint bright
+whisper near the ground and silent below ~2 km/s.
+
 **A-WIND-3 — the plateau. FIXED (`q_ref` 30 kPa → 98 kPa).** Reported on the
 third listen: *"flying at a low angle from ground into orbit … the wind volume
 did not really decrease at all for the most part and was still pretty high when

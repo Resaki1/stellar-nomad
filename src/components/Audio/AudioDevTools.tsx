@@ -58,7 +58,7 @@ import {
   absorptionDbPerM,
   densityAtAltitude,
 } from "@/audio/acoustics";
-import { windLayerGain, windState, WIND_Q_REF_PA, WIND_RANGE_DB } from "@/audio/wind";
+import { windLayerGain, windState } from "@/audio/wind";
 import { getDominantAtmosphereBody } from "@/components/space/atmospherePass";
 import { playAlarm, ALARM_TIERS, type AlarmTier } from "@/audio/alarms";
 import {
@@ -214,7 +214,7 @@ export default function AudioDevTools() {
         const layers = ([0, 1, 2] as const).map((layer) => ({
           layer,
           event: ["ship.wind.low", "ship.wind.mid", "ship.wind.high"][layer],
-          gain: Math.round(windLayerGain(layer, windState.db) * 1e4) / 1e4,
+          gain: Math.round(windLayerGain(layer, windState.db, windState.brightness) * 1e4) / 1e4,
         }));
         const out = {
           body: windState.bodyId ?? "none (vacuum)",
@@ -222,14 +222,12 @@ export default function AudioDevTools() {
           densityKgM3: windState.densityKgM3.toExponential(3),
           speedMps: Math.round(windState.speedMps * 10) / 10,
           qPa: Math.round(windState.qPa * 100) / 100,
-          qRefPa: WIND_Q_REF_PA,
-          // ⚠ TWO levels, and the gap between them is the follower working.
-          // `targetDb` is what q says this instant; `levelDb` is what is
-          // playing. They differ during a climb, a throttle change or a
-          // transit, and that difference IS the fix for the reported cliff.
+          mach: Math.round(windState.mach * 100) / 100,
+          wallSplDb: Math.round(windState.splDb * 10) / 10,
+          // targetDb = what physics says this instant; levelDb = what plays.
           targetDb: Math.round(windState.targetDb * 10) / 10,
           levelDb: Math.round(windState.db * 10) / 10,
-          drive: Math.round((1 + windState.db / WIND_RANGE_DB) * 1e3) / 1e3,
+          brightness: Math.round(windState.brightness * 100) / 100,
           layers,
           // Below CULL_EXIT_GAIN (0.008) on every layer means no voice exists,
           // which is the difference between quiet and silent.

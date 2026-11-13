@@ -87,9 +87,9 @@ export default function GameAudioTriggers() {
     const wind = (["ship.wind.low", "ship.wind.mid", "ship.wind.high"] as const)
       .map((event, layer) => registerEmitter({
         event,
-        // ⚠ `windState.db`, the FOLLOWED level — never `qPa`. The raw value is
-        // 60·log10(speed ratio) and steps by tens of dB in a frame.
-        intensity: () => windLayerGain(layer as 0 | 1 | 2, windState.db),
+        // ⚠ The FOLLOWED level and brightness — never the instantaneous ones,
+        // which step by tens of dB on transit engage or a collision.
+        intensity: () => windLayerGain(layer as 0 | 1 | 2, windState.db, windState.brightness),
         // ⚠⚠ SHORT ON PURPOSE, AND IT USED TO BE 1200. `setVoiceGain` early-
         // returns for the whole attack (voices.ts, `attackEndsAtS`), so a long
         // fade-in freezes the voice at its promotion gain — ~-34 dBFS, the cull

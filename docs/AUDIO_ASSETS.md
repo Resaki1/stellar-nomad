@@ -92,6 +92,14 @@ the level now falls from the first metre (−8 dB at 5 km, −16 at 10, −31 at
 and the voice releases at 24.8 km. ⚠ The cost is Mars, now silent at −56.7 dB.
 AUDIO_PLAN §12.3e, defect A-WIND-3.
 
+**2026-11-13 (b): the wrong law.** At 10 km/s the climb still plateaued and
+Earth, Mars and Saturn sounded identical. The level law is now the hull's
+turbulent-boundary-layer wall pressure (pressure-dominated when hypersonic)
+compressed linearly with a log knee, and brightness follows Mach. Verified live
+at 10 km/s: Earth fades 0.59 dB/km from −6 dB to silence at ~60 km; Saturn is as
+loud but fades 5× slower and duller; Mars is a faint whisper below ~10 km.
+Supersedes (e). AUDIO_PLAN §12.3e, A-WIND-4.
+
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
 Measured, that split the palette perfectly: **A-weighted energy in 1.2–8 kHz was
