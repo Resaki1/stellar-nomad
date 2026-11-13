@@ -84,6 +84,14 @@ to 120 km, removing the atmosphere and all velocity in one frame — now fades
 over 3.3 s and reaches the floor exactly at 4.25 s, while ordinary acceleration
 lags by 0.2 dB. See [AUDIO_PLAN §12.3e](AUDIO_PLAN.md), defect A-WIND-2.
 
+**2026-11-13: the plateau.** Third listen: the level "did not really decrease at
+all for the most part" during a climb. `q_ref` was 30 kPa against a ship that
+makes 98 kPa at sea level, so the clamp ate the top third of every climb — flat
+to 9.8 km, still −8 dB at 15 km. Re-anchored to the ship's own sea-level max-q:
+the level now falls from the first metre (−8 dB at 5 km, −16 at 10, −31 at 20)
+and the voice releases at 24.8 km. ⚠ The cost is Mars, now silent at −56.7 dB.
+AUDIO_PLAN §12.3e, defect A-WIND-3.
+
 **2026-11-12 (b): renderer v4 — the static.** Reported: a strong, cheap static
 over every cutter, every flight sound and every hull sound except hull tension.
 Measured, that split the palette perfectly: **A-weighted energy in 1.2–8 kHz was

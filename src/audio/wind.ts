@@ -20,18 +20,31 @@ import { audioShipBuffer } from "./shipBuffer";
 /**
  * Dynamic pressure at which the bed sits at its authored level, Pa.
  *
- * 🔑 ANCHORED TO A REAL NUMBER, not to a game constant. ~30 kPa is max-q for a
- * launch vehicle on ascent (Saturn V ≈ 33 kPa, Shuttle ≈ 32 kPa); an airliner
- * cruises nearer 15 kPa. So "full bed" means "the loudest moment of a real
- * atmospheric ascent", which is exactly the manoeuvre this sound exists for.
+ * 🔑 THE SHIP'S OWN SEA-LEVEL MAX-Q, and it is a GLOBAL constant, not per body.
+ * `½ · 1.225 · 400² = 98 kPa` — Earth at sea level at SHIP_MAX_SPEED_KMPS. Every
+ * body is then measured against that one yardstick, which is the whole point:
+ * Venus pins and Mars whispers because ρ differs, not because anyone tuned them.
+ * A per-body reference would make every planet use the full range and therefore
+ * sound the same, which is the opposite of what this system is for.
  *
- * ⚠ Deliberately NOT the ship's own maximum. At SHIP_MAX_SPEED_KMPS = 0.4 km/s
- * in sea-level air, q = ½·1.225·400² = 98 kPa — 15 dB past this reference and
- * clamped. Anchoring here instead means the bed reaches full level where a real
- * vehicle would, and the ship's ability to exceed it reads as "pinned", which
- * is also what it would be.
+ * ⚠⚠ THIS WAS 30 kPa — real ascent max-q (Saturn V ≈ 33 kPa) — and that was a
+ * better story than a design. The ship makes 98 kPa at sea level, so the level
+ * CLAMPED for the first 15 dB: MEASURED, it was pinned at 0 dB from the ground
+ * to 9.8 km at full throttle, still only −8 dB at 15 km, and then spent the
+ * whole 40 dB between 10 and 35 km. Reported as "the volume did not really
+ * decrease at all for the most part … and then it suddenly decreases to 0".
+ * Anchored here instead, the level falls from the first metre of climb
+ * (−15.3 dB at 10 km, −30.7 dB at 20 km, released by 25.5 km) with no plateau.
+ *
+ * ⚠ The COST is Mars. The voice releases ~39 dB below this reference, so flight
+ * is audible only where q ≥ ~500 Pa. Mars at 400 m/s on the surface is 1.6 kPa
+ * against Earth's 98 kPa — −53.6 dB — so Mars is silent, where the old 30 kPa
+ * put it just inside the range. That is physically right (1/61 the density is
+ * like flying 50 m/s on Earth) and it is the honest consequence of one global
+ * yardstick, but it is a real loss and it is why this number is documented
+ * rather than tuned. Raising the ship's top speed moves this.
  */
-export const WIND_Q_REF_PA = 30_000;
+export const WIND_Q_REF_PA = 98_000;
 
 /**
  * Range below the reference that the bed spans, dB.
@@ -41,7 +54,9 @@ export const WIND_Q_REF_PA = 30_000;
  * 10^(-40/20) = 0.0100, times the -3 dB trim = 0.00708, which is below
  * CULL_EXIT_GAIN (0.008, spatial.ts). So the voice is released at the bottom of
  * the range: the bed reaches **exact silence**, not a fade to an inaudible
- * constant. Raising this past ~41 would strand a voice alive in vacuum forever.
+ * constant. ⚠ LOWERING this is the danger, not raising it: at 30 the floor
+ * would be 10^(-30/20)·0.708 = 0.0224, above CULL_EXIT, and the voice would
+ * never release. (An earlier revision of this comment had that backwards.)
  *
  * ⚠ The rate cap below delays that release but cannot prevent it: the cap
  * subtracts a fixed dB each tick, so the floor is reached exactly rather than

@@ -2150,11 +2150,9 @@ is `30·log10(q/q_ref)` — **9.03 dB per doubling of q** — or, in amplitude, 
 tidy `(q/q_ref)^1.5`. ⚠ Lighthill's V⁸ is the **quadrupole** (a free jet) and is
 the wrong law here: a hull is a surface, not a jet.
 
-**The reference.** `WIND_Q_REF_PA = 30 kPa`, anchored to real max-q on ascent
-(Saturn V ≈ 33 kPa, Shuttle ≈ 32 kPa; an airliner cruises nearer 15 kPa) —
-deliberately *not* to a game constant. The ship can exceed it (400 m/s at sea
-level is 98 kPa, 15 dB past the reference) and the level clamps, which reads as
-pinned, which is what it would be.
+**The reference.** `WIND_Q_REF_PA = 98 kPa` — the ship's own sea-level max-q,
+`½·1.225·400²`. ⚠ It was 30 kPa (real ascent max-q, Saturn V ≈ 33 kPa), which
+was a better story than a design: see A-WIND-3 below. Global, never per body.
 
 **Three layers, and the reason is a runtime limit, not a taste.** A `ship`-tier
 voice cannot be filtered: `setVoicePropagation` returns early unless the voice
@@ -2313,14 +2311,52 @@ they exist for. Vacuum is **exactly** silent — `WIND_RANGE_DB = 40` with the
 catalogue's `gainDb: -3` puts the floor at 0.00708, just under the 0.008 exit —
 rather than held at an inaudible constant.
 
-**⚠ Known, not fixed: the plateau.** `q_ref = 30 kPa` against a ship that makes
-98 kPa at sea level at max speed means the bed is **pinned at 0 dB from the
-ground to 9.8 km** at full throttle, and only then begins to fall. The plan
-calls that pinning intended ("which reads as pinned, which is what it would
-be"), and the rate cap removes the harshness it used to produce, but it does
-flatten the first third of the climb. Re-anchoring `q_ref` to the ship's own
-sea-level max-q would spread the range across the whole envelope. That is a
-character decision, not a defect, so it is left as a knob.
+**A-WIND-3 — the plateau. FIXED (`q_ref` 30 kPa → 98 kPa).** Reported on the
+third listen: *"flying at a low angle from ground into orbit … the wind volume
+did not really decrease at all for the most part and was still pretty high when
+it looked like I was already out of the atmosphere, and then it suddenly
+decreases to 0."* Measured, at 400 m/s under the 30 kPa reference:
+
+| altitude | 0 | 2 | 5 | 10 | 15 | 20 | 25 | 30 km |
+|---|---|---|---|---|---|---|---|---|
+| old (30 kPa) | 0 | 0 | 0 | 0 | −8 | −16 | −24 | −32 dB |
+| **new (98 kPa)** | 0 | −3 | −8 | −16 | −24 | −31 | −39 | floor |
+
+The ship makes **98 kPa at sea level**, 15 dB past the old reference, so the
+clamp ate the top third of every climb: flat to 9.8 km, still only −8 dB at
+15 km, and the whole 40 dB crammed between 10 and 35 km. Anchoring the
+reference to the ship's own sea-level max-q instead makes the level fall from
+the first metre, and the voice releases at **24.8 km** instead of 34.6 km.
+⚠ The reference stays **global**, not per body — a per-body reference would
+give every planet the full range and so make them all sound alike, which is the
+opposite of the point. Verified live: 4.1 km at 400 m/s now reads −6.5 dB where
+it used to read 0; 26.1 km reads the floor and no voice.
+
+⚠ **The cost is Mars.** The voice releases ~39 dB below the reference, so flight
+is audible only where q ≳ 500 Pa. Mars at 400 m/s on the surface is 1.26 kPa
+(ρ = 0.0158) against Earth's 98 kPa — **−56.7 dB** — so Mars is silent, where
+30 kPa put it just inside the range. Physically that is right (1/78 the density
+is like flying 45 m/s on Earth) and it is the honest consequence of one global
+yardstick, but it is a real loss. Raising the ship's top speed moves it back.
+
+**What the one law gives each body, with no per-body authoring** (every input
+comes from `sol.json`'s `surfacePressureBar` / `surfaceTemperatureK` /
+`composition` plus gravity, via `acousticsForBody`):
+
+| body | ρ₀ kg/m³ | H km | level at 400 m/s | fade rate |
+|---|---|---|---|---|
+| Venus | 65.2 | 15.9 | 0 dB (**+51.8 raw**, pinned) | 0.82 dB/km |
+| Earth | 1.226 | 8.4 | 0 dB | 1.55 dB/km |
+| Neptune | 0.446 | 19.9 | −13.2 dB | 0.65 dB/km |
+| Uranus | 0.418 | 27.0 | −14.0 dB | 0.48 dB/km |
+| Saturn | 0.192 | 46.5 | −24.1 dB | 0.28 dB/km |
+| Jupiter | 0.164 | 23.5 | −26.2 dB | 0.55 dB/km |
+| Mars | 0.0158 | 10.8 | −56.7 dB (**silent**) | 1.21 dB/km |
+
+Two independent axes fall out of the same two numbers: ρ₀ sets **how loud** at a
+given speed, and the scale height sets **how fast it fades** — `30/(H·ln10)`
+dB/km. Venus is pinned for 60 km of descent and fades at half Earth's rate;
+Saturn is quiet and fades at a fifth of it.
 
 🔑 **One law, every body, no per-body authoring.** Thin-Mars entry and
 thick-Venus entry differ because ρ differs, which is the whole argument for
