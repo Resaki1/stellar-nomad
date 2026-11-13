@@ -1769,7 +1769,10 @@ mood changes never interrupt a playing track.
 > after arrival; otherwise `calm`. No `tension`/`danger` tracks exist, so those
 > fall back to calm. **Death** fades music out in 2 s and holds it until respawn.
 > **Ducks −9 dB** under comms and critical hull (§7.6). **MediaSession** shows
-> title/artist; pause/stop fade out, next skips, play starts a track.
+> title/artist (artist "Stellar Nomad"; the real creator is in CREDITS.md);
+> pause/stop fade out, next skips, play starts a track. **Pause menu:** the
+> ambience and both SFX buses fade out (τ 0.1 s) and back on resume; music and UI
+> carry on, matching Minecraft since 1.21.6 (it paused music before that).
 >
 > **Verified live:** first track 26 s after the click; edge silence skipped;
 > 3 s fade to exactly the manifest gain (0.666 = −3.53 dB); the real Music slider

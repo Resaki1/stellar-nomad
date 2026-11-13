@@ -314,10 +314,27 @@ export function setMasterGain(gain: number): void {
   if (!blurred) setParamSmooth(e.master.gain, gain, 0.02);
 }
 
+const busTarget: Partial<Record<BusId, number>> = {};
+let gamePaused = false;
+/** Buses silenced by the pause menu. Music and UI stay: the menu has clicks, and music carries on (as in Minecraft since 1.21.6). */
+const PAUSED_BUSES: readonly BusId[] = ["ambience", "sfxShip", "sfxWorld"];
+
 export function setBusGain(bus: BusId, gain: number): void {
+  busTarget[bus] = gain;
   const e = engine;
   if (!e) return;
+  if (gamePaused && PAUSED_BUSES.includes(bus)) return;
   setParamSmooth(e.buses[bus].gain, gain, 0.02);
+}
+
+/** Pause menu open: fade the world (engine, wind, ambience) out, and back in on resume. */
+export function setGamePaused(paused: boolean): void {
+  if (gamePaused === paused) return;
+  gamePaused = paused;
+  const e = engine;
+  if (!e) return;
+  // τ 0.1 s: inaudible within ~0.5 s, quick enough to read as a response to the key.
+  for (const bus of PAUSED_BUSES) setParamSmooth(e.buses[bus].gain, paused ? 0 : (busTarget[bus] ?? 0), 0.1);
 }
 
 /**

@@ -6,7 +6,7 @@
 // Owns four side effects and nothing else:
 //   1. unlock on the first real user gesture (T8)
 //   2. settings → bus gains
-//   3. tab-visibility ducking (§8.2)
+//   3. tab-visibility ducking (§8.2) and the pause-menu fade
 //   4. starting the A5 tick
 //
 // ⚠ IT OWNS NO AUDIO STATE. The engine is a module singleton that is never torn
@@ -22,10 +22,12 @@ import { useEffect } from "react";
 import { useAtomValue } from "jotai";
 
 import { audioSettingsAtom, VOLUME_KEYS } from "@/store/audio";
+import { settingsIsOpenAtom } from "@/store/store";
 import {
   applyBlurState,
   ensureEngine,
   setBusGain,
+  setGamePaused,
   setMasterGain,
   sliderToGain,
   unlockAudio,
@@ -35,6 +37,7 @@ import { startAudioTick, stopAudioTick } from "@/audio/tick";
 
 export default function AudioSystem({ authoring = false }: { authoring?: boolean }) {
   const settings = useAtomValue(audioSettingsAtom);
+  const paused = useAtomValue(settingsIsOpenAtom) && !authoring;
 
   // ── 1. Unlock on the first gesture ───────────────────────────────────────
   useEffect(() => {
@@ -86,6 +89,9 @@ export default function AudioSystem({ authoring = false }: { authoring?: boolean
     onVisibility();
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [settings.onBlur]);
+
+  // The settings menu IS the pause menu (it stops the render loop).
+  useEffect(() => setGamePaused(paused), [paused]);
 
   // ── 4. The A5 tick + tiered preload ──────────────────────────────────────
   useEffect(() => {

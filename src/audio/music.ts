@@ -69,7 +69,7 @@ function setMediaSession(track: MusicTrack | null): void {
     ms.playbackState = "none";
     return;
   }
-  ms.metadata = new MediaMetadata({ title: track.title, artist: track.artist, album: "Stellar Nomad" });
+  ms.metadata = new MediaMetadata({ title: track.title, artist: track.artist });
   ms.playbackState = "playing";
   // A stray media key must do something sensible mid-flight (§7.7).
   ms.setActionHandler("pause", () => stopMusic());

@@ -19,14 +19,16 @@ import {
   VOLUME_LABELS,
   type BlurBehaviour,
 } from "@/store/audio";
-import { playAudio, sliderToGain } from "@/audio";
+import { playAudio } from "@/audio";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 
-/** Slider position → the dB the player is actually setting. For the readout only. */
+/**
+ * Slider readout as a plain percentage, like every other game's. The curve
+ * behind it is perceptual (gain = t², §8.1 / `sliderToGain`), so 50% sounds
+ * about half as loud rather than nearly full.
+ */
 function labelFor(t: number): string {
-  const g = sliderToGain(t);
-  if (g <= 0) return "off";
-  return `${(20 * Math.log10(g)).toFixed(1)} dB`;
+  return `${Math.round(t * 100)}%`;
 }
 
 export default function AudioSettings() {
@@ -59,18 +61,8 @@ export default function AudioSettings() {
         </label>
       ))}
 
-      {/* 🔑 The slider curve is PERCEPTUAL, not linear: gain = t², i.e.
-          dB = 40·log10(t). A linear `gain = t` mapping is the single
-          most-reported volume-slider complaint — it puts nearly all audible
-          change in the top 20-30% of travel, so the slider "does nothing until
-          80%". See §8.1 and `sliderToGain`. */}
-      <div className="dev-controls__hint">
-        Music defaults below effects on purpose — it otherwise buries the alarms
-        and the mining feedback.
-      </div>
-
       <label className="dev-controls__label">
-        when the tab loses focus
+        audio in background
         <select
           className="dev-controls__select"
           value={audio.onBlur}
@@ -86,16 +78,9 @@ export default function AudioSettings() {
         </select>
       </label>
 
-      {/* Three states rather than a boolean, and `duck` is the default. This is
-          a co-op game: you alt-tab to a wiki or a call while the world keeps
-          running and teammates keep playing. A hard mute means missing a
-          hull-breach cue the game is actively delivering; full volume means
-          blaring into the call. Ducking to −25 dB resolves both. §8.2. */}
-      <div className="dev-controls__hint">
-        <strong>duck</strong> drops to −25 dB so alerts still reach you —
-        recommended for co-op. <strong>mute</strong> silences everything.
-      </div>
-
+      {/* Three states, "reduced" (−25 dB) by default: co-op, so you alt-tab to a
+          call while the world keeps running and a hull alarm should still reach
+          you. §8.2. */}
       <SettingsCheckbox
         active={audio.muted}
         onChange={() => setAudio({ muted: !audio.muted })}

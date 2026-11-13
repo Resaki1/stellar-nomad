@@ -95,8 +95,9 @@ export const VOLUME_KEYS = [
   "music",
 ] as const;
 
+/** Player-facing names; the ids stay for saved settings. Key order = menu order. */
 export const BLUR_LABELS: Record<BlurBehaviour, string> = {
-  mute: "mute",
-  duck: "duck",
-  play: "keep playing",
+  play: "full volume",
+  duck: "reduced",
+  mute: "muted",
 };
