@@ -59,6 +59,7 @@ import HullRegenTicker from "../Effects/HullRegenTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
 import WreckCollector from "../WreckCollector";
+import TestFrameProbe from "../TestHarness/TestFrameProbe";
 
 /**
  * three.js renderer internals we touch directly (not in the public typings).
@@ -294,6 +295,7 @@ const Scene = () => {
     >
           {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
           {perfOn ? <PerfProbe /> : null}
+          {process.env.NODE_ENV === "development" ? <TestFrameProbe /> : null}
 
           <WebGPUGate>
             <SpaceRenderer scaled={scaledContent} local={localContent} />

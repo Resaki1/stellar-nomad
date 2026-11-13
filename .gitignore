@@ -48,3 +48,6 @@ era5_gibs_*.jpg
 # Music source masters (Suno downloads). Only the processed public/audio/music/*.opus ships;
 # re-download to regenerate. scripts/process-music.mjs
 AUDIO/music/
+
+# scripted verification output (scripts/drive.mjs, __test.*.save)
+/.captures/

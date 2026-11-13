@@ -24,5 +24,7 @@ export default defineConfig([
     "build/**",
     "next-env.d.ts",
     "public/basis/**",
+    // scripts/drive.mjs output, incl. a Chrome profile full of third-party JS
+    ".captures/**",
   ]),
 ]);

@@ -19,6 +19,8 @@
  *   __bench.warp("earth_8")        — fly to a scenario and stay
  *   __bench.report()               — print live per-pass timings
  *   __bench.lastJson               — full result as JSON (copy this to share)
+ *
+ *   __test.*                       — scripted verification (docs/AUTOMATED_TESTING.md)
  */
 
 import { useEffect } from "react";
@@ -30,6 +32,7 @@ import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
 import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
 import { getLumHarness, type LumHarness } from "./space/perf/lumHarness";
+import { createTestHarness, type TestHarness } from "./TestHarness/testHarness";
 
 export default function DevTools() {
   const store = useStore();
@@ -110,15 +113,19 @@ export default function DevTools() {
     const bench = getBenchRunner(store);
     // Photometric counterpart to __bench — see docs/LIGHTING_PLAN.md §4.2.
     const lum = getLumHarness(store);
+    // Scripted verification — docs/AUTOMATED_TESTING.md, scripts/drive.mjs.
+    const test = createTestHarness(store);
 
     type DevWindow = Window & {
       __dev?: typeof devApi;
       __bench?: BenchRunner;
       __lum?: LumHarness;
+      __test?: TestHarness;
     };
     (window as DevWindow).__dev = devApi;
     (window as DevWindow).__bench = bench;
     (window as DevWindow).__lum = lum;
+    (window as DevWindow).__test = test;
     console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
     console.log("[Dev] Perf harness via __bench. Try __bench.list() or await __bench.sweep()");
     console.log("[Dev] Photometry harness via __lum. Try __lum.units() or await __lum.probe()");
@@ -127,6 +134,7 @@ export default function DevTools() {
       delete (window as DevWindow).__dev;
       delete (window as DevWindow).__bench;
       delete (window as DevWindow).__lum;
+      delete (window as DevWindow).__test;
     };
   }, [store]);
 

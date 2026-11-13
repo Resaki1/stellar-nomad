@@ -50,6 +50,18 @@
 
 > There is still no `test` script. If you add one, update this section.
 
+**Seeing and hearing the running game (scripted verification)**
+- `pnpm drive -- <steps>` — headless Chrome with real Metal WebGPU, driven over CDP
+  (zero deps). Warp, settle, hold keys, capture frames/audio, measure. Use it for
+  any check you'd otherwise ask the user to eyeball, and for unattended quality-goal
+  loops. Needs the dev server and an UNSANDBOXED command (Chrome can't start in
+  Seatbelt). Example: `pnpm drive -- --keep scene:earth_650 settle canvas:e650 stats`
+- `--perf` for any timing (it switches to vsync pacing; uncapped mode overflows the
+  GPU timestamp pool and the numbers are garbage).
+- In-page API `window.__test` (scene / settled / image.stats / audio.record / state).
+- The in-app browser pane renders at ~2 fps while hidden — don't run loops there.
+- Full guide, settle semantics, metrics, traps: [`docs/AUTOMATED_TESTING.md`](docs/AUTOMATED_TESTING.md).
+
 **Generating LOD1 asteroid models:**
 
 To create simplified LOD1 `.glb` models (stripped textures, ~50% geometry, flat grey material):

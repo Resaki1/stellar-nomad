@@ -75,7 +75,7 @@ type Store = ReturnType<typeof createStore>;
  * jitter. That is the exact failure the measure-window note in
  * docs/PERF_MEASUREMENT.md warns about, armed and waiting.
  */
-const CLOUD_TEMPORAL_CYCLE = (() => {
+export const CLOUD_TEMPORAL_CYCLE = (() => {
   const bayerLen = SPARSE_DIVISOR * SPARSE_DIVISOR;
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
   return (bayerLen * STBN_FRAME_MODULUS) / gcd(bayerLen, STBN_FRAME_MODULUS);

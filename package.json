@@ -17,7 +17,8 @@
     "check:audio-integrated": "node scripts/integrate-workshop-audio.mjs --check",
     "check:audio-lifecycle": "node scripts/check-audio-lifecycle.mjs",
     "process:music": "node scripts/process-music.mjs",
-    "check:music": "node scripts/process-music.mjs --check"
+    "check:music": "node scripts/process-music.mjs --check",
+    "drive": "node --experimental-websocket --no-warnings=ExperimentalWarning scripts/drive.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
