@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "cargo.jettison",
+    "seed": 24017,
+    "duration": 1.5,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.3,
+    "body": 0.9,
+    "texture": 0.75,
+    "detail": 0.6
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Resources are jettisoned from the hold.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.999999988978489,
+    "rmsDb": -29.860564036353082,
+    "dc": -4.9026662933086365e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.007980018854141235,
+    "finite": true,
+    "silent": false
+  }
+}

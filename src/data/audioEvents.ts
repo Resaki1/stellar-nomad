@@ -647,6 +647,137 @@ export const AUDIO_EVENTS = [
     loop: true,
     preloadTier: 2,
     gainDb: 0
+  },
+  // Gate EA-1 gaps (2026-11-13): physically modelled ship hardware, heard
+  // through the structure. See src/audio/workshop/mechanisms.ts.
+  {
+    id: "mining.heatsink.vent",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/mining_heatsink_vent_s24017.opus",
+      "/audio/workshop/mining_heatsink_vent_s24018.opus"
+    ],
+    priority: 60,
+    maxInstances: 2,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0,
+    pitchJitterCents: 40,
+    gainJitterDb: 0.5
+  },
+  {
+    id: "mining.purge.vent",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/mining_purge_vent_s24017.opus"
+    ],
+    priority: 60,
+    maxInstances: 2,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0
+  },
+  {
+    id: "mining.laser.ready",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/mining_laser_ready_s24017.opus"
+    ],
+    priority: 70,
+    maxInstances: 1,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0,
+    pitchJitterCents: 30
+  },
+  {
+    id: "module.unequip",
+    bus: "ui",
+    tier: "ui",
+    variants: [
+      "/audio/workshop/module_unequip_s24017.opus",
+      "/audio/workshop/module_unequip_s24018.opus"
+    ],
+    priority: 85,
+    maxInstances: 3,
+    cooldownMs: 120,
+    preloadTier: 0,
+    gainDb: 0,
+    pitchJitterCents: 25,
+    gainJitterDb: 0.5
+  },
+  {
+    id: "cargo.jettison",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/cargo_jettison_s24017.opus",
+      "/audio/workshop/cargo_jettison_s24018.opus"
+    ],
+    priority: 60,
+    maxInstances: 2,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0,
+    pitchJitterCents: 30
+  },
+  {
+    id: "ship.hull.repair",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/ship_hull_repair_s24017.opus",
+      "/audio/workshop/ship_hull_repair_s24018.opus"
+    ],
+    priority: 60,
+    maxInstances: 2,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0,
+    pitchJitterCents: 30
+  },
+  {
+    id: "ship.respawn",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/ship_respawn_s24017.opus"
+    ],
+    priority: 90,
+    maxInstances: 1,
+    cooldownMs: 1000,
+    preloadTier: 1,
+    gainDb: 0
+  },
+  {
+    id: "transit.abort",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/transit_abort_s24017.opus"
+    ],
+    priority: 60,
+    maxInstances: 1,
+    cooldownMs: 150,
+    preloadTier: 1,
+    gainDb: 0
+  },
+  {
+    id: "wreck.tractor.loop",
+    bus: "sfxShip",
+    tier: "ship",
+    variants: [
+      "/audio/workshop/wreck_tractor_loop_s24017.wav"
+    ],
+    priority: 40,
+    maxInstances: 1,
+    cooldownMs: 0,
+    preloadTier: 1,
+    gainDb: -3,
+    loop: true
   }
 ] as const satisfies readonly AudioEventShape[];
 

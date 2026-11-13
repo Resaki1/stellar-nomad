@@ -1,6 +1,6 @@
 {
   "tool": "Stellar Nomad Audio Workshop",
-  "rendererVersion": 5,
+  "rendererVersion": 6,
   "recipe": {
     "version": 1,
     "presetId": "mining.target.acquire",

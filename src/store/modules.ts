@@ -234,7 +234,7 @@ export const unequipSlotAtom = atom(
       ...state,
       equippedModules: newEquipped,
     });
-    set(signalAudioActionAtom, "module.equip");
+    set(signalAudioActionAtom, "module.unequip");
   },
 );
 

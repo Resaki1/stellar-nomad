@@ -35,9 +35,10 @@ import { audioShipBuffer } from "@/audio/shipBuffer";
 import { resetWind, windLayerGain, windState } from "@/audio/wind";
 import { shipHealthAtom, settingsIsOpenAtom } from "@/store/store";
 import { vfxEventsAtom } from "@/store/vfx";
-import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom } from "@/store/mining";
+import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom, pulseCycleBuffer } from "@/store/mining";
 import { isCargoFullAtom } from "@/store/cargo";
-import { transitStateAtom } from "@/store/transit";
+import { targetedPOIAtom, transitStateAtom } from "@/store/transit";
+import { activeTimedEffectsAtom } from "@/store/timedEffects";
 import { toastsAtom } from "@/store/toast";
 import { isDeadAtom } from "@/store/death";
 import { itemCraftedSignalAtom } from "@/store/modules";
@@ -54,6 +55,9 @@ const targetKeyAtom = atom((get) => {
 });
 const targetingStepAtom = atom((get) => Math.floor(get(targetingProgressAtom) * 6));
 const transitPhaseAtom = atom((get) => get(transitStateAtom).phase);
+const poiTargetIdAtom = atom((get) => get(targetedPOIAtom)?.id ?? null);
+// Count only: the list itself commits every frame while an effect ticks.
+const timedEffectCountAtom = atom((get) => get(activeTimedEffectsAtom).length);
 
 export default function GameAudioTriggers() {
   const store = useStore();
@@ -112,7 +116,10 @@ export default function GameAudioTriggers() {
     const end = startup === null ? null : voiceEndTime(startup);
     const emitter = registerEmitter({
       event: "mining.laser.loop",
-      intensity: 1,
+      // Pulse mode cuts the power stage for 0.5 s of every 2 s; the beam visual
+      // already followed it and the sustain did not. The residue is the
+      // cooling loop that keeps running between pulses.
+      intensity: () => (pulseCycleBuffer.beamOn ? 1 : 0.14),
       pitchCents: pitch,
       fadeInMs: CUTTER_ATTACK_MS,
       // Blend only the final edge fade, using the decoded, pitch-adjusted end.
@@ -189,6 +196,8 @@ export default function GameAudioTriggers() {
     // A synthesised caution tone, not a sampled placeholder — §6.3's alarms are
     // the one content category that is FINISHED rather than placeholdered.
     if (!isDead && isOverheated && !prevOverheated.current) playAlarm("caution");
+    // Cleared — by natural cooldown or a heat sink — the cutter re-arms.
+    if (!isDead && !isOverheated && prevOverheated.current) playAudio("mining.laser.ready");
     prevOverheated.current = isOverheated;
   }, [isOverheated, isDead]);
 
@@ -230,6 +239,7 @@ export default function GameAudioTriggers() {
   const prevDead = useRef(isDead);
   useEffect(() => {
     if (isDead && !prevDead.current) playAudio("ship.destroyed");
+    if (!isDead && prevDead.current) playAudio("ship.respawn");
     prevDead.current = isDead;
   }, [isDead]);
   useEffect(() => {
@@ -254,6 +264,9 @@ export default function GameAudioTriggers() {
       else if (phase === "decelerating") cue = playAudio("transit.decel");
       else if (phase === "idle" && prevPhase.current === "decelerating")
         playAudio("transit.arrive");
+      // Released before engaging: the half-charged field collapses.
+      else if (phase === "idle" && prevPhase.current === "spooling")
+        playAudio("transit.abort");
     }
     prevPhase.current = phase;
     // Spool/decel cues are cancellable, so aborted transit cannot leave a tail.
@@ -265,6 +278,36 @@ export default function GameAudioTriggers() {
     const emitter = registerEmitter({ event: "transit.loop", intensity: 1 });
     return () => emitter.stop();
   }, [inTransit]);
+
+  // Salvage tractor: its field coils hum while any beam holds a wreck.
+  useEffect(() => {
+    if (isDead) return;
+    const tractor = registerEmitter({
+      event: "wreck.tractor.loop",
+      intensity: () => (audioShipBuffer.tractorBeams > 0 ? 1 : 0),
+      fadeInMs: 120,
+    });
+    return () => tractor.stop(250);
+  }, [isDead]);
+
+  // Navigation target lock, the same instrument as the mining lock.
+  // ⚠ Only a gaze release counts as "lost": the autopilot-disengage path also
+  // clears the target, but its toast already makes a sound.
+  const poiTarget = useAtomValue(poiTargetIdAtom);
+  const prevPoiTarget = useRef(poiTarget);
+  useEffect(() => {
+    if (!isDead && poiTarget && poiTarget !== prevPoiTarget.current) playAudio("mining.target.lock");
+    else if (!isDead && !poiTarget && prevPoiTarget.current && phase === "idle") playAudio("mining.target.lost");
+    prevPoiTarget.current = poiTarget;
+  }, [poiTarget, isDead, phase]);
+
+  // A timed consumable running out is a state change the player relies on.
+  const timedEffects = useAtomValue(timedEffectCountAtom);
+  const prevTimedEffects = useRef(timedEffects);
+  useEffect(() => {
+    if (!isDead && timedEffects < prevTimedEffects.current) playAudio("notify.info");
+    prevTimedEffects.current = timedEffects;
+  }, [timedEffects, isDead]);
 
   // ── Progression ──────────────────────────────────────────────────────────
   const crafted = useAtomValue(itemCraftedSignalAtom);

@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { playAudio } from "@/audio";
 import "./ContextMenu.scss";
 
 export interface ContextMenuItem {
@@ -92,6 +93,7 @@ export default function ContextMenu({ x, y, items, onClose, title }: Props) {
             disabled={item.disabled}
             onClick={() => {
               if (item.disabled) return;
+              playAudio("click.soft");
               item.onSelect?.();
               onClose();
             }}

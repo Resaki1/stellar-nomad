@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "transit.abort",
+    "seed": 24017,
+    "duration": 0.8,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.35,
+    "body": 0.8,
+    "texture": 0.55,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "The transit spool is released before it engages.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.00000005838476,
+    "rmsDb": -22.61891122778159,
+    "dc": 2.954872645900599e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.011851683259010315,
+    "finite": true,
+    "silent": false
+  }
+}

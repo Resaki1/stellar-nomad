@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "wreck.tractor.loop",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.25,
+    "motion": 0.3,
+    "body": 0.9,
+    "texture": 0.35,
+    "detail": 0.2
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "While the salvage tractor beam holds a wreck.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -18.000000436554874,
+    "rmsDb": -25.020274945199436,
+    "dc": -1.4227087891239954e-9,
+    "seamDelta": 0.001588231883943081,
+    "maxDelta": 0.0023239469155669212,
+    "finite": true,
+    "silent": false
+  }
+}

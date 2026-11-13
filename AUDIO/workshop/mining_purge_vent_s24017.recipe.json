@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.purge.vent",
+    "seed": 24017,
+    "duration": 2,
+    "pitch": 0,
+    "brightness": 0.4,
+    "motion": 0.3,
+    "body": 0.9,
+    "texture": 0.9,
+    "detail": 0.45
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A Thermal Purge Charge is used.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.999999988978489,
+    "rmsDb": -33.82211481876493,
+    "dc": -4.1227671680168965e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.016157258301973343,
+    "finite": true,
+    "silent": false
+  }
+}

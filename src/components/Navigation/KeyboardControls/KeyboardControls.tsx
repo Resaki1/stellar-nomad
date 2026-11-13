@@ -1,7 +1,9 @@
 import { movementAtom, settingsAtom } from "@/store/store";
 import { keybindsAtom } from "@/store/keybinds";
-import { transitDriveBuffer } from "@/store/transit";
-import { useAtomValue, useSetAtom } from "jotai";
+import { transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
+import { miningStateAtom } from "@/store/mining";
+import { playAudio } from "@/audio";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { useEffect, useRef, useCallback } from "react";
 
 // Speed change per second while holding accel/decel key
@@ -10,6 +12,7 @@ const SPEED_RATE_PER_S = 0.5;
 const KeyboardControls = () => {
   const settings = useAtomValue(settingsAtom);
   const setMovement = useSetAtom(movementAtom);
+  const store = useStore();
   const keybinds = useAtomValue(keybindsAtom);
 
   // Ref that holds a live Set of currently-pressed keys.
@@ -69,7 +72,11 @@ const KeyboardControls = () => {
       // Transit drive: hold to spool, tap to toggle decel.
       if (keybindsRef.current.transitDrive.includes(key)) {
         const phase = transitDriveBuffer.phase;
-        if (phase === "idle" || phase === "spooling") {
+        // TransitTicker silently ignores the key without a drive or while
+        // mining; reject audibly so the press is not mistaken for a dead key.
+        if (phase === "idle" && (!store.get(transitDriveOwnedAtom) || store.get(miningStateAtom).isMining)) {
+          playAudio("ui.reject");
+        } else if (phase === "idle" || phase === "spooling") {
           // Start or continue holding for spool.
           transitDriveBuffer.keyHeld = true;
         } else if (phase === "accelerating" || phase === "decelerating") {

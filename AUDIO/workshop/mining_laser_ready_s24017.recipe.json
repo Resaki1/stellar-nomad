@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.laser.ready",
+    "seed": 24017,
+    "duration": 0.35,
+    "pitch": 0,
+    "brightness": 0.55,
+    "motion": 0.2,
+    "body": 0.6,
+    "texture": 0.6,
+    "detail": 0.8
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "The cutter has cooled down after an overheat and can fire again.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -13.999999827421785,
+    "rmsDb": -39.945051153191066,
+    "dc": -1.88461746291507e-12,
+    "seamDelta": 0,
+    "maxDelta": 0.040094995871186256,
+    "finite": true,
+    "silent": false
+  }
+}

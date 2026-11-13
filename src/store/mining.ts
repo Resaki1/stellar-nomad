@@ -1,3 +1,4 @@
+import { signalAudioActionAtom } from "./audioSignals";
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { isCargoFullAtom } from "@/store/cargo";
@@ -151,6 +152,7 @@ export const pulseMiningActiveAtom = atom(false);
 /** Toggle pulse mining mode on/off. */
 export const togglePulseMiningAtom = atom(null, (get, set) => {
   set(pulseMiningActiveAtom, !get(pulseMiningActiveAtom));
+  set(signalAudioActionAtom, "click.soft");
 });
 
 /**

@@ -30,4 +30,6 @@ export const audioShipBuffer = {
    * that silenced the wind would measure the wrong scene.
    */
   speedMps: 0,
+  /** Salvage tractor beams currently holding a wreck. Written by WreckCollector. */
+  tractorBeams: 0,
 };

@@ -1707,6 +1707,23 @@ The point at which the game stops feeling broken.
 signal list in §1.3 and require each to have a wired sound. A silent action reads as a
 bug even in early access. This is a named punch-list item, not a vibe.
 
+> ### ✅ Gate EA-1 run — 2026-11-13
+>
+> ~170 actions enumerated from the code (not from §1.3, which predates hotbar,
+> pulse mining, wrecks and POI autopilot). **Silent gaps found and closed:**
+> consumable effects (heat sink, purge, hull patch — were a generic UI chime),
+> module unequip (played the *equip* latch), jettison, respawn, overheat
+> clearing, spool abort (the cue was just cut), salvage tractor, POI lock/lost,
+> timed-effect expiry, pulse mining (sustain ignored the 0.5 s off-phase), and
+> five silent rejections. New assets are the `mechanism` family
+> (`src/audio/workshop/mechanisms.ts`). Verified live: spool → abort, every
+> rejection, hotbar assign, unequip, and hull patch at 80 % → 92 % hull.
+>
+> **Deliberately left silent:** steering, ping brackets, HUD readouts, hull
+> regen ticks, Settings toggles/keybinds. **Not live-verified:** the tractor
+> loop (needs a wreck), heat-sink/purge success (needs cutter heat), respawn
+> (needs a death) — all wired on the same edge pattern as verified triggers.
+
 **Gate EA-2:** `__audio.stress(24)` under a dense-asteroid `__bench` scenario shows no
 frame-time regression beyond noise. Only then consider raising the voice cap.
 

@@ -15,6 +15,7 @@ import { shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
+import { signalAudioActionAtom, type AudioAction } from "@/store/audioSignals";
 import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
 
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
@@ -47,6 +48,7 @@ export default function Hotbar() {
   const setShipHealth = useSetAtom(shipHealthAtom);
   const addTimedEffect = useSetAtom(addTimedEffectAtom);
   const addToast = useSetAtom(addToastAtom);
+  const signalAudio = useSetAtom(signalAudioActionAtom);
   const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
 
   // Tick counter to force re-render while any cooldown is active
@@ -100,10 +102,12 @@ export default function Hotbar() {
   const activateSlot = useCallback(
     (index: number) => {
       const itemId = modulesState.hotbar[index];
-      if (!itemId) return;
-
-      const def = getItemDef(itemId);
-      if (!def) return;
+      const def = itemId ? getItemDef(itemId) : null;
+      // An empty slot's key did nothing; say so rather than drop the input.
+      if (!itemId || !def) {
+        signalAudio("ui.reject");
+        return;
+      }
 
       // Block heat-related consumables when there's no heat
       if (requiresHeat(def) && miningState.laserHeat <= 0) {
@@ -122,6 +126,8 @@ export default function Hotbar() {
         const ok = consumeItem(itemId);
         if (ok) {
           addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 3000 });
+        } else {
+          signalAudio("ui.reject");
         }
         return;
       }
@@ -139,10 +145,13 @@ export default function Hotbar() {
           return;
         }
 
-        // Instant effects
+        // Instant effects. Each kind is a physical event aboard — a coolant
+        // dump or a hull patch — so it gets that sound instead of a UI chime.
+        let cue: AudioAction | null = null;
         if (def.useEffects) {
           for (const eff of def.useEffects) {
             if (eff.key === "mining.currentHeat") {
+              cue = eff.op === "set" ? "mining.purge.vent" : "mining.heatsink.vent";
               if (eff.op === "set") {
                 heatSinkBuffer.pendingSet = eff.value as number;
               } else if (eff.op === "multiply") {
@@ -151,6 +160,7 @@ export default function Hotbar() {
                 heatSinkBuffer.pendingAdd = eff.value as number;
               }
             } else if (eff.key === "ship.currentHealth") {
+              cue = "ship.hull.repair";
               if (eff.op === "add") {
                 const newHealth = Math.min(shipConfig.maxHealth, shipHealth + (eff.value as number));
                 setShipHealth(newHealth);
@@ -158,10 +168,14 @@ export default function Hotbar() {
             }
           }
         }
-        addToast({ message: `Used: ${def.name}`, durationMs: 2000 });
+        if (cue) signalAudio(cue);
+        addToast({ message: `Used: ${def.name}`, durationMs: 2000, audio: cue ? "silent" : undefined });
+      } else {
+        // Out of stock or on cooldown.
+        signalAudio("ui.reject");
       }
     },
-    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast],
+    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast, signalAudio],
   );
 
   // Handle key presses 0-9 for hotbar
@@ -214,6 +228,7 @@ export default function Hotbar() {
     const def = getItemDef(itemId);
     if (!def || def.type !== "consumable") return;
     setHotbarSlot({ index, itemId });
+    signalAudio("click.soft");
     setJustAssignedSlot(index);
     document.body.classList.remove("sn-dragging-consumable");
   };
@@ -325,7 +340,9 @@ export default function Hotbar() {
             <div
               key={index}
               className={slotClass}
-              onClick={hasItem && !onCooldown && !unavailable ? () => activateSlot(index) : undefined}
+              // Greyed and cooling slots still answer a click: activateSlot explains
+              // "no heat" / "hull full" with a reject toast, cooldown rejects directly.
+              onClick={hasItem ? () => (onCooldown ? signalAudio("ui.reject") : activateSlot(index)) : undefined}
               onContextMenu={(e) => onSlotContextMenu(e, index)}
               draggable={!!hasItem}
               onDragStart={hasItem ? (e) => onSlotDragStart(e, index, itemId!) : undefined}

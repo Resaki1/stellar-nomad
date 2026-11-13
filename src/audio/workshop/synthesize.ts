@@ -1,7 +1,8 @@
+import { renderMechanism } from "./mechanisms";
 import { getPreset, parseRecipe, type Recipe } from "./presets";
 
 export const WORKSHOP_SAMPLE_RATE = 48000;
-export const RENDERER_VERSION = 5;
+export const RENDERER_VERSION = 6;
 const TAU = Math.PI * 2;
 
 export type SoundStats = {
@@ -220,7 +221,10 @@ export function renderSound(input: Recipe): RenderedSound {
   }));
   let phase = 0;
   const bright = recipe.brightness;
-  for (let i = 0; i < n; i++) {
+  // Ship hardware one-shots are modal/flow models with their own structure.
+  const mechanism = preset.family === "mechanism" ? renderMechanism(preset.gesture, recipe, n, rate) : null;
+  if (mechanism) samples.set(mechanism);
+  else for (let i = 0; i < n; i++) {
     const t = i / rate;
     const u = i / n;
     let body = 0, texture = 0, detail = 0;

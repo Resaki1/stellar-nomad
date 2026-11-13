@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.hull.repair",
+    "seed": 24017,
+    "duration": 1.7,
+    "pitch": 0,
+    "brightness": 0.5,
+    "motion": 0.3,
+    "body": 0.75,
+    "texture": 0.6,
+    "detail": 0.75
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A hull repair consumable is used.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.00000005838476,
+    "rmsDb": -30.703904576350705,
+    "dc": 8.427911023020079e-12,
+    "seamDelta": 0,
+    "maxDelta": 0.009827353060245514,
+    "finite": true,
+    "silent": false
+  }
+}

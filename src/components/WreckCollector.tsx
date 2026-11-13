@@ -9,6 +9,7 @@ import { cargoRemainingUnitsAtom, addCargoAtom } from "@/store/cargo";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { audioShipBuffer } from "@/audio/shipBuffer";
 
 // ── Tuning ───────────────────────────────────────────────────────────
 /** Beam locks on when ship is within this range (km). */
@@ -202,6 +203,7 @@ const WreckCollector = memo(function WreckCollector() {
       }
     }
 
+    audioShipBuffer.tractorBeams = beamCount;
     if (mesh) {
       mesh.instanceMatrix.needsUpdate = true;
       mesh.count = Math.min(wrecks.length, MAX_WRECKS);

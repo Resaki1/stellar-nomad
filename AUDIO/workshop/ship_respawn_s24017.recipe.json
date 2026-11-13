@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.respawn",
+    "seed": 24017,
+    "duration": 3,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.3,
+    "body": 0.9,
+    "texture": 0.75,
+    "detail": 0.5
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "The ship comes back online after a respawn.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.999999988978489,
+    "rmsDb": -31.901090028996126,
+    "dc": 2.7750422478838176e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.00687660276889801,
+    "finite": true,
+    "silent": false
+  }
+}

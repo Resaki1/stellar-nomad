@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "mining.heatsink.vent",
+    "seed": 24017,
+    "duration": 1.2,
+    "pitch": 0,
+    "brightness": 0.45,
+    "motion": 0.3,
+    "body": 0.8,
+    "texture": 0.85,
+    "detail": 0.5
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "A Heat Sink Cartridge is used.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -10.00000005838476,
+    "rmsDb": -33.599639313616414,
+    "dc": 2.658656123022065e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.012974917888641357,
+    "finite": true,
+    "silent": false
+  }
+}

@@ -10,6 +10,7 @@ import {
   removeCargoAtom,
 } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
+import { signalAudioActionAtom } from "@/store/audioSignals";
 import { getResourceTypes } from "@/sim/asteroids/resources";
 import Panel from "../Shell/Panel";
 
@@ -29,6 +30,7 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
   const used = useAtomValue(cargoUsedUnitsAtom);
   const capacity = useAtomValue(cargoCapacityUnitsAtom);
   const removeCargo = useSetAtom(removeCargoAtom);
+  const signalAudio = useSetAtom(signalAudioActionAtom);
 
   // Track per-row jettison amounts
   const [amounts, setAmounts] = useState<Record<string, string>>({});
@@ -68,13 +70,14 @@ export default function CargoDetail({ onClose }: { onClose: () => void }) {
       const qty = Math.min(parseInt(raw, 10) || 0, max);
       if (qty <= 0) return;
       removeCargo({ resourceId: id, amount: qty });
+      signalAudio("cargo.jettison");
       setAmounts((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
       });
     },
-    [amounts, removeCargo]
+    [amounts, removeCargo, signalAudio]
   );
 
   return (

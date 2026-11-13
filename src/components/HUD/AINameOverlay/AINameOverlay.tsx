@@ -5,6 +5,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
 import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
 
+import { playAudio } from "@/audio";
 import "./AINameOverlay.scss";
 
 const MAX_NAME_LENGTH = 20;
@@ -40,7 +41,11 @@ export default function AINameOverlay() {
 
   const confirm = useCallback(() => {
     const trimmed = inputValue.trim();
-    if (trimmed.length === 0) return;
+    if (trimmed.length === 0) {
+      playAudio("ui.reject");
+      return;
+    }
+    playAudio("click.hard");
     setAiName(trimmed);
     setIsNamed(true);
   }, [inputValue, setAiName]);

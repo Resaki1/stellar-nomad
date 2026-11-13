@@ -15,6 +15,7 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
 import { pulseMiningActiveAtom, togglePulseMiningAtom } from "@/store/mining";
 
+import { playAudio } from "@/audio";
 import "./MiningHUD.scss";
 
 export default function MiningHUD() {
@@ -125,6 +126,10 @@ export default function MiningHUD() {
         cancelMining();
       } else if (miningState.isFocused && !cargoFull && !miningState.isOverheated) {
         startMining();
+      } else {
+        // No target, full hold or an overheated cutter: the key did nothing,
+        // and a silent refusal reads as a dropped input.
+        playAudio("ui.reject");
       }
     };
     window.addEventListener("keydown", onKeyDown);
