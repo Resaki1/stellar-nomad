@@ -1,21 +1,12 @@
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
+import { defaultCargo } from "@/save/defaults";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { signalAudioActionAtom } from "./audioSignals";
 
-export type CargoState = {
-  /** Maximum cargo capacity in "cargo units". */
-  capacityUnits: number;
-  /** ResourceId -> amount (integer units). */
-  items: Record<string, number>;
-};
+export type { CargoState } from "@/save/types";
 
-const DEFAULT_CARGO_CAPACITY_UNITS = 2000;
-
-export const cargoAtom = atomWithStorage<CargoState>("cargo", {
-  capacityUnits: DEFAULT_CARGO_CAPACITY_UNITS,
-  items: {},
-});
+export const cargoAtom = savedAtom("player", "cargo", defaultCargo());
 
 export const cargoCapacityUnitsAtom = atom((get) => {
   const base = get(cargoAtom).capacityUnits;

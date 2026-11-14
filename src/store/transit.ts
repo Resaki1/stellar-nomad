@@ -7,6 +7,7 @@
 
 import { atom } from "jotai";
 import { modulesAtom } from "@/store/modules";
+import type { FrameId } from "@/sim/frames";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,7 +40,9 @@ export type TransitPhase =
 export type TransitTarget = {
   id: string;
   name: string;
+  /** LIVE array (body / field anchor) in system km, or relative to `frameId` when set. */
   positionKm: [number, number, number];
+  frameId?: FrameId;
   /** Stand-off distance (km) — autopilot aims this far short of the center. */
   arrivalOffsetKm?: number;
 };
@@ -88,8 +91,12 @@ export const transitDriveBuffer = {
   spoolAccS: 0,
   /** Whether autopilot is active (target was set when drive engaged). */
   autopilot: false,
-  /** Autopilot target position in km (copied when drive engages). */
+  /** Autopilot aim point, system km; re-resolved every frame from the target below. */
   autopilotTargetKm: { x: 0, y: 0, z: 0 },
+  /** Target captured at spool start; held by reference so a moving body stays current. */
+  autopilotTarget: null as TransitTarget | null,
+  /** Aim point minus target position, fixed at spool start (the arrival stand-off). */
+  autopilotOffsetKm: { x: 0, y: 0, z: 0 },
   /** Whether the transit key was tapped (pressed and released) since last frame.
    *  Used to trigger manual deceleration. Written by KeyboardControls, consumed by TransitTicker. */
   keyTapped: false,

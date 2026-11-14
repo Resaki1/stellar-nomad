@@ -1,5 +1,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
+import { DEFAULT_HEALTH } from "@/save/defaults";
 
 export type SetAtom<Args extends unknown[], Result> = (...args: Args) => Result;
 
@@ -120,14 +122,16 @@ export const settingsIsOpenAtom = atom(false);
  */
 export const hdrCalibrationOpenAtom = atom(false);
 
+/** A loaded ship starts at rest. */
 export const movementAtom = atom<Movement>({
   yaw: 0,
   pitch: 0,
-  speed: 1,
+  speed: 0,
 });
 
 export const hudInfoAtom = atom({
   speed: 0,
 });
 
-export const shipHealthAtom = atom(100);
+/** Hull HP (player save). */
+export const shipHealthAtom = savedAtom("player", "health", DEFAULT_HEALTH, { sampled: true });

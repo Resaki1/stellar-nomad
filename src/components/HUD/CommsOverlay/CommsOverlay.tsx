@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { activeCommsMessageAtom, dismissCommsAtom } from "@/store/comms";
-import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
+import { aiNameAtom } from "@/store/aiName";
 import { isShipAISpeaker, signalAudioActionAtom } from "@/store/audioSignals";
 
 import "./CommsOverlay.scss";
@@ -18,7 +18,7 @@ export default function CommsOverlay() {
   const message = useAtomValue(activeCommsMessageAtom);
   const dismiss = useSetAtom(dismissCommsAtom);
   const signalAudio = useSetAtom(signalAudioActionAtom);
-  const aiName = useAtomValue(aiNameAtom) ?? readAiNameFromStorage();
+  const aiName = useAtomValue(aiNameAtom);
 
   const [pageIndex, setPageIndex] = useState(0);
 

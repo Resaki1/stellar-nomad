@@ -1,9 +1,7 @@
 "use client";
 
-import Game from "@/components/Game/Game";
+import AppShell from "@/components/AppShell/AppShell";
 
-const Main = () => {
-  return <Game />;
-};
+const Main = () => <AppShell />;
 
 export default Main;

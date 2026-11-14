@@ -2,7 +2,8 @@
 // Research + Assay Samples state
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
+import { defaultResearch } from "@/save/defaults";
 import {
   RESEARCH_NODES,
   getResearchNode,
@@ -14,25 +15,9 @@ import {
 // Persisted state
 // ---------------------------------------------------------------------------
 
-export type ResearchState = {
-  /** Non-cargo currency earned from mining. */
-  assaySamples: number;
-  /** IDs of completed research nodes. */
-  completedNodes: string[];
-  /** Currently active research (only one at a time). */
-  activeResearch: { nodeId: string; elapsedS: number } | null;
-};
+export type { ResearchState } from "@/save/types";
 
-const DEFAULT_RESEARCH: ResearchState = {
-  assaySamples: 0,
-  completedNodes: [],
-  activeResearch: null,
-};
-
-export const researchAtom = atomWithStorage<ResearchState>(
-  "research-v1",
-  DEFAULT_RESEARCH,
-);
+export const researchAtom = savedAtom("player", "research", defaultResearch());
 
 // ---------------------------------------------------------------------------
 // Derived: assay samples count

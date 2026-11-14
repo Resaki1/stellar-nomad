@@ -20,6 +20,10 @@
  *   --fresh         wipe the test profile (localStorage etc.) before launch
  *   --no-isolate    don't enter bench mode (comms + save writes stay live)
  *   --out DIR       capture directory (default .captures)
+ *   --title         load the title screen (no ?autostart=1); steps start at the title.
+ *                   A run: script starts a world (UI or __test.app.start()) then calls
+ *                   `d.enterGame()` to wait for the loading gate and apply the usual setup.
+ *   --query K=V     extra URL parameter, repeatable (e.g. nogate=1, nocompile=1)
  *
  * Steps (run in order; each prints one JSON line)
  *   reload                      reload page and wait for __test (picks up code changes)
@@ -60,7 +64,7 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 
 // ── args ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
-const opt = { size: "1280x720", dpr: "1", out: ".captures", url: null, perf: false, keep: false, stop: false, fresh: false, isolate: true };
+const opt = { size: "1280x720", dpr: "1", out: ".captures", url: null, perf: false, keep: false, stop: false, fresh: false, isolate: true, title: false, query: [] };
 const steps = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -70,6 +74,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--stop") opt.stop = true;
   else if (a === "--fresh") opt.fresh = true;
   else if (a === "--no-isolate") opt.isolate = false;
+  else if (a === "--title") opt.title = true;
+  else if (a === "--query") opt.query.push(argv[++i]);
   else if (["--url", "--size", "--dpr", "--out"].includes(a)) opt[a.slice(2)] = argv[++i];
   else steps.push(a);
 }
@@ -135,8 +141,28 @@ if (reused && keptMode() && keptMode() !== MODE) {
   for (let i = 0; i < 50 && (await cdpAlive()); i++) await sleep(100);
   reused = false;
 }
+// --fresh must not reuse: a live Chrome keeps the HTTP and GPU shader caches (and may be
+// an orphan with no pidfile), so close it over CDP.
+if (reused && opt.fresh) {
+  killKept();
+  await closeBrowserOverCdp();
+  for (let i = 0; i < 50 && (await cdpAlive()); i++) await sleep(100);
+  reused = false;
+}
+async function closeBrowserOverCdp() {
+  try {
+    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+    const s = new WebSocket(webSocketDebuggerUrl);
+    await new Promise((res, rej) => ((s.onopen = res), (s.onerror = rej)));
+    s.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+    await sleep(300);
+  } catch {
+    /* already gone */
+  }
+}
 if (!reused) {
-  if (opt.fresh) rmSync(PROFILE, { recursive: true, force: true });
+  // Retries: an exiting Chrome still flushes into the profile after its CDP port closes.
+  if (opt.fresh) rmSync(PROFILE, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   chrome = spawn(
     CHROME,
     [
@@ -221,16 +247,18 @@ await send("Runtime.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: VW, height: VH, deviceScaleFactor: 1, mobile: false });
 // Headless pages have no focus by default; keyboard handlers on window need it.
 await send("Emulation.setFocusEmulationEnabled", { enabled: true });
-// Skip the "name your AI" prompt, which swallows keystrokes on a fresh profile.
-await send("Page.addScriptToEvaluateOnNewDocument", {
-  source: `try{ if(!localStorage.getItem("ai-name-v1")) localStorage.setItem("ai-name-v1", JSON.stringify("Test")); }catch(e){}`,
-});
 
 async function load() {
   const base = await pickUrl();
   const u = new URL(base);
   u.searchParams.set("dpr", opt.dpr);
   if (opt.perf) u.searchParams.set("perf", "");
+  // Every script but a --title one skips the title screen (it still passes the loading gate).
+  if (!opt.title) u.searchParams.set("autostart", "1");
+  for (const q of opt.query) {
+    const [k, ...v] = q.split("=");
+    u.searchParams.set(k, v.join("="));
+  }
   // Mark the outgoing document: Page.navigate returns before it is replaced, and
   // the old page's __test would otherwise satisfy waitHarness (seen: steps ran on it).
   await evaluate("window.__driveStale = true", 5000).catch(() => {});
@@ -252,16 +280,28 @@ async function waitHarness() {
     if (Date.now() - t0 > 180_000) throw new Error("__test never appeared (is this a dev build?)");
     await sleep(250);
   }
+  if (opt.title) {
+    await evaluate(`new Promise((res, rej) => { const t0 = performance.now(); const f = () => __test.app.phase() === "title" && document.querySelector(".shell-menu__item") ? res(true) : performance.now() - t0 > 60000 ? rej(new Error("title never became interactive")) : setTimeout(f, 50); f(); })`);
+    return;
+  }
+  await enterGame();
+}
+
+/** Wait for the loading gate to open, then the standard setup (AI named, isolation, audio). */
+async function enterGame() {
   await evaluate("__test.ready()");
+  // Not a localStorage seed: "ai-name-v1" is a legacy key the save would re-import.
+  await evaluate("__test.nameAi()");
   if (opt.isolate) await evaluate("__test.isolate(true)");
   await evaluate("__test.audio.unlock()");
 }
 
 // Load unless we're reusing a kept page that already has the harness.
 let currentUrl = page.url;
-const hasHarness = reused ? await evaluate("!!window.__test", 5000).catch(() => false) : false;
+const hasHarness = reused ? await evaluate("!!window.__test?.settled", 5000).catch(() => false) : false;
 const perfMatches = reused ? currentUrl.includes("perf") === opt.perf : true;
-if (!hasHarness || !perfMatches) {
+const queryMatches = opt.query.every((q) => currentUrl.includes(q));
+if (opt.title || !hasHarness || !perfMatches || !queryMatches) {
   const t0 = Date.now();
   currentUrl = await load();
   log({ step: "load", ok: true, url: currentUrl, ms: Date.now() - t0, reusedChrome: reused });
@@ -279,7 +319,8 @@ const SPECIAL = {
 function keyParams(key) {
   if (key === "Space") key = " ";
   const sp = SPECIAL[key];
-  if (sp) return { key, code: sp[1], windowsVirtualKeyCode: sp[0] };
+  // Enter needs its text ("\r") or Chrome does not activate buttons / submit forms.
+  if (sp) return { key, code: sp[1], windowsVirtualKeyCode: sp[0], text: key === "Enter" ? "\r" : undefined };
   const up = key.toUpperCase();
   const code = /[0-9]/.test(key) ? `Digit${key}` : `Key${up}`;
   return { key, code, windowsVirtualKeyCode: up.charCodeAt(0), text: key.length === 1 ? key : undefined };
@@ -317,6 +358,11 @@ const api = {
   async reload() {
     return load();
   },
+  enterGame,
+  /** Type text into the focused element (trusted input). */
+  async type(text) {
+    await send("Input.insertText", { text });
+  },
   async scene(arg) {
     const parts = arg.split(":");
     if (parts.length === 1) return evaluate(`__test.scene(${JSON.stringify(parts[0])})`);
@@ -350,7 +396,7 @@ const api = {
     return evaluate(`__test.hud(${on ? "true" : "false"})`);
   },
   async shot(name) {
-    await evaluate("__test.frames(2)");
+    await evaluate("__test.frames ? __test.frames(2) : new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
     const r = await send("Page.captureScreenshot", { format: "png" });
     const p = outPath(name, ".png");
     writeFileSync(p, Buffer.from(r.data, "base64"));

@@ -1,6 +1,6 @@
 import { signalAudioActionAtom } from "./audioSignals";
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
 import { isCargoFullAtom } from "@/store/cargo";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import type { AsteroidInstanceLocation } from "@/sim/asteroids/runtime";
@@ -132,10 +132,7 @@ export const asteroidMinedSignalAtom = atom(0);
  * sessions (unlike asteroidMinedSignalAtom which is a session signal).
  * Used for one-shot tutorial guarantees (e.g. first-ever mine = 1 assay).
  */
-export const asteroidsMinedLifetimeAtom = atomWithStorage<number>(
-  "asteroids-mined-lifetime-v1",
-  0,
-);
+export const asteroidsMinedLifetimeAtom = savedAtom("player", "minedLifetime", 0);
 
 // ---------------------------------------------------------------------------
 // Pulse Mining mode

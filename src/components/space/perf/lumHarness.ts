@@ -148,7 +148,7 @@ import {
 } from "@/components/celestial/planetshine";
 import { bodyReflectanceRgb } from "@/components/celestial/bodyColour";
 import { hullShineStatus } from "@/components/celestial/planetshine";
-import { formatSimTime, simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import { ECLIPSE_2024_04_08_MS, formatSimTime, simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import {
   MAX_ECLIPSE_OCCLUDERS,
   createEclipseUniforms,
@@ -4946,6 +4946,12 @@ export class LumHarness {
     );
   }
 
+  /** Freeze sim time at the default epoch: the live reference checks need it, as play runs at 1×. */
+  freezeEpoch(): void {
+    this.store.set(simRateAtom, 0);
+    this.store.set(simEpochMsAtom, ECLIPSE_2024_04_08_MS);
+  }
+
   /**
    * The ephemeris, checked against published eclipse data.
    *
@@ -5064,7 +5070,7 @@ export class LumHarness {
             `      🔑 The 2024-04-08 umbra must land on NORTHWEST MEXICO. On the Sahara means the\n` +
             `      orientation chain is broken even though the eclipse TIME and γ above still pass.`
           : `[lum] Earth sub-solar point: lat ${eref["sub-stellar lat (°)"]}, ` +
-            `lon ${eref["sub-stellar lon (°)"]} (no reference — not the default epoch)`,
+            `lon ${eref["sub-stellar lon (°)"]} (no reference — not the default epoch; run __lum.freezeEpoch())`,
       );
     }
 
@@ -5121,7 +5127,7 @@ export class LumHarness {
       [
         `[lum] sim time = ${formatSimTime(this.store.get(simEpochMsAtom))}  (JD ${jdNow.toFixed(5)})`,
         `      renderer last solved: ${Number.isFinite(jdRendered) ? "JD " + jdRendered.toFixed(5) : "never (no frame has run)"}`,
-        `      rate = ${this.store.get(simRateAtom)}× real time (0 = frozen)`,
+        `      rate = ${this.store.get(simRateAtom)}× real time (0 = frozen; __lum.freezeEpoch() for the reference checks)`,
         "      ⚠ Galilean moons: their ELEMENTS are real but `meanAnomalyAtEpochDeg`",
         "      is a PLACEHOLDER 0, so their orbital PHASE is wrong. Io transits",
         "      Jupiter at the right INTERVAL but not at the right TIME. Needs a",

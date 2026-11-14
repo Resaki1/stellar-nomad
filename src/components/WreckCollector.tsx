@@ -7,6 +7,7 @@ import { useStore } from "jotai";
 import { wrecksAtom, collectWreckAtom, isDeadAtom } from "@/store/death";
 import { cargoRemainingUnitsAtom, addCargoAtom } from "@/store/cargo";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { frameOriginKm } from "@/sim/frames";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 import { audioShipBuffer } from "@/audio/shipBuffer";
@@ -78,9 +79,11 @@ const _scale = new THREE.Vector3(1, 1, 1);
 const _zeroMat = new THREE.Matrix4().makeScale(0, 0, 0);
 
 // ── Per-wreck beam state (position in simulation km) ─────────────────
+const _wreckFrame = new THREE.Vector3();
+
 type BeamState = {
   wreckId: string;
-  /** Current position in simulation km (pulled away from anchor toward ship). */
+  /** Current position relative to the wreck's frame, km (pulled toward the ship). */
   x: number; y: number; z: number;
   /** Is the beam currently active (ship in range)? */
   active: boolean;
@@ -140,10 +143,14 @@ const WreckCollector = memo(function WreckCollector() {
         states.set(w.id, bs);
       }
 
-      // Distance from ship to wreck's current position (km)
-      const dx = bs.x - shipKm.x;
-      const dy = bs.y - shipKm.y;
-      const dz = bs.z - shipKm.z;
+      // Ship in the wreck's frame, km.
+      const fo = frameOriginKm(w.frameId, _wreckFrame);
+      const sx = shipKm.x - fo.x;
+      const sy = shipKm.y - fo.y;
+      const sz = shipKm.z - fo.z;
+      const dx = bs.x - sx;
+      const dy = bs.y - sy;
+      const dz = bs.z - sz;
       const d2 = dx * dx + dy * dy + dz * dz;
       const inRange = !isDead && d2 < activationR2;
       bs.active = inRange;
@@ -151,14 +158,14 @@ const WreckCollector = memo(function WreckCollector() {
       if (inRange) {
         // Pull toward ship position in km — exponential ease-in
         const alpha = 1 - Math.exp(-PULL_RATE * delta);
-        bs.x += (shipKm.x - bs.x) * alpha;
-        bs.y += (shipKm.y - bs.y) * alpha;
-        bs.z += (shipKm.z - bs.z) * alpha;
+        bs.x += (sx - bs.x) * alpha;
+        bs.y += (sy - bs.y) * alpha;
+        bs.z += (sz - bs.z) * alpha;
 
         // Check collection (distance from current beam pos to ship, in km)
-        const cdx = bs.x - shipKm.x;
-        const cdy = bs.y - shipKm.y;
-        const cdz = bs.z - shipKm.z;
+        const cdx = bs.x - sx;
+        const cdy = bs.y - sy;
+        const cdz = bs.z - sz;
         const cd2 = cdx * cdx + cdy * cdy + cdz * cdz;
         if (cd2 < collectR2) {
           const remaining = store.get(cargoRemainingUnitsAtom);
@@ -179,9 +186,9 @@ const WreckCollector = memo(function WreckCollector() {
       // When out of range: cube stays at its current km position (no drift back)
 
       // Convert beam state km → local render-space meters for visuals
-      const localX = (bs.x - originKm.x) * 1000;
-      const localY = (bs.y - originKm.y) * 1000;
-      const localZ = (bs.z - originKm.z) * 1000;
+      const localX = (bs.x + fo.x - originKm.x) * 1000;
+      const localY = (bs.y + fo.y - originKm.y) * 1000;
+      const localZ = (bs.z + fo.z - originKm.z) * 1000;
 
       // Update cube instance matrix
       if (mesh) {

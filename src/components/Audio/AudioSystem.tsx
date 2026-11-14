@@ -18,27 +18,30 @@
 // human-rate, which is the only reason reading atoms here is acceptable.
 // ---------------------------------------------------------------------------
 
-import { useEffect } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useAtomValue } from "jotai";
 
-import { audioSettingsAtom, VOLUME_KEYS } from "@/store/audio";
+import { audioSettingsAtom } from "@/store/audio";
 import { settingsIsOpenAtom } from "@/store/store";
 import {
   applyBlurState,
   ensureEngine,
-  setBusGain,
   setGamePaused,
-  setMasterGain,
   setMonoOutput,
-  sliderToGain,
   unlockAudio,
 } from "@/audio/engine";
+import { applyAudioSettings } from "./applyAudioSettings";
 import { preloadTier } from "@/audio/loader";
 import { startAudioTick, stopAudioTick } from "@/audio/tick";
+import { setMusicHeld } from "@/audio/music";
+import { getAppPhase, subscribeApp } from "@/components/AppShell/appState";
 
 export default function AudioSystem({ authoring = false }: { authoring?: boolean }) {
   const settings = useAtomValue(audioSettingsAtom);
-  const paused = useAtomValue(settingsIsOpenAtom) && !authoring;
+  const settingsOpen = useAtomValue(settingsIsOpenAtom);
+  const loading = useSyncExternalStore(subscribeApp, () => getAppPhase() === "loading", () => false);
+  const paused = (settingsOpen || loading) && !authoring;
+  const wasLoading = useRef(false);
 
   // ── 1. Unlock on the first gesture ───────────────────────────────────────
   useEffect(() => {
@@ -65,20 +68,7 @@ export default function AudioSystem({ authoring = false }: { authoring?: boolean
 
   // ── 2. Settings → gains ──────────────────────────────────────────────────
   useEffect(() => {
-    setMasterGain(settings.muted ? 0 : sliderToGain(settings.master));
-    for (const key of VOLUME_KEYS) {
-      if (key === "master") continue;
-      const gain = sliderToGain(settings[key]);
-      // `sfx` drives two buses: ship-diegetic and world emitters. They are
-      // separate buses for muffling/snapshot reasons (§5.5), but one slider —
-      // players do not want to balance them by hand.
-      if (key === "sfx") {
-        setBusGain("sfxShip", gain);
-        setBusGain("sfxWorld", gain);
-      } else {
-        setBusGain(key, gain);
-      }
-    }
+    applyAudioSettings(settings);
   }, [settings]);
 
   useEffect(() => setMonoOutput(settings.mono), [settings.mono]);
@@ -94,7 +84,12 @@ export default function AudioSystem({ authoring = false }: { authoring?: boolean
   }, [settings.onBlur]);
 
   // The settings menu IS the pause menu (it stops the render loop).
-  useEffect(() => setGamePaused(paused), [paused]);
+  // Behind the loading overlay the world is silent; it fades in as the overlay fades out.
+  useEffect(() => {
+    setGamePaused(paused, wasLoading.current && !loading ? 0.25 : 0.1);
+    wasLoading.current = loading;
+    setMusicHeld(loading);
+  }, [paused, loading]);
 
   // ── 4. The A5 tick + tiered preload ──────────────────────────────────────
   useEffect(() => {

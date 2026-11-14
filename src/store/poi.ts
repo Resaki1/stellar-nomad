@@ -5,11 +5,14 @@
  * The POIMarkers (HUD component) reads them via rAF for smooth updates.
  */
 
+import type { FrameId } from "@/sim/frames";
+
 export type POIDef = {
   id: string;
   name: string;
-  /** World position in km (simulation coordinates). */
+  /** System-frame km, or relative to `frameId` when set. A LIVE array for bodies/fields. */
   positionKm: [number, number, number];
+  frameId?: FrameId;
   /** Hide marker when closer than this (km). */
   minDistanceKm: number;
   /** Hide marker when farther than this (km). */

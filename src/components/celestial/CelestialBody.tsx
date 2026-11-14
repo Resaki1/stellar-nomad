@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useDeferredKTX2 } from "@/hooks/useDeferredKTX2";
 import * as THREE from "three";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useStore } from "jotai";
 
 import { devSegmentsOverrideAtom } from "@/store/dev";
 import { NodeMaterial } from "three/webgpu";
@@ -417,7 +417,8 @@ function CelestialBody({ config }: CelestialBodyProps) {
   // ⚠ `positionKm` above is a LIVE array that `updateEphemerisPositions()`
   // rewrites in place — see the header of `sim/celestialConstants.ts`. It is
   // held as a reference on purpose; copying it would freeze the body in space.
-  const simEpochMs = useAtomValue(simEpochMsAtom);
+  // Read imperatively per frame: a React-state copy lags the clock and re-solves a stale JD.
+  const store = useStore();
   const orientRef = useRef<THREE.Group>(null);
   // Reused every frame — `bodyOrientation` fills it rather than allocating.
   const orientState = useRef(createBodyOrientation());
@@ -663,11 +664,8 @@ function CelestialBody({ config }: CelestialBodyProps) {
     // registration below. A body's umbra is far longer than the range at which
     // the body is worth drawing: Neptune's runs 165 M km against a 12 M km LOD
     // gate. Gating this is precisely the bug. See space/sunOcclusion.ts.
-    // ── Solve the ephemeris for this frame ──────────────────────────────────
-    // ⚠ Called by EVERY body; `updateEphemerisPositions` caches on the Julian
-    // Date so the first caller does the work. That is why there is no ordering
-    // requirement between this and the bodies that read the result.
-    const jd = jdFromUnixMs(simEpochMs);
+    // Already solved by the sim clock tick (FRAME_PRIORITY_SIM_CLOCK); a cached no-op.
+    const jd = jdFromUnixMs(store.get(simEpochMsAtom));
     updateEphemerisPositions(jd);
 
     // ── Live orientation: axial tilt ∘ spin ────────────────────────────────

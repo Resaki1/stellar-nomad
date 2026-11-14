@@ -1,5 +1,7 @@
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
+import { defaultShipConfig } from "@/save/defaults";
+import type { ShipConfig } from "@/save/types";
 import {
   computedModifiersAtom,
   getMultiplier,
@@ -12,76 +14,11 @@ import { completedNodeSetAtom } from "@/store/research";
 import { timedEffectModifiersAtom } from "@/store/timedEffects";
 import { RESEARCH_NODES, type ItemEffect } from "@/data/content";
 
-// ---------------------------------------------------------------------------
-// Ship configuration — central place for all upgradable stats.
-//
-// Every value starts at the un-upgraded default. Module modifiers from the
-// loadout system and research bonuses are folded in via `effectiveShipConfigAtom`.
-//
-// Using atomWithStorage so upgrades persist across sessions.
-// ---------------------------------------------------------------------------
+// Base ship stats (un-upgraded defaults in save/defaults.ts). Module, research and timed
+// modifiers are folded in by `effectiveShipConfigAtom`.
+export type { ShipConfig } from "@/save/types";
 
-export type ShipConfig = {
-  // ── Mining ──
-  /** Multiplier on mining speed (1 = base). Higher = faster mining. */
-  miningSpeedMult: number;
-  /** Multiplier on mining yield (1 = base). Higher = more resources per rock. */
-  miningEfficiencyMult: number;
-  /** Max continuous mining time in seconds before overheat. */
-  miningHeatCapacityS: number;
-  /** Time in seconds for a full cooldown from 100% heat to 0%. */
-  miningCooldownS: number;
-
-  // ── Ship ──
-  /** Max hull HP. */
-  maxHealth: number;
-  /** Top-speed multiplier (1 = base). */
-  speedMult: number;
-  /** Acceleration multiplier (1 = base). */
-  accelerationMult: number;
-  /** Deceleration multiplier (1 = base). */
-  decelerationMult: number;
-  /** Collision damage multiplier (1 = base). Lower = less damage. */
-  collisionDamageMult: number;
-  /** Extra cargo capacity from modules/research (added on top of base). */
-  bonusCargoCapacity: number;
-
-  // ── Scanner ──
-  /** Target lock speed multiplier (1 = base). Lower = faster lock. */
-  scannerLockSpeedMult: number;
-  /** All sensor ranges multiplier (1 = base). */
-  scannerRangeMult: number;
-
-  // ── Economy ──
-  /** Probability (0-1) of receiving a bonus assay sample from mining. */
-  assaySampleBonusChance: number;
-
-  // ── Survivability ──
-  /** Passive hull regeneration per second. */
-  hullRegenPerSecond: number;
-};
-
-const DEFAULT_SHIP_CONFIG: ShipConfig = {
-  miningSpeedMult: 1,
-  miningEfficiencyMult: 1,
-  miningHeatCapacityS: 15,
-  miningCooldownS: 10,
-  maxHealth: 100,
-  speedMult: 1,
-  accelerationMult: 1,
-  decelerationMult: 1,
-  collisionDamageMult: 1,
-  bonusCargoCapacity: 0,
-  scannerLockSpeedMult: 1,
-  scannerRangeMult: 1,
-  assaySampleBonusChance: 0,
-  hullRegenPerSecond: 0,
-};
-
-export const shipConfigAtom = atomWithStorage<ShipConfig>(
-  "ship-config-v1",
-  DEFAULT_SHIP_CONFIG
-);
+export const shipConfigAtom = savedAtom("player", "shipConfig", defaultShipConfig());
 
 // ---------------------------------------------------------------------------
 // Research modifiers: passive bonuses from completed research nodes

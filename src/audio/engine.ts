@@ -345,13 +345,13 @@ export function setBusGain(bus: BusId, gain: number): void {
 }
 
 /** Pause menu open: fade the world (engine, wind, ambience) out, and back in on resume. */
-export function setGamePaused(paused: boolean): void {
+export function setGamePaused(paused: boolean, tauS = 0.1): void {
   if (gamePaused === paused) return;
   gamePaused = paused;
   const e = engine;
   if (!e) return;
   // τ 0.1 s: inaudible within ~0.5 s, quick enough to read as a response to the key.
-  for (const bus of PAUSED_BUSES) setParamSmooth(e.buses[bus].gain, paused ? 0 : (busTarget[bus] ?? 0), 0.1);
+  for (const bus of PAUSED_BUSES) setParamSmooth(e.buses[bus].gain, paused ? 0 : (busTarget[bus] ?? 0), tauS);
 }
 
 /**

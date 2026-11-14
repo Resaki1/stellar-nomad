@@ -19,6 +19,7 @@ import {
 } from "@/sim/units";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { LY_IN_KM } from "@/sim/units";
+import { PLANET_POSITION_KM } from "@/sim/celestialConstants";
 import { updateSkyParallax } from "@/components/space/skyParallax";
 import {
   HalfFloatType,
@@ -29,6 +30,7 @@ import { useAtomValue, useSetAtom } from "jotai/react";
 
 import { devApResScaleAtom } from "@/store/dev";
 import { advanceSimTimeAtom } from "@/store/simTime";
+import { FRAME_PRIORITY_SIM_CLOCK } from "@/components/frameOrder";
 import { hdrCalibrationOpenAtom, settingsAtom } from "@/store/store";
 import {
   getActiveCloudPipeline,
@@ -240,6 +242,7 @@ const tempClearColor = new THREE.Color();
 const tempBayerSub = new THREE.Vector2();
 const tempViewProj = new THREE.Matrix4();
 const tempOriginShiftScaled = new THREE.Vector3();
+const _cloudBodyKm = new THREE.Vector3();
 const tempFullSize = new THREE.Vector2();
 const tempSparseSize = new THREE.Vector2();
 // Camera position relative to the dominant atmosphere body, in km — feeds the
@@ -374,6 +377,32 @@ export type SpaceRendererProps = {
   scaled: ReactNode;
   local: ReactNode;
 };
+
+type WarmupTargets = {
+  gl: WebGPURenderer;
+  scaled: { target: RenderTarget; camera: THREE.Camera };
+  local: { target: RenderTarget; camera: THREE.Camera };
+};
+let warmupTargets: WarmupTargets | null = null;
+
+/**
+ * M0.4 warm-up: `compileAsync` both scene passes against the targets they draw into
+ * (pipelines are keyed on target format/samples). Resolves to the ms taken, or null.
+ */
+export async function compileScenePipelines(): Promise<number | null> {
+  const w = warmupTargets;
+  if (!w) return null;
+  const t0 = performance.now();
+  const prev = w.gl.getRenderTarget();
+  // compileAsync reads the render target synchronously, before its first await.
+  w.gl.setRenderTarget(w.scaled.target);
+  const a = w.gl.compileAsync(scaledScene, w.scaled.camera);
+  w.gl.setRenderTarget(w.local.target);
+  const b = w.gl.compileAsync(localScene, w.local.camera);
+  w.gl.setRenderTarget(prev);
+  await Promise.all([a, b]);
+  return performance.now() - t0;
+}
 
 const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const settings = useAtomValue(settingsAtom);
@@ -610,8 +639,10 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     () => new RenderPipeline(gl as unknown as WebGPURenderer),
     [gl]
   );
-  // ONE tick site for sim time — see the call in the frame loop below.
+  // ONE tick site for sim time. Runs before every other callback; setting the epoch
+  // solves the ephemeris, so the ship and bodies all read THIS frame's positions.
   const advanceSimTime = useSetAtom(advanceSimTimeAtom);
+  useFrame((_state, delta) => advanceSimTime(delta), FRAME_PRIORITY_SIM_CLOCK);
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
@@ -779,6 +810,17 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     };
   }, [settings.toneMapping, calibrating, pipeline, rt, rtB, gl]);
 
+  useEffect(() => {
+    warmupTargets = {
+      gl: gl as unknown as WebGPURenderer,
+      scaled: { target: rt, camera: scaledCamera },
+      local: { target: rtB ?? rt, camera: localCamera },
+    };
+    return () => {
+      warmupTargets = null;
+    };
+  }, [gl, rt, rtB, scaledCamera, localCamera]);
+
   // Camera setup
   useEffect(() => {
     localCamera.near = LOCAL_CAMERA_NEAR;
@@ -828,6 +870,8 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // a velocity-proportional offset in the history sample UV.
   // `hasPrevWorldOrigin` is false on the very first render and is also
   // reset whenever we choose to invalidate history mid-session.
+  // Origin RELATIVE TO EARTH: clouds ride Earth, which moves ~0.5 km/frame at sim rate 1.
+  // Translation only; Earth's spin (~8 m/frame at the equator, rate 1) is not reprojected.
   const prevWorldOriginKm = useRef(new THREE.Vector3());
   const hasPrevWorldOrigin = useRef(false);
   // Phase D6: history-validity flag passed to the cloud pass each frame.
@@ -860,12 +904,6 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // Must be the first thing in the frame: every radiance source multiplies by
     // it, and a frame where some sources used the old value is an internally
     // inconsistent image. See photometry.ts's setPreExposure note.
-    // ── Advance sim time (ephemeris) ────────────────────────────────────────
-    // ONE tick site, here, because every `CelestialBody` READS the clock and
-    // exactly one thing may advance it. No-op while `simRateAtom` is 0, which is
-    // the default — see store/simTime.ts.
-    advanceSimTime(delta);
-
     updatePreExposureForFrame();
     // Plain (non-TSL) emissive materials can't read a uniform — rescale them from
     // their authored colours now that this frame's factor is chosen.
@@ -1142,6 +1180,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       if (hasPrevWorldOrigin.current) {
         tempOriginShiftScaled
           .copy(worldOrigin.worldOriginKm)
+          .sub(_cloudBodyKm.fromArray(PLANET_POSITION_KM))
           .sub(prevWorldOriginKm.current)
           .multiplyScalar(SCALED_UNITS_PER_KM);
       } else {
@@ -1390,7 +1429,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // needs both to be consistent. (Spaceship.tsx mutates worldOriginKm
     // before each render frame, so the value we read here is the one the
     // scaled scene was just rendered with.)
-    prevWorldOriginKm.current.copy(worldOrigin.worldOriginKm);
+    prevWorldOriginKm.current
+      .copy(worldOrigin.worldOriginKm)
+      .sub(_cloudBodyKm.fromArray(PLANET_POSITION_KM));
     hasPrevWorldOrigin.current = true;
 
     // ── Close the profiling frame ───────────────────────────────────────────

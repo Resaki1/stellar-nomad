@@ -5,6 +5,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
+import { isSimPaused } from "@/sim/simPause";
 import { useStore } from "jotai";
 import { useRef } from "react";
 
@@ -16,6 +17,7 @@ export default function HullRegenTicker() {
   const accumRef = useRef(0);
 
   useFrame((_, delta) => {
+    if (isSimPaused()) return;
     if (store.get(settingsIsOpenAtom)) return;
 
     const config = store.get(effectiveShipConfigAtom);

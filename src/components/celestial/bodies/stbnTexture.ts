@@ -47,6 +47,11 @@ export function isStbnLoaded(): boolean {
   return loaded;
 }
 
+/** Requested and not yet loaded. Unlike `!isStbnLoaded()`, false where nothing uses it (e.g. at Luna). */
+export function isStbnPending(): boolean {
+  return loadStarted && !loaded;
+}
+
 /**
  * Returns a singleton 128 × 128 × 64 R8 `Data3DTexture` for spatiotemporal
  * blue noise jitter. First call schedules an async fetch; subsequent calls

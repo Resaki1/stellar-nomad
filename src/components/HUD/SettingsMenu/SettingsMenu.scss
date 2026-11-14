@@ -113,6 +113,12 @@
     }
   }
 
+  &--exit {
+    margin-top: s.$space-4;
+    background: transparent;
+    border-color: s.$stroke-strong;
+  }
+
   &--subtle {
     background: rgba(200, 200, 200, 0.1); // legacy bright-glass variant; keep raw to preserve visuals
     border-color: rgba(200, 200, 200, 0.3); // legacy bright-glass variant; keep raw to preserve visuals
@@ -122,6 +128,17 @@
     &:hover {
       background: rgba(200, 200, 200, 0.25); // legacy bright-glass variant; keep raw to preserve visuals
     }
+  }
+}
+
+.settings-menu__exit-error {
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-2;
+  color: s.$accent-warn;
+
+  p {
+    margin: 0;
   }
 }
 

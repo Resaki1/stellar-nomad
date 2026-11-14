@@ -3,41 +3,39 @@
 
 import React, { createContext, useContext, useEffect, useMemo } from "react";
 import { AsteroidSystemRuntime } from "./runtime";
-import { AsteroidDeltaStore } from "./persistence";
+import { worldAuthority } from "@/sim/world/worldAuthority";
 
-type AsteroidRuntimeContextValue = {
-  runtime: AsteroidSystemRuntime;
-  deltaStore: AsteroidDeltaStore;
-};
+const AsteroidRuntimeContext = createContext<AsteroidSystemRuntime | null>(null);
 
-const AsteroidRuntimeContext = createContext<AsteroidRuntimeContextValue | null>(null);
+let activeRuntime: AsteroidSystemRuntime | null = null;
+
+/** The mounted runtime, for dev/test tooling outside the React tree. */
+export function getActiveAsteroidRuntime(): AsteroidSystemRuntime | null {
+  return activeRuntime;
+}
 
 export const AsteroidRuntimeProvider = ({
   children,
 }: {
   children: React.ReactNode;
 }) => {
-  const value = useMemo(() => {
-    const deltaStore = new AsteroidDeltaStore();
-    deltaStore.load();
-    const runtime = new AsteroidSystemRuntime(deltaStore);
-    return { runtime, deltaStore };
-  }, []);
+  const runtime = useMemo(() => new AsteroidSystemRuntime(worldAuthority.destroyedAsteroids), []);
 
-  // Flush pending saves when the page is about to unload.
+  // Any player's accepted destroy removes the instance from what is loaded here.
   useEffect(() => {
-    const onBeforeUnload = () => {
-      value.deltaStore.saveImmediate();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
+    activeRuntime = runtime;
+    const unsubscribe = worldAuthority.subscribe((e) => {
+      if (e.type !== "asteroid.destroyed") return;
+      runtime.getFieldRuntime(e.fieldId)?.destroyInstance(e.instanceId);
+    });
     return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      value.deltaStore.saveImmediate();
+      unsubscribe();
+      if (activeRuntime === runtime) activeRuntime = null;
     };
-  }, [value]);
+  }, [runtime]);
 
   return (
-    <AsteroidRuntimeContext.Provider value={value}>
+    <AsteroidRuntimeContext.Provider value={runtime}>
       {children}
     </AsteroidRuntimeContext.Provider>
   );
@@ -49,14 +47,5 @@ export const useAsteroidRuntime = () => {
     throw new Error(
       "useAsteroidRuntime must be used within an AsteroidRuntimeProvider"
     );
-  return ctx.runtime;
-};
-
-export const useAsteroidDeltaStore = () => {
-  const ctx = useContext(AsteroidRuntimeContext);
-  if (!ctx)
-    throw new Error(
-      "useAsteroidDeltaStore must be used within an AsteroidRuntimeProvider"
-    );
-  return ctx.deltaStore;
+  return ctx;
 };

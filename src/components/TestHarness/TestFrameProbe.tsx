@@ -21,6 +21,7 @@ export default function TestFrameProbe(): null {
   }, [gl]);
   useFrame(() => {
     testProbe.frames++;
+    testProbe.frameHooks.forEach((hook) => hook());
   });
   return null;
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { aiNameAtom, readAiNameFromStorage } from "@/store/aiName";
+import { aiNameAtom } from "@/store/aiName";
 import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
 
 import { playAudio } from "@/audio";
@@ -21,15 +21,9 @@ export default function AINameOverlay() {
   const activeMessage = useAtomValue(activeCommsMessageAtom);
   const playedIds = useAtomValue(playedMessageIdsAtom);
 
-  // Read localStorage directly on mount to avoid hydration flash
-  const [isNamed, setIsNamed] = useState(() => readAiNameFromStorage() !== null);
+  const isNamed = aiName !== null;
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Sync with atom once it hydrates
-  useEffect(() => {
-    if (aiName) setIsNamed(true);
-  }, [aiName]);
 
   // Only show once the greeting has been dismissed (prevents flash on first boot
   // where the greeting hasn't been enqueued yet and activeMessage is still null)
@@ -47,7 +41,6 @@ export default function AINameOverlay() {
     }
     playAudio("click.hard");
     setAiName(trimmed);
-    setIsNamed(true);
   }, [inputValue, setAiName]);
 
   const onKeyDown = useCallback(

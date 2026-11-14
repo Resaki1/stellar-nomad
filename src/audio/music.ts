@@ -6,10 +6,9 @@
 // tick on real time (A6), so it keeps time while the settings menu stops the
 // render loop.
 //
-// 🔑 THE FIRST TRACK COMES EARLY, THE REST ARE SPARSE. There is no title
-// screen, so the start of a session plays that role: one track shortly after
-// the first interaction, then long randomised silences. Silence is the default
-// state (§7.2) — it is what makes a track land when it does.
+// The title screen plays one fixed theme on repeat. In a world the first track
+// comes early (later if the title theme just played), then long randomised
+// silences. Silence is the default state (§7.2): it is what makes a track land.
 // ---------------------------------------------------------------------------
 
 import { MUSIC_TRACKS, musicUrl, type MusicMood, type MusicTrack } from "@/data/musicTracks";
@@ -19,6 +18,11 @@ import { createStreamSource, dbToGain, getEngine, isAudioUnlocked, setParamSmoot
 export const MUSIC_FIRST_DELAY_S: readonly [number, number] = [20, 40];
 /** Silence between tracks, s. Minecraft-like sparseness, a little denser. */
 export const MUSIC_GAP_S: readonly [number, number] = [300, 720];
+/** Title theme; falls back to a normal pick if the id is missing. */
+const TITLE_TRACK_ID = "glacial_pads";
+const TITLE_REPEAT_GAP_S = 6;
+/** First in-world track when the title theme was heard this session, s. */
+const AFTER_TITLE_DELAY_S: readonly [number, number] = [90, 180];
 const FADE_IN_S = 3;
 const FADE_OUT_S = 4;
 /** Under comms and critical alerts (§7.6). */
@@ -33,6 +37,9 @@ let nextAtMs: number | null = null;
 let lastId: string | null = null;
 let ducked = false;
 let suppressed = false;
+let held = false;
+let title = false;
+let titleHeard = false;
 let traveling = false;
 let exploreUntilMs = 0;
 
@@ -116,8 +123,14 @@ function fadeOut(seconds = FADE_OUT_S): void {
 /** Called from the audio tick. */
 export function pumpMusic(): void {
   if (!isAudioUnlocked() || MUSIC_TRACKS.length === 0) return;
+  if (held && !current) {
+    nextAtMs = null;
+    return;
+  }
   const now = performance.now();
-  if (nextAtMs === null) nextAtMs = now + between(MUSIC_FIRST_DELAY_S) * 1000;
+  if (nextAtMs === null) {
+    nextAtMs = title ? now : now + between(titleHeard ? AFTER_TITLE_DELAY_S : MUSIC_FIRST_DELAY_S) * 1000;
+  }
 
   if (current) {
     const el = current.src.element;
@@ -127,13 +140,17 @@ export function pumpMusic(): void {
       current.src.dispose();
       current = null;
       setMediaSession(null);
-      nextAtMs = now + between(MUSIC_GAP_S) * 1000;
+      // Leaving the title: null lets the first-track delay be drawn afresh.
+      nextAtMs = title ? now + TITLE_REPEAT_GAP_S * 1000 : titleHeard && lastId === TITLE_TRACK_ID ? null : now + between(MUSIC_GAP_S) * 1000;
     }
     return;
   }
   if (!suppressed && now >= nextAtMs) {
-    const track = pick(mood(now));
-    if (track) start(track);
+    const track = (title ? MUSIC_TRACKS.find((t) => t.id === TITLE_TRACK_ID) : null) ?? pick(mood(now));
+    if (track) {
+      if (title) titleHeard = true;
+      start(track);
+    }
   }
 }
 
@@ -148,6 +165,19 @@ export function setMusicDucked(isDucked: boolean): void {
   if (ducked === isDucked) return;
   ducked = isDucked;
   if (current && !current.fadingOut) setParamSmooth(current.src.gain.gain, targetGain(current.track), 0.3);
+}
+
+/** Title screen: play the theme at once and repeat it; leaving fades it out. */
+export function setMusicTitle(isTitle: boolean): void {
+  if (title === isTitle) return;
+  title = isTitle;
+  nextAtMs = null;
+  if (!isTitle) fadeOut(2);
+}
+
+/** Loading overlay: start nothing; the first-track delay counts from release. */
+export function setMusicHeld(isHeld: boolean): void {
+  held = isHeld;
 }
 
 /** Death: fade out and start nothing until it clears. */
@@ -201,7 +231,7 @@ export function musicDebug(): Record<string, unknown> {
       paused: el?.paused,
     } : null,
     nextInS: !current && nextAtMs !== null ? Math.round((nextAtMs - now) / 1000) : null,
-    ducked, suppressed, traveling,
+    ducked, suppressed, traveling, title, held,
     exploreHoldS: Math.max(0, Math.round((exploreUntilMs - now) / 1000)),
   };
 }

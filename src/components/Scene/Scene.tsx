@@ -60,6 +60,8 @@ import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe from "../TestHarness/TestFrameProbe";
+import LoadingGate from "../Loading/LoadingGate";
+import { loadFailed } from "../AppShell/appState";
 
 /**
  * three.js renderer internals we touch directly (not in the public typings).
@@ -86,6 +88,9 @@ function WebGPUGate({ children }: { children: ReactNode }) {
         performance.now().toFixed(0) + "ms",
       );
       setReady(true);
+    }).catch((e: unknown) => {
+      console.error("[load] WebGPU renderer init failed", e);
+      loadFailed(`The renderer could not start (${e instanceof Error ? e.message : String(e)}). This game needs WebGPU.`);
     });
   }, [gl]);
 
@@ -299,6 +304,7 @@ const Scene = () => {
 
           <WebGPUGate>
             <SpaceRenderer scaled={scaledContent} local={localContent} />
+            <LoadingGate />
           </WebGPUGate>
 
           {/* <AdaptiveDpr pixelated /> */}
