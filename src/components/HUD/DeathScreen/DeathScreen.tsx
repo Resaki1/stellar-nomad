@@ -7,7 +7,6 @@ import { shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom } from "@/store/dev";
 import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
-import { clearShipState } from "@/sim/shipPersistence";
 
 import "./DeathScreen.scss";
 
@@ -25,9 +24,6 @@ export default function DeathScreen() {
 
     // Teleport to starting position
     setTeleport({ positionKm: [...STARTING_POSITION_KM] });
-
-    // Clear persisted ship state so it doesn't restore to the death position
-    clearShipState();
 
     // Clear death flag (wrecks persist, cargo already cleared on death)
     respawn();

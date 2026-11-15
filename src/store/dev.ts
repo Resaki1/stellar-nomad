@@ -1,5 +1,7 @@
 import { atom } from "jotai";
+import { Vector3 } from "three";
 import type { SpeedUnit } from "@/sim/units";
+import { SYSTEM_FRAME_ID, frameOriginKm, selectFrame, type FrameId } from "@/sim/frames";
 
 /**
  * Dev-only overrides consumed by the Spaceship component.
@@ -27,7 +29,26 @@ export type DevWarp = {
  * atom. Handled in Spaceship's useFrame, which also zeroes throttle, steering
  * rates and the transit drive so the resulting pose is fully settled.
  */
-export const devTeleportAtom = atom<DevWarp | null>(null);
+/** A warp with its frame resolved at SET time, against the ephemeris instant the producer read. */
+export type ResolvedDevWarp = DevWarp & { frameId: FrameId; relKm: [number, number, number] };
+
+const devTeleportBaseAtom = atom<ResolvedDevWarp | null>(null);
+const _warpOrigin = new Vector3();
+
+export const devTeleportAtom = atom(
+  (get) => get(devTeleportBaseAtom),
+  (_get, set, warp: DevWarp | null) => {
+    if (!warp) return set(devTeleportBaseAtom, null);
+    const [x, y, z] = warp.positionKm;
+    const frameId = selectFrame({ x, y, z }, SYSTEM_FRAME_ID);
+    frameOriginKm(frameId, _warpOrigin);
+    set(devTeleportBaseAtom, {
+      ...warp,
+      frameId,
+      relKm: [x - _warpOrigin.x, y - _warpOrigin.y, z - _warpOrigin.z],
+    });
+  },
+);
 
 /**
  * Override every body's sphere tessellation, or 0 for the per-tier authored value.

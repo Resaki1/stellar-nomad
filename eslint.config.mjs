@@ -17,6 +17,31 @@ export default defineConfig([
       "react-hooks/set-state-in-effect": "warn",
     },
   },
+  {
+    // Sim and save must stay engine-free so the world sim can run headless (M4 host / server).
+    files: ["src/sim/**", "src/save/**"],
+    // React by design: context providers / R3F loaders. nearbyStars.ts imports a component
+    // helper (equatorialToGame) and should move it into src/sim.
+    ignores: [
+      "src/sim/worldOrigin.tsx",
+      "src/sim/asteroids/runtimeContext.tsx",
+      "src/sim/asteroids/modelRegistry.ts",
+      "src/sim/nearbyStars.ts",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["react", "react/*", "jotai", "jotai/*", "@react-three/*", "@/store/*", "@/components/*"],
+              message: "src/sim and src/save must not depend on React, jotai, R3F, stores or components.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   globalIgnores([
     ".next/**",
     ".claude/**",

@@ -6,11 +6,9 @@
 // epoch milliseconds. `sim/ephemeris.ts` turns it into a Julian Date and
 // then into positions and orientations.
 //
-// ⚠ DEFAULT RATE IS 0 — orbits are FROZEN unless someone asks otherwise.
-// That keeps today's gameplay bit-identical while making eclipses testable,
-// and it sidesteps every question a moving solar system raises (floating
-// origin drift, asteroid-field re-anchoring, LOD thrash) until we choose to
-// take them on. Unfreezing later is a settings change, not a code change.
+// Default rate is 1 (real time, ROADMAP D6). Ships ride their body's frame
+// (sim/frames.ts), so moving bodies do not leave them behind. `__test.isolate()`
+// and `__bench` force 0 for reproducible captures.
 //
 // 🔑 Why a RATE rather than a boolean freeze: an eclipse is a moment, and the
 // shadow racing across the surface is the part worth seeing. Because time is
@@ -21,6 +19,7 @@ import { atom } from "jotai";
 
 import { updateEphemerisPositions } from "@/sim/celestialConstants";
 import { DEFAULT_SIM_EPOCH_MS, jdFromUnixMs } from "@/sim/ephemeris";
+import { isSimPaused } from "@/sim/simPause";
 
 /**
  * The instant the simulation is currently at, UTC epoch milliseconds.
@@ -60,21 +59,21 @@ export const simEpochMsAtom = atom(
 );
 
 /**
- * Simulated seconds per real second. 0 = frozen (the default), 1 = real time,
+ * Simulated seconds per real second. 0 = frozen, 1 = real time (the default),
  * 1e5 ≈ a day per second.
  *
  * ⚠ Clamped by the UI rather than here — a dev tool wanting 1e9 to skip a year
  * should be able to, and the ephemeris is analytic so a huge step costs the same
  * as a small one. There is no integrator to destabilise.
  */
-export const simRateAtom = atom<number>(0);
+export const simRateAtom = atom<number>(1);
 
-/** Advance sim time by one real frame. No-op while the rate is 0. */
+/** Advance sim time by one real frame. No-op while the rate is 0 or the sim is paused. Called once per frame (SpaceRenderer). */
 export const advanceSimTimeAtom = atom(
   null,
   (get, set, realDeltaSeconds: number) => {
     const rate = get(simRateAtom);
-    if (rate === 0) return;
+    if (rate === 0 || isSimPaused()) return;
     set(simEpochMsAtom, get(simEpochMsAtom) + realDeltaSeconds * rate * 1000);
   },
 );

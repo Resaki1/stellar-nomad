@@ -29,6 +29,7 @@ import {
 } from "@/components/space/starTierGate";
 import { LY_IN_KM } from "@/sim/units";
 import { wrecksAtom } from "@/store/death";
+import { resolveFramePositionKm } from "@/sim/frames";
 import {
   targetedPOIAtom,
   transitDriveOwnedAtom,
@@ -39,6 +40,7 @@ import {
 // Reusable temp vectors — zero allocation in the hot path.
 const _pos = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
+const _poiKm = new THREE.Vector3();
 
 /** Half-angle (radians) of the "focused" cone around screen center. */
 const FOCUS_HALF_ANGLE_NDC = 0.06; // ~3.4° at center of NDC space
@@ -194,6 +196,7 @@ function usePOIDefs(): POIDef[] {
         id: `wreck:${wreck.id}`,
         name: "Wreck",
         positionKm: wreck.positionKm,
+        frameId: wreck.frameId,
         minDistanceKm: WRECK_DEFAULTS.minDistanceKm,
         maxDistanceKm: WRECK_DEFAULTS.maxDistanceKm,
       });
@@ -271,7 +274,8 @@ const POIProjector = memo(function POIProjector() {
 
     for (let i = 0; i < pois.length; i++) {
       const poi = pois[i];
-      const [px, py, pz] = poi.positionKm;
+      resolveFramePositionKm(poi.positionKm, poi.frameId, _poiKm);
+      const px = _poiKm.x, py = _poiKm.y, pz = _poiKm.z;
 
       // Distance from ship (km).
       const dx = px - shipKm.x;
@@ -368,6 +372,7 @@ const POIProjector = memo(function POIProjector() {
               id: focusedPoiDef.id,
               name: focusedPoiDef.name,
               positionKm: focusedPoiDef.positionKm,
+              frameId: focusedPoiDef.frameId,
               arrivalOffsetKm: focusedPoiDef.arrivalOffsetKm,
             });
             poiBuffer.targetedId = focusedPoiDef.id;
@@ -407,7 +412,8 @@ const POIProjector = memo(function POIProjector() {
       // Update ETA on targeted POI.
       const targeted = store.get(targetedPOIAtom);
       if (targeted) {
-        const [tx, ty, tz] = targeted.positionKm;
+        resolveFramePositionKm(targeted.positionKm, targeted.frameId, _poiKm);
+        const tx = _poiKm.x, ty = _poiKm.y, tz = _poiKm.z;
         const tdx = tx - shipKm.x;
         const tdy = ty - shipKm.y;
         const tdz = tz - shipKm.z;
@@ -427,7 +433,8 @@ const POIProjector = memo(function POIProjector() {
       // Keep the existing target/ETA visible in the HUD.
       const targeted = store.get(targetedPOIAtom);
       if (targeted) {
-        const [tx, ty, tz] = targeted.positionKm;
+        resolveFramePositionKm(targeted.positionKm, targeted.frameId, _poiKm);
+        const tx = _poiKm.x, ty = _poiKm.y, tz = _poiKm.z;
         const tdx = tx - shipKm.x;
         const tdy = ty - shipKm.y;
         const tdz = tz - shipKm.z;

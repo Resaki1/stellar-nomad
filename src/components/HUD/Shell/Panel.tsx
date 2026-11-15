@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { playAudio } from "@/audio";
+// Not the "@/audio" barrel: it pulls the emitter graph (three.js) into the title bundle.
+import { playAudio } from "@/audio/voices";
 import "./Panel.scss";
 
 export type PanelActionVariant = "primary" | "secondary" | "danger" | "subtle";

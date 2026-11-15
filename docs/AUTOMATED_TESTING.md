@@ -39,6 +39,14 @@ save). `--fresh` wipes it. The driver pre-sets the AI name so the naming prompt 
 swallow keystrokes, and by default calls `__test.isolate()`: bench mode, so no comms,
 no ship-position saves, no camera shake. `--no-isolate` keeps gameplay live.
 
+**Title screen (M0.4).** The driver loads `?autostart=1`, which skips the title but
+still waits for the loading gate: `__test.ready()` resolves once the game is playable.
+`--title` loads the title instead; a script then starts a world (UI clicks or
+`__test.app.start(id?)`) and calls `d.enterGame()`. `__test.app` exposes `phase()`,
+`progress()` and `timings()` (stage times, and frame stats for the first 10 s after the
+gate). `--query nogate=1` bypasses the gate (dev only); see
+`scripts/drive-examples/shell-check.mjs`.
+
 **Resolution** is pinned: `--size 1280x720 --dpr 1` by default. Compare captures
 only at the same size and DPR.
 

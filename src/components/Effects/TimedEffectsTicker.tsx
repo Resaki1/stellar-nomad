@@ -7,6 +7,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
+import { isSimPaused } from "@/sim/simPause";
 import { useStore } from "jotai";
 
 import { tickTimedEffectsAtom, activeTimedEffectsAtom } from "@/store/timedEffects";
@@ -16,6 +17,7 @@ export default function TimedEffectsTicker() {
   const store = useStore();
 
   useFrame((_, delta) => {
+    if (isSimPaused()) return;
     // Don't tick while paused
     if (store.get(settingsIsOpenAtom)) return;
 

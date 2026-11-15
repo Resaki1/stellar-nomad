@@ -7,6 +7,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
+import { isSimPaused } from "@/sim/simPause";
 import { useStore } from "jotai";
 import { useRef } from "react";
 
@@ -21,6 +22,7 @@ export default function ResearchTicker() {
   const persistTimerRef = useRef(0);
 
   useFrame((_, delta) => {
+    if (isSimPaused()) return;
     // Don't progress while paused (settings open)
     const paused = store.get(settingsIsOpenAtom);
     if (paused) return;

@@ -5,9 +5,22 @@
 export const testProbe: {
   /** Rendered R3F frames since load. */
   frames: number;
+  /** Dev hooks run once per frame AFTER the sim clock and the ship (priority 0). */
+  frameHooks: Set<() => void>;
   /** The live renderer, for resident-resource counts. Null until the Canvas mounts. */
   renderer: { info: { memory: { textures: number; geometries: number } } } | null;
+  /** Player ship sim pose (system-frame km, frame-relative km, quaternion xyzw), fixed steps run. */
+  ship: {
+    posKm: [number, number, number];
+    frameId: string;
+    relPosKm: [number, number, number];
+    quat: [number, number, number, number];
+    steps: number;
+    frameSwitches: number;
+  };
 } = {
+  ship: { posKm: [0, 0, 0], frameId: "", relPosKm: [0, 0, 0], quat: [0, 0, 0, 1], steps: 0, frameSwitches: 0 },
   frames: 0,
+  frameHooks: new Set(),
   renderer: null,
 };

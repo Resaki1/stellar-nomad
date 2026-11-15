@@ -23,11 +23,24 @@ import { settingsIsOpenAtom, movementAtom } from "@/store/store";
 import { miningStateAtom } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
 import { systemConfigAtom } from "@/store/system";
+import { resolveFramePositionKm } from "@/sim/frames";
 
 // Reusable temp vectors — zero allocation in hot path.
 const _vel = new Vector3();
 const _toTarget = new Vector3();
 const _shipPos = new Vector3();
+const _targetPos = new Vector3();
+
+/** Re-resolve the autopilot aim point from the LIVE target: a moving body must not leave it stale. */
+function refreshAutopilotTarget(): void {
+  const buf = transitDriveBuffer;
+  const t = buf.autopilotTarget;
+  if (!t) return;
+  resolveFramePositionKm(t.positionKm, t.frameId, _targetPos);
+  buf.autopilotTargetKm.x = _targetPos.x + buf.autopilotOffsetKm.x;
+  buf.autopilotTargetKm.y = _targetPos.y + buf.autopilotOffsetKm.y;
+  buf.autopilotTargetKm.z = _targetPos.z + buf.autopilotOffsetKm.z;
+}
 
 /** When velocity drops below this during decel, drive disengages (km/s). */
 const DISENGAGE_SPEED = 0.5;
@@ -171,6 +184,7 @@ export default function TransitTicker() {
     const dt = Math.min(delta, MAX_DT);
 
     const prevPhase = buf.phase;
+    if (buf.autopilot) refreshAutopilotTarget();
 
     // ── Phase logic (mutually exclusive per frame) ─────────────────────
     if (buf.phase === "idle") {
@@ -188,9 +202,10 @@ export default function TransitTicker() {
         const target = store.get(targetedPOIAtom);
         if (target && buf.shipPosKm) {
           buf.autopilot = true;
-          const tx = target.positionKm[0];
-          const ty = target.positionKm[1];
-          const tz = target.positionKm[2];
+          resolveFramePositionKm(target.positionKm, target.frameId, _targetPos);
+          const tx = _targetPos.x;
+          const ty = _targetPos.y;
+          const tz = _targetPos.z;
           const offset = target.arrivalOffsetKm ?? 0;
           if (offset > 0) {
             // Arrive at a point `offset` km from the body center, on the
@@ -213,8 +228,15 @@ export default function TransitTicker() {
           } else {
             buf.autopilotTargetKm = { x: tx, y: ty, z: tz };
           }
+          buf.autopilotTarget = target;
+          buf.autopilotOffsetKm = {
+            x: buf.autopilotTargetKm.x - tx,
+            y: buf.autopilotTargetKm.y - ty,
+            z: buf.autopilotTargetKm.z - tz,
+          };
         } else {
           buf.autopilot = false;
+          buf.autopilotTarget = null;
         }
       }
     } else if (buf.phase === "spooling") {

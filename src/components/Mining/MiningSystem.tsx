@@ -2,7 +2,7 @@
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
@@ -23,6 +23,8 @@ import {
 } from "@/store/mining";
 import { systemConfigAtom } from "@/store/system";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
+import { worldAuthority } from "@/sim/world/worldAuthority";
+import { getLocalPlayerId } from "@/save/playerId";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
@@ -648,6 +650,7 @@ const MiningSystem = () => {
   const { camera, scene } = useThree();
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
+  const store = useStore();
   const systemConfig = useAtomValue(systemConfigAtom);
 
   const [miningState, setMiningState] = useAtom(miningStateAtom);
@@ -693,7 +696,7 @@ const MiningSystem = () => {
   const miningProgressRef = useRef(0);
 
   // One frame delay to remove the asteroid after state update is committed
-  const pendingRemovalIdRef = useRef<number | null>(null);
+  const pendingRemovalIdRef = useRef<{ instanceId: number; fieldId: string; chunkKey: string } | null>(null);
   const pendingMiningRewardRef = useRef<
     {
       instanceId: number;
@@ -742,17 +745,14 @@ const MiningSystem = () => {
   type RawPingEntry = { instanceId: number; x: number; y: number; z: number; radiusM: number };
   const pingRawRef = useRef<RawPingEntry[]>([]);
 
+  // Location captured at completion: the chunk may stream out before this runs.
   const removeAsteroid = useCallback(
-    (instanceId: number) => {
-      const loc = asteroidRuntime.findInstanceLocation(instanceId);
-      if (!loc) return;
-
-      const fieldRuntime = asteroidRuntime.getFieldRuntime(loc.fieldId);
-      if (!fieldRuntime) return;
-
-      fieldRuntime.destroyInstance(instanceId);
-    },
-    [asteroidRuntime]
+    (t: { instanceId: number; fieldId: string; chunkKey: string }): boolean =>
+      worldAuthority.submit(
+        { type: "asteroid.destroy", fieldId: t.fieldId, chunkKey: t.chunkKey, instanceId: t.instanceId, cause: "mined" },
+        getLocalPlayerId(),
+      ),
+    []
   );
 
   const getTargetSnapshot = useCallback(
@@ -1264,7 +1264,11 @@ const MiningSystem = () => {
 
           if (miningProgressRef.current >= 1) {
             miningProgressRef.current = 1;
-            pendingRemovalIdRef.current = snapshot.instanceId;
+            pendingRemovalIdRef.current = {
+              instanceId: snapshot.instanceId,
+              fieldId: snapshot.location.fieldId,
+              chunkKey: snapshot.location.chunkKey,
+            };
 
             // Compute deterministic mining reward before we clear the snapshot
             const fieldId = snapshot.location.fieldId;
@@ -1406,10 +1410,12 @@ const MiningSystem = () => {
     }
 
     // Apply side effect: remove asteroid
-    const removeId = pendingRemovalIdRef.current;
-    if (removeId !== null) {
+    const removal = pendingRemovalIdRef.current;
+    if (removal !== null) {
+      const removeId = removal.instanceId;
       const reward = pendingMiningRewardRef.current;
-      if (reward && reward.instanceId === removeId) {
+      // Rewards only for a destroy the authority accepted.
+      if (removeAsteroid(removal) && reward && reward.instanceId === removeId) {
         // Apply efficiency multiplier and add each resource to cargo
         const effMult = shipConfigRef.current.miningEfficiencyMult;
         for (const r of reward.resources) {
@@ -1420,13 +1426,7 @@ const MiningSystem = () => {
         // --- Assay samples yield based on asteroid size ---
         // Tutorial guarantee: the player's very first mined asteroid always
         // yields exactly 1 assay sample so the intro reward is deterministic.
-        // Read localStorage directly to dodge atomWithStorage hydration race.
-        const lifetimeRaw =
-          typeof window !== "undefined"
-            ? window.localStorage.getItem("asteroids-mined-lifetime-v1")
-            : null;
-        const lifetimeMined = lifetimeRaw ? Number(JSON.parse(lifetimeRaw)) : 0;
-        const isFirstEverMine = !Number.isFinite(lifetimeMined) || lifetimeMined <= 0;
+        const isFirstEverMine = store.get(asteroidsMinedLifetimeAtom) <= 0;
         let assayAmount: number;
         if (isFirstEverMine) {
           assayAmount = 1;
@@ -1472,7 +1472,6 @@ const MiningSystem = () => {
         incrementMinedLifetime((c) => c + 1);
       }
 
-      removeAsteroid(removeId);
       pendingRemovalIdRef.current = null;
       pendingMiningRewardRef.current = null;
     }

@@ -18,7 +18,6 @@ import { aiNameAtom } from "@/store/aiName";
 import { enqueueCommsAtom } from "@/store/comms";
 import { transitStateAtom } from "@/store/transit";
 import { COMMS_MESSAGES, RESEARCH_COMPLETE_MESSAGES, ITEM_CRAFTED_MESSAGES } from "@/data/commsMessages";
-import { TIER_2_NODE_IDS } from "@/data/content";
 
 // Derived atom so we don't rerender on every mining-state frame update
 const isOverheatedAtom = atom((get) => get(miningStateAtom).isOverheated);
@@ -28,7 +27,7 @@ export default function GameCommsTriggers() {
 
   // ── Welcome sequence ────────────────────────────────────────────────
   // Phase 1: AI greeting fires on mount (before naming)
-  // Phase 2: AI intro + Dr. Stern welcome fire after player names the AI
+  // Phase 2: AI intro fires after the player names the AI
   const aiName = useAtomValue(aiNameAtom);
 
   useEffect(() => {
@@ -40,8 +39,6 @@ export default function GameCommsTriggers() {
     if (!aiName) return;
     const intro = COMMS_MESSAGES.ai_intro_001;
     if (intro) enqueue(intro);
-    const welcome = COMMS_MESSAGES.welcome_001;
-    if (welcome) enqueue(welcome);
   }, [aiName, enqueue]);
 
   // ── First mining completion ─────────────────────────────────────────
@@ -139,30 +136,6 @@ export default function GameCommsTriggers() {
     }
   }, [research.activeResearch, enqueue]);
 
-  // ── MicroLab research completed ─────────────────────────────────────
-  const microlabCompleteFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (microlabCompleteFiredRef.current) return;
-    if (completedNodes.has("r0_microlab_boot")) {
-      microlabCompleteFiredRef.current = true;
-      const msg = COMMS_MESSAGES.research_complete_001;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
-
-  // ── Stern reinforces lunar goal (delayed follow-up to MicroLab) ─────
-  const sternLunarGoalFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (sternLunarGoalFiredRef.current) return;
-    if (completedNodes.has("r0_microlab_boot")) {
-      sternLunarGoalFiredRef.current = true;
-      const msg = COMMS_MESSAGES.stern_lunar_goal_001;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
-
   // ── First item crafted ──────────────────────────────────────────────
   const craftCount = useAtomValue(itemCraftedSignalAtom);
   const craftFiredRef = useRef(false);
@@ -174,34 +147,6 @@ export default function GameCommsTriggers() {
     if (msg) enqueue(msg);
   }, [craftCount, enqueue]);
 
-  // ── Elara's first message (after first craft) ──────────────────────
-  const elara1FiredRef = useRef(false);
-
-  useEffect(() => {
-    if (elara1FiredRef.current || craftCount === 0) return;
-    elara1FiredRef.current = true;
-    const msg = COMMS_MESSAGES.elara_001;
-    if (msg) enqueue(msg);
-  }, [craftCount, enqueue]);
-
-  // ── Stern foreshadowing: overbuilt (after 2+ tier-1 nodes) ─────────
-  const sternOverbuiltFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (sternOverbuiltFiredRef.current) return;
-    const tier1Nodes = [
-      "a1_sensor_calibration",
-      "b1_laser_optics",
-      "c1_structural_engineering",
-    ];
-    const completedTier1 = tier1Nodes.filter((n) => completedNodes.has(n));
-    if (completedTier1.length >= 2) {
-      sternOverbuiltFiredRef.current = true;
-      const msg = COMMS_MESSAGES.stern_overbuilt_001;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
-
   // ── AI observation: pattern-noticing (after 8+ asteroids mined) ────
   const aiObsFiredRef = useRef(false);
 
@@ -211,46 +156,6 @@ export default function GameCommsTriggers() {
     const msg = COMMS_MESSAGES.ai_observation_001;
     if (msg) enqueue(msg);
   }, [minedCount, enqueue]);
-
-  // ── Elara's second message (after 5+ research nodes completed) ─────
-  const elara2FiredRef = useRef(false);
-
-  useEffect(() => {
-    if (elara2FiredRef.current) return;
-    if (completedNodes.size >= 5) {
-      elara2FiredRef.current = true;
-      const msg = COMMS_MESSAGES.elara_002;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
-
-  // ── Stern earth update (after any tier-2 node) ─────────────────────
-  const sternUpdateFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (sternUpdateFiredRef.current) return;
-    const hasAnyTier2 = TIER_2_NODE_IDS.some((n) => completedNodes.has(n));
-    if (hasAnyTier2) {
-      sternUpdateFiredRef.current = true;
-      const msg = COMMS_MESSAGES.stern_earth_update_001;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
-
-  // ── ESA bulletin (after thermal dynamics OR propulsion systems) ──────
-  const esaBulletinFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (esaBulletinFiredRef.current) return;
-    if (
-      completedNodes.has("b2b_thermal_dynamics") ||
-      completedNodes.has("c2b_propulsion_systems")
-    ) {
-      esaBulletinFiredRef.current = true;
-      const msg = COMMS_MESSAGES.esa_bulletin_001;
-      if (msg) enqueue(msg);
-    }
-  }, [completedNodes, enqueue]);
 
   // ── Per-research completion messages ────────────────────────────────
   const lastResearchId = useAtomValue(lastCompletedResearchIdAtom);
@@ -292,8 +197,6 @@ export default function GameCommsTriggers() {
       if (transitState.target?.id?.includes("luna") || transitState.target?.id?.includes("moon")) {
         const arrival = COMMS_MESSAGES.lunar_arrival_001;
         if (arrival) enqueue(arrival);
-        const stern = COMMS_MESSAGES.lunar_stern_001;
-        if (stern) enqueue(stern);
       }
     }
 

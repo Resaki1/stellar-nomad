@@ -33,7 +33,8 @@ import type { createStore } from "jotai";
 import { Vector3 } from "three";
 import { benchModeAtom, devMaxSpeedOverrideAtom, devTeleportAtom } from "@/store/dev";
 import { commsQueueAtom } from "@/store/comms";
-import { simEpochMsAtom } from "@/store/simTime";
+import { ECLIPSE_2024_04_08_MS, simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import { suspendSaveWrites } from "@/save/activeSave";
 import { SPARSE_DIVISOR } from "@/components/space/cloudReconstructionPass";
 import { STBN_FRAME_MODULUS } from "@/components/space/cloudFullscreenPass";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
@@ -439,12 +440,25 @@ export class BenchRunner {
       geometries: snap.counters.geometries,
     };
     this.store.set(benchModeAtom, true);
+    suspendSaveWrites(true, "bench");
+    // Freeze sim time at the default epoch (time runs at 1x in play): poses and lighting
+    // must not depend on how long the session ran before the bench.
+    this.rateBeforeSession = this.store.get(simRateAtom);
+    this.epochBeforeSession = this.store.get(simEpochMsAtom);
+    this.store.set(simRateAtom, 0);
+    this.store.set(simEpochMsAtom, ECLIPSE_2024_04_08_MS);
     // Drop any comms already queued; benchModeAtom stops new ones arriving.
     this.store.set(commsQueueAtom, []);
   }
 
+  private rateBeforeSession = 0;
+  private epochBeforeSession = ECLIPSE_2024_04_08_MS;
+
   private endSession(): void {
     this.store.set(benchModeAtom, false);
+    this.store.set(simRateAtom, this.rateBeforeSession);
+    this.store.set(simEpochMsAtom, this.epochBeforeSession);
+    suspendSaveWrites(false, "bench");
   }
 
   /** Measure one scenario. Assumes a session is already open. */

@@ -3,116 +3,17 @@
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
 import { signalAudioActionAtom } from "./audioSignals";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
+import { defaultModules } from "@/save/defaults";
 import {
-  ITEMS,
   getItemDef,
-  type ItemDef,
   type ItemEffect,
   type ItemSlot,
 } from "@/data/content";
 
-// ---------------------------------------------------------------------------
-// Persisted state
-// ---------------------------------------------------------------------------
+export type { ModulesState } from "@/save/types";
 
-export type ModulesState = {
-  /** moduleItemId[] — all owned module items. */
-  ownedModules: string[];
-  /** One module per slot. Only equipped modules contribute stat effects. */
-  equippedModules: Partial<Record<ItemSlot, string>>;
-  /** consumableItemId → current stack count. */
-  consumables: Record<string, number>;
-  /** consumableItemId → timestamp (ms) of last use for cooldown tracking. */
-  consumableCooldowns: Record<string, number>;
-  /** Hotbar: index 0-9 → consumable item ID (or null). */
-  hotbar: (string | null)[];
-};
-
-const DEFAULT_MODULES: ModulesState = {
-  ownedModules: [],
-  equippedModules: {},
-  consumables: {},
-  consumableCooldowns: {},
-  hotbar: Array(10).fill(null),
-};
-
-/**
- * Migrate from v1 (no equippedModules) to v2 format.
- * Auto-equips all owned modules (one per slot, last wins).
- */
-function migrateV1toV2(raw: Record<string, unknown>): ModulesState {
-  const ownedModules = (raw.ownedModules as string[]) ?? [];
-  const equippedModules: Partial<Record<ItemSlot, string>> = {};
-
-  // Auto-equip each owned module into its slot (last item wins per slot)
-  for (const itemId of ownedModules) {
-    const def = getItemDef(itemId);
-    if (def && def.type === "module") {
-      equippedModules[def.slot] = itemId;
-    }
-  }
-
-  return {
-    ownedModules,
-    equippedModules,
-    consumables: (raw.consumables as Record<string, number>) ?? {},
-    consumableCooldowns: (raw.consumableCooldowns as Record<string, number>) ?? {},
-    hotbar: (raw.hotbar as (string | null)[]) ?? Array(10).fill(null),
-  };
-}
-
-// Read v1 data from localStorage and migrate if needed, then clean up
-function getInitialModulesState(): ModulesState {
-  if (typeof window === "undefined") return DEFAULT_MODULES;
-
-  // Check for v2 data first
-  const v2Raw = localStorage.getItem("modules-v2");
-  if (v2Raw) {
-    try {
-      const parsed = JSON.parse(v2Raw);
-      // Ensure equippedModules exists (guard against partial data)
-      if (!parsed.equippedModules) {
-        return migrateV1toV2(parsed);
-      }
-      return parsed as ModulesState;
-    } catch { /* fall through */ }
-  }
-
-  // Check for v1 data and migrate
-  const v1Raw = localStorage.getItem("modules-v1");
-  if (v1Raw) {
-    try {
-      const parsed = JSON.parse(v1Raw);
-      const migrated = migrateV1toV2(parsed);
-      // Write migrated data to v2 key
-      localStorage.setItem("modules-v2", JSON.stringify(migrated));
-      // Clean up v1 key
-      localStorage.removeItem("modules-v1");
-      return migrated;
-    } catch { /* fall through */ }
-  }
-
-  return DEFAULT_MODULES;
-}
-
-export const modulesAtom = atomWithStorage<ModulesState>(
-  "modules-v2",
-  DEFAULT_MODULES,
-  {
-    getItem: (_key, _initialValue) => getInitialModulesState(),
-    setItem: (key, value) => {
-      if (typeof window !== "undefined") {
-        localStorage.setItem(key, JSON.stringify(value));
-      }
-    },
-    removeItem: (key) => {
-      if (typeof window !== "undefined") {
-        localStorage.removeItem(key);
-      }
-    },
-  },
-);
+export const modulesAtom = savedAtom("player", "modules", defaultModules());
 
 // ---------------------------------------------------------------------------
 // Derived: computed stat modifiers from EQUIPPED modules only

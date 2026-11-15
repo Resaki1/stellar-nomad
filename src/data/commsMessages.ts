@@ -54,21 +54,6 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     priority: 3,
   },
 
-  // -- Ground Control welcome (follows AI intro) ----------------------------
-  welcome_001: {
-    messageId: "welcome_001",
-    speaker: "Dr. Stern",
-    avatar: "/assets/avatars/stern.jpeg",
-    delaySec: 5,
-    textContent: [
-      "Nomad, this is Flight Director Stern. We have your signal. Good to hear from you. We were starting to worry about the hibernation lag.",
-      "I'll keep this brief. The situation on the ground has deteriorated since your launch. Methane readings from the Siberian shelf are accelerating. The timeline is tighter than anyone hoped.",
-      "There's an asteroid cluster in your sensor range. Start there. Mine what you can, get your lab running, feed the data back to us.",
-      "The long game is lunar orbit. The Moon carries concentrations of helium-3 and rare elements we can't get from asteroids. It's beyond your conventional thruster range, but you'll build up to it. Stay safe out there.",
-    ],
-    priority: 2,
-  },
-
   // == TUTORIAL BEATS =======================================================
 
   // -- First mining completion ----------------------------------------------
@@ -116,32 +101,6 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     priority: 1,
   },
 
-  // -- MicroLab research complete -------------------------------------------
-  research_complete_001: {
-    messageId: "research_complete_001",
-    speaker: "Dr. Stern",
-    delaySec: 5,
-    avatar: "/assets/avatars/stern.jpeg",
-    textContent: [
-      "Nomad, we're receiving your MicroLab telemetry. Analysis framework is live. This is what we needed.",
-      "From here, your assay data opens up real research paths. Better extraction methods, sensor capability, ship hardening. Prioritize what keeps you operational out there. Stern out.",
-    ],
-    priority: 1,
-  },
-
-  // -- Stern reinforces the lunar goal (follows MicroLab completion) --------
-  stern_lunar_goal_001: {
-    messageId: "stern_lunar_goal_001",
-    speaker: "Dr. Stern",
-    avatar: "/assets/avatars/stern.jpeg",
-    delaySec: 60,
-    textContent: [
-      "Nomad, we're tracking steady returns from your research framework. The engineering models you're feeding us are clarifying options we didn't have before.",
-      "The Moon is still the target. Helium-3, rare regolith elements — the serious material is concentrated there. Keep working. You'll know when you're ready to make the crossing.",
-    ],
-    priority: 1,
-  },
-
   // -- First module/item crafted --------------------------------------------
   first_craft_001: {
     messageId: "first_craft_001",
@@ -155,32 +114,6 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
 
   // == STORY & CHARACTER BEATS ==============================================
 
-  // -- Elara's first message ------------------------------------------------
-  elara_001: {
-    messageId: "elara_001",
-    speaker: "Elara",
-    avatar: "/assets/avatars/elara.jpeg",
-    delaySec: 60,
-    textContent: [
-      "Hey. It's me. I don't really know how these things work. They said I could send messages through the ESA relay, but I'm probably just talking to dead air.",
-      "They won't tell me much about your mission. 'Classified operational parameters.' Very helpful. But I saw the launch. Everyone did.",
-      "I don't know. Be careful, I guess. Come back.",
-    ],
-    priority: 1,
-  },
-
-  // -- Stern foreshadowing: ship is overbuilt -------------------------------
-  stern_overbuilt_001: {
-    messageId: "stern_overbuilt_001",
-    speaker: "Dr. Stern",
-    avatar: "/assets/avatars/stern.jpeg",
-    textContent: [
-      "Nomad, your research throughput is ahead of schedule. The engineering team is impressed.",
-      "Between you and me, that ship of yours was overbuilt for a mining vessel. But I'm not complaining. It means you can push further and harder than the original mission profile assumed. Keep it up.",
-    ],
-    priority: 1,
-  },
-
   // -- AI personality moment: noticing patterns -----------------------------
   ai_observation_001: {
     messageId: "ai_observation_001",
@@ -189,45 +122,6 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     textContent: [
       "I've been correlating your extraction data. The silicate-to-metal ratios across this cluster are unusually consistent. Statistically, that's... unexpected. Probably just sampling bias.",
       "Probably.",
-    ],
-    priority: 1,
-  },
-
-  // -- Elara's second message (with foreshadowing) --------------------------
-  elara_002: {
-    messageId: "elara_002",
-    speaker: "Elara",
-    avatar: "/assets/avatars/elara.jpeg",
-    delaySec: 45,
-    textContent: [
-      "Me again. Water rations got cut this week. Everyone's pretending it's fine. It's not fine.",
-      "The university's been weird. ESA requisitioned half the bioengineering department's equipment last month. 'For the Mars program.' Nobody I've talked to knows anything about a Mars program.",
-      "Sorry, I shouldn't dump this on you. You've got enough to worry about up there. Just... yeah.",
-    ],
-    priority: 1,
-  },
-
-  // -- Stern earth deterioration update -------------------------------------
-  stern_earth_update_001: {
-    messageId: "stern_earth_update_001",
-    speaker: "Dr. Stern",
-    avatar: "/assets/avatars/stern.jpeg",
-    delaySec: 30,
-    textContent: [
-      "Nomad, mission update. The North Atlantic fisheries have collapsed. Faster than the models predicted. Oxygen generation from marine algae is now measurably declining.",
-      "I'm telling you this because you deserve to know what your work means. Every sample, every extraction. It all feeds models that could give us a fighting chance. Don't let up.",
-    ],
-    priority: 1,
-  },
-
-  // -- ESA automated bulletin -----------------------------------------------
-  esa_bulletin_001: {
-    messageId: "esa_bulletin_001",
-    speaker: "ESA Comms",
-    delaySec: 60,
-    textContent: [
-      "[AUTOMATED BULLETIN: ESA RELAY] International resource-sharing agreements between ESA and CNSA have been suspended following the Jakarta incident. ISRO has formally withdrawn from the Proxima Compact. Mission support from non-ESA partners is no longer guaranteed.",
-      "[END BULLETIN]",
     ],
     priority: 1,
   },
@@ -252,19 +146,6 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     textContent: [
       "Drive disengaged. Lunar proximity confirmed. I'm reading a dense asteroid cluster in the local field.",
       "Composition scans show unfamiliar signatures. Titanium. And something else. Helium-3, if the spectral data is right. That's... significant.",
-    ],
-    priority: 2,
-  },
-
-  // -- Stern reacts to lunar arrival ------------------------------------------
-  lunar_stern_001: {
-    messageId: "lunar_stern_001",
-    speaker: "Dr. Stern",
-    avatar: "/assets/avatars/stern.jpeg",
-    delaySec: 10,
-    textContent: [
-      "Nomad, we're tracking your position update. You made it to lunar orbit. That drive performed well.",
-      "The helium-3 readings alone justify the trip. Get samples. Everything you pull from that field opens engineering options we didn't have before.",
     ],
     priority: 2,
   },

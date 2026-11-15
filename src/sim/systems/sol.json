@@ -34,6 +34,7 @@
       "type": "star",
       "positionKm": [0, 0, 0],
       "radiusKm": 696340,
+      "massKg": 1.98847e30,
       "luminositySun": 1.0,
       "tempK": 5772
     },
@@ -45,6 +46,7 @@
       "type": "planet",
       "positionKm": [58000000, 0, 0],
       "radiusKm": 2440,
+      "massKg": 3.3011e23,
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
@@ -97,6 +99,7 @@
       "parent": "earth",
       "positionKm": [-130379400, 0, -65015000],
       "radiusKm": 1737,
+      "massKg": 7.342e22,
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 500000 }
     },
     {
@@ -215,6 +218,7 @@
       "parent": "jupiter",
       "positionKm": [90671000, 0, -779000000],
       "radiusKm": 1561,
+      "massKg": 4.7998e22,
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
     },
     {
@@ -226,6 +230,7 @@
       "parent": "jupiter",
       "positionKm": [90421700, 0, -779000000],
       "radiusKm": 1822,
+      "massKg": 8.9319e22,
       "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
     },
     {
@@ -237,6 +242,7 @@
       "parent": "jupiter",
       "positionKm": [91883000, 0, -779000000],
       "radiusKm": 2405,
+      "massKg": 1.0759e23,
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
     },
     {
@@ -248,6 +254,7 @@
       "parent": "jupiter",
       "positionKm": [91070000, 0, -779000000],
       "radiusKm": 2634,
+      "massKg": 1.4819e23,
       "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
     }
   ],

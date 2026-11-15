@@ -1,83 +1,38 @@
-/**
- * Persistence for the player ship's position and orientation.
- *
- * Saves at a regular interval (not every frame) to keep perf impact negligible.
- * Uses localStorage; the shape is small (~120 bytes JSON).
- */
+/** The local player's ship pose in the active save (frame-relative). */
+import { Vector3 } from "three";
+import { getActiveSave, getLocalPlayerState, registerCollector } from "@/save/activeSave";
+import type { ShipPose } from "@/save/types";
+import { frameOriginKm, isFrameId } from "@/sim/frames";
+import type { ShipState } from "@/sim/ship/shipState";
 
-const STORAGE_KEY = "ship-state-v1";
+const _origin = new Vector3();
 
-// ---------------------------------------------------------------------------
-// Persisted shape
-// ---------------------------------------------------------------------------
-
-export type PersistedShipState = {
-  version: 1;
-  /** Position in simulation km. */
-  positionKm: [number, number, number];
-  /** Orientation as quaternion [x, y, z, w]. */
-  quaternion: [number, number, number, number];
-};
-
-// ---------------------------------------------------------------------------
-// Read / write
-// ---------------------------------------------------------------------------
-
-export function loadShipState(): PersistedShipState | null {
-  if (typeof window === "undefined") return null;
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-
-    const parsed: PersistedShipState = JSON.parse(raw);
-    if (parsed.version !== 1) return null;
-
-    // Basic sanity checks
-    const p = parsed.positionKm;
-    const q = parsed.quaternion;
-
-    if (
-      !Array.isArray(p) || p.length !== 3 ||
-      !p.every((v) => typeof v === "number" && Number.isFinite(v))
-    ) return null;
-
-    if (
-      !Array.isArray(q) || q.length !== 4 ||
-      !q.every((v) => typeof v === "number" && Number.isFinite(v))
-    ) return null;
-
-    return parsed;
-  } catch {
-    return null;
-  }
+export function loadShipState(): ShipPose | null {
+  if (!getActiveSave()) return null;
+  const pose = getLocalPlayerState().ship;
+  return pose && isFrameId(pose.frameId) ? pose : null;
 }
 
-export function saveShipState(
-  positionKm: { x: number; y: number; z: number },
-  quaternion: { x: number; y: number; z: number; w: number }
-): void {
-  if (typeof window === "undefined") return;
-
-  const state: PersistedShipState = {
-    version: 1,
-    positionKm: [positionKm.x, positionKm.y, positionKm.z],
-    quaternion: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
-  };
-
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Storage full or unavailable — non-fatal.
-  }
+/** System-frame position of a saved pose, km, at the current ephemeris instant. */
+export function persistedAbsoluteKm(saved: ShipPose): [number, number, number] {
+  frameOriginKm(saved.frameId, _origin);
+  const p = saved.positionKm;
+  return [p[0] + _origin.x, p[1] + _origin.y, p[2] + _origin.z];
 }
 
-export function clearShipState(): void {
-  if (typeof window === "undefined") return;
-
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
+/** Sample the live ship into the save at every flush. Returns the unregister function. */
+export function collectShipPose(ship: ShipState): () => void {
+  return registerCollector(() => {
+    const player = getLocalPlayerState();
+    const pose = player.ship ?? { frameId: ship.frameId, positionKm: [0, 0, 0], quaternion: [0, 0, 0, 1] };
+    pose.frameId = ship.frameId;
+    pose.positionKm[0] = ship.posKm.x;
+    pose.positionKm[1] = ship.posKm.y;
+    pose.positionKm[2] = ship.posKm.z;
+    pose.quaternion[0] = ship.quat.x;
+    pose.quaternion[1] = ship.quat.y;
+    pose.quaternion[2] = ship.quat.z;
+    pose.quaternion[3] = ship.quat.w;
+    player.ship = pose;
+  });
 }

@@ -20,8 +20,7 @@
  */
 
 import { atom } from "jotai";
-
-const STORAGE_KEY = "star-markers-v1";
+import { savedAtom } from "@/store/savedAtom";
 
 /**
  * How many of the NEAREST stars get a marker.
@@ -46,32 +45,6 @@ export const STAR_MARKER_NEAREST = 6;
  */
 export const STAR_MARKER_MAX_LY = 30;
 
-/**
- * ⚠ Read straight from localStorage rather than through `atomWithStorage`.
- * `atomWithStorage` returns its DEFAULT until hydration, so a write that lands in
- * that window silently discards everything already stored — the trap
- * `dismissCommsAtom` was rewritten to avoid.
- */
-function loadRevealed(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRevealed(ids: string[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    /* quota or privacy mode — markers are not worth failing a frame over */
-  }
-}
-
 /** The player's own toggle. */
 export const starMarkersEnabledAtom = atom(true);
 
@@ -81,20 +54,16 @@ export const starMarkersEnabledAtom = atom(true);
  */
 export const revealAllStarMarkersAtom = atom(true);
 
-/** Discovered star ids. Seeded from localStorage on first read. */
-export const revealedStarMarkerIdsAtom = atom<string[]>(loadRevealed());
+/** Discovered star ids (player save). */
+export const revealedStarMarkerIdsAtom = savedAtom("player", "starMarkers", []);
 
 /** Gameplay's entry point: "the player has acquired this star". */
 export const revealStarMarkerAtom = atom(null, (get, set, id: string) => {
-  // ⚠ Merge against storage, not just the atom, so two tabs or a mid-hydration
-  // write cannot drop earlier discoveries.
-  const merged = Array.from(new Set([...loadRevealed(), ...get(revealedStarMarkerIdsAtom), id]));
-  set(revealedStarMarkerIdsAtom, merged);
-  saveRevealed(merged);
+  const ids = get(revealedStarMarkerIdsAtom);
+  if (!ids.includes(id)) set(revealedStarMarkerIdsAtom, [...ids, id]);
 });
 
 /** For a "new game" flow. */
 export const resetStarMarkersAtom = atom(null, (_get, set) => {
   set(revealedStarMarkerIdsAtom, []);
-  saveRevealed([]);
 });

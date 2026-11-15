@@ -12,7 +12,10 @@
  *   await __test.image.stats({ x0: 0, y0: 0, x1: 1, y1: 0.5 })
  *   await __test.image.save("mars_20")       PNG → .captures/ via the dev API route
  *   await __test.audio.record(2000)          loudness/peak + base64 webm
- *   __test.state()                           body, altitude, speed, exposure
+ *   __test.state()                           body, altitude, speed, exposure, ship frame
+ *   __test.simRate(1e4)                      get/set sim rate (isolate() forces 0, restores on false)
+ *   await __test.sampleOffsets("luna", 120)  per-frame absolute ship→body offset spread
+ *   __test.transitTo("luna")                 target a body and engage the autopilot
  *
  * Built on the bench harness's poses (`resolveScenario`) and its readiness signals
  * (`hasPendingCloudBakes`, `isStbnLoaded`, `CLOUD_TEMPORAL_CYCLE`), not copies of them.
@@ -22,8 +25,8 @@ import type { createStore } from "jotai";
 
 import { benchModeAtom, devTeleportAtom } from "@/store/dev";
 import { commsQueueAtom } from "@/store/comms";
-import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
-import { isStbnLoaded } from "@/components/celestial/bodies/stbnTexture";
+import { createReadiness } from "@/components/Loading/readiness";
+import { app, getAppPhase } from "@/components/AppShell/appState";
 import {
   exposureMeterStatus,
   resetExposureAdaptation,
@@ -42,6 +45,19 @@ import { audioShipBuffer } from "@/audio/shipBuffer";
 import { playAudio } from "@/audio";
 import { tryGetAudioEvent } from "@/data/audioEvents";
 import { testProbe } from "./testProbe";
+import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import { allBodyDefs } from "@/sim/celestialConstants";
+import { listFrames } from "@/sim/frames";
+import { modulesAtom } from "@/store/modules";
+import { aiNameAtom } from "@/store/aiName";
+import { systemConfigAtom } from "@/store/system";
+import { flush, getActiveSave, resetActiveWorld, saveInfo, snapshotActiveData, suspendSaveWrites } from "@/save/activeSave";
+import { exportWorld, importWorld } from "@/save/saveDb";
+import { getLocalPlayerId, setLastWorldId } from "@/save/playerId";
+import type { WorldCommand } from "@/sim/world/commands";
+import { worldAuthority } from "@/sim/world/worldAuthority";
+import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
+import { targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -114,35 +130,6 @@ export type AudioRecording = {
   /** base64 of the encoded recording, for drive.mjs to write and run ffmpeg on. */
   base64?: string;
 };
-
-// ── Network-quiet tracking (installed once, dev only) ───────────────────────
-
-const net = { inFlight: 0, lastActivityAt: 0, installed: false };
-
-function installNetworkTracking(): void {
-  if (net.installed) return;
-  net.installed = true;
-  // fetch covers KTX2/GLTF/audio (three's FileLoader uses fetch); the observer
-  // also catches <img>-based loads, which never go through fetch.
-  const orig = window.fetch.bind(window);
-  window.fetch = (async (...args: Parameters<typeof fetch>) => {
-    net.inFlight++;
-    net.lastActivityAt = performance.now();
-    try {
-      return await orig(...args);
-    } finally {
-      net.inFlight--;
-      net.lastActivityAt = performance.now();
-    }
-  }) as typeof fetch;
-  try {
-    new PerformanceObserver(() => {
-      net.lastActivityAt = performance.now();
-    }).observe({ type: "resource", buffered: false });
-  } catch {
-    /* observer unsupported — fetch tracking still works */
-  }
-}
 
 // ── Frame helpers ───────────────────────────────────────────────────────────
 
@@ -372,7 +359,8 @@ function setHud(visible: boolean): void {
 // ── Harness ─────────────────────────────────────────────────────────────────
 
 export function createTestHarness(store: Store) {
-  installNetworkTracking();
+  let rateBeforeIsolate: number | null = null;
+  const trackStops = new Set<() => void>();
 
   const harness = {
     /** Rendered frames since load. */
@@ -380,23 +368,157 @@ export function createTestHarness(store: Store) {
       return testProbe.frames;
     },
 
-    /** Wait until the first frames render (page fully booted). */
-    async ready(timeoutMs = 60_000): Promise<{ frames: number; ms: number }> {
+    /** Wait until the game is playable: the loading gate is open and frames render. */
+    async ready(timeoutMs = 180_000): Promise<{ frames: number; ms: number }> {
       const t0 = performance.now();
-      while (testProbe.frames < 3) {
-        if (performance.now() - t0 > timeoutMs) throw new Error("[test] game never rendered");
+      while (getAppPhase() !== "playing" || testProbe.frames < 3) {
+        if (performance.now() - t0 > timeoutMs) throw new Error(`[test] game never became playable (phase ${getAppPhase()})`);
         await new Promise((r) => setTimeout(r, 100));
       }
       return { frames: testProbe.frames, ms: Math.round(performance.now() - t0) };
     },
 
+    /** App shell (M0.4): phase(), start(worldId?), timings(), progress(). */
+    app,
+
     /**
-     * Bench mode on/off. On = no comms, no ship-position saves, no camera shake,
+     * Bench mode on/off. On = no comms, no save writes at all, no camera shake,
      * frozen HUD readouts — what you want for any repeatable capture.
      */
     isolate(on = true): void {
       store.set(benchModeAtom, on);
-      if (on) store.set(commsQueueAtom, []);
+      suspendSaveWrites(on, "isolate");
+      if (on) {
+        store.set(commsQueueAtom, []);
+        if (rateBeforeIsolate === null) rateBeforeIsolate = store.get(simRateAtom);
+        store.set(simRateAtom, 0);
+      } else if (rateBeforeIsolate !== null) {
+        store.set(simRateAtom, rateBeforeIsolate);
+        rateBeforeIsolate = null;
+      }
+    },
+
+    /** Name the ship AI if unnamed, so the naming prompt does not take keyboard focus. */
+    nameAi(name = "Test"): void {
+      if (store.get(aiNameAtom) === null) store.set(aiNameAtom, name);
+    },
+
+    /** Get, or set then get, the sim rate (sim seconds per real second). */
+    simRate(rate?: number): number {
+      if (rate !== undefined) {
+        store.set(simRateAtom, rate);
+        rateBeforeIsolate = null; // an explicit rate survives isolate(false)
+      }
+      return store.get(simRateAtom);
+    },
+
+    /** Body frames with their SOI radii, km. */
+    frameList() {
+      return listFrames().map((f) => ({ id: f.id, depth: f.depth, soiKm: Math.round(f.soiKm) }));
+    },
+
+    /**
+     * Sample the ABSOLUTE ship→body offset on `n` consecutive frames, read after the
+     * ship's update. A one-frame frame-origin lag shows as a spread ≈ the body's per-frame motion.
+     */
+    async sampleOffsets(bodyId: string, n = 120) {
+      const body = allBodyDefs().find((b) => b.id === bodyId);
+      if (!body) throw new Error(`[test] unknown body "${bodyId}"`);
+      const off: number[][] = [];
+      const bodyPos: number[][] = [];
+      const frameIds = new Set<string>();
+      await new Promise<void>((resolve, reject) => {
+        const hook = () => {
+          const p = testProbe.ship.posKm;
+          const b = body.positionKm;
+          off.push([p[0] - b[0], p[1] - b[1], p[2] - b[2]]);
+          bodyPos.push([b[0], b[1], b[2]]);
+          frameIds.add(testProbe.ship.frameId);
+          if (off.length >= n) {
+            testProbe.frameHooks.delete(hook);
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+        const timer = setTimeout(() => {
+          testProbe.frameHooks.delete(hook);
+          reject(new Error("[test] sampleOffsets: frames stalled"));
+        }, STALL_MS + n * 100);
+        testProbe.frameHooks.add(hook);
+      });
+      const spread = [0, 1, 2].map((k) => {
+        const v = off.map((o) => o[k]);
+        return Math.max(...v) - Math.min(...v);
+      });
+      const dist = off.map((o) => Math.hypot(o[0], o[1], o[2]));
+      let bodyMove = 0;
+      for (let i = 1; i < bodyPos.length; i++) {
+        bodyMove += Math.hypot(
+          bodyPos[i][0] - bodyPos[i - 1][0],
+          bodyPos[i][1] - bodyPos[i - 1][1],
+          bodyPos[i][2] - bodyPos[i - 1][2],
+        );
+      }
+      return {
+        n: off.length,
+        frameIds: Array.from(frameIds),
+        distKm: { min: Math.min(...dist), max: Math.max(...dist) },
+        distSpreadKm: Math.max(...dist) - Math.min(...dist),
+        maxComponentSpreadKm: Math.max(...spread),
+        bodyMoveKmPerFrame: bodyPos.length > 1 ? bodyMove / (bodyPos.length - 1) : 0,
+      };
+    },
+
+    /** Per-frame ship track (frame id, absolute km, cumulative fixed steps): `n` frames or until trackStop(). */
+    async track(n: number): Promise<{ frameId: string; absKm: number[]; steps: number }[]> {
+      const rows: { frameId: string; absKm: number[]; steps: number }[] = [];
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          testProbe.frameHooks.delete(hook);
+          trackStops.delete(finish);
+          resolve();
+        };
+        const hook = () => {
+          const t = testProbe.ship;
+          rows.push({ frameId: t.frameId, absKm: [...t.posKm], steps: t.steps });
+          if (rows.length >= n) finish();
+        };
+        trackStops.add(finish);
+        testProbe.frameHooks.add(hook);
+      });
+      return rows;
+    },
+
+    /** End every running track() now. */
+    trackStop(): void {
+      for (const stop of Array.from(trackStops)) stop();
+    },
+
+    /**
+     * Target a body (same POI shape as gaze targeting) and engage the autopilot: holds
+     * the transit key through the spool. Grants the transit-drive module if missing.
+     */
+    async transitTo(bodyId: string): Promise<{ engaged: boolean; arrivalOffsetKm: number }> {
+      const body = allBodyDefs().find((b) => b.id === bodyId);
+      if (!body) throw new Error(`[test] unknown body "${bodyId}"`);
+      if (!store.get(transitDriveOwnedAtom)) {
+        const m = store.get(modulesAtom);
+        store.set(modulesAtom, { ...m, ownedModules: [...m.ownedModules, "special_transit_drive"] });
+      }
+      const arrivalOffsetKm = Math.max(100, body.radiusKm * 2);
+      store.set(targetedPOIAtom, {
+        id: `body:${body.id}`,
+        name: body.name,
+        positionKm: body.positionKm as [number, number, number],
+        arrivalOffsetKm,
+      });
+      transitDriveBuffer.keyHeld = true;
+      try {
+        for (let i = 0; i < 2000 && transitDriveBuffer.phase !== "accelerating"; i++) await frames(1);
+      } finally {
+        transitDriveBuffer.keyHeld = false;
+      }
+      return { engaged: transitDriveBuffer.phase === "accelerating" && transitDriveBuffer.autopilot, arrivalOffsetKm };
     },
 
     /** Teleport to a bench scenario id or an ad-hoc `SceneSpec`. Ship stops dead. */
@@ -437,8 +559,7 @@ export function createTestHarness(store: Store) {
       const f0 = testProbe.frames;
 
       await frames(2);
-      let lastRes = "";
-      let resStableSince = testProbe.frames;
+      const readiness = createReadiness(testProbe.frames);
       // Frame at which loading finished (and exposure snapped). `minFrames` counts from
       // here: radiance buffers are pre-exposed (D25), so temporal history accumulated
       // before the snap is at the wrong exposure.
@@ -446,19 +567,9 @@ export function createTestHarness(store: Store) {
       let pending: string[] = [];
 
       while (testProbe.frames - f0 < maxFrames) {
-        pending = [];
-        if (store.get(devTeleportAtom) !== null) pending.push("teleport");
-        if (hasPendingCloudBakes()) pending.push("cloudBakes");
-        if (!isStbnLoaded()) pending.push("blueNoise");
-        if (net.inFlight > 0 || performance.now() - net.lastActivityAt < quietMs)
-          pending.push(`network(${net.inFlight} in flight)`);
-        const mem = testProbe.renderer?.info.memory;
-        const res = mem ? `${mem.textures}/${mem.geometries}` : "";
-        if (res !== lastRes) {
-          lastRes = res;
-          resStableSince = testProbe.frames;
-        }
-        if (testProbe.frames - resStableSince < 30) pending.push(`resources(${res})`);
+        pending = readiness.describe(
+          readiness.check(store, testProbe.frames, quietMs, testProbe.renderer?.info.memory),
+        );
 
         // Snap only once loading is done, or it snaps to a half-loaded scene's EV.
         if (pending.length > 0) {
@@ -512,6 +623,17 @@ export function createTestHarness(store: Store) {
         altitudeKm: dom ? Math.round((dom.distanceKm - dom.params.groundRadiusKm) * 1000) / 1000 : null,
         speedMps: Math.round(audioShipBuffer.speedMps * 10) / 10,
         throttle: Math.round(audioShipBuffer.throttle * 100) / 100,
+        simRate: store.get(simRateAtom),
+        simEpochMs: store.get(simEpochMsAtom),
+        ship: {
+          posKm: [...testProbe.ship.posKm],
+          frameId: testProbe.ship.frameId,
+          relPosKm: [...testProbe.ship.relPosKm],
+          quat: [...testProbe.ship.quat],
+          steps: testProbe.ship.steps,
+          frameSwitches: testProbe.ship.frameSwitches,
+        },
+        transit: { phase: transitDriveBuffer.phase, autopilot: transitDriveBuffer.autopilot },
         exposure: {
           meteredEV: Math.round(ex.meteredEV * 100) / 100,
           adaptedEV: Math.round(ex.adaptedEV * 100) / 100,
@@ -522,6 +644,65 @@ export function createTestHarness(store: Store) {
           : null,
         gates,
       };
+    },
+
+    /** Active world save (M0.3). Writes respect isolate(): flush() is a no-op while isolated. */
+    save: {
+      info: () => saveInfo(),
+      flush: () => flush(),
+      /** Deep copy of the in-memory save data. */
+      data: () => snapshotActiveData(),
+      async export(): Promise<string> {
+        const rec = getActiveSave();
+        if (!rec) throw new Error("[test] no active world");
+        await flush();
+        return exportWorld(rec.meta.id);
+      },
+      /** Store `json` as a new world and make it the one the next load boots. Returns its id. */
+      async importAndActivate(json: string): Promise<string> {
+        const meta = await importWorld(json, getLocalPlayerId());
+        setLastWorldId(meta.id);
+        return meta.id;
+      },
+      /** Fresh data for the active world (same meta), written immediately. Reload afterwards. */
+      reset: () => resetActiveWorld(),
+    },
+
+    world: {
+      submit: (cmd: WorldCommand): boolean => worldAuthority.submit(cmd, getLocalPlayerId()),
+      /** Loaded asteroid instances nearest the ship: id, field, chunk, distance (km). */
+      asteroidsNearShip(n = 5) {
+        const rt = getActiveAsteroidRuntime();
+        const fields = store.get(systemConfigAtom).asteroidFields ?? [];
+        const ship = testProbe.ship.posKm;
+        const out: { instanceId: number; fieldId: string; chunkKey: string; distKm: number }[] = [];
+        for (const f of fields) {
+          const fr = rt?.getFieldRuntime(f.id);
+          if (!fr) continue;
+          fr.chunks.forEach((chunk, chunkKey) => {
+            for (const modelId in chunk.instancesByModel) {
+              const inst = chunk.instancesByModel[modelId];
+              for (let i = 0; i < inst.count; i++) {
+                const x = f.anchorKm[0] + chunk.originKm[0] + inst.positionsM[i * 3] / 1000 - ship[0];
+                const y = f.anchorKm[1] + chunk.originKm[1] + inst.positionsM[i * 3 + 1] / 1000 - ship[1];
+                const z = f.anchorKm[2] + chunk.originKm[2] + inst.positionsM[i * 3 + 2] / 1000 - ship[2];
+                out.push({ instanceId: inst.instanceIds[i] >>> 0, fieldId: f.id, chunkKey, distKm: Math.hypot(x, y, z) });
+              }
+            }
+          });
+        }
+        return out.sort((a, b) => a.distKm - b.distKm).slice(0, n);
+      },
+      /** Is `instanceId` present in loaded chunk `chunkKey`? (null when that chunk isn't loaded) */
+      instanceLoaded(fieldId: string, chunkKey: string, instanceId: number): boolean | null {
+        const chunk = getActiveAsteroidRuntime()?.getFieldRuntime(fieldId)?.getChunk(chunkKey);
+        if (!chunk) return null;
+        for (const modelId in chunk.instancesByModel) {
+          const inst = chunk.instancesByModel[modelId];
+          for (let i = 0; i < inst.count; i++) if (inst.instanceIds[i] >>> 0 === instanceId >>> 0) return true;
+        }
+        return false;
+      },
     },
 
     image: {

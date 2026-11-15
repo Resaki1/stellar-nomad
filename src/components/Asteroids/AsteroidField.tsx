@@ -15,8 +15,12 @@ import { systemConfigAtom } from "@/store/system";
 import { shipHealthAtom, hudInfoAtom } from "@/store/store";
 import { spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
+import { worldAuthority } from "@/sim/world/worldAuthority";
+import { getLocalPlayerId } from "@/save/playerId";
 import { dieAtom, isDeadAtom } from "@/store/death";
 import { cargoAtom } from "@/store/cargo";
+import { getLocalPlayerShip } from "@/sim/entities";
+import { SYSTEM_FRAME_ID } from "@/sim/frames";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -214,8 +218,12 @@ const FieldLayer = memo(function FieldLayer({
   }, [fieldRuntime]);
 
   const removeAsteroidInstance = useCallback(
-    (instanceId: number) => { fieldRuntime.destroyInstance(instanceId); },
-    [fieldRuntime]
+    (chunkKey: string, instanceId: number) =>
+      worldAuthority.submit(
+        { type: "asteroid.destroy", fieldId: field.id, chunkKey, instanceId, cause: "collision" },
+        getLocalPlayerId(),
+      ),
+    [field.id]
   );
 
   const applyShipCollisionDamage = useCallback((asteroidRadiusM: number): number => {
@@ -598,7 +606,8 @@ const FieldLayer = memo(function FieldLayer({
                     ? [idX / idLen, idY / idLen, idZ / idLen]
                     : [0, 1, 0];
 
-                removeAsteroidInstance(instanceId);
+                // Already destroyed (e.g. mined this frame): no impact.
+                if (!removeAsteroidInstance(key, instanceId)) continue;
                 const newHealth = applyShipCollisionDamage(radii[i]);
 
                 spawnVFX({
@@ -616,8 +625,12 @@ const FieldLayer = memo(function FieldLayer({
                     radiusM: 120,
                   });
                   const cargo = store.get(cargoAtom);
+                  const local = getLocalPlayerShip();
                   triggerDeath({
-                    positionKm: [ship.x, ship.y, ship.z],
+                    frameId: local ? local.frameId : SYSTEM_FRAME_ID,
+                    positionKm: local
+                      ? [local.posKm.x, local.posKm.y, local.posKm.z]
+                      : [ship.x, ship.y, ship.z],
                     cargoItems: cargo.items,
                   });
                   return;

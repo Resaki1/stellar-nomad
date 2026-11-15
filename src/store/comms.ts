@@ -2,7 +2,7 @@
 // Comms system — priority queue + played-message persistence
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
-import { atomWithStorage } from "jotai/utils";
+import { savedAtom } from "@/store/savedAtom";
 import type { CommsMessage } from "@/data/commsMessages";
 import { benchModeAtom } from "@/store/dev";
 
@@ -11,28 +11,7 @@ import { benchModeAtom } from "@/store/dev";
 // Survives page reloads so the player never sees the same message twice.
 // ---------------------------------------------------------------------------
 
-const PLAYED_STORAGE_KEY = "comms-played-v1";
-
-export const playedMessageIdsAtom = atomWithStorage<string[]>(
-  PLAYED_STORAGE_KEY,
-  [],
-);
-
-/**
- * Read played IDs directly from localStorage. This avoids the race where
- * atomWithStorage hasn't hydrated yet (returns default []) but localStorage
- * already has the persisted list.
- */
-function readPlayedIdsFromStorage(): string[] {
-  try {
-    const raw = localStorage.getItem(PLAYED_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch { /* ignore */ }
-  return [];
-}
+export const playedMessageIdsAtom = savedAtom("player", "commsPlayed", []);
 
 // ---------------------------------------------------------------------------
 // Live queue — ordered by priority (highest first), then insertion order.
@@ -66,9 +45,7 @@ const insertIntoQueueAtom = atom(
     // before the benchmark started and would otherwise land mid-measurement.
     if (get(benchModeAtom)) return;
 
-    const played = get(playedMessageIdsAtom);
-    const stored = readPlayedIdsFromStorage();
-    if (played.includes(message.messageId) || stored.includes(message.messageId)) return;
+    if (get(playedMessageIdsAtom).includes(message.messageId)) return;
 
     const queue = get(commsQueueAtom);
     if (queue.some((m) => m.messageId === message.messageId)) return;
@@ -95,10 +72,7 @@ const insertIntoQueueAtom = atom(
 export const enqueueCommsAtom = atom(
   null,
   (get, set, message: CommsMessage): void => {
-    // Check both the atom (may not be hydrated yet) and localStorage directly
-    const played = get(playedMessageIdsAtom);
-    const stored = readPlayedIdsFromStorage();
-    if (played.includes(message.messageId) || stored.includes(message.messageId)) return;
+    if (get(playedMessageIdsAtom).includes(message.messageId)) return;
 
     const queue = get(commsQueueAtom);
     if (queue.some((m) => m.messageId === message.messageId)) return;
@@ -127,15 +101,10 @@ export const dismissCommsAtom = atom(null, (get, set): void => {
 
   const dismissed = queue[0];
 
-  // Merge atom + localStorage to avoid overwriting during hydration race
-  const fromAtom = get(playedMessageIdsAtom);
-  const fromStorage = readPlayedIdsFromStorage();
-  const merged = Array.from(new Set([...fromAtom, ...fromStorage]));
-
-  if (!merged.includes(dismissed.messageId)) {
-    merged.push(dismissed.messageId);
+  const played = get(playedMessageIdsAtom);
+  if (!played.includes(dismissed.messageId)) {
+    set(playedMessageIdsAtom, [...played, dismissed.messageId]);
   }
-  set(playedMessageIdsAtom, merged);
 
   // Remove from queue
   set(commsQueueAtom, queue.slice(1));

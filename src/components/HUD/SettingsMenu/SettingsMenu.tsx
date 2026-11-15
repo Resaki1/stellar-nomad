@@ -12,24 +12,21 @@ import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
 import {
   SetAtom,
   Settings,
-  hdrCalibrationOpenAtom,
   settingsAtom,
   settingsIsOpenAtom,
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import AudioSettings from "./AudioSettings";
-import KeybindRow from "./KeybindRow/KeybindRow";
+import { ControlsSettings, GraphicsSettings } from "./SettingsSections";
 import Panel from "../Shell/Panel";
-import {
-  KEYBIND_ACTIONS,
-  CATEGORY_LABELS,
-  KeybindCategory,
-  keybindsAtom,
-  resetKeybindsAtom,
-} from "@/store/keybinds";
+import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
-import { useAsteroidDeltaStore } from "@/sim/asteroids/runtimeContext";
-import { clearShipState, loadShipState } from "@/sim/shipPersistence";
+import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
+import { worldAuthority } from "@/sim/world/worldAuthority";
+import { getLocalPlayerId } from "@/save/playerId";
+import { flush, getActiveSave, resetActiveWorld, saveInfo, switchWorld } from "@/save/activeSave";
+import { titleUrl } from "@/components/AppShell/appState";
+import { exportWorld, importWorld } from "@/save/saveDb";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, devSpeedUnitAtom } from "@/store/dev";
 import {
   type SpeedUnit,
@@ -60,11 +57,6 @@ import {
   notableNearbyStars,
   type NearbyStar,
 } from "@/sim/nearbyStars";
-import {
-  displaySupportsHdr,
-  displaySupportsP3,
-  hdrCanvasStatus,
-} from "@/components/space/hdrOutput";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -97,98 +89,7 @@ const renderSubMenu = (
 ) => {
   switch (subMenu) {
     case SubMenu.Graphics:
-      return (
-        <>
-          {/* D14. Applies to the scaled scene (planets, asteroids, stars), which
-              is where the aliasing was reported; the ship's own pass is not
-              multisampled — see the note in SpaceRenderer. Costs GPU memory and a
-              little fill on that one target, so it is worth exposing. */}
-          <SettingsCheckbox
-            active={settings.antialias ?? true}
-            onChange={() =>
-              setSettings((prev) => ({
-                ...prev,
-                // ⚠ `?? true` — atomWithStorage replaces the defaults with the saved
-                // blob, so a key added after first run is `undefined` and `!undefined`
-                // would flip it to `true` on the FIRST click and `false` on the
-                // second, i.e. the toggle would appear to do nothing the first time.
-                antialias: !(prev.antialias ?? true),
-              }))
-            }
-            label="anti-aliasing (4× MSAA)"
-          />
-          <SettingsCheckbox
-            active={settings.toneMapping}
-            onChange={() =>
-              setSettings((prev) => ({
-                ...prev,
-                toneMapping: !prev.toneMapping,
-              }))
-            }
-            label="AgX tone mapping"
-          />
-          <HdrOutputSetting settings={settings} setSettings={setSettings} />
-          {/* Player-facing brightness. Rides on TOP of auto-exposure rather than
-              replacing it: `exposureStops` is the compensation term, which
-              composes with the metered EV (photometry.ts) exactly the way
-              Unreal's ExposureCompensation does. So the eye still adapts; the
-              player only shifts where it settles — which is what a display
-              brightness control should do, since we cannot detect their panel. */}
-          <label className="dev-controls__label">
-            brightness {settings.exposureStops > 0 ? "+" : ""}
-            {(settings.exposureStops ?? 0).toFixed(1)} stops
-            {/* ⚠ No conditional " (default)" suffix here. It reflows the label when the
-                value leaves its default, which moves the slider out from under the
-                cursor mid-drag — the author hit exactly that on the HDR headroom
-                slider and had to strip it. Same bug, same fix. */}
-            <input
-              type="range"
-              className="dev-controls__range"
-              min={-4}
-              max={4}
-              step={0.5}
-              value={settings.exposureStops ?? 0}
-              onChange={(e) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  exposureStops: Number(e.target.value),
-                }))
-              }
-            />
-          </label>
-          {/* ── VEILING GLARE (Phase 8, glarePass.ts) ──────────────────────────
-              Scales the physical straylight fraction (0.03 = "a few percent of all
-              light entering the eye is scattered"). 1.0× is the calibrated value.
-
-              🔑 Exposed on request, and it is the right knob: glare is what makes
-              staring at the sun punishing — deliberate feel — but it also veils
-              asteroids and targets, so the tolerable amount depends on taste and on
-              what the player is doing. The SHAPE stays derived; this scales only the
-              amount, so no setting can make it unphysical in KIND.
-
-              ⚠ `?? 1` throughout — atomWithStorage replaces defaults with the saved
-              blob, so a key added after first run reads `undefined`. */}
-          <label className="dev-controls__label">
-            veiling glare {((settings.glare ?? 1) * 100).toFixed(0)}%
-            {(settings.glare ?? 1) === 1 ? " (physical)" : ""}
-            {(settings.glare ?? 1) === 0 ? " (off)" : ""}
-            <input
-              type="range"
-              className="dev-controls__range"
-              min={0}
-              max={2}
-              step={0.1}
-              value={settings.glare ?? 1}
-              onChange={(e) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  glare: Number(e.target.value),
-                }))
-              }
-            />
-          </label>
-        </>
-      );
+      return <GraphicsSettings settings={settings} setSettings={setSettings} />;
     // Audio settings live in their own store module (A9), so this case needs
     // nothing from `settings`/`setSettings` and is a self-contained component.
     // ⚠ UNCONDITIONAL — not gated by IS_DEV like SubMenu.Dev (trap T2): the Dev
@@ -196,50 +97,8 @@ const renderSubMenu = (
     // production. A player-facing submenu must not be threaded through it.
     case SubMenu.Audio:
       return <AudioSettings />;
-    case SubMenu.Controls: {
-      const categories = new Map<KeybindCategory, typeof KEYBIND_ACTIONS>();
-      for (const a of KEYBIND_ACTIONS) {
-        if (!categories.has(a.category)) categories.set(a.category, []);
-        categories.get(a.category)!.push(a);
-      }
-
-      return (
-        <>
-          <SettingsCheckbox
-            active={settings.invertPitch}
-            onChange={() =>
-              setSettings((prev) => ({
-                ...prev,
-                invertPitch: !prev.invertPitch,
-              }))
-            }
-            label="invert pitch"
-          />
-
-          {Array.from(categories.entries()).map(([cat, actions]) => (
-            <div key={cat} className="keybind-category">
-              <div className="keybind-category__title">
-                {CATEGORY_LABELS[cat]}
-              </div>
-              <div className="keybind-category__rows">
-                {actions.map((a) => (
-                  <KeybindRow key={a.id} action={a.id} label={a.label} />
-                ))}
-              </div>
-            </div>
-          ))}
-
-          {onResetKeybinds && (
-            <button
-              className="settings-menu__button settings-menu__button--subtle"
-              onClick={onResetKeybinds}
-            >
-              reset keybinds
-            </button>
-          )}
-        </>
-      );
-    }
+    case SubMenu.Controls:
+      return <ControlsSettings settings={settings} setSettings={setSettings} onResetKeybinds={onResetKeybinds} />;
     case SubMenu.Dev:
       return (
         <>
@@ -273,6 +132,7 @@ const renderSubMenu = (
             audio workshop
           </a>
           {devHandlers && <DevControls {...devHandlers} />}
+          <SaveFileControls />
           {onResetWorld && (
             <button
               className="settings-menu__button settings-menu__button--danger"
@@ -285,6 +145,49 @@ const renderSubMenu = (
       );
   }
 };
+
+/** Export the active world as JSON / import one as a new world and switch to it. */
+function SaveFileControls() {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const onExport = async () => {
+    const rec = getActiveSave();
+    if (!rec) return;
+    await flush(true);
+    const blob = new Blob([await exportWorld(rec.meta.id)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${rec.meta.name.replace(/[^\w-]+/g, "_")}.stellar-nomad.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const onImport = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const meta = await importWorld(await file.text(), getLocalPlayerId());
+      await flush();
+      switchWorld(meta.id);
+    } catch (e) {
+      window.alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  return (
+    <div className="dev-controls__row">
+      <button className="settings-menu__button settings-menu__button--subtle" onClick={() => void onExport()}>
+        export save
+      </button>
+      <button className="settings-menu__button settings-menu__button--subtle" onClick={() => fileRef.current?.click()}>
+        import save
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        onChange={(e) => void onImport(e.target.files?.[0])}
+      />
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Sim time (ephemeris) — see store/simTime.ts
@@ -301,9 +204,8 @@ const RATE_TO_NOTCH = (rate: number): number =>
 
 /**
  * Date + rate for the ephemeris. One scalar drives every body's position and
- * orientation; the default rate is 0, so orbits are FROZEN and gameplay is
- * unchanged. Set a date to reach a specific configuration, or a rate to watch
- * one evolve.
+ * orientation; the default rate is 1 (real time). Set a date to reach a specific
+ * configuration, or a rate to watch one evolve.
  *
  * 🔑 The default date is the 2024-04-08 total solar eclipse at greatest eclipse,
  * the case `__lum.ephemeris()` validates against published values — so "does the
@@ -326,8 +228,17 @@ const RATE_TO_NOTCH = (rate: number): number =>
  * cascading render.
  */
 function SimTimeControls() {
-  const [simEpochMs, setSimEpochMs] = useAtom(simEpochMsAtom);
-  const [simRate, setSimRate] = useAtom(simRateAtom);
+  const simEpochMs = useAtomValue(simEpochMsAtom);
+  const simRate = useAtomValue(simRateAtom);
+  // World state: through the authority; the bridge updates the atoms from `time.changed`.
+  const setSimEpochMs = useCallback(
+    (ms: number) => worldAuthority.submit({ type: "time.set", epochMs: ms }, getLocalPlayerId()),
+    [],
+  );
+  const setSimRate = useCallback(
+    (rate: number) => worldAuthority.submit({ type: "time.set", rate }, getLocalPlayerId()),
+    [],
+  );
   const dateRef = useRef<HTMLInputElement>(null);
 
   const applyDate = useCallback(() => {
@@ -688,104 +599,6 @@ function PerfSweepButton() {
 }
 
 // ---------------------------------------------------------------------------
-/**
- * Phase 6a — the HDR output toggle plus a read-back of what the canvas actually became.
- *
- * No hooks and no effect: this subtree is unreachable until the player has opened the
- * menu AND picked Graphics (`isOpen && activeSubMenu`), both of which start false/null,
- * so it can never be part of the server render or of hydration. That means the
- * browser-only probes can simply be read during render — and the status is then fresh
- * every time the panel is opened instead of frozen at mount.
- *
- * 🔑 The status line reports `toneMapping.mode` from the canvas's own
- * `getConfiguration()`, not a media query. That is the only test that interrogates the
- * pipeline we actually render through — a browser that accepts `outputType` but ignores
- * the tone-mapping option shows up here and nowhere else.
- */
-const HdrOutputSetting = ({
-  settings,
-  setSettings,
-}: {
-  settings: Settings;
-  setSettings: SetAtom<[SetStateAction<Settings>], void>;
-}) => {
-  // ⚠ Hooks ARE allowed here even though the rest of this subtree deliberately avoids
-  // them: the component is only reachable after two clicks (menu open, Graphics picked),
-  // so it is never part of the server render or of hydration.
-  const setCalOpen = useSetAtom(hdrCalibrationOpenAtom);
-  const setSettingsOpen = useSetAtom(settingsIsOpenAtom);
-  const st = hdrCanvasStatus();
-  const capable = displaySupportsHdr();
-  const p3 = displaySupportsP3();
-  // ⚠ `?? false` — `atomWithStorage` REPLACES the defaults with the saved blob rather
-  // than merging, so for a returning player this key is `undefined` and `!undefined`
-  // would make the first click a no-op. Same trap as `antialias` above.
-  const on = settings.hdrOutput ?? false;
-
-  return (
-    <>
-      <SettingsCheckbox
-        active={on}
-        onChange={() =>
-          setSettings((prev) => ({ ...prev, hdrOutput: !(prev.hdrOutput ?? false) }))
-        }
-        label="HDR output (reload)"
-      />
-      {st.active && (
-        /* ── HDR headroom (Phase 6c) ─────────────────────────────────────────
-           How far above reference white the display transform is allowed to go.
-           MEASURED on an XDR: 2 stops makes the sun's core punch out; 3 stops adds
-           very little, because past the panel's real headroom the compositor clips
-           and extra stops only compress more scene range into the same visible span.
-           So the point where raising this stops helping IS your display's headroom —
-           which is exactly what a calibration screen would measure. Mid-tones do not
-           move (the transform's pivot is pinned to middle grey), so the thing to
-           watch while dragging this is the SUN, not the ground. */
-        <label className="dev-controls__label">
-          HDR headroom {(settings.hdrPeakStops ?? 2).toFixed(2)} stops (
-          {Math.pow(2, settings.hdrPeakStops ?? 2).toFixed(1)}× white)
-          <input
-            type="range"
-            className="dev-controls__range"
-            min={0}
-            max={3}
-            step={0.25}
-            value={settings.hdrPeakStops ?? 2}
-            onChange={(e) =>
-              setSettings((prev) => ({
-                ...prev,
-                hdrPeakStops: Number(e.target.value),
-              }))
-            }
-          />
-        </label>
-      )}
-      {st.active && (
-        <button
-          className="settings-menu__button"
-          onClick={() => {
-            setCalOpen(true);
-            setSettingsOpen(false);
-          }}
-        >
-          calibrate HDR…
-        </button>
-      )}
-      <div className="dev-controls__label">
-        {st.active
-          ? `active — ${st.format}. \u26a0 costs a fixed ~2 ms per frame (browser compositing, measured), which hurts most at high frame rates. Raise the headroom until the sun stops getting brighter — that point is your display's real limit.`
-          : on
-            ? st.toneMappingMode === null
-              ? "enabled — reload to apply."
-              : `enabled, but this browser reported "${st.toneMappingMode}" — HDR is not active.`
-            : capable
-              ? `your display reports HDR${p3 ? " and P3" : ""}. \u26a0 costs a fixed ~2 ms per frame, and panels that advertise HDR at low peak brightness can look worse with it on — try both.`
-              : "no HDR display detected — this will have no effect."}
-      </div>
-    </>
-  );
-};
-
 // Dev-only controls (position teleport + max speed override)
 // ---------------------------------------------------------------------------
 
@@ -841,9 +654,10 @@ function DevControls({
   const handleLoadCurrent = () => {
     const saved = loadShipState();
     if (saved) {
-      setPosX(String(Math.round(saved.positionKm[0] * 100) / 100));
-      setPosY(String(Math.round(saved.positionKm[1] * 100) / 100));
-      setPosZ(String(Math.round(saved.positionKm[2] * 100) / 100));
+      const abs = persistedAbsoluteKm(saved);
+      setPosX(String(Math.round(abs[0] * 100) / 100));
+      setPosY(String(Math.round(abs[1] * 100) / 100));
+      setPosZ(String(Math.round(abs[2] * 100) / 100));
     }
   };
 
@@ -1087,12 +901,12 @@ function DevControls({
   );
 }
 
+
 const SettingsMenu = () => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
   const gpu = useDetectGPU();
-  const deltaStore = useAsteroidDeltaStore();
 
   const keybinds = useAtomValue(keybindsAtom);
   const resetKeybinds = useSetAtom(resetKeybindsAtom);
@@ -1176,19 +990,11 @@ const SettingsMenu = () => {
     resetKeybinds();
   }, [resetKeybinds]);
 
-  const handleResetWorld = useCallback(() => {
-    if (!window.confirm("Reset asteroid field? All mining progress will be lost.")) return;
-    deltaStore.clearAll();
-    clearShipState();
-    localStorage.removeItem("ship-config-v1");
-    localStorage.removeItem("cargo");
-    localStorage.removeItem("keybinds-v1");
-    localStorage.removeItem("research-v1");
-    localStorage.removeItem("modules-v1");
-    localStorage.removeItem("modules-v2");
-    localStorage.removeItem("asteroids-mined-lifetime-v1");
+  const handleResetWorld = useCallback(async () => {
+    if (!window.confirm("Reset this world? All world and player progress in it will be lost.")) return;
+    await resetActiveWorld();
     window.location.reload();
-  }, [deltaStore]);
+  }, []);
 
   useEffect(() => {
     const storedSettings = JSON.parse(
@@ -1219,6 +1025,19 @@ const SettingsMenu = () => {
         initial: false,
       }));
     }
+  }, []);
+
+  const [exiting, setExiting] = useState(false);
+  const [exitFailed, setExitFailed] = useState(false);
+  const handleExitToTitle = useCallback(async (force = false) => {
+    setExiting(true);
+    // A suspended save (test isolation, another tab owns the world) stays unwritten.
+    if (!force && !saveInfo().suspended && !(await flush(true))) {
+      setExiting(false);
+      setExitFailed(true);
+      return;
+    }
+    window.location.assign(titleUrl());
   }, []);
 
   const handleClose = useCallback(() => {
@@ -1295,6 +1114,25 @@ const SettingsMenu = () => {
                     {subMenu}
                   </button>
                 ))}
+                <button
+                  className="settings-menu__button settings-menu__button--exit"
+                  disabled={exiting}
+                  onClick={() => void handleExitToTitle()}
+                >
+                  {exiting ? "saving…" : "save and exit to title"}
+                </button>
+                {exitFailed && (
+                  <div className="settings-menu__exit-error" role="alert">
+                    <p>Saving failed. Progress since the last autosave would be lost.</p>
+                    <button
+                      className="settings-menu__button"
+                      disabled={exiting}
+                      onClick={() => void handleExitToTitle(true)}
+                    >
+                      exit without saving
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="settings-menu__content">

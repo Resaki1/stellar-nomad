@@ -109,6 +109,36 @@ The Basis Universal transcoder WASM files live in `public/basis/` (copied from `
 cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/basis/
 ```
 
+**Regression gates for the sim core (headless, each prints pass/fail JSON)**
+- `pnpm drive -- --keep run:scripts/drive-examples/flight-trace.mjs` — flight per fixed step
+- `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
+- `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
+- `SHELL_PARTS=title,continue pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs` — title + loading gate
+
+The driver autostarts the last world; `--title` stops at the title screen. If a run hangs
+at load, `pnpm drive -- --stop` (a kept Chrome can wedge after the machine sleeps).
+
+---
+
+## Sim core rules (roadmap M0, see [`docs/ROADMAP.md`](docs/ROADMAP.md))
+
+- **`src/sim/**` and `src/save/**` import no React, jotai, R3F, `@/store` or
+  `@/components`** (ESLint-enforced; they must run headless for a future server).
+- **The ship's position is frame-relative** (`ShipState.frameId` + `posKm`, see
+  `src/sim/frames.ts`). Absolute system-frame km is derived each frame and reaches the rest
+  of the game through `worldOrigin`. Anything stored in the world (wrecks, later stations)
+  stores `frameId` + relative position, never absolute km: bodies move.
+- **Per-frame order is fixed** in `src/components/frameOrder.ts`: sim clock + ephemeris,
+  then the player ship, then everything else.
+- **Shared world state changes only through commands** to the authority
+  (`src/sim/world/`): asteroid destruction, wrecks, sim time. Views update from its
+  events. Never write world state directly; co-op depends on this seam.
+- **Gameplay state persists through `savedAtom`** (`src/store/savedAtom.ts`) into the
+  active world save (IndexedDB, `src/save/`), scoped `player` or `world`. Do not add
+  `atomWithStorage`/`localStorage` for gameplay; those are for device preferences only.
+- **`src/sim/simPause.ts`** is the one pause signal (loading overlay). New tickers must
+  respect it.
+
 ---
 
 ## Project overview
