@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type ComponentT
 import { useStore } from "jotai";
 import { bootActiveWorld, bootNewWorld } from "@/save/boot";
 import { unlockAudio } from "@/audio/engine";
+import { requestGamePointerLock } from "@/input/pointerLock";
 import { musicDebug } from "@/audio/music";
 import type { Difficulty } from "@/save/types";
 import { addToastAtom } from "@/store/toast";
@@ -48,6 +49,7 @@ export default function AppShell() {
     (target: StartTarget): Promise<void> => {
       if (getAppPhase() !== "title") return Promise.resolve();
       unlockAudio();
+      requestGamePointerLock();
       beginLoading();
       const booted =
         target.kind === "new"

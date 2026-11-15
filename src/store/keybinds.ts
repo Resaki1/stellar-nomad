@@ -1,14 +1,10 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import type { FlightAction } from "@/input/playerInput";
 
 // ── Action identifiers ──────────────────────────────────────────────
 export type KeybindAction =
-  | "pitchUp"
-  | "pitchDown"
-  | "yawLeft"
-  | "yawRight"
-  | "accelerate"
-  | "decelerate"
+  | FlightAction
   | "toggleCargo"
   | "toggleResearch"
   | "toggleCrafting"
@@ -31,12 +27,22 @@ export interface KeybindActionMeta {
 }
 
 export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
+  { id: "accelerate", label: "Throttle Up", category: "flight" },
+  { id: "decelerate", label: "Throttle Down", category: "flight" },
+  { id: "strafeLeft", label: "Strafe Left", category: "flight" },
+  { id: "strafeRight", label: "Strafe Right", category: "flight" },
+  { id: "strafeUp", label: "Strafe Up", category: "flight" },
+  { id: "strafeDown", label: "Strafe Down", category: "flight" },
+  { id: "rollLeft", label: "Roll Left", category: "flight" },
+  { id: "rollRight", label: "Roll Right", category: "flight" },
+  { id: "boost", label: "Boost (Hold)", category: "flight" },
+  { id: "brake", label: "Brake", category: "flight" },
+  { id: "toggleFlightAssist", label: "Flight Assist On/Off", category: "flight" },
+  { id: "freeLook", label: "Free Look (Hold)", category: "flight" },
   { id: "pitchUp", label: "Pitch Up", category: "flight" },
   { id: "pitchDown", label: "Pitch Down", category: "flight" },
   { id: "yawLeft", label: "Yaw Left", category: "flight" },
   { id: "yawRight", label: "Yaw Right", category: "flight" },
-  { id: "accelerate", label: "Throttle Up", category: "flight" },
-  { id: "decelerate", label: "Throttle Down", category: "flight" },
   { id: "toggleCargo", label: "Inventory", category: "actions" },
   { id: "toggleResearch", label: "Research", category: "actions" },
   { id: "toggleCrafting", label: "Crafting", category: "actions" },
@@ -55,12 +61,22 @@ export const CATEGORY_LABELS: Record<KeybindCategory, string> = {
 
 // ── Defaults ────────────────────────────────────────────────────────
 export const DEFAULT_KEYBINDS: KeybindConfig = {
-  pitchUp: ["w"],
-  pitchDown: ["s"],
-  yawLeft: ["a"],
-  yawRight: ["d"],
-  accelerate: ["shift", "e"],
-  decelerate: ["control", "c"],
+  pitchUp: ["arrowup"],
+  pitchDown: ["arrowdown"],
+  yawLeft: ["arrowleft"],
+  yawRight: ["arrowright"],
+  rollLeft: ["q"],
+  rollRight: ["e"],
+  strafeLeft: ["a"],
+  strafeRight: ["d"],
+  strafeUp: [" "],
+  strafeDown: ["control"],
+  accelerate: ["w"],
+  decelerate: ["s"],
+  boost: ["shift"],
+  brake: ["x"],
+  toggleFlightAssist: ["v"],
+  freeLook: ["alt"],
   toggleCargo: ["tab", "i"],
   toggleResearch: ["r"],
   toggleCrafting: ["f"],
@@ -75,10 +91,38 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
 export const MAX_KEYS_PER_ACTION = 2;
 
 // ── Atom (persisted) ────────────────────────────────────────────────
-const _rawKeybindsAtom = atomWithStorage<KeybindConfig>(
-  "keybinds-v1",
-  DEFAULT_KEYBINDS
-);
+const KEYBINDS_KEY = "keybinds-v2";
+const KEYBINDS_V1_KEY = "keybinds-v1";
+
+/**
+ * M1 control scheme: a saved v1 action whose key collides with a NEW default of another
+ * action is reset to its own default (only that action). Runs once, v1 → v2.
+ */
+export function migrateKeybindsV1(saved: Partial<Record<string, string[]>>): KeybindConfig {
+  const result = { ...DEFAULT_KEYBINDS };
+  for (const action of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
+    const keys = saved[action];
+    if (!Array.isArray(keys)) continue;
+    const collides = keys.some((k) =>
+      (Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]).some((o) => o !== action && DEFAULT_KEYBINDS[o].includes(k)),
+    );
+    if (!collides) result[action] = keys;
+  }
+  return result;
+}
+
+if (typeof window !== "undefined") {
+  try {
+    const v1 = window.localStorage.getItem(KEYBINDS_V1_KEY);
+    if (v1 && window.localStorage.getItem(KEYBINDS_KEY) === null) {
+      window.localStorage.setItem(KEYBINDS_KEY, JSON.stringify(migrateKeybindsV1(JSON.parse(v1))));
+    }
+  } catch {
+    // Unreadable v1 blob or blocked storage: defaults apply.
+  }
+}
+
+const _rawKeybindsAtom = atomWithStorage<KeybindConfig>(KEYBINDS_KEY, DEFAULT_KEYBINDS);
 
 /**
  * Migration-safe keybinds atom: ensures any newly-added actions get their

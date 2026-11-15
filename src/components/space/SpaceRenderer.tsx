@@ -31,6 +31,7 @@ import { useAtomValue, useSetAtom } from "jotai/react";
 import { devApResScaleAtom } from "@/store/dev";
 import { advanceSimTimeAtom } from "@/store/simTime";
 import { FRAME_PRIORITY_SIM_CLOCK } from "@/components/frameOrder";
+import { MAX_FRAME_DT as MAX_SIM_FRAME_DT } from "@/sim/ship/shipConstants";
 import { hdrCalibrationOpenAtom, settingsAtom } from "@/store/store";
 import {
   getActiveCloudPipeline,
@@ -642,7 +643,9 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   // ONE tick site for sim time. Runs before every other callback; setting the epoch
   // solves the ephemeris, so the ship and bodies all read THIS frame's positions.
   const advanceSimTime = useSetAtom(advanceSimTimeAtom);
-  useFrame((_state, delta) => advanceSimTime(delta), FRAME_PRIORITY_SIM_CLOCK);
+  // A long delta is a pause, not elapsed play: the settings menu and a hidden tab both stop
+  // the render loop, and the first frame back reports the whole gap. Sim time skips it.
+  useFrame((_state, delta) => advanceSimTime(delta > MAX_SIM_FRAME_DT ? 0 : delta), FRAME_PRIORITY_SIM_CLOCK);
   const pipelineRef = useRef(pipeline);
   pipelineRef.current = pipeline;
 
@@ -964,6 +967,11 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
       .multiplyScalar(LOCAL_TO_SCALED_FROM_LOCAL_UNITS);
     scaledCamera.position.copy(tempScaledPos);
     scaledCamera.quaternion.copy(localCamera.quaternion);
+    // The chase rig widens the FOV with speed every frame; the effect above only runs on resize.
+    if (scaledCamera.fov !== localCamera.fov) {
+      scaledCamera.fov = localCamera.fov;
+      scaledCamera.updateProjectionMatrix();
+    }
 
     // ── Render both scenes into the offscreen RT in linear HDR ──
     // Disable tone mapping so HDR values stay in absolute game units.

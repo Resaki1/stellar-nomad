@@ -1,0 +1,131 @@
+@use '../../../styles' as s;
+
+// Markers sit at viewport (0,0) and are translated to their projected point each frame.
+.flight-hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: s.$z-hud-base;
+
+  &__marker {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    transition: opacity s.$dur-fast s.$ease-out;
+
+    &::before,
+    > span {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform: translate(-50%, -50%);
+    }
+  }
+
+  // Virtual-stick travel circle around the nose (radius = STICK_RING_PX).
+  &__ring::before {
+    content: '';
+    width: 96px;
+    height: 96px;
+    border: 1px dashed s.$stroke-base;
+    border-radius: 50%;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6));
+  }
+
+  &__stick::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: s.$text-secondary;
+    box-shadow: 0 0 6px s.$glow-info;
+  }
+
+  // Aim marker (mode B): open circle with a centre pip, unlike the POI diamonds.
+  &__aim > span {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid s.$text-primary;
+    border-radius: 50%;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 0 4px s.$glow-info);
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: s.$text-primary;
+      transform: translate(-50%, -50%);
+    }
+  }
+
+  // Velocity vector: a circle with three short ticks (prograde marker).
+  &__velocity > span {
+    width: 12px;
+    height: 12px;
+    border: 2px solid s.$accent-info;
+    border-radius: 50%;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 0 3px s.$glow-info);
+
+    &::before,
+    &::after {
+      content: '';
+      position: absolute;
+      background: s.$accent-info;
+    }
+
+    &::before {
+      left: 50%;
+      top: -7px;
+      width: 1.5px;
+      height: 6px;
+      width: 2px;
+      transform: translateX(-50%);
+    }
+
+    &::after {
+      top: 50%;
+      left: -7px;
+      width: 24px;
+      height: 2px;
+      transform: translateY(-50%);
+      background: linear-gradient(to right, s.$accent-info 0 6px, transparent 6px 18px, s.$accent-info 18px);
+    }
+  }
+
+  &__hint {
+    position: fixed;
+    left: 50%;
+    bottom: 8%;
+    transform: translateX(-50%);
+    font-family: s.$font-mono;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: s.$text-primary;
+    text-shadow:
+      0 0 1px rgba(0, 0, 0, 0.9),
+      0 0 8px s.$glow-info;
+    transition: opacity s.$dur-base s.$ease-out;
+
+    &--quiet {
+      bottom: auto;
+      top: calc(50% - 96px);
+      color: s.$text-secondary;
+      text-shadow:
+        0 0 2px rgba(0, 0, 0, 1),
+        0 1px 6px rgba(0, 0, 0, 0.85);
+    }
+  }
+
+  &__hint-key {
+    color: s.$text-tertiary;
+  }
+}

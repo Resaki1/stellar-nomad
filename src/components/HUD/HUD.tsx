@@ -7,6 +7,8 @@ import { keybindsAtom } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
+import FlightHud from "./FlightHud/FlightHud";
+import { setCursorNeeded } from "@/input/pointerLock";
 import MiningHUD from "./MiningHUD/MiningHUD";
 import CargoHUD from "./CargoHUD/CargoHUD";
 import CargoDetail from "./CargoHUD/CargoDetail";
@@ -71,6 +73,8 @@ export default function HUD() {
     }
   }, [settingsIsOpen]);
 
+  useEffect(() => setCursorNeeded("panel", activePanel !== null), [activePanel]);
+
   const openPanel = useCallback((panel: OverlayPanel) => {
     if (store.get(settingsIsOpenAtom)) return;
     setActivePanel((prev) => (prev === panel ? null : panel));
@@ -128,6 +132,7 @@ export default function HUD() {
       <DamageVignette />
       <POIMarkers />
       <ShipDashboard />
+      <FlightHud />
       <Reticle />
       <MiningHUD />
       <CargoHUD onClick={() => openPanel("cargo")} />

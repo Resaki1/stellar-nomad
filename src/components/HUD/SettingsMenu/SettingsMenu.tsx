@@ -18,6 +18,7 @@ import {
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import AudioSettings from "./AudioSettings";
 import { ControlsSettings, GraphicsSettings } from "./SettingsSections";
+import FlightTuningControls from "./FlightTuningControls";
 import Panel from "../Shell/Panel";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
@@ -102,6 +103,7 @@ const renderSubMenu = (
     case SubMenu.Dev:
       return (
         <>
+          <FlightTuningControls />
           <SimTimeControls />
 
           <SettingsCheckbox

@@ -1,61 +1,41 @@
-import { movementAtom, settingsAtom } from "@/store/store";
-import { useAtomValue, useSetAtom } from "jotai";
+import { settingsAtom } from "@/store/store";
+import { useAtomValue } from "jotai";
 import { Joystick } from "react-joystick-component";
 import { IJoystickUpdateEvent } from "react-joystick-component/build/lib/Joystick";
 import "./TouchControls.scss";
 import { useGesture } from "@use-gesture/react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
+import { nudgeThrottle, playerInput } from "@/input/playerInput";
 
+/** Touch device: joystick = pitch/yaw stick, vertical drag = throttle. Writes playerInput. */
 const TouchControls = () => {
   const settings = useAtomValue(settingsAtom);
-  const setMovement = useSetAtom(movementAtom);
   const dragPosition = useRef<number>(undefined);
 
-  const pitch = (y: number | null) => {
-    if (!y) return null;
-    return settings.invertPitch ? y : -1 * y;
-  };
+  useEffect(() => {
+    playerInput.invertPitch = settings.invertPitch;
+  }, [settings.invertPitch]);
 
   const handleMove = (event: IJoystickUpdateEvent) => {
-    // Update the spaceship movement based on joystick input
-    setMovement((prevMovement) => ({
-      yaw: event.x ?? 0,
-      pitch: pitch(event.y) ?? 0,
-      speed: prevMovement.speed,
-    }));
+    playerInput.stickYaw = event.x ?? 0;
+    playerInput.stickPitch = event.y ?? 0;
   };
 
   const handleStop = () => {
-    // Reset the spaceship movement when the joystick is released
-    setMovement((prevMovement) => ({
-      yaw: 0,
-      pitch: 0,
-      speed: prevMovement.speed,
-    }));
+    playerInput.stickYaw = 0;
+    playerInput.stickPitch = 0;
   };
 
   const bind = useGesture({
-    onDrag: ({ down, movement: [_, y] }) => {
-      if (down) {
-        if (dragPosition.current === undefined) {
-          dragPosition.current = y;
-        } else {
-          const screenHeight = window.innerHeight;
-          const delta = (dragPosition.current - y) / screenHeight;
-          setMovement((prevMovement) => ({
-            ...prevMovement,
-            speed: Math.min(Math.max(prevMovement.speed + delta * 2, 0), 1),
-          }));
-          dragPosition.current = y;
-        }
-      } else {
+    onDrag: ({ down, movement: [, y] }) => {
+      if (!down) {
         dragPosition.current = undefined;
+        return;
       }
-    },
-    onScroll: ({ delta: [_, y] }) => {
-      if (y < 0) {
-      } else {
+      if (dragPosition.current !== undefined) {
+        nudgeThrottle(((dragPosition.current - y) / window.innerHeight) * 2);
       }
+      dragPosition.current = y;
     },
   });
 

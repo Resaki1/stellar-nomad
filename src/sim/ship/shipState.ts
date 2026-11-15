@@ -14,18 +14,24 @@ export interface ShipState {
   /** Previous-step snapshots, for render interpolation (prevPosKm is frame-relative). */
   prevPosKm: Vector3;
   prevQuat: Quaternion;
-  yawRate: number;
-  pitchRate: number;
-  /** Visual model tilt (roll from yaw input, pitch), radians. */
-  vRoll: number;
-  vPitch: number;
-  prevVRoll: number;
-  prevVPitch: number;
-  /** Current speed fraction 0..1 of max. */
-  speed: number;
+  /** Linear velocity, km/s, relative to `frameId` (carried over unchanged on a frame switch). */
+  velKmps: Vector3;
+  /** Angular velocity, rad/s, about body axes (+X left, +Y up, +Z forward). */
+  angVel: Vector3;
+  assist: AssistMode;
+  /** Boost capacitor 0..1. */
+  boostCharge: number;
+  /** Seconds since boost was last drawn (refill starts after the delay). */
+  boostIdleS: number;
+  /** Last-step telemetry for views: main-engine use 0..1, boost firing, speed limit km/s. */
+  thrustMain: number;
+  boosting: boolean;
+  speedLimitKmps: number;
   /** World-forward (+Z rotated by quat) as of the last step. */
   forward: Vector3;
 }
+
+export type AssistMode = "coupled" | "decoupled";
 
 export function createShipState(): ShipState {
   const p = STARTING_POSITION_KM;
@@ -40,26 +46,26 @@ export function createShipState(): ShipState {
     quat: new Quaternion(q[0], q[1], q[2], q[3]),
     prevPosKm: rel,
     prevQuat: new Quaternion(q[0], q[1], q[2], q[3]),
-    yawRate: 0,
-    pitchRate: 0,
-    vRoll: 0,
-    vPitch: 0,
-    prevVRoll: 0,
-    prevVPitch: 0,
-    speed: 0,
-    forward: new Vector3(0, 0, 1),
+    velKmps: new Vector3(),
+    angVel: new Vector3(),
+    assist: "coupled",
+    boostCharge: 1,
+    boostIdleS: 0,
+    thrustMain: 0,
+    boosting: false,
+    speedLimitKmps: 0,
+    forward: new Vector3(0, 0, 1).applyQuaternion(new Quaternion(q[0], q[1], q[2], q[3])),
   };
 }
 
-/** Zero all motion (rates, speed, visual tilt) and make prev = current. Used by dev warp. */
+/** Zero all motion and make prev = current (dev warp, respawn). Boost refills. */
 export function resetShipMotion(state: ShipState): void {
-  state.speed = 0;
-  state.yawRate = 0;
-  state.pitchRate = 0;
-  state.vRoll = 0;
-  state.vPitch = 0;
-  state.prevVRoll = 0;
-  state.prevVPitch = 0;
+  state.velKmps.set(0, 0, 0);
+  state.angVel.set(0, 0, 0);
+  state.boostCharge = 1;
+  state.boostIdleS = 0;
+  state.thrustMain = 0;
+  state.boosting = false;
   state.prevPosKm.copy(state.posKm);
   state.prevQuat.copy(state.quat);
 }

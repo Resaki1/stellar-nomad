@@ -223,7 +223,15 @@ Today the game boots straight into the last position and streams assets while pl
 - **Exit gate:** cold-cache start shows no frame over a set budget in the first 10 s of
   flight at a named `__bench` scenario; warm-cache time-to-title measured and recorded.
 
-### M1 — Flight model v2 · size L · *own plan doc*
+### M1 — Flight model v2 · ✅ built 2026-11-15 (branch `m1-flight-model`), awaiting playtest
+
+Design and as-built notes: [`FLIGHT_MODEL_PLAN.md`](FLIGHT_MODEL_PLAN.md). Gate script:
+`scripts/drive-examples/flight-trace.mjs` (`FLIGHT_PARTS=sim,live,mouse,camera,reticle`),
+14 of 14 pass. Open: the playtest that turns the starting values into defaults; pointer
+lock paths for boot failure and alt-tab, and the reduced-motion camera, were checked by
+reading the code only.
+
+Original scope, for reference:
 
 - **Velocity-vector flight, 6DOF**: pitch, yaw, roll, lateral/vertical strafe, throttle,
   boost, brake. Ship stats become physical (mass, thrust per axis); module effects remap.

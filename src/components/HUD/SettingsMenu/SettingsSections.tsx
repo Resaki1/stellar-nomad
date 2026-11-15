@@ -5,7 +5,8 @@
  * in-game settings menu and the title screen's settings.
  */
 import type { SetStateAction } from "jotai";
-import { useSetAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
+import { mouseSettingsAtom, withMouseDefaults, type MouseMode } from "@/store/mouseSettings";
 import {
   SetAtom,
   Settings,
@@ -144,6 +145,7 @@ export function ControlsSettings({
         }
         label="invert pitch"
       />
+      <MouseSettingsSection />
 
       {Array.from(categories.entries()).map(([cat, actions]) => (
         <div key={cat} className="keybind-category">
@@ -165,6 +167,66 @@ export function ControlsSettings({
         >
           reset keybinds
         </button>
+      )}
+    </>
+  );
+}
+
+/** Mouse steering preferences (docs/FLIGHT_MODEL_PLAN.md §2), applied live by MouseControls. */
+function MouseSettingsSection() {
+  const [raw, setRaw] = useAtom(mouseSettingsAtom);
+  const m = withMouseDefaults(raw);
+  const patch = (p: Partial<typeof m>) => setRaw((prev) => ({ ...withMouseDefaults(prev), ...p }));
+  return (
+    <>
+      <label className="dev-controls__label">
+        mouse steering
+        <select
+          className="dev-controls__select"
+          value={m.mode}
+          onChange={(e) => patch({ mode: e.target.value as MouseMode })}
+        >
+          <option value="stick">virtual stick</option>
+          <option value="aim">aim</option>
+        </select>
+      </label>
+      <div className="dev-controls__hint">
+        {m.mode === "stick"
+          ? "The mouse moves a marker around the nose; its offset sets the turn rate, so leaving it off-centre keeps the ship turning."
+          : "The mouse places a marker in space and the ship turns its nose onto it, then stops."}
+      </div>
+      <label className="dev-controls__label">
+        mouse sensitivity {m.sensitivity.toFixed(2)}×
+        <input
+          type="range"
+          className="dev-controls__range"
+          min={0.2}
+          max={3}
+          step={0.05}
+          value={m.sensitivity}
+          onChange={(e) => patch({ sensitivity: Number(e.target.value) })}
+        />
+      </label>
+      {m.mode === "stick" && (
+        <>
+          <label className="dev-controls__label">
+            stick deadzone {Math.round(m.deadzone * 100)}%
+            <input
+              type="range"
+              className="dev-controls__range"
+              min={0}
+              max={0.25}
+              step={0.01}
+              value={m.deadzone}
+              onChange={(e) => patch({ deadzone: Number(e.target.value) })}
+            />
+          </label>
+          <SettingsCheckbox
+            active={m.autoCentre}
+            onChange={() => patch({ autoCentre: !m.autoCentre })}
+            label="stick returns to centre"
+          />
+        </>
       )}
     </>
   );

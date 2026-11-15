@@ -17,9 +17,15 @@ export const testProbe: {
     quat: [number, number, number, number];
     steps: number;
     frameSwitches: number;
+    /** Frame-relative velocity km/s, body angular velocity rad/s, assist mode, boost 0..1, limit km/s. */
+    velKmps: [number, number, number];
+    angVel: [number, number, number];
+    assist: string;
+    boostCharge: number;
+    speedLimitKmps: number;
   };
 } = {
-  ship: { posKm: [0, 0, 0], frameId: "", relPosKm: [0, 0, 0], quat: [0, 0, 0, 1], steps: 0, frameSwitches: 0 },
+  ship: { posKm: [0, 0, 0], frameId: "", relPosKm: [0, 0, 0], quat: [0, 0, 0, 1], steps: 0, frameSwitches: 0, velKmps: [0, 0, 0], angVel: [0, 0, 0], assist: "coupled", boostCharge: 1, speedLimitKmps: 0 },
   frames: 0,
   frameHooks: new Set(),
   renderer: null,

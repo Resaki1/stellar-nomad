@@ -1,9 +1,11 @@
 @use '../../../styles' as s;
 
 .reticle {
+  // Moved to the projected nose each frame by drawFlightHud (the chase camera lags the ship).
   position: fixed;
-  top: 50%;
-  left: 50%;
+  top: 0;
+  left: 0;
+  transform: translate(50vw, 50vh);
   pointer-events: none;
   z-index: s.$z-hud-base;
   width: 0;
@@ -32,6 +34,8 @@
     inset: 0;
     border: 1px solid s.$stroke-faint;
     border-radius: 50%;
+    // It now moves over bright cloud decks, where the faint stroke alone disappears.
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
   }
 
   &__dot {

@@ -2,6 +2,7 @@
 
 import TouchControls from "./TouchControls/TouchControls";
 import KeyboardControls from "./KeyboardControls/KeyboardControls";
+import MouseControls from "./MouseControls";
 import "./Navigation.scss";
 import { useEffect, useState } from "react";
 
@@ -12,7 +13,14 @@ const Navigation = () => {
     setIsTouchDevice(window.matchMedia("(pointer: coarse)").matches);
   }, []);
 
-  return isTouchDevice ? <TouchControls /> : <KeyboardControls />;
+  return isTouchDevice ? (
+    <TouchControls />
+  ) : (
+    <>
+      <KeyboardControls />
+      <MouseControls />
+    </>
+  );
 };
 
 export default Navigation;

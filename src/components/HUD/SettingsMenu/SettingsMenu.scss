@@ -269,3 +269,51 @@
     min-width: 180px;
   }
 }
+
+// ─── Flight tuning (Settings → Dev) ──────────────────────────────
+.flight-tuning__derived {
+  font-family: s.$font-mono;
+  font-size: 0.75rem;
+  color: s.$text-secondary;
+  font-variant-numeric: tabular-nums;
+}
+
+.flight-tuning__groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: s.$space-4;
+}
+
+.flight-tuning__group {
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-1;
+}
+
+.flight-tuning__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: s.$space-2;
+  font-size: 0.75rem;
+  color: s.$text-tertiary;
+
+  &--changed {
+    color: s.$accent-info;
+  }
+
+  .dev-controls__input {
+    width: 72px;
+    padding: 2px s.$space-1;
+  }
+}
+
+.flight-tuning__json {
+  width: 100%;
+  min-height: 120px;
+  font-family: s.$font-mono;
+  font-size: 0.7rem;
+  background: rgba(0, 0, 0, 0.3);
+  color: s.$text-secondary;
+  border: 1px solid s.$stroke-base;
+}

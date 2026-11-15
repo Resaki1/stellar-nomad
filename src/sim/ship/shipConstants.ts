@@ -1,7 +1,4 @@
-/** Ship flight-model tuning. Pure data: no engine imports. */
-export const SHIP_HANDLING = 1.5;
-export const MAX_ROT_SPEED = SHIP_HANDLING / 2;
-export const SHIP_MAX_SPEED_KMPS = 400 / 1000;
+/** Ship sim constants. Pure data: no engine imports. Handling lives in flightTuning.ts. */
 
 /** Fixed sim step; rendering interpolates between the two latest states. */
 export const FIXED_DT = 1 / 120;

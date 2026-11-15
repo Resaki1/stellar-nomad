@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { aiNameAtom } from "@/store/aiName";
+import { setCursorNeeded } from "@/input/pointerLock";
 import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
 
 import { playAudio } from "@/audio";
@@ -32,6 +33,7 @@ export default function AINameOverlay() {
   useEffect(() => {
     if (visible) inputRef.current?.focus();
   }, [visible]);
+  useEffect(() => setCursorNeeded("ai-name", visible), [visible]);
 
   const confirm = useCallback(() => {
     const trimmed = inputValue.trim();

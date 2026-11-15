@@ -23,16 +23,42 @@
   @include s.chamfer(s.$radius-xl, ('tl'));
 
   width: 16vw;
-  min-width: 120px;
-  height: 6vw;
+  min-width: 140px;
   min-height: 64px;
 
   display: grid;
   grid-template-columns: 1fr 1fr;
-  padding: 0 s.$space-4;
-  grid-template-rows: 1.2rem 1.2rem;
+  padding: s.$space-2 s.$space-4;
+  grid-auto-rows: 1.2rem;
   align-content: center;
   font-size: 0.8rem;
+
+  // Actual speed (fill) against the throttle set-point (tick), both as a fraction of the limit.
+  &__throttle {
+    grid-column: 1 / -1;
+    position: relative;
+    height: 3px;
+    margin: s.$space-1 0;
+    background: s.$stroke-faint;
+    border-radius: s.$radius-pill;
+  }
+
+  &__throttle-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: s.$text-secondary;
+    border-radius: s.$radius-pill;
+  }
+
+  &__throttle-set {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 9px;
+    margin-left: -1px;
+    background: s.$accent-info;
+    box-shadow: 0 0 4px s.$glow-info;
+  }
 
   &__health--warning {
     color: s.$accent-warn;

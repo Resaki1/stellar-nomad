@@ -12,7 +12,8 @@ import FarTierBatch from "@/components/Asteroids/FarTierBatch";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "@/components/Asteroids/GpuSlotAllocator";
 
 import { systemConfigAtom } from "@/store/system";
-import { shipHealthAtom, hudInfoAtom } from "@/store/store";
+import { shipHealthAtom } from "@/store/store";
+import { transitDriveBuffer } from "@/store/transit";
 import { spawnVFXEventAtom } from "@/store/vfx";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { worldAuthority } from "@/sim/world/worldAuthority";
@@ -230,7 +231,9 @@ const FieldLayer = memo(function FieldLayer({
     const cfg = store.get(effectiveShipConfigAtom);
     // Asteroids are effectively static in their field — the ship's absolute
     // speed (m/s) is a good proxy for relative impact velocity.
-    const velocityMps = Math.max(store.get(hudInfoAtom).speed, MIN_IMPACT_VELOCITY_MPS);
+    const tv = transitDriveBuffer.velocityKmps;
+    const shipKmps = getLocalPlayerShip()?.velKmps.length() ?? 0;
+    const velocityMps = Math.max(shipKmps * 1000, Math.hypot(tv.x, tv.y, tv.z) * 1000, MIN_IMPACT_VELOCITY_MPS);
 
     const volumeM3 = (4 / 3) * Math.PI * asteroidRadiusM * asteroidRadiusM * asteroidRadiusM;
     const massKg = ASTEROID_DENSITY_KG_M3 * volumeM3;

@@ -1,5 +1,6 @@
 "use client";
 
+import { shipView } from "@/components/Camera/shipView";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
@@ -647,7 +648,7 @@ const AsteroidHighlight = ({
 };
 
 const MiningSystem = () => {
-  const { camera, scene } = useThree();
+  const { scene } = useThree();
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
   const store = useStore();
@@ -893,10 +894,11 @@ const MiningSystem = () => {
     const maxDistM = MAX_TARGETING_DISTANCE_M * rangeMult;
     const maxDistKm = MAX_TARGETING_DISTANCE_KM * rangeMult;
 
-    camera.getWorldDirection(_rayDir);
-    _rayOrigin.copy(camera.position);
+    // The nose ray, not the camera's: the chase camera lags, so screen centre is not the nose.
+    _rayDir.copy(shipView.forward);
+    _rayOrigin.copy(shipView.position);
 
-    // camera position in sim-km
+    // ray origin in sim-km
     _cameraKm.set(
       worldOrigin.worldOriginKm.x + _rayOrigin.x / 1000,
       worldOrigin.worldOriginKm.y + _rayOrigin.y / 1000,
@@ -1043,7 +1045,7 @@ const MiningSystem = () => {
     });
 
     return locked ?? best;
-  }, [asteroidRuntime, camera, fieldAnchorMap, worldOrigin]);
+  }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
 
   useFrame((_, delta) => {
     pendingRemovalIdRef.current = null;
@@ -1164,8 +1166,8 @@ const MiningSystem = () => {
         miningAimLostTimeRef.current = 0;
         lockedEndForAsteroidIdRef.current = null;
       } else {
-        _rayOrigin.copy(camera.position);
-        camera.getWorldDirection(_rayDir);
+        _rayOrigin.copy(shipView.position);
+        _rayDir.copy(shipView.forward);
 
         _centerLocal.set(
           snapshot.positionLocal[0],

@@ -17,7 +17,8 @@ import {
 } from "@/components/AppShell/appState";
 import { compileScenePipelines } from "@/components/space/SpaceRenderer";
 import { resetExposureAdaptation } from "@/components/space/exposureMeter";
-import { movementAtom } from "@/store/store";
+import { resetPlayerInput } from "@/input/playerInput";
+import { resetMouseSteering } from "@/input/mouse";
 
 const QUIET_MS = 750;
 const TIMEOUT_MS = 90_000;
@@ -140,7 +141,8 @@ export default function LoadingGate(): null {
         console.warn(`[load] gate timed out after ${TIMEOUT_MS / 1000} s; still pending:`, s.readiness.describe(mask));
       }
       resetExposureAdaptation();
-      store.set(movementAtom, { yaw: 0, pitch: 0, speed: 0 });
+      resetPlayerInput();
+      resetMouseSteering();
       enterPlaying({ timedOut, compileMs: s.compileMs });
       return;
     }

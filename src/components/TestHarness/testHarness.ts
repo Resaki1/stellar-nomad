@@ -16,6 +16,8 @@
  *   __test.simRate(1e4)                      get/set sim rate (isolate() forces 0, restores on false)
  *   await __test.sampleOffsets("luna", 120)  per-frame absolute ship→body offset spread
  *   __test.transitTo("luna")                 target a body and engage the autopilot
+ *   __test.flight.simulate({ segments })     scripted stepShip run, no rendering (M1 gates)
+ *   __test.input.mouse(dx, dy)               inject a pointer-lock mouse delta (M1b gates)
  *
  * Built on the bench harness's poses (`resolveScenario`) and its readiness signals
  * (`hasPendingCloudBakes`, `isStbnLoaded`, `CLOUD_TEMPORAL_CYCLE`), not copies of them.
@@ -58,6 +60,15 @@ import type { WorldCommand } from "@/sim/world/commands";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
+import { poiBuffer } from "@/store/poi";
+import { simulateFlight, type FlightScript, type FlightSimResult } from "@/sim/ship/flightSim";
+import { getFlightTuning, resetFlightTuning, setFlightTuning, speedLimitKmps, type FlightTuning } from "@/sim/ship/flightTuning";
+import { playerInput } from "@/input/playerInput";
+import { addMouseDelta, mouseConfig, mouseState, resetMouseSteering } from "@/input/mouse";
+import { isCursorNeeded, isPointerLocked, pointerLock, releaseGamePointerLock, requestGamePointerLock } from "@/input/pointerLock";
+import type { MouseMode } from "@/store/mouseSettings";
+import { cameraProbe } from "@/components/Camera/chaseCamera";
+import { flightHud } from "@/components/HUD/FlightHud/flightHudBuffer";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -632,8 +643,31 @@ export function createTestHarness(store: Store) {
           quat: [...testProbe.ship.quat],
           steps: testProbe.ship.steps,
           frameSwitches: testProbe.ship.frameSwitches,
+          velKmps: [...testProbe.ship.velKmps],
+          speedMps: Math.hypot(...testProbe.ship.velKmps) * 1000,
+          angVelRadS: [...testProbe.ship.angVel],
+          assist: testProbe.ship.assist,
+          boostCharge: testProbe.ship.boostCharge,
+          speedLimitMps: testProbe.ship.speedLimitKmps * 1000,
+          throttleSetPoint: playerInput.throttle,
         },
         transit: { phase: transitDriveBuffer.phase, autopilot: transitDriveBuffer.autopilot },
+        camera: harness.input.camera(),
+        input: {
+          mode: mouseConfig.mode,
+          sensitivity: mouseConfig.sensitivity,
+          deadzone: mouseConfig.deadzone,
+          autoCentre: mouseConfig.autoCentre,
+          invertPitch: playerInput.invertPitch,
+          stick: [mouseState.stickX, mouseState.stickY],
+          mouseCmd: [playerInput.mouseYaw, playerInput.mousePitch],
+          aimCmd: [playerInput.aimYaw, playerInput.aimPitch],
+          aim: mouseState.aimValid ? [mouseState.aim.x, mouseState.aim.y, mouseState.aim.z] : null,
+          freeLook: mouseState.freeLook,
+          pointerLocked: isPointerLocked(),
+          cursorNeeded: isCursorNeeded(),
+        },
+        reticle: harness.input.reticle(),
         exposure: {
           meteredEV: Math.round(ex.meteredEV * 100) / 100,
           adaptedEV: Math.round(ex.adaptedEV * 100) / 100,
@@ -644,6 +678,91 @@ export function createTestHarness(store: Store) {
           : null,
         gates,
       };
+    },
+
+    /** M1 flight model: deterministic scripted runs through the real stepShip, and the live tuning table. */
+    flight: {
+      simulate: (script: FlightScript): FlightSimResult => simulateFlight(script),
+      tuning(patch?: Partial<FlightTuning> | "reset"): FlightTuning {
+        if (patch === "reset") resetFlightTuning();
+        else if (patch) setFlightTuning(patch);
+        return { ...getFlightTuning() };
+      },
+      speedLimitMps: (): number => speedLimitKmps(getFlightTuning()) * 1000,
+      input: () => ({ ...playerInput, held: { ...playerInput.held } }),
+    },
+
+    /** M1b mouse steering and camera rig. Injected deltas go through the same path as a pointer-lock mousemove. */
+    input: {
+      mouse(dx: number, dy: number): void {
+        addMouseDelta(dx, dy);
+      },
+      /** true/false overrides the free-look key; null hands it back to the key. */
+      freeLook(on: boolean | null): void {
+        mouseState.freeLookForced = on;
+      },
+      mode(m?: MouseMode): MouseMode {
+        if (m && m !== mouseConfig.mode) {
+          mouseConfig.mode = m;
+          resetMouseSteering();
+        }
+        return mouseConfig.mode;
+      },
+      /** Patch the live mouse preferences (not persisted). */
+      config(patch: Partial<typeof mouseConfig> = {}) {
+        Object.assign(mouseConfig, patch);
+        return { ...mouseConfig };
+      },
+      centre(): void {
+        resetMouseSteering();
+      },
+      /** Test override of the invert-pitch setting (the settings atom re-applies on its next change). */
+      invertPitch(on: boolean): void {
+        playerInput.invertPitch = on;
+      },
+      camera() {
+        const p = cameraProbe;
+        return {
+          lagDeg: p.lagDeg, lagVecDeg: [...p.lagVecDeg], orbitDeg: [...p.orbitDeg], offsetDeg: p.offsetDeg,
+          fovDeg: p.fovDeg, snaps: p.snaps, quat: [...flightHud.cameraQuat], shipRenderQuat: [...flightHud.shipQuat],
+        };
+      },
+      /** Reticle as computed this frame, plus where the DOM element actually is. */
+      reticle() {
+        const h = flightHud;
+        const el = h.els.nose;
+        const r = el?.getBoundingClientRect();
+        return {
+          x: h.reticle.x, y: h.reticle.y, visible: h.reticle.visible,
+          dom: r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null,
+          stick: { ...h.stick }, aim: { ...h.aim }, velocity: { ...h.velocity }, driftMps: h.driftMps,
+          fovDeg: h.fovDeg, aspect: h.aspect, viewport: [...h.viewport],
+          focusedPoi: poiBuffer.pois.find((p) => p.focused)?.id ?? null,
+        };
+      },
+      /** Camera rig + ship rate on each of the next `n` frames. */
+      async sampleCamera(n: number) {
+        const rows: { t: number; lagVecDeg: number[]; lagDeg: number; offsetDeg: number; orbitDeg: number[]; angVel: number[] }[] = [];
+        await new Promise<void>((resolve) => {
+          const hook = () => {
+            rows.push({
+              t: performance.now(), lagVecDeg: [...cameraProbe.lagVecDeg], lagDeg: cameraProbe.lagDeg,
+              offsetDeg: cameraProbe.offsetDeg, orbitDeg: [...cameraProbe.orbitDeg], angVel: [...testProbe.ship.angVel],
+            });
+            if (rows.length >= n) {
+              testProbe.frameHooks.delete(hook);
+              resolve();
+            }
+          };
+          testProbe.frameHooks.add(hook);
+        });
+        return rows;
+      },
+      pointerLock: {
+        request: () => requestGamePointerLock(),
+        release: () => releaseGamePointerLock(),
+        state: () => ({ ...pointerLock, locked: isPointerLocked(), cursorNeeded: isCursorNeeded() }),
+      },
     },
 
     /** Active world save (M0.3). Writes respect isolate(): flush() is a no-op while isolated. */

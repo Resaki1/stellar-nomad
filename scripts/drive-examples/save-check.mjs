@@ -234,7 +234,7 @@ export default async function saveCheck(d) {
     const i0 = await ev("__test.save.info()");
     const db0 = await ev(IDB);
     const s0 = (await d.state()).ship;
-    await d.hold("e", 2000);
+    await d.hold("w", 2000);
     await wait(3000);
     const s1 = (await d.state()).ship;
     const i1 = await ev("__test.save.info()");
