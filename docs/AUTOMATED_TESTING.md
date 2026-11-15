@@ -71,8 +71,16 @@ intend to compare; quote pass milliseconds, not FPS).
 ### Input
 
 `hold:<key>:<ms>` sends trusted CDP key events. The flight model samples **held**
-keys per frame, so a tap (`press:`) never steers. Defaults: W/S pitch, A/D yaw,
-Shift/E throttle up, Ctrl/C down, M mine, T transit (hold). `click:<x>:<y>` for UI.
+keys per frame, so a tap (`press:`) never steers. Defaults (M1): W/S throttle set-point,
+A/D strafe, arrows pitch/yaw, Q/E roll, Shift boost, X brake, V assist, M mine, T transit
+(hold). `click:<x>:<y>` for UI. Scripted flight without key timing: `__test.flight.simulate`.
+
+Mouse (M1b): `__test.input.mouse(dx, dy)` injects a delta exactly where a pointer-lock
+`mousemove` lands; `freeLook(on)`, `mode('stick'|'aim')`, `sampleCamera(n)`; `state()` has
+`camera`, `input` and `reticle`. A real pointer lock works headless only after
+`d.send("Page.bringToFront")` (else `WrongDocumentError`); then trusted CDP `mouseMoved`
+events arrive as `movementX`. The settings menu stops the render loop, so `shot:` (which
+waits for frames) stalls there: capture with `Page.captureScreenshot` directly.
 
 ### Sandbox
 

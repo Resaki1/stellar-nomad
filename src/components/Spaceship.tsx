@@ -1,11 +1,12 @@
 import { useFrame } from "@react-three/fiber";
 import { memo, useEffect, useMemo, useRef } from "react";
-import { Vector3, Mesh } from "three";
+import { MathUtils, Vector3, Mesh, type PerspectiveCamera } from "three";
+import { getCameraTuning } from "./Camera/cameraTuning";
 import { ShipOne } from "./models/ships/ShipOne";
 import EngineExhaust from "./VFX/EngineExhaust";
 import type { ExhaustConfig } from "./VFX/EngineExhaust";
 import { useStore } from "jotai";
-import { hudInfoAtom, movementAtom, shipHealthAtom } from "@/store/store";
+import { hudInfoAtom, shipHealthAtom } from "@/store/store";
 import { collisionImpactAtom, cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
 import { audioShipBuffer } from "@/audio/shipBuffer";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
@@ -21,10 +22,17 @@ import { updateShipFrame } from "@/sim/ship/shipFrame";
 import type { CelestialCollider } from "@/sim/celestialCollision";
 import { LOCAL_PLAYER_ID, registerEntity, unregisterEntity } from "@/sim/entities";
 import { createShipState, resetShipMotion, updateShipAbsolute, type ShipState } from "@/sim/ship/shipState";
-import type { ShipInput } from "@/sim/ship/shipInput";
-import { createShipStepEnv, stepShip } from "@/sim/ship/stepShip";
-import { FIXED_DT, MAX_FRAME_DT, SHIP_HULL_RADIUS_KM, SHIP_MAX_SPEED_KMPS } from "@/sim/ship/shipConstants";
-import { ChaseCamera } from "./Camera/chaseCamera";
+import { createShipInput } from "@/sim/ship/shipInput";
+import { createShipStepEnv, shipBodyAxes, stepShip } from "@/sim/ship/stepShip";
+import { getFlightTuning, speedLimitKmps } from "@/sim/ship/flightTuning";
+import { loadTuningPrefs } from "@/store/flightTuningPrefs";
+import { FIXED_DT, MAX_FRAME_DT, SHIP_HULL_RADIUS_KM } from "@/sim/ship/shipConstants";
+import { sampleShipInput } from "@/input/sampleShipInput";
+import { playerInput, resetPlayerInput } from "@/input/playerInput";
+import { mouseState, resetMouseSteering, updateMouseSteering } from "@/input/mouse";
+import { ChaseRig, type ShipMotion } from "./Camera/chaseCamera";
+import { shipView } from "./Camera/shipView";
+import { drawFlightHud } from "./HUD/FlightHud/flightHudBuffer";
 import { starDiscPool } from "@/components/space/starLodStatus";
 import { testProbe } from "@/components/TestHarness/testProbe";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
@@ -40,8 +48,19 @@ let _starColliderBase = 0;
 
 const _localRel = new Vector3();
 const _frameOrigin = new Vector3();
-const _input: ShipInput = { yaw: 0, pitch: 0, throttle: 0 };
-const _env = createShipStepEnv();
+const _input = createShipInput();
+const _env = createShipStepEnv(getFlightTuning());
+const _vPrev = new Vector3();
+const _accel = new Vector3();
+const _bf = new Vector3();
+const _br = new Vector3();
+const _bu = new Vector3();
+const _motion: ShipMotion = {
+  accelRight: 0, accelUp: 0, accelForward: 0, speedFrac: 0, boosting: false,
+  freeLook: false, freeLookYaw: 0, freeLookPitch: 0, shakeSignal: 0, benchMode: false,
+};
+/** HUD readout cadence; the atom write re-renders the dashboard. */
+const HUD_PUBLISH_S = 0.1;
 
 const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
 const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
@@ -72,6 +91,12 @@ function publishShipPose(ship: ShipState): void {
   r[0] = ship.posKm.x; r[1] = ship.posKm.y; r[2] = ship.posKm.z;
   q[0] = ship.quat.x; q[1] = ship.quat.y; q[2] = ship.quat.z; q[3] = ship.quat.w;
   t.frameId = ship.frameId;
+  const v = t.velKmps, w = t.angVel;
+  v[0] = ship.velKmps.x; v[1] = ship.velKmps.y; v[2] = ship.velKmps.z;
+  w[0] = ship.angVel.x; w[1] = ship.angVel.y; w[2] = ship.angVel.z;
+  t.assist = ship.assist;
+  t.boostCharge = ship.boostCharge;
+  t.speedLimitKmps = ship.speedLimitKmps;
 }
 
 const SpaceShip = memo(() => {
@@ -82,10 +107,11 @@ const SpaceShip = memo(() => {
 
   const shipState = useRef<ShipState>(null!);
   if (!shipState.current) shipState.current = createShipState();
-  const chaseCamera = useRef<ChaseCamera>(null!);
-  if (!chaseCamera.current) chaseCamera.current = new ChaseCamera();
+  const chaseCamera = useRef<ChaseRig>(null!);
+  if (!chaseCamera.current) chaseCamera.current = new ChaseRig();
 
   const physicsAcc = useRef(0);
+  const hudAcc = useRef(0);
   const exhaustIntensity = useRef(0);
   /** Live position arrays backing `celestialColliders`, in the same order. */
   const colliderSources = useRef<readonly (readonly number[])[]>([]);
@@ -137,6 +163,7 @@ const SpaceShip = memo(() => {
 
   // Register the sim state in the entity table.
   useEffect(() => {
+    loadTuningPrefs();
     registerEntity({ id: LOCAL_PLAYER_ID, kind: "ship", ship: shipState.current });
     return () => unregisterEntity(LOCAL_PLAYER_ID);
   }, []);
@@ -147,7 +174,7 @@ const SpaceShip = memo(() => {
   // Track dead state to show/hide ship mesh
   const wasDeadRef = useRef(false);
 
-  useFrame(({ camera }, delta) => {
+  useFrame(({ camera, size }, delta) => {
     if (!shipRef.current || !modelRef.current) return;
     const ship = shipState.current;
 
@@ -167,16 +194,17 @@ const SpaceShip = memo(() => {
       return;
     }
     if (wasDeadRef.current) {
-      // Just respawned — re-show ship, kill residual shake
+      // Just respawned — re-show ship at rest, kill residual shake
       shipRef.current.visible = true;
-      chaseCamera.current.resetShake();
+      resetShipMotion(ship);
+      resetPlayerInput();
+      resetMouseSteering();
+      chaseCamera.current.snap();
+      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
       store.set(cameraShakeIntensityAtom, 0);
       wasDeadRef.current = false;
     }
 
-    // Read input imperatively (zero subscriptions → zero re-renders).
-    // `let` because a dev warp below zeroes the input and must take effect this frame.
-    let movement = store.get(movementAtom);
     // Benchmark mode: suppress wall-clock-driven and save-mutating side effects
     // that would make a measurement irreproducible. See benchModeAtom.
     const benchMode = store.get(benchModeAtom);
@@ -187,15 +215,13 @@ const SpaceShip = memo(() => {
       // Size-dependent speed dip: small asteroids = mild, large = severe.
       const t = Math.min(impact.radiusM / COLLISION_SIZE_REF_M, 1);
       const dip = COLLISION_SPEED_DIP_MIN + (COLLISION_SPEED_DIP_MAX - COLLISION_SPEED_DIP_MIN) * t;
-      ship.speed *= (1 - dip);
+      ship.velKmps.multiplyScalar(1 - dip);
       store.set(collisionImpactAtom, null);
     }
 
     // ── Dev warp (one-shot) ────────────────────────────────────────────
-    // Everything carrying motion across the jump must be zeroed or the pose keeps
-    // settling: prevPosKm (else the swept collider sweeps from the OLD position through
-    // every planet in between = instant death), steering rates, movementAtom.speed,
-    // the transit drive, and speed (the chase camera standoff scales with it).
+    // Zero everything carrying motion: prevPosKm (else the swept collider sweeps from the
+    // OLD position through every planet in between), velocity, throttle, transit drive.
     const warp = store.get(devTeleportAtom);
     if (warp) {
       ship.frameId = warp.frameId;
@@ -208,25 +234,22 @@ const SpaceShip = memo(() => {
       worldOrigin.setShipPosKm(ship.absPosKm);
       worldOrigin.setWorldOriginKm(ship.absPosKm);
       physicsAcc.current = 0;
-      chaseCamera.current.resetShake();
-      movement = { ...movement, yaw: 0, pitch: 0, speed: 0 };
-      store.set(movementAtom, movement);
+      chaseCamera.current.snap();
+      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
+      resetPlayerInput();
+      resetMouseSteering();
       killTransitDrive();
       store.set(devTeleportAtom, null);
     }
 
-    _input.yaw = movement.yaw;
-    _input.pitch = movement.pitch;
-    _input.throttle = movement.speed;
+    const inputDt = isSimPaused() ? 0 : Math.min(delta, MAX_FRAME_DT);
+    updateMouseSteering(ship.quat, inputDt, transitDriveBuffer.desiredForward !== null);
+    sampleShipInput(_input, inputDt);
 
     // ── Per-frame step environment (nothing below changes between substeps) ──
     const tBuf = transitDriveBuffer;
     const cfg = store.get(effectiveShipConfigAtom);
     const devSpeed = store.get(devMaxSpeedOverrideAtom);
-    // Dev override is absolute (skips speedMult); otherwise base * module multiplier.
-    const maxSpeedKmps = devSpeed !== null
-      ? devSpeed / 1000
-      : SHIP_MAX_SPEED_KMPS * cfg.speedMult;
     const transitActive = tBuf.phase === "accelerating" || tBuf.phase === "decelerating";
     _env.steerMult = transitActive ? TRANSIT_STEER_MULT : 1;
     const desired = tBuf.desiredForward;
@@ -237,9 +260,12 @@ const SpaceShip = memo(() => {
       _env.desiredForwardZ = desired.z;
     }
     _env.desiredForwardRateRadPerS = tBuf.desiredForwardRateRadPerS;
+    _env.tuning = getFlightTuning();
     _env.accelerationMult = cfg.accelerationMult;
     _env.decelerationMult = cfg.decelerationMult;
-    _env.maxSpeedKmps = maxSpeedKmps;
+    _env.speedMult = cfg.speedMult;
+    // Dev override is absolute (skips speedMult).
+    _env.speedLimitOverrideKmps = devSpeed !== null ? Math.max(0, devSpeed / 1000) : -1;
     _env.transitVelX = tBuf.velocityKmps.x;
     _env.transitVelY = tBuf.velocityKmps.y;
     _env.transitVelZ = tBuf.velocityKmps.z;
@@ -276,6 +302,8 @@ const SpaceShip = memo(() => {
     if (isSimPaused()) physicsAcc.current = 0;
     else physicsAcc.current += Math.min(delta, MAX_FRAME_DT);
 
+    _vPrev.copy(ship.velKmps);
+    let stepsRun = 0;
     while (physicsAcc.current >= FIXED_DT) {
       const hit = stepShip(ship, _input, _env, FIXED_DT);
       if (hit) {
@@ -302,6 +330,21 @@ const SpaceShip = memo(() => {
 
       physicsAcc.current -= FIXED_DT;
       testProbe.ship.steps++;
+      stepsRun++;
+    }
+    // Body acceleration for the camera's give-way (m/s²); held over frames that ran no step.
+    if (stepsRun > 0) {
+      _accel.subVectors(ship.velKmps, _vPrev).multiplyScalar(1000 / (stepsRun * FIXED_DT));
+      // The dev speed override scales thrust with the limit; the camera must not feel that,
+      // or the slightest turn at light-years per second throws it to its stops.
+      if (_env.speedLimitOverrideKmps >= 0) {
+        const base = speedLimitKmps(_env.tuning, cfg.decelerationMult, cfg.speedMult);
+        if (base > 0 && _env.speedLimitOverrideKmps > base) _accel.multiplyScalar(base / _env.speedLimitOverrideKmps);
+      }
+      shipBodyAxes(ship.quat, _bf, _br, _bu);
+      _motion.accelForward = _accel.dot(_bf);
+      _motion.accelRight = _accel.dot(_br);
+      _motion.accelUp = _accel.dot(_bu);
     }
     // Frame switch: once per frame, after the substeps, never inside stepShip.
     if (updateShipFrame(ship) !== null) {
@@ -311,11 +354,10 @@ const SpaceShip = memo(() => {
     // Absolute, every frame: the ship moves with its frame even when no substep ran.
     publishShipPose(ship);
 
-    // ── Engine exhaust intensity (thrust demand) ──────────────────────
-    // Gap between requested and current speed; negative (coasting) gives no thrust.
+    // ── Engine exhaust intensity (real main-engine thrust of the last step) ──
     {
-      const thrustDemand = Math.max(0, movement.speed - ship.speed);
-      exhaustIntensity.current += (thrustDemand - exhaustIntensity.current)
+      const thrust = Math.min(1, ship.thrustMain);
+      exhaustIntensity.current += (thrust - exhaustIntensity.current)
         * Math.min(1, EXHAUST_SMOOTH_RATE * delta);
       if (exhaustIntensity.current < 0.001) exhaustIntensity.current = 0;
 
@@ -329,29 +371,48 @@ const SpaceShip = memo(() => {
 
     shipRef.current.quaternion.slerpQuaternions(ship.prevQuat, ship.quat, alpha);
 
+    // Visual only: the model rolls into yaw and leans into pitch, in proportion to turn rate.
+    {
+      const ct = getCameraTuning();
+      const ft = _env.tuning;
+      const yawFrac = ft.maxYawRateDegS > 0 ? -ship.angVel.y / (ft.maxYawRateDegS * MathUtils.DEG2RAD) : 0;
+      // Same sign as the real pitch rate (the model shares the ship's x axis), so the lean leads the turn.
+      const pitchFrac = ft.maxPitchRateDegS > 0 ? ship.angVel.x / (ft.maxPitchRateDegS * MathUtils.DEG2RAD) : 0;
+      const k = 1 - Math.exp(-delta / ct.bankLagS);
+      const rot = modelRef.current.rotation;
+      rot.z += (MathUtils.clamp(yawFrac, -1, 1) * ct.bankMaxDeg * MathUtils.DEG2RAD - rot.z) * k;
+      rot.x += (MathUtils.clamp(pitchFrac, -1, 1) * ct.pitchLeanMaxDeg * MathUtils.DEG2RAD - rot.x) * k;
+    }
+
     // Interpolate in frame-relative km, add the CURRENT frame origin, and put the world
     // origin there so the ship sits at local (0,0,0).
     _localRel.lerpVectors(ship.prevPosKm, ship.posKm, alpha).add(_frameOrigin);
     worldOrigin.setShipPosKm(ship.absPosKm);
     worldOrigin.setWorldOriginKm(_localRel);
     shipRef.current.position.set(0, 0, 0);
-
-    // Model visual tilt (interpolated)
-    const renderRoll = ship.prevVRoll + (ship.vRoll - ship.prevVRoll) * alpha;
-    const renderPitch = ship.prevVPitch + (ship.vPitch - ship.prevVPitch) * alpha;
-    modelRef.current.rotation.set(
-      renderPitch,
-      modelRef.current.rotation.y,
-      renderRoll
-    );
+    shipView.position.set(0, 0, 0);
+    shipView.forward.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
 
     // ── Camera (chase + shake) ──────────────────────────────────────────
     const shakeSignal = store.get(cameraShakeIntensityAtom);
     if (shakeSignal > 0) store.set(cameraShakeIntensityAtom, 0);
-    chaseCamera.current.update(camera, shipRef.current, ship.speed, delta, shakeSignal, benchMode);
+    const speedKmps = ship.velKmps.length();
+    const refLimit = _env.speedLimitOverrideKmps >= 0
+      ? _env.speedLimitOverrideKmps
+      : speedLimitKmps(_env.tuning, cfg.decelerationMult, cfg.speedMult);
+    const speedFrac = Math.min(1.5, refLimit > 0 ? speedKmps / refLimit : 0);
+    _motion.speedFrac = speedFrac;
+    _motion.boosting = ship.boosting;
+    _motion.freeLook = mouseState.freeLook;
+    _motion.freeLookYaw = mouseState.freeLookYaw;
+    _motion.freeLookPitch = mouseState.freeLookPitch;
+    _motion.shakeSignal = shakeSignal;
+    _motion.benchMode = benchMode;
+    const cam = camera as PerspectiveCamera;
+    chaseCamera.current.update(cam, shipRef.current, _motion, delta);
+    drawFlightHud(cam, size, shipRef.current.quaternion, ship.velKmps, transitActive);
 
-    // ── HUD speed (analytical — no sampling jitter) ─────────────────────
-    // Includes cfg.speedMult so the HUD reflects module-boosted top speed.
+    // ── HUD speed: the real velocity, or the transit velocity when larger ──
     const transitSpeedMps = (_env.transitVelX !== 0 || _env.transitVelY !== 0 || _env.transitVelZ !== 0)
       ? Math.sqrt(
           tBuf.velocityKmps.x ** 2 +
@@ -359,14 +420,23 @@ const SpaceShip = memo(() => {
           tBuf.velocityKmps.z ** 2
         ) * 1000 // km/s → m/s
       : 0;
-    const normalSpeedMps = ship.speed * maxSpeedKmps * 1000;
+    const normalSpeedMps = speedKmps * 1000;
     // ⚠ Audio write is OUTSIDE the benchMode guard on purpose: the guard exists because
     // store.set re-renders HUD subtrees, a plain-object write does not, and the wind bed
     // must stay driven during a bench run. Same definition as the HUD speed (transit
     // included) so the bed never disagrees with the on-screen number.
     audioShipBuffer.speedMps = Math.max(normalSpeedMps, transitSpeedMps);
-    if (!benchMode) {
-      store.set(hudInfoAtom, { speed: Math.max(normalSpeedMps, transitSpeedMps) });
+    hudAcc.current += delta;
+    if (!benchMode && hudAcc.current >= HUD_PUBLISH_S) {
+      hudAcc.current = 0;
+      store.set(hudInfoAtom, {
+        speed: Math.max(normalSpeedMps, transitSpeedMps),
+        throttle: playerInput.throttle,
+        setPointSpeed: playerInput.throttle * refLimit * 1000,
+        speedLimit: ship.speedLimitKmps * 1000,
+        decoupled: ship.assist === "decoupled",
+        boostCharge: ship.boostCharge,
+      });
     }
   }, FRAME_PRIORITY_PLAYER_SHIP);
 

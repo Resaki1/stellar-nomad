@@ -110,7 +110,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 ```
 
 **Regression gates for the sim core (headless, each prints pass/fail JSON)**
-- `pnpm drive -- --keep run:scripts/drive-examples/flight-trace.mjs` — flight per fixed step
+- `FLIGHT_PARTS=sim,live,mouse,camera,reticle pnpm drive -- --keep run:scripts/drive-examples/flight-trace.mjs` — flight model (deterministic sim gates + live input, camera, reticle); design in `docs/FLIGHT_MODEL_PLAN.md`
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `SHELL_PARTS=title,continue pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs` — title + loading gate
@@ -136,6 +136,11 @@ at load, `pnpm drive -- --stop` (a kept Chrome can wedge after the machine sleep
 - **Gameplay state persists through `savedAtom`** (`src/store/savedAtom.ts`) into the
   active world save (IndexedDB, `src/save/`), scoped `player` or `world`. Do not add
   `atomWithStorage`/`localStorage` for gameplay; those are for device preferences only.
+- **Input reaches the ship only as `ShipInput`** via `src/input/` (`playerInput` buffer,
+  sampled once per frame). Flight constants live in `src/sim/ship/flightTuning.ts`, camera
+  constants in `src/components/Camera/cameraTuning.ts`; both are editable live in
+  Settings → Dev. The camera lags the ship, so **screen centre is not the nose**: target
+  with the ship's forward ray (`src/components/Camera/shipView.ts`), never the camera's.
 - **`src/sim/simPause.ts`** is the one pause signal (loading overlay). New tickers must
   respect it.
 

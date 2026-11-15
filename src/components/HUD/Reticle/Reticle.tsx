@@ -9,6 +9,7 @@ import {
 } from "@/store/mining";
 import { poiBuffer } from "@/store/poi";
 import { keybindsAtom, displayKey } from "@/store/keybinds";
+import { flightHud } from "../FlightHud/flightHudBuffer";
 import "./Reticle.scss";
 
 const RING_R = 14;
@@ -23,6 +24,14 @@ export default function Reticle() {
   const poiRingContainerRef = useRef<HTMLDivElement>(null);
   const poiRingProgressRef = useRef<SVGCircleElement>(null);
   const poiHintRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    flightHud.els.nose = rootRef.current;
+    return () => {
+      flightHud.els.nose = null;
+    };
+  }, []);
 
   // POI gaze progress lives in a mutable buffer — drive the SVG and hint
   // via rAF so we don't trigger React re-renders for a continuous signal.
@@ -63,7 +72,7 @@ export default function Reticle() {
   const transitKey = displayKey(keybinds.transitDrive[0] ?? "t");
 
   return (
-    <div className="reticle">
+    <div className="reticle" ref={rootRef}>
       {/* Default: 18px circle + 2 micro-dots */}
       <div
         className={`reticle__default ${

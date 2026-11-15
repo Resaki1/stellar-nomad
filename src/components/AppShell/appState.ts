@@ -5,6 +5,7 @@
  */
 import { suspendSaveWrites } from "@/save/activeSave";
 import { setSimPaused } from "@/sim/simPause";
+import { releaseGamePointerLock } from "@/input/pointerLock";
 
 export type AppPhase = "title" | "loading" | "playing";
 export type LoadStage = "world" | "assets" | "warmup";
@@ -140,6 +141,8 @@ export function publishProgress(next: Partial<Omit<LoadProgress, "stage" | "worl
 export function loadFailed(message: string): void {
   if (phase !== "loading" || progress.error) return;
   gateRunning();
+  // The title gesture took the lock; the error screen needs the cursor.
+  releaseGamePointerLock();
   progress = { ...progress, error: message };
   emit();
 }

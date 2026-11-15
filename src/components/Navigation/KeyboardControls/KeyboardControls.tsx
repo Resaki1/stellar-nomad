@@ -1,185 +1,59 @@
-import { movementAtom, settingsAtom } from "@/store/store";
+import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import { keybindsAtom } from "@/store/keybinds";
 import { transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { miningStateAtom } from "@/store/mining";
 import { playAudio } from "@/audio";
-import { useAtomValue, useSetAtom, useStore } from "jotai";
-import { useEffect, useRef, useCallback } from "react";
+import { attachKeyboard, type KeyboardDevice } from "@/input/keyboard";
+import { playerInput } from "@/input/playerInput";
+import { useAtomValue, useStore } from "jotai";
+import { useEffect, useRef } from "react";
 
-// Speed change per second while holding accel/decel key
-const SPEED_RATE_PER_S = 0.5;
-
+/** Mounts the keyboard device (src/input/keyboard.ts) and handles the transit-drive key. */
 const KeyboardControls = () => {
-  const settings = useAtomValue(settingsAtom);
-  const setMovement = useSetAtom(movementAtom);
   const store = useStore();
   const keybinds = useAtomValue(keybindsAtom);
-
-  // Ref that holds a live Set of currently-pressed keys.
-  const pressedKeys = useRef(new Set<string>());
-
-  // Keep settings & keybinds in refs so listener closures never go stale
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
+  const settings = useAtomValue(settingsAtom);
+  const settingsOpen = useAtomValue(settingsIsOpenAtom);
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
+  const deviceRef = useRef<KeyboardDevice | null>(null);
 
-  /** Check if any key bound to the given action is pressed. */
-  const isActionPressed = (action: keyof typeof keybinds) => {
-    const k = pressedKeys.current;
-    return keybindsRef.current[action].some((key) => k.has(key));
-  };
-
-  /** Recompute and push yaw/pitch from current pressed keys. */
-  const updateSteering = () => {
-    const left = isActionPressed("yawLeft");
-    const right = isActionPressed("yawRight");
-    const up = isActionPressed("pitchUp");
-    const down = isActionPressed("pitchDown");
-
-    const yaw = right === left ? 0 : right ? 1 : -1;
-    const rawPitch = up === down ? 0 : up ? 1 : -1;
-    const pitch = settingsRef.current.invertPitch ? rawPitch : -rawPitch;
-    setMovement((prev) => ({ ...prev, yaw, pitch }));
-  };
-
-  // Build a Set of all steering keys for fast lookup
-  const steeringKeysRef = useRef(new Set<string>());
   useEffect(() => {
-    const s = new Set<string>();
-    for (const k of keybinds.pitchUp) s.add(k);
-    for (const k of keybinds.pitchDown) s.add(k);
-    for (const k of keybinds.yawLeft) s.add(k);
-    for (const k of keybinds.yawRight) s.add(k);
-    steeringKeysRef.current = s;
-  }, [keybinds]);
+    playerInput.invertPitch = settings.invertPitch;
+  }, [settings.invertPitch]);
 
-  // ── Raw keydown / keyup listeners ─────────────────────────────────
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      const key = e.key.toLowerCase();
-      pressedKeys.current.add(key);
-
-      if (steeringKeysRef.current.has(key)) {
-        updateSteering();
-      }
-
-      // Transit drive: hold to spool, tap to toggle decel.
-      if (keybindsRef.current.transitDrive.includes(key)) {
+    const device = attachKeyboard({
+      bindings: () => keybindsRef.current,
+      blocked: () => store.get(settingsIsOpenAtom),
+      onPress(action) {
+        if (action !== "transitDrive") return;
         const phase = transitDriveBuffer.phase;
-        // TransitTicker silently ignores the key without a drive or while
-        // mining; reject audibly so the press is not mistaken for a dead key.
+        // TransitTicker ignores the key without a drive or while mining; reject audibly.
         if (phase === "idle" && (!store.get(transitDriveOwnedAtom) || store.get(miningStateAtom).isMining)) {
           playAudio("ui.reject");
         } else if (phase === "idle" || phase === "spooling") {
-          // Start or continue holding for spool.
           transitDriveBuffer.keyHeld = true;
         } else if (phase === "accelerating" || phase === "decelerating") {
-          // Tap while in flight — signal decel/accel toggle.
           transitDriveBuffer.keyTapped = true;
         }
-      }
-    };
-
-    const onKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      pressedKeys.current.delete(key);
-
-      if (steeringKeysRef.current.has(key)) {
-        updateSteering();
-      }
-
-      // Transit drive key released — stop holding.
-      if (keybindsRef.current.transitDrive.includes(key)) {
-        transitDriveBuffer.keyHeld = false;
-      }
-    };
-
-    const onBlur = () => {
-      pressedKeys.current.clear();
-      setMovement((prev) => ({ ...prev, yaw: 0, pitch: 0 }));
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onBlur);
+      },
+      onRelease(action) {
+        if (action === "transitDrive") transitDriveBuffer.keyHeld = false;
+      },
+    });
+    deviceRef.current = device;
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onBlur);
+      device.detach();
+      deviceRef.current = null;
     };
-  }, [setMovement]);
-
-  // ── Scroll wheel: immediate speed steps ───────────────────────────
-  const handleWheel = useCallback(
-    (e: WheelEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      // Don't hijack scroll when the player is interacting with a modal
-      // (including Settings, which uses the Panel shell) — the wheel is
-      // meant for that panel's own scrollable content.
-      if (target?.closest(".panel__backdrop")) return;
-
-      const step = e.deltaY < 0 ? 0.05 : -0.05;
-      setMovement((prev) => ({
-        ...prev,
-        speed: Math.min(Math.max(prev.speed + step, 0), 1),
-      }));
-    },
-    [setMovement]
-  );
+  }, [store]);
 
   useEffect(() => {
-    window.addEventListener("wheel", handleWheel, { passive: true });
-    return () => window.removeEventListener("wheel", handleWheel);
-  }, [handleWheel]);
+    if (settingsOpen) deviceRef.current?.releaseAll();
+  }, [settingsOpen]);
 
-  // ── Continuous speed adjustment via rAF ───────────────────────────
-  const rafRef = useRef<number>(0);
-  const lastTimeRef = useRef(0);
-
-  useEffect(() => {
-    let running = true;
-
-    const tick = (time: number) => {
-      if (!running) return;
-      const dt = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 : 0;
-      lastTimeRef.current = time;
-
-      const accel = isActionPressed("accelerate");
-      const decel = isActionPressed("decelerate");
-
-      if (accel) {
-        setMovement((prev) => ({
-          ...prev,
-          speed: Math.min(prev.speed + SPEED_RATE_PER_S * dt, 1),
-        }));
-      }
-      if (decel) {
-        setMovement((prev) => ({
-          ...prev,
-          speed: Math.max(prev.speed - SPEED_RATE_PER_S * dt, 0),
-        }));
-      }
-
-      rafRef.current = requestAnimationFrame(tick);
-    };
-
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafRef.current);
-    };
-  }, [setMovement]);
-
-  return <></>;
+  return null;
 };
 
 export default KeyboardControls;

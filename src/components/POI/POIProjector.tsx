@@ -7,6 +7,7 @@ import { useAtomValue, useStore } from "jotai";
 
 import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { shipView } from "@/components/Camera/shipView";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
 import {
   STAR_MARKER_MAX_LY,
@@ -41,8 +42,9 @@ import {
 const _pos = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _poiKm = new THREE.Vector3();
+const _noseNdc = new THREE.Vector3();
 
-/** Half-angle (radians) of the "focused" cone around screen center. */
+/** Half-size, in NDC, of the "focused" square around the projected nose (the reticle). */
 const FOCUS_HALF_ANGLE_NDC = 0.06; // ~3.4° at center of NDC space
 
 /** Time in seconds the player must gaze at a POI to target it. */
@@ -272,6 +274,10 @@ const POIProjector = memo(function POIProjector() {
     let focusedPoiDef: POIDef | null = null;
     let focusedDistKm = 0;
 
+    // Gaze is measured at the reticle (ship nose), which the lagging chase camera moves off centre.
+    _noseNdc.copy(shipView.forward).multiplyScalar(camera.far * 0.5).add(shipView.position).project(camera);
+    const noseInFront = _noseNdc.z >= -1 && _noseNdc.z <= 1;
+
     for (let i = 0; i < pois.length; i++) {
       const poi = pois[i];
       resolveFramePositionKm(poi.positionKm, poi.frameId, _poiKm);
@@ -315,11 +321,11 @@ const POIProjector = memo(function POIProjector() {
       const inView =
         inFront && sx >= 0 && sx <= 1 && sy >= 0 && sy <= 1;
 
-      // Focus: POI near screen center in NDC space.
       const focused =
         inView &&
-        Math.abs(_ndc.x) < FOCUS_HALF_ANGLE_NDC &&
-        Math.abs(_ndc.y) < FOCUS_HALF_ANGLE_NDC;
+        noseInFront &&
+        Math.abs(_ndc.x - _noseNdc.x) < FOCUS_HALF_ANGLE_NDC &&
+        Math.abs(_ndc.y - _noseNdc.y) < FOCUS_HALF_ANGLE_NDC;
 
       if (focused) {
         focusedPoiId = poi.id;

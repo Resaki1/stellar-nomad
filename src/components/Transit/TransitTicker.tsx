@@ -19,7 +19,8 @@ import {
   TRANSIT_ACCEL_KMPS2,
   TRANSIT_SPOOL_TIME_S,
 } from "@/store/transit";
-import { settingsIsOpenAtom, movementAtom } from "@/store/store";
+import { settingsIsOpenAtom } from "@/store/store";
+import { lastShipInput } from "@/input/sampleShipInput";
 import { miningStateAtom } from "@/store/mining";
 import { addToastAtom } from "@/store/toast";
 import { systemConfigAtom } from "@/store/system";
@@ -289,8 +290,7 @@ export default function TransitTicker() {
       // Autopilot abort: deliberate steering input takes over. Clears autopilot
       // and posts a toast so the player knows why the target readout disappeared.
       if (buf.autopilot) {
-        const movement = store.get(movementAtom);
-        const steerInput = Math.max(Math.abs(movement.yaw), Math.abs(movement.pitch));
+        const steerInput = Math.max(Math.abs(lastShipInput.yaw), Math.abs(lastShipInput.pitch));
         if (steerInput > AUTOPILOT_ABORT_INPUT_THRESHOLD) {
           buf.autopilot = false;
           buf.desiredForward = null;

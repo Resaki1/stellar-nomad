@@ -5,12 +5,6 @@ import { DEFAULT_HEALTH } from "@/save/defaults";
 
 export type SetAtom<Args extends unknown[], Result> = (...args: Args) => Result;
 
-export type Movement = {
-  yaw: number;
-  pitch: number;
-  speed: number;
-};
-
 export type Settings = {
   invertPitch: boolean;
   toneMapping: boolean;
@@ -122,16 +116,20 @@ export const settingsIsOpenAtom = atom(false);
  */
 export const hdrCalibrationOpenAtom = atom(false);
 
-/** A loaded ship starts at rest. */
-export const movementAtom = atom<Movement>({
-  yaw: 0,
-  pitch: 0,
-  speed: 0,
-});
+/** Flight readout for the HUD, published at ~10 Hz by Spaceship (never per frame). */
+export interface HudInfo {
+  /** m/s, transit included. */
+  speed: number;
+  /** Throttle set-point 0..1, and the coupled forward speed it commands, m/s. */
+  throttle: number;
+  setPointSpeed: number;
+  /** Current speed limit (boost included), m/s. */
+  speedLimit: number;
+  decoupled: boolean;
+  boostCharge: number;
+}
 
-export const hudInfoAtom = atom({
-  speed: 0,
-});
+export const hudInfoAtom = atom<HudInfo>({ speed: 0, throttle: 0, setPointSpeed: 0, speedLimit: 0, decoupled: false, boostCharge: 1 });
 
 /** Hull HP (player save). */
 export const shipHealthAtom = savedAtom("player", "health", DEFAULT_HEALTH, { sampled: true });

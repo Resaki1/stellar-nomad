@@ -25,7 +25,7 @@
  * ── Determinism ─────────────────────────────────────────────────────────────
  * This works because the bench runner FREEZES sim time (`simRateAtom` = 0): body
  * positions come from the ephemeris at a fixed epoch, sun direction is pure
- * geometry, and `SHIP_MAX_SPEED_KMPS` is 0 so a warped ship does not drift. The
+ * geometry, and the dev speed-limit override is 0 so a warped ship does not drift. The
  * only moving parts are the temporal accumulators, which the runner waits out.
  *
  * Positions are derived, never hard-coded: `altitudeKm` above a body's LIVE

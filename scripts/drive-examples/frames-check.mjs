@@ -70,14 +70,14 @@ export default async function framesCheck(d) {
     async function fly(kmps, stopKm, outward) {
       await ev(`__bench.maxSpeed(${kmps * 1000})`);
       await ev("void (window.__trk = __test.track(4000))");
-      await d.hold("e", 1500);
+      await d.hold("w", 1500);
       for (let i = 0; i < 600; i++) {
         const r = await dist("luna");
         if (outward ? r >= stopKm : r <= stopKm) break;
         await wait(20);
       }
       await ev("__bench.maxSpeed(0)");
-      await d.hold("c", 1500);
+      await d.hold("s", 1500);
       await d.frames(5);
       await ev("__test.frames(1)");
       await ev("__test.trackStop()");

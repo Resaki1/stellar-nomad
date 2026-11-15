@@ -11,6 +11,8 @@ import {
   keybindsAtom,
 } from "@/store/keybinds";
 
+import { keyFromEvent } from "@/input/keyboard";
+
 import "./KeybindRow.scss";
 
 interface KeybindRowProps {
@@ -47,7 +49,7 @@ export default function KeybindRow({ action, label }: KeybindRowProps) {
       const slot = listeningRef.current;
       if (slot < 0) return;
 
-      const key = e.key.toLowerCase();
+      const key = keyFromEvent(e);
 
       // Escape cancels rebinding
       if (key === "escape") {

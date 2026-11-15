@@ -31,7 +31,7 @@
  *   scene:<body>:<altKm>[:look][:phaseDeg]   ad-hoc, look ∈ body|up|horizon
  *   settle[:maxFrames]          __test.settled()
  *   frames:N | wait:MS
- *   hold:<key>:<ms>             trusted CDP key hold (W/S/A/D pitch/yaw, e throttle …)
+ *   hold:<key>:<ms>             trusted CDP key hold (W/S throttle, A/D strafe, arrows pitch/yaw …)
  *   press:<key>                 tap (Enter, Escape, Tab, m, t, …)
  *   click:<x>:<y>               mouse click at CSS px
  *   hud:on | hud:off
@@ -313,7 +313,7 @@ if (opt.title || !hasHarness || !perfMatches || !queryMatches) {
 // ── keys ────────────────────────────────────────────────────────────────────
 const SPECIAL = {
   Enter: [13, "Enter"], Escape: [27, "Escape"], Tab: [9, "Tab"], Shift: [16, "ShiftLeft"],
-  Control: [17, "ControlLeft"], " ": [32, "Space"], Space: [32, "Space"],
+  Control: [17, "ControlLeft"], Alt: [18, "AltLeft"], " ": [32, "Space"], Space: [32, "Space"],
   ArrowUp: [38, "ArrowUp"], ArrowDown: [40, "ArrowDown"], ArrowLeft: [37, "ArrowLeft"], ArrowRight: [39, "ArrowRight"],
 };
 function keyParams(key) {
