@@ -21,6 +21,7 @@
  *   __bench.lastJson               — full result as JSON (copy this to share)
  *
  *   __test.*                       — scripted verification (docs/AUTOMATED_TESTING.md)
+ *   __phys.stats()                 — near-field physics; __phys.dev.add() synthetic colliders
  */
 
 import { useEffect } from "react";
@@ -33,6 +34,7 @@ import { ITEMS, RESEARCH_NODES } from "@/data/content";
 import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
 import { getLumHarness, type LumHarness } from "./space/perf/lumHarness";
 import { createTestHarness, type TestHarness } from "./TestHarness/testHarness";
+import { createPhysicsHarness, type PhysicsHarness } from "./TestHarness/physicsHarness";
 
 export default function DevTools() {
   const store = useStore();
@@ -115,17 +117,21 @@ export default function DevTools() {
     const lum = getLumHarness(store);
     // Scripted verification — docs/AUTOMATED_TESTING.md, scripts/drive.mjs.
     const test = createTestHarness(store);
+    // Near-field physics (docs/PHYSICS_PLAN.md §7.4).
+    const phys = createPhysicsHarness(store);
 
     type DevWindow = Window & {
       __dev?: typeof devApi;
       __bench?: BenchRunner;
       __lum?: LumHarness;
       __test?: TestHarness;
+      __phys?: PhysicsHarness;
     };
     (window as DevWindow).__dev = devApi;
     (window as DevWindow).__bench = bench;
     (window as DevWindow).__lum = lum;
     (window as DevWindow).__test = test;
+    (window as DevWindow).__phys = phys;
     console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
     console.log("[Dev] Perf harness via __bench. Try __bench.list() or await __bench.sweep()");
     console.log("[Dev] Photometry harness via __lum. Try __lum.units() or await __lum.probe()");
@@ -135,6 +141,7 @@ export default function DevTools() {
       delete (window as DevWindow).__bench;
       delete (window as DevWindow).__lum;
       delete (window as DevWindow).__test;
+      delete (window as DevWindow).__phys;
     };
   }, [store]);
 

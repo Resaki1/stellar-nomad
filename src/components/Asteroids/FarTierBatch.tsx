@@ -39,6 +39,8 @@ import {
   createFarCullComputeNode,
   createFarCullUniforms,
   extractFrustumPlanes,
+  registerBatchDebug,
+  setOriginUniforms,
 } from "./asteroidCullCompute";
 
 /** Max visible far-tier instances per model in the output buffer. */
@@ -50,6 +52,8 @@ const _sunDir = new THREE.Vector3();
 // ─── Per-model batch ────────────────────────────────────────────────
 
 type FarModelBatchProps = {
+  debugKey: string;
+  anchorKm: readonly number[];
   allocator: GpuSlotAllocator;
   nearRadiusKm: number;
   farRadiusKm: number;
@@ -65,6 +69,8 @@ type FarModelBatchProps = {
  * the surviving billboards. Zero CPU per-frame instance management.
  */
 const FarModelBatch = memo(function FarModelBatch({
+  debugKey,
+  anchorKm,
   allocator,
   nearRadiusKm,
   farRadiusKm,
@@ -106,11 +112,11 @@ const FarModelBatch = memo(function FarModelBatch({
     const aCenter = aFarData.xyz;
     const aScale = aFarData.w.mul(float(0.4)); // visual scale factor
 
-    // Distance from field origin for fragment fade (must be a varying).
-    const vCenterDist = length(aCenter).toVarying("v_centerDist");
+    const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
+    // Fade on camera distance, the same band the cull uses (fadeEnd = farRadius).
+    const vCenterDist = length(cameraPosition.sub(worldCenter.xyz)).toVarying("v_centerDist");
 
     // World-space face direction (asteroid → camera) for lighting.
-    const worldCenter = modelWorldMatrix.mul(vec4(aCenter, 1.0));
     const vFaceDir = normalize(cameraPosition.sub(worldCenter.xyz)).toVarying("v_faceDir");
 
     // ── Vertex: camera-facing billboard ──────────────────────────
@@ -184,6 +190,12 @@ const FarModelBatch = memo(function FarModelBatch({
     uFadeEnd.value = fadeEnd;
   }, [farRadiusKm, fadeOutKm, uFadeStart, uFadeEnd]);
 
+  useEffect(
+    () => registerBatchDebug(debugKey, "far", mesh, gl as unknown as WebGPURenderer, indirectAttr, outputAttr,
+      { ...uniforms, bandM: () => [uniforms.uNearRadiusM.value, uniforms.uFarRadiusM.value] }),
+    [debugKey, mesh, gl, indirectAttr, outputAttr, uniforms],
+  );
+
   useFrame((state) => {
     mesh.updateWorldMatrix(true, false);
 
@@ -204,6 +216,7 @@ const FarModelBatch = memo(function FarModelBatch({
     );
     uniforms.uNearRadiusM.value = nearRadiusKm * 1000;
     uniforms.uFarRadiusM.value = farRadiusKm * 1000;
+    setOriginUniforms(worldOrigin.worldOriginKm, anchorKm, uniforms);
 
     extractFrustumPlanes(state.camera, mesh.matrixWorld, uniforms.uFrustum);
 
@@ -225,6 +238,8 @@ FarModelBatch.displayName = "FarModelBatch";
 // ─── FarTierBatch ───────────────────────────────────────────────────
 
 type FarTierBatchProps = {
+  fieldId: string;
+  anchorKm: readonly number[];
   nearRadiusKm: number;
   farRadiusKm: number;
   fadeOutKm: number;
@@ -238,6 +253,8 @@ type FarTierBatchProps = {
  * 3D meshes, with a band-pass distance filter [nearRadius, farRadius).
  */
 const FarTierBatch = memo(function FarTierBatch({
+  fieldId,
+  anchorKm,
   nearRadiusKm,
   farRadiusKm,
   fadeOutKm,
@@ -260,6 +277,8 @@ const FarTierBatch = memo(function FarTierBatch({
       {entries.map(({ id, allocator }) => (
         <FarModelBatch
           key={id}
+          debugKey={`far:${fieldId}:${id}`}
+          anchorKm={anchorKm}
           allocator={allocator}
           nearRadiusKm={nearRadiusKm}
           farRadiusKm={farRadiusKm}

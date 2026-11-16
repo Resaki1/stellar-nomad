@@ -67,6 +67,9 @@ export const PASS = {
 
 export type PassLabel = (typeof PASS)[keyof typeof PASS];
 
+/** CPU-side passes, timed with performance.now() per rendered frame (not GPU timestamps). */
+export const CPU_PASS_PHYSICS = "physics.step";
+
 /** Display order for the HUD and the benchmark report. */
 export const PASS_ORDER: readonly PassLabel[] = [
   PASS.atmoLUT,
@@ -220,6 +223,8 @@ export type PerfSnapshot = {
   gpuTotalMs: SeriesStats;
   /** Per-pass GPU ms, in `PASS_ORDER`, omitting passes that never ran. */
   passes: Array<{ label: string; gpu: SeriesStats }>;
+  /** Per-frame CPU ms of sim passes recorded with `recordCpuPass` (e.g. `physics.step`). */
+  cpuPasses: Array<{ label: string; cpu: SeriesStats }>;
   /**
    * Last frame's renderer counters (valid now that info.reset() runs).
    *
@@ -283,6 +288,7 @@ class PerfProfiler {
   readonly gpuTotalMs = new Series();
 
   private readonly passes = new Map<string, Series>();
+  private readonly cpuPasses = new Map<string, Series>();
 
   counters = {
     drawCalls: 0,
@@ -332,6 +338,18 @@ class PerfProfiler {
     this.cpuRenderMs.reset();
     this.gpuTotalMs.reset();
     this.passes.forEach((s) => s.reset());
+    this.cpuPasses.forEach((s) => s.reset());
+  }
+
+  /** One sample per rendered frame for a CPU pass. */
+  recordCpuPass(label: string, ms: number): void {
+    if (!this.enabled) return;
+    let s = this.cpuPasses.get(label);
+    if (s === undefined) {
+      s = new Series();
+      this.cpuPasses.set(label, s);
+    }
+    s.push(ms);
   }
 
   // ── CPU hooks ─────────────────────────────────────────────────────────────
@@ -419,6 +437,7 @@ class PerfProfiler {
       cpuRenderMs: this.cpuRenderMs.stats(),
       gpuTotalMs: this.gpuTotalMs.stats(),
       passes,
+      cpuPasses: Array.from(this.cpuPasses, ([label, s]) => ({ label, cpu: s.stats() })),
       counters: { ...this.counters },
       gates: { ...this.gates },
       gpuAvailable: this.gpuTimingAvailable,

@@ -10,7 +10,10 @@ import {
   createMidCullComputeNode,
   createMidCullUniforms,
   extractFrustumPlanes,
+  registerBatchDebug,
+  setOriginUniforms,
 } from "./asteroidCullCompute";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { NearTierAllocators } from "./NearTierBatch";
 
 /**
@@ -23,6 +26,8 @@ export const MAX_MID_INSTANCES = 4096 * 32; // 131072
 // ─── Per-model batch ────────────────────────────────────────────────
 
 type MidModelBatchProps = {
+  fieldId: string;
+  anchorKm: readonly number[];
   modelId: string;
   /** LOD1 (simplified) asset for this model. */
   asset: AsteroidModelAsset;
@@ -42,12 +47,16 @@ type MidModelBatchProps = {
  * from the LOD1 asset.
  */
 const MidModelBatch = memo(function MidModelBatch({
+  fieldId,
+  anchorKm,
+  modelId,
   asset,
   allocator,
   nearRadiusKm,
   midRadiusKm,
 }: MidModelBatchProps) {
   const gl = useThree((state) => state.gl);
+  const worldOrigin = useWorldOrigin();
 
   const baseQuat = useMemo(() => {
     return new THREE.Quaternion().setFromEuler(
@@ -91,6 +100,12 @@ const MidModelBatch = memo(function MidModelBatch({
     uniforms.uBaseScale.value = asset.baseScale;
   }, [uniforms, baseQuat, asset.baseRadiusM, asset.baseScale]);
 
+  useEffect(
+    () => registerBatchDebug(`mid:${fieldId}:${modelId}`, "mid", mesh, gl as unknown as WebGPURenderer, indirectAttr, outputAttr,
+      { ...uniforms, bandM: () => [uniforms.uMinRadiusM.value, uniforms.uMaxRadiusM.value] }),
+    [fieldId, modelId, mesh, gl, indirectAttr, outputAttr, uniforms],
+  );
+
   useFrame((state) => {
     mesh.updateWorldMatrix(true, false);
 
@@ -110,6 +125,7 @@ const MidModelBatch = memo(function MidModelBatch({
     );
     uniforms.uMinRadiusM.value = nearRadiusKm * 1000;
     uniforms.uMaxRadiusM.value = midRadiusKm * 1000;
+    setOriginUniforms(worldOrigin.worldOriginKm, anchorKm, uniforms);
 
     extractFrustumPlanes(state.camera, mesh.matrixWorld, uniforms.uFrustum);
 
@@ -125,6 +141,8 @@ MidModelBatch.displayName = "MidModelBatch";
 // ─── MidTierBatch ───────────────────────────────────────────────────
 
 type MidTierBatchProps = {
+  fieldId: string;
+  anchorKm: readonly number[];
   nearRadiusKm: number;
   midRadiusKm: number;
   /** LOD1 model assets (simplified geometry, no textures). */
@@ -138,6 +156,8 @@ type MidTierBatchProps = {
  * with simplified LOD1 geometry. Band-pass filter: nearRadius ≤ dist < midRadius.
  */
 const MidTierBatch = memo(function MidTierBatch({
+  fieldId,
+  anchorKm,
   nearRadiusKm,
   midRadiusKm,
   modelRegistry,
@@ -159,6 +179,8 @@ const MidTierBatch = memo(function MidTierBatch({
       {modelEntries.map(({ id, asset, allocator }) => (
         <MidModelBatch
           key={id}
+          fieldId={fieldId}
+          anchorKm={anchorKm}
           modelId={id}
           asset={asset}
           allocator={allocator}

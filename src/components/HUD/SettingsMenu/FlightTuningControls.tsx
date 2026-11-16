@@ -39,7 +39,7 @@ function label(key: string): string {
   return key.replace(/([A-Z])/g, " $1").toLowerCase();
 }
 
-function Rows<T extends object>({ title, defaults, live, onSet, version }: {
+export function Rows<T extends object>({ title, defaults, live, onSet, version }: {
   title: string;
   defaults: Readonly<T>;
   live: Readonly<T>;
@@ -130,7 +130,7 @@ export default function FlightTuningControls() {
         <textarea className="flight-tuning__json" readOnly value={tuningJson()} onFocus={(e) => e.target.select()} />
       )}
       <div className="flight-tuning__groups">
-        <Rows title="Physics" defaults={DEFAULT_FLIGHT_TUNING} live={flight} onSet={onFlight} version={version} />
+        <Rows title="Flight" defaults={DEFAULT_FLIGHT_TUNING} live={flight} onSet={onFlight} version={version} />
         <Rows title="Camera" defaults={DEFAULT_CAMERA_TUNING} live={camera} onSet={onCamera} version={version} />
       </div>
     </div>

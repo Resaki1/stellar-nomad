@@ -111,6 +111,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 
 **Regression gates for the sim core (headless, each prints pass/fail JSON)**
 - `FLIGHT_PARTS=sim,live,mouse,camera,reticle pnpm drive -- --keep run:scripts/drive-examples/flight-trace.mjs` — flight model (deterministic sim gates + live input, camera, reticle); design in `docs/FLIGHT_MODEL_PLAN.md`
+- `PHYS_PARTS=sim,damage,hull,asteroids pnpm drive -- --keep run:scripts/drive-examples/physics-check.mjs` — collisions (deterministic contact gates + live asteroid hits); design in `docs/PHYSICS_PLAN.md` §7
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `SHELL_PARTS=title,continue pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs` — title + loading gate
@@ -141,6 +142,11 @@ at load, `pnpm drive -- --stop` (a kept Chrome can wedge after the machine sleep
   constants in `src/components/Camera/cameraTuning.ts`; both are editable live in
   Settings → Dev. The camera lags the ship, so **screen centre is not the nose**: target
   with the ship's forward ray (`src/components/Camera/shipView.ts`), never the camera's.
+- **Only `src/sim/physics/rapierBackend.ts` imports Rapier.** `stepShip` decides how the
+  ship flies; the near field (`nearField.ts`) only resolves contacts after it, in metres
+  relative to a physics origin in the ship's frame. Collision constants live in
+  `src/sim/physics/physicsTuning.ts` (Settings → Dev → Physics). Run gate scripts on a
+  freshly reloaded page; state left by another script has produced false failures.
 - **`src/sim/simPause.ts`** is the one pause signal (loading overlay). New tickers must
   respect it.
 

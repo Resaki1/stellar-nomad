@@ -17,6 +17,7 @@
  *   await __test.sampleOffsets("luna", 120)  per-frame absolute ship→body offset spread
  *   __test.transitTo("luna")                 target a body and engage the autopilot
  *   __test.flight.simulate({ segments })     scripted stepShip run, no rendering (M1 gates)
+ *   await __test.physics.simulate({ segments, rocks })  same plus a private physics world (M2)
  *   __test.input.mouse(dx, dy)               inject a pointer-lock mouse delta (M1b gates)
  *
  * Built on the bench harness's poses (`resolveScenario`) and its readiness signals
@@ -62,6 +63,7 @@ import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { poiBuffer } from "@/store/poi";
 import { simulateFlight, type FlightScript, type FlightSimResult } from "@/sim/ship/flightSim";
+import { simulatePhysics, type PhysicsScript, type PhysicsSimResult } from "@/sim/physics/physicsSim";
 import { getFlightTuning, resetFlightTuning, setFlightTuning, speedLimitKmps, type FlightTuning } from "@/sim/ship/flightTuning";
 import { playerInput } from "@/input/playerInput";
 import { addMouseDelta, mouseConfig, mouseState, resetMouseSteering } from "@/input/mouse";
@@ -690,6 +692,11 @@ export function createTestHarness(store: Store) {
       },
       speedLimitMps: (): number => speedLimitKmps(getFlightTuning()) * 1000,
       input: () => ({ ...playerInput, held: { ...playerInput.held } }),
+    },
+
+    /** Private near-field world + stepShip, no rendering (docs/PHYSICS_PLAN.md §7.4). */
+    physics: {
+      simulate: (script: PhysicsScript): Promise<PhysicsSimResult> => simulatePhysics(script),
     },
 
     /** M1b mouse steering and camera rig. Injected deltas go through the same path as a pointer-lock mousemove. */

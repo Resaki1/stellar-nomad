@@ -6,10 +6,14 @@ import { useFrame, useThree } from "@react-three/fiber";
 import type { WebGPURenderer } from "three/webgpu";
 import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "./GpuSlotAllocator";
+import { renderDebug } from "@/sim/physics/asteroidColliders";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 import {
   createCullComputeNode,
   createCullUniforms,
   extractFrustumPlanes,
+  registerBatchDebug,
+  setOriginUniforms,
 } from "./asteroidCullCompute";
 
 /**
@@ -22,6 +26,9 @@ export const MAX_NEAR_INSTANCES = 4096 * 32;
 // ─── Per-model batch ────────────────────────────────────────────────
 
 type ModelBatchProps = {
+  fieldId: string;
+  /** Field anchor, absolute km (mutated in place by the ephemeris). */
+  anchorKm: readonly number[];
   modelId: string;
   asset: AsteroidModelAsset;
   allocator: GpuSlotAllocator;
@@ -40,11 +47,15 @@ type ModelBatchProps = {
  * never enter the vertex shader. Zero wasted vertex processing.
  */
 const ModelBatch = memo(function ModelBatch({
+  fieldId,
+  anchorKm,
+  modelId,
   asset,
   allocator,
   nearRadiusKm,
 }: ModelBatchProps) {
   const gl = useThree((state) => state.gl);
+  const worldOrigin = useWorldOrigin();
 
   // Pre-compute base rotation quaternion for the asset (stable).
   const baseQuat = useMemo(() => {
@@ -92,10 +103,20 @@ const ModelBatch = memo(function ModelBatch({
     uniforms.uBaseQuat.value.set(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
     uniforms.uInvBaseRadius.value = 1 / asset.baseRadiusM;
     uniforms.uBaseScale.value = asset.baseScale;
-  }, [uniforms, baseQuat, asset.baseRadiusM, asset.baseScale]);
+    const key = `${fieldId}:${modelId}`;
+    renderDebug.nearUniforms.set(key, uniforms);
+    return () => {
+      if (renderDebug.nearUniforms.get(key) === uniforms) renderDebug.nearUniforms.delete(key);
+    };
+  }, [uniforms, baseQuat, asset.baseRadiusM, asset.baseScale, fieldId, modelId]);
+
+  useEffect(
+    () => registerBatchDebug(`near:${fieldId}:${modelId}`, "near", mesh, gl as unknown as WebGPURenderer, indirectAttr, outputAttr,
+      { ...uniforms, bandM: () => [0, uniforms.uNearRadiusM.value] }),
+    [fieldId, modelId, mesh, gl, indirectAttr, outputAttr, uniforms],
+  );
 
   useFrame((state) => {
-    // Ensure matrixWorld is up to date (parent SimGroup sets position in useFrame).
     mesh.updateWorldMatrix(true, false);
 
     // Skip compute if no instances are allocated.
@@ -115,8 +136,8 @@ const ModelBatch = memo(function ModelBatch({
       camWorld[14] - mw[14],
     );
     uniforms.uNearRadiusM.value = nearRadiusKm * 1000;
+    setOriginUniforms(worldOrigin.worldOriginKm, anchorKm, uniforms);
 
-    // Extract frustum planes in field-local space.
     extractFrustumPlanes(state.camera, mesh.matrixWorld, uniforms.uFrustum);
 
     // Dispatch compute: reset atomic counter on GPU, then cull + compact.
@@ -134,6 +155,8 @@ ModelBatch.displayName = "ModelBatch";
 export type NearTierAllocators = Map<string, GpuSlotAllocator>;
 
 type NearTierBatchProps = {
+  fieldId: string;
+  anchorKm: readonly number[];
   nearRadiusKm: number;
   modelRegistry: Map<string, AsteroidModelAsset>;
   allocatorsRef: { readonly current: NearTierAllocators };
@@ -151,6 +174,8 @@ type NearTierBatchProps = {
  * CPU per-frame cost: ~120 bytes of uniforms + 20 bytes indirect reset.
  */
 const NearTierBatch = memo(function NearTierBatch({
+  fieldId,
+  anchorKm,
   nearRadiusKm,
   modelRegistry,
   allocatorsRef,
@@ -171,6 +196,8 @@ const NearTierBatch = memo(function NearTierBatch({
       {modelEntries.map(({ id, asset, allocator }) => (
         <ModelBatch
           key={id}
+          fieldId={fieldId}
+          anchorKm={anchorKm}
           modelId={id}
           asset={asset}
           allocator={allocator}

@@ -150,13 +150,18 @@ export default function GameAudioTriggers() {
     for (const ev of vfxEvents) {
       if (playedVfxRef.current.has(ev.id)) continue;
       playedVfxRef.current.add(ev.id);
-      if (ev.type !== "collision") continue;
+      if (ev.type !== "collision" || ev.silent) continue;
       // Larger rocks use the heavier palette; both events jitter pitch and
       // gain per play, so repeats do not sound identical (§6.4).
-      const sizeDb = Math.min(6, Math.max(-6, Math.log10(Math.max(1, ev.radiusM)) * 6 - 6));
-      playAudio(ev.radiusM >= 64 ? "world.impact.large" : "world.impact.small", {
+      // Ship-vs-rock contacts carry their Δv: sound scales with the same number as damage and shake.
+      const dv = ev.impactDvMps;
+      const large = dv !== undefined ? dv >= 40 : ev.radiusM >= 64;
+      const db = dv !== undefined
+        ? Math.min(3, Math.max(-12, 20 * Math.log10(Math.max(1, dv) / 40)))
+        : Math.min(6, Math.max(-6, Math.log10(Math.max(1, ev.radiusM)) * 6 - 6)) - 3;
+      playAudio(large ? "world.impact.large" : "world.impact.small", {
         positionM: { x: ev.position[0], y: ev.position[1], z: ev.position[2] },
-        gainDb: sizeDb - 3,
+        gainDb: db,
       });
     }
     // Bounded: `vfxEventsAtom` is pruned by its consumers, so drop ids that are

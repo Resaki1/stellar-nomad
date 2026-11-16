@@ -13,6 +13,9 @@ importers:
 
   .:
     dependencies:
+      '@dimforge/rapier3d-simd-compat':
+        specifier: 0.21.0
+        version: 0.21.0
       '@react-three/drei':
         specifier: ^10.7.7
         version: 10.7.7(@react-three/fiber@9.5.0(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(three@0.183.2(patch_hash=paynjbd2jtfngj74jqyy6z7svq)))(@types/react@19.2.7)(@types/three@0.183.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(three@0.183.2(patch_hash=paynjbd2jtfngj74jqyy6z7svq))
@@ -153,6 +156,9 @@ packages:
 
   '@dimforge/rapier3d-compat@0.12.0':
     resolution: {integrity: sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow==}
+
+  '@dimforge/rapier3d-simd-compat@0.21.0':
+    resolution: {integrity: sha512-o30irwGVP/Q8CYxZBBtftMqhq/kUY2nGv4ml5xNkblpDD5IViybzxo3XtuNnq1C5RJgeGagLgBFRJBMrt2ydLw==}
 
   '@emnapi/core@1.8.1':
     resolution: {integrity: sha512-AvT9QFpxK0Zd8J0jopedNm+w/2fIzvtPKPjqyw9jwvBaReTTqPBk9Hixaz7KbjimP+QNz605/XnjFcDAL2pqBg==}
@@ -2304,6 +2310,8 @@ snapshots:
       '@babel/helper-validator-identifier': 7.29.7
 
   '@dimforge/rapier3d-compat@0.12.0': {}
+
+  '@dimforge/rapier3d-simd-compat@0.21.0': {}
 
   '@emnapi/core@1.8.1':
     dependencies:
