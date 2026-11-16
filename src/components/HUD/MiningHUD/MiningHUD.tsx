@@ -101,8 +101,8 @@ export default function MiningHUD() {
   const showOverheatWarning =
     showButton && !miningState.isMining && miningState.isOverheated && !cargoFull;
 
-  // Show heat bar whenever there is heat, or we're focused
-  const showHeatBar = miningState.laserHeat > 0 || miningState.isMining;
+  // laserHeat is the ship's one thermal store: show it here only around mining (the dashboard always shows it).
+  const showHeatBar = miningState.isMining || miningState.isOverheated || (miningState.laserHeat > 0 && miningState.targetedAsteroid !== null);
 
   const handleMineClick = () => {
     if (miningState.isMining) cancelMining();

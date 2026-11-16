@@ -35,8 +35,11 @@ import {
   targetedPOIAtom,
   transitDriveOwnedAtom,
   transitDriveBuffer,
-  calcTransitTimeS,
+  transitPreviewAtom,
 } from "@/store/transit";
+
+const previewEta = (p: { targetId: string; ok: boolean; etaS: number } | null, id: string): number | null =>
+  p && p.ok && p.targetId === id ? p.etaS : null;
 
 // Reusable temp vectors — zero allocation in the hot path.
 const _pos = new THREE.Vector3();
@@ -273,6 +276,7 @@ const POIProjector = memo(function POIProjector() {
     let focusedPoiId: string | null = null;
     let focusedPoiDef: POIDef | null = null;
     let focusedDistKm = 0;
+    let focusedNoseOff = Infinity;
 
     // Gaze is measured at the reticle (ship nose), which the lagging chase camera moves off centre.
     _noseNdc.copy(shipView.forward).multiplyScalar(camera.far * 0.5).add(shipView.position).project(camera);
@@ -327,7 +331,10 @@ const POIProjector = memo(function POIProjector() {
         Math.abs(_ndc.x - _noseNdc.x) < FOCUS_HALF_ANGLE_NDC &&
         Math.abs(_ndc.y - _noseNdc.y) < FOCUS_HALF_ANGLE_NDC;
 
-      if (focused) {
+      // Nearest the nose wins: in an eclipse the Moon and the Sun share the focus box.
+      const noseOff = focused ? Math.hypot(_ndc.x - _noseNdc.x, _ndc.y - _noseNdc.y) : Infinity;
+      if (focused && noseOff < focusedNoseOff) {
+        focusedNoseOff = noseOff;
         focusedPoiId = poi.id;
         focusedPoiDef = poi;
         focusedDistKm = distanceKm;
@@ -415,17 +422,11 @@ const POIProjector = memo(function POIProjector() {
         ? Math.min(gazeTimeRef.current / POI_TARGET_GAZE_TIME_S, 1)
         : 0;
 
-      // Update ETA on targeted POI.
+      // ETA on the targeted POI: the transit predictor's (fuel-limited legs and clearance routes included).
       const targeted = store.get(targetedPOIAtom);
       if (targeted) {
-        resolveFramePositionKm(targeted.positionKm, targeted.frameId, _poiKm);
-        const tx = _poiKm.x, ty = _poiKm.y, tz = _poiKm.z;
-        const tdx = tx - shipKm.x;
-        const tdy = ty - shipKm.y;
-        const tdz = tz - shipKm.z;
-        const targetDistKm = Math.sqrt(tdx * tdx + tdy * tdy + tdz * tdz);
         poiBuffer.targetedId = targeted.id;
-        poiBuffer.targetedEtaS = calcTransitTimeS(targetDistKm);
+        poiBuffer.targetedEtaS = previewEta(store.get(transitPreviewAtom), targeted.id);
       } else {
         poiBuffer.targetedId = null;
         poiBuffer.targetedEtaS = null;
@@ -439,14 +440,8 @@ const POIProjector = memo(function POIProjector() {
       // Keep the existing target/ETA visible in the HUD.
       const targeted = store.get(targetedPOIAtom);
       if (targeted) {
-        resolveFramePositionKm(targeted.positionKm, targeted.frameId, _poiKm);
-        const tx = _poiKm.x, ty = _poiKm.y, tz = _poiKm.z;
-        const tdx = tx - shipKm.x;
-        const tdy = ty - shipKm.y;
-        const tdz = tz - shipKm.z;
-        const targetDistKm = Math.sqrt(tdx * tdx + tdy * tdy + tdz * tdz);
         poiBuffer.targetedId = targeted.id;
-        poiBuffer.targetedEtaS = calcTransitTimeS(targetDistKm);
+        poiBuffer.targetedEtaS = previewEta(store.get(transitPreviewAtom), targeted.id);
       } else {
         // Autopilot was aborted mid-transit — clear the diamond highlight.
         poiBuffer.targetedId = null;

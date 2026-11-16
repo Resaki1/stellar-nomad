@@ -10,6 +10,7 @@ import {
   arePrerequisitesMet,
   type ResearchNodeDef,
 } from "@/data/content";
+import { unlockedItemIds } from "@/sim/ship/loadout";
 
 // ---------------------------------------------------------------------------
 // Persisted state
@@ -17,7 +18,11 @@ import {
 
 export type { ResearchState } from "@/save/types";
 
+/** Per-player assay samples and active timer (PR 1). */
 export const researchAtom = savedAtom("player", "research", defaultResearch());
+
+/** Read-only mirror of the WORLD's completed research; the authority is its only writer. */
+export const sharedResearchMirrorAtom = atom<readonly string[]>([]);
 
 // ---------------------------------------------------------------------------
 // Derived: assay samples count
@@ -29,9 +34,7 @@ export const assaySamplesAtom = atom((get) => get(researchAtom).assaySamples);
 // Derived: set of completed node IDs (for quick lookup)
 // ---------------------------------------------------------------------------
 
-export const completedNodeSetAtom = atom((get) => {
-  return new Set(get(researchAtom).completedNodes);
-});
+export const completedNodeSetAtom = atom((get): ReadonlySet<string> => new Set(get(sharedResearchMirrorAtom)));
 
 // ---------------------------------------------------------------------------
 // Derived: visible (available) research nodes
@@ -83,19 +86,7 @@ export const activeResearchNodeAtom = atom((get) => {
 // Derived: unlocked item IDs (from completed research)
 // ---------------------------------------------------------------------------
 
-export const unlockedItemIdsAtom = atom((get): Set<string> => {
-  const completed = get(completedNodeSetAtom);
-  const set = new Set<string>();
-
-  for (const node of RESEARCH_NODES) {
-    if (!completed.has(node.id)) continue;
-    if (node.unlocks.items) {
-      for (const itemId of node.unlocks.items) set.add(itemId);
-    }
-  }
-
-  return set;
-});
+export const unlockedItemIdsAtom = atom((get): Set<string> => unlockedItemIds(get(completedNodeSetAtom)));
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -111,66 +102,5 @@ export const addAssaySamplesAtom = atom(
       ...state,
       assaySamples: state.assaySamples + Math.floor(amount),
     });
-  },
-);
-
-/** Start a research node. Deducts assay samples immediately. */
-export const startResearchAtom = atom(
-  null,
-  (get, set, nodeId: string): boolean => {
-    const state = get(researchAtom);
-    if (state.activeResearch) return false; // already researching
-
-    const node = getResearchNode(nodeId);
-    if (!node) return false;
-
-    // Check prerequisites (including special rules like milestone nodes)
-    const completed = new Set(state.completedNodes);
-    if (!arePrerequisitesMet(node, completed)) return false;
-
-    // Check cost
-    if (state.assaySamples < node.costs.assaySamples) return false;
-
-    set(researchAtom, {
-      ...state,
-      assaySamples: state.assaySamples - node.costs.assaySamples,
-      activeResearch: { nodeId, elapsedS: 0 },
-    });
-    return true;
-  },
-);
-
-/**
- * Advance the active research timer by `deltaS` seconds.
- * Returns the completed node ID if research just finished, else null.
- */
-export const tickResearchAtom = atom(
-  null,
-  (get, set, deltaS: number): string | null => {
-    const state = get(researchAtom);
-    if (!state.activeResearch || deltaS <= 0) return null;
-
-    const node = getResearchNode(state.activeResearch.nodeId);
-    if (!node) return null;
-
-    const newElapsed = state.activeResearch.elapsedS + deltaS;
-
-    if (newElapsed >= node.durationSeconds) {
-      // Research complete
-      set(researchAtom, {
-        ...state,
-        completedNodes: [...state.completedNodes, node.id],
-        activeResearch: null,
-      });
-      // Signal for comms triggers
-      set(lastCompletedResearchIdAtom, node.id);
-      return node.id;
-    }
-
-    set(researchAtom, {
-      ...state,
-      activeResearch: { ...state.activeResearch, elapsedS: newElapsed },
-    });
-    return null;
   },
 );

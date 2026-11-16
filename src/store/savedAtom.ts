@@ -79,6 +79,17 @@ export function savedAtom(
   return make(`world:${k}`, () => readWorldSlice(k), (v) => writeWorldSlice(k, v as WorldState[typeof k]), defaultValue);
 }
 
+/**
+ * Re-read player slices a committed operation replaced. Runs in the same task as the commit,
+ * so neither a write-through nor a flush-time sample can put a pre-operation value back.
+ */
+export function refreshPlayerAtoms(store: Store, keys: readonly (keyof PlayerState)[]): void {
+  for (const k of keys) {
+    const e = registry.get(`player:${k}`);
+    if (e) store.set(e.base, e.read() ?? e.fallback);
+  }
+}
+
 /** Set every registered saved atom from the active save (defaults for missing slices). */
 let unregisterSampler: (() => void) | null = null;
 

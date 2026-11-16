@@ -1,5 +1,5 @@
 /**
- * Save v1 exit gates (ROADMAP M0.3) for scripts/drive.mjs. Needs --no-isolate (gameplay and
+ * Save exit gates (M0.3; schema-2 expectations since M3.1) (ROADMAP M0.3) for scripts/drive.mjs. Needs --no-isolate (gameplay and
  * saving live); split parts to stay under a couple of minutes per run:
  *
  *   SAVE_PARTS=fresh,legacy pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs
@@ -107,7 +107,9 @@ export default async function saveCheck(d) {
     const worldsAfterImport = (await ev(IDB)).meta.map((m) => m.name);
     const checks = {
       cargo: eq(p.cargo, legacy.cargo),
-      research: eq(p.research, legacy["research-v1"]),
+      // Schema 2: completions are world-owned; assay samples and the timer stay with the player.
+      research: eq(p.research, { assaySamples: 13, activeResearch: null }) && eq(data.world.research.completedNodes, ["r0_microlab_boot"]),
+      tanksFull: p.propellant.ordinaryKg > 0 && p.propellant.protectedKg > 0 && p.processing === null,
       modulesOwned: eq(p.modules.ownedModules, ["module_cargo_rack_mk1"]),
       modulesAutoEquipped: p.modules.equippedModules.cargo === "module_cargo_rack_mk1",
       consumables: eq(p.modules.consumables, { consumable_hull_patch_kit: 2 }),
@@ -115,7 +117,7 @@ export default async function saveCheck(d) {
       shipPose: p.ship && p.ship.frameId === frameId &&
         close(p.ship.positionKm, legacy["ship-state-v1"].positionKm, 1e-9) &&
         close(p.ship.quaternion, legacy["ship-state-v1"].quaternion, 1e-9),
-      wreck: eq(data.world.wrecks, legacy["death-v1"].wrecks),
+      wreck: eq(data.world.wrecks, legacy["death-v1"].wrecks.map(({ id, frameId, positionKm, items, createdAt }) => ({ id, frameId, positionKm, items, fuelKg: 0, consumables: {}, createdAt }))),
       deltas: eq(data.world.asteroidDeltas, { legacy_field: { unchunked: [111, 222, 333] } }),
       minedLifetime: p.minedLifetime === 4,
       comms: eq(p.commsPlayed, legacy["comms-played-v1"]),
@@ -152,7 +154,7 @@ export default async function saveCheck(d) {
     const fp = fresh.players[await pid()];
     const defaults = {
       cargoEmpty: Object.keys(fp.cargo.items).length === 0,
-      researchEmpty: fp.research.completedNodes.length === 0,
+      researchEmpty: fresh.world.research.completedNodes.length === 0 && fresh.world.receipts.length === 0,
       deltasEmpty: Object.keys(fresh.world.asteroidDeltas).length === 0,
       epochDefault: fresh.world.simEpochMs !== epoch,
     };

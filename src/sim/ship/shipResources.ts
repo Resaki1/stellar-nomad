@@ -1,0 +1,11 @@
+/**
+ * Durable ship-resource tuning defaults (M3.0). Stored now so PR 1 needs one migration;
+ * the gameplay that consumes them (M3.2) owns the values.
+ */
+
+/** Ordinary propellant tank, kg. New and migrated saves start full. */
+export const PROPELLANT_TANK_KG = 600;
+/** Protected recovery allowance, kg: never salvaged, transferred or dropped at a wreck. */
+export const RECOVERY_ALLOWANCE_KG = 60;
+/** Sanitiser bound for any stored fuel amount, kg. */
+export const MAX_STORED_FUEL_KG = 1e6;

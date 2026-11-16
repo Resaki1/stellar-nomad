@@ -12,11 +12,11 @@ import { audioShipBuffer } from "@/audio/shipBuffer";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, benchModeAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom } from "@/store/death";
-import { cargoAtom } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
-import { transitDriveBuffer, TRANSIT_STEER_MULT } from "@/store/transit";
+import { isTransitBurning, transitDriveBuffer, transitInputs, updateTransitInputs, TRANSIT_STEER_MULT } from "@/store/transit";
+import { resetTransit, stepTransit, transitReserveKg } from "@/sim/ship/transitDrive";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { collectShipPose, loadShipState } from "@/sim/shipPersistence";
+import { collectShipPose, holdSavedPose, loadShipState } from "@/sim/shipPersistence";
 import { frameOriginKm } from "@/sim/frames";
 import { updateShipFrame } from "@/sim/ship/shipFrame";
 import type { CelestialCollider } from "@/sim/celestialCollision";
@@ -42,6 +42,19 @@ import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
 import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
+import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { propellantGate, stepShipResources, worstStepKg } from "@/sim/ship/resourceStep";
+import { loadResourcePrefs } from "@/store/resourceTuningPrefs";
+import { heatSinkBuffer, miningBeamRequest } from "@/store/mining";
+import {
+  buildShipResourcesHud,
+  settleShipResources,
+  shipRes,
+  shipResControl,
+  shipReq,
+  shipResourcesHudAtom,
+  updateShipRequests,
+} from "@/store/shipResources";
 
 /**
  * Collider slots reserved for promoted stars (§19). Must be ≥ the disc pool's size;
@@ -60,6 +73,7 @@ const _accel = new Vector3();
 const _bf = new Vector3();
 const _br = new Vector3();
 const _bu = new Vector3();
+const _gate = { thrust: 1, angular: 1 };
 /** Identifies each fixed step for the near field's one-owner assertion. */
 let _stepSerial = 0;
 /** Folds each hit's contact events into one impact (docs/PHYSICS_PLAN.md §7.3). */
@@ -93,16 +107,29 @@ const EXHAUST_CONFIGS: ExhaustConfig[] = [
 
 const EXHAUST_SMOOTH_RATE = 6.0; // higher = faster response
 
-function killTransitDrive(): void {
-  transitDriveBuffer.velocityKmps = { x: 0, y: 0, z: 0 };
-  transitDriveBuffer.phase = "idle";
-  transitDriveBuffer.spoolAccS = 0;
-  transitDriveBuffer.autopilot = false;
+/** Hotbar heat-sink consumables act on the one ship thermal store. */
+function applyHeatSinks(): void {
+  const b = heatSinkBuffer;
+  if (b.pendingSet !== null) {
+    shipRes.heat01 = Math.max(0, Math.min(1, b.pendingSet));
+    b.pendingSet = b.pendingMultiplier = b.pendingAdd = null;
+  }
+  if (b.pendingMultiplier !== null) {
+    shipRes.heat01 = Math.max(0, shipRes.heat01 * b.pendingMultiplier);
+    b.pendingMultiplier = null;
+  }
+  if (b.pendingAdd !== null) {
+    shipRes.heat01 = Math.max(0, Math.min(getResourceTuning().heatMax01, shipRes.heat01 + b.pendingAdd));
+    b.pendingAdd = null;
+  }
 }
 
-/** Publish the absolute + frame-relative pose to the transit buffer and the test probe. */
+function killTransitDrive(): void {
+  resetTransit(transitDriveBuffer);
+}
+
+/** Publish the absolute + frame-relative pose to the test probe. */
 function publishShipPose(ship: ShipState): void {
-  transitDriveBuffer.shipPosKm = { x: ship.absPosKm.x, y: ship.absPosKm.y, z: ship.absPosKm.z };
   const t = testProbe.ship;
   const p = t.posKm, r = t.relPosKm, q = t.quat;
   p[0] = ship.absPosKm.x; p[1] = ship.absPosKm.y; p[2] = ship.absPosKm.z;
@@ -194,6 +221,7 @@ const SpaceShip = memo(() => {
   useEffect(() => {
     loadTuningPrefs();
     loadPhysicsPrefs();
+    loadResourcePrefs();
     registerEntity({ id: LOCAL_PLAYER_ID, kind: "ship", ship: shipState.current });
     return () => unregisterEntity(LOCAL_PLAYER_ID);
   }, []);
@@ -236,7 +264,6 @@ const SpaceShip = memo(() => {
     store.set(dieAtom, {
       frameId: ship.frameId,
       positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z],
-      cargoItems: store.get(cargoAtom).items,
     });
     return true;
   }, [store, worldOrigin]);
@@ -304,37 +331,24 @@ const SpaceShip = memo(() => {
       nearField.markReseed();
       _impacts.reset();
       store.set(devTeleportAtom, null);
+      holdSavedPose(false);
     }
 
     const inputDt = isSimPaused() ? 0 : Math.min(delta, MAX_FRAME_DT);
-    updateMouseSteering(ship.quat, inputDt, transitDriveBuffer.desiredForward !== null);
+    updateMouseSteering(ship.quat, inputDt, transitDriveBuffer.hasDesiredForward);
     sampleShipInput(_input, inputDt);
 
     // ── Per-frame step environment (nothing below changes between substeps) ──
     const tBuf = transitDriveBuffer;
     const cfg = store.get(effectiveShipConfigAtom);
     const devSpeed = store.get(devMaxSpeedOverrideAtom);
-    const transitActive = tBuf.phase === "accelerating" || tBuf.phase === "decelerating";
-    _env.steerMult = transitActive ? TRANSIT_STEER_MULT : 1;
-    const desired = tBuf.desiredForward;
-    _env.hasDesiredForward = desired !== null;
-    if (desired) {
-      _env.desiredForwardX = desired.x;
-      _env.desiredForwardY = desired.y;
-      _env.desiredForwardZ = desired.z;
-    }
-    _env.desiredForwardRateRadPerS = tBuf.desiredForwardRateRadPerS;
     _env.tuning = getFlightTuning();
     _env.accelerationMult = cfg.accelerationMult;
     _env.decelerationMult = cfg.decelerationMult;
     _env.speedMult = cfg.speedMult;
     // Dev override is absolute (skips speedMult).
     _env.speedLimitOverrideKmps = devSpeed !== null ? Math.max(0, devSpeed / 1000) : -1;
-    _env.transitVelX = tBuf.velocityKmps.x;
-    _env.transitVelY = tBuf.velocityKmps.y;
-    _env.transitVelZ = tBuf.velocityKmps.z;
     _env.colliders = celestialColliders;
-    nearField.setGates(transitActive, devSpeed !== null, false);
     nearField.angularAuthority = _env.tuning.angularAccelDegS2 * MathUtils.DEG2RAD * FIXED_DT;
     _env.hullRadiusKm = SHIP_HULL_RADIUS_KM;
 
@@ -364,6 +378,17 @@ const SpaceShip = memo(() => {
       c.r = s.radiusKm;
     }
 
+    // ── Ship resources: requests for this frame's steps (human-rate inputs) ──
+    if (shipResControl.capacitorDirty) {
+      ship.boostCharge = shipRes.capacitor01;
+      shipResControl.capacitorDirty = false;
+    }
+    applyHeatSinks();
+    updateShipRequests(store, devSpeed !== null, miningBeamRequest.on);
+    updateTransitInputs(store, _input);
+    const rt = getResourceTuning();
+    const worstKg = worstStepKg(_env.tuning, rt, cfg.accelerationMult, cfg.decelerationMult, FIXED_DT);
+
     // ── Fixed-timestep physics loop ────────────────────────────────────
     if (isSimPaused()) physicsAcc.current = 0;
     else physicsAcc.current += Math.min(delta, MAX_FRAME_DT);
@@ -371,6 +396,26 @@ const SpaceShip = memo(() => {
     _vPrev.copy(ship.velKmps);
     let stepsRun = 0;
     while (physicsAcc.current >= FIXED_DT) {
+      // Transit first: its speed this step feeds stepShip; the resource step bills it.
+      stepTransit(tBuf, ship, transitInputs, shipRes, rt, FIXED_DT);
+      const burning = isTransitBurning(tBuf.phase);
+      _env.transitVelX = tBuf.velX;
+      _env.transitVelY = tBuf.velY;
+      _env.transitVelZ = tBuf.velZ;
+      _env.steerMult = burning ? TRANSIT_STEER_MULT : 1;
+      _env.hasDesiredForward = tBuf.hasDesiredForward;
+      _env.desiredForwardX = tBuf.dfX;
+      _env.desiredForwardY = tBuf.dfY;
+      _env.desiredForwardZ = tBuf.dfZ;
+      _env.desiredForwardRateRadPerS = tBuf.desiredRateRadPerS;
+      nearField.setGates(burning || tBuf.speedKmps > 0, devSpeed !== null, false);
+      shipReq.transitDvKmps = tBuf.stepDvKmps;
+      shipReq.transitHeatKW = tBuf.stepHeatKW;
+      shipReq.reservedKg = transitReserveKg(tBuf, rt);
+      propellantGate(shipRes, worstKg, rt, _gate, shipReq.reservedKg);
+      // Dev speed override flies free: never charged, so never gated.
+      _env.thrustScale = shipReq.freeFlight ? 1 : _gate.thrust;
+      _env.angularScale = shipReq.freeFlight ? 1 : _gate.angular;
       const hit = stepShip(ship, _input, _env, FIXED_DT);
       if (hit) {
         killTransitDrive();
@@ -380,23 +425,19 @@ const SpaceShip = memo(() => {
           position: [0, 0, 0],
           radiusM: 120,
         });
-        const cargo = store.get(cargoAtom);
         store.set(dieAtom, {
           frameId: ship.frameId,
           positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z],
-          cargoItems: cargo.items,
         });
         // Stop further substeps; the top-of-frame dead gate handles later frames.
         physicsAcc.current = 0;
         break;
       }
+      stepShipResources(shipRes, ship, shipReq, rt, FIXED_DT);
       _feedSerial = _stepSerial;
       nearField.resolve(ship, _stepSerial++);
       nearField.lastStepContacts(_feedContact);
       _impacts.endStep(_feedSerial, FIXED_DT, getPhysicsTuning());
-
-      // Forward + position for TransitTicker (flip point / acceleration direction).
-      tBuf.shipForward = { x: ship.forward.x, y: ship.forward.y, z: ship.forward.z };
 
       physicsAcc.current -= FIXED_DT;
       testProbe.ship.steps++;
@@ -468,9 +509,15 @@ const SpaceShip = memo(() => {
     // ── Asteroid impacts: damage + feedback, once per impact (after the origin moved) ──
     _impactsThisFrame.length = 0;
     _impacts.drain(collectImpact);
+    let died = false;
     for (let i = 0; i < _impactsThisFrame.length; i++) {
-      if (applyImpact(_impactsThisFrame[i], ship)) break;
+      if (applyImpact(_impactsThisFrame[i], ship)) {
+        died = true;
+        break;
+      }
     }
+    // Repair operations, over-temperature damage, completion notices from this frame's steps.
+    if (!died && settleShipResources(store, ship)) killTransitDrive();
 
     // ── Camera (chase + shake) ──────────────────────────────────────────
     const shakeSignal = store.get(cameraShakeIntensityAtom);
@@ -489,16 +536,10 @@ const SpaceShip = memo(() => {
     _motion.benchMode = benchMode;
     const cam = camera as PerspectiveCamera;
     chaseCamera.current.update(cam, shipRef.current, _motion, delta);
-    drawFlightHud(cam, size, shipRef.current.quaternion, ship.velKmps, transitActive);
+    drawFlightHud(cam, size, shipRef.current.quaternion, ship.velKmps, isTransitBurning(tBuf.phase));
 
     // ── HUD speed: the real velocity, or the transit velocity when larger ──
-    const transitSpeedMps = (_env.transitVelX !== 0 || _env.transitVelY !== 0 || _env.transitVelZ !== 0)
-      ? Math.sqrt(
-          tBuf.velocityKmps.x ** 2 +
-          tBuf.velocityKmps.y ** 2 +
-          tBuf.velocityKmps.z ** 2
-        ) * 1000 // km/s → m/s
-      : 0;
+    const transitSpeedMps = tBuf.speedKmps * 1000;
     const normalSpeedMps = speedKmps * 1000;
     // ⚠ Audio write is OUTSIDE the benchMode guard on purpose: the guard exists because
     // store.set re-renders HUD subtrees, a plain-object write does not, and the wind bed
@@ -516,6 +557,7 @@ const SpaceShip = memo(() => {
         decoupled: ship.assist === "decoupled",
         boostCharge: ship.boostCharge,
       });
+      store.set(shipResourcesHudAtom, buildShipResourcesHud());
     }
   }, FRAME_PRIORITY_PLAYER_SHIP);
 

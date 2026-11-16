@@ -7,10 +7,10 @@ import { getItemDef, type ItemSlot } from "@/data/content";
 import { updateEphemerisPositions } from "@/sim/celestialConstants";
 import { DEFAULT_SIM_EPOCH_MS, jdFromUnixMs } from "@/sim/ephemeris";
 import { SYSTEM_FRAME_ID, frameOriginKm, isFrameId, selectFrame } from "@/sim/frames";
-import { SCHEMA_VERSION, defaultPlayerState, defaultWorldState } from "./defaults";
+import { SCHEMA_VERSION } from "./defaults";
 import { getLocalPlayerId, setLastWorldId } from "./playerId";
 import { deleteWorld, listWorlds, loadWorld, newWorldId, putWorld, requestPersistentStorage } from "./saveDb";
-import { sanitizePlayer, sanitizePose, sanitizeWreck } from "./validate";
+import { parseSaveData, sanitizePose, sanitizeWreck } from "./validate";
 import { LEGACY_KEYS, hasLegacyKeys } from "./legacyKeys";
 
 export { LEGACY_KEYS, hasLegacyKeys };
@@ -72,12 +72,12 @@ function legacyModules(): unknown {
 }
 
 
+/** Builds schema-1 data (the shape these keys were written for) and migrates it like any save. */
 export function buildLegacySave(playerId: string): SaveData {
   updateEphemerisPositions(jdFromUnixMs(DEFAULT_SIM_EPOCH_MS));
   const death = readJson("death-v1");
   const research = readJson("research-v1");
-  const player = sanitizePlayer({
-    ...defaultPlayerState(),
+  const player = {
     ship: legacyShip(readJson("ship-state-v1")),
     isDead: isObj(death) && death.isDead === true,
     cargo: readJson("cargo"),
@@ -88,20 +88,25 @@ export function buildLegacySave(playerId: string): SaveData {
     commsPlayed: readJson("comms-played-v1"),
     starMarkers: readJson("star-markers-v1"),
     minedLifetime: readJson("asteroids-mined-lifetime-v1"),
-  });
+  };
 
-  const world = defaultWorldState();
   const wrecks = isObj(death) && Array.isArray(death.wrecks) ? death.wrecks : [];
-  world.wrecks = wrecks.map(legacyWreck).filter((w): w is WreckRecord => w !== null);
+  const asteroidDeltas: Record<string, Record<string, number[]>> = {};
   const deltas = readJson("asteroid-deltas-v1");
   if (isObj(deltas) && deltas.version === 1 && isObj(deltas.fields)) {
     for (const [fieldId, f] of Object.entries(deltas.fields)) {
       const ids = isObj(f) && Array.isArray(f.destroyed) ? f.destroyed : [];
       const clean = ids.filter((id): id is number => typeof id === "number" && Number.isFinite(id)).map((id) => id >>> 0);
-      if (clean.length > 0) world.asteroidDeltas[fieldId] = { [UNCHUNKED]: clean };
+      if (clean.length > 0) asteroidDeltas[fieldId] = { [UNCHUNKED]: clean };
     }
   }
-  return { schemaVersion: SCHEMA_VERSION, world, players: { [playerId]: player } };
+  const world = {
+    simEpochMs: DEFAULT_SIM_EPOCH_MS,
+    simRate: 1,
+    asteroidDeltas,
+    wrecks: wrecks.map(legacyWreck).filter((w): w is WreckRecord => w !== null),
+  };
+  return parseSaveData({ schemaVersion: 1, world, players: { [playerId]: player } });
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {

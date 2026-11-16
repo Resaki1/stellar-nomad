@@ -3,12 +3,15 @@
  * SaveData / SaveMeta. Missing or malformed fields fall back to defaults; structurally
  * unusable input throws.
  */
-import { SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
+import { MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
+import { MAX_RECEIPTS, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
 import { MIGRATIONS } from "./migrations";
 import type {
   AsteroidDeltas,
   Difficulty,
+  OperationReceipt,
   PlayerState,
+  ProcessingBatch,
   QuatTuple,
   SaveData,
   SaveMeta,
@@ -38,6 +41,25 @@ function numRecord(v: unknown): Record<string, number> {
   if (!isObj(v)) return out;
   for (const k of Object.keys(v)) if (isNum(v[k])) out[k] = v[k] as number;
   return out;
+}
+
+/** Integer counts (cargo units, consumables): floored, zero/negative/non-finite dropped. */
+function countRecord(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isObj(v)) return out;
+  for (const k of Object.keys(v)) {
+    const n = v[k];
+    if (isNum(n) && n >= 1) out[k] = Math.min(Math.floor(n), 1e9);
+  }
+  return out;
+}
+
+/** Fuel mass, kg: non-finite → fallback, negative → 0, bounded. */
+const fuelKg = (v: unknown, fallback: number): number => (isNum(v) ? Math.min(Math.max(0, v), MAX_STORED_FUEL_KG) : fallback);
+const unit01 = (v: unknown, fallback: number): number => (isNum(v) ? Math.min(Math.max(0, v), 1) : fallback);
+
+function uniqueStrings(v: unknown): string[] {
+  return Array.from(new Set(strArray(v)));
 }
 
 function tuple<N extends 3 | 4>(v: unknown, n: N): (N extends 3 ? Vec3Tuple : QuatTuple) | null {
@@ -71,7 +93,15 @@ export function sanitizeWreck(v: unknown): WreckRecord | null {
   if (!isObj(v) || typeof v.id !== "string" || typeof v.frameId !== "string") return null;
   const p = position(v.positionKm);
   if (!p) return null;
-  return { id: v.id, frameId: v.frameId, positionKm: p, items: numRecord(v.items), createdAt: num(v.createdAt, 0) };
+  return {
+    id: v.id,
+    frameId: v.frameId,
+    positionKm: p,
+    items: countRecord(v.items),
+    fuelKg: fuelKg(v.fuelKg, 0),
+    consumables: countRecord(v.consumables),
+    createdAt: num(v.createdAt, 0),
+  };
 }
 
 function sanitizeDeltas(v: unknown): AsteroidDeltas {
@@ -102,6 +132,31 @@ export function sanitizeWorld(v: unknown): WorldState {
     wrecks: Array.isArray(v.wrecks)
       ? v.wrecks.map(sanitizeWreck).filter((w): w is WreckRecord => w !== null)
       : [],
+    research: { completedNodes: uniqueStrings(isObj(v.research) ? v.research.completedNodes : undefined) },
+    receipts: sanitizeReceipts(v.receipts),
+  };
+}
+
+function sanitizeReceipts(v: unknown): OperationReceipt[] {
+  if (!Array.isArray(v)) return [];
+  const out: OperationReceipt[] = [];
+  const seen = new Set<string>();
+  for (const r of v) {
+    if (!isObj(r) || typeof r.opId !== "string" || r.opId === "" || seen.has(r.opId)) continue;
+    seen.add(r.opId);
+    out.push({ opId: r.opId, type: str(r.type, ""), by: str(r.by, ""), at: num(r.at, 0) });
+  }
+  return out.slice(-MAX_RECEIPTS);
+}
+
+function sanitizeProcessing(v: unknown): ProcessingBatch | null {
+  if (!isObj(v) || typeof v.id !== "string" || typeof v.recipeId !== "string") return null;
+  return {
+    id: v.id,
+    recipeId: v.recipeId,
+    reserved: countRecord(v.reserved),
+    elapsedS: Math.max(0, num(v.elapsedS, 0)),
+    committedKg: fuelKg(v.committedKg, 0),
   };
 }
 
@@ -124,25 +179,26 @@ export function sanitizePlayer(v: unknown): PlayerState {
     : d.modules.hotbar;
   while (hotbar.length < 10) hotbar.push(null);
   const equipped: Obj = isObj(modules.equippedModules) ? modules.equippedModules : {};
+  const propellant = isObj(v.propellant) ? v.propellant : {};
+  const power = isObj(v.power) ? v.power : {};
   return {
     ship: sanitizePose(v.ship),
     health: Math.max(0, Math.min(MAX_HEALTH, num(v.health, d.health))),
     isDead: v.isDead === true,
-    cargo: { capacityUnits: num(cargo.capacityUnits, d.cargo.capacityUnits), items: numRecord(cargo.items) },
+    cargo: { capacityUnits: Math.max(0, num(cargo.capacityUnits, d.cargo.capacityUnits)), items: countRecord(cargo.items) },
     research: {
-      assaySamples: num(research.assaySamples, 0),
-      completedNodes: strArray(research.completedNodes),
+      assaySamples: Math.max(0, Math.floor(num(research.assaySamples, 0))),
       activeResearch:
         active && typeof active.nodeId === "string"
-          ? { nodeId: active.nodeId, elapsedS: num(active.elapsedS, 0) }
+          ? { nodeId: active.nodeId, elapsedS: Math.max(0, num(active.elapsedS, 0)) }
           : null,
     },
     modules: {
-      ownedModules: strArray(modules.ownedModules),
+      ownedModules: uniqueStrings(modules.ownedModules),
       equippedModules: Object.fromEntries(
         Object.entries(equipped).filter((e): e is [string, string] => typeof e[1] === "string"),
       ),
-      consumables: numRecord(modules.consumables),
+      consumables: countRecord(modules.consumables),
       consumableCooldowns: numRecord(modules.consumableCooldowns),
       hotbar,
     },
@@ -150,7 +206,13 @@ export function sanitizePlayer(v: unknown): PlayerState {
     aiName: typeof v.aiName === "string" ? v.aiName : null,
     commsPlayed: strArray(v.commsPlayed),
     starMarkers: strArray(v.starMarkers),
-    minedLifetime: num(v.minedLifetime, 0),
+    minedLifetime: Math.max(0, Math.floor(num(v.minedLifetime, 0))),
+    propellant: {
+      ordinaryKg: fuelKg(propellant.ordinaryKg, d.propellant.ordinaryKg),
+      protectedKg: fuelKg(propellant.protectedKg, d.propellant.protectedKg),
+    },
+    power: { capacitor01: unit01(power.capacitor01, d.power.capacitor01), heat01: unit01(power.heat01, d.power.heat01) },
+    processing: sanitizeProcessing(v.processing),
   };
 }
 

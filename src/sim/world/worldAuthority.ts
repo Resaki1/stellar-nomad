@@ -1,5 +1,11 @@
-import { getWorldState, markDirty } from "@/save/activeSave";
+import { getPlayerState, getWorldState, markDirty } from "@/save/activeSave";
 import { LocalAuthority } from "./authority";
 
 /** Solo play: the in-process authority over the active save's WorldState. */
-export const worldAuthority = new LocalAuthority({ getWorld: getWorldState, markDirty });
+export const worldAuthority = new LocalAuthority({ getWorld: getWorldState, getPlayer: getPlayerState, markDirty });
+
+let opSeq = 0;
+/** Fresh id for a new intent; reuse it to retry the same intent. */
+export function newOpId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `op-${Date.now()}-${++opSeq}`;
+}

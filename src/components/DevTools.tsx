@@ -31,6 +31,7 @@ import { addAssaySamplesAtom, researchAtom } from "@/store/research";
 import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
+import { newOpId, runOperation } from "@/store/operations";
 import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
 import { getLumHarness, type LumHarness } from "./space/perf/lumHarness";
 import { createTestHarness, type TestHarness } from "./TestHarness/testHarness";
@@ -58,13 +59,9 @@ export default function DevTools() {
       /** Complete all research nodes instantly. */
       unlockAll() {
         const allIds = RESEARCH_NODES.map((n) => n.id);
+        runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: allIds });
         const state = store.get(researchAtom);
-        store.set(researchAtom, {
-          ...state,
-          completedNodes: allIds,
-          activeResearch: null,
-          assaySamples: state.assaySamples + 9999,
-        });
+        store.set(researchAtom, { ...state, activeResearch: null, assaySamples: state.assaySamples + 9999 });
         console.log(`[Dev] All ${allIds.length} research nodes completed.`);
       },
 
@@ -84,11 +81,8 @@ export default function DevTools() {
 
       /** Reset research + modules to defaults. */
       resetProgress() {
-        store.set(researchAtom, {
-          assaySamples: 0,
-          completedNodes: [],
-          activeResearch: null,
-        });
+        runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
+        store.set(researchAtom, { assaySamples: 0, activeResearch: null });
         store.set(modulesAtom, {
           ownedModules: [],
           equippedModules: {},

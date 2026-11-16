@@ -78,16 +78,81 @@
     letter-spacing: 0.04em;
   }
 
-  // ── Active transit: centered cinematic readout ──────────────────
-  &--active {
-    top: 50%;
+  // ── Plan preview + active transit: right-side readout ───────────
+  // Below the top-right buttons, clear of the ship dashboard (bottom-right).
+  &--side {
+    top: 96px;
     right: 16px;
-    transform: translate(0, -50%);
+    max-width: min(300px, calc(100vw - 32px));
     display: flex;
     flex-direction: column;
     align-items: end;
     gap: s.$space-1;
+    text-align: right;
     animation: transitActiveIn s.$dur-slow s.$ease-out;
+  }
+
+  &--preview {
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+  }
+
+  &__plan {
+    margin: s.$space-2 0 0;
+    display: grid;
+    grid-template-columns: auto auto;
+    column-gap: s.$space-3;
+    row-gap: 2px;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+
+    dt {
+      color: s.$text-tertiary;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      align-self: baseline;
+    }
+
+    dd {
+      margin: 0;
+      color: s.$text-primary;
+    }
+  }
+
+  &__plan-eta {
+    color: s.$accent-signal !important;
+    text-shadow: 0 0 6px s.$glow-signal;
+  }
+
+  &__warn {
+    margin-top: s.$space-1;
+    font-family: s.$font-mono;
+    font-size: 11px;
+    line-height: 1.35;
+    color: s.$accent-warn;
+    text-shadow: 0 0 6px s.$glow-warn;
+
+    &--crit {
+      color: s.$accent-crit;
+      text-shadow: 0 0 6px s.$glow-crit;
+    }
+  }
+
+  &__leg {
+    color: s.$text-tertiary;
+    font-size: 12px;
+  }
+
+  @media (max-width: 520px) {
+    &--side {
+      top: 88px;
+    }
+
+    &__velocity {
+      font-size: 28px;
+      line-height: 32px;
+    }
   }
 
   &__phase-label {
@@ -126,7 +191,7 @@
     margin-top: s.$space-2;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: end;
     gap: 2px;
   }
 
@@ -185,11 +250,11 @@
   @keyframes transitActiveIn {
     from {
       opacity: 0;
-      transform: translate(16px, -50%);
+      transform: translate(16px, 0);
     }
     to {
       opacity: 1;
-      transform: translate(0, -50%);
+      transform: translate(0, 0);
     }
   }
 }

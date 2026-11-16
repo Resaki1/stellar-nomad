@@ -20,11 +20,13 @@ import AudioSettings from "./AudioSettings";
 import { ControlsSettings, GraphicsSettings } from "./SettingsSections";
 import FlightTuningControls from "./FlightTuningControls";
 import PhysicsTuningControls from "./PhysicsTuningControls";
+import ResourceTuningControls from "./ResourceTuningControls";
+import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
-import { worldAuthority } from "@/sim/world/worldAuthority";
+import { newOpId, runOperation } from "@/store/operations";
 import { getLocalPlayerId } from "@/save/playerId";
 import { flush, getActiveSave, resetActiveWorld, saveInfo, switchWorld } from "@/save/activeSave";
 import { titleUrl } from "@/components/AppShell/appState";
@@ -106,6 +108,7 @@ const renderSubMenu = (
         <>
           <FlightTuningControls />
           <PhysicsTuningControls />
+          <ResourceTuningControls />
           <SimTimeControls />
 
           <SettingsCheckbox
@@ -236,11 +239,11 @@ function SimTimeControls() {
   const simRate = useAtomValue(simRateAtom);
   // World state: through the authority; the bridge updates the atoms from `time.changed`.
   const setSimEpochMs = useCallback(
-    (ms: number) => worldAuthority.submit({ type: "time.set", epochMs: ms }, getLocalPlayerId()),
+    (ms: number) => runOperation({ type: "time.set", opId: newOpId(), epochMs: ms }),
     [],
   );
   const setSimRate = useCallback(
-    (rate: number) => worldAuthority.submit({ type: "time.set", rate }, getLocalPlayerId()),
+    (rate: number) => runOperation({ type: "time.set", opId: newOpId(), rate }),
     [],
   );
   const dateRef = useRef<HTMLInputElement>(null);
@@ -953,13 +956,8 @@ const SettingsMenu = () => {
             onGrantCargo: (resourceId: string, amount: number) =>
               setAddCargo({ resourceId, amount }),
             onUnlockAllResearch: () => {
-              const allIds = RESEARCH_NODES.map((n) => n.id);
-              setResearch((prev) => ({
-                ...prev,
-                completedNodes: allIds,
-                activeResearch: null,
-                assaySamples: prev.assaySamples + 9999,
-              }));
+              runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: RESEARCH_NODES.map((n) => n.id) });
+              setResearch((prev) => ({ ...prev, activeResearch: null, assaySamples: prev.assaySamples + 9999 }));
             },
             onGrantAllItems: () => {
               for (const item of ITEMS) {
@@ -971,11 +969,8 @@ const SettingsMenu = () => {
               }
             },
             onResetProgress: () => {
-              setResearch({
-                assaySamples: 0,
-                completedNodes: [],
-                activeResearch: null,
-              });
+              runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
+              setResearch({ assaySamples: 0, activeResearch: null });
               setModules({
                 ownedModules: [],
                 equippedModules: {},
@@ -1125,6 +1120,7 @@ const SettingsMenu = () => {
                 >
                   {exiting ? "saving…" : "save and exit to title"}
                 </button>
+                <AbandonShip onDone={handleClose} />
                 {exitFailed && (
                   <div className="settings-menu__exit-error" role="alert">
                     <p>Saving failed. Progress since the last autosave would be lost.</p>

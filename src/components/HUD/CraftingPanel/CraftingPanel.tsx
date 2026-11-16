@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { unlockedItemIdsAtom } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
-import { removeCargoAtom } from "@/store/cargo";
-import { addCraftedItemAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
+import { craftItemAtom, modulesAtom } from "@/store/modules";
+import { describeRejection } from "@/store/operations";
 import { addToastAtom } from "@/store/toast";
 import { systemConfigAtom } from "@/store/system";
 import { getResourceTypes } from "@/sim/asteroids/resources";
@@ -20,6 +20,7 @@ import {
   type ItemSlot,
 } from "@/data/content";
 import Panel from "../Shell/Panel";
+import ShipWorkshop from "./ShipWorkshop";
 
 import "./CraftingPanel.scss";
 
@@ -28,11 +29,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   const cargo = useAtomValue(cargoAtom);
   const modulesState = useAtomValue(modulesAtom);
   const systemConfig = useAtomValue(systemConfigAtom);
-  const removeCargo = useSetAtom(removeCargoAtom);
-  const addCraftedItem = useSetAtom(addCraftedItemAtom);
-  const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
-  const incrementCraftSignal = useSetAtom(itemCraftedSignalAtom);
-  const setLastCraftedId = useSetAtom(lastCraftedItemIdAtom);
+  const craftItem = useSetAtom(craftItemAtom);
   const addToast = useSetAtom(addToastAtom);
 
   const [slotFilter, setSlotFilter] = useState<ItemSlot | "all">("all");
@@ -88,8 +85,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   );
 
   const requestCraft = (item: ItemDef) => {
-    if (!canAfford(item)) return;
-    if (item.type === "module" || item.type === "special") {
+    // Unaffordable crafts still go to the authority: its rejection explains what is missing.
+    if (canAfford(item) && (item.type === "module" || item.type === "special")) {
       setConfirmItem(item);
     } else {
       handleCraft(item);
@@ -97,49 +94,24 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   };
 
   const handleCraft = (item: ItemDef) => {
-    if (!canAfford(item)) return;
     setConfirmItem(null);
-
-    for (const [resourceId, needed] of Object.entries(item.recipe)) {
-      removeCargo({ resourceId, amount: needed });
-    }
-
-    const autoEquipped = addCraftedItem(item.id);
-
-    if (item.type === "consumable") {
-      const alreadyOnHotbar = modulesState.hotbar.includes(item.id);
-      if (!alreadyOnHotbar) {
-        const emptyIdx = modulesState.hotbar.findIndex((s) => s === null);
-        if (emptyIdx !== -1) {
-          setHotbarSlot({ index: emptyIdx, itemId: item.id });
+    craftItem({
+      itemId: item.id,
+      onSettled: (o) => {
+        if (o.status === "rejected") {
+          addToast({ audio: "reject", message: `Cannot craft ${item.name}`, detail: describeRejection(o), durationMs: 3000 });
+          return;
         }
-      }
-    }
-
-    incrementCraftSignal((c) => c + 1);
-    setLastCraftedId(item.id);
-
-    if (item.type === "module") {
-      if (autoEquipped) {
-        addToast({
-          audio: "silent",
-          message: `Crafted & equipped: ${item.name}`,
-          durationMs: 3000,
-        });
-      } else {
-        addToast({
-          audio: "silent",
-          message: `Crafted: ${item.name} (${SLOT_LABELS[item.slot]} slot in use)`,
-          durationMs: 4000,
-        });
-      }
-    } else {
-      addToast({
-        audio: "silent",
-        message: `Crafted: ${item.name}`,
-        durationMs: 3000,
-      });
-    }
+        if (o.status !== "accepted" || o.result.type !== "item.craft") return;
+        const message =
+          item.type !== "module"
+            ? `Crafted: ${item.name}`
+            : o.result.autoEquipped
+              ? `Crafted & equipped: ${item.name}`
+              : `Crafted: ${item.name} (${SLOT_LABELS[item.slot]} slot in use)`;
+        addToast({ audio: "silent", message, durationMs: item.type === "module" && !o.result.autoEquipped ? 4000 : 3000 });
+      },
+    });
   };
 
   // Local Esc handler: when the confirmation dialog is open, Esc dismisses
@@ -167,6 +139,8 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       closeOnBackdrop={!confirmItem}
     >
       <div className="crafting-panel">
+        <ShipWorkshop />
+
         {/* Cargo summary */}
         <div className="crafting-panel__cargo-row">
           {Array.from(resourceMap.entries()).map(([id, def]) => (

@@ -115,6 +115,9 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `SHELL_PARTS=title,continue pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs` — title + loading gate
+- `GAME_PARTS=migrate,tx,shared,live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3 ownership, transactions, migration, live loop (disposable `[gc] ` fixture worlds)
+- `GAME_PARTS=res,m32,reach pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — ship resources (fuel, heat, processing, repair)
+- `GAME_PARTS=transit,transitLive pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — fuel-aware transit (prediction vs execution, reserve, pacing, Earth → Moon at two dates); `TRANSIT_EPOCHS=defaultEpoch,…` splits the live part into runs under 2 min
 
 The driver autostarts the last world; `--title` stops at the title screen. If a run hangs
 at load, `pnpm drive -- --stop` (a kept Chrome can wedge after the machine sleeps).

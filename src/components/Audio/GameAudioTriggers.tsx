@@ -266,7 +266,7 @@ export default function GameAudioTriggers() {
     let cue: number | null = null;
     if (!isDead && phase !== prevPhase.current) {
       if (phase === "spooling") cue = playAudio("transit.spool");
-      else if (phase === "accelerating") cue = playAudio("transit.engage");
+      else if (phase === "accelerating" && prevPhase.current === "spooling") cue = playAudio("transit.engage");
       else if (phase === "decelerating") cue = playAudio("transit.decel");
       else if (phase === "idle" && prevPhase.current === "decelerating")
         playAudio("transit.arrive");
@@ -278,7 +278,7 @@ export default function GameAudioTriggers() {
     // Spool/decel cues are cancellable, so aborted transit cannot leave a tail.
     return () => { if (cue !== null) stopVoiceBySerial(cue, 80); };
   }, [phase, isDead]);
-  const inTransit = !isDead && (phase === "accelerating" || phase === "decelerating");
+  const inTransit = !isDead && (phase === "accelerating" || phase === "coasting" || phase === "decelerating");
   useEffect(() => {
     if (!inTransit) return;
     const emitter = registerEmitter({ event: "transit.loop", intensity: 1 });

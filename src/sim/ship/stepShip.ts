@@ -23,6 +23,10 @@ export interface ShipStepEnv {
   stopDistanceMult: number;
   /** Dev override of the speed limit, km/s; < 0 = off. Hard clamp, thrust scaled up to match. */
   speedLimitOverrideKmps: number;
+  /** Propellant gate (resourceStep): scales every translational thrust limit, 0 = none. */
+  thrustScale: number;
+  /** Angular-acceleration authority, 0..1. */
+  angularScale: number;
   /** Transit-drive velocity, km/s, added on top of normal flight. */
   transitVelX: number;
   transitVelY: number;
@@ -46,6 +50,8 @@ export function createShipStepEnv(tuning: Readonly<FlightTuning> = DEFAULT_FLIGH
     speedMult: 1,
     stopDistanceMult: 1,
     speedLimitOverrideKmps: -1,
+    thrustScale: 1,
+    angularScale: 1,
     transitVelX: 0,
     transitVelY: 0,
     transitVelZ: 0,
@@ -94,11 +100,13 @@ export function stepShip(state: ShipState, input: ShipInput, env: ShipStepEnv, d
 
   // ── Rotation: rate command with an angular-acceleration limit (body axes) ──
   const steer = env.steerMult;
-  const maxDw = t.angularAccelDegS2 * DEG * dt;
+  const maxDw = t.angularAccelDegS2 * DEG * dt * env.angularScale;
   const w = state.angVel;
+  const wx0 = w.x, wy0 = w.y, wz0 = w.z;
   w.x = approach(w.x, -input.pitch * t.maxPitchRateDegS * DEG * steer, maxDw);
   w.y = approach(w.y, -input.yaw * t.maxYawRateDegS * DEG * steer, maxDw);
   w.z = approach(w.z, input.roll * t.maxRollRateDegS * DEG * steer, maxDw);
+  state.ctlDwRadps = Math.abs(w.x - wx0) + Math.abs(w.y - wy0) + Math.abs(w.z - wz0);
   const wLen = w.length();
   if (wLen > 0) {
     _axis.copy(w).divideScalar(wLen);
@@ -134,7 +142,8 @@ export function stepShip(state: ShipState, input: ShipInput, env: ShipStepEnv, d
   // ── Boost capacitor ──
   // Boost is a sprint: full boosted main thrust to the boosted limit, whatever the throttle says.
   const boostDemand = input.boost && !input.brake;
-  const boosting = boostDemand && state.boostCharge > 0;
+  // No propellant, no boost: it would spend capacitor and heat for zero thrust.
+  const boosting = boostDemand && state.boostCharge > 0 && env.thrustScale > 0;
   if (boosting) state.boostCharge = Math.max(0, state.boostCharge - dt / t.boostChargeS);
   // Holding boost on an empty capacitor still holds off the refill.
   if (boostDemand) {
@@ -152,10 +161,11 @@ export function stepShip(state: ShipState, input: ShipInput, env: ShipStepEnv, d
   const override = env.speedLimitOverrideKmps;
   const accelScale = override >= 0 && baseLimit > 0 ? Math.max(1, override / baseLimit) : 1;
   const boostMult = boosting ? t.boostThrustMult : 1;
-  _lim.main = (t.mainThrustMps2 / 1000) * env.accelerationMult * boostMult * accelScale;
-  _lim.retro = (t.retroThrustMps2 / 1000) * env.decelerationMult * accelScale;
-  _lim.strafe = (t.strafeThrustMps2 / 1000) * env.accelerationMult * accelScale;
-  _lim.grip = (t.gripMps2 / 1000) * env.decelerationMult * accelScale;
+  const gate = accelScale * env.thrustScale;
+  _lim.main = (t.mainThrustMps2 / 1000) * env.accelerationMult * boostMult * gate;
+  _lim.retro = (t.retroThrustMps2 / 1000) * env.decelerationMult * gate;
+  _lim.strafe = (t.strafeThrustMps2 / 1000) * env.accelerationMult * gate;
+  _lim.grip = (t.gripMps2 / 1000) * env.decelerationMult * gate;
   const vLimit = (override >= 0 ? override : baseLimit) * (boosting ? t.boostLimitMult : 1);
   state.speedLimitKmps = vLimit;
 
@@ -198,8 +208,12 @@ export function stepShip(state: ShipState, input: ShipInput, env: ShipStepEnv, d
     if (s > vLimit) v.multiplyScalar(vLimit / s);
   }
 
-  // From the velocity change that survived the clamps, so exhaust/audio never show cut thrust.
-  const df = _v0.subVectors(v, _v0).dot(fwd);
+  // From the velocity change that survived the clamps: exhaust, audio and the propellant meter.
+  _v0.subVectors(v, _v0);
+  const df = _v0.dot(fwd);
+  state.ctlDvF = df;
+  state.ctlDvR = _v0.dot(_right);
+  state.ctlDvU = _v0.dot(_up);
   state.thrustMain = _lim.main > 0 && dt > 0 ? Math.min(1, Math.max(0, df / (_lim.main * dt))) : 0;
 
   state.posKm.addScaledVector(v, dt);

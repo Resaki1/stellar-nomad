@@ -1,8 +1,11 @@
 import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
+import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
 import type {
   CargoState,
   ModulesState,
   PlayerState,
+  PowerState,
+  PropellantState,
   ResearchState,
   SaveData,
   ShipConfig,
@@ -10,13 +13,20 @@ import type {
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/** Bound of `WorldState.receipts`. */
+export const MAX_RECEIPTS = 256;
 
 export const DEFAULT_CARGO_CAPACITY_UNITS = 2000;
 
 export const defaultCargo = (): CargoState => ({ capacityUnits: DEFAULT_CARGO_CAPACITY_UNITS, items: {} });
 
-export const defaultResearch = (): ResearchState => ({ assaySamples: 0, completedNodes: [], activeResearch: null });
+export const defaultResearch = (): ResearchState => ({ assaySamples: 0, activeResearch: null });
+
+export const defaultPropellant = (): PropellantState => ({ ordinaryKg: PROPELLANT_TANK_KG, protectedKg: RECOVERY_ALLOWANCE_KG });
+
+export const defaultPower = (): PowerState => ({ capacitor01: 1, heat01: 0 });
 
 export const defaultModules = (): ModulesState => ({
   ownedModules: [],
@@ -58,11 +68,21 @@ export function defaultPlayerState(): PlayerState {
     commsPlayed: [],
     starMarkers: [],
     minedLifetime: 0,
+    propellant: defaultPropellant(),
+    power: defaultPower(),
+    processing: null,
   };
 }
 
 export function defaultWorldState(): WorldState {
-  return { simEpochMs: DEFAULT_SIM_EPOCH_MS, simRate: 1, asteroidDeltas: {}, wrecks: [] };
+  return {
+    simEpochMs: DEFAULT_SIM_EPOCH_MS,
+    simRate: 1,
+    asteroidDeltas: {},
+    wrecks: [],
+    research: { completedNodes: [] },
+    receipts: [],
+  };
 }
 
 export function defaultSaveData(playerId: string): SaveData {

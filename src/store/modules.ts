@@ -5,92 +5,26 @@ import { atom } from "jotai";
 import { signalAudioActionAtom } from "./audioSignals";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultModules } from "@/save/defaults";
-import {
-  getItemDef,
-  type ItemEffect,
-  type ItemSlot,
-} from "@/data/content";
+import { getItemDef, type ItemSlot } from "@/data/content";
+import { moduleModifiers, type ComputedModifiers } from "@/sim/ship/loadout";
+import type { OperationOutcome } from "@/sim/world/commands";
+import { newOpId, runOperation } from "@/store/operations";
 
 export type { ModulesState } from "@/save/types";
 
 export const modulesAtom = savedAtom("player", "modules", defaultModules());
 
-// ---------------------------------------------------------------------------
-// Derived: computed stat modifiers from EQUIPPED modules only
-// ---------------------------------------------------------------------------
+export {
+  aggregateEffects,
+  mergeModifiers,
+  getFlag,
+  getMultiplier,
+  getAddition,
+  type ComputedModifiers,
+} from "@/sim/ship/loadout";
 
-export type ComputedModifiers = {
-  /** Boolean flags set by modules. */
-  flags: Record<string, boolean>;
-  /** Multiplicative modifiers (product of all multipliers per key). */
-  multipliers: Record<string, number>;
-  /** Additive modifiers (sum of all additions per key). */
-  additions: Record<string, number>;
-};
-
-export function aggregateEffects(effects: ItemEffect[]): ComputedModifiers {
-  const flags: Record<string, boolean> = {};
-  const multipliers: Record<string, number> = {};
-  const additions: Record<string, number> = {};
-
-  for (const eff of effects) {
-    if (eff.op === "set") {
-      flags[eff.key] = eff.value as boolean;
-    } else if (eff.op === "multiply") {
-      multipliers[eff.key] = (multipliers[eff.key] ?? 1) * (eff.value as number);
-    } else if (eff.op === "add") {
-      additions[eff.key] = (additions[eff.key] ?? 0) + (eff.value as number);
-    }
-  }
-
-  return { flags, multipliers, additions };
-}
-
-export function mergeModifiers(a: ComputedModifiers, b: ComputedModifiers): ComputedModifiers {
-  const flags = { ...a.flags, ...b.flags };
-  const multipliers = { ...a.multipliers };
-  const additions = { ...a.additions };
-
-  for (const [key, val] of Object.entries(b.multipliers)) {
-    multipliers[key] = (multipliers[key] ?? 1) * val;
-  }
-  for (const [key, val] of Object.entries(b.additions)) {
-    additions[key] = (additions[key] ?? 0) + val;
-  }
-
-  return { flags, multipliers, additions };
-}
-
-export const computedModifiersAtom = atom((get): ComputedModifiers => {
-  const state = get(modulesAtom);
-  const allEffects: ItemEffect[] = [];
-
-  // Only iterate EQUIPPED modules, not all owned modules
-  for (const itemId of Object.values(state.equippedModules)) {
-    if (!itemId) continue;
-    const def = getItemDef(itemId);
-    if (!def?.effects) continue;
-    allEffects.push(...def.effects);
-  }
-
-  return aggregateEffects(allEffects);
-});
-
-// ---------------------------------------------------------------------------
-// Helper: query a modifier
-// ---------------------------------------------------------------------------
-
-export function getFlag(mods: ComputedModifiers, key: string): boolean {
-  return mods.flags[key] ?? false;
-}
-
-export function getMultiplier(mods: ComputedModifiers, key: string): number {
-  return mods.multipliers[key] ?? 1;
-}
-
-export function getAddition(mods: ComputedModifiers, key: string): number {
-  return mods.additions[key] ?? 0;
-}
+/** Stat modifiers from EQUIPPED modules only. */
+export const computedModifiersAtom = atom((get): ComputedModifiers => moduleModifiers(get(modulesAtom)));
 
 // ---------------------------------------------------------------------------
 // Actions: equip / unequip modules
@@ -144,7 +78,24 @@ export const unequipSlotAtom = atom(
 // ---------------------------------------------------------------------------
 
 /**
- * Add a crafted item to inventory. Does NOT deduct cargo (caller does that).
+ * Craft through the authority: validates knowledge, stack room and materials, then spends and
+ * grants in one commit. `onSettled` receives the outcome (a rejection spent nothing).
+ */
+export const craftItemAtom = atom(
+  null,
+  (_get, set, payload: { itemId: string; onSettled?: (o: OperationOutcome) => void }): void => {
+    runOperation({ type: "item.craft", opId: newOpId(), itemId: payload.itemId }, (o) => {
+      if (o.status === "accepted" && o.result.type === "item.craft") {
+        set(itemCraftedSignalAtom, (c) => c + 1);
+        set(lastCraftedItemIdAtom, o.result.itemId);
+      }
+      payload.onSettled?.(o);
+    });
+  },
+);
+
+/**
+ * Dev grant: add an item without a recipe (no cargo spend).
  * Returns whether the item was auto-equipped into an empty slot.
  */
 export const addCraftedItemAtom = atom(

@@ -4,10 +4,13 @@
  */
 import type { createStore } from "jotai";
 import { getWorldState, registerCollector } from "@/save/activeSave";
+import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
-import { hydrateSavedAtoms } from "@/store/savedAtom";
+import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
 import { wrecksMirrorAtom } from "@/store/death";
+import { sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import { adoptShipResources, installShipResources } from "@/store/shipResources";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -16,10 +19,13 @@ let teardown: (() => void) | null = null;
 export function installWorldBridge(store: Store): void {
   teardown?.();
   hydrateSavedAtoms(store);
+  const uninstallResources = installShipResources();
   const world = getWorldState();
   store.set(simEpochMsAtom, world.simEpochMs);
   store.set(simRateAtom, world.simRate);
   store.set(wrecksMirrorAtom, world.wrecks);
+  store.set(sharedResearchMirrorAtom, world.research.completedNodes);
+  const local = getLocalPlayerId();
 
   const unsubscribe = worldAuthority.subscribe((e) => {
     switch (e.type) {
@@ -27,6 +33,15 @@ export function installWorldBridge(store: Store): void {
       case "wreck.changed":
       case "wreck.removed":
         store.set(wrecksMirrorAtom, getWorldState().wrecks);
+        break;
+      case "research.changed":
+        store.set(sharedResearchMirrorAtom, getWorldState().research.completedNodes);
+        break;
+      case "player.changed":
+        if (e.playerId === local) {
+          refreshPlayerAtoms(store, e.keys);
+          adoptShipResources(e.keys);
+        }
         break;
       case "time.changed":
         if (e.epochMs !== undefined) store.set(simEpochMsAtom, e.epochMs);
@@ -43,5 +58,6 @@ export function installWorldBridge(store: Store): void {
   teardown = () => {
     unsubscribe();
     unregister();
+    uninstallResources();
   };
 }

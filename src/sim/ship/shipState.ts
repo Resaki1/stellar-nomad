@@ -25,6 +25,11 @@ export interface ShipState {
   boostIdleS: number;
   /** Last-step telemetry for views: main-engine use 0..1, boost firing, speed limit km/s. */
   thrustMain: number;
+  /** Control demand of the last step: delivered thrust Δv in body axes (km/s), |Δω| L1 (rad/s). */
+  ctlDvF: number;
+  ctlDvR: number;
+  ctlDvU: number;
+  ctlDwRadps: number;
   boosting: boolean;
   speedLimitKmps: number;
   /** World-forward (+Z rotated by quat) as of the last step. */
@@ -52,6 +57,10 @@ export function createShipState(): ShipState {
     boostCharge: 1,
     boostIdleS: 0,
     thrustMain: 0,
+    ctlDvF: 0,
+    ctlDvR: 0,
+    ctlDvU: 0,
+    ctlDwRadps: 0,
     boosting: false,
     speedLimitKmps: 0,
     forward: new Vector3(0, 0, 1).applyQuaternion(new Quaternion(q[0], q[1], q[2], q[3])),
@@ -65,6 +74,7 @@ export function resetShipMotion(state: ShipState): void {
   state.boostCharge = 1;
   state.boostIdleS = 0;
   state.thrustMain = 0;
+  state.ctlDvF = state.ctlDvR = state.ctlDvU = state.ctlDwRadps = 0;
   state.boosting = false;
   state.prevPosKm.copy(state.posKm);
   state.prevQuat.copy(state.quat);

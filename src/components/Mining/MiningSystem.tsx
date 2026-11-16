@@ -12,7 +12,7 @@ import { emitterColor } from "@/components/space/emissivePhotometry";
 import {
   miningStateAtom,
   pingWorldBuffer,
-  heatSinkBuffer,
+  miningBeamRequest,
   pulseCycleBuffer,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
@@ -24,18 +24,27 @@ import {
 } from "@/store/mining";
 import { systemConfigAtom } from "@/store/system";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
-import { worldAuthority } from "@/sim/world/worldAuthority";
-import { getLocalPlayerId } from "@/save/playerId";
+import { newOpId, runOperation } from "@/store/operations";
+import { buildMineOperation } from "@/sim/asteroids/mineOperation";
+import { signalAudioActionAtom } from "@/store/audioSignals";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
-import { addCargoAtom } from "@/store/cargo";
 import { spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
-import { addAssaySamplesAtom } from "@/store/research";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
+import { shipRes } from "@/store/shipResources";
+
+let _miningWorkSeen = 0;
+/** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
+function takeMiningWork(): number {
+  const total = shipRes.meter.miningWorkS;
+  const work = total - _miningWorkSeen;
+  _miningWorkSeen = total;
+  return work > 0 ? work : 0;
+}
 
 // --------------------
 // Gameplay / tuning
@@ -720,22 +729,16 @@ const MiningSystem = () => {
   const miningDurationSRef = useRef<number>(5);
   const miningDurationForAsteroidIdRef = useRef<number | null>(null);
 
-  // --- Laser heat tracking (0 = cool, 1 = overheated)
-  const laserHeatRef = useRef(0);
-  const isOverheatedRef = useRef(false);
-
   // --- Pulse mining state
   const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
   const pulseMiningActiveRef = useRef(pulseMiningActive);
   useEffect(() => { pulseMiningActiveRef.current = pulseMiningActive; }, [pulseMiningActive]);
   const pulseCycleTimerRef = useRef(0);
 
-  const addCargo = useSetAtom(addCargoAtom);
-  const addAssaySamples = useSetAtom(addAssaySamplesAtom);
+  const signalAudio = useSetAtom(signalAudioActionAtom);
   const addToast = useSetAtom(addToastAtom);
   const spawnVFX = useSetAtom(spawnVFXEventAtom);
   const incrementMinedSignal = useSetAtom(asteroidMinedSignalAtom);
-  const incrementMinedLifetime = useSetAtom(asteroidsMinedLifetimeAtom);
 
   // Ping Array: modules state for flags
   const modifiers = useAtomValue(computedModifiersAtom);
@@ -748,11 +751,8 @@ const MiningSystem = () => {
 
   // Location captured at completion: the chunk may stream out before this runs.
   const removeAsteroid = useCallback(
-    (t: { instanceId: number; fieldId: string; chunkKey: string }): boolean =>
-      worldAuthority.submit(
-        { type: "asteroid.destroy", fieldId: t.fieldId, chunkKey: t.chunkKey, instanceId: t.instanceId, cause: "mined" },
-        getLocalPlayerId(),
-      ),
+    (t: { instanceId: number; fieldId: string; chunkKey: string }) =>
+      runOperation({ type: "asteroid.destroy", opId: newOpId(), fieldId: t.fieldId, chunkKey: t.chunkKey, instanceId: t.instanceId, cause: "mined" }),
     []
   );
 
@@ -1047,8 +1047,13 @@ const MiningSystem = () => {
     return locked ?? best;
   }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
 
+  useEffect(() => () => {
+    miningBeamRequest.on = false;
+  }, []);
+
   useFrame((_, delta) => {
     pendingRemovalIdRef.current = null;
+    let isOverheatedNow = false;
 
     // --- Find ship object & compute nose once geometry is available
     if (!shipObjRef.current) {
@@ -1234,20 +1239,13 @@ const MiningSystem = () => {
             pulseCycleBuffer.beamOn = true;
           }
 
-          const heatCapS = shipConfigRef.current.miningHeatCapacityS;
+          // Heat and extraction rate come from the ship resource step (one thermal store,
+          // reactor-throttled work on executed time): request the beam, consume granted seconds.
+          miningBeamRequest.on = beamFiring;
+          const work = takeMiningWork();
 
-          if (beamFiring) {
-            // --- "On" phase: heat up + advance mining
-            laserHeatRef.current = Math.min(1, laserHeatRef.current + delta / heatCapS);
-          } else {
-            // --- "Off" phase: partial heat dissipation, no mining progress
-            const cooldownS = shipConfigRef.current.miningCooldownS;
-            laserHeatRef.current = Math.max(0, laserHeatRef.current - delta / cooldownS);
-          }
-
-          // Overheat check
-          if (laserHeatRef.current >= 1) {
-            isOverheatedRef.current = true;
+          if (shipRes.miningTripped) {
+            isOverheatedNow = true;
             cancelMining = true;
             miningProgressRef.current = 0;
             miningAimLostTimeRef.current = 0;
@@ -1257,11 +1255,8 @@ const MiningSystem = () => {
             currentSnapshotRef.current = null;
             lockedEndForAsteroidIdRef.current = null;
             pulseCycleTimerRef.current = 0;
-          }
-
-          // Advance mining (only during beam-on phases)
-          if (beamFiring) {
-            miningProgressRef.current += delta / miningDurationSRef.current;
+          } else {
+            miningProgressRef.current += work / miningDurationSRef.current;
           }
 
           if (miningProgressRef.current >= 1) {
@@ -1305,6 +1300,7 @@ const MiningSystem = () => {
             lockedEndForAsteroidIdRef.current = null;
           }
         } else {
+          miningBeamRequest.on = false;
           miningAimLostTimeRef.current += delta;
 
           if (miningAimLostTimeRef.current > MINING_AIM_GRACE_S) {
@@ -1328,39 +1324,9 @@ const MiningSystem = () => {
       lockedEndForAsteroidIdRef.current = null;
       pulseCycleTimerRef.current = 0;
       pulseCycleBuffer.beamOn = true;
-
-      // --- Cool down the laser when not mining
-      if (laserHeatRef.current > 0) {
-        const cooldownS = shipConfigRef.current.miningCooldownS;
-        laserHeatRef.current = Math.max(0, laserHeatRef.current - delta / cooldownS);
-
-        // Clear overheat once fully cooled
-        if (isOverheatedRef.current && laserHeatRef.current <= 0) {
-          isOverheatedRef.current = false;
-        }
-      }
     }
-
-    // --- Apply pending heat-sink effects (from consumables)
-    if (heatSinkBuffer.pendingSet !== null) {
-      laserHeatRef.current = Math.max(0, Math.min(1, heatSinkBuffer.pendingSet));
-      heatSinkBuffer.pendingSet = null;
-      // Clear multiply/add if set takes priority
-      heatSinkBuffer.pendingMultiplier = null;
-      heatSinkBuffer.pendingAdd = null;
-    }
-    if (heatSinkBuffer.pendingMultiplier !== null) {
-      laserHeatRef.current = Math.max(0, laserHeatRef.current * heatSinkBuffer.pendingMultiplier);
-      heatSinkBuffer.pendingMultiplier = null;
-    }
-    if (heatSinkBuffer.pendingAdd !== null) {
-      laserHeatRef.current = Math.max(0, Math.min(1, laserHeatRef.current + heatSinkBuffer.pendingAdd));
-      heatSinkBuffer.pendingAdd = null;
-    }
-    // Clear overheat if heat dropped below threshold
-    if (laserHeatRef.current < 1 && isOverheatedRef.current) {
-      isOverheatedRef.current = false;
-    }
+    if (!isMiningNow || cancelMining) miningBeamRequest.on = false;
+    if (!miningBeamRequest.on) takeMiningWork();
 
     // Force an immediate state commit if we just cancelled or completed mining
     if (cancelMining || pendingRemovalIdRef.current !== null) {
@@ -1390,8 +1356,8 @@ const MiningSystem = () => {
           isFocused: nextFocused,
           isMining: nextIsMining,
           miningProgress: nextMiningProgress,
-          laserHeat: laserHeatRef.current,
-          isOverheated: isOverheatedRef.current,
+          laserHeat: shipRes.heat01,
+          isOverheated: shipRes.miningTripped || isOverheatedNow,
         };
       });
 
@@ -1411,67 +1377,31 @@ const MiningSystem = () => {
       pingWorldBuffer.generation++;
     }
 
-    // Apply side effect: remove asteroid
+    // Mine the asteroid; reward, loot VFX and signals come from the accepted result only.
     const removal = pendingRemovalIdRef.current;
     if (removal !== null) {
-      const removeId = removal.instanceId;
       const reward = pendingMiningRewardRef.current;
-      // Rewards only for a destroy the authority accepted.
-      if (removeAsteroid(removal) && reward && reward.instanceId === removeId) {
-        // Apply efficiency multiplier and add each resource to cargo
-        const effMult = shipConfigRef.current.miningEfficiencyMult;
-        for (const r of reward.resources) {
-          const boostedAmount = Math.max(1, Math.round(r.amount * effMult));
-          addCargo({ resourceId: r.resourceId, amount: boostedAmount });
-        }
-
-        // --- Assay samples yield based on asteroid size ---
-        // Tutorial guarantee: the player's very first mined asteroid always
-        // yields exactly 1 assay sample so the intro reward is deterministic.
-        const isFirstEverMine = store.get(asteroidsMinedLifetimeAtom) <= 0;
-        let assayAmount: number;
-        if (isFirstEverMine) {
-          assayAmount = 1;
-        } else {
-          const field = systemConfig.asteroidFields?.find(
-            (f) => f.id === reward.fieldId
-          );
-          const minR = field?.size?.minRadiusM ?? 8;
-          const maxR = field?.size?.maxRadiusM ?? 1024;
-          const t = maxR > minR ? Math.max(0, Math.min(1, (reward.radiusM - minR) / (maxR - minR))) : 0;
-          // Piecewise-linear: t=0→1, t=0.35→2, t=0.70→4, t=1.0→6
-          let assayYield: number;
-          if (t <= 0.35) {
-            assayYield = 1 + (t / 0.35) * (2 - 1);
-          } else if (t <= 0.70) {
-            assayYield = 2 + ((t - 0.35) / 0.35) * (4 - 2);
-          } else {
-            assayYield = 4 + ((t - 0.70) / 0.30) * (6 - 4);
-          }
-          assayAmount = Math.max(1, Math.round(assayYield));
-          const bonusChance = shipConfigRef.current.assaySampleBonusChance;
-          if (bonusChance > 0 && Math.random() < bonusChance) {
-            assayAmount += 1;
-          }
-        }
-        addAssaySamples(assayAmount);
-
-        // Build loot entries including assay samples
-        const lootEntries = [
-          ...reward.resources,
-          { resourceId: "_assay", amount: assayAmount, name: "Assay Samples", icon: "" },
-        ];
-
-        spawnVFX({
-          type: "mined",
-          position: reward.positionLocal,
-          radiusM: reward.radiusM,
-          loot: lootEntries,
+      if (reward && reward.instanceId === removal.instanceId) {
+        const cfg = shipConfigRef.current;
+        const op = buildMineOperation(
+          systemConfig,
+          { ...removal, radiusM: reward.radiusM },
+          { miningEfficiencyMult: cfg.miningEfficiencyMult, assaySampleBonusChance: cfg.assaySampleBonusChance, minedLifetime: store.get(asteroidsMinedLifetimeAtom) },
+          newOpId(),
+        );
+        runOperation(op, (o) => {
+          if (o.status !== "accepted" || o.result.type !== "asteroid.mine") return;
+          const granted = o.result.granted;
+          const loot = reward.resources
+            .filter((r) => (granted[r.resourceId] ?? 0) > 0)
+            .map((r) => ({ ...r, amount: granted[r.resourceId] }));
+          loot.push({ resourceId: "_assay", amount: o.result.assaySamples, name: "Assay Samples", icon: "" });
+          spawnVFX({ type: "mined", position: reward.positionLocal, radiusM: reward.radiusM, loot });
+          if (Object.keys(granted).length > 0) signalAudio("loot.acquire");
+          incrementMinedSignal((c) => c + 1);
         });
-
-        // Signal that mining completed (GameCommsTriggers watches this)
-        incrementMinedSignal((c) => c + 1);
-        incrementMinedLifetime((c) => c + 1);
+      } else {
+        removeAsteroid(removal);
       }
 
       pendingRemovalIdRef.current = null;

@@ -9,7 +9,7 @@ import { SCHEMA_VERSION, defaultPlayerState, defaultSaveData } from "./defaults"
 import { listWorlds, loadWorld, newWorldId, putWorld, requestPersistentStorage } from "./saveDb";
 import { getLocalPlayerId, setLastWorldId } from "./playerId";
 import { isSimPaused } from "@/sim/simPause";
-import type { Difficulty, PlayerState, SaveData, SaveMeta, SaveRecord, WorldId, WorldState } from "./types";
+import type { Difficulty, PlayerId, PlayerState, SaveData, SaveMeta, SaveRecord, WorldId, WorldState } from "./types";
 
 const FLUSH_DEBOUNCE_MS = 1000;
 const PLAY_TICK_MS = 2000;
@@ -47,6 +47,12 @@ export function getLocalPlayerState(): PlayerState {
   return (players[id] ??= defaultPlayerState());
 }
 
+/** Any saved player's state; the local player is created on demand, others must exist. */
+export function getPlayerState(id: PlayerId): PlayerState | null {
+  if (!active) return null;
+  return id === getLocalPlayerId() ? getLocalPlayerState() : (active.data.players[id] ?? null);
+}
+
 export function readPlayerSlice<K extends keyof PlayerState>(key: K): PlayerState[K] | undefined {
   return active ? getLocalPlayerState()[key] : undefined;
 }
@@ -72,20 +78,42 @@ export function writeWorldSlice<K extends keyof WorldState>(key: K, value: World
   markDirty();
 }
 
-export function markDirty(): void {
+/**
+ * `urgent`: flush on the next task, not after the debounce. MEASURED: a reload within the 1 s
+ * debounce lost committed operations; the pagehide flush's IndexedDB write is aborted by unload.
+ */
+export function markDirty(urgent = false): void {
   if (!active) return;
   dirty = true;
-  if (flushTimer !== null) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    void flush();
-  }, FLUSH_DEBOUNCE_MS);
+  if (flushTimer !== null) {
+    if (!urgent) return;
+    clearTimeout(flushTimer);
+  }
+  flushTimer = setTimeout(
+    () => {
+      flushTimer = null;
+      void flush();
+    },
+    urgent ? 0 : FLUSH_DEBOUNCE_MS,
+  );
 }
 
 /** Runs right before every flush; writes sampled values into the save without dirtying it. */
 export function registerCollector(fn: () => void): () => void {
   collectors.add(fn);
   return () => collectors.delete(fn);
+}
+
+/** Sample live values into the in-memory record now (before an operation reads it). No write. */
+export function sampleCollectors(): void {
+  if (!active) return;
+  collectors.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {
+      console.error("[save] collector failed", e);
+    }
+  });
 }
 
 /** Benchmarks / test isolation: no IndexedDB write happens while any reason holds. */

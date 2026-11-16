@@ -36,8 +36,12 @@ export interface WreckRecord {
   frameId: string;
   /** Relative to `frameId`'s origin, km. */
   positionKm: Vec3Tuple;
-  /** resourceId → amount. */
+  /** Material cargo: resourceId → integer units. */
   items: Record<string, number>;
+  /** Ordinary propellant, kg (finite, ≥ 0). Never the protected allowance. Schema 2+. */
+  fuelKg: number;
+  /** Loose consumables: itemId → integer count. Schema 2+. */
+  consumables: Record<string, number>;
   createdAt: number;
 }
 
@@ -47,11 +51,29 @@ export const UNCHUNKED = "unchunked";
 /** fieldId → chunkKey (or UNCHUNKED) → destroyed instance ids. */
 export type AsteroidDeltas = Record<string, Record<string, number[]>>;
 
+/** World-shared research progress (schema 2+). Only the world authority writes it. */
+export interface SharedResearchState {
+  /** Completed node ids in completion order. Ids unknown to this build are kept, inert. */
+  completedNodes: string[];
+}
+
+/** One accepted operation, for duplicate rejection across reloads. */
+export interface OperationReceipt {
+  opId: string;
+  type: string;
+  by: PlayerId;
+  /** Wall clock ms at acceptance. */
+  at: number;
+}
+
 export interface WorldState {
   simEpochMs: number;
   simRate: number;
   asteroidDeltas: AsteroidDeltas;
   wrecks: WreckRecord[];
+  research: SharedResearchState;
+  /** Bounded, oldest first (MAX_RECEIPTS). */
+  receipts: OperationReceipt[];
 }
 
 export type CargoState = {
@@ -61,11 +83,10 @@ export type CargoState = {
   items: Record<string, number>;
 };
 
+/** Per-player until PR 2 retires assay samples and the timer; completions live in the world. */
 export type ResearchState = {
   /** Non-cargo currency earned from mining. */
   assaySamples: number;
-  /** IDs of completed research nodes. */
-  completedNodes: string[];
   /** Currently active research (only one at a time). */
   activeResearch: { nodeId: string; elapsedS: number } | null;
 };
@@ -123,6 +144,31 @@ export type ShipConfig = {
   hullRegenPerSecond: number;
 };
 
+/** Propellant, kg: finite, ≥ 0, fractional. */
+export interface PropellantState {
+  ordinaryKg: number;
+  /** Protected recovery allowance; separate from ordinary tanks. */
+  protectedKg: number;
+}
+
+/** Fractions of the equipment-defined stores (0–1), so a capacity change keeps them valid. */
+export interface PowerState {
+  capacitor01: number;
+  heat01: number;
+}
+
+/** One onboard processing batch (M3.2). Reserved feedstock is already out of cargo. */
+export interface ProcessingBatch {
+  id: string;
+  recipeId: string;
+  /** resourceId → integer units reserved. */
+  reserved: Record<string, number>;
+  /** Executed simulation seconds so far. */
+  elapsedS: number;
+  /** Output already delivered to the ordinary tank, kg. */
+  committedKg: number;
+}
+
 export interface PlayerState {
   /** null = never saved; the ship spawns at the system's starting position. */
   ship: ShipPose | null;
@@ -136,6 +182,9 @@ export interface PlayerState {
   commsPlayed: string[];
   starMarkers: string[];
   minedLifetime: number;
+  propellant: PropellantState;
+  power: PowerState;
+  processing: ProcessingBatch | null;
 }
 
 export interface SaveData {

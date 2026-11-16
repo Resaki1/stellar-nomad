@@ -35,6 +35,52 @@
     display: block;
   }
 
+  // ── Onboard work: fuel processing + repair ──
+  &__workshop {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: s.$space-2;
+
+    @media (max-width: 560px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  &__workshop-row {
+    margin-top: s.$space-2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: s.$space-2;
+    justify-content: space-between;
+  }
+
+  &__workshop-units {
+    display: inline-flex;
+    gap: s.$space-1;
+  }
+
+  &__workshop-reason {
+    margin-top: s.$space-1;
+    font-size: 11px;
+    color: s.$accent-warn;
+  }
+
+  &__progress {
+    position: relative;
+    margin-top: s.$space-2;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: s.$radius-pill;
+    overflow: hidden;
+  }
+
+  &__progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: s.$accent-info;
+  }
+
   // ── Slot filters ──
   &__filters {
     display: flex;
