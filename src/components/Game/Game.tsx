@@ -11,6 +11,10 @@ import AudioDevTools from "../Audio/AudioDevTools";
 
 import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
+import { loadNearFieldEngine } from "@/sim/physics/nearField";
+
+// Starts with the game chunk's evaluation, in parallel with the scene's assets; the loading gate waits (bounded).
+if (typeof window !== "undefined") void loadNearFieldEngine();
 
 const Game = () => {
   return (

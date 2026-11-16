@@ -10,9 +10,9 @@ Title: SpaceShip
 
 import { useGLTF } from "@react-three/drei";
 import { GLTF } from "three-stdlib";
-import { Mesh, MeshStandardMaterial } from "three";
+import { Mesh, MeshStandardMaterial, type BufferGeometry } from "three";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { JSX } from "react";
 
 type GLTFResult = GLTF & {
@@ -81,10 +81,22 @@ type GLTFResult = GLTF & {
 // ~5.5 stops. The hull was never the problem. See LIGHTING_PLAN D26.
 const HULL_EMISSIVE_INTENSITY = 0.0;
 
-export function ShipOne({ children, ...props }: JSX.IntrinsicElements["group"]) {
+/** Hull mesh scale relative to the ship body (group 0.3 × mesh 0.01): vertices × this = metres. */
+const SHIP_ONE_MESH_SCALE = 0.3 * 0.01;
+
+type ShipOneProps = JSX.IntrinsicElements["group"] & {
+  /** Called once the GLB is loaded with the hull geometry and its scale to ship-body metres. */
+  onHullGeometry?: (geometry: BufferGeometry, scale: number) => void;
+};
+
+export function ShipOne({ children, onHullGeometry, ...props }: ShipOneProps) {
   const { nodes, materials } = useGLTF(
     "/models/ships/ShipOne.glb"
   ) as unknown as GLTFResult;
+  const geometry = nodes.Starship_Material003_0.geometry;
+  useEffect(() => {
+    onHullGeometry?.(geometry, SHIP_ONE_MESH_SCALE);
+  }, [geometry, onHullGeometry]);
   // CLONE rather than mutate: useGLTF caches materials per URL, so writing to the
   // hook's material would be a cross-instance side effect during render (and the
   // lint rule is right to object). The clone is memoised on the source material,
@@ -99,7 +111,7 @@ export function ShipOne({ children, ...props }: JSX.IntrinsicElements["group"]) 
       <mesh
         castShadow
         receiveShadow
-        geometry={nodes.Starship_Material003_0.geometry}
+        geometry={geometry}
         material={hull}
         scale={0.01}
       />

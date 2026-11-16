@@ -8,15 +8,24 @@ export const MAX_INSTANCES_PER_MODEL = 4096 * 128; // 524288
 import type { AsteroidChunkModelInstances } from "@/sim/asteroids/runtimeTypes";
 
 /**
- * Floats per slot: vec4(pos.xyz, radius) + vec4(quat.xyzw) = 8 floats.
- * Stored as 2 x vec4 in the storage buffer.
+ * Slot = 3 x vec4: (posHigh.xyz, radius), (posLow.xyz, 0), quat.xyzw. Field-local metres are split
+ * so the shaders can subtract the world origin exactly (relative-to-eye; see splitHigh).
  */
-const FLOATS_PER_SLOT = 8;
+export const VEC4_PER_SLOT = 3;
+const FLOATS_PER_SLOT = VEC4_PER_SLOT * 4;
+
+/** High/low split grid. A multiple of it is exact in f32 and the remainder (<= 512 m) keeps 0.03 mm steps. */
+export const PRECISION_GRID_M = 1024;
+
+/** The high part of `v` metres: the nearest multiple of PRECISION_GRID_M. */
+export function splitHigh(v: number): number {
+  return Math.round(v / PRECISION_GRID_M) * PRECISION_GRID_M;
+}
 
 /**
  * Manages GPU storage buffer slots for one asteroid model type.
  *
- * Writes instance data (pos, quat, radius) directly into the
+ * Writes instance data (split pos, quat, radius) directly into the
  * StorageBufferAttribute's typed array on chunk add/remove, then
  * flags the buffer for upload via `needsUpdate`. The compute shader
  * reads this buffer every frame — dead slots have radius=0 and are
@@ -48,8 +57,7 @@ export class GpuSlotAllocator {
   constructor(maxSlots: number) {
     this.maxSlots = maxSlots;
 
-    // 2 vec4s per slot → count = maxSlots * 2, itemSize = 4 (vec4)
-    this.inputAttr = new StorageBufferAttribute(maxSlots * 2, 4);
+    this.inputAttr = new StorageBufferAttribute(maxSlots * VEC4_PER_SLOT, 4);
     this.data = this.inputAttr.array as Float32Array;
   }
 
@@ -104,17 +112,20 @@ export class GpuSlotAllocator {
       const pi = i * 3;
       const qi = i * 4;
 
-      // vec4(pos.xyz, radius)
-      d[off]     = ox + positions[pi];
-      d[off + 1] = oy + positions[pi + 1];
-      d[off + 2] = oz + positions[pi + 2];
+      const px = ox + positions[pi], py = oy + positions[pi + 1], pz = oz + positions[pi + 2];
+      const hx = splitHigh(px), hy = splitHigh(py), hz = splitHigh(pz);
+      d[off]     = hx;
+      d[off + 1] = hy;
+      d[off + 2] = hz;
       d[off + 3] = radii[i];
-
-      // vec4(quat.xyzw)
-      d[off + 4] = quaternions[qi];
-      d[off + 5] = quaternions[qi + 1];
-      d[off + 6] = quaternions[qi + 2];
-      d[off + 7] = quaternions[qi + 3];
+      d[off + 4] = px - hx;
+      d[off + 5] = py - hy;
+      d[off + 6] = pz - hz;
+      d[off + 7] = 0;
+      d[off + 8]  = quaternions[qi];
+      d[off + 9]  = quaternions[qi + 1];
+      d[off + 10] = quaternions[qi + 2];
+      d[off + 11] = quaternions[qi + 3];
     }
 
     this.chunkSlots.set(chunkKey, slots);
@@ -183,6 +194,13 @@ export class GpuSlotAllocator {
     this.inputAttr.needsUpdate = true;
     this._dirtyMin = Infinity;
     this._dirtyMax = -1;
+  }
+
+  /** The slot data (posHigh.xyz, radius, posLow.xyz, 0, quat.xyzw) of a chunk's `localIndex`-th instance, as uploaded. */
+  readInstance(chunkKey: string, localIndex: number): number[] | null {
+    const slot = this.chunkSlots.get(chunkKey)?.[localIndex];
+    if (slot === undefined) return null;
+    return Array.from(this.data.subarray(slot * FLOATS_PER_SLOT, (slot + 1) * FLOATS_PER_SLOT));
   }
 
   /** Check if a chunk is already allocated. */

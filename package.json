@@ -21,6 +21,7 @@
     "drive": "node --experimental-websocket --no-warnings=ExperimentalWarning scripts/drive.mjs"
   },
   "dependencies": {
+    "@dimforge/rapier3d-simd-compat": "0.21.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.4.2",
     "@types/three": "^0.183.1",

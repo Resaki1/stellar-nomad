@@ -18,7 +18,9 @@ import {
   StorageInstancedBufferAttribute,
   IndirectStorageBufferAttribute,
 } from "three/webgpu";
-import type { GpuSlotAllocator } from "./GpuSlotAllocator";
+import type { StorageBufferNode, WebGPURenderer } from "three/webgpu";
+import { splitHigh, VEC4_PER_SLOT, type GpuSlotAllocator } from "./GpuSlotAllocator";
+import { renderDebug, type AsteroidBatchDebug } from "@/sim/physics/asteroidColliders";
 
 // ─── Near tier types ────────────────────────────────────────────────
 
@@ -31,7 +33,52 @@ type UniformVec3 = typeof _uVec3;
 type UniformVec4 = typeof _uVec4;
 type UniformNum = typeof _uNum;
 
-export type CullComputeUniforms = {
+// ─── World origin in field-local metres, split high/low ─────────────
+
+export type OriginUniforms = {
+  uOriginHigh: UniformVec3;
+  uOriginLow: UniformVec3;
+  /** f64 origin the uniforms were last set from (dev read-back). */
+  originM: Float64Array;
+};
+
+function createOriginUniforms(): OriginUniforms {
+  return { uOriginHigh: uniform(new THREE.Vector3()), uOriginLow: uniform(new THREE.Vector3()), originM: new Float64Array(3) };
+}
+
+/** Per frame: the world origin relative to the field anchor, metres, split on the slot grid. */
+export function setOriginUniforms(
+  worldOriginKm: THREE.Vector3,
+  anchorKm: readonly number[],
+  u: OriginUniforms,
+): void {
+  const o = u.originM;
+  o[0] = (worldOriginKm.x - anchorKm[0]) * 1000;
+  o[1] = (worldOriginKm.y - anchorKm[1]) * 1000;
+  o[2] = (worldOriginKm.z - anchorKm[2]) * 1000;
+  const hx = splitHigh(o[0]), hy = splitHigh(o[1]), hz = splitHigh(o[2]);
+  u.uOriginHigh.value.set(hx, hy, hz);
+  u.uOriginLow.value.set(o[0] - hx, o[1] - hy, o[2] - hz);
+}
+
+type SlotStorage = StorageBufferNode<"vec4">;
+
+/**
+ * Slot `i` relative to the world origin: (high - originHigh) + (low - originLow). The first
+ * difference is exact (both on the grid); each is materialised so the sum can't be regrouped
+ * into one ~1e6 m add, which is what rounded rocks to 0.25 m steps (the close-range jitter).
+ */
+function slotRelative(inputNode: SlotStorage, u: OriginUniforms) {
+  const base = instanceIndex.mul(VEC4_PER_SLOT);
+  const high = inputNode.element(base);
+  const low = inputNode.element(base.add(1));
+  const dHigh = high.xyz.sub(u.uOriginHigh).toVar();
+  const dLow = low.xyz.sub(u.uOriginLow).toVar();
+  const pos = dHigh.add(dLow).toVar();
+  return { pos, radius: high.w, quat: inputNode.element(base.add(2)) };
+}
+
+export type CullComputeUniforms = OriginUniforms & {
   uCameraPos: UniformVec3;
   uNearRadiusM: UniformNum;
   uFrustum: UniformVec4[];
@@ -42,6 +89,7 @@ export type CullComputeUniforms = {
 
 export function createCullUniforms(): CullComputeUniforms {
   return {
+    ...createOriginUniforms(),
     uCameraPos: uniform(new THREE.Vector3()),
     uNearRadiusM: uniform(0),
     uFrustum: Array.from({ length: 6 }, () => uniform(new THREE.Vector4())),
@@ -53,7 +101,7 @@ export function createCullUniforms(): CullComputeUniforms {
 
 // ─── Far tier types ─────────────────────────────────────────────────
 
-export type FarCullComputeUniforms = {
+export type FarCullComputeUniforms = OriginUniforms & {
   uCameraPos: UniformVec3;
   uNearRadiusM: UniformNum;
   uFarRadiusM: UniformNum;
@@ -62,6 +110,7 @@ export type FarCullComputeUniforms = {
 
 export function createFarCullUniforms(): FarCullComputeUniforms {
   return {
+    ...createOriginUniforms(),
     uCameraPos: uniform(new THREE.Vector3()),
     uNearRadiusM: uniform(0),
     uFarRadiusM: uniform(0),
@@ -83,7 +132,7 @@ export function createCullComputeNode(
   uniforms: CullComputeUniforms,
   indexCount: number,
 ) {
-  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * VEC4_PER_SLOT).toReadOnly();
 
   const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 16);
   const outputNode = storage(outputAttr, "vec4", maxOutputInstances * 4);
@@ -100,17 +149,13 @@ export function createCullComputeNode(
   } = uniforms;
 
   const computeFn = Fn(() => {
-    const i = instanceIndex;
-
-    const posRadius = inputNode.element(i.mul(2));
-    const quat = inputNode.element(i.mul(2).add(1));
-    const radius = posRadius.w;
+    const { pos, radius, quat } = slotRelative(inputNode, uniforms);
 
     // Dead slot: radius ≤ 0
     const alive = step(float(0.001), radius);
 
     // Distance: within near radius
-    const toCamera = posRadius.xyz.sub(uCameraPos);
+    const toCamera = pos.sub(uCameraPos);
     const dist = length(toCamera);
     const inRange = float(1.0).sub(step(uNearRadiusM, dist));
 
@@ -118,7 +163,7 @@ export function createCullComputeNode(
     let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
-      const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
+      const d = dot(pos, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
@@ -161,7 +206,7 @@ export function createCullComputeNode(
           vec4(xz.add(wy).mul(s), yz.sub(wx).mul(s), float(1).sub(xx.add(yy)).mul(s), float(0))
         );
         outputNode.element(base.add(3)).assign(
-          vec4(posRadius.x, posRadius.y, posRadius.z, float(1))
+          vec4(pos, float(1))
         );
       });
     });
@@ -179,7 +224,7 @@ export function createCullComputeNode(
 
 // ─── Mid tier types ──────────────────────────────────────────────────
 
-export type MidCullComputeUniforms = {
+export type MidCullComputeUniforms = OriginUniforms & {
   uCameraPos: UniformVec3;
   uMinRadiusM: UniformNum;
   uMaxRadiusM: UniformNum;
@@ -191,6 +236,7 @@ export type MidCullComputeUniforms = {
 
 export function createMidCullUniforms(): MidCullComputeUniforms {
   return {
+    ...createOriginUniforms(),
     uCameraPos: uniform(new THREE.Vector3()),
     uMinRadiusM: uniform(0),
     uMaxRadiusM: uniform(0),
@@ -215,7 +261,7 @@ export function createMidCullComputeNode(
   uniforms: MidCullComputeUniforms,
   indexCount: number,
 ) {
-  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * VEC4_PER_SLOT).toReadOnly();
 
   const outputAttr = new StorageInstancedBufferAttribute(maxOutputInstances, 16);
   const outputNode = storage(outputAttr, "vec4", maxOutputInstances * 4);
@@ -231,16 +277,12 @@ export function createMidCullComputeNode(
   } = uniforms;
 
   const computeFn = Fn(() => {
-    const i = instanceIndex;
-
-    const posRadius = inputNode.element(i.mul(2));
-    const quat = inputNode.element(i.mul(2).add(1));
-    const radius = posRadius.w;
+    const { pos, radius, quat } = slotRelative(inputNode, uniforms);
 
     const alive = step(float(0.001), radius);
 
     // Band-pass: minRadius ≤ dist < maxRadius
-    const toCamera = posRadius.xyz.sub(uCameraPos);
+    const toCamera = pos.sub(uCameraPos);
     const dist = length(toCamera);
     const beyondMin = step(uMinRadiusM, dist);
     const withinMax = float(1.0).sub(step(uMaxRadiusM, dist));
@@ -250,7 +292,7 @@ export function createMidCullComputeNode(
     let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
-      const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
+      const d = dot(pos, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
@@ -292,7 +334,7 @@ export function createMidCullComputeNode(
           vec4(xz.add(wy).mul(s), yz.sub(wx).mul(s), float(1).sub(xx.add(yy)).mul(s), float(0))
         );
         outputNode.element(base.add(3)).assign(
-          vec4(posRadius.x, posRadius.y, posRadius.z, float(1))
+          vec4(pos, float(1))
         );
       });
     });
@@ -313,7 +355,7 @@ export function createMidCullComputeNode(
 /**
  * GPU compute: cull + compact for the far tier (billboard impostors).
  * Band-pass distance filter: nearRadius ≤ dist < farRadius.
- * Outputs compacted vec4(pos.xyz, radius) packed into mat4 column 0.
+ * Outputs compacted vec4(pos.xyz, radius), pos relative to the world origin.
  */
 export function createFarCullComputeNode(
   allocator: GpuSlotAllocator,
@@ -321,7 +363,7 @@ export function createFarCullComputeNode(
   maxOutputInstances: number,
   uniforms: FarCullComputeUniforms,
 ) {
-  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * 2).toReadOnly();
+  const inputNode = storage(allocator.inputAttr, "vec4", maxAllocSlots * VEC4_PER_SLOT).toReadOnly();
 
   // Output: one vec4(pos.xyz, radius) per visible instance.
   // Added to the geometry as a named instanced attribute "aFarData".
@@ -338,16 +380,12 @@ export function createFarCullComputeNode(
   const { uCameraPos, uNearRadiusM, uFarRadiusM, uFrustum } = uniforms;
 
   const computeFn = Fn(() => {
-    const i = instanceIndex;
-
-    // Read only pos+radius (skip quat — billboards don't need orientation).
-    const posRadius = inputNode.element(i.mul(2));
-    const radius = posRadius.w;
+    const { pos, radius } = slotRelative(inputNode, uniforms);
 
     const alive = step(float(0.001), radius);
 
     // Band-pass: nearRadius ≤ dist < farRadius
-    const toCamera = posRadius.xyz.sub(uCameraPos);
+    const toCamera = pos.sub(uCameraPos);
     const dist = length(toCamera);
     const beyondNear = step(uNearRadiusM, dist);       // 1 if dist ≥ near
     const withinFar = float(1.0).sub(step(uFarRadiusM, dist)); // 1 if dist < far
@@ -357,7 +395,7 @@ export function createFarCullComputeNode(
     let inFrustum: ReturnType<typeof float> = float(1.0);
     for (let p = 0; p < 6; p++) {
       const plane = uFrustum[p];
-      const d = dot(posRadius.xyz, plane.xyz).add(plane.w);
+      const d = dot(pos, plane.xyz).add(plane.w);
       inFrustum = inFrustum.mul(step(radius.negate(), d));
     }
 
@@ -372,7 +410,7 @@ export function createFarCullComputeNode(
 
       If(outIdx.lessThan(maxOut), () => {
         outputNode.element(outIdx).assign(
-          vec4(posRadius.x, posRadius.y, posRadius.z, radius)
+          vec4(pos, radius)
         );
       });
     });
@@ -386,6 +424,32 @@ export function createFarCullComputeNode(
   const resetNode = resetFn().compute(1);
 
   return { computeNode, resetNode, outputAttr, indirectAttr };
+}
+
+// ─── Dev read-back registry ─────────────────────────────────────────
+
+/** Register a tier batch for the harness (`renderDebug.batches`); returns the cleanup. */
+export function registerBatchDebug(
+  key: string,
+  tier: AsteroidBatchDebug["tier"],
+  mesh: THREE.Object3D,
+  gl: WebGPURenderer,
+  indirectAttr: THREE.BufferAttribute,
+  outputAttr: THREE.BufferAttribute,
+  cull: AsteroidBatchDebug["cull"],
+): () => void {
+  if (process.env.NODE_ENV !== "development") return () => {};
+  const entry: AsteroidBatchDebug = {
+    tier,
+    mesh,
+    cull,
+    readCount: async () => new Uint32Array(await gl.getArrayBufferAsync(indirectAttr))[1],
+    readOutput: async () => new Float32Array(await gl.getArrayBufferAsync(outputAttr)),
+  };
+  renderDebug.batches.set(key, entry);
+  return () => {
+    if (renderDebug.batches.get(key) === entry) renderDebug.batches.delete(key);
+  };
 }
 
 // ─── Frustum plane extraction helper ────────────────────────────────

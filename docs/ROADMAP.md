@@ -1,13 +1,21 @@
 # Stellar Nomad — Roadmap
 
-**Status:** proposal, 2026-11-13. Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming
-brief, long since built). Not yet reviewed by Christian.
+**Status:** active roadmap; original proposal 2026-11-13, gameplay/story direction and
+M3 scope agreed 2026-11-15. M0/M1 are built as recorded below; M2 is in progress.
+Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
 model, clouds, procedural systems, asteroid fields v2, ship interiors), splits them where
 parts of one depend on parts of another, and defines milestones with exit gates. Each
 milestone marked *own plan doc* gets a detailed design doc when it starts; this file only
 fixes order, scope and the seams between them.
+
+**Gameplay handoff:** [GAMEPLAY_AND_STORY.md](GAMEPLAY_AND_STORY.md) records the agreed
+sandbox, nomadic progression, replication, and Von Neumann premise.
+[M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md) is the detailed M3 design and ordered
+implementation plan. These documents include the discussion absent from the original
+M0–M2 implementation context. They supersede the old root story/progression documents;
+the following historical survey is not a description of the current code.
 
 ---
 
@@ -29,12 +37,15 @@ structures and drones → asteroid fields v2 → terrain → generic bodies / cl
 → procedural systems → interiors.**
 
 Multiplayer is *architecturally* early (F3) and *feature-wise* in the middle: it lands
-after the solo loop is fun but **before stations and drones**, so those are built once,
-networked from day one.
+after the solo loop is fun but **before industrial stations and drones**, so those are
+built once, networked from day one. **Exception decided for M3:** a simple standalone
+replication point is pulled forward from M5 to support nomadic solo recovery. It uses
+the shared-world authority/save seam immediately; M4 networks it along with discoveries
+and shared research. It does not pull depot storage or general station building forward.
 
 ---
 
-## 2. What the code looks like today (surveyed 2026-11-13)
+## 2. Historical baseline before M0 (surveyed 2026-11-13)
 
 Only the facts that drive the ordering. File references are where to start reading.
 
@@ -88,8 +99,11 @@ module-level singletons. Gas giants are Phase 8 of [`CLOUD_TYPES_PLAN.md`](CLOUD
 
 **Existing plans that stay valid:** `PHYSICS_PLAN.md` (Rapier behind a facade, P0–P4),
 `CLOUD_TYPES_PLAN.md`, `CLOUD_SHADOWS_GODRAYS_PLAN.md`, `STAR_RENDERING_PLAN.md` §25–§28
-(system switch blockers, parked procedural stars). **Stale:** `STORY.md`, the story and
-comms parts of `GAME_DESIGN.md`, `CURRENT_PLAN.md`, `COMMS_IDEAS.md`.
+(system switch blockers, parked procedural stars). **Superseded:** `STORY.md`, the story,
+comms and prescribed progression parts of `GAME_DESIGN.md`, `CURRENT_PLAN.md`, and
+`COMMS_IDEAS.md`. Current gameplay/story requirements are in
+[GAMEPLAY_AND_STORY.md](GAMEPLAY_AND_STORY.md); M3 details are in
+[M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md).
 
 ---
 
@@ -99,7 +113,7 @@ comms parts of `GAME_DESIGN.md`, `CURRENT_PLAN.md`, `COMMS_IDEAS.md`.
 |---|---|---|
 | Flight model | sim extraction (F1) · velocity-vector 6DOF + flight assist · mouse/input layer · camera rig · atmospheric drag | M0, M1, (drag: M7) |
 | Physics | near-field collision + response (`PHYSICS_PLAN` P0–P3) · ship-vs-ship, debris (P4) · terrain heightfield collision | M2, M5, M7 |
-| Game loop | design doc v2 · solo survival pressures + tier rebalance · stations, storage, drones · later tiers (belt, giants, interstellar) | M3, M5, then with each world milestone |
+| Game loop | nomadic solo survival, discovery-based research, simple replication · industrial stations, fuel routes, drones · branching regional/interstellar opportunities | M3, M5, then with each world milestone |
 | Multiplayer | state/authority split (F3) · presence · shared world deltas · shared structures · dedicated server | M0, M4, M5, later |
 | Asteroid fields v2 | chunk-keyed deltas (F3) · new shapes + density functions + multi-scale grid · rings · system-wide belts | M0, M6 |
 | Terrain | rotating frames · quadtree LOD + real data (Moon) · collision + landing · Mars · Earth · walking | M7, later |
@@ -248,68 +262,90 @@ Original scope, for reference:
 - **Exit gate:** scripted manoeuvres with numeric targets (stop time from top speed, 180°
   turn time, strafe authority), then your playtest.
 
-### M2 — Near-field physics · size L · plan exists
+### M2 — Near-field physics · ✅ built 2026-11-17 (branch `m2-physics`), awaiting playtest
 
-Execute [`PHYSICS_PLAN.md`](PHYSICS_PLAN.md) P0–P3 with three amendments:
+As built: [`PHYSICS_PLAN.md`](PHYSICS_PLAN.md) §7. Gate script:
+`scripts/drive-examples/physics-check.mjs` (`PHYS_PARTS=sim,damage,hull,asteroids`, plus
+`live,park,switch,transit,foreign` and, with `--perf`, `cost,stream`).
+- Rapier 0.21 behind `src/sim/physics/`; ship hull 7.8 × 2.0 × 6.6 m from its own mesh,
+  rocks as convex hulls of their LOD1 meshes, matching the rendered instance to 0.05 cm.
+- Asteroids no longer vanish on contact: the ship bounces, damage follows impact speed
+  (nothing under 8 m/s, lethal from 120 m/s). Pushable or shattering rocks: M5.
+- Asteroids are not solid above 0.9 km/s, in transit, or under the dev speed override.
+- Cost: 0.2 ms per step with 40 colliders, 0.46 ms with 2,000. Download +1.65 MB.
+- Asteroid render precision (found in playtest, predates M2): instance positions were f32
+  metres from the field anchor (~2,800 km away → 0.25 m steps, visible jitter up close).
+  Now stored split on a 1 km grid and subtracted from the world origin part by part:
+  error 0.22 m → under 0.7 mm. Gate: `scripts/drive-examples/asteroid-precision.mjs`.
+  Side effect: the far tier's fade measured distance from the field anchor and hid far
+  billboards at the start pose; it now uses camera distance, so more distant rocks show.
+  Cost: +16 B per slot (+48 MiB GPU and CPU reserved across 6 allocators; size them per
+  field as a follow-up).
+- Open: playtest of bounce and damage values (Settings → Dev → Physics); with the default
+  3 km radius the field is so sparse (~0.5 rocks in range) that streaming was only
+  exercised with a widened radius; if the engine fails to load, asteroids have no collision.
 
-1. The physics world lives in the **ship's current frame** (local metres), per M0.2.
-2. **One flight integrator.** We keep computing accelerations ourselves; in the near field
-   the ship is a Rapier dynamic body whose velocity we set before the step and read back
-   after, so Rapier resolves contacts but never owns flight feel. Above the speed gate we
-   integrate position ourselves.
-3. P3's impulses use M1's real mass and velocity.
 
-Adds a dependency: `@dimforge/rapier3d-simd-compat` (already chosen in that plan).
-**Exit gates:** as written there (zero missed contacts against a 1 kHz reference sweep).
+Execute the current contract in [`PHYSICS_PLAN.md` §7](PHYSICS_PLAN.md#7-m2-as-decided-2026-11-16--supersedes-3-where-they-differ),
+which supersedes that document's older P0–P3 details where they differ. Keep one flight
+integrator and a near-field contact resolve step, frame-relative local metres, a speed
+gate, and the raw Rapier facade (`@dimforge/rapier3d-simd-compat`). Asteroids stay fixed
+and are not destroyed by ramming; damage follows the contact-normal delta-v curve.
+Celestial swept collisions stay lethal until terrain/landing. **Exit gates:** §7.4,
+including M0/M1 regressions. Record as-built results when actually verified; this
+gameplay documentation update does not mark M2 complete.
 
-### M3 — Survival loop v1, solo · size L · *own plan doc (GAME_DESIGN v2)*
+### M3 — Solo exploration and survival · size L · design ready
 
-Design work can start in parallel with M0–M2; it is writing, not code.
+Detailed design, code map, migrations, ordered phases M3.0–M3.8, and verification:
+[`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md). Agreed gameplay/story decisions:
+[`GAMEPLAY_AND_STORY.md`](GAMEPLAY_AND_STORY.md). No M3 implementation is claimed yet.
 
-- **Pressures** (D3). The rule that keeps this from becoming a fight for life: **nothing
-  drains while you are idle.** Every pressure is spent by *doing* something, so it shapes
-  how far an expedition goes rather than putting a timer on the player.
+- **Outcome:** a self-sufficient probe can prepare a worthwhile lunar-orbit expedition,
+  establish a new recovery point, and keep operating there without returning to Earth.
+  One-way relocation, settling, and continued nomadic exploration are all valid.
+- **Starter self-sufficiency:** basic scanning, mining, analysis, onboard fabrication,
+  hydrate-to-propellant processing, common-material repair, and an initial replication
+  point. No Earth service, rare drop, or lunar material is required for basic survival.
+- **Prospecting and progression:** useful composition/yield inspection, persistent
+  resource/site discoveries, typed discovery/trial-based research, and a small branching
+  equipment catalogue. Remove the generic-assay/timer grind and the unrelated
+  three-tier-2 transit prerequisite. Basic scanner information is not a consumable tax.
+- **Pressures:** propellant spent on actual thrust/transit; reactor output and capacitor
+  constrain simultaneous/burst work; shared heat throttles sustained activity before
+  damage; hull repairs cost material. Safe inactivity has no upkeep. Preserve M2's
+  collision/damage contract. No oxygen, food, crew, or archive meters.
+- **Fuel-aware travel:** ETA/burn/arrival reserve, safe abort/braking fuel, and reachable
+  clearance legs where Earth blocks the lunar route. One initial propellant; distant
+  drive physics/fiction remains D4. A small reserve is not a substitute for recovery.
+- **Replication pulled forward from M5:** craft/place/name a standalone point anywhere
+  usable and safe; placement activates it for its owner; explicit nearby activation
+  selects an existing point. No depot storage, modular stations, or station physics.
+- **Loss:** restore at the last activated valid point; leave cargo/consumables and
+  remaining ordinary fuel in recoverable wrecks. Preserve research, discoveries,
+  manufactured permanent equipment, and archive copies. Emergency abandonment uses
+  the same flow. Protected recovery allowance plus an explicit supplied-starter fallback
+  prevents isolated-point/zero-fuel loops; these are first-slice implementation defaults.
+- **Playable content:** Earth and lunar orbital regions with practical local resources,
+  several useful opportunities, and one small lunar survey-equipment/sample recovery
+  activity. No terrain or surface extraction. No easy helium-3 early economy.
+- **Guidance:** optional player-selected projects, contextual companion-AI hints and
+  records; no prescribed ground-control campaign or mandatory return-home objective.
+- **State:** research/evidence/discoveries and placed points are shared world state
+  through the authority. Fuel, equipment, tracked projects, and active replication ID
+  remain per-player. Migrate old saves without erasing progress; atomic loss/transfer
+  operations must survive reloads and future asynchronous M4 acceptance.
+- **Difficulty:** balance Standard first; simple resource/damage multipliers for the
+  other presets. Preserve the recovery/knowledge model; old punitive hard-mode module
+  loss and in-place explorer respawn are not M3 requirements.
 
-  | Pressure | Spent by | Restored by | When it runs out |
-  |---|---|---|---|
-  | **Propellant** | thrust; transit burns a lot | refined from hydrates (water as reaction mass), depots, other players | limp-home thrust only, never death. It is the range limiter that makes "can I reach the Moon and get back?" a real question |
-  | **Power** | not a draining bar: a reactor gives a budget, modules draw from it, a capacitor covers bursts (boost, pulse mining) | better reactors (He-3 at tier 1+) | you cannot run everything at once; a loadout constraint |
-  | **Heat** | mining laser (exists today), boost, transit spool, later the Sun and atmospheric entry | radiators, heat sinks, time | systems throttle, then hull damage |
-  | **Hull** | impacts scaled by impact energy (M2), sustained overheating | repair costs Fe-Ni; no free regeneration by default | ship destroyed |
-
-  No oxygen, food or crew needs. Radiation arrives with tier 3 as a location gate.
-- **Destruction** stays real: a scrape costs hull, a head-on hit on a large asteroid at
-  speed or any impact with the Moon destroys the ship. Fairness comes from the flight
-  model (collision warning, flight assist), not from soft damage. On destruction: respawn
-  at the last depot (or the start), cargo stays in a recoverable wreck, as today.
-- **Difficulty** is a per-world setting chosen at world creation, implemented as one data
-  table of multipliers on top of the existing effects system, so it costs almost nothing
-  if it is there from the first pressure onward:
-
-  | | Explorer | Standard | Hard |
-  |---|---|---|---|
-  | Propellant use | off | 1× | 1.5× |
-  | Collision damage | hull cannot drop below 1% | 1× | 1.5× |
-  | Hull repair | free, automatic | costs resources | costs resources |
-  | On destruction | respawn in place | cargo left in a wreck | cargo lost, one equipped module damaged |
-
-  Balance Standard first; the other two columns are numbers to tune later.
-- **Tiers by destination**, each adding one resource, one hazard and one capability:
-
-  | Tier | Place | New resource | New hazard | Unlocks |
-  |---|---|---|---|---|
-  | 0 | Earth far-orbit field | silicates, Fe-Ni, carbon, sulfur, hydrates | collisions | better engine |
-  | 1 | Moon | titanium, He-3 | fuel range | depot, first drone |
-  | 2 | Mars, main belt | to design | distance, dust | refining, hauler drones |
-  | 3 | Jupiter, Saturn | ring ice, atmospheric gases | radiation, gravity wells | scooping, larger stations |
-  | 4 | Outer system, Kuiper belt | volatiles | cold, isolation | interstellar drive |
-  | 5 | Other stars | to design | to design | to design |
-
-  Only tiers 0–1 are built in M3; the table exists so early systems do not block later ones.
-- Rebalance research and recipes around the tiers; replace the old objective tracker.
-- Everything here is **per-player state**, so it is multiplayer-safe by construction.
-- **Exit gate:** a fresh save reaches the Moon in a play session with at least one moment
-  where a pressure forced a decision.
+**Exit gates:** a fresh save completes scan → mine → process → research → craft/equip
+→ lunar transit → survey/salvage → replication placement → destruction → restoration
+→ partial/full cargo/fuel recovery. At least two viable early investment priorities,
+one understood resource decision, indefinite practical self-sufficiency near the Moon,
+usable zero-fuel/invalid/isolated-point recovery, migration/reload integrity, measured
+performance, and passing M0–M2 regressions. Detailed cases are in the plan; reaching
+the Moon alone is insufficient.
 
 ### M4 — Co-op v1 · size L · *own plan doc*
 
@@ -330,22 +366,34 @@ Design work can start in parallel with M0–M2; it is writing, not code.
 - **N1 presence**: remote ships as entities; pose snapshots in frame-relative coordinates
   at ~15 Hz with an interpolation buffer; shared sim clock from the host; remote exhaust,
   lights and spatial audio. Each client simulates its own ship. No rollback, no lockstep.
-- **N2 shared world**: asteroid deltas, mining locks and wrecks through host commands;
-  join-in-progress sends the world save.
-- **N3 player persistence** (D2) and item transfer between players.
+- **N2 shared world**: asteroid deltas, mining locks, cargo/fuel wrecks, M3 replication
+  points, discoveries/evidence and research unlocks through host commands; join-in-progress
+  sends the world save. Do not reintroduce individual research grinding.
+- **N3 player persistence** (D2), individual active replication selections, and item/fuel
+  transfer between players. All essential activities remain possible solo; no compulsory
+  crew roles or synchronized progression attendance.
 - Scale target: a handful of ships. Friends only, so no anti-cheat.
 - **Exit gate:** two browsers mine the same field for 30 minutes; world saves are identical
   afterwards; a late joiner sees the same destroyed asteroids.
 
-### M5 — Shared structures and drones · size L
+### M5 — Industrial structures, sustainable routes, and drones · size L · own plan doc
 
-- **Depot**: first placeable entity. Storage, respawn point, shared access. Rides an
-  orbit co-moving frame (pulls that frame kind forward from M6 if needed).
-- **Fabrication** at the depot; decide whether ship-side crafting stays instant.
-- **Drones v1**: assign a mining drone to a field and a depot. Simulated for real when a
-  player is near, as a rate when nobody is. A few drones per station, not hundreds.
+- Extend the simple M3 placeable/authority model into **depots** with shared storage,
+  expanded fabrication and specialized production. Basic ship self-sufficiency remains.
+  A depot may include replication; respawning is no longer a depot-exclusive feature.
+  Use existing body frames initially or pull an orbit co-moving frame forward only if
+  needed. No compulsory fixed home.
+- **Fuel production and routes:** a refinery at a resource source can supply itself;
+  relay depots receive cargo deliveries. Players carry construction outward and establish
+  longer routes. Adequate production/transport/buffers make a route sustainable without
+  constant manual top-ups.
+- **Drones v1:** UI-assigned jobs, resource filters/priorities, destination, return reserve,
+  and stop conditions. No required scripting, random breakdowns, or recurring maintenance.
+  Simulate detailed work nearby and resource-conserving rates/routes remotely. A few
+  detailed drones per station, not hundreds of full rigid bodies.
 - Physics P4: ship-vs-ship and ship-vs-station contact, mining debris.
-- **Exit gate:** two players and two drones fill one depot; state survives host restart.
+- **Exit gate:** two players and two drones operate a depot and a supplied fuel route;
+  state survives host restart, and sustained operation needs no manual refill round.
 
 ### M6 — Asteroid fields v2 · size L · *own plan doc*
 
@@ -374,7 +422,8 @@ Design work can start in parallel with M0–M2; it is writing, not code.
   existing far sphere so photometry, albedo calibration and eclipses stay valid.
 - **T3 Moon**: real elevation (LOLA) down to its resolution; below that, procedural
   amplification from the real crater size distribution plus instanced rocks. The Moon goes
-  first because it has no atmosphere, ocean, vegetation or clouds, and it is tier 1.
+  first because it has no atmosphere, ocean, vegetation or clouds, and it extends the
+  already-playable M3 lunar orbital region.
 - **T4** heightfield collision patches around the ship, landing gear contact, landing
   assist, surface resource nodes.
 - **T5 Mars** (MOLA/HRSC), with atmospheric drag and entry heating in the flight model.
@@ -386,7 +435,7 @@ Design work can start in parallel with M0–M2; it is writing, not code.
 - **F4**: `BodyDescriptor` → one parameterised renderer (rocky, icy, gas archetypes),
   clearing `systemRegistry` blockers 1–4. Existing hand-tuned bodies become descriptors.
 - Clouds: remove the Earth singletons, per-body cloud config, then `CLOUD_TYPES_PLAN`
-  Phase 8 (gas giants). Unlocks tier 3 atmosphere scooping.
+  Phase 8 (gas giants). Enables the atmospheric collection branch of regional gameplay.
 
 ### M9 — Procedural systems and the interstellar loop · size XL
 
@@ -394,8 +443,23 @@ Design work can start in parallel with M0–M2; it is writing, not code.
   elsewhere. System activation by distance. Procedural stars per the entry conditions in
   `STAR_RENDERING_PLAN.md` §28.2.
 - Interstellar travel design (D4).
+- Later astronomical surveying can identify promising systems without revealing exact
+  remote deposits. Local investigation and scientific discovery remain worthwhile
+  alongside resource gathering. No mandatory sequence through every earlier planet.
 
 ### M10 — Interiors and on-foot · size XL · far future
+
+### Later gameplay — regional hazards and optional human restoration
+
+- Introduce intense solar heating, radiation, and specialist extraction alongside the
+  regional content that makes preparation for them useful. Scope their thermal/scientific
+  models separately; M3 activity heat does not authorize changes to calibrated lighting.
+- A Von Neumann probe carries humanity's protected archive after Earth's loss. Finding
+  a suitable world and establishing a human colony is an **optional endgame ambition**,
+  comparable to a major sandbox milestone, not a required campaign or game-ending trigger.
+- Actual habitability/colony systems require their own later plan after the necessary
+  exploration/world foundations. They are not silently included in M9 or M10. No archive
+  maintenance, decay, countdown, or permanent loss of this goal after ship destruction.
 
 ### Track C — Cloud polish · parallel, optional
 
@@ -405,21 +469,26 @@ then time-boxed sessions only.
 
 ---
 
-## 5. Decisions needed from you
+## 5. Decision record and remaining choices
 
-M0–M2 can start without any of these. D1–D3 are needed before M3/M4.
+Do not re-request agreed direction when starting M3. Detailed rule defaults and tuning
+values are in its plan; D4/D8 and later feature details remain appropriately deferred.
 
 | # | Decision | Recommendation |
 |---|---|---|
 | D1 | **Who hosts a co-op world?** | ✅ **Decided 2026-11-13:** a player's browser hosts; dedicated servers only once there are players beyond friends. Transport: WebRTC data channels, see M4 |
-| D2 | **Where does a player's progress live in co-op?** | ✅ **Decided 2026-11-13:** in the world save, keyed by player (Minecraft model) |
-| D3 | **Survival pressures** | ✅ **Direction decided 2026-11-13:** propellant, power, hull, heat; satisfying collect/craft/explore over constant danger; difficulty levels. Details in M3. Still open: whether the player is a crewed pilot or a machine intelligence (affects only fiction and M10) |
-| D4 | **Interstellar travel** | Today's drive silently exceeds c. Either a clearly fictional drive with honest rules, or real relativistic travel. Decide before M9, not now |
+| D2 | **Where does progress live in co-op?** | ✅ **Decided 2026-11-13; refined 2026-11-15:** individual ships/equipment/supplies live in the world save keyed by player (Minecraft model); research/evidence/discoveries and structures are shared world state (D11). |
+| D3 | **Survival pressures and player identity** | ✅ **Direction decided 2026-11-13; refined 2026-11-15:** propellant, power/capacitor, hull, heat; no safe-idle upkeep. Player is an autonomous Von Neumann probe intelligence, with a distinct companion AI. No crew/oxygen/food/archive care. |
+| D4 | **Transit/interstellar travel** | Exact technology remains open before M9. Real-scale short journeys already need an explicit fictional concession; do not label present performance conventional physics or revive a compulsory relativistic/time-dilation campaign. M3 implements honest fuel/ETA/braking rules without settling the final interstellar drive. |
 | D5 | **Speed regimes** | Keep two (manoeuvring + transit). Derive the manoeuvring speed cap from stopping distance vs sensor range instead of a fixed 400 m/s, so better engines and scanners raise it |
 | D6 | **Run sim time at 1× by default after M0.2?** | Yes. The terminator moves, moons orbit, and frames are exercised constantly instead of only in tests |
 | D7 | **Ring particle scale** | Real ring particles are centimetres to ~10 m. Render true scale near the camera and add rarer, larger mineable bodies; say so in the design doc |
 | D8 | **Terrain tile hosting** | Elevation pyramids are gigabytes: object storage + CDN, outside git. Decide in M7's spike |
 | D9 | **Is landing on Earth in scope?** | Not for the first terrain pass |
+| D10 | **Home and progression** | ✅ **Decided 2026-11-15:** Earth is a starting region, not a required home. Basic self-sufficiency travels with the ship; progression branches and supports one-way relocation. |
+| D11 | **Shared research and discovery** | ✅ **Decided 2026-11-15:** world-owned knowledge/unlocks; individual ships, equipment, supplies, tracked projects, and recovery selections. Establish ownership in M3 before networking. |
+| D12 | **Replication and loss** | ✅ **Decided 2026-11-15:** craftable free-form points; last placed automatically active for the placer, existing points explicitly reactivated nearby. Destruction leaves cargo/fuel at a wreck and preserves permanent progression. M3 defaults add protected startup allowance and an explicit safe fallback. |
+| D13 | **Story and optional endgame** | ✅ **Decided 2026-11-15:** delayed awakening after humanity is gone; Earth uninhabitable for humans; protected reproducible archive; optional human colony goal, continued sandbox afterward. Exact catastrophe, time elapsed, archive biology, and colony implementation remain open. |
 
 ---
 
@@ -441,12 +510,16 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 
 ---
 
-## 7. Starting point
+## 7. Current implementation handoff
 
-M0.1, in this order, each step shippable on its own:
+1. Finish/verify M2 against its current `PHYSICS_PLAN.md` §7 contract and record actual
+   as-built results. Preserve the existing M0/M1 flight, frame, save and loading seams.
+2. Read [GAMEPLAY_AND_STORY.md](GAMEPLAY_AND_STORY.md) for decisions made after the
+   original roadmap discussion. Root story/progression documents are historical.
+3. Follow [M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md), starting with M3.0's current-code
+   reconciliation, save migration policy, tuning tables, and measured baseline.
+4. Implement M3 in its ordered, gated slices. Record deviations and playtest evidence;
+   do not expand it into M5 automation or M7 terrain.
 
-1. Record a reference pose trace with `pnpm drive` (straight flight, turns, a transit hop).
-2. Extract `ShipState` + `stepShip` verbatim from `Spaceship.tsx`. No behaviour change.
-3. Move the camera into `ChaseCamera`; move input to a `ShipInput` buffer.
-4. Add the entity table; point mining and the wreck collector at it.
-5. Re-run the trace and diff.
+The 2026-11-15 update adds documentation only. It neither implements M3 nor certifies
+the active M2 working tree. Exact source/gate APIs must be re-read when M3 starts.

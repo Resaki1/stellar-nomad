@@ -1,10 +1,11 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { useAtomValue } from "jotai";
+import * as THREE from "three";
+import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
 
-import SimGroup from "@/components/space/SimGroup";
 import NearTierBatch from "@/components/Asteroids/NearTierBatch";
 import type { NearTierAllocators } from "@/components/Asteroids/NearTierBatch";
 import MidTierBatch from "@/components/Asteroids/MidTierBatch";
@@ -12,16 +13,9 @@ import FarTierBatch from "@/components/Asteroids/FarTierBatch";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "@/components/Asteroids/GpuSlotAllocator";
 
 import { systemConfigAtom } from "@/store/system";
-import { shipHealthAtom } from "@/store/store";
-import { transitDriveBuffer } from "@/store/transit";
-import { spawnVFXEventAtom } from "@/store/vfx";
-import { effectiveShipConfigAtom } from "@/store/shipConfig";
-import { worldAuthority } from "@/sim/world/worldAuthority";
-import { getLocalPlayerId } from "@/save/playerId";
-import { dieAtom, isDeadAtom } from "@/store/death";
-import { cargoAtom } from "@/store/cargo";
-import { getLocalPlayerShip } from "@/sim/entities";
-import { SYSTEM_FRAME_ID } from "@/sim/frames";
+import { SYSTEM_FRAME_ID, isFrameId, type FrameId } from "@/sim/frames";
+import { nearField } from "@/sim/physics/nearField";
+import { AsteroidFieldColliders, asteroidFieldColliders, registerAsteroidColliderModel, renderDebug, type FieldColliderContext } from "@/sim/physics/asteroidColliders";
 import type { AsteroidFieldDef, SystemConfig } from "@/sim/systemTypes";
 import {
   getSystemAsteroidModelDefs,
@@ -31,14 +25,11 @@ import {
   resolveFieldStreaming,
 } from "@/sim/systemTypes";
 
-import type { ChunkCoord } from "@/sim/asteroids/runtimeTypes";
-import { makeChunkKey } from "@/sim/asteroids/runtimeTypes";
-
 import { useAsteroidModelRegistry } from "@/sim/asteroids/modelRegistry";
 import type { AsteroidModelRegistries } from "@/sim/asteroids/modelRegistry";
 import { useAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { useWorldOrigin } from "@/sim/worldOrigin";
-import { prepareFieldShape, distancePointToAabbKm } from "@/sim/asteroids/shapes";
+import { prepareFieldShape } from "@/sim/asteroids/shapes";
 
 import type {
   AsteroidChunkWorkerWorkerToMainMessage,
@@ -48,27 +39,6 @@ import type {
 
 const GENERATION_LOOK_AHEAD_S = 2.0;
 const MAX_GEN_REQUESTS_PER_TICK = 256;
-
-// Collision
-const COLLISION_INTERVAL_S = 0.1;
-const SHIP_COLLIDER_RADIUS_M = 60;
-const COLLISION_LOG_COOLDOWN_MS = 1000;
-const MAX_COLLISION_LOGS_PER_TICK = 3;
-
-// Kinetic-energy damage model
-// Damage = baseDamage * (0.5·m·v²) / referenceKE, m = ρ·(4/3)π·r³.
-// Calibrated so a ~30 m rock at full burn (400 m/s) — the median field hit —
-// costs roughly 20% of an unarmored hull. Exponent < 1 compresses the huge
-// mass range (10 m pebble → 500 m boulder) into a gameplay-sane damage band.
-const ASTEROID_DENSITY_KG_M3 = 3000;      // typical rocky asteroid density
-const REF_BASE_DAMAGE = 20;               // damage at the reference impact
-const REF_KINETIC_ENERGY_J = 3e13;        // ~30 m rock @ 400 m/s
-const KE_DAMAGE_EXPONENT = 0.4;           // flattens the r³·v² range
-const MIN_IMPACT_VELOCITY_MPS = 20;       // below this: grazing bump only
-// Hard cap at 80% of max hull. A full-speed smack into a giant rock is
-// brutal but must never one-shot the ship — the player always gets a
-// chance to react.
-const MAX_DAMAGE_FRACTION = 0.8;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -131,6 +101,25 @@ function ensureCandidateBuffers(size: number): void {
   _candIndices = new Uint32Array(newSize);
 }
 
+/** Collision mesh = LOD1 vertices; scale and base rotation = the near tier's (what is drawn close up). */
+function registerColliderModels(registries: AsteroidModelRegistries): void {
+  registries.lod0.forEach((near: AsteroidModelAsset, id) => {
+    const mesh = registries.lod1.get(id);
+    const pos = (mesh ?? near).geometry.getAttribute("position");
+    const pts = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      pts[i * 3] = pos.getX(i); pts[i * 3 + 1] = pos.getY(i); pts[i * 3 + 2] = pos.getZ(i);
+    }
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(near.baseRotationRad[0], near.baseRotationRad[1], near.baseRotationRad[2]));
+    registerAsteroidColliderModel(id, pts, mesh ? "lod1" : "lod0", [q.x, q.y, q.z, q.w], near.baseRadiusM, near.baseScale, {
+      vertices: pos.count,
+      lod0Vertices: near.geometry.getAttribute("position").count,
+      lod0RadiusM: near.baseRadiusM / near.baseScale,
+      lod1RadiusM: mesh ? mesh.baseRadiusM / mesh.baseScale : NaN,
+    });
+  });
+}
+
 // ─── FieldLayer ─────────────────────────────────────────────────────
 
 type FieldLayerProps = {
@@ -147,10 +136,6 @@ const FieldLayer = memo(function FieldLayer({
   const modelRegistry = modelRegistries.lod0;
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
-  const store = useStore();
-  const setShipHealth = useSetAtom(shipHealthAtom);
-  const spawnVFX = useSetAtom(spawnVFXEventAtom);
-  const triggerDeath = useSetAtom(dieAtom);
 
   const renderCfg = useMemo(() => resolveFieldRender(system, field), [system, field]);
   const streamingCfg = useMemo(
@@ -196,14 +181,28 @@ const FieldLayer = memo(function FieldLayer({
   const tickFrameRef = useRef(0);
   const prevFieldPosRef = useRef({ x: 0, y: 0, z: 0, valid: false });
 
-  // Collision
-  const collisionAccRef = useRef(0);
-  const lastCollisionLogMsRef = useRef<Map<number, number>>(new Map());
+  // Physics colliders of this field's rocks around the ship (docs/PHYSICS_PLAN.md §7.2).
+  const colliders = useMemo(() => new AsteroidFieldColliders(field.id, nearField), [field.id]);
+  useEffect(() => {
+    colliders.attach();
+    asteroidFieldColliders.set(field.id, colliders);
+    renderDebug.allocators.set(field.id, allocatorsRef);
+    return () => {
+      colliders.dispose();
+      if (asteroidFieldColliders.get(field.id) === colliders) asteroidFieldColliders.delete(field.id);
+      renderDebug.allocators.delete(field.id);
+    };
+  }, [colliders, field.id]);
+  const unframedWarned = useRef(false);
+  const colliderCtx = useRef<FieldColliderContext>({
+    chunks: fieldRuntime.chunks, frameId: SYSTEM_FRAME_ID, anchorRelKm: [0, 0, 0], shipX: 0, shipY: 0, shipZ: 0,
+  });
 
-  // ── Chunk mutation listener (mining/collision) ────────────────
+  // ── Chunk mutation listener (asteroid.destroyed) ──────────────
   // Re-allocates GPU slots when an external system mutates a chunk.
   useEffect(() => {
     const unsubscribe = fieldRuntime.onChunkUpdate((chunkKey, updatedChunk) => {
+      colliders.onChunkUpdated(chunkKey, updatedChunk);
       // Re-sync GPU allocators for the mutated chunk.
       allocatorsRef.current.forEach((alloc) => {
         if (alloc.hasChunk(chunkKey)) alloc.freeChunk(chunkKey);
@@ -216,43 +215,7 @@ const FieldLayer = memo(function FieldLayer({
       }
     });
     return unsubscribe;
-  }, [fieldRuntime]);
-
-  const removeAsteroidInstance = useCallback(
-    (chunkKey: string, instanceId: number) =>
-      worldAuthority.submit(
-        { type: "asteroid.destroy", fieldId: field.id, chunkKey, instanceId, cause: "collision" },
-        getLocalPlayerId(),
-      ),
-    [field.id]
-  );
-
-  const applyShipCollisionDamage = useCallback((asteroidRadiusM: number): number => {
-    const cfg = store.get(effectiveShipConfigAtom);
-    // Asteroids are effectively static in their field — the ship's absolute
-    // speed (m/s) is a good proxy for relative impact velocity.
-    const tv = transitDriveBuffer.velocityKmps;
-    const shipKmps = getLocalPlayerShip()?.velKmps.length() ?? 0;
-    const velocityMps = Math.max(shipKmps * 1000, Math.hypot(tv.x, tv.y, tv.z) * 1000, MIN_IMPACT_VELOCITY_MPS);
-
-    const volumeM3 = (4 / 3) * Math.PI * asteroidRadiusM * asteroidRadiusM * asteroidRadiusM;
-    const massKg = ASTEROID_DENSITY_KG_M3 * volumeM3;
-    const kineticEnergyJ = 0.5 * massKg * velocityMps * velocityMps;
-
-    const keRatio = kineticEnergyJ / REF_KINETIC_ENERGY_J;
-    const baseDamage = REF_BASE_DAMAGE * Math.pow(keRatio, KE_DAMAGE_EXPONENT);
-
-    const effectiveDamage = baseDamage * cfg.collisionDamageMult / (cfg.maxHealth / 100);
-    const maxDamage = cfg.maxHealth * MAX_DAMAGE_FRACTION;
-    const damage = Math.max(1, Math.min(maxDamage, Math.round(effectiveDamage)));
-
-    let newHealth = 0;
-    setShipHealth((prev) => {
-      newHealth = Math.max(0, prev - damage);
-      return newHealth;
-    });
-    return newHealth;
-  }, [setShipHealth, store]);
+  }, [fieldRuntime, colliders]);
 
   // ── Worker lifecycle ────────────────────────────────────────────
 
@@ -353,8 +316,6 @@ const FieldLayer = memo(function FieldLayer({
   // ── Frame loop ──────────────────────────────────────────────────
 
   useFrame((_state, delta) => {
-    collisionAccRef.current += delta;
-
     const ship = worldOrigin.shipPosKm;
     const px = ship.x - field.anchorKm[0];
     const py = ship.y - field.anchorKm[1];
@@ -365,6 +326,7 @@ const FieldLayer = memo(function FieldLayer({
     if (distToFieldKm > streamingCfg.unloadRadiusKm) {
       if (fieldRuntime.chunks.size > 0) fieldRuntime.clear();
       allocatorsRef.current.forEach((alloc) => alloc.clear());
+      colliders.clear();
 
       epochRef.current += 1;
       prevFieldPosRef.current.valid = false;
@@ -518,143 +480,31 @@ const FieldLayer = memo(function FieldLayer({
       }
     }
 
-    // ── Phase C: Collision checks ───────────────────────────────
-    if (collisionAccRef.current >= COLLISION_INTERVAL_S) {
-      collisionAccRef.current = 0;
-
-      // Skip collisions when ship is destroyed
-      if (store.get(isDeadAtom)) return;
-
-      const shipRadiusM = SHIP_COLLIDER_RADIUS_M;
-      const shipRadiusKm = shipRadiusM / 1000;
-      const chunkSizeKm = streamingCfg.chunkSizeKm;
-
-      const shipCx = Math.floor(px / chunkSizeKm);
-      const shipCy = Math.floor(py / chunkSizeKm);
-      const shipCz = Math.floor(pz / chunkSizeKm);
-
-      const nowMs = performance.now();
-      const lastLog = lastCollisionLogMsRef.current;
-      if (lastLog.size > 20_000) lastLog.clear();
-
-      let logsThisTick = 0;
-
-      for (let ox = -1; ox <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; ox++) {
-        for (let oy = -1; oy <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; oy++) {
-          for (let oz = -1; oz <= 1 && logsThisTick < MAX_COLLISION_LOGS_PER_TICK; oz++) {
-            const coord: ChunkCoord = { x: shipCx + ox, y: shipCy + oy, z: shipCz + oz };
-            const key = makeChunkKey(field.id, coord);
-
-            const chunk = fieldRuntime.getChunk(key);
-            if (!chunk) continue;
-
-            const aabbDistKm = distancePointToAabbKm(
-              px, py, pz,
-              chunk.aabbMinKm[0], chunk.aabbMinKm[1], chunk.aabbMinKm[2],
-              chunk.aabbMaxKm[0], chunk.aabbMaxKm[1], chunk.aabbMaxKm[2],
-            );
-
-            const chunkInflationKm = shipRadiusKm + chunk.maxRadiusM / 1000;
-            if (aabbDistKm > chunkInflationKm) continue;
-
-            const sxM = (px - chunk.originKm[0]) * 1000;
-            const syM = (py - chunk.originKm[1]) * 1000;
-            const szM = (pz - chunk.originKm[2]) * 1000;
-
-            const byModel = chunk.instancesByModel;
-
-            for (const modelId in byModel) {
-              const inst = byModel[modelId];
-              const positions = inst.positionsM;
-              const radii = inst.radiiM;
-              const ids = inst.instanceIds;
-              const count = inst.count;
-
-              for (let i = 0; i < count; i++) {
-                const pIndex = i * 3;
-                const dx = positions[pIndex] - sxM;
-                const dy = positions[pIndex + 1] - syM;
-                const dz = positions[pIndex + 2] - szM;
-
-                const r = radii[i] + shipRadiusM;
-                const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > r * r) continue;
-
-                const instanceId = ids[i] >>> 0;
-                const prevMs = lastLog.get(instanceId);
-                if (prevMs !== undefined && nowMs - prevMs < COLLISION_LOG_COOLDOWN_MS) continue;
-                lastLog.set(instanceId, nowMs);
-
-                const chunkOriginLocalX =
-                  (field.anchorKm[0] + chunk.originKm[0] - worldOrigin.worldOriginKm.x) * 1000;
-                const chunkOriginLocalY =
-                  (field.anchorKm[1] + chunk.originKm[1] - worldOrigin.worldOriginKm.y) * 1000;
-                const chunkOriginLocalZ =
-                  (field.anchorKm[2] + chunk.originKm[2] - worldOrigin.worldOriginKm.z) * 1000;
-
-                const asteroidLocalX = chunkOriginLocalX + positions[pIndex];
-                const asteroidLocalY = chunkOriginLocalY + positions[pIndex + 1];
-                const asteroidLocalZ = chunkOriginLocalZ + positions[pIndex + 2];
-
-                const shipLocalX = (ship.x - worldOrigin.worldOriginKm.x) * 1000;
-                const shipLocalY = (ship.y - worldOrigin.worldOriginKm.y) * 1000;
-                const shipLocalZ = (ship.z - worldOrigin.worldOriginKm.z) * 1000;
-
-                const idX = shipLocalX - asteroidLocalX;
-                const idY = shipLocalY - asteroidLocalY;
-                const idZ = shipLocalZ - asteroidLocalZ;
-                const idLen = Math.sqrt(idX * idX + idY * idY + idZ * idZ);
-                const impactDir: [number, number, number] =
-                  idLen > 0.01
-                    ? [idX / idLen, idY / idLen, idZ / idLen]
-                    : [0, 1, 0];
-
-                // Already destroyed (e.g. mined this frame): no impact.
-                if (!removeAsteroidInstance(key, instanceId)) continue;
-                const newHealth = applyShipCollisionDamage(radii[i]);
-
-                spawnVFX({
-                  type: "collision",
-                  position: [asteroidLocalX, asteroidLocalY, asteroidLocalZ],
-                  radiusM: radii[i],
-                  impactDirection: impactDir,
-                });
-
-                if (newHealth <= 0) {
-                  // Ship destroyed — spawn large debris at ship position and trigger death
-                  spawnVFX({
-                    type: "collision",
-                    position: [shipLocalX, shipLocalY, shipLocalZ],
-                    radiusM: 120,
-                  });
-                  const cargo = store.get(cargoAtom);
-                  const local = getLocalPlayerShip();
-                  triggerDeath({
-                    frameId: local ? local.frameId : SYSTEM_FRAME_ID,
-                    positionKm: local
-                      ? [local.posKm.x, local.posKm.y, local.posKm.z]
-                      : [ship.x, ship.y, ship.z],
-                    cargoItems: cargo.items,
-                  });
-                  return;
-                }
-
-                logsThisTick++;
-                if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;
-              }
-              if (logsThisTick >= MAX_COLLISION_LOGS_PER_TICK) break;
-            }
-          }
-        }
+    // ── Phase C: physics colliders around the ship ──────────────
+    const ctx = colliderCtx.current;
+    const frameId: FrameId = field.anchorBody && field.anchorOffsetKm && isFrameId(field.anchorBody) ? field.anchorBody : SYSTEM_FRAME_ID;
+    ctx.chunks = fieldRuntime.chunks;
+    ctx.frameId = frameId;
+    // In its body's frame the anchor offset IS the field's position (anchorKm = body + offset).
+    ctx.anchorRelKm = frameId === SYSTEM_FRAME_ID ? field.anchorKm : (field.anchorOffsetKm ?? field.anchorKm);
+    ctx.shipX = px; ctx.shipY = py; ctx.shipZ = pz;
+    // A body-anchored field without a frame would leave system-frame colliders behind the moving rocks.
+    if (field.anchorBody && frameId === SYSTEM_FRAME_ID) {
+      if (!unframedWarned.current) {
+        unframedWarned.current = true;
+        console.warn(`[physics] field ${field.id} is anchored to ${field.anchorBody} without a frame/anchorOffsetKm: no asteroid colliders`);
       }
-    }
+    } else colliders.update(ctx);
   });
 
   // ── Render ──────────────────────────────────────────────────────
 
+  // No anchor translation: the batches subtract the world origin per instance (split precision).
   return (
-    <SimGroup space="local" positionKm={field.anchorKm}>
+    <group>
       <NearTierBatch
+        fieldId={field.id}
+        anchorKm={field.anchorKm}
         nearRadiusKm={renderCfg.nearRadiusKm}
         modelRegistry={modelRegistry}
         allocatorsRef={allocatorsRef}
@@ -662,6 +512,8 @@ const FieldLayer = memo(function FieldLayer({
 
       {renderCfg.midRadiusKm > 0 && modelRegistries.lod1.size > 0 && (
         <MidTierBatch
+          fieldId={field.id}
+          anchorKm={field.anchorKm}
           nearRadiusKm={renderCfg.nearRadiusKm}
           midRadiusKm={renderCfg.midRadiusKm}
           modelRegistry={modelRegistries.lod1}
@@ -671,6 +523,8 @@ const FieldLayer = memo(function FieldLayer({
 
       {renderCfg.farRadiusKm > 0 && (
         <FarTierBatch
+          fieldId={field.id}
+          anchorKm={field.anchorKm}
           nearRadiusKm={renderCfg.midRadiusKm > 0 ? renderCfg.midRadiusKm : renderCfg.nearRadiusKm}
           farRadiusKm={renderCfg.farRadiusKm}
           fadeOutKm={renderCfg.crossFadeKm}
@@ -678,7 +532,7 @@ const FieldLayer = memo(function FieldLayer({
           allocatorsRef={allocatorsRef}
         />
       )}
-    </SimGroup>
+    </group>
   );
 });
 
@@ -690,6 +544,7 @@ function AsteroidField() {
   const system = useAtomValue(systemConfigAtom);
   const modelDefs = useMemo(() => getSystemAsteroidModelDefs(system), [system]);
   const modelRegistries = useAsteroidModelRegistry(modelDefs);
+  useEffect(() => registerColliderModels(modelRegistries), [modelRegistries]);
 
   const enabledFields = useMemo(
     () => (system.asteroidFields ?? []).filter((f) => f.enabled !== false),

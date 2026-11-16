@@ -1,6 +1,6 @@
 # Physics Engine Plan — Stellar Nomad
 
-**Status:** proposal, 2026-09-05
+**Status:** proposal 2026-09-05; M2 scope fixed 2026-11-16 in §7 (read that first)
 **Decision:** adopt **Rapier** (`@dimforge/rapier3d-simd-compat`) as a *near-field*
 rigid-body layer behind our own `src/sim/physics` facade. Keep the existing swept
 analytic tests for the far-field / transit regime. Re-evaluate Jolt at the point we
@@ -371,6 +371,110 @@ implementation is far off:
    the analytic swept test still kills on planetary impact, and dropping out of
    transit re-seeds the near field with no jump.
 5. `pnpm lint` clean. (Do not run `pnpm build` from an agent sandbox.)
+
+---
+
+## 7. M2 as decided (2026-11-16) — supersedes §3 where they differ
+
+§1–§2 stand. §3 was written before the flight model (M1), reference frames (M0.2) and the
+world authority (M0.3) existed. This section is what gets built.
+
+### 7.1 Architecture
+
+- **Facade** `src/sim/physics/` (pure TS, no React/jotai): `types.ts`, `PhysicsWorld.ts`
+  (interface), `rapierBackend.ts` (the only file importing `@dimforge/rapier3d-simd-compat`,
+  v0.21.0, lazy `import()` + `init()`), `nearField.ts` (the game-facing module below).
+  Read the package's own `.d.ts` for the API; do not trust remembered signatures.
+- **One flight integrator.** `stepShip` stays pure and unchanged: it produces the new
+  velocities and a tentative pose every fixed step. A separate **resolve** step runs after
+  it: if the near field holds no collider, the tentative pose is accepted as today (exact,
+  f64). If it does, the ship body is placed at the *previous* pose with the *new* linear and
+  angular velocity, the world is stepped by the same `dt`, and pose and velocities are read
+  back into `ShipState`. Rapier resolves contacts; it never decides how the ship flies.
+- **Coordinates.** The physics world is in **metres relative to a physics origin expressed
+  in the ship's current reference frame** (f64 km anchor). The engine never sees km, never
+  sees absolute system coordinates. Rebase when the ship is more than 2 km from the origin:
+  move the anchor and rebuild the near-field colliders (counts are small). A reference-frame
+  switch rebuilds the same way.
+- **Speed gate.** Above `PHYSICS_MAX_SPEED` (derive it: the largest per-step travel the
+  ship's CCD body handles against the smallest collider, with margin; write the derivation
+  next to the constant), during transit, and under the dev speed override, the near field is
+  **suspended**: no body stepping, own integration only, celestial sweep only. Coming back
+  under the gate re-seeds it. One owner at a time, asserted in dev.
+- **Loading.** The engine loads with the game chunk, never on the title screen. The loading
+  gate waits for it (bounded), so there is no window in which rocks are not solid.
+
+### 7.2 Colliders
+
+- **Asteroids are fixed colliders**, created and destroyed as chunks stream within a
+  physics radius around the ship (start: 3 km; cap the count and log what was dropped).
+  Shape: a **convex hull built from the model's LOD1 mesh vertices** scaled and rotated per
+  instance; ball of `radiiM` only as the fallback until a model's vertices are registered.
+  Convex hull, not trimesh: cheap, robust, good enough for lumpy rocks.
+- **The ship is a dynamic body with CCD** and a convex hull from its own mesh. One hull,
+  one size: delete `SHIP_COLLIDER_RADIUS_M = 60` (the model is ~10 m across) and the
+  10 Hz point-in-sphere scan, the per-tick collision cap and the stale-array iteration.
+- `asteroid.destroyed` events (mining, another player) remove the collider.
+- **Celestial bodies stay on the analytic swept test and stay lethal.** Landing is M7.
+
+### 7.3 Contact response and damage
+
+- **Asteroids do not move and are not destroyed by ramming.** Even the smallest rock in
+  the field (8 m radius, ~5,000 t at rock density) outweighs the ship several hundred
+  times, so the physically honest outcome of every collision is that the ship bounces and
+  the rock stays. This removes today's behaviour (rock deleted on contact). Pushable or
+  shattering bodies need world state for moved objects and come with M5.
+- The ship bounces with low restitution and some friction, can pick up spin from an
+  off-centre hit, and the flight assist then recovers. Resting against a rock is stable.
+- **Damage depends on impact speed, not rock size**: the component of the ship's velocity
+  change along the contact normal. Starting curve: nothing below 8 m/s (a bump), then
+  `100 % · ((Δv − 8) / 112)²`, so ~25 % at 64 m/s and lethal from 120 m/s. Scaled by the
+  existing `collisionDamageMult` and max health. Constants live in one tuning table with
+  the same live-edit API as the flight tuning, shown in Settings → Dev.
+- Hull at zero → the existing death flow (wreck with cargo in the ship's frame).
+- VFX, camera shake and `world.impact` audio scale with the same Δv.
+- One contact episode (contact with one rock until a 0.5 s gap) charges `curve(peak Δv)` in
+  total: a scrape or a pogo re-contact only adds damage, flash and sound when it beats the
+  episode's peak.
+- **Known degradation:** with the engine unavailable (load failure, 20 s timeout) or the
+  near field suspended (speed gate, dev speed override) asteroids have no collision at all;
+  only celestial bodies keep the analytic sweep.
+
+### 7.4 Harness and gates
+
+- `__phys.stats()`: ready, suspended + reason, colliders, contacts this step, step ms,
+  origin, rebases. `physics.step` appears in the per-pass profiler.
+- `__test.physics.simulate(script)`: a **private** physics world plus `stepShip`, no
+  rendering: ship start state, scripted input, a list of rocks (ball or hull). Used for
+  every numeric gate below so results do not depend on frame rate.
+
+Gates:
+1. **Free flight unchanged**: with an empty near field every M1 flight gate passes
+   bit-for-bit as before; with a rock 500 m away and no contact, the trajectory matches
+   the no-physics trajectory to 1 mm over 10 s.
+2. **No tunnelling**: at the boosted speed limit, straight at the smallest rock, for 50
+   lateral offsets: contact if and only if the swept hull crosses the rock (analytic
+   ground truth); zero misses, zero false hits. Repeat just under the speed gate.
+3. **Head-on at 30 m/s**: bounces back, exit speed consistent with the restitution,
+   damage as the curve says.
+4. **Glancing at 100 m/s, 10° incidence**: deflected, small damage, some spin, and with
+   flight assist back under 2° sideslip within 3 s.
+5. **Lethal**: 200 m/s head-on destroys the ship. **Bump**: 5 m/s does no damage.
+6. **Resting**: full throttle against a rock for 10 s: penetration under 0.2 m, no
+   jitter above 0.05 m/s, no NaN.
+7. **Energy**: the ship never leaves a collision faster than it entered.
+8. **Hull fidelity**: for 26 directions, the hull's support distance matches the LOD1
+   mesh's within 5 %.
+9. **Rebase and frames**: a 10 km straight flight past rocks gives the same contacts and
+   trajectory with the rebase threshold at 2 km and at 100 km; parked beside a rock at
+   sim rate 10⁴ produces no contact and no drift; a frame switch re-seeds cleanly.
+10. **Speed gate**: transit suspends the near field and re-seeds it after; collider count
+    returns to its baseline; never two owners.
+11. **Cost**: `physics.step` in ms at a named scene with the field loaded, and with 2,000
+    synthetic colliders; empty world under 0.1 ms.
+12. **Live**: in the running game, fly into a real asteroid at ~20 m/s (damage, rock
+    still there, ship bounces) and at ~300 m/s (death, wreck created).
+13. Title screen still loads no physics code; M0 and M1 gate scripts pass.
 
 ---
 

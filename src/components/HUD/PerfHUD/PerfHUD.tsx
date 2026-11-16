@@ -69,6 +69,7 @@ function headline(snap: PerfSnapshot): string {
     "\n" +
     `gpu ${ms(snap.gpuTotalMs.mean)}   ` +
     `cpu ${ms(snap.cpuTotalMs.mean)} (submit ${ms(snap.cpuRenderMs.mean)})` +
+    snap.cpuPasses.map((c) => `  ${c.label} ${ms(c.cpu.mean)}`).join("") +
     // Only shown when it happens — see PerfProfiler.droppedFrames.
     (snap.droppedFrames > 0
       ? `\n${snap.frames} frames, ${snap.droppedFrames} dropped`

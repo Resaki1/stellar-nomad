@@ -104,10 +104,15 @@ export default async function shellCheck(d) {
       resources: performance.getEntriesByType("resource").map((r) => r.name.replace(location.origin, "")),
     })`);
     await wait(3000); // idle at the title: nothing more may load
-    const idle = await ev(`({ probe: window.__probe, resources: performance.getEntriesByType("resource").map((r) => r.name.replace(location.origin, "")) })`);
+    const idle = await ev(`({ probe: window.__probe, resources: performance.getEntriesByType("resource").map((r) => r.name.replace(location.origin, "")),
+      big: performance.getEntriesByType("resource").filter((r) => r.decodedBodySize > 2e6).map((r) => ({ url: r.name.replace(location.origin, ""), bytes: r.decodedBodySize })) })`);
     // The title may load its own audio (UI sounds, the title theme) and nothing else heavy.
     const heavy = idle.resources.filter((r) => HEAVY.test(r) && !r.startsWith("/audio/"));
     const threeAfterIdle = idle.resources.filter((r) => /three/.test(r));
+    // M2: the physics engine (Rapier, ~4.6 MB of inlined wasm) loads with the game chunk only.
+    const physicsAfterIdle = idle.resources.filter((r) => /rapier|dimforge|sim_physics/i.test(r));
+    // Name-independent backstop: no >2 MB non-audio body at the title (Rapier's chunk is ~4.6 MB).
+    const bigAfterIdle = idle.big.filter((r) => !r.url.startsWith("/audio/"));
     // The driver's Chrome allows autoplay, so "silent before a gesture" cannot be tested here.
     const musicBefore = await ev(`__test.titleMusic().playing`);
     await d.press("ArrowDown");
@@ -125,9 +130,11 @@ export default async function shellCheck(d) {
       heavy,
       probe: idle.probe,
       threeChunksAfterIdle: threeAfterIdle.length,
+      physicsChunksAfterIdle: physicsAfterIdle,
+      bigAfterIdle,
       titleMusic: { beforeGesture: musicBefore, afterKey: musicAfter },
       pass:
-        heavy.length === 0 && threeAtInteractive.length === 0 && threeAfterIdle.length === 0 &&
+        heavy.length === 0 && threeAtInteractive.length === 0 && threeAfterIdle.length === 0 && physicsAfterIdle.length === 0 && bigAfterIdle.length === 0 &&
         idle.probe.audioCtx <= 1 && idle.probe.gpuAdapter === 0 && idle.probe.gpuDevice === 0 &&
         musicAfter?.id === "glacial_pads" && musicAfter.paused === false,
     };
@@ -165,6 +172,7 @@ export default async function shellCheck(d) {
 
   if (parts.includes("continue")) {
     await title();
+    const clickedAt = await ev("performance.now()");
     await clickText(".shell-menu__item", "Continue");
     const samples = [];
     let shotTaken = false;
@@ -184,10 +192,14 @@ export default async function shellCheck(d) {
     }
     await playing();
     const at0 = await d.state();
+    // M2: when the physics engine starts/finishes loading relative to the click (ms).
+    const phys = await ev(`(() => { const l = __phys.stats().load; return { state: l.state, startMs: Math.round(l.startedAtMs - ${clickedAt}), readyMs: Math.round(l.startedAtMs + l.loadMs - ${clickedAt}),
+      chunks: performance.getEntriesByType("resource").filter((e) => /dimforge|rapierBackend/.test(e.name)).map((e) => ({ url: e.name.split("/").pop(), bytes: e.decodedBodySize, transfer: e.transferSize, startMs: Math.round(e.startTime - ${clickedAt}), endMs: Math.round(e.responseEnd - ${clickedAt}) })) }; })()`);
     await wait(3000);
     const at3 = await d.state();
     const distinct = (k) => new Set(samples.map((s) => JSON.stringify(s[k]))).size;
     out.continue = {
+      physicsLoad: phys,
       loadingSamples: samples.length,
       distinctRelPos: distinct("rel"),
       relValues: [...new Set(samples.map((s) => JSON.stringify([s.rel, s.frameId, s.frames])))].slice(0, 4),

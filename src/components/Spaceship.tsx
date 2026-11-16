@@ -1,13 +1,13 @@
 import { useFrame } from "@react-three/fiber";
-import { memo, useEffect, useMemo, useRef } from "react";
-import { MathUtils, Vector3, Mesh, type PerspectiveCamera } from "three";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { MathUtils, Vector3, Mesh, type BufferGeometry, type PerspectiveCamera } from "three";
 import { getCameraTuning } from "./Camera/cameraTuning";
 import { ShipOne } from "./models/ships/ShipOne";
 import EngineExhaust from "./VFX/EngineExhaust";
 import type { ExhaustConfig } from "./VFX/EngineExhaust";
 import { useStore } from "jotai";
 import { hudInfoAtom, shipHealthAtom } from "@/store/store";
-import { collisionImpactAtom, cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
+import { cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
 import { audioShipBuffer } from "@/audio/shipBuffer";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, benchModeAtom } from "@/store/dev";
@@ -26,6 +26,7 @@ import { createShipInput } from "@/sim/ship/shipInput";
 import { createShipStepEnv, shipBodyAxes, stepShip } from "@/sim/ship/stepShip";
 import { getFlightTuning, speedLimitKmps } from "@/sim/ship/flightTuning";
 import { loadTuningPrefs } from "@/store/flightTuningPrefs";
+import { loadPhysicsPrefs } from "@/store/physicsTuningPrefs";
 import { FIXED_DT, MAX_FRAME_DT, SHIP_HULL_RADIUS_KM } from "@/sim/ship/shipConstants";
 import { sampleShipInput } from "@/input/sampleShipInput";
 import { playerInput, resetPlayerInput } from "@/input/playerInput";
@@ -37,6 +38,10 @@ import { starDiscPool } from "@/components/space/starLodStatus";
 import { testProbe } from "@/components/TestHarness/testProbe";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
 import { isSimPaused } from "@/sim/simPause";
+import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
+import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
+import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
+import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
 
 /**
  * Collider slots reserved for promoted stars (§19). Must be ≥ the disc pool's size;
@@ -55,16 +60,29 @@ const _accel = new Vector3();
 const _bf = new Vector3();
 const _br = new Vector3();
 const _bu = new Vector3();
+/** Identifies each fixed step for the near field's one-owner assertion. */
+let _stepSerial = 0;
+/** Folds each hit's contact events into one impact (docs/PHYSICS_PLAN.md §7.3). */
+const _impacts = new ImpactTracker();
+let _feedSerial = 0;
+const _feedContact = (c: Readonly<NearFieldContact>): void => _impacts.contact(c, _feedSerial, getPhysicsTuning());
+const _impactFo = new Vector3();
+const _impactsThisFrame: Impact[] = [];
+const _impactPool: Impact[] = [];
+const collectImpact = (im: Readonly<Impact>): void => {
+  const k = _impactsThisFrame.length;
+  if (!_impactPool[k]) _impactPool[k] = { ...im };
+  else Object.assign(_impactPool[k], im);
+  _impactsThisFrame.push(_impactPool[k]);
+};
+/** M3 seam: the difficulty setting's collision-damage multiplier plugs in here. */
+const DIFFICULTY_DAMAGE_MULT = 1;
 const _motion: ShipMotion = {
   accelRight: 0, accelUp: 0, accelForward: 0, speedFrac: 0, boosting: false,
   freeLook: false, freeLookYaw: 0, freeLookPitch: 0, shakeSignal: 0, benchMode: false,
 };
 /** HUD readout cadence; the atom write re-renders the dashboard. */
 const HUD_PUBLISH_S = 0.1;
-
-const COLLISION_SPEED_DIP_MIN = 0.15; // small asteroid: lose 15% speed
-const COLLISION_SPEED_DIP_MAX = 0.65; // huge asteroid: lose 65% speed
-const COLLISION_SIZE_REF_M = 200;     // radius at which dip reaches max
 
 // Engine exhaust nozzle config (model-local space, inside 0.3x group); edit when swapping models.
 const EXHAUST_CONFIGS: ExhaustConfig[] = [
@@ -161,15 +179,67 @@ const SpaceShip = memo(() => {
     worldOrigin.setWorldOriginKm(ship.absPosKm);
   }
 
+  const onHullGeometry = useCallback((g: BufferGeometry, scale: number) => {
+    const pos = g.getAttribute("position");
+    const pts = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      pts[i * 3] = pos.getX(i) * scale;
+      pts[i * 3 + 1] = pos.getY(i) * scale;
+      pts[i * 3 + 2] = pos.getZ(i) * scale;
+    }
+    nearField.setShipShape({ kind: "hull", points: pts }, "mesh");
+  }, []);
+
   // Register the sim state in the entity table.
   useEffect(() => {
     loadTuningPrefs();
+    loadPhysicsPrefs();
     registerEntity({ id: LOCAL_PLAYER_ID, kind: "ship", ship: shipState.current });
     return () => unregisterEntity(LOCAL_PLAYER_ID);
   }, []);
 
   // Pose is sampled at save-flush time; bench/test isolation suspends the writes.
   useEffect(() => collectShipPose(shipState.current), []);
+
+  /** Damage through shipHealthAtom (scaled by max health and collisionDamageMult), VFX, shake; true when fatal. */
+  const applyImpact = useCallback((im: Readonly<Impact>, ship: ShipState): boolean => {
+    const t = getPhysicsTuning();
+    const cfg = store.get(effectiveShipConfigAtom);
+    const dmg = impactDamageHp(im, t, cfg.maxHealth, cfg.collisionDamageMult, DIFFICULTY_DAMAGE_MULT);
+    const health = Math.max(0, store.get(shipHealthAtom) - dmg);
+    if (dmg > 0) store.set(shipHealthAtom, health);
+    const fatal = dmg > 0 && health <= 0;
+    logImpact({
+      t: performance.now(), dvMps: im.dvMps, damageFrac: impactDamageFractionOf(im, t), damageHp: dmg,
+      healthAfter: health, contacts: im.contacts, colliderId: im.colliderId, fatal,
+    });
+    const wo = worldOrigin.worldOriginKm;
+    const pos: [number, number, number] = [0, 0, 0];
+    if (im.hasPoint) {
+      frameOriginKm(im.frameId, _impactFo);
+      pos[0] = (_impactFo.x + im.pxKm - wo.x) * 1000;
+      pos[1] = (_impactFo.y + im.pyKm - wo.y) * 1000;
+      pos[2] = (_impactFo.z + im.pzKm - wo.z) * 1000;
+    }
+    store.set(spawnVFXEventAtom, {
+      type: "collision",
+      position: pos,
+      radiusM: Math.min(40, 2 + im.dvMps * 0.3),
+      impactDirection: [im.nx, im.ny, im.nz],
+      impactDvMps: im.dvMps,
+      shake: Math.min(1, im.dvMps / 60),
+    });
+    if (!fatal) return false;
+    killTransitDrive();
+    // The contact-point event above already played the impact sound and shake.
+    store.set(spawnVFXEventAtom, { type: "collision", position: [0, 0, 0], radiusM: 120, shake: 0, silent: true });
+    store.set(dieAtom, {
+      frameId: ship.frameId,
+      positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z],
+      cargoItems: store.get(cargoAtom).items,
+    });
+    return true;
+  }, [store, worldOrigin]);
 
   // Track dead state to show/hide ship mesh
   const wasDeadRef = useRef(false);
@@ -202,22 +272,14 @@ const SpaceShip = memo(() => {
       chaseCamera.current.snap();
       modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
       store.set(cameraShakeIntensityAtom, 0);
+      nearField.markReseed();
+      _impacts.reset();
       wasDeadRef.current = false;
     }
 
     // Benchmark mode: suppress wall-clock-driven and save-mutating side effects
     // that would make a measurement irreproducible. See benchModeAtom.
     const benchMode = store.get(benchModeAtom);
-
-    // Consume collision impact once per frame, before the physics loop.
-    const impact = store.get(collisionImpactAtom);
-    if (impact) {
-      // Size-dependent speed dip: small asteroids = mild, large = severe.
-      const t = Math.min(impact.radiusM / COLLISION_SIZE_REF_M, 1);
-      const dip = COLLISION_SPEED_DIP_MIN + (COLLISION_SPEED_DIP_MAX - COLLISION_SPEED_DIP_MIN) * t;
-      ship.velKmps.multiplyScalar(1 - dip);
-      store.set(collisionImpactAtom, null);
-    }
 
     // ── Dev warp (one-shot) ────────────────────────────────────────────
     // Zero everything carrying motion: prevPosKm (else the swept collider sweeps from the
@@ -239,6 +301,8 @@ const SpaceShip = memo(() => {
       resetPlayerInput();
       resetMouseSteering();
       killTransitDrive();
+      nearField.markReseed();
+      _impacts.reset();
       store.set(devTeleportAtom, null);
     }
 
@@ -270,6 +334,8 @@ const SpaceShip = memo(() => {
     _env.transitVelY = tBuf.velocityKmps.y;
     _env.transitVelZ = tBuf.velocityKmps.z;
     _env.colliders = celestialColliders;
+    nearField.setGates(transitActive, devSpeed !== null, false);
+    nearField.angularAuthority = _env.tuning.angularAccelDegS2 * MathUtils.DEG2RAD * FIXED_DT;
     _env.hullRadiusKm = SHIP_HULL_RADIUS_KM;
 
     // Refresh colliders from the live ephemeris arrays, relative to the ship's frame.
@@ -324,6 +390,10 @@ const SpaceShip = memo(() => {
         physicsAcc.current = 0;
         break;
       }
+      _feedSerial = _stepSerial;
+      nearField.resolve(ship, _stepSerial++);
+      nearField.lastStepContacts(_feedContact);
+      _impacts.endStep(_feedSerial, FIXED_DT, getPhysicsTuning());
 
       // Forward + position for TransitTicker (flip point / acceleration direction).
       tBuf.shipForward = { x: ship.forward.x, y: ship.forward.y, z: ship.forward.z };
@@ -349,8 +419,10 @@ const SpaceShip = memo(() => {
     // Frame switch: once per frame, after the substeps, never inside stepShip.
     if (updateShipFrame(ship) !== null) {
       frameOriginKm(ship.frameId, _frameOrigin);
+      nearField.onFrameSwitch();
       testProbe.ship.frameSwitches++;
     }
+    perf.recordCpuPass(CPU_PASS_PHYSICS, nearField.takeFrameStepMs());
     // Absolute, every frame: the ship moves with its frame even when no substep ran.
     publishShipPose(ship);
 
@@ -392,6 +464,13 @@ const SpaceShip = memo(() => {
     shipRef.current.position.set(0, 0, 0);
     shipView.position.set(0, 0, 0);
     shipView.forward.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
+
+    // ── Asteroid impacts: damage + feedback, once per impact (after the origin moved) ──
+    _impactsThisFrame.length = 0;
+    _impacts.drain(collectImpact);
+    for (let i = 0; i < _impactsThisFrame.length; i++) {
+      if (applyImpact(_impactsThisFrame[i], ship)) break;
+    }
 
     // ── Camera (chase + shake) ──────────────────────────────────────────
     const shakeSignal = store.get(cameraShakeIntensityAtom);
@@ -442,7 +521,7 @@ const SpaceShip = memo(() => {
 
   return (
     <mesh ref={shipRef} name="playerShip">
-      <ShipOne ref={modelRef} name="playerShipModel">
+      <ShipOne ref={modelRef} name="playerShipModel" onHullGeometry={onHullGeometry}>
         <EngineExhaust
           configs={EXHAUST_CONFIGS}
           intensityRef={exhaustIntensity}

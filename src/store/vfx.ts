@@ -15,6 +15,12 @@ export type AsteroidVFXEvent = {
   radiusM: number;
   /** Normalized direction of impact (from asteroid toward ship) for collision bias */
   impactDirection?: [number, number, number];
+  /** Collision: the ship's velocity change along the contact normal, m/s (scales shake and sound). */
+  impactDvMps?: number;
+  /** Collision: camera shake added, 0..1 (default 1). */
+  shake?: number;
+  /** Collision: no impact sound (a second visual of a hit that already played one). */
+  silent?: boolean;
   /** Resource info for loot popup (multi-resource) */
   loot?: { resourceId: string; amount: number; name: string; icon: string }[];
   /** Timestamp (ms) when the event was created */
@@ -33,13 +39,6 @@ export const vfxEventsAtom = atom<AsteroidVFXEvent[]>([]);
 /** Camera shake intensity: 0 = none, 1 = max. Decays in the consumer. */
 export const cameraShakeIntensityAtom = atom(0);
 
-/** Collision impact signal (consumed once by Spaceship for speed dip). */
-export type CollisionImpact = {
-  /** Radius of the asteroid that was hit, in meters */
-  radiusM: number;
-};
-export const collisionImpactAtom = atom<CollisionImpact | null>(null);
-
 // ---------------------------------------------------------------------------
 // Action atoms
 // ---------------------------------------------------------------------------
@@ -54,8 +53,7 @@ export const spawnVFXEventAtom = atom(
 
     // Collision-specific side effects
     if (event.type === "collision") {
-      set(cameraShakeIntensityAtom, 1);
-      set(collisionImpactAtom, { radiusM: event.radiusM });
+      set(cameraShakeIntensityAtom, Math.min(1, get(cameraShakeIntensityAtom) + (event.shake ?? 1)));
     }
   }
 );

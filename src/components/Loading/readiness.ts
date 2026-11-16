@@ -7,6 +7,7 @@ import { devTeleportAtom } from "@/store/dev";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { isStbnLoaded, isStbnPending } from "@/components/celestial/bodies/stbnTexture";
 import { installNetworkTracking, net, networkQuiet } from "./netActivity";
+import { nearFieldLoadSettled } from "@/sim/physics/nearField";
 
 installNetworkTracking();
 
@@ -18,6 +19,8 @@ export const PENDING_CLOUD_BAKES = 2;
 export const PENDING_BLUE_NOISE = 4;
 export const PENDING_NETWORK = 8;
 export const PENDING_RESOURCES = 16;
+/** Physics engine still loading (bounded by PHYSICS_LOAD_TIMEOUT_MS, then analytic only). */
+export const PENDING_PHYSICS = 32;
 
 /** Resident texture/geometry counts must hold this many frames. */
 const RESOURCE_STABLE_FRAMES = 30;
@@ -51,6 +54,7 @@ export function createReadiness(startFrame: number, requireBlueNoise = true): Re
         stableSince = frame;
       }
       if (frame - stableSince < RESOURCE_STABLE_FRAMES) mask |= PENDING_RESOURCES;
+      if (!nearFieldLoadSettled()) mask |= PENDING_PHYSICS;
       return mask;
     },
     describe(mask) {
@@ -59,6 +63,7 @@ export function createReadiness(startFrame: number, requireBlueNoise = true): Re
       if (mask & PENDING_CLOUD_BAKES) out.push("cloudBakes");
       if (mask & PENDING_BLUE_NOISE) out.push("blueNoise");
       if (mask & PENDING_NETWORK) out.push(`network(${net.inFlight} in flight)`);
+      if (mask & PENDING_PHYSICS) out.push("physics");
       if (mask & PENDING_RESOURCES) out.push(`resources(${textures < 0 ? "" : `${textures}/${geometries}`})`);
       return out;
     },
