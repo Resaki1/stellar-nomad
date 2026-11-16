@@ -565,7 +565,7 @@ below are initially uncompleted; do not mark them based on this documentation pa
 
 - [x] Read the two new design docs and current M2 as-built status/gates.
 - [x] Record actual save schema, physics API, pause behaviour, and baseline timings.
-- [ ] Write the content/legacy mapping and resource tuning tables; define units and
+- [x] Write the content/legacy mapping and resource tuning tables; define units and
       command boundaries before touching UI.
 - [ ] Confirm a default initial fuel-source/replication placement for every supported seed.
 
@@ -576,7 +576,7 @@ tuning defaults; no stale root-story requirement used. No new dependency require
 
 - [x] Add typed world/player records, accepted domain operations, world mirrors,
       coherent save transactions, and append-only migration/sanitization.
-- [ ] Move shared research/evidence/discovery ownership; preserve old data by mapping.
+- [x] Move shared research/evidence/discovery ownership; preserve old data by mapping.
 - [x] Implement deduplicated transaction foundations for manufacturing and world/player
       transfers, including fuel-only wreck representation.
 
@@ -590,7 +590,7 @@ retain separate supplies/equipment/active point selections.
 - [x] Add pure resource stepping, control-demand metering, reactor/capacitor arbitration,
       unified heat, basic fuel batches, repair, and resource HUD read models.
 - [x] Integrate mining/boost/processing requests with actual granted work and pause.
-- [ ] Make starter tools and essential recipes available without the old research boot gate.
+- [x] Make starter tools and essential recipes available without the old research boot gate.
 
 **Gate:** rest/coast/no-input idle costs nothing; thrust and work cost the intended
 resources; conversions conserve inputs/outputs; throttle and frame rate do not change
@@ -598,11 +598,11 @@ results for the same executed inputs. Empty/full tanks, heat, pause and death ar
 
 ### M3.3 — Prospecting and discovery-based research
 
-- [ ] Implement meaningful baseline inspection, stable findings/markers, typed research
+- [x] Implement meaningful baseline inspection, stable findings/markers, typed research
       requirements, and simple non-dangerous trials.
-- [ ] Remove generic assay rewards/required timers from the new path; disable the old
+- [x] Remove generic assay rewards/required timers from the new path; disable the old
       research completion writer for new saves.
-- [ ] Expose useful missing-evidence explanations in existing research UI.
+- [x] Expose useful missing-evidence explanations in existing research UI.
 
 **Gate:** repeated known-source scans do not farm universal progress; durable evidence
 unlocks the intended options exactly once and survives death/reload; basics remain
@@ -610,9 +610,9 @@ available without consuming scan probes.
 
 ### M3.4 — Branching equipment and economy
 
-- [ ] Rebalance recipes/available modules, retire incompatible effects/consumables,
+- [x] Rebalance recipes/available modules, retire incompatible effects/consumables,
       and connect equipment to one effective config and power/thermal preview.
-- [ ] Provide at least two viable early investment priorities and a direct, purposeful
+- [x] Provide at least two viable early investment priorities and a direct, purposeful
       starter-region path to transit.
 - [ ] Ensure replication kits, fuel, and repairs remain craftable in either region.
 
@@ -1102,3 +1102,84 @@ destination" hides the plan panel and raises no toast. (9) A leg stopping short 
 (obstruction, drive too hot, out of propellant). (10) Fuel deviation: the default-epoch Earth → Moon
 trip goes via the clearance leg and costs 240.8 kg = 40 % of a tank, not the ≈ 35 % of the direct
 380,000 km leg (34.9 %); tuning left at 0.006 kg per km/s, PR 2 balances against the 40 %.
+
+### 13.5 M3.3 / M3.4 as built (2026-11-16)
+
+**Save schema 3** (`MIGRATIONS[1]`, frozen tables in `src/save/legacyMap3.ts`):
+
+| Slice | Owner | Shape |
+|---|---|---|
+| `world.research` | world, authority only | `{completedNodes, legacy}`: unlocked options in order; unmapped pre-M3.3 ids kept inert |
+| `world.discoveries.families` | world | material → `{firstAt, by, inspected, extracted, sourceId}`; recorded once, flags only turn on |
+| `world.discoveries.sources` | world | inspected rocks, stable id `fieldId:chunkKey:asteroidId`, frame-relative pose (field anchor body), class, composition estimate, `depleted`; bounded `MAX_SOURCES` = 64 (evicts oldest depleted, then oldest not bookmarked by the inspecting player) |
+| `world.discoveries.trials` / `.sites` | world | id → `{at, by}` |
+| `player.research` | removed | assay samples and the timer are gone |
+| `player.legacy` | player, inert | `{assaySamples, activeResearch, items, consumables, notes}` or null; never read by gameplay |
+| `player.bookmarks` | player | `{sourceId, name}[]`, ≤ 24 |
+
+**Operations.** `survey.inspect` (scanner claim built by `buildInspectOperation` from the same generator mining uses; a known source → `already_done`), `research.unlock` (pure `evaluateNode`; rejects `evidence` with the missing requirement keys, `materials` with the analysis shortfall; spends the analysis and unlocks in one commit), `trial.record` (client-detected trials), `site.record` (range-checked, M3.7 stub), `bookmark.set`. `asteroid.mine` confirms families by extraction (≥ 3 % of the yield) and marks an inspected source depleted (the finding stays); `asteroid.destroy` also depletes; `item.craft` records `first_fabrication`. `research.start` / `research.complete` and `ResearchTicker` are deleted: no writer of the old timer exists, the assay award is gone from `asteroid.mine`. All new ops except `bookmark.set` are receipted.
+
+**Inspection.** Broad indication = the existing target lock (class always shown; composition bands with a survey module). Close inspection: lock, then Inspect (G, rebindable, or the HUD button) for 4 s within 2.5 km (× module multipliers); no consumable. The HUD then shows composition and a yield estimate (× extraction efficiency) for that rock from the world record. Trials detected client-side: `first_batch` (processing completion), `sustained_beam` (8 s of continuous granted beam on one rock without a trip, `settleShipResources`), `transit_leg` (TransitTicker arrival).
+
+**Research/recipe matrix** (`src/data/content.ts`; all numbers tuning defaults; research grants blueprints only, no passive stats):
+
+| Option | Branch | Evidence (all / any) | Analysis | Unlocks |
+|---|---|---|---|---|
+| sv1 Composition Survey | survey | silicates, Fe-Ni, hydrates confirmed by inspection | 10 silicates | Prospector Scanner Mk1 |
+| sv2 Volatile Mapping | survey | sv1; inspected C-type and X-type; carbon | 2 hydrates, 2 carbon | Ping Array Mk1 |
+| ex1 Controlled Extraction | extraction | Fe-Ni; trial sustained_beam | 15 Fe-Ni | Beam Focuser Mk1 |
+| ex2 Yield Analysis | extraction | ex1; sulfur / any: carbon or inspected C-type | 2 sulfur | Yield Extractor Mk1 |
+| th1 Heat Rejection | thermal | trial sustained_beam; silicates | 15 silicates | Radiator Strips Mk1, Coolant Circulator Mk1 |
+| lg1 Bulk Handling | logistics | trials first_batch, first_fabrication | 10 Fe-Ni | Cargo Rack Mk1, Auxiliary Tank Mk1, Electrolysis Cell Mk1 |
+| pr1 Transit Drive Calibration | propulsion | hydrates; trials first_batch, first_fabrication | 2 hydrates | Interplanetary Transit Drive |
+| pr2 Thruster Tuning | propulsion | pr1; trial transit_leg | 10 Fe-Ni | Thruster Nozzles Mk1 |
+| hl1 Hull Reinforcement | hull | Fe-Ni by inspection; trial first_fabrication | 10 Fe-Ni | Ablative Plating Mk1, Nanite Repair System |
+| ln1 Survey Instrument Recovery | lunar (stub) | site luna_survey_canister | none | Integrated Sensor Suite (titanium) |
+
+| Item | Slot | Recipe (units) | Effect |
+|---|---|---|---|
+| Hull Patch Kit (starter) | consumable | 15 Fe-Ni, 10 sil | +15 HP |
+| Heat Sink Cartridge (starter) | consumable | 20 sil, 5 Fe-Ni | −50 % heat |
+| Prospector Scanner Mk1 | scanner | 120 sil, 40 Fe-Ni | inspect time ×0.5, range ×1.6, composition bands |
+| Ping Array Mk1 | scanner | 150 sil, 60 Fe-Ni, 6 C | ping, range ×2.4, time ×0.75 |
+| Beam Focuser Mk1 | mining | 90 Fe-Ni, 80 sil | mining time ×0.7, laser power ×1.3, laser heat ×1.3 |
+| Yield Extractor Mk1 | mining | 120 Fe-Ni, 60 sil, 4 S | yield ×1.25, time ×1.1 |
+| Radiator Strips Mk1 | cooling | 140 sil, 40 Fe-Ni | laser heat ×0.8, cooling ×1.15 |
+| Coolant Circulator Mk1 | cooling | 100 sil, 70 Fe-Ni, 4 C | cooling ×1.4, thermal buffer ×1.25 |
+| Cargo Rack Mk1 | cargo | 150 Fe-Ni, 50 sil | cargo +600 |
+| Auxiliary Tank Mk1 | cargo | 120 Fe-Ni, 40 sil | tank +400 kg, cargo −500 |
+| Electrolysis Cell Mk1 | utility | 80 sil, 60 Fe-Ni, 4 C | processing rate ×1.6 (its power and heat too), reactor +25 kW |
+| Interplanetary Transit Drive | special | 160 sil, 120 Fe-Ni, 4 hyd, 4 C | transit |
+| Thruster Nozzles Mk1 | propulsion | 150 Fe-Ni, 80 sil, 6 S | accel ×1.15, top speed ×1.2 |
+| Ablative Plating Mk1 | hull | 200 Fe-Ni, 100 sil | HP ×1.25, collision ×0.9 |
+| Nanite Repair System | hull | 150 Fe-Ni, 80 sil, 6 C | paid auto repair 0.2 HP/s |
+| Integrated Sensor Suite | scanner | 200 sil, 80 Fe-Ni, 30 Ti | all scanner bits |
+
+Two first investments: survey (three inspections → sv1) or extraction/cooling (one sustained beam → ex1 + th1). Cargo vs fuel: the cargo slot holds the rack or the tank. **Transit decision:** the drive is unlocked by the short path pr1 (a hydrate family, one processing batch, any fabrication), not available from the start; the old "any three tier-2 nodes" gate is gone. Pulse mining has no item in the catalogue (its He-3 module is retired); the code stays dormant.
+
+**Effective config.** `equipTuning(base, cfg, out)` (`src/sim/ship/loadout.ts`) applies tank, reactor, laser power, processing rate (kg/s, kW, heat), thermal capacity to the resource table; cooling and laser heat stay the M3.2 request multipliers. The runtime (`getShipTuning`, refreshed per frame), the reducers (tank checks, wreck fuel room), the transit predictor and `computeLoadoutPreview` (rolls out `stepShipResources`) all use it. Loadout panel shows the preview; drawback effects render amber.
+
+**Legacy mapping (schema 2 → 3).** Research: r0 → nothing (basic analysis is free); a1, a2b → sv1; a2a, a3 → sv2; b1 → ex1; b2a → ex2; b2b → th1; b3 → th1 + ex2; c1 → lg1; c2a → hl1; c2b → pr2; c3 → hl1 + pr2; m1 → pr1; unknown → `world.research.legacy`. A paid active timer completes its mapped options once; unmappable → `player.legacy.activeResearch`. Items: same id where kept; spectral mapper → prospector; focuser mk2 → mk1; radiator mk2 → mk1; pulse modulator → coolant circulator; cargo rack mk2 → mk1; plating mk2 → mk1; reaction wheels, nozzles mk2 → nozzles mk1; assay enhancer and unknown ids → `legacy.items`. Equipped modules map into their new slot if free. Consumables: heat sink, thermal purge → heat sink; patch kit → patch kit; emergency kit → 2 patch kits; capped at stack size, overflow and retired consumables (assay probe, scanner pulse, composition scan, deep scan, overclock, precision, afterburner) → `legacy.consumables`. Hotbar entries map or clear. Assay samples → `legacy.assaySamples`. No research passive bonuses remain, so none can double. Poses, cargo, deltas, wrecks untouched; discoveries start empty.
+
+**Fuel economics** (tuning table unchanged: 600 kg tank, 20 kg per hydrate unit, 0.008 kg per m/s). 30 hydrate units per tank. Belt bench scene, within 25 km: 29 rocks, 5 C-type, mean 8 hydrate units per C-type (median 6) → 3.75 C-rocks per tank, best cold-mineable 2. All 18,409 loaded starter rocks: 4,630 C-type, mean 13.1 units (median 4) → 2.3 rocks per tank at the mean. 47.8 scripted 1,563 m/s hops per tank (M3.2). Earth → Moon at the playthrough epoch 266–268 kg (≈ 13.4 units; 240.8 kg at the default epoch); Auxiliary Tank (1,000 kg) carries 3.7 such trips. No retune needed.
+
+**Measured** (gameplay-check parts, `--no-isolate`, fixture worlds):
+
+| Gate | Result |
+|---|---|
+| audit | pass: 10 options, 16 items, no cycles/unreachable/over-capacity/He-3 gate/lunar-only basics/orphans |
+| evidence | mining an S-type: 2 families once; second S-type: 0, discoveries identical; C-type inspection: +carbon, +hydrates, 1 source; same rock again `already_done`, same opId `duplicate`; other C-type: new source, 0 families, 0 upgrades, no unlock; mining the inspected rock: depleted, composition kept; identical after death+respawn, hard reload, world switch (other world empty); 200 inspections → 199 accepted, 64 sources, 5 families, 207 receipts |
+| reqs | all 10 options: exact evidence unlocks once, retry `duplicate`, new id `already_done`, analysis spent; each of 24 missing pieces rejected `evidence` naming its key, nothing spent; missing analysis rejected `materials` naming the material |
+| playA (survey) | 14 accepted ops (3 inspect, 5 mine, 2 unlock, 2 craft, 1 processing, 1 trial); used 290 sil, 160 Fe-Ni, 7 hyd, 4 C; 25.2 kg flown to make tank room; Moon plan ok: 268.2 kg, 61.9 s, 2 legs, 326.6 kg on arrival |
+| playB (extraction/cooling) | live sustained beam recorded the trial; 18 ops (2 trial, 9 mine incl. the live one, 3 unlock, 3 craft, 1 processing); used 395 sil, 290 Fe-Ni, 7 hyd, 4 C; 25.2 kg flown; Moon plan ok: 266.0 kg, 61.5 s, 328.8 kg on arrival |
+| config | 6 loadouts: preview = resource-sim trip/cool to the step, = hand table (trip 14.99/11.53/18.74/18.74/14.42/18.74 s; cool 10/10/8.69/8.93/8.93/8.69 s; tank 600 or 1000; cargo 2000/1500/2600; reactor 100/125); live table and cargo equal |
+| migrate3 | 8 fixtures (v1/v2 × fresh, mid-progression, multi-player, dead remote) pass; export → import data equal and = pure parse; booted v2 mirrors match; 4 invalid imports refused |
+| live (adapted) | real scanner inspection via the HUD action in 4.2 s; starter craft without research |
+
+**Adapted older gates.** gameplay-check `migrate` (schema 3 expectations), `tx` (craft the starter patch kit; trial + unlock replace start/complete; mine checks families instead of assay), `shared` (A unlocks, B crafts the shared blueprint; B's late unlock `already_done`), `live` (inspection replaces the timer); save-check `legacy` expectation and `roundtrip` setup (no assay grant).
+
+**Deviations / next milestone.** Inspection range and the trial claims are trusted like the mine claim; an M4 authority re-derives them. The 3 % family threshold means trace sulfur in S-types does not count (the panel says "at least 3 %"). A fresh full tank cannot start a batch, so `first_batch` follows some flying (25 kg in the scripts). Wreck consumables are not remapped (no PR 1 path wrote any). Source eviction protects only the inspecting player's bookmarks. Replication kits (third M3.4 box) wait for M3.6; ln1 and `luna_survey_canister` are data stubs for M3.7 (no marker, no visual); luna_belt's helium-3 fractions are untouched (nothing needs them). Bookmarked sources appear as POI markers; "Set destination" pins the target until another is chosen.
+
+**Regressions** (page reloaded before each script): flight-trace `sim,live,mouse,camera,reticle` 14/14 pass; physics-check `sim,damage,hull,asteroids` pass; frames-check `ride,switch` pass; save-check `roundtrip,reload,isolation` pass (fresh/legacy not run: they wipe the profile); shell-check `title,continue` pass; gameplay-check `migrate,tx,shared,live,res,m32,reach,transit` pass, `transitLive` pass for `defaultEpoch` and `secondEpoch` (`secondEpochRate100` not rerun). Typecheck clean; lint 0 errors (131 warnings); `check:audio` 0 problems (no audio event changed). Perf `--perf bench:belt` 1280×720: frame P50 14.8 ms, GPU 8.02 ms, local scene 0.39 ms (M3.5: 14.8 / 11.69 / 0.50): no regression.
+
+**Review fixes (M3.3/M3.4).** Equip/unequip is now the `module.equip` operation: the authority refuses a loadout that would leave ordinary fuel above the new tank (`tank_overflow`) or cargo above the new hold (`cargo_overflow`), and craft auto-equip only fits when it would not overflow (so the aux tank / cargo rack tradeoff cannot be bypassed by swapping). Source eviction prefers sources no player has bookmarked (depleted first); `bookmark.set` drops bookmarks of evicted sources and does not count them toward capacity, and `parseSaveData` prunes them. `survey.inspect` composition and `asteroid.mine` yield keys must be known material ids (bounds family records to 7; no fabricated families). The `sustained_beam` run restarts when the beam's target rock changes. The `first_batch` hint says the tank needs room. `r0_microlab_boot` stays an explicit mapping to nothing (basic analysis is free), not an inert legacy id. New gate part `fit`: aux tank at 1000 kg → rack/empty refused `tank_overflow`, accepted at 500 kg; full 2600-unit hold → aux/empty refused `cargo_overflow`; forged inspect/mine keys `invalid`; two players' bookmarked sources (one depleted) survive 70 further inspections at the 64 bound while an unbookmarked depleted source is evicted.

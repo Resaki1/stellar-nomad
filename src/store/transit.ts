@@ -20,8 +20,7 @@ import {
   type TransitTarget,
 } from "@/sim/ship/transitDrive";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
-import { shipRes, shipReq } from "@/store/shipResources";
+import { getShipTuning, shipRes, shipReq } from "@/store/shipResources";
 import { getLocalPlayerShip } from "@/sim/entities";
 
 export {
@@ -132,7 +131,7 @@ export function updateAimVelocity(store: Store, target: TransitTarget | null, sh
 export function computeTransitPreview(store: Store): TransitPreview | null {
   const ship = getLocalPlayerShip();
   const rt = transitDriveBuffer;
-  const t = getResourceTuning();
+  const t = getShipTuning();
   const target = rt.phase !== "idle" && rt.autopilot ? rt.target : store.get(targetedPOIAtom);
   if (!ship || !target || !store.get(transitDriveOwnedAtom)) return null;
   _ship.copy(ship.absPosKm);

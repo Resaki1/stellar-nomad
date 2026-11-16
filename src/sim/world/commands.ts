@@ -8,12 +8,27 @@ export type AsteroidDestroyCause = "mined" | "collision";
  */
 export type WorldOperation =
   | { type: "asteroid.destroy"; opId: string; fieldId: string; chunkKey: string; instanceId: number; cause: AsteroidDestroyCause }
-  /** `yield` / `assaySamples` are the miner's computed reward; the authority bounds them by capacity. */
-  | { type: "asteroid.mine"; opId: string; fieldId: string; chunkKey: string; instanceId: number; yield: Record<string, number>; assaySamples: number }
+  /** `yield` is the miner's computed reward; the authority bounds it by capacity. */
+  | { type: "asteroid.mine"; opId: string; fieldId: string; chunkKey: string; instanceId: number; yield: Record<string, number> }
   | { type: "item.craft"; opId: string; itemId: string }
-  | { type: "research.start"; opId: string; nodeId: string }
-  /** `elapsedS`: the player's executed research time (the old per-player timer, PR 1 only). */
-  | { type: "research.complete"; opId: string; nodeId: string; elapsedS: number }
+  /**
+   * Close inspection of a targeted rock. The claim (class, composition estimate, pose) is the
+   * scanner's, from the same deterministic generator mining uses; an M4 remote authority re-derives it.
+   */
+  | {
+      type: "survey.inspect"; opId: string; fieldId: string; chunkKey: string; instanceId: number;
+      classId: string; radiusM: number; frameId: string; positionKm: Vec3Tuple; composition: Record<string, number>;
+    }
+  /** Unlock a research option: its evidence must be recorded and its analysis material aboard. */
+  | { type: "research.unlock"; opId: string; nodeId: string }
+  /** A client-detected safe trial (first batch, sustained beam, transit leg); recorded once. */
+  | { type: "trial.record"; opId: string; trialId: string }
+  /** Recover/inspect an authored site within its range (M3.7 fills the content). */
+  | { type: "site.record"; opId: string; siteId: string }
+  /** The player's own bookmark of a world source; `name: null` removes it. */
+  | { type: "bookmark.set"; opId: string; sourceId: string; name: string | null }
+  /** Equip an owned module (`itemId: null` empties the slot); refused if fuel or cargo would overflow. */
+  | { type: "module.equip"; opId: string; slot: string; itemId: string | null }
   /** Dev tools only: replace the world's completed research. */
   | { type: "research.devSet"; opId: string; nodeIds: string[] }
   /** Death and emergency abandonment share this: cargo, ordinary fuel and unconverted feedstock go to the wreck. */
@@ -39,11 +54,14 @@ export interface Transfer {
 
 export type OperationResult =
   | { type: "asteroid.destroy" }
-  | { type: "asteroid.mine"; granted: Record<string, number>; overflow: Record<string, number>; assaySamples: number }
-  | { type: "item.craft"; itemId: string; spent: Record<string, number>; autoEquipped: boolean; hotbarIndex: number | null }
-  | { type: "research.start"; nodeId: string; spentAssay: number }
-  /** `refundedAssay` > 0 when another player had already completed the node. */
-  | { type: "research.complete"; nodeId: string; unlockedItems: string[]; refundedAssay: number }
+  | { type: "asteroid.mine"; granted: Record<string, number>; overflow: Record<string, number>; newFamilies: string[]; depletedSource: string | null }
+  | { type: "item.craft"; itemId: string; spent: Record<string, number>; autoEquipped: boolean; hotbarIndex: number | null; newTrial: boolean }
+  | { type: "survey.inspect"; sourceId: string; newFamilies: string[]; upgraded: string[]; evicted: string | null }
+  | { type: "research.unlock"; nodeId: string; unlockedItems: string[]; spent: Record<string, number> }
+  | { type: "trial.record"; trialId: string }
+  | { type: "site.record"; siteId: string }
+  | { type: "bookmark.set"; sourceId: string; name: string | null }
+  | { type: "module.equip"; slot: string; itemId: string | null }
   | { type: "research.devSet"; count: number }
   | { type: "ship.destroy"; wreckId: string | null; dropped: Transfer; cause: "impact" | "abandon" }
   | { type: "ship.respawn"; health: number }
@@ -66,12 +84,13 @@ export type RejectReason =
   | "stack_full"
   | "materials"
   | "busy"
-  | "prerequisites"
-  | "assay"
+  | "evidence"
+  | "too_far"
   | "not_active"
-  | "incomplete"
   | "no_capacity"
   | "tank_full"
+  | "tank_overflow"
+  | "cargo_overflow"
   | "full_hull";
 
 /**
@@ -80,7 +99,8 @@ export type RejectReason =
  */
 export type OperationOutcome =
   | { status: "accepted"; opId: string; by: PlayerId; result: OperationResult }
-  | { status: "rejected"; opId: string; by: PlayerId; reason: RejectReason; missing?: Record<string, number> }
+  /** `missing`: material units short; `evidence`: requirement keys still missing (research.unlock). */
+  | { status: "rejected"; opId: string; by: PlayerId; reason: RejectReason; missing?: Record<string, number>; evidence?: string[] }
   | { status: "duplicate"; opId: string; by: PlayerId }
   | { status: "pending"; opId: string; by: PlayerId };
 
@@ -90,6 +110,7 @@ export type WorldEvent =
   | { type: "wreck.changed"; by: PlayerId; wreck: WreckRecord }
   | { type: "wreck.removed"; by: PlayerId; wreckId: string }
   | { type: "research.changed"; by: PlayerId; completedNodes: readonly string[] }
+  | { type: "discoveries.changed"; by: PlayerId }
   /** The listed slices of `playerId` were replaced by a committed operation. */
   | { type: "player.changed"; by: PlayerId; playerId: PlayerId; keys: readonly (keyof PlayerState)[] }
   /** Carries only the fields the command set: the live clock is ahead of the stored epoch. */

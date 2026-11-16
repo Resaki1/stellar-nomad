@@ -31,17 +31,17 @@ export function describeRejection(o: Extract<OperationOutcome, { status: "reject
     case "materials":
       return `Missing: ${Object.entries(o.missing ?? {}).map(([k, n]) => `${n} ${k}`).join(", ")}`;
     case "locked":
-      return "Blueprint not researched";
+      return "Blueprint not unlocked";
     case "owned":
       return "Already owned";
     case "stack_full":
       return "Stack is full";
-    case "assay":
-      return `Need ${o.missing?.assaySamples ?? "more"} more assay samples`;
     case "busy":
-      return "Research already in progress";
-    case "prerequisites":
-      return "Prerequisites not met";
+      return "Already in progress";
+    case "evidence":
+      return "Evidence still missing";
+    case "too_far":
+      return "Too far away";
     case "dead":
       return "Ship destroyed";
     case "no_capacity":
@@ -50,6 +50,10 @@ export function describeRejection(o: Extract<OperationOutcome, { status: "reject
       return "Tank is full";
     case "full_hull":
       return "Hull is intact";
+    case "tank_overflow":
+      return "Propellant would exceed the new tank";
+    case "cargo_overflow":
+      return "Cargo would exceed the new hold";
     default:
       return o.reason.replace(/_/g, " ");
   }

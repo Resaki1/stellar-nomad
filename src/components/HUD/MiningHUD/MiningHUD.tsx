@@ -3,7 +3,10 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useMemo, useRef } from "react";
 import { keybindsAtom } from "@/store/keybinds";
-import { miningStateAtom, startMiningAtom, cancelMiningAtom } from "@/store/mining";
+import { miningStateAtom, startMiningAtom, cancelMiningAtom, startInspectionAtom, cancelInspectionAtom } from "@/store/mining";
+import { discoveriesMirrorAtom } from "@/store/research";
+import { INSPECT_RANGE_M, materialName } from "@/data/content";
+import { sourceIdOf } from "@/sim/research/discoveries";
 import {
   cargoCapacityUnitsAtom,
   cargoUsedUnitsAtom,
@@ -24,9 +27,10 @@ export default function MiningHUD() {
   const systemConfig = useAtomValue(systemConfigAtom);
   const shipConfig = useAtomValue(effectiveShipConfigAtom);
   const modifiers = useAtomValue(computedModifiersAtom);
-  const showAsteroidType = getFlag(modifiers, "scanner.lockShowsAsteroidType");
   const showCompositionBands = getFlag(modifiers, "scanner.lockShowsCompositionBands");
-  const showYieldEstimate = getFlag(modifiers, "scanner.lockShowsYieldEstimate");
+  const discoveries = useAtomValue(discoveriesMirrorAtom);
+  const startInspection = useSetAtom(startInspectionAtom);
+  const cancelInspection = useSetAtom(cancelInspectionAtom);
   const pulseMiningUnlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
 
   const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
@@ -69,27 +73,24 @@ export default function MiningHUD() {
         });
     }
 
-    // Assay yield estimate (piecewise-linear by size) — mirrors MiningSystem reward calc.
-    let assayEstimate: number | null = null;
-    if (showYieldEstimate) {
-      const field = systemConfig.asteroidFields?.find((f) => f.id === t.location.fieldId);
-      const minR = field?.size?.minRadiusM ?? 8;
-      const maxR = field?.size?.maxRadiusM ?? 1024;
-      const tt = maxR > minR ? Math.max(0, Math.min(1, (t.radiusM - minR) / (maxR - minR))) : 0;
-      let y: number;
-      if (tt <= 0.35) y = 1 + (tt / 0.35) * (2 - 1);
-      else if (tt <= 0.7) y = 2 + ((tt - 0.35) / 0.35) * (4 - 2);
-      else y = 4 + ((tt - 0.7) / 0.3) * (6 - 4);
-      assayEstimate = Math.max(1, Math.round(y));
-    }
+    // Close inspection on record: composition and a yield estimate the player can act on.
+    const source = discoveries.sources.find((x) => x.id === sourceIdOf(t.location.fieldId, t.location.chunkKey, t.instanceId)) ?? null;
+    const inspected = source
+      ? Object.entries(source.composition)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => ({ id: k, name: materialName(k), units: Math.max(1, Math.round(n * shipConfig.miningEfficiencyMult)) }))
+      : null;
+    const inspectRangeM = INSPECT_RANGE_M * shipConfig.scannerInspectRangeMult;
 
     return {
       className: classDef?.name ?? "Unknown",
       durationS,
       compositionBands,
-      assayEstimate,
+      inspected,
+      inRange: t.distanceM <= inspectRangeM,
+      inspectRangeKm: inspectRangeM / 1000,
     };
-  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, showCompositionBands, showYieldEstimate]);
+  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, shipConfig.miningEfficiencyMult, shipConfig.scannerInspectRangeMult, showCompositionBands, discoveries.sources]);
 
   const showInfo = miningState.isFocused;
   const showButton = miningState.isFocused;
@@ -103,6 +104,18 @@ export default function MiningHUD() {
 
   // laserHeat is the ship's one thermal store: show it here only around mining (the dashboard always shows it).
   const showHeatBar = miningState.isMining || miningState.isOverheated || (miningState.laserHeat > 0 && miningState.targetedAsteroid !== null);
+
+  const inspecting = miningState.inspectProgress > 0;
+  const canInspect = showInfo && !!lootPreview && !lootPreview.inspected && lootPreview.inRange && !miningState.isMining;
+  const handleInspect = () => {
+    if (inspecting) cancelInspection();
+    else if (canInspect) startInspection();
+    else playAudio("ui.reject");
+  };
+  const handleInspectRef = useRef(handleInspect);
+  useEffect(() => {
+    handleInspectRef.current = handleInspect;
+  });
 
   const handleMineClick = () => {
     if (miningState.isMining) cancelMining();
@@ -136,6 +149,17 @@ export default function MiningHUD() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [miningState.isFocused, miningState.isMining, miningState.isOverheated, cargoFull, startMining, cancelMining]);
 
+  // Inspect hotkey
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (keybindsRef.current.inspect.includes(e.key.toLowerCase())) handleInspectRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // Pulse mining hotkey
   useEffect(() => {
     if (!pulseMiningUnlocked) return;
@@ -163,24 +187,49 @@ export default function MiningHUD() {
         </div>
 
         <div className="mining-hud__loot">
-          {lootPreview
-            ? `${showAsteroidType ? lootPreview.className : "Asteroid"} · ~${lootPreview.durationS.toFixed(1)}s`
-            : ""}
+          {lootPreview ? `${lootPreview.className} · ~${lootPreview.durationS.toFixed(1)}s` : ""}
         </div>
 
-        {lootPreview && lootPreview.compositionBands.length > 0 && (
+        {lootPreview && !lootPreview.inspected && lootPreview.compositionBands.length > 0 && (
           <div className="mining-hud__composition">
             {lootPreview.compositionBands.join(" · ")}
           </div>
         )}
 
-        {lootPreview && lootPreview.assayEstimate !== null && (
-          <div className="mining-hud__yield-estimate">
-            Est. yield: ~{lootPreview.assayEstimate} samples
+        {lootPreview?.inspected && (
+          <div className="mining-hud__inspected">
+            <div className="mining-hud__yield-estimate">
+              Inspected · est. yield {lootPreview.inspected.reduce((a, r) => a + r.units, 0)} units
+            </div>
+            {lootPreview.inspected.slice(0, 4).map((r) => (
+              <div key={r.id} className="mining-hud__comp-row">
+                <span>{r.name}</span>
+                <span>{r.units}</span>
+              </div>
+            ))}
           </div>
         )}
 
-        <div className="mining-hud__cargo">
+        {lootPreview && !lootPreview.inspected && showInfo && (
+          <div className="mining-hud__inspect">
+            {inspecting ? (
+              <>
+                <div className="mining-hud__inspect-bar">
+                  <div className="mining-hud__inspect-fill" style={{ width: `${Math.round(miningState.inspectProgress * 100)}%` }} />
+                </div>
+                <span className="mining-hud__inspect-text">Inspecting… {Math.round(miningState.inspectProgress * 100)}%</span>
+              </>
+            ) : lootPreview.inRange ? (
+              <button className="mining-hud__inspect-btn" onClick={handleInspect} disabled={miningState.isMining}>
+                Inspect <span className="mining-hud__hotkey">{(keybinds.inspect[0] ?? "g").toUpperCase()}</span>
+              </button>
+            ) : (
+              <span className="mining-hud__inspect-text">Inspect within {lootPreview.inspectRangeKm.toFixed(1)} km</span>
+            )}
+          </div>
+        )}
+
+        <div className="mining-hud__cargo" hidden={!!lootPreview?.inspected}>
           Cargo: {cargoUsedUnits}/{cargoCapacityUnits}
         </div>
 

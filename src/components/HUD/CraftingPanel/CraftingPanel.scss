@@ -201,6 +201,11 @@
     border-radius: s.$radius-sm;
     background: rgba(107, 227, 164, 0.10); // $accent-ok-tinted
     color: rgba(120, 220, 160, 0.9);
+
+    &--drawback {
+      background: rgba(255, 176, 92, 0.1);
+      color: rgba(255, 190, 120, 0.9);
+    }
   }
 
   // ── Recipe ──

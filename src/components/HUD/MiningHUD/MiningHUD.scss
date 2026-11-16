@@ -50,6 +50,66 @@
     font-variant-numeric: tabular-nums;
   }
 
+  &__inspected {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 150px;
+    gap: 1px;
+  }
+
+  &__comp-row {
+    display: flex;
+    justify-content: space-between;
+    gap: s.$space-3;
+    font-family: s.$font-mono;
+    font-size: 10px;
+    color: s.$text-secondary;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__inspect {
+    margin-top: 2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    pointer-events: auto;
+  }
+
+  &__inspect-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: s.$space-2;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px s.$space-2 3px s.$space-3;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(127, 184, 255, 0.4);
+    background: rgba(127, 184, 255, 0.12);
+    color: s.$text-primary;
+    cursor: pointer;
+  }
+
+  &__inspect-bar {
+    width: 120px;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: s.$radius-pill;
+    overflow: hidden;
+  }
+
+  &__inspect-fill {
+    height: 100%;
+    background: s.$accent-info;
+  }
+
+  &__inspect-text {
+    font-size: 10px;
+    color: rgba(140, 200, 255, 0.75);
+    letter-spacing: 0.04em;
+  }
+
   &__warning {
     margin-top: s.$space-1;
     font-size: 12px;

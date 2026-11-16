@@ -53,7 +53,6 @@ import SpaceRenderer from "../space/SpaceRenderer";
 import MiningSystem from "../Mining/MiningSystem";
 import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
-import ResearchTicker from "../Research/ResearchTicker";
 import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
@@ -217,7 +216,6 @@ const Scene = () => {
         <MiningSystem />
         <PingBrackets3D />
         <AsteroidVFX />
-        <ResearchTicker />
         <TimedEffectsTicker />
         <TransitTicker />
         <POIProjector />

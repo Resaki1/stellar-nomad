@@ -2,27 +2,32 @@ import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
 import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
 import type {
   CargoState,
+  DiscoveryState,
   ModulesState,
   PlayerState,
   PowerState,
   PropellantState,
-  ResearchState,
   SaveData,
   ShipConfig,
   WorldState,
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;
+
+/** Bound of `WorldState.discoveries.sources` and of each player's bookmarks. */
+export const MAX_SOURCES = 64;
+export const MAX_BOOKMARKS = 24;
+export const MAX_LEGACY_IDS = 256;
 
 export const DEFAULT_CARGO_CAPACITY_UNITS = 2000;
 
 export const defaultCargo = (): CargoState => ({ capacityUnits: DEFAULT_CARGO_CAPACITY_UNITS, items: {} });
 
-export const defaultResearch = (): ResearchState => ({ assaySamples: 0, activeResearch: null });
+export const defaultDiscoveries = (): DiscoveryState => ({ families: {}, sources: [], sites: {}, trials: {} });
 
 export const defaultPropellant = (): PropellantState => ({ ordinaryKg: PROPELLANT_TANK_KG, protectedKg: RECOVERY_ALLOWANCE_KG });
 
@@ -49,8 +54,14 @@ export const defaultShipConfig = (): ShipConfig => ({
   bonusCargoCapacity: 0,
   scannerLockSpeedMult: 1,
   scannerRangeMult: 1,
-  assaySampleBonusChance: 0,
   hullRegenPerSecond: 0,
+  scannerInspectTimeMult: 1,
+  scannerInspectRangeMult: 1,
+  tankBonusKg: 0,
+  reactorBonusKW: 0,
+  miningPowerMult: 1,
+  processingRateMult: 1,
+  heatCapacityMult: 1,
 });
 
 export const DEFAULT_HEALTH = 100;
@@ -61,7 +72,6 @@ export function defaultPlayerState(): PlayerState {
     health: DEFAULT_HEALTH,
     isDead: false,
     cargo: defaultCargo(),
-    research: defaultResearch(),
     modules: defaultModules(),
     shipConfig: defaultShipConfig(),
     aiName: null,
@@ -71,6 +81,8 @@ export function defaultPlayerState(): PlayerState {
     propellant: defaultPropellant(),
     power: defaultPower(),
     processing: null,
+    bookmarks: [],
+    legacy: null,
   };
 }
 
@@ -80,7 +92,8 @@ export function defaultWorldState(): WorldState {
     simRate: 1,
     asteroidDeltas: {},
     wrecks: [],
-    research: { completedNodes: [] },
+    research: { completedNodes: [], legacy: [] },
+    discoveries: defaultDiscoveries(),
     receipts: [],
   };
 }

@@ -1,14 +1,15 @@
 // ---------------------------------------------------------------------------
 // Modules / Loadout + Consumables inventory state
 // ---------------------------------------------------------------------------
-import { atom } from "jotai";
+import { atom, type Setter } from "jotai";
 import { signalAudioActionAtom } from "./audioSignals";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultModules } from "@/save/defaults";
 import { getItemDef, type ItemSlot } from "@/data/content";
 import { moduleModifiers, type ComputedModifiers } from "@/sim/ship/loadout";
 import type { OperationOutcome } from "@/sim/world/commands";
-import { newOpId, runOperation } from "@/store/operations";
+import { describeRejection, newOpId, runOperation } from "@/store/operations";
+import { addToastAtom } from "@/store/toast";
 
 export type { ModulesState } from "@/save/types";
 
@@ -30,48 +31,25 @@ export const computedModifiersAtom = atom((get): ComputedModifiers => moduleModi
 // Actions: equip / unequip modules
 // ---------------------------------------------------------------------------
 
-/**
- * Equip a module into its slot. The module must be owned.
- * Replaces whatever is currently in that slot.
- */
-export const equipModuleAtom = atom(
-  null,
-  (get, set, itemId: string): boolean => {
-    const def = getItemDef(itemId);
-    if (!def || def.type !== "module") return false;
+/** Equip (or with `itemId: null` empty) a slot through the authority, which refuses a fit
+ * that would leave fuel above the new tank or cargo above the new hold. */
+const setSlot = (set: Setter, slot: ItemSlot, itemId: string | null): boolean => {
+  const o = runOperation({ type: "module.equip", opId: newOpId(), slot, itemId });
+  if (o.status === "accepted") set(signalAudioActionAtom, itemId ? "module.equip" : "module.unequip");
+  else if (o.status === "rejected" && o.reason !== "already_done") {
+    set(addToastAtom, { audio: "reject", message: itemId ? "Cannot equip module" : "Cannot remove module", detail: describeRejection(o), durationMs: 3000 });
+  }
+  return o.status === "accepted" || (o.status === "rejected" && o.reason === "already_done" && itemId !== null);
+};
 
-    const state = get(modulesAtom);
-    if (!state.ownedModules.includes(itemId)) return false;
-    if (state.equippedModules[def.slot] === itemId) return true;
+export const equipModuleAtom = atom(null, (_get, set, itemId: string): boolean => {
+  const def = getItemDef(itemId);
+  return !!def && def.type === "module" && setSlot(set, def.slot, itemId);
+});
 
-    set(modulesAtom, {
-      ...state,
-      equippedModules: { ...state.equippedModules, [def.slot]: itemId },
-    });
-    set(signalAudioActionAtom, "module.equip");
-    return true;
-  },
-);
-
-/**
- * Unequip whatever module is in the given slot.
- */
-export const unequipSlotAtom = atom(
-  null,
-  (get, set, slot: ItemSlot): void => {
-    const state = get(modulesAtom);
-    if (!state.equippedModules[slot]) return;
-
-    const newEquipped = { ...state.equippedModules };
-    delete newEquipped[slot];
-
-    set(modulesAtom, {
-      ...state,
-      equippedModules: newEquipped,
-    });
-    set(signalAudioActionAtom, "module.unequip");
-  },
-);
+export const unequipSlotAtom = atom(null, (_get, set, slot: ItemSlot): void => {
+  setSlot(set, slot, null);
+});
 
 // ---------------------------------------------------------------------------
 // Actions: craft item

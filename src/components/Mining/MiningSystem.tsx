@@ -16,7 +16,7 @@ import {
   pulseCycleBuffer,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
-  asteroidsMinedLifetimeAtom,
+  inspectControl,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
   PULSE_ON_S,
@@ -35,7 +35,10 @@ import { spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
-import { shipRes } from "@/store/shipResources";
+import { shipRes, shipResControl } from "@/store/shipResources";
+import { INSPECT_RANGE_M, INSPECT_TIME_S, SOURCE_CLASS_NAMES, materialName } from "@/data/content";
+import { isSimPaused } from "@/sim/simPause";
+import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -756,6 +759,35 @@ const MiningSystem = () => {
     []
   );
 
+  /** Submit the close inspection of `snap` (the scanner's claim; feedback from the accepted result). */
+  const submitInspection = useCallback(
+    (snap: TargetedAsteroid) => {
+      const loc = snap.location;
+      const chunk = asteroidRuntime.getFieldRuntime(loc.fieldId)?.getChunk(loc.chunkKey);
+      const inst = chunk?.instancesByModel[loc.modelId];
+      if (!chunk || !inst) return;
+      const i = loc.localIndex * 3;
+      const op = buildInspectOperation(
+        systemConfig,
+        { fieldId: loc.fieldId, chunkKey: loc.chunkKey, instanceId: snap.instanceId, radiusM: snap.radiusM, chunkOriginKm: chunk.originKm, localM: [inst.positionsM[i], inst.positionsM[i + 1], inst.positionsM[i + 2]] },
+        newOpId(),
+      );
+      if (!op) return;
+      runOperation(op, (o) => {
+        if (o.status !== "accepted" || o.result.type !== "survey.inspect") return;
+        const fresh = o.result.newFamilies.map(materialName);
+        signalAudio("click.soft");
+        addToast({
+          audio: "silent",
+          message: `Inspected: ${SOURCE_CLASS_NAMES[op.classId] ?? op.classId}`,
+          detail: fresh.length > 0 ? `New material confirmed: ${fresh.join(", ")}` : "Composition and yield recorded",
+          durationMs: 3500,
+        });
+      });
+    },
+    [asteroidRuntime, systemConfig, signalAudio, addToast],
+  );
+
   const getTargetSnapshot = useCallback(
     (instanceId: number): TargetedAsteroid | null => {
       const loc = asteroidRuntime.findInstanceLocation(instanceId);
@@ -1160,6 +1192,22 @@ const MiningSystem = () => {
     const focusTimeS = TARGET_FOCUS_TIME_S * shipConfigRef.current.scannerLockSpeedMult;
     const isFocused = !!snapshot && targetingTimeRef.current >= focusTimeS;
 
+    // --- Close inspection: hold the lock within range; no consumable.
+    if (inspectControl.requested) {
+      const cfg = shipConfigRef.current;
+      if (!snapshot || !isFocused || isMiningNow || snapshot.instanceId !== inspectControl.targetId) {
+        inspectControl.requested = false;
+        inspectControl.progress = 0;
+      } else if (snapshot.distanceM <= INSPECT_RANGE_M * cfg.scannerInspectRangeMult && !isSimPaused()) {
+        inspectControl.progress += delta / (INSPECT_TIME_S * cfg.scannerInspectTimeMult);
+        if (inspectControl.progress >= 1) {
+          inspectControl.requested = false;
+          inspectControl.progress = 0;
+          submitInspection(snapshot);
+        }
+      }
+    }
+
     // --- Mining progression + must keep aim
     let cancelMining = false;
 
@@ -1242,6 +1290,7 @@ const MiningSystem = () => {
           // Heat and extraction rate come from the ship resource step (one thermal store,
           // reactor-throttled work on executed time): request the beam, consume granted seconds.
           miningBeamRequest.on = beamFiring;
+          shipResControl.beamTargetId = snapshot.instanceId;
           const work = takeMiningWork();
 
           if (shipRes.miningTripped) {
@@ -1358,6 +1407,7 @@ const MiningSystem = () => {
           miningProgress: nextMiningProgress,
           laserHeat: shipRes.heat01,
           isOverheated: shipRes.miningTripped || isOverheatedNow,
+          inspectProgress: inspectControl.requested ? Math.max(0.001, inspectControl.progress) : 0,
         };
       });
 
@@ -1386,7 +1436,7 @@ const MiningSystem = () => {
         const op = buildMineOperation(
           systemConfig,
           { ...removal, radiusM: reward.radiusM },
-          { miningEfficiencyMult: cfg.miningEfficiencyMult, assaySampleBonusChance: cfg.assaySampleBonusChance, minedLifetime: store.get(asteroidsMinedLifetimeAtom) },
+          { miningEfficiencyMult: cfg.miningEfficiencyMult },
           newOpId(),
         );
         runOperation(op, (o) => {
@@ -1395,7 +1445,6 @@ const MiningSystem = () => {
           const loot = reward.resources
             .filter((r) => (granted[r.resourceId] ?? 0) > 0)
             .map((r) => ({ ...r, amount: granted[r.resourceId] }));
-          loot.push({ resourceId: "_assay", amount: o.result.assaySamples, name: "Assay Samples", icon: "" });
           spawnVFX({ type: "mined", position: reward.positionLocal, radiusM: reward.radiusM, loot });
           if (Object.keys(granted).length > 0) signalAudio("loot.acquire");
           incrementMinedSignal((c) => c + 1);

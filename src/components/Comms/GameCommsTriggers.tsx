@@ -12,7 +12,7 @@ import { atom, useAtomValue, useSetAtom } from "jotai";
 import { shipHealthAtom } from "@/store/store";
 import { miningStateAtom, asteroidMinedSignalAtom } from "@/store/mining";
 import { isCargoFullAtom } from "@/store/cargo";
-import { researchAtom, completedNodeSetAtom, lastCompletedResearchIdAtom } from "@/store/research";
+import { completedNodeSetAtom, lastCompletedResearchIdAtom } from "@/store/research";
 import { modulesAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom } from "@/store/modules";
 import { aiNameAtom } from "@/store/aiName";
 import { enqueueCommsAtom } from "@/store/comms";
@@ -78,7 +78,7 @@ export default function GameCommsTriggers() {
     if (overheatFiredRef.current || !isOverheated) return;
     overheatFiredRef.current = true;
 
-    const hasThermalResearch = completedNodes.has("b2b_thermal_dynamics");
+    const hasThermalResearch = completedNodes.has("th1_heat_rejection");
     const heatSinkCount =
       modules.consumables["consumable_heat_sink_cartridge"] ?? 0;
 
@@ -93,13 +93,13 @@ export default function GameCommsTriggers() {
       // Research done but no cartridges: suggest crafting
       textContent = [
         "Laser overheated. Forced cooldown. The current optics still can't handle sustained mining on larger asteroids without hitting the thermal limit.",
-        "You have the fabrication specs for heat sink cartridges. Worth putting a few together when you get the chance — they dump laser heat on the spot.",
+        "Radiator strips or a coolant circulator would buy longer runs. Heat sink cartridges dump heat on the spot, and they're in the basic fabrication specs.",
       ];
     } else {
-      // No research yet: point them to the research tree
+      // No thermal research yet: point at the trial and the starter cartridges
       textContent = [
         "Mining laser thermal capacity exceeded. Forced cooldown in progress. The current optics can't sustain fire long enough to mine larger asteroids in a single pass.",
-        "There's a thermal management approach in the research data that could help. It would unlock heat sink cartridges. Single-use, but they dump excess heat on the spot. Could be worth prioritizing.",
+        "If you keep the beam on one rock for a sustained run without tripping it, I can work out better heat rejection. Heat sink cartridges are in the basic fabrication specs too.",
         "Alternatively, search for smaller asteroids."
       ];
     }
@@ -122,19 +122,6 @@ export default function GameCommsTriggers() {
     const msg = COMMS_MESSAGES.cargo_full_001;
     if (msg) enqueue(msg);
   }, [isCargoFull, enqueue]);
-
-  // ── MicroLab research started ───────────────────────────────────────
-  const research = useAtomValue(researchAtom);
-  const microlabStartFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (microlabStartFiredRef.current) return;
-    if (research.activeResearch?.nodeId === "r0_microlab_boot") {
-      microlabStartFiredRef.current = true;
-      const msg = COMMS_MESSAGES.research_start_001;
-      if (msg) enqueue(msg);
-    }
-  }, [research.activeResearch, enqueue]);
 
   // ── First item crafted ──────────────────────────────────────────────
   const craftCount = useAtomValue(itemCraftedSignalAtom);

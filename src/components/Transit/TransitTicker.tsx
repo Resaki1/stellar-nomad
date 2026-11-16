@@ -16,6 +16,7 @@ import {
   type TransitPreview,
 } from "@/store/transit";
 import { addToastAtom } from "@/store/toast";
+import { recordTrial } from "@/store/research";
 import { systemConfigAtom } from "@/store/system";
 import { ALREADY_THERE, type TransitBody } from "@/sim/ship/transitDrive";
 
@@ -69,6 +70,8 @@ export default function TransitTicker() {
     }
     // The arrival frame keeps its destination so arrival comms know where the ship arrived.
     const arrivedNow = ev.arrived !== seen.arrived;
+    // A completed leg is the propulsion trial; a fresh world's counter starts at 0, so it is real.
+    if (arrivedNow && ev.arrived > seen.arrived) recordTrial("transit_leg");
     seen.arrived = ev.arrived;
 
     // Phase / leg / target mirror, only on change.

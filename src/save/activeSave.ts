@@ -53,6 +53,11 @@ export function getPlayerState(id: PlayerId): PlayerState | null {
   return id === getLocalPlayerId() ? getLocalPlayerState() : (active.data.players[id] ?? null);
 }
 
+/** Every saved player (bookmark protection when the source list evicts). */
+export function getPlayerStates(): PlayerState[] {
+  return active ? Object.values(active.data.players) : [];
+}
+
 export function readPlayerSlice<K extends keyof PlayerState>(key: K): PlayerState[K] | undefined {
   return active ? getLocalPlayerState()[key] : undefined;
 }

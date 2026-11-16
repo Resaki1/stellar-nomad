@@ -6,7 +6,7 @@ import type { createStore } from "jotai";
 import { getActiveSave, sampleCollectors } from "@/save/activeSave";
 import { getLocalPlayerId, setLastWorldId } from "@/save/playerId";
 import { deleteWorld, exportWorld, importWorld, listWorlds, newWorldId, putWorld } from "@/save/saveDb";
-import type { SaveData, SaveMeta } from "@/save/types";
+import type { DiscoveryState, ModulesState, SaveData, SaveMeta } from "@/save/types";
 import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
@@ -18,7 +18,17 @@ import { devTeleportAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom, wrecksMirrorAtom } from "@/store/death";
 import { asteroidsMinedLifetimeAtom } from "@/store/mining";
 import { craftItemAtom, modulesAtom } from "@/store/modules";
-import { researchAtom, sharedResearchMirrorAtom } from "@/store/research";
+import { bookmarksAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom, unlockResearchAtom } from "@/store/research";
+import { RESEARCH_NODES, getResearchNode } from "@/data/content";
+import { DEFAULT_CARGO_CAPACITY_UNITS, defaultShipConfig } from "@/save/defaults";
+import { auditContent, evaluateNode } from "@/sim/research/requirements";
+import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
+import { aggregateEffects, applyModifiers } from "@/sim/ship/loadout";
+import { computeLoadoutPreview } from "@/sim/ship/loadoutPreview";
+import { getItemDef, type ItemEffect } from "@/data/content";
+import { inspectControl, startInspectionAtom } from "@/store/mining";
+import { getShipTuning } from "@/store/shipResources";
+import { loadoutPreviewAtom, setDestinationToSourceAtom } from "@/store/discoveries";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { shipHealthAtom } from "@/store/store";
 import { systemConfigAtom } from "@/store/system";
@@ -98,7 +108,8 @@ export function createGameplayHarness(store: Store) {
     /** What the UI atoms hold now (must equal the save after every operation). */
     mirrors: () => ({
       cargo: store.get(cargoAtom),
-      research: store.get(researchAtom),
+      discoveries: store.get(discoveriesMirrorAtom),
+      bookmarks: store.get(bookmarksAtom),
       modules: store.get(modulesAtom),
       isDead: store.get(isDeadAtom),
       health: store.get(shipHealthAtom),
@@ -117,9 +128,8 @@ export function createGameplayHarness(store: Store) {
       const op = buildMineOperation(
         store.get(systemConfigAtom),
         t,
-        { miningEfficiencyMult: cfg.miningEfficiencyMult, assaySampleBonusChance: cfg.assaySampleBonusChance, minedLifetime: store.get(asteroidsMinedLifetimeAtom) },
+        { miningEfficiencyMult: cfg.miningEfficiencyMult },
         opId ?? newOpId(),
-        () => 1,
       );
       return runOperation(op);
     },
@@ -323,6 +333,150 @@ export function createGameplayHarness(store: Store) {
         const r = transitRecorder;
         transitRecorder = null;
         return r ? r.stop() : null;
+      },
+    },
+
+    /** M3.3/M3.4: discovery research, content audit, loadout preview. */
+    m33: {
+      audit: () => auditContent(DEFAULT_CARGO_CAPACITY_UNITS),
+      nodeIds: (): string[] => RESEARCH_NODES.map((n) => n.id),
+      node: (id: string) => getResearchNode(id) ?? null,
+      /** Pure evaluation against the live world record. */
+      evaluate(id: string) {
+        const n = getResearchNode(id);
+        const w = getActiveSave()?.data.world;
+        if (!n || !w) return null;
+        return evaluateNode(n, { discoveries: w.discoveries, completed: new Set(w.research.completedNodes) });
+      },
+      /** Loaded rocks nearest the ship with class and composition (the scanner's view). */
+      rocks(n = 20, classId?: string, minRadiusM = 0) {
+        const rt = getActiveAsteroidRuntime();
+        const system = store.get(systemConfigAtom);
+        const ship = testProbe.ship.posKm;
+        const out: { fieldId: string; chunkKey: string; instanceId: number; radiusM: number; classId: string; composition: Record<string, number>; distKm: number; mineS: number }[] = [];
+        const speedMult = store.get(effectiveShipConfigAtom).miningSpeedMult;
+        for (const f of system.asteroidFields ?? []) {
+          const fr = rt?.getFieldRuntime(f.id);
+          if (!fr) continue;
+          fr.chunks.forEach((chunk, chunkKey) => {
+            for (const modelId in chunk.instancesByModel) {
+              const inst = chunk.instancesByModel[modelId];
+              for (let i = 0; i < inst.count; i++) {
+                const radiusM = inst.radiiM[i];
+                if (radiusM < minRadiusM) continue;
+                const id = inst.instanceIds[i] >>> 0;
+                const reward = getAsteroidMiningReward(system, f.id, id, radiusM);
+                if (!reward || (classId && reward.asteroidClass.id !== classId)) continue;
+                const x = f.anchorKm[0] + chunk.originKm[0] + inst.positionsM[i * 3] / 1000;
+                const y = f.anchorKm[1] + chunk.originKm[1] + inst.positionsM[i * 3 + 1] / 1000;
+                const z = f.anchorKm[2] + chunk.originKm[2] + inst.positionsM[i * 3 + 2] / 1000;
+                const composition: Record<string, number> = {};
+                for (const r of reward.resources) composition[r.resourceId] = r.amount;
+                out.push({ fieldId: f.id, chunkKey, instanceId: id, radiusM, classId: reward.asteroidClass.id, composition, distKm: Math.hypot(x - ship[0], y - ship[1], z - ship[2]), mineS: computeMiningDurationS(radiusM) / speedMult });
+              }
+            }
+          });
+        }
+        out.sort((a, b) => a.distKm - b.distKm);
+        return out.slice(0, n);
+      },
+      /** The scanner's inspection claim for a loaded rock, submitted as the local player (range not checked). */
+      inspect(t: RockRef & { radiusM?: number }, opId?: string): OperationOutcome | { status: "missing" } {
+        const chunk = getActiveAsteroidRuntime()?.getFieldRuntime(t.fieldId)?.getChunk(t.chunkKey);
+        if (!chunk) return { status: "missing" };
+        for (const modelId in chunk.instancesByModel) {
+          const inst = chunk.instancesByModel[modelId];
+          for (let i = 0; i < inst.count; i++) {
+            if (inst.instanceIds[i] >>> 0 !== t.instanceId >>> 0) continue;
+            const op = buildInspectOperation(
+              store.get(systemConfigAtom),
+              { fieldId: t.fieldId, chunkKey: t.chunkKey, instanceId: t.instanceId, radiusM: inst.radiiM[i], chunkOriginKm: chunk.originKm, localM: [inst.positionsM[i * 3], inst.positionsM[i * 3 + 1], inst.positionsM[i * 3 + 2]] },
+              opId ?? newOpId(),
+            );
+            return op ? runOperation(op) : { status: "missing" };
+          }
+        }
+        return { status: "missing" };
+      },
+      /** Teleport `offsetKm` from a rock along +x (system frame). */
+      approach(t: RockRef, offsetKm = 0.6): boolean {
+        const p = resolveKm(t);
+        if (!p) return false;
+        store.set(devTeleportAtom, { positionKm: [p[0] + offsetKm, p[1], p[2]] });
+        return true;
+      },
+      /** The research panel's unlock action. */
+      unlock(nodeId: string): OperationOutcome | null {
+        const out: { o: OperationOutcome | null } = { o: null };
+        store.set(unlockResearchAtom, { nodeId, onSettled: (o) => (out.o = o) });
+        return out.o;
+      },
+      /** Pure preview for an equipped id list (gate d) and the live one the loadout panel shows. */
+      preview(equipped: string[]) {
+        const effects: ItemEffect[] = [];
+        for (const id of equipped) effects.push(...(getItemDef(id)?.effects ?? []));
+        const cfg = applyModifiers(defaultShipConfig(), aggregateEffects(effects));
+        return { ...computeLoadoutPreview(cfg, getResourceTuning(), DEFAULT_CARGO_CAPACITY_UNITS), cfg };
+      },
+      livePreview: () => store.get(loadoutPreviewAtom),
+      /** Dev: own and equip exactly these modules (each in its own slot), nothing else equipped. */
+      setLoadout(ids: string[]): void {
+        store.set(modulesAtom, (m) => {
+          const equippedModules: ModulesState["equippedModules"] = {};
+          for (const id of ids) {
+            const def = getItemDef(id);
+            if (def?.type === "module") equippedModules[def.slot] = id;
+          }
+          return { ...m, ownedModules: Array.from(new Set([...m.ownedModules, ...ids])), equippedModules };
+        });
+      },
+      liveTuning: (): ResourceTuning => ({ ...getShipTuning() }),
+      /** The loadout panel's path: equip (or `null` empty) a slot through the authority. */
+      equipOp: (itemId: string | null, slot: string): OperationOutcome => runOperation({ type: "module.equip", opId: newOpId(), slot, itemId }),
+      /** UI path: start a close inspection on the locked rock. */
+      startInspection: (): boolean => store.set(startInspectionAtom),
+      inspection: () => ({ ...inspectControl, progressUi: store.get(miningStateAtom).inspectProgress }),
+      /** Discoveries list action: make a recorded source the transit destination. */
+      setDestination: (sourceId: string): boolean => store.set(setDestinationToSourceAtom, sourceId),
+      bookmark: (sourceId: string, name: string | null): OperationOutcome => runOperation({ type: "bookmark.set", opId: newOpId(), sourceId, name }),
+      /** Test setup only: overwrite the active (fixture) world's findings and unlocked options. */
+      devSetWorld(p: { discoveries?: DiscoveryState; completedNodes?: string[] }): void {
+        const w = getActiveSave()?.data.world;
+        if (!w) return;
+        if (p.discoveries) w.discoveries = structuredClone(p.discoveries);
+        if (p.completedNodes) w.research = { completedNodes: [...p.completedNodes], legacy: w.research.legacy };
+        store.set(discoveriesMirrorAtom, w.discoveries);
+        store.set(sharedResearchMirrorAtom, w.research.completedNodes);
+      },
+      /** Target a body as gaze-locking it would (transit preview / destination). */
+      targetBody(bodyId: string): boolean {
+        const b = allBodyDefs().find((x) => x.id === bodyId);
+        if (!b?.positionKm) return false;
+        store.set(targetedPOIAtom, { id: `body:${b.id}`, name: b.name, positionKm: b.positionKm, arrivalOffsetKm: Math.max(100, b.radiusKm * 2) });
+        return true;
+      },
+      /** Starter-belt hydrate economics over the loaded chunks within `radiusKm` of the ship. */
+      fuelStats(radiusKm = 25) {
+        const t = getResourceTuning();
+        const rocks = this.rocks(1e6).filter((r) => r.distKm <= radiusKm);
+        const hyd = rocks.map((r) => r.composition.hydrates ?? 0);
+        const c = rocks.filter((r) => r.classId === "c_type");
+        const cHyd = c.map((r) => r.composition.hydrates ?? 0).sort((a, b) => a - b);
+        const coldC = c.filter((r) => r.mineS < 14).map((r) => r.composition.hydrates ?? 0).sort((a, b) => b - a);
+        const unitsPerTank = t.tankKg / t.processingKgPerUnit;
+        let need = unitsPerTank;
+        let best = 0;
+        for (const h of coldC) {
+          if (need <= 0) break;
+          need -= h;
+          best++;
+        }
+        const mean = (xs: number[]) => (xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : 0);
+        return {
+          rocks: rocks.length, cType: c.length, unitsPerTank, kgPerUnit: t.processingKgPerUnit,
+          meanHydratesAll: mean(hyd), meanHydratesC: mean(cHyd), medianHydratesC: cHyd[Math.floor(cHyd.length / 2)] ?? 0,
+          rocksPerTankMeanC: mean(cHyd) > 0 ? unitsPerTank / mean(cHyd) : null, rocksPerTankBestColdC: need <= 0 ? best : null,
+        };
       },
     },
 

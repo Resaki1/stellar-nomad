@@ -107,8 +107,8 @@ export default async function saveCheck(d) {
     const worldsAfterImport = (await ev(IDB)).meta.map((m) => m.name);
     const checks = {
       cargo: eq(p.cargo, legacy.cargo),
-      // Schema 2: completions are world-owned; assay samples and the timer stay with the player.
-      research: eq(p.research, { assaySamples: 13, activeResearch: null }) && eq(data.world.research.completedNodes, ["r0_microlab_boot"]),
+      // Schema 3: r0 maps to no option (basic analysis is free); the retired assay samples stay inert in legacy.
+      research: !("research" in p) && p.legacy?.assaySamples === 13 && eq(data.world.research.completedNodes, []),
       tanksFull: p.propellant.ordinaryKg > 0 && p.propellant.protectedKg > 0 && p.processing === null,
       modulesOwned: eq(p.modules.ownedModules, ["module_cargo_rack_mk1"]),
       modulesAutoEquipped: p.modules.equippedModules.cargo === "module_cargo_rack_mk1",
@@ -140,7 +140,7 @@ export default async function saveCheck(d) {
     const [a] = await nearest(1);
     const epoch = Date.UTC(2031, 6, 4, 12, 0, 0);
     await ev(`__dev.grantCargo("fe_ni_metal", 77)`);
-    await ev(`__dev.grantAssay(9)`);
+    await ev(`__dev.grantCargo("hydrates", 9)`);
     await ev(`__dev.unlockAll()`);
     const destroyed = await ev(`__test.world.submit(${JSON.stringify({ type: "asteroid.destroy", fieldId: a.fieldId, chunkKey: a.chunkKey, instanceId: a.instanceId, cause: "mined" })})`);
     await ev(`__test.world.submit({ type: "time.set", epochMs: ${epoch}, rate: 0 })`);

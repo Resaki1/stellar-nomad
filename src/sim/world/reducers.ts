@@ -2,12 +2,15 @@
  * Operation reducers: validate every affected slice, then return a commit that only assigns.
  * Nothing is written before validation finishes, so a rejection changes nothing.
  */
-import { REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, arePrerequisitesMet } from "@/data/content";
+import { ALL_ITEM_SLOTS, MATERIAL_NAMES, REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, getSiteDef, getTrialDef } from "@/data/content";
+import { MAX_BOOKMARKS } from "@/save/defaults";
 import type { PlayerId, PlayerState, QuatTuple, Vec3Tuple, WorldState, WreckRecord } from "@/save/types";
 import { isFrameId } from "@/sim/frames";
-import { cargoUsedUnits, persistentShipConfig, unlockedItemIds } from "@/sim/ship/loadout";
+import { planExtraction, planInspection, planStamp, sourceIdOf } from "@/sim/research/discoveries";
+import { evaluateNode, missingAnalysis, unlockedItemIds } from "@/sim/research/requirements";
+import { cargoUsedUnits, equipTuning, persistentShipConfig } from "@/sim/ship/loadout";
 import { unconvertedUnits } from "@/sim/ship/resourceStep";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
 import type { AsteroidDeltaIndex } from "./asteroidDeltas";
 import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
 
@@ -19,6 +22,8 @@ export interface ReduceCtx {
   asteroids: AsteroidDeltaIndex;
   /** Wall clock, ms, supplied by the authority so the reducer stays pure. */
   now: number;
+  /** Source ids any player has bookmarked (eviction protection). */
+  bookmarked: () => ReadonlySet<string>;
 }
 
 export interface Commit {
@@ -32,6 +37,7 @@ export interface Commit {
 export interface Rejection {
   reason: RejectReason;
   missing?: Record<string, number>;
+  evidence?: string[];
 }
 
 export type Reduction = Commit | Rejection;
@@ -40,7 +46,7 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isCount = (v: unknown): v is number => isNum(v) && v >= 0 && Number.isInteger(v);
 const reject = (reason: RejectReason, missing?: Record<string, number>): Rejection => (missing ? { reason, missing } : { reason });
 const DEFAULT_STACK_MAX = 99;
-const MAX_ASSAY_PER_ROCK = 100;
+const has = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
 function validAsteroid(op: { fieldId: string; chunkKey: string; instanceId: number }): boolean {
   const id = op.instanceId;
@@ -51,9 +57,25 @@ function completedSet(world: WorldState): Set<string> {
   return new Set(world.research.completedNodes);
 }
 
+const _tuning: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+/** The live resource table with this player's equipment applied (tank, reactor, rates). */
+function shipTuning(player: PlayerState, world: WorldState): Readonly<ResourceTuning> {
+  return equipTuning(getResourceTuning(), persistentShipConfig(player, completedSet(world)), _tuning);
+}
+
+const discoveriesEvent = (by: PlayerId): WorldEvent => ({ type: "discoveries.changed", by });
+
 function cargoRemaining(player: PlayerState, world: WorldState): number {
   const cap = player.cargo.capacityUnits + persistentShipConfig(player, completedSet(world)).bonusCargoCapacity;
   return Math.max(0, Math.floor(cap) - cargoUsedUnits(player.cargo.items));
+}
+
+/** Why `modules` cannot be fitted with this player's current fuel and cargo, or null. */
+function loadoutOverflow(player: PlayerState, world: WorldState, modules: PlayerState["modules"]): RejectReason | null {
+  const next = { ...player, modules };
+  if (cargoUsedUnits(player.cargo.items) > Math.floor(player.cargo.capacityUnits + persistentShipConfig(next, completedSet(world)).bonusCargoCapacity)) return "cargo_overflow";
+  if (player.propellant.ordinaryKg > shipTuning(next, world).tankKg + 1e-6) return "tank_overflow";
+  return null;
 }
 
 export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
@@ -77,10 +99,16 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "asteroid.destroy": {
       if (!validAsteroid(op)) return reject("invalid");
       if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
+      const plan = planExtraction(world.discoveries, sourceIdOf(op.fieldId, op.chunkKey, op.instanceId), null, by, now);
+      const events: WorldEvent[] = [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: op.cause }];
+      if (plan) events.push(discoveriesEvent(by));
       return {
         result: { type: "asteroid.destroy" },
-        apply: () => asteroids.add(op.fieldId, op.chunkKey, op.instanceId),
-        events: [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: op.cause }],
+        apply: () => {
+          asteroids.add(op.fieldId, op.chunkKey, op.instanceId);
+          if (plan) world.discoveries = plan.next;
+        },
+        events,
         playerKeys: [],
       };
     }
@@ -91,7 +119,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       return {
         result: { type: "research.devSet", count: completedNodes.length },
         apply: () => {
-          world.research = { completedNodes };
+          world.research = { completedNodes, legacy: world.research.legacy };
         },
         events: [{ type: "research.changed", by, completedNodes }],
         playerKeys: [],
@@ -101,8 +129,12 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "wreck.collect":
     case "asteroid.mine":
     case "item.craft":
-    case "research.start":
-    case "research.complete":
+    case "survey.inspect":
+    case "research.unlock":
+    case "trial.record":
+    case "site.record":
+    case "bookmark.set":
+    case "module.equip":
     case "ship.destroy":
     case "ship.respawn":
     case "processing.start":
@@ -116,9 +148,9 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
 
   switch (op.type) {
     case "asteroid.mine": {
-      if (!validAsteroid(op) || !isCount(op.assaySamples) || op.assaySamples > MAX_ASSAY_PER_ROCK) return reject("invalid");
+      if (!validAsteroid(op)) return reject("invalid");
       if (typeof op.yield !== "object" || op.yield === null) return reject("invalid");
-      for (const k of Object.keys(op.yield)) if (!isCount(op.yield[k])) return reject("invalid");
+      for (const k of Object.keys(op.yield)) if (!has(MATERIAL_NAMES, k) || !isCount(op.yield[k])) return reject("invalid");
       if (p.isDead) return reject("dead");
       if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
       let room = cargoRemaining(p, world);
@@ -137,18 +169,21 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
         if (want > n) overflow[k] = want - n;
       }
       const cargo = { ...p.cargo, items };
-      const research = { ...p.research, assaySamples: p.research.assaySamples + op.assaySamples };
       const minedLifetime = p.minedLifetime + 1;
+      // Evidence from what was actually extracted (overflow left behind still confirms the rock).
+      const plan = planExtraction(world.discoveries, sourceIdOf(op.fieldId, op.chunkKey, op.instanceId), op.yield, by, now);
+      const events: WorldEvent[] = [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: "mined" }];
+      if (plan) events.push(discoveriesEvent(by));
       return {
-        result: { type: "asteroid.mine", granted, overflow, assaySamples: op.assaySamples },
+        result: { type: "asteroid.mine", granted, overflow, newFamilies: plan?.newFamilies ?? [], depletedSource: plan?.depletedSource ?? null },
         apply: () => {
           asteroids.add(op.fieldId, op.chunkKey, op.instanceId);
           p.cargo = cargo;
-          p.research = research;
           p.minedLifetime = minedLifetime;
+          if (plan) world.discoveries = plan.next;
         },
-        events: [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: "mined" }],
-        playerKeys: ["cargo", "research", "minedLifetime"],
+        events,
+        playerKeys: ["cargo", "minedLifetime"],
       };
     }
 
@@ -186,67 +221,150 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
         }
         modules = { ...m, consumables: { ...m.consumables, [def.id]: (m.consumables[def.id] ?? 0) + 1 }, hotbar };
       } else if (def.type === "module") {
-        autoEquipped = !m.equippedModules[def.slot];
-        modules = {
-          ...m,
-          ownedModules: [...m.ownedModules, def.id],
-          equippedModules: autoEquipped ? { ...m.equippedModules, [def.slot]: def.id } : m.equippedModules,
-        };
+        const owned = { ...m, ownedModules: [...m.ownedModules, def.id] };
+        const fitted = { ...owned, equippedModules: { ...m.equippedModules, [def.slot]: def.id } };
+        autoEquipped = !m.equippedModules[def.slot] && !loadoutOverflow({ ...p, cargo: { ...p.cargo, items } }, world, fitted);
+        modules = autoEquipped ? fitted : owned;
       } else {
         modules = { ...m, ownedModules: [...m.ownedModules, def.id] };
       }
       const cargo = { ...p.cargo, items };
+      const trial = planStamp(world.discoveries, "trials", "first_fabrication", by, now);
       return {
-        result: { type: "item.craft", itemId: def.id, spent: { ...def.recipe }, autoEquipped, hotbarIndex },
+        result: { type: "item.craft", itemId: def.id, spent: { ...def.recipe }, autoEquipped, hotbarIndex, newTrial: !!trial },
         apply: () => {
           p.cargo = cargo;
           p.modules = modules;
+          if (trial) world.discoveries = trial;
         },
-        events: [],
+        events: trial ? [discoveriesEvent(by)] : [],
         playerKeys: ["cargo", "modules"],
       };
     }
 
-    case "research.start": {
-      const node = typeof op.nodeId === "string" ? getResearchNode(op.nodeId) : undefined;
-      if (!node) return reject("not_found");
-      if (p.research.activeResearch) return reject("busy");
-      const completed = completedSet(world);
-      if (completed.has(node.id)) return reject("already_done");
-      if (!arePrerequisitesMet(node, completed)) return reject("prerequisites");
-      const cost = node.costs.assaySamples;
-      if (p.research.assaySamples < cost) return reject("assay", { assaySamples: cost - p.research.assaySamples });
-      const research = { assaySamples: p.research.assaySamples - cost, activeResearch: { nodeId: node.id, elapsedS: 0 } };
+    case "survey.inspect": {
+      if (!validAsteroid(op) || typeof op.classId !== "string" || !isNum(op.radiusM) || op.radiusM < 0) return reject("invalid");
+      const pos = op.positionKm;
+      if (!isFrameId(op.frameId) || !Array.isArray(pos) || pos.length !== 3 || !pos.every(isNum)) return reject("invalid");
+      if (typeof op.composition !== "object" || op.composition === null) return reject("invalid");
+      const composition: Record<string, number> = {};
+      for (const k of Object.keys(op.composition)) {
+        if (!has(MATERIAL_NAMES, k) || !isCount(op.composition[k])) return reject("invalid");
+        if (op.composition[k] > 0) composition[k] = op.composition[k];
+      }
+      if (p.isDead) return reject("dead");
+      const destroyed = asteroids.has(op.fieldId, op.chunkKey, op.instanceId);
+      if (destroyed) return reject("not_found");
+      const plan = planInspection(
+        world.discoveries,
+        { fieldId: op.fieldId, chunkKey: op.chunkKey, asteroidId: op.instanceId >>> 0, classId: op.classId, frameId: op.frameId, positionKm: [pos[0], pos[1], pos[2]], radiusM: op.radiusM, composition },
+        false,
+        by,
+        now,
+        ctx.bookmarked(),
+      );
+      if (!plan) return reject("already_done");
       return {
-        result: { type: "research.start", nodeId: node.id, spentAssay: cost },
+        result: { type: "survey.inspect", sourceId: sourceIdOf(op.fieldId, op.chunkKey, op.instanceId), newFamilies: plan.newFamilies, upgraded: plan.upgraded, evicted: plan.evicted },
         apply: () => {
-          p.research = research;
+          world.discoveries = plan.next;
         },
-        events: [],
-        playerKeys: ["research"],
+        events: [discoveriesEvent(by)],
+        playerKeys: [],
       };
     }
 
-    case "research.complete": {
-      const active = p.research.activeResearch;
-      if (!active || active.nodeId !== op.nodeId) return reject("not_active");
-      const node = getResearchNode(op.nodeId);
+    case "research.unlock": {
+      const node = typeof op.nodeId === "string" ? getResearchNode(op.nodeId) : undefined;
       if (!node) return reject("not_found");
-      if (!isNum(op.elapsedS) || op.elapsedS + 1e-6 < node.durationSeconds) return reject("incomplete");
-      const known = world.research.completedNodes.includes(node.id);
-      const completedNodes = known ? world.research.completedNodes : [...world.research.completedNodes, node.id];
-      // Already completed by another player: refund the paid samples instead of losing them.
-      const refund = known ? node.costs.assaySamples : 0;
-      const research = { assaySamples: p.research.assaySamples + refund, activeResearch: null };
+      if (p.isDead) return reject("dead");
+      const completed = completedSet(world);
+      if (completed.has(node.id)) return reject("already_done");
+      const ev = evaluateNode(node, { discoveries: world.discoveries, completed });
+      if (!ev.met) return { reason: "evidence", evidence: ev.missing };
+      const short = missingAnalysis(node, p.cargo.items);
+      if (Object.keys(short).length > 0) return reject("materials", short);
+      const items = { ...p.cargo.items };
+      for (const [k, n] of Object.entries(node.analysis)) {
+        items[k] -= n;
+        if (items[k] <= 0) delete items[k];
+      }
+      const cargo = { ...p.cargo, items };
+      const completedNodes = [...world.research.completedNodes, node.id];
       return {
-        result: { type: "research.complete", nodeId: node.id, unlockedItems: known ? [] : [...(node.unlocks.items ?? [])], refundedAssay: refund },
+        result: { type: "research.unlock", nodeId: node.id, unlockedItems: [...node.unlocks.items], spent: { ...node.analysis } },
         apply: () => {
-          if (!known) world.research = { completedNodes };
-          p.research = research;
+          world.research = { completedNodes, legacy: world.research.legacy };
+          p.cargo = cargo;
         },
-        events: known ? [] : [{ type: "research.changed", by, completedNodes }],
-        playerKeys: ["research"],
+        events: [{ type: "research.changed", by, completedNodes }],
+        playerKeys: ["cargo"],
       };
+    }
+
+    case "trial.record": {
+      if (typeof op.trialId !== "string" || !getTrialDef(op.trialId)) return reject("not_found");
+      if (p.isDead) return reject("dead");
+      const next = planStamp(world.discoveries, "trials", op.trialId, by, now);
+      if (!next) return reject("already_done");
+      return { result: { type: "trial.record", trialId: op.trialId }, apply: () => {
+          world.discoveries = next;
+        }, events: [discoveriesEvent(by)], playerKeys: [] };
+    }
+
+    case "site.record": {
+      const site = typeof op.siteId === "string" ? getSiteDef(op.siteId) : undefined;
+      if (!site) return reject("not_found");
+      if (p.isDead) return reject("dead");
+      const ship = p.ship;
+      if (!ship || ship.frameId !== site.frameId) return reject("too_far");
+      const d = Math.hypot(ship.positionKm[0] - site.positionKm[0], ship.positionKm[1] - site.positionKm[1], ship.positionKm[2] - site.positionKm[2]);
+      if (!(d <= site.rangeKm)) return reject("too_far");
+      const next = planStamp(world.discoveries, "sites", site.id, by, now);
+      if (!next) return reject("already_done");
+      return { result: { type: "site.record", siteId: site.id }, apply: () => {
+          world.discoveries = next;
+        }, events: [discoveriesEvent(by)], playerKeys: [] };
+    }
+
+    case "bookmark.set": {
+      if (typeof op.sourceId !== "string" || (op.name !== null && typeof op.name !== "string")) return reject("invalid");
+      // Bookmarks of evicted sources are dropped here, so they never hold capacity.
+      const known = new Set(world.discoveries.sources.map((s) => s.id));
+      const rest = p.bookmarks.filter((b) => b.sourceId !== op.sourceId && known.has(b.sourceId));
+      let bookmarks = rest;
+      if (op.name !== null) {
+        if (!known.has(op.sourceId)) return reject("not_found");
+        if (rest.length >= MAX_BOOKMARKS && !p.bookmarks.some((b) => b.sourceId === op.sourceId)) return reject("no_capacity");
+        const name = op.name.trim().slice(0, 40);
+        bookmarks = [...rest, { sourceId: op.sourceId, name }];
+      }
+      return { result: { type: "bookmark.set", sourceId: op.sourceId, name: op.name }, apply: () => {
+          p.bookmarks = bookmarks;
+        }, events: [], playerKeys: ["bookmarks"] };
+    }
+
+    case "module.equip": {
+      const slot = ALL_ITEM_SLOTS.find((s) => s === op.slot);
+      if (!slot || (op.itemId !== null && typeof op.itemId !== "string")) return reject("invalid");
+      const m = p.modules;
+      const equippedModules = { ...m.equippedModules };
+      if (op.itemId === null) {
+        if (!equippedModules[slot]) return reject("already_done");
+        delete equippedModules[slot];
+      } else {
+        const def = getItemDef(op.itemId);
+        if (!def || def.type !== "module" || def.slot !== slot) return reject("unknown_item");
+        if (!m.ownedModules.includes(def.id)) return reject("not_found");
+        if (equippedModules[def.slot] === def.id) return reject("already_done");
+        equippedModules[def.slot] = def.id;
+      }
+      const modules = { ...m, equippedModules };
+      const overflow = loadoutOverflow(p, world, modules);
+      if (overflow) return reject(overflow);
+      return { result: { type: "module.equip", slot: op.slot, itemId: op.itemId }, apply: () => {
+          p.modules = modules;
+        }, events: [], playerKeys: ["modules"] };
     }
 
     case "ship.destroy": {
@@ -350,7 +468,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
         leftCons[k] -= n;
         if (leftCons[k] === 0) delete leftCons[k];
       }
-      const fuel = Math.min(wreck.fuelKg, Math.max(0, getResourceTuning().tankKg - p.propellant.ordinaryKg));
+      const fuel = Math.min(wreck.fuelKg, Math.max(0, shipTuning(p, world).tankKg - p.propellant.ordinaryKg));
       taken.fuelKg = fuel;
       const anything = Object.keys(taken.items).length > 0 || Object.keys(taken.consumables).length > 0 || fuel > 0;
       const wasEmpty = Object.keys(wreck.items).length === 0 && Object.keys(wreck.consumables).length === 0 && wreck.fuelKg <= 0;
@@ -377,7 +495,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "processing.start": {
       const recipe = typeof op.recipeId === "string" ? getProcessingRecipe(op.recipeId) : undefined;
       if (!recipe) return reject("not_found");
-      const t = getResourceTuning();
+      const t = shipTuning(p, world);
       if (!isCount(op.units) || op.units < 1 || op.units > t.processingMaxBatchUnits) return reject("invalid");
       if (p.isDead) return reject("dead");
       if (p.processing) return reject("busy");

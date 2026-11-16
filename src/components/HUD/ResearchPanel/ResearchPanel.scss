@@ -1,410 +1,305 @@
 @use '../../../styles' as s;
 
-// Modal chrome (backdrop, container, header, title, close) moved to the
-// universal Panel shell in ../Shell/Panel. This file styles only the
-// content inside Panel's body + headerRight slot.
+// Content inside the Panel shell: research options (M3.3) and the discoveries list.
 
-// ─── Samples pill (header-right slot) ────────────────────────────
-.research-panel__samples {
+.rp-tabs {
   display: inline-flex;
-  align-items: center;
-  gap: s.$space-1 + 2px; // 6px
-  font-family: s.$font-mono;
-  font-variant-numeric: tabular-nums;
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(140, 200, 255, 0.95); // info-blue-tinted; keep raw
+  gap: s.$space-1;
 
-  svg {
-    flex: 0 0 auto;
+  // The display-font title and both tabs do not fit one line at phone width.
+  @media (max-width: 520px) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  &__btn {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: s.$space-1 s.$space-3;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: s.$text-secondary;
+    cursor: pointer;
+
+    &--active {
+      background: rgba(127, 184, 255, 0.15);
+      border-color: rgba(127, 184, 255, 0.4);
+      color: rgba(160, 210, 255, 0.95);
+    }
   }
 }
 
-.research-panel__samples-label {
-  font-family: s.$font-ui;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: s.$text-tertiary;
-  margin-left: 2px;
-}
-
-// ─── Panel body layout ───────────────────────────────────────────
-.research-panel {
+.rp-options,
+.rp-disc {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  gap: s.$space-3;
   min-height: 0;
+}
 
-  // ── Active research ──
-  &__active {
-    margin: s.$space-3 s.$space-4 0;
-    padding: s.$space-2 14px; // TODO(phase-3): normalize spacing (14px)
-    background: rgba(127, 184, 255, 0.08);
-    border: 1px solid rgba(127, 184, 255, 0.25);
-    border-radius: s.$radius-lg;
-    flex: 0 0 auto;
-  }
+.rp-intro {
+  font-size: 12px;
+  line-height: 1.4;
+  color: s.$text-tertiary;
+}
 
-  &__active-label {
+.rp-branch {
+  &__label {
     font-size: 10px;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: s.$text-tertiary;
-    margin-bottom: 3px;
+    margin-bottom: s.$space-1;
   }
 
-  &__active-name {
+  &__cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: s.$space-2;
+
+    @media (max-width: 560px) {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+.rp-card {
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-1 + 2px;
+  padding: s.$space-2 s.$space-3;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: s.$radius-lg;
+
+  &--ready {
+    border-color: rgba(127, 184, 255, 0.4);
+  }
+
+  &--done {
+    opacity: 0.75;
+  }
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: s.$space-2;
+  }
+
+  &__name {
     font-size: 13px;
     font-weight: 600;
   }
 
-  &__progress-bar {
-    margin-top: s.$radius-lg;
-    height: s.$space-1;
-    background: s.$stroke-faint;
-    border-radius: s.$radius-pill;
-    overflow: hidden;
-  }
-
-  &__progress-fill {
-    height: 100%;
-    background: rgba(127, 184, 255, 0.7); // $accent-info-tinted
-    transition: width s.$dur-base linear;
-  }
-
-  &__active-time {
-    margin-top: 3px;
-    font-family: s.$font-mono;
+  &__status {
+    flex: 0 0 auto;
     font-size: 10px;
-    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     color: s.$text-tertiary;
-    text-align: right;
+
+    &--ready {
+      color: s.$accent-info;
+    }
+
+    &--done {
+      color: s.$accent-ok;
+    }
+
+    &--material {
+      color: s.$accent-warn;
+    }
   }
 
-  // ── Body: tree + detail side by side ──
-  &__body {
+  &__purpose {
+    font-size: 11px;
+    line-height: 1.35;
+    color: s.$text-secondary;
+  }
+
+  &__label {
+    font-size: 10px;
+    color: s.$text-tertiary;
+  }
+
+  &__evidence {
+    margin: 0;
+    padding: 0;
+    list-style: none;
     display: flex;
-    overflow: hidden;
-    margin-top: s.$space-3;
+    flex-direction: column;
+    gap: 2px;
   }
 
-  &__tree-scroll {
-    flex: 1 1 0;
-    overflow: auto;
-    padding: s.$space-3 s.$space-4 s.$space-4;
+  &__analysis {
+    font-size: 11px;
+    color: s.$text-tertiary;
+
+    &--short {
+      color: s.$accent-warn;
+    }
   }
 
-  &__tree-canvas {
-    position: relative;
-    min-width: fit-content;
+  &__unlocks {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: s.$space-1;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
 
-  &__edges {
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
+  &__unlock {
+    display: flex;
+    flex-direction: column;
   }
 
-  // ── Detail panel ──
-  &__detail {
-    flex: 0 0 240px;
-    border-left: 1px solid s.$stroke-faint;
-    padding: 14px s.$space-4;
-    overflow-y: auto;
+  &__unlock-name {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  &__unlock-desc {
+    font-size: 10px;
+    color: s.$text-tertiary;
+  }
+
+  &__btn {
+    align-self: flex-start;
+    margin-top: s.$space-1;
+    font-size: 11px;
+    font-weight: 600;
+    padding: s.$space-1 s.$space-3;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(127, 184, 255, 0.45);
+    background: rgba(127, 184, 255, 0.16);
+    color: s.$text-primary;
+    cursor: pointer;
+
+    &:disabled {
+      cursor: default;
+      border-color: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.03);
+      color: s.$text-disabled;
+    }
+  }
+}
+
+.rp-evidence {
+  display: flex;
+  align-items: flex-start;
+  gap: s.$space-1 + 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: s.$text-secondary;
+
+  svg {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    color: s.$text-tertiary;
+  }
+
+  &--met {
+    color: s.$text-tertiary;
+
+    svg {
+      color: s.$accent-ok;
+    }
+  }
+}
+
+.rp-disc {
+  &__list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 2px s.$space-3;
+  }
+
+  &__how {
+    color: s.$text-tertiary;
+    font-size: 10px;
+  }
+
+  &__sources {
     display: flex;
     flex-direction: column;
     gap: s.$space-2;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Tree nodes (positioned absolutely within the canvas)
-// ---------------------------------------------------------------------------
+.rp-source {
+  padding: s.$space-2 s.$space-3;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: s.$radius-lg;
 
-.rt-node {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 s.$space-2;
-  border-radius: 7px; // TODO(phase-3): normalize radius
-  border: 1px solid s.$stroke-faint;
-  background: rgba(255, 255, 255, 0.03);
-  cursor: pointer;
-  transition:
-    background s.$dur-fast s.$ease-out,
-    border-color s.$dur-fast s.$ease-out,
-    opacity s.$dur-fast s.$ease-out,
-    box-shadow s.$dur-fast s.$ease-out;
-  font-family: inherit;
-  color: inherit;
-  text-align: left;
-
-  &__icon {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    color: s.$text-secondary;
-
-    svg {
-      display: block;
-    }
-  }
-
-  &__name {
-    flex: 1 1 0;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  &__cost {
-    flex: 0 0 auto;
-    font-family: s.$font-mono;
-    font-size: 9px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    color: rgba(140, 200, 255, 0.8);
-    background: rgba(140, 200, 255, 0.08);
-    padding: 1px s.$space-1;
-    border-radius: s.$radius-sm;
-
-    &--insufficient {
-      color: rgba(255, 120, 120, 0.8);
-      background: rgba(255, 120, 120, 0.08);
-    }
-  }
-
-  // ── States ──
-  &--locked {
-    opacity: 0.3;
-    cursor: default;
-  }
-
-  &--available {
-    border-color: rgba(255, 255, 255, 0.15);
-    background: rgba(255, 255, 255, 0.05);
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.25);
-    }
-  }
-
-  &--active {
-    border-color: rgba(127, 184, 255, 0.4);
-    background: rgba(127, 184, 255, 0.1);
-  }
-
-  &--completed {
+  &--depleted {
     opacity: 0.6;
-    background: rgba(107, 227, 164, 0.05);
-    border-color: rgba(107, 227, 164, 0.2);
   }
 
-  &--selected {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
-  }
-
-  // ── Branch colors ──
-  &--a.rt-node--available,
-  &--a.rt-node--active {
-    border-color: rgba(100, 160, 255, 0.35);
-  }
-  &--a.rt-node--completed {
-    border-color: rgba(100, 160, 255, 0.25);
-    background: rgba(100, 160, 255, 0.05);
-  }
-
-  &--b.rt-node--available,
-  &--b.rt-node--active {
-    border-color: rgba(255, 160, 60, 0.35);
-  }
-  &--b.rt-node--completed {
-    border-color: rgba(255, 160, 60, 0.25);
-    background: rgba(255, 160, 60, 0.05);
-  }
-
-  &--c.rt-node--available,
-  &--c.rt-node--active {
-    border-color: rgba(80, 200, 120, 0.35);
-  }
-  &--c.rt-node--completed {
-    border-color: rgba(80, 200, 120, 0.25);
-    background: rgba(80, 200, 120, 0.05);
-  }
-
-  &--milestone.rt-node--available,
-  &--milestone.rt-node--active {
-    border-color: rgba(255, 200, 60, 0.4);
-    background: rgba(255, 200, 60, 0.06);
-  }
-  &--milestone.rt-node--completed {
-    border-color: rgba(255, 200, 60, 0.3);
-    background: rgba(255, 200, 60, 0.05);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Detail panel
-// ---------------------------------------------------------------------------
-
-.rt-detail {
-  &__name {
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1.25;
-  }
-
-  &__desc {
-    font-size: 11px;
-    color: s.$text-tertiary;
-    line-height: 1.4;
-  }
-
-  &__meta {
-    display: flex;
-    gap: s.$space-3;
-    font-family: s.$font-mono;
-    font-size: 11px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: rgba(140, 200, 255, 0.9);
-
-    &-cost {
-      display: inline-flex;
-      align-items: center;
-      gap: s.$space-1;
-
-      svg {
-        flex: 0 0 auto;
-      }
-    }
-  }
-
-  &__section {
-    display: flex;
-    flex-direction: column;
-    gap: s.$space-1;
-  }
-
-  &__section-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: s.$text-tertiary;
-  }
-
-  &__bonuses {
+  &__head {
     display: flex;
     flex-wrap: wrap;
-    gap: 3px;
+    justify-content: space-between;
+    gap: s.$space-1 s.$space-2;
   }
 
-  &__bonus-tag {
+  &__name {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__meta,
+  &__comp {
+    font-family: s.$font-mono;
     font-size: 10px;
-    font-weight: 600;
-    padding: 2px s.$radius-lg;
-    border-radius: s.$radius-sm;
-    background: rgba(107, 227, 164, 0.1);
-    color: rgba(120, 220, 160, 0.9);
-  }
-
-  &__items {
-    display: flex;
-    flex-direction: column;
-    gap: s.$space-1;
-  }
-
-  &__item {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: s.$space-1 s.$radius-lg;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: s.$radius-md;
-  }
-
-  &__item-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: rgba(160, 210, 255, 0.9);
-  }
-
-  &__item-desc {
-    font-size: 9px;
     color: s.$text-tertiary;
-    line-height: 1.3;
   }
 
-  &__prereq {
-    font-size: 11px;
+  &__comp {
+    margin-top: 2px;
     color: s.$text-secondary;
   }
 
-  &__start-btn {
-    margin-top: auto;
-    padding: s.$space-2 14px;
-    font-size: 12px;
-    font-weight: 600;
-    border-radius: s.$radius-md;
-    border: 1px solid rgba(127, 184, 255, 0.4);
-    background: rgba(127, 184, 255, 0.12);
-    color: rgba(160, 210, 255, 0.95);
-    cursor: pointer;
-    transition:
-      background s.$dur-fast s.$ease-out,
-      border-color s.$dur-fast s.$ease-out;
+  &__actions {
+    margin-top: s.$space-1 + 2px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: s.$space-1 + 2px;
+  }
 
-    &:hover:not(:disabled) {
-      background: rgba(127, 184, 255, 0.25);
-      border-color: rgba(127, 184, 255, 0.6);
-    }
+  &__input {
+    flex: 1 1 120px;
+    min-width: 0;
+    font-size: 11px;
+    padding: 3px s.$space-2;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(0, 0, 0, 0.25);
+    color: s.$text-primary;
+  }
+
+  &__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px s.$space-2;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: s.$text-secondary;
+    cursor: pointer;
 
     &:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
+      cursor: default;
+      color: s.$text-disabled;
     }
-  }
-
-  &__completed-badge {
-    margin-top: auto;
-    font-size: 11px;
-    font-weight: 600;
-    color: rgba(107, 227, 164, 0.8);
-    text-align: center;
-    padding: s.$radius-lg;
-  }
-
-  &__active-badge {
-    margin-top: auto;
-    font-size: 11px;
-    color: rgba(127, 184, 255, 0.8);
-    text-align: center;
-    padding: s.$radius-lg;
-  }
-
-  // Branch-colored detail panel accent
-  &--a {
-    border-left-color: rgba(100, 160, 255, 0.2) !important;
-  }
-  &--b {
-    border-left-color: rgba(255, 160, 60, 0.2) !important;
-  }
-  &--c {
-    border-left-color: rgba(80, 200, 120, 0.2) !important;
-  }
-  &--milestone {
-    border-left-color: rgba(255, 200, 60, 0.2) !important;
   }
 }

@@ -48,6 +48,7 @@ import { loadResourcePrefs } from "@/store/resourceTuningPrefs";
 import { heatSinkBuffer, miningBeamRequest } from "@/store/mining";
 import {
   buildShipResourcesHud,
+  getShipTuning,
   settleShipResources,
   shipRes,
   shipResControl,
@@ -386,7 +387,7 @@ const SpaceShip = memo(() => {
     applyHeatSinks();
     updateShipRequests(store, devSpeed !== null, miningBeamRequest.on);
     updateTransitInputs(store, _input);
-    const rt = getResourceTuning();
+    const rt = getShipTuning();
     const worstKg = worstStepKg(_env.tuning, rt, cfg.accelerationMult, cfg.decelerationMult, FIXED_DT);
 
     // ── Fixed-timestep physics loop ────────────────────────────────────

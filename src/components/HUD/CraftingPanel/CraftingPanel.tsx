@@ -15,6 +15,7 @@ import {
   ALL_ITEM_SLOTS,
   SLOT_LABELS,
   describeEffect,
+  isDrawback,
   getItemIconUrl,
   type ItemDef,
   type ItemSlot,
@@ -178,9 +179,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
         <div className="crafting-panel__list">
           {craftableItems.length === 0 ? (
             <div className="crafting-panel__empty">
-              {unlockedIds.size === 0
-                ? "Complete research to unlock blueprints."
-                : "No items match this filter."}
+              No unlocked blueprints match this filter. Research unlocks more.
             </div>
           ) : (
             craftableItems.map((item) => {
@@ -210,7 +209,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                   {item.effects && item.effects.length > 0 && (
                     <div className="crafting-panel__item-effects">
                       {item.effects.map((eff, i) => (
-                        <span key={i} className="crafting-panel__item-effect">
+                        <span key={i} className={`crafting-panel__item-effect ${isDrawback(eff) ? "crafting-panel__item-effect--drawback" : ""}`}>
                           {describeEffect(eff)}
                         </span>
                       ))}
@@ -220,7 +219,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                   {item.useEffects && item.useEffects.length > 0 && (
                     <div className="crafting-panel__item-effects">
                       {item.useEffects.map((eff, i) => (
-                        <span key={i} className="crafting-panel__item-effect">
+                        <span key={i} className={`crafting-panel__item-effect ${isDrawback(eff) ? "crafting-panel__item-effect--drawback" : ""}`}>
                           {describeEffect(eff)}
                         </span>
                       ))}
@@ -287,7 +286,7 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
             {confirmItem.effects && confirmItem.effects.length > 0 && (
               <div className="crafting-panel__confirm-effects">
                 {confirmItem.effects.map((eff, i) => (
-                  <span key={i} className="crafting-panel__item-effect">
+                  <span key={i} className={`crafting-panel__item-effect ${isDrawback(eff) ? "crafting-panel__item-effect--drawback" : ""}`}>
                     {describeEffect(eff)}
                   </span>
                 ))}

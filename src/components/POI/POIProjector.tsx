@@ -9,6 +9,7 @@ import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import { bookmarkPOIsAtom } from "@/store/discoveries";
 import {
   STAR_MARKER_MAX_LY,
   STAR_MARKER_NEAREST,
@@ -153,6 +154,7 @@ function useNearestStars(): NearestCandidate[] {
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
+  const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
   const starsOn = useAtomValue(starMarkersEnabledAtom);
   const revealAll = useAtomValue(revealAllStarMarkersAtom);
   const revealed = useAtomValue(revealedStarMarkerIdsAtom);
@@ -207,6 +209,9 @@ function usePOIDefs(): POIDef[] {
       });
     }
 
+    // Bookmarked resource sources (discoveries list)
+    for (const b of bookmarkPois) pois.push(b);
+
     // ── Stars ────────────────────────────────────────────────────────────────
     // ⚠ Includes the PRIMARY, which the celestial-body loop above deliberately
     // skips (`type === "star"`). Without it there is no way to find your way home
@@ -247,7 +252,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, bookmarkPois, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -402,7 +407,8 @@ const POIProjector = memo(function POIProjector() {
         gazeTimeRef.current = 0;
 
         // If a POI is currently targeted, accumulate untarget grace and clear after timeout.
-        if (currentTarget) {
+        // A destination picked from the discoveries list stays until another is chosen.
+        if (currentTarget && currentTarget.id !== poiBuffer.pinnedId) {
           untargetGraceRef.current += dtClamped;
           if (untargetGraceRef.current >= POI_UNTARGET_GRACE_S) {
             store.set(targetedPOIAtom, null);

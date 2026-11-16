@@ -6,7 +6,10 @@
 import { Vector3 } from "three";
 import { frameOriginKm, frameSoiKm, isFrameId } from "@/sim/frames";
 import { getFlightTuning } from "./flightTuning";
-import { getResourceTuning } from "./resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "./resourceTuning";
+import { defaultShipConfig } from "@/save/defaults";
+import { getItemDef, type ItemEffect } from "@/data/content";
+import { aggregateEffects, applyModifiers, coolingMultOf, equipTuning, miningHeatMultOf } from "./loadout";
 import {
   createResourceRequests,
   createShipResourceState,
@@ -58,6 +61,8 @@ export interface ResourceScript {
   sampleEvery?: number;
   /** Equipment multipliers as `updateShipRequests` derives them (1 = starter). */
   miningHeatMult?: number;
+  /** Equipped item ids: the table and request multipliers come from the effective config (gate d). */
+  equipped?: string[];
   coolingMult?: number;
 }
 
@@ -104,14 +109,22 @@ export interface ResourceSimResult {
 }
 
 export function simulateResources(script: ResourceScript): ResourceSimResult {
-  const t = getResourceTuning();
+  let t: Readonly<ResourceTuning> = getResourceTuning();
+  const req = createResourceRequests();
+  req.miningHeatMult = script.miningHeatMult ?? 1;
+  req.coolingMult = script.coolingMult ?? 1;
+  if (script.equipped) {
+    const effects: ItemEffect[] = [];
+    for (const id of script.equipped) effects.push(...(getItemDef(id)?.effects ?? []));
+    const cfg = applyModifiers(defaultShipConfig(), aggregateEffects(effects));
+    t = equipTuning(getResourceTuning(), cfg, { ...DEFAULT_RESOURCE_TUNING });
+    req.miningHeatMult = script.miningHeatMult ?? miningHeatMultOf(cfg);
+    req.coolingMult = script.coolingMult ?? coolingMultOf(cfg);
+  }
   const ft = getFlightTuning();
   const ship = createShipState();
   const env = createShipStepEnv(ft);
   const input = createShipInput();
-  const req = createResourceRequests();
-  req.miningHeatMult = script.miningHeatMult ?? 1;
-  req.coolingMult = script.coolingMult ?? 1;
   const st = script.start ?? {};
   const res = createShipResourceState(st.ordinaryKg ?? t.tankKg, st.protectedKg ?? t.recoveryAllowanceKg);
   res.heat01 = st.heat01 ?? 0;

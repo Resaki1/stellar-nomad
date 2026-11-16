@@ -5,7 +5,7 @@
  * samples this into it first and `adoptShipResources` takes the committed result back.
  */
 import { atom, type createStore } from "jotai";
-import { REPAIR_MATERIAL_ID, getProcessingRecipe } from "@/data/content";
+import { REPAIR_MATERIAL_ID, SUSTAINED_BEAM_S, getProcessingRecipe } from "@/data/content";
 import { getActiveSave, getLocalPlayerState, registerCollector, samplePlayerSlice } from "@/save/activeSave";
 import type { PlayerState } from "@/save/types";
 import {
@@ -13,7 +13,9 @@ import {
   createShipResourceState,
   type ShipResourceState,
 } from "@/sim/ship/resourceStep";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
+import { coolingMultOf, equipTuning, miningHeatMultOf } from "@/sim/ship/loadout";
+import { recordTrial } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
 import { dieAtom, isDeadAtom } from "@/store/death";
 import { describeRejection, newOpId, runOperation } from "@/store/operations";
@@ -28,6 +30,10 @@ type Store = ReturnType<typeof createStore>;
 export const shipRes: ShipResourceState = createShipResourceState(0, 0);
 export const shipReq = createResourceRequests();
 
+/** The live resource table with the local ship's equipment applied; refreshed every frame. */
+const shipTuning: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+export const getShipTuning = (): Readonly<ResourceTuning> => shipTuning;
+
 /** Player intent and bookkeeping outside the pure step. */
 export const shipResControl = {
   repairManual: false,
@@ -40,6 +46,12 @@ export const shipResControl = {
   repairSubmitted: 0,
   heatDamageApplied: 0,
   processingDoneSeen: 0,
+  /** Continuous granted beam seconds on the current rock (sustained_beam trial). */
+  beamRunS: 0,
+  beamSeen: 0,
+  /** Rock the beam last worked (MiningSystem); a change restarts `beamRunS`. */
+  beamTargetId: -1,
+  beamRunTargetId: -1,
 };
 
 const RESOURCE_KEYS: ReadonlySet<keyof PlayerState> = new Set<keyof PlayerState>(["propellant", "power", "processing"]);
@@ -161,7 +173,7 @@ export const shipResourcesHudAtom = atom<ShipResourcesHud>({
 
 function reasonLine(): string | null {
   const s = shipRes;
-  const t = getResourceTuning();
+  const t = shipTuning;
   if (s.ordinaryKg + s.protectedKg <= 0) return "No propellant: thrust offline";
   if (s.heat01 > 1) return "Over temperature: hull damage imminent";
   if (s.miningTripped) return "Mining laser overheated: cooling";
@@ -176,7 +188,7 @@ function reasonLine(): string | null {
 
 export function buildShipResourcesHud(): ShipResourcesHud {
   const s = shipRes;
-  const t = getResourceTuning();
+  const t = shipTuning;
   const run = s.processing;
   return {
     ordinaryKg: s.ordinaryKg,
@@ -204,7 +216,7 @@ export function buildShipResourcesHud(): ShipResourcesHud {
 /** Fill the requests the step reads; human-rate inputs only. */
 export function updateShipRequests(store: Store, freeFlight: boolean, miningBeam: boolean): void {
   const cfg = store.get(effectiveShipConfigAtom);
-  const t = getResourceTuning();
+  const t = equipTuning(getResourceTuning(), cfg, shipTuning);
   const health = store.get(shipHealthAtom);
   const damaged = health < cfg.maxHealth;
   if (!damaged) shipResControl.repairManual = false;
@@ -215,8 +227,8 @@ export function updateShipRequests(store: Store, freeFlight: boolean, miningBeam
   shipReq.repairPerS = shipResControl.repairManual ? Math.max(t.repairPerS, naniteRate) : naniteRate;
   shipReq.miningBeam = miningBeam || shipResControl.forceMining;
   shipReq.freeFlight = freeFlight;
-  shipReq.miningHeatMult = cfg.miningHeatCapacityS > 0 ? 15 / cfg.miningHeatCapacityS : 1;
-  shipReq.coolingMult = cfg.miningCooldownS > 0 ? 10 / cfg.miningCooldownS : 1;
+  shipReq.miningHeatMult = miningHeatMultOf(cfg);
+  shipReq.coolingMult = coolingMultOf(cfg);
 }
 
 /** Turn step outputs into operations / hull changes. Returns true when the ship died. */
@@ -245,6 +257,18 @@ export function settleShipResources(store: Store, ship: { frameId: string; posKm
   if (m.processingDone !== shipResControl.processingDoneSeen) {
     shipResControl.processingDoneSeen = m.processingDone;
     store.set(addToastAtom, { audio: "silent", message: "Processing complete", detail: "Propellant delivered to the tank", durationMs: 3000 });
+    recordTrial("first_batch");
+  }
+  const beam = m.miningWorkS - shipResControl.beamSeen;
+  shipResControl.beamSeen = m.miningWorkS;
+  if (shipResControl.beamTargetId !== shipResControl.beamRunTargetId) {
+    shipResControl.beamRunTargetId = shipResControl.beamTargetId;
+    shipResControl.beamRunS = 0;
+  }
+  if (!shipReq.miningBeam || shipRes.miningTripped) shipResControl.beamRunS = 0;
+  else if (beam > 0) {
+    shipResControl.beamRunS += beam;
+    if (shipResControl.beamRunS >= SUSTAINED_BEAM_S) recordTrial("sustained_beam");
   }
   return false;
 }
@@ -283,7 +307,7 @@ export const setRepairAtom = atom(null, (get, set, on: boolean): boolean => {
     return true;
   }
   const cfg = get(effectiveShipConfigAtom);
-  const t = getResourceTuning();
+  const t = shipTuning;
   let why: string | null = null;
   if (get(isDeadAtom)) why = "Ship destroyed";
   else if (get(shipHealthAtom) >= cfg.maxHealth) why = "Hull is intact";

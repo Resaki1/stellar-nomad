@@ -62,8 +62,8 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     speaker: "{{AI_NAME}}",
     delaySec: 2,
     textContent: [
-      "Extraction complete. Cargo intake confirmed, and I'm reading a clean assay sample in the collection buffer. That's useful.",
-      "The MicroLab hasn't been calibrated since launch. One sample is all it needs to bootstrap the analysis framework. Might be worth getting that running.",
+      "Extraction complete. Cargo intake confirmed, and I logged what came out of it.",
+      "Before you cut the next one, hold a lock and run a close inspection. It tells us what is inside and roughly how much, and every new material we confirm opens up research options.",
     ],
     priority: 1,
   },
@@ -85,21 +85,12 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     speaker: "{{AI_NAME}}",
     textContent: [
       "Cargo hold is at capacity. Can't take on more material until you free up space.",
-      "You could put some of it toward fabrication or research. Or jettison what you don't need, though once it's gone, it's gone.",
+      "You could put some of it toward fabrication or processing. Or jettison what you don't need, though once it's gone, it's gone.",
     ],
     priority: 1,
   },
 
   // -- MicroLab research started --------------------------------------------
-  research_start_001: {
-    messageId: "research_start_001",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "MicroLab calibration running. Integrating your assay data into the analysis framework now.",
-      "Should be operational shortly. I'll let you know.",
-    ],
-    priority: 1,
-  },
 
   // -- First module/item crafted --------------------------------------------
   first_craft_001: {
@@ -145,7 +136,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     speaker: "{{AI_NAME}}",
     textContent: [
       "Drive disengaged. Lunar proximity confirmed. I'm reading a dense asteroid cluster in the local field.",
-      "Composition scans show unfamiliar signatures. Titanium. And something else. Helium-3, if the spectral data is right. That's... significant.",
+      "Composition scans show titanium-rich rock out here. Worth an inspection or two.",
     ],
     priority: 2,
   },
@@ -159,111 +150,88 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
 // ---------------------------------------------------------------------------
 
 export const RESEARCH_COMPLETE_MESSAGES: Record<string, CommsMessage> = {
-  a1_sensor_calibration: {
-    messageId: "rc_a1_sensor_calibration",
+  sv1_composition_survey: {
+    messageId: "rc_sv1_composition_survey",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Sensor calibration locked in. Return signals are reading cleaner already — I can pull more detail from the raw data now.",
+      "Composition survey models are in. I can read a rock faster and from further out now. The prospector scanner specs are ready to fabricate.",
     ],
     priority: 1,
   },
-  a2a_active_scanning: {
-    messageId: "rc_a2a_active_scanning",
+  sv2_volatile_mapping: {
+    messageId: "rc_sv2_volatile_mapping",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Active ping subroutines loaded. Sensor sweep is available — should make prospecting considerably less manual.",
+      "Volatile mapping done. With a ping array I can mark the rocks around us and inspect them from long range.",
     ],
     priority: 1,
   },
-  a2b_spectral_analysis: {
-    messageId: "rc_a2b_spectral_analysis",
+  ex1_controlled_extraction: {
+    messageId: "rc_ex1_controlled_extraction",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Spectral analysis framework online. I can break reflected light into composition bands now. No more mining blind.",
+      "That sustained run gave me what I needed. A focused beam cuts faster, but it pulls more power and runs hot. Your call when it's worth it.",
     ],
     priority: 1,
   },
-  a3_integrated_survey: {
-    messageId: "rc_a3_integrated_survey",
+  ex2_yield_analysis: {
+    messageId: "rc_ex2_yield_analysis",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Full sensor integration complete. Every system feeding into one survey model. I'll admit — this is satisfying to see come together.",
+      "Yield analysis complete. A different extraction head recovers more of each rock, at the cost of a slower cut.",
     ],
     priority: 1,
   },
-  b1_laser_optics: {
-    messageId: "rc_b1_laser_optics",
+  th1_heat_rejection: {
+    messageId: "rc_th1_heat_rejection",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Optics recalibrated. Beam coherence is tighter. You should notice the difference on the next pass.",
+      "Heat rejection specs validated against the load we just observed. Radiator strips and a coolant loop are both buildable.",
     ],
     priority: 1,
   },
-  b2a_beam_optimization: {
-    messageId: "rc_b2a_beam_optimization",
+  lg1_bulk_handling: {
+    messageId: "rc_lg1_bulk_handling",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Beam pulse shaping optimized. Energy-to-ablation efficiency is significantly better. More rock per joule.",
+      "Bulk handling worked out. The cargo slot can carry a bigger hold or an auxiliary tank, not both. And the electrolysis cell speeds up processing.",
     ],
     priority: 1,
   },
-  b2b_thermal_dynamics: {
-    messageId: "rc_b2b_thermal_dynamics",
+  pr1_transit_calibration: {
+    messageId: "rc_pr1_transit_calibration",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Thermal dynamics models integrated. I've mapped every heat pathway in the laser assembly — sustained fire is much more manageable.",
+      "Transit drive calibration complete. We process our own propellant and fabricate our own parts now. Build the drive and the Moon is in range, fuel permitting.",
     ],
     priority: 1,
   },
-  b3_pulse_extraction: {
-    messageId: "rc_b3_pulse_extraction",
+  pr2_thruster_tuning: {
+    messageId: "rc_pr2_thruster_tuning",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Pulse extraction firmware loaded. The laser can sustain fire indefinitely with the right rhythm. This changes things.",
+      "Thruster tuning done, using the data from that transit run. Nozzle upgrades are ready to fabricate.",
     ],
     priority: 1,
   },
-  c1_structural_engineering: {
-    messageId: "rc_c1_structural_engineering",
+  hl1_hull_reinforcement: {
+    messageId: "rc_hl1_hull_reinforcement",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Structural analysis complete. Load-bearing patterns mapped across the hull. Field fabrication should be straightforward from here.",
+      "Hull reinforcement specs are ready. Ablative plating, or nanites that patch the hull from our own metal stock.",
     ],
     priority: 1,
   },
-  c2a_hull_reinforcement: {
-    messageId: "rc_c2a_hull_reinforcement",
+  ln1_survey_salvage: {
+    messageId: "rc_ln1_survey_salvage",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Composite plating specs validated. The simulations show significant improvement in collision survivability.",
-    ],
-    priority: 1,
-  },
-  c2b_propulsion_systems: {
-    messageId: "rc_c2b_propulsion_systems",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Propulsion optimization complete. RCS authority and nozzle efficiency both improved. The ship should feel more responsive.",
-    ],
-    priority: 1,
-  },
-  c3_integrated_platform: {
-    messageId: "rc_c3_integrated_platform",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Full platform integration done. Structural, propulsion, and autonomous systems all linked. This ship is... considerably more than what left Earth orbit.",
-    ],
-    priority: 1,
-  },
-  m1_transit_drive: {
-    messageId: "rc_m1_transit_drive",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Transit drive calibration complete. Interplanetary burn parameters validated. You've been building toward this since hibernation woke you — the Moon is finally in range. Fabricate the drive and we can make the crossing.",
+      "The survey canister's data is decoded. There's an integrated sensor suite design in here. Titanium heavy, but worth it.",
     ],
     priority: 1,
   },
 };
+
 
 // ---------------------------------------------------------------------------
 // Item craft messages — per-item AI reactions
@@ -276,7 +244,7 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     messageId: "ic_prospector_scanner_mk1",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Prospector Scanner online. Target lock will now identify asteroid classification: S-type, C-type, or X-type.",
+      "Prospector Scanner online. Inspections run twice as fast from further out, and target lock shows composition bands.",
       "Quick primer on what those classes mean for you. S-types are the common silicate rocks: Mostly silicates with a respectable fraction of iron-nickel metal.",
       "C-types are carbonaceous. Lower silicate content, but they're the only reliable source of hydrates, along with measurable carbon and sulfur.",
       "X-types are metallic. Sixty to ninety percent iron-nickel by composition: Dense, heavy, and the richest metal yield in the belt.",
@@ -289,22 +257,6 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     speaker: "{{AI_NAME}}",
     textContent: [
       "Ping Array installed. Sensor sweep will highlight targetable asteroids in range.",
-    ],
-    priority: 1,
-  },
-  module_spectral_mapper_mk1: {
-    messageId: "ic_spectral_mapper_mk1",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Spectral Mapper integrated. Composition band analysis now available on target lock.",
-    ],
-    priority: 1,
-  },
-  module_assay_enhancer_mk1: {
-    messageId: "ic_assay_enhancer_mk1",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Assay Enhancer calibrated. Sample recovery should improve — the collection system is wasting less material.",
     ],
     priority: 1,
   },
@@ -324,27 +276,11 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     ],
     priority: 1,
   },
-  module_beam_focuser_mk2: {
-    messageId: "ic_beam_focuser_mk2",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Beam Focuser Mk2 online. Significant refinement over the first iteration — the energy profile is more aggressive.",
-    ],
-    priority: 1,
-  },
   module_yield_extractor_mk1: {
     messageId: "ic_yield_extractor_mk1",
     speaker: "{{AI_NAME}}",
     textContent: [
       "Yield Extractor calibrated. The collection system will capture material previously lost to ablation scatter.",
-    ],
-    priority: 1,
-  },
-  module_pulse_modulator_mk1: {
-    messageId: "ic_pulse_modulator_mk1",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Pulse Modulator installed. New mining mode available — pulsed extraction. Slower peak rate, but sustainable on large targets.",
     ],
     priority: 1,
   },
@@ -364,27 +300,11 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     ],
     priority: 1,
   },
-  module_radiator_strips_mk2: {
-    messageId: "ic_radiator_strips_mk2",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Radiator Strips Mk2 installed. Thermal rejection is substantially better. The originals look primitive by comparison.",
-    ],
-    priority: 1,
-  },
   module_cargo_rack_mk1: {
     messageId: "ic_cargo_rack_mk1",
     speaker: "{{AI_NAME}}",
     textContent: [
       "Cargo Rack secured. Additional storage volume online — should help with longer mining runs.",
-    ],
-    priority: 1,
-  },
-  module_cargo_rack_mk2: {
-    messageId: "ic_cargo_rack_mk2",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Cargo Rack Mk2 installed. That's a significant hold expansion. We can stockpile properly now.",
     ],
     priority: 1,
   },
@@ -396,27 +316,11 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     ],
     priority: 1,
   },
-  module_ablative_plating_mk2: {
-    messageId: "ic_ablative_plating_mk2",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Ablative Plating Mk2 in place. The composite layering is more sophisticated. This hull can handle real punishment.",
-    ],
-    priority: 1,
-  },
   module_nanite_repair_mk1: {
     messageId: "ic_nanite_repair_mk1",
     speaker: "{{AI_NAME}}",
     textContent: [
       "Nanite Repair System activated. Autonomous hull restoration. Slow, but it works while we do other things. I find the concept... appealing.",
-    ],
-    priority: 1,
-  },
-  module_reaction_wheels_mk1: {
-    messageId: "ic_reaction_wheels_mk1",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Reaction Wheels installed. Attitude control authority improved — braking should feel tighter.",
     ],
     priority: 1,
   },
@@ -428,64 +332,8 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     ],
     priority: 1,
   },
-  module_thruster_nozzles_mk2: {
-    messageId: "ic_thruster_nozzles_mk2",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Thruster Nozzles Mk2 online. The acceleration curve is aggressive. This ship moves like something considerably smaller.",
-    ],
-    priority: 1,
-  },
 
   // ── Consumables (first craft only — played registry handles dedup) ──
-  consumable_assay_probe: {
-    messageId: "ic_assay_probe",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Assay Probes ready. Deploy on a locked target for a resource breakdown before committing to a mining pass.",
-    ],
-    priority: 1,
-  },
-  consumable_scanner_pulse: {
-    messageId: "ic_scanner_pulse",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Scanner Pulse charges fabricated. Temporary enhanced sweep — useful for quick field assessment.",
-    ],
-    priority: 1,
-  },
-  consumable_composition_scan: {
-    messageId: "ic_composition_scan",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Composition Scan Charges ready. Activate one and every asteroid in range reveals its type briefly.",
-    ],
-    priority: 1,
-  },
-  consumable_deep_scan_probe: {
-    messageId: "ic_deep_scan_probe",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Deep Scan Probes fabricated. Full-spectrum burst — complete data on everything in range. Temporary, but thorough.",
-    ],
-    priority: 1,
-  },
-  consumable_overclock_charge: {
-    messageId: "ic_overclock_charge",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Overclock Charges fabricated. Temporary mining speed boost. Pushes the laser past safe parameters for a short burst.",
-    ],
-    priority: 1,
-  },
-  consumable_precision_charge: {
-    messageId: "ic_precision_charge",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Precision Charges ready. Use during mining for a guaranteed bonus yield from the current target.",
-    ],
-    priority: 1,
-  },
   consumable_heat_sink_cartridge: {
     messageId: "ic_heat_sink_cartridge",
     speaker: "{{AI_NAME}}",
@@ -494,35 +342,11 @@ export const ITEM_CRAFTED_MESSAGES: Record<string, CommsMessage> = {
     ],
     priority: 1,
   },
-  consumable_thermal_purge: {
-    messageId: "ic_thermal_purge",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Thermal Purge Charges ready. Complete heat reset. More potent than a standard heat sink — save these for critical moments.",
-    ],
-    priority: 1,
-  },
   consumable_hull_patch_kit: {
     messageId: "ic_hull_patch_kit",
     speaker: "{{AI_NAME}}",
     textContent: [
       "Hull Patch Kits fabricated. Field repair for hull damage. Not full restoration, but keeps us in one piece.",
-    ],
-    priority: 1,
-  },
-  consumable_emergency_repair_kit: {
-    messageId: "ic_emergency_repair_kit",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Emergency Repair Kits ready. Substantial hull restoration — more effective than basic patches.",
-    ],
-    priority: 1,
-  },
-  consumable_afterburner_charge: {
-    messageId: "ic_afterburner_charge",
-    speaker: "{{AI_NAME}}",
-    textContent: [
-      "Afterburner Charges fabricated. Temporary thrust override. Significant speed burst for a few seconds.",
     ],
     priority: 1,
   },
