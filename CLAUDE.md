@@ -52,6 +52,9 @@
   any check you'd otherwise ask the user to eyeball, and for unattended quality-goal
   loops. Needs the dev server and an UNSANDBOXED command (Chrome can't start in
   Seatbelt). Example: `pnpm drive -- --keep scene:earth_650 settle canvas:e650 stats`
+- Run the dev server for testing on **:3001** (`.claude/launch.json` → `preview_start {name:"dev"}`);
+  :3000 belongs to the owner. The driver probes `127.0.0.1:3001` (another app answers
+  `localhost` over IPv6) and launches Chrome with `--mute-audio`, so tests are never audible.
 - `--perf` for any timing (it switches to vsync pacing; uncapped mode overflows the
   GPU timestamp pool and the numbers are garbage).
 - In-page API `window.__test` (scene / settled / image.stats / audio.record / state).

@@ -11,7 +11,7 @@
  *   pnpm drive -- scene:earth_horizon_8 settle canvas:horizon stats
  *
  * Options
- *   --url URL       dev server (default: first of :3000/:3001/:3002 that answers)
+ *   --url URL       dev server (default: first of 127.0.0.1:3001/:3002 that answers; :3000 is the owner's)
  *   --size WxH      viewport, CSS px (default 1280x720)
  *   --dpr N         pins render resolution via ?dpr (default 1)
  *   --perf          load with ?perf (per-pass GPU timers)
@@ -120,15 +120,17 @@ if (opt.stop) {
 
 async function pickUrl() {
   if (opt.url) return opt.url;
-  for (const p of [3000, 3001, 3002]) {
+  // 127.0.0.1, not localhost: another app on the owner's Mac answers localhost over IPv6.
+  // :3000 is left to the owner; the dev server for testing runs on :3001.
+  for (const p of [3001, 3002]) {
     try {
-      const r = await fetch(`http://localhost:${p}/`, { signal: AbortSignal.timeout(20000) });
-      if (r.status < 500) return `http://localhost:${p}/`;
+      const r = await fetch(`http://127.0.0.1:${p}/`, { signal: AbortSignal.timeout(20000) });
+      if (r.status < 500) return `http://127.0.0.1:${p}/`;
     } catch {
       /* next */
     }
   }
-  throw new Error("no dev server on :3000/:3001/:3002 — start it with `pnpm start` or pass --url");
+  throw new Error("no dev server on 127.0.0.1:3001/:3002 — start it with `pnpm start -p 3001` or pass --url");
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
@@ -177,6 +179,8 @@ if (!reused) {
       "--disable-renderer-backgrounding",
       "--disable-backgrounding-occluded-windows",
       "--autoplay-policy=no-user-gesture-required",
+      // Silent speakers: the Web Audio graph and __test.audio.record still run.
+      "--mute-audio",
       "--no-first-run",
       "--no-default-browser-check",
       `--remote-debugging-port=${PORT}`,
