@@ -2,6 +2,7 @@ import type {
   SystemConfig,
   AsteroidResourcesDef,
   AsteroidClassDef,
+  AsteroidPocketDef,
   ResourceTypeDef,
 } from "@/sim/systemTypes";
 import { normalizeSeed } from "@/sim/asteroids/seeding";
@@ -32,9 +33,9 @@ function hashToUnitFloat(n: number): number {
 function pickAsteroidClass(
   instanceId: number,
   fieldId: string,
-  def: AsteroidResourcesDef
+  def: AsteroidResourcesDef,
+  classes: AsteroidClassDef[] = def.classes ?? []
 ): AsteroidClassDef | null {
-  const classes = def.classes ?? [];
   if (classes.length === 0) return null;
 
   const salt = normalizeSeed(def.seedSalt ?? `${fieldId}:class`);
@@ -151,17 +152,27 @@ export type AsteroidMiningReward = {
   totalAmount: number;
 };
 
+/** The authored pocket containing `chunkKey` ("fieldId:x,y,z"), if any. */
+export function pocketOf(def: AsteroidResourcesDef | undefined, fieldId: string, chunkKey: string | undefined): AsteroidPocketDef | null {
+  if (!def?.pockets || !chunkKey || !chunkKey.startsWith(fieldId + ":")) return null;
+  const coord = chunkKey.slice(fieldId.length + 1);
+  for (const p of def.pockets) if (p.chunks.includes(coord)) return p;
+  return null;
+}
+
+/** `chunkKey` ("fieldId:x,y,z") selects an authored pocket's classes. */
 export function getAsteroidMiningReward(
   system: SystemConfig,
   fieldId: string,
   instanceId: number,
-  radiusM: number
+  radiusM: number,
+  chunkKey: string
 ): AsteroidMiningReward | null {
   const field = system.asteroidFields.find((f) => f.id === fieldId);
   const def = field?.resources;
   if (!def) return null;
 
-  const classDef = pickAsteroidClass(instanceId, fieldId, def);
+  const classDef = pickAsteroidClass(instanceId, fieldId, def, pocketOf(def, fieldId, chunkKey)?.classes);
   if (!classDef) return null;
 
   const totalAmount = computeYieldAmount(radiusM, instanceId, fieldId, def);
@@ -215,12 +226,13 @@ export function getAsteroidMiningReward(
 export function getAsteroidClass(
   system: SystemConfig,
   fieldId: string,
-  instanceId: number
+  instanceId: number,
+  chunkKey: string
 ): AsteroidClassDef | null {
   const field = system.asteroidFields.find((f) => f.id === fieldId);
   const def = field?.resources;
   if (!def) return null;
-  return pickAsteroidClass(instanceId, fieldId, def);
+  return pickAsteroidClass(instanceId, fieldId, def, pocketOf(def, fieldId, chunkKey)?.classes);
 }
 
 // ---------------------------------------------------------------------------

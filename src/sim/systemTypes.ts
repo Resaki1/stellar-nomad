@@ -530,10 +530,24 @@ export type ResourceYieldDef = {
   maxAmount?: number;
 };
 
+/**
+ * Authored regional opportunity (M3.7): inside these chunks the field's classes are replaced,
+ * so a fuel source near the start never depends on a lucky roll. Positions are not touched.
+ */
+export type AsteroidPocketDef = {
+  id: string;
+  name: string;
+  kind: "volatile" | "metal" | "mixed";
+  /** Field-local chunk coordinates "x,y,z". */
+  chunks: string[];
+  classes: AsteroidClassDef[];
+};
+
 export type AsteroidResourcesDef = {
   seedSalt?: number | string;
   /** Asteroid spectral classes with per-class resource composition ranges. */
   classes: AsteroidClassDef[];
+  pockets?: AsteroidPocketDef[];
   /** @deprecated Legacy single-resource distribution. Ignored when classes is set. */
   distribution?: WeightedResourceRef[];
   yield: ResourceYieldDef;

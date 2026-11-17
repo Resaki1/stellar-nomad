@@ -3,7 +3,7 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useState } from "react";
 import { PROCESSING_RECIPES, REPAIR_MATERIAL_ID } from "@/data/content";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 import { cargoAtom } from "@/store/cargo";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { cancelProcessingAtom, setRepairAtom, shipResourcesHudAtom, startProcessingAtom } from "@/store/shipResources";
@@ -20,7 +20,7 @@ export default function ShipWorkshop() {
   const start = useSetAtom(startProcessingAtom);
   const cancel = useSetAtom(cancelProcessingAtom);
   const setRepair = useSetAtom(setRepairAtom);
-  const t = getResourceTuning();
+  const t = getEffectiveTuning();
 
   const have = Math.floor(cargo.items[recipe.inputId] ?? 0);
   const roomUnits = Math.max(0, Math.ceil((res.tankKg - res.ordinaryKg) / t.processingKgPerUnit - 1e-9));

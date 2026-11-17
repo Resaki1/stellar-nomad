@@ -120,7 +120,8 @@ export default async function saveCheck(d) {
       wreck: eq(data.world.wrecks, legacy["death-v1"].wrecks.map(({ id, frameId, positionKm, items, createdAt }) => ({ id, frameId, positionKm, items, fuelKg: 0, consumables: {}, createdAt }))),
       deltas: eq(data.world.asteroidDeltas, { legacy_field: { unchunked: [111, 222, 333] } }),
       minedLifetime: p.minedLifetime === 4,
-      comms: eq(p.commsPlayed, legacy["comms-played-v1"]),
+      // M3.7 hints mark themselves played in real time after load; compare the imported ids only.
+      comms: eq(p.commsPlayed.filter((x) => !x.startsWith("hint_")), legacy["comms-played-v1"]),
       starMarkers: eq(p.starMarkers, ["proxima"]),
       aiName: p.aiName === "HAL",
       legacyKeysRemoved: keysLeft.length === 0,
@@ -171,6 +172,8 @@ export default async function saveCheck(d) {
     const strip = (x) => {
       const c = structuredClone(x);
       c.players[id].ship.positionKm = null;
+      // A hint (e.g. hint_hydrates for the granted cargo) can show after the export: real-time, not a load defect.
+      c.players[id].commsPlayed = c.players[id].commsPlayed.filter((m) => !m.startsWith("hint_"));
       return c;
     };
     out.roundtrip = {

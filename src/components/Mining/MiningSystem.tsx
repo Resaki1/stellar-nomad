@@ -700,6 +700,8 @@ const MiningSystem = () => {
   const commitAccRef = useRef(0);
 
   const targetIdRef = useRef<number | null>(null);
+  /** Instance ids are unique per chunk only, so the target is (chunk, id). */
+  const targetChunkRef = useRef<string>("");
   const targetLostTimeRef = useRef(0);
   const targetingTimeRef = useRef(0);
 
@@ -789,8 +791,9 @@ const MiningSystem = () => {
   );
 
   const getTargetSnapshot = useCallback(
-    (instanceId: number): TargetedAsteroid | null => {
-      const loc = asteroidRuntime.findInstanceLocation(instanceId);
+    (instanceId: number, chunkKey: string): TargetedAsteroid | null => {
+      const fieldId = chunkKey.slice(0, chunkKey.lastIndexOf(":"));
+      const loc = asteroidRuntime.getFieldRuntime(fieldId)?.getInstanceLocation(chunkKey, instanceId) ?? null;
       if (!loc) return null;
 
       const fieldRuntime = asteroidRuntime.getFieldRuntime(loc.fieldId);
@@ -1033,7 +1036,7 @@ const MiningSystem = () => {
           };
 
           // Prefer existing target to reduce flicker
-          if (preferredId !== null && instanceId === preferredId) {
+          if (preferredId !== null && instanceId === preferredId && chunk.key === targetChunkRef.current) {
             if (projT < lockedT) {
               locked = candidate;
               lockedT = projT;
@@ -1131,8 +1134,9 @@ const MiningSystem = () => {
         if (hitId !== null) {
           targetLostTimeRef.current = 0;
 
-          if (prevId !== hitId) {
+          if (prevId !== hitId || targetChunkRef.current !== hit?.location.chunkKey) {
             targetIdRef.current = hitId;
+            targetChunkRef.current = hit?.location.chunkKey ?? "";
             targetingTimeRef.current = 0;
           }
         } else {
@@ -1154,7 +1158,7 @@ const MiningSystem = () => {
 
     let snapshot: TargetedAsteroid | null = null;
     if (targetId !== null) {
-      snapshot = getTargetSnapshot(targetId);
+      snapshot = getTargetSnapshot(targetId, targetChunkRef.current);
 
       if (!snapshot) {
         targetIdRef.current = null;
@@ -1322,7 +1326,8 @@ const MiningSystem = () => {
               systemConfig,
               fieldId,
               snapshot.instanceId,
-              snapshot.radiusM
+              snapshot.radiusM,
+              snapshot.location.chunkKey
             );
             if (reward) {
               pendingMiningRewardRef.current = {

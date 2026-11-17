@@ -7,7 +7,7 @@ import { Vector3 } from "three";
 import { SYSTEM_FRAME_ID } from "@/sim/frames";
 import type { CelestialCollider } from "@/sim/celestialCollision";
 import { getFlightTuning } from "./flightTuning";
-import { getResourceTuning } from "./resourceTuning";
+import { getEffectiveTuning } from "./resourceTuning";
 import { createResourceRequests, createShipResourceState, propellantGate, stepShipResources, worstStepKg } from "./resourceStep";
 import { createShipInput } from "./shipInput";
 import { FIXED_DT, MAX_FRAME_DT, SHIP_HULL_RADIUS_KM } from "./shipConstants";
@@ -91,7 +91,7 @@ export interface TransitSimResult {
 }
 
 export function simulateTransit(script: TransitScript): TransitSimResult {
-  const t = getResourceTuning();
+  const t = getEffectiveTuning();
   const ft = getFlightTuning();
   const ship = createShipState();
   ship.frameId = SYSTEM_FRAME_ID;

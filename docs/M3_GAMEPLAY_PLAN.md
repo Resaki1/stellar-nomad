@@ -567,7 +567,7 @@ below are initially uncompleted; do not mark them based on this documentation pa
 - [x] Record actual save schema, physics API, pause behaviour, and baseline timings.
 - [x] Write the content/legacy mapping and resource tuning tables; define units and
       command boundaries before touching UI.
-- [ ] Confirm a default initial fuel-source/replication placement for every supported seed.
+- [x] Confirm a default initial fuel-source/replication placement for every supported seed.
 
 **Gate:** M0/M1/M2 regression status recorded; agreed decisions distinguished from
 tuning defaults; no stale root-story requirement used. No new dependency required.
@@ -646,11 +646,11 @@ loss, no protected-fuel farming, no immediate spawn collision or physics jump.
 
 ### M3.7 — Lunar opportunity, projects, and narrative
 
-- [ ] Author/rebalance initial sites and the lunar instrument/sample recovery opportunity.
-- [ ] Add player-selected projects, concise hints/help records, sparse premise text,
+- [x] Author/rebalance initial sites and the lunar instrument/sample recovery opportunity.
+- [x] Add player-selected projects, concise hints/help records, sparse premise text,
       and updated POI/crafting/research/death explanations.
-- [ ] Remove obsolete ESA/live-human messages and generic-assay prompts from the active path.
-- [ ] Apply simple Explorer/Standard/Hard multipliers; keep the recovery/progression
+- [x] Remove obsolete ESA/live-human messages and generic-assay prompts from the active path.
+- [x] Apply simple Explorer/Standard/Hard multipliers; keep the recovery/progression
       preservation model consistent. Balance Standard first.
 
 **Gate:** a lunar discovery supplies a worthwhile optional capability; both regions
@@ -659,10 +659,10 @@ All content has meaningful reload/deduplication behaviour.
 
 ### M3.8 — End-to-end gates and playtest
 
-- [ ] Run the verification matrix below in disposable worlds, plus required regressions.
+- [x] Run the verification matrix below in disposable worlds, plus required regressions.
 - [ ] Playtest both early priorities, one-way relocation, and a deliberate failure/recovery.
-- [ ] Record timings, resource decisions, unclear UI, economy exploits, and final tuning.
-- [ ] Update roadmap/as-built notes with actual completion and remaining limitations.
+- [x] Record timings, resource decisions, unclear UI, economy exploits, and final tuning.
+- [x] Update roadmap/as-built notes with actual completion and remaining limitations.
 
 **Gate:** every release criterion in §12 is demonstrated. Passing pure maths checks
 alone does not establish that the loop is understandable or enjoyable.
@@ -1221,3 +1221,237 @@ Two first investments: survey (three inspections → sv1) or extraction/cooling 
 
 
 **Review fixes (M3.6).** `player.lastLoss` (sanitised, cleared by recovery) carries the wreck contents so the recovery screen still states the loss after a reload while dead (gate `death.reloadDead` checks the text). `resetReposition` also releases the saved-pose hold, so a world switch or unmount between an accepted recovery and its reposition cannot freeze pose sampling. Points in an unknown frame stay in the save but get no marker, beacon or activation prompt (recovery still reports them `invalid`). Wreck labels: `Wreck`, `Wreck · consumables`, `Wreck · fuel only, N kg`, plus ` · N kg fuel` when mixed. Placement mode closes on death; H with no point nearby is silent. Naming is placement-time only and deactivation has no UI (operations exist; harness only). Open for the owner: §6.3's "restore the configured allowance" vs the lead rule "dying never adds usable fuel" still conflict below 60 kg (`strandedEscape`).
+
+### M3.7 — Lunar opportunity, projects, guidance and difficulty (as built, 2026-11-17)
+
+**Save schema 5** (`MIGRATIONS[3]`): `world.discoveries.inspectedSites` (site id → stamp; a site already
+in `sites` counts as inspected) and `player.trackedProject` (string or null). Difficulty already lived in
+`SaveMeta` (chosen on the title screen since M0.4, stored, validated to `standard`); M3.7 consumes it.
+
+**Earth region.** `origin_belt` keeps its seed, salt, shape and streaming. Three authored *pockets*
+(`resources.pockets` in `sol.json`, `pocketOf` in `resources.ts`) replace the class table inside named
+chunks, so a fuel source never depends on a roll; positions and instance ids are untouched:
+
+| Pocket | Chunks | Classes (fractions) | Measured |
+|---|---|---|---|
+| Volatile-rich debris | `-141,8,-10`, `-142,9,-10` | C-type 100 %, hydrates 20–32 % | 7 rocks, 79 cold-mineable hydrate units (1,580 kg), nearest 9.96 km from the starter emergence, 6 units, 6.5 s |
+| Metal-rich fragments | `-142,8,-11` | X-type 80 % (Fe-Ni 65–90 %), S-type 20 % | 4 X-type |
+| Mixed rubble | `-141,9,-10` | S 40 / C 35 / X 25 % (field defaults) | 2 X, 1 C, 2 S |
+
+Each pocket is a POI ("regional indication", 1–2,500 km). The survey opportunity is the three pockets
+together: one short tour confirms silicates, Fe-Ni and hydrates by inspection (sv1's evidence). Every
+reward/class call now takes the chunk key (`getAsteroidMiningReward(…, chunkKey)` is required).
+
+**Lunar region.** `luna_belt` keeps id, seed, salt, class ids, weights and slot counts (so class picks are
+unchanged); the three helium-3 slots became hydrates (regolith 2–6 %), carbon (metallic 1–4 %) and
+hydrates (volatile 20–35 %, was 5–10 %); volatile's old hydrate slot became Fe-Ni 5–12 %. Measured over
+120,119 loaded rocks: titanium 22.4 %, Fe-Ni 24.5 %, hydrates 11.5 %, silicates 35.2 %, no helium-3.
+`helium_3` remains a known material id (old cargo stays valid) but no class provides it.
+
+**Lunar survey site** (`SITES` in `content.ts`): `luna_survey_canister` at Luna-frame [5200, 1200, 0] km
+(5,337 km from the Moon's centre, at luna_belt's thinning edge; nearest rock > 3 km). It sits **outside**
+the Moon's 2 R route-clearance sphere: at the first position (inside it) the standoff → site hop needed a
+26,000 km detour. Signal marker within 120,000 km ("Automated survey signal"), then G within 2 km =
+`site.inspect`, G within 1 km = `site.recover` (one operation: 30 titanium into cargo + the `sites`
+stamp; refused `not_inspected`, `too_far`, `no_capacity`, `already_done`; receipted). `ln1` (no
+analysis) unlocks the Integrated Sensor Suite (200 sil, 80 Fe-Ni, 30 Ti). Nothing else requires `ln1`
+and no starter/transit recipe needs titanium. Placeholder visual `src/components/Sites/SurveySite.tsx`:
+one merged truss/dish mesh + a canister that hides once recovered, frame-relative, drawn within 400 km.
+
+**Projects** (`src/data/projects.ts`, pure evaluator `src/sim/research/projects.ts`, tracker
+`ObjectiveTracker`, panel `ProjectsPanel`, key O): Reach the Moon, Build a forward replication point,
+Recover the lunar survey canister, Establish a lunar foothold, plus "Research: <option>" for every option.
+A research step expands into its missing evidence and analysis material. Optional, any number of times;
+completion is a toast, no reward. "Set destination" pins the transit target.
+
+**Guidance.** Comms catalogue reduced to four sparse entries: `opening_001` (premise; the naming prompt
+follows it), `opening_002` (first opportunity), `lunar_signal_001`, `site_recovered_001`. 33 retired ids
+(`RETIRED_COMMS_IDS`: ESA ground control, the human commander, assay prompts, per-craft/per-research
+lines) stay valid in played registries and `enqueueCommsAtom` refuses them. Routine state is now 12
+one-time hints (`src/data/guidance.ts`, `HintStrip`, no Continue, 9 s, click to dismiss), marked played
+**when shown** in the same save-backed registry (`player.commsPlayed`, not localStorage), so a reload
+never repeats one. Six help records (premise, propellant, research, rock classes, recovery, the survey
+site after its signal) in the Projects panel. The comms overlay advances with Enter only (Space is
+strafe-up) and hides while dead or in Settings, so it can never cover the recovery screen or the abandon
+dialog. All triggers stay in `GameCommsTriggers.tsx`.
+
+**Difficulty** (`src/sim/difficulty.ts`, rates only; `getEffectiveTuning()` = live table × multipliers,
+used by the reducers, the runtime, transit and the resource harness; collision through `impactDamageHp`;
+yield in `buildMineOperation`). Measured in the deterministic harness:
+
+| | Explorer | Standard | Hard |
+|---|---|---|---|
+| propellant per Δv (manoeuvre + transit) | ×0.75 (2 s main burn 1.44 kg; Earth → Moon line 156.9 kg) | 1.92 kg; 209.2 kg | ×1.25 (2.40; 261.5) |
+| heat input (mining, boost, processing, repair, transit) | ×0.85 (cold laser trips at 25.8 s) | 15.0 s | ×1.15 (10.7 s) |
+| collision damage | ×0.5 (40 m/s hit 4.1 HP) | 8.2 HP | ×1.5 (12.2 HP) |
+| protected allowance | 90 kg | 60 kg | 45 kg |
+| mining yield | ×1.25 (same rock 29 vs 23 units) | 23 | ×1 |
+
+Death/recovery is the same model on every setting (cargo, consumables and ordinary fuel minus the
+allowance top-up to the wreck; modules, research, discoveries kept; full hull; protected = allowance).
+There is no in-game switch; editing the stored setting changes rates only, never stored quantities.
+
+**Glance HUD** (ship dashboard): heat shows its headroom to the 80 % warning; a `recovery:` row (active
+point and distance, when not the starter or > 50 km away); one warning line, worst first: no propellant
+(abandon path), on the protected allowance, short of the ideal transit fuel back to the active point,
+propellant low. Boost and hull unchanged.
+
+**Defects found and fixed on the way.**
+- `[AsteroidRuntime] instanceId collision detected`: instance ids are 32-bit hashes unique per chunk,
+  not per field. Birthday maths for luna_belt's ~120,000 loaded rocks gives ~1.7 expected pairs (18,409
+  near Earth: 0.04), which is why it showed in mass-inspection and lunar runs. Real defect: the runtime's
+  field-wide id index and `MiningSystem`'s target (id only) could resolve a mined rock to the other
+  chunk's twin and hide the wrong one until reload. Index is now keyed by chunk handle + id,
+  `destroyInstance(chunkKey, id)`, the miner targets (chunk, id), and `findInstanceLocation` is gone.
+- Transit routing: a target behind the Moon from Earth grew the clearance waypoint until the second
+  blocker cleared — a 1,821,843 km plan (4.9× direct) that took the whole tank, and in flight had not
+  arrived after 110 s. A waypoint may now lengthen the route at most 1.5 × direct + 10 clearance radii;
+  beyond that it refuses "Route blocked by Earth and Luna: travel to Luna first". The M3.5 standoff →
+  lunar field hop is unchanged (24 s / 88 kg); Earth → site is 76 s / 335 kg via Earth.
+- Gaze targeting replaced a destination pinned from a menu within 1.5 s (arrival at the Moon faces the
+  Sun; recovery emerges facing its point). A pinned destination now yields only to a 4 s look, and a POI
+  the ship stands inside the arrival stand-off of no longer starts a gaze lock.
+- UI: at ≤ 520 px the panel buttons are icon-only and right-aligned (they covered the cargo bar), toasts
+  are a full-width band under the top bar and the transit plan sits below it (the refusal toast covered
+  the plan title), the tracker yields to the transit plan; the tracker has a scrim (POI labels draw in its
+  band); hints sit top-left at 1280 px, clear of the comms lower-third. The title screen's "no effect on
+  gameplay yet" difficulty line is replaced.
+
+### M3.8 — End-to-end gates (as built, 2026-11-17)
+
+New gate file `scripts/drive-examples/gameplay-m37.mjs`, wired into `gameplay-check.mjs` (parts in
+CLAUDE.md). Every part runs in disposable `[gc] ` worlds and restores the active one. Sessions keep one
+world across parts (`.captures/m37-sessions.json`) so no single command runs longer than ~2 min.
+
+**Verification matrix (§11).**
+
+| Gate | Part(s) | Measured |
+|---|---|---|
+| V1 resource accounting | `res` | idle/coast 0 kg; main 240 m/s → 1.92 kg, strafe 0.96, retro 1.60; 30/60/144 Hz + hitches bit-identical (2,900 steps); bounce / frame switch 0 kg; stores never negative |
+| V2 power/thermal | `res`, `m32` | cold trip 14.99 s (15); warn 0.39 s < throttle 0.80 < trip 1.28 < damage 3.28 s; essential control unchanged at 120 % heat |
+| V3 processing/repair | `m32`, sessionB | partial cancel refund 19 = expected; full tank pauses; reload invariant 100 kg; death wreck 210.17 kg + 109 hydrates = expected; repair 62 → 100 % on lunar Fe-Ni (sessionB) |
+| V4 research | `evidence`, `reqs`, `audit` | families once, repeat `already_done`, duplicate id `duplicate`; 200 inspections without an instance-id warning; content audit pass |
+| V5 transactions | `tx`, `shared`, `exploits` | duplicates `duplicate`, retries `already_done`, nothing granted twice across reload / death / world switch |
+| V6 placement | `place`, sessionB, sessionC | one kit → one point; refusals spend nothing; lunar point "Lunar camp" in Luna frame, active |
+| V7 recovery | `recover`, sessionC | real click on the recovery screen; explicit origin fallback through button + confirmation: 0.00 km from the starter emergence, 0 / 60 kg |
+| V8 wrecks | `death`, `salvage`, sessionC | partial salvage by stack limit (1 of 3 heat sinks fits, 2 stay); fuel-only/mixed labels; protected never salvaged |
+| V9 transit | `transit`, `transitLive`, sessions | pure ETA/fuel ≤ 0.4 %; Earth → Moon 240.8 kg / 56.2 s pred = exec; Moon → site 76.5 kg / 22.0 s; Earth → site 335.3 kg / 75.9 s; Earth → lunar field refused (two blockers) |
+| V10 migration | `migrate`, `migrate3`, `migrate4`, `difficulty` | schema 1–4 fixtures → 5; malformed difficulty → standard; export/import equal |
+| V11 lifecycle | `m32` lifecycle, `transitLive` lifecycle | settings/loading pause freeze batch and drive; 3 s stall 31 steps; no offline catch-up |
+| V12 live loop | sessions A, B, C, `live36` | see below |
+| V13 performance | `bench:belt` ×2, `bench:m3_lunar_site` | see Performance |
+
+**Performance** (`--perf`, 1280×720, DPR 1, headless M2 Pro, page reloaded per run): `bench:belt` frame
+P50 14.7 / 14.4 ms, GPU 7.12 / 8.48 ms, local scene 0.33 / 0.37 ms (baseline 14.2–14.9 ms; M3.6 14.7 /
+14.5): no regression. New scenario `m3_lunar_site` (1.5 km beyond the canister, facing the Moon, live
+with its orbit): frame P50 16.6 ms, GPU 8.16 ms, local scene 0.50 ms, atmosphere 2.28 ms. It has no
+pre-M3.7 baseline (the scene did not exist); the frame time is paced (`--perf` uses vsync) and the GPU
+total is in line with belt. The installation is one merged mesh + one canister: 2 draw calls within 400 km.
+
+**Sessions (all pass; mining fast-forwarded through the accepted claim, everything else real input or UI
+operations).**
+
+(i) Survey first → prepared lunar visit → site → optional unlock (3 parts). 3 inspections, 7 rocks mined
+(74 s of extraction), 3 unlocks (sv1, pr1, ln1), 3 fabrications (prospector, drive, sensor suite), 1
+processing batch topping the tank to 594.8 kg, 2 trials, `site.inspect` + `site.recover` by pressing G,
+1 `module.equip`. Earth → Moon 240.8 kg (predicted = executed, 56.2 s), Moon → site 76.5 kg (22.0 s,
+via the Luna clearance point), approach 15 s with W/X; 262.5 kg left. The tracked "Recover the lunar
+survey canister" project completed. **Play time:** the scripted actions sum to ≈ 9.5 min (extraction +
+25 s between rocks + 20 s per craft/unlock/processing/site interaction + real flight and transit). A
+first-time player also learns flight and the UI, reads the opening, hints and research panel, inspects
+rocks that turn out useless, and flies at 200–400 m/s between them: an honest estimate is 30–45 min,
+**below the 60–90 min target**. Assumptions: the player follows the hints and the tracker, finds the
+volatile pocket from its marker, and does not die. Knobs if the playtest agrees it is too quick: drive
+recipe (280 units), pocket richness (79 cold-mineable hydrate units), the sv1/pr1 evidence lists.
+
+(ii) Extraction/cooling first → one-way relocation → lunar self-sufficiency (5 parts). Live 8 s
+sustained beam (trial), 8 rocks, ex1 + th1 + pr1, focuser + radiator + drive; Earth → survey site in one
+go: 335.3 kg, 75.9 s, 259.5 kg left, no return planned. Earth cargo jettisoned on arrival, so everything
+after is lunar: a kit from lunar Fe-Ni/silicates, "Lunar camp" placed and active in the Luna frame, five
+refuel cycles (each a real transit round trip to the lunar field, 31.1–31.5 kg, refilled by processing 2
+lunar hydrate units: 259.5 → 301.9 kg over the five), hull 80 → 100 % repaired with lunar Fe-Ni, a
+second kit fabricated. "Establish a lunar foothold" completed.
+
+(iii) Deliberate failure (2 parts). Setup deviation: the world starts with 40 kg ordinary fuel (burning
+600 kg by manoeuvring takes ~10 min). Kit + 3 heat sinks, "Forward camp" placed after a short W/X
+flight; W/X until ordinary was 0 (45–50 s, 7.5–8.4 km out over two runs); abandon → wreck with all cargo and
+3 heat sinks, 0 kg fuel; recovery by clicking the recovery screen; 9 heat sinks fabricated there; flown
+back on the allowance in 36–42 s (60 → 33–36 kg protected); wreck collection took all cargo and 1 heat
+sink (stack 10), 2 stayed (partial salvage); abandon again; "Emergency fallback: Origin point" + its
+confirmation by real clicks → 0.00 km from the starter emergence with 0 / 60 kg, Forward camp still the
+active selection, both wrecks kept. Fuel note: both recoveries ran the documented stranded-ship rule
+(usable fuel below the allowance recovers with exactly the allowance; second death +26.7 kg in the final run); nothing else
+can add fuel.
+
+**Release criteria (§12).**
+- Complete loop in a normal session: sessions (i)–(iii) pass; time estimate above (likely shorter
+  than intended).
+- Two distinguishable early priorities: `config` (prospector inspection ×0.5 time / ×1.6 range; focuser
+  ×0.7 mining time with ×1.3 power and heat; radiator trip 18.74 s vs 15.0 s), playA/playB.
+- A resource constraint forcing a decision: one cargo slot holds the rack (+600 units) or the aux tank
+  (+400 kg, −500 units), refused when it would overflow (`fit`); Earth → Moon costs 40 % of a tank and a
+  one-way trip to the site 56 %.
+- Indefinite lunar self-sufficiency: session (ii); the lunar field (120,119 rocks) is 11.5 % hydrates,
+  24.5 % Fe-Ni, 35.2 % silicates.
+- A different lunar interaction with a useful optional result: `site` (inspect then recover, one-time,
+  persists through death, reload and import; the sensor suite unlocks only from it; nothing depends on it).
+- Recoverable failures without duplication: M3.6 gates, session (iii), `exploits`.
+- Knowledge/equipment survive, no archive care or campaign: death gates; catalogue grep (no ground
+  control, commander, assay or uplink text in active comms or hints).
+- Migration/import integrity: migrate gates, `difficulty.migrate`, `site.persist`.
+- Regressions and performance: below.
+
+**Exploit sweep (`exploits`, all yield nothing).** Site reward: reload + same id `duplicate`, new id
+`already_done`, after death `already_done`, titanium total stays 30, another world has no stamp. Craft
+with a reused id `duplicate` (no second kit, cargo unchanged); research unlock again `already_done`.
+Processing start/cancel ×5: value (hydrates × 20 kg + fuel + reserved − committed) only falls (500 →
+435.6: a unit already converting is never refunded). Equip swaps ×4 (suite ↔ empty): stores unchanged,
+one owned copy. Death loop ×5 with 250 kg: tanks + wrecks 310 kg every time. Difficulty: no in-game
+switch; an edited setting changes no stored quantity. Projects and hints grant nothing.
+
+**What a scripted run cannot establish** (owner playtest): whether the opening and hints explain enough
+without the tracker; whether the pocket markers read as "go here for fuel"; whether the survey signal is
+findable and the two-hop route (or the "travel to Luna first" refusal) is understood; pacing against
+60–90 min; whether Hard/Explorer feel right; whether the placeholder installation reads as a place.
+
+Playtest checklist (fresh Standard world): (1) without the Projects panel, find fuel and make a batch;
+(2) repair a small impact; (3) pick survey or extraction and say why; (4) track "Reach the Moon" and
+follow only the tracker; (5) find and recover the canister, then decide whether the suite is worth 200
+silicates; (6) place a lunar point and live there for 20 min; (7) run dry, abandon, salvage, and use the
+origin fallback once; (8) note every moment you did not know what to do next, with the time.
+
+**Remaining limitations.** World seed still does not vary the starter region (pockets and fields are the
+same for every seed; measured identical across 8 seeds). Site inspection range and recovery are trusted
+from the client pose like the mine claim (M4 re-derives). A pinned destination yields to a 4 s gaze.
+The transit planner still routes round only one body; a second blocker now refuses instead of
+detouring. Hints are English strings in data, no localisation. The tracker shows at most three unmet
+lines. Session (iii) starts from a 40 kg setup. The `[gc]` session worlds are deleted by each session's final
+part only; an interrupted session leaves a `[gc] m37-session*` world behind (delete it from Load world).
+
+**Regressions (final tree, page reloaded before each script).** flight-trace `sim,live,mouse,camera,reticle`
+14/14; physics-check `sim,damage,hull,asteroids` pass; frames-check `ride,switch` pass; save-check
+`roundtrip,reload,isolation` pass (`fresh,legacy` not run: they wipe the driver profile's database);
+shell-check `title,continue` pass; gameplay-check `migrate,tx,shared,live` (34), `res,m32,reach`,
+`audit,fit,reqs,config,migrate3` (39), `evidence`, `place,activate,death,recover,salvage,migrate4` (55),
+`transit,live36` (22), `playA,playB`, `transitLive` (`defaultEpoch`, `secondEpoch`), and every M3.7 part
+pass. Typecheck clean; lint 0 errors (132 warnings); `check:audio` 0 problems (no audio event changed).
+No console errors; no instance-id warning in any run after the fix. **Adapted older gates:** schema 5
+expectations (`migrate`, `migrate3`, `migrate4`, `discoveriesEmpty` with `inspectedSites`); `evidence`
+picks an S-type rock without a hydrate family (the last composition slot takes the rounding remainder, so
+a small S-type can show 3 % hydrates, and the pockets changed which rock came first); `devSetWorld` goes
+through the sanitiser. `res,m32,reach` takes 4.6 min in one run: split it when the 2 min limit matters.
+
+**Review fixes (after M3.8).** (1) A new world's protected propellant is now seeded from its difficulty
+(`defaultSaveData(playerId, difficulty)` in `createWorld`/reset/new player): Explorer 90 kg, Standard 60,
+Hard 45, read before any death by the new `difficulty` sub-gate `created` (pass); before, every new world
+started at 60 regardless of the allowance. (2) "Reach the Moon" fuel step label no longer states Standard
+kg (the requirement itself is scaled). (3) Comms overlay: between 521 and 1180 px its right edge stops at
+the dashboard's left edge (the centred 760 px overlay reached the fuel/heat rows below ~1118 px);
+`commsHitsDash` false at 768×1024 and 1100×800. It also has a dark scrim, so the lunar arrival text reads
+over the Moon. (4) The transit side panel has a scrim, so POI distance labels no longer read through the
+refusal line (the inline refusal stays: it is the persistent preview, the toast is the event). (5) Hints:
+the module-level pending queue is gone; a busy slot drops the offer and the trigger re-offers when free,
+only while its condition holds (no stale hint after refuelling). (6) The recovery toast names the research
+options whose requirements cite the site, not a literal. (7) save-check `legacy`/`roundtrip` ignore `hint_`
+ids in `commsPlayed`: a hint can legitimately show after the export/import in real time. Note for this
+machine: something else answers `localhost:3000` over IPv6; run the driver with `--url http://127.0.0.1:3000`.

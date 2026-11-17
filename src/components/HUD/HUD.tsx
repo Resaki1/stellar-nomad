@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Microscope, Shield, Wrench } from "lucide-react";
+import { Microscope, Shield, Target, Wrench } from "lucide-react";
 import { keybindsAtom } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
@@ -20,6 +20,9 @@ import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
 import ToastDisplay from "./ToastDisplay/ToastDisplay";
 import Hotbar from "./Hotbar/Hotbar";
 import ObjectiveTracker from "./ObjectiveTracker/ObjectiveTracker";
+import ProjectsPanel from "./ProjectsPanel/ProjectsPanel";
+import HintStrip from "./HintStrip/HintStrip";
+import { sampleGlanceAtom } from "@/store/sites";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
@@ -35,7 +38,10 @@ import { audioSettingsAtom } from "@/store/audio";
 
 import "./HUD.scss";
 
-type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | null;
+type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | null;
+
+/** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
+const GLANCE_MS = 250;
 
 export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
@@ -75,6 +81,11 @@ export default function HUD() {
   }, [settingsIsOpen]);
 
   useEffect(() => setCursorNeeded("panel", activePanel !== null), [activePanel]);
+
+  useEffect(() => {
+    const t = setInterval(() => store.set(sampleGlanceAtom), GLANCE_MS);
+    return () => clearInterval(t);
+  }, [store]);
 
   const openPanel = useCallback((panel: OverlayPanel) => {
     if (store.get(settingsIsOpenAtom)) return;
@@ -119,6 +130,12 @@ export default function HUD() {
         return;
       }
 
+      if (keybindsRef.current.toggleProjects.includes(key)) {
+        e.preventDefault();
+        setActivePanel((prev) => (prev === "projects" ? null : "projects"));
+        return;
+      }
+
       // Escape / settings key closes any open panel
       if (keybindsRef.current.toggleSettings.includes(key) && activePanelRef.current) {
         setActivePanel(null);
@@ -140,6 +157,7 @@ export default function HUD() {
       <ObjectiveTracker />
       <SettingsMenu />
       <ToastDisplay />
+      <HintStrip />
       <AINameOverlay />
       <CommsOverlay />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
@@ -179,6 +197,14 @@ export default function HUD() {
           <Shield size={14} strokeWidth={1.75} aria-hidden />
           <span>Loadout</span>
         </button>
+        <button
+          className={`hud__panel-btn ${activePanel === "projects" ? "hud__panel-btn--active" : ""}`}
+          onClick={() => openPanel("projects")}
+          title="Projects and records (O)"
+        >
+          <Target size={14} strokeWidth={1.75} aria-hidden />
+          <span>Projects</span>
+        </button>
       </div>
 
       {/* Overlay panels */}
@@ -186,6 +212,7 @@ export default function HUD() {
       {activePanel === "research" && <ResearchPanel onClose={closePanel} />}
       {activePanel === "crafting" && <CraftingPanel onClose={closePanel} />}
       {activePanel === "loadout" && <LoadoutPanel onClose={closePanel} />}
+      {activePanel === "projects" && <ProjectsPanel onClose={closePanel} />}
     </div>
   );
 }

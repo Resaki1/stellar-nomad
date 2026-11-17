@@ -13,6 +13,17 @@
   display: flex;
   gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing
   pointer-events: auto;
+
+  // Phones: icon-only, right-aligned, clear of the cargo readout (top-left).
+  @media (max-width: 520px) {
+    left: auto;
+    right: s.$space-3;
+    transform: none;
+
+    .hud__panel-btn span {
+      display: none;
+    }
+  }
 }
 
 .hud__panel-btn {

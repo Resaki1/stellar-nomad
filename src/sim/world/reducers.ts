@@ -10,7 +10,7 @@ import { planExtraction, planInspection, planStamp, sourceIdOf } from "@/sim/res
 import { evaluateNode, missingAnalysis, unlockedItemIds } from "@/sim/research/requirements";
 import { cargoUsedUnits, equipTuning, persistentShipConfig } from "@/sim/ship/loadout";
 import { unconvertedUnits } from "@/sim/ship/resourceStep";
-import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
 import type { AsteroidDeltaIndex } from "./asteroidDeltas";
 import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, type PlacementCheck } from "@/sim/replication/placement";
 import { MAX_POINTS, REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, cleanPointName } from "@/sim/replication/points";
@@ -63,7 +63,7 @@ const _tuning: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
 const _placement: PlacementCheck = { refusal: null, bodyAltKm: 0, bodyId: null, rockClearM: 0 };
 /** The live resource table with this player's equipment applied (tank, reactor, rates). */
 function shipTuning(player: PlayerState, world: WorldState): Readonly<ResourceTuning> {
-  return equipTuning(getResourceTuning(), persistentShipConfig(player, completedSet(world)), _tuning);
+  return equipTuning(getEffectiveTuning(), persistentShipConfig(player, completedSet(world)), _tuning);
 }
 
 const discoveriesEvent = (by: PlayerId): WorldEvent => ({ type: "discoveries.changed", by });
@@ -135,7 +135,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "survey.inspect":
     case "research.unlock":
     case "trial.record":
-    case "site.record":
+    case "site.inspect":
+    case "site.recover":
     case "bookmark.set":
     case "module.equip":
     case "ship.destroy":
@@ -319,19 +320,34 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
         }, events: [discoveriesEvent(by)], playerKeys: [] };
     }
 
-    case "site.record": {
+    case "site.inspect":
+    case "site.recover": {
       const site = typeof op.siteId === "string" ? getSiteDef(op.siteId) : undefined;
       if (!site) return reject("not_found");
       if (p.isDead) return reject("dead");
+      const inspect = op.type === "site.inspect";
+      if (inspect ? world.discoveries.inspectedSites[site.id] : world.discoveries.sites[site.id]) return reject("already_done");
+      if (!inspect && !world.discoveries.inspectedSites[site.id]) return reject("not_inspected");
       const ship = p.ship;
-      if (!ship || ship.frameId !== site.frameId) return reject("too_far");
-      const d = Math.hypot(ship.positionKm[0] - site.positionKm[0], ship.positionKm[1] - site.positionKm[1], ship.positionKm[2] - site.positionKm[2]);
-      if (!(d <= site.rangeKm)) return reject("too_far");
+      if (!ship || !isFrameId(ship.frameId) || !(poseDistanceKm(ship.frameId, ship.positionKm, site.frameId, site.positionKm) <= (inspect ? site.inspectRangeKm : site.recoverRangeKm))) return reject("too_far");
+      if (inspect) {
+        const next = planStamp(world.discoveries, "inspectedSites", site.id, by, now);
+        if (!next) return reject("already_done");
+        return { result: { type: "site.inspect", siteId: site.id }, apply: () => {
+            world.discoveries = next;
+          }, events: [discoveriesEvent(by)], playerKeys: [] };
+      }
+      const need = Object.values(site.reward).reduce((a, v) => a + v, 0);
+      if (need > cargoRemaining(p, world)) return reject("no_capacity", { cargo: need - cargoRemaining(p, world) });
       const next = planStamp(world.discoveries, "sites", site.id, by, now);
       if (!next) return reject("already_done");
-      return { result: { type: "site.record", siteId: site.id }, apply: () => {
+      const items = { ...p.cargo.items };
+      for (const [k, n] of Object.entries(site.reward)) items[k] = (items[k] ?? 0) + n;
+      const cargo = { ...p.cargo, items };
+      return { result: { type: "site.recover", siteId: site.id, reward: { ...site.reward } }, apply: () => {
           world.discoveries = next;
-        }, events: [discoveriesEvent(by)], playerKeys: [] };
+          p.cargo = cargo;
+        }, events: [discoveriesEvent(by)], playerKeys: ["cargo"] };
     }
 
     case "bookmark.set": {
@@ -389,13 +405,13 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (batch) {
         const recipe = getProcessingRecipe(batch.recipeId);
         const reserved = recipe ? Math.floor(batch.reserved[recipe.inputId] ?? 0) : 0;
-        const back = recipe ? unconvertedUnits(reserved, batch.committedKg, getResourceTuning().processingKgPerUnit) : 0;
+        const back = recipe ? unconvertedUnits(reserved, batch.committedKg, getEffectiveTuning().processingKgPerUnit) : 0;
         if (recipe && back > 0) dropped.items[recipe.inputId] = (dropped.items[recipe.inputId] ?? 0) + back;
       }
       // Ordinary fuel only, minus what refills the protected allowance: dying never adds usable fuel
       // (the refill is free only for a ship whose ordinary fuel cannot pay it).
       const ordinary = isNum(p.propellant.ordinaryKg) ? Math.max(0, p.propellant.ordinaryKg) : 0;
-      const topUp = Math.min(ordinary, Math.max(0, getResourceTuning().recoveryAllowanceKg - p.propellant.protectedKg));
+      const topUp = Math.min(ordinary, Math.max(0, getEffectiveTuning().recoveryAllowanceKg - p.propellant.protectedKg));
       dropped.fuelKg = ordinary - topUp;
       const hasDrop = Object.keys(dropped.items).length > 0 || Object.keys(dropped.consumables).length > 0 || dropped.fuelKg > 0;
       const wreck: WreckRecord | null = hasDrop
@@ -436,7 +452,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids);
       const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
       // Recovery: full hull, empty ordinary tank, exactly the protected allowance, a cold ship.
-      const protectedKg = getResourceTuning().recoveryAllowanceKg;
+      const protectedKg = getEffectiveTuning().recoveryAllowanceKg;
       const propellant = { ordinaryKg: 0, protectedKg };
       const power = { capacitor01: 1, heat01: 0 };
       // A vanished point is forgotten; an obstructed or explicitly bypassed one stays selected.
@@ -614,7 +630,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const recipe = getProcessingRecipe(batch.recipeId);
       const inputId = recipe?.inputId ?? Object.keys(batch.reserved)[0];
       const reserved = inputId ? Math.floor(batch.reserved[inputId] ?? 0) : 0;
-      const back = inputId ? unconvertedUnits(reserved, batch.committedKg, getResourceTuning().processingKgPerUnit) : 0;
+      const back = inputId ? unconvertedUnits(reserved, batch.committedKg, getEffectiveTuning().processingKgPerUnit) : 0;
       if (back > cargoRemaining(p, world)) return reject("no_capacity");
       const refunded: Record<string, number> = back > 0 && inputId ? { [inputId]: back } : {};
       const items = { ...p.cargo.items };
@@ -636,7 +652,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (p.isDead) return reject("dead");
       const max = persistentShipConfig(p, completedSet(world)).maxHealth;
       if (!(p.health < max)) return reject("full_hull");
-      const per = getResourceTuning().repairUnitsPerPct;
+      const per = getEffectiveTuning().repairUnitsPerPct;
       const have = Math.floor(p.cargo.items[REPAIR_MATERIAL_ID] ?? 0);
       const missingPct = Math.ceil(((max - p.health) / max) * 100 - 1e-9);
       const pct = Math.min(op.pct, missingPct, Math.floor(have / per));

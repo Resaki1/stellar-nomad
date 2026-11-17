@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
 import { savedAtom } from "@/store/savedAtom";
-import type { CommsMessage } from "@/data/commsMessages";
+import { RETIRED_COMMS_IDS, type CommsMessage } from "@/data/commsMessages";
+import type { HintDef } from "@/data/guidance";
 import { benchModeAtom } from "@/store/dev";
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,7 @@ const insertIntoQueueAtom = atom(
 export const enqueueCommsAtom = atom(
   null,
   (get, set, message: CommsMessage): void => {
+    if (RETIRED_COMMS_IDS.has(message.messageId)) return;
     if (get(playedMessageIdsAtom).includes(message.messageId)) return;
 
     const queue = get(commsQueueAtom);
@@ -116,4 +118,27 @@ export const dismissCommsAtom = atom(null, (get, set): void => {
 export const resetCommsPlayedAtom = atom(null, (_get, set): void => {
   set(playedMessageIdsAtom, []);
   set(commsQueueAtom, []);
+  set(activeHintAtom, null);
+});
+
+// ---------------------------------------------------------------------------
+// Hints (M3.7): one-time, non-blocking lines. Marked played when SHOWN (never repeat after a
+// reload). No queue: an offer made while another hint shows is dropped, and the trigger
+// re-offers once the slot is free only if its condition still holds (no stale hints).
+// ---------------------------------------------------------------------------
+
+export const HINT_SHOW_MS = 9000;
+export const activeHintAtom = atom<HintDef | null>(null);
+
+export const showHintAtom = atom(null, (get, set, hint: HintDef): void => {
+  if (get(benchModeAtom) || get(activeHintAtom)) return;
+  const played = get(playedMessageIdsAtom);
+  if (played.includes(hint.id)) return;
+  set(activeHintAtom, hint);
+  set(playedMessageIdsAtom, [...played, hint.id]);
+});
+
+/** Retire the shown hint; waiting triggers re-offer on the next render. */
+export const nextHintAtom = atom(null, (_get, set): void => {
+  set(activeHintAtom, null);
 });

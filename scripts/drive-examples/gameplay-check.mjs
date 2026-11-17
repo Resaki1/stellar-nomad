@@ -9,10 +9,12 @@
  *   GAME_PARTS=transit,transitLive,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
  *   GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 / playA / playB / m33shots   M3.3+M3.4 gates (gameplay-m33.mjs); m33narrow with --size 390x844
  *   GAME_PARTS=place,activate,death,recover,salvage,migrate4 / live36 / m36shots   M3.6 gates (gameplay-m36.mjs); m36narrow with --size 390x844
+ *   GAME_PARTS=seeds / regions / site / guidance / difficulty / sessionA / sessionB / sessionC / exploits / m37shots   M3.7+M3.8 gates (gameplay-m37.mjs); m37narrow with --size 390x844
  */
 import { m32Gates, reachGates, resGates, shotGates } from "./gameplay-m32.mjs";
 import { transitLiveGates, transitPureGates, transitShotGates } from "./gameplay-transit.mjs";
 import { activateGates, deathGates, live36Gates, m36ShotGates, migrate4Gates, placeGates, recoverGates, salvageGates } from "./gameplay-m36.mjs";
+import * as m37 from "./gameplay-m37.mjs";
 import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -105,6 +107,8 @@ export default async function gameplayCheck(d) {
     if (parts.includes("migrate4")) out.migrate4 = await migrate4Gates(d, ctx);
     if (parts.includes("live36")) out.live36 = await live36Gates(d, ctx);
     if (parts.includes("m36shots") || parts.includes("m36narrow")) out.m36shots = await m36ShotGates(d, ctx, parts.includes("m36narrow"));
+    const m37Parts = { seeds: "seedGates", regions: "regionGates", site: "siteGates", guidance: "guidanceGates", difficulty: "difficultyGates", sessionA: "sessionAGates", sessionB: "sessionBGates", sessionC: "sessionCGates", exploits: "exploitGates", m37shots: "shotGates", m37narrow: "narrowGates", m37title: "titleShot" };
+    for (const [part, fn] of Object.entries(m37Parts)) if (parts.includes(part)) out[part] = await m37[fn](d, ctx);
     if (parts.includes("res")) out.res = await resGates(d);
     if (parts.includes("transit")) out.transit = await transitPureGates(d);
     if (parts.includes("transitLive")) out.transitLive = await transitLiveGates(d, ctx);
@@ -157,7 +161,7 @@ export default async function gameplayCheck(d) {
         const r = await ev(`(() => { const a = ${G}.parse(${js(raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
         const a = r.a;
         const p = a.players[me];
-        const c = { schema: a.schemaVersion === 4, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
+        const c = { schema: a.schemaVersion === 5, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
         const v1p = raw.players[me];
         if (name !== "malformed") {
           c.pose = eq(p.ship, v1p.ship);

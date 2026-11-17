@@ -195,4 +195,22 @@ function v3ToV4(data: Obj): Obj {
   return { ...data, schemaVersion: 4, world, players };
 }
 
-export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4];
+/**
+ * 4 → 5 (M3.7): site inspections (a recovered site counts as inspected), no tracked project.
+ * Difficulty lives in the meta, already defaulted to "standard" by `parseSaveMeta`.
+ */
+function v4ToV5(data: Obj): Obj {
+  const world: Obj = isObj(data.world) ? { ...data.world } : {};
+  const disc: Obj = isObj(world.discoveries) ? { ...world.discoveries } : {};
+  disc.inspectedSites = isObj(disc.sites) ? { ...disc.sites } : {};
+  world.discoveries = disc;
+  const playersIn: Obj = isObj(data.players) ? data.players : {};
+  const players: Obj = {};
+  for (const pid of Object.keys(playersIn)) {
+    const p = playersIn[pid];
+    players[pid] = isObj(p) ? { ...p, trackedProject: null } : p;
+  }
+  return { ...data, schemaVersion: 5, world, players };
+}
+
+export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4, v4ToV5];

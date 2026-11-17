@@ -24,8 +24,10 @@ export type WorldOperation =
   | { type: "research.unlock"; opId: string; nodeId: string }
   /** A client-detected safe trial (first batch, sustained beam, transit leg); recorded once. */
   | { type: "trial.record"; opId: string; trialId: string }
-  /** Recover/inspect an authored site within its range (M3.7 fills the content). */
-  | { type: "site.record"; opId: string; siteId: string }
+  /** Close inspection of an authored site within its inspection range. */
+  | { type: "site.inspect"; opId: string; siteId: string }
+  /** One-time recovery of an inspected site: its reward into cargo, its evidence into the world. */
+  | { type: "site.recover"; opId: string; siteId: string }
   /** The player's own bookmark of a world source; `name: null` removes it. */
   | { type: "bookmark.set"; opId: string; sourceId: string; name: string | null }
   /** Equip an owned module (`itemId: null` empties the slot); refused if fuel or cargo would overflow. */
@@ -70,7 +72,8 @@ export type OperationResult =
   | { type: "survey.inspect"; sourceId: string; newFamilies: string[]; upgraded: string[]; evicted: string | null }
   | { type: "research.unlock"; nodeId: string; unlockedItems: string[]; spent: Record<string, number> }
   | { type: "trial.record"; trialId: string }
-  | { type: "site.record"; siteId: string }
+  | { type: "site.inspect"; siteId: string }
+  | { type: "site.recover"; siteId: string; reward: Record<string, number> }
   | { type: "bookmark.set"; sourceId: string; name: string | null }
   | { type: "module.equip"; slot: string; itemId: string | null }
   | { type: "research.devSet"; count: number }
@@ -110,7 +113,8 @@ export type RejectReason =
   | "no_kit"
   | "near_body"
   | "near_rock"
-  | "emergence_blocked";
+  | "emergence_blocked"
+  | "not_inspected";
 
 /**
  * A remote authority (M4) answers `pending` and settles later through an `op.settled` event:

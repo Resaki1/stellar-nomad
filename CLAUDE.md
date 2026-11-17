@@ -118,6 +118,8 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `GAME_PARTS=migrate,tx,shared,live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3 ownership, transactions, migration, live loop (disposable `[gc] ` fixture worlds)
 - `GAME_PARTS=res,m32,reach pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — ship resources (fuel, heat, processing, repair)
 - `GAME_PARTS=transit,transitLive pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — fuel-aware transit (prediction vs execution, reserve, pacing, Earth → Moon at two dates); `TRANSIT_EPOCHS=defaultEpoch,…` splits the live part into runs under 2 min
+- `GAME_PARTS=seeds|regions|site|guidance|difficulty|exploits pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3.7/M3.8 (gameplay-m37.mjs): starter fuel source per seed, lunar rebalance, survey site, hints/projects/overlays, difficulty, exploit sweep (one part per run keeps each under 2 min)
+- `GAME_PARTS=sessionA SESSION_PART=1|2|3`, `sessionB` parts 1–5, `sessionC` parts 1–2 — the three end-to-end sessions, one world carried between parts in `.captures/m37-sessions.json` (run the parts in order); `m37shots` / `m37narrow` (`--size 390x844`) captures
 - `GAME_PARTS=place,activate,death,recover,salvage,migrate4 pnpm drive -- --keep --no-isolate reload run:scripts/drive-examples/gameplay-check.mjs` — M3.6 replication points, death/recovery, wreck salvage, schema 4 (`GAME_PARTS=live36` real-input run; `m36shots` captures)
 
 - `GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3.3/M3.4 discovery research: content audit, loadout fit vs fuel/cargo, findings, requirements, effective-config preview, schema-3 migration
@@ -385,8 +387,10 @@ const health = useAtomValue(shipHealthAtom);
 - Messages are **manually dismissed** (Enter key or click). Never auto-timeout.
 - `textContent` is an array of strings — each string is one page.
 - `delaySec` is optional: if set, the message waits N seconds after the trigger fires before entering the queue. Tracked in a `pendingDelayedIds` set to prevent double-scheduling.
-- Played message IDs persist in localStorage (`comms-played-v1`). Messages only play once per save.
-- `dismissCommsAtom` merges atom + localStorage to avoid hydration race with `atomWithStorage`.
+- Played message IDs persist in the player's save (`player.commsPlayed`, a `savedAtom`); old `comms-played-v1` localStorage is only read by the legacy importer. Messages and hints play once per save.
+- **Hints** (`src/data/guidance.ts`, `showHintAtom`, `HintStrip`) are one-time, non-blocking lines for routine state; they enter the same registry when SHOWN. There is no hint queue: an offer made while another hint shows is dropped and re-offered by its trigger (`useHint`) once the slot frees, only if its condition still holds. Prefer a hint over a comms entry unless it is a story beat.
+- `RETIRED_COMMS_IDS` (pre-M3.7 ground-control/assay/per-craft ids) stay valid in registries; `enqueueCommsAtom` refuses them. Do not reuse them.
+- The overlay advances with Enter only and is hidden (queue kept) while dead or in Settings, so it never covers recovery or abandonment.
 - `resetCommsPlayedAtom` clears the registry (for "new game" flows).
 - Priority queue: higher-priority messages inserted ahead of lower ones; equal priority preserves insertion order.
 - **All triggers live in `GameCommsTriggers.tsx`.** Do not enqueue messages directly from gameplay components. Instead, use signal atoms (e.g., `asteroidMinedSignalAtom`, `itemCraftedSignalAtom`) or watch existing state atoms from GameCommsTriggers.

@@ -13,7 +13,7 @@ export function impactDamageFraction(dvMps: number, t: Readonly<Curve>): number 
   return Math.min(1, Math.pow(x, t.damageExponent));
 }
 
-/** Hull points removed. `difficultyMult` is the M3 seam (1 until difficulty exists). */
+/** Hull points removed. `difficultyMult`: the world difficulty's collision multiplier (src/sim/difficulty.ts). */
 export function impactDamageHp(
   im: Readonly<Pick<Impact, "dvMps" | "prevDvMps">>,
   t: Readonly<Curve>,

@@ -222,7 +222,7 @@ function sanitizeSource(v: unknown): SourceFinding | null {
 }
 
 function sanitizeDiscoveries(v: unknown): DiscoveryState {
-  const d: DiscoveryState = { families: {}, sources: [], sites: {}, trials: {} };
+  const d: DiscoveryState = { families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} };
   if (!isObj(v)) return d;
   if (isObj(v.families)) {
     for (const k of Object.keys(v.families)) {
@@ -242,6 +242,7 @@ function sanitizeDiscoveries(v: unknown): DiscoveryState {
   }
   d.sites = stampRecord(v.sites);
   d.trials = stampRecord(v.trials);
+  d.inspectedSites = stampRecord(v.inspectedSites);
   return d;
 }
 
@@ -338,6 +339,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
     legacy: sanitizeLegacy(v.legacy),
     replication: { activeId: isObj(v.replication) && typeof v.replication.activeId === "string" && v.replication.activeId !== "" ? v.replication.activeId : STARTER_POINT_ID },
     lastLoss: sanitizeLoss(v.lastLoss),
+    trackedProject: typeof v.trackedProject === "string" && v.trackedProject.length <= 64 ? v.trackedProject : null,
   };
 }
 

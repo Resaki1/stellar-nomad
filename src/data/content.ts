@@ -101,17 +101,40 @@ export const SUSTAINED_BEAM_S = 8;
 export type SiteDef = {
   id: string;
   name: string;
+  /** What the regional indication calls it before inspection. */
+  signalName: string;
   frameId: string;
   /** Relative to `frameId`, km. */
   positionKm: [number, number, number];
-  /** Accepted when the ship is within this range, km. */
-  rangeKm: number;
-  /** Placeholder until M3.7 authors the site (no marker, no visual). */
-  stub?: boolean;
+  /** Regional indication: the marker shows within this distance, km. */
+  signalRangeKm: number;
+  /** Close inspection within this range, km. */
+  inspectRangeKm: number;
+  /** Recovery (one accepted operation) within this range, km. */
+  recoverRangeKm: number;
+  /** One-time reward into cargo (units); recovery is refused if the hold cannot take it. */
+  reward: Record<string, number>;
+  /** Shown after inspection: what the site is and what recovering it gives. */
+  inspectText: string;
 };
 
+/**
+ * Authored sites (M3.7). The lunar canister sits at luna_belt's thinning edge, outside the Moon's
+ * 2 R route-clearance sphere: a target inside it needed a 26,000 km detour from the near-side standoff.
+ */
 export const SITES: SiteDef[] = [
-  { id: "luna_survey_canister", name: "Lunar survey canister", frameId: "luna", positionKm: [3400, 600, 0], rangeKm: 5, stub: true },
+  {
+    id: "luna_survey_canister",
+    name: "Lunar survey canister",
+    signalName: "Automated survey signal",
+    frameId: "luna",
+    positionKm: [5200, 1200, 0],
+    signalRangeKm: 120_000,
+    inspectRangeKm: 2,
+    recoverRangeKm: 1,
+    reward: { titanium: 30 },
+    inspectText: "An abandoned automated survey installation. Its instrument canister is intact: recovering it yields titanium stock and the design data of an integrated sensor suite.",
+  },
 ];
 
 export function getSiteDef(id: string): SiteDef | undefined {
@@ -283,7 +306,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     id: "ln1_survey_salvage",
     name: "Survey Instrument Recovery",
     branch: "lunar",
-    purpose: "Optional specialist scanner from the lunar survey site (M3.7).",
+    purpose: "Optional specialist scanner decoded from the recovered lunar survey canister.",
     all: [{ kind: "site", siteId: "luna_survey_canister" }],
     analysis: {},
     unlocks: { items: ["module_integrated_sensor_suite"] },

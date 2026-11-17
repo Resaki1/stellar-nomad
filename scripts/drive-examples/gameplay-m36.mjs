@@ -56,7 +56,7 @@ async function craftKits(ctx, n) {
 }
 
 /** Nudge in a widening spiral until the preview (0.8 km ahead) is clear. */
-async function findClearPreview(d, ctx) {
+export async function findClearPreview(d, ctx) {
   const { ev } = ctx;
   await ev(`${R}.setMode(true)`);
   for (let i = 0; i < 12; i++) {
@@ -68,7 +68,7 @@ async function findClearPreview(d, ctx) {
   return ev(`${R}.preview()`);
 }
 
-async function waitArrival(ctx, ms = 15000) {
+export async function waitArrival(ctx, ms = 15000) {
   const t0 = Date.now();
   let rt = await ctx.ev(`${R}.runtime()`);
   while ((rt.pending || rt.arriving || rt.paused) && Date.now() - t0 < ms) {
@@ -636,7 +636,7 @@ export async function migrate4Gates(d, ctx) {
   for (const [name, f] of Object.entries(fx)) {
     const r = await ev(`(() => { const a = ${G}.parse(${js(f.raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
     const a = r.a;
-    const c = { schema: a.schemaVersion === 4, idempotent: r.idempotent, starter: eq(a.world.replication.points, [starter]) };
+    const c = { schema: a.schemaVersion === 5, idempotent: r.idempotent, starter: eq(a.world.replication.points, [starter]) };
     for (const pid of Object.keys(f.raw.players)) {
       const p = a.players[pid];
       const rp = f.raw.players[pid];
@@ -673,7 +673,7 @@ export async function migrate4Gates(d, ctx) {
     const j2 = await ev(`${G}.fixtures.export(${js(id2)})`);
     const x1 = JSON.parse(j1), x2 = JSON.parse(j2);
     const parsedDirect = await ev(`${G}.parse(${js(fx[name].raw)})`);
-    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 4 };
+    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 5 };
     rt[name].pass = rt[name].dataEqual && rt[name].matchesPureParse && rt[name].schema;
   }
   // A dead v1 save at a remote pose boots dead and recovers at the starter point.
@@ -705,7 +705,7 @@ export async function migrate4Gates(d, ctx) {
   return { fixtures: res, roundtrip: rt, pass: Object.values(res).every((r) => r.pass) && Object.values(rt).every((r) => r.pass) };
 }
 /** Centre of the first element matching `selector` (optionally containing `text`), scrolled into view. */
-async function centerOf(ctx, selector, text) {
+export async function centerOf(ctx, selector, text) {
   return ctx.ev(`(() => {
     const els = [...document.querySelectorAll(${JSON.stringify(selector)})].filter((e) => !${JSON.stringify(text ?? null)} || e.textContent.includes(${JSON.stringify(text ?? "")}));
     const e = els[0];
@@ -717,7 +717,7 @@ async function centerOf(ctx, selector, text) {
 }
 
 /** Real-input flight towards a moving frame-relative target: W to close, X to brake near it. */
-async function flyTo(d, ctx, frameId, posKm, stopKm, maxS = 60, done = async () => false) {
+export async function flyTo(d, ctx, frameId, posKm, stopKm, maxS = 60, done = async () => false) {
   const { ev } = ctx;
   const t0 = Date.now();
   let nav = null;

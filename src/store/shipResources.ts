@@ -13,7 +13,7 @@ import {
   createShipResourceState,
   type ShipResourceState,
 } from "@/sim/ship/resourceStep";
-import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
 import { coolingMultOf, equipTuning, miningHeatMultOf } from "@/sim/ship/loadout";
 import { recordTrial } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
@@ -216,7 +216,7 @@ export function buildShipResourcesHud(): ShipResourcesHud {
 /** Fill the requests the step reads; human-rate inputs only. */
 export function updateShipRequests(store: Store, freeFlight: boolean, miningBeam: boolean): void {
   const cfg = store.get(effectiveShipConfigAtom);
-  const t = equipTuning(getResourceTuning(), cfg, shipTuning);
+  const t = equipTuning(getEffectiveTuning(), cfg, shipTuning);
   const health = store.get(shipHealthAtom);
   const damaged = health < cfg.maxHealth;
   if (!damaged) shipResControl.repairManual = false;

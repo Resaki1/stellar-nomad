@@ -29,7 +29,7 @@ function diffPaths(a, b, path = "", out = []) {
   return out;
 }
 
-async function loadedRocks(ctx, n = 3000) {
+export async function loadedRocks(ctx, n = 3000) {
   let rocks = [];
   for (let i = 0; i < 60 && rocks.length < 50; i++) {
     rocks = await ctx.ev(`${G}.m33.rocks(${n})`);
@@ -113,7 +113,8 @@ export async function evidenceGates(d, ctx) {
   const E = {};
 
   // Mining an uninspected rock confirms its families by extraction, once each.
-  const s1 = rocks.find((r) => r.classId === "s_type" && r.radiusM > 15);
+  // No hydrate family: the last slot takes the rounding remainder, so a small S-type can reach 3 %.
+  const s1 = rocks.find((r) => r.classId === "s_type" && r.radiusM > 15 && !familiesOf(r.composition).includes("hydrates"));
   const known = new Set(familiesOf(s1.composition));
   const s2 = rocks.find((r) => r !== s1 && r.classId === "s_type" && familiesOf(r.composition).every((f) => known.has(f)));
   const d0 = await disc();
@@ -288,7 +289,7 @@ export async function reqGates(d, ctx) {
 // ── (c) playthroughs ───────────────────────────────────────────────────────
 
 /** Mine (fast-forward, accepted operations) nearest rocks until `need` is in cargo. */
-async function gather(ctx, rocks, need, used) {
+export async function gather(ctx, rocks, need, used) {
   const { ev } = ctx;
   let ops = 0;
   for (let guard = 0; guard < 400; guard++) {
@@ -305,7 +306,7 @@ async function gather(ctx, rocks, need, used) {
 }
 
 /** Real manoeuvring (W then brake) until at least `kg` of ordinary propellant has been used. */
-async function burnFuel(d, ctx, kg) {
+export async function burnFuel(d, ctx, kg) {
   const start = (await ctx.ev(`${G}.res.state()`)).ordinaryKg;
   for (let i = 0; i < 12; i++) {
     const now = (await ctx.ev(`${G}.res.state()`)).ordinaryKg;
@@ -316,7 +317,7 @@ async function burnFuel(d, ctx, kg) {
   return start - (await ctx.ev(`${G}.res.state()`)).ordinaryKg;
 }
 
-async function waitFor(ctx, fn, ms) {
+export async function waitFor(ctx, fn, ms) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     if (await fn()) return true;
@@ -526,9 +527,9 @@ export async function migrate3Gates(d, ctx) {
     const p = a.players[me];
     const rp = f.raw.players[me];
     const c = {
-      schema: a.schemaVersion === 4, idempotent: r.idempotent, pose: eq(p.ship, rp.ship), cargo: eq(p.cargo, rp.cargo), deltas: eq(a.world.asteroidDeltas, f.raw.world.asteroidDeltas),
+      schema: a.schemaVersion === 5, idempotent: r.idempotent, pose: eq(p.ship, rp.ship), cargo: eq(p.cargo, rp.cargo), deltas: eq(a.world.asteroidDeltas, f.raw.world.asteroidDeltas),
       wrecks: eq(a.world.wrecks.map((w) => [w.id, w.items, w.positionKm, w.frameId]), f.raw.world.wrecks.map((w) => [w.id, w.items, w.positionKm, w.frameId])),
-      noResearchSlice: !("research" in p), discoveriesEmpty: eq(a.world.discoveries, { families: {}, sources: [], sites: {}, trials: {} }),
+      noResearchSlice: !("research" in p), discoveriesEmpty: eq(a.world.discoveries, { families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} }),
       propellant: f.v === 2 ? eq(p.propellant, rp.propellant) : p.propellant.ordinaryKg === 600,
     };
     if (f.mid) {
@@ -559,7 +560,7 @@ export async function migrate3Gates(d, ctx) {
     const j2 = await ev(`${G}.fixtures.export(${js(id2)})`);
     const x1 = JSON.parse(j1), x2 = JSON.parse(j2);
     const parsedDirect = await ev(`${G}.parse(${js(fx[name].raw)})`);
-    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 4 };
+    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 5 };
     rt[name].pass = rt[name].dataEqual && rt[name].matchesPureParse && rt[name].schema;
   }
   // Booting a migrated world: the mirrors and HUD config read the new catalogue.

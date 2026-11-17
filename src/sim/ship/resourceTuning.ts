@@ -3,6 +3,7 @@
  * panel edits. Units: kg, s, kW, kJ; heat is an effective store, `heatCapacityKJ` = 100 %.
  */
 import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "./shipResources";
+import { applyDifficulty, difficultyMults, difficultyVersion } from "@/sim/difficulty";
 
 export interface ResourceTuning {
   tankKg: number;
@@ -108,10 +109,25 @@ export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
 });
 
 const live: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+let liveVersion = 0;
 
-/** The live table. Read it where used; never cache fields across frames. */
+/** The live (dev-editable) table, before difficulty. Gameplay reads `getEffectiveTuning`. */
 export function getResourceTuning(): Readonly<ResourceTuning> {
   return live;
+}
+
+const effective: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+let effectiveLive = -1;
+let effectiveDiff = -1;
+
+/** The live table with the active world's difficulty applied (refreshed on change, no per-call allocation). */
+export function getEffectiveTuning(): Readonly<ResourceTuning> {
+  if (effectiveLive !== liveVersion || effectiveDiff !== difficultyVersion()) {
+    applyDifficulty(live, difficultyMults(), effective);
+    effectiveLive = liveVersion;
+    effectiveDiff = difficultyVersion();
+  }
+  return effective;
 }
 
 const POSITIVE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>([
@@ -134,8 +150,10 @@ export function setResourceTuning(patch: Partial<ResourceTuning>): void {
   // Throttle ramp divides by (1 − heatThrottle01); keep it non-degenerate.
   if (live.heatThrottle01 > 0.999) live.heatThrottle01 = 0.999;
   if (live.heatMax01 < 1) live.heatMax01 = 1;
+  liveVersion++;
 }
 
 export function resetResourceTuning(): void {
   Object.assign(live, DEFAULT_RESOURCE_TUNING);
+  liveVersion++;
 }

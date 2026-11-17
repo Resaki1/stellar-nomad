@@ -1,0 +1,48 @@
+@use '../../../styles' as s;
+
+// Top-left under the cargo readout: clear of the comms lower-third and of the dashboard
+// (fuel/heat/hull, bottom-right), so a hint never covers a warning.
+.hint-strip {
+  position: fixed;
+  left: s.$space-4;
+  top: 84px;
+  z-index: s.$z-hud-base;
+  max-width: min(360px, calc(100vw - #{s.$space-7}));
+  display: flex;
+  align-items: flex-start;
+  gap: s.$space-2;
+  padding: s.$space-2 s.$space-3;
+  border-left: 2px solid s.$accent-info;
+  background: rgba(0, 0, 0, 0.45);
+  font-family: s.$font-ui;
+  font-size: 12px;
+  line-height: 1.4;
+  color: s.$text-primary;
+  pointer-events: auto;
+  cursor: pointer;
+  animation: hintIn s.$dur-base s.$ease-out;
+
+  &__icon {
+    flex: 0 0 auto;
+    color: s.$accent-info;
+    margin-top: 2px;
+  }
+
+  // Phones: above the stacked dashboard and the comms lower-third.
+  @media (max-width: 520px) {
+    top: auto;
+    bottom: 440px;
+    left: s.$space-3;
+  }
+}
+
+@keyframes hintIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

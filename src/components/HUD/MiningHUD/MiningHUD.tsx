@@ -19,6 +19,8 @@ import { computedModifiersAtom, getFlag } from "@/store/modules";
 import { pulseMiningActiveAtom, togglePulseMiningAtom } from "@/store/mining";
 
 import { playAudio } from "@/audio";
+import { difficultyMults } from "@/sim/difficulty";
+import { interactSiteAtom } from "@/store/sites";
 import "./MiningHUD.scss";
 
 export default function MiningHUD() {
@@ -50,7 +52,8 @@ export default function MiningHUD() {
     const classDef = getAsteroidClass(
       systemConfig,
       t.location.fieldId,
-      t.instanceId
+      t.instanceId,
+      t.location.chunkKey
     );
 
     const baseDurationS = computeMiningDurationS(t.radiusM);
@@ -78,7 +81,7 @@ export default function MiningHUD() {
     const inspected = source
       ? Object.entries(source.composition)
           .sort((a, b) => b[1] - a[1])
-          .map(([k, n]) => ({ id: k, name: materialName(k), units: Math.max(1, Math.round(n * shipConfig.miningEfficiencyMult)) }))
+          .map(([k, n]) => ({ id: k, name: materialName(k), units: Math.max(1, Math.round(n * shipConfig.miningEfficiencyMult * difficultyMults().yield)) }))
       : null;
     const inspectRangeM = INSPECT_RANGE_M * shipConfig.scannerInspectRangeMult;
 
@@ -107,9 +110,12 @@ export default function MiningHUD() {
 
   const inspecting = miningState.inspectProgress > 0;
   const canInspect = showInfo && !!lootPreview && !lootPreview.inspected && lootPreview.inRange && !miningState.isMining;
+  const interactSite = useSetAtom(interactSiteAtom);
   const handleInspect = () => {
     if (inspecting) cancelInspection();
     else if (canInspect) startInspection();
+    // No rock to inspect: G works the survey site in range (inspect, then recover).
+    else if (!miningState.isFocused && interactSite() !== null) return;
     else playAudio("ui.reject");
   };
   const handleInspectRef = useRef(handleInspect);

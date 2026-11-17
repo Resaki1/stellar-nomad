@@ -105,7 +105,7 @@ export function planExtraction(
   return { next: { ...d, families, sources }, newFamilies, depletedSource: depletes ? sourceId : null };
 }
 
-export function planStamp(d: Readonly<DiscoveryState>, kind: "trials" | "sites", id: string, by: PlayerId, now: number): DiscoveryState | null {
+export function planStamp(d: Readonly<DiscoveryState>, kind: "trials" | "sites" | "inspectedSites", id: string, by: PlayerId, now: number): DiscoveryState | null {
   if (d[kind][id]) return null;
   return { ...d, [kind]: { ...d[kind], [id]: { at: now, by } } };
 }

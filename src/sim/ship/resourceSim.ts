@@ -6,7 +6,7 @@
 import { Vector3 } from "three";
 import { frameOriginKm, frameSoiKm, isFrameId } from "@/sim/frames";
 import { getFlightTuning } from "./flightTuning";
-import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "./resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from "./resourceTuning";
 import { defaultShipConfig } from "@/save/defaults";
 import { getItemDef, type ItemEffect } from "@/data/content";
 import { aggregateEffects, applyModifiers, coolingMultOf, equipTuning, miningHeatMultOf } from "./loadout";
@@ -109,7 +109,7 @@ export interface ResourceSimResult {
 }
 
 export function simulateResources(script: ResourceScript): ResourceSimResult {
-  let t: Readonly<ResourceTuning> = getResourceTuning();
+  let t: Readonly<ResourceTuning> = getEffectiveTuning();
   const req = createResourceRequests();
   req.miningHeatMult = script.miningHeatMult ?? 1;
   req.coolingMult = script.coolingMult ?? 1;
@@ -117,7 +117,7 @@ export function simulateResources(script: ResourceScript): ResourceSimResult {
     const effects: ItemEffect[] = [];
     for (const id of script.equipped) effects.push(...(getItemDef(id)?.effects ?? []));
     const cfg = applyModifiers(defaultShipConfig(), aggregateEffects(effects));
-    t = equipTuning(getResourceTuning(), cfg, { ...DEFAULT_RESOURCE_TUNING });
+    t = equipTuning(getEffectiveTuning(), cfg, { ...DEFAULT_RESOURCE_TUNING });
     req.miningHeatMult = script.miningHeatMult ?? miningHeatMultOf(cfg);
     req.coolingMult = script.coolingMult ?? coolingMultOf(cfg);
   }

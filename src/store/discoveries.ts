@@ -7,7 +7,7 @@ import { SOURCE_CLASS_NAMES } from "@/data/content";
 import type { SourceFinding } from "@/save/types";
 import type { FrameId } from "@/sim/frames";
 import { computeLoadoutPreview, type LoadoutPreview } from "@/sim/ship/loadoutPreview";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 import { cargoAtom } from "@/store/cargo";
 import { poiBuffer, type POIDef } from "@/store/poi";
 import { bookmarksAtom, discoveriesMirrorAtom } from "@/store/research";
@@ -55,5 +55,5 @@ export const setDestinationToSourceAtom = atom(null, (get, set, sourceId: string
 const cargoBaseCapacityAtom = atom((get) => get(cargoAtom).capacityUnits);
 
 export const loadoutPreviewAtom = atom((get): LoadoutPreview =>
-  computeLoadoutPreview(get(effectiveShipConfigAtom), getResourceTuning(), get(cargoBaseCapacityAtom)),
+  computeLoadoutPreview(get(effectiveShipConfigAtom), getEffectiveTuning(), get(cargoBaseCapacityAtom)),
 );

@@ -45,6 +45,7 @@ import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
 import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
 import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { difficultyMults } from "@/sim/difficulty";
 import { propellantGate, stepShipResources, worstStepKg } from "@/sim/ship/resourceStep";
 import { loadResourcePrefs } from "@/store/resourceTuningPrefs";
 import { heatSinkBuffer, miningBeamRequest } from "@/store/mining";
@@ -92,8 +93,6 @@ const collectImpact = (im: Readonly<Impact>): void => {
   else Object.assign(_impactPool[k], im);
   _impactsThisFrame.push(_impactPool[k]);
 };
-/** M3 seam: the difficulty setting's collision-damage multiplier plugs in here. */
-const DIFFICULTY_DAMAGE_MULT = 1;
 const _motion: ShipMotion = {
   accelRight: 0, accelUp: 0, accelForward: 0, speedFrac: 0, boosting: false,
   freeLook: false, freeLookYaw: 0, freeLookPitch: 0, shakeSignal: 0, benchMode: false,
@@ -236,7 +235,7 @@ const SpaceShip = memo(() => {
   const applyImpact = useCallback((im: Readonly<Impact>, ship: ShipState): boolean => {
     const t = getPhysicsTuning();
     const cfg = store.get(effectiveShipConfigAtom);
-    const dmg = impactDamageHp(im, t, cfg.maxHealth, cfg.collisionDamageMult, DIFFICULTY_DAMAGE_MULT);
+    const dmg = impactDamageHp(im, t, cfg.maxHealth, cfg.collisionDamageMult, difficultyMults().collisionDamage);
     const health = Math.max(0, store.get(shipHealthAtom) - dmg);
     if (dmg > 0) store.set(shipHealthAtom, health);
     const fatal = dmg > 0 && health <= 0;

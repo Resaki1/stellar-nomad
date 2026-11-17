@@ -128,6 +128,16 @@
     font-size: 0.7rem;
     line-height: 1.1;
     white-space: normal;
+
+    &--crit {
+      color: s.$accent-crit;
+    }
+  }
+
+  &__rec {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   &__health--warning {

@@ -76,6 +76,9 @@ export interface TransitInputs {
 /** Refusal for a target the ship already stands at (the HUD hides it; no toast). */
 export const ALREADY_THERE = "Already at the destination";
 
+/** A clearance waypoint may lengthen the route at most this much over the direct line (+ 10 clearance radii, so a short hop round a body keeps working: M3.5's standoff → lunar field hop). */
+const ROUTE_MAX_DETOUR = 1.5;
+
 export interface TransitEvents {
   refused: number;
   refusal: string | null;
@@ -402,13 +405,18 @@ export function planRoute(out: TransitPlan, ship: Vector3, target: Readonly<Tran
   }
   _pB.normalize();
   const rc = Math.max(hardRadiusKm(b), b.radiusKm * t.transitRouteClearanceRadii);
+  let second = -1;
   for (let h = rc * 1.05, i = 0; i < 40; i++, h *= 1.15) {
     _pS.set(bx + _pB.x * h, by + _pB.y * h, bz + _pB.z * h); // waypoint W
     if (!arrivalAim(p, _pS, offset, _pAim)) continue;
-    if (firstBlocker(ship, _pS, bodies, null, t) >= 0) continue;
-    if (firstBlocker(_pS, _pAim, bodies, skip, t) >= 0) continue;
-    _pC.set(bx, by, bz);
     const l1 = _pS.distanceTo(ship), l2k = _pAim.distanceTo(_pS);
+    // MEASURED: a target behind the Moon from Earth grew this waypoint to a 1.82M km path (4.9×
+    // direct) that took the whole tank. A second blocker is not routed around: refuse instead.
+    if (l1 + l2k > ROUTE_MAX_DETOUR * out.directKm + 10 * rc) break;
+    if (firstBlocker(ship, _pS, bodies, null, t) >= 0) continue;
+    second = firstBlocker(_pS, _pAim, bodies, skip, t);
+    if (second >= 0) continue;
+    _pC.set(bx, by, bz);
     setLeg(out.legs[0], b.pos, undefined, _pC, _pS, l1);
     resolveFramePositionKm(target.positionKm, target.frameId, _pC);
     setLeg(out.legs[1], target.positionKm, target.frameId, _pC, _pAim, l2k);
@@ -418,6 +426,7 @@ export function planRoute(out: TransitPlan, ship: Vector3, target: Readonly<Tran
     out.pathKm = l1 + l2k;
     return true;
   }
+  if (second >= 0 && bodies[second] !== b) return refuse(out, `Route blocked by ${b.name} and ${bodies[second].name}: travel to ${bodies[second].name} first`);
   return refuse(out, `Route blocked by ${b.name}`);
 }
 

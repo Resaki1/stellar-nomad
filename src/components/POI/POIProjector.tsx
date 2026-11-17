@@ -10,6 +10,7 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
 import { bookmarkPOIsAtom } from "@/store/discoveries";
+import { sitePOIsAtom } from "@/store/sites";
 import {
   STAR_MARKER_MAX_LY,
   STAR_MARKER_NEAREST,
@@ -55,6 +56,8 @@ const FOCUS_HALF_ANGLE_NDC = 0.06; // ~3.4° at center of NDC space
 
 /** Time in seconds the player must gaze at a POI to target it. */
 const POI_TARGET_GAZE_TIME_S = 1.5;
+/** A destination picked from a menu yields to gaze only after a deliberate look (arrival often faces the Sun). */
+const POI_PINNED_GAZE_TIME_S = 4;
 
 /** Grace period (seconds) where looking away doesn't untarget — absorbs brief glances. */
 const POI_UNTARGET_GRACE_S = 0.3;
@@ -157,6 +160,7 @@ function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
   const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
+  const sitePois = useAtomValue(sitePOIsAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const starsOn = useAtomValue(starMarkersEnabledAtom);
@@ -234,6 +238,9 @@ function usePOIDefs(): POIDef[] {
     // Bookmarked resource sources (discoveries list)
     for (const b of bookmarkPois) pois.push(b);
 
+    // Authored regional opportunities and site signals
+    for (const p of sitePois) pois.push(p);
+
     // ── Stars ────────────────────────────────────────────────────────────────
     // ⚠ Includes the PRIMARY, which the celestial-body loop above deliberately
     // skips (`type === "star"`). Without it there is no way to find your way home
@@ -274,7 +281,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -397,17 +404,26 @@ const POIProjector = memo(function POIProjector() {
     // rotation doesn't accidentally retarget a different POI.
     const transitBusy = transitDriveBuffer.phase !== "idle";
 
+    // A POI the ship already stands at (inside its arrival stand-off) is no transit target: gazing
+    // at it (recovery emerges facing its point) must not replace the current one.
+    if (focusedPoiDef && focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5) {
+      focusedPoiId = null;
+      focusedPoiDef = null;
+    }
+
     if (driveOwned && !transitBusy) {
       const currentTarget = store.get(targetedPOIAtom);
       const dtClamped = Math.min(delta, 0.1);
 
+      const gazeNeedS = currentTarget && currentTarget.id === poiBuffer.pinnedId ? POI_PINNED_GAZE_TIME_S : POI_TARGET_GAZE_TIME_S;
       if (focusedPoiId && focusedPoiId === gazeIdRef.current) {
         // Still gazing at same POI — accumulate time.
         gazeTimeRef.current += dtClamped;
         untargetGraceRef.current = 0;
 
-        if (gazeTimeRef.current >= POI_TARGET_GAZE_TIME_S) {
+        if (gazeTimeRef.current >= gazeNeedS) {
           if (currentTarget?.id !== focusedPoiId && focusedPoiDef) {
+            poiBuffer.pinnedId = null;
             store.set(targetedPOIAtom, {
               id: focusedPoiDef.id,
               name: focusedPoiDef.name,
@@ -447,7 +463,7 @@ const POIProjector = memo(function POIProjector() {
         !!focusedPoiId && (!currentTarget || currentTarget.id !== focusedPoiId);
       poiBuffer.gazeActive = gazingAtUntargeted;
       poiBuffer.gazeProgress = gazingAtUntargeted
-        ? Math.min(gazeTimeRef.current / POI_TARGET_GAZE_TIME_S, 1)
+        ? Math.min(gazeTimeRef.current / gazeNeedS, 1)
         : 0;
 
       // ETA on the targeted POI: the transit predictor's (fuel-limited legs and clearance routes included).

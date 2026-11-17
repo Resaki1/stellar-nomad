@@ -65,6 +65,10 @@
     align-items: stretch;
     min-width: 150px;
     gap: 1px;
+    // Scrim and above the POI layer: distant markers' labels drew through this readout.
+    padding: s.$space-1 s.$space-2;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: s.$z-hud-base + 1;
 
     &--visible {
       opacity: 1;

@@ -21,6 +21,21 @@
 
   animation: commsSlideUp s.$dur-slow s.$ease-out;
 
+  // Dark scrim so the text reads over a sunlit limb (the Moon fills the frame on lunar arrival).
+  box-sizing: border-box;
+  padding: s.$space-2 s.$space-4;
+  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.6) 10%, rgba(0, 0, 0, 0.6) 90%, transparent);
+
+  // Below ~1118 px a centred 760 px overlay reaches the bottom-right dashboard (fuel/heat rows);
+  // stop its right edge at the dashboard's left edge (16vw, min 140px).
+  @media (min-width: 521px) and (max-width: 1180px) {
+    left: s.$space-4;
+    right: calc(max(16vw, 140px) + #{s.$space-4});
+    width: auto;
+    transform: none;
+    animation-name: commsSlideUpLeft;
+  }
+
   // Phones: the ship dashboard spans most of the width (~170 px tall); sit above it.
   @media (max-width: 520px) {
     bottom: 200px;
@@ -151,7 +166,7 @@
     font-size: 13px;
     line-height: 1.55;
     color: s.$text-primary;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.8);
   }
 
   &__hint {
@@ -168,6 +183,17 @@
 
   &__hint-key {
     color: s.$text-tertiary;
+  }
+
+  @keyframes commsSlideUpLeft {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   @keyframes commsSlideUp {

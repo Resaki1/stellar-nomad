@@ -20,7 +20,7 @@ export interface InspectTarget {
  */
 export function buildInspectOperation(system: SystemConfig, t: InspectTarget, opId: string): Extract<WorldOperation, { type: "survey.inspect" }> | null {
   const field = (system.asteroidFields ?? []).find((f) => f.id === t.fieldId);
-  const reward = getAsteroidMiningReward(system, t.fieldId, t.instanceId, t.radiusM);
+  const reward = getAsteroidMiningReward(system, t.fieldId, t.instanceId, t.radiusM, t.chunkKey);
   if (!field || !reward) return null;
   const anchored = !!field.anchorBody && !!field.anchorOffsetKm && isFrameId(field.anchorBody);
   const base = anchored && field.anchorOffsetKm ? field.anchorOffsetKm : field.anchorKm;

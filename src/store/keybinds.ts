@@ -9,6 +9,7 @@ export type KeybindAction =
   | "toggleResearch"
   | "toggleCrafting"
   | "toggleLoadout"
+  | "toggleProjects"
   | "mine"
   | "inspect"
   | "togglePulseMining"
@@ -50,6 +51,7 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "toggleResearch", label: "Research", category: "actions" },
   { id: "toggleCrafting", label: "Crafting", category: "actions" },
   { id: "toggleLoadout", label: "Loadout", category: "actions" },
+  { id: "toggleProjects", label: "Projects and records", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
   { id: "inspect", label: "Inspect Target", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
@@ -87,6 +89,7 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   toggleResearch: ["r"],
   toggleCrafting: ["f"],
   toggleLoadout: ["l"],
+  toggleProjects: ["o"],
   mine: ["m"],
   inspect: ["g"],
   togglePulseMining: ["p"],

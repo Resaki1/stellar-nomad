@@ -5,7 +5,7 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { isDeadAtom, lastLossAtom } from "@/store/death";
 import { FALLBACK_TEXT, activePointAtom, previewRecovery, recoverAtom, replicationPointsAtom } from "@/store/replication";
 import { STARTER_POINT_ID } from "@/sim/replication/points";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 import { setCursorNeeded } from "@/input/pointerLock";
 import { getItemDef } from "@/data/content";
 
@@ -36,7 +36,7 @@ function RecoveryPanel() {
   const dest = previewRecovery(store, "active");
   const starterName = points.find((p) => p.id === STARTER_POINT_ID)?.name ?? "Origin point";
 
-  const allowance = getResourceTuning().recoveryAllowanceKg;
+  const allowance = getEffectiveTuning().recoveryAllowanceKg;
   const atStarter = dest.pointId === STARTER_POINT_ID;
   const lossLine = loss
     ? [

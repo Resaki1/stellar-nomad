@@ -7,7 +7,7 @@ import { isDeadAtom } from "@/store/death";
 import { abandonShipAtom, shipRes } from "@/store/shipResources";
 import { modulesAtom } from "@/store/modules";
 import { previewRecovery } from "@/store/replication";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 
 /**
  * Emergency abandonment (M3 plan §2 rule 9): always reachable, zero fuel included. Same death
@@ -32,7 +32,7 @@ export default function AbandonShip({ onDone }: { onDone: () => void }) {
   const units = Object.values(cargo.items).reduce((a, v) => a + Math.floor(v), 0);
   const loose = Object.values(consumables).reduce((a, v) => a + Math.floor(v), 0);
   const batch = shipRes.processing.active ? shipRes.processing : null;
-  const allowance = getResourceTuning().recoveryAllowanceKg;
+  const allowance = getEffectiveTuning().recoveryAllowanceKg;
   // The allowance refill is paid from the ordinary fuel first, so abandoning never adds fuel.
   const wreckFuel = Math.max(0, shipRes.ordinaryKg - Math.max(0, allowance - shipRes.protectedKg));
   const dest = previewRecovery(store, "active");

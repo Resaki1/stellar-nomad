@@ -20,7 +20,7 @@ import { asteroidsMinedLifetimeAtom } from "@/store/mining";
 import { craftItemAtom, modulesAtom } from "@/store/modules";
 import { bookmarksAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom, unlockResearchAtom } from "@/store/research";
 import { RESEARCH_NODES, getResearchNode } from "@/data/content";
-import { DEFAULT_CARGO_CAPACITY_UNITS, defaultShipConfig } from "@/save/defaults";
+import { DEFAULT_CARGO_CAPACITY_UNITS, SCHEMA_VERSION, defaultSaveData, defaultShipConfig } from "@/save/defaults";
 import { auditContent, evaluateNode } from "@/sim/research/requirements";
 import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 import { aggregateEffects, applyModifiers } from "@/sim/ship/loadout";
@@ -34,6 +34,7 @@ import { shipHealthAtom } from "@/store/store";
 import { systemConfigAtom } from "@/store/system";
 import { runOperation } from "@/store/operations";
 import { testProbe } from "./testProbe";
+import { createM37Harness } from "./m37Harness";
 import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { getLocalPlayerShip } from "@/sim/entities";
@@ -235,7 +236,7 @@ export function createGameplayHarness(store: Store) {
                 rocks++;
                 const id = inst.instanceIds[i] >>> 0;
                 const radiusM = inst.radiiM[i];
-                const reward = getAsteroidMiningReward(system, f.id, id, radiusM);
+                const reward = getAsteroidMiningReward(system, f.id, id, radiusM, chunkKey);
                 const hyd = reward?.resources.find((r) => r.resourceId === "hydrates")?.amount ?? 0;
                 if (hyd < 1) continue;
                 const x = f.anchorKm[0] + chunk.originKm[0] + inst.positionsM[i * 3] / 1000;
@@ -363,6 +364,8 @@ export function createGameplayHarness(store: Store) {
     },
 
     /** M3.3/M3.4: discovery research, content audit, loadout preview. */
+    m37: createM37Harness(store),
+
     m33: {
       audit: () => auditContent(DEFAULT_CARGO_CAPACITY_UNITS),
       nodeIds: (): string[] => RESEARCH_NODES.map((n) => n.id),
@@ -391,7 +394,7 @@ export function createGameplayHarness(store: Store) {
                 const radiusM = inst.radiiM[i];
                 if (radiusM < minRadiusM) continue;
                 const id = inst.instanceIds[i] >>> 0;
-                const reward = getAsteroidMiningReward(system, f.id, id, radiusM);
+                const reward = getAsteroidMiningReward(system, f.id, id, radiusM, chunkKey);
                 if (!reward || (classId && reward.asteroidClass.id !== classId)) continue;
                 const x = f.anchorKm[0] + chunk.originKm[0] + inst.positionsM[i * 3] / 1000;
                 const y = f.anchorKm[1] + chunk.originKm[1] + inst.positionsM[i * 3 + 1] / 1000;
@@ -469,7 +472,8 @@ export function createGameplayHarness(store: Store) {
       devSetWorld(p: { discoveries?: DiscoveryState; completedNodes?: string[] }): void {
         const w = getActiveSave()?.data.world;
         if (!w) return;
-        if (p.discoveries) w.discoveries = structuredClone(p.discoveries);
+        // Through the sanitiser, so an older-schema fixture shape gains the newer slices.
+        if (p.discoveries) w.discoveries = parseSaveData({ schemaVersion: SCHEMA_VERSION, world: { discoveries: structuredClone(p.discoveries) }, players: {} }).world.discoveries;
         if (p.completedNodes) w.research = { completedNodes: [...p.completedNodes], legacy: w.research.legacy };
         store.set(discoveriesMirrorAtom, w.discoveries);
         store.set(sharedResearchMirrorAtom, w.research.completedNodes);
@@ -616,15 +620,16 @@ export function createGameplayHarness(store: Store) {
     },
 
     fixtures: {
-      /** Store raw `data` (any schema; migrated when loaded) as a new fixture world. */
-      async create(name: string, data: unknown): Promise<string> {
+      /** Store raw `data` (any schema; migrated when loaded) as a new fixture world; "new" = createWorld's data. */
+      async create(name: string, data: unknown, opts?: { seed?: number; difficulty?: SaveMeta["difficulty"] }): Promise<string> {
         const now = Date.now();
+        if (data === "new") data = defaultSaveData(getLocalPlayerId(), opts?.difficulty ?? "standard");
         const raw = data as { schemaVersion?: unknown };
         const meta: SaveMeta = {
           id: newWorldId(),
           name: FIXTURE_PREFIX + name,
-          seed: 1,
-          difficulty: "standard",
+          seed: (opts?.seed ?? 1) >>> 0,
+          difficulty: opts?.difficulty ?? "standard",
           createdAt: now,
           lastPlayedAt: now,
           playTimeS: 0,

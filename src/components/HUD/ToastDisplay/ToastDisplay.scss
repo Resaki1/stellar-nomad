@@ -10,6 +10,14 @@
   gap: s.$space-2;
   pointer-events: none;
   max-width: 340px;
+
+  // Phones: full-width band under the top bar; the transit plan sits below it (TransitHUD).
+  @media (max-width: 520px) {
+    top: 64px;
+    left: s.$space-3;
+    right: s.$space-3;
+    max-width: none;
+  }
 }
 
 .toast-display__item {

@@ -90,6 +90,9 @@
     gap: s.$space-1;
     text-align: right;
     animation: transitActiveIn s.$dur-slow s.$ease-out;
+    // Scrim: POI distance labels (z-world-label) otherwise read through the plan rows.
+    padding: s.$space-2 s.$space-3;
+    background: linear-gradient(270deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.72) 85%, rgba(0, 0, 0, 0.2));
   }
 
   &--preview {
@@ -145,8 +148,9 @@
   }
 
   @media (max-width: 520px) {
+    // Below the full-width toast band (top 64, one toast ≈ 60 px).
     &--side {
-      top: 88px;
+      top: 140px;
     }
 
     &__velocity {

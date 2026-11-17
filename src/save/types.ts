@@ -16,7 +16,7 @@ export interface SaveMeta {
   name: string;
   /** Stored, not consumed yet. */
   seed: number;
-  /** Stored, not consumed yet. */
+  /** Chosen at creation; applied through `src/sim/difficulty.ts`. */
   difficulty: Difficulty;
   createdAt: number;
   lastPlayedAt: number;
@@ -98,8 +98,11 @@ export interface DiscoveryState {
   families: Record<string, FamilyFinding>;
   /** Bounded (MAX_SOURCES), oldest first. */
   sources: SourceFinding[];
+  /** Recovered authored sites (one-time rewards). */
   sites: Record<string, EvidenceStamp>;
   trials: Record<string, EvidenceStamp>;
+  /** Schema 5: authored sites closely inspected (recovery needs it). */
+  inspectedSites: Record<string, EvidenceStamp>;
 }
 
 /** One accepted operation, for duplicate rejection across reloads. */
@@ -281,6 +284,8 @@ export interface PlayerState {
   legacy: PlayerLegacyState | null;
   replication: PlayerReplicationState;
   lastLoss: LossRecord | null;
+  /** Schema 5: the player's tracked project id (src/data/projects.ts), or null. */
+  trackedProject: string | null;
 }
 
 export interface SaveData {
