@@ -614,7 +614,7 @@ available without consuming scan probes.
       and connect equipment to one effective config and power/thermal preview.
 - [x] Provide at least two viable early investment priorities and a direct, purposeful
       starter-region path to transit.
-- [ ] Ensure replication kits, fuel, and repairs remain craftable in either region.
+- [x] Ensure replication kits, fuel, and repairs remain craftable in either region.
 
 **Gate:** recipe dependency/capacity audit passes; no helium-3 survival/travel gate;
 manufacturing UI and underlying accepted actions agree; no duplicated passive effects.
@@ -634,10 +634,10 @@ Verify departure/arrival with Earth obstructing and at a second orbital date.
 
 ### M3.6 — Replication and complete recovery
 
-- [ ] Add the simple placeable point, naming/activation, initial fallback, and recovery UI.
-- [ ] Implement atomic death/abandonment, safe frame-relative restoration, protected
+- [x] Add the simple placeable point, naming/activation, initial fallback, and recovery UI.
+- [x] Implement atomic death/abandonment, safe frame-relative restoration, protected
       allowance, cargo/consumable/fuel salvage, and explicit final starter fallback.
-- [ ] Wire normal and fuel-only wrecks into markers and partial collection.
+- [x] Wire normal and fuel-only wrecks into markers and partial collection.
 
 **Gate:** failed/retried placement spends no extra kit; activation affects only its
 player; live/dead reloads do not duplicate drops; a second death preserves prior wrecks;
@@ -1183,3 +1183,41 @@ Two first investments: survey (three inspections → sv1) or extraction/cooling 
 **Regressions** (page reloaded before each script): flight-trace `sim,live,mouse,camera,reticle` 14/14 pass; physics-check `sim,damage,hull,asteroids` pass; frames-check `ride,switch` pass; save-check `roundtrip,reload,isolation` pass (fresh/legacy not run: they wipe the profile); shell-check `title,continue` pass; gameplay-check `migrate,tx,shared,live,res,m32,reach,transit` pass, `transitLive` pass for `defaultEpoch` and `secondEpoch` (`secondEpochRate100` not rerun). Typecheck clean; lint 0 errors (131 warnings); `check:audio` 0 problems (no audio event changed). Perf `--perf bench:belt` 1280×720: frame P50 14.8 ms, GPU 8.02 ms, local scene 0.39 ms (M3.5: 14.8 / 11.69 / 0.50): no regression.
 
 **Review fixes (M3.3/M3.4).** Equip/unequip is now the `module.equip` operation: the authority refuses a loadout that would leave ordinary fuel above the new tank (`tank_overflow`) or cargo above the new hold (`cargo_overflow`), and craft auto-equip only fits when it would not overflow (so the aux tank / cargo rack tradeoff cannot be bypassed by swapping). Source eviction prefers sources no player has bookmarked (depleted first); `bookmark.set` drops bookmarks of evicted sources and does not count them toward capacity, and `parseSaveData` prunes them. `survey.inspect` composition and `asteroid.mine` yield keys must be known material ids (bounds family records to 7; no fabricated families). The `sustained_beam` run restarts when the beam's target rock changes. The `first_batch` hint says the tank needs room. `r0_microlab_boot` stays an explicit mapping to nothing (basic analysis is free), not an inert legacy id. New gate part `fit`: aux tank at 1000 kg → rack/empty refused `tank_overflow`, accepted at 500 kg; full 2600-unit hold → aux/empty refused `cargo_overflow`; forged inspect/mine keys `invalid`; two players' bookmarked sources (one depleted) survive 70 further inspections at the 64 bound while an unbookmarked depleted source is evicted.
+
+### M3.6 — Replication points and complete recovery (as built)
+
+**Kit.** `consumable_replication_kit`: baseline (starter) recipe 150 Fe-Ni + 100 silicates (250 of the 2000-unit starter hold), `stackMax` 3, counted in `ModulesState.consumables`, flagged `deployable` so the hotbar never fires it. Both materials are common in the starter belt and at the Moon, so no research or lunar gate (content audit passes).
+
+**Schema 4.** `world.replication.points[]` (`id, name, frameId, positionKm, quaternion, by, createdAt, starter`; starter first, bounded at 64) and `player.replication.activeId`. Migration 3 → 4 adds the starter point (`src/sim/replication/points.ts::starterPoint`, deterministic from the system's starting pose: its default emergence IS the old start position) and points every player, dead ones included, at it; poses are untouched, so a live remote ship stays where it is. Defaults, validation (unknown frame kept but unusable → recovery falls back), import/export and the legacy import share the same sanitiser.
+
+**Operations** (authority, deduplicated by opId): `replication.place` (one kit, one record, activates it for the placer only), `replication.activate` (within 2 km), `replication.deactivate` (selection → starter; never deletes), `replication.rename`, `ship.respawn {mode: "active" | "starter"}` (the reducer resolves and revalidates the destination; the client cannot pass a pose any more). Refusals: `invalid` (non-finite or non-unit pose, unknown frame, or a frame the position does not belong in), `no_kit`, `too_far` (> 2 km from the ship), `near_body` (< 150 km altitude), `near_rock` (< 200 m rock surface), `emergence_blocked` (< 120 m at the emergence position), `no_capacity`.
+
+**Clearance** (`src/sim/replication/clearance.ts`) regenerates asteroid chunks with the field streamer's own deterministic generator (minus destroyed rocks), so a never-streamed area validates like a loaded one. It is injected into `placement.ts` (`registerClearanceProbe`) because it pulls three.js and the asteroid generator, which the reducers, and through them the title screen, must not load (shell-check `title` caught this). `src/store/replicationMirror.ts` exists for the same reason.
+
+**Emergence.** The ship emerges 0.5 km on the point's −Z side, at rest, facing the point; if obstructed, 17 further candidates (other five axes at 0.5, 1, 1.5 km), else the starter with reason `obstructed`; `missing` / `invalid` likewise. The recovery screen always offers "Emergency fallback: origin point" behind a confirmation that names the lost expedition location (`chosen`).
+
+**Death fuel rule.** The wreck receives ordinary fuel minus the amount that refills the protected allowance (`topUp = min(ordinary, 60 − protected)`), so tanks + every wreck never rise across a death. The one exception is deliberate: a ship whose total usable fuel is below 60 kg recovers with exactly 60 kg (the empty-space escape; gate `strandedEscape` +60 kg from 0/0). Processing: unconverted feedstock goes to the wreck, committed output stays in the ordinary fuel being dropped, no cancellation refund. Consumables leave with the wreck; hotbar assignments stay, cooldowns and timed effects are cleared.
+
+**Reposition.** `src/sim/ship/reposition.ts` + `Spaceship.applyReposition`: one function for recovery and dev warps (frame pose, prev/current interpolation, velocities, transit, fixed-step accumulator, absolute position + floating origin, input/mouse, camera snap + shake, model lean, near-field reseed, pending impacts, published pose). Recovery holds `simPause("arrival")` until every field chunk within reach of the arrival is streamed (10 s timeout); the loading readiness treats a pending arrival like a teleport.
+
+**UI / input.** B (`placePoint`) opens the preview panel (range ring, emergence marker, clearance, kit count, name field, nearest known hydrate / Fe-Ni source, warning beyond 50 km); Enter places. H (`activatePoint`) makes the nearby point active. Both rebindable; existing mappings unchanged. Points render as one instanced draw (merged octahedron + ring + mast, emissive `replication_beacon`, drawn within range) and appear as POI markers ("(active)" suffix) usable as transit targets, arriving at the emergence distance. Death and abandon screens name the destination and the loss.
+
+**Measured** (gameplay-check parts in `gameplay-m36.mjs`, `--no-isolate`, fixture worlds):
+
+| Gate | Result |
+|---|---|
+| place | 3 kits crafted; valid placement kits 3 → 2, points 1 → 2, same opId `duplicate` (2, 2); refusals invalid ×2 / too_far / near_rock / emergence_blocked / near_body / no_kit, each spends 0; Luna point at rate 10000: rel pose unchanged, absolute moved 906,570 km |
+| activate | placer only; other player `too_far` → `accepted` in range; at 2.5 km `too_far`, 1.9 km accepted; deactivate keeps 2 points, second call `already_done` |
+| death | wreck = 40 Fe-Ni, 25 sil, 19 hyd (includes the active batch's unconverted feedstock), kit ×1, patch ×1, 300.25 kg = expected exactly; after: cargo/consumables/cooldowns empty, 0 / 60 kg, no batch; reload while dead and after recovery: 1 wreck; second death 2 wrecks; abandon 3 |
+| recover | at point 0.0 km off emergence, 0.5 km from point, 0 m/s, 0 rad/s, hull 100, cargo empty, 0 / 60 kg, arrival 135 ms; first 5 s: 0 impacts, 0 owner violations, 0 drift; shake/throttle/mouse 0, transit idle; obstructed → candidate 1 (695 m clear); missing / invalid → starter with reason; isolated point → explicit fallback; 10 cycles before = after every time |
+| salvage | partial: 40 Fe-Ni, 2 kits (stackMax), 50 kg (tank full at 600) taken, rest left; protected stays 60; markers "fuel only, 40 kg"; wreck removed only when empty; duplicate opId awards nothing |
+| migrate4 | 12 fixtures (v1/v2/v3 × fresh, mid, multi-player, dead remote) + malformed pass; export-import equal; dead Luna save boots to the starter (241 ms arrival); live Luna save not relocated; 5 invalid imports refused |
+| live36 (real inputs) | craft 0.37 s, fly out 0.82 km in 6.0 s, place "Forward camp" 0.69 s, fly on and die at 224.7 m/s 20.5 s, recover 2.8 s, fly back and collect 20.0 s (wreck gone, 33 Fe-Ni + 5 C + 578 kg back) |
+| bench:belt | frame P50 14.7 / 14.5 ms, GPU 11.48 / 10.88 ms (baseline 14.4–14.9, ~11) |
+
+**Adapted older gates.** `migrate` / `migrate3` expect schema 4; `tx` respawns with `mode: "active"` instead of a client pose; the physics harness no longer uses the old `respawnAtom` teleport. Inspection layout fix: the composition readout sits right of the targeting ring instead of under the reticle.
+
+**Deviations / next milestone.** The stranded-ship refill above is the only way dying can add fuel. Placement, activation range and pose are trusted from the client like the mine claim; an M4 authority re-derives them. Difficulty multipliers (M3.7) should scale the allowance and the kit recipe only through the tuning tables. Points live in the system frame or an existing body-SOI (inertial) frame; no orbit/rotating-surface frames were added.
+
+
+**Review fixes (M3.6).** `player.lastLoss` (sanitised, cleared by recovery) carries the wreck contents so the recovery screen still states the loss after a reload while dead (gate `death.reloadDead` checks the text). `resetReposition` also releases the saved-pose hold, so a world switch or unmount between an accepted recovery and its reposition cannot freeze pose sampling. Points in an unknown frame stay in the save but get no marker, beacon or activation prompt (recovery still reports them `invalid`). Wreck labels: `Wreck`, `Wreck · consumables`, `Wreck · fuel only, N kg`, plus ` · N kg fuel` when mixed. Placement mode closes on death; H with no point nearby is silent. Naming is placement-time only and deactivation has no UI (operations exist; harness only). Open for the owner: §6.3's "restore the configured allowance" vs the lead rule "dying never adds usable fuel" still conflict below 60 kg (`strandedEscape`).

@@ -1,0 +1,198 @@
+@use '../../../styles' as s;
+
+.replication-hud {
+  position: fixed;
+  z-index: s.$z-hud-overlay;
+  font-family: s.$font-ui;
+  color: s.$text-primary;
+  pointer-events: auto;
+
+  &--place {
+    left: s.$space-4;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 300px;
+    max-width: calc(100vw - 2 * #{s.$space-4});
+    padding: s.$space-3 s.$space-4;
+    @include s.glass(2);
+    @include s.chamfer(s.$radius-lg, ('tl', 'br'));
+  }
+
+  // Top centre, under the objective line: clear of the comms box, hotbar and dashboard.
+  &--prompt {
+    left: 50%;
+    top: 96px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    white-space: nowrap;
+    @include s.hologram();
+    @include s.null-surface;
+  }
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  &__title {
+    @include s.label;
+    color: s.$accent-info;
+  }
+
+  &__kits {
+    font-family: s.$font-mono;
+    font-size: 12px;
+    color: s.$text-secondary;
+  }
+
+  &__status {
+    margin: s.$space-2 0;
+    font-size: 14px;
+
+    &--ok {
+      color: s.$accent-ok;
+      text-shadow: 0 0 6px s.$glow-ok;
+    }
+
+    &--bad {
+      color: s.$accent-crit;
+      text-shadow: 0 0 6px s.$glow-crit;
+    }
+  }
+
+  &__facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: s.$space-3;
+    row-gap: 2px;
+    margin: 0 0 s.$space-2;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+
+    dt {
+      color: s.$text-tertiary;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      align-self: baseline;
+    }
+
+    dd {
+      margin: 0;
+    }
+  }
+
+  &__warn {
+    margin: 0 0 s.$space-2;
+    font-family: s.$font-mono;
+    font-size: 11px;
+    line-height: 1.35;
+    color: s.$accent-warn;
+    text-shadow: 0 0 6px s.$glow-warn;
+  }
+
+  &__name {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    margin-bottom: s.$space-3;
+
+    span {
+      @include s.label;
+    }
+
+    input {
+      flex: 1;
+      min-width: 0;
+      background: s.$surface-null;
+      border: 1px solid s.$stroke-base;
+      border-radius: s.$radius-sm;
+      color: s.$text-primary;
+      font-family: s.$font-ui;
+      font-size: 13px;
+      padding: 4px s.$space-2;
+
+      &:focus {
+        outline: none;
+        border-color: s.$stroke-active;
+      }
+    }
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: s.$space-2;
+  }
+
+  &__btn {
+    background: transparent;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-sm;
+    color: s.$text-secondary;
+    font-family: s.$font-ui;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px s.$space-3;
+    cursor: pointer;
+
+    kbd {
+      font-family: s.$font-mono;
+      font-size: 10px;
+      color: s.$text-tertiary;
+      margin-left: 4px;
+    }
+
+    &:hover:not(:disabled) {
+      color: s.$text-primary;
+      border-color: s.$stroke-strong;
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    &--primary {
+      color: s.$accent-info;
+      border-color: s.$accent-info;
+    }
+  }
+
+  &__glyph {
+    color: s.$accent-info;
+  }
+
+  &__pname {
+    font-size: 13px;
+    letter-spacing: 0.04em;
+  }
+
+  &__dist {
+    font-family: s.$font-mono;
+    font-size: 12px;
+    color: s.$text-tertiary;
+  }
+
+  &__activeTag {
+    @include s.label;
+    color: s.$accent-ok;
+  }
+
+  @media (max-width: 520px) {
+    // Phones: under the top buttons, where the comms box, dashboard and hotbar are not.
+    &--place {
+      top: 72px;
+      transform: none;
+    }
+
+    &--prompt {
+      top: 72px;
+    }
+  }
+}

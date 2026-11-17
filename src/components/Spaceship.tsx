@@ -38,6 +38,8 @@ import { starDiscPool } from "@/components/space/starLodStatus";
 import { testProbe } from "@/components/TestHarness/testProbe";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
 import { isSimPaused } from "@/sim/simPause";
+import { beginArrival, repositionState, resetReposition, takeReposition } from "@/sim/ship/reposition";
+import { resetTimedEffectsAtom } from "@/store/timedEffects";
 import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
@@ -272,6 +274,39 @@ const SpaceShip = memo(() => {
   // Track dead state to show/hide ship mesh
   const wasDeadRef = useRef(false);
 
+  /**
+   * Proper runtime reposition: frame-relative pose, prev/current interpolation, velocities,
+   * boost, transit, fixed-step accumulator, absolute position + floating origin, input/mouse
+   * intent, camera rig and shake, model lean, near-field reseed, pending impacts.
+   */
+  const applyReposition = useCallback((ship: ShipState, frameId: string, relKm: readonly number[], quat: readonly number[] | null): void => {
+    ship.frameId = frameId;
+    ship.posKm.set(relKm[0], relKm[1], relKm[2]);
+    if (quat) ship.quat.set(quat[0], quat[1], quat[2], quat[3]);
+    resetShipMotion(ship);
+    updateShipAbsolute(ship);
+    frameOriginKm(ship.frameId, _frameOrigin);
+    worldOrigin.setShipPosKm(ship.absPosKm);
+    worldOrigin.setWorldOriginKm(ship.absPosKm);
+    physicsAcc.current = 0;
+    _vPrev.set(0, 0, 0);
+    _motion.accelForward = _motion.accelRight = _motion.accelUp = 0;
+    chaseCamera.current.snap();
+    store.set(cameraShakeIntensityAtom, 0);
+    if (modelRef.current) modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
+    resetPlayerInput();
+    resetMouseSteering();
+    killTransitDrive();
+    nearField.markReseed();
+    _impacts.reset();
+    shipView.forward.set(0, 0, 1).applyQuaternion(ship.quat);
+    holdSavedPose(false);
+    publishShipPose(ship);
+    repositionState.applied++;
+  }, [store, worldOrigin]);
+
+  useEffect(() => () => resetReposition(), []);
+
   useFrame(({ camera, size }, delta) => {
     if (!shipRef.current || !modelRef.current) return;
     const ship = shipState.current;
@@ -283,6 +318,8 @@ const SpaceShip = memo(() => {
         shipRef.current.visible = false;
         wasDeadRef.current = true;
         killTransitDrive();
+        // The dashboard behind the recovery screen shows the emptied tank, not the last live frame.
+        store.set(shipResourcesHudAtom, buildShipResourcesHud());
       }
       // The wreck site keeps riding its frame while the death screen is up.
       updateShipAbsolute(ship);
@@ -292,16 +329,9 @@ const SpaceShip = memo(() => {
       return;
     }
     if (wasDeadRef.current) {
-      // Just respawned — re-show ship at rest, kill residual shake
+      // Recovered: the recovery's reposition request (below) moves and resets the ship.
       shipRef.current.visible = true;
-      resetShipMotion(ship);
-      resetPlayerInput();
-      resetMouseSteering();
-      chaseCamera.current.snap();
-      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
-      store.set(cameraShakeIntensityAtom, 0);
-      nearField.markReseed();
-      _impacts.reset();
+      store.set(resetTimedEffectsAtom);
       wasDeadRef.current = false;
     }
 
@@ -309,30 +339,16 @@ const SpaceShip = memo(() => {
     // that would make a measurement irreproducible. See benchModeAtom.
     const benchMode = store.get(benchModeAtom);
 
-    // ── Dev warp (one-shot) ────────────────────────────────────────────
-    // Zero everything carrying motion: prevPosKm (else the swept collider sweeps from the
-    // OLD position through every planet in between), velocity, throttle, transit drive.
+    // ── Reposition (recovery, dev warp): one reset of every motion/camera/input/physics buffer ──
     const warp = store.get(devTeleportAtom);
     if (warp) {
-      ship.frameId = warp.frameId;
-      ship.posKm.set(warp.relKm[0], warp.relKm[1], warp.relKm[2]);
-      if (warp.quaternion) {
-        ship.quat.set(warp.quaternion[0], warp.quaternion[1], warp.quaternion[2], warp.quaternion[3]);
-      }
-      resetShipMotion(ship);
-      updateShipAbsolute(ship);
-      worldOrigin.setShipPosKm(ship.absPosKm);
-      worldOrigin.setWorldOriginKm(ship.absPosKm);
-      physicsAcc.current = 0;
-      chaseCamera.current.snap();
-      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
-      resetPlayerInput();
-      resetMouseSteering();
-      killTransitDrive();
-      nearField.markReseed();
-      _impacts.reset();
+      applyReposition(ship, warp.frameId, warp.relKm, warp.quaternion ?? null);
       store.set(devTeleportAtom, null);
-      holdSavedPose(false);
+    }
+    const req = takeReposition();
+    if (req) {
+      applyReposition(ship, req.frameId, req.relKm, req.quaternion);
+      if (req.holdUntilReady) beginArrival(performance.now());
     }
 
     const inputDt = isSimPaused() ? 0 : Math.min(delta, MAX_FRAME_DT);

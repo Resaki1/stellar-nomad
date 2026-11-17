@@ -26,6 +26,7 @@ import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
 import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
+import ReplicationHUD from "./ReplicationHUD/ReplicationHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 import PerfHUD from "./PerfHUD/PerfHUD";
 import AudioHUD from "./AudioHUD/AudioHUD";
@@ -148,6 +149,7 @@ export default function HUD() {
       <DeathScreen />
       <Hotbar />
       <TransitHUD />
+      <ReplicationHUD />
       {perfHudOn && <PerfHUD />}
       {audioHudOn && <AudioHUD />}
 

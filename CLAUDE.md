@@ -118,6 +118,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `GAME_PARTS=migrate,tx,shared,live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3 ownership, transactions, migration, live loop (disposable `[gc] ` fixture worlds)
 - `GAME_PARTS=res,m32,reach pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — ship resources (fuel, heat, processing, repair)
 - `GAME_PARTS=transit,transitLive pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — fuel-aware transit (prediction vs execution, reserve, pacing, Earth → Moon at two dates); `TRANSIT_EPOCHS=defaultEpoch,…` splits the live part into runs under 2 min
+- `GAME_PARTS=place,activate,death,recover,salvage,migrate4 pnpm drive -- --keep --no-isolate reload run:scripts/drive-examples/gameplay-check.mjs` — M3.6 replication points, death/recovery, wreck salvage, schema 4 (`GAME_PARTS=live36` real-input run; `m36shots` captures)
 
 - `GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3.3/M3.4 discovery research: content audit, loadout fit vs fuel/cargo, findings, requirements, effective-config preview, schema-3 migration
 - `GAME_PARTS=playA` / `GAME_PARTS=playB` (same command, one per run) — fresh-save playthroughs to transit (survey first / extraction+cooling first); `GAME_PARTS=m33shots` captures, `m33narrow` with `--size 390x844`

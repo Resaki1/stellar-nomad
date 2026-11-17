@@ -12,6 +12,8 @@ import { cargoUsedUnits, equipTuning, persistentShipConfig } from "@/sim/ship/lo
 import { unconvertedUnits } from "@/sim/ship/resourceStep";
 import { DEFAULT_RESOURCE_TUNING, getResourceTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
 import type { AsteroidDeltaIndex } from "./asteroidDeltas";
+import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, type PlacementCheck } from "@/sim/replication/placement";
+import { MAX_POINTS, REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, cleanPointName } from "@/sim/replication/points";
 import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
 
 export interface ReduceCtx {
@@ -58,6 +60,7 @@ function completedSet(world: WorldState): Set<string> {
 }
 
 const _tuning: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+const _placement: PlacementCheck = { refusal: null, bodyAltKm: 0, bodyId: null, rockClearM: 0 };
 /** The live resource table with this player's equipment applied (tank, reactor, rates). */
 function shipTuning(player: PlayerState, world: WorldState): Readonly<ResourceTuning> {
   return equipTuning(getResourceTuning(), persistentShipConfig(player, completedSet(world)), _tuning);
@@ -140,6 +143,10 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "processing.start":
     case "processing.cancel":
     case "ship.repair":
+    case "replication.place":
+    case "replication.activate":
+    case "replication.deactivate":
+    case "replication.rename":
       break;
   }
 
@@ -212,7 +219,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       let modules = m;
       if (def.type === "consumable") {
         const hotbar = [...m.hotbar];
-        if (!hotbar.includes(def.id)) {
+        if (!def.deployable && !hotbar.includes(def.id)) {
           const i = hotbar.indexOf(null);
           if (i !== -1) {
             hotbar[i] = def.id;
@@ -375,6 +382,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const dropped: Transfer = { items: {}, consumables: {}, fuelKg: 0 };
       // Same rule as the save sanitiser (whole units), so the wreck holds exactly what a reload would.
       for (const [k, v] of Object.entries(p.cargo.items)) if (isNum(v) && v >= 1) dropped.items[k] = Math.floor(v);
+      // Loose consumables (kits included) leave with the cargo; hotbar assignments stay.
+      for (const [k, v] of Object.entries(p.modules.consumables)) if (isNum(v) && v >= 1) dropped.consumables[k] = Math.floor(v);
       // Unconverted feedstock leaves with the cargo; committed output is already in the ordinary tank.
       const batch = p.processing;
       if (batch) {
@@ -383,9 +392,12 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
         const back = recipe ? unconvertedUnits(reserved, batch.committedKg, getResourceTuning().processingKgPerUnit) : 0;
         if (recipe && back > 0) dropped.items[recipe.inputId] = (dropped.items[recipe.inputId] ?? 0) + back;
       }
-      // Ordinary fuel only: the protected allowance never reaches a wreck.
-      dropped.fuelKg = isNum(p.propellant.ordinaryKg) ? Math.max(0, p.propellant.ordinaryKg) : 0;
-      const hasDrop = Object.keys(dropped.items).length > 0 || dropped.fuelKg > 0;
+      // Ordinary fuel only, minus what refills the protected allowance: dying never adds usable fuel
+      // (the refill is free only for a ship whose ordinary fuel cannot pay it).
+      const ordinary = isNum(p.propellant.ordinaryKg) ? Math.max(0, p.propellant.ordinaryKg) : 0;
+      const topUp = Math.min(ordinary, Math.max(0, getResourceTuning().recoveryAllowanceKg - p.propellant.protectedKg));
+      dropped.fuelKg = ordinary - topUp;
+      const hasDrop = Object.keys(dropped.items).length > 0 || Object.keys(dropped.consumables).length > 0 || dropped.fuelKg > 0;
       const wreck: WreckRecord | null = hasDrop
         ? {
             id: `wreck-${op.opId}`,
@@ -393,12 +405,13 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
             positionKm: [pos[0], pos[1], pos[2]],
             items: dropped.items,
             fuelKg: dropped.fuelKg,
-            consumables: {},
+            consumables: dropped.consumables,
             createdAt: now,
           }
         : null;
       const cargo = { ...p.cargo, items: {} };
-      const propellant = { ...p.propellant, ordinaryKg: 0 };
+      const propellant = { ordinaryKg: 0, protectedKg: p.propellant.protectedKg + topUp };
+      const modules = { ...p.modules, consumables: {}, consumableCooldowns: {} };
       return {
         result: { type: "ship.destroy", wreckId: wreck?.id ?? null, dropped, cause: op.cause ?? "impact" },
         apply: () => {
@@ -406,26 +419,30 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           p.isDead = true;
           p.health = 0;
           p.cargo = cargo;
+          p.modules = modules;
           p.propellant = propellant;
           p.processing = null;
+          p.lastLoss = { items: { ...dropped.items }, consumables: { ...dropped.consumables }, fuelKg: dropped.fuelKg, cause: op.cause ?? "impact" };
         },
         events: wreck ? [{ type: "wreck.created", by, wreck }] : [],
-        playerKeys: ["isDead", "health", "cargo", "propellant", "processing"],
+        playerKeys: ["isDead", "health", "cargo", "modules", "propellant", "processing", "lastLoss"],
       };
     }
 
     case "ship.respawn": {
-      const pos = op.positionKm;
-      if (!isFrameId(op.frameId) || !Array.isArray(pos) || pos.length !== 3 || !pos.every(isNum)) return reject("invalid");
+      if (op.mode !== "active" && op.mode !== "starter") return reject("invalid");
       if (!p.isDead) return reject("not_dead");
       const health = persistentShipConfig(p, completedSet(world)).maxHealth;
-      const q = p.ship?.quaternion;
-      const ship = { frameId: op.frameId, positionKm: [pos[0], pos[1], pos[2]] as Vec3Tuple, quaternion: q ? ([q[0], q[1], q[2], q[3]] as QuatTuple) : ([0, 0, 0, 1] as QuatTuple) };
-      // Recovery: full hull, empty ordinary tank, the configured protected allowance, a cold ship.
-      const propellant = { ordinaryKg: 0, protectedKg: getResourceTuning().recoveryAllowanceKg };
+      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids);
+      const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
+      // Recovery: full hull, empty ordinary tank, exactly the protected allowance, a cold ship.
+      const protectedKg = getResourceTuning().recoveryAllowanceKg;
+      const propellant = { ordinaryKg: 0, protectedKg };
       const power = { capacitor01: 1, heat01: 0 };
+      // A vanished point is forgotten; an obstructed or explicitly bypassed one stays selected.
+      const replication = dest.fallback === "missing" ? { activeId: STARTER_POINT_ID } : p.replication;
       return {
-        result: { type: "ship.respawn", health },
+        result: { type: "ship.respawn", health, destination: dest, protectedKg },
         apply: () => {
           p.isDead = false;
           p.health = health;
@@ -433,10 +450,83 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           p.propellant = propellant;
           p.power = power;
           p.processing = null;
+          p.replication = replication;
+          p.lastLoss = null;
         },
         events: [],
-        playerKeys: ["isDead", "health", "ship", "propellant", "power", "processing"],
+        playerKeys: ["isDead", "health", "ship", "propellant", "power", "processing", "replication", "lastLoss"],
       };
+    }
+
+    case "replication.place": {
+      if (typeof op.name !== "string") return reject("invalid");
+      if (p.isDead) return reject("dead");
+      const id = `rp-${op.opId}`;
+      const points = world.replication.points;
+      if (points.some((x) => x.id === id)) return reject("already_done");
+      if (points.length >= MAX_POINTS) return reject("no_capacity");
+      const kits = Math.floor(p.modules.consumables[REPLICATION_KIT_ID] ?? 0);
+      const check = checkPlacement(op, p.ship, kits, asteroids, _placement);
+      if (check.refusal) return reject(check.refusal);
+      const pos = op.positionKm, q = op.quaternion;
+      const point = {
+        id,
+        name: cleanPointName(op.name, `Point ${points.length}`),
+        frameId: op.frameId,
+        positionKm: [pos[0], pos[1], pos[2]] as Vec3Tuple,
+        quaternion: [q[0], q[1], q[2], q[3]] as QuatTuple,
+        by,
+        createdAt: now,
+        starter: false,
+      };
+      const consumables: Record<string, number> = { ...p.modules.consumables, [REPLICATION_KIT_ID]: kits - 1 };
+      if (consumables[REPLICATION_KIT_ID] <= 0) delete consumables[REPLICATION_KIT_ID];
+      const modules = { ...p.modules, consumables };
+      return {
+        result: { type: "replication.place", point },
+        apply: () => {
+          world.replication = { points: [...points, point] };
+          p.modules = modules;
+          p.replication = { activeId: id };
+        },
+        events: [{ type: "replication.changed", by }],
+        playerKeys: ["modules", "replication"],
+      };
+    }
+
+    case "replication.activate": {
+      const point = world.replication.points.find((x) => x.id === op.pointId);
+      if (!point) return reject("not_found");
+      if (p.isDead) return reject("dead");
+      if (p.replication.activeId === point.id) return reject("already_done");
+      if (!validPose(point.frameId, point.positionKm, point.quaternion)) return reject("invalid");
+      const ship = p.ship;
+      if (!ship || !isFrameId(ship.frameId) || !(poseDistanceKm(ship.frameId, ship.positionKm, point.frameId, point.positionKm) <= REPLICATION_TUNING.activateRangeKm)) return reject("too_far");
+      return { result: { type: "replication.activate", pointId: point.id }, apply: () => {
+          p.replication = { activeId: point.id };
+        }, events: [], playerKeys: ["replication"] };
+    }
+
+    case "replication.deactivate": {
+      if (p.replication.activeId === STARTER_POINT_ID) return reject("already_done");
+      const was = p.replication.activeId;
+      return { result: { type: "replication.deactivate", pointId: was }, apply: () => {
+          p.replication = { activeId: STARTER_POINT_ID };
+        }, events: [], playerKeys: ["replication"] };
+    }
+
+    case "replication.rename": {
+      if (typeof op.name !== "string" || typeof op.pointId !== "string") return reject("invalid");
+      const i = world.replication.points.findIndex((x) => x.id === op.pointId);
+      if (i < 0) return reject("not_found");
+      const point = world.replication.points[i];
+      if (point.starter) return reject("invalid");
+      const name = cleanPointName(op.name, point.name);
+      if (name === point.name) return reject("already_done");
+      const points = world.replication.points.map((x, k) => (k === i ? { ...x, name } : x));
+      return { result: { type: "replication.rename", pointId: point.id, name }, apply: () => {
+          world.replication = { points };
+        }, events: [{ type: "replication.changed", by }], playerKeys: [] };
     }
 
     case "wreck.collect": {

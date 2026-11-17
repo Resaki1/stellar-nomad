@@ -127,7 +127,7 @@ export const useConsumableAtom = atom(
   null,
   (get, set, itemId: string): boolean => {
     const def = getItemDef(itemId);
-    if (!def || def.type !== "consumable") return false;
+    if (!def || def.type !== "consumable" || def.deployable) return false;
 
     const state = get(modulesAtom);
     const count = state.consumables[itemId] ?? 0;

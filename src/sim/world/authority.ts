@@ -31,6 +31,7 @@ const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "wreck.collect",
   "processing.start",
   "processing.cancel",
+  "replication.place",
 ]);
 
 export class LocalAuthority implements Authority {

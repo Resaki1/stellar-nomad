@@ -13,6 +13,8 @@ export type KeybindAction =
   | "inspect"
   | "togglePulseMining"
   | "transitDrive"
+  | "placePoint"
+  | "activatePoint"
   | "toggleSettings";
 
 /** Maps each action → array of bound key strings (e.key.toLowerCase()). */
@@ -52,6 +54,8 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "inspect", label: "Inspect Target", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
   { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
+  { id: "placePoint", label: "Replication Point: Place", category: "actions" },
+  { id: "activatePoint", label: "Replication Point: Make Active", category: "actions" },
   { id: "toggleSettings", label: "Settings", category: "menu" },
 ];
 
@@ -87,6 +91,8 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   inspect: ["g"],
   togglePulseMining: ["p"],
   transitDrive: ["t"],
+  placePoint: ["b"],
+  activatePoint: ["h"],
   toggleSettings: ["escape"],
 };
 

@@ -8,9 +8,11 @@
  *   GAME_PARTS=res,m32,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
  *   GAME_PARTS=transit,transitLive,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
  *   GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 / playA / playB / m33shots   M3.3+M3.4 gates (gameplay-m33.mjs); m33narrow with --size 390x844
+ *   GAME_PARTS=place,activate,death,recover,salvage,migrate4 / live36 / m36shots   M3.6 gates (gameplay-m36.mjs); m36narrow with --size 390x844
  */
 import { m32Gates, reachGates, resGates, shotGates } from "./gameplay-m32.mjs";
 import { transitLiveGates, transitPureGates, transitShotGates } from "./gameplay-transit.mjs";
+import { activateGates, deathGates, live36Gates, m36ShotGates, migrate4Gates, placeGates, recoverGates, salvageGates } from "./gameplay-m36.mjs";
 import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -95,6 +97,14 @@ export default async function gameplayCheck(d) {
     if (parts.includes("playA")) out.playA = await playGates(d, ctx, "A");
     if (parts.includes("playB")) out.playB = await playGates(d, ctx, "B");
     if (parts.includes("m33shots") || parts.includes("m33narrow")) out.m33shots = await m33ShotGates(d, ctx, parts.includes("m33narrow"));
+    if (parts.includes("place")) out.place = await placeGates(d, ctx);
+    if (parts.includes("activate")) out.activate = await activateGates(d, ctx);
+    if (parts.includes("death")) out.death = await deathGates(d, ctx);
+    if (parts.includes("recover")) out.recover = await recoverGates(d, ctx);
+    if (parts.includes("salvage")) out.salvage = await salvageGates(d, ctx);
+    if (parts.includes("migrate4")) out.migrate4 = await migrate4Gates(d, ctx);
+    if (parts.includes("live36")) out.live36 = await live36Gates(d, ctx);
+    if (parts.includes("m36shots") || parts.includes("m36narrow")) out.m36shots = await m36ShotGates(d, ctx, parts.includes("m36narrow"));
     if (parts.includes("res")) out.res = await resGates(d);
     if (parts.includes("transit")) out.transit = await transitPureGates(d);
     if (parts.includes("transitLive")) out.transitLive = await transitLiveGates(d, ctx);
@@ -147,7 +157,7 @@ export default async function gameplayCheck(d) {
         const r = await ev(`(() => { const a = ${G}.parse(${js(raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
         const a = r.a;
         const p = a.players[me];
-        const c = { schema: a.schemaVersion === 3, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
+        const c = { schema: a.schemaVersion === 4, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
         const v1p = raw.players[me];
         if (name !== "malformed") {
           c.pose = eq(p.ship, v1p.ship);
@@ -336,8 +346,8 @@ export default async function gameplayCheck(d) {
 
       // Respawn once; wreck collection partial → full, accepted once, fuel/consumables respect limits.
       // Move away in the same task: the live WreckCollector must not race these operations.
-      const r1 = await ev(`(() => { const o = ${G}.submit({ type: "ship.respawn", opId: "resp-1", frameId: "earth", positionKm: [7000, 0, 0] }); ${G}.teleportToWreck(${JSON.stringify(wreckId)}, 5e6); return o; })()`);
-      const r2 = await submit({ type: "ship.respawn", opId: "resp-2", frameId: "earth", positionKm: [7000, 0, 0] });
+      const r1 = await ev(`(() => { const o = ${G}.submit({ type: "ship.respawn", opId: "resp-1", mode: "active" }); ${G}.teleportToWreck(${JSON.stringify(wreckId)}, 5e6); return o; })()`);
+      const r2 = await submit({ type: "ship.respawn", opId: "resp-2", mode: "active" });
       const pr1 = await player();
       t.respawn = { statuses: [r1.status, r2.reason], health: pr1.health, pass: r1.status === "accepted" && r2.reason === "not_dead" && !pr1.isDead && pr1.health === r1.result.health && pr1.health > 0 };
       const cap = (await ev(`${G}.mirrors()`)).cargoCapacity;

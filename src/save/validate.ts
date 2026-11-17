@@ -4,6 +4,7 @@
  * unusable input throws.
  */
 import { MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
+import { MAX_POINTS, STARTER_POINT_ID, cleanPointName, starterPoint } from "@/sim/replication/points";
 import { MAX_BOOKMARKS, MAX_LEGACY_IDS, MAX_RECEIPTS, MAX_SOURCES, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
 import { MIGRATIONS } from "./migrations";
 import type {
@@ -12,7 +13,10 @@ import type {
   DiscoveryState,
   EvidenceStamp,
   FamilyFinding,
+  LossRecord,
   PlayerLegacyState,
+  ReplicationPoint,
+  ReplicationState,
   SourceBookmark,
   SourceFinding,
   OperationReceipt,
@@ -143,8 +147,32 @@ export function sanitizeWorld(v: unknown): WorldState {
       legacy: uniqueStrings(isObj(v.research) ? v.research.legacy : undefined).slice(0, MAX_LEGACY_IDS),
     },
     discoveries: sanitizeDiscoveries(v.discoveries),
+    replication: sanitizeReplication(v.replication),
     receipts: sanitizeReceipts(v.receipts),
   };
+}
+
+function sanitizePoint(v: unknown): ReplicationPoint | null {
+  if (!isObj(v) || typeof v.id !== "string" || v.id === "" || typeof v.frameId !== "string") return null;
+  const p = position(v.positionKm);
+  const q = unitQuat(v.quaternion);
+  if (!p || !q) return null;
+  return { id: v.id, name: cleanPointName(v.name, "Replication point"), frameId: v.frameId, positionKm: p, quaternion: q, by: str(v.by, ""), createdAt: num(v.createdAt, 0), starter: false };
+}
+
+/** The canonical starter always leads (protected: never moved, renamed or dropped); unknown frames stay, inert. */
+function sanitizeReplication(v: unknown): ReplicationState {
+  const points: ReplicationPoint[] = [starterPoint()];
+  if (isObj(v) && Array.isArray(v.points)) {
+    const seen = new Set<string>([STARTER_POINT_ID]);
+    for (const x of v.points) {
+      const pt = sanitizePoint(x);
+      if (!pt || seen.has(pt.id)) continue;
+      seen.add(pt.id);
+      points.push(pt);
+    }
+  }
+  return { points: [points[0], ...points.slice(1).slice(-(MAX_POINTS - 1))] };
 }
 
 function stamp(v: unknown): EvidenceStamp | null {
@@ -308,7 +336,14 @@ export function sanitizePlayer(v: unknown): PlayerState {
     processing: sanitizeProcessing(v.processing),
     bookmarks: sanitizeBookmarks(v.bookmarks),
     legacy: sanitizeLegacy(v.legacy),
+    replication: { activeId: isObj(v.replication) && typeof v.replication.activeId === "string" && v.replication.activeId !== "" ? v.replication.activeId : STARTER_POINT_ID },
+    lastLoss: sanitizeLoss(v.lastLoss),
   };
+}
+
+function sanitizeLoss(v: unknown): LossRecord | null {
+  if (!isObj(v) || (v.cause !== "impact" && v.cause !== "abandon")) return null;
+  return { items: countRecord(v.items), consumables: countRecord(v.consumables), fuelKg: fuelKg(v.fuelKg, 0), cause: v.cause };
 }
 
 /** Applies migrations, then sanitizes. Throws on input that is not a save at all. */

@@ -4,6 +4,7 @@
  * They run on untrusted JSON: shape-check what they read and leave cleaning to the sanitisers.
  */
 import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
+import { STARTER_POINT_ID, starterPoint } from "@/sim/replication/points";
 import { LEGACY_CONSUMABLE_MAP, LEGACY_ITEM_MAP, LEGACY_RESEARCH_MAP, V3_ITEM_SLOTS, V3_NODE_IDS, V3_STACK_MAX } from "./legacyMap3";
 
 export type SaveMigration = (data: Record<string, unknown>) => Record<string, unknown>;
@@ -178,4 +179,20 @@ function v2ToV3(data: Obj): Obj {
   return { ...data, schemaVersion: 3, world, players };
 }
 
-export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3];
+/**
+ * 3 → 4 (M3.6): the world gains the protected starter replication point; every player (dead
+ * ones included) selects it. Poses are untouched, so a live remote ship is not relocated.
+ */
+function v3ToV4(data: Obj): Obj {
+  const world: Obj = isObj(data.world) ? { ...data.world } : {};
+  world.replication = { points: [starterPoint()] };
+  const playersIn: Obj = isObj(data.players) ? data.players : {};
+  const players: Obj = {};
+  for (const pid of Object.keys(playersIn)) {
+    const p = playersIn[pid];
+    players[pid] = isObj(p) ? { ...p, replication: { activeId: STARTER_POINT_ID } } : p;
+  }
+  return { ...data, schemaVersion: 4, world, players };
+}
+
+export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4];

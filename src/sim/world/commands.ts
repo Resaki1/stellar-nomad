@@ -1,4 +1,5 @@
-import type { PlayerId, PlayerState, Vec3Tuple, WreckRecord } from "@/save/types";
+import type { PlayerId, PlayerState, QuatTuple, ReplicationPoint, Vec3Tuple, WreckRecord } from "@/save/types";
+import type { RecoveryDestination } from "@/sim/replication/placement";
 
 export type AsteroidDestroyCause = "mined" | "collision";
 
@@ -33,8 +34,18 @@ export type WorldOperation =
   | { type: "research.devSet"; opId: string; nodeIds: string[] }
   /** Death and emergency abandonment share this: cargo, ordinary fuel and unconverted feedstock go to the wreck. */
   | { type: "ship.destroy"; opId: string; frameId: string; positionKm: Vec3Tuple; cause?: "impact" | "abandon" }
-  /** The recovery pose is committed with the respawn, so no flush can store alive-at-the-wreck. */
-  | { type: "ship.respawn"; opId: string; frameId: string; positionKm: Vec3Tuple }
+  /**
+   * Recovery: the authority resolves the destination (active point, revalidated; `starter` is the
+   * explicit emergency fallback) and commits the pose with the alive state.
+   */
+  | { type: "ship.respawn"; opId: string; mode: "active" | "starter" }
+  /** Consume one kit, create one point and make it this player's active point. */
+  | { type: "replication.place"; opId: string; frameId: string; positionKm: Vec3Tuple; quaternion: QuatTuple; name: string }
+  /** Make an existing point this player's active point; the ship must be near it. */
+  | { type: "replication.activate"; opId: string; pointId: string }
+  /** Back to the starter point; the deactivated point stays in the world. */
+  | { type: "replication.deactivate"; opId: string }
+  | { type: "replication.rename"; opId: string; pointId: string; name: string }
   | { type: "wreck.collect"; opId: string; wreckId: string }
   /** Reserve `units` of the recipe's feedstock from cargo into one onboard batch. */
   | { type: "processing.start"; opId: string; recipeId: string; units: number }
@@ -64,7 +75,11 @@ export type OperationResult =
   | { type: "module.equip"; slot: string; itemId: string | null }
   | { type: "research.devSet"; count: number }
   | { type: "ship.destroy"; wreckId: string | null; dropped: Transfer; cause: "impact" | "abandon" }
-  | { type: "ship.respawn"; health: number }
+  | { type: "ship.respawn"; health: number; destination: RecoveryDestination; protectedKg: number }
+  | { type: "replication.place"; point: ReplicationPoint }
+  | { type: "replication.activate"; pointId: string }
+  | { type: "replication.deactivate"; pointId: string }
+  | { type: "replication.rename"; pointId: string; name: string }
   | { type: "wreck.collect"; wreckId: string; taken: Transfer; removed: boolean }
   | { type: "processing.start"; batchId: string; inputId: string; units: number; outputKg: number }
   | { type: "processing.cancel"; batchId: string; refunded: Record<string, number>; committedKg: number }
@@ -91,7 +106,11 @@ export type RejectReason =
   | "tank_full"
   | "tank_overflow"
   | "cargo_overflow"
-  | "full_hull";
+  | "full_hull"
+  | "no_kit"
+  | "near_body"
+  | "near_rock"
+  | "emergence_blocked";
 
 /**
  * A remote authority (M4) answers `pending` and settles later through an `op.settled` event:
@@ -111,6 +130,7 @@ export type WorldEvent =
   | { type: "wreck.removed"; by: PlayerId; wreckId: string }
   | { type: "research.changed"; by: PlayerId; completedNodes: readonly string[] }
   | { type: "discoveries.changed"; by: PlayerId }
+  | { type: "replication.changed"; by: PlayerId }
   /** The listed slices of `playerId` were replaced by a committed operation. */
   | { type: "player.changed"; by: PlayerId; playerId: PlayerId; keys: readonly (keyof PlayerState)[] }
   /** Carries only the fields the command set: the live clock is ahead of the stored epoch. */

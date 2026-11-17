@@ -1,5 +1,6 @@
 import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
 import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
+import { STARTER_POINT_ID, starterPoint } from "@/sim/replication/points";
 import type {
   CargoState,
   DiscoveryState,
@@ -13,7 +14,7 @@ import type {
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;
@@ -83,6 +84,8 @@ export function defaultPlayerState(): PlayerState {
     processing: null,
     bookmarks: [],
     legacy: null,
+    replication: { activeId: STARTER_POINT_ID },
+    lastLoss: null,
   };
 }
 
@@ -94,6 +97,7 @@ export function defaultWorldState(): WorldState {
     wrecks: [],
     research: { completedNodes: [], legacy: [] },
     discoveries: defaultDiscoveries(),
+    replication: { points: [starterPoint()] },
     receipts: [],
   };
 }

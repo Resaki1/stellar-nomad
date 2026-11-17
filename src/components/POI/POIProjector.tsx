@@ -31,7 +31,9 @@ import {
 } from "@/components/space/starTierGate";
 import { LY_IN_KM } from "@/sim/units";
 import { wrecksAtom } from "@/store/death";
-import { resolveFramePositionKm } from "@/sim/frames";
+import { playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
+import { REPLICATION_TUNING } from "@/sim/replication/points";
+import { isFrameId, resolveFramePositionKm } from "@/sim/frames";
 import {
   targetedPOIAtom,
   transitDriveOwnedAtom,
@@ -155,6 +157,8 @@ function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
   const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
+  const points = useAtomValue(replicationPointsAtom);
+  const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const starsOn = useAtomValue(starMarkersEnabledAtom);
   const revealAll = useAtomValue(revealAllStarMarkersAtom);
   const revealed = useAtomValue(revealedStarMarkerIdsAtom);
@@ -197,15 +201,33 @@ function usePOIDefs(): POIDef[] {
       });
     }
 
-    // Wrecks (death sites with recoverable cargo)
+    // Wrecks (death sites with recoverable cargo, consumables and/or fuel)
     for (const wreck of wrecks) {
+      const items = Object.keys(wreck.items).length > 0;
+      const kits = Object.keys(wreck.consumables).length > 0;
+      const fuel = Math.round(wreck.fuelKg);
+      const kind = items ? "" : kits ? " · consumables" : ` · fuel only, ${fuel} kg`;
       pois.push({
         id: `wreck:${wreck.id}`,
-        name: "Wreck",
+        name: `Wreck${kind}${(items || kits) && fuel > 0 ? ` · ${fuel} kg fuel` : ""}`,
         positionKm: wreck.positionKm,
         frameId: wreck.frameId,
         minDistanceKm: WRECK_DEFAULTS.minDistanceKm,
         maxDistanceKm: WRECK_DEFAULTS.maxDistanceKm,
+      });
+    }
+
+    // Replication points: transit destinations; arrival at the emergence distance
+    for (const pt of points) {
+      if (!isFrameId(pt.frameId)) continue;
+      pois.push({
+        id: `point:${pt.id}`,
+        name: pt.id === activePointId ? `${pt.name} (active)` : pt.name,
+        positionKm: pt.positionKm,
+        frameId: pt.frameId,
+        minDistanceKm: 0,
+        maxDistanceKm: 2e6,
+        arrivalOffsetKm: REPLICATION_TUNING.emergenceKm,
       });
     }
 
@@ -252,7 +274,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, bookmarkPois, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**

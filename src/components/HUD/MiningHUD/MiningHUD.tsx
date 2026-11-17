@@ -178,6 +178,21 @@ export default function MiningHUD() {
 
   return (
     <div className="mining-hud">
+      {/* Inspection result: its own fixed block right of the reticle (the info column is transformed). */}
+      {lootPreview?.inspected && (
+        <div className={`mining-hud__inspected ${showInfo ? "mining-hud__inspected--visible" : ""}`}>
+          <div className="mining-hud__yield-estimate">
+            Inspected · est. yield {lootPreview.inspected.reduce((a, r) => a + r.units, 0)} units
+          </div>
+          {lootPreview.inspected.slice(0, 4).map((r) => (
+            <div key={r.id} className="mining-hud__comp-row">
+              <span>{r.name}</span>
+              <span>{r.units}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Info panel – positioned above the reticle */}
       <div className={`mining-hud__info ${showInfo ? "mining-hud__info--visible" : ""}`}>
         <div className="mining-hud__distance">
@@ -196,19 +211,6 @@ export default function MiningHUD() {
           </div>
         )}
 
-        {lootPreview?.inspected && (
-          <div className="mining-hud__inspected">
-            <div className="mining-hud__yield-estimate">
-              Inspected · est. yield {lootPreview.inspected.reduce((a, r) => a + r.units, 0)} units
-            </div>
-            {lootPreview.inspected.slice(0, 4).map((r) => (
-              <div key={r.id} className="mining-hud__comp-row">
-                <span>{r.name}</span>
-                <span>{r.units}</span>
-              </div>
-            ))}
-          </div>
-        )}
 
         {lootPreview && !lootPreview.inspected && showInfo && (
           <div className="mining-hud__inspect">

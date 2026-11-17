@@ -90,6 +90,15 @@ export function frameOriginKm(id: FrameId, out: Vector3): Vector3 {
   return p ? out.set(p[0], p[1], p[2]) : out.set(0, 0, 0);
 }
 
+/** `frameOriginKm` into a plain object (modules on the title path must not load three). */
+export function frameOriginXyzKm(id: FrameId, out: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
+  const p = id === SYSTEM_FRAME_ID ? null : entry(id)?.body.positionKm;
+  out.x = p ? p[0] : 0;
+  out.y = p ? p[1] : 0;
+  out.z = p ? p[2] : 0;
+  return out;
+}
+
 const VEL_HALF_STEP_S = 30;
 let _ax = 0, _ay = 0, _az = 0;
 

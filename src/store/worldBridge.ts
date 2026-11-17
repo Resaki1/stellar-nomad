@@ -11,6 +11,8 @@ import { wrecksMirrorAtom } from "@/store/death";
 import { discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources } from "@/store/shipResources";
+import { replicationPointsAtom } from "@/store/replicationMirror";
+import { resetReposition } from "@/sim/ship/reposition";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -26,6 +28,8 @@ export function installWorldBridge(store: Store): void {
   store.set(wrecksMirrorAtom, world.wrecks);
   store.set(sharedResearchMirrorAtom, world.research.completedNodes);
   store.set(discoveriesMirrorAtom, world.discoveries);
+  store.set(replicationPointsAtom, world.replication.points);
+  resetReposition();
   const local = getLocalPlayerId();
 
   const unsubscribe = worldAuthority.subscribe((e) => {
@@ -40,6 +44,9 @@ export function installWorldBridge(store: Store): void {
         break;
       case "discoveries.changed":
         store.set(discoveriesMirrorAtom, getWorldState().discoveries);
+        break;
+      case "replication.changed":
+        store.set(replicationPointsAtom, getWorldState().replication.points);
         break;
       case "player.changed":
         if (e.playerId === local) {

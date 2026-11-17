@@ -56,6 +56,7 @@ import AsteroidVFX from "../VFX/AsteroidVFX";
 import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
+import ReplicationPoints from "@/components/Replication/ReplicationPoints";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe from "../TestHarness/TestFrameProbe";
 import LoadingGate from "../Loading/LoadingGate";
@@ -220,6 +221,7 @@ const Scene = () => {
         <TransitTicker />
         <POIProjector />
         <WreckCollector />
+        <ReplicationPoints />
       </>
     ),
     [],

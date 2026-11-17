@@ -47,6 +47,8 @@ export type ItemDef = {
   useDurationS?: number;
   cooldownS?: number;
   stackMax?: number;
+  /** Counted deployable (replication kit): placed by its own action, never from the hotbar. */
+  deployable?: boolean;
   /** resourceId → integer cargo units consumed. */
   recipe: Record<string, number>;
 };
@@ -316,6 +318,18 @@ export const ITEMS: ItemDef[] = [
     useEffects: [{ key: "mining.currentHeat", op: "add", value: -0.5 }],
     stackMax: 10,
     recipe: { silicates: 20, fe_ni_metal: 5 },
+  },
+  {
+    id: "consumable_replication_kit",
+    name: "Replication Kit",
+    uiDesc: "Deployable replication point: place it (B) to make a new recovery location",
+    slot: "utility",
+    type: "consumable",
+    starter: true,
+    icon: "module_ping_array_mk1",
+    deployable: true,
+    stackMax: 3,
+    recipe: { fe_ni_metal: 150, silicates: 100 },
   },
 
   // ── Survey ──────────────────────────────────────────────────────────────

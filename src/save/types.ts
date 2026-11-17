@@ -111,6 +111,30 @@ export interface OperationReceipt {
   at: number;
 }
 
+/** A placed replication point (schema 4). World-owned; no per-player active flag on it. */
+export interface ReplicationPoint {
+  id: string;
+  name: string;
+  frameId: string;
+  /** Relative to `frameId`'s origin, km. */
+  positionKm: Vec3Tuple;
+  quaternion: QuatTuple;
+  by: PlayerId;
+  createdAt: number;
+  /** The protected, supplied initial point every world has. */
+  starter: boolean;
+}
+
+export interface ReplicationState {
+  /** Starter first, then placement order; bounded (MAX_POINTS). */
+  points: ReplicationPoint[];
+}
+
+/** A player's own recovery selection (schema 4). */
+export interface PlayerReplicationState {
+  activeId: string;
+}
+
 export interface WorldState {
   simEpochMs: number;
   simRate: number;
@@ -118,6 +142,7 @@ export interface WorldState {
   wrecks: WreckRecord[];
   research: SharedResearchState;
   discoveries: DiscoveryState;
+  replication: ReplicationState;
   /** Bounded, oldest first (MAX_RECEIPTS). */
   receipts: OperationReceipt[];
 }
@@ -229,6 +254,14 @@ export interface ProcessingBatch {
   committedKg: number;
 }
 
+/** What the last death left at its wreck (recovery screen across a reload). */
+export interface LossRecord {
+  items: Record<string, number>;
+  consumables: Record<string, number>;
+  fuelKg: number;
+  cause: "impact" | "abandon";
+}
+
 export interface PlayerState {
   /** null = never saved; the ship spawns at the system's starting position. */
   ship: ShipPose | null;
@@ -246,6 +279,8 @@ export interface PlayerState {
   processing: ProcessingBatch | null;
   bookmarks: SourceBookmark[];
   legacy: PlayerLegacyState | null;
+  replication: PlayerReplicationState;
+  lastLoss: LossRecord | null;
 }
 
 export interface SaveData {

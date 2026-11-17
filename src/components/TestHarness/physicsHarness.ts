@@ -22,10 +22,10 @@ import { getPhysicsTuning, setPhysicsTuning, type PhysicsTuning } from "@/sim/ph
 import type { NearFieldColliderId } from "@/sim/physics/nearField";
 
 import { shipHealthAtom } from "@/store/store";
-import { isDeadAtom, respawnAtom, wrecksAtom } from "@/store/death";
+import { isDeadAtom, wrecksAtom } from "@/store/death";
+import { recoverAtom } from "@/store/replication";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { cargoAtom } from "@/store/cargo";
-import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
 import { physicsDebug } from "@/store/physicsTuningPrefs";
 import { playerInput } from "@/input/playerInput";
 
@@ -294,9 +294,9 @@ export function createPhysicsHarness(store: Store) {
       isDead: (): boolean => store.get(isDeadAtom),
       cargo: (): Record<string, number> => ({ ...store.get(cargoAtom).items }),
       wrecks: () => store.get(wrecksAtom).map((w) => ({ ...w })),
-      /** The death screen's respawn button. */
+      /** The death screen's recover button (active point; the starter in a fresh world). */
       respawn(): void {
-        store.set(respawnAtom, [...STARTING_POSITION_KM]);
+        store.set(recoverAtom, "active");
       },
     },
     /** Real asteroid colliders (M2b). */

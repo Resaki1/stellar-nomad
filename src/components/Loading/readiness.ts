@@ -4,6 +4,7 @@
  */
 import type { createStore } from "jotai";
 import { devTeleportAtom } from "@/store/dev";
+import { repositionState } from "@/sim/ship/reposition";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { isStbnLoaded, isStbnPending } from "@/components/celestial/bodies/stbnTexture";
 import { installNetworkTracking, net, networkQuiet } from "./netActivity";
@@ -42,7 +43,7 @@ export function createReadiness(startFrame: number, requireBlueNoise = true): Re
   return {
     check(store, frame, quietMs, memory) {
       let mask = 0;
-      if (store.get(devTeleportAtom) !== null) mask |= PENDING_TELEPORT;
+      if (store.get(devTeleportAtom) !== null || repositionState.pending !== null || repositionState.arrivalSince > 0) mask |= PENDING_TELEPORT;
       if (hasPendingCloudBakes()) mask |= PENDING_CLOUD_BAKES;
       if (requireBlueNoise ? !isStbnLoaded() : isStbnPending()) mask |= PENDING_BLUE_NOISE;
       if (!networkQuiet(quietMs)) mask |= PENDING_NETWORK;

@@ -280,6 +280,27 @@ export const EMITTERS = {
       "⚠ Site envelope: × opacity 0.6 (peak 2,383 cd/m²).",
   },
 
+  replication_beacon: {
+    kind: "design",
+    nits: 1800,
+    hue: [0.55, 0.85, 1.0],
+    why:
+      "Replication point beacon band (M3.6 placeholder). Design value at navigation-light " +
+      "level, so a point reads from a few km in shadow without becoming a light source.",
+  },
+  replication_preview: {
+    kind: "design",
+    nits: 1200,
+    hue: [0.45, 1.0, 0.6],
+    why: "Placement preview outline and range ring (valid). Design value, HUD-like overlay.",
+  },
+  replication_preview_bad: {
+    kind: "design",
+    nits: 1200,
+    hue: [1.0, 0.35, 0.3],
+    why: "Placement preview outline and range ring (refused). Design value, HUD-like overlay.",
+  },
+
   // ── Reference row: owned elsewhere, listed so the audit is complete ─
   ship_plume: {
     kind: "design",

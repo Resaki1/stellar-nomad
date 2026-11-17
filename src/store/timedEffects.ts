@@ -107,3 +107,8 @@ export const tickTimedEffectsAtom = atom(
     }
   },
 );
+
+/** Recovery: a replacement ship carries no running consumable effects. */
+export const resetTimedEffectsAtom = atom(null, (_get, set) => {
+  set(activeTimedEffectsAtom, []);
+});

@@ -6,7 +6,7 @@ import type { createStore } from "jotai";
 import { getActiveSave, sampleCollectors } from "@/save/activeSave";
 import { getLocalPlayerId, setLastWorldId } from "@/save/playerId";
 import { deleteWorld, exportWorld, importWorld, listWorlds, newWorldId, putWorld } from "@/save/saveDb";
-import type { DiscoveryState, ModulesState, SaveData, SaveMeta } from "@/save/types";
+import type { DiscoveryState, ModulesState, ReplicationPoint, SaveData, SaveMeta } from "@/save/types";
 import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
@@ -57,6 +57,32 @@ import { simulateTransit, type TransitScript } from "@/sim/ship/transitSim";
 import { computeTransitPreview, targetedPOIAtom, transitDriveBuffer, transitInputs, transitPreviewPlan } from "@/store/transit";
 import { allBodyDefs } from "@/sim/celestialConstants";
 import { nearField } from "@/sim/physics/nearField";
+import { poiBuffer } from "@/store/poi";
+import { probeClearance, absoluteKm, type Obstruction } from "@/sim/replication/clearance";
+import { checkPlacement, resolveRecovery, type PlacementCheck } from "@/sim/replication/placement";
+import { REPLICATION_TUNING, emergencePose, starterPoint } from "@/sim/replication/points";
+import { repositionState } from "@/sim/ship/reposition";
+import { isSimPaused } from "@/sim/simPause";
+import {
+  activatePointAtom,
+  deactivatePointAtom,
+  lastRecoveryAtom,
+  nearbyPointAtom,
+  placePointAtom,
+  placementModeAtom,
+  placementPreview,
+  placementStatusAtom,
+  playerReplicationAtom,
+  recoverAtom,
+  replicationPointsAtom,
+  updateNearbyPoint,
+  updatePlacementPreview,
+} from "@/store/replication";
+import { lastLossAtom } from "@/store/death";
+import { cameraShakeIntensityAtom } from "@/store/vfx";
+import { playerInput } from "@/input/playerInput";
+import { mouseState } from "@/input/mouse";
+import { activeTimedEffectsAtom } from "@/store/timedEffects";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -476,6 +502,115 @@ export function createGameplayHarness(store: Store) {
           rocks: rocks.length, cType: c.length, unitsPerTank, kgPerUnit: t.processingKgPerUnit,
           meanHydratesAll: mean(hyd), meanHydratesC: mean(cHyd), medianHydratesC: cHyd[Math.floor(cHyd.length / 2)] ?? 0,
           rocksPerTankMeanC: mean(cHyd) > 0 ? unitsPerTank / mean(cHyd) : null, rocksPerTankBestColdC: need <= 0 ? best : null,
+        };
+      },
+    },
+
+    /** M3.6 replication points and recovery. */
+    rep: {
+      tuning: () => ({ ...REPLICATION_TUNING }),
+      starter: () => starterPoint(),
+      points: () => structuredClone(store.get(replicationPointsAtom)),
+      activeId: (): string => store.get(playerReplicationAtom).activeId,
+      /** The preview's check at a frame-relative pose, from the local ship (pure). */
+      check(frameId: string, positionKm: number[], quaternion: number[], kits?: number): PlacementCheck {
+        const ship = getLocalPlayerShip();
+        worldAuthority.world();
+        const out: PlacementCheck = { refusal: null, bodyAltKm: 0, bodyId: null, rockClearM: 0 };
+        return checkPlacement({ frameId, positionKm, quaternion }, ship ? { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] } : null, kits ?? 1, worldAuthority.asteroids, out);
+      },
+      probe(frameId: string, positionKm: number[], searchM = 2000): Obstruction {
+        worldAuthority.world();
+        return probeClearance(frameId, positionKm, searchM, worldAuthority.asteroids, { bodyAltKm: 0, bodyId: null, rockClearM: 0 });
+      },
+      emergence: (positionKm: [number, number, number], quaternion: [number, number, number, number], i = 0) => emergencePose({ positionKm, quaternion }, i),
+      abs: (frameId: string, positionKm: number[]): number[] => absoluteKm(frameId, positionKm, new Vector3()).toArray(),
+      /** Ship pose now: frame, relative km, quaternion. */
+      ship() {
+        const sh = getLocalPlayerShip();
+        return sh ? { frameId: sh.frameId, posKm: sh.posKm.toArray(), absKm: sh.absPosKm.toArray(), quat: sh.quat.toArray(), velKmps: sh.velKmps.toArray(), angVel: sh.angVel.toArray() } : null;
+      },
+      /** Dev warp to a frame-relative pose (resolved at the current ephemeris instant). */
+      teleportRel(frameId: string, positionKm: number[], quaternion?: [number, number, number, number]): void {
+        const a = absoluteKm(frameId, positionKm, new Vector3());
+        store.set(devTeleportAtom, { positionKm: [a.x, a.y, a.z], quaternion });
+      },
+      /** UI path: open/close the preview, refresh its check now, place with a name. */
+      setMode: (on: boolean): void => store.set(placementModeAtom, on),
+      preview() {
+        updatePlacementPreview(store);
+        return { ...structuredClone({ frameId: placementPreview.frameId, positionKm: placementPreview.positionKm, quaternion: placementPreview.quaternion, emergenceKm: placementPreview.emergenceKm, valid: placementPreview.valid, check: placementPreview.check }), status: store.get(placementStatusAtom) };
+      },
+      place: (name: string, opId?: string): OperationOutcome => store.set(placePointAtom, { name, opId }),
+      nearby() {
+        updateNearbyPoint(store);
+        return store.get(nearbyPointAtom);
+      },
+      activate: (pointId: string): OperationOutcome => store.set(activatePointAtom, pointId),
+      deactivate: (): OperationOutcome => store.set(deactivatePointAtom),
+      /** Where the authority would recover the local player now (pure). */
+      resolve(mode: "active" | "starter") {
+        worldAuthority.world();
+        const p = getActiveSave()?.data.players[getLocalPlayerId()];
+        return resolveRecovery(getActiveSave()?.data.world.replication.points ?? [], p?.replication.activeId ?? "starter", mode, worldAuthority.asteroids);
+      },
+      /** Loaded rocks nearest the ship, with their anchor-frame pose (fields ride their body). */
+      rocks(n = 20) {
+        const rt = getActiveAsteroidRuntime();
+        const system = store.get(systemConfigAtom);
+        const ship = testProbe.ship.posKm;
+        const out: { fieldId: string; chunkKey: string; instanceId: number; radiusM: number; frameId: string; posKm: number[]; distKm: number }[] = [];
+        for (const f of system.asteroidFields ?? []) {
+          const fr = rt?.getFieldRuntime(f.id);
+          const frameId = f.anchorBody;
+          if (!fr || !frameId || !f.anchorOffsetKm) continue;
+          const off = f.anchorOffsetKm;
+          fr.chunks.forEach((chunk, chunkKey) => {
+            for (const modelId in chunk.instancesByModel) {
+              const inst = chunk.instancesByModel[modelId];
+              for (let i = 0; i < inst.count; i++) {
+                const rel = [0, 1, 2].map((k) => off[k] + chunk.originKm[k] + inst.positionsM[i * 3 + k] / 1000);
+                const abs = [0, 1, 2].map((k) => f.anchorKm[k] + chunk.originKm[k] + inst.positionsM[i * 3 + k] / 1000);
+                out.push({ fieldId: f.id, chunkKey, instanceId: inst.instanceIds[i] >>> 0, radiusM: inst.radiiM[i], frameId, posKm: rel, distKm: Math.hypot(abs[0] - ship[0], abs[1] - ship[1], abs[2] - ship[2]) });
+              }
+            }
+          });
+        }
+        out.sort((a, b) => a.distKm - b.distKm);
+        return out.slice(0, n);
+      },
+      /** Test setup only (fixture worlds): add/replace a point record, set a player's selection or ship pose. */
+      devSetPoint(point: ReplicationPoint): void {
+        const w = getActiveSave()?.data.world;
+        if (!w) return;
+        w.replication.points = [...w.replication.points.filter((x) => x.id !== point.id), structuredClone(point)];
+        store.set(replicationPointsAtom, w.replication.points);
+      },
+      devSetActive(activeId: string, playerId?: string): void {
+        const p = getActiveSave()?.data.players[playerId ?? getLocalPlayerId()];
+        if (!p) return;
+        p.replication = { activeId };
+        if (!playerId || playerId === getLocalPlayerId()) store.set(playerReplicationAtom, { activeId });
+      },
+      devSetPlayerShip(playerId: string, pose: { frameId: string; positionKm: [number, number, number]; quaternion: [number, number, number, number] }): void {
+        const p = getActiveSave()?.data.players[playerId];
+        if (p) p.ship = structuredClone(pose);
+      },
+      /** Projected POI markers (id, name) the HUD shows now. */
+      pois: (prefix = "") => poiBuffer.pois.filter((p) => p.id.startsWith(prefix)).map((p) => ({ id: p.id, name: p.name, distanceKm: p.distanceKm })),
+      /** The death screen's recover action. */
+      recover: (mode: "active" | "starter"): OperationOutcome => store.set(recoverAtom, mode),
+      lastRecovery: () => store.get(lastRecoveryAtom),
+      lastLoss: () => store.get(lastLossAtom),
+      /** Reposition / arrival-gate state and the reset-relevant runtime buffers. */
+      runtime() {
+        const sh = getLocalPlayerShip();
+        return {
+          applied: repositionState.applied, pending: repositionState.pending !== null, arriving: repositionState.arrivalSince > 0, lastArrivalMs: repositionState.lastArrivalMs,
+          paused: isSimPaused(), shake: store.get(cameraShakeIntensityAtom), throttle: playerInput.throttle, mouseYaw: playerInput.mouseYaw, mousePitch: playerInput.mousePitch,
+          stickX: mouseState.stickX, stickY: mouseState.stickY, transitPhase: transitDriveBuffer.phase, transitSpeed: transitDriveBuffer.speedKmps,
+          speedMps: sh ? sh.velKmps.length() * 1000 : null, angVel: sh ? sh.angVel.length() : null, timedEffects: store.get(activeTimedEffectsAtom).length,
+          nearField: { ...nearField.counters, suspended: nearField.suspended, owner: nearField.lastOwner },
         };
       },
     },

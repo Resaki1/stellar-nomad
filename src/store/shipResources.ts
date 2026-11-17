@@ -323,9 +323,9 @@ export const setRepairAtom = atom(null, (get, set, on: boolean): boolean => {
 });
 
 /** Emergency abandonment: the death operation, at the live pose. Explicit confirmation is the UI's job. */
-export const abandonShipAtom = atom(null, (get): boolean => {
+export const abandonShipAtom = atom(null, (get, set): boolean => {
   const ship = getLocalPlayerShip();
   if (get(isDeadAtom) || !ship) return false;
   const p = ship.posKm;
-  return runOperation({ type: "ship.destroy", opId: newOpId(), frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" }).status === "accepted";
+  return set(dieAtom, { frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" })?.status === "accepted";
 });
