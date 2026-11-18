@@ -1,33 +1,20 @@
 "use client";
 
 import { useCallback } from "react";
-import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { isDeadAtom, respawnAtom } from "@/store/death";
-import { shipHealthAtom } from "@/store/store";
-import { effectiveShipConfigAtom } from "@/store/shipConfig";
-import { devTeleportAtom } from "@/store/dev";
 import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
 
 import "./DeathScreen.scss";
 
 export default function DeathScreen() {
   const isDead = useAtomValue(isDeadAtom);
-  const store = useStore();
   const respawn = useSetAtom(respawnAtom);
-  const setShipHealth = useSetAtom(shipHealthAtom);
-  const setTeleport = useSetAtom(devTeleportAtom);
 
+  // PR 1 recovery: the starting position (replication points arrive in PR 2).
   const handleRespawn = useCallback(() => {
-    // Restore full health
-    const cfg = store.get(effectiveShipConfigAtom);
-    setShipHealth(cfg.maxHealth);
-
-    // Teleport to starting position
-    setTeleport({ positionKm: [...STARTING_POSITION_KM] });
-
-    // Clear death flag (wrecks persist, cargo already cleared on death)
-    respawn();
-  }, [store, setShipHealth, setTeleport, respawn]);
+    respawn([...STARTING_POSITION_KM]);
+  }, [respawn]);
 
   if (!isDead) return null;
 
@@ -36,7 +23,8 @@ export default function DeathScreen() {
       <div className="death-screen__content">
         <h1 className="death-screen__title">Ship Destroyed</h1>
         <p className="death-screen__subtitle">
-          Your cargo has been lost at the wreck site.
+          Cargo and ordinary propellant stay at the wreck site. You recover at the starting
+          position with a full hull and the protected propellant allowance.
         </p>
         <button className="death-screen__respawn" onClick={handleRespawn}>
           Respawn

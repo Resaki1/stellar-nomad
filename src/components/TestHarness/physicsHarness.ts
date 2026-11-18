@@ -11,7 +11,7 @@ import type { createStore } from "jotai";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { systemConfigAtom } from "@/store/system";
 import { devTeleportAtom } from "@/store/dev";
-import { worldAuthority } from "@/sim/world/worldAuthority";
+import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
 import {
   asteroidFieldColliders, ensureModelHull, getAsteroidColliderModel, listAsteroidColliderModels, renderDebug,
@@ -296,9 +296,7 @@ export function createPhysicsHarness(store: Store) {
       wrecks: () => store.get(wrecksAtom).map((w) => ({ ...w })),
       /** The death screen's respawn button. */
       respawn(): void {
-        store.set(shipHealthAtom, store.get(effectiveShipConfigAtom).maxHealth);
-        store.set(devTeleportAtom, { positionKm: [...STARTING_POSITION_KM] });
-        store.set(respawnAtom);
+        store.set(respawnAtom, [...STARTING_POSITION_KM]);
       },
     },
     /** Real asteroid colliders (M2b). */
@@ -344,7 +342,8 @@ export function createPhysicsHarness(store: Store) {
       destroy(instanceId: number): boolean {
         const r = findRock(instanceId);
         if (!r) return false;
-        return worldAuthority.submit({ type: "asteroid.destroy", fieldId: r.fieldId, chunkKey: r.chunkKey, instanceId: r.instanceId, cause: "mined" }, getLocalPlayerId());
+        const o = worldAuthority.submit({ type: "asteroid.destroy", opId: newOpId(), fieldId: r.fieldId, chunkKey: r.chunkKey, instanceId: r.instanceId, cause: "mined" }, getLocalPlayerId());
+        return o.status === "accepted";
       },
       /**
        * Streaming check: registry vs. the loaded instances within the physics radius (surface

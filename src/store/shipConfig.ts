@@ -2,17 +2,10 @@ import { atom } from "jotai";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultShipConfig } from "@/save/defaults";
 import type { ShipConfig } from "@/save/types";
-import {
-  computedModifiersAtom,
-  getMultiplier,
-  getAddition,
-  type ComputedModifiers,
-  aggregateEffects,
-  mergeModifiers,
-} from "@/store/modules";
+import { computedModifiersAtom } from "@/store/modules";
 import { completedNodeSetAtom } from "@/store/research";
 import { timedEffectModifiersAtom } from "@/store/timedEffects";
-import { RESEARCH_NODES, type ItemEffect } from "@/data/content";
+import { applyModifiers, mergeModifiers, researchModifiers, type ComputedModifiers } from "@/sim/ship/loadout";
 
 // Base ship stats (un-upgraded defaults in save/defaults.ts). Module, research and timed
 // modifiers are folded in by `effectiveShipConfigAtom`.
@@ -20,72 +13,8 @@ export type { ShipConfig } from "@/save/types";
 
 export const shipConfigAtom = savedAtom("player", "shipConfig", defaultShipConfig());
 
-// ---------------------------------------------------------------------------
-// Research modifiers: passive bonuses from completed research nodes
-// ---------------------------------------------------------------------------
-
-export const researchModifiersAtom = atom((get): ComputedModifiers => {
-  const completed = get(completedNodeSetAtom);
-  const allEffects: ItemEffect[] = [];
-
-  for (const node of RESEARCH_NODES) {
-    if (!completed.has(node.id)) continue;
-    if (node.researchEffects) {
-      allEffects.push(...node.researchEffects);
-    }
-  }
-
-  return aggregateEffects(allEffects);
-});
-
-// ---------------------------------------------------------------------------
-// Effective config: base values * equipped module modifiers * research bonuses
-// ---------------------------------------------------------------------------
-
-function applyModifiers(base: ShipConfig, mods: ComputedModifiers): ShipConfig {
-  // Handle overallEfficiencyMultiplier: affects both speed and yield
-  const overallMult = getMultiplier(mods, "mining.overallEfficiencyMultiplier");
-
-  return {
-    // Mining: timePerAsteroidMultiplier < 1 means faster mining → invert for speedMult
-    miningSpeedMult:
-      base.miningSpeedMult / getMultiplier(mods, "mining.timePerAsteroidMultiplier") * overallMult,
-    miningEfficiencyMult:
-      base.miningEfficiencyMult * getMultiplier(mods, "mining.yieldMultiplier") * overallMult,
-    miningHeatCapacityS:
-      base.miningHeatCapacityS / getMultiplier(mods, "mining.heatBuildUpRateMultiplier"),
-    miningCooldownS:
-      base.miningCooldownS / getMultiplier(mods, "mining.cooldownSpeedMultiplier"),
-
-    // Ship
-    maxHealth:
-      base.maxHealth * getMultiplier(mods, "ship.maxHealthMultiplier"),
-    speedMult:
-      base.speedMult * getMultiplier(mods, "ship.maxSpeedMultiplier"),
-    accelerationMult:
-      base.accelerationMult * getMultiplier(mods, "ship.accelerationMultiplier"),
-    decelerationMult:
-      base.decelerationMult * getMultiplier(mods, "ship.decelerationMultiplier"),
-    collisionDamageMult:
-      base.collisionDamageMult * getMultiplier(mods, "ship.collisionDamageMultiplier"),
-    bonusCargoCapacity:
-      base.bonusCargoCapacity + getAddition(mods, "ship.cargoCapacity"),
-
-    // Scanner
-    scannerLockSpeedMult:
-      base.scannerLockSpeedMult * getMultiplier(mods, "scanner.lockSpeedMultiplier"),
-    scannerRangeMult:
-      base.scannerRangeMult * getMultiplier(mods, "scanner.allRangeMultiplier"),
-
-    // Economy
-    assaySampleBonusChance:
-      Math.min(1, base.assaySampleBonusChance + getAddition(mods, "mining.assaySampleBonusChance")),
-
-    // Survivability
-    hullRegenPerSecond:
-      base.hullRegenPerSecond + getAddition(mods, "ship.hullRegenPerSecond"),
-  };
-}
+/** Passive bonuses of the WORLD's completed research, folded in exactly once below. */
+export const researchModifiersAtom = atom((get): ComputedModifiers => researchModifiers(get(completedNodeSetAtom)));
 
 /**
  * Derived atom that combines base ship config with equipped module effects,

@@ -21,6 +21,11 @@
 
   animation: commsSlideUp s.$dur-slow s.$ease-out;
 
+  // Phones: the ship dashboard spans most of the width (~170 px tall); sit above it.
+  @media (max-width: 520px) {
+    bottom: 200px;
+  }
+
   &--accent-comms {
     --comms-accent: #{s.$accent-comms};
     --comms-glow: #{s.$glow-comms};

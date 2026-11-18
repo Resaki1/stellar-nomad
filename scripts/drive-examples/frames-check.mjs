@@ -8,7 +8,7 @@
  *              relative position, absolute distance constant; per-frame no-lag spread
  *   switch     fly across Luna's SOI both ways: absolute continuity + no flapping in the band
  *   asteroids  parked in the origin belt at rate 1 and 1e4: offset to Earth constant, same rocks
- *   transit    autopilot → Luna at rate 1: arrival distance vs intended standoff
+ *   transit    autopilot → Luna at rate 1 (FRAMES_TRANSIT_RATE): arrival within 1 % of the standoff, in Luna's frame
  */
 const len = (a) => Math.hypot(...a);
 const sub = (a, b) => a.map((v, i) => v - b[i]);
@@ -190,9 +190,8 @@ export default async function framesCheck(d) {
   }
 
   if (parts.includes("transit")) {
-    // From the spawn belt, Earth sits between the ship and Luna at the default epoch and the
-    // auto-brake stops the drive at Earth, so start 100,000 km above Luna (Earth's frame):
-    // the run also crosses into Luna's SOI with the drive engaged.
+    // Start 100,000 km above Luna (Earth's frame): the leg crosses into Luna's SOI with the drive
+    // engaged. (From the spawn the route needs a clearance leg past Earth: gameplay-check transitLive.)
     if (await ev("!!document.querySelector('.death-screen__respawn')")) {
       await ev("document.querySelector('.death-screen__respawn').click()");
       await d.frames(10);
@@ -227,6 +226,9 @@ export default async function framesCheck(d) {
       frameId: s.frameId,
       frameSwitches: s.frameSwitches,
     };
+    // The fixed-step drive brakes to rest on the standoff: within 1 % of it, in Luna's frame.
+    out.transit.pass = eng.engaged && phase === "idle" && !out.transit.dead && s.frameId === "luna" &&
+      Math.abs(out.transit.errorKm) <= 0.01 * eng.arrivalOffsetKm;
   }
   return out;
 }

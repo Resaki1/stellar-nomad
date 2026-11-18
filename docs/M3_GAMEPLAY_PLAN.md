@@ -563,8 +563,8 @@ below are initially uncompleted; do not mark them based on this documentation pa
 
 ### M3.0 — Reconcile and capture the baseline
 
-- [ ] Read the two new design docs and current M2 as-built status/gates.
-- [ ] Record actual save schema, physics API, pause behaviour, and baseline timings.
+- [x] Read the two new design docs and current M2 as-built status/gates.
+- [x] Record actual save schema, physics API, pause behaviour, and baseline timings.
 - [ ] Write the content/legacy mapping and resource tuning tables; define units and
       command boundaries before touching UI.
 - [ ] Confirm a default initial fuel-source/replication placement for every supported seed.
@@ -574,10 +574,10 @@ tuning defaults; no stale root-story requirement used. No new dependency require
 
 ### M3.1 — Durable domain and ownership
 
-- [ ] Add typed world/player records, accepted domain operations, world mirrors,
+- [x] Add typed world/player records, accepted domain operations, world mirrors,
       coherent save transactions, and append-only migration/sanitization.
 - [ ] Move shared research/evidence/discovery ownership; preserve old data by mapping.
-- [ ] Implement deduplicated transaction foundations for manufacturing and world/player
+- [x] Implement deduplicated transaction foundations for manufacturing and world/player
       transfers, including fuel-only wreck representation.
 
 **Gate:** migration and round-trip fixtures preserve progress; rejected/repeated
@@ -587,9 +587,9 @@ retain separate supplies/equipment/active point selections.
 
 ### M3.2 — Self-sufficiency and activity budgets
 
-- [ ] Add pure resource stepping, control-demand metering, reactor/capacitor arbitration,
+- [x] Add pure resource stepping, control-demand metering, reactor/capacitor arbitration,
       unified heat, basic fuel batches, repair, and resource HUD read models.
-- [ ] Integrate mining/boost/processing requests with actual granted work and pause.
+- [x] Integrate mining/boost/processing requests with actual granted work and pause.
 - [ ] Make starter tools and essential recipes available without the old research boot gate.
 
 **Gate:** rest/coast/no-input idle costs nothing; thrust and work cost the intended
@@ -622,9 +622,9 @@ Fresh-save playthroughs through both early priorities remain viable.
 
 ### M3.5 — Fuel-aware travel
 
-- [ ] Extract/consolidate the transit time/trajectory seam, predictor, safe braking reserve,
+- [x] Extract/consolidate the transit time/trajectory seam, predictor, safe braking reserve,
       abort handling, and frame-relative POI targeting.
-- [ ] Add range/arrival balance and obstruction feedback; make the Earth-to-Moon route
+- [x] Add range/arrival balance and obstruction feedback; make the Earth-to-Moon route
       playable with bounded clearance legs when necessary.
 
 **Gate:** predicted versus executed burn/ETA within a documented tolerance (initial
@@ -772,3 +772,333 @@ They are implementation defaults, not reasons to re-open the agreed concept or a
 permission for every number. Record significant playtest-driven rule changes here.
 Exact catastrophe, archive biology, future drives, station/drone design, and colony
 mechanics remain deferred as listed in the companion decision document.
+
+## 13. As-built log
+
+### 13.1 Delivery split (owner decision, 2026-11-16)
+
+M3 ships as two pull requests:
+
+- **PR 1** (`m3a-survival-core`): M3.0, M3.1, M3.2, M3.5 — ownership, transactions and
+  migration; propellant, power, heat, processing, repair; fuel-aware transit.
+- **PR 2**: M3.3, M3.4, M3.6, M3.7, M3.8 — discovery research, equipment rework,
+  replication points and full recovery, lunar opportunity, guidance, difficulty, end-to-end.
+
+Consequences for PR 1: the old research catalogue, assay samples and research timer stay the
+gameplay until PR 2 replaces them; recovery after destruction stays "respawn at the starting
+position" until PR 2 adds replication points. The research/item retirement mapping (§7.3) is
+PR 2 work. M3.1's "evidence/discovery ownership" is therefore only research completion today.
+
+### 13.2 M3.0 / M3.1 as built (2026-11-16)
+
+**Save schema 2** (`src/save/types.ts`, migration `MIGRATIONS[0]` in `migrations.ts`):
+
+| Slice | Owner | Shape (units) |
+|---|---|---|
+| `world.research.completedNodes` | world, authority-only writer | string[], completion order; unknown ids kept, inert |
+| `world.receipts` | world | `{opId,type,by,at}[]`, oldest first, bounded to `MAX_RECEIPTS` = 256 |
+| `world.wrecks[].fuelKg` / `.consumables` | world | kg ≥ 0 / itemId → integer count |
+| `player.research` | player (until PR 2) | `{assaySamples, activeResearch}`; no `completedNodes` |
+| `player.propellant` | player | `{ordinaryKg, protectedKg}`, kg, finite, ≥ 0, ≤ 1e6 |
+| `player.power` | player | `{capacitor01, heat01}`, fractions of the equipment stores |
+| `player.processing` | player | `null` or `{id, recipeId, reserved, elapsedS, committedKg}` |
+
+Tuning defaults (`src/sim/ship/shipResources.ts`, owned by M3.2): tank 600 kg, protected
+allowance 60 kg. New and migrated players start full, capacitor 1, heat 0, no batch.
+
+**Legacy mapping for PR 1 (schema 1 → 2):**
+
+| Schema 1 | Schema 2 |
+|---|---|
+| `players[*].research.completedNodes` | union into `world.research.completedNodes` (first-seen order, players in key order); removed from players |
+| `players[*].research.{assaySamples, activeResearch}` | unchanged, per player (paid active research kept running) |
+| `world.wrecks[*]` | + `fuelKg: 0`, `consumables: {}` |
+| (none) | `world.receipts: []`; per player full tanks, `power {1, 0}`, `processing: null` |
+| everything else (poses, cargo, modules, deltas, comms, AI name, markers, dead state) | unchanged |
+
+Sanitisers tightened alongside: cargo/consumable/wreck counts are floored integers ≥ 1
+(zero, negative, non-finite dropped); fuel non-finite → default, negative → 0; assay
+samples, mined lifetime ≥ 0; owned modules and completed research de-duplicated. The
+legacy-localStorage importer now builds schema-1 data and runs it through the same migration.
+
+**Authority API** (`src/sim/world/`): `Authority.submit(op: WorldOperation, by): OperationOutcome`
+and `subscribe(listener)`. Outcomes: `accepted` (with typed `result`), `rejected` (`reason`,
+optional `missing`), `duplicate`, `pending` (reserved for M4). Every submit ends with an
+`op.settled` event after its state events; `player.changed {playerId, keys}` tells mirrors which
+player slices were replaced. Operations: `asteroid.destroy`, `asteroid.mine`, `item.craft`,
+`research.start`, `research.complete`, `research.devSet` (dev), `ship.destroy`, `ship.respawn`,
+`wreck.collect`, `time.set`. Reducers (`reducers.ts`) validate every slice and return a commit
+of plain assignments. UI uses `runOperation(op, onSettled)` (`src/store/operations.ts`) and
+grants feedback only from the settled outcome. Duplicate protection: receipts for retryable
+transfers, plus durable state (destroyed asteroid, dead flag, completed node, inactive timer).
+After a receipt is evicted (256 later operations) a craft or wreck collection retried with
+that id would apply again; no caller retries that late.
+
+**Atomicity / no stale overwrite:** a submit validates, commits to the in-memory record,
+refreshes the local player's saved atoms from the record (`refreshPlayerAtoms`) and publishes,
+all in one synchronous task. A save flush (collectors included) only runs as its own task, so
+it sees the record before or after an operation, never between steps, and the sampled atoms
+(hull) already hold the post-operation value. Accepted receipted operations request an
+immediate flush (`markDirty(true)`): MEASURED, with the 1 s debounce a reload right after an
+operation lost it, because the pagehide flush's IndexedDB write is aborted by the unload.
+
+**Effective config:** one pure fold (`src/sim/ship/loadout.ts`) used by the HUD atoms and the
+authority (cargo capacity, respawn hull). Research bonuses come from the world record once.
+The authority trusts the miner's reward claim (`buildMineOperation`) and the research timer's
+`elapsedS`, and does not check wreck distance; a remote M4 authority must re-derive them.
+
+**Behaviour changes vs pre-M3** (review, 2026-11-16; owner to confirm): crafting, mining
+rewards and wreck collection are rejected while dead (`dead`); a rock finishing its mine in
+the death frame stays intact. `ship.respawn` carries the recovery pose and commits it with the
+alive state (the pose collector is held until the teleport lands). A `research.complete` for a
+node another player already finished refunds the paid assay samples. An already-empty wreck is
+removed on collect. Reducers are pure: the authority passes `now` in. Cargo, wreck and
+consumable counts are whole units: a fractional v1 value is floored on migration (pre-M3 code
+already floored on add and on use, so no playable unit is lost), and `ship.destroy` moves
+exactly the floored amounts it clears.
+
+**M2 facts later phases need:** `nearField.resolve(ship, serial)` runs after every `stepShip`
+fixed step (one owner per step, asserted); `nearField.markReseed()` must follow any teleport /
+respawn / external reposition; the near field is suspended above `PHYSICS_MAX_SPEED_KMPS` =
+0.9 km/s, in transit, under the dev speed override and while dead (`setGates`); fatal impacts
+call the death operation through `dieAtom`.
+
+**Pause signals:** `src/sim/simPause.ts` (loading gate only), `settingsIsOpenAtom` (Settings
+also stops the R3F loop: `frameloop="never"`), `isDeadAtom`, bench `__test.isolate()` (no save
+writes). Tickers using `useFrame` stop with the loop; timers outside it must check all of these.
+
+**Baseline timings** (`pnpm drive -- --keep --perf bench:belt,earth_650`, 1280×720, DPR 1,
+headless M2 Pro Metal; GPU ms, P50), before → after the M3.1 change (no render change; the
+spread is run-to-run noise):
+
+| Scene | frame P50 | GPU P50 | atmosphere | atmo apply | cloud march | reconstruction | composite | local scene | post |
+|---|---|---|---|---|---|---|---|---|---|
+| belt | 14.7 → 14.5 | 12.56 → 8.66 | 2.50 → 1.64 | 2.56 → 1.69 | — | — | — | 0.60 → 0.41 | 5.25 → 3.66 |
+| earth_650 | 16.6 → 16.7 | 21.78 → 26.07 | 2.94 → 3.35 | 3.19 → 3.63 | 2.76 → 3.20 | 3.03 → 3.52 | 3.36 → 3.86 | 0.37 → 0.41 | 3.46 → 4.33 |
+
+**Gates:** `scripts/drive-examples/gameplay-check.mjs` (parts `migrate,tx,shared` and `live`,
+`--no-isolate`) works in disposable `[gc] ` fixture worlds, restores the previously active world
+and deletes only its fixtures. Hooks: `__test.gameplay` (submit as any player, read slices and
+mirrors, pure `parse`, fixture create/export/import/remove, mine/craft/kill via the game's
+actions).
+
+### 13.3 M3.2 as built (2026-11-16)
+
+**One resource step** (`src/sim/ship/resourceStep.ts`, pure, no allocation): `stepShipResources`
+runs inside Spaceship's fixed 120 Hz loop right after `stepShip` (so loading pause, settings
+`frameloop="never"`, death and the 0.25 s frame-delta cap gate it exactly like flight; `simRate`
+never reaches it). Order per step: propellant meter → capacitor → reactor arbitration → heat →
+granted work (mining seconds, processing kg, repair percent). The runtime state is a store
+singleton (`src/store/shipResources.ts`): it owns fuel, heat, capacitor and the batch between
+operations, a collector samples it into the record, `runOperation` samples every collector
+before submitting (`sampleCollectors`) and `adoptShipResources` takes committed `propellant` /
+`power` / `processing` slices back on `player.changed`. UI reads `shipResourcesHudAtom`
+(published at the 10 Hz HUD cadence, not in bench mode).
+
+**Control demand:** `stepShip` now writes the delivered body-axis Δv (`ctlDvF/R/U`, after every
+clamp) and |Δω| L1 (`ctlDwRadps`); `env.thrustScale` scales every translational limit and
+`env.angularScale` the angular acceleration. Cost = 0.008 kg per m/s of L1 Δv + 0.02 kg per
+rad/s of Δω; a step under 1 mm/s is chatter and free. Contacts, frame switches, ephemeris and
+transit velocity are outside `stepShip`'s thrust and cost nothing; the dev speed override is not
+charged. Ordinary first, then protected. `propellantGate` scales thrust to what the tank can
+pay for the worst-case step, so a store never goes negative; at zero, thrust is 0 and rotation
+keeps 25 % authority free (attitude wheels), velocity untouched. Transit: `shipReq.transitKgPerS`
+is charged by the step and set to 0 until M3.5.
+
+**Power, capacitor, heat:** capacitor = M1's `boostCharge` (stepShip still drains/refills it;
+the step only mirrors it and charges 10 kW while it refills). Reactor 100 kW: essential 20 kW
+first, capacitor next, then mining 50 / processing 45 / repair 15 kW pro rata (mining +
+processing → 0.84 each, output too). One thermal store, 1000 kJ = 100 %, inputs mining 171.9,
+boost 144.9, processing 97.1, repair 10 kW, rejection 77.1 + 50 × heat kW (the two terms are what
+make mining alone 0 → 100 % in 15 s and idle 100 → 0 in 10 s, and processing alone settle near
+40 %). Warning 80 %; processing and repair throttle linearly 90 → 100 %; the mining laser trips at
+100 % (today's overheat, now `shipRes.miningTripped`, cleared once the beam is off and heat <
+100 %); only boost can push past 100 %, and hull damage (2 %/s) starts after 2 s above it.
+Equipment heat modifiers scale mining input (15 / `miningHeatCapacityS`) and rejection
+(10 / `miningCooldownS`). Heat-sink consumables write the same store. MiningSystem no longer
+integrates heat or progress on render delta: it requests the beam and advances progress by the
+granted beam seconds.
+
+**Processing** (`PROCESSING_RECIPES` in `content.ts`, no research gate): `processing.start`
+reserves 1–50 hydrate units out of cargo (rejects busy / tank_full / materials); the step
+delivers 10 kg/s × throttle (4 kg per unit) straight into the ordinary tank and `committedKg`,
+pauses with a reason when the tank is full, completes once. `processing.cancel` returns only
+units whose conversion has not started (`unconvertedUnits`), keeps committed output, rejects
+`no_capacity` if the cargo cannot hold the refund. Progress is sampled with the pose (2 s save
+tick), so a hard reload resumes from the last write: never a duplicate, never a catch-up.
+
+**Repair:** manual (2 %/s) or automatic with the Nanite Repair module (its 0.2 HP/s rate), both
+through `ship.repair {pct}`: 1 fe_ni_metal per percent, stops at max hull or when material runs
+out (reason line), refused with a reason when it cannot start. Not receipted (two per second would
+evict the bounded receipt log); callers never retry it. **Free regeneration removed:**
+`HullRegenTicker` is deleted; the Nanite module's `hullRegenPerSecond` now only drives paid
+repair. Chosen over retiring the module because it keeps an owned item meaningful without a
+free stat. Patch kits stay: their material is paid at craft time.
+
+**Loss:** `ship.destroy` (impact and `cause: "abandon"`) also moves the ordinary tank and the
+batch's unconverted feedstock to the wreck (protected never), clears the batch; `ship.respawn`
+sets ordinary 0, protected = `recoveryAllowanceKg`, power {1, 0}, no batch. Emergency
+abandonment: Settings main menu → "emergency: abandon ship" → confirmation listing the loss →
+the same death operation (reachable at zero fuel; the settings menu needs no flight).
+
+**Tuning** (`src/sim/ship/resourceTuning.ts`, Settings → Dev → ship resources, persisted as
+`dev-resource-tuning-v1`): tank 600 kg, allowance 60 kg, 0.008 kg/(m/s), 0.02 kg/(rad/s),
+deadband 1 mm/s, exhausted angular 0.25, reactor/loads/heat as above, heat max 130 %, processing
+4 kg/unit, 10 kg/s, batch ≤ 50, repair 2 %/s, 1 unit per percent. All values are defaults.
+
+**Measured** (gameplay-check `res,m32,reach`, `--no-isolate`; pure parts run the real
+`stepShip` + step at explicit 30/60/144 Hz pacing):
+
+| Gate | Result |
+|---|---|
+| idle / coast 60 s (decoupled, and coupled at its set-point) | 0 kg exactly; live parked 8 s: 0 kg |
+| axes | main 240 m/s → 1.92 kg; strafe X/Y 120 → 0.96; retro/brake 200 → 1.60; grip turn 211 m/s → 1.69 kg; 180° yaw 0.038 kg = 0.32 % of a hop |
+| scripted hop (0 → 402 m/s, 90° turn, brake) | 1563 m/s, 12.54 kg vs 12 kg target (+4.5 %); 47.8 hops per tank, 4.8 in the allowance |
+| 30 / 60 / 144 Hz, 0.25 s hitch | bit-identical finals (2900 steps each); 2 s hitch drops 1.75 s wall time, stores unchanged |
+| bounce / frame switch | decoupled bounce 0 kg; Earth SOI crossing 0 kg; the assist cancelling a 30 m/s bounce is thrust: 0.24 kg |
+| exhaustion | protected touched only at ordinary 0; both reach exactly 0; thrust gate 0; speed held 250.17 m/s |
+| boost | capacitor trace identical to `__test.flight.simulate` (2280 samples): empty 5.0 s, refill +1.5 s, full +9.5 s; 5 s boost → heat 30 % |
+| reactor | alone: 5.0 beam-s, 50 kg in 5 s; together 0.842 each, output 42.1 kg |
+| mining-only heat | trip 14.99 s (15), 100 → 0 % in 10.0 s (10) |
+| ladder (from 70 %, mining + processing + boost) | warn 0.39 s < throttle 0.80 s < laser trip 1.28 s < >100 % 1.28 s < damage 3.28 s (2.9 s window) |
+| essential control | thrust identical with every load on at 120 % heat |
+| live batch | partial cancel refund = 20 − ⌈15.25/4⌉ = 16; tank full stops at 600 kg with reason, cancel returns 7; settings / loading pause: nothing moves; 3 s stall executes 31 steps (≤ 0.25 s); simRate 1e4: 8.42 kg/executed s |
+| reload / death | ordinary − committed invariant (100 kg) across reload; 260 kg final, once; death wreck = live ordinary (210.08 kg) + unconverted feedstock, protected excluded; recovery 100 % hull, 0 / 60 kg |
+| repair | refused without Fe-Ni (reason); 12 units → 50 → 62 % then stops "no Fe-Ni"; → 100 % stops with 62 left; Nanite: 0 % in 4 s without material, 1 % per unit with it |
+| emergency (zero fuel, 40,000 km out) | thrust held 1.5 s: 0 m/s; confirm lists loss; wreck = cargo, 0 kg fuel; recovery 100 %, 0 / 60 kg |
+
+**Starter reach** (`__test.gameplay.res.starterReach`, repeatable; world seed still unused): from
+the start, 18,409 rocks loaded, 10,286 with ≥ 1 hydrate unit; nearest 6.5 km (1 unit, 15.0 s
+mine: trips a cold laser), nearest cold-mineable 9.8 km (1 unit), richest within 25 km 19 units
+at 23.9 km (r 165 m, 10.3 s). Live proof (`reach`): recover with 0 / 60 kg, fly 22 km in 62 s
+for 6.44 kg of protected fuel, mine 19 hydrates in 10.5 s (heat 74 %), process to 76 kg ordinary.
+No starting-offset or allowance change needed: coasting is free, so the allowance buys ~5 hops of
+any length. **Next phases must know:** hydrate yields are thin (s/x-type rocks give 0–1 unit; rocks
+over ~300 m cannot be mined from a cold laser because extraction time caps at 18 s), so PR 2's
+content pass should author hydrate-rich targets rather than rely on rolls.
+
+**Deviations:** the 90 % throttle applies to processing and repair; the mining laser keeps its
+100 % trip (that IS its throttle) so mining alone behaves as before. Starter crafting recipes stay
+behind the old research catalogue (owner decision for PR 1), so the third M3.2 checkbox stays open;
+processing and repair need no research. Recovery is still the starting position (PR 2).
+Dashboard and comms overlay overlap at 390 px width as before (compacted to two pairs per row).
+`save-check` was run with `SAVE_PARTS=roundtrip,reload,isolation` only (fresh/legacy wipe the
+profile). Perf (`--perf bench:belt`, 1280×720): frame P50 14.4 ms (baseline 14.7 → 14.5), GPU
+11.12 ms, local scene 0.51 ms: within run-to-run noise of §13.2.
+
+**Review fixes (2026-11-16).** Mining heat modules: multipliers now act on mining's *net* rise
+and on idle cooling only (`miningQ = hm·(Q − rej) + cm·rej`, identical to before at 1/1), so the
+pre-M3 law holds per module: trip 18.74 / 23.07 / 16.66 / 28.83 s for ×0.80 / ×0.65 / ×0.90 /
+×0.52 (expected 18.75 / 23.08 / 16.67 / 28.85), cooldown ×1.30 cools in 7.69 s and leaves the
+trip at 15 s (gate `v2_miningHeatModules`). Sub-deadband Δv is carried and charged once it
+reaches 1 mm/s, not dropped (0.05 % throttle for 60 s: 3.6 m/s, 0.0288 kg; `v1_deadbandCarry`).
+Boost needs a non-zero thrust gate: an empty tank spends no capacitor and adds no heat. The dev
+speed override is never gated. Respawn (any adopt of `power`) drops heat damage and repair still
+due from the dead ship. At ≤ 520 px the comms overlay sits above the dashboard; the cargo bar
+under the top panel buttons at 390 px predates M3 (HUD/CargoHUD untouched) and stays open.
+
+### 13.4 M3.5 as built (2026-11-16)
+
+**One transit model on executed time** (`src/sim/ship/transitDrive.ts`, pure, no allocation in the
+step): `stepTransit` runs first in Spaceship's fixed 120 Hz loop, then `stepShip` adds its speed
+along the nose (`env.transitVel*`, steering ×0.6, autopilot heading override as in M1), then
+`stepShipResources` bills it. The render-delta integrator is gone; `TransitTicker` only mirrors
+phase changes into `transitStateAtom`, turns step events into toasts and refreshes the preview at
+4 Hz. Phases: idle → spooling (3 s = 360 steps) → accelerating / coasting / decelerating → idle.
+The near field is suspended while the drive carries speed (gate set per step).
+
+**Speed law** (`transitLaw`, shared by execution and `predictRoute`): per step, accelerate (800 km/s²)
+while the remaining distance still allows the *discrete* stop and the fuel left after the step still
+pays for that stop × (1 + 2 %); else coast; else brake. Braking is never heat-throttled; acceleration
+uses the processing/repair throttle (90 → 100 %). A braking leg re-accelerates only on 4 steps of slack
+(a receding target), and within 3 × peak × dt of its aim it brakes to rest (`arriving`). A float
+residue of the summed brake steps snaps to 0 (it otherwise coasted at 1e-14 km/s forever).
+Prediction = the same law, spool heat, heat law (`heatAfter`) and spend order rolled out in 1D; a
+moving aim uses a 3-pass intercept on the aim frame's velocity × simRate. Assumption shown in the
+HUD: "assumes no detours or mining".
+
+**Fuel and reserve.** 0.006 kg per km/s of delivered drive speed change (accelerating and braking),
+billed through the M3.2 hook (`req.transitDvKmps`) before manoeuvring thrust. While the drive carries
+speed, `propellantGate` withholds `speed × 0.006 × 1.02` kg from manoeuvring, so braking can always be
+paid; braking falls back to the protected allowance only if ordinary was taken by something else.
+Acceleration plans with ordinary fuel only: **zero ordinary refuses** ("the protected allowance is for
+manoeuvring"); a trip predicted over 10 min refuses ("too little propellant"). Fuel-limited legs cap
+the peak speed and coast. Abort (T during a burn, T between legs) = brake to rest; releasing T in the
+spool cancels free. Steering off autopilot during a burn continues manually (braking if it was braking).
+
+**Route.** `planRoute`: if the first body (other than the target) enters the line's clearance sphere
+(2 R, shrunk to a leg end that sits inside it, never below R + max(2 % R, 200 km)), ONE waypoint is
+placed beside it (pushed out through the line's closest point, 1.05 × 2 R, growing ×1.15 until both
+legs are clear); a second blocker refuses. Each leg stops at rest; the next spools automatically.
+Waypoints ride the blocker (live base + offset), arrival standoffs ride the target. The ordinary fuel
+is split between legs by ideal cost (∝ √distance) at each leg start; the predictor does the same.
+
+**Tuning** (resource table, Settings → Dev): `transitKgPerKmps` 0.006, `transitReserveMargin` 0.02,
+`transitSpoolHeatKW` 120, `transitBurnHeatKW` 95 (at full drive acceleration), `transitMaxTripS` 600,
+`transitRouteClearanceRadii` 2. **Changed M3.2 value:** `processingKgPerUnit` 4 → 20 (a tank is 30
+units; full tank still 60 s at 10 kg/s). M3.2 gates now read kg/unit from the table (the lifecycle /
+reload batch is 8 units = the same 160 kg as before).
+
+**Other changes.** Gaze targeting picks the POI nearest the nose (in the default-epoch eclipse the Sun
+sat behind the Moon and won the focus box). The POI marker ETA is the predictor's. Transit HUD:
+plan panel (ETA, fuel, on arrival, protected reserve, warnings: clearance route, low-fuel coast,
+refusal reason) before engaging and during the trip, top-right below the menu buttons. Audio: the
+engage cue plays only out of the spool; `coasting` counts as in transit. Arrival comms keep the
+destination on the arrival frame (it was cleared before, so `lunar_arrival_001` could not fire).
+
+**Measured** (gameplay-check `transit`, `transitLive`, `transitShots`; live at 1280×720):
+
+| Gate | Result |
+|---|---|
+| straight 1,000 / 50,000 / 380,000 km (pure) | ETA 5.24 / 18.82 / 46.59 s pred = exec; fuel 10.72 / 75.84 / 209.2 kg pred vs 10.68 / 75.80 / 209.2 exec (≤ 0.4 %); 380,000 km = 34.9 % of a tank, peak heat 33 % |
+| moving target, 1.02 km/s × rate (pure) | rate 1: 46.39 s, 208.24 kg, exact; rate 100: 46.39 vs 46.43 s, 208.24 vs 208.20 kg |
+| blocked line (pure) | 2 legs via Earth, 60.28 s, 260.5 kg, heat 35.2 %, min Earth distance 13,345 km (sphere 12,742) |
+| partial fuel 80 kg | coasts 49.3 s, 68.83 s (ideal 46.59), arrives at rest with 0.79 kg ordinary = predicted, protected untouched |
+| refusals | 5 kg: "trip would exceed 10 min", nothing spent; 0 ordinary / 60 protected: refused, protected untouched (also manual) |
+| abort | spool 0 kg; accel at 3,200 km/s 38.36 kg (2·v·c = 38.4); coast at 9,901 km/s 118.8 kg; decel; all end at rest, billed = transit meter, ordinary ≥ 0 |
+| pacing | 7,234 steps, bit-identical at 30 / 60 / 144 Hz, 0.25 s hitch and 2 s hitch (1.75 s dropped) |
+| hot start 97 % | 19.06 s (cold 18.82), arrives at rest |
+| Earth → Moon live, 2024-04-08 18:17 (default) | real gaze lock + T key; via Earth, 2 legs; ETA 56.19 s / fuel 240.8 kg / heat 34.9 % pred = exec; arrival 3,474.5 km from Luna's centre (standoff 3,474) in Luna's frame; min Earth distance 13,159 km; near field suspended ×2, re-seeded ×2, 0 owner violations |
+| Earth → Moon live, 2024-04-22 06:00 | direct (not blocked); 47.13 s / 211.76 kg / 33.1 % pred = exec; arrival +0.11 km |
+| same at simRate 100 | 47.12 vs 47.13 s, 211.68 vs 211.76 kg, arrival −7.8 km, Luna frame |
+| Moon side | 0 rocks at the Earth-side standoff; hop to the Lunar belt field: via Luna, 24.28 s / 87.6 kg pred = exec; there 120,055 rocks, 33,433 with hydrates, nearest 1.8 km (2 units), a 90-unit rock at 3.0 km (18 s mine: trips a cold laser); mined 2 units → processed +40 kg |
+| lifecycle mid-leg | settings / loading pause: speed, distance, fuel, heat, steps frozen; 3 s stall: 32 steps; death ends the leg at idle, nothing billed while dead |
+| sweep | 5 km/s (dev speed) into Luna from 20 km: destroyed at 0.15 km altitude |
+
+**Regressions** (page reloaded between scripts): flight-trace `sim,live,mouse,camera` all pass;
+physics-check `sim,damage,asteroids,transit` all pass (transit: suspended "transit", 2 re-seeds, 0
+owner violations); frames-check `ride,switch,transit` (transit now has a pass: arrival 0.1 km off
+the standoff, Luna frame); gameplay-check `migrate,tx,shared,live,res,m32,reach,transit,transitLive`
+pass; save-check `roundtrip,reload,isolation` pass; shell-check `title,continue` pass. Perf
+(`--perf bench:belt`, 1280×720): frame P50 14.8 ms, GPU 11.69 ms, local scene 0.50 ms (M3.2: 14.4 /
+11.12 / 0.51): run-to-run noise; transit adds no render work.
+
+**Deviations / notes for later phases.** Heat "≈ 35 % for Earth → Moon" is the store's PEAK with
+rejection running (33 % direct, 35 % via the clearance leg); a long burn levels off near 36 %, so
+transit alone never throttles. The protected allowance never accelerates the drive (it is braking
+backstop only). The default-start direct line to the Moon passes 11,050 km from Earth's centre, outside
+the old 6,571 km auto-brake sphere but inside the 2 R clearance sphere, so the route uses a clearance
+leg; at the second date (2024-04-22) the line is clear. With a 600 kg tank the 10 min cap refuses Mars
+(≈ 3,000 kg at closest approach) and every star marker (the pre-M3.5 drive reached them); a manual
+transit (no target) is still unbounded in range, capped in speed by the braking reserve (≈ 49,500 km/s
+from a full tank). The Moon standoff faces the arrival direction; the lunar field sits behind the Moon
+(reached by a second, Luna-cleared hop). The predictor assumes no manoeuvring thrust and no other heat
+loads during the trip. A receding aim (no frame of its own) is reached within 3 × peak speed × dt.
+
+**Review fixes (2026-11-16).** (1) A start inside a body's hard sphere (low orbit, respawn) is
+routable when the leg only recedes: the clearance radius is capped at the start distance. (2) While
+a leg runs, manoeuvring thrust spends ordinary above the braking reserve, then the protected
+allowance, and touches the reserve only with sub-deadband carry; gate `b_strafeCoast` strafes
+through the 80 kg coast: transit billed 79.204 kg = 2·c·peak, manoeuvring 1.28 kg from protected.
+(3) The dev speed override flies transit unbilled and uncapped by fuel (no empty-tank refusal).
+(4) A leg ending, an abort or a reset with T held needs a fresh press. (5) Pacing invariance is
+exact for static aims; a moving aim is resolved once per render frame (the ephemeris runs per
+frame), so at high sim rates pacings differ by a few km of miss distance, inside the arrival
+tolerance. (6) The preview refuses out-of-range targets from an analytic bound (d / fuel-capped
+peak > 1.1 × max trip) before any rollout, and the intercept passes stop on a timed-out leg.
+(7) Refusals are worded by cause: "Out of range for this tank: … needs about N kg" on a full tank
+or when N > tank, else "Too little propellant: … needs about N kg". (8) "Already at the
+destination" hides the plan panel and raises no toast. (9) A leg stopping short names its cause
+(obstruction, drive too hot, out of propellant). (10) Fuel deviation: the default-epoch Earth → Moon
+trip goes via the clearance leg and costs 240.8 kg = 40 % of a tank, not the ≈ 35 % of the direct
+380,000 km leg (34.9 %); tuning left at 0.006 kg per km/s, PR 2 balances against the 40 %.

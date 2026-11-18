@@ -131,6 +131,29 @@
   }
 }
 
+.settings-menu__abandon {
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-2;
+  padding: s.$space-3;
+  border: 1px solid rgba(255, 92, 92, 0.4);
+  border-radius: s.$radius-md;
+  background: rgba(255, 92, 92, 0.06);
+  color: s.$text-secondary;
+  font-size: 12px;
+  line-height: 1.4;
+
+  p {
+    margin: 0;
+  }
+}
+
+.settings-menu__abandon-title {
+  color: s.$accent-crit;
+  font-weight: 600;
+  font-size: 13px;
+}
+
 .settings-menu__exit-error {
   display: flex;
   flex-direction: column;

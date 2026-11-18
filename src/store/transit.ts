@@ -1,153 +1,160 @@
-// ---------------------------------------------------------------------------
-// Transit Drive — real-physics acceleration/deceleration through the solar system.
-//
-// No teleportation. The drive adds a true velocity vector to the ship.
-// Phases: idle → spooling (hold key) → accelerating → decelerating → idle
-// ---------------------------------------------------------------------------
+// Transit drive, store side: the runtime instance the fixed step mutates (sim/ship/transitDrive.ts),
+// per-frame inputs, the human-rate phase atom and the route preview the HUD reads.
 
-import { atom } from "jotai";
+import { atom, type createStore } from "jotai";
+import { Vector3 } from "three";
 import { modulesAtom } from "@/store/modules";
-import type { FrameId } from "@/sim/frames";
+import { miningStateAtom } from "@/store/mining";
+import { simRateAtom } from "@/store/simTime";
+import type { ShipInput } from "@/sim/ship/shipInput";
+import { frameVelocityKmps, isFrameId, resolveFramePositionKm, selectFrame, SYSTEM_FRAME_ID } from "@/sim/frames";
+import {
+  createTransitInputs,
+  createTransitPlan,
+  createTransitRuntime,
+  planTransit,
+  predictFromRuntime,
+  targetBodyId,
+  type TransitPhase,
+  type TransitPlan,
+  type TransitTarget,
+} from "@/sim/ship/transitDrive";
+import { FIXED_DT } from "@/sim/ship/shipConstants";
+import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { shipRes, shipReq } from "@/store/shipResources";
+import { getLocalPlayerShip } from "@/sim/entities";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+export {
+  TRANSIT_ACCEL_KMPS2,
+  TRANSIT_SPOOL_TIME_S,
+  TRANSIT_STEER_MULT,
+  type TransitPhase,
+  type TransitTarget,
+} from "@/sim/ship/transitDrive";
 
-/** Drive acceleration in km/s^2 (~81,600 g — handwaved by inertial compensation). */
-export const TRANSIT_ACCEL_KMPS2 = 800;
-
-/** Time in seconds the player must hold the transit key to engage. */
-export const TRANSIT_SPOOL_TIME_S = 3.0;
-
-/** Steering rate multiplier during transit (fraction of normal).
- *  Keeps the "heavy freight train" feel without making turns unresponsive,
- *  since velocity direction tracks ship forward during acceleration. */
-export const TRANSIT_STEER_MULT = 0.6;
-
-/** When velocity magnitude drops below this during deceleration, drive disengages. */
-const TRANSIT_DISENGAGE_SPEED_KMPS = 0.5; // just above normal max (0.4 km/s)
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type TransitPhase =
-  | "idle"
-  | "spooling"
-  | "accelerating"
-  | "decelerating";
-
-export type TransitTarget = {
-  id: string;
-  name: string;
-  /** LIVE array (body / field anchor) in system km, or relative to `frameId` when set. */
-  positionKm: [number, number, number];
-  frameId?: FrameId;
-  /** Stand-off distance (km) — autopilot aims this far short of the center. */
-  arrivalOffsetKm?: number;
-};
+type Store = ReturnType<typeof createStore>;
 
 export type TransitState = {
   phase: TransitPhase;
-  /** Spool-up progress 0..1 while holding the transit key. */
-  spoolProgress: number;
-  /** Current velocity magnitude in km/s (for HUD display). */
-  velocityKmps: number;
-  /** Peak velocity reached during this transit (for comms). */
-  peakVelocityKmps: number;
-  /** Targeted destination (if any — enables autopilot). */
+  /** Final destination while the autopilot flies a route (not the clearance point). */
   target: TransitTarget | null;
-  /** Distance remaining to target in km (null if no target). */
-  distanceToTargetKm: number | null;
-  /** Estimated time to arrival in seconds (null if no target). */
-  etaS: number | null;
+  legIndex: number;
+  legCount: number;
 };
 
-const DEFAULT_TRANSIT: TransitState = {
-  phase: "idle",
-  spoolProgress: 0,
-  velocityKmps: 0,
-  peakVelocityKmps: 0,
-  target: null,
-  distanceToTargetKm: null,
-  etaS: null,
-};
+const DEFAULT_TRANSIT: TransitState = { phase: "idle", target: null, legIndex: 0, legCount: 0 };
 
+/** Human-rate mirror: written on phase / leg / target changes only. */
 export const transitStateAtom = atom<TransitState>(DEFAULT_TRANSIT);
 
-// ---------------------------------------------------------------------------
-// Mutable buffer — written by TransitTicker at frame rate, read by Spaceship.
-// This avoids per-frame atom writes for the velocity vector.
-// ---------------------------------------------------------------------------
+/** The runtime the fixed step mutates; the keyboard writes `keyHeld` / `keyTapped`. */
+export const transitDriveBuffer = createTransitRuntime();
+/** Filled once per frame by the ship before its fixed steps. */
+export const transitInputs = createTransitInputs();
 
-export const transitDriveBuffer = {
-  /** Current transit velocity vector in km/s. Zero when idle. */
-  velocityKmps: { x: 0, y: 0, z: 0 },
-  /** Current phase (mirrors atom but accessible without subscription). */
-  phase: "idle" as TransitPhase,
-  /** Whether the transit key is currently held (written by KeyboardControls). */
-  keyHeld: false,
-  /** Spool accumulator in seconds (written by TransitTicker). */
-  spoolAccS: 0,
-  /** Whether autopilot is active (target was set when drive engaged). */
-  autopilot: false,
-  /** Autopilot aim point, system km; re-resolved every frame from the target below. */
-  autopilotTargetKm: { x: 0, y: 0, z: 0 },
-  /** Target captured at spool start; held by reference so a moving body stays current. */
-  autopilotTarget: null as TransitTarget | null,
-  /** Aim point minus target position, fixed at spool start (the arrival stand-off). */
-  autopilotOffsetKm: { x: 0, y: 0, z: 0 },
-  /** Whether the transit key was tapped (pressed and released) since last frame.
-   *  Used to trigger manual deceleration. Written by KeyboardControls, consumed by TransitTicker. */
-  keyTapped: false,
-  /** Ship forward direction (written by Spaceship.tsx each frame). */
-  shipForward: null as { x: number; y: number; z: number } | null,
-  /** Ship position in km (written by Spaceship.tsx each frame). */
-  shipPosKm: null as { x: number; y: number; z: number } | null,
-  /** Heading override for Spaceship.tsx: when non-null, Spaceship slerps ship
-   *  quaternion toward this direction (overrides player steering). Used for
-   *  autopilot auto-align during spool and continuous course correction. */
-  desiredForward: null as { x: number; y: number; z: number } | null,
-  /** Max slerp rate (rad/s) when desiredForward override is active. */
-  desiredForwardRateRadPerS: 0,
-  /** Ship forward direction snapshotted at spool start (for smooth auto-align lerp). */
-  spoolStartForward: null as { x: number; y: number; z: number } | null,
-};
+export const transitDriveOwnedAtom = atom((get) => get(modulesAtom).ownedModules.includes("special_transit_drive"));
 
-// ---------------------------------------------------------------------------
-// Derived: is transit drive owned?
-// ---------------------------------------------------------------------------
-
-export const transitDriveOwnedAtom = atom((get) => {
-  const modules = get(modulesAtom);
-  return modules.ownedModules.includes("special_transit_drive");
-});
-
-// ---------------------------------------------------------------------------
-// Targeted POI for autopilot
-// ---------------------------------------------------------------------------
-
+/** Targeted POI for autopilot. */
 export const targetedPOIAtom = atom<TransitTarget | null>(null);
 
-/**
- * Calculate transit time for a symmetric flip-and-burn at constant acceleration.
- * d = a * t^2 / 4  →  t = 2 * sqrt(d / a)
- */
-export function calcTransitTimeS(distanceKm: number): number {
-  if (distanceKm <= 0) return 0;
-  return 2 * Math.sqrt(distanceKm / TRANSIT_ACCEL_KMPS2);
-}
+export const isTransitBurning = (phase: TransitPhase): boolean =>
+  phase === "accelerating" || phase === "coasting" || phase === "decelerating";
 
-// ---------------------------------------------------------------------------
-// Actions
-// ---------------------------------------------------------------------------
-
-/** Reset transit state to idle (e.g. on death, or drive unequipped). */
+/** Reset to idle (death, teleport, drive removed). */
 export const resetTransitAtom = atom(null, (_get, set) => {
-  transitDriveBuffer.velocityKmps = { x: 0, y: 0, z: 0 };
   transitDriveBuffer.phase = "idle";
-  transitDriveBuffer.spoolAccS = 0;
+  transitDriveBuffer.speedKmps = transitDriveBuffer.velX = transitDriveBuffer.velY = transitDriveBuffer.velZ = 0;
   transitDriveBuffer.autopilot = false;
   transitDriveBuffer.keyTapped = false;
   set(transitStateAtom, { ...DEFAULT_TRANSIT });
 });
+
+/** Per frame, before the ship's fixed steps. */
+export function updateTransitInputs(store: Store, input: Readonly<ShipInput>): void {
+  transitInputs.owned = store.get(transitDriveOwnedAtom);
+  transitInputs.blocked = store.get(miningStateAtom).isMining;
+  transitInputs.steer = Math.max(Math.abs(input.yaw), Math.abs(input.pitch));
+  transitInputs.target = store.get(targetedPOIAtom);
+  transitInputs.coolingMult = shipReq.coolingMult;
+  transitInputs.freeFlight = shipReq.freeFlight;
+}
+
+// ── Route preview (human rate) ──────────────────────────────────────────────
+
+export interface TransitPreview {
+  /** Destination this preview is for. */
+  targetId: string;
+  targetName: string;
+  /** Planned trip (idle) or the rest of the running one. */
+  live: boolean;
+  ok: boolean;
+  reason: string | null;
+  etaS: number;
+  fuelKg: number;
+  arrivalOrdinaryKg: number;
+  protectedKg: number;
+  peakHeat01: number;
+  fuelLimited: boolean;
+  /** Fuel caps the peak speed: the leg coasts and takes longer. */
+  slow: boolean;
+  viaName: string | null;
+  legCount: number;
+}
+
+export const transitPreviewAtom = atom<TransitPreview | null>(null);
+
+/** Latest full prediction (numbers for tests and the POI marker). */
+export const transitPreviewPlan: TransitPlan = createTransitPlan();
+const _ship = new Vector3();
+const _aimNow = new Vector3();
+const _vA = new Vector3();
+const _vB = new Vector3();
+
+/**
+ * Aim velocity relative to the ship's frame, km per executed second (simRate included):
+ * the destination's frame minus the ship's. Uses the ephemeris (allocates): human rate only.
+ */
+export function updateAimVelocity(store: Store, target: TransitTarget | null, shipFrame: string): void {
+  if (!target) {
+    transitInputs.aimVelX = transitInputs.aimVelY = transitInputs.aimVelZ = 0;
+    return;
+  }
+  resolveFramePositionKm(target.positionKm, target.frameId, _aimNow);
+  const body = targetBodyId(target);
+  const frame = target.frameId ?? (body && isFrameId(body) ? body : selectFrame(_aimNow, SYSTEM_FRAME_ID));
+  frameVelocityKmps(frame, _vA).sub(frameVelocityKmps(shipFrame, _vB)).multiplyScalar(store.get(simRateAtom));
+  transitInputs.aimVelX = _vA.x;
+  transitInputs.aimVelY = _vA.y;
+  transitInputs.aimVelZ = _vA.z;
+}
+
+/** Recompute the preview for the targeted destination (or the running route). Returns it. */
+export function computeTransitPreview(store: Store): TransitPreview | null {
+  const ship = getLocalPlayerShip();
+  const rt = transitDriveBuffer;
+  const t = getResourceTuning();
+  const target = rt.phase !== "idle" && rt.autopilot ? rt.target : store.get(targetedPOIAtom);
+  if (!ship || !target || !store.get(transitDriveOwnedAtom)) return null;
+  _ship.copy(ship.absPosKm);
+  updateAimVelocity(store, target, ship.frameId);
+  const p = transitPreviewPlan;
+  const live = rt.phase !== "idle" && rt.autopilot;
+  if (live) predictFromRuntime(p, rt, _ship, shipRes, transitInputs, t, FIXED_DT);
+  else planTransit(p, _ship, target, rt.bodies, shipRes, transitInputs, t, FIXED_DT);
+  return {
+    targetId: target.id,
+    targetName: target.name,
+    live,
+    ok: p.ok,
+    reason: p.reason,
+    etaS: p.etaS,
+    fuelKg: p.fuelKg,
+    arrivalOrdinaryKg: p.arrivalOrdinaryKg,
+    protectedKg: p.protectedKg,
+    peakHeat01: p.peakHeat01,
+    fuelLimited: p.fuelLimited,
+    slow: p.ok && p.fuelLimited,
+    viaName: p.viaBodyId ? (p.viaName ?? rt.bodies.find((b) => b.id === p.viaBodyId)?.name ?? p.viaBodyId) : null,
+    legCount: p.legCount,
+  };
+}

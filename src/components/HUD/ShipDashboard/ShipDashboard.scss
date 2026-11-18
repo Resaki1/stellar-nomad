@@ -29,9 +29,18 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   padding: s.$space-2 s.$space-4;
-  grid-auto-rows: 1.2rem;
+  grid-auto-rows: minmax(1.2rem, auto);
   align-content: center;
   font-size: 0.8rem;
+
+  // Phones: two label/value pairs per row, so the taller M3 readout keeps a small footprint.
+  @media (max-width: 520px) {
+    width: 66vw;
+    grid-template-columns: auto 1fr auto 1fr;
+    column-gap: s.$space-2;
+    padding: s.$space-1 s.$space-3;
+    font-size: 0.72rem;
+  }
 
   // Actual speed (fill) against the throttle set-point (tick), both as a fraction of the limit.
   &__throttle {
@@ -58,6 +67,67 @@
     margin-left: -1px;
     background: s.$accent-info;
     box-shadow: 0 0 4px s.$glow-info;
+  }
+
+  // Ordinary fuel (fill of the tank) beside the protected allowance (small separate cell).
+  &__fuel {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 14%;
+    gap: 3px;
+    height: 3px;
+    margin: s.$space-1 0;
+  }
+
+  &__fuel-tank,
+  &__fuel-reserve,
+  &__heat {
+    position: relative;
+    background: s.$stroke-faint;
+    border-radius: s.$radius-pill;
+    overflow: hidden;
+  }
+
+  &__fuel-fill,
+  &__fuel-reserve-fill,
+  &__heat-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: s.$text-secondary;
+    border-radius: s.$radius-pill;
+  }
+
+  &__fuel-fill--low,
+  &__heat-fill--hot {
+    background: s.$accent-warn;
+  }
+
+  &__fuel-reserve-fill {
+    background: s.$accent-info;
+  }
+
+  &__heat {
+    grid-column: 1 / -1;
+    height: 3px;
+    margin: s.$space-1 0;
+    overflow: visible;
+  }
+
+  &__heat-mark {
+    position: absolute;
+    top: -2px;
+    width: 1px;
+    height: 7px;
+    background: s.$accent-warn;
+    opacity: 0.7;
+  }
+
+  &__reason {
+    grid-column: 1 / -1;
+    color: s.$accent-warn;
+    font-size: 0.7rem;
+    line-height: 1.1;
+    white-space: normal;
   }
 
   &__health--warning {

@@ -1,42 +1,50 @@
-import type { PlayerId, WorldState, WreckRecord } from "@/save/types";
-import { isFrameId } from "@/sim/frames";
+import { MAX_RECEIPTS } from "@/save/defaults";
+import type { PlayerId, PlayerState, WorldState } from "@/save/types";
 import { AsteroidDeltaIndex } from "./asteroidDeltas";
-import type { WorldCommand, WorldEvent } from "./commands";
+import type { OperationOutcome, OperationType, WorldEvent, WorldOperation } from "./commands";
+import { reduce } from "./reducers";
 
 export type WorldListener = (event: WorldEvent) => void;
 
 /**
- * The only writer of shared world state. M4 adds a remote authority whose acceptance arrives
- * asynchronously: views must update from EVENTS, and `submit`'s boolean is only local gating.
+ * The only writer of shared world state, and of player state touched by a world operation.
+ * Local acceptance is synchronous; M4's remote one answers "pending" and settles via events.
  */
 export interface Authority {
-  submit(cmd: WorldCommand, by: PlayerId): boolean;
+  submit(op: WorldOperation, by: PlayerId): OperationOutcome;
   subscribe(listener: WorldListener): () => void;
 }
 
-const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-
-function cleanItems(items: Record<string, number>): Record<string, number> | null {
-  const out: Record<string, number> = {};
-  let any = false;
-  for (const k of Object.keys(items)) {
-    const v = items[k];
-    if (!isNum(v) || v < 0 || !Number.isInteger(v)) return null;
-    if (v > 0) {
-      out[k] = v;
-      any = true;
-    }
-  }
-  return any ? out : null;
-}
-
-let wreckSeq = 1;
+/**
+ * Retryable transfers. time.set / collision destroys are idempotent by state, so not logged.
+ * ship.repair is not: two per second of repair would evict the bounded log within minutes.
+ */
+const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
+  "asteroid.mine",
+  "item.craft",
+  "research.start",
+  "research.complete",
+  "ship.destroy",
+  "ship.respawn",
+  "wreck.collect",
+  "processing.start",
+  "processing.cancel",
+]);
 
 export class LocalAuthority implements Authority {
   readonly asteroids = new AsteroidDeltaIndex();
   private readonly listeners = new Set<WorldListener>();
+  private receiptSource: WorldState["receipts"] | null = null;
+  private readonly receiptIds = new Set<string>();
 
-  constructor(private readonly deps: { getWorld: () => WorldState; markDirty: () => void }) {}
+  constructor(
+    private readonly deps: {
+      getWorld: () => WorldState;
+      getPlayer: (id: PlayerId) => PlayerState | null;
+      /** `urgent` for operations a reload must not lose. */
+      markDirty: (urgent: boolean) => void;
+    },
+  ) {}
 
   /** Read-only lookup for chunk generation (O(1) per id); always reads the current world. */
   readonly destroyedAsteroids = {
@@ -50,10 +58,15 @@ export class LocalAuthority implements Authority {
     },
   };
 
-  /** Current world, with the asteroid index synced to it. */
+  /** Current world, with the asteroid and receipt indices synced to it. */
   world(): WorldState {
     const w = this.deps.getWorld();
     this.asteroids.sync(w.asteroidDeltas);
+    if (w.receipts !== this.receiptSource) {
+      this.receiptSource = w.receipts;
+      this.receiptIds.clear();
+      for (const r of w.receipts) this.receiptIds.add(r.opId);
+    }
     return w;
   }
 
@@ -63,71 +76,48 @@ export class LocalAuthority implements Authority {
   }
 
   private emit(e: WorldEvent): void {
-    this.listeners.forEach((l) => l(e));
+    // A throwing listener must not stop the mirrors from seeing a committed result.
+    this.listeners.forEach((l) => {
+      try {
+        l(e);
+      } catch (err) {
+        console.error("[authority] listener failed", e.type, err);
+      }
+    });
   }
 
-  submit(cmd: WorldCommand, by: PlayerId): boolean {
+  /** Validate → commit (one synchronous task, so no save flush can land in between) → publish. */
+  submit(op: WorldOperation, by: PlayerId): OperationOutcome {
     const w = this.world();
-    switch (cmd.type) {
-      case "asteroid.destroy": {
-        const id = cmd.instanceId;
-        if (!cmd.fieldId || !cmd.chunkKey || !isNum(id) || id < 0 || id > 0xffffffff || !Number.isInteger(id)) return false;
-        if (this.asteroids.has(cmd.fieldId, cmd.chunkKey, id)) return false;
-        this.asteroids.add(cmd.fieldId, cmd.chunkKey, id);
-        this.deps.markDirty();
-        this.emit({ type: "asteroid.destroyed", by, fieldId: cmd.fieldId, chunkKey: cmd.chunkKey, instanceId: id, cause: cmd.cause });
-        return true;
+    let outcome: OperationOutcome;
+    if (typeof op.opId !== "string" || op.opId === "") {
+      outcome = { status: "rejected", opId: String(op.opId), by, reason: "invalid" };
+    } else if (this.receiptIds.has(op.opId)) {
+      outcome = { status: "duplicate", opId: op.opId, by };
+    } else {
+      const now = Date.now();
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now });
+      if ("reason" in r) {
+        outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing };
+      } else {
+        r.apply();
+        if (RECEIPTED.has(op.type)) this.addReceipt(w, { opId: op.opId, type: op.type, by, at: now });
+        this.deps.markDirty(RECEIPTED.has(op.type));
+        outcome = { status: "accepted", opId: op.opId, by, result: r.result };
+        r.events.forEach((e) => this.emit(e));
+        if (r.playerKeys.length > 0) this.emit({ type: "player.changed", by, playerId: by, keys: r.playerKeys });
       }
-      case "wreck.create": {
-        const items = cleanItems(cmd.items);
-        const p = cmd.positionKm;
-        if (!items || !isFrameId(cmd.frameId) || p.length !== 3 || !p.every(isNum)) return false;
-        const now = Date.now();
-        const wreck: WreckRecord = {
-          id: `wreck-${now}-${wreckSeq++}`,
-          frameId: cmd.frameId,
-          positionKm: [p[0], p[1], p[2]],
-          items,
-          createdAt: now,
-        };
-        w.wrecks = [...w.wrecks, wreck];
-        this.deps.markDirty();
-        this.emit({ type: "wreck.created", by, wreck });
-        return true;
-      }
-      case "wreck.take": {
-        const idx = w.wrecks.findIndex((x) => x.id === cmd.wreckId);
-        const take = cleanItems(cmd.items);
-        if (idx < 0 || !take) return false;
-        const wreck = w.wrecks[idx];
-        const left: Record<string, number> = { ...wreck.items };
-        for (const k of Object.keys(take)) {
-          if ((left[k] ?? 0) < take[k]) return false;
-          left[k] -= take[k];
-          if (left[k] === 0) delete left[k];
-        }
-        if (Object.keys(left).length === 0) {
-          w.wrecks = w.wrecks.filter((_, i) => i !== idx);
-          this.deps.markDirty();
-          this.emit({ type: "wreck.removed", by, wreckId: wreck.id });
-        } else {
-          const next = { ...wreck, items: left };
-          w.wrecks = w.wrecks.map((x, i) => (i === idx ? next : x));
-          this.deps.markDirty();
-          this.emit({ type: "wreck.changed", by, wreck: next });
-        }
-        return true;
-      }
-      case "time.set": {
-        if (cmd.epochMs === undefined && cmd.rate === undefined) return false;
-        if (cmd.epochMs !== undefined && !isNum(cmd.epochMs)) return false;
-        if (cmd.rate !== undefined && !isNum(cmd.rate)) return false;
-        if (cmd.epochMs !== undefined) w.simEpochMs = cmd.epochMs;
-        if (cmd.rate !== undefined) w.simRate = cmd.rate;
-        this.deps.markDirty();
-        this.emit({ type: "time.changed", by, epochMs: cmd.epochMs, rate: cmd.rate });
-        return true;
-      }
+    }
+    this.emit({ type: "op.settled", outcome });
+    return outcome;
+  }
+
+  private addReceipt(w: WorldState, r: WorldState["receipts"][number]): void {
+    w.receipts.push(r);
+    this.receiptIds.add(r.opId);
+    while (w.receipts.length > MAX_RECEIPTS) {
+      const old = w.receipts.shift();
+      if (old) this.receiptIds.delete(old.opId);
     }
   }
 }

@@ -29,12 +29,14 @@ const KeyboardControls = () => {
       onPress(action) {
         if (action !== "transitDrive") return;
         const phase = transitDriveBuffer.phase;
-        // TransitTicker ignores the key without a drive or while mining; reject audibly.
+        // The drive ignores the key without a module or while mining; reject audibly.
         if (phase === "idle" && (!store.get(transitDriveOwnedAtom) || store.get(miningStateAtom).isMining)) {
           playAudio("ui.reject");
+        } else if (phase === "spooling" && transitDriveBuffer.autoSpool) {
+          transitDriveBuffer.keyTapped = true; // abort the route between legs
         } else if (phase === "idle" || phase === "spooling") {
           transitDriveBuffer.keyHeld = true;
-        } else if (phase === "accelerating" || phase === "decelerating") {
+        } else {
           transitDriveBuffer.keyTapped = true;
         }
       },

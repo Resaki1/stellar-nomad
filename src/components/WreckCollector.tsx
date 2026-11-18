@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
 import { wrecksAtom, collectWreckAtom, isDeadAtom } from "@/store/death";
-import { cargoRemainingUnitsAtom, addCargoAtom } from "@/store/cargo";
+import { signalAudioActionAtom } from "@/store/audioSignals";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { frameOriginKm } from "@/sim/frames";
 import { emitterColor } from "@/components/space/emissivePhotometry";
@@ -19,6 +19,8 @@ const BEAM_ACTIVATION_KM = 0.3; // 300 meters
 const COLLECTION_DIST_KM = 0.01; // 10 meters
 /** Pull speed — fraction of remaining distance closed per second. */
 const PULL_RATE = 1.5;
+/** After a rejected collection (nothing fits), wait before asking the authority again. */
+const RETRY_AFTER_S = 1;
 
 /** Max wrecks we allocate GPU slots for. */
 const MAX_WRECKS = 16;
@@ -87,6 +89,8 @@ type BeamState = {
   x: number; y: number; z: number;
   /** Is the beam currently active (ship in range)? */
   active: boolean;
+  /** Clock seconds before which no collection is attempted. */
+  retryAt: number;
 };
 
 const WreckCollector = memo(function WreckCollector() {
@@ -106,7 +110,7 @@ const WreckCollector = memo(function WreckCollector() {
     mesh.instanceMatrix.needsUpdate = true;
   }, []);
 
-  useFrame((_, delta) => {
+  useFrame(({ clock }, delta) => {
     const wrecks = store.get(wrecksAtom);
     const mesh = meshRef.current;
     const beamLines = beamLinesRef.current;
@@ -139,6 +143,7 @@ const WreckCollector = memo(function WreckCollector() {
           wreckId: w.id,
           x: w.positionKm[0], y: w.positionKm[1], z: w.positionKm[2],
           active: false,
+          retryAt: 0,
         };
         states.set(w.id, bs);
       }
@@ -167,20 +172,12 @@ const WreckCollector = memo(function WreckCollector() {
         const cdy = bs.y - sy;
         const cdz = bs.z - sz;
         const cd2 = cdx * cdx + cdy * cdy + cdz * cdz;
-        if (cd2 < collectR2) {
-          const remaining = store.get(cargoRemainingUnitsAtom);
-          if (remaining > 0) {
-            const collected = store.set(collectWreckAtom, {
-              wreckId: w.id,
-              cargoRemaining: remaining,
-            });
-            for (const [resourceId, amount] of Object.entries(collected)) {
-              if (amount > 0) {
-                store.set(addCargoAtom, { resourceId, amount });
-              }
-            }
+        if (cd2 < collectR2 && clock.elapsedTime >= bs.retryAt) {
+          if (store.set(collectWreckAtom, w.id)) {
+            store.set(signalAudioActionAtom, "loot.acquire");
             continue;
           }
+          bs.retryAt = clock.elapsedTime + RETRY_AFTER_S;
         }
       }
       // When out of range: cube stays at its current km position (no drift back)

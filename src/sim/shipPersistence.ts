@@ -2,10 +2,23 @@
 import { Vector3 } from "three";
 import { getActiveSave, getLocalPlayerState, registerCollector } from "@/save/activeSave";
 import type { ShipPose } from "@/save/types";
-import { frameOriginKm, isFrameId } from "@/sim/frames";
+import { SYSTEM_FRAME_ID, frameOriginKm, isFrameId, selectFrame, type FrameId } from "@/sim/frames";
 import type { ShipState } from "@/sim/ship/shipState";
 
 const _origin = new Vector3();
+/** Set while an operation-committed pose waits for its teleport; the live ship is stale until then. */
+let poseHeld = false;
+
+export function holdSavedPose(on: boolean): void {
+  poseHeld = on;
+}
+
+/** Frame-relative pose for a system-frame position, km, at the current ephemeris instant. */
+export function relativePose(absKm: readonly [number, number, number]): { frameId: FrameId; positionKm: [number, number, number] } {
+  const frameId = selectFrame({ x: absKm[0], y: absKm[1], z: absKm[2] }, SYSTEM_FRAME_ID);
+  frameOriginKm(frameId, _origin);
+  return { frameId, positionKm: [absKm[0] - _origin.x, absKm[1] - _origin.y, absKm[2] - _origin.z] };
+}
 
 export function loadShipState(): ShipPose | null {
   if (!getActiveSave()) return null;
@@ -23,6 +36,7 @@ export function persistedAbsoluteKm(saved: ShipPose): [number, number, number] {
 /** Sample the live ship into the save at every flush. Returns the unregister function. */
 export function collectShipPose(ship: ShipState): () => void {
   return registerCollector(() => {
+    if (poseHeld) return;
     const player = getLocalPlayerState();
     const pose = player.ship ?? { frameId: ship.frameId, positionKm: [0, 0, 0], quaternion: [0, 0, 0, 1] };
     pose.frameId = ship.frameId;

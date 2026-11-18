@@ -19,6 +19,15 @@ import {
 import { saveTuningPrefs, tuningJson } from "@/store/flightTuningPrefs";
 
 const UNITS: [RegExp, string][] = [
+  [/KgPerMps$/, " (kg per m/s)"],
+  [/KgPerRadps$/, " (kg per rad/s)"],
+  [/KgPerUnit$/, " (kg/unit)"],
+  [/KgPerS$/, " (kg/s)"],
+  [/Kg$/, " (kg)"],
+  [/KW$/, " (kW)"],
+  [/KJ$/, " (kJ)"],
+  [/PerS$/, " (/s)"],
+  [/01$/, " (0–1)"],
   [/MPerMps2$/, " (m per m/s²)"],
   [/DegPerPx$/, " (°/px)"],
   [/DegS2$/, " (°/s²)"],

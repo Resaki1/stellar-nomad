@@ -15,6 +15,7 @@ import { researchAtom, researchElapsedAtom, lastCompletedResearchIdAtom } from "
 import { settingsIsOpenAtom } from "@/store/store";
 import { addToastAtom } from "@/store/toast";
 import { getResearchNode, getItemDef } from "@/data/content";
+import { newOpId, runOperation } from "@/store/operations";
 
 export default function ResearchTicker() {
   const store = useStore();
@@ -55,31 +56,18 @@ export default function ResearchTicker() {
     store.set(researchElapsedAtom, newElapsed);
 
     if (newElapsed >= node.durationSeconds) {
-      // Complete — persist immediately
       elapsedRef.current = 0;
       store.set(researchElapsedAtom, 0);
-      store.set(researchAtom, {
-        ...state,
-        completedNodes: [...state.completedNodes, node.id],
-        activeResearch: null,
-      });
-
-      // Signal for comms triggers
-      store.set(lastCompletedResearchIdAtom, node.id);
-
-      // Toast
-      const unlockedNames = (node.unlocks.items ?? [])
-        .map((id) => {
-          const def = getItemDef(id);
-          return def?.name ?? id;
-        })
-        .join(", ");
-
-      store.set(addToastAtom, {
-        audio: "silent",
-        message: `Research Complete: ${node.name}`,
-        detail: unlockedNames ? `Blueprints unlocked: ${unlockedNames}` : undefined,
-        durationMs: 5000,
+      runOperation({ type: "research.complete", opId: newOpId(), nodeId: node.id, elapsedS: newElapsed }, (o) => {
+        if (o.status !== "accepted" || o.result.type !== "research.complete") return;
+        store.set(lastCompletedResearchIdAtom, node.id);
+        const unlockedNames = o.result.unlockedItems.map((id) => getItemDef(id)?.name ?? id).join(", ");
+        store.set(addToastAtom, {
+          audio: "silent",
+          message: `Research Complete: ${node.name}`,
+          detail: unlockedNames ? `Blueprints unlocked: ${unlockedNames}` : undefined,
+          durationMs: 5000,
+        });
       });
     } else {
       // Persist periodically (every ~5s) for crash recovery

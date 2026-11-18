@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Check, Circle, CircleDot, Lock, Microscope } from "lucide-react";
 import { playAudio } from "@/audio";
 
@@ -9,8 +9,9 @@ import {
   researchAtom,
   assaySamplesAtom,
   activeResearchNodeAtom,
-  startResearchAtom,
+  completedNodeSetAtom,
 } from "@/store/research";
+import { describeRejection, newOpId, runOperation } from "@/store/operations";
 import { addToastAtom } from "@/store/toast";
 import {
   RESEARCH_NODES,
@@ -147,15 +148,11 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
   const assaySamples = useAtomValue(assaySamplesAtom);
   const activeResearch = useAtomValue(activeResearchNodeAtom);
   const researchState = useAtomValue(researchAtom);
-  const startResearch = useSetAtom(startResearchAtom);
   const addToast = useSetAtom(addToastAtom);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  const completed = useMemo(
-    () => new Set(researchState.completedNodes),
-    [researchState.completedNodes],
-  );
+  const completed = useAtomValue(completedNodeSetAtom);
 
   const activeId = researchState.activeResearch?.nodeId ?? null;
 
@@ -168,11 +165,10 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
   }
 
   const handleStart = (nodeId: string) => {
-    const ok = startResearch(nodeId);
-    if (ok) playAudio("click.hard");
-    if (!ok) {
-      addToast({ audio: "reject", message: "Cannot start research", durationMs: 2000 });
-    }
+    runOperation({ type: "research.start", opId: newOpId(), nodeId }, (o) => {
+      if (o.status === "accepted") playAudio("click.hard");
+      else if (o.status === "rejected") addToast({ audio: "reject", message: "Cannot start research", detail: describeRejection(o), durationMs: 2500 });
+    });
   };
 
   const selectedDef = selectedNodeId ? nodeMap.get(selectedNodeId) : null;

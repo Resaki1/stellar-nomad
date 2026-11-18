@@ -57,10 +57,11 @@ import { systemConfigAtom } from "@/store/system";
 import { flush, getActiveSave, resetActiveWorld, saveInfo, snapshotActiveData, suspendSaveWrites } from "@/save/activeSave";
 import { exportWorld, importWorld } from "@/save/saveDb";
 import { getLocalPlayerId, setLastWorldId } from "@/save/playerId";
-import type { WorldCommand } from "@/sim/world/commands";
-import { worldAuthority } from "@/sim/world/worldAuthority";
+import type { WorldOperation } from "@/sim/world/commands";
+import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
+import { createGameplayHarness } from "./gameplayHarness";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
-import { targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
+import { isTransitBurning, targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { poiBuffer } from "@/store/poi";
 import { simulateFlight, type FlightScript, type FlightSimResult } from "@/sim/ship/flightSim";
 import { simulatePhysics, type PhysicsScript, type PhysicsSimResult } from "@/sim/physics/physicsSim";
@@ -511,7 +512,7 @@ export function createTestHarness(store: Store) {
      * Target a body (same POI shape as gaze targeting) and engage the autopilot: holds
      * the transit key through the spool. Grants the transit-drive module if missing.
      */
-    async transitTo(bodyId: string): Promise<{ engaged: boolean; arrivalOffsetKm: number }> {
+    async transitTo(bodyId: string): Promise<{ engaged: boolean; arrivalOffsetKm: number; legCount: number; refusal: string | null }> {
       const body = allBodyDefs().find((b) => b.id === bodyId);
       if (!body) throw new Error(`[test] unknown body "${bodyId}"`);
       if (!store.get(transitDriveOwnedAtom)) {
@@ -526,12 +527,13 @@ export function createTestHarness(store: Store) {
         arrivalOffsetKm,
       });
       transitDriveBuffer.keyHeld = true;
+      const refused0 = transitDriveBuffer.ev.refused;
       try {
-        for (let i = 0; i < 2000 && transitDriveBuffer.phase !== "accelerating"; i++) await frames(1);
+        for (let i = 0; i < 2000 && !isTransitBurning(transitDriveBuffer.phase) && transitDriveBuffer.ev.refused === refused0; i++) await frames(1);
       } finally {
         transitDriveBuffer.keyHeld = false;
       }
-      return { engaged: transitDriveBuffer.phase === "accelerating" && transitDriveBuffer.autopilot, arrivalOffsetKm };
+      return { engaged: isTransitBurning(transitDriveBuffer.phase) && transitDriveBuffer.autopilot, arrivalOffsetKm, legCount: transitDriveBuffer.legCount, refusal: transitDriveBuffer.ev.refused !== refused0 ? transitDriveBuffer.ev.refusal : null };
     },
 
     /** Teleport to a bench scenario id or an ad-hoc `SceneSpec`. Ship stops dead. */
@@ -794,8 +796,15 @@ export function createTestHarness(store: Store) {
       reset: () => resetActiveWorld(),
     },
 
+    /** M3 domain operations and save fixtures (gameplay-check.mjs). */
+
+    gameplay: createGameplayHarness(store),
+
+
     world: {
-      submit: (cmd: WorldCommand): boolean => worldAuthority.submit(cmd, getLocalPlayerId()),
+      /** Legacy gate shape: no opId needed, true when accepted. */
+      submit: (cmd: Omit<WorldOperation, "opId">): boolean =>
+        worldAuthority.submit({ ...cmd, opId: newOpId() } as WorldOperation, getLocalPlayerId()).status === "accepted",
       /** Loaded asteroid instances nearest the ship: id, field, chunk, distance (km). */
       asteroidsNearShip(n = 5) {
         const rt = getActiveAsteroidRuntime();

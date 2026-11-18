@@ -284,7 +284,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_nanite_repair_mk1",
     name: "Nanite Repair System",
-    uiDesc: "Slow passive hull regeneration",
+    uiDesc: "Automatic hull repair while damaged (pays Fe-Ni metal like manual repair)",
     slot: "hull",
     type: "module",
     effects: [
@@ -494,6 +494,35 @@ export const ITEMS: ItemDef[] = [
     recipe: { silicates: 800, fe_ni_metal: 600, carbon: 200, sulfur: 100, hydrates: 50 },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Onboard processing and repair (M3.2): available from the start, no research gate.
+// Conversion rates and costs are tuning values (src/sim/ship/resourceTuning.ts).
+// ---------------------------------------------------------------------------
+
+export type ProcessingRecipeDef = {
+  id: string;
+  name: string;
+  uiDesc: string;
+  /** Cargo feedstock consumed per unit. */
+  inputId: string;
+};
+
+export const PROCESSING_RECIPES: ProcessingRecipeDef[] = [
+  {
+    id: "hydrate_propellant",
+    name: "Propellant from hydrates",
+    uiDesc: "Electrolyses hydrate feedstock into ordinary propellant",
+    inputId: "hydrates",
+  },
+];
+
+export function getProcessingRecipe(id: string): ProcessingRecipeDef | undefined {
+  return PROCESSING_RECIPES.find((r) => r.id === id);
+}
+
+/** Structural material hull repairs consume. */
+export const REPAIR_MATERIAL_ID = "fe_ni_metal";
 
 // ---------------------------------------------------------------------------
 // Research nodes
@@ -860,7 +889,7 @@ export function describeEffect(eff: { key: string; op: string; value: number | b
  * Check if a research node's prerequisites are satisfied.
  * Handles both standard prerequisites and special prerequisiteRule.
  */
-export function arePrerequisitesMet(node: ResearchNodeDef, completedNodes: Set<string>): boolean {
+export function arePrerequisitesMet(node: ResearchNodeDef, completedNodes: ReadonlySet<string>): boolean {
   // Check standard prerequisites
   if (!node.prerequisites.every((p) => completedNodes.has(p))) return false;
 

@@ -35,9 +35,9 @@ export type MiningState = {
   isMining: boolean;
   /** Mining progress from 0 to 1 */
   miningProgress: number;
-  /** Mining laser heat from 0 to 1 (1 = overheated). */
+  /** Ship thermal store 0..1 (shared with boost and processing; the laser trips at 1). */
   laserHeat: number;
-  /** True when the laser has overheated and is still cooling down. */
+  /** The laser's over-temperature trip, until the beam is off and heat is below 100 %. */
   isOverheated: boolean;
 };
 
@@ -108,11 +108,10 @@ export const pingWorldBuffer: {
   generation: number;
 } = { candidates: [], generation: 0 };
 
-/**
- * Mutable shared buffer for heat-sink effects.
- * Written by Hotbar when a heat-sink consumable is used.
- * Read (and cleared) by MiningSystem each frame so laserHeatRef stays in sync.
- */
+/** MiningSystem's beam request for the next fixed steps; the resource step grants the work. */
+export const miningBeamRequest = { on: false };
+
+/** Heat-sink consumables (Hotbar); applied to the ship thermal store by Spaceship. */
 export const heatSinkBuffer: {
   pendingMultiplier: number | null;
   pendingAdd: number | null;

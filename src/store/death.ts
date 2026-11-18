@@ -1,72 +1,55 @@
 import { atom } from "jotai";
-import { cargoAtom } from "@/store/cargo";
 import { savedAtom } from "@/store/savedAtom";
-import { getLocalPlayerId } from "@/save/playerId";
 import type { WreckRecord } from "@/save/types";
 import type { FrameId } from "@/sim/frames";
-import { worldAuthority } from "@/sim/world/worldAuthority";
+import type { OperationOutcome, Transfer } from "@/sim/world/commands";
+import { newOpId, runOperation } from "@/store/operations";
+import { devTeleportAtom } from "@/store/dev";
+import { holdSavedPose, relativePose } from "@/sim/shipPersistence";
 
 /** A persistent marker where a ship was destroyed, holding its cargo. World state. */
 export type Wreck = WreckRecord;
 
-/** Whether the local ship is currently destroyed (player save). */
+/** Whether the local ship is currently destroyed (player save). Written by operations. */
 export const isDeadAtom = savedAtom("player", "isDead", false);
 
 /** Read-only mirror of the world's wrecks, kept in sync from authority events (worldBridge.ts). */
 export const wrecksMirrorAtom = atom<Wreck[]>([]);
 export const wrecksAtom = atom((get) => get(wrecksMirrorAtom));
 
-/** Ship death: the player part here, the wreck through the authority. */
+/** Ship death: wreck + cargo clear + dead state as ONE operation. */
 export const dieAtom = atom(
   null,
   (
     get,
-    set,
+    _set,
     payload: {
       frameId: FrameId;
       /** Relative to `frameId`, km. */
       positionKm: [number, number, number];
-      cargoItems: Record<string, number>;
     },
-  ) => {
-    if (get(isDeadAtom)) return;
-    set(isDeadAtom, true);
-    if (Object.values(payload.cargoItems).some((v) => v > 0)) {
-      worldAuthority.submit(
-        { type: "wreck.create", frameId: payload.frameId, positionKm: payload.positionKm, items: { ...payload.cargoItems } },
-        getLocalPlayerId(),
-      );
-    }
-    // Clear cargo immediately so a reload doesn't let the player keep items.
-    set(cargoAtom, { ...get(cargoAtom), items: {} });
+  ): OperationOutcome | null => {
+    if (get(isDeadAtom)) return null;
+    return runOperation({ type: "ship.destroy", opId: newOpId(), frameId: payload.frameId, positionKm: payload.positionKm });
   },
 );
 
-/** Respawn the player: clear isDead (wrecks persist). */
-export const respawnAtom = atom(null, (_get, set) => {
-  set(isDeadAtom, false);
+/** Clear the dead state, restore hull and commit the recovery pose (system frame, km) in one operation. */
+export const respawnAtom = atom(null, (_get, set, positionKm: [number, number, number]): void => {
+  const pose = relativePose(positionKm);
+  runOperation({ type: "ship.respawn", opId: newOpId(), frameId: pose.frameId, positionKm: pose.positionKm }, (o) => {
+    if (o.status !== "accepted") return;
+    // Spaceship releases the hold when it applies the warp.
+    holdSavedPose(true);
+    set(devTeleportAtom, { positionKm });
+  });
 });
 
-/**
- * Take up to `cargoRemaining` units from a wreck. Returns what was granted (only on acceptance);
- * partial collection leaves the rest in the wreck.
- */
-export const collectWreckAtom = atom(
-  null,
-  (get, _set, payload: { wreckId: string; cargoRemaining: number }): Record<string, number> => {
-    const wreck = get(wrecksMirrorAtom).find((w) => w.id === payload.wreckId);
-    if (!wreck) return {};
-    const take: Record<string, number> = {};
-    let budget = payload.cargoRemaining;
-    for (const [resourceId, amount] of Object.entries(wreck.items)) {
-      const n = Math.min(amount, budget);
-      if (n > 0) {
-        take[resourceId] = n;
-        budget -= n;
-      }
-    }
-    if (Object.keys(take).length === 0) return {};
-    const ok = worldAuthority.submit({ type: "wreck.take", wreckId: wreck.id, items: take }, getLocalPlayerId());
-    return ok ? take : {};
-  },
-);
+/** Take what fits from a wreck. The returned transfer exists only on acceptance. */
+export const collectWreckAtom = atom(null, (_get, _set, wreckId: string): Transfer | null => {
+  const out: { taken: Transfer | null } = { taken: null };
+  runOperation({ type: "wreck.collect", opId: newOpId(), wreckId }, (o) => {
+    if (o.status === "accepted" && o.result.type === "wreck.collect") out.taken = o.result.taken;
+  });
+  return out.taken;
+});

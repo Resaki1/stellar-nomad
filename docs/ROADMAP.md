@@ -299,7 +299,8 @@ gameplay documentation update does not mark M2 complete.
 
 Detailed design, code map, migrations, ordered phases M3.0–M3.8, and verification:
 [`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md). Agreed gameplay/story decisions:
-[`GAMEPLAY_AND_STORY.md`](GAMEPLAY_AND_STORY.md). No M3 implementation is claimed yet.
+[`GAMEPLAY_AND_STORY.md`](GAMEPLAY_AND_STORY.md). Ships as two PRs (2026-11-16, see the plan's §13);
+M3.0/M3.1 (save schema 2, domain operations, world-owned research) are built on `m3a-survival-core`.
 
 - **Outcome:** a self-sufficient probe can prepare a worthwhile lunar-orbit expedition,
   establish a new recovery point, and keep operating there without returning to Earth.
