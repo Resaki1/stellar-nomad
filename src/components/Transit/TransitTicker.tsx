@@ -41,7 +41,7 @@ let lastPreviewKey = "";
 
 function previewKey(p: TransitPreview | null): string {
   if (!p) return "";
-  return [p.targetId, p.live, p.ok, p.reason, Math.ceil(p.etaS), Math.round(p.fuelKg), Math.round(p.arrivalOrdinaryKg), Math.round(p.protectedKg), Math.round(p.peakHeat01 * 100), p.slow, p.viaName, p.legCount].join("|");
+  return [p.targetId, p.live, p.ok, p.reason, Math.ceil(p.etaS), Math.round(p.fuelKg), Math.round(p.arrivalOrdinaryKg), Math.round(p.protectedKg), Math.round(p.peakHeat01 * 100), Math.round(p.needKg), p.tankKg, p.slow, p.viaName, p.legCount].join("|");
 }
 
 export default function TransitTicker() {

@@ -67,6 +67,8 @@ export interface ResourceRequests {
   repairPerS: number;
   /** Transit drive this step: delivered speed change (km/s, billed per `transitKgPerKmps`) and heat input (kW). */
   transitDvKmps: number;
+  /** ...and the distance it carried the ship, km (billed per `transitKgPerKm`). */
+  transitKm: number;
   transitHeatKW: number;
   /** Dev speed override: thrust scaled by the override is not charged. */
   freeFlight: boolean;
@@ -109,7 +111,7 @@ export function createShipResourceState(ordinaryKg: number, protectedKg: number)
 }
 
 export function createResourceRequests(): ResourceRequests {
-  return { miningBeam: false, repair: false, repairPerS: 0, transitDvKmps: 0, transitHeatKW: 0, freeFlight: false, reservedKg: 0, miningHeatMult: 1, coolingMult: 1 };
+  return { miningBeam: false, repair: false, repairPerS: 0, transitDvKmps: 0, transitKm: 0, transitHeatKW: 0, freeFlight: false, reservedKg: 0, miningHeatMult: 1, coolingMult: 1 };
 }
 
 const EPS_KG = 1e-9;
@@ -185,7 +187,9 @@ export function stepShipResources(
   m.steps++;
 
   // Transit first: its braking fuel is reserved, so it can always be paid (ordinary, then protected).
-  if (req.transitDvKmps > 0 && !req.freeFlight) m.transitKg += spendPropellant(s, req.transitDvKmps * t.transitKgPerKmps);
+  if ((req.transitDvKmps > 0 || req.transitKm > 0) && !req.freeFlight) {
+    m.transitKg += spendPropellant(s, req.transitDvKmps * t.transitKgPerKmps + req.transitKm * t.transitKgPerKm);
+  }
 
   // ── Propellant: delivered control work only (coasting, contacts, frames cost nothing) ──
   if (!req.freeFlight) {

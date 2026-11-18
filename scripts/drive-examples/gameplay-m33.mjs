@@ -446,7 +446,8 @@ export async function inspectClass(d, ctx, rocks, used, cls) {
 /**
  * The shared path from any start to an owned transit drive (playtest-1 matrix, plan §13 WP2):
  * sustained beam, C-type, first batch (the 200 kg start tank has room), Heat Rejection, Bulk
- * Handling + Cargo Rack, Transit Drive Calibration, the drive. `accept(label, outcome)` logs.
+ * Handling + Cargo Rack, Transit Drive Calibration, the drive, then the Auxiliary Tank fitted
+ * (playtest 2: the Moon needs more than the base tank). `accept(label, outcome)` logs.
  */
 export async function pathToDrive(d, ctx, rocks, used, accept) {
   const { ev } = ctx;
@@ -477,17 +478,38 @@ export async function pathToDrive(d, ctx, rocks, used, accept) {
   accept("unlock pr1", await ev(`${G}.m33.unlock("pr1_transit_calibration")`));
   await gather(ctx, rocks, { silicates: 600, fe_ni_metal: 550, hydrates: 30, carbon: 20, sulfur: 12 }, used, true);
   accept("craft drive", await ev(`${G}.craft("special_transit_drive")`));
+  // Playtest 2: Earth -> Moon needs more than the base tank; the Auxiliary Tank replaces the rack.
+  if (!owned.has("module_aux_tank_mk1")) {
+    await gather(ctx, rocks, { fe_ni_metal: 120, silicates: 40 }, used, true);
+    accept("craft aux tank", await ev(`${G}.craft("module_aux_tank_mk1")`));
+  }
+  await fitAuxTank(ctx, accept);
+}
+
+/** Equip the Auxiliary Tank, jettisoning what no longer fits the smaller hold (a player would). */
+export async function fitAuxTank(ctx, accept) {
+  const { ev } = ctx;
+  if ((await ctx.player()).modules.equippedModules.cargo === "module_aux_tank_mk1") return;
+  let o = await ev(`${G}.m33.equipOp("module_aux_tank_mk1", "cargo")`);
+  if (o?.status !== "accepted") {
+    const items = (await ctx.player()).cargo.items;
+    for (const k of ["silicates", "sulfur", "carbon", "titanium", "fe_ni_metal"]) if ((items[k] ?? 0) > 0) await ev(`${G}.jettison(${JSON.stringify(k)})`);
+    o = await ev(`${G}.m33.equipOp("module_aux_tank_mk1", "cargo")`);
+  }
+  accept("equip aux tank", o);
 }
 
 /** Fill the tank with local hydrates (one batch up to the batch cap), waiting for it to finish. */
 export async function topUp(ctx, rocks, used, accept) {
   const { ev } = ctx;
-  const tank = (await ev(`${G}.m33.liveTuning()`)).tankKg;
-  const room = Math.min(50, Math.floor((tank - (await ev(`${G}.res.state()`)).ordinaryKg) / 20));
+  const T = await ev(`${G}.m33.liveTuning()`);
+  const room = Math.min(T.processingMaxBatchUnits, Math.floor((T.tankKg - (await ev(`${G}.res.state()`)).ordinaryKg) / T.processingKgPerUnit));
   if (room <= 0) return 0;
   await gather(ctx, rocks, { hydrates: room }, used, true);
   accept(`process ${room} units`, await ev(`${G}.res.startProcessing(${room})`));
-  await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, 40000);
+  // The Auxiliary Tank's room is a long batch (38 units = 76 s at 10 kg/s).
+  const batchMs = ((room * T.processingKgPerUnit) / T.processingKgPerS) * 1000 + 10000;
+  await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, batchMs);
   return room;
 }
 

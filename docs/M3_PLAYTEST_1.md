@@ -106,3 +106,11 @@ Overall verdict: "We need to take more care when building stuff, this still feel
 
 ## Infrastructure (done)
 - Dev server for testing on :3001 (owner uses :3000); headless Chrome muted.
+
+## Playtest 2 (owner, 2026-11-18)
+- P2.1 Reaching the Moon should be harder: the first Earth -> Moon trip must not fit the base tank, only with the Auxiliary Tank.
+  - Status: done, live gates pass (base tank refused with NEED 701 / TANK 600; aux tank 802 kg, 46 s at the default date). Transit now also costs fuel per km (`transitKgPerKm` 0.0019, not difficulty-scaled); the speed part halved (`transitKgPerKmps` 0.003). Earth field -> lunar field needs 650-803 kg over the year (base 600: refused `Tank too small`, the route panel shows NEED vs TANK); full Auxiliary Tank: burns 758-924 kg, 45-60 s. `Reach the Moon` gains a tank step (Craft / Equip Auxiliary Tank Mk1) and fuel 820 kg. In-field hops got cheaper (50 km 1.3 kg). Pace: arrival 47.8 bot min, new-player estimate 76.
+- P2.2 Lunar field and survey canister in the dark: move them so Luna is partly lit from there, like Earth from the start field.
+  - Status: done. Field anchor [3400, 0, 0] -> [1130, 3195, 273] km (Luna frame), canister -> [1629, 4605, 393]: from the arrival point Luna is half lit at the default date (phase 95 deg; 52-128 over month and year), never in the Moon's shadow. Rocks and canister lit (captures .captures/lunar-*.png).
+- P2.3 The AI notes the transit drive unlock as a milestone.
+  - Status: done. On crafting the drive the AI says one line pointing at the tank (`drive_online_001`); the `hint_drive` control hint follows it instead of colliding. The research unlock keeps its one toast.

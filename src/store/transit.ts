@@ -113,6 +113,9 @@ export interface TransitPreview {
   protectedKg: number;
   peakHeat01: number;
   fuelLimited: boolean;
+  /** Lower-bound fuel the route needs, kg, and the tank it must fit in (refusals show both). */
+  needKg: number;
+  tankKg: number;
   /** Fuel caps the peak speed: the leg coasts and takes longer. */
   slow: boolean;
   viaName: string | null;
@@ -171,6 +174,8 @@ export function computeTransitPreview(store: Store): TransitPreview | null {
     protectedKg: p.protectedKg,
     peakHeat01: p.peakHeat01,
     fuelLimited: p.fuelLimited,
+    needKg: p.needKg,
+    tankKg: t.tankKg,
     slow: p.ok && p.fuelLimited,
     viaName: p.viaBodyId ? (p.viaName ?? rt.bodies.find((b) => b.id === p.viaBodyId)?.name ?? p.viaBodyId) : null,
     legCount: p.legCount,

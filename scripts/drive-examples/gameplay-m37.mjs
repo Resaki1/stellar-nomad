@@ -326,15 +326,17 @@ export async function difficultyGates(d, ctx) {
     const thrust = (await rsim({ segments: [{ decoupled: true, throttle: 1, seconds: 2 }] })).segments[0].meter.thrustKg;
     const trip = (await rsim({ sampleEvery: 1, segments: [{ mining: true, seconds: 30 }] })).segments[0].firstTripS;
     const boost = (await rsim({ segments: [{ boost: true, throttle: 1, seconds: 3 }] })).final.heat01;
-    const tr = await tsim({ target: { positionKm: [0, 0, 380000] } });
+    // 50,000 km fits every tank; the distance fuel (transitKgPerKm) is a progression floor, not difficulty-scaled.
+    const tr = await tsim({ target: { positionKm: [0, 0, 50000] } });
+    const perKm = (await ev(`${G}.res.tuning()`)).transitKgPerKm;
     const eff = await ev(`${M}.difficulty.effective()`);
-    rows[diff] = { thrustKg: r2(thrust * 1000) / 1000, miningTripS: r2(trip), boost3sHeat: r2(boost), transit380kKg: r2(600 - tr.final.ordinaryKg), allowanceKg: eff.recoveryAllowanceKg, impactHp40: r2(await ev(`${M}.difficulty.impactHp(40)`)) };
+    rows[diff] = { thrustKg: r2(thrust * 1000) / 1000, miningTripS: r2(trip), boost3sHeat: r2(boost), transit50kSpeedKg: r2(600 - tr.final.ordinaryKg - perKm * Math.hypot(...tr.final.posKm)), transit50kKg: r2(600 - tr.final.ordinaryKg), allowanceKg: eff.recoveryAllowanceKg, impactHp40: r2(await ev(`${M}.difficulty.impactHp(40)`)) };
   }
   await ev(`${M}.difficulty.set("standard")`);
   const s = rows.standard;
   const ratio = (k, dd) => r2(rows[dd][k] / s[k]);
   const ratios = {};
-  for (const dd of ["explorer", "hard"]) ratios[dd] = { fuel: ratio("thrustKg", dd), transit: ratio("transit380kKg", dd), allowance: ratio("allowanceKg", dd), impact: ratio("impactHp40", dd), boostHeat: ratio("boost3sHeat", dd) };
+  for (const dd of ["explorer", "hard"]) ratios[dd] = { fuel: ratio("thrustKg", dd), transit: ratio("transit50kSpeedKg", dd), allowance: ratio("allowanceKg", dd), impact: ratio("impactHp40", dd), boostHeat: ratio("boost3sHeat", dd) };
   const near = (a, b) => Math.abs(a - b) <= 0.02;
   out.pure = { rows, ratios, table,
     pass: ["explorer", "hard"].every((dd) => near(ratios[dd].fuel, table[dd].fuelUse) && near(ratios[dd].transit, table[dd].fuelUse) && near(ratios[dd].allowance, table[dd].allowance) &&

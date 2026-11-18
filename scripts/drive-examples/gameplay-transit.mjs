@@ -19,9 +19,11 @@ const SHIP_BEHIND = [-17000, 0, 3000];
 const EARTH_HAZARD_KM = 6371 + 100 + 200;
 const LUNA_HAZARD_KM = 1737 + 200;
 /** Lunar field: anchor offset from Luna (sol.json) and its outer radius. */
-const BELT_OFFSET_KM = [3400, 0, 0];
+const BELT_OFFSET_KM = [1130, 3195, 273];
 const BELT_OUTER_KM = 4000;
 const FIELD_DEPTH_KM = 1500;
+/** Base tank + Auxiliary Tank Mk1 (content.ts), kg. */
+const AUX_TANK_KG = 1000;
 
 /** Closest approach of segment a→b to point c, km. */
 function segDist(a, b, c) {
@@ -45,9 +47,12 @@ function rng(seed) {
 
 export async function transitPureGates(d) {
   const ev = (s) => d.evaluate(s);
-  const sim = (sc) => ev(`${TR}.simulate(${JSON.stringify(sc)})`);
+  // Earth-Moon distances need more than the base tank (transitKgPerKm): sims fly an Auxiliary Tank ship.
+  const sim = (sc) => ev(`${TR}.simulate(${JSON.stringify({ tankKg: AUX_TANK_KG, ...sc })})`);
   const T = await ev(`${G}.res.tuning()`);
   const g = {};
+  /** Ideal flip-and-burn transit fuel for a straight leg of `D` km: distance + speed both ways. */
+  const idealKg = (D) => T.transitKgPerKm * D + 2 * T.transitKgPerKmps * Math.sqrt(800 * D);
   const cmp = (r) => ({
     planEtaS: r4(r.plan.etaS), etaS: r4(r.etaS), etaErr: r4(rel(r.etaS ?? Infinity, r.plan.etaS)),
     planKg: r4(r.plan.fuelKg), kg: r4(r.fuelKg), kgErr: r4(rel(r.fuelKg, r.plan.fuelKg)),
@@ -65,10 +70,14 @@ export async function transitPureGates(d) {
       rows[`moving_rate${rate}`] = cmp(await sim({ target: { positionKm: [0, 0, 380000], velKmps: [1.02 * rate, 0, 0], arrivalOffsetKm: 3474 } }));
     }
     const e = rows.straight380000;
+    // Playtest 2: the base tank cannot fly Earth-Moon (refused, need shown); the Auxiliary Tank can.
+    const base = await sim({ tankKg: T.tankKg, target: { positionKm: [0, 0, 380000] } });
     g.a_prediction = {
       ...rows,
-      earthMoonShare: r4(e.kg / T.tankKg), expectShare: 0.35,
-      pass: Object.values(rows).every((c) => within(c)) && Math.abs(e.kg / T.tankKg - 0.35) < 0.03 && Math.abs(e.heat - 0.35) < 0.05,
+      earthMoonKg: e.kg, expectKg: r4(idealKg(380000)), auxShare: r4(e.kg / AUX_TANK_KG),
+      baseTank: { engaged: base.engaged, refusal: base.refusal, needKg: base.plan.needKg, tankKg: T.tankKg },
+      pass: Object.values(rows).every((c) => within(c)) && rel(e.kg, idealKg(380000)) < 0.03 && e.kg < AUX_TANK_KG && Math.abs(e.heat - 0.35) < 0.05 &&
+        !base.engaged && base.refusal === "Tank too small" && base.plan.needKg > T.tankKg && base.plan.needKg < AUX_TANK_KG,
     };
   }
 
@@ -108,7 +117,7 @@ export async function transitPureGates(d) {
   // (b) Reserve: partial fuel coasts and still stops; far too little refuses; zero ordinary refuses.
   {
     const ideal = await sim({ target: { positionKm: [0, 0, 380000] } });
-    const part = await sim({ ordinaryKg: 80, target: { positionKm: [0, 0, 380000] } });
+    const part = await sim({ ordinaryKg: Math.ceil(T.transitKgPerKm * 380000) + 60, target: { positionKm: [0, 0, 380000] } });
     const tiny = await sim({ ordinaryKg: 5, target: { positionKm: [0, 0, 380000] } });
     const zero = await sim({ ordinaryKg: 0, protectedKg: T.recoveryAllowanceKg, target: { positionKm: [0, 0, 380000] } });
     const zeroManual = await sim({ ordinaryKg: 0, protectedKg: T.recoveryAllowanceKg, target: null });
@@ -120,17 +129,17 @@ export async function transitPureGates(d) {
       zeroOrdinaryManual: { engaged: zeroManual.engaged, refusal: zeroManual.refusal },
       pass: within(c) && part.plan.fuelLimited && part.phaseAt.coasting !== undefined && part.etaS > ideal.etaS && part.minOrdinaryKg >= 0 &&
         part.protectedKg === T.recoveryAllowanceKg && part.endSpeedKmps === 0 &&
-        !tiny.engaged && /Needs \d+ kg fuel/.test(tiny.refusal ?? "") && tiny.fuelKg === 0 &&
+        !tiny.engaged && tiny.refusal === "Not enough fuel" && tiny.fuelKg === 0 &&
         !zero.engaged && /No fuel/.test(zero.refusal ?? "") && zero.protectedKg === T.recoveryAllowanceKg &&
         !zeroManual.engaged && /No fuel/.test(zeroManual.refusal ?? ""),
     };
   }
 
-  // (b) Manoeuvring during coast spends around the braking reserve: transit billing stays 2·c·peak.
+  // (b) Manoeuvring during coast spends around the braking reserve: transit billing stays 2·c·peak + perKm·distance.
   {
-    const r = await sim({ ordinaryKg: 80, strafeIn: "coasting", target: { positionKm: [0, 0, 380000] } });
+    const r = await sim({ ordinaryKg: Math.ceil(T.transitKgPerKm * 380000) + 60, strafeIn: "coasting", target: { positionKm: [0, 0, 380000] } });
     const c = cmp(r);
-    const expectKg = 2 * T.transitKgPerKmps * r.peakKmps;
+    const expectKg = 2 * T.transitKgPerKmps * r.peakKmps + T.transitKgPerKm * Math.hypot(...r.final.posKm);
     g.b_strafeCoast = {
       ...c, transitKg: r4(r.transitKg), expectTransitKg: r4(expectKg), thrustKg: r4(r.thrustKg), protectedKg: r4(r.protectedKg), minOrdinaryKg: r4(r.minOrdinaryKg),
       pass: c.endKmps === 0 && c.arrived === 1 && r.thrustKg > 0 && rel(r.transitKg, expectKg) < 0.01 && rel(r.transitKg, r.plan.fuelKg) <= 0.05 &&
@@ -151,15 +160,15 @@ export async function transitPureGates(d) {
     g.freeFlight = { engaged: r.engaged, refusal: r.refusal, transitKg: r.transitKg, arrived: r.events.arrived, endKmps: r.endSpeedKmps, pass: r.engaged && r.transitKg === 0 && r.events.arrived === 1 && r.endSpeedKmps === 0 };
   }
 
-  // Out of range on a full tank is worded as range, not as "too little propellant".
+  // A route that needs more than the tank holds is worded as the tank, not as "too little propellant".
   {
     const r = await sim({ target: { positionKm: [0, 0, 78e6] } });
-    g.outOfRange = { engaged: r.engaged, refusal: r.refusal, pass: !r.engaged && /Out of range: needs/.test(r.refusal ?? "") };
+    g.outOfRange = { engaged: r.engaged, refusal: r.refusal, needKg: r.plan.needKg, pass: !r.engaged && r.refusal === "Tank too small" && r.plan.needKg > AUX_TANK_KG };
   }
 
   // (b) Abort in every phase ends at rest; every kg billed is the transit meter's; ordinary never negative.
   {
-    const base = { ordinaryKg: 120, target: { positionKm: [0, 0, 380000] } };
+    const base = { ordinaryKg: Math.ceil(T.transitKgPerKm * 380000) + 60, target: { positionKm: [0, 0, 380000] } };
     const cases = {
       spool: { ...base, tapAt: { phase: "spooling", afterS: 1.5 } },
       accel: { ...base, tapAt: { phase: "accelerating", afterS: 4 } },
@@ -171,7 +180,7 @@ export async function transitPureGates(d) {
     for (const [name, sc] of Object.entries(cases)) {
       const r = await sim(sc);
       const c = T.transitKgPerKmps;
-      // Billed = speed built + the braking that removed it: 2 × speed at the tap for accel/coast aborts.
+      // Billed = speed built + the braking that removed it (2 × speed at the tap) + distance covered.
       const row = {
         tapS: r4(r.tapS), speedAtTap: r4(r.speedAtTapKmps), endKmps: r.endSpeedKmps, shipMps: r4(r.shipSpeedMps), endPhase: r.endPhase,
         kg: r4(r.fuelKg), transitKg: r4(r.transitKg), minOrdinaryKg: r4(r.minOrdinaryKg), aborted: r.events.aborted, arrived: r.events.arrived,
@@ -180,8 +189,9 @@ export async function transitPureGates(d) {
         r.minOrdinaryKg >= 0 && r.events.arrived === 0;
       if (name === "spool") row.pass &&= r.fuelKg === 0;
       if (name === "accel" || name === "coast") {
-        row.expectKg = r4(2 * r.speedAtTapKmps * c);
-        row.pass &&= Math.abs(r.fuelKg - 2 * r.speedAtTapKmps * c) < 0.02 * r.fuelKg + 1e-6;
+        const expect = 2 * r.speedAtTapKmps * c + T.transitKgPerKm * Math.hypot(...r.final.posKm);
+        row.expectKg = r4(expect);
+        row.pass &&= Math.abs(r.fuelKg - expect) < 0.02 * r.fuelKg + 1e-6;
       }
       ok &&= row.pass;
       rows[name] = row;
@@ -191,7 +201,7 @@ export async function transitPureGates(d) {
 
   // (c) Pacing: identical results at 30/60/144 Hz and across hitches (a 2 s hitch drops wall time only).
   {
-    const sc = { shipKm: SHIP_BEHIND, bodies: [EARTH, MOON], ordinaryKg: 300, target: { id: "body:luna", positionKm: MOON_KM, arrivalOffsetKm: 3474 } };
+    const sc = { shipKm: SHIP_BEHIND, bodies: [EARTH, MOON], ordinaryKg: 900, target: { id: "body:luna", positionKm: MOON_KM, arrivalOffsetKm: 3474 } };
     const runs = {};
     for (const hz of [30, 60, 144]) runs[hz] = await sim({ ...sc, frameHz: hz });
     runs.hitch = await sim({ ...sc, frameHz: 60, hitchAtS: 10, hitchS: 0.25 });
@@ -283,10 +293,11 @@ const SECOND_EPOCH_MS = Date.UTC(2941, 9, 6, 12, 0, 0);
 
 /** Fixture: default start (no saved pose), transit drive owned, full tanks, at `epochMs`. */
 function transitWorld(ctx, epochMs, o = {}) {
-  const modules = { ownedModules: ["special_transit_drive"], equippedModules: {}, consumables: {}, consumableCooldowns: {}, hotbar: Array(10).fill(null) };
+  // Playtest 2: Earth -> Moon needs the Auxiliary Tank (1,000 kg).
+  const modules = { ownedModules: ["special_transit_drive", "module_aux_tank_mk1"], equippedModules: { cargo: "module_aux_tank_mk1" }, consumables: {}, consumableCooldowns: {}, hotbar: Array(10).fill(null) };
   const { research, ...rest } = ctx.v1Player({ modules, ...(o.base ?? {}) });
   void research;
-  const player = { ...rest, research: { assaySamples: 0, activeResearch: null }, propellant: o.propellant ?? { ordinaryKg: 600, protectedKg: 60 }, power: { capacitor01: 1, heat01: 0 }, processing: null };
+  const player = { ...rest, research: { assaySamples: 0, activeResearch: null }, propellant: o.propellant ?? { ordinaryKg: AUX_TANK_KG, protectedKg: 60 }, power: { capacitor01: 1, heat01: 0 }, processing: null };
   return { schemaVersion: 2, world: { ...ctx.v1World({ simEpochMs: epochMs, simRate: o.simRate ?? 1 }), research: { completedNodes: [] }, receipts: [] }, players: { [ctx.me]: player } };
 }
 
@@ -416,6 +427,28 @@ async function flySampled(d, maxS = 150) {
   };
 }
 
+/** Playtest 2: the base tank at Earth targeting Luna is refused in the panel (NEED > TANK) and T does not engage. */
+export async function transitTankGates(d, ctx) {
+  const { ev, boot, fixture } = ctx;
+  const modules = { ownedModules: ["special_transit_drive"], equippedModules: {}, consumables: {}, consumableCooldowns: {}, hotbar: Array(10).fill(null) };
+  const id = await fixture("transit-basetank", transitWorld(ctx, DEFAULT_EPOCH_MS, { base: { modules }, propellant: { ordinaryKg: 600, protectedKg: 60 } }));
+  await boot(id);
+  await d.frames(60);
+  const locked = await gazeLock(d, "body:luna", "luna");
+  await d.frames(30);
+  const pre = await ev(`${TR}.preview()`);
+  const rows = await ev(`[...document.querySelectorAll(".transit-hud__row")].map((r) => r.innerText.replace(/\\s+/g, " ").trim())`);
+  const status = await ev(`document.querySelector(".transit-hud__status")?.innerText ?? null`);
+  const shot = await d.shot(process.env.GAME_SHOT_NARROW ? "transit-basetank-390" : "transit-basetank");
+  await d.hold("t", 3400);
+  await d.frames(30);
+  const st = await ev(`${TR}.state()`);
+  const has = (l) => rows.some((r) => r.startsWith(l));
+  const out = { locked, reason: pre?.reason, needKg: pre?.needKg, tankKg: pre?.tankKg, rows, status, phaseAfterT: st.phase, shot };
+  out.pass = locked && pre?.ok === false && pre.reason === "Tank too small" && pre.needKg > 600 && pre.tankKg === 600 && has("NEED") && has("TANK") && !has("BURN") && status === "Tank too small" && st.phase === "idle";
+  return out;
+}
+
 /**
  * B8: the live preview during every phase of three trips in one session (Earth → lunar field, an
  * in-field hop, then a two-leg trip round Luna): the spool after an arrival used to read "Too
@@ -474,7 +507,8 @@ async function lunarHydrates(d, ctx) {
   const m = await ev(`${G}.mine(${JSON.stringify(rock)})`);
   const hyd = (await ev(`${G}.player()`)).cargo.items.hydrates ?? 0;
   const p = hyd > 0 ? await ev(`${G}.res.startProcessing(${Math.min(hyd, 50)})`) : null;
-  for (let i = 0; i < 40 && p; i++) {
+  // Up to 50 s: with the aux tank's room a 17-unit rock processes in full (340 kg at 10 kg/s = 34 s).
+  for (let i = 0; i < 100 && p; i++) {
     await new Promise((r) => setTimeout(r, 500));
     if (!(await ev(`${G}.res.state()`)).processing.active) break;
   }

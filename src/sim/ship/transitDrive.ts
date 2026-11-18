@@ -2,7 +2,8 @@
  * Transit drive (docs/M3_GAMEPLAY_PLAN.md §5.5): one pure model on the fixed step. The same
  * speed law (`transitLaw`) flies the live leg and the predictor, so fuel, heat and ETA agree
  * by construction. Transit is a scalar speed along the ship's nose, added to stepShip's
- * velocity; fuel per km/s of delivered speed change, braking fuel reserved before any burn.
+ * velocity; fuel per km/s of delivered speed change plus per km covered, braking and distance
+ * fuel reserved before any speed is bought (the law sees leg fuel minus perKm × aim distance).
  */
 import { Vector3 } from "three";
 import { frameOriginKm, resolveFramePositionKm, type FrameId } from "@/sim/frames";
@@ -134,6 +135,8 @@ export interface TransitPlan {
   fuelLimited: boolean;
   idealEtaS: number;
   idealFuelKg: number;
+  /** Lower-bound fuel the route needs (distance fuel + the slowest allowed peak), kg; 0 until predicted. */
+  needKg: number;
   directKm: number;
   pathKm: number;
   steps: number;
@@ -186,6 +189,8 @@ export interface TransitRuntime {
   spoolFz: number;
   /** This step's delivered speed change (km/s) and heat input (kW): the resource step bills them. */
   stepDvKmps: number;
+  /** Distance the drive carries the ship this step, km (billed per `transitKgPerKm`). */
+  stepKm: number;
   stepHeatKW: number;
   totalKg: number;
   bodies: readonly TransitBody[];
@@ -200,7 +205,7 @@ export function createTransitPlan(): TransitPlan {
   return {
     ok: false, reason: null, manual: false, legCount: 0, legs: [createLeg(), createLeg()], viaBodyId: null, viaName: null, fieldArrival: false,
     etaS: 0, fuelKg: 0, arrivalOrdinaryKg: 0, protectedKg: 0, peakKmps: 0, peakHeat01: 0, endHeat01: 0, fuelLimited: false,
-    idealEtaS: 0, idealFuelKg: 0, directKm: 0, pathKm: 0, steps: 0,
+    idealEtaS: 0, idealFuelKg: 0, needKg: 0, directKm: 0, pathKm: 0, steps: 0,
   };
 }
 
@@ -215,7 +220,7 @@ export function createTransitRuntime(): TransitRuntime {
     legs: [createLeg(), createLeg()], legCount: 0, legIndex: 0, legBudgetKg: 0, legSpentKg: 0, legPeakKmps: 0, legProximitySeen: false, braking: false, arriving: false,
     viaBodyId: null, fieldArrival: false, aimX: 0, aimY: 0, aimZ: 0, distKm: 0,
     hasDesiredForward: false, dfX: 0, dfY: 0, dfZ: 1, desiredRateRadPerS: 0, spoolFx: 0, spoolFy: 0, spoolFz: 1,
-    stepDvKmps: 0, stepHeatKW: 0, totalKg: 0, bodies: [],
+    stepDvKmps: 0, stepKm: 0, stepHeatKW: 0, totalKg: 0, bodies: [],
     ev: { refused: 0, refusal: null, arrived: 0, aborted: 0, autopilotOff: 0, proximity: 0, proximityId: "", legDone: 0, stoppedShort: 0, stopReason: "" },
   };
 }
@@ -234,14 +239,21 @@ export function resetTransit(rt: TransitRuntime): void {
   rt.legIndex = 0;
   rt.hasDesiredForward = false;
   rt.desiredRateRadPerS = 0;
-  rt.stepDvKmps = rt.stepHeatKW = 0;
+  rt.stepDvKmps = rt.stepKm = rt.stepHeatKW = 0;
 }
 
 export const spoolStepsFor = (dt: number): number => Math.round(TRANSIT_SPOOL_TIME_S / dt);
 
+/** Distance fuel of a stop from `v` (continuous, so it bounds the discrete stop), kg. */
+function stopDistKg(v: number, t: Readonly<ResourceTuning>): number {
+  return ((v * v) / (2 * TRANSIT_ACCEL_KMPS2)) * t.transitKgPerKm;
+}
+
 /** Propellant the leg must keep for braking from `speedKmps`, kg (manoeuvring thrust may not touch it). */
 export function transitReserveKg(rt: Readonly<TransitRuntime>, t: Readonly<ResourceTuning>): number {
-  return rt.speedKmps > 0 ? rt.speedKmps * t.transitKgPerKmps * (1 + t.transitReserveMargin) : 0;
+  if (rt.speedKmps <= 0) return 0;
+  const distKg = rt.autopilot ? rt.distKm * t.transitKgPerKm : stopDistKg(rt.speedKmps, t);
+  return rt.speedKmps * t.transitKgPerKmps * (1 + t.transitReserveMargin) + distKg;
 }
 
 /** Distance covered while braking from `v` at `q` km/s per step (exact for the discrete step). */
@@ -288,7 +300,8 @@ export function arrivalTolKm(peakKmps: number, dt: number): number {
 
 /** Ideal flip-and-burn fuel for a leg, kg (budget split between legs). */
 function idealLegKg(dKm: number, t: Readonly<ResourceTuning>): number {
-  return 2 * t.transitKgPerKmps * Math.sqrt(TRANSIT_ACCEL_KMPS2 * Math.max(0, dKm));
+  const d = Math.max(0, dKm);
+  return 2 * t.transitKgPerKmps * Math.sqrt(TRANSIT_ACCEL_KMPS2 * d) + t.transitKgPerKm * d;
 }
 
 // Step scratch (stepTransit); planning and prediction use their own (engage plans mid-step).
@@ -526,15 +539,16 @@ function rolloutLeg(r: LegRun, spoolLeft: number, dKm: number, v0: number, braki
       return;
     }
     if (!stopping && braking && d <= arrivalTolKm(r.peakKmps, dt)) stopping = true;
-    const fuel = inp.freeFlight ? Infinity : Math.min(r.ordinaryKg, budgetKg - spent);
+    const fuel = inp.freeFlight ? Infinity : Math.min(r.ordinaryKg, budgetKg - spent) - t.transitKgPerKm * Math.max(0, d);
     const v1 = stopping ? brakeStep(v, q) : transitLaw(d, v, fuel, throttleScale(r.heat01, t), braking, t, dt);
     if (_lawFuelCapped && !stopping) r.fuelCapped = true;
     if (v1 < v) braking = true;
     else if (v1 > v) braking = false;
     const dv = Math.abs(v1 - v);
     if (!inp.freeFlight) {
-      spent += dv * c;
-      predictSpend(r, dv * c);
+      const kg = dv * c + v1 * dt * t.transitKgPerKm;
+      spent += kg;
+      predictSpend(r, kg);
     }
     r.heat01 = heatAfter(r.heat01, (t.transitBurnHeatKW * dv) / q, t, inp.coolingMult, dt);
     if (r.heat01 > r.peakHeat01) r.peakHeat01 = r.heat01;
@@ -574,10 +588,15 @@ export function predictRoute(
   const ss = spoolStepsFor(dt);
   _pVel.set(inp.aimVelX, inp.aimVelY, inp.aimVelZ);
   // Cheap range bound before the rollout: no leg can beat d / (fuel-capped peak speed).
-  const vMax = inp.freeFlight || t.transitKgPerKmps <= 0 ? Infinity : res.ordinaryKg / (t.transitKgPerKmps * (2 + t.transitReserveMargin));
-  let dMax = 0;
-  for (let i = legIndex; i < out.legCount; i++) dMax = Math.max(dMax, out.legs[i].plannedKm);
-  if (legIndex === 0 && v0 === 0 && dMax / vMax > 1.1 * t.transitMaxTripS) return rangeRefusal(out, dMax, res.ordinaryKg, t);
+  let dMax = 0, dSum = 0;
+  for (let i = legIndex; i < out.legCount; i++) {
+    dMax = Math.max(dMax, out.legs[i].plannedKm);
+    dSum += out.legs[i].plannedKm;
+  }
+  out.needKg = inp.freeFlight ? 0 : routeNeedKg(out.legs, legIndex, out.legCount, t);
+  const speedKg = res.ordinaryKg - t.transitKgPerKm * dSum;
+  const vMax = inp.freeFlight || t.transitKgPerKmps <= 0 ? Infinity : speedKg / (t.transitKgPerKmps * (2 + t.transitReserveMargin));
+  if (legIndex === 0 && v0 === 0 && (vMax <= 0 || dMax / vMax > 1.1 * t.transitMaxTripS)) return rangeRefusal(out, res.ordinaryKg, t);
   let eta = 0;
   let r = _run;
   // The final leg's aim moves; earlier legs are clearance points riding the blocker.
@@ -608,19 +627,38 @@ export function predictRoute(
   out.peakHeat01 = r.peakHeat01;
   out.endHeat01 = r.heat01;
   out.fuelLimited = r.fuelCapped;
-  if (r.stuck) return refuse(out, res.heat01 >= 1 ? "Drive too hot" : "Not enough fuel");
-  if (r.timedOut) return rangeRefusal(out, dMax, res.ordinaryKg, t);
+  if (r.stuck) return refuse(out, res.heat01 >= 1 ? "Drive too hot" : NEEDS_FUEL);
+  if (r.timedOut) return rangeRefusal(out, res.ordinaryKg, t);
   out.ok = true;
   out.reason = null;
   return true;
 }
 
-/** Max-trip refusal worded by cause: a full tank cannot fix an out-of-range target. */
-function rangeRefusal(out: TransitPlan, dKm: number, ordinaryKg: number, t: Readonly<ResourceTuning>): false {
-  // Fuel for a peak of d/T (coast-dominated lower bound), kg.
-  const needKg = Math.ceil(t.transitKgPerKmps * (2 + t.transitReserveMargin) * (dKm / t.transitMaxTripS));
-  if (needKg > t.tankKg || ordinaryKg >= t.tankKg - 1e-6) return refuse(out, `Out of range: needs ${needKg} kg`);
-  return refuse(out, `Needs ${needKg} kg fuel`);
+/**
+ * Fuel a route needs, kg: each leg's distance fuel + a coast peak of d/T, scaled up by the share
+ * `legBudget` gives it (fuel splits by ideal cost, so a long final leg gets less than its need).
+ */
+function routeNeedKg(legs: readonly TransitLeg[], from: number, n: number, t: Readonly<ResourceTuning>): number {
+  let sum = 0;
+  for (let i = from; i < n; i++) sum += idealLegKg(legs[i].plannedKm, t);
+  let need = 0;
+  for (let i = from; i < n; i++) {
+    const d = legs[i].plannedKm;
+    const own = idealLegKg(d, t);
+    const legNeed = t.transitKgPerKm * d + t.transitKgPerKmps * (2 + t.transitReserveMargin) * (d / t.transitMaxTripS);
+    if (own > 0) need = Math.max(need, (legNeed * sum) / own);
+  }
+  return Math.ceil(need);
+}
+
+/** Refusal texts for a route the fuel cannot fly (the panel shows `needKg` against the tank). */
+export const TANK_TOO_SMALL = "Tank too small";
+export const NEEDS_FUEL = "Not enough fuel";
+
+/** Max-trip refusal worded by cause: a full tank cannot fix a route that needs more than the tank holds. */
+function rangeRefusal(out: TransitPlan, ordinaryKg: number, t: Readonly<ResourceTuning>): false {
+  if (out.needKg > t.tankKg || ordinaryKg >= t.tankKg - 1e-6) return refuse(out, TANK_TOO_SMALL);
+  return refuse(out, NEEDS_FUEL);
 }
 
 function resetRun(res: { ordinaryKg: number; protectedKg: number; heat01: number }): LegRun {
@@ -652,7 +690,7 @@ export function planTransit(
   out.legCount = 0;
   out.viaBodyId = out.viaName = null;
   out.fieldArrival = false;
-  out.etaS = out.fuelKg = out.peakKmps = 0;
+  out.etaS = out.fuelKg = out.peakKmps = out.needKg = 0;
   out.arrivalOrdinaryKg = res.ordinaryKg;
   out.protectedKg = res.protectedKg;
   out.peakHeat01 = out.endHeat01 = res.heat01;
@@ -678,7 +716,7 @@ export function predictFromRuntime(out: TransitPlan, rt: Readonly<TransitRuntime
     out.ok = true;
     out.reason = null;
     out.etaS = rt.speedKmps / (TRANSIT_ACCEL_KMPS2);
-    out.fuelKg = rt.speedKmps * t.transitKgPerKmps;
+    out.fuelKg = rt.speedKmps * t.transitKgPerKmps + stopDistKg(rt.speedKmps, t);
     out.arrivalOrdinaryKg = Math.max(0, res.ordinaryKg - out.fuelKg);
     out.protectedKg = res.protectedKg;
     return true;
@@ -793,6 +831,7 @@ function endLeg(rt: TransitRuntime, arrivedAtAim: boolean): boolean {
  */
 export function stepTransit(rt: TransitRuntime, ship: Readonly<ShipState>, inp: Readonly<TransitInputs>, res: Readonly<ShipResourceState>, t: Readonly<ResourceTuning>, dt: number): void {
   rt.stepDvKmps = 0;
+  rt.stepKm = 0;
   rt.stepHeatKW = 0;
   const tap = rt.keyTapped;
   rt.keyTapped = false;
@@ -856,7 +895,10 @@ export function stepTransit(rt: TransitRuntime, ship: Readonly<ShipState>, inp: 
   const dEff = Math.min(d, obs);
   const v = rt.speedKmps;
   const q = TRANSIT_ACCEL_KMPS2 * dt;
-  const fuel = inp.freeFlight ? Infinity : Math.min(res.ordinaryKg, rt.legBudgetKg - rt.legSpentKg);
+  // Manual flight has no aim: it reserves its stop's distance fuel and brakes once ordinary fuel
+  // only pays the stop (coasting bills per km), so the protected allowance stays untouched.
+  if (!rt.autopilot && !inp.freeFlight && v > 0 && res.ordinaryKg <= v * t.transitKgPerKmps + stopDistKg(v, t)) rt.stopping = true;
+  const fuel = inp.freeFlight ? Infinity : Math.min(res.ordinaryKg, rt.legBudgetKg - rt.legSpentKg) - (rt.autopilot ? t.transitKgPerKm * d : stopDistKg(v, t));
   if (rt.autopilot && !rt.stopping && rt.braking && d <= arrivalTolKm(rt.legPeakKmps, dt)) rt.arriving = true;
   let v1 = rt.stopping || rt.arriving ? brakeStep(v, q) : transitLaw(dEff, v, fuel, throttleScale(res.heat01, t), rt.braking, t, dt);
   // Discrete braking parks the ship up to the arrival tolerance short (measured 1.9 km at the survey
@@ -870,9 +912,11 @@ export function stepTransit(rt: TransitRuntime, ship: Readonly<ShipState>, inp: 
   const dv = Math.abs(v1 - v);
   rt.speedKmps = v1;
   rt.stepDvKmps = dv;
+  rt.stepKm = v1 * dt;
   rt.stepHeatKW = (t.transitBurnHeatKW * dv) / q;
-  rt.legSpentKg += dv * t.transitKgPerKmps;
-  rt.totalKg += dv * t.transitKgPerKmps;
+  const stepKg = dv * t.transitKgPerKmps + rt.stepKm * t.transitKgPerKm;
+  rt.legSpentKg += stepKg;
+  rt.totalKg += stepKg;
   if (v1 > rt.legPeakKmps) rt.legPeakKmps = v1;
   if (v1 < v) rt.braking = true;
   else if (v1 > v) rt.braking = false;

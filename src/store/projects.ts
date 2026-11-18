@@ -1,7 +1,6 @@
 /** Tracked project (M3.7): player-owned selection plus its evaluated status for the tracker. */
 import { atom } from "jotai";
 import { getLocalPlayerId } from "@/save/playerId";
-import { difficultyMults } from "@/sim/difficulty";
 import { evaluateProject, type ProjectStatus, type ProjectView } from "@/sim/research/projects";
 import { cargoAtom } from "@/store/cargo";
 import { modulesAtom } from "@/store/modules";
@@ -15,6 +14,7 @@ export const trackedProjectAtom = savedAtom("player", "trackedProject", null);
 
 /** Rounded fuel so the 10 Hz resource mirror re-evaluates projects only per whole kg. */
 const fuelKgAtom = atom((get) => Math.floor(get(shipResourcesHudAtom).ordinaryKg));
+const tankKgAtom = atom((get) => Math.round(get(shipResourcesHudAtom).tankKg));
 
 export const projectViewAtom = atom((get): ProjectView => {
   const ev = get(evidenceViewAtom);
@@ -28,7 +28,7 @@ export const projectViewAtom = atom((get): ProjectView => {
     ordinaryKg: get(fuelKgAtom),
     shipFrameId: get(glanceAtom).frameId,
     myPointFrames: get(replicationPointsAtom).filter((p) => !p.starter && p.by === me).map((p) => p.frameId),
-    fuelUse: difficultyMults().fuelUse,
+    tankKg: get(tankKgAtom),
   };
 });
 

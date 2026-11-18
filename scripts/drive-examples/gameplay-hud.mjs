@@ -5,6 +5,7 @@
  *   hudTransit   transit panel geometry sampled every 60 ms through a two-leg trip (width constant,
  *                height changes only with the plan → active state)
  *   hudSite      real keys from a transit arrival: lock the canister, one G, recovered
+ *   lunarShots   captures at the field arrival (Luna, nearest big rock) and at the canister (lighting check)
  *   hudKeys      keybinds v2 → v3: untouched defaults move to C/P, custom bindings stay (restores storage)
  *   hudHotbar    keys 1…9, 0; a crafted kit fills a slot; its key opens placement with the name selected
  */
@@ -173,7 +174,10 @@ export async function hudGates(d, ctx) {
 
   // Transit: the idle plan, then the active panel (abort with T).
   await ev(`${G}.res.equip("special_transit_drive", "utility")`);
-  await ev(`${G}.res.set({ ordinaryKg: 600 })`);
+  // Playtest 2: Luna -> Earth needs the Auxiliary Tank.
+  await ev(`${G}.res.equip("module_aux_tank_mk1", "cargo")`);
+  await d.frames(5);
+  await ev(`${G}.res.set({ ordinaryKg: 1000 })`);
   await ev(`${M}.site.setDestination({ bodyId: "earth" })`);
   await ev(`${G}.res.face(${R}.abs("earth", [0, 0, 0]))`);
   await d.frames(30);
@@ -192,10 +196,10 @@ export async function hudGates(d, ctx) {
 
 // ── hudTransit: panel geometry through a two-leg trip ──
 function transitWorld(ctx) {
-  const modules = { ownedModules: ["special_transit_drive"], equippedModules: {}, consumables: {}, consumableCooldowns: {}, hotbar: Array(10).fill(null) };
+  const modules = { ownedModules: ["special_transit_drive", "module_aux_tank_mk1"], equippedModules: { cargo: "module_aux_tank_mk1" }, consumables: {}, consumableCooldowns: {}, hotbar: Array(10).fill(null) };
   const { research, ...rest } = ctx.v1Player({ modules });
   void research;
-  const player = { ...rest, research: { assaySamples: 0, activeResearch: null }, propellant: { ordinaryKg: 600, protectedKg: 60 }, power: { capacitor01: 1, heat01: 0 }, processing: null, aiName: "Vega", commsPlayed: ["opening_001", "opening_002", "hint_projects", "hint_lock", "hint_drive"] };
+  const player = { ...rest, research: { assaySamples: 0, activeResearch: null }, propellant: { ordinaryKg: 1000, protectedKg: 60 }, power: { capacitor01: 1, heat01: 0 }, processing: null, aiName: "Vega", commsPlayed: ["opening_001", "opening_002", "hint_projects", "hint_lock", "drive_online_001", "hint_drive"] };
   return { schemaVersion: 2, world: { ...ctx.v1World({ simEpochMs: DEFAULT_EPOCH_MS, simRate: 1 }), research: { completedNodes: [] }, receipts: [] }, players: { [ctx.me]: player } };
 }
 
@@ -299,6 +303,51 @@ export async function hudSiteGates(d, ctx) {
   out.after = await state(d, ctx, "site-recovered", undefined, false);
   out.recover = { scanning, recovered, rejects, titanium: [ti0, ti1], pass: scanning && recovered && rejects === 0 && ti1 - ti0 === 30 };
   out.pass = out.lockLuna && out.lockSite && out.focused && out.arrival2.distKm <= 2 && out.recover.pass && out.after.stack.some((s) => s.startsWith("Canister recovered"));
+  return out;
+}
+
+// ── lunarShots: what the player sees at the field arrival point and at the canister (lighting check) ──
+export async function lunarShotGates(d, ctx) {
+  const { ev } = ctx;
+  const sfx = process.env.GAME_SHOT_NARROW ? "-390" : "";
+  const id = await ctx.fixture("lunar-shots", transitWorld(ctx));
+  await ctx.boot(id);
+  await d.frames(60);
+  for (let i = 0; i < 40 && (await ev(`${TR}.state()`)).targeted !== "body:luna"; i++) {
+    await ev(`${G}.res.face(${R}.abs("luna", [0, 0, 0]))`);
+    await d.frames(10);
+  }
+  log("to the lunar field");
+  await flyHeld(d, ctx);
+  await ctx.wait(2000);
+  const out = { shots: {} };
+  const look = async (name, faceExpr) => {
+    await ev(`${G}.res.face(${faceExpr})`);
+    await ctx.wait(1500);
+    out.shots[name] = await d.shot(`lunar-${name}${sfx}`);
+  };
+  // Phase angle at Luna (sun–Luna–ship), deg: 0 = full, 90 = half lit as seen from here.
+  const b = await ev(`${TR}.bodies(["sol", "luna"])`);
+  const ship = (await d.state()).ship.posKm;
+  const u = b.sol.posKm.map((x, i) => x - b.luna.posKm[i]);
+  const v = ship.map((x, i) => x - b.luna.posKm[i]);
+  const dot = u.reduce((a, x, i) => a + x * v[i], 0);
+  out.lunaPhaseDeg = Math.round((Math.acos(dot / Math.hypot(...u) / Math.hypot(...v)) * 180) / Math.PI);
+  out.lunaDistKm = Math.round(Math.hypot(...v));
+  await look("luna", `${R}.abs("luna", [0, 0, 0])`);
+  const rocks = (await ev(`${G}.m33.rocks(40)`)).sort((a, b) => b.radiusM / b.distKm - a.radiusM / a.distKm);
+  out.rock = rocks[0] ? { distKm: rocks[0].distKm, radiusM: rocks[0].radiusM } : null;
+  if (rocks[0]) await look("rocks", JSON.stringify({ fieldId: rocks[0].fieldId, chunkKey: rocks[0].chunkKey, instanceId: rocks[0].instanceId }));
+  for (let i = 0; i < 40 && (await ev(`${TR}.state()`)).targeted !== `site:${SITE}`; i++) {
+    await faceSite(ctx);
+    await d.frames(10);
+  }
+  log("to the site");
+  await flyHeld(d, ctx);
+  await ctx.wait(1500);
+  out.siteDistKm = (await ev(`${G}.res.nav(${M}.site.absKm(${JSON.stringify(SITE)}))`)).distKm;
+  await look("canister", `${M}.site.absKm(${JSON.stringify(SITE)})`);
+  out.pass = !!out.rock && out.siteDistKm < 2;
   return out;
 }
 

@@ -6,21 +6,21 @@
  *   GAME_PARTS=migrate,tx,shared pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
  *   GAME_PARTS=live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
  *   GAME_PARTS=res,m32,repairEdge,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
- *   GAME_PARTS=transit,transitLive,transitBelt,transitSpool,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
+ *   GAME_PARTS=transit,transitLive,transitBelt,transitSpool,transitTank,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
  *   GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 / playA / playB / m33shots   M3.3+M3.4 gates (gameplay-m33.mjs); m33narrow with --size 390x844
  *   GAME_PARTS=place,activate,death,recover,salvage,migrate4 / live36 / m36shots   M3.6 gates (gameplay-m36.mjs); m36narrow with --size 390x844
- *   GAME_PARTS=hud (also --size 390x844) / hudTransit / hudSite / hudKeys / hudHotbar   playtest-1 WP3 HUD gates (gameplay-hud.mjs)
+ *   GAME_PARTS=hud (also --size 390x844) / hudTransit / hudSite / lunarShots / hudKeys / hudHotbar   playtest-1 WP3 HUD gates (gameplay-hud.mjs)
  *   GAME_PARTS=panels (also --size 390x844)   playtest-1 WP4 panel gates (gameplay-panels.mjs)
  *   GAME_PARTS=pace   timed real-input first trip to the lunar field (gameplay-pace.mjs; resumable, rerun until done)
  *   GAME_PARTS=seeds / regions / site / guidance / difficulty / sessionA / sessionB / sessionC / exploits / m37shots   M3.7+M3.8 gates (gameplay-m37.mjs); m37narrow with --size 390x844
  */
 import { m32Gates, reachGates, repairEdgeGates, resGates, shotGates } from "./gameplay-m32.mjs";
-import { transitBeltGates, transitLiveGates, transitPureGates, transitShotGates, transitSpoolGates } from "./gameplay-transit.mjs";
+import { transitBeltGates, transitLiveGates, transitPureGates, transitShotGates, transitSpoolGates, transitTankGates } from "./gameplay-transit.mjs";
 import { activateGates, deathGates, live36Gates, m36ShotGates, migrate4Gates, placeGates, recoverGates, salvageGates } from "./gameplay-m36.mjs";
 import * as m37 from "./gameplay-m37.mjs";
 import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, marksGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
 import { paceGates } from "./gameplay-pace.mjs";
-import { hudGates, hudHotbarGates, hudKeysGates, hudSiteGates, hudTransitGates } from "./gameplay-hud.mjs";
+import { hudGates, hudHotbarGates, hudKeysGates, hudSiteGates, hudTransitGates, lunarShotGates } from "./gameplay-hud.mjs";
 import { panelGates } from "./gameplay-panels.mjs";
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -100,6 +100,7 @@ export default async function gameplayCheck(d) {
     if (parts.includes("hud")) out.hud = await hudGates(d, ctx);
     if (parts.includes("hudTransit")) out.hudTransit = await hudTransitGates(d, ctx);
     if (parts.includes("hudSite")) out.hudSite = await hudSiteGates(d, ctx);
+    if (parts.includes("lunarShots")) out.lunarShots = await lunarShotGates(d, ctx);
     if (parts.includes("hudKeys")) out.hudKeys = await hudKeysGates(d, ctx);
     if (parts.includes("hudHotbar")) out.hudHotbar = await hudHotbarGates(d, ctx);
     if (parts.includes("panels")) out.panels = await panelGates(d, ctx);
@@ -128,6 +129,7 @@ export default async function gameplayCheck(d) {
     if (parts.includes("transitLive")) out.transitLive = await transitLiveGates(d, ctx);
     if (parts.includes("transitBelt")) out.transitBelt = await transitBeltGates(d);
     if (parts.includes("transitSpool")) out.transitSpool = await transitSpoolGates(d, ctx);
+    if (parts.includes("transitTank")) out.transitTank = await transitTankGates(d, ctx);
     if (parts.includes("transitShots") || parts.includes("transitNarrow")) out.transitShots = await transitShotGates(d, ctx, parts.includes("transitNarrow"));
     if (parts.includes("m32")) out.m32 = await m32Gates(d, ctx);
     if (parts.includes("repairEdge")) out.repairEdge = await repairEdgeGates(d, ctx);

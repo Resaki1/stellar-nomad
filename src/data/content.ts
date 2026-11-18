@@ -119,11 +119,11 @@ export type SiteDef = {
 };
 
 /**
- * Authored sites (M3.7). The lunar canister sits at luna_belt's thinning edge, outside the Moon's
- * 2 R route-clearance sphere: a target inside it needed a 26,000 km detour from the near-side standoff.
- * 1,900 km off the ecliptic: the Moon's shadow (a ≤ 1,753 km cylinder along the anti-Sun line, which
- * stays in the ecliptic) never reaches it. At [5200, 1200, 0] it sat in the umbra for weeks around the
- * default start date and the canister and ship drew black. Nearest loaded rocks ~7 km.
+ * Authored sites (M3.7). The lunar canister sits 1,500 km beyond luna_belt's anchor, radially out from
+ * the Moon (inside the field core, rocks loaded around it; 4,900 km from Luna, outside its 2 R route
+ * clearance). Field and site sit 3,290 / 4,740 km north of the ecliptic, so the Moon's shadow (a
+ * <= 1,753 km cylinder in the ecliptic) never reaches them; Sun-Luna-site phase 75 deg at the default
+ * date, 75-105 deg over the year (Luna in view half to gibbous lit, playtest 2).
  */
 export const SITES: SiteDef[] = [
   {
@@ -131,7 +131,7 @@ export const SITES: SiteDef[] = [
     name: "Survey canister",
     signalName: "Survey signal",
     frameId: "luna",
-    positionKm: [3400, 1900, 0],
+    positionKm: [1629, 4605, 393],
     signalRangeKm: 120_000,
     inspectRangeKm: 2,
     recoverRangeKm: 2,

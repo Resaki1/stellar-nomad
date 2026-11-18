@@ -426,6 +426,7 @@ const SpaceShip = memo(() => {
       _env.desiredForwardRateRadPerS = tBuf.desiredRateRadPerS;
       nearField.setGates(burning || tBuf.speedKmps > 0, devSpeed !== null, false);
       shipReq.transitDvKmps = tBuf.stepDvKmps;
+      shipReq.transitKm = tBuf.stepKm;
       shipReq.transitHeatKW = tBuf.stepHeatKW;
       shipReq.reservedKg = transitReserveKg(tBuf, rt);
       propellantGate(shipRes, worstKg, rt, _gate, shipReq.reservedKg);

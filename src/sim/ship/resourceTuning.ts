@@ -49,6 +49,12 @@ export interface ResourceTuning {
 
   /** Transit: kg per km/s of delivered drive speed change (accelerate and brake). */
   transitKgPerKmps: number;
+  /**
+   * Transit: kg per km covered while the drive carries speed. The distance floor of a trip: an
+   * Earth -> Moon route needs more than the base tank holds whatever the speed. Not scaled by
+   * difficulty (a progression gate, not a rate).
+   */
+  transitKgPerKm: number;
   /** Braking fuel kept beyond the exact stop, fraction. */
   transitReserveMargin: number;
   transitSpoolHeatKW: number;
@@ -95,7 +101,8 @@ export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
   processingKgPerS: 10,
   processingMaxBatchUnits: 50,
 
-  transitKgPerKmps: 0.006,
+  transitKgPerKmps: 0.003,
+  transitKgPerKm: 0.0019,
   transitReserveMargin: 0.02,
   transitSpoolHeatKW: 120,
   transitBurnHeatKW: 95,

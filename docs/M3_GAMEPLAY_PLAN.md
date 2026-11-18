@@ -1846,3 +1846,41 @@ operation agree; ±15 % jitter stays. MEASURED with the pace gate on fresh defau
 38.9 min, 25 rocks. origin_belt 6 u/s, luna_belt 17 u/s (lunar refuel and Ti loops unchanged; gates
 pass). The pace bot now refuels below 80 kg from any hydrates aboard (at 6 u/s it flew the tank dry
 keeping hydrates for recipes). playA/playB mine 52/70 rocks (were 24/39); no gate expectation changed.
+
+**Playtest 2: fuel gate, lunar lighting, drive milestone.** (1) The drive spent whatever fuel was aboard
+up to the ideal flip-and-burn (2·c·√(a·d)); its only hard floor was the 600 s coast bound, 7.8 kg for
+Earth → Moon, so raising `transitKgPerKmps` alone could not make the trip need more than 600 kg without
+making a 50 km hop cost ~60 kg. Transit now also bills `transitKgPerKm` (0.0019 kg/km, covered distance,
+not difficulty-scaled: a progression floor); the leg reserves perKm × aim distance before it buys speed
+(the law sees leg fuel minus that), so prediction and execution still share one law, and the coast stays
+flat. `transitKgPerKmps` 0.006 → 0.003. `needKg` (distance fuel + the coast bound) is the refusal number:
+above the tank `Tank too small`, else `Not enough fuel`; the route panel shows NEED / TANK rows. MEASURED
+offline with the compiled `simulateTransit` (Earth field → lunar field arrival, field offsets included):
+path 339,894-420,652 km over a year (6 h steps) → need 650-803 kg; at the default date 699 kg (base tank
+refused), full Auxiliary Tank 797 kg burnt, ETA 46 s, 203 kg left; perigee 2941-10-13 need 670 / burn 766;
+apogee 2941-09-29 need 784 / burn 888; worst (2-leg) 2941-12-22 need 800 / burn 924, 76 kg left. Hops:
+5 km 0.35 kg, 50 km 1.28, 500 km 4.7, 5,000 km 21.4; field arrival → canister 2,018 km 11.4 kg, miss 0.02 km.
+Manual (untargeted) flight brakes when the tank empties. `Reach the Moon` adds a `tank` step (820 kg:
+Craft / Equip Auxiliary Tank Mk1, unlocked by lg1 before pr1) and its fuel step is 820 kg unscaled.
+(2) luna_belt's anchor sat in the Moon's shadow (phase 166°). New anchor [-850, 3290, -200] km and
+canister [-1225, 4740, -290] (1,500 km radially out): Sun-Luna-field phase 75.2° at the default date,
+75-105° over the year, 3,290 km off the ecliptic (shadow ≤ 1,753 km), route from the Earth field passes
+≥ 3,487 km from Luna's centre. Old saves: lunar chunk deltas/discoveries keyed by the old field no longer
+match its rocks (accepted); wrecks and points are frame-relative and stay where they were. (3) Crafting the
+drive plays `drive_online_001` (AI, one line, points at the tank); `hint_drive` waits for it.
+Live round (dev server back): base tank at Earth targeting Luna shows `Tank too small`, NEED 701-703 /
+TANK 600 (new gate `transitTank`); full aux tank, default date 45.9 s / 802 kg predicted == executed
+(198 kg left), second date 867.7 kg. Pace on a fresh world (bot fixed: tank after the drive, hydrate rock
+when fuel is low, respawn when both fuels are 0): arrival 47.8 bot min (drive 39.3, fuel to 900 kg 8.1
+min), new-player estimate 76.1; `throughputPerS` unchanged. Lighting: at the anchor above, the arrival
+point's phase was 63° and Luna read as full (no terminator on the visible disk; a phase probe at
+0/63/90/120° confirmed the render: only 90° and up read as half or crescent).
+Anchor moved again to [1130, 3195, 273] (canister [1629, 4605, 393]): arrival phase 95° at the default
+date (52-128° over month and year), field 70-110° over the year, never shadowed (≥ 3,195 km off the
+anti-Sun axis), Earth field → arrival 347-420k km. `lunarShots` captures Luna half lit, rocks and canister lit.
+Review fixes (offline, same sim code): `plan.needKg` now scales each leg's need by its `legBudget`
+share, so NEED equals the least fuel that flies (measured within 0.6 kg at 1 and 2 legs; it was up to
+15 kg low on 2-leg routes). Fuel step 820 -> 900 kg: 820 arrives but takes 104-203 s at the far epochs,
+900 takes ≤ 61 s everywhere. Manual (untargeted) transit reserves its stop's distance fuel and brakes
+while ordinary fuel still pays it (protected allowance: ≤ 0.06 kg drawn; before, every manual run to
+an empty tank drained all 60 kg). A drive built with the aux tank already fitted plays `drive_online_002` instead.

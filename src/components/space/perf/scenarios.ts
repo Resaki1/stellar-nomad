@@ -196,11 +196,11 @@ export type Scenario = {
  * Earth's CENTRE; these are altitudes (centre distance − 6371 km), so e.g. the
  * "19,000 km" observation is `earth_12629`.
  */
-/** 1.5 km beyond the lunar survey site (Luna frame [3400, 1900, 0]), live with the Moon: read at warp time. */
+/** 1.5 km beyond the lunar survey site (Luna frame [1629, 4605, 393], content.ts), live with the Moon: read at warp time. */
 function lunarSiteApproachKm(): [number, number, number] {
   const luna = bodies.find((b) => b.id === "luna")?.positionKm;
   const out: [number, number, number] = [0, 0, 0];
-  const rel = [3401.5, 1900, 0];
+  const rel = [1630.5, 4605, 393];
   for (let i = 0; i < 3; i++) Object.defineProperty(out, i, { get: () => (luna ? luna[i] : 0) + rel[i], enumerable: true });
   return out;
 }

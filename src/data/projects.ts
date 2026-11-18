@@ -9,8 +9,10 @@ import { RESEARCH_NODES } from "./content";
 export type ProjectStep =
   | { kind: "research"; nodeId: string }
   | { kind: "own"; itemId: string }
-  /** Ordinary propellant aboard, kg at Standard (scaled by the difficulty's fuel use). */
+  /** Ordinary propellant aboard, kg (transit's distance fuel is not difficulty-scaled). */
   | { kind: "fuel"; kg: number; label: string }
+  /** Tank capacity at least `kg` (the module that gets it there is `itemId`). */
+  | { kind: "tank"; kg: number; itemId: string; label: string }
   | { kind: "inFrame"; frameId: string; label: string }
   | { kind: "siteInspected"; siteId: string }
   | { kind: "siteRecovered"; siteId: string }
@@ -30,13 +32,16 @@ const AUTHORED: ProjectDef[] = [
   {
     id: "reach_moon",
     name: "Reach the Moon",
-    summary: "Build the transit drive, fuel up and travel to lunar space.",
+    summary: "Build the transit drive, fit a bigger tank, fuel up and travel to lunar space.",
     steps: [
       { kind: "research", nodeId: "th1_heat_rejection" },
       { kind: "research", nodeId: "lg1_bulk_handling" },
       { kind: "research", nodeId: "pr1_transit_calibration" },
       { kind: "own", itemId: "special_transit_drive" },
-      { kind: "fuel", kg: 280, label: "Fuel for Earth to Moon" },
+      // Earth -> lunar field needs 680-815 kg over the year (transitKgPerKm): over the base 600.
+      // 900 flies in ~60 s at the worst epochs (the bare minimum takes up to ~10 min).
+      { kind: "tank", kg: 820, itemId: "module_aux_tank_mk1", label: "A tank that holds Earth to Moon" },
+      { kind: "fuel", kg: 900, label: "Fuel for Earth to Moon" },
       { kind: "inFrame", frameId: "luna", label: "Reach the lunar field" },
     ],
     destination: { bodyId: "luna" },

@@ -68,7 +68,7 @@ export const sampleGlanceAtom = atom(null, (get, set): void => {
   const recDist = pt ? poseDistanceKm(ship.frameId, pos, pt.frameId, pt.positionKm) : 0;
   const recovery = pt && Number.isFinite(recDist) ? { name: pt.name, distKm: round(recDist), starter: pt.starter } : null;
   const t = getEffectiveTuning();
-  const returnKg = recovery && recDist > 50 ? Math.round(2 * t.transitKgPerKmps * Math.sqrt(TRANSIT_ACCEL_KMPS2 * recDist) * (1 + t.transitReserveMargin)) : 0;
+  const returnKg = recovery && recDist > 50 ? Math.round(2 * t.transitKgPerKmps * Math.sqrt(TRANSIT_ACCEL_KMPS2 * recDist) * (1 + t.transitReserveMargin) + t.transitKgPerKm * recDist) : 0;
   const prev = get(glanceAtom);
   const same = prev.frameId === ship.frameId && prev.returnKg === returnKg &&
     JSON.stringify(prev.site) === JSON.stringify(site) && JSON.stringify(prev.recovery) === JSON.stringify(recovery);

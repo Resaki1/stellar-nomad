@@ -455,7 +455,7 @@
     {
       "id": "luna_belt",
       "anchorBody": "luna",
-      "anchorOffsetKm": [3400, 0, 0],
+      "anchorOffsetKm": [1130, 3195, 273],
       "name": "Lunar field",
       "seed": 7331,
       "enabled": true,

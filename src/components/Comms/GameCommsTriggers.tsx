@@ -6,7 +6,7 @@
 // registry (player save, `commsPlayed`) prevents replays across reloads.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import { COMMS_MESSAGES } from "@/data/commsMessages";
 import { HINTS, type HintDef } from "@/data/guidance";
@@ -32,6 +32,7 @@ const lowFuelAtom = atom((get) => {
 });
 const hasHydratesAtom = atom((get) => (get(cargoAtom).items.hydrates ?? 0) > 0);
 const hasDriveAtom = atom((get) => get(modulesAtom).ownedModules.includes("special_transit_drive"));
+const auxTankAtom = atom((get) => get(modulesAtom).equippedModules.cargo === "module_aux_tank_mk1");
 const frameAtom = atom((get) => get(glanceAtom).frameId);
 const damagedAtom = atom((get) => {
   const h = get(shipHealthAtom);
@@ -78,7 +79,20 @@ export default function GameCommsTriggers() {
   useHint(HINTS.cargoFull, useAtomValue(isCargoFullAtom), dead);
   // Only actionable with hydrates aboard (after a respawn the hold is empty: the wreck hint applies).
   useHint(HINTS.lowFuel, useAtomValue(lowFuelAtom) && hasHydrates, dead);
-  useHint(HINTS.drive, useAtomValue(hasDriveAtom), dead);
+  // Drive built: the AI marks the milestone (and points at the tank); the control hint follows it.
+  const hasDrive = useAtomValue(hasDriveAtom);
+  const frameNow = useAtomValue(frameAtom);
+  const auxTank = useAtomValue(auxTankAtom);
+  // hint_drive alone: a save that had the drive before these messages existed.
+  const drivePlayed = playedSet.has("drive_online_001") || playedSet.has("drive_online_002") || playedSet.has("hint_drive");
+  // The variant is chosen once: fitting the tank while the first is queued must not add the second.
+  const driveMsg = useRef<"drive_online_001" | "drive_online_002" | null>(null);
+  useEffect(() => {
+    if (!hasDrive || frameNow === "luna" || dead || drivePlayed) return;
+    driveMsg.current ??= auxTank ? "drive_online_002" : "drive_online_001";
+    enqueue(COMMS_MESSAGES[driveMsg.current]);
+  }, [hasDrive, frameNow, dead, drivePlayed, auxTank, enqueue]);
+  useHint(HINTS.drive, hasDrive && (drivePlayed || frameNow === "luna"), dead);
   useHint(HINTS.recovered, useAtomValue(lastRecoveryAtom) !== null, dead);
 
   useHint(HINTS.damage, useAtomValue(damagedAtom) && openingDone, dead);

@@ -29,8 +29,13 @@ const TASKS = [
   { id: "rack", kind: "craft", item: "module_cargo_rack_mk1", need: { silicates: 50, fe_ni_metal: 150 } },
   { id: "pr1", kind: "unlock", node: "pr1_transit_calibration", need: { hydrates: 15, fe_ni_metal: 40 } },
   { id: "drive", kind: "craft", item: "special_transit_drive", need: { silicates: 600, fe_ni_metal: 550, hydrates: 30, carbon: 20, sulfur: 12 } },
+  // Playtest 2: Earth -> Moon needs more than the base 600 kg tank. The rack stays fitted while hauling drive material.
+  // Crafted after the drive (the tracker's order): an earlier craft auto-fits it and blocks the rack.
+  { id: "tank", kind: "craft", item: "module_aux_tank_mk1", after: "drive", need: { fe_ni_metal: 120, silicates: 40 } },
+  { id: "tankEquip", kind: "equip", item: "module_aux_tank_mk1", slot: "cargo", after: "drive", need: {} },
 ];
-const FUEL_GOAL_KG = 320;
+/** The tracker's "Fuel for Earth to Moon" step (projects.ts). */
+const FUEL_GOAL_KG = 900;
 /** Below this the bot refuels from any hydrates aboard (to the refill level), like a player told "Fuel low". */
 const LOW_FUEL_KG = 80;
 const LOW_FUEL_REFILL_KG = 160;
@@ -87,12 +92,13 @@ export async function paceGates(d, ctx) {
   /** Execute every task that is affordable now (in order), plus fuel processing with spare hydrates. */
   const doTasks = async () => {
     for (const t of TASKS) {
-      if (st.done[t.id]) continue;
+      if (st.done[t.id] || (t.after && !st.done[t.after]) || (t.kind === "equip" && !st.done.tank)) continue;
       const p = await ctx.player();
       if (Object.entries(t.need).some(([k, n]) => (p.cargo.items[k] ?? 0) < n)) continue;
       let o = null;
       if (t.kind === "unlock") o = await ev(`${G}.m33.unlock(${JSON.stringify(t.node)})`);
       else if (t.kind === "craft") o = await ev(`${G}.craft(${JSON.stringify(t.item)})`);
+      else if (t.kind === "equip") o = await ev(`${G}.m33.equipOp(${JSON.stringify(t.item)}, ${JSON.stringify(t.slot)})`);
       else if (t.kind === "batch") {
         if ((await ev(`${G}.res.state()`)).processing?.active) continue;
         o = await ev(`${G}.res.startProcessing(${Math.min(5, p.cargo.items.hydrates ?? 0)})`);
@@ -105,6 +111,7 @@ export async function paceGates(d, ctx) {
         log(clockMin(), "min", t.id);
         if (t.id === "pr1") mark("pr1Unlocked");
         if (t.id === "drive") mark("driveCrafted");
+        if (t.id === "tankEquip") mark("tankEquipped");
       } else if (o && o.reason !== "evidence") st.log.push({ t: clockMin(), task: t.id, refused: o.reason, missing: o.missing });
     }
     // Spare hydrates beyond the remaining recipes go into the tank.
@@ -136,6 +143,8 @@ export async function paceGates(d, ctx) {
   /** Choose the next rock: evidence first, then the best useful-units-per-second among nearby rocks. */
   const pick = async (need, have, ev0) => {
     const rocks = await ev(`${G}.m33.rocks(400)`);
+    // "Fuel low" with no hydrates aboard: a player goes for the nearest hydrate rock first.
+    if ((await ev(`${G}.res.state()`)).ordinaryKg < LOW_FUEL_KG && (have.hydrates ?? 0) < 4) need = { hydrates: 40 };
     const radiator = (await ctx.player()).modules.equippedModules.cooling === "module_radiator_strips_mk1";
     const maxMine = Math.min(MAX_MINE_S, radiator ? 18.5 : 13);
     let best = null;
@@ -206,7 +215,21 @@ export async function paceGates(d, ctx) {
       });
       continue;
     }
-    if (st.done.drive) {
+    // Stranded (both fuels spent): the dashboard reads "No fuel · Esc › Respawn".
+    const r0 = await ev(`${G}.res.state()`);
+    if (r0.ordinaryKg + r0.protectedKg < 0.5) {
+      st.deaths++;
+      st.log.push({ t: clockMin(), respawn: "no fuel" });
+      charge("menu");
+      await real(async () => {
+        await ev(`${G}.res.abandon()`);
+        await ctx.wait(1000);
+        await ev(`${G}.rep.recover("active")`);
+        await ctx.wait(1500);
+      });
+      continue;
+    }
+    if (st.done.drive && st.done.tankEquip) {
       phase = "fuel";
       const r = await ev(`${G}.res.state()`);
       if (r.ordinaryKg >= FUEL_GOAL_KG && !r.processing?.active) {

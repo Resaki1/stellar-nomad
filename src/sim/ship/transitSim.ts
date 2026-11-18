@@ -54,6 +54,8 @@ export interface TransitScript {
   strafeIn?: TransitPhase;
   /** Dev speed override (transit unbilled, uncapped by fuel). */
   freeFlight?: boolean;
+  /** Tank capacity override, kg (an Auxiliary Tank loadout); default the effective tuning's. */
+  tankKg?: number;
 }
 
 export interface TransitSimResult {
@@ -93,7 +95,7 @@ export interface TransitSimResult {
 }
 
 export function simulateTransit(script: TransitScript): TransitSimResult | Pick<TransitSimResult, "plan"> {
-  const t = getEffectiveTuning();
+  const t = script.tankKg ? { ...getEffectiveTuning(), tankKg: script.tankKg } : getEffectiveTuning();
   const ft = getFlightTuning();
   const ship = createShipState();
   ship.frameId = SYSTEM_FRAME_ID;
@@ -198,6 +200,7 @@ export function simulateTransit(script: TransitScript): TransitSimResult | Pick<
       env.desiredForwardX = rt.dfX; env.desiredForwardY = rt.dfY; env.desiredForwardZ = rt.dfZ;
       env.desiredForwardRateRadPerS = rt.desiredRateRadPerS;
       req.transitDvKmps = rt.stepDvKmps;
+      req.transitKm = rt.stepKm;
       req.transitHeatKW = rt.stepHeatKW;
       req.reservedKg = transitReserveKg(rt, t);
       propellantGate(res, worstKg, t, gate, req.reservedKg);

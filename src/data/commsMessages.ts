@@ -53,6 +53,23 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     priority: 3,
   },
 
+  // -- Transit drive built: the next milestone is the tank -------------------
+  drive_online_001: {
+    messageId: "drive_online_001",
+    speaker: "{{AI_NAME}}",
+    textContent: [
+      "Transit drive online. The Moon needs a bigger tank than ours: build an auxiliary tank.",
+    ],
+    priority: 2,
+  },
+  // Same milestone when the tank is already fitted (one of the two plays per save).
+  drive_online_002: {
+    messageId: "drive_online_002",
+    speaker: "{{AI_NAME}}",
+    textContent: ["Transit drive online. With the auxiliary tank aboard, the Moon is in range."],
+    priority: 2,
+  },
+
   // -- First arrival in lunar space -----------------------------------------
   lunar_signal_001: {
     messageId: "lunar_signal_001",

@@ -10,7 +10,7 @@ import {
   type TransitPreview,
 } from "@/store/transit";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
-import { ALREADY_THERE, spoolStepsFor } from "@/sim/ship/transitDrive";
+import { ALREADY_THERE, NEEDS_FUEL, TANK_TOO_SMALL, spoolStepsFor } from "@/sim/ship/transitDrive";
 import { KeyChip } from "../shared/Chips";
 
 import "./TransitHUD.scss";
@@ -33,11 +33,11 @@ const WRITE_PERIOD_MS = 100;
 /** The `Obstacle` chip stays this long after a proximity brake. */
 const OBSTACLE_CHIP_MS = 4000;
 
-function Row({ label, children, valueRef }: { label: string; children?: string; valueRef?: Ref<HTMLSpanElement> }) {
+function Row({ label, children, valueRef, bad }: { label: string; children?: string; valueRef?: Ref<HTMLSpanElement>; bad?: boolean }) {
   return (
     <div className="transit-hud__row">
       <span className="transit-hud__label">{label}</span>
-      <span className="transit-hud__value" ref={valueRef}>
+      <span className={`transit-hud__value${bad ? " transit-hud__status--bad" : ""}`} ref={valueRef}>
         {children}
       </span>
     </div>
@@ -110,7 +110,9 @@ export default function TransitHUD() {
   const showPanel = idle ? !!plan && plan.reason !== ALREADY_THERE : true;
   // Numbers: the live plan when it is good, else the last good one for the same destination (greyed).
   const nums = plan?.ok ? plan : lastGood && plan && lastGood.targetId === plan.targetId ? lastGood : null;
-  const stale = !!plan && !plan.ok;
+  // A fuel refusal shows the route's need against the tank in the fixed rows instead of stale numbers.
+  const fuelShort = !!plan && !plan.ok && (plan.reason === TANK_TOO_SMALL || plan.reason === NEEDS_FUEL) && plan.needKg > 0;
+  const stale = !!plan && !plan.ok && !fuelShort;
   const name = plan?.targetName ?? route?.name ?? "Free flight";
   const legs = nums && nums.legCount > 1 ? nums.legCount : 0;
   const leg = state.legCount > 1 ? `Leg ${state.legIndex + 1}/${state.legCount}` : "";
@@ -161,9 +163,18 @@ export default function TransitHUD() {
             <Row label="DIST" valueRef={distRef} />
           </div>
           <div className="transit-hud__nums">
-            <Row label="ETA">{nums ? fmtEta(nums.etaS) : "--:--"}</Row>
-            <Row label="BURN">{nums ? kg(nums.fuelKg) : "—"}</Row>
-            <Row label="LEFT">{nums ? kg(nums.arrivalOrdinaryKg) : "—"}</Row>
+            <Row label="ETA">{nums && !fuelShort ? fmtEta(nums.etaS) : "--:--"}</Row>
+            {fuelShort && plan ? (
+              <>
+                <Row label="NEED" bad>{kg(plan.needKg)}</Row>
+                <Row label="TANK" bad={plan.needKg > plan.tankKg}>{kg(plan.tankKg)}</Row>
+              </>
+            ) : (
+              <>
+                <Row label="BURN">{nums ? kg(nums.fuelKg) : "—"}</Row>
+                <Row label="LEFT">{nums ? kg(nums.arrivalOrdinaryKg) : "—"}</Row>
+              </>
+            )}
           </div>
           <div className="transit-hud__status">{status}</div>
         </div>

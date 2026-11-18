@@ -15,8 +15,8 @@ export interface ProjectView extends EvidenceView {
   shipFrameId: string | null;
   /** Frames of the non-starter points this player placed. */
   myPointFrames: readonly string[];
-  /** Difficulty fuel-use multiplier (fuel steps scale with it). */
-  fuelUse: number;
+  /** Effective tank capacity (loadout included), kg. */
+  tankKg: number;
 }
 
 /** One piece of a research step: a requirement, an any-of group, or analysis material. */
@@ -80,8 +80,16 @@ function stepLine(s: ProjectStep, v: ProjectView): ProjectLine {
       const met = have || (s.itemId === "consumable_replication_kit" && v.myPointFrames.length > 0);
       return { icon: "craft", text: met ? `${name} built` : `Craft ${name}`, name, met, sub: [] };
     }
+    case "tank": {
+      // Met once the tank holds the trip (or the ship is already in lunar space).
+      const met = v.tankKg >= s.kg || v.shipFrameId === "luna";
+      const def = getItemDef(s.itemId);
+      const name = def?.name ?? s.itemId;
+      if (met) return { icon: "fuel", text: `Tank ${v.tankKg} kg`, tip: s.label, met, sub: [] };
+      return { icon: "craft", text: v.owned.has(s.itemId) ? `Equip ${name}` : `Craft ${name}`, name, tip: s.label, met, sub: [] };
+    }
     case "fuel": {
-      const kg = Math.round(s.kg * v.fuelUse);
+      const kg = s.kg;
       // Spent on the way: once in lunar space the fuel step stays met.
       const met = v.ordinaryKg >= kg || v.shipFrameId === "luna";
       return { icon: "fuel", text: `${Math.floor(v.ordinaryKg)} / ${kg} kg`, tip: s.label, met, sub: [] };
