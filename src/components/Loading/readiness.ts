@@ -4,6 +4,7 @@
  */
 import type { createStore } from "jotai";
 import { devTeleportAtom } from "@/store/dev";
+import { repositionState } from "@/sim/ship/reposition";
 import { hasPendingCloudBakes } from "@/components/celestial/bodies/cloudVolumeCompute";
 import { isStbnLoaded, isStbnPending } from "@/components/celestial/bodies/stbnTexture";
 import { installNetworkTracking, net, networkQuiet } from "./netActivity";
@@ -19,7 +20,7 @@ export const PENDING_CLOUD_BAKES = 2;
 export const PENDING_BLUE_NOISE = 4;
 export const PENDING_NETWORK = 8;
 export const PENDING_RESOURCES = 16;
-/** Physics engine still loading (bounded by PHYSICS_LOAD_TIMEOUT_MS, then analytic only). */
+/** Physics engine still loading: holds one PHYSICS_LOAD_TIMEOUT_MS window; a second runs in play, flagged. */
 export const PENDING_PHYSICS = 32;
 
 /** Resident texture/geometry counts must hold this many frames. */
@@ -42,7 +43,7 @@ export function createReadiness(startFrame: number, requireBlueNoise = true): Re
   return {
     check(store, frame, quietMs, memory) {
       let mask = 0;
-      if (store.get(devTeleportAtom) !== null) mask |= PENDING_TELEPORT;
+      if (store.get(devTeleportAtom) !== null || repositionState.pending !== null || repositionState.arrivalSince > 0) mask |= PENDING_TELEPORT;
       if (hasPendingCloudBakes()) mask |= PENDING_CLOUD_BAKES;
       if (requireBlueNoise ? !isStbnLoaded() : isStbnPending()) mask |= PENDING_BLUE_NOISE;
       if (!networkQuiet(quietMs)) mask |= PENDING_NETWORK;

@@ -5,6 +5,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { aiNameAtom } from "@/store/aiName";
 import { setCursorNeeded } from "@/input/pointerLock";
 import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
+import { NAMING_AFTER_IDS } from "@/data/commsMessages";
 
 import { playAudio } from "@/audio";
 import "./AINameOverlay.scss";
@@ -26,9 +27,8 @@ export default function AINameOverlay() {
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Only show once the greeting has been dismissed (prevents flash on first boot
-  // where the greeting hasn't been enqueued yet and activeMessage is still null)
-  const greetingPlayed = playedIds.includes("ai_greeting_001");
+  // Only after the opening premise is dismissed (no flash before it is enqueued).
+  const greetingPlayed = NAMING_AFTER_IDS.some((id) => playedIds.includes(id));
   const visible = !isNamed && !activeMessage && greetingPlayed;
   useEffect(() => {
     if (visible) inputRef.current?.focus();

@@ -3,6 +3,7 @@
  * panel edits. Units: kg, s, kW, kJ; heat is an effective store, `heatCapacityKJ` = 100 %.
  */
 import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "./shipResources";
+import { applyDifficulty, difficultyMults, difficultyVersion } from "@/sim/difficulty";
 
 export interface ResourceTuning {
   tankKg: number;
@@ -48,6 +49,12 @@ export interface ResourceTuning {
 
   /** Transit: kg per km/s of delivered drive speed change (accelerate and brake). */
   transitKgPerKmps: number;
+  /**
+   * Transit: kg per km covered while the drive carries speed. The distance floor of a trip: an
+   * Earth -> Moon route needs more than the base tank holds whatever the speed. Not scaled by
+   * difficulty (a progression gate, not a rate).
+   */
+  transitKgPerKm: number;
   /** Braking fuel kept beyond the exact stop, fraction. */
   transitReserveMargin: number;
   transitSpoolHeatKW: number;
@@ -55,8 +62,6 @@ export interface ResourceTuning {
   transitBurnHeatKW: number;
   /** A trip predicted longer than this is refused (too little fuel), s. */
   transitMaxTripS: number;
-  /** Routes stay outside this many body radii (the clearance waypoint's sphere). */
-  transitRouteClearanceRadii: number;
 
   /** Fraction of max hull per second while repairing. */
   repairPerS: number;
@@ -96,26 +101,41 @@ export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
   processingKgPerS: 10,
   processingMaxBatchUnits: 50,
 
-  transitKgPerKmps: 0.006,
+  transitKgPerKmps: 0.003,
+  transitKgPerKm: 0.0019,
   transitReserveMargin: 0.02,
   transitSpoolHeatKW: 120,
   transitBurnHeatKW: 95,
   transitMaxTripS: 600,
-  transitRouteClearanceRadii: 2,
 
   repairPerS: 0.02,
   repairUnitsPerPct: 1,
 });
 
 const live: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+let liveVersion = 0;
 
-/** The live table. Read it where used; never cache fields across frames. */
+/** The live (dev-editable) table, before difficulty. Gameplay reads `getEffectiveTuning`. */
 export function getResourceTuning(): Readonly<ResourceTuning> {
   return live;
 }
 
+const effective: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+let effectiveLive = -1;
+let effectiveDiff = -1;
+
+/** The live table with the active world's difficulty applied (refreshed on change, no per-call allocation). */
+export function getEffectiveTuning(): Readonly<ResourceTuning> {
+  if (effectiveLive !== liveVersion || effectiveDiff !== difficultyVersion()) {
+    applyDifficulty(live, difficultyMults(), effective);
+    effectiveLive = liveVersion;
+    effectiveDiff = difficultyVersion();
+  }
+  return effective;
+}
+
 const POSITIVE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>([
-  "tankKg", "heatCapacityKJ", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS", "transitRouteClearanceRadii",
+  "tankKg", "heatCapacityKJ", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS",
 ]);
 const UNIT_RANGE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["exhaustedAngularScale", "heatWarn01", "heatThrottle01"]);
 const INTEGER: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["processingMaxBatchUnits", "repairUnitsPerPct"]);
@@ -134,8 +154,10 @@ export function setResourceTuning(patch: Partial<ResourceTuning>): void {
   // Throttle ramp divides by (1 − heatThrottle01); keep it non-degenerate.
   if (live.heatThrottle01 > 0.999) live.heatThrottle01 = 0.999;
   if (live.heatMax01 < 1) live.heatMax01 = 1;
+  liveVersion++;
 }
 
 export function resetResourceTuning(): void {
   Object.assign(live, DEFAULT_RESOURCE_TUNING);
+  liveVersion++;
 }

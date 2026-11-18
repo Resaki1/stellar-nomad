@@ -61,7 +61,7 @@ import type { WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
 import { createGameplayHarness } from "./gameplayHarness";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
-import { isTransitBurning, targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
+import { bodyTransitTarget, isTransitBurning, targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { poiBuffer } from "@/store/poi";
 import { simulateFlight, type FlightScript, type FlightSimResult } from "@/sim/ship/flightSim";
 import { simulatePhysics, type PhysicsScript, type PhysicsSimResult } from "@/sim/physics/physicsSim";
@@ -512,20 +512,16 @@ export function createTestHarness(store: Store) {
      * Target a body (same POI shape as gaze targeting) and engage the autopilot: holds
      * the transit key through the spool. Grants the transit-drive module if missing.
      */
-    async transitTo(bodyId: string): Promise<{ engaged: boolean; arrivalOffsetKm: number; legCount: number; refusal: string | null }> {
+    async transitTo(bodyId: string, opts: { field?: boolean } = {}): Promise<{ engaged: boolean; arrivalOffsetKm: number; legCount: number; fieldArrival: boolean; refusal: string | null }> {
       const body = allBodyDefs().find((b) => b.id === bodyId);
       if (!body) throw new Error(`[test] unknown body "${bodyId}"`);
       if (!store.get(transitDriveOwnedAtom)) {
         const m = store.get(modulesAtom);
         store.set(modulesAtom, { ...m, ownedModules: [...m.ownedModules, "special_transit_drive"] });
       }
-      const arrivalOffsetKm = Math.max(100, body.radiusKm * 2);
-      store.set(targetedPOIAtom, {
-        id: `body:${body.id}`,
-        name: body.name,
-        positionKm: body.positionKm as [number, number, number],
-        arrivalOffsetKm,
-      });
+      const target = bodyTransitTarget(body, store.get(systemConfigAtom).asteroidFields, opts.field !== false);
+      const arrivalOffsetKm = target.arrivalOffsetKm ?? 0;
+      store.set(targetedPOIAtom, target);
       transitDriveBuffer.keyHeld = true;
       const refused0 = transitDriveBuffer.ev.refused;
       try {
@@ -533,7 +529,7 @@ export function createTestHarness(store: Store) {
       } finally {
         transitDriveBuffer.keyHeld = false;
       }
-      return { engaged: isTransitBurning(transitDriveBuffer.phase) && transitDriveBuffer.autopilot, arrivalOffsetKm, legCount: transitDriveBuffer.legCount, refusal: transitDriveBuffer.ev.refused !== refused0 ? transitDriveBuffer.ev.refusal : null };
+      return { engaged: isTransitBurning(transitDriveBuffer.phase) && transitDriveBuffer.autopilot, arrivalOffsetKm, legCount: transitDriveBuffer.legCount, fieldArrival: transitDriveBuffer.fieldArrival, refusal: transitDriveBuffer.ev.refused !== refused0 ? transitDriveBuffer.ev.refusal : null };
     },
 
     /** Teleport to a bench scenario id or an ad-hoc `SceneSpec`. Ship stops dead. */

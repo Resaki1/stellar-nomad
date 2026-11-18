@@ -18,14 +18,15 @@ import {
   type InstanceTransform,
 } from "@/sim/physics/asteroidColliders";
 import { impactLog, liveImpactCounters } from "@/sim/physics/impactDamage";
-import { getPhysicsTuning, setPhysicsTuning, type PhysicsTuning } from "@/sim/physics/physicsTuning";
+import { DEFAULT_PHYSICS_TUNING, getPhysicsTuning, setPhysicsTuning, type PhysicsTuning } from "@/sim/physics/physicsTuning";
+import { devTuningActive } from "@/store/devTuning";
 import type { NearFieldColliderId } from "@/sim/physics/nearField";
 
 import { shipHealthAtom } from "@/store/store";
-import { isDeadAtom, respawnAtom, wrecksAtom } from "@/store/death";
+import { isDeadAtom, wrecksAtom } from "@/store/death";
+import { recoverAtom } from "@/store/replication";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { cargoAtom } from "@/store/cargo";
-import { STARTING_POSITION_KM } from "@/sim/celestialConstants";
 import { physicsDebug } from "@/store/physicsTuningPrefs";
 import { playerInput } from "@/input/playerInput";
 
@@ -263,6 +264,9 @@ export function createPhysicsHarness(store: Store) {
     /** Live tuning table (docs/PHYSICS_PLAN.md §7.3). */
     tuning: {
       get: (): PhysicsTuning => ({ ...getPhysicsTuning() }),
+      defaults: (): PhysicsTuning => ({ ...DEFAULT_PHYSICS_TUNING }),
+      /** Any dev tuning table (flight, camera, physics, resources) off its defaults. */
+      devActive: (): boolean => devTuningActive(),
       set: (p: Partial<PhysicsTuning>): PhysicsTuning => {
         setPhysicsTuning(p);
         const t = getPhysicsTuning();
@@ -294,9 +298,9 @@ export function createPhysicsHarness(store: Store) {
       isDead: (): boolean => store.get(isDeadAtom),
       cargo: (): Record<string, number> => ({ ...store.get(cargoAtom).items }),
       wrecks: () => store.get(wrecksAtom).map((w) => ({ ...w })),
-      /** The death screen's respawn button. */
+      /** The death screen's recover button (active point; the starter in a fresh world). */
       respawn(): void {
-        store.set(respawnAtom, [...STARTING_POSITION_KM]);
+        store.set(recoverAtom, "active");
       },
     },
     /** Real asteroid colliders (M2b). */

@@ -1,30 +1,41 @@
 import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
-import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
+import { RECOVERY_ALLOWANCE_KG, START_PROPELLANT_KG } from "@/sim/ship/shipResources";
+import { STARTER_POINT_ID, starterPoint } from "@/sim/replication/points";
+import { DIFFICULTY_TABLE } from "@/sim/difficulty";
 import type {
   CargoState,
+  Difficulty,
+  DiscoveryState,
   ModulesState,
   PlayerState,
   PowerState,
   PropellantState,
-  ResearchState,
   SaveData,
   ShipConfig,
   WorldState,
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 5;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;
+
+/** Bound of `WorldState.discoveries.sources` and of each player's bookmarks. */
+export const MAX_SOURCES = 64;
+export const MAX_BOOKMARKS = 24;
+export const MAX_LEGACY_IDS = 256;
 
 export const DEFAULT_CARGO_CAPACITY_UNITS = 2000;
 
 export const defaultCargo = (): CargoState => ({ capacityUnits: DEFAULT_CARGO_CAPACITY_UNITS, items: {} });
 
-export const defaultResearch = (): ResearchState => ({ assaySamples: 0, activeResearch: null });
+export const defaultDiscoveries = (): DiscoveryState => ({ families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} });
 
-export const defaultPropellant = (): PropellantState => ({ ordinaryKg: PROPELLANT_TANK_KG, protectedKg: RECOVERY_ALLOWANCE_KG });
+export const defaultPropellant = (difficulty: Difficulty = "standard"): PropellantState => ({
+  ordinaryKg: START_PROPELLANT_KG,
+  protectedKg: RECOVERY_ALLOWANCE_KG * DIFFICULTY_TABLE[difficulty].allowance,
+});
 
 export const defaultPower = (): PowerState => ({ capacitor01: 1, heat01: 0 });
 
@@ -49,28 +60,38 @@ export const defaultShipConfig = (): ShipConfig => ({
   bonusCargoCapacity: 0,
   scannerLockSpeedMult: 1,
   scannerRangeMult: 1,
-  assaySampleBonusChance: 0,
   hullRegenPerSecond: 0,
+  scannerInspectTimeMult: 1,
+  scannerInspectRangeMult: 1,
+  tankBonusKg: 0,
+  reactorBonusKW: 0,
+  miningPowerMult: 1,
+  processingRateMult: 1,
+  heatCapacityMult: 1,
 });
 
 export const DEFAULT_HEALTH = 100;
 
-export function defaultPlayerState(): PlayerState {
+export function defaultPlayerState(difficulty: Difficulty = "standard"): PlayerState {
   return {
     ship: null,
     health: DEFAULT_HEALTH,
     isDead: false,
     cargo: defaultCargo(),
-    research: defaultResearch(),
     modules: defaultModules(),
     shipConfig: defaultShipConfig(),
     aiName: null,
     commsPlayed: [],
     starMarkers: [],
     minedLifetime: 0,
-    propellant: defaultPropellant(),
+    propellant: defaultPropellant(difficulty),
     power: defaultPower(),
     processing: null,
+    bookmarks: [],
+    legacy: null,
+    replication: { activeId: STARTER_POINT_ID },
+    lastLoss: null,
+    trackedProject: null,
   };
 }
 
@@ -80,15 +101,17 @@ export function defaultWorldState(): WorldState {
     simRate: 1,
     asteroidDeltas: {},
     wrecks: [],
-    research: { completedNodes: [] },
+    research: { completedNodes: [], legacy: [] },
+    discoveries: defaultDiscoveries(),
+    replication: { points: [starterPoint()] },
     receipts: [],
   };
 }
 
-export function defaultSaveData(playerId: string): SaveData {
+export function defaultSaveData(playerId: string, difficulty: Difficulty = "standard"): SaveData {
   return {
     schemaVersion: SCHEMA_VERSION,
     world: defaultWorldState(),
-    players: { [playerId]: defaultPlayerState() },
+    players: { [playerId]: defaultPlayerState(difficulty) },
   };
 }

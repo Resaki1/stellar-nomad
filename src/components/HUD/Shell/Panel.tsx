@@ -48,6 +48,8 @@ export type PanelProps = {
   noBodyPadding?: boolean;
   /** Suppress the header entirely. */
   hideHeader?: boolean;
+  /** Fixed height per tier (D4): tabs and content changes never resize the panel; the body scrolls. */
+  fixedHeight?: boolean;
   children: ReactNode;
 };
 
@@ -96,6 +98,7 @@ export default function Panel({
   footerSlot,
   noBodyPadding = false,
   hideHeader = false,
+  fixedHeight = false,
   children,
 }: PanelProps) {
   // Panel open/close. Every menu-space surface routes through this component
@@ -163,7 +166,7 @@ export default function Panel({
   return (
     <div className="panel__backdrop" onClick={handleBackdropClick}>
       <div
-        className={`panel panel--tier-${tier}`}
+        className={`panel panel--tier-${tier}${fixedHeight ? " panel--fixed-h" : ""}`}
         onClick={stop}
         style={widthStyle}
         role="dialog"

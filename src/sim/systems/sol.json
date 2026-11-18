@@ -75,7 +75,8 @@
     {
       "id": "earth",
       "orbit": { "model": "jpl", "aKm": 149598023, "periodDays": 365.256363 },
-      "rotation": { "poleRaDeg": 0.0, "poleDecDeg": 90.0, "spinDegPerDay": 360.9856235, "primeMeridianDeg": 190.147, "tiltDeg": 23.4392911, "tiltNodeDeg": 0 },
+      "rotation": { "poleRaDeg": 0.0, "poleDecDeg": 90.0, "spinDegPerDay": 360.9856235,
+        "ut": true, "primeMeridianDeg": 190.147, "tiltDeg": 23.4392911, "tiltNodeDeg": 0 },
       "name": "Earth",
       "type": "planet",
       "positionKm": [-129995000, 0, -65015000],
@@ -360,21 +361,102 @@
             ]
           }
         ],
+        "pockets": [
+          {
+            "id": "origin_volatile", "name": "Volatile-rich debris", "kind": "volatile",
+            "chunks": ["-141,8,-10", "-142,9,-10"],
+            "classes": [
+              {
+                "id": "c_type", "name": "C-Type", "weight": 1.0,
+                "resources": [
+                  { "resourceId": "silicates",    "min": 0.35, "max": 0.50 },
+                  { "resourceId": "hydrates",     "min": 0.20, "max": 0.32 },
+                  { "resourceId": "carbon",       "min": 0.03, "max": 0.07 },
+                  { "resourceId": "fe_ni_metal",  "min": 0.05, "max": 0.12 },
+                  { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "origin_metal", "name": "Metal-rich fragments", "kind": "metal",
+            "chunks": ["-142,8,-11"],
+            "classes": [
+              {
+                "id": "x_type", "name": "X-Type", "weight": 0.8,
+                "resources": [
+                  { "resourceId": "fe_ni_metal",  "min": 0.65, "max": 0.90 },
+                  { "resourceId": "silicates",    "min": 0.08, "max": 0.25 },
+                  { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+                  { "resourceId": "carbon",       "min": 0.00, "max": 0.03 },
+                  { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+                ]
+              },
+              {
+                "id": "s_type", "name": "S-Type", "weight": 0.2,
+                "resources": [
+                  { "resourceId": "silicates",    "min": 0.60, "max": 0.75 },
+                  { "resourceId": "fe_ni_metal",  "min": 0.20, "max": 0.30 },
+                  { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+                  { "resourceId": "carbon",       "min": 0.00, "max": 0.02 },
+                  { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "origin_mixed", "name": "Mixed rubble", "kind": "mixed",
+            "chunks": ["-141,9,-10"],
+            "classes": [
+              {
+                "id": "s_type", "name": "S-Type", "weight": 0.4,
+                "resources": [
+                  { "resourceId": "silicates",    "min": 0.65, "max": 0.80 },
+                  { "resourceId": "fe_ni_metal",  "min": 0.12, "max": 0.25 },
+                  { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+                  { "resourceId": "carbon",       "min": 0.00, "max": 0.02 },
+                  { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+                ]
+              },
+              {
+                "id": "c_type", "name": "C-Type", "weight": 0.35,
+                "resources": [
+                  { "resourceId": "silicates",    "min": 0.45, "max": 0.65 },
+                  { "resourceId": "hydrates",     "min": 0.05, "max": 0.15 },
+                  { "resourceId": "carbon",       "min": 0.02, "max": 0.06 },
+                  { "resourceId": "fe_ni_metal",  "min": 0.05, "max": 0.15 },
+                  { "resourceId": "sulfur",       "min": 0.02, "max": 0.07 }
+                ]
+              },
+              {
+                "id": "x_type", "name": "X-Type", "weight": 0.25,
+                "resources": [
+                  { "resourceId": "fe_ni_metal",  "min": 0.60, "max": 0.90 },
+                  { "resourceId": "silicates",    "min": 0.08, "max": 0.30 },
+                  { "resourceId": "sulfur",       "min": 0.01, "max": 0.06 },
+                  { "resourceId": "carbon",       "min": 0.00, "max": 0.03 },
+                  { "resourceId": "hydrates",     "min": 0.00, "max": 0.01 }
+                ]
+              }
+            ]
+          }
+        ],
         "yield": {
           "referenceRadiusM": 50,
           "baseAmount": 15,
           "exponent": 1.6,
           "variance": 0.15,
           "minAmount": 1,
-          "maxAmount": 2500
+          "maxAmount": 2500,
+          "throughputPerS": 6
         }
       }
     },
     {
       "id": "luna_belt",
       "anchorBody": "luna",
-      "anchorOffsetKm": [3400, 0, 0],
-      "name": "Lunar Asteroid Field",
+      "anchorOffsetKm": [1130, 3195, 273],
+      "name": "Lunar field",
       "seed": 7331,
       "enabled": true,
       "frame": "system",
@@ -382,7 +464,7 @@
       "shape": { "type": "sphere", "radiusKm": 2000, "edgeFalloffKm": 2000 },
       "population": { "mode": "density", "densityPerKm3": 0.003, "jitter": 0.2, "maxPerChunk": 8000 },
       "size": { "minRadiusM": 10, "maxRadiusM": 1200, "distribution": "logNormal", "params": { "mu": 1.4, "sigma": 1.1 } },
-      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 10000 },
+      "marker": { "minDistanceKm": 4000, "maxDistanceKm": 50000 },
       "models": [
         { "modelId": "asteroid_01", "weight": 0.5 },
         { "modelId": "asteroid_02", "weight": 0.3 },
@@ -399,8 +481,8 @@
             "resources": [
               { "resourceId": "silicates",    "min": 0.35, "max": 0.50 },
               { "resourceId": "titanium",     "min": 0.15, "max": 0.30 },
-              { "resourceId": "fe_ni_metal",  "min": 0.10, "max": 0.20 },
-              { "resourceId": "helium_3",     "min": 0.05, "max": 0.12 },
+              { "resourceId": "fe_ni_metal",  "min": 0.12, "max": 0.22 },
+              { "resourceId": "hydrates",     "min": 0.02, "max": 0.06 },
               { "resourceId": "sulfur",       "min": 0.01, "max": 0.04 }
             ]
           },
@@ -413,7 +495,7 @@
               { "resourceId": "titanium",     "min": 0.20, "max": 0.35 },
               { "resourceId": "silicates",    "min": 0.10, "max": 0.25 },
               { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
-              { "resourceId": "helium_3",     "min": 0.02, "max": 0.08 }
+              { "resourceId": "carbon",       "min": 0.01, "max": 0.04 }
             ]
           },
           {
@@ -421,10 +503,10 @@
             "name": "L-Volatile",
             "weight": 0.30,
             "resources": [
-              { "resourceId": "helium_3",     "min": 0.20, "max": 0.40 },
+              { "resourceId": "hydrates",     "min": 0.20, "max": 0.35 },
               { "resourceId": "silicates",    "min": 0.20, "max": 0.40 },
               { "resourceId": "carbon",       "min": 0.05, "max": 0.12 },
-              { "resourceId": "hydrates",     "min": 0.05, "max": 0.10 },
+              { "resourceId": "fe_ni_metal",  "min": 0.05, "max": 0.12 },
               { "resourceId": "titanium",     "min": 0.05, "max": 0.15 }
             ]
           }
@@ -435,7 +517,8 @@
           "exponent": 1.6,
           "variance": 0.15,
           "minAmount": 2,
-          "maxAmount": 3000
+          "maxAmount": 3000,
+          "throughputPerS": 17
         }
       }
     }

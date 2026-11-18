@@ -1,421 +1,296 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useState } from "react";
-import { Check, Circle, CircleDot, Lock, Microscope } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bookmark, BookmarkCheck, Check, Crosshair, Pickaxe, ScanLine } from "lucide-react";
 import { playAudio } from "@/audio";
 
 import {
-  researchAtom,
-  assaySamplesAtom,
-  activeResearchNodeAtom,
-  completedNodeSetAtom,
-} from "@/store/research";
-import { describeRejection, newOpId, runOperation } from "@/store/operations";
-import { addToastAtom } from "@/store/toast";
-import {
+  BRANCH_LABELS,
+  MATERIAL_NAMES,
   RESEARCH_NODES,
-  arePrerequisitesMet,
+  TRIALS,
   describeEffect,
   getItemDef,
-  TIER_2_NODE_IDS,
+  getItemIconUrl,
+  type ResearchBranch,
   type ResearchNodeDef,
 } from "@/data/content";
+import { evaluateNode, missingAnalysis, nodeProgress, sourceClassBadge, type EvidenceView } from "@/sim/research/requirements";
+import { cargoAtom } from "@/store/cargo";
+import { setDestinationToSourceAtom } from "@/store/discoveries";
+import { transitDriveOwnedAtom } from "@/store/transit";
+import { newOpId, runOperation } from "@/store/operations";
+import { bookmarksAtom, discoveriesMirrorAtom, evidenceViewAtom, unlockResearchAtom } from "@/store/research";
+import { AnalysisChips, KeyChip, ReqAnyGroup, ReqChip, ResourceGlyph, ResourceIcon, Tooltip } from "../shared/Chips";
 import Panel from "../Shell/Panel";
 
 import "./ResearchPanel.scss";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+type Tab = "options" | "discoveries";
 
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  if (m > 0) return `${m}m ${s.toString().padStart(2, "0")}s`;
-  return `${s}s`;
+const BRANCH_ORDER: ResearchBranch[] = ["survey", "extraction", "thermal", "logistics", "propulsion", "hull", "lunar"];
+
+/** Fraction ring: met / total pieces (analysis included). */
+function Ring({ met, total }: { met: number; total: number }) {
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  const f = total > 0 ? met / total : 0;
+  return (
+    <span className="rp-ring" aria-label={`${met} of ${total}`}>
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
+        <circle cx="9" cy="9" r={r} className="rp-ring__track" />
+        <circle cx="9" cy="9" r={r} className="rp-ring__fill" strokeDasharray={`${c * f} ${c}`} transform="rotate(-90 9 9)" />
+      </svg>
+      <span className="rp-ring__n">{met}/{total}</span>
+    </span>
+  );
 }
 
-type NodeState = "completed" | "active" | "available" | "locked";
-
-/** Branch identity for coloring. */
-type Branch = "root" | "a" | "b" | "c" | "milestone";
-
-function getBranch(nodeId: string): Branch {
-  if (nodeId.startsWith("a")) return "a";
-  if (nodeId.startsWith("b")) return "b";
-  if (nodeId.startsWith("c")) return "c";
-  if (nodeId.startsWith("m")) return "milestone";
-  return "root";
+/** Item icon; tooltip = name and effect chips (the old purpose line lives here). */
+function UnlockIcon({ id }: { id: string }) {
+  const item = getItemDef(id);
+  if (!item) return null;
+  const effects = [...(item.effects ?? []), ...(item.useEffects ?? [])].map(describeEffect);
+  return (
+    <Tooltip text={[item.name, ...effects].join(" · ")} className="rp-unlock">
+      <img src={getItemIconUrl(item)} alt={item.name} />
+    </Tooltip>
+  );
 }
 
-function StateIcon({ state }: { state: NodeState }) {
-  switch (state) {
-    case "completed":
-      return <Check size={11} strokeWidth={2.25} aria-hidden />;
-    case "active":
-      return <CircleDot size={11} strokeWidth={2} aria-hidden />;
-    case "available":
-      return <Circle size={11} strokeWidth={2} aria-hidden />;
-    case "locked":
-      return <Lock size={11} strokeWidth={2} aria-hidden />;
-  }
+type CardState = "ready" | "progress" | "locked";
+
+function cardState(node: ResearchNodeDef, ev: EvidenceView, cargo: Readonly<Record<string, number>>): CardState {
+  const e = evaluateNode(node, ev);
+  if (e.met && Object.keys(missingAnalysis(node, cargo)).length === 0) return "ready";
+  return e.all.some((s) => s.req.kind === "research" && !s.met) ? "locked" : "progress";
 }
 
-// ---------------------------------------------------------------------------
-// Layout: fixed positions for the tree graph (column, row)
-// ---------------------------------------------------------------------------
-
-type LayoutNode = {
-  id: string;
-  col: number;
-  row: number;
-  branch: Branch;
-};
-
-const TREE_LAYOUT: LayoutNode[] = [
-  // Root
-  { id: "r0_microlab_boot", col: 0, row: 3, branch: "root" },
-
-  // Branch A: Survey (rows 0-1)
-  { id: "a1_sensor_calibration", col: 1, row: 1, branch: "a" },
-  { id: "a2a_active_scanning", col: 2, row: 0, branch: "a" },
-  { id: "a2b_spectral_analysis", col: 2, row: 2, branch: "a" },
-  { id: "a3_integrated_survey", col: 3, row: 1, branch: "a" },
-
-  // Branch B: Extraction (rows 3-4)
-  { id: "b1_laser_optics", col: 1, row: 4, branch: "b" },
-  { id: "b2a_beam_optimization", col: 2, row: 3, branch: "b" },
-  { id: "b2b_thermal_dynamics", col: 2, row: 5, branch: "b" },
-  { id: "b3_pulse_extraction", col: 3, row: 4, branch: "b" },
-
-  // Branch C: Ship Systems (rows 6-7)
-  { id: "c1_structural_engineering", col: 1, row: 7, branch: "c" },
-  { id: "c2a_hull_reinforcement", col: 2, row: 6, branch: "c" },
-  { id: "c2b_propulsion_systems", col: 2, row: 8, branch: "c" },
-  { id: "c3_integrated_platform", col: 3, row: 7, branch: "c" },
-
-  // Milestone (bottom)
-  { id: "m1_transit_drive", col: 2, row: 10, branch: "milestone" },
-];
-
-const NODE_W = 140;
-const NODE_H = 44;
-const COL_GAP = 40;
-const ROW_GAP = 10;
-
-function getNodePos(layout: LayoutNode): { x: number; y: number } {
-  return {
-    x: layout.col * (NODE_W + COL_GAP),
-    y: layout.row * (NODE_H + ROW_GAP),
-  };
-}
-
-type Edge = { from: string; to: string };
-
-const TREE_EDGES: Edge[] = [
-  { from: "r0_microlab_boot", to: "a1_sensor_calibration" },
-  { from: "r0_microlab_boot", to: "b1_laser_optics" },
-  { from: "r0_microlab_boot", to: "c1_structural_engineering" },
-  { from: "a1_sensor_calibration", to: "a2a_active_scanning" },
-  { from: "a1_sensor_calibration", to: "a2b_spectral_analysis" },
-  { from: "a2a_active_scanning", to: "a3_integrated_survey" },
-  { from: "a2b_spectral_analysis", to: "a3_integrated_survey" },
-  { from: "b1_laser_optics", to: "b2a_beam_optimization" },
-  { from: "b1_laser_optics", to: "b2b_thermal_dynamics" },
-  { from: "b2a_beam_optimization", to: "b3_pulse_extraction" },
-  { from: "b2b_thermal_dynamics", to: "b3_pulse_extraction" },
-  { from: "c1_structural_engineering", to: "c2a_hull_reinforcement" },
-  { from: "c1_structural_engineering", to: "c2b_propulsion_systems" },
-  { from: "c2a_hull_reinforcement", to: "c3_integrated_platform" },
-  { from: "c2b_propulsion_systems", to: "c3_integrated_platform" },
-];
-
-const layoutMap = new Map<string, LayoutNode>();
-for (const ln of TREE_LAYOUT) layoutMap.set(ln.id, ln);
-
-const nodeMap = new Map<string, ResearchNodeDef>();
-for (const node of RESEARCH_NODES) nodeMap.set(node.id, node);
-
-const CANVAS_W = 4 * (NODE_W + COL_GAP) - COL_GAP;
-const CANVAS_H = 11 * (NODE_H + ROW_GAP) - ROW_GAP;
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-export default function ResearchPanel({ onClose }: { onClose: () => void }) {
-  const assaySamples = useAtomValue(assaySamplesAtom);
-  const activeResearch = useAtomValue(activeResearchNodeAtom);
-  const researchState = useAtomValue(researchAtom);
-  const addToast = useSetAtom(addToastAtom);
-
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-
-  const completed = useAtomValue(completedNodeSetAtom);
-
-  const activeId = researchState.activeResearch?.nodeId ?? null;
-
-  function getState(nodeId: string): NodeState {
-    if (completed.has(nodeId)) return "completed";
-    if (activeId === nodeId) return "active";
-    const def = nodeMap.get(nodeId);
-    if (!def) return "locked";
-    return arePrerequisitesMet(def, completed) ? "available" : "locked";
-  }
-
-  const handleStart = (nodeId: string) => {
-    runOperation({ type: "research.start", opId: newOpId(), nodeId }, (o) => {
-      if (o.status === "accepted") playAudio("click.hard");
-      else if (o.status === "rejected") addToast({ audio: "reject", message: "Cannot start research", detail: describeRejection(o), durationMs: 2500 });
-    });
-  };
-
-  const selectedDef = selectedNodeId ? nodeMap.get(selectedNodeId) : null;
-  const selectedState = selectedNodeId ? getState(selectedNodeId) : null;
+function OptionCard({ node, state }: { node: ResearchNodeDef; state: CardState }) {
+  const ev = useAtomValue(evidenceViewAtom);
+  const cargo = useAtomValue(cargoAtom);
+  const unlock = useSetAtom(unlockResearchAtom);
+  const [busy, setBusy] = useState(false);
+  const e = evaluateNode(node, ev);
+  const p = nodeProgress(node, ev, cargo.items);
+  // A research prerequisite leads the chips (it is what blocks the card).
+  const chips = [...e.all].sort((a, b) => Number(b.req.kind === "research") - Number(a.req.kind === "research"));
 
   return (
-    <Panel
-      title="Research Lab"
-      tier={2}
-      width={960}
-      onClose={onClose}
-      noBodyPadding
-      headerRight={
-        <span className="research-panel__samples">
-          <Microscope size={14} strokeWidth={1.75} aria-hidden />
-          <span>{assaySamples}</span>
-          <span className="research-panel__samples-label">Assay Samples</span>
+    <div className={`rp-card rp-card--${state}`} data-node={node.id}>
+      <div className="rp-card__head">
+        <span className="rp-card__name" data-name="">{node.name}</span>
+        {state === "ready" ? <span className="rp-card__ready">Ready</span> : <Ring met={p.met} total={p.total} />}
+      </div>
+      <div className="rp-card__chips">
+        {chips.map((s) => <ReqChip key={s.key} req={s.req} met={s.met} />)}
+        {e.any.length > 0 && <ReqAnyGroup items={e.any.map((s) => ({ req: s.req, met: s.met }))} met={e.anyMet} />}
+      </div>
+      <div className="rp-card__foot">
+        <AnalysisChips analysis={node.analysis} cargo={cargo.items} />
+        <span className="rp-card__unlocks">
+          <span className="rp-card__arrow" aria-hidden>→</span>
+          {node.unlocks.items.map((id) => <UnlockIcon key={id} id={id} />)}
         </span>
-      }
-    >
-      <div className="research-panel">
-        {/* Active research progress */}
-        {activeResearch && (
-          <div className="research-panel__active">
-            <div className="research-panel__active-label">Researching</div>
-            <div className="research-panel__active-name">
-              {activeResearch.node.name}
-            </div>
-            <div className="research-panel__progress-bar">
-              <div
-                className="research-panel__progress-fill"
-                style={{
-                  width: `${Math.min(
-                    100,
-                    (activeResearch.elapsedS /
-                      activeResearch.node.durationSeconds) *
-                      100,
-                  )}%`,
-                }}
-              />
-            </div>
-            <div className="research-panel__active-time">
-              {formatTime(
-                Math.max(
-                  0,
-                  activeResearch.node.durationSeconds - activeResearch.elapsedS,
-                ),
-              )}{" "}
-              remaining
-            </div>
+        <button
+          className="rp-card__btn"
+          disabled={state !== "ready" || busy}
+          onClick={() => {
+            setBusy(true);
+            unlock({
+              nodeId: node.id,
+              onSettled: (o) => {
+                setBusy(false);
+                if (o.status === "accepted") playAudio("click.hard");
+              },
+            });
+          }}
+        >
+          Unlock
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const STATE_RANK: Record<CardState, number> = { ready: 0, progress: 1, locked: 2 };
+
+function OptionsTab() {
+  const ev = useAtomValue(evidenceViewAtom);
+  const cargo = useAtomValue(cargoAtom);
+  const groups = useMemo(() => BRANCH_ORDER.map((b) => {
+    const nodes = RESEARCH_NODES.filter((n) => n.branch === b && !ev.completed.has(n.id)).map((n) => {
+      const p = nodeProgress(n, ev, cargo.items);
+      return { node: n, state: cardState(n, ev, cargo.items), frac: p.total > 0 ? p.met / p.total : 0 };
+    });
+    nodes.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || b.frac - a.frac);
+    return { branch: b, nodes };
+  }).filter((g) => g.nodes.length > 0), [ev, cargo.items]);
+  const unlocked = RESEARCH_NODES.filter((n) => ev.completed.has(n.id));
+  // Opening: bring the first Ready card into view (on phones a later branch sits below the fold
+  // while the tracker says "Research ready").
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    rootRef.current?.querySelector(".rp-card--ready")?.scrollIntoView({ block: "nearest" });
+  }, []);
+  return (
+    <div className="rp-options" ref={rootRef}>
+      {groups.map((g) => (
+        <section key={g.branch} className={`rp-branch rp-branch--${g.branch}`}>
+          <div className="rp-branch__label">{BRANCH_LABELS[g.branch]}</div>
+          <div className="rp-branch__cards">
+            {g.nodes.map((n) => <OptionCard key={n.node.id} node={n.node} state={n.state} />)}
+          </div>
+        </section>
+      ))}
+      {unlocked.length > 0 && (
+        <section className="rp-branch rp-done" data-testid="research-unlocked">
+          <div className="rp-branch__label">Unlocked</div>
+          <div className="rp-done__chips">
+            {unlocked.map((n) => (
+              <span key={n.id} className="rp-done__chip" data-node={n.id}>
+                <Check size={10} strokeWidth={2.5} aria-hidden />
+                <span data-name="">{n.name}</span>
+                {n.unlocks.items.map((id) => <UnlockIcon key={id} id={id} />)}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SourceRow({ id }: { id: string }) {
+  const d = useAtomValue(discoveriesMirrorAtom);
+  const bookmarks = useAtomValue(bookmarksAtom);
+  const setDestination = useSetAtom(setDestinationToSourceAtom);
+  // B3: without the drive a destination is cleared at once, so the button would do nothing.
+  const driveOwned = useAtomValue(transitDriveOwnedAtom);
+  const s = d.sources.find((x) => x.id === id);
+  const mark = bookmarks.find((b) => b.sourceId === id);
+  const [name, setName] = useState(mark?.name ?? "");
+  if (!s) return null;
+  const parts = Object.entries(s.composition).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const save = (next: string | null) => runOperation({ type: "bookmark.set", opId: newOpId(), sourceId: id, name: next });
+  return (
+    <div className="rp-source" data-source={id}>
+      <span className="rp-source__badge">{sourceClassBadge(s.classId)}</span>
+      <span className="rp-source__r">r {Math.round(s.radiusM)} m</span>
+      <span className="rp-source__comp">
+        {parts.map(([k, n]) => <ResourceIcon key={k} id={k} amount={n} />)}
+      </span>
+      <span className="rp-source__actions">
+        {mark && (
+          <input
+            className="rp-source__input"
+            value={name}
+            maxLength={40}
+            placeholder="Name"
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => name !== mark.name && save(name)}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+        )}
+        <Tooltip text={mark ? "Remove bookmark" : "Bookmark"}>
+          <button className={`rp-source__btn${mark ? " rp-source__btn--on" : ""}`} aria-label={mark ? "Unmark" : "Bookmark"} onClick={() => save(mark ? null : "")}>
+            {mark ? <BookmarkCheck size={12} aria-hidden /> : <Bookmark size={12} aria-hidden />}
+          </button>
+        </Tooltip>
+        {driveOwned && (
+          <Tooltip text="Set destination">
+            <button className="rp-source__btn" aria-label="Set destination" onClick={() => {
+              if (setDestination(id)) playAudio("click.soft");
+            }}>
+              <Crosshair size={12} aria-hidden />
+            </button>
+          </Tooltip>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function DiscoveriesTab() {
+  const d = useAtomValue(discoveriesMirrorAtom);
+  // B4: a mined (depleted) rock is gone; its evidence stays in Materials above.
+  const sources = useMemo(() => d.sources.filter((s) => !s.depleted).reverse(), [d.sources]);
+  const mined = d.sources.length - sources.length;
+  return (
+    <div className="rp-disc">
+      <section className="rp-branch">
+        <div className="rp-branch__label">Materials</div>
+        <div className="rp-mats">
+          {Object.keys(MATERIAL_NAMES).map((m) => {
+            const f = d.families[m];
+            const how = f ? [f.inspected ? "inspected" : null, f.extracted ? "mined" : null].filter(Boolean).join(" · ") : "not found yet";
+            return (
+              <Tooltip key={m} text={`${MATERIAL_NAMES[m]} · ${how}`} className={`rp-mat${f ? " rp-mat--found" : ""}`}>
+                <ResourceGlyph id={m} />
+                <span className="rp-mat__state">
+                  {f?.inspected && <ScanLine size={10} strokeWidth={2} aria-label="inspected" />}
+                  {f?.extracted && <Pickaxe size={10} strokeWidth={2} aria-label="mined" />}
+                </span>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </section>
+      <section className="rp-branch">
+        <div className="rp-branch__label">Trials</div>
+        <div className="rp-card__chips">
+          {TRIALS.map((t) => <ReqChip key={t.id} req={{ kind: "trial", trialId: t.id }} met={!!d.trials[t.id]} />)}
+        </div>
+      </section>
+      <section className="rp-branch">
+        <div className="rp-branch__label">Sources {sources.length}{mined > 0 ? ` · mined ${mined}` : ""}</div>
+        {sources.length === 0 ? (
+          <div className="rp-empty">Inspect rocks with <KeyChip action="inspect" /></div>
+        ) : (
+          <div className="rp-disc__sources">
+            {sources.map((s) => <SourceRow key={s.id} id={s.id} />)}
           </div>
         )}
+      </section>
+    </div>
+  );
+}
 
-        {/* Tree + Detail side-by-side */}
-        <div className="research-panel__body">
-          {/* Tree graph */}
-          <div className="research-panel__tree-scroll">
-            <div
-              className="research-panel__tree-canvas"
-              style={{ width: CANVAS_W, height: CANVAS_H }}
-            >
-              {/* SVG edges */}
-              <svg className="research-panel__edges" width={CANVAS_W} height={CANVAS_H}>
-                {TREE_EDGES.map(({ from, to }) => {
-                  const fromL = layoutMap.get(from);
-                  const toL = layoutMap.get(to);
-                  if (!fromL || !toL) return null;
-                  const fp = getNodePos(fromL);
-                  const tp = getNodePos(toL);
-                  const x1 = fp.x + NODE_W;
-                  const y1 = fp.y + NODE_H / 2;
-                  const x2 = tp.x;
-                  const y2 = tp.y + NODE_H / 2;
-                  const mx = (x1 + x2) / 2;
-
-                  const fromState = getState(from);
-                  const toState = getState(to);
-                  const bothDone = fromState === "completed" && toState === "completed";
-                  const oneAvailable = toState === "available" || toState === "active";
-
-                  const branch = toL.branch;
-                  let stroke = "rgba(255,255,255,0.08)";
-                  if (bothDone) {
-                    stroke = branch === "a" ? "rgba(100,160,255,0.35)"
-                      : branch === "b" ? "rgba(255,160,60,0.35)"
-                      : branch === "c" ? "rgba(80,200,120,0.35)"
-                      : "rgba(255,200,60,0.35)";
-                  } else if (oneAvailable) {
-                    stroke = "rgba(255,255,255,0.18)";
-                  }
-
-                  return (
-                    <path
-                      key={`${from}-${to}`}
-                      d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`}
-                      fill="none"
-                      stroke={stroke}
-                      strokeWidth={bothDone ? 2 : 1}
-                    />
-                  );
-                })}
-
-                {/* Milestone connections: dashed lines from tier-2 nodes */}
-                {(() => {
-                  const mLayout = layoutMap.get("m1_transit_drive");
-                  if (!mLayout) return null;
-                  const mPos = getNodePos(mLayout);
-
-                  return TIER_2_NODE_IDS.map((nodeId) => {
-                    const nLayout = layoutMap.get(nodeId);
-                    if (!nLayout) return null;
-                    const nPos = getNodePos(nLayout);
-                    const x1 = nPos.x + NODE_W / 2;
-                    const y1 = nPos.y + NODE_H;
-                    const x2 = mPos.x + NODE_W / 2;
-                    const y2 = mPos.y;
-
-                    const isDone = completed.has(nodeId);
-                    return (
-                      <line
-                        key={`m-${nodeId}`}
-                        x1={x1} y1={y1} x2={x2} y2={y2}
-                        stroke={isDone ? "rgba(255,200,60,0.3)" : "rgba(255,255,255,0.05)"}
-                        strokeWidth={1}
-                        strokeDasharray={isDone ? "none" : "4 4"}
-                      />
-                    );
-                  });
-                })()}
-              </svg>
-
-              {/* Nodes */}
-              {TREE_LAYOUT.map((layout) => {
-                const def = nodeMap.get(layout.id);
-                if (!def) return null;
-                const pos = getNodePos(layout);
-                const state = getState(layout.id);
-                const branch = layout.branch;
-                const isSelected = selectedNodeId === layout.id;
-                const canAfford = assaySamples >= def.costs.assaySamples;
-
-                return (
-                  <button
-                    key={layout.id}
-                    className={`rt-node rt-node--${state} rt-node--${branch} ${isSelected ? "rt-node--selected" : ""}`}
-                    style={{
-                      left: pos.x,
-                      top: pos.y,
-                      width: NODE_W,
-                      height: NODE_H,
-                    }}
-                    onClick={() => {
-                      playAudio("click.soft");
-                      setSelectedNodeId(layout.id === selectedNodeId ? null : layout.id);
-                    }}
-                  >
-                    <span className="rt-node__icon">
-                      <StateIcon state={state} />
-                    </span>
-                    <span className="rt-node__name">{def.name}</span>
-                    {(state === "available" || state === "locked") && (
-                      <span className={`rt-node__cost ${!canAfford && state === "available" ? "rt-node__cost--insufficient" : ""}`}>
-                        {def.costs.assaySamples}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+export default function ResearchPanel({ onClose }: { onClose: () => void }) {
+  const [tab, setTab] = useState<Tab>("options");
+  const ev = useAtomValue(evidenceViewAtom);
+  const unlocked = RESEARCH_NODES.filter((n) => ev.completed.has(n.id)).length;
+  return (
+    <Panel
+      title="Research"
+      tier={2}
+      width={760}
+      fixedHeight
+      onClose={onClose}
+      headerRight={
+        <>
+          <span className="rp-count" data-testid="research-count">{unlocked}/{RESEARCH_NODES.length}</span>
+          <div className="rp-tabs" role="tablist">
+            {(["options", "discoveries"] as const).map((t) => (
+              <button
+                key={t}
+                role="tab"
+                aria-selected={tab === t}
+                className={`rp-tabs__btn ${tab === t ? "rp-tabs__btn--active" : ""}`}
+                onClick={() => {
+                  playAudio("click.soft");
+                  setTab(t);
+                }}
+              >
+                {t === "options" ? "Options" : "Discoveries"}
+              </button>
+            ))}
           </div>
-
-          {/* Detail panel */}
-          {selectedDef && selectedState && (
-            <div className={`research-panel__detail rt-detail--${getBranch(selectedDef.id)}`}>
-              <div className="rt-detail__name">{selectedDef.name}</div>
-              <div className="rt-detail__desc">{selectedDef.desc}</div>
-
-              <div className="rt-detail__meta">
-                <span className="rt-detail__meta-cost">
-                  <Microscope size={12} strokeWidth={1.75} aria-hidden />
-                  {selectedDef.costs.assaySamples} samples
-                </span>
-                <span>{formatTime(selectedDef.durationSeconds)}</span>
-              </div>
-
-              {/* Research bonus */}
-              {selectedDef.researchEffects && selectedDef.researchEffects.length > 0 && (
-                <div className="rt-detail__section">
-                  <div className="rt-detail__section-label">Research Bonus</div>
-                  <div className="rt-detail__bonuses">
-                    {selectedDef.researchEffects.map((eff, i) => (
-                      <span key={i} className="rt-detail__bonus-tag">{describeEffect(eff)}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Unlocked items */}
-              {selectedDef.unlocks.items && selectedDef.unlocks.items.length > 0 && (
-                <div className="rt-detail__section">
-                  <div className="rt-detail__section-label">Unlocks</div>
-                  <div className="rt-detail__items">
-                    {selectedDef.unlocks.items.map((itemId) => {
-                      const item = getItemDef(itemId);
-                      return (
-                        <div key={itemId} className="rt-detail__item">
-                          <span className="rt-detail__item-name">{item?.name ?? itemId}</span>
-                          {item && <span className="rt-detail__item-desc">{item.uiDesc}</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Prerequisites */}
-              {selectedDef.prerequisiteRule && (
-                <div className="rt-detail__section">
-                  <div className="rt-detail__section-label">Requires</div>
-                  <div className="rt-detail__prereq">
-                    Any {selectedDef.prerequisiteRule.count} tier-2 nodes ({TIER_2_NODE_IDS.filter((n) => completed.has(n)).length}/{selectedDef.prerequisiteRule.count})
-                  </div>
-                </div>
-              )}
-
-              {/* Action */}
-              {selectedState === "available" && (
-                <button
-                  className="rt-detail__start-btn"
-                  disabled={!!activeResearch || assaySamples < selectedDef.costs.assaySamples}
-                  onClick={() => handleStart(selectedDef.id)}
-                >
-                  {activeResearch ? "Research in progress" : assaySamples < selectedDef.costs.assaySamples ? "Not enough samples" : "Start Research"}
-                </button>
-              )}
-              {selectedState === "completed" && (
-                <div className="rt-detail__completed-badge">Completed</div>
-              )}
-              {selectedState === "active" && activeResearch && (
-                <div className="rt-detail__active-badge">
-                  In progress: {formatTime(Math.max(0, activeResearch.node.durationSeconds - activeResearch.elapsedS))} remaining
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+        </>
+      }
+    >
+      {tab === "options" ? <OptionsTab /> : <DiscoveriesTab />}
     </Panel>
   );
 }

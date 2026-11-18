@@ -51,12 +51,14 @@ import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import MiningSystem from "../Mining/MiningSystem";
+import InteractFocus from "@/components/Mining/InteractFocus";
 import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
-import ResearchTicker from "../Research/ResearchTicker";
 import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
+import ReplicationPoints from "@/components/Replication/ReplicationPoints";
+import SurveySite from "@/components/Sites/SurveySite";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe from "../TestHarness/TestFrameProbe";
 import LoadingGate from "../Loading/LoadingGate";
@@ -215,13 +217,15 @@ const Scene = () => {
         {process.env.NODE_ENV === "development" ? <PhysicsDebugView /> : null}
         <AsteroidField />
         <MiningSystem />
+        <InteractFocus />
         <PingBrackets3D />
         <AsteroidVFX />
-        <ResearchTicker />
         <TimedEffectsTicker />
         <TransitTicker />
         <POIProjector />
         <WreckCollector />
+        <ReplicationPoints />
+        <SurveySite />
       </>
     ),
     [],

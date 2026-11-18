@@ -9,6 +9,7 @@ import { SCHEMA_VERSION, defaultPlayerState, defaultSaveData } from "./defaults"
 import { listWorlds, loadWorld, newWorldId, putWorld, requestPersistentStorage } from "./saveDb";
 import { getLocalPlayerId, setLastWorldId } from "./playerId";
 import { isSimPaused } from "@/sim/simPause";
+import { getDifficulty, setDifficulty } from "@/sim/difficulty";
 import type { Difficulty, PlayerId, PlayerState, SaveData, SaveMeta, SaveRecord, WorldId, WorldState } from "./types";
 
 const FLUSH_DEBOUNCE_MS = 1000;
@@ -44,13 +45,18 @@ export function getWorldState(): WorldState {
 export function getLocalPlayerState(): PlayerState {
   const players = requireActive().data.players;
   const id = getLocalPlayerId();
-  return (players[id] ??= defaultPlayerState());
+  return (players[id] ??= defaultPlayerState(getDifficulty()));
 }
 
 /** Any saved player's state; the local player is created on demand, others must exist. */
 export function getPlayerState(id: PlayerId): PlayerState | null {
   if (!active) return null;
   return id === getLocalPlayerId() ? getLocalPlayerState() : (active.data.players[id] ?? null);
+}
+
+/** Every saved player (bookmark protection when the source list evicts). */
+export function getPlayerStates(): PlayerState[] {
+  return active ? Object.values(active.data.players) : [];
 }
 
 export function readPlayerSlice<K extends keyof PlayerState>(key: K): PlayerState[K] | undefined {
@@ -208,6 +214,7 @@ async function setActive(rec: SaveRecord): Promise<SaveMeta> {
     console.warn("[save] this world is open in another tab: this tab will not save");
   }
   active = rec;
+  setDifficulty(rec.meta.difficulty);
   dirty = false;
   lastCollectMs = 0;
   rec.meta.schemaVersion = SCHEMA_VERSION;
@@ -237,7 +244,7 @@ export async function createWorld(opts: { name: string; seed: number; difficulty
     playTimeS: 0,
     schemaVersion: SCHEMA_VERSION,
   };
-  const data = defaultSaveData(getLocalPlayerId());
+  const data = defaultSaveData(getLocalPlayerId(), opts.difficulty);
   await putWorld(meta, data);
   if (first) requestPersistentStorage();
   return setActive({ meta, data });
@@ -255,7 +262,7 @@ export async function activateWorld(id: WorldId): Promise<SaveMeta> {
  */
 export async function resetActiveWorld(): Promise<void> {
   const rec = requireActive();
-  rec.data = defaultSaveData(getLocalPlayerId());
+  rec.data = defaultSaveData(getLocalPlayerId(), rec.meta.difficulty);
   rec.meta.playTimeS = 0;
   dirty = true;
   const run = () => doFlush(true, true);
@@ -275,6 +282,7 @@ export function switchWorld(id: WorldId): void {
 export function saveInfo(): {
   id: WorldId | null;
   name: string | null;
+  difficulty: Difficulty | null;
   schemaVersion: number;
   dirty: boolean;
   suspended: boolean;
@@ -284,6 +292,7 @@ export function saveInfo(): {
   return {
     id: active?.meta.id ?? null,
     name: active?.meta.name ?? null,
+    difficulty: active?.meta.difficulty ?? null,
     schemaVersion: active?.data.schemaVersion ?? SCHEMA_VERSION,
     dirty,
     suspended: isSuspended(),

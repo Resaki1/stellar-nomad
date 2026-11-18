@@ -16,7 +16,7 @@ export interface SaveMeta {
   name: string;
   /** Stored, not consumed yet. */
   seed: number;
-  /** Stored, not consumed yet. */
+  /** Chosen at creation; applied through `src/sim/difficulty.ts`. */
   difficulty: Difficulty;
   createdAt: number;
   lastPlayedAt: number;
@@ -53,8 +53,56 @@ export type AsteroidDeltas = Record<string, Record<string, number[]>>;
 
 /** World-shared research progress (schema 2+). Only the world authority writes it. */
 export interface SharedResearchState {
-  /** Completed node ids in completion order. Ids unknown to this build are kept, inert. */
+  /** Unlocked option ids in unlock order (schema 3: the M3.3 catalogue). */
   completedNodes: string[];
+  /** Schema 3: pre-M3.3 node ids with no mapping, kept inert. */
+  legacy: string[];
+}
+
+/** One confirmed material family (schema 3). Recorded once; flags only ever turn on. */
+export interface FamilyFinding {
+  firstAt: number;
+  by: PlayerId;
+  /** Confirmed by a close inspection / by extraction. */
+  inspected: boolean;
+  extracted: boolean;
+  /** Source that first confirmed it, if inspected. */
+  sourceId: string | null;
+}
+
+/** An inspected rock: stable `fieldId:chunkKey:asteroidId` id, never an instance index. */
+export interface SourceFinding {
+  id: string;
+  fieldId: string;
+  chunkKey: string;
+  asteroidId: number;
+  classId: string;
+  /** Frame-relative position (the field's anchor body), km. */
+  frameId: string;
+  positionKm: Vec3Tuple;
+  radiusM: number;
+  /** Estimated yield, material → integer units (before equipment). */
+  composition: Record<string, number>;
+  depleted: boolean;
+  foundAt: number;
+  by: PlayerId;
+}
+
+export interface EvidenceStamp {
+  at: number;
+  by: PlayerId;
+}
+
+/** Durable world findings (schema 3). Written only by accepted operations. */
+export interface DiscoveryState {
+  families: Record<string, FamilyFinding>;
+  /** Bounded (MAX_SOURCES), oldest first. */
+  sources: SourceFinding[];
+  /** Recovered authored sites (one-time rewards). */
+  sites: Record<string, EvidenceStamp>;
+  trials: Record<string, EvidenceStamp>;
+  /** Schema 5: authored sites closely inspected (recovery needs it). */
+  inspectedSites: Record<string, EvidenceStamp>;
 }
 
 /** One accepted operation, for duplicate rejection across reloads. */
@@ -66,12 +114,38 @@ export interface OperationReceipt {
   at: number;
 }
 
+/** A placed replication point (schema 4). World-owned; no per-player active flag on it. */
+export interface ReplicationPoint {
+  id: string;
+  name: string;
+  frameId: string;
+  /** Relative to `frameId`'s origin, km. */
+  positionKm: Vec3Tuple;
+  quaternion: QuatTuple;
+  by: PlayerId;
+  createdAt: number;
+  /** The protected, supplied initial point every world has. */
+  starter: boolean;
+}
+
+export interface ReplicationState {
+  /** Starter first, then placement order; bounded (MAX_POINTS). */
+  points: ReplicationPoint[];
+}
+
+/** A player's own recovery selection (schema 4). */
+export interface PlayerReplicationState {
+  activeId: string;
+}
+
 export interface WorldState {
   simEpochMs: number;
   simRate: number;
   asteroidDeltas: AsteroidDeltas;
   wrecks: WreckRecord[];
   research: SharedResearchState;
+  discoveries: DiscoveryState;
+  replication: ReplicationState;
   /** Bounded, oldest first (MAX_RECEIPTS). */
   receipts: OperationReceipt[];
 }
@@ -83,13 +157,20 @@ export type CargoState = {
   items: Record<string, number>;
 };
 
-/** Per-player until PR 2 retires assay samples and the timer; completions live in the world. */
-export type ResearchState = {
-  /** Non-cargo currency earned from mining. */
+/** Schema 3: what the M3.3 migration could not map, kept inert (never read by gameplay). */
+export interface PlayerLegacyState {
   assaySamples: number;
-  /** Currently active research (only one at a time). */
   activeResearch: { nodeId: string; elapsedS: number } | null;
-};
+  items: string[];
+  consumables: Record<string, number>;
+  notes: string[];
+}
+
+/** A player's named bookmark of a world source (schema 3). */
+export interface SourceBookmark {
+  sourceId: string;
+  name: string;
+}
 
 export type ModulesState = {
   /** moduleItemId[] — all owned module items. */
@@ -135,9 +216,16 @@ export type ShipConfig = {
   /** All sensor ranges multiplier (1 = base). */
   scannerRangeMult: number;
 
-  // ── Economy ──
-  /** Probability (0-1) of receiving a bonus assay sample from mining. */
-  assaySampleBonusChance: number;
+  /** Close-inspection time / range multipliers (1 = base). */
+  scannerInspectTimeMult: number;
+  scannerInspectRangeMult: number;
+
+  // ── Ship resources (applied to the resource tuning by `equipTuning`) ──
+  tankBonusKg: number;
+  reactorBonusKW: number;
+  miningPowerMult: number;
+  processingRateMult: number;
+  heatCapacityMult: number;
 
   // ── Survivability ──
   /** Passive hull regeneration per second. */
@@ -169,13 +257,20 @@ export interface ProcessingBatch {
   committedKg: number;
 }
 
+/** What the last death left at its wreck (recovery screen across a reload). */
+export interface LossRecord {
+  items: Record<string, number>;
+  consumables: Record<string, number>;
+  fuelKg: number;
+  cause: "impact" | "abandon";
+}
+
 export interface PlayerState {
   /** null = never saved; the ship spawns at the system's starting position. */
   ship: ShipPose | null;
   health: number;
   isDead: boolean;
   cargo: CargoState;
-  research: ResearchState;
   modules: ModulesState;
   shipConfig: ShipConfig;
   aiName: string | null;
@@ -185,6 +280,12 @@ export interface PlayerState {
   propellant: PropellantState;
   power: PowerState;
   processing: ProcessingBatch | null;
+  bookmarks: SourceBookmark[];
+  legacy: PlayerLegacyState | null;
+  replication: PlayerReplicationState;
+  lastLoss: LossRecord | null;
+  /** Schema 5: the player's tracked project id (src/data/projects.ts), or null. */
+  trackedProject: string | null;
 }
 
 export interface SaveData {

@@ -8,51 +8,64 @@ import { cargoAtom } from "@/store/cargo";
 import { craftItemAtom, modulesAtom } from "@/store/modules";
 import { describeRejection } from "@/store/operations";
 import { addToastAtom } from "@/store/toast";
-import { systemConfigAtom } from "@/store/system";
-import { getResourceTypes } from "@/sim/asteroids/resources";
 import {
   ITEMS,
-  ALL_ITEM_SLOTS,
-  SLOT_LABELS,
+  CRAFT_CATEGORIES,
+  CRAFT_CATEGORY_LABELS,
+  MATERIAL_NAMES,
+  craftCategory,
   describeEffect,
+  isDrawback,
   getItemIconUrl,
+  type CraftCategory,
   type ItemDef,
-  type ItemSlot,
 } from "@/data/content";
+import { KeyChip, ResourceIcon } from "../shared/Chips";
 import Panel from "../Shell/Panel";
 import ShipWorkshop from "./ShipWorkshop";
 
 import "./CraftingPanel.scss";
 
+/** Effect chips (module effects, then use effects), minus what `uiDesc` already states. */
+function EffectChips({ item, className }: { item: ItemDef; className: string }) {
+  const effs = [...(item.effects ?? []), ...(item.useEffects ?? [])].filter((e) => !item.descStates?.includes(e.key));
+  if (effs.length === 0) return null;
+  return (
+    <div className={className}>
+      {effs.map((eff, i) => (
+        <span key={i} className={`crafting-panel__item-effect ${isDrawback(eff) ? "crafting-panel__item-effect--drawback" : ""}`}>
+          {describeEffect(eff)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function CraftingPanel({ onClose }: { onClose: () => void }) {
   const unlockedIds = useAtomValue(unlockedItemIdsAtom);
   const cargo = useAtomValue(cargoAtom);
   const modulesState = useAtomValue(modulesAtom);
-  const systemConfig = useAtomValue(systemConfigAtom);
   const craftItem = useSetAtom(craftItemAtom);
   const addToast = useSetAtom(addToastAtom);
 
-  const [slotFilter, setSlotFilter] = useState<ItemSlot | "all">("all");
+  const [filter, setFilter] = useState<CraftCategory | "all">("all");
   const [confirmItem, setConfirmItem] = useState<ItemDef | null>(null);
 
-  const resourceMap = useMemo(() => {
-    const types = getResourceTypes(systemConfig);
-    const map = new Map<string, { name: string; icon: string }>();
-    for (const d of types) map.set(d.id, { name: d.name, icon: d.icon ?? "" });
-    return map;
-  }, [systemConfig]);
+  // Only categories with an unlocked blueprint (the workshop is always there).
+  const categories = useMemo(() => CRAFT_CATEGORIES.filter((c) => c === "processing" || ITEMS.some((i) => unlockedIds.has(i.id) && craftCategory(i) === c)), [unlockedIds]);
 
   const craftableItems = useMemo(() => {
+    if (filter === "processing") return [];
     return ITEMS.filter((item) => {
       if (!unlockedIds.has(item.id)) return false;
-      if (slotFilter !== "all" && item.slot !== slotFilter) return false;
+      if (filter !== "all" && craftCategory(item) !== filter) return false;
       return true;
     }).sort((a, b) => {
       const aOwned = a.type === "module" && modulesState.ownedModules.includes(a.id) ? 1 : 0;
       const bOwned = b.type === "module" && modulesState.ownedModules.includes(b.id) ? 1 : 0;
       return aOwned - bOwned;
     });
-  }, [unlockedIds, slotFilter, modulesState.ownedModules]);
+  }, [unlockedIds, filter, modulesState.ownedModules]);
 
   const isModuleOwned = useCallback(
     (item: ItemDef): boolean =>
@@ -99,17 +112,11 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       itemId: item.id,
       onSettled: (o) => {
         if (o.status === "rejected") {
-          addToast({ audio: "reject", message: `Cannot craft ${item.name}`, detail: describeRejection(o), durationMs: 3000 });
+          addToast({ audio: "reject", kind: "warn", message: "Cannot craft", detail: describeRejection(o) });
           return;
         }
         if (o.status !== "accepted" || o.result.type !== "item.craft") return;
-        const message =
-          item.type !== "module"
-            ? `Crafted: ${item.name}`
-            : o.result.autoEquipped
-              ? `Crafted & equipped: ${item.name}`
-              : `Crafted: ${item.name} (${SLOT_LABELS[item.slot]} slot in use)`;
-        addToast({ audio: "silent", message, durationMs: item.type === "module" && !o.result.autoEquipped ? 4000 : 3000 });
+        addToast({ audio: "silent", kind: "success", message: o.result.autoEquipped ? "Crafted · Equipped" : "Crafted", values: [{ id: item.id }], detail: item.name });
       },
     });
   };
@@ -134,53 +141,40 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
       title="Crafting"
       tier={2}
       width={640}
+      fixedHeight
       onClose={onClose}
       closeOnEsc={!confirmItem}
       closeOnBackdrop={!confirmItem}
     >
       <div className="crafting-panel">
-        <ShipWorkshop />
-
-        {/* Cargo summary */}
-        <div className="crafting-panel__cargo-row">
-          {Array.from(resourceMap.entries()).map(([id, def]) => (
-            <span key={id} className="crafting-panel__cargo-item">
-              {def.icon && <img className="crafting-panel__resource-icon" src={def.icon} alt="" />}
-              {Math.floor(cargo.items[id] ?? 0)}
-            </span>
-          ))}
-        </div>
-
-        {/* Slot filter */}
-        <div className="crafting-panel__filters">
-          <button
-            className={`crafting-panel__filter-btn ${
-              slotFilter === "all" ? "crafting-panel__filter-btn--active" : ""
-            }`}
-            onClick={() => setSlotFilter("all")}
-          >
-            All
-          </button>
-          {ALL_ITEM_SLOTS.map((slot) => (
+        <div className="crafting-panel__filters" role="tablist">
+          {(["all", ...categories] as const).map((c) => (
             <button
-              key={slot}
-              className={`crafting-panel__filter-btn ${
-                slotFilter === slot ? "crafting-panel__filter-btn--active" : ""
-              }`}
-              onClick={() => setSlotFilter(slot)}
+              key={c}
+              role="tab"
+              aria-selected={filter === c}
+              data-category={c}
+              className={`crafting-panel__filter-btn ${filter === c ? "crafting-panel__filter-btn--active" : ""}`}
+              onClick={() => setFilter(c)}
             >
-              {SLOT_LABELS[slot]}
+              {c === "all" ? "All" : CRAFT_CATEGORY_LABELS[c]}
             </button>
           ))}
         </div>
 
+        <div className="crafting-panel__cargo-row">
+          {Object.keys(MATERIAL_NAMES).filter((id) => (cargo.items[id] ?? 0) >= 1).map((id) => (
+            <ResourceIcon key={id} id={id} amount={Math.floor(cargo.items[id] ?? 0)} />
+          ))}
+        </div>
+
+        {(filter === "all" || filter === "processing") && <ShipWorkshop />}
+
         {/* Items */}
         <div className="crafting-panel__list">
-          {craftableItems.length === 0 ? (
+          {filter === "processing" ? null : craftableItems.length === 0 ? (
             <div className="crafting-panel__empty">
-              {unlockedIds.size === 0
-                ? "Complete research to unlock blueprints."
-                : "No items match this filter."}
+              Nothing unlocked here yet
             </div>
           ) : (
             craftableItems.map((item) => {
@@ -201,51 +195,18 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
                         {item.name}
                       </span>
                       <span className="crafting-panel__item-slot">
-                        {SLOT_LABELS[item.slot]}
+                        {CRAFT_CATEGORY_LABELS[craftCategory(item)]}
                       </span>
                     </div>
                   </div>
                   <div className="crafting-panel__item-desc">{item.uiDesc}</div>
 
-                  {item.effects && item.effects.length > 0 && (
-                    <div className="crafting-panel__item-effects">
-                      {item.effects.map((eff, i) => (
-                        <span key={i} className="crafting-panel__item-effect">
-                          {describeEffect(eff)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {item.useEffects && item.useEffects.length > 0 && (
-                    <div className="crafting-panel__item-effects">
-                      {item.useEffects.map((eff, i) => (
-                        <span key={i} className="crafting-panel__item-effect">
-                          {describeEffect(eff)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  <EffectChips item={item} className="crafting-panel__item-effects" />
 
                   <div className="crafting-panel__recipe">
-                    {Object.entries(item.recipe).map(([resId, needed]) => {
-                      const have = Math.floor(cargo.items[resId] ?? 0);
-                      const def = resourceMap.get(resId);
-                      const enough = have >= needed;
-                      return (
-                        <span
-                          key={resId}
-                          className={`crafting-panel__recipe-item ${
-                            !enough
-                              ? "crafting-panel__recipe-item--insufficient"
-                              : ""
-                          }`}
-                        >
-                          {def?.icon && <img className="crafting-panel__resource-icon" src={def.icon} alt="" />}
-                          {have}/{needed}
-                        </span>
-                      );
-                    })}
+                    {Object.entries(item.recipe).map(([resId, needed]) => (
+                      <ResourceIcon key={resId} id={resId} amount={needed} have={owned ? undefined : Math.floor(cargo.items[resId] ?? 0)} />
+                    ))}
                   </div>
 
                   <div className="crafting-panel__item-actions">
@@ -284,22 +245,12 @@ export default function CraftingPanel({ onClose }: { onClose: () => void }) {
               <div className="crafting-panel__confirm-name">{confirmItem.name}</div>
             </div>
             <div className="crafting-panel__confirm-desc">{confirmItem.uiDesc}</div>
-            {confirmItem.effects && confirmItem.effects.length > 0 && (
-              <div className="crafting-panel__confirm-effects">
-                {confirmItem.effects.map((eff, i) => (
-                  <span key={i} className="crafting-panel__item-effect">
-                    {describeEffect(eff)}
-                  </span>
-                ))}
+            <EffectChips item={confirmItem} className="crafting-panel__confirm-effects" />
+            {confirmItem.type === "module" && (
+              <div className="crafting-panel__confirm-note">
+                {!modulesState.equippedModules[confirmItem.slot] ? "Equips automatically" : <>Slot in use: equip in Loadout <KeyChip action="toggleLoadout" /></>}
               </div>
             )}
-            <div className="crafting-panel__confirm-note">
-              {confirmItem.type === "module" && !modulesState.equippedModules[confirmItem.slot]
-                ? "This module will be auto-equipped into the empty slot."
-                : confirmItem.type === "module"
-                  ? `This module will be added to inventory. The ${SLOT_LABELS[confirmItem.slot]} slot is currently in use — swap from the loadout panel.`
-                  : "This is a one-time craft."}
-            </div>
             <div className="crafting-panel__confirm-actions">
               <button
                 className="crafting-panel__confirm-cancel"

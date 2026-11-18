@@ -5,7 +5,8 @@
  * samples this into it first and `adoptShipResources` takes the committed result back.
  */
 import { atom, type createStore } from "jotai";
-import { REPAIR_MATERIAL_ID, getProcessingRecipe } from "@/data/content";
+import { hullRepairable } from "@/sim/ship/hull";
+import { REPAIR_MATERIAL_ID, SUSTAINED_BEAM_S, getProcessingRecipe } from "@/data/content";
 import { getActiveSave, getLocalPlayerState, registerCollector, samplePlayerSlice } from "@/save/activeSave";
 import type { PlayerState } from "@/save/types";
 import {
@@ -13,7 +14,9 @@ import {
   createShipResourceState,
   type ShipResourceState,
 } from "@/sim/ship/resourceStep";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
+import { coolingMultOf, equipTuning, miningHeatMultOf } from "@/sim/ship/loadout";
+import { recordTrial } from "@/store/research";
 import { cargoAtom } from "@/store/cargo";
 import { dieAtom, isDeadAtom } from "@/store/death";
 import { describeRejection, newOpId, runOperation } from "@/store/operations";
@@ -28,6 +31,10 @@ type Store = ReturnType<typeof createStore>;
 export const shipRes: ShipResourceState = createShipResourceState(0, 0);
 export const shipReq = createResourceRequests();
 
+/** The live resource table with the local ship's equipment applied; refreshed every frame. */
+const shipTuning: ResourceTuning = { ...DEFAULT_RESOURCE_TUNING };
+export const getShipTuning = (): Readonly<ResourceTuning> => shipTuning;
+
 /** Player intent and bookkeeping outside the pure step. */
 export const shipResControl = {
   repairManual: false,
@@ -40,6 +47,12 @@ export const shipResControl = {
   repairSubmitted: 0,
   heatDamageApplied: 0,
   processingDoneSeen: 0,
+  /** Continuous granted beam seconds on the current rock (sustained_beam trial). */
+  beamRunS: 0,
+  beamSeen: 0,
+  /** Rock the beam last worked (MiningSystem); a change restarts `beamRunS`. */
+  beamTargetId: -1,
+  beamRunTargetId: -1,
 };
 
 const RESOURCE_KEYS: ReadonlySet<keyof PlayerState> = new Set<keyof PlayerState>(["propellant", "power", "processing"]);
@@ -161,22 +174,18 @@ export const shipResourcesHudAtom = atom<ShipResourcesHud>({
 
 function reasonLine(): string | null {
   const s = shipRes;
-  const t = getResourceTuning();
-  if (s.ordinaryKg + s.protectedKg <= 0) return "No propellant: thrust offline";
-  if (s.heat01 > 1) return "Over temperature: hull damage imminent";
-  if (s.miningTripped) return "Mining laser overheated: cooling";
+  if (s.ordinaryKg + s.protectedKg <= 0) return "Thrust offline";
+  if (s.heat01 > 1) return "Overheat: hull damage";
   const workBlocked = s.processing.active || shipReq.repair || shipReq.miningBeam;
-  if (workBlocked && s.heatScale < 1) return `Heat ${Math.round(s.heat01 * 100)}%: processing and repair throttled`;
-  if (s.powerScale < 1 && s.powerDemandKW > 0) return `Reactor limit: work at ${Math.round(s.powerScale * 100)}%`;
-  if (s.tankFull) return "Tank full: processing paused";
-  if (s.ordinaryKg <= 0) return "Reserve allowance in use";
-  if (s.heat01 >= t.heatWarn01) return `Heat ${Math.round(s.heat01 * 100)}%`;
+  if (workBlocked && s.heatScale < 1) return "Heat throttling";
+  if (s.powerScale < 1 && s.powerDemandKW > 0) return `Power limited ${Math.round(s.powerScale * 100)}%`;
+  if (s.tankFull) return "Tank full";
   return shipResControl.refusal;
 }
 
 export function buildShipResourcesHud(): ShipResourcesHud {
   const s = shipRes;
-  const t = getResourceTuning();
+  const t = shipTuning;
   const run = s.processing;
   return {
     ordinaryKg: s.ordinaryKg,
@@ -204,9 +213,9 @@ export function buildShipResourcesHud(): ShipResourcesHud {
 /** Fill the requests the step reads; human-rate inputs only. */
 export function updateShipRequests(store: Store, freeFlight: boolean, miningBeam: boolean): void {
   const cfg = store.get(effectiveShipConfigAtom);
-  const t = getResourceTuning();
+  const t = equipTuning(getEffectiveTuning(), cfg, shipTuning);
   const health = store.get(shipHealthAtom);
-  const damaged = health < cfg.maxHealth;
+  const damaged = hullRepairable(health, cfg.maxHealth);
   if (!damaged) shipResControl.repairManual = false;
   const naniteRate = cfg.maxHealth > 0 ? cfg.hullRegenPerSecond / cfg.maxHealth : 0;
   const hasMaterial = (store.get(cargoAtom).items[REPAIR_MATERIAL_ID] ?? 0) >= t.repairUnitsPerPct;
@@ -215,8 +224,8 @@ export function updateShipRequests(store: Store, freeFlight: boolean, miningBeam
   shipReq.repairPerS = shipResControl.repairManual ? Math.max(t.repairPerS, naniteRate) : naniteRate;
   shipReq.miningBeam = miningBeam || shipResControl.forceMining;
   shipReq.freeFlight = freeFlight;
-  shipReq.miningHeatMult = cfg.miningHeatCapacityS > 0 ? 15 / cfg.miningHeatCapacityS : 1;
-  shipReq.coolingMult = cfg.miningCooldownS > 0 ? 10 / cfg.miningCooldownS : 1;
+  shipReq.miningHeatMult = miningHeatMultOf(cfg);
+  shipReq.coolingMult = coolingMultOf(cfg);
 }
 
 /** Turn step outputs into operations / hull changes. Returns true when the ship died. */
@@ -228,7 +237,7 @@ export function settleShipResources(store: Store, ship: { frameId: string; posKm
     runOperation({ type: "ship.repair", opId: newOpId(), pct: due }, (o) => {
       if (o.status !== "rejected") return;
       shipResControl.repairManual = false;
-      shipResControl.refusal = o.reason === "materials" ? "Repair stopped: no Fe-Ni metal" : o.reason === "full_hull" ? null : `Repair stopped: ${describeRejection(o)}`;
+      shipResControl.refusal = o.reason === "materials" ? "Repair stopped: no Fe-Ni" : o.reason === "full_hull" ? null : `Repair stopped: ${describeRejection(o)}`;
     });
   }
   const dmg = m.heatDamage01 - shipResControl.heatDamageApplied;
@@ -244,7 +253,19 @@ export function settleShipResources(store: Store, ship: { frameId: string; posKm
   }
   if (m.processingDone !== shipResControl.processingDoneSeen) {
     shipResControl.processingDoneSeen = m.processingDone;
-    store.set(addToastAtom, { audio: "silent", message: "Processing complete", detail: "Propellant delivered to the tank", durationMs: 3000 });
+    store.set(addToastAtom, { kind: "success", message: "Fuel delivered", values: [{ id: "fuel", amount: shipRes.processing.committedKg }] });
+    recordTrial("first_batch");
+  }
+  const beam = m.miningWorkS - shipResControl.beamSeen;
+  shipResControl.beamSeen = m.miningWorkS;
+  if (shipResControl.beamTargetId !== shipResControl.beamRunTargetId) {
+    shipResControl.beamRunTargetId = shipResControl.beamTargetId;
+    shipResControl.beamRunS = 0;
+  }
+  if (!shipReq.miningBeam || shipRes.miningTripped) shipResControl.beamRunS = 0;
+  else if (beam > 0) {
+    shipResControl.beamRunS += beam;
+    if (shipResControl.beamRunS >= SUSTAINED_BEAM_S) recordTrial("sustained_beam");
   }
   return false;
 }
@@ -255,9 +276,9 @@ export const startProcessingAtom = atom(null, (_get, set, payload: { recipeId: s
   shipResControl.refusal = null;
   return runOperation({ type: "processing.start", opId: newOpId(), recipeId: payload.recipeId, units: payload.units }, (o) => {
     if (o.status === "rejected") {
-      const why = o.reason === "tank_full" ? "Tank is full" : o.reason === "busy" ? "A batch is already running" : describeRejection(o);
-      shipResControl.refusal = `Processing refused: ${why}`;
-      set(addToastAtom, { audio: "reject", message: "Cannot start processing", detail: why, durationMs: 3000 });
+      const why = o.reason === "tank_full" ? "Tank full" : o.reason === "busy" ? "Batch running" : describeRejection(o);
+      // Stack only: a one-shot refusal parked in the dashboard line went stale ("Batch running" after the batch ended).
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "Processing refused", detail: why });
     }
   });
 });
@@ -266,12 +287,11 @@ export const cancelProcessingAtom = atom(null, (_get, set): OperationOutcome => 
   const id = shipRes.processing.active ? shipRes.processing.id : "";
   return runOperation({ type: "processing.cancel", opId: newOpId(), batchId: id }, (o) => {
     if (o.status === "rejected") {
-      set(addToastAtom, { audio: "reject", message: "Cannot cancel", detail: o.reason === "no_capacity" ? "No cargo room for the returned feedstock" : describeRejection(o), durationMs: 3000 });
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot cancel", detail: o.reason === "no_capacity" ? "Hold full" : describeRejection(o) });
       return;
     }
     if (o.status === "accepted" && o.result.type === "processing.cancel") {
-      const back = Object.values(o.result.refunded).reduce((a, v) => a + v, 0);
-      set(addToastAtom, { audio: "silent", message: "Processing cancelled", detail: `${back} feedstock returned`, durationMs: 3000 });
+      set(addToastAtom, { audio: "silent", message: "Batch cancelled", values: Object.entries(o.result.refunded).map(([id, amount]) => ({ id, amount })) });
     }
   });
 });
@@ -283,14 +303,14 @@ export const setRepairAtom = atom(null, (get, set, on: boolean): boolean => {
     return true;
   }
   const cfg = get(effectiveShipConfigAtom);
-  const t = getResourceTuning();
+  const t = shipTuning;
   let why: string | null = null;
   if (get(isDeadAtom)) why = "Ship destroyed";
-  else if (get(shipHealthAtom) >= cfg.maxHealth) why = "Hull is intact";
-  else if ((get(cargoAtom).items[REPAIR_MATERIAL_ID] ?? 0) < t.repairUnitsPerPct) why = "Needs Fe-Ni metal";
+  else if (!hullRepairable(get(shipHealthAtom), cfg.maxHealth)) why = "Hull intact";
+  else if ((get(cargoAtom).items[REPAIR_MATERIAL_ID] ?? 0) < t.repairUnitsPerPct) why = "No Fe-Ni";
   if (why) {
     shipResControl.refusal = `Repair refused: ${why}`;
-    set(addToastAtom, { audio: "reject", message: "Cannot repair", detail: why, durationMs: 3000 });
+    set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot repair", detail: why });
     return false;
   }
   shipResControl.refusal = null;
@@ -299,9 +319,9 @@ export const setRepairAtom = atom(null, (get, set, on: boolean): boolean => {
 });
 
 /** Emergency abandonment: the death operation, at the live pose. Explicit confirmation is the UI's job. */
-export const abandonShipAtom = atom(null, (get): boolean => {
+export const abandonShipAtom = atom(null, (get, set): boolean => {
   const ship = getLocalPlayerShip();
   if (get(isDeadAtom) || !ship) return false;
   const p = ship.posKm;
-  return runOperation({ type: "ship.destroy", opId: newOpId(), frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" }).status === "accepted";
+  return set(dieAtom, { frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" })?.status === "accepted";
 });

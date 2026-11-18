@@ -196,6 +196,15 @@ export type Scenario = {
  * Earth's CENTRE; these are altitudes (centre distance − 6371 km), so e.g. the
  * "19,000 km" observation is `earth_12629`.
  */
+/** 1.5 km beyond the lunar survey site (Luna frame [1629, 4605, 393], content.ts), live with the Moon: read at warp time. */
+function lunarSiteApproachKm(): [number, number, number] {
+  const luna = bodies.find((b) => b.id === "luna")?.positionKm;
+  const out: [number, number, number] = [0, 0, 0];
+  const rel = [1630.5, 4605, 393];
+  for (let i = 0; i < 3; i++) Object.defineProperty(out, i, { get: () => (luna ? luna[i] : 0) + rel[i], enumerable: true });
+  return out;
+}
+
 export const SCENARIOS: readonly Scenario[] = [
   // ── Controls ──────────────────────────────────────────────────────────────
   {
@@ -218,6 +227,14 @@ export const SCENARIOS: readonly Scenario[] = [
     // position after the ephemeris landed.
     positionKm: activeSystem().startingPositionKm as [number, number, number],
     lookAtBodyId: "earth",
+  },
+
+  {
+    id: "m3_lunar_site",
+    what: "M3.7 lunar survey site: luna_belt edge streaming + the placeholder installation, facing the Moon",
+    bodyId: null,
+    positionKm: lunarSiteApproachKm(),
+    lookAtBodyId: "luna",
   },
 
   // ── Earth descent ladder ──────────────────────────────────────────────────

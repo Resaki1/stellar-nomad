@@ -5,6 +5,8 @@
  *   PHYS_PARTS=live,park,switch,transit   (live game, synthetic colliders)
  *   PHYS_PARTS=cost pnpm drive -- --keep --perf run:…   (gate 11, needs --perf)
  *   M2b: PHYS_PARTS=damage,hull (sim + gate 8), asteroids (gate 12 live), stream (--perf), look (captures)
+ *   PHYS_PARTS=liveOwner [PHYS_DIFFS=explorer,standard,hard] --no-isolate   B2: fresh world, flag, real W into a rock
+ *   PHYS_PARTS=devFlag --no-isolate   B2: stored dev tuning shows "Dev tuning active"; Settings → Dev reset clears it
  *
  * sim parts run `__test.physics.simulate` (private world + real stepShip, fixed dt): gates
  * 1–4, 6, 7, 9, 10. Analytic ground truth for gate 2 is computed here from the ship hull.
@@ -552,7 +554,7 @@ export default async function physicsCheck(d) {
   await m2b(d, parts, out, { ev, sim, state, vLim });
 
   out.pass = Object.values(g).every((x) => x.pass) &&
-    ["live", "park", "switch", "transit", "foreign", "cost", "damage", "hull", "asteroids", "stream", "look"].every((k) => !out[k] || out[k].pass);
+    ["live", "park", "switch", "transit", "foreign", "cost", "damage", "hull", "asteroids", "stream", "look", "liveOwner", "devFlag"].every((k) => !out[k] || out[k].pass);
   delete out._g2energy;
   delete out._g2clamp;
   return out;
@@ -850,5 +852,153 @@ async function m2b(d, parts, out, { ev, sim, state, vLim }) {
       contactCounters: st.counters.touchedSteps, impactsWhileResting: impacts.map((x) => ({ dvMps: r4(x.dvMps), damageHp: r4(x.damageHp) })),
       captures: ["phys-outline-near", "phys-outline-field", "phys-contact"], pass: true,
     };
+  }
+
+  if (parts.includes("liveOwner")) {
+    // B2 owner path: a fresh world per difficulty (PHYS_DIFFS), engine load state, the "Collisions off"
+    // flag (absent; shown under the dev speed override), then real held W from spawn into a rock.
+    const G = "__test.gameplay";
+    const MULT = { explorer: 0.5, standard: 1, hard: 1.5 };
+    const flag = () => ev(`document.querySelector('[data-testid="collisions-off"]')?.textContent ?? null`);
+    const W = { key: "w", code: "KeyW", windowsVirtualKeyCode: 87 };
+    const original = (await ev("__test.save.info()")).id;
+    const runs = {};
+    for (const diff of (process.env.PHYS_DIFFS ?? "explorer,standard,hard").split(",")) {
+      const id = await ev(`${G}.fixtures.create("phys-owner-${diff}", "new", { difficulty: ${JSON.stringify(diff)} })`);
+      try {
+        await ev(`${G}.fixtures.activate(${JSON.stringify(id)})`);
+        await d.reload();
+        await d.frames(20);
+        try {
+          await ev(`${G}.m37.comms.nameAi("Vega")`);
+          await ev(`${G}.m37.comms.dismiss()`);
+        } catch {
+          /* no naming prompt */
+        }
+        const load = (await ev("__phys.stats()")).load;
+        await sleep(ev, 400);
+        const flagNormal = await flag();
+        await ev("__bench.maxSpeed(50000)");
+        await sleep(ev, 600);
+        const flagDev = await flag();
+        await ev("__bench.maxSpeed(null)");
+        await sleep(ev, 600);
+        const flagAfter = await flag();
+        // Chunks stream in after the reload: poll for a 40-400 m rock 1.5-8 km out.
+        let rocks = [], rock;
+        for (let i = 0; i < 40 && !rock; i++) {
+          rocks = await ev("__phys.asteroids.nearest(3000, 8000)");
+          rock = rocks.filter((r) => r.radiusM >= 40 && r.radiusM <= 400 && r.surfaceDistM > 1500)[0];
+          if (!rock) await sleep(ev, 500);
+        }
+        if (!rock) {
+          runs[diff] = { error: "no rock 40-400 m beyond 1.5 km", n: rocks.length, pass: false };
+          continue;
+        }
+        await ev(`${G}.res.face(${JSON.stringify({ fieldId: rock.fieldId, chunkKey: rock.chunkKey, instanceId: rock.instanceId })})`);
+        await d.frames(60);
+        await ev("__phys.impacts.clear()");
+        const h0 = await ev("__phys.game.health()");
+        await d.send("Input.dispatchKeyEvent", { type: "keyDown", ...W, text: "w" });
+        const t0 = Date.now();
+        let peak = 0, suspended = new Set(), minSurf = Infinity, colAtMin = null;
+        while (Date.now() - t0 < 30000) {
+          await sleep(ev, 60);
+          const x = await ev(`(() => { const rt = ${G}.rep.runtime(); const a = __phys.asteroids.state(${rock.instanceId}); return { v: rt.speedMps, sus: rt.nearField.suspended, n: __phys.impacts.log().length, dead: __phys.game.isDead(), surf: a.surfaceDistM, col: a.collider ? a.collider.inEngine : null }; })()`);
+          if (x.surf !== undefined && x.surf < minSurf) { minSurf = x.surf; colAtMin = x.col; }
+          peak = Math.max(peak, x.v ?? 0);
+          suspended.add(String(x.sus));
+          if (x.n > 0 || x.dead) break;
+        }
+        await d.send("Input.dispatchKeyEvent", { type: "keyUp", ...W });
+        await sleep(ev, 300);
+        const h1 = await ev("__phys.game.health()");
+        const impacts = (await ev("__phys.impacts.log()")).map((x) => ({ dvMps: Math.round(x.dvMps), damageHp: r4(x.damageHp), fatal: x.fatal }));
+        const first = impacts[0];
+        const expectHp = first ? curve(first.dvMps) * h0.max * MULT[diff] : null;
+        runs[diff] = {
+          load, flags: { normal: flagNormal, devSpeed: flagDev, after: flagAfter }, rock: { radiusM: Math.round(rock.radiusM), startSurfaceKm: r4(rock.surfaceDistM / 1000) },
+          peakSpeedMps: Math.round(peak), nearField: [...suspended], minSurfaceM: Math.round(minSurf), colliderInEngineAtMin: colAtMin, flightS: r4((Date.now() - t0) / 1000), healthBefore: r4(h0.health), healthAfter: r4(h1.health), dead: await ev("__phys.game.isDead()"), impacts, expectHp: r4(expectHp),
+        };
+        runs[diff].pass = load.state === "ready" && flagNormal === null && /Collisions off/.test(flagDev ?? "") && flagAfter === null &&
+          !!first && h1.health < h0.health && Math.abs(first.damageHp - expectHp) <= 0.02 * expectHp + 0.01;
+      } finally {
+        await ev(`${G}.fixtures.activate(${JSON.stringify(original)})`);
+        await d.reload();
+        await d.frames(10);
+        await ev(`${G}.fixtures.remove(${JSON.stringify(id)})`);
+      }
+    }
+    out.liveOwner = { runs, pass: Object.values(runs).every((x) => x.pass) };
+  }
+
+  if (parts.includes("devFlag")) {
+    // B2 owner cause: a stored dev physics edit (lethal speed) carried silently across saves.
+    const KEY = "dev-physics-tuning-v1";
+    const flag = () => ev(`document.querySelector('[data-testid="dev-tuning"]')?.textContent ?? null`);
+    const keys = () => ev(`["dev-flight-tuning-v1", "dev-physics-tuning-v1", "dev-resource-tuning-v1"].filter((k) => localStorage.getItem(k) !== null)`);
+    const same = async () => JSON.stringify(await ev("__phys.tuning.get()")) === JSON.stringify(await ev("__phys.tuning.defaults()"));
+    const reload = async () => {
+      await d.reload();
+      await d.frames(20);
+      await sleep(ev, 800);
+    };
+    const resetViaMenu = async () => {
+      if (!(await ev("!!document.querySelector('.settings-menu')"))) await d.press("Escape");
+      await sleep(ev, 300);
+      await ev(`[...document.querySelectorAll(".settings-menu__button")].find((e) => e.textContent.trim().toLowerCase().startsWith("dev"))?.click()`);
+      await sleep(ev, 300);
+      const clicked = await ev(`(() => { const b = document.querySelector('[data-action="reset-dev-tuning"]'); b?.click(); return !!b; })()`);
+      await sleep(ev, 200);
+      await d.press("Escape");
+      await sleep(ev, 200);
+      if (await ev("!!document.querySelector('.settings-menu')")) await d.press("Escape");
+      await sleep(ev, 500);
+      return clicked;
+    };
+    const G = "__test.gameplay";
+    const original = (await ev("__test.save.info()")).id;
+    const id = await ev(`${G}.fixtures.create("phys-devflag", "new", {})`);
+    await ev(`${G}.fixtures.activate(${JSON.stringify(id)})`);
+    try {
+      await reload();
+      const baseClicked = await resetViaMenu();
+      const base = { clicked: baseClicked, flag: await flag(), defaults: await same(), keys: await keys() };
+      const lethal = (await ev("__phys.tuning.defaults()")).lethalSpeedMps * 4;
+      await ev(`__phys.tuning.set({ lethalSpeedMps: ${lethal} })`);
+      await ev(`localStorage.setItem(${JSON.stringify(KEY)}, JSON.stringify({ tuning: { lethalSpeedMps: ${lethal} }, outlines: false }))`);
+      await sleep(ev, 500);
+      const live = { flag: await flag(), devActive: await ev("__phys.tuning.devActive()") };
+      await reload();
+      const stored = { flag: await flag(), lethal: (await ev("__phys.tuning.get()")).lethalSpeedMps };
+      const clicked = await resetViaMenu();
+      const reset = { clicked, flag: await flag(), defaults: await same(), keys: await keys() };
+      await reload();
+      const after = { flag: await flag(), defaults: await same() };
+      const slot = await ev(`document.querySelector(".ship-dashboard__status")?.textContent ?? null`);
+      // The other tables: a live edit flags, the menu reset clears it.
+      const tables = {};
+      for (const [name, set] of [
+        ["flight", `__test.flight.tuning({ maxPitchRateDegS: __test.flight.tuning().maxPitchRateDegS * 2 })`],
+        ["resources", `${G}.res.setTuning({ tankKg: ${G}.res.tuning().tankKg * 2 })`],
+      ]) {
+        await ev(set);
+        await sleep(ev, 500);
+        const on = { flag: await flag(), devActive: await ev("__phys.tuning.devActive()") };
+        await resetViaMenu();
+        tables[name] = { on, offFlag: await flag(), offActive: await ev("__phys.tuning.devActive()") };
+      }
+      const tablesPass = Object.values(tables).every((t) => t.on.flag === "Dev tuning active" && t.on.devActive && t.offFlag === null && !t.offActive);
+      out.devFlag = {
+        base, live, stored, reset, after, slotAfter: slot, tables,
+        pass: base.flag === null && base.defaults && base.keys.length === 0 &&
+          live.flag === "Dev tuning active" && live.devActive && tablesPass && stored.flag === "Dev tuning active" && stored.lethal === lethal &&
+          reset.clicked && reset.flag === null && reset.defaults && reset.keys.length === 0 && after.flag === null && after.defaults,
+      };
+    } finally {
+      await ev(`${G}.fixtures.activate(${JSON.stringify(original)})`);
+      await reload();
+      await ev(`${G}.fixtures.remove(${JSON.stringify(id)})`);
+    }
   }
 }

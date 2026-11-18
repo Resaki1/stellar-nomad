@@ -21,6 +21,7 @@ import { ControlsSettings, GraphicsSettings } from "./SettingsSections";
 import FlightTuningControls from "./FlightTuningControls";
 import PhysicsTuningControls from "./PhysicsTuningControls";
 import ResourceTuningControls from "./ResourceTuningControls";
+import { resetAllDevTuning } from "@/store/devTuning";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
@@ -40,7 +41,6 @@ import {
   DISTANCE_UNIT_TO_KM,
   DISTANCE_UNITS,
 } from "@/sim/units";
-import { addAssaySamplesAtom, researchAtom } from "@/store/research";
 import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
@@ -83,7 +83,6 @@ const renderSubMenu = (
     currentMaxSpeedOverride: number | null;
     exposureStops: number;
     onSetExposureStops: (stops: number) => void;
-    onGrantAssay: (amount: number) => void;
     onGrantCargo: (resourceId: string, amount: number) => void;
     onUnlockAllResearch: () => void;
     onGrantAllItems: () => void;
@@ -106,9 +105,7 @@ const renderSubMenu = (
     case SubMenu.Dev:
       return (
         <>
-          <FlightTuningControls />
-          <PhysicsTuningControls />
-          <ResourceTuningControls />
+          <DevTuningControls />
           <SimTimeControls />
 
           <SettingsCheckbox
@@ -193,6 +190,30 @@ function SaveFileControls() {
         onChange={(e) => void onImport(e.target.files?.[0])}
       />
     </div>
+  );
+}
+
+/** The three tuning tables plus one reset for all of them (remounts the tables so their inputs re-read). */
+function DevTuningControls() {
+  const [gen, setGen] = useState(0);
+  return (
+    <>
+      <div className="dev-controls__row">
+        <button
+          className="settings-menu__button settings-menu__button--subtle"
+          data-action="reset-dev-tuning"
+          onClick={() => {
+            resetAllDevTuning();
+            setGen((g) => g + 1);
+          }}
+        >
+          reset all dev tuning
+        </button>
+      </div>
+      <FlightTuningControls key={`f${gen}`} />
+      <PhysicsTuningControls key={`p${gen}`} />
+      <ResourceTuningControls key={`r${gen}`} />
+    </>
   );
 }
 
@@ -625,7 +646,6 @@ function DevControls({
   currentMaxSpeedOverride,
   exposureStops,
   onSetExposureStops,
-  onGrantAssay,
   onGrantCargo,
   onUnlockAllResearch,
   onGrantAllItems,
@@ -637,7 +657,6 @@ function DevControls({
   currentMaxSpeedOverride: number | null;
   exposureStops: number;
   onSetExposureStops: (stops: number) => void;
-  onGrantAssay: (amount: number) => void;
   onGrantCargo: (resourceId: string, amount: number) => void;
   onUnlockAllResearch: () => void;
   onGrantAllItems: () => void;
@@ -656,7 +675,6 @@ function DevControls({
 
   const [selectedResource, setSelectedResource] = useState<string>(RESOURCE_IDS[0]);
   const [resourceAmount, setResourceAmount] = useState("500");
-  const [assayAmount, setAssayAmount] = useState("500");
 
   const handleLoadCurrent = () => {
     const saved = loadShipState();
@@ -708,11 +726,6 @@ function DevControls({
     }
   };
 
-  const handleGrantAssay = () => {
-    const amt = parseInt(assayAmount, 10);
-    if (!Number.isFinite(amt) || amt <= 0) return;
-    onGrantAssay(amt);
-  };
 
   return (
     <div className="dev-controls">
@@ -854,26 +867,6 @@ function DevControls({
         </div>
       </div>
 
-      {/* Grant assay samples */}
-      <div className="dev-controls__section">
-        <div className="dev-controls__label">assay samples</div>
-        <div className="dev-controls__row">
-          <input
-            className="dev-controls__input dev-controls__input--wide"
-            type="number"
-            placeholder="500"
-            value={assayAmount}
-            onChange={(e) => setAssayAmount(e.target.value)}
-          />
-          <button
-            className="settings-menu__button settings-menu__button--subtle"
-            onClick={handleGrantAssay}
-          >
-            add
-          </button>
-        </div>
-      </div>
-
       {/* Progression cheats */}
       <div className="dev-controls__section">
         <div className="dev-controls__label">progression</div>
@@ -920,9 +913,7 @@ const SettingsMenu = () => {
 
   const setDevTeleport = useSetAtom(devTeleportAtom);
   const [devMaxSpeed, setDevMaxSpeed] = useAtom(devMaxSpeedOverrideAtom);
-  const setAddAssay = useSetAtom(addAssaySamplesAtom);
   const setAddCargo = useSetAtom(addCargoAtom);
-  const [, setResearch] = useAtom(researchAtom);
   const [, setModules] = useAtom(modulesAtom);
   const setAddCraftedItem = useSetAtom(addCraftedItemAtom);
   const resetComms = useSetAtom(resetCommsPlayedAtom);
@@ -952,12 +943,10 @@ const SettingsMenu = () => {
             exposureStops: settings.exposureStops ?? 0,
             onSetExposureStops: (stops: number) =>
               setSettings((prev) => ({ ...prev, exposureStops: stops })),
-            onGrantAssay: (amount: number) => setAddAssay(amount),
             onGrantCargo: (resourceId: string, amount: number) =>
               setAddCargo({ resourceId, amount }),
             onUnlockAllResearch: () => {
               runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: RESEARCH_NODES.map((n) => n.id) });
-              setResearch((prev) => ({ ...prev, activeResearch: null, assaySamples: prev.assaySamples + 9999 }));
             },
             onGrantAllItems: () => {
               for (const item of ITEMS) {
@@ -970,7 +959,6 @@ const SettingsMenu = () => {
             },
             onResetProgress: () => {
               runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
-              setResearch({ assaySamples: 0, activeResearch: null });
               setModules({
                 ownedModules: [],
                 equippedModules: {},
@@ -982,7 +970,7 @@ const SettingsMenu = () => {
             onResetComms: () => resetComms(),
           }
         : undefined,
-    [setDevTeleport, setDevMaxSpeed, devMaxSpeed, settings.exposureStops, setSettings, setAddAssay, setAddCargo, setResearch, setAddCraftedItem, setModules, resetComms]
+    [setDevTeleport, setDevMaxSpeed, devMaxSpeed, settings.exposureStops, setSettings, setAddCargo, setAddCraftedItem, setModules, resetComms]
   );
 
   const handleResetKeybinds = useCallback(() => {

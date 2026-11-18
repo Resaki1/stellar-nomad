@@ -89,21 +89,29 @@ export function releaseGamePointerLock(): void {
   document.exitPointerLock();
 }
 
-/** Register/unregister a reason the cursor is needed. Turning one on releases the lock and recentres. */
+/**
+ * Register/unregister a reason the cursor is needed. Turning one on releases the lock and recentres.
+ * Clearing the last one recaptures (B12) while the closing click/key's transient activation lasts;
+ * Esc grants none, so an Esc-close keeps the "click to steer" prompt.
+ */
 export function setCursorNeeded(reason: string, on: boolean): void {
   if (on) {
     if (cursorNeeded.has(reason)) return;
     cursorNeeded.add(reason);
     releaseGamePointerLock();
     notifyRelease();
-  } else {
-    cursorNeeded.delete(reason);
+  } else if (cursorNeeded.delete(reason) && cursorNeeded.size === 0) {
+    requestGamePointerLock();
   }
 }
 
 if (typeof document !== "undefined") {
   document.addEventListener("pointerlockchange", () => {
-    if (isPointerLocked()) return;
+    // A recapture that resolved after another UI asked for the cursor gives it straight back.
+    if (isPointerLocked()) {
+      if (isCursorNeeded()) releaseGamePointerLock();
+      return;
+    }
     const ours = releasing;
     releasing = false;
     notifyRelease();

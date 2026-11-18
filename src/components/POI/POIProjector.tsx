@@ -1,5 +1,6 @@
 "use client";
 
+import { INTERACT_LOCK_KM } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
@@ -9,6 +10,8 @@ import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
 import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import { bookmarkPOIsAtom } from "@/store/discoveries";
+import { sitePOIsAtom } from "@/store/sites";
 import {
   STAR_MARKER_MAX_LY,
   STAR_MARKER_NEAREST,
@@ -30,8 +33,11 @@ import {
 } from "@/components/space/starTierGate";
 import { LY_IN_KM } from "@/sim/units";
 import { wrecksAtom } from "@/store/death";
-import { resolveFramePositionKm } from "@/sim/frames";
+import { playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
+import { REPLICATION_TUNING } from "@/sim/replication/points";
+import { isFrameId, resolveFramePositionKm } from "@/sim/frames";
 import {
+  bodyTransitTarget,
   targetedPOIAtom,
   transitDriveOwnedAtom,
   transitDriveBuffer,
@@ -52,6 +58,8 @@ const FOCUS_HALF_ANGLE_NDC = 0.06; // ~3.4° at center of NDC space
 
 /** Time in seconds the player must gaze at a POI to target it. */
 const POI_TARGET_GAZE_TIME_S = 1.5;
+/** A destination picked from a menu yields to gaze only after a deliberate look (arrival often faces the Sun). */
+const POI_PINNED_GAZE_TIME_S = 4;
 
 /** Grace period (seconds) where looking away doesn't untarget — absorbs brief glances. */
 const POI_UNTARGET_GRACE_S = 0.3;
@@ -61,10 +69,8 @@ const POI_UNTARGET_GRACE_S = 0.3;
 const ASTEROID_FIELD_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 50_000 };
 const CELESTIAL_BODY_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 500_000 };
 
-/**
- * Derives POI definitions from the active system config.
- * Sources: celestial bodies (planets, moons) + asteroid fields.
- */
+/** Placed point model: ring 43 m (ReplicationPoints.tsx). */
+const POINT_OBJECT_RADIUS_KM = 0.043;
 const WRECK_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 100_000 };
 
 /**
@@ -150,9 +156,18 @@ function useNearestStars(): NearestCandidate[] {
   return nearest;
 }
 
+/**
+ * Derives POI definitions from the active system config.
+ * Sources: celestial bodies (planets, moons) + asteroid fields.
+ */
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
+  const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
+  const sitePois = useAtomValue(sitePOIsAtom);
+  const target = useAtomValue(targetedPOIAtom);
+  const points = useAtomValue(replicationPointsAtom);
+  const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const starsOn = useAtomValue(starMarkersEnabledAtom);
   const revealAll = useAtomValue(revealAllStarMarkersAtom);
   const revealed = useAtomValue(revealedStarMarkerIdsAtom);
@@ -171,32 +186,34 @@ function usePOIDefs(): POIDef[] {
     for (const body of system.celestialBodies ?? []) {
       if (body.type === "star") continue;
       if (!body.marker) continue;
-      // Arrival stand-off: radius + 20% padding (minimum 100km).
-      const arrivalOffsetKm = Math.max(100, body.radiusKm * 2);
+      const t = bodyTransitTarget(body, system.asteroidFields);
       pois.push({
-        id: `body:${body.id}`,
-        name: body.name,
+        id: t.id,
+        name: t.name,
         positionKm: body.positionKm,
         minDistanceKm: body.marker.minDistanceKm ?? CELESTIAL_BODY_DEFAULTS.minDistanceKm,
         maxDistanceKm: body.marker.maxDistanceKm ?? CELESTIAL_BODY_DEFAULTS.maxDistanceKm,
-        arrivalOffsetKm,
+        arrivalOffsetKm: t.arrivalOffsetKm,
+        field: t.field,
       });
     }
 
-    // Asteroid fields
+    // Asteroid fields: hidden while the ship is inside the field's outer radius (§8)
     for (const field of system.asteroidFields ?? []) {
       if (field.enabled === false) continue;
+      const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
         id: `field:${field.id}`,
         name: field.name,
         positionKm: field.anchorKm,
-        minDistanceKm: field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm,
+        minDistanceKm: Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
         maxDistanceKm: field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
       });
     }
 
-    // Wrecks (death sites with recoverable cargo)
+    // Wrecks (death sites with recoverable cargo, consumables and/or fuel)
     for (const wreck of wrecks) {
+      // Contents are on the Target Card when focused (§1.11).
       pois.push({
         id: `wreck:${wreck.id}`,
         name: "Wreck",
@@ -204,6 +221,42 @@ function usePOIDefs(): POIDef[] {
         frameId: wreck.frameId,
         minDistanceKm: WRECK_DEFAULTS.minDistanceKm,
         maxDistanceKm: WRECK_DEFAULTS.maxDistanceKm,
+      });
+    }
+
+    // Replication points: transit destinations; arrival at the emergence distance
+    for (const pt of points) {
+      // D1: the origin point is the recovery fallback (world spawn), not a place: no marker.
+      if (pt.starter || !isFrameId(pt.frameId)) continue;
+      pois.push({
+        id: `point:${pt.id}`,
+        name: pt.id === activePointId ? `${pt.name} ◆` : pt.name,
+        positionKm: pt.positionKm,
+        frameId: pt.frameId,
+        minDistanceKm: 0,
+        maxDistanceKm: 2e6,
+        arrivalOffsetKm: REPLICATION_TUNING.emergenceKm,
+        objectRadiusKm: POINT_OBJECT_RADIUS_KM,
+      });
+    }
+
+    // Bookmarked resource sources (discoveries list)
+    for (const b of bookmarkPois) pois.push(b);
+
+    // Authored site signals
+    for (const p of sitePois) pois.push(p);
+
+    // B3: the current destination always has a marker, even when nothing else lists it.
+    if (target && !pois.some((p) => p.id === target.id)) {
+      pois.push({
+        id: target.id,
+        name: target.name,
+        positionKm: target.positionKm as [number, number, number],
+        frameId: target.frameId,
+        minDistanceKm: 0,
+        maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM,
+        arrivalOffsetKm: target.arrivalOffsetKm,
+        field: target.field,
       });
     }
 
@@ -247,7 +300,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -353,6 +406,11 @@ const POIProjector = memo(function POIProjector() {
         edgeAngle = Math.atan2(ey, ex);
       }
 
+      // projectionMatrix[5] = 1/tan(fov/2): radius over distance → fraction of the half-height.
+      const objectRadiusFrac = inView && poi.objectRadiusKm
+        ? (0.5 * camera.projectionMatrix.elements[5] * poi.objectRadiusKm * 1000) / Math.max(1, _pos.distanceTo(camera.position))
+        : 0;
+
       projected.push({
         id: poi.id,
         name: poi.name,
@@ -362,6 +420,7 @@ const POIProjector = memo(function POIProjector() {
         distanceKm,
         edgeAngle,
         focused,
+        objectRadiusFrac,
       });
     }
 
@@ -370,23 +429,35 @@ const POIProjector = memo(function POIProjector() {
     // rotation doesn't accidentally retarget a different POI.
     const transitBusy = transitDriveBuffer.phase !== "idle";
 
+    // A POI the ship already stands at (inside its arrival stand-off) is no transit target: gazing
+    // at it (recovery emerges facing its point) must not replace the current one.
+    // An interactable within lock range is a Target Card target, not a transit destination (§2.2).
+    const interactable = !!focusedPoiDef && /^(site|wreck|point):/.test(focusedPoiDef.id) && focusedDistKm <= INTERACT_LOCK_KM;
+    if (focusedPoiDef && (interactable || focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5)) {
+      focusedPoiId = null;
+      focusedPoiDef = null;
+    }
+
     if (driveOwned && !transitBusy) {
       const currentTarget = store.get(targetedPOIAtom);
       const dtClamped = Math.min(delta, 0.1);
 
+      const gazeNeedS = currentTarget && currentTarget.id === poiBuffer.pinnedId ? POI_PINNED_GAZE_TIME_S : POI_TARGET_GAZE_TIME_S;
       if (focusedPoiId && focusedPoiId === gazeIdRef.current) {
         // Still gazing at same POI — accumulate time.
         gazeTimeRef.current += dtClamped;
         untargetGraceRef.current = 0;
 
-        if (gazeTimeRef.current >= POI_TARGET_GAZE_TIME_S) {
+        if (gazeTimeRef.current >= gazeNeedS) {
           if (currentTarget?.id !== focusedPoiId && focusedPoiDef) {
+            poiBuffer.pinnedId = null;
             store.set(targetedPOIAtom, {
               id: focusedPoiDef.id,
               name: focusedPoiDef.name,
               positionKm: focusedPoiDef.positionKm,
               frameId: focusedPoiDef.frameId,
               arrivalOffsetKm: focusedPoiDef.arrivalOffsetKm,
+              field: focusedPoiDef.field,
             });
             poiBuffer.targetedId = focusedPoiDef.id;
           }
@@ -402,7 +473,8 @@ const POIProjector = memo(function POIProjector() {
         gazeTimeRef.current = 0;
 
         // If a POI is currently targeted, accumulate untarget grace and clear after timeout.
-        if (currentTarget) {
+        // A destination picked from the discoveries list stays until another is chosen.
+        if (currentTarget && currentTarget.id !== poiBuffer.pinnedId) {
           untargetGraceRef.current += dtClamped;
           if (untargetGraceRef.current >= POI_UNTARGET_GRACE_S) {
             store.set(targetedPOIAtom, null);
@@ -419,7 +491,7 @@ const POIProjector = memo(function POIProjector() {
         !!focusedPoiId && (!currentTarget || currentTarget.id !== focusedPoiId);
       poiBuffer.gazeActive = gazingAtUntargeted;
       poiBuffer.gazeProgress = gazingAtUntargeted
-        ? Math.min(gazeTimeRef.current / POI_TARGET_GAZE_TIME_S, 1)
+        ? Math.min(gazeTimeRef.current / gazeNeedS, 1)
         : 0;
 
       // ETA on the targeted POI: the transit predictor's (fuel-limited legs and clearance routes included).

@@ -26,7 +26,7 @@ export const AsteroidRuntimeProvider = ({
     activeRuntime = runtime;
     const unsubscribe = worldAuthority.subscribe((e) => {
       if (e.type !== "asteroid.destroyed") return;
-      runtime.getFieldRuntime(e.fieldId)?.destroyInstance(e.instanceId);
+      runtime.getFieldRuntime(e.fieldId)?.destroyInstance(e.chunkKey, e.instanceId);
     });
     return () => {
       unsubscribe();

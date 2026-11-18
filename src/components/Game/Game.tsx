@@ -1,6 +1,6 @@
 import Navigation from "../Navigation/Navigation";
 import SettingsMenu from "../HUD/SettingsMenu/SettingsMenu";
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import "./Game.scss";
 import Scene from "../Scene/Scene";
 import HUD from "../HUD/HUD";
@@ -11,12 +11,13 @@ import AudioDevTools from "../Audio/AudioDevTools";
 
 import { AsteroidRuntimeProvider } from "@/sim/asteroids/runtimeContext";
 import { WorldOriginProvider } from "@/sim/worldOrigin";
-import { loadNearFieldEngine } from "@/sim/physics/nearField";
+import { armNearFieldLoadTimeout, loadNearFieldEngine } from "@/sim/physics/nearField";
 
 // Starts with the game chunk's evaluation, in parallel with the scene's assets; the loading gate waits (bounded).
-if (typeof window !== "undefined") void loadNearFieldEngine();
+if (typeof window !== "undefined") loadNearFieldEngine();
 
 const Game = () => {
+  useEffect(() => armNearFieldLoadTimeout(), []);
   return (
     <WorldOriginProvider>
       <AsteroidRuntimeProvider>

@@ -17,9 +17,9 @@ const TitleSettings = lazy(() => import("./TitleSettings"));
 type View = "menu" | "new" | "load" | "settings";
 
 const DIFFICULTIES: { id: Difficulty; label: string; blurb: string }[] = [
-  { id: "explorer", label: "Explorer", blurb: "Forgiving margins. Room to learn the ship and the system." },
+  { id: "explorer", label: "Explorer", blurb: "Forgiving: 25 % less propellant use, half collision damage, cooler work, richer yields, a larger recovery allowance." },
   { id: "standard", label: "Standard", blurb: "The intended balance of risk and reward." },
-  { id: "hard", label: "Hard", blurb: "Thin margins. Mistakes cost more." },
+  { id: "hard", label: "Hard", blurb: "Thin margins: 25 % more propellant use, harder impacts, hotter work, a smaller recovery allowance." },
 ];
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { explorer: "Explorer", standard: "Standard", hard: "Hard" };
 
@@ -342,7 +342,7 @@ function NewWorldPanel({
               <span className="shell-choice__blurb">{d.blurb}</span>
             </label>
           ))}
-          <p className="shell-field__hint">Stored with the world. It has no effect on gameplay yet.</p>
+          <p className="shell-field__hint">Fixed for this world. Loss and recovery work the same on every setting.</p>
         </fieldset>
       </form>
     </Panel>

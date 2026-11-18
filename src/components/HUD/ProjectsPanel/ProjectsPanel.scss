@@ -1,0 +1,162 @@
+@use '../../../styles' as s;
+
+.pp-tabs {
+  display: inline-flex;
+  gap: s.$space-1;
+
+  &__btn {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: s.$space-1 s.$space-3;
+    border-radius: s.$radius-md;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: s.$text-secondary;
+    cursor: pointer;
+
+    &--active {
+      background: rgba(127, 184, 255, 0.15);
+      border-color: rgba(127, 184, 255, 0.4);
+      color: rgba(160, 210, 255, 0.95);
+    }
+  }
+}
+
+.pp-list {
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-2;
+  font-family: s.$font-ui;
+}
+
+.pp-count {
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: s.$text-secondary;
+}
+
+.pp-line-icon { color: s.$text-tertiary; flex: 0 0 auto; }
+
+.pp-card {
+  padding: s.$space-2 s.$space-3;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-md;
+  background: rgba(255, 255, 255, 0.02);
+
+  &--tracked { border-color: rgba(127, 184, 255, 0.5); }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    margin-bottom: s.$space-1;
+
+    .pp-count { margin-left: auto; }
+  }
+
+  &__name { font-size: 13px; font-weight: 600; color: s.$text-primary; }
+
+  &__steps {
+    list-style: none;
+    margin: 0 0 s.$space-2;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  &__actions { display: flex; gap: s.$space-2; flex-wrap: wrap; }
+}
+
+.pp-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px s.$space-2;
+  min-height: 20px;
+  font-size: 12px;
+  color: s.$text-secondary;
+
+  > svg { flex: 0 0 auto; }
+  &--met { color: s.$text-tertiary; }
+  &--met > svg:first-child { color: s.$accent-ok; }
+}
+
+.pp-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 4px;
+}
+
+.pp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px s.$space-2;
+  border-radius: s.$radius-md;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: s.$text-secondary;
+  cursor: pointer;
+
+  &--primary {
+    border-color: rgba(127, 184, 255, 0.45);
+    color: rgba(160, 210, 255, 0.95);
+  }
+}
+
+.pp-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto 76px;
+  align-items: center;
+  gap: s.$space-2;
+  height: 30px;
+  padding: 0 s.$space-3;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-md;
+  font-size: 12px;
+  color: s.$text-secondary;
+
+  .pp-btn { justify-content: center; }
+  &__icon { color: s.$text-tertiary; }
+  &__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &--tracked { border-color: rgba(127, 184, 255, 0.5); }
+  &--tracked .pp-row__name { color: rgba(160, 210, 255, 0.95); }
+}
+
+.pp-done {
+  display: flex;
+  align-items: center;
+  gap: s.$space-2;
+  height: 24px;
+  padding: 0 s.$space-3;
+  font-size: 12px;
+  color: s.$text-tertiary;
+
+  svg { color: s.$accent-ok; }
+}
+
+.pp-record {
+  border-top: 1px solid s.$stroke-faint;
+  padding: s.$space-2 0;
+
+  // Records are ≤ 2 sentences each, so all show open: an accordion hid them behind dead-looking labels.
+  &__title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: s.$text-primary;
+  }
+
+  &__text {
+    margin: s.$space-2 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: s.$text-secondary;
+  }
+}

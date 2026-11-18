@@ -16,7 +16,7 @@ import {
   pulseCycleBuffer,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
-  asteroidsMinedLifetimeAtom,
+  inspectControl,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
   PULSE_ON_S,
@@ -35,7 +35,11 @@ import { spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
-import { shipRes } from "@/store/shipResources";
+import { shipRes, shipResControl } from "@/store/shipResources";
+import { INSPECT_RANGE_M, INSPECT_TIME_S } from "@/data/content";
+import { playAudio } from "@/audio";
+import { isSimPaused } from "@/sim/simPause";
+import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -697,6 +701,8 @@ const MiningSystem = () => {
   const commitAccRef = useRef(0);
 
   const targetIdRef = useRef<number | null>(null);
+  /** Instance ids are unique per chunk only, so the target is (chunk, id). */
+  const targetChunkRef = useRef<string>("");
   const targetLostTimeRef = useRef(0);
   const targetingTimeRef = useRef(0);
 
@@ -756,9 +762,36 @@ const MiningSystem = () => {
     []
   );
 
+  /** Submit the close inspection of `snap` (the scanner's claim; feedback from the accepted result). */
+  const submitInspection = useCallback(
+    (snap: TargetedAsteroid) => {
+      const loc = snap.location;
+      const chunk = asteroidRuntime.getFieldRuntime(loc.fieldId)?.getChunk(loc.chunkKey);
+      const inst = chunk?.instancesByModel[loc.modelId];
+      if (!chunk || !inst) return;
+      const i = loc.localIndex * 3;
+      const op = buildInspectOperation(
+        systemConfig,
+        { fieldId: loc.fieldId, chunkKey: loc.chunkKey, instanceId: snap.instanceId, radiusM: snap.radiusM, chunkOriginKm: chunk.originKm, localM: [inst.positionsM[i], inst.positionsM[i + 1], inst.positionsM[i + 2]] },
+        newOpId(),
+      );
+      if (!op) return;
+      runOperation(op, (o) => {
+        if (o.status !== "accepted" || o.result.type !== "survey.inspect") return;
+        playAudio("mining.inspect.complete");
+        // The card's contents row is the result; only a NEW material is worth a notification.
+        if (o.result.newFamilies.length > 0) {
+          addToast({ message: "New material", kind: "success", audio: "silent", values: o.result.newFamilies.map((id) => ({ id })) });
+        }
+      });
+    },
+    [asteroidRuntime, systemConfig, addToast],
+  );
+
   const getTargetSnapshot = useCallback(
-    (instanceId: number): TargetedAsteroid | null => {
-      const loc = asteroidRuntime.findInstanceLocation(instanceId);
+    (instanceId: number, chunkKey: string): TargetedAsteroid | null => {
+      const fieldId = chunkKey.slice(0, chunkKey.lastIndexOf(":"));
+      const loc = asteroidRuntime.getFieldRuntime(fieldId)?.getInstanceLocation(chunkKey, instanceId) ?? null;
       if (!loc) return null;
 
       const fieldRuntime = asteroidRuntime.getFieldRuntime(loc.fieldId);
@@ -1001,7 +1034,7 @@ const MiningSystem = () => {
           };
 
           // Prefer existing target to reduce flicker
-          if (preferredId !== null && instanceId === preferredId) {
+          if (preferredId !== null && instanceId === preferredId && chunk.key === targetChunkRef.current) {
             if (projT < lockedT) {
               locked = candidate;
               lockedT = projT;
@@ -1099,8 +1132,9 @@ const MiningSystem = () => {
         if (hitId !== null) {
           targetLostTimeRef.current = 0;
 
-          if (prevId !== hitId) {
+          if (prevId !== hitId || targetChunkRef.current !== hit?.location.chunkKey) {
             targetIdRef.current = hitId;
+            targetChunkRef.current = hit?.location.chunkKey ?? "";
             targetingTimeRef.current = 0;
           }
         } else {
@@ -1122,7 +1156,7 @@ const MiningSystem = () => {
 
     let snapshot: TargetedAsteroid | null = null;
     if (targetId !== null) {
-      snapshot = getTargetSnapshot(targetId);
+      snapshot = getTargetSnapshot(targetId, targetChunkRef.current);
 
       if (!snapshot) {
         targetIdRef.current = null;
@@ -1159,6 +1193,22 @@ const MiningSystem = () => {
 
     const focusTimeS = TARGET_FOCUS_TIME_S * shipConfigRef.current.scannerLockSpeedMult;
     const isFocused = !!snapshot && targetingTimeRef.current >= focusTimeS;
+
+    // --- Close inspection: hold the lock within range; no consumable.
+    if (inspectControl.requested) {
+      const cfg = shipConfigRef.current;
+      if (!snapshot || !isFocused || isMiningNow || snapshot.instanceId !== inspectControl.targetId) {
+        inspectControl.requested = false;
+        inspectControl.progress = 0;
+      } else if (snapshot.distanceM <= INSPECT_RANGE_M * cfg.scannerInspectRangeMult && !isSimPaused()) {
+        inspectControl.progress += delta / (INSPECT_TIME_S * cfg.scannerInspectTimeMult);
+        if (inspectControl.progress >= 1) {
+          inspectControl.requested = false;
+          inspectControl.progress = 0;
+          submitInspection(snapshot);
+        }
+      }
+    }
 
     // --- Mining progression + must keep aim
     let cancelMining = false;
@@ -1242,6 +1292,7 @@ const MiningSystem = () => {
           // Heat and extraction rate come from the ship resource step (one thermal store,
           // reactor-throttled work on executed time): request the beam, consume granted seconds.
           miningBeamRequest.on = beamFiring;
+          shipResControl.beamTargetId = snapshot.instanceId;
           const work = takeMiningWork();
 
           if (shipRes.miningTripped) {
@@ -1273,7 +1324,8 @@ const MiningSystem = () => {
               systemConfig,
               fieldId,
               snapshot.instanceId,
-              snapshot.radiusM
+              snapshot.radiusM,
+              snapshot.location.chunkKey
             );
             if (reward) {
               pendingMiningRewardRef.current = {
@@ -1358,6 +1410,7 @@ const MiningSystem = () => {
           miningProgress: nextMiningProgress,
           laserHeat: shipRes.heat01,
           isOverheated: shipRes.miningTripped || isOverheatedNow,
+          inspectProgress: inspectControl.requested ? Math.max(0.001, inspectControl.progress) : 0,
         };
       });
 
@@ -1386,7 +1439,7 @@ const MiningSystem = () => {
         const op = buildMineOperation(
           systemConfig,
           { ...removal, radiusM: reward.radiusM },
-          { miningEfficiencyMult: cfg.miningEfficiencyMult, assaySampleBonusChance: cfg.assaySampleBonusChance, minedLifetime: store.get(asteroidsMinedLifetimeAtom) },
+          { miningEfficiencyMult: cfg.miningEfficiencyMult },
           newOpId(),
         );
         runOperation(op, (o) => {
@@ -1395,9 +1448,12 @@ const MiningSystem = () => {
           const loot = reward.resources
             .filter((r) => (granted[r.resourceId] ?? 0) > 0)
             .map((r) => ({ ...r, amount: granted[r.resourceId] }));
-          loot.push({ resourceId: "_assay", amount: o.result.assaySamples, name: "Assay Samples", icon: "" });
           spawnVFX({ type: "mined", position: reward.positionLocal, radiusM: reward.radiusM, loot });
-          if (Object.keys(granted).length > 0) signalAudio("loot.acquire");
+          if (Object.keys(granted).length > 0) {
+            signalAudio("loot.acquire");
+            const values = Object.entries(granted).sort((a, b) => b[1] - a[1]).map(([id, amount]) => ({ id, amount }));
+            addToast({ message: "Mined", kind: "success", audio: "silent", values });
+          }
           incrementMinedSignal((c) => c + 1);
         });
       } else {

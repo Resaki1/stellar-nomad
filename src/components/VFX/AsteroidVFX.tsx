@@ -11,7 +11,6 @@ import {
 
 import DebrisEffect from "./DebrisEffect";
 import FlashEffect from "./FlashEffect";
-import LootPopup from "./LootPopup";
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -31,10 +30,9 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
 }) {
   const debrisDone = useRef(false);
   const flashDone = useRef(false);
-  const lootDone = useRef(!event.loot); // already "done" if no loot
 
   const checkAllDone = useCallback(() => {
-    if (debrisDone.current && flashDone.current && lootDone.current) {
+    if (debrisDone.current && flashDone.current) {
       onComplete(event.id);
     }
   }, [event.id, onComplete]);
@@ -60,20 +58,6 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
           checkAllDone();
         }}
       />
-      {event.loot && event.loot.length > 0 && (
-        <LootPopup
-          position={[
-            event.position[0],
-            event.position[1] + event.radiusM * 1.2 + 5,
-            event.position[2],
-          ]}
-          loot={event.loot}
-          onComplete={() => {
-            lootDone.current = true;
-            checkAllDone();
-          }}
-        />
-      )}
     </>
   );
 });

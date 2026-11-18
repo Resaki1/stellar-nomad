@@ -13,6 +13,8 @@
 
   &__content {
     text-align: center;
+    max-width: min(560px, calc(100vw - 2 * #{s.$space-4}));
+    padding: 0 s.$space-4;
     opacity: 0;
     animation: death-content-in 1s ease-out 1s forwards;
   }
@@ -26,11 +28,83 @@
     margin: 0 0 s.$space-3;
   }
 
-  &__subtitle {
-    font-size: 0.95rem;
-    color: rgba(255, 255, 255, 0.5); // close to $text-tertiary; keep raw to preserve visuals
-    margin: 0 0 40px; // TODO(phase-3): normalize spacing
-    font-weight: 400;
+  &__title--respawn {
+    color: s.$accent-info;
+  }
+
+  &__wreck {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: s.$space-2 s.$space-3;
+    margin: 0 0 s.$space-6;
+
+    .sn-res { font-size: 13px; }
+  }
+
+  &__wreck-label {
+    @include s.label;
+    color: s.$text-tertiary;
+  }
+
+  &__wreck-empty {
+    font-size: 12px;
+    color: s.$text-tertiary;
+  }
+
+  &__dest-name {
+    color: inherit;
+    font-weight: 600;
+  }
+
+  &__warn {
+    margin: 0 0 s.$space-3;
+    font-family: s.$font-mono;
+    font-size: 12px;
+    color: s.$accent-warn;
+    text-shadow: 0 0 6px s.$glow-warn;
+  }
+
+  &__fallback {
+    display: block;
+    margin: s.$space-4 auto 0;
+    padding: s.$space-2 s.$space-4;
+    background: rgb(10, 12, 16); // opaque: HUD panels sit behind the overlay on narrow screens
+    border: 1px solid s.$stroke-faint;
+    border-radius: s.$radius-md;
+    color: s.$text-secondary;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color s.$dur-base, border-color s.$dur-base;
+
+    &:hover {
+      color: s.$accent-warn;
+      border-color: s.$accent-warn;
+    }
+  }
+
+  &__confirm {
+    p {
+      color: s.$text-secondary;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      margin: 0 0 s.$space-5;
+    }
+  }
+
+  &__confirm-row {
+    display: flex;
+    gap: s.$space-3;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+
+    .death-screen__fallback {
+      margin: 0;
+    }
   }
 
   &__respawn {
@@ -39,7 +113,7 @@
     padding: s.$space-3 s.$space-7;
     border-radius: s.$radius-lg;
     border: 1px solid rgba(255, 255, 255, 0.2); // close to $stroke-base; keep raw to preserve visuals
-    background: s.$stroke-faint;
+    background: linear-gradient(s.$stroke-faint, s.$stroke-faint) rgb(10, 12, 16);
     color: rgba(255, 255, 255, 0.85); // close to $text-primary; keep raw to preserve visuals
     cursor: pointer;
     letter-spacing: 0.08em;
@@ -50,9 +124,23 @@
       color s.$dur-base;
 
     &:hover {
-      background: s.$stroke-base;
+      background: linear-gradient(s.$stroke-base, s.$stroke-base) rgb(10, 12, 16);
       border-color: s.$stroke-strong;
       color: white;
+    }
+  }
+}
+
+@media (max-width: 520px) {
+  .death-screen {
+    &__title {
+      font-size: 2rem;
+      letter-spacing: 0.1em;
+    }
+
+    &__respawn {
+      padding: s.$space-3 s.$space-5;
+      font-size: 0.9rem;
     }
   }
 }
@@ -62,7 +150,7 @@
     background: rgba(0, 0, 0, 0);
   }
   100% {
-    background: rgba(0, 0, 0, 0.85);
+    background: rgba(0, 0, 0, 0.92);
   }
 }
 

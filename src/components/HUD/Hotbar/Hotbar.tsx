@@ -1,6 +1,7 @@
 "use client";
 
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { hullRepairable } from "@/sim/ship/hull";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -17,10 +18,18 @@ import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
 import { signalAudioActionAtom, type AudioAction } from "@/store/audioSignals";
 import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
+import { isTypingTarget } from "@/input/keyboard";
+import { REPLICATION_KIT_ID } from "@/sim/replication/points";
+import { placementModeAtom } from "@/store/replication";
+import { togglePlacement } from "../ReplicationHUD/ReplicationHUD";
 
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
 
 import "./Hotbar.scss";
+
+/** D8: slot i is key `(i + 1) % 10`, so the labels read 1…9, 0 like the keyboard. */
+export const slotKey = (index: number): string => String((index + 1) % 10);
+const slotOfKey = (key: string): number => (key === "0" ? 9 : Number(key) - 1);
 
 /** Returns true if this item requires heat to be usable. */
 function requiresHeat(def: ItemDef): boolean {
@@ -38,7 +47,9 @@ function isInfoConsumable(def: ItemDef): boolean {
 }
 
 export default function Hotbar() {
+  const store = useStore();
   const modulesState = useAtomValue(modulesAtom);
+  const placing = useAtomValue(placementModeAtom);
   const miningState = useAtomValue(miningStateAtom);
   const shipHealth = useAtomValue(shipHealthAtom);
   const shipConfig = useAtomValue(effectiveShipConfigAtom);
@@ -91,6 +102,20 @@ export default function Hotbar() {
     };
   }, [hasActiveCooldown]);
 
+  // A kit that arrives (craft, salvage, a loaded save) gets a slot once; a manual removal sticks.
+  // The hotbar is its only control, so a full bar says so (Loadout can drag it in later).
+  const kits = modulesState.consumables[REPLICATION_KIT_ID] ?? 0;
+  const kitSlotted = modulesState.hotbar.includes(REPLICATION_KIT_ID);
+  const freeSlot = modulesState.hotbar.indexOf(null);
+  const prevKits = useRef(0);
+  useEffect(() => {
+    const arrived = kits > prevKits.current;
+    prevKits.current = kits;
+    if (!arrived || kitSlotted) return;
+    if (freeSlot !== -1) setHotbarSlot({ index: freeSlot, itemId: REPLICATION_KIT_ID });
+    else addToast({ kind: "warn", message: "Hotbar full", values: [{ id: REPLICATION_KIT_ID }] });
+  }, [kits, kitSlotted, freeSlot, setHotbarSlot, addToast]);
+
   // Clear the "just assigned" pulse class after the animation finishes
   useEffect(() => {
     if (justAssignedSlot === null) return;
@@ -109,26 +134,30 @@ export default function Hotbar() {
         return;
       }
 
+      // D16: the replication kit's slot opens (or closes) placement; placing consumes it.
+      if (def.deployable) {
+        if ((modulesState.consumables[itemId] ?? 0) > 0 || store.get(placementModeAtom)) togglePlacement(store);
+        else signalAudio("ui.reject");
+        return;
+      }
+
       // Block heat-related consumables when there's no heat
       if (requiresHeat(def) && miningState.laserHeat <= 0) {
-        addToast({ audio: "reject", message: "No heat to reduce", durationMs: 1500 });
+        addToast({ audio: "reject", kind: "warn", message: "Heat already low" });
         return;
       }
 
       // Block hull repair when at full health
-      if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth) {
-        addToast({ audio: "reject", message: "Hull already at full integrity", durationMs: 1500 });
+      if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && !hullRepairable(shipHealth, shipConfig.maxHealth)) {
+        addToast({ audio: "reject", kind: "warn", message: "Hull intact" });
         return;
       }
 
-      // Information consumables — stub: show toast, consume item
+      // Information consumables — stub: consume the item
       if (isInfoConsumable(def)) {
         const ok = consumeItem(itemId);
-        if (ok) {
-          addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 3000 });
-        } else {
-          signalAudio("ui.reject");
-        }
+        if (ok) addToast({ message: "Used", values: [{ id: itemId }] });
+        else signalAudio("ui.reject");
         return;
       }
 
@@ -141,7 +170,7 @@ export default function Hotbar() {
             effects: def.useEffects,
             durationS: def.useDurationS!,
           });
-          addToast({ message: `Activated: ${def.name} (${def.useDurationS}s)`, durationMs: 2000 });
+          addToast({ message: "Used", values: [{ id: itemId }] });
           return;
         }
 
@@ -169,24 +198,24 @@ export default function Hotbar() {
           }
         }
         if (cue) signalAudio(cue);
-        addToast({ message: `Used: ${def.name}`, durationMs: 2000, audio: cue ? "silent" : undefined });
+        addToast({ message: "Used", values: [{ id: itemId }], audio: cue ? "silent" : undefined });
       } else {
         // Out of stock or on cooldown.
         signalAudio("ui.reject");
       }
     },
-    [modulesState.hotbar, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast, signalAudio],
+    [store, modulesState.hotbar, modulesState.consumables, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast, signalAudio],
   );
 
-  // Handle key presses 0-9 for hotbar
+  // Keys 1…9 then 0 (names with digits are typed, never activate a slot).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
+      if (isTypingTarget(e.target) || e.repeat) return;
       const key = e.key;
-      if (key >= "0" && key <= "9") {
-        activateSlot(parseInt(key, 10));
+      if (key.length === 1 && key >= "0" && key <= "9") {
+        // The kit's slot focuses the name input in this same keydown: without this the digit is typed into it.
+        e.preventDefault();
+        activateSlot(slotOfKey(key));
       }
     };
 
@@ -261,11 +290,11 @@ export default function Hotbar() {
 
     items.push({
       label: "Use",
-      hint: String(index),
+      hint: slotKey(index),
       disabled: (() => {
         if (!def) return true;
         if (requiresHeat(def) && miningState.laserHeat <= 0) return true;
-        if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth) return true;
+        if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && !hullRepairable(shipHealth, shipConfig.maxHealth)) return true;
         const cdS = def.cooldownS ?? 0;
         if (cdS > 0) {
           const last = modulesState.consumableCooldowns[itemId] ?? 0;
@@ -319,7 +348,7 @@ export default function Hotbar() {
 
           // Gray out items that can't be used right now
           const heatUnavailable = hasItem && requiresHeat(def) && miningState.laserHeat <= 0;
-          const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && shipHealth >= shipConfig.maxHealth;
+          const healthUnavailable = hasItem && !!def.useEffects?.some((e) => e.key === "ship.currentHealth") && !hullRepairable(shipHealth, shipConfig.maxHealth);
           const unavailable = heatUnavailable || healthUnavailable;
 
           const remainingAngle = `${cooldownFraction * 360}deg`;
@@ -334,6 +363,7 @@ export default function Hotbar() {
             unavailable && "hotbar__slot--unavailable",
             isDragOver && "hotbar__slot--drag-over",
             justAssigned && "hotbar__slot--just-assigned",
+            placing && def?.deployable && "hotbar__slot--active",
           ].filter(Boolean).join(" ");
 
           return (
@@ -352,7 +382,7 @@ export default function Hotbar() {
               onDragLeave={(e) => onSlotDragLeave(e, index)}
               onDrop={(e) => onSlotDrop(e, index)}
             >
-              <span className="hotbar__key">{index}</span>
+              <span className="hotbar__key">{slotKey(index)}</span>
               {hasItem && (
                 <>
                   <img
@@ -385,7 +415,7 @@ export default function Hotbar() {
           y={menu.y}
           title={(() => {
             const id = modulesState.hotbar[menu.index];
-            return id ? (getItemDef(id)?.name ?? `Slot ${menu.index}`) : `Slot ${menu.index}`;
+            return id ? (getItemDef(id)?.name ?? `Slot ${slotKey(menu.index)}`) : `Slot ${slotKey(menu.index)}`;
           })()}
           items={buildSlotMenu(menu.index)}
           onClose={() => setMenu(null)}

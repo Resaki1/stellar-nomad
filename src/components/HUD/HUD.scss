@@ -4,6 +4,12 @@
   display: contents;
 }
 
+// The ship loop stops drawing the flight HUD while dead, so its last state (steer prompt) would linger.
+.hud--dead .ship-dashboard,
+.hud--dead .flight-hud {
+  visibility: hidden;
+}
+
 .hud__panel-buttons {
   position: absolute;
   top: s.$space-3;
@@ -13,6 +19,21 @@
   display: flex;
   gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing
   pointer-events: auto;
+
+  // Phones: icon-only, right-aligned between the cargo readout and the settings gear (2vmax, 32 px).
+  @media (max-width: 599px) {
+    left: auto;
+    right: calc(2vmax + 40px);
+    transform: none;
+
+    .hud__panel-btn {
+      padding: s.$space-1 + 2px;
+    }
+
+    .hud__panel-btn span {
+      display: none;
+    }
+  }
 }
 
 .hud__panel-btn {

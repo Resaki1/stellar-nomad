@@ -20,9 +20,9 @@ import {
   type TransitTarget,
 } from "@/sim/ship/transitDrive";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
-import { getResourceTuning } from "@/sim/ship/resourceTuning";
-import { shipRes, shipReq } from "@/store/shipResources";
+import { getShipTuning, shipRes, shipReq } from "@/store/shipResources";
 import { getLocalPlayerShip } from "@/sim/entities";
+import type { AsteroidFieldDef, CelestialBodyDef } from "@/sim/systemTypes";
 
 export {
   TRANSIT_ACCEL_KMPS2,
@@ -56,6 +56,24 @@ export const transitDriveOwnedAtom = atom((get) => get(modulesAtom).ownedModules
 
 /** Targeted POI for autopilot. */
 export const targetedPOIAtom = atom<TransitTarget | null>(null);
+
+/** Arrival stand-off at a body: two radii from its centre (min 100 km). */
+export const bodyArrivalOffsetKm = (radiusKm: number): number => Math.max(100, radiusKm * 2);
+
+/**
+ * The transit target for a body, as every caller (gaze, menus, tests) builds it: a body that
+ * anchors an enabled asteroid field carries it, so a trip from afar ends in the field (D11).
+ */
+export function bodyTransitTarget(body: Readonly<CelestialBodyDef>, fields: readonly AsteroidFieldDef[] | undefined, withField = true): TransitTarget {
+  const f = withField ? fields?.find((x) => x.enabled !== false && x.anchorBody === body.id) : undefined;
+  return {
+    id: `body:${body.id}`,
+    name: body.name,
+    positionKm: body.positionKm,
+    arrivalOffsetKm: bodyArrivalOffsetKm(body.radiusKm),
+    field: f ? { positionKm: f.anchorKm, name: f.name } : undefined,
+  };
+}
 
 export const isTransitBurning = (phase: TransitPhase): boolean =>
   phase === "accelerating" || phase === "coasting" || phase === "decelerating";
@@ -95,6 +113,9 @@ export interface TransitPreview {
   protectedKg: number;
   peakHeat01: number;
   fuelLimited: boolean;
+  /** Lower-bound fuel the route needs, kg, and the tank it must fit in (refusals show both). */
+  needKg: number;
+  tankKg: number;
   /** Fuel caps the peak speed: the leg coasts and takes longer. */
   slow: boolean;
   viaName: string | null;
@@ -132,7 +153,7 @@ export function updateAimVelocity(store: Store, target: TransitTarget | null, sh
 export function computeTransitPreview(store: Store): TransitPreview | null {
   const ship = getLocalPlayerShip();
   const rt = transitDriveBuffer;
-  const t = getResourceTuning();
+  const t = getShipTuning();
   const target = rt.phase !== "idle" && rt.autopilot ? rt.target : store.get(targetedPOIAtom);
   if (!ship || !target || !store.get(transitDriveOwnedAtom)) return null;
   _ship.copy(ship.absPosKm);
@@ -143,7 +164,7 @@ export function computeTransitPreview(store: Store): TransitPreview | null {
   else planTransit(p, _ship, target, rt.bodies, shipRes, transitInputs, t, FIXED_DT);
   return {
     targetId: target.id,
-    targetName: target.name,
+    targetName: p.fieldArrival && target.field ? `${target.name} · ${target.field.name.toLowerCase()}` : target.name,
     live,
     ok: p.ok,
     reason: p.reason,
@@ -153,6 +174,8 @@ export function computeTransitPreview(store: Store): TransitPreview | null {
     protectedKg: p.protectedKg,
     peakHeat01: p.peakHeat01,
     fuelLimited: p.fuelLimited,
+    needKg: p.needKg,
+    tankKg: t.tankKg,
     slow: p.ok && p.fuelLimited,
     viaName: p.viaBodyId ? (p.viaName ?? rt.bodies.find((b) => b.id === p.viaBodyId)?.name ?? p.viaBodyId) : null,
     legCount: p.legCount,

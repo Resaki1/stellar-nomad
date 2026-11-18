@@ -173,8 +173,12 @@ const WreckCollector = memo(function WreckCollector() {
         const cdz = bs.z - sz;
         const cd2 = cdx * cdx + cdy * cdy + cdz * cdz;
         if (cd2 < collectR2 && clock.elapsedTime >= bs.retryAt) {
-          if (store.set(collectWreckAtom, w.id)) {
+          // One "no room" notice per approach; the retries every second stay quiet.
+          const quiet = bs.retryAt > 0;
+          if (store.set(collectWreckAtom, { wreckId: w.id, quiet })) {
             store.set(signalAudioActionAtom, "loot.acquire");
+            // A partial salvage already said what is left: later "no room" retries stay quiet.
+            bs.retryAt = clock.elapsedTime + RETRY_AFTER_S;
             continue;
           }
           bs.retryAt = clock.elapsedTime + RETRY_AFTER_S;

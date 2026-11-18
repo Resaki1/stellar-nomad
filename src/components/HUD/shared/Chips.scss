@@ -1,0 +1,168 @@
+@use '../../../styles' as s;
+
+.sn-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  margin: 0 2px;
+  box-sizing: border-box;
+  font-family: s.$font-mono;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: s.$text-primary;
+  border: 1px solid s.$stroke-strong;
+  border-radius: s.$radius-sm;
+  background: rgba(255, 255, 255, 0.06);
+  text-shadow: none;
+  vertical-align: middle;
+
+  &--dim {
+    color: s.$text-tertiary;
+    border-color: s.$stroke-faint;
+  }
+}
+
+.sn-res {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: s.$text-primary;
+  white-space: nowrap;
+
+  &__icon {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+    flex: 0 0 auto;
+  }
+
+  &__glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1px solid s.$stroke-strong;
+    // Sans, not the parent's mono: mono "Ti" read as "T1".
+    font-family: s.$font-ui;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0;
+    color: s.$text-primary;
+    flex: 0 0 auto;
+  }
+
+  // Scanner estimate: icon only, dashed outline, no amount.
+  &--est &__icon,
+  &--est &__glyph {
+    outline: 1px dashed rgba(140, 200, 255, 0.55);
+    outline-offset: 1px;
+    border-radius: 3px;
+    opacity: 0.8;
+  }
+
+  &--short &__n {
+    color: s.$accent-crit;
+  }
+}
+
+.sn-tooltip {
+  position: fixed;
+  z-index: s.$z-context-menu + 10;
+  transform: translate(-50%, calc(-100% - 6px));
+  padding: 3px s.$space-2;
+  @include s.glass(1);
+  @include s.t-sm;
+  font-family: s.$font-ui;
+  color: s.$text-primary;
+  white-space: nowrap;
+  pointer-events: none;
+  border-radius: s.$radius-sm;
+}
+
+// Requirement chip (§4.1): glyph + icon + short label; met = ok tone.
+.sn-req {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 6px 0 4px;
+  box-sizing: border-box;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-md;
+  background: rgba(255, 255, 255, 0.03);
+  font-family: s.$font-ui;
+  font-size: 11px;
+  line-height: 1;
+  color: s.$text-secondary;
+  white-space: nowrap;
+
+  &__state { color: s.$text-tertiary; flex: 0 0 auto; }
+  &__scan { color: s.$accent-info; opacity: 0.85; flex: 0 0 auto; }
+  &__label { overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+
+  &__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 14px;
+    padding: 0 2px;
+    border-radius: s.$radius-sm;
+    border: 1px solid s.$stroke-strong;
+    font-family: s.$font-mono;
+    font-size: 9px;
+    font-weight: 700;
+    color: s.$text-primary;
+  }
+
+  .sn-res__icon, .sn-res__glyph { width: 14px; height: 14px; }
+
+  &--met {
+    color: s.$text-primary;
+    border-color: rgba(107, 227, 164, 0.35);
+    .sn-req__state { color: s.$accent-ok; }
+  }
+}
+
+// A closed box so the group reads as one unit (half-brackets read as clipped); 22 px keeps two chip lines in a card.
+.sn-req-any {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  max-width: 100%;
+  padding: 0 1px 0 0;
+  box-sizing: border-box;
+  border: 1px dashed s.$stroke-strong;
+  border-radius: s.$radius-md;
+
+  .sn-req { height: 18px; }
+
+  &__label {
+    padding: 0 2px 0 5px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: s.$text-secondary;
+    white-space: nowrap;
+  }
+
+  &--met { border-color: rgba(107, 227, 164, 0.5); }
+}
+
+.sn-analysis {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  &__flask { display: inline-flex; color: s.$text-tertiary; }
+}

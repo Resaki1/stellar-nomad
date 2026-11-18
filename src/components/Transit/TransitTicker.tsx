@@ -16,8 +16,21 @@ import {
   type TransitPreview,
 } from "@/store/transit";
 import { addToastAtom } from "@/store/toast";
+import { recordTrial } from "@/store/research";
 import { systemConfigAtom } from "@/store/system";
 import { ALREADY_THERE, type TransitBody } from "@/sim/ship/transitDrive";
+import type { CelestialBodyDef } from "@/sim/systemTypes";
+import { deriveAtmosphere } from "@/components/celestial/bodies/atmosphereData";
+
+/** Rendered atmosphere top above the surface, km (the route hazard shell sits above it). */
+function atmosphereTopKm(b: CelestialBodyDef, star: CelestialBodyDef | undefined): number {
+  if (!b.atmosphere || !star) return 0;
+  try {
+    return deriveAtmosphere(b, star).atmosphereHeightKm;
+  } catch {
+    return 0;
+  }
+}
 
 /** Preview refresh period, s (the predictor runs the whole route through the step law). */
 const PREVIEW_PERIOD_S = 0.25;
@@ -28,7 +41,7 @@ let lastPreviewKey = "";
 
 function previewKey(p: TransitPreview | null): string {
   if (!p) return "";
-  return [p.targetId, p.live, p.ok, p.reason, Math.ceil(p.etaS), Math.round(p.fuelKg), Math.round(p.arrivalOrdinaryKg), Math.round(p.protectedKg), Math.round(p.peakHeat01 * 100), p.slow, p.viaName, p.legCount].join("|");
+  return [p.targetId, p.live, p.ok, p.reason, Math.ceil(p.etaS), Math.round(p.fuelKg), Math.round(p.arrivalOrdinaryKg), Math.round(p.protectedKg), Math.round(p.peakHeat01 * 100), Math.round(p.needKg), p.tankKg, p.slow, p.viaName, p.legCount].join("|");
 }
 
 export default function TransitTicker() {
@@ -37,7 +50,8 @@ export default function TransitTicker() {
   // Bodies the route planner and proximity brake see: LIVE position arrays (ephemeris rewrites them).
   useEffect(() => {
     const bodies = store.get(systemConfigAtom).celestialBodies ?? [];
-    transitDriveBuffer.bodies = bodies.map((b): TransitBody => ({ id: b.id, name: b.name, pos: b.positionKm, radiusKm: b.radiusKm }));
+    const star = bodies.find((b) => b.type === "star");
+    transitDriveBuffer.bodies = bodies.map((b): TransitBody => ({ id: b.id, name: b.name, pos: b.positionKm, radiusKm: b.radiusKm, atmosphereTopKm: atmosphereTopKm(b, star) }));
     const ev = transitDriveBuffer.ev;
     for (const k of Object.keys(seen) as (keyof typeof seen)[]) seen[k] = ev[k];
   }, [store]);
@@ -48,27 +62,28 @@ export default function TransitTicker() {
 
     if (ev.refused !== seen.refused) {
       seen.refused = ev.refused;
-      if (ev.refusal !== ALREADY_THERE) store.set(addToastAtom, { audio: "reject", message: "TRANSIT REFUSED", detail: ev.refusal ?? "", durationMs: 4000 });
+      if (ev.refusal !== ALREADY_THERE) store.set(addToastAtom, { audio: "reject", kind: "warn", message: "Transit refused", detail: ev.refusal ?? "" });
     }
     if (ev.proximity !== seen.proximity) {
       seen.proximity = ev.proximity;
-      store.set(addToastAtom, { message: "TRANSIT BRAKING", audio: "silent", detail: `Proximity: ${ev.proximityId.toUpperCase()}`, durationMs: 3000 });
     }
     if (ev.autopilotOff !== seen.autopilotOff) {
       seen.autopilotOff = ev.autopilotOff;
       store.set(targetedPOIAtom, null);
-      store.set(addToastAtom, { message: "AUTOPILOT DISENGAGED", detail: "Manual control active", durationMs: 3000 });
+      store.set(addToastAtom, { message: "Autopilot off" });
     }
     if (ev.aborted !== seen.aborted) {
       seen.aborted = ev.aborted;
-      store.set(addToastAtom, { message: "TRANSIT ABORTED", audio: "silent", detail: "Braking to a stop", durationMs: 3000 });
+      store.set(addToastAtom, { message: "Transit aborted", audio: "silent" });
     }
     if (ev.stoppedShort !== seen.stoppedShort) {
       seen.stoppedShort = ev.stoppedShort;
-      store.set(addToastAtom, { message: "TRANSIT STOPPED SHORT", audio: "silent", detail: ev.stopReason, durationMs: 3000 });
+      store.set(addToastAtom, { message: "Stopped short", kind: "warn", audio: "silent", detail: ev.stopReason });
     }
     // The arrival frame keeps its destination so arrival comms know where the ship arrived.
     const arrivedNow = ev.arrived !== seen.arrived;
+    // A completed leg is the propulsion trial; a fresh world's counter starts at 0, so it is real.
+    if (arrivedNow && ev.arrived > seen.arrived) recordTrial("transit_leg");
     seen.arrived = ev.arrived;
 
     // Phase / leg / target mirror, only on change.

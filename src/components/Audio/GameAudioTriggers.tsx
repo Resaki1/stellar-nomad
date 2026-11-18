@@ -44,6 +44,7 @@ import { toastsAtom } from "@/store/toast";
 import { isDeadAtom } from "@/store/death";
 import { itemCraftedSignalAtom } from "@/store/modules";
 import { lastCompletedResearchIdAtom } from "@/store/research";
+import { placementModeAtom } from "@/store/replication";
 
 // Derived atoms so this component does not re-render on every frame-rate field
 // of `miningStateAtom` (which commits at 30 Hz and carries `miningProgress`).
@@ -349,13 +350,21 @@ export default function GameAudioTriggers() {
     for (const t of toasts) {
       if (seenToastRef.current.has(t.id)) continue;
       seenToastRef.current.add(t.id);
-      if (t.audio === "silent") continue;
+      if (t.audio === "silent" || t.kind === "tip") continue;
       playAudio(t.audio === "reject" ? "ui.reject" : t.kind === "warn" ? "notify.warn" : "notify.info");
     }
     if (seenToastRef.current.size > 128) {
       seenToastRef.current = new Set(toasts.map((t) => t.id));
     }
   }, [toasts]);
+
+  // Placement opens and closes like a panel (hotbar key, place key, Esc); death closes it silently.
+  const placing = useAtomValue(placementModeAtom);
+  const wasPlacing = useRef(placing);
+  useEffect(() => {
+    if (placing !== wasPlacing.current && !dead) playAudio("click.soft");
+    wasPlacing.current = placing;
+  }, [placing, dead]);
 
   const actions = useAtomValue(audioActionCountsAtom);
   const previousActions = useRef(actions);

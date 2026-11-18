@@ -5,7 +5,6 @@
  * and the performance benchmark harness on `window.__bench`.
  *
  * Usage from browser console:
- *   __dev.grantAssay(100)          — grant 100 assay samples
  *   __dev.grantCargo("iron", 500)  — grant 500 iron
  *   __dev.unlockAll()              — complete all research nodes
  *   __dev.grantAllItems()          — add all craftable items to inventory
@@ -27,7 +26,6 @@
 import { useEffect } from "react";
 import { useStore } from "jotai";
 
-import { addAssaySamplesAtom, researchAtom } from "@/store/research";
 import { addCargoAtom } from "@/store/cargo";
 import { modulesAtom, addCraftedItemAtom } from "@/store/modules";
 import { ITEMS, RESEARCH_NODES } from "@/data/content";
@@ -44,12 +42,6 @@ export default function DevTools() {
     if (process.env.NODE_ENV !== "development") return;
 
     const devApi = {
-      /** Grant assay samples. */
-      grantAssay(amount = 50) {
-        store.set(addAssaySamplesAtom, amount);
-        console.log(`[Dev] Granted ${amount} assay samples.`);
-      },
-
       /** Grant cargo resource by ID. */
       grantCargo(resourceId: string, amount = 100) {
         store.set(addCargoAtom, { resourceId, amount });
@@ -60,8 +52,6 @@ export default function DevTools() {
       unlockAll() {
         const allIds = RESEARCH_NODES.map((n) => n.id);
         runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: allIds });
-        const state = store.get(researchAtom);
-        store.set(researchAtom, { ...state, activeResearch: null, assaySamples: state.assaySamples + 9999 });
         console.log(`[Dev] All ${allIds.length} research nodes completed.`);
       },
 
@@ -82,7 +72,6 @@ export default function DevTools() {
       /** Reset research + modules to defaults. */
       resetProgress() {
         runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
-        store.set(researchAtom, { assaySamples: 0, activeResearch: null });
         store.set(modulesAtom, {
           ownedModules: [],
           equippedModules: {},
@@ -126,7 +115,7 @@ export default function DevTools() {
     (window as DevWindow).__lum = lum;
     (window as DevWindow).__test = test;
     (window as DevWindow).__phys = phys;
-    console.log("[Dev] Debug utilities available via __dev. Try __dev.grantAssay(100)");
+    console.log("[Dev] Debug utilities available via __dev. Try __dev.grantCargo('hydrates', 20)");
     console.log("[Dev] Perf harness via __bench. Try __bench.list() or await __bench.sweep()");
     console.log("[Dev] Photometry harness via __lum. Try __lum.units() or await __lum.probe()");
 

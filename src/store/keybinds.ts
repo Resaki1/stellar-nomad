@@ -9,9 +9,12 @@ export type KeybindAction =
   | "toggleResearch"
   | "toggleCrafting"
   | "toggleLoadout"
+  | "toggleProjects"
   | "mine"
+  | "inspect"
   | "togglePulseMining"
   | "transitDrive"
+  | "placePoint"
   | "toggleSettings";
 
 /** Maps each action → array of bound key strings (e.key.toLowerCase()). */
@@ -47,9 +50,12 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "toggleResearch", label: "Research", category: "actions" },
   { id: "toggleCrafting", label: "Crafting", category: "actions" },
   { id: "toggleLoadout", label: "Loadout", category: "actions" },
+  { id: "toggleProjects", label: "Projects and records", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
+  { id: "inspect", label: "Interact", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
   { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
+  { id: "placePoint", label: "Replication Point: Place", category: "actions" },
   { id: "toggleSettings", label: "Settings", category: "menu" },
 ];
 
@@ -79,11 +85,16 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   freeLook: ["alt"],
   toggleCargo: ["tab", "i"],
   toggleResearch: ["r"],
-  toggleCrafting: ["f"],
+  toggleCrafting: ["c"],
   toggleLoadout: ["l"],
+  toggleProjects: ["p"],
   mine: ["m"],
-  togglePulseMining: ["p"],
+  inspect: ["g"],
+  // Dormant (no item grants pulse mining yet): unbound so P can open Projects (D5).
+  togglePulseMining: [],
   transitDrive: ["t"],
+  // The kit is used from the hotbar (D16); kept for rebinding.
+  placePoint: [],
   toggleSettings: ["escape"],
 };
 
@@ -91,34 +102,63 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
 export const MAX_KEYS_PER_ACTION = 2;
 
 // ── Atom (persisted) ────────────────────────────────────────────────
-const KEYBINDS_KEY = "keybinds-v2";
+const KEYBINDS_KEY = "keybinds-v3";
+const KEYBINDS_V2_KEY = "keybinds-v2";
 const KEYBINDS_V1_KEY = "keybinds-v1";
 
 /**
  * M1 control scheme: a saved v1 action whose key collides with a NEW default of another
  * action is reset to its own default (only that action). Runs once, v1 → v2.
  */
-export function migrateKeybindsV1(saved: Partial<Record<string, string[]>>): KeybindConfig {
+export function migrateKeybindsV1(saved: Partial<Record<string, string[]>>): Record<string, string[]> {
+  const result: Record<string, string[]> = { ...V2_DEFAULTS };
+  for (const action of Object.keys(V2_DEFAULTS)) {
+    const keys = saved[action];
+    if (!Array.isArray(keys)) continue;
+    const collides = keys.some((k) => Object.keys(V2_DEFAULTS).some((o) => o !== action && V2_DEFAULTS[o].includes(k)));
+    if (!collides) result[action] = keys;
+  }
+  return result;
+}
+
+/** The v2 defaults of the actions playtest 1 moved (D5, D16); everything else kept its default. */
+const V2_MOVED: Record<string, string[]> = { toggleCrafting: ["f"], toggleProjects: ["o"], togglePulseMining: ["p"], placePoint: ["b"], activatePoint: ["h"] };
+const V2_DEFAULTS: Record<string, string[]> = { ...DEFAULT_KEYBINDS, ...V2_MOVED };
+
+const sameKeys = (a: readonly string[] | undefined, b: readonly string[]): boolean => !!a && a.length === b.length && a.every((k, i) => k === b[i]);
+
+/**
+ * v2 → v3 (playtest 1): an action still on its OLD default moves to the new one, unless that key is
+ * already bound to another action in the saved config (then it is left unbound). Custom bindings are
+ * never touched. `activatePoint` is dropped (merged into Interact).
+ */
+export function migrateKeybindsV2(saved: Partial<Record<string, string[]>>): KeybindConfig {
   const result = { ...DEFAULT_KEYBINDS };
   for (const action of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
     const keys = saved[action];
-    if (!Array.isArray(keys)) continue;
-    const collides = keys.some((k) =>
-      (Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]).some((o) => o !== action && DEFAULT_KEYBINDS[o].includes(k)),
-    );
-    if (!collides) result[action] = keys;
+    if (Array.isArray(keys)) result[action] = keys;
+  }
+  // Free every untouched old default first: Projects' new P is Pulse Mining's old P.
+  const moving = (Object.keys(V2_MOVED).filter((a) => a in DEFAULT_KEYBINDS) as KeybindAction[]).filter(
+    (a) => saved[a] === undefined || sameKeys(saved[a], V2_MOVED[a]),
+  );
+  for (const a of moving) result[a] = [];
+  for (const a of moving) {
+    result[a] = DEFAULT_KEYBINDS[a].filter((k) => !(Object.keys(result) as KeybindAction[]).some((o) => o !== a && result[o].includes(k)));
   }
   return result;
 }
 
 if (typeof window !== "undefined") {
   try {
-    const v1 = window.localStorage.getItem(KEYBINDS_V1_KEY);
-    if (v1 && window.localStorage.getItem(KEYBINDS_KEY) === null) {
-      window.localStorage.setItem(KEYBINDS_KEY, JSON.stringify(migrateKeybindsV1(JSON.parse(v1))));
+    if (window.localStorage.getItem(KEYBINDS_KEY) === null) {
+      const v2 = window.localStorage.getItem(KEYBINDS_V2_KEY);
+      const v1 = v2 === null ? window.localStorage.getItem(KEYBINDS_V1_KEY) : null;
+      const saved = v2 !== null ? JSON.parse(v2) : v1 !== null ? migrateKeybindsV1(JSON.parse(v1)) : null;
+      if (saved) window.localStorage.setItem(KEYBINDS_KEY, JSON.stringify(migrateKeybindsV2(saved)));
     }
   } catch {
-    // Unreadable v1 blob or blocked storage: defaults apply.
+    // Unreadable blob or blocked storage: defaults apply.
   }
 }
 

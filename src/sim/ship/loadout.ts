@@ -1,9 +1,11 @@
 /**
- * The one effective-ship-config fold (equipped modules + completed research + timed effects).
- * Pure so the world authority validates capacity and hull with the same numbers the HUD shows.
+ * The one effective-ship-config fold (equipped modules + timed effects; M3.3 research grants
+ * blueprints, never passive bonuses). Pure so the authority, the resource step and the HUD
+ * use the same numbers; `equipTuning` carries the config into the resource table.
  */
-import { RESEARCH_NODES, getItemDef, type ItemEffect } from "@/data/content";
+import { getItemDef, type ItemEffect } from "@/data/content";
 import type { ModulesState, PlayerState, ShipConfig } from "@/save/types";
+import type { ResourceTuning } from "./resourceTuning";
 
 export type ComputedModifiers = {
   flags: Record<string, boolean>;
@@ -48,22 +50,6 @@ export function moduleModifiers(modules: ModulesState): ComputedModifiers {
   return aggregateEffects(all);
 }
 
-/** Passive bonuses of completed (world-shared) research. Unknown ids contribute nothing. */
-export function researchModifiers(completed: ReadonlySet<string>): ComputedModifiers {
-  const all: ItemEffect[] = [];
-  for (const node of RESEARCH_NODES) if (completed.has(node.id) && node.researchEffects) all.push(...node.researchEffects);
-  return aggregateEffects(all);
-}
-
-export function unlockedItemIds(completed: ReadonlySet<string>): Set<string> {
-  const out = new Set<string>();
-  for (const node of RESEARCH_NODES) {
-    if (!completed.has(node.id)) continue;
-    for (const id of node.unlocks.items ?? []) out.add(id);
-  }
-  return out;
-}
-
 export function applyModifiers(base: ShipConfig, mods: ComputedModifiers): ShipConfig {
   const overallMult = getMultiplier(mods, "mining.overallEfficiencyMultiplier");
   return {
@@ -80,15 +66,44 @@ export function applyModifiers(base: ShipConfig, mods: ComputedModifiers): ShipC
     bonusCargoCapacity: base.bonusCargoCapacity + getAddition(mods, "ship.cargoCapacity"),
     scannerLockSpeedMult: base.scannerLockSpeedMult * getMultiplier(mods, "scanner.lockSpeedMultiplier"),
     scannerRangeMult: base.scannerRangeMult * getMultiplier(mods, "scanner.allRangeMultiplier"),
-    assaySampleBonusChance: Math.min(1, base.assaySampleBonusChance + getAddition(mods, "mining.assaySampleBonusChance")),
     hullRegenPerSecond: base.hullRegenPerSecond + getAddition(mods, "ship.hullRegenPerSecond"),
+    scannerInspectTimeMult: base.scannerInspectTimeMult * getMultiplier(mods, "scanner.inspectTimeMultiplier"),
+    scannerInspectRangeMult: base.scannerInspectRangeMult * getMultiplier(mods, "scanner.inspectRangeMultiplier"),
+    tankBonusKg: base.tankBonusKg + getAddition(mods, "ship.tankKg"),
+    reactorBonusKW: base.reactorBonusKW + getAddition(mods, "ship.reactorKW"),
+    miningPowerMult: base.miningPowerMult * getMultiplier(mods, "mining.powerMultiplier"),
+    processingRateMult: base.processingRateMult * getMultiplier(mods, "processing.rateMultiplier"),
+    heatCapacityMult: base.heatCapacityMult * getMultiplier(mods, "ship.heatCapacityMultiplier"),
   };
 }
 
-/** Effective config without timed consumable effects (none of which change capacity or max hull). */
-export function persistentShipConfig(player: PlayerState, completed: ReadonlySet<string>): ShipConfig {
-  return applyModifiers(player.shipConfig, mergeModifiers(moduleModifiers(player.modules), researchModifiers(completed)));
+/**
+ * Effective config without timed consumable effects (none of which change capacity or max hull).
+ * `_completed` is kept for the call sites: unlocked research adds blueprints, not stats.
+ */
+export function persistentShipConfig(player: PlayerState, _completed?: ReadonlySet<string>): ShipConfig {
+  return applyModifiers(player.shipConfig, moduleModifiers(player.modules));
 }
+
+/**
+ * The resource table with equipment applied, written into `out` (no allocation). Processing
+ * power and heat scale with its rate, so a faster cell costs what it delivers.
+ */
+export function equipTuning(base: Readonly<ResourceTuning>, cfg: Readonly<ShipConfig>, out: ResourceTuning): ResourceTuning {
+  Object.assign(out, base);
+  out.tankKg = Math.max(1, base.tankKg + cfg.tankBonusKg);
+  out.reactorKW = Math.max(base.essentialKW, base.reactorKW + cfg.reactorBonusKW);
+  out.miningKW = base.miningKW * cfg.miningPowerMult;
+  out.processingKgPerS = base.processingKgPerS * cfg.processingRateMult;
+  out.processingKW = base.processingKW * cfg.processingRateMult;
+  out.processingHeatKW = base.processingHeatKW * cfg.processingRateMult;
+  out.heatCapacityKJ = base.heatCapacityKJ * cfg.heatCapacityMult;
+  return out;
+}
+
+/** Request multipliers the resource step takes from the config (M3.2's pre-M3 laser law). */
+export const miningHeatMultOf = (cfg: Readonly<ShipConfig>): number => (cfg.miningHeatCapacityS > 0 ? 15 / cfg.miningHeatCapacityS : 1);
+export const coolingMultOf = (cfg: Readonly<ShipConfig>): number => (cfg.miningCooldownS > 0 ? 10 / cfg.miningCooldownS : 1);
 
 export function cargoUsedUnits(items: Readonly<Record<string, number>>): number {
   let used = 0;

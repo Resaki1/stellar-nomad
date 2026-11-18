@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Microscope, Shield, Wrench } from "lucide-react";
-import { keybindsAtom } from "@/store/keybinds";
+import { Microscope, Shield, Target, Wrench } from "lucide-react";
+import { displayKey, keybindsAtom } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
@@ -17,15 +17,19 @@ import DamageVignette from "./DamageVignette/DamageVignette";
 import ResearchPanel from "./ResearchPanel/ResearchPanel";
 import CraftingPanel from "./CraftingPanel/CraftingPanel";
 import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
-import ToastDisplay from "./ToastDisplay/ToastDisplay";
+import NotificationStack from "./NotificationStack/NotificationStack";
 import Hotbar from "./Hotbar/Hotbar";
 import ObjectiveTracker from "./ObjectiveTracker/ObjectiveTracker";
+import ProjectsPanel from "./ProjectsPanel/ProjectsPanel";
+import { sampleGlanceAtom } from "@/store/sites";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
+import { isDeadAtom } from "@/store/death";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
 import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
+import ReplicationHUD from "./ReplicationHUD/ReplicationHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 import PerfHUD from "./PerfHUD/PerfHUD";
 import AudioHUD from "./AudioHUD/AudioHUD";
@@ -34,12 +38,19 @@ import { audioSettingsAtom } from "@/store/audio";
 
 import "./HUD.scss";
 
-type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | null;
+/** First bound key, for button titles (rebinding updates them). */
+const keyLabel = (keys: readonly string[]): string => (keys[0] ? displayKey(keys[0]) : "unbound");
+
+type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | null;
+
+/** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
+const GLANCE_MS = 250;
 
 export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const dead = useAtomValue(isDeadAtom);
   // Either the persisted setting (which shows a "needs reload" hint when the
   // renderer was built without timestamp queries) or `?perf=1`, which turns
   // profiling on from a cold load and should show the readout too.
@@ -74,6 +85,11 @@ export default function HUD() {
   }, [settingsIsOpen]);
 
   useEffect(() => setCursorNeeded("panel", activePanel !== null), [activePanel]);
+
+  useEffect(() => {
+    const t = setInterval(() => store.set(sampleGlanceAtom), GLANCE_MS);
+    return () => clearInterval(t);
+  }, [store]);
 
   const openPanel = useCallback((panel: OverlayPanel) => {
     if (store.get(settingsIsOpenAtom)) return;
@@ -118,6 +134,12 @@ export default function HUD() {
         return;
       }
 
+      if (keybindsRef.current.toggleProjects.includes(key)) {
+        e.preventDefault();
+        setActivePanel((prev) => (prev === "projects" ? null : "projects"));
+        return;
+      }
+
       // Escape / settings key closes any open panel
       if (keybindsRef.current.toggleSettings.includes(key) && activePanelRef.current) {
         setActivePanel(null);
@@ -128,7 +150,7 @@ export default function HUD() {
   }, [store]);
 
   return (
-    <div className="hud">
+    <div className={`hud${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
       <POIMarkers />
       <ShipDashboard />
@@ -138,7 +160,7 @@ export default function HUD() {
       <CargoHUD onClick={() => openPanel("cargo")} />
       <ObjectiveTracker />
       <SettingsMenu />
-      <ToastDisplay />
+      <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
@@ -148,6 +170,7 @@ export default function HUD() {
       <DeathScreen />
       <Hotbar />
       <TransitHUD />
+      <ReplicationHUD />
       {perfHudOn && <PerfHUD />}
       {audioHudOn && <AudioHUD />}
 
@@ -156,7 +179,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "research" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("research")}
-          title="Research (R)"
+          title={`Research (${keyLabel(keybinds.toggleResearch)})`}
         >
           <Microscope size={14} strokeWidth={1.75} aria-hidden />
           <span>Research</span>
@@ -164,7 +187,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "crafting" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("crafting")}
-          title="Crafting (F)"
+          title={`Crafting (${keyLabel(keybinds.toggleCrafting)})`}
         >
           <Wrench size={14} strokeWidth={1.75} aria-hidden />
           <span>Craft</span>
@@ -172,10 +195,18 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "loadout" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("loadout")}
-          title="Loadout (L)"
+          title={`Loadout (${keyLabel(keybinds.toggleLoadout)})`}
         >
           <Shield size={14} strokeWidth={1.75} aria-hidden />
           <span>Loadout</span>
+        </button>
+        <button
+          className={`hud__panel-btn ${activePanel === "projects" ? "hud__panel-btn--active" : ""}`}
+          onClick={() => openPanel("projects")}
+          title={`Projects and records (${keyLabel(keybinds.toggleProjects)})`}
+        >
+          <Target size={14} strokeWidth={1.75} aria-hidden />
+          <span>Projects</span>
         </button>
       </div>
 
@@ -184,6 +215,7 @@ export default function HUD() {
       {activePanel === "research" && <ResearchPanel onClose={closePanel} />}
       {activePanel === "crafting" && <CraftingPanel onClose={closePanel} />}
       {activePanel === "loadout" && <LoadoutPanel onClose={closePanel} />}
+      {activePanel === "projects" && <ProjectsPanel onClose={closePanel} />}
     </div>
   );
 }

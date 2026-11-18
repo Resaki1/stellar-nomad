@@ -1,3 +1,4 @@
+import { placementModeAtom } from "@/store/replication";
 import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { hdrCalibrationOpenAtom, settingsIsOpenAtom } from "@/store/store";
@@ -29,7 +30,9 @@ const MouseControls = () => {
     const device = attachMouse();
     // During loading the menu would be hidden behind the overlay and would stall the gate (frameloop "never").
     setUserUnlockHandler(() => {
-      if (getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
+      // Esc while placing a point cancels the placement only.
+      if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
+      else if (getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
     });
     const onClick = (e: MouseEvent): void => {
       if (e.button === 0 && e.target instanceof HTMLCanvasElement) requestGamePointerLock();

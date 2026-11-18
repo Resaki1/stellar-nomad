@@ -1,273 +1,47 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
+import { isTypingTarget } from "@/input/keyboard";
 import { keybindsAtom } from "@/store/keybinds";
-import { miningStateAtom, startMiningAtom, cancelMiningAtom } from "@/store/mining";
-import {
-  cargoCapacityUnitsAtom,
-  cargoUsedUnitsAtom,
-  isCargoFullAtom,
-} from "@/store/cargo";
-import { systemConfigAtom } from "@/store/system";
-import { getAsteroidClass, computeMiningDurationS, getResourceType } from "@/sim/asteroids/resources";
-import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
 import { pulseMiningActiveAtom, togglePulseMiningAtom } from "@/store/mining";
-
-import { playAudio } from "@/audio";
+import { KeyChip } from "../shared/Chips";
 import "./MiningHUD.scss";
 
+/**
+ * Laser mode instrument (dormant: no item grants pulse mining yet, and its key is unbound by
+ * default). Target info, inspect and mine live on the Target Card.
+ */
 export default function MiningHUD() {
-  const miningState = useAtomValue(miningStateAtom);
-
-  const systemConfig = useAtomValue(systemConfigAtom);
-  const shipConfig = useAtomValue(effectiveShipConfigAtom);
   const modifiers = useAtomValue(computedModifiersAtom);
-  const showAsteroidType = getFlag(modifiers, "scanner.lockShowsAsteroidType");
-  const showCompositionBands = getFlag(modifiers, "scanner.lockShowsCompositionBands");
-  const showYieldEstimate = getFlag(modifiers, "scanner.lockShowsYieldEstimate");
-  const pulseMiningUnlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
-
-  const pulseMiningActive = useAtomValue(pulseMiningActiveAtom);
-  const togglePulseMining = useSetAtom(togglePulseMiningAtom);
-
-  const cargoUsedUnits = useAtomValue(cargoUsedUnitsAtom);
-  const cargoCapacityUnits = useAtomValue(cargoCapacityUnitsAtom);
-  const cargoFull = useAtomValue(isCargoFullAtom);
-
-  const startMining = useSetAtom(startMiningAtom);
-  const cancelMining = useSetAtom(cancelMiningAtom);
-
-  const lootPreview = useMemo(() => {
-    const t = miningState.targetedAsteroid;
-    if (!t) return null;
-
-    const classDef = getAsteroidClass(
-      systemConfig,
-      t.location.fieldId,
-      t.instanceId
-    );
-
-    const baseDurationS = computeMiningDurationS(t.radiusM);
-    const durationS = baseDurationS / shipConfig.miningSpeedMult;
-
-    // Composition bands: top resources by midpoint fraction
-    let compositionBands: string[] = [];
-    if (classDef && showCompositionBands) {
-      compositionBands = classDef.resources
-        .map((r) => ({
-          id: r.resourceId,
-          mid: (r.min + r.max) / 2,
-        }))
-        .filter((r) => r.mid > 0.05) // skip trace amounts
-        .sort((a, b) => b.mid - a.mid)
-        .slice(0, 3)
-        .map((r) => {
-          const rt = getResourceType(systemConfig, r.id);
-          return rt?.name ?? r.id;
-        });
-    }
-
-    // Assay yield estimate (piecewise-linear by size) — mirrors MiningSystem reward calc.
-    let assayEstimate: number | null = null;
-    if (showYieldEstimate) {
-      const field = systemConfig.asteroidFields?.find((f) => f.id === t.location.fieldId);
-      const minR = field?.size?.minRadiusM ?? 8;
-      const maxR = field?.size?.maxRadiusM ?? 1024;
-      const tt = maxR > minR ? Math.max(0, Math.min(1, (t.radiusM - minR) / (maxR - minR))) : 0;
-      let y: number;
-      if (tt <= 0.35) y = 1 + (tt / 0.35) * (2 - 1);
-      else if (tt <= 0.7) y = 2 + ((tt - 0.35) / 0.35) * (4 - 2);
-      else y = 4 + ((tt - 0.7) / 0.3) * (6 - 4);
-      assayEstimate = Math.max(1, Math.round(y));
-    }
-
-    return {
-      className: classDef?.name ?? "Unknown",
-      durationS,
-      compositionBands,
-      assayEstimate,
-    };
-  }, [miningState.targetedAsteroid, systemConfig, shipConfig.miningSpeedMult, showCompositionBands, showYieldEstimate]);
-
-  const showInfo = miningState.isFocused;
-  const showButton = miningState.isFocused;
-  const showProgress = miningState.isMining;
-
-  const mineDisabled =
-    !miningState.isMining && (cargoFull || miningState.isOverheated);
-  const showCargoFullWarning = showButton && !miningState.isMining && cargoFull;
-  const showOverheatWarning =
-    showButton && !miningState.isMining && miningState.isOverheated && !cargoFull;
-
-  // laserHeat is the ship's one thermal store: show it here only around mining (the dashboard always shows it).
-  const showHeatBar = miningState.isMining || miningState.isOverheated || (miningState.laserHeat > 0 && miningState.targetedAsteroid !== null);
-
-  const handleMineClick = () => {
-    if (miningState.isMining) cancelMining();
-    else startMining();
-  };
-
-  // Mine hotkey — reads bound keys from keybinds store
+  const unlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
+  const active = useAtomValue(pulseMiningActiveAtom);
+  const toggle = useSetAtom(togglePulseMiningAtom);
   const keybinds = useAtomValue(keybindsAtom);
   const keybindsRef = useRef(keybinds);
-  keybindsRef.current = keybinds;
+  useEffect(() => {
+    keybindsRef.current = keybinds;
+  });
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      const key = e.key.toLowerCase();
-      if (!keybindsRef.current.mine.includes(key)) return;
-
-      if (miningState.isMining) {
-        cancelMining();
-      } else if (miningState.isFocused && !cargoFull && !miningState.isOverheated) {
-        startMining();
-      } else {
-        // No target, full hold or an overheated cutter: the key did nothing,
-        // and a silent refusal reads as a dropped input.
-        playAudio("ui.reject");
-      }
+    if (!unlocked) return;
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (isTypingTarget(e.target)) return;
+      if (keybindsRef.current.togglePulseMining.includes(e.key.toLowerCase())) toggle();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [miningState.isFocused, miningState.isMining, miningState.isOverheated, cargoFull, startMining, cancelMining]);
+  }, [unlocked, toggle]);
 
-  // Pulse mining hotkey
-  useEffect(() => {
-    if (!pulseMiningUnlocked) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      const key = e.key.toLowerCase();
-      if (keybindsRef.current.togglePulseMining.includes(key)) {
-        togglePulseMining();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pulseMiningUnlocked, togglePulseMining]);
-
+  if (!unlocked) return null;
   return (
     <div className="mining-hud">
-      {/* Info panel – positioned above the reticle */}
-      <div className={`mining-hud__info ${showInfo ? "mining-hud__info--visible" : ""}`}>
-        <div className="mining-hud__distance">
-          {miningState.targetedAsteroid
-            ? `${Math.round(miningState.targetedAsteroid.distanceM)}m`
-            : ""}
-        </div>
-
-        <div className="mining-hud__loot">
-          {lootPreview
-            ? `${showAsteroidType ? lootPreview.className : "Asteroid"} · ~${lootPreview.durationS.toFixed(1)}s`
-            : ""}
-        </div>
-
-        {lootPreview && lootPreview.compositionBands.length > 0 && (
-          <div className="mining-hud__composition">
-            {lootPreview.compositionBands.join(" · ")}
-          </div>
-        )}
-
-        {lootPreview && lootPreview.assayEstimate !== null && (
-          <div className="mining-hud__yield-estimate">
-            Est. yield: ~{lootPreview.assayEstimate} samples
-          </div>
-        )}
-
-        <div className="mining-hud__cargo">
-          Cargo: {cargoUsedUnits}/{cargoCapacityUnits}
-        </div>
-
-        <div
-          className={`mining-hud__warning ${
-            showCargoFullWarning ? "mining-hud__warning--visible" : ""
-          }`}
-        >
-          Cargo is full
-        </div>
-
-        <div
-          className={`mining-hud__warning mining-hud__warning--overheat ${
-            showOverheatWarning ? "mining-hud__warning--visible" : ""
-          }`}
-        >
-          Overheated
-        </div>
-      </div>
-
-      {/* Pulse mining mode indicator — docked above the ShipDashboard
-          (bottom-right) so it reads as a persistent "laser mode" instrument
-          rather than a center-of-screen button over the ship. */}
-      {pulseMiningUnlocked && (
-        <button
-          className={`mining-hud__pulse-toggle ${pulseMiningActive ? "mining-hud__pulse-toggle--active" : ""}`}
-          onClick={() => togglePulseMining()}
-          title={pulseMiningActive ? "Switch to Continuous Mining (P)" : "Switch to Pulse Mining (P)"}
-        >
-          <span className="mining-hud__pulse-label">LASER</span>
-          <span className="mining-hud__pulse-mode">
-            {pulseMiningActive ? "PULSE" : "CONT"}
-          </span>
-          <span className="mining-hud__pulse-key">P</span>
-        </button>
-      )}
-
-      {/* Actions – positioned at bottom center */}
-      <div className="mining-hud__actions">
-        {/* Heat bar */}
-        <div
-          className={`mining-hud__heat-container ${
-            showHeatBar ? "mining-hud__heat-container--visible" : ""
-          }`}
-        >
-          <div
-            className={`mining-hud__heat-bar ${
-              miningState.isOverheated ? "mining-hud__heat-bar--overheated" : ""
-            } ${miningState.laserHeat > 0.75 && !miningState.isOverheated ? "mining-hud__heat-bar--warning" : ""}`}
-            style={{ width: `${miningState.laserHeat * 100}%` }}
-          />
-          <span className="mining-hud__heat-label">HEAT</span>
-        </div>
-
-        <div
-          className={`mining-hud__progress-container ${
-            showProgress ? "mining-hud__progress-container--visible" : ""
-          }`}
-        >
-          <div
-            className="mining-hud__progress-bar"
-            style={{ width: `${miningState.miningProgress * 100}%` }}
-          />
-        </div>
-
-        <div
-          className={`mining-hud__progress-text ${
-            showProgress ? "mining-hud__progress-text--visible" : ""
-          }`}
-        >
-          {miningState.isMining ? "Mining..." : ""}{" "}
-          {Math.round(miningState.miningProgress * 100)}%
-        </div>
-
-        <button
-          onClick={handleMineClick}
-          disabled={mineDisabled}
-          className={`mining-hud__button ${showButton ? "mining-hud__button--visible" : ""} ${
-            miningState.isMining ? "mining-hud__button--mining" : ""
-          } ${mineDisabled ? "mining-hud__button--disabled" : ""}`}
-        >
-          {miningState.isMining ? "Abort Mining" : "Mine"}
-          {!miningState.isMining && showButton && !mineDisabled && (
-            <span className="mining-hud__hotkey">M</span>
-          )}
-        </button>
-      </div>
+      <button className={`mining-hud__pulse-toggle ${active ? "mining-hud__pulse-toggle--active" : ""}`} onClick={() => toggle()}>
+        <span className="mining-hud__pulse-label">LASER</span>
+        <span className="mining-hud__pulse-mode">{active ? "PULSE" : "CONT"}</span>
+        <KeyChip action="togglePulseMining" dim />
+      </button>
     </div>
   );
 }

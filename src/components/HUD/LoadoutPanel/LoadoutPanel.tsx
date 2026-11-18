@@ -9,12 +9,14 @@ import {
   getItemDef,
   getItemIconUrl,
   describeEffect,
+  isDrawback,
   ALL_ITEM_SLOTS,
   SLOT_LABELS,
   type ItemSlot,
   type ItemDef,
 } from "@/data/content";
 import Panel from "../Shell/Panel";
+import LoadoutPreview from "./LoadoutPreview";
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
 
 import "./LoadoutPanel.scss";
@@ -137,6 +139,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
       onClose={onClose}
     >
       <div className="loadout-panel">
+        <LoadoutPreview />
         {/* Equipped modules by slot */}
         <div className="loadout-panel__modules">
           {!hasModules ? (
@@ -164,7 +167,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
                       {equippedDef.effects && equippedDef.effects.length > 0 && (
                         <div className="loadout-panel__module-effects">
                           {equippedDef.effects.map((eff, i) => (
-                            <span key={i} className="loadout-panel__effect-tag">
+                            <span key={i} className={`loadout-panel__effect-tag ${isDrawback(eff) ? "loadout-panel__effect-tag--drawback" : ""}`}>
                               {describeEffect(eff)}
                             </span>
                           ))}
@@ -199,7 +202,7 @@ export default function LoadoutPanel({ onClose }: { onClose: () => void }) {
                       {def.effects && def.effects.length > 0 && (
                         <div className="loadout-panel__module-effects">
                           {def.effects.map((eff, i) => (
-                            <span key={i} className="loadout-panel__effect-tag">
+                            <span key={i} className={`loadout-panel__effect-tag ${isDrawback(eff) ? "loadout-panel__effect-tag--drawback" : ""}`}>
                               {describeEffect(eff)}
                             </span>
                           ))}

@@ -7,23 +7,22 @@
   font-family: s.$font-ui;
   color: s.$text-primary;
 
-  // ── Spooling state: centered ring below reticle ─────────────────
+  // ── Spooling state: ring concentric with the 96 px steering ring, text under it ──
   &--spooling {
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, -56px);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: s.$space-2;
-    margin-top: 60px;
     animation: spoolAppear s.$dur-cine s.$ease-bounce;
   }
 
   &__spool-ring {
     position: relative;
-    width: s.$space-7;
-    height: s.$space-7;
+    width: 112px;
+    height: 112px;
   }
 
   &__spool-svg {
@@ -35,13 +34,13 @@
   &__spool-track {
     fill: none;
     stroke: rgba(255, 211, 107, 0.15);
-    stroke-width: 2;
+    stroke-width: 1;
   }
 
   &__spool-fill {
     fill: none;
     stroke: s.$accent-signal;
-    stroke-width: 2;
+    stroke-width: 1;
     stroke-linecap: round;
     filter: drop-shadow(0 0 4px s.$glow-signal);
     transition: stroke-dasharray s.$dur-instant linear;
@@ -78,172 +77,183 @@
     letter-spacing: 0.04em;
   }
 
-  // ── Plan preview + active transit: right-side readout ───────────
-  // Below the top-right buttons, clear of the ship dashboard (bottom-right).
+  &__spool-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  // ── Route panel, top-right (§2.4): fixed width, fixed rows per state ───────────
+  // Below the settings gear (top 2vmax, 32 px).
   &--side {
-    top: 96px;
-    right: 16px;
-    max-width: min(300px, calc(100vw - 32px));
+    top: 72px;
+    right: s.$space-4;
+    width: 288px;
+    box-sizing: border-box;
+    padding: s.$space-2 s.$space-3;
     display: flex;
     flex-direction: column;
-    align-items: end;
-    gap: s.$space-1;
-    text-align: right;
+    text-align: left;
+    // Scrim: POI distance labels (z-world-label) otherwise read through the rows.
+    background: linear-gradient(270deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.72) 85%, rgba(0, 0, 0, 0.2));
+    border-right: 1px solid s.$accent-signal;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
     animation: transitActiveIn s.$dur-slow s.$ease-out;
   }
 
-  &--preview {
-    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+  // Plan: head + 3 numbers + status. Active: head + phase/dist + 3 numbers + status.
+  &--preview { height: 2 * 8px + 22px + 3 * 20px + 20px; }
+  &--active { height: 2 * 8px + 22px + 5 * 20px + 20px; }
+  &--preview &__live { display: none; }
+
+  &__head {
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: s.$space-2;
+    min-width: 0;
   }
 
-  &__plan {
-    margin: s.$space-2 0 0;
+  &__name {
+    font-family: s.$font-display;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: s.$accent-signal;
+    text-shadow: 0 0 8px s.$glow-signal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__chips {
+    display: flex;
+    gap: s.$space-1;
+    flex: 0 0 auto;
+  }
+
+  &__chip {
+    @include s.t-xs;
+    padding: 0 s.$space-1;
+    line-height: 14px;
+    border: 1px solid s.$stroke-strong;
+    border-radius: s.$radius-sm;
+    color: s.$text-secondary;
+    white-space: nowrap;
+
+    &--warn {
+      color: s.$accent-warn;
+      border-color: s.$accent-warn;
+    }
+
+    &[hidden] { display: none; }
+  }
+
+  &__row {
+    height: 20px;
     display: grid;
-    grid-template-columns: auto auto;
-    column-gap: s.$space-3;
-    row-gap: 2px;
+    grid-template-columns: 7ch 1fr;
+    align-items: center;
+  }
+
+  &__label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: s.$text-tertiary;
+  }
+
+  &__value {
+    justify-self: end;
     font-family: s.$font-mono;
     font-variant-numeric: tabular-nums;
     font-size: 12px;
-
-    dt {
-      color: s.$text-tertiary;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-size: 10px;
-      align-self: baseline;
-    }
-
-    dd {
-      margin: 0;
-      color: s.$text-primary;
-    }
+    color: s.$text-primary;
+    white-space: nowrap;
   }
 
-  &__plan-eta {
-    color: s.$accent-signal !important;
-    text-shadow: 0 0 6px s.$glow-signal;
+  &__row--phase {
+    grid-template-columns: 1fr auto;
   }
 
-  &__warn {
-    margin-top: s.$space-1;
-    font-family: s.$font-mono;
-    font-size: 11px;
-    line-height: 1.35;
-    color: s.$accent-warn;
-    text-shadow: 0 0 6px s.$glow-warn;
-
-    &--crit {
-      color: s.$accent-crit;
-      text-shadow: 0 0 6px s.$glow-crit;
-    }
-  }
-
-  &__leg {
-    color: s.$text-tertiary;
-    font-size: 12px;
-  }
-
-  @media (max-width: 520px) {
-    &--side {
-      top: 88px;
-    }
-
-    &__velocity {
-      font-size: 28px;
-      line-height: 32px;
-    }
-  }
-
-  &__phase-label {
+  &__phase {
     font-family: s.$font-display;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.22em;
-    text-transform: uppercase;
     color: s.$accent-signal;
-    text-shadow: 0 0 8px s.$glow-signal;
   }
 
-  &__velocity {
-    font-family: s.$font-display;
-    font-size: 40px;
-    line-height: 44px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    font-variant-numeric: tabular-nums;
-    color: s.$text-primary;
-    text-shadow:
-      0 0 1px rgba(0, 0, 0, 0.9),
-      0 0 16px s.$glow-signal;
-  }
-
-  &__light-pct {
+  &__leg {
     font-family: s.$font-mono;
-    font-variant-numeric: tabular-nums;
-    font-size: 12px;
-    font-weight: 600;
-    color: s.$accent-signal;
-    text-shadow: 0 0 6px s.$glow-signal;
+    font-size: 11px;
+    color: s.$text-tertiary;
   }
 
-  &__target-info {
-    margin-top: s.$space-2;
+  &--stale &__nums &__value {
+    color: s.$text-disabled;
+  }
+
+  &__status {
+    height: 20px;
     display: flex;
-    flex-direction: column;
-    align-items: end;
+    align-items: center;
     gap: 2px;
-  }
-
-  &__target-name {
-    font-family: s.$font-display;
-    font-size: 15px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: s.$accent-signal;
-    text-shadow: 0 0 8px s.$glow-signal;
-  }
-
-  &__target-meta {
-    display: flex;
-    align-items: baseline;
-    gap: s.$space-2;
-    font-family: s.$font-mono;
-    font-variant-numeric: tabular-nums;
-    font-size: 15px;
+    @include s.t-sm;
     color: s.$text-secondary;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &--bad {
+      color: s.$accent-warn;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   }
 
-  &__target-sep {
-    color: s.$text-tertiary;
-  }
+  // Phones (§2.7): the panel takes the tracker's slot, full width; numbers share one row.
+  @media (max-width: 599px) {
+    &--side {
+      top: 160px;
+      left: s.$space-3;
+      right: s.$space-3;
+      width: auto;
+    }
 
-  &__eta {
-    color: s.$accent-signal;
-    text-shadow: 0 0 6px s.$glow-signal;
-  }
+    &--preview { height: 2 * 8px + 22px + 20px + 20px; }
+    &--active { height: 2 * 8px + 22px + 2 * 20px + 20px; }
 
-  &__target-dist {
-    color: s.$text-secondary;
-  }
+    &__live,
+    &__nums {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      column-gap: s.$space-3;
+    }
 
-  &__hint {
-    margin-top: s.$space-2;
-    font-family: s.$font-mono;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    color: s.$text-tertiary;
-    text-transform: uppercase;
+    &__live &__row,
+    &__nums &__row {
+      grid-template-columns: auto 1fr;
+      column-gap: s.$space-1;
+    }
+
+    // Value beside its label (`ETA 00:40   BURN 190 kg`), not pushed against the next label.
+    &__live &__value,
+    &__nums &__value {
+      justify-self: start;
+    }
   }
 
   @keyframes spoolAppear {
     from {
       opacity: 0;
-      transform: translate(-50%, calc(-50% + 16px)) scale(0.92);
+      transform: translate(-50%, -40px) scale(0.92);
     }
     to {
       opacity: 1;
-      transform: translate(-50%, -50%) scale(1);
+      transform: translate(-50%, -56px) scale(1);
     }
   }
 

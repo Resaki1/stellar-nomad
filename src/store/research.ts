@@ -1,106 +1,58 @@
 // ---------------------------------------------------------------------------
-// Research + Assay Samples state
+// Research and discoveries (M3.3): read-only mirrors of the WORLD's unlocked options and
+// findings (the authority is their only writer), the player's bookmarks, and the actions.
 // ---------------------------------------------------------------------------
 import { atom } from "jotai";
+import { getItemDef, getResearchNode } from "@/data/content";
+import { getActiveSave, getWorldState } from "@/save/activeSave";
+import { defaultDiscoveries } from "@/save/defaults";
+import type { DiscoveryState, SourceBookmark } from "@/save/types";
+import { describeMissingKeys, unlockedItemIds, type EvidenceView } from "@/sim/research/requirements";
+import type { OperationOutcome } from "@/sim/world/commands";
+import { describeRejection, newOpId, runOperation } from "@/store/operations";
 import { savedAtom } from "@/store/savedAtom";
-import { defaultResearch } from "@/save/defaults";
-import {
-  RESEARCH_NODES,
-  getResearchNode,
-  arePrerequisitesMet,
-  type ResearchNodeDef,
-} from "@/data/content";
-import { unlockedItemIds } from "@/sim/ship/loadout";
+import { addToastAtom } from "@/store/toast";
 
-// ---------------------------------------------------------------------------
-// Persisted state
-// ---------------------------------------------------------------------------
-
-export type { ResearchState } from "@/save/types";
-
-/** Per-player assay samples and active timer (PR 1). */
-export const researchAtom = savedAtom("player", "research", defaultResearch());
-
-/** Read-only mirror of the WORLD's completed research; the authority is its only writer. */
+/** Read-only mirror of the WORLD's unlocked research options. */
 export const sharedResearchMirrorAtom = atom<readonly string[]>([]);
 
-// ---------------------------------------------------------------------------
-// Derived: assay samples count
-// ---------------------------------------------------------------------------
-
-export const assaySamplesAtom = atom((get) => get(researchAtom).assaySamples);
-
-// ---------------------------------------------------------------------------
-// Derived: set of completed node IDs (for quick lookup)
-// ---------------------------------------------------------------------------
+/** Read-only mirror of the WORLD's findings. */
+export const discoveriesMirrorAtom = atom<DiscoveryState>(defaultDiscoveries());
 
 export const completedNodeSetAtom = atom((get): ReadonlySet<string> => new Set(get(sharedResearchMirrorAtom)));
 
-// ---------------------------------------------------------------------------
-// Derived: visible (available) research nodes
-//   Visible = all prerequisites completed AND not completed AND not active
-// ---------------------------------------------------------------------------
+export const evidenceViewAtom = atom((get): EvidenceView => ({ discoveries: get(discoveriesMirrorAtom), completed: get(completedNodeSetAtom) }));
 
-export const visibleNodesAtom = atom((get): ResearchNodeDef[] => {
-  const completed = get(completedNodeSetAtom);
-  const active = get(researchAtom).activeResearch;
+/** Starter items plus every unlocked option's blueprints. */
+export const unlockedItemIdsAtom = atom((get): Set<string> => unlockedItemIds(get(completedNodeSetAtom)));
 
-  return RESEARCH_NODES.filter((node) => {
-    if (completed.has(node.id)) return false;
-    if (active?.nodeId === node.id) return false;
-    return arePrerequisitesMet(node, completed);
+/** The local player's bookmarks of world sources. */
+export const bookmarksAtom = savedAtom("player", "bookmarks", [] as SourceBookmark[]);
+
+/** Signal: last unlocked option (comms and audio watch it). */
+export const lastCompletedResearchIdAtom = atom<string | null>(null);
+
+export function describeUnlockRejection(o: Extract<OperationOutcome, { status: "rejected" }>): string {
+  if (o.reason === "evidence") return `Missing evidence: ${describeMissingKeys(o.evidence ?? []).join("; ")}`;
+  return describeRejection(o);
+}
+
+/** Unlock an option through the authority; feedback comes from the settled outcome only. */
+export const unlockResearchAtom = atom(null, (_get, set, payload: { nodeId: string; onSettled?: (o: OperationOutcome) => void }): void => {
+  runOperation({ type: "research.unlock", opId: newOpId(), nodeId: payload.nodeId }, (o) => {
+    const node = getResearchNode(payload.nodeId);
+    if (o.status === "accepted" && o.result.type === "research.unlock") {
+      set(lastCompletedResearchIdAtom, o.result.nodeId);
+      set(addToastAtom, { audio: "silent", kind: "success", message: "Unlocked", detail: node?.name ?? o.result.nodeId, values: o.result.unlockedItems.filter((id) => getItemDef(id)).map((id) => ({ id })) });
+    } else if (o.status === "rejected") {
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot unlock", detail: node?.name ?? payload.nodeId });
+    }
+    payload.onSettled?.(o);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Volatile: frame-rate elapsed time for smooth progress bars.
-// The ResearchTicker writes here every frame; UI reads this for display.
-// The persisted researchAtom is only updated on completion or periodically.
-// ---------------------------------------------------------------------------
-
-export const researchElapsedAtom = atom(0);
-
-// ---------------------------------------------------------------------------
-// Signal: last completed research node ID
-// GameCommsTriggers watches this to fire per-research comms messages.
-// ---------------------------------------------------------------------------
-
-export const lastCompletedResearchIdAtom = atom<string | null>(null);
-
-// ---------------------------------------------------------------------------
-// Derived: active research node def (convenience)
-// Uses volatile elapsed for smooth progress.
-// ---------------------------------------------------------------------------
-
-export const activeResearchNodeAtom = atom((get) => {
-  const state = get(researchAtom);
-  if (!state.activeResearch) return null;
-  const node = getResearchNode(state.activeResearch.nodeId);
-  if (!node) return null;
-  // Prefer volatile elapsed for smooth UI; fallback to persisted
-  const elapsed = get(researchElapsedAtom) || state.activeResearch.elapsedS;
-  return { ...state.activeResearch, elapsedS: elapsed, node };
-});
-
-// ---------------------------------------------------------------------------
-// Derived: unlocked item IDs (from completed research)
-// ---------------------------------------------------------------------------
-
-export const unlockedItemIdsAtom = atom((get): Set<string> => unlockedItemIds(get(completedNodeSetAtom)));
-
-// ---------------------------------------------------------------------------
-// Actions
-// ---------------------------------------------------------------------------
-
-/** Add assay samples (e.g. from mining). */
-export const addAssaySamplesAtom = atom(
-  null,
-  (get, set, amount: number): void => {
-    if (amount <= 0) return;
-    const state = get(researchAtom);
-    set(researchAtom, {
-      ...state,
-      assaySamples: state.assaySamples + Math.floor(amount),
-    });
-  },
-);
+/** Record a client-detected trial once (no-op when the world already has it). */
+export function recordTrial(trialId: string): void {
+  if (!getActiveSave() || getWorldState().discoveries.trials[trialId]) return;
+  runOperation({ type: "trial.record", opId: newOpId(), trialId });
+}

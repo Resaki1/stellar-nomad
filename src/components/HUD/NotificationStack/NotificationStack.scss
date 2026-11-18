@@ -1,0 +1,120 @@
+@use '../../../styles' as s;
+
+// Top-left under the cargo block: 300 px wide, max 4 items of a fixed 44 px (bottom at 260 px).
+.notif-stack {
+  position: fixed;
+  left: s.$space-4;
+  top: 72px;
+  width: 300px;
+  z-index: s.$z-toast;
+  display: flex;
+  flex-direction: column;
+  gap: s.$space-1;
+  pointer-events: none;
+
+  @media (max-width: 599px) {
+    left: s.$space-3;
+    right: s.$space-3;
+    top: 60px;
+    width: auto;
+
+    .notif-stack__item:nth-child(n + 3) {
+      display: none;
+    }
+  }
+
+  // A deep panel (≤ 760 px wide, centred) is glass: items under it showed through and were cut at
+  // its edge. Keep to the gutter beside it; phones keep the newest item, above the panel's top.
+  body:has(.panel__backdrop) & {
+    width: min(300px, calc(50vw - 404px));
+
+    @media (min-width: 600px) and (max-width: 1047px) {
+      display: none;
+    }
+
+    @media (max-width: 599px) {
+      width: auto;
+
+      .notif-stack__item:nth-child(n + 2) {
+        display: none;
+      }
+    }
+  }
+
+  &__item {
+    box-sizing: border-box;
+    height: 44px;
+    padding: 5px s.$space-3 5px s.$space-3;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    overflow: hidden;
+    pointer-events: auto;
+    cursor: pointer;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.55) 70%, rgba(0, 0, 0, 0.25));
+    border-left: 2px solid s.$accent-info;
+    color: s.$text-primary;
+    font-family: s.$font-ui;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+    animation: notifIn s.$dur-base s.$ease-out;
+
+    &--success { border-left-color: s.$accent-ok; }
+    &--warn { border-left-color: s.$accent-warn; }
+    &--tip { border-left-color: s.$accent-info; }
+  }
+
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: s.$space-1;
+    @include s.t-md;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  &__item--tip &__title {
+    font-weight: 500;
+    @include s.t-sm;
+    letter-spacing: 0.02em;
+    white-space: normal;
+  }
+
+  &__text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__tip-icon {
+    flex: 0 0 auto;
+    color: s.$accent-info;
+  }
+
+  &__values {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    min-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  &__detail {
+    @include s.t-sm;
+    color: s.$text-secondary;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  @keyframes notifIn {
+    from {
+      opacity: 0;
+      transform: translateX(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}

@@ -37,8 +37,9 @@
 //   2. **Named high-accuracy models** for bodies where real data exists,
 //      selected by `orbit.model`:
 //      • `"jpl"` — JPL's *Keplerian Elements for Approximate Positions of
-//        the Major Planets*: the same six elements plus per-century linear
-//        RATES. ~10 arcmin, 1800–2050. Same solver, twelve numbers.
+//        the Major Planets*: table 1 inside 1800–2050 (~10 arcmin), the long
+//        table 2a/2b (3000 BC – AD 3000) outside it, whose Jupiter–Neptune rows
+//        add b·T² + c·cos fT + s·sin fT to the mean anomaly. Same solver.
 //      • `"meeus-moon"` — abridged ELP2000-82B (Meeus, *Astronomical
 //        Algorithms* ch. 47): 40 longitude, 30 latitude, 30 distance terms.
 //
@@ -66,15 +67,13 @@ import type { CelestialBodyDef, OrbitDef } from "./systemTypes";
 const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
 /**
- * Default sim instant: the **2024-04-08 total solar eclipse at greatest
- * eclipse**. Not arbitrary — it is the case `__lum.ephemeris()` validates
- * against published values, so a fresh session starts somewhere the system's
- * correctness is verifiable.
- *
- * ⚠ Lives here rather than in `store/simTime.ts` so `celestialConstants` can
- * solve for it at module load without importing the store (a cycle).
+ * Default sim instant for NEW worlds: a far-future date picked so Luna stands well clear of
+ * the Sun and of every other marker and Earth shows a terminator from the start position
+ * (search and numbers: docs/M3_GAMEPLAY_PLAN.md §13). No calendar year is shown to players.
+ * ⚠ Lives here, not in `store/simTime.ts`, so `celestialConstants` can solve for it at module
+ * load without a cycle. The eclipse validation instant is `ECLIPSE_2024_04_08_MS` there.
  */
-export const DEFAULT_SIM_EPOCH_MS = Date.UTC(2024, 3, 8, 18, 17, 0);
+export const DEFAULT_SIM_EPOCH_MS = Date.UTC(2941, 8, 22, 0, 0, 0);
 
 /** Julian date of J2000.0 (2000-01-01 12:00 TT). */
 export const JD_J2000 = 2451545.0;
@@ -115,17 +114,29 @@ export const jdFromUnixMs = (ms: number): number =>
   2440587.5 + ms / 86400000;
 
 /**
- * TT − UTC in seconds. ⚠ A crude constant, and deliberately so: ΔT is ~69 s
- * in the 2020s and its drift is a few seconds per decade, i.e. ~0.001° of
- * lunar motion per year of error. It matters enough to include (69 s is 0.01°
- * of Moon) and not enough to model. Raise it if the game ever wants dates far
- * from the present.
+ * ΔT = TT − UT in seconds at a UTC Julian Date: Espenak & Meeus (NASA, 2006) polynomials to
+ * 2150, then Morrison & Stephenson's long-term parabola. ~69 s today but ~68 min by 2950,
+ * i.e. 0.6° of lunar motion, so the old constant only held near the present.
  */
-const DELTA_T_SECONDS = 69;
+export function deltaTSeconds(jdUTC: number): number {
+  const y = 2000 + (jdUTC - JD_J2000) / 365.25;
+  const u = (y - 1820) / 100;
+  if (y >= 2150) return -20 + 32 * u * u;
+  if (y >= 2050) return -20 + 32 * u * u - 0.5628 * (2150 - y);
+  if (y >= 2005) {
+    const t = y - 2000;
+    return 62.92 + 0.32217 * t + 0.005589 * t * t;
+  }
+  if (y >= 1986) {
+    const t = y - 2000;
+    return 63.86 + 0.3345 * t - 0.060374 * t ** 2 + 0.0017275 * t ** 3 + 0.000651814 * t ** 4 + 0.00002373599 * t ** 5;
+  }
+  return -20 + 32 * u * u;
+}
 
 /** Julian centuries of TT from J2000, from a UTC Julian Date. */
 const centuriesTT = (jdUTC: number): number =>
-  (jdUTC + DELTA_T_SECONDS / 86400 - JD_J2000) / 36525;
+  (jdUTC + deltaTSeconds(jdUTC) / 86400 - JD_J2000) / 36525;
 
 // ── Kepler ──────────────────────────────────────────────────────────
 
@@ -185,9 +196,11 @@ function elementsToXyz(
 }
 
 // ── JPL approximate planetary elements ──────────────────────────────
-// a(AU) · e · I(°) · L(°) · ϖ(°) · Ω(°), then the six per-century rates.
-// Referred to the mean ecliptic and equinox of **J2000**.
-const JPL: Record<string, readonly number[]> = {
+// Standish, "Keplerian Elements for Approximate Positions of the Major Planets", Tables 1 and 2a/2b (ssd.jpl.nasa.gov/planets/approx_pos.html).
+// a(AU) · e · I(°) · L(°) · ϖ(°) · Ω(°), then the six per-century rates. Mean ecliptic and
+// equinox of **J2000**. `earth` is the Earth–Moon barycentre row. Table 1 (1800–2050, the validated
+// eclipse range) is used inside its range, table 2a outside (MEASURED step at 2050: ≤ 7.4 arcmin, Uranus).
+const JPL1: Record<string, readonly number[]> = {
   mercury: [0.38709927, 0.20563593, 7.00497902, 252.2503235, 77.45779628, 48.33076593,
     0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
   venus: [0.72333566, 0.00677672, 3.39467605, 181.9790995, 131.60246718, 76.67984255,
@@ -205,19 +218,49 @@ const JPL: Record<string, readonly number[]> = {
   neptune: [30.06992276, 0.00859048, 1.77004347, -55.12002969, 44.96476227, 131.78422574,
     0.00026291, 0.00005105, 0.00035372, 218.45945325, -0.32241464, -0.00508664],
 };
+const JPL: Record<string, readonly number[]> = {
+  mercury: [0.38709843, 0.20563661, 7.00559432, 252.25166724, 77.45771895, 48.33961819,
+    0.0, 0.00002123, -0.00590158, 149472.67486623, 0.15940013, -0.12214182],
+  venus: [0.72332102, 0.00676399, 3.39777545, 181.9797085, 131.76755713, 76.67261496,
+    -0.00000026, -0.00005107, 0.00043494, 58517.8156026, 0.05679648, -0.27274174],
+  earth: [1.00000018, 0.01673163, -0.00054346, 100.46691572, 102.93005885, -5.11260389,
+    -0.00000003, -0.00003661, -0.01337178, 35999.37306329, 0.3179526, -0.24123856],
+  mars: [1.52371243, 0.09336511, 1.85181869, -4.56813164, -23.91744784, 49.71320984,
+    0.00000097, 0.00009149, -0.00724757, 19140.29934243, 0.45223625, -0.26852431],
+  jupiter: [5.20248019, 0.0485359, 1.29861416, 34.33479152, 14.27495244, 100.29282654,
+    -0.00002864, 0.00018026, -0.00322699, 3034.90371757, 0.18199196, 0.13024619],
+  saturn: [9.54149883, 0.05550825, 2.49424102, 50.07571329, 92.86136063, 113.63998702,
+    -0.00003065, -0.00032044, 0.00451969, 1222.11494724, 0.54179478, -0.25015002],
+  uranus: [19.18797948, 0.0468574, 0.77298127, 314.20276625, 172.43404441, 73.96250215,
+    -0.00020455, -0.0000155, -0.00180155, 428.49512595, 0.09266985, 0.05739699],
+  neptune: [30.06952752, 0.00895439, 1.7700552, 304.22289287, 46.68158724, 131.78635853,
+    0.00006447, 0.00000818, 0.000224, 218.46515314, 0.01009938, -0.00606302],
+};
+
+/** Table 2b: extra mean-anomaly terms b·T² + c·cos(fT) + s·sin(fT), degrees (f in deg/cy). */
+const JPL_BCSF: Record<string, readonly [number, number, number, number]> = {
+  jupiter: [-0.00012452, 0.0606406, -0.35635438, 38.35125],
+  saturn: [0.00025899, -0.13434469, 0.87320147, 38.35125],
+  uranus: [0.00058331, -0.97731848, 0.17689245, 7.67025],
+  neptune: [-0.00041348, 0.68346318, -0.10162547, 7.67025],
+};
 
 /** Heliocentric position from the JPL table, km, ecliptic J2000 (+Y north). */
 function jplPosition(id: string, jdUTC: number): [number, number, number] | null {
-  const p = JPL[id];
-  if (!p) return null;
   const T = centuriesTT(jdUTC);
+  const long = T < -2 || T > 0.5;
+  const p = long ? JPL[id] : JPL1[id];
+  if (!p) return null;
   const a = p[0] + p[6] * T;
   const e = p[1] + p[7] * T;
   const I = p[2] + p[8] * T;
   const L = p[3] + p[9] * T;
   const peri = p[4] + p[10] * T;
   const node = p[5] + p[11] * T;
-  return elementsToXyz(a * AU_KM, e, I, node, peri, L - peri);
+  let M = L - peri;
+  const x = long ? JPL_BCSF[id] : undefined;
+  if (x) M += x[0] * T * T + x[1] * Math.cos(x[3] * T * D2R) + x[2] * Math.sin(x[3] * T * D2R);
+  return elementsToXyz(a * AU_KM, e, I, node, peri, M);
 }
 
 // ── The Moon: abridged ELP2000-82B (Meeus AA ch. 47) ────────────────
@@ -500,7 +543,9 @@ export function bodyOrientation(
     return out;
   }
 
-  const d = jdUTC + DELTA_T_SECONDS / 86400 - JD_J2000;
+  // Earth turns on UT, every other body on TT. The 69 s is the offset W₀ was validated with
+  // in 2024 (see above); the growing ΔT would spin Earth 17° off by 2950.
+  const d = jdUTC + (rot.ut ? EARTH_ROT_OFFSET_S : deltaTSeconds(jdUTC)) / 86400 - JD_J2000;
   const rate = rot.spinDegPerDay ?? (rot.periodHours ? 360 / (rot.periodHours / 24) : 0);
   const W = norm360((rot.primeMeridianDeg ?? 0) + rate * d);
   out.spinDeg = W;
@@ -555,6 +600,7 @@ export function bodyOrientation(
 }
 
 const _node: [number, number, number] = [0, 0, 0];
+const EARTH_ROT_OFFSET_S = 69;
 
 // ── Diagnostics ─────────────────────────────────────────────────────
 

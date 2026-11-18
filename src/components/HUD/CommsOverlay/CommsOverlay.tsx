@@ -5,6 +5,8 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { activeCommsMessageAtom, dismissCommsAtom } from "@/store/comms";
 import { aiNameAtom } from "@/store/aiName";
 import { isShipAISpeaker, signalAudioActionAtom } from "@/store/audioSignals";
+import { isDeadAtom } from "@/store/death";
+import { settingsIsOpenAtom } from "@/store/store";
 
 import "./CommsOverlay.scss";
 
@@ -14,8 +16,12 @@ function resolveAiName(text: string, name: string | null): string {
   return text.replaceAll("{{AI_NAME}}", name);
 }
 
+/** Hidden (queue kept) while dead or in settings, so it never covers recovery or abandonment. */
 export default function CommsOverlay() {
-  const message = useAtomValue(activeCommsMessageAtom);
+  const queued = useAtomValue(activeCommsMessageAtom);
+  const dead = useAtomValue(isDeadAtom);
+  const settingsOpen = useAtomValue(settingsIsOpenAtom);
+  const message = dead || settingsOpen ? null : queued;
   const dismiss = useSetAtom(dismissCommsAtom);
   const signalAudio = useSetAtom(signalAudioActionAtom);
   const aiName = useAtomValue(aiNameAtom);
@@ -44,7 +50,7 @@ export default function CommsOverlay() {
     }
   }, [message, isLastPage, dismiss, pages.length, signalAudio]);
 
-  // Keyboard: Enter or Space to advance / dismiss
+  // Keyboard: Enter advances / dismisses (Space stays a flight key)
   useEffect(() => {
     if (!message) return;
 
@@ -52,7 +58,7 @@ export default function CommsOverlay() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-      if (e.key === "Enter" || e.key === " ") {
+      if (e.key === "Enter") {
         if (e.repeat) return;
         e.preventDefault();
         e.stopPropagation();
@@ -108,7 +114,7 @@ export default function CommsOverlay() {
           </div>
 
           <div className="comms-overlay__hint">
-            <span className="comms-overlay__hint-key">[SPACE]</span>
+            <span className="comms-overlay__hint-key">[ENTER]</span>
             <span>{isLastPage ? "Dismiss" : "Continue"}</span>
           </div>
         </div>

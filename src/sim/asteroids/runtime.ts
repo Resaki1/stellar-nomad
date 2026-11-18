@@ -145,15 +145,9 @@ export class AsteroidFieldRuntime {
    * Remove a destroyed instance from the loaded chunks and notify listeners. Only the
    * `asteroid.destroyed` world-event listener calls this; gameplay submits `asteroid.destroy`.
    */
-  destroyInstance(instanceId: number): AsteroidChunkData | null {
-    const updatedChunk = this.removeInstance(instanceId);
-
-    // Notify listeners (e.g. AsteroidField) so rendering state stays in sync
-    // even when the caller is external (e.g. MiningSystem).
-    if (updatedChunk) {
-      this.notifyChunkUpdate(updatedChunk.key, updatedChunk);
-    }
-
+  destroyInstance(chunkKey: string, instanceId: number): AsteroidChunkData | null {
+    const updatedChunk = this.removeInstance(chunkKey, instanceId);
+    if (updatedChunk) this.notifyChunkUpdate(updatedChunk.key, updatedChunk);
     return updatedChunk;
   }
 
@@ -166,69 +160,47 @@ export class AsteroidFieldRuntime {
   }
 
   /**
-   * Resolve an instanceId to its current location inside the loaded chunk set.
-   * Returns null if not currently loaded/known.
+   * Instance ids are 32-bit hashes unique per chunk, not per field: MEASURED ~1.7 expected
+   * birthday pairs among luna_belt's ~120k loaded rocks. So the index is keyed by chunk + id.
    */
-  getInstanceLocation(instanceId: number): AsteroidInstanceLocation | null {
-    const packed = this.instanceIndex.get(instanceId >>> 0);
+  private indexKey(chunkHandle: number, instanceId: number): number {
+    return chunkHandle * POW2_32 + (instanceId >>> 0);
+  }
+
+  /** Resolve an instance to its current location in `chunkKey`; null if not loaded. */
+  getInstanceLocation(chunkKey: string, instanceId: number): AsteroidInstanceLocation | null {
+    const handle = this.chunkHandleByKey.get(chunkKey);
+    if (handle === undefined) return null;
+    const key = this.indexKey(handle, instanceId);
+    const packed = this.instanceIndex.get(key);
     if (packed === undefined) return null;
 
-    const { chunkHandle, modelSlot, localIndex } = unpackInstanceRef(packed);
-
-    const chunkKey = this.chunkKeyByHandle[chunkHandle];
-    if (!chunkKey) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
-
+    const { modelSlot, localIndex } = unpackInstanceRef(packed);
     const chunk = this.chunks.get(chunkKey);
-    if (!chunk) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
-
     const modelId = this.modelIdBySlot[modelSlot];
-    if (!modelId) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
-
-    const modelInstances = chunk.instancesByModel[modelId];
+    const modelInstances = chunk && modelId ? chunk.instancesByModel[modelId] : undefined;
     if (!modelInstances || localIndex >= modelInstances.count) {
-      this.instanceIndex.delete(instanceId >>> 0);
+      this.instanceIndex.delete(key);
       return null;
     }
-
-    return { fieldId: this.fieldId, chunkKey, modelId, localIndex };
+    return { fieldId: this.fieldId, chunkKey, modelId: modelId as string, localIndex };
   }
 
   /**
    * Remove a single asteroid instance from the runtime and return the updated chunk data if present.
    * Returns null when the instance is not currently loaded.
    */
-  removeInstance(instanceId: number): AsteroidChunkData | null {
-    const loc = this.getInstanceLocation(instanceId);
+  removeInstance(chunkKey: string, instanceId: number): AsteroidChunkData | null {
+    const loc = this.getInstanceLocation(chunkKey, instanceId);
     if (!loc) return null;
 
     const chunk = this.chunks.get(loc.chunkKey);
-    if (!chunk) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
-
     const chunkHandle = this.chunkHandleByKey.get(loc.chunkKey);
     const modelSlot = this.modelSlotById.get(loc.modelId);
-
-    if (chunkHandle === undefined || modelSlot === undefined) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
+    if (!chunk || chunkHandle === undefined || modelSlot === undefined) return null;
 
     const instances = chunk.instancesByModel[loc.modelId];
-    if (!instances || loc.localIndex >= instances.count) {
-      this.instanceIndex.delete(instanceId >>> 0);
-      return null;
-    }
+    if (!instances || loc.localIndex >= instances.count) return null;
 
     const removedId = instances.instanceIds[loc.localIndex] >>> 0;
     const lastIndex = instances.count - 1;
@@ -261,7 +233,7 @@ export class AsteroidFieldRuntime {
       const movedId = ids[lastIndex] >>> 0;
       ids[loc.localIndex] = movedId;
       this.instanceIndex.set(
-        movedId,
+        this.indexKey(chunkHandle, movedId),
         packInstanceRef(chunkHandle, modelSlot, loc.localIndex)
       );
     }
@@ -292,7 +264,7 @@ export class AsteroidFieldRuntime {
       maxRadiusM: this.computeChunkMaxRadius(updatedInstancesByModel),
     };
 
-    this.instanceIndex.delete(removedId);
+    this.instanceIndex.delete(this.indexKey(chunkHandle, removedId));
     this.chunks.set(loc.chunkKey, updatedChunk);
 
     return updatedChunk;
@@ -518,15 +490,16 @@ export class AsteroidFieldRuntime {
 
       for (let i = 0; i < count; i++) {
         const id = ids[i] >>> 0;
+        const key = this.indexKey(chunkHandle, id);
         const packed = packInstanceRef(chunkHandle, slot, i);
 
         if (IS_DEV) {
-          const prev = this.instanceIndex.get(id);
+          const prev = this.instanceIndex.get(key);
           if (prev !== undefined && prev !== packed) {
             this.collisionCount++;
             if (this.collisionCount <= 5) {
                
-              console.warn("[AsteroidRuntime] instanceId collision detected", {
+              console.warn("[AsteroidRuntime] instanceId collision within one chunk", {
                 fieldId: this.fieldId,
                 instanceId: id,
                 prev,
@@ -540,7 +513,7 @@ export class AsteroidFieldRuntime {
           }
         }
 
-        this.instanceIndex.set(id, packed);
+        this.instanceIndex.set(key, packed);
       }
     }
   }
@@ -558,11 +531,9 @@ export class AsteroidFieldRuntime {
       const count = instances.count;
 
       for (let i = 0; i < count; i++) {
-        const id = ids[i] >>> 0;
+        const key = this.indexKey(chunkHandle, ids[i] >>> 0);
         const expected = packInstanceRef(chunkHandle, slot, i);
-        const current = this.instanceIndex.get(id);
-
-        if (current === expected) this.instanceIndex.delete(id);
+        if (this.instanceIndex.get(key) === expected) this.instanceIndex.delete(key);
       }
     }
   }
@@ -624,22 +595,6 @@ export class AsteroidSystemRuntime {
   clear(): void {
     this.fields.forEach((rt) => rt.clear());
     this.fields.clear();
-  }
-
-  /**
-   * Convenience: global lookup when caller does not know the field.
-   * O(number_of_fields) — use sparingly.
-   */
-  findInstanceLocation(instanceId: number): AsteroidInstanceLocation | null {
-    let found: AsteroidInstanceLocation | null = null;
-
-    this.fields.forEach((rt) => {
-      if (found) return;
-      const loc = rt.getInstanceLocation(instanceId);
-      if (loc) found = loc;
-    });
-
-    return found;
   }
 
   /**

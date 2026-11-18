@@ -107,8 +107,8 @@ export default async function saveCheck(d) {
     const worldsAfterImport = (await ev(IDB)).meta.map((m) => m.name);
     const checks = {
       cargo: eq(p.cargo, legacy.cargo),
-      // Schema 2: completions are world-owned; assay samples and the timer stay with the player.
-      research: eq(p.research, { assaySamples: 13, activeResearch: null }) && eq(data.world.research.completedNodes, ["r0_microlab_boot"]),
+      // Schema 3: r0 maps to no option (basic analysis is free); the retired assay samples stay inert in legacy.
+      research: !("research" in p) && p.legacy?.assaySamples === 13 && eq(data.world.research.completedNodes, []),
       tanksFull: p.propellant.ordinaryKg > 0 && p.propellant.protectedKg > 0 && p.processing === null,
       modulesOwned: eq(p.modules.ownedModules, ["module_cargo_rack_mk1"]),
       modulesAutoEquipped: p.modules.equippedModules.cargo === "module_cargo_rack_mk1",
@@ -120,7 +120,8 @@ export default async function saveCheck(d) {
       wreck: eq(data.world.wrecks, legacy["death-v1"].wrecks.map(({ id, frameId, positionKm, items, createdAt }) => ({ id, frameId, positionKm, items, fuelKg: 0, consumables: {}, createdAt }))),
       deltas: eq(data.world.asteroidDeltas, { legacy_field: { unchunked: [111, 222, 333] } }),
       minedLifetime: p.minedLifetime === 4,
-      comms: eq(p.commsPlayed, legacy["comms-played-v1"]),
+      // M3.7 hints mark themselves played in real time after load; compare the imported ids only.
+      comms: eq(p.commsPlayed.filter((x) => !x.startsWith("hint_")), legacy["comms-played-v1"]),
       starMarkers: eq(p.starMarkers, ["proxima"]),
       aiName: p.aiName === "HAL",
       legacyKeysRemoved: keysLeft.length === 0,
@@ -140,7 +141,7 @@ export default async function saveCheck(d) {
     const [a] = await nearest(1);
     const epoch = Date.UTC(2031, 6, 4, 12, 0, 0);
     await ev(`__dev.grantCargo("fe_ni_metal", 77)`);
-    await ev(`__dev.grantAssay(9)`);
+    await ev(`__dev.grantCargo("hydrates", 9)`);
     await ev(`__dev.unlockAll()`);
     const destroyed = await ev(`__test.world.submit(${JSON.stringify({ type: "asteroid.destroy", fieldId: a.fieldId, chunkKey: a.chunkKey, instanceId: a.instanceId, cause: "mined" })})`);
     await ev(`__test.world.submit({ type: "time.set", epochMs: ${epoch}, rate: 0 })`);
@@ -171,6 +172,8 @@ export default async function saveCheck(d) {
     const strip = (x) => {
       const c = structuredClone(x);
       c.players[id].ship.positionKm = null;
+      // A hint (e.g. hint_hydrates for the granted cargo) can show after the export: real-time, not a load defect.
+      c.players[id].commsPlayed = c.players[id].commsPlayed.filter((m) => !m.startsWith("hint_"));
       return c;
     };
     out.roundtrip = {

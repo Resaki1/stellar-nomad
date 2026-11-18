@@ -39,6 +39,8 @@ export type MiningState = {
   laserHeat: number;
   /** The laser's over-temperature trip, until the beam is off and heat is below 100 %. */
   isOverheated: boolean;
+  /** Close inspection of the target, 0..1 (0 = not inspecting). */
+  inspectProgress: number;
 };
 
 export const miningStateAtom = atom<MiningState>({
@@ -49,6 +51,25 @@ export const miningStateAtom = atom<MiningState>({
   miningProgress: 0,
   laserHeat: 0,
   isOverheated: false,
+  inspectProgress: 0,
+});
+
+/** Close-inspection intent (M3.3): MiningSystem advances it on the locked target, HUD starts it. */
+export const inspectControl = { requested: false, targetId: -1, progress: 0 };
+
+/** Start inspecting the locked rock (refused silently when nothing is locked). */
+export const startInspectionAtom = atom(null, (get): boolean => {
+  const s = get(miningStateAtom);
+  if (!s.targetedAsteroid || !s.isFocused || s.isMining) return false;
+  inspectControl.requested = true;
+  inspectControl.targetId = s.targetedAsteroid.instanceId;
+  inspectControl.progress = 0;
+  return true;
+});
+
+export const cancelInspectionAtom = atom(null, () => {
+  inspectControl.requested = false;
+  inspectControl.progress = 0;
 });
 
 /**
@@ -126,11 +147,7 @@ export const heatSinkBuffer: {
 
 export const asteroidMinedSignalAtom = atom(0);
 
-/**
- * Lifetime count of asteroids the player has ever mined. Persists across
- * sessions (unlike asteroidMinedSignalAtom which is a session signal).
- * Used for one-shot tutorial guarantees (e.g. first-ever mine = 1 assay).
- */
+/** Lifetime count of asteroids the player has ever mined (persists; a session signal is above). */
 export const asteroidsMinedLifetimeAtom = savedAtom("player", "minedLifetime", 0);
 
 // ---------------------------------------------------------------------------

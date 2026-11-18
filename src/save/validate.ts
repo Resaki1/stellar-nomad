@@ -4,11 +4,21 @@
  * unusable input throws.
  */
 import { MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
-import { MAX_RECEIPTS, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
+import { MAX_POINTS, STARTER_POINT_ID, cleanPointName, starterPoint } from "@/sim/replication/points";
+import { MAX_BOOKMARKS, MAX_LEGACY_IDS, MAX_RECEIPTS, MAX_SOURCES, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
 import { MIGRATIONS } from "./migrations";
 import type {
   AsteroidDeltas,
   Difficulty,
+  DiscoveryState,
+  EvidenceStamp,
+  FamilyFinding,
+  LossRecord,
+  PlayerLegacyState,
+  ReplicationPoint,
+  ReplicationState,
+  SourceBookmark,
+  SourceFinding,
   OperationReceipt,
   PlayerState,
   ProcessingBatch,
@@ -132,8 +142,129 @@ export function sanitizeWorld(v: unknown): WorldState {
     wrecks: Array.isArray(v.wrecks)
       ? v.wrecks.map(sanitizeWreck).filter((w): w is WreckRecord => w !== null)
       : [],
-    research: { completedNodes: uniqueStrings(isObj(v.research) ? v.research.completedNodes : undefined) },
+    research: {
+      completedNodes: uniqueStrings(isObj(v.research) ? v.research.completedNodes : undefined),
+      legacy: uniqueStrings(isObj(v.research) ? v.research.legacy : undefined).slice(0, MAX_LEGACY_IDS),
+    },
+    discoveries: sanitizeDiscoveries(v.discoveries),
+    replication: sanitizeReplication(v.replication),
     receipts: sanitizeReceipts(v.receipts),
+  };
+}
+
+function sanitizePoint(v: unknown): ReplicationPoint | null {
+  if (!isObj(v) || typeof v.id !== "string" || v.id === "" || typeof v.frameId !== "string") return null;
+  const p = position(v.positionKm);
+  const q = unitQuat(v.quaternion);
+  if (!p || !q) return null;
+  return { id: v.id, name: cleanPointName(v.name, "Replication point"), frameId: v.frameId, positionKm: p, quaternion: q, by: str(v.by, ""), createdAt: num(v.createdAt, 0), starter: false };
+}
+
+/** The canonical starter always leads (protected: never moved, renamed or dropped); unknown frames stay, inert. */
+function sanitizeReplication(v: unknown): ReplicationState {
+  const points: ReplicationPoint[] = [starterPoint()];
+  if (isObj(v) && Array.isArray(v.points)) {
+    const seen = new Set<string>([STARTER_POINT_ID]);
+    for (const x of v.points) {
+      const pt = sanitizePoint(x);
+      if (!pt || seen.has(pt.id)) continue;
+      seen.add(pt.id);
+      points.push(pt);
+    }
+  }
+  return { points: [points[0], ...points.slice(1).slice(-(MAX_POINTS - 1))] };
+}
+
+function stamp(v: unknown): EvidenceStamp | null {
+  return isObj(v) ? { at: num(v.at, 0), by: str(v.by, "") } : null;
+}
+
+function stampRecord(v: unknown): Record<string, EvidenceStamp> {
+  const out: Record<string, EvidenceStamp> = {};
+  if (!isObj(v)) return out;
+  for (const k of Object.keys(v)) {
+    const s = stamp(v[k]);
+    if (s) out[k] = s;
+  }
+  return out;
+}
+
+function sanitizeFamily(v: unknown): FamilyFinding | null {
+  if (!isObj(v)) return null;
+  return {
+    firstAt: num(v.firstAt, 0),
+    by: str(v.by, ""),
+    inspected: v.inspected === true,
+    extracted: v.extracted === true,
+    sourceId: typeof v.sourceId === "string" ? v.sourceId : null,
+  };
+}
+
+function sanitizeSource(v: unknown): SourceFinding | null {
+  if (!isObj(v) || typeof v.fieldId !== "string" || typeof v.chunkKey !== "string" || typeof v.frameId !== "string") return null;
+  const id = v.asteroidId;
+  const p = position(v.positionKm);
+  if (!isNum(id) || id < 0 || id > 0xffffffff || !Number.isInteger(id) || !p) return null;
+  return {
+    id: `${v.fieldId}:${v.chunkKey}:${id}`,
+    fieldId: v.fieldId,
+    chunkKey: v.chunkKey,
+    asteroidId: id,
+    classId: str(v.classId, ""),
+    frameId: v.frameId,
+    positionKm: p,
+    radiusM: Math.max(0, num(v.radiusM, 0)),
+    composition: countRecord(v.composition),
+    depleted: v.depleted === true,
+    foundAt: num(v.foundAt, 0),
+    by: str(v.by, ""),
+  };
+}
+
+function sanitizeDiscoveries(v: unknown): DiscoveryState {
+  const d: DiscoveryState = { families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} };
+  if (!isObj(v)) return d;
+  if (isObj(v.families)) {
+    for (const k of Object.keys(v.families)) {
+      const f = sanitizeFamily(v.families[k]);
+      if (f) d.families[k] = f;
+    }
+  }
+  if (Array.isArray(v.sources)) {
+    const seen = new Set<string>();
+    for (const x of v.sources) {
+      const s = sanitizeSource(x);
+      if (!s || seen.has(s.id)) continue;
+      seen.add(s.id);
+      d.sources.push(s);
+    }
+    d.sources = d.sources.slice(-MAX_SOURCES);
+  }
+  d.sites = stampRecord(v.sites);
+  d.trials = stampRecord(v.trials);
+  d.inspectedSites = stampRecord(v.inspectedSites);
+  return d;
+}
+
+function sanitizeBookmarks(v: unknown): SourceBookmark[] {
+  if (!Array.isArray(v)) return [];
+  const out: SourceBookmark[] = [];
+  for (const b of v) {
+    if (!isObj(b) || typeof b.sourceId !== "string" || out.some((x) => x.sourceId === b.sourceId)) continue;
+    out.push({ sourceId: b.sourceId, name: str(b.name, "").slice(0, 40) });
+  }
+  return out.slice(0, MAX_BOOKMARKS);
+}
+
+function sanitizeLegacy(v: unknown): PlayerLegacyState | null {
+  if (!isObj(v)) return null;
+  const active = isObj(v.activeResearch) && typeof v.activeResearch.nodeId === "string" ? v.activeResearch : null;
+  return {
+    assaySamples: Math.max(0, Math.floor(num(v.assaySamples, 0))),
+    activeResearch: active ? { nodeId: active.nodeId as string, elapsedS: Math.max(0, num(active.elapsedS, 0)) } : null,
+    items: uniqueStrings(v.items).slice(0, MAX_LEGACY_IDS),
+    consumables: countRecord(v.consumables),
+    notes: strArray(v.notes).slice(0, 32),
   };
 }
 
@@ -171,8 +302,6 @@ export function sanitizePlayer(v: unknown): PlayerState {
   const d = defaultPlayerState();
   if (!isObj(v)) return d;
   const cargo = isObj(v.cargo) ? v.cargo : {};
-  const research = isObj(v.research) ? v.research : {};
-  const active = isObj(research.activeResearch) ? research.activeResearch : null;
   const modules = isObj(v.modules) ? v.modules : {};
   const hotbar = Array.isArray(modules.hotbar)
     ? modules.hotbar.slice(0, 10).map((x) => (typeof x === "string" ? x : null))
@@ -186,13 +315,6 @@ export function sanitizePlayer(v: unknown): PlayerState {
     health: Math.max(0, Math.min(MAX_HEALTH, num(v.health, d.health))),
     isDead: v.isDead === true,
     cargo: { capacityUnits: Math.max(0, num(cargo.capacityUnits, d.cargo.capacityUnits)), items: countRecord(cargo.items) },
-    research: {
-      assaySamples: Math.max(0, Math.floor(num(research.assaySamples, 0))),
-      activeResearch:
-        active && typeof active.nodeId === "string"
-          ? { nodeId: active.nodeId, elapsedS: Math.max(0, num(active.elapsedS, 0)) }
-          : null,
-    },
     modules: {
       ownedModules: uniqueStrings(modules.ownedModules),
       equippedModules: Object.fromEntries(
@@ -213,7 +335,17 @@ export function sanitizePlayer(v: unknown): PlayerState {
     },
     power: { capacitor01: unit01(power.capacitor01, d.power.capacitor01), heat01: unit01(power.heat01, d.power.heat01) },
     processing: sanitizeProcessing(v.processing),
+    bookmarks: sanitizeBookmarks(v.bookmarks),
+    legacy: sanitizeLegacy(v.legacy),
+    replication: { activeId: isObj(v.replication) && typeof v.replication.activeId === "string" && v.replication.activeId !== "" ? v.replication.activeId : STARTER_POINT_ID },
+    lastLoss: sanitizeLoss(v.lastLoss),
+    trackedProject: typeof v.trackedProject === "string" && v.trackedProject.length <= 64 ? v.trackedProject : null,
   };
+}
+
+function sanitizeLoss(v: unknown): LossRecord | null {
+  if (!isObj(v) || (v.cause !== "impact" && v.cause !== "abandon")) return null;
+  return { items: countRecord(v.items), consumables: countRecord(v.consumables), fuelKg: fuelKg(v.fuelKg, 0), cause: v.cause };
 }
 
 /** Applies migrations, then sanitizes. Throws on input that is not a save at all. */
@@ -226,8 +358,14 @@ export function parseSaveData(raw: unknown): SaveData {
   for (let v = version; v < SCHEMA_VERSION; v++) data = MIGRATIONS[v - 1](data);
   if (!isObj(data.world) || !isObj(data.players)) throw new Error("save data has no world or players");
   const players: Record<string, PlayerState> = {};
-  for (const id of Object.keys(data.players)) players[id] = sanitizePlayer(data.players[id]);
-  return { schemaVersion: SCHEMA_VERSION, world: sanitizeWorld(data.world), players };
+  const world = sanitizeWorld(data.world);
+  const known = new Set(world.discoveries.sources.map((s) => s.id));
+  for (const id of Object.keys(data.players)) {
+    const p = sanitizePlayer(data.players[id]);
+    p.bookmarks = p.bookmarks.filter((b) => known.has(b.sourceId));
+    players[id] = p;
+  }
+  return { schemaVersion: SCHEMA_VERSION, world, players };
 }
 
 const DIFFICULTIES: readonly Difficulty[] = ["explorer", "standard", "hard"];

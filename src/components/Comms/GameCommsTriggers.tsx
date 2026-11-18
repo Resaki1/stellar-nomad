@@ -1,207 +1,111 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// GameCommsTriggers — centralized comms triggers for ALL gameplay events.
-//
-// Watches atoms and enqueues messages on state transitions.
-// The played-message registry in the comms store prevents replays.
+// GameCommsTriggers: every comms entry and hint trigger lives here (M3.7).
+// Comms are sparse and contextual; routine state goes to one-time hints. The played
+// registry (player save, `commsPlayed`) prevents replays across reloads.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { atom, useAtomValue, useSetAtom } from "jotai";
-import { shipHealthAtom } from "@/store/store";
-import { miningStateAtom, asteroidMinedSignalAtom } from "@/store/mining";
-import { isCargoFullAtom } from "@/store/cargo";
-import { researchAtom, completedNodeSetAtom, lastCompletedResearchIdAtom } from "@/store/research";
-import { modulesAtom, itemCraftedSignalAtom, lastCraftedItemIdAtom } from "@/store/modules";
+import { COMMS_MESSAGES } from "@/data/commsMessages";
+import { HINTS, type HintDef } from "@/data/guidance";
 import { aiNameAtom } from "@/store/aiName";
-import { enqueueCommsAtom } from "@/store/comms";
-import { transitStateAtom } from "@/store/transit";
-import { COMMS_MESSAGES, RESEARCH_COMPLETE_MESSAGES, ITEM_CRAFTED_MESSAGES } from "@/data/commsMessages";
+import { cargoAtom, isCargoFullAtom } from "@/store/cargo";
+import { enqueueCommsAtom, playedMessageIdsAtom, retireHintAtom, showHintAtom } from "@/store/comms";
+import { toastStackFullAtom } from "@/store/toast";
+import { isDeadAtom } from "@/store/death";
+import { miningStateAtom } from "@/store/mining";
+import { modulesAtom } from "@/store/modules";
+import { trackedProjectAtom } from "@/store/projects";
+import { lastRecoveryAtom } from "@/store/replication";
+import { discoveriesMirrorAtom } from "@/store/research";
+import { shipResourcesHudAtom } from "@/store/shipResources";
+import { glanceAtom } from "@/store/sites";
+import { shipHealthAtom } from "@/store/store";
 
-// Derived atom so we don't rerender on every mining-state frame update
-const isOverheatedAtom = atom((get) => get(miningStateAtom).isOverheated);
+const focusedAtom = atom((get) => get(miningStateAtom).isFocused);
+const heatWarnAtom = atom((get) => get(shipResourcesHudAtom).heatWarn);
+const lowFuelAtom = atom((get) => {
+  const r = get(shipResourcesHudAtom);
+  return r.tankKg > 1 && r.ordinaryKg < r.tankKg * 0.15;
+});
+const hasHydratesAtom = atom((get) => (get(cargoAtom).items.hydrates ?? 0) > 0);
+const hasDriveAtom = atom((get) => get(modulesAtom).ownedModules.includes("special_transit_drive"));
+const auxTankAtom = atom((get) => get(modulesAtom).equippedModules.cargo === "module_aux_tank_mk1");
+const frameAtom = atom((get) => get(glanceAtom).frameId);
+const damagedAtom = atom((get) => {
+  const h = get(shipHealthAtom);
+  return h > 0 && h < 99.5;
+});
+
+
+/** Show `hint` once while `when` holds (and the ship is alive); it leaves when `when` stops holding. */
+function useHint(hint: HintDef, when: boolean, dead: boolean): void {
+  const show = useSetAtom(showHintAtom);
+  const retire = useSetAtom(retireHintAtom);
+  const busy = useAtomValue(toastStackFullAtom);
+  useEffect(() => {
+    if (!when) retire(hint.id);
+    else if (!dead && !busy) show(hint);
+  }, [hint, when, dead, busy, show, retire]);
+}
 
 export default function GameCommsTriggers() {
   const enqueue = useSetAtom(enqueueCommsAtom);
-
-  // ── Welcome sequence ────────────────────────────────────────────────
-  // Phase 1: AI greeting fires on mount (before naming)
-  // Phase 2: AI intro fires after the player names the AI
   const aiName = useAtomValue(aiNameAtom);
+  const played = useAtomValue(playedMessageIdsAtom);
+  const dead = useAtomValue(isDeadAtom);
+  const playedSet = useMemo(() => new Set(played), [played]);
 
+  // ── Opening premise, naming, first opportunity ──
   useEffect(() => {
-    const greeting = COMMS_MESSAGES.ai_greeting_001;
-    if (greeting) enqueue(greeting);
-  }, [enqueue]);
-
-  useEffect(() => {
-    if (!aiName) return;
-    const intro = COMMS_MESSAGES.ai_intro_001;
-    if (intro) enqueue(intro);
+    if (!aiName) enqueue(COMMS_MESSAGES.opening_001);
   }, [aiName, enqueue]);
-
-  // ── First mining completion ─────────────────────────────────────────
-  const minedCount = useAtomValue(asteroidMinedSignalAtom);
-  const minedFiredRef = useRef(false);
-
+  const openedHere = playedSet.has("opening_001");
   useEffect(() => {
-    if (minedFiredRef.current || minedCount === 0) return;
-    minedFiredRef.current = true;
-    const msg = COMMS_MESSAGES.mining_001;
-    if (msg) enqueue(msg);
-  }, [minedCount, enqueue]);
+    if (aiName && openedHere) enqueue(COMMS_MESSAGES.opening_002);
+  }, [aiName, openedHere, enqueue]);
+  // Older saves (named before M3.7) get the projects hint without the opening.
+  const openingDone = !!aiName && (playedSet.has("opening_002") || !openedHere);
+  const untracked = useAtomValue(trackedProjectAtom) === null;
+  useHint(HINTS.projects, openingDone && untracked, dead);
 
-  // ── First damage ────────────────────────────────────────────────────
-  const health = useAtomValue(shipHealthAtom);
-  const prevHealthRef = useRef(health);
-  const damageFiredRef = useRef(false);
-
+  // ── Contextual one-time hints ──
+  useHint(HINTS.lock, !useAtomValue(focusedAtom) && openingDone, dead);
+  const hasHydrates = useAtomValue(hasHydratesAtom);
+  useHint(HINTS.hydrates, hasHydrates, dead);
+  useHint(HINTS.heat, useAtomValue(heatWarnAtom), dead);
+  useHint(HINTS.cargoFull, useAtomValue(isCargoFullAtom), dead);
+  // Only actionable with hydrates aboard (after a respawn the hold is empty: the wreck hint applies).
+  useHint(HINTS.lowFuel, useAtomValue(lowFuelAtom) && hasHydrates, dead);
+  // Drive built: the AI marks the milestone (and points at the tank); the control hint follows it.
+  const hasDrive = useAtomValue(hasDriveAtom);
+  const frameNow = useAtomValue(frameAtom);
+  const auxTank = useAtomValue(auxTankAtom);
+  // hint_drive alone: a save that had the drive before these messages existed.
+  const drivePlayed = playedSet.has("drive_online_001") || playedSet.has("drive_online_002") || playedSet.has("hint_drive");
+  // The variant is chosen once: fitting the tank while the first is queued must not add the second.
+  const driveMsg = useRef<"drive_online_001" | "drive_online_002" | null>(null);
   useEffect(() => {
-    if (damageFiredRef.current) return;
-    // Trigger when health drops (but not on death — that has its own message)
-    if (health < prevHealthRef.current && health > 0) {
-      damageFiredRef.current = true;
-      const msg = COMMS_MESSAGES.first_damage_001;
-      if (msg) enqueue(msg);
-    }
-    prevHealthRef.current = health;
-  }, [health, enqueue]);
+    if (!hasDrive || frameNow === "luna" || dead || drivePlayed) return;
+    driveMsg.current ??= auxTank ? "drive_online_002" : "drive_online_001";
+    enqueue(COMMS_MESSAGES[driveMsg.current]);
+  }, [hasDrive, frameNow, dead, drivePlayed, auxTank, enqueue]);
+  useHint(HINTS.drive, hasDrive && (drivePlayed || frameNow === "luna"), dead);
+  useHint(HINTS.recovered, useAtomValue(lastRecoveryAtom) !== null, dead);
 
-  // ── Overheat (context-aware) ────────────────────────────────────────
-  const isOverheated = useAtomValue(isOverheatedAtom);
-  const completedNodes = useAtomValue(completedNodeSetAtom);
-  const modules = useAtomValue(modulesAtom);
-  const overheatFiredRef = useRef(false);
+  useHint(HINTS.damage, useAtomValue(damagedAtom) && openingDone, dead);
 
+  // ── Lunar space and the survey site ──
+  const frameId = useAtomValue(frameAtom);
   useEffect(() => {
-    if (overheatFiredRef.current || !isOverheated) return;
-    overheatFiredRef.current = true;
-
-    const hasThermalResearch = completedNodes.has("b2b_thermal_dynamics");
-    const heatSinkCount =
-      modules.consumables["consumable_heat_sink_cartridge"] ?? 0;
-
-    let textContent: string[];
-
-    if (heatSinkCount > 0) {
-      // Player has heat sinks: tell them to use one
-      textContent = [
-        "Laser overheated. You have heat sink cartridges on hand — one of those would skip the cooldown entirely.",
-      ];
-    } else if (hasThermalResearch) {
-      // Research done but no cartridges: suggest crafting
-      textContent = [
-        "Laser overheated. Forced cooldown. The current optics still can't handle sustained mining on larger asteroids without hitting the thermal limit.",
-        "You have the fabrication specs for heat sink cartridges. Worth putting a few together when you get the chance — they dump laser heat on the spot.",
-      ];
-    } else {
-      // No research yet: point them to the research tree
-      textContent = [
-        "Mining laser thermal capacity exceeded. Forced cooldown in progress. The current optics can't sustain fire long enough to mine larger asteroids in a single pass.",
-        "There's a thermal management approach in the research data that could help. It would unlock heat sink cartridges. Single-use, but they dump excess heat on the spot. Could be worth prioritizing.",
-        "Alternatively, search for smaller asteroids."
-      ];
-    }
-
-    enqueue({
-      messageId: "overheat_001",
-      speaker: "{{AI_NAME}}",
-      textContent,
-      priority: 1,
-    });
-  }, [isOverheated, completedNodes, modules.consumables, enqueue]);
-
-  // ── Cargo full ──────────────────────────────────────────────────────
-  const isCargoFull = useAtomValue(isCargoFullAtom);
-  const cargoFiredRef = useRef(false);
-
+    if (frameId === "luna" && !dead) enqueue(COMMS_MESSAGES.lunar_signal_001);
+  }, [frameId, dead, enqueue]);
+  const recovered = !!useAtomValue(discoveriesMirrorAtom).sites.luna_survey_canister;
   useEffect(() => {
-    if (cargoFiredRef.current || !isCargoFull) return;
-    cargoFiredRef.current = true;
-    const msg = COMMS_MESSAGES.cargo_full_001;
-    if (msg) enqueue(msg);
-  }, [isCargoFull, enqueue]);
-
-  // ── MicroLab research started ───────────────────────────────────────
-  const research = useAtomValue(researchAtom);
-  const microlabStartFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (microlabStartFiredRef.current) return;
-    if (research.activeResearch?.nodeId === "r0_microlab_boot") {
-      microlabStartFiredRef.current = true;
-      const msg = COMMS_MESSAGES.research_start_001;
-      if (msg) enqueue(msg);
-    }
-  }, [research.activeResearch, enqueue]);
-
-  // ── First item crafted ──────────────────────────────────────────────
-  const craftCount = useAtomValue(itemCraftedSignalAtom);
-  const craftFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (craftFiredRef.current || craftCount === 0) return;
-    craftFiredRef.current = true;
-    const msg = COMMS_MESSAGES.first_craft_001;
-    if (msg) enqueue(msg);
-  }, [craftCount, enqueue]);
-
-  // ── AI observation: pattern-noticing (after 8+ asteroids mined) ────
-  const aiObsFiredRef = useRef(false);
-
-  useEffect(() => {
-    if (aiObsFiredRef.current || minedCount < 8) return;
-    aiObsFiredRef.current = true;
-    const msg = COMMS_MESSAGES.ai_observation_001;
-    if (msg) enqueue(msg);
-  }, [minedCount, enqueue]);
-
-  // ── Per-research completion messages ────────────────────────────────
-  const lastResearchId = useAtomValue(lastCompletedResearchIdAtom);
-
-  useEffect(() => {
-    if (!lastResearchId) return;
-    const msg = RESEARCH_COMPLETE_MESSAGES[lastResearchId];
-    if (msg) enqueue(msg);
-  }, [lastResearchId, enqueue]);
-
-  // ── Per-item craft messages ────────────────────────────────────────
-  const lastCraftedId = useAtomValue(lastCraftedItemIdAtom);
-
-  useEffect(() => {
-    if (!lastCraftedId) return;
-    const msg = ITEM_CRAFTED_MESSAGES[lastCraftedId];
-    if (msg) enqueue(msg);
-  }, [lastCraftedId, enqueue]);
-
-  // ── Transit drive: first use + arrival ──────────────────────────────
-  const transitState = useAtomValue(transitStateAtom);
-  const prevPhaseRef = useRef(transitState.phase);
-  const transitUsedRef = useRef(false);
-
-  useEffect(() => {
-    const prev = prevPhaseRef.current;
-    const curr = transitState.phase;
-
-    // Fire "first transit" message when drive first engages
-    if (curr === "accelerating" && prev !== "accelerating" && !transitUsedRef.current) {
-      transitUsedRef.current = true;
-      const msg = COMMS_MESSAGES.transit_first_001;
-      if (msg) enqueue(msg);
-    }
-
-    // Fire arrival messages when drive disengages (was active, now idle)
-    if (curr === "idle" && (prev === "decelerating" || prev === "accelerating") && transitUsedRef.current) {
-      // Lunar arrival (if target was lunar)
-      if (transitState.target?.id?.includes("luna") || transitState.target?.id?.includes("moon")) {
-        const arrival = COMMS_MESSAGES.lunar_arrival_001;
-        if (arrival) enqueue(arrival);
-      }
-    }
-
-    prevPhaseRef.current = curr;
-  }, [transitState.phase, transitState.target, enqueue]);
+    if (recovered) enqueue(COMMS_MESSAGES.site_recovered_001);
+  }, [recovered, enqueue]);
 
   return null;
 }

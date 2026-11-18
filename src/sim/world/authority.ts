@@ -22,13 +22,17 @@ export interface Authority {
 const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "asteroid.mine",
   "item.craft",
-  "research.start",
-  "research.complete",
+  "survey.inspect",
+  "research.unlock",
+  "trial.record",
+  "site.inspect",
+  "site.recover",
   "ship.destroy",
   "ship.respawn",
   "wreck.collect",
   "processing.start",
   "processing.cancel",
+  "replication.place",
 ]);
 
 export class LocalAuthority implements Authority {
@@ -41,6 +45,7 @@ export class LocalAuthority implements Authority {
     private readonly deps: {
       getWorld: () => WorldState;
       getPlayer: (id: PlayerId) => PlayerState | null;
+      getPlayers: () => readonly PlayerState[];
       /** `urgent` for operations a reload must not lose. */
       markDirty: (urgent: boolean) => void;
     },
@@ -96,9 +101,11 @@ export class LocalAuthority implements Authority {
       outcome = { status: "duplicate", opId: op.opId, by };
     } else {
       const now = Date.now();
-      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now });
+      const getPlayers = this.deps.getPlayers;
+      const bookmarked = (): Set<string> => new Set(getPlayers().flatMap((p) => p.bookmarks.map((b) => b.sourceId)));
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked });
       if ("reason" in r) {
-        outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing };
+        outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing, evidence: r.evidence };
       } else {
         r.apply();
         if (RECEIPTED.has(op.type)) this.addReceipt(w, { opId: op.opId, type: op.type, by, at: now });

@@ -5,11 +5,23 @@
  *
  *   GAME_PARTS=migrate,tx,shared pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
  *   GAME_PARTS=live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
- *   GAME_PARTS=res,m32,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
- *   GAME_PARTS=transit,transitLive,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
+ *   GAME_PARTS=res,m32,repairEdge,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
+ *   GAME_PARTS=transit,transitLive,transitBelt,transitSpool,transitTank,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
+ *   GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 / playA / playB / m33shots   M3.3+M3.4 gates (gameplay-m33.mjs); m33narrow with --size 390x844
+ *   GAME_PARTS=place,activate,death,recover,salvage,migrate4 / live36 / m36shots   M3.6 gates (gameplay-m36.mjs); m36narrow with --size 390x844
+ *   GAME_PARTS=hud (also --size 390x844) / hudTransit / hudSite / lunarShots / hudKeys / hudHotbar   playtest-1 WP3 HUD gates (gameplay-hud.mjs)
+ *   GAME_PARTS=panels (also --size 390x844)   playtest-1 WP4 panel gates (gameplay-panels.mjs)
+ *   GAME_PARTS=pace   timed real-input first trip to the lunar field (gameplay-pace.mjs; resumable, rerun until done)
+ *   GAME_PARTS=seeds / regions / site / guidance / difficulty / sessionA / sessionB / sessionC / exploits / m37shots   M3.7+M3.8 gates (gameplay-m37.mjs); m37narrow with --size 390x844
  */
-import { m32Gates, reachGates, resGates, shotGates } from "./gameplay-m32.mjs";
-import { transitLiveGates, transitPureGates, transitShotGates } from "./gameplay-transit.mjs";
+import { m32Gates, reachGates, repairEdgeGates, resGates, shotGates } from "./gameplay-m32.mjs";
+import { transitBeltGates, transitLiveGates, transitPureGates, transitShotGates, transitSpoolGates, transitTankGates } from "./gameplay-transit.mjs";
+import { activateGates, deathGates, live36Gates, m36ShotGates, migrate4Gates, placeGates, recoverGates, salvageGates } from "./gameplay-m36.mjs";
+import * as m37 from "./gameplay-m37.mjs";
+import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, marksGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
+import { paceGates } from "./gameplay-pace.mjs";
+import { hudGates, hudHotbarGates, hudKeysGates, hudSiteGates, hudTransitGates, lunarShotGates } from "./gameplay-hud.mjs";
+import { panelGates } from "./gameplay-panels.mjs";
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** JSON with NaN/±Infinity kept as JS literals, for malformed fixtures. */
@@ -38,16 +50,6 @@ const v1Player = (o = {}) => ({
 const v1World = (o = {}) => ({ simEpochMs: Date.UTC(2031, 2, 1), simRate: 1, asteroidDeltas: {}, wrecks: [], ...o });
 const v1 = (players, world = {}) => ({ schemaVersion: 1, world: v1World(world), players });
 
-/** Diff paths, first 8. */
-function diff(a, b, path = "", out = []) {
-  if (out.length >= 8) return out;
-  if (typeof a !== typeof b || Array.isArray(a) !== Array.isArray(b) || a === null || b === null || typeof a !== "object") {
-    if (!eq(a, b)) out.push(`${path}: ${JSON.stringify(a)?.slice(0, 60)} vs ${JSON.stringify(b)?.slice(0, 60)}`);
-    return out;
-  }
-  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) diff(a[k], b[k], `${path}.${k}`, out);
-  return out;
-}
 
 export default async function gameplayCheck(d) {
   const ev = (src) => d.evaluate(src);
@@ -82,7 +84,7 @@ export default async function gameplayCheck(d) {
     const m = await ev(`${G}.mirrors()`);
     const p = await player();
     const w = await world();
-    return eq(m.cargo, p.cargo) && eq(m.research, p.research) && eq(m.modules, p.modules) && m.isDead === p.isDead &&
+    return eq(m.cargo, p.cargo) && eq(m.discoveries, w.discoveries) && eq(m.bookmarks, p.bookmarks) && eq(m.modules, p.modules) && m.isDead === p.isDead &&
       m.health === p.health && m.minedLifetime === p.minedLifetime && eq(m.completedNodes, w.research.completedNodes) && eq(m.wrecks, w.wrecks);
   };
   const created = [];
@@ -94,11 +96,43 @@ export default async function gameplayCheck(d) {
 
   const ctx = { ev, wait, player, world, submit, idb, boot, fixture, me, v1, v1Player, v1World, created };
   try {
+    if (parts.includes("pace")) out.pace = await paceGates(d, ctx);
+    if (parts.includes("hud")) out.hud = await hudGates(d, ctx);
+    if (parts.includes("hudTransit")) out.hudTransit = await hudTransitGates(d, ctx);
+    if (parts.includes("hudSite")) out.hudSite = await hudSiteGates(d, ctx);
+    if (parts.includes("lunarShots")) out.lunarShots = await lunarShotGates(d, ctx);
+    if (parts.includes("hudKeys")) out.hudKeys = await hudKeysGates(d, ctx);
+    if (parts.includes("hudHotbar")) out.hudHotbar = await hudHotbarGates(d, ctx);
+    if (parts.includes("panels")) out.panels = await panelGates(d, ctx);
+    if (parts.includes("audit")) out.audit = await auditGates(d, ctx);
+    if (parts.includes("fit")) out.fit = await fitGates(d, ctx);
+    if (parts.includes("marks")) out.marks = await marksGates(d, ctx);
+    if (parts.includes("evidence")) out.evidence = await evidenceGates(d, ctx);
+    if (parts.includes("reqs")) out.reqs = await reqGates(d, ctx);
+    if (parts.includes("config")) out.config = await configGates(d, ctx);
+    if (parts.includes("migrate3")) out.migrate3 = await migrate3Gates(d, ctx);
+    if (parts.includes("playA")) out.playA = await playGates(d, ctx, "A");
+    if (parts.includes("playB")) out.playB = await playGates(d, ctx, "B");
+    if (parts.includes("m33shots") || parts.includes("m33narrow")) out.m33shots = await m33ShotGates(d, ctx, parts.includes("m33narrow"));
+    if (parts.includes("place")) out.place = await placeGates(d, ctx);
+    if (parts.includes("activate")) out.activate = await activateGates(d, ctx);
+    if (parts.includes("death")) out.death = await deathGates(d, ctx);
+    if (parts.includes("recover")) out.recover = await recoverGates(d, ctx);
+    if (parts.includes("salvage")) out.salvage = await salvageGates(d, ctx);
+    if (parts.includes("migrate4")) out.migrate4 = await migrate4Gates(d, ctx);
+    if (parts.includes("live36")) out.live36 = await live36Gates(d, ctx);
+    if (parts.includes("m36shots") || parts.includes("m36narrow")) out.m36shots = await m36ShotGates(d, ctx, parts.includes("m36narrow"));
+    const m37Parts = { seeds: "seedGates", regions: "regionGates", site: "siteGates", guidance: "guidanceGates", difficulty: "difficultyGates", sessionA: "sessionAGates", sessionB: "sessionBGates", sessionC: "sessionCGates", exploits: "exploitGates", m37shots: "shotGates", m37narrow: "narrowGates", m37title: "titleShot" };
+    for (const [part, fn] of Object.entries(m37Parts)) if (parts.includes(part)) out[part] = await m37[fn](d, ctx);
     if (parts.includes("res")) out.res = await resGates(d);
     if (parts.includes("transit")) out.transit = await transitPureGates(d);
     if (parts.includes("transitLive")) out.transitLive = await transitLiveGates(d, ctx);
+    if (parts.includes("transitBelt")) out.transitBelt = await transitBeltGates(d);
+    if (parts.includes("transitSpool")) out.transitSpool = await transitSpoolGates(d, ctx);
+    if (parts.includes("transitTank")) out.transitTank = await transitTankGates(d, ctx);
     if (parts.includes("transitShots") || parts.includes("transitNarrow")) out.transitShots = await transitShotGates(d, ctx, parts.includes("transitNarrow"));
     if (parts.includes("m32")) out.m32 = await m32Gates(d, ctx);
+    if (parts.includes("repairEdge")) out.repairEdge = await repairEdgeGates(d, ctx);
     if (parts.includes("reach")) out.reach = await reachGates(d, ctx);
     if (parts.includes("shots") || parts.includes("narrow")) out.shots = await shotGates(d, ctx, parts.includes("narrow"));
     if (parts.includes("migrate")) {
@@ -146,38 +180,40 @@ export default async function gameplayCheck(d) {
         const r = await ev(`(() => { const a = ${G}.parse(${js(raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
         const a = r.a;
         const p = a.players[me];
-        const c = { schema: a.schemaVersion === 2, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
+        const c = { schema: a.schemaVersion === 5, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
         const v1p = raw.players[me];
         if (name !== "malformed") {
           c.pose = eq(p.ship, v1p.ship);
           c.cargo = eq(p.cargo, v1p.cargo);
-          c.assay = p.research.assaySamples === v1p.research.assaySamples && eq(p.research.activeResearch, v1p.research.activeResearch);
-          c.noPlayerCompleted = !("completedNodes" in p.research);
+          // Schema 3: assay samples retire into the inert legacy record; a mapped paid timer completes once.
+          c.assay = (p.legacy?.assaySamples ?? 0) === v1p.research.assaySamples && (p.legacy?.activeResearch ?? null) === null;
+          c.noPlayerResearch = !("research" in p);
           c.fullTanks = p.propellant.ordinaryKg > 0 && p.propellant.protectedKg > 0 && p.power.capacitor01 === 1 && p.power.heat01 === 0 && p.processing === null;
           c.deltas = eq(a.world.asteroidDeltas, raw.world.asteroidDeltas);
           c.wrecks = eq(a.world.wrecks, raw.world.wrecks.map((w) => ({ ...w, fuelKg: 0, consumables: {} })).map(({ id, frameId, positionKm, items, fuelKg, consumables, createdAt }) => ({ id, frameId, positionKm, items, fuelKg, consumables, createdAt })));
         }
         if (name === "single") {
           c.modules = eq(p.modules, v1p.modules) && p.aiName === "HAL" && eq(p.commsPlayed, v1p.commsPlayed) && eq(p.starMarkers, ["proxima"]) && p.minedLifetime === 9;
-          c.research = eq(a.world.research.completedNodes, ["r0_microlab_boot"]);
+          c.research = eq(a.world.research.completedNodes, []) && eq(a.world.research.legacy, []);
         }
         if (name === "twoPlayers") {
-          c.union = eq(a.world.research.completedNodes, ["r0_microlab_boot", "a1_sensor_calibration", "zz_future_node"]);
-          c.bothPlayers = eq(a.players["player-b"].cargo.items, { sulfur: 8 }) && a.players["player-b"].research.assaySamples === 2;
+          c.union = eq(a.world.research.completedNodes, ["sv1_composition_survey"]) && eq(a.world.research.legacy, ["zz_future_node"]);
+          c.bothPlayers = eq(a.players["player-b"].cargo.items, { sulfur: 8 }) && a.players["player-b"].legacy.assaySamples === 2;
         }
+        if (name === "paidResearch") c.paidCompleted = eq(a.world.research.completedNodes, ["sv1_composition_survey"]);
         if (name === "dead") c.dead = p.isDead === true && p.health === 0;
         if (name === "moon") c.moonPose = p.ship.frameId === moonFrame;
         if (name === "malformed") {
           c.cleaned = p.ship === null && p.health === 100 && p.cargo.capacityUnits === 0 && eq(p.cargo.items, { silicates: 2 });
-          c.counts = eq(p.modules.consumables, { consumable_assay_probe: 1 }) && p.research.assaySamples === 0 && p.research.activeResearch === null && p.minedLifetime === 0;
+          c.counts = eq(p.modules.consumables, {}) && eq(p.legacy?.consumables, { consumable_assay_probe: 1 }) && p.legacy?.assaySamples === 0 && p.legacy?.activeResearch === null && p.minedLifetime === 0;
           c.wrecks = eq(a.world.wrecks.map((w) => [w.id, w.items]), [["w2", { silicates: 3 }]]);
           c.brokenPlayerDefaulted = a.players.broken !== undefined && a.players.broken.health === 100;
           c.simRate = a.world.simRate === 1;
-          c.research = eq(a.world.research.completedNodes, ["r0_microlab_boot"]);
+          c.research = eq(a.world.research.completedNodes, []);
         }
         if (name === "unknownIds") {
-          c.keptInert = eq(a.world.research.completedNodes, ["r0_microlab_boot", "zz_unknown_node"]) && eq(p.cargo.items, { unobtanium: 4 }) &&
-            eq(p.modules.ownedModules, ["module_from_future"]) && eq(p.modules.consumables, { consumable_unknown: 3 });
+          c.keptInert = eq(a.world.research.completedNodes, []) && eq(a.world.research.legacy, ["zz_unknown_node"]) && eq(p.cargo.items, { unobtanium: 4 }) &&
+            eq(p.modules.ownedModules, []) && eq(p.modules.equippedModules, {}) && eq(p.legacy?.items, ["module_from_future"]) && eq(p.legacy?.consumables, { consumable_unknown: 3 });
         }
         const pass = Object.values(c).every((v) => v === true);
         res[name] = pass ? { pass } : { pass, c, sample: p };
@@ -216,7 +252,7 @@ export default async function gameplayCheck(d) {
         world: {
           ...v1World(), research: { completedNodes: ["r0_microlab_boot", "a1_sensor_calibration"] }, receipts: [],
           wrecks: [
-            { id: "wreck-fuel", frameId: "earth", positionKm: [7100, 1, 2], items: {}, fuelKg: 50, consumables: { consumable_assay_probe: 12 }, createdAt: 1 },
+            { id: "wreck-fuel", frameId: "earth", positionKm: [7100, 1, 2], items: {}, fuelKg: 50, consumables: { consumable_hull_patch_kit: 12 }, createdAt: 1 },
             { id: "wreck-empty", frameId: "earth", positionKm: [7100, 3, 2], items: { dust: 0.5 }, fuelKg: 0, consumables: {}, createdAt: 2 },
           ],
         },
@@ -226,23 +262,23 @@ export default async function gameplayCheck(d) {
       await d.scene("belt");
       await d.frames(30);
       const t = {};
-      const item = "consumable_assay_probe"; // silicates 60, carbon 20, hydrates 15; stackMax 10
+      const item = "consumable_hull_patch_kit"; // starter recipe: fe_ni_metal 15, silicates 10; stackMax 10
 
       // Crafting: rejected spends nothing and says why.
       const p0 = await player();
       const rej = await submit({ type: "item.craft", opId: "craft-reject", itemId: item });
       const p1 = await player();
-      t.craftReject = { status: rej.status, reason: rej.reason, missing: rej.missing, unchanged: eq(p0, p1), pass: rej.status === "rejected" && rej.reason === "materials" && eq(rej.missing, { silicates: 60, carbon: 20, hydrates: 15 }) && eq(p0, p1) };
+      t.craftReject = { status: rej.status, reason: rej.reason, missing: rej.missing, unchanged: eq(p0, p1), pass: rej.status === "rejected" && rej.reason === "materials" && eq(rej.missing, { fe_ni_metal: 15, silicates: 10 }) && eq(p0, p1) };
       const lockedRej = await submit({ type: "item.craft", opId: "craft-locked", itemId: "module_ping_array_mk1" });
       t.craftLocked = { reason: lockedRej.reason, pass: lockedRej.reason === "locked" && eq(p0, await player()) };
       // Accepted once; the same id again has no effect.
-      for (const [r, n] of [["silicates", 130], ["carbon", 45], ["hydrates", 40]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
+      for (const [r, n] of [["fe_ni_metal", 70], ["silicates", 25]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
       const ok1 = await submit({ type: "item.craft", opId: "craft-1", itemId: item });
       const ok2 = await submit({ type: "item.craft", opId: "craft-1", itemId: item });
       const p2 = await player();
       t.craftOnce = {
         statuses: [ok1.status, ok2.status], cargo: p2.cargo.items, count: p2.modules.consumables[item], hotbar: p2.modules.hotbar.indexOf(item), mirrors: await mirrorsMatch(),
-        pass: ok1.status === "accepted" && ok2.status === "duplicate" && p2.modules.consumables[item] === 1 && eq(p2.cargo.items, { silicates: 70, carbon: 25, hydrates: 25 }) && p2.modules.hotbar.includes(item) && (await mirrorsMatch()),
+        pass: ok1.status === "accepted" && ok2.status === "duplicate" && p2.modules.consumables[item] === 1 && eq(p2.cargo.items, { fe_ni_metal: 55, silicates: 15 }) && p2.modules.hotbar.includes(item) && (await mirrorsMatch()),
       };
       // Reload immediately after (pagehide flush): complete result, and the receipt survives.
       await ev(`${G}.submit({ type: "item.craft", opId: "craft-2", itemId: ${JSON.stringify(item)} })`);
@@ -252,28 +288,28 @@ export default async function gameplayCheck(d) {
       const dupAfterReload = await submit({ type: "item.craft", opId: "craft-2", itemId: item });
       t.craftReload = {
         count: p3.modules.consumables[item], cargo: p3.cargo.items, dup: dupAfterReload.status,
-        pass: p3.modules.consumables[item] === 2 && eq(p3.cargo.items, { silicates: 10, carbon: 5, hydrates: 10 }) && dupAfterReload.status === "duplicate",
+        pass: p3.modules.consumables[item] === 2 && eq(p3.cargo.items, { fe_ni_metal: 40, silicates: 5 }) && dupAfterReload.status === "duplicate",
       };
 
-      // Research: incomplete rejected, accepted once, retry after reload has no effect.
-      const poor = await submit({ type: "research.start", opId: "rs-0", nodeId: "a2a_active_scanning" });
-      await ev("__dev.grantAssay(3)");
-      const st = await submit({ type: "research.start", opId: "rs-1", nodeId: "a2a_active_scanning" });
-      const stDup = await submit({ type: "research.start", opId: "rs-1", nodeId: "a2a_active_scanning" });
+      // Research (M3.3): missing evidence rejected by name; a trial and an unlock accepted once; retry after reload has no effect.
+      const node = "lg1_bulk_handling"; // trials first_batch + first_fabrication (the craft above recorded it); 30 fe_ni_metal
+      const poor = await submit({ type: "research.unlock", opId: "ru-0", nodeId: node });
+      const tr1 = await submit({ type: "trial.record", opId: "tr-1", trialId: "first_batch" });
+      const tr1dup = await submit({ type: "trial.record", opId: "tr-1", trialId: "first_batch" });
+      const tr2 = await submit({ type: "trial.record", opId: "tr-2", trialId: "first_batch" });
+      const done1 = await submit({ type: "research.unlock", opId: "ru-1", nodeId: node });
       const pr = await player();
-      const early = await submit({ type: "research.complete", opId: "rc-1", nodeId: "a2a_active_scanning", elapsedS: 1 });
-      const done1 = await submit({ type: "research.complete", opId: "rc-2", nodeId: "a2a_active_scanning", elapsedS: 1e6 });
       await d.reload();
       await d.frames(5);
-      const done2 = await submit({ type: "research.complete", opId: "rc-2", nodeId: "a2a_active_scanning", elapsedS: 1e6 });
-      const done3 = await submit({ type: "research.complete", opId: "rc-3", nodeId: "a2a_active_scanning", elapsedS: 1e6 });
+      const done2 = await submit({ type: "research.unlock", opId: "ru-1", nodeId: node });
+      const done3 = await submit({ type: "research.unlock", opId: "ru-3", nodeId: node });
       const w1 = await world();
       t.research = {
-        start: [st.status, stDup.status, st.reason], assayAfterStart: pr.research.assaySamples, early: early.reason, done: [done1.status, done2.status, done3.reason],
-        poor: [poor.reason, poor.missing], completed: w1.research.completedNodes, active: (await player()).research.activeResearch, mirrors: await mirrorsMatch(),
-        pass: poor.reason === "assay" && st.status === "accepted" && stDup.status === "duplicate" && pr.research.assaySamples === 1 && early.reason === "incomplete" &&
-          done1.status === "accepted" && done2.status === "duplicate" && done3.reason === "not_active" &&
-          w1.research.completedNodes.filter((n) => n === "a2a_active_scanning").length === 1 && (await mirrorsMatch()),
+        poor: [poor.reason, poor.evidence], trial: [tr1.status, tr1dup.status, tr2.reason], done: [done1.status, done2.status, done3.reason], cargoAfter: pr.cargo.items,
+        completed: w1.research.completedNodes, mirrors: await mirrorsMatch(),
+        pass: poor.reason === "evidence" && eq(poor.evidence, ["trial:first_batch"]) && tr1.status === "accepted" && tr1dup.status === "duplicate" && tr2.reason === "already_done" &&
+          done1.status === "accepted" && done2.status === "duplicate" && done3.reason === "already_done" && eq(pr.cargo.items, { fe_ni_metal: 10, silicates: 5 }) &&
+          w1.research.completedNodes.filter((n) => n === node).length === 1 && (await mirrorsMatch()),
       };
 
       // Mining: one reward; same rock again (new id) rejected; gone after reload.
@@ -301,10 +337,10 @@ export default async function gameplayCheck(d) {
       const grantedSum = Object.values(granted).reduce((s, v) => s + v, 0);
       const cargoDelta = Object.values(after.cargo.items).reduce((s, v) => s + v, 0) - Object.values(before.cargo.items).reduce((s, v) => s + v, 0);
       t.mine = {
-        statuses: [m1.status, m2.status, m3.reason], granted, assay: [before.research.assaySamples, after.research.assaySamples], lifetime: [before.minedLifetime, after.minedLifetime],
+        statuses: [m1.status, m2.status, m3.reason], granted, newFamilies: m1.result?.newFamilies, lifetime: [before.minedLifetime, after.minedLifetime],
         presentAfterReload: present, keptAfterReload: eq(afterReload.cargo, after.cargo),
         pass: m1.status === "accepted" && m2.status === "duplicate" && m3.reason === "already_done" && grantedSum > 0 && cargoDelta === grantedSum &&
-          after.research.assaySamples === before.research.assaySamples + m1.result.assaySamples && after.minedLifetime === before.minedLifetime + 1 &&
+          Array.isArray(m1.result.newFamilies) && after.minedLifetime === before.minedLifetime + 1 &&
           present === false && eq(afterReload.cargo, after.cargo),
       };
 
@@ -333,8 +369,8 @@ export default async function gameplayCheck(d) {
 
       // Respawn once; wreck collection partial → full, accepted once, fuel/consumables respect limits.
       // Move away in the same task: the live WreckCollector must not race these operations.
-      const r1 = await ev(`(() => { const o = ${G}.submit({ type: "ship.respawn", opId: "resp-1", frameId: "earth", positionKm: [7000, 0, 0] }); ${G}.teleportToWreck(${JSON.stringify(wreckId)}, 5e6); return o; })()`);
-      const r2 = await submit({ type: "ship.respawn", opId: "resp-2", frameId: "earth", positionKm: [7000, 0, 0] });
+      const r1 = await ev(`(() => { const o = ${G}.submit({ type: "ship.respawn", opId: "resp-1", mode: "active" }); ${G}.teleportToWreck(${JSON.stringify(wreckId)}, 5e6); return o; })()`);
+      const r2 = await submit({ type: "ship.respawn", opId: "resp-2", mode: "active" });
       const pr1 = await player();
       t.respawn = { statuses: [r1.status, r2.reason], health: pr1.health, pass: r1.status === "accepted" && r2.reason === "not_dead" && !pr1.isDead && pr1.health === r1.result.health && pr1.health > 0 };
       const cap = (await ev(`${G}.mirrors()`)).cargoCapacity;
@@ -371,7 +407,7 @@ export default async function gameplayCheck(d) {
       // A flush queued right before an operation runs after it: the record is all-new, never half.
       await ev("__dev.grantCargo('carbon', 1)");
       await ev("__test.save.flush()");
-      const raced = await ev(`(async () => { const f = __test.save.flush(); const o = ${G}.submit({ type: "item.craft", opId: "craft-race", itemId: "consumable_assay_probe" }); await f; return o.status; })()`);
+      const raced = await ev(`(async () => { const f = __test.save.flush(); const o = ${G}.submit({ type: "item.craft", opId: "craft-race", itemId: "consumable_hull_patch_kit" }); await f; return o.status; })()`);
       const recR = await idb(id);
       const pR = await player();
       t.flushRace = { status: raced, pass: eq(recR.players[me].cargo, pR.cargo) && eq(recR.players[me].modules, pR.modules) };
@@ -380,27 +416,29 @@ export default async function gameplayCheck(d) {
 
     if (parts.includes("shared")) {
       const id = await fixture("shared", v1({
-        [me]: v1Player({ research: { assaySamples: 0, completedNodes: ["r0_microlab_boot"], activeResearch: { nodeId: "a1_sensor_calibration", elapsedS: 0 } }, cargo: { capacityUnits: 2000, items: { carbon: 5 } } }),
-        "player-b": v1Player({ research: { assaySamples: 6, completedNodes: [], activeResearch: { nodeId: "a1_sensor_calibration", elapsedS: 0 } }, cargo: { capacityUnits: 2000, items: { silicates: 200, fe_ni_metal: 80, carbon: 30, sulfur: 10 } } }),
+        [me]: v1Player({ cargo: { capacityUnits: 2000, items: { silicates: 22, carbon: 5 } } }),
+        "player-b": v1Player({ research: { assaySamples: 6, completedNodes: [], activeResearch: null }, cargo: { capacityUnits: 2000, items: { silicates: 200, fe_ni_metal: 80, carbon: 30, sulfur: 10 } } }),
       }));
       await boot(id);
       const a0 = await player();
       const b0 = await player("player-b");
       const bLocked = await submit({ type: "item.craft", opId: "b-craft-0", itemId: "module_prospector_scanner_mk1" }, "player-b");
-      const done = await submit({ type: "research.complete", opId: "a-rc", nodeId: "a1_sensor_calibration", elapsedS: 999 });
+      // A's inspections (shared findings: one rock per class) make Composition Survey available to both; A pays the analysis.
+      const src = (i, classId) => ({ id: `origin_belt:0,0,0:${i}`, fieldId: "origin_belt", chunkKey: "0,0,0", asteroidId: i, classId, frameId: "earth", positionKm: [0, 0, 0], radiusM: 10, composition: {}, depleted: false, foundAt: 1, by: me });
+      await ev(`${G}.m33.devSetWorld(${JSON.stringify({ discoveries: { families: {}, sources: [src(1, "s_type"), src(2, "c_type"), src(3, "x_type")], sites: {}, trials: {} } })})`);
+      const done = await submit({ type: "research.unlock", opId: "a-ru", nodeId: "sv1_composition_survey" });
       const bCraft = await submit({ type: "item.craft", opId: "b-craft-1", itemId: "module_prospector_scanner_mk1" }, "player-b");
-      const bLate = await submit({ type: "research.complete", opId: "b-rc", nodeId: "a1_sensor_calibration", elapsedS: 999 }, "player-b");
+      const bLate = await submit({ type: "research.unlock", opId: "b-ru", nodeId: "sv1_composition_survey" }, "player-b");
       const a1 = await player();
       const b1 = await player("player-b");
       const unknown = await submit({ type: "item.craft", opId: "x-craft", itemId: "module_prospector_scanner_mk1" }, "nobody");
       out.shared = {
-        bBefore: bLocked.reason, research: done.status, bCraft: bCraft.status, unknownPlayer: unknown.reason,
-        aCargoUnchanged: eq(a1.cargo, a0.cargo), aModulesUnchanged: eq(a1.modules, a0.modules), bGotModule: b1.modules.ownedModules,
-        bSpent: b1.cargo.items, assay: [a1.research.assaySamples, b1.research.assaySamples], bRefund: bLate.result?.refundedAssay, fuelSeparate: a1.propellant !== b1.propellant,
-        pass: bLocked.reason === "locked" && done.status === "accepted" && bCraft.status === "accepted" && unknown.reason === "unknown_player" &&
-          eq(a1.cargo, a0.cargo) && eq(a1.modules, a0.modules) && b1.modules.ownedModules.includes("module_prospector_scanner_mk1") &&
-          eq(b1.cargo.items, { silicates: 20, fe_ni_metal: 20, carbon: 10, sulfur: 2 }) && bLate.status === "accepted" && bLate.result.refundedAssay > 0 && b1.research.assaySamples === b0.research.assaySamples + bLate.result.refundedAssay &&
-          eq(b1.propellant, b0.propellant) && a1.research.activeResearch === null && b1.research.activeResearch === null,
+        bBefore: bLocked.reason, research: done.status, bCraft: bCraft.status, bLate: bLate.reason, unknownPlayer: unknown.reason,
+        aCargo: a1.cargo.items, aModulesUnchanged: eq(a1.modules, a0.modules), bGotModule: b1.modules.ownedModules,
+        bSpent: b1.cargo.items, fuelSeparate: eq(b1.propellant, b0.propellant),
+        pass: bLocked.reason === "locked" && done.status === "accepted" && bCraft.status === "accepted" && bLate.reason === "already_done" && unknown.reason === "unknown_player" &&
+          eq(a1.cargo.items, { silicates: 2, carbon: 5 }) && eq(a1.modules, a0.modules) && b1.modules.ownedModules.includes("module_prospector_scanner_mk1") &&
+          eq(b1.cargo.items, { silicates: 80, fe_ni_metal: 40, carbon: 30, sulfur: 10 }) && b1.legacy?.assaySamples === 6 && eq(b1.propellant, b0.propellant),
       };
     }
 
@@ -428,21 +466,34 @@ export default async function gameplayCheck(d) {
       const pm = await player();
       L.mine = { status: m.status, granted: m.result?.granted, cargo: pm.cargo.items, present, pass: m.status === "accepted" && present === false && eq(pm.cargo.items, m.result.granted) && pm.minedLifetime === 1 };
 
-      // Research through the real ticker: start (ResearchPanel's op) and let it run 45 s.
-      const s = await submit({ type: "research.start", opId: "live-rs", nodeId: "r0_microlab_boot" });
-      let completed = false;
-      const t0 = Date.now();
-      while (!completed && Date.now() - t0 < 60_000) {
-        await wait(2000);
-        completed = (await world()).research.completedNodes.includes("r0_microlab_boot");
+      // Close inspection through the real scanner path: lock the nearest rock, start (HUD action), let it run.
+      let near = [];
+      for (let i = 0; i < 40 && near.length === 0; i++) {
+        near = (await ev(`${G}.m33.rocks(200)`)).filter((r) => r.radiusM > 10 && r.instanceId !== rock.instanceId);
+        if (near.length === 0) await wait(250);
       }
-      L.research = { start: s.status, completed, seconds: Math.round((Date.now() - t0) / 1000), active: (await player()).research.activeResearch, pass: s.status === "accepted" && completed && (await player()).research.activeResearch === null };
+      const target = near[0];
+      await ev(`${G}.m33.approach(${JSON.stringify(target)}, ${target.radiusM / 1000 + 0.4})`);
+      await d.frames(10);
+      await ev(`${G}.res.face(${JSON.stringify(target)})`);
+      let focused = false;
+      for (let i = 0; i < 40 && !focused; i++) {
+        await wait(250);
+        focused = (await ev(`${G}.res.mining()`)).focused;
+      }
+      const started = await ev(`${G}.m33.startInspection()`);
+      const t0 = Date.now();
+      let src = null;
+      while (!src && Date.now() - t0 < 10_000) {
+        await wait(250);
+        src = (await world()).discoveries.sources.find((x) => x.asteroidId === target.instanceId) ?? null;
+      }
+      L.inspect = { focused, started, seconds: Math.round((Date.now() - t0) / 100) / 10, classId: src?.classId, composition: src?.composition, pass: focused && started && !!src && eq(src.composition, target.composition) };
 
-      // Craft through the crafting panel's action (r0 unlocks nothing craftable: grant the a1 node).
-      await submit({ type: "research.devSet", nodeIds: ["r0_microlab_boot", "a1_sensor_calibration"] });
-      for (const [r, n] of [["silicates", 60], ["carbon", 20], ["hydrates", 15]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
-      const c = await ev(`${G}.craft("consumable_assay_probe")`);
-      L.craft = { status: c?.status, count: (await player()).modules.consumables.consumable_assay_probe, pass: c?.status === "accepted" && (await player()).modules.consumables.consumable_assay_probe === 1 };
+      // Craft through the crafting panel's action: a starter blueprint needs no research.
+      for (const [r, n] of [["fe_ni_metal", 15], ["silicates", 10]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
+      const c = await ev(`${G}.craft("consumable_hull_patch_kit")`);
+      L.craft = { status: c?.status, count: (await player()).modules.consumables.consumable_hull_patch_kit, pass: c?.status === "accepted" && (await player()).modules.consumables.consumable_hull_patch_kit === 1 };
 
       // Die with cargo, reload while dead, respawn via the death screen button, then let the
       // WreckCollector pull the wreck in: partially (cargo nearly full), then fully.

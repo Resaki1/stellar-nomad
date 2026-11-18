@@ -238,6 +238,49 @@ const SOUNDS = [
   },
 ];
 
+// Close inspection (B11): rising two-tone start, a quiet 8 Hz scan tick loop, a bright confirm chirp.
+SOUNDS.push(
+  {
+    out: `${OUT_2D}/mining_inspect_start.opus`,
+    channels: 1,
+    render: () =>
+      deClick(
+        render(0.18, (t, d) => {
+          const f = t < 0.07 ? 1180 : 1580;
+          return Math.sin(2 * Math.PI * f * t) * env(t, d, 0.003, 0.06) * 0.42;
+        }),
+      ),
+  },
+  {
+    out: `${OUT_2D}/mining_inspect_loop.opus`,
+    channels: 1,
+    loop: true,
+    // 8 ticks per second over exactly 1 s, so the loop seam falls between ticks.
+    render: () =>
+      render(1.0, (t) => {
+        const ph = (t * 8) % 1;
+        const tick = ph < 0.018 ? Math.sin(2 * Math.PI * 2400 * t) * Math.sin((Math.PI * ph) / 0.018) : 0;
+        const bed = Math.sin(2 * Math.PI * 620 * t) * 0.05;
+        return (tick * 0.5 + bed) * 0.6;
+      }),
+  },
+  {
+    out: `${OUT_2D}/mining_inspect_complete.opus`,
+    channels: 1,
+    render: () =>
+      deClick(
+        render(0.3, (t, d) => {
+          const f = t < 0.08 ? 1320 : t < 0.16 ? 1760 : 2350;
+          return (Math.sin(2 * Math.PI * f * t) + 0.3 * Math.sin(4 * Math.PI * f * t)) * env(t, d, 0.002, 0.12) * 0.34;
+        }),
+      ),
+  },
+);
+
+// Optional name filter (`... inspect`): write only matching outputs, so a new placeholder does not
+// regenerate (and orphan) the ones real assets have replaced.
+const ONLY = process.argv[2] ?? null;
+
 // ── run ────────────────────────────────────────────────────────────────────
 function haveFfmpeg() {
   try {
@@ -260,6 +303,7 @@ mkdirSync(TMP, { recursive: true });
 
 let made = 0;
 for (const s of SOUNDS) {
+  if (ONLY && !s.out.includes(ONLY)) continue;
   const wav = join(TMP, s.out.replace(/\//g, "_").replace(/\.opus$/, ".wav"));
   writeWav(wav, s.render(), s.channels);
 

@@ -38,16 +38,20 @@ import { starDiscPool } from "@/components/space/starLodStatus";
 import { testProbe } from "@/components/TestHarness/testProbe";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
 import { isSimPaused } from "@/sim/simPause";
+import { beginArrival, repositionState, resetReposition, takeReposition } from "@/sim/ship/reposition";
+import { resetTimedEffectsAtom } from "@/store/timedEffects";
 import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
 import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
 import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { difficultyMults } from "@/sim/difficulty";
 import { propellantGate, stepShipResources, worstStepKg } from "@/sim/ship/resourceStep";
 import { loadResourcePrefs } from "@/store/resourceTuningPrefs";
 import { heatSinkBuffer, miningBeamRequest } from "@/store/mining";
 import {
   buildShipResourcesHud,
+  getShipTuning,
   settleShipResources,
   shipRes,
   shipResControl,
@@ -89,8 +93,6 @@ const collectImpact = (im: Readonly<Impact>): void => {
   else Object.assign(_impactPool[k], im);
   _impactsThisFrame.push(_impactPool[k]);
 };
-/** M3 seam: the difficulty setting's collision-damage multiplier plugs in here. */
-const DIFFICULTY_DAMAGE_MULT = 1;
 const _motion: ShipMotion = {
   accelRight: 0, accelUp: 0, accelForward: 0, speedFrac: 0, boosting: false,
   freeLook: false, freeLookYaw: 0, freeLookPitch: 0, shakeSignal: 0, benchMode: false,
@@ -233,7 +235,7 @@ const SpaceShip = memo(() => {
   const applyImpact = useCallback((im: Readonly<Impact>, ship: ShipState): boolean => {
     const t = getPhysicsTuning();
     const cfg = store.get(effectiveShipConfigAtom);
-    const dmg = impactDamageHp(im, t, cfg.maxHealth, cfg.collisionDamageMult, DIFFICULTY_DAMAGE_MULT);
+    const dmg = impactDamageHp(im, t, cfg.maxHealth, cfg.collisionDamageMult, difficultyMults().collisionDamage);
     const health = Math.max(0, store.get(shipHealthAtom) - dmg);
     if (dmg > 0) store.set(shipHealthAtom, health);
     const fatal = dmg > 0 && health <= 0;
@@ -271,6 +273,39 @@ const SpaceShip = memo(() => {
   // Track dead state to show/hide ship mesh
   const wasDeadRef = useRef(false);
 
+  /**
+   * Proper runtime reposition: frame-relative pose, prev/current interpolation, velocities,
+   * boost, transit, fixed-step accumulator, absolute position + floating origin, input/mouse
+   * intent, camera rig and shake, model lean, near-field reseed, pending impacts.
+   */
+  const applyReposition = useCallback((ship: ShipState, frameId: string, relKm: readonly number[], quat: readonly number[] | null): void => {
+    ship.frameId = frameId;
+    ship.posKm.set(relKm[0], relKm[1], relKm[2]);
+    if (quat) ship.quat.set(quat[0], quat[1], quat[2], quat[3]);
+    resetShipMotion(ship);
+    updateShipAbsolute(ship);
+    frameOriginKm(ship.frameId, _frameOrigin);
+    worldOrigin.setShipPosKm(ship.absPosKm);
+    worldOrigin.setWorldOriginKm(ship.absPosKm);
+    physicsAcc.current = 0;
+    _vPrev.set(0, 0, 0);
+    _motion.accelForward = _motion.accelRight = _motion.accelUp = 0;
+    chaseCamera.current.snap();
+    store.set(cameraShakeIntensityAtom, 0);
+    if (modelRef.current) modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
+    resetPlayerInput();
+    resetMouseSteering();
+    killTransitDrive();
+    nearField.markReseed();
+    _impacts.reset();
+    shipView.forward.set(0, 0, 1).applyQuaternion(ship.quat);
+    holdSavedPose(false);
+    publishShipPose(ship);
+    repositionState.applied++;
+  }, [store, worldOrigin]);
+
+  useEffect(() => () => resetReposition(), []);
+
   useFrame(({ camera, size }, delta) => {
     if (!shipRef.current || !modelRef.current) return;
     const ship = shipState.current;
@@ -282,6 +317,8 @@ const SpaceShip = memo(() => {
         shipRef.current.visible = false;
         wasDeadRef.current = true;
         killTransitDrive();
+        // The dashboard behind the recovery screen shows the emptied tank, not the last live frame.
+        store.set(shipResourcesHudAtom, buildShipResourcesHud());
       }
       // The wreck site keeps riding its frame while the death screen is up.
       updateShipAbsolute(ship);
@@ -291,16 +328,9 @@ const SpaceShip = memo(() => {
       return;
     }
     if (wasDeadRef.current) {
-      // Just respawned — re-show ship at rest, kill residual shake
+      // Recovered: the recovery's reposition request (below) moves and resets the ship.
       shipRef.current.visible = true;
-      resetShipMotion(ship);
-      resetPlayerInput();
-      resetMouseSteering();
-      chaseCamera.current.snap();
-      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
-      store.set(cameraShakeIntensityAtom, 0);
-      nearField.markReseed();
-      _impacts.reset();
+      store.set(resetTimedEffectsAtom);
       wasDeadRef.current = false;
     }
 
@@ -308,30 +338,16 @@ const SpaceShip = memo(() => {
     // that would make a measurement irreproducible. See benchModeAtom.
     const benchMode = store.get(benchModeAtom);
 
-    // ── Dev warp (one-shot) ────────────────────────────────────────────
-    // Zero everything carrying motion: prevPosKm (else the swept collider sweeps from the
-    // OLD position through every planet in between), velocity, throttle, transit drive.
+    // ── Reposition (recovery, dev warp): one reset of every motion/camera/input/physics buffer ──
     const warp = store.get(devTeleportAtom);
     if (warp) {
-      ship.frameId = warp.frameId;
-      ship.posKm.set(warp.relKm[0], warp.relKm[1], warp.relKm[2]);
-      if (warp.quaternion) {
-        ship.quat.set(warp.quaternion[0], warp.quaternion[1], warp.quaternion[2], warp.quaternion[3]);
-      }
-      resetShipMotion(ship);
-      updateShipAbsolute(ship);
-      worldOrigin.setShipPosKm(ship.absPosKm);
-      worldOrigin.setWorldOriginKm(ship.absPosKm);
-      physicsAcc.current = 0;
-      chaseCamera.current.snap();
-      modelRef.current.rotation.x = modelRef.current.rotation.z = 0;
-      resetPlayerInput();
-      resetMouseSteering();
-      killTransitDrive();
-      nearField.markReseed();
-      _impacts.reset();
+      applyReposition(ship, warp.frameId, warp.relKm, warp.quaternion ?? null);
       store.set(devTeleportAtom, null);
-      holdSavedPose(false);
+    }
+    const req = takeReposition();
+    if (req) {
+      applyReposition(ship, req.frameId, req.relKm, req.quaternion);
+      if (req.holdUntilReady) beginArrival(performance.now());
     }
 
     const inputDt = isSimPaused() ? 0 : Math.min(delta, MAX_FRAME_DT);
@@ -386,7 +402,7 @@ const SpaceShip = memo(() => {
     applyHeatSinks();
     updateShipRequests(store, devSpeed !== null, miningBeamRequest.on);
     updateTransitInputs(store, _input);
-    const rt = getResourceTuning();
+    const rt = getShipTuning();
     const worstKg = worstStepKg(_env.tuning, rt, cfg.accelerationMult, cfg.decelerationMult, FIXED_DT);
 
     // ── Fixed-timestep physics loop ────────────────────────────────────
@@ -410,6 +426,7 @@ const SpaceShip = memo(() => {
       _env.desiredForwardRateRadPerS = tBuf.desiredRateRadPerS;
       nearField.setGates(burning || tBuf.speedKmps > 0, devSpeed !== null, false);
       shipReq.transitDvKmps = tBuf.stepDvKmps;
+      shipReq.transitKm = tBuf.stepKm;
       shipReq.transitHeatKW = tBuf.stepHeatKW;
       shipReq.reservedKg = transitReserveKg(tBuf, rt);
       propellantGate(shipRes, worstKg, rt, _gate, shipReq.reservedKg);

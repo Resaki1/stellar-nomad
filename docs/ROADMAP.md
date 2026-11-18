@@ -348,6 +348,30 @@ usable zero-fuel/invalid/isolated-point recovery, migration/reload integrity, me
 performance, and passing M0–M2 regressions. Detailed cases are in the plan; reaching
 the Moon alone is insufficient.
 
+**M3 as built** (2026-11-17, branch `m3b-discovery-progression`; PR 1 `m3a-survival-core` + PR 2;
+details and every measurement: [`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md) §13). Gate script:
+`scripts/drive-examples/gameplay-check.mjs` (parts listed in CLAUDE.md), disposable `[gc] ` worlds.
+- Save schema 1 → 5 (append-only migrations, sanitisers, import/export): world-owned research,
+  discoveries, receipts, replication points and site findings; per-player fuel, power, processing,
+  bookmarks, active point and tracked project. Every grant/spend is an accepted domain operation.
+- Ship resources on executed time: propellant per delivered Δv (coasting free), reactor/capacitor,
+  one heat store, onboard hydrate processing, paid repair. Fuel-aware transit with prediction = execution,
+  braking reserve and one clearance leg; Earth → Moon ≈ 241 kg / 56 s at the default epoch.
+- Discovery research: close inspection, typed evidence and trials, 10 options, 16 items, two viable first
+  priorities (survey vs extraction/cooling); transit from starter evidence; no assay grind, no helium-3.
+- Replication points, atomic death/abandonment, cargo/consumable/fuel wrecks with partial salvage,
+  protected allowance and an explicit origin-point fallback.
+- M3.7: authored Earth pockets (a hydrate source 10 km from the start for every seed), lunar field
+  without helium-3 (22 % titanium, 12 % hydrates), a lunar survey canister (inspect, recover once, an
+  optional sensor suite), tracked projects, 4 sparse comms + 12 one-time hints + help records,
+  Explorer/Standard/Hard rate multipliers, glance HUD. Fixed on the way: asteroid instance-id collisions
+  across chunks, a transit route that spent a whole tank detouring round a second body, gaze stealing a
+  menu-pinned destination, narrow-screen overlaps.
+- M3.8: three scripted sessions pass (survey-first to the lunar unlock; one-way relocation with five
+  lunar refuel cycles, a repair and a lunar kit; out-of-fuel abandonment, salvage and the origin
+  fallback); exploit sweep yields nothing. Open: the owner's playtest (is the loop understandable and
+  enjoyable; the scripted survey-first path is ~10 min of actions against the 60–90 min target).
+
 ### M4 — Co-op v1 · size L · *own plan doc*
 
 - **N0 session + transport** (D1): host-authoritative; the host's game applies commands.

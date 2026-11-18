@@ -22,16 +22,14 @@ import { DEFAULT_SIM_EPOCH_MS, jdFromUnixMs } from "@/sim/ephemeris";
 import { isSimPaused } from "@/sim/simPause";
 
 /**
- * The instant the simulation is currently at, UTC epoch milliseconds.
- *
- * Defaults to the **2024-04-08 total solar eclipse at greatest eclipse**, which
- * is not an arbitrary choice: it is the validation case `__lum.ephemeris()`
- * checks against published values (greatest eclipse 18:17 UTC, γ = 0.3435), so
- * a fresh session starts somewhere the system's correctness is verifiable.
+ * The 2024-04-08 total solar eclipse at greatest eclipse: the case `__lum.ephemeris()`, the
+ * bench and the eclipse checks validate against (18:17 UTC, γ = 0.3435). Its own literal, not
+ * the new-world default (`DEFAULT_SIM_EPOCH_MS`, far future since M3 playtest 1).
  */
-export const ECLIPSE_2024_04_08_MS = DEFAULT_SIM_EPOCH_MS;
+export const ECLIPSE_2024_04_08_MS = Date.UTC(2024, 3, 8, 18, 17, 0);
 
-const simEpochMsBaseAtom = atom<number>(ECLIPSE_2024_04_08_MS);
+/** The instant the simulation is at, UTC epoch ms (the active save overrides it on load). */
+const simEpochMsBaseAtom = atom<number>(DEFAULT_SIM_EPOCH_MS);
 
 /**
  * ⚠⚠ WRITE-THROUGH: setting this SOLVES THE EPHEMERIS IMMEDIATELY, it does not

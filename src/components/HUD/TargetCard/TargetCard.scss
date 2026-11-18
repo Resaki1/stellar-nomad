@@ -1,0 +1,189 @@
+@use '../../../styles' as s;
+
+// Attached to the reticle root (moved to the nose each frame): left = nose + 44 px, top = nose − 28 px.
+// Fixed 232 × 104 (4 rows × 22 px + padding), 82 for the 3-row kinds: within a kind nothing shifts.
+.target-card {
+  position: absolute;
+  left: 44px;
+  top: -28px;
+  width: 232px;
+  height: 104px;
+  box-sizing: border-box;
+  padding: 4px s.$space-2 4px s.$space-3;
+  display: grid;
+  grid-template-rows: repeat(4, 22px);
+  // Opaque enough that POI labels and a bright Moon behind it do not read through its rows.
+  background: rgba(2, 5, 10, 0.95);
+  border-left: 1px solid s.$accent-info;
+  color: s.$text-primary;
+  font-family: s.$font-ui;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity s.$dur-fast s.$ease-out, visibility 0s linear s.$dur-fast;
+  pointer-events: none;
+
+  &--rows3 {
+    height: 82px;
+    grid-template-rows: repeat(3, 22px);
+  }
+
+  &--visible {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity s.$dur-fast s.$ease-out;
+  }
+
+  &--site,
+  &--wreck { border-left-color: s.$accent-signal; }
+  &--point,
+  &--place { border-left-color: s.$accent-ok; }
+
+  // Flipped to the reticle's left when it would cross the right edge (drawFlightHud sets data-flip).
+  .reticle[data-flip='1'] & {
+    left: auto;
+    right: 44px;
+  }
+
+  // Narrow: centred below the reticle.
+  @media (max-width: 599px) {
+    &,
+    .reticle[data-flip='1'] & {
+      left: -120px;
+      right: auto;
+      top: 40px;
+      width: 240px;
+    }
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+
+    &--head {
+      justify-content: space-between;
+    }
+
+    &--facts {
+      justify-content: space-between;
+      @include s.t-sm;
+      font-family: s.$font-mono;
+      font-variant-numeric: tabular-nums;
+      color: s.$text-secondary;
+    }
+
+    &--actions {
+      gap: s.$space-3;
+    }
+  }
+
+  &__name {
+    @include s.t-sm;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__dist {
+    @include s.t-sm;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    color: s.$text-secondary;
+    flex: 0 0 auto;
+  }
+
+  &__fact,
+  &__tag,
+  &__state,
+  &__warn,
+  &__why {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  &__tag { @include s.t-sm; color: s.$accent-ok; font-family: s.$font-ui; }
+  &__state { @include s.t-sm; font-family: s.$font-ui; }
+  &__state--ok { color: s.$accent-ok; }
+  &__state--bad { color: s.$accent-warn; }
+  &__state--live { color: s.$accent-signal; animation: tcPulse 1s ease-in-out infinite alternate; }
+
+  &__muted {
+    @include s.t-sm;
+    color: s.$text-tertiary;
+  }
+
+  &__icon { color: s.$text-secondary; flex: 0 0 auto; }
+
+  &__act {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    @include s.t-sm;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+
+    &--off {
+      color: s.$text-tertiary;
+    }
+  }
+
+  &__why {
+    margin-left: 2px;
+    color: s.$accent-warn;
+    font-weight: 500;
+  }
+
+  &__bar {
+    position: relative;
+    flex: 1 1 auto;
+    height: 4px;
+    background: s.$stroke-faint;
+    overflow: hidden;
+
+    &--info .target-card__bar-fill { background: s.$accent-info; }
+    &--heat .target-card__bar-fill { background: s.$accent-heat; }
+    &--signal .target-card__bar-fill { background: s.$accent-signal; }
+  }
+
+  &__bar-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    transition: width s.$dur-instant linear;
+  }
+
+  &__input {
+    pointer-events: auto;
+    width: 112px;
+    height: 18px;
+    box-sizing: border-box;
+    padding: 0 s.$space-1;
+    font-family: s.$font-ui;
+    @include s.t-sm;
+    color: s.$text-primary;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid s.$stroke-strong;
+    border-radius: s.$radius-sm;
+    outline: none;
+
+    &:focus {
+      border-color: s.$accent-ok;
+    }
+  }
+
+  &__warn {
+    @include s.t-xs;
+    letter-spacing: 0.02em;
+    color: s.$accent-warn;
+  }
+
+  @keyframes tcPulse {
+    from { opacity: 0.6; }
+    to { opacity: 1; }
+  }
+}

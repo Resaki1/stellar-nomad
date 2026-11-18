@@ -94,6 +94,9 @@ export function drawFlightHud(
   projectDir(_fwd, camera, vp, h.reticle);
   show(e.nose, h.reticle.visible);
   place(e.nose, h.reticle);
+  // The Target Card (232 px at nose + 44) flips to the left before it crosses the right edge.
+  const flip = h.reticle.x + 44 + 232 > vp[0] + vp[2] - 16 ? "1" : "0";
+  if (e.nose && e.nose.dataset.flip !== flip) e.nose.dataset.flip = flip;
 
   const steering = mouseState.attached && !mouseState.freeLook;
   const stickMode = steering && mouseConfig.mode === "stick";

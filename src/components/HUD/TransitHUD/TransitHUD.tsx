@@ -1,109 +1,95 @@
 "use client";
 
 import { useAtomValue } from "jotai";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import {
   transitStateAtom,
   transitDriveOwnedAtom,
   transitDriveBuffer,
   transitPreviewAtom,
-  TRANSIT_SPOOL_TIME_S,
   type TransitPreview,
 } from "@/store/transit";
-import { displayKey, keybindsAtom } from "@/store/keybinds";
-import { formatDuration } from "@/sim/units";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
-import { ALREADY_THERE, spoolStepsFor } from "@/sim/ship/transitDrive";
+import { ALREADY_THERE, NEEDS_FUEL, TANK_TOO_SMALL, spoolStepsFor } from "@/sim/ship/transitDrive";
+import { KeyChip } from "../shared/Chips";
 
 import "./TransitHUD.scss";
 
-function formatVelocity(kmps: number): string {
-  if (kmps < 1) return `${Math.round(kmps * 1000)} m/s`;
-  if (kmps < 1000) return `${kmps.toFixed(1)} km/s`;
-  return `${(kmps / 1000).toFixed(2)}k km/s`;
+/** `8,412 km` below 10,000 km, `356k km` above. */
+export const fmtRouteKm = (km: number): string =>
+  km < 10_000 ? `${Math.round(Math.max(0, km)).toLocaleString("en-US")} km` : `${Math.round(km / 1000).toLocaleString("en-US")}k km`;
+/** `mm:ss` under an hour, `h:mm` above. */
+export function fmtEta(s: number): string {
+  if (!Number.isFinite(s) || s < 0) return "--:--";
+  const t = Math.ceil(s);
+  if (t < 3600) return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+  return `${Math.floor(t / 3600)}:${String(Math.floor((t % 3600) / 60)).padStart(2, "0")}`;
 }
-
-function formatLightPercent(kmps: number): string {
-  const pct = (kmps / 299_792.458) * 100;
-  return pct < 0.01 ? "" : `${pct.toFixed(2)}% c`;
-}
-
-const kg = (x: number): string => `${Math.round(Math.max(0, x))} kg`;
+const kg = (x: number): string => `${Math.round(Math.max(0, x)).toLocaleString("en-US")} kg`;
 
 const SPOOL_CIRCUMFERENCE = 2 * Math.PI * 20;
+/** DOM text writes from the drive buffer, s (the slots are fixed; only the digits change). */
+const WRITE_PERIOD_MS = 100;
+/** The `Obstacle` chip stays this long after a proximity brake. */
+const OBSTACLE_CHIP_MS = 4000;
 
-/** Fuel / ETA / balance rows and warnings for a planned or running route. */
-function PlanRows({ p, keyLabel, idle }: { p: TransitPreview; keyLabel: string; idle: boolean }) {
+function Row({ label, children, valueRef, bad }: { label: string; children?: string; valueRef?: Ref<HTMLSpanElement>; bad?: boolean }) {
   return (
-    <>
-      {p.ok ? (
-        <dl className="transit-hud__plan">
-          <dt>ETA</dt>
-          <dd className="transit-hud__plan-eta">{formatDuration(p.etaS)}</dd>
-          <dt>{idle ? "Fuel" : "To burn"}</dt>
-          <dd>{kg(p.fuelKg)}</dd>
-          <dt>On arrival</dt>
-          <dd>{kg(p.arrivalOrdinaryKg)}</dd>
-          <dt>Reserve</dt>
-          <dd>{kg(p.protectedKg)} protected</dd>
-        </dl>
-      ) : (
-        <div className="transit-hud__warn transit-hud__warn--crit">Refused: {p.reason}</div>
-      )}
-      {p.ok && p.viaName && (
-        <div className="transit-hud__warn">
-          {p.viaName} blocks the line: {p.legCount} legs via a clearance point
-        </div>
-      )}
-      {p.ok && p.slow && <div className="transit-hud__warn">Low fuel: slower leg with a coast phase</div>}
-      {idle && (
-        <div className="transit-hud__hint">
-          {p.ok ? `Hold ${keyLabel} to engage · ` : ""}assumes no detours or mining
-        </div>
-      )}
-    </>
+    <div className="transit-hud__row">
+      <span className="transit-hud__label">{label}</span>
+      <span className={`transit-hud__value${bad ? " transit-hud__status--bad" : ""}`} ref={valueRef}>
+        {children}
+      </span>
+    </div>
   );
 }
 
 /**
- * Transit readouts. Phase, target and the 4 Hz route preview come from atoms; speed, spool
- * and distance are written to the DOM from the drive buffer in a rAF loop (no React per frame).
+ * Route panel, top-right (§2.4): fixed width, fixed rows per state (plan / active), tabular
+ * fixed-format numbers. Speed lives on the dashboard only (R3); BURN is the trip's fuel, so it
+ * cannot be misread as the tank. Distance is written from the drive buffer by a throttled rAF
+ * loop into fixed slots (no React per frame); a refusal keeps the last good numbers, greyed.
  */
 export default function TransitHUD() {
   const state = useAtomValue(transitStateAtom);
   const owned = useAtomValue(transitDriveOwnedAtom);
-  const keybinds = useAtomValue(keybindsAtom);
   const preview = useAtomValue(transitPreviewAtom);
 
   const spoolFillRef = useRef<SVGCircleElement>(null);
-  const spoolLabelRef = useRef<HTMLDivElement>(null);
-  const velocityRef = useRef<HTMLDivElement>(null);
-  const lightPctRef = useRef<HTMLDivElement>(null);
-  const targetDistRef = useRef<HTMLSpanElement>(null);
+  const distRef = useRef<HTMLSpanElement>(null);
+  const obstacleRef = useRef<HTMLSpanElement>(null);
+
+  // Last accepted numbers for the current destination (a transient refusal keeps them, greyed).
+  const [lastGood, setLastGood] = useState<TransitPreview | null>(null);
+  useEffect(() => {
+    if (preview?.ok) setLastGood(preview);
+  }, [preview]);
 
   useEffect(() => {
     let running = true;
     const spoolSteps = spoolStepsFor(FIXED_DT);
-    const tick = () => {
+    let lastWrite = 0;
+    let seenProximity = transitDriveBuffer.ev.proximity;
+    let obstacleUntil = 0;
+    const setText = (el: HTMLElement | null, text: string): void => {
+      if (el && el.textContent !== text) el.textContent = text;
+    };
+    const tick = (now: number): void => {
       if (!running) return;
       const buf = transitDriveBuffer;
-      if (buf.phase === "spooling" && spoolFillRef.current && spoolLabelRef.current) {
+      if (buf.phase === "spooling" && spoolFillRef.current) {
         const progress = Math.min(1, buf.spoolSteps / spoolSteps);
         spoolFillRef.current.setAttribute("stroke-dasharray", `${progress * SPOOL_CIRCUMFERENCE} ${SPOOL_CIRCUMFERENCE}`);
-        spoolLabelRef.current.textContent = `${Math.round(progress * 100)}%`;
       }
-      if (buf.phase !== "idle" && buf.phase !== "spooling") {
-        const speed = buf.speedKmps;
-        if (velocityRef.current) velocityRef.current.textContent = formatVelocity(speed);
-        if (lightPctRef.current) {
-          const pct = formatLightPercent(speed);
-          lightPctRef.current.textContent = pct;
-          lightPctRef.current.style.display = pct ? "" : "none";
-        }
-        if (buf.autopilot && targetDistRef.current) {
-          const dist = buf.distKm;
-          targetDistRef.current.textContent = dist >= 1000 ? `${(dist / 1000).toFixed(1)}k km` : `${Math.round(dist)} km`;
-        }
+      if (buf.ev.proximity !== seenProximity) {
+        seenProximity = buf.ev.proximity;
+        obstacleUntil = now + OBSTACLE_CHIP_MS;
+      }
+      if (now - lastWrite >= WRITE_PERIOD_MS) {
+        lastWrite = now;
+        setText(distRef.current, buf.autopilot ? fmtRouteKm(buf.distKm) : "");
+        const obstacle = buf.phase !== "idle" && now < obstacleUntil;
+        if (obstacleRef.current && obstacleRef.current.hidden === obstacle) obstacleRef.current.hidden = !obstacle;
       }
       requestAnimationFrame(tick);
     };
@@ -116,14 +102,26 @@ export default function TransitHUD() {
 
   if (!owned) return null;
 
-  const transitKey = keybinds.transitDrive[0];
-  const keyLabel = transitKey ? displayKey(transitKey) : "T";
   const phase = state.phase;
-  const active = phase === "accelerating" || phase === "coasting" || phase === "decelerating";
+  const idle = phase === "idle";
   const spooling = phase === "spooling";
   const route = state.target;
-  const leg = state.legCount > 1 ? `Leg ${state.legIndex + 1}/${state.legCount}${state.legIndex === 0 ? " · clearance point" : ""}` : null;
   const plan = preview && (!route || preview.targetId === route.id) ? preview : null;
+  const showPanel = idle ? !!plan && plan.reason !== ALREADY_THERE : true;
+  // Numbers: the live plan when it is good, else the last good one for the same destination (greyed).
+  const nums = plan?.ok ? plan : lastGood && plan && lastGood.targetId === plan.targetId ? lastGood : null;
+  // A fuel refusal shows the route's need against the tank in the fixed rows instead of stale numbers.
+  const fuelShort = !!plan && !plan.ok && (plan.reason === TANK_TOO_SMALL || plan.reason === NEEDS_FUEL) && plan.needKg > 0;
+  const stale = !!plan && !plan.ok && !fuelShort;
+  const name = plan?.targetName ?? route?.name ?? "Free flight";
+  const legs = nums && nums.legCount > 1 ? nums.legCount : 0;
+  const leg = state.legCount > 1 ? `Leg ${state.legIndex + 1}/${state.legCount}` : "";
+
+  let status: ReactNode;
+  if (idle) status = plan && !plan.ok ? <span className="transit-hud__status--bad">{plan.reason}</span> : <>Hold <KeyChip action="transitDrive" /></>;
+  else if (spooling) status = <>Hold <KeyChip action="transitDrive" /></>;
+  else if (route) status = <><KeyChip action="transitDrive" /> Abort</>;
+  else status = phase === "decelerating" ? "" : <><KeyChip action="transitDrive" /> Brake</>;
 
   return (
     <>
@@ -134,44 +132,51 @@ export default function TransitHUD() {
               <circle cx="24" cy="24" r="20" className="transit-hud__spool-track" />
               <circle ref={spoolFillRef} cx="24" cy="24" r="20" className="transit-hud__spool-fill" strokeDasharray={`0 ${SPOOL_CIRCUMFERENCE}`} />
             </svg>
-            <div ref={spoolLabelRef} className="transit-hud__spool-label">0%</div>
           </div>
-          <div className="transit-hud__spool-text">TRANSIT DRIVE SPOOLING</div>
-          <div className="transit-hud__spool-hint">{leg ?? `Hold ${keyLabel} to engage`}</div>
+          <div className="transit-hud__spool-text">SPOOLING</div>
+          <div className="transit-hud__spool-hint">
+            Hold <KeyChip action="transitDrive" />
+          </div>
         </div>
       )}
 
-      {phase === "idle" && plan && plan.reason !== ALREADY_THERE && (
-        <div className="transit-hud transit-hud--side transit-hud--preview">
-          <div className="transit-hud__phase-label">Transit plan</div>
-          <div className="transit-hud__target-name">{plan.targetName}</div>
-          <PlanRows p={plan} keyLabel={keyLabel} idle />
-        </div>
-      )}
-
-      {(active || (spooling && route)) && (
-        <div className="transit-hud transit-hud--side transit-hud--active">
-          <div className="transit-hud__phase-label">{spooling ? "SPOOLING" : phase.toUpperCase()}</div>
-          {active && <div ref={velocityRef} className="transit-hud__velocity">0 km/s</div>}
-          {active && <div ref={lightPctRef} className="transit-hud__light-pct" style={{ display: "none" }} />}
-          {route && (
-            <div className="transit-hud__target-info">
-              <div className="transit-hud__target-name">{route.name}</div>
-              {active && (
-                <div className="transit-hud__target-meta">
-                  <span ref={targetDistRef} className="transit-hud__target-dist">—</span>
-                  {leg && <span className="transit-hud__target-sep">·</span>}
-                  {leg && <span className="transit-hud__leg">{leg}</span>}
-                </div>
-              )}
+      {showPanel && (
+        <div
+          className={`transit-hud transit-hud--side ${idle ? "transit-hud--preview" : "transit-hud--active"}${stale ? " transit-hud--stale" : ""}`}
+          data-testid="transit-panel"
+        >
+          <div className="transit-hud__head">
+            <span className="transit-hud__name">{name}</span>
+            <span className="transit-hud__chips">
+              {legs > 0 && <span className="transit-hud__chip">{legs} legs</span>}
+              {nums?.slow && <span className="transit-hud__chip transit-hud__chip--warn">Coast</span>}
+              <span ref={obstacleRef} className="transit-hud__chip transit-hud__chip--warn" hidden>
+                Obstacle
+              </span>
+            </span>
+          </div>
+          <div className="transit-hud__live">
+            <div className="transit-hud__row transit-hud__row--phase">
+              <span className="transit-hud__phase">{idle ? "" : phase.toUpperCase()}</span>
+              <span className="transit-hud__leg">{leg}</span>
             </div>
-          )}
-          {route && plan && <PlanRows p={plan} keyLabel={keyLabel} idle={false} />}
-          <div className="transit-hud__hint">
-            {active && !route && phase !== "decelerating" && <>Press {keyLabel} to brake</>}
-            {active && route && <>Autopilot · {keyLabel} aborts to a safe stop</>}
-            {active && !route && phase === "decelerating" && <>Braking…</>}
+            <Row label="DIST" valueRef={distRef} />
           </div>
+          <div className="transit-hud__nums">
+            <Row label="ETA">{nums && !fuelShort ? fmtEta(nums.etaS) : "--:--"}</Row>
+            {fuelShort && plan ? (
+              <>
+                <Row label="NEED" bad>{kg(plan.needKg)}</Row>
+                <Row label="TANK" bad={plan.needKg > plan.tankKg}>{kg(plan.tankKg)}</Row>
+              </>
+            ) : (
+              <>
+                <Row label="BURN">{nums ? kg(nums.fuelKg) : "—"}</Row>
+                <Row label="LEFT">{nums ? kg(nums.arrivalOrdinaryKg) : "—"}</Row>
+              </>
+            )}
+          </div>
+          <div className="transit-hud__status">{status}</div>
         </div>
       )}
     </>

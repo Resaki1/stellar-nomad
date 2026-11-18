@@ -8,9 +8,12 @@ import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
 import { wrecksMirrorAtom } from "@/store/death";
-import { sharedResearchMirrorAtom } from "@/store/research";
+import { discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources } from "@/store/shipResources";
+import { replicationPointsAtom } from "@/store/replicationMirror";
+import { resetReposition } from "@/sim/ship/reposition";
+import { targetedPOIAtom } from "@/store/transit";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -25,6 +28,9 @@ export function installWorldBridge(store: Store): void {
   store.set(simRateAtom, world.simRate);
   store.set(wrecksMirrorAtom, world.wrecks);
   store.set(sharedResearchMirrorAtom, world.research.completedNodes);
+  store.set(discoveriesMirrorAtom, world.discoveries);
+  store.set(replicationPointsAtom, world.replication.points);
+  resetReposition();
   const local = getLocalPlayerId();
 
   const unsubscribe = worldAuthority.subscribe((e) => {
@@ -36,6 +42,20 @@ export function installWorldBridge(store: Store): void {
         break;
       case "research.changed":
         store.set(sharedResearchMirrorAtom, getWorldState().research.completedNodes);
+        break;
+      case "discoveries.changed": {
+        const d = getWorldState().discoveries;
+        store.set(discoveriesMirrorAtom, d);
+        // A destination rock that was mined or destroyed (by anyone) is no place to go.
+        const t = store.get(targetedPOIAtom);
+        if (t?.id.startsWith("source:")) {
+          const s = d.sources.find((x) => `source:${x.id}` === t.id);
+          if (!s || s.depleted) store.set(targetedPOIAtom, null);
+        }
+        break;
+      }
+      case "replication.changed":
+        store.set(replicationPointsAtom, getWorldState().replication.points);
         break;
       case "player.changed":
         if (e.playerId === local) {
