@@ -85,6 +85,54 @@ export function describeRequirement(r: Requirement, met = false): string {
   }
 }
 
+/** Chip glyph for a requirement (the UI maps it to an icon). */
+export type ReqChipIcon = "material" | "class" | "beam" | "batch" | "craft" | "transit" | "site" | "research";
+
+/** Compact chip: icon + ≤ 3-word label; `tip` (≤ 8 words) carries the full requirement. */
+export interface ReqChipSpec {
+  icon: ReqChipIcon;
+  label: string;
+  tip: string;
+  material?: string;
+  scan?: boolean;
+}
+
+const CLASS_BADGE: Record<string, string> = { s_type: "S", c_type: "C", x_type: "X", l_regolith: "LR", l_metallic: "LM", l_volatile: "LV" };
+
+/** Short trial names and tooltips (Discoveries and chips). */
+export const TRIAL_CHIPS: Record<string, { icon: ReqChipIcon; label: string; tip: string }> = {
+  sustained_beam: { icon: "beam", label: "Beam 8 s", tip: "Mine one rock 8 s without overheating" },
+  first_batch: { icon: "batch", label: "First batch", tip: "Process hydrates into fuel once" },
+  first_fabrication: { icon: "craft", label: "First craft", tip: "Craft any item" },
+  transit_leg: { icon: "transit", label: "Transit leg", tip: "Finish one transit leg" },
+};
+
+export function requirementChip(r: Requirement): ReqChipSpec {
+  const pct = Math.round(FAMILY_MIN_SHARE * 100);
+  switch (r.kind) {
+    case "family": {
+      const m = materialName(r.material);
+      return r.inspected
+        ? { icon: "material", label: "", material: r.material, scan: true, tip: `Inspect a rock with ≥${pct} % ${m}` }
+        : { icon: "material", label: "", material: r.material, tip: `Mine or inspect a rock with ≥${pct} % ${m}` };
+    }
+    case "sourceClass": {
+      const c = SOURCE_CLASS_NAMES[r.classId] ?? r.classId;
+      return { icon: "class", label: CLASS_BADGE[r.classId] ?? c, scan: true, tip: `Inspect ${/^[AEFHILMNORSX]/.test(c) ? "an" : "a"} ${c} rock` };
+    }
+    case "trial":
+      return TRIAL_CHIPS[r.trialId] ?? { icon: "beam", label: r.trialId, tip: getTrialDef(r.trialId)?.howTo ?? r.trialId };
+    case "site":
+      return { icon: "site", label: "Canister", tip: `Recover the ${(getSiteDef(r.siteId)?.name ?? r.siteId).toLowerCase()}` };
+    case "research": {
+      const n = getResearchNode(r.nodeId)?.name ?? r.nodeId;
+      return { icon: "research", label: n, tip: `Unlock ${n} first` };
+    }
+  }
+}
+
+export const sourceClassBadge = (classId: string): string => CLASS_BADGE[classId] ?? classId;
+
 export interface RequirementStatus {
   req: Requirement;
   key: string;
@@ -114,6 +162,17 @@ export function evaluateNode(node: ResearchNodeDef, ev: EvidenceView): NodeEvalu
   const missing = all.filter((s) => !s.met).map((s) => s.key);
   if (!anyMet) missing.push(`any:${any.map((s) => s.key).join("|")}`);
   return { met: missing.length === 0, all, any, anyMet, missing };
+}
+
+/** Met / total pieces of an option, analysis materials included (the card's fraction ring). */
+export function nodeProgress(node: ResearchNodeDef, ev: EvidenceView, cargo: Readonly<Record<string, number>>): { met: number; total: number } {
+  const e = evaluateNode(node, ev);
+  const analysis = Object.entries(node.analysis);
+  const metAnalysis = analysis.filter(([k, n]) => Math.floor(cargo[k] ?? 0) >= n).length;
+  return {
+    met: e.all.filter((s) => s.met).length + (e.any.length > 0 && e.anyMet ? 1 : 0) + metAnalysis,
+    total: e.all.length + (e.any.length > 0 ? 1 : 0) + analysis.length,
+  };
 }
 
 /** Analysis material still missing from `cargo`, units. */

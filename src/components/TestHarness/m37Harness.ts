@@ -27,7 +27,8 @@ import { getEffectiveTuning, getResourceTuning } from "@/sim/ship/resourceTuning
 import { activeCommsMessageAtom, activeHintAtom, commsQueueAtom, dismissCommsAtom, enqueueCommsAtom, nextHintAtom, playedMessageIdsAtom, resetCommsPlayedAtom, showHintAtom } from "@/store/comms";
 import { aiNameAtom } from "@/store/aiName";
 import { projectViewAtom, trackedProjectAtom, trackedStatusAtom } from "@/store/projects";
-import { glanceAtom, interactSiteAtom, sampleGlanceAtom, setDestinationAtom, sitePOIsAtom, type Destination } from "@/store/sites";
+import { recoverSite, interactFocusAtom, interactControl } from "@/store/interact";
+import { glanceAtom, sampleGlanceAtom, setDestinationAtom, sitePOIsAtom, type Destination } from "@/store/sites";
 import { systemConfigAtom } from "@/store/system";
 import { poiBuffer } from "@/store/poi";
 import { targetedPOIAtom } from "@/store/transit";
@@ -235,11 +236,16 @@ export function createM37Harness(store: Store) {
 
     site: {
       defs: () => SITES.map((s) => ({ ...s })),
-      /** The G action near a site (inspect, then recover); null when none is in range. */
+      /** The G action without aiming (inspect + recover back to back); null when none is in range. */
       interact(opId?: string): OperationOutcome | null {
         store.set(sampleGlanceAtom);
-        return store.set(interactSiteAtom, opId);
+        const g = store.get(glanceAtom).site;
+        const def = g ? getSiteDef(g.id) : undefined;
+        if (!def || !g || g.distKm > def.recoverRangeKm) return null;
+        return recoverSite(store, def.id, opId);
       },
+      /** The reticle focus on interactables (sites, wrecks, points) and the site scan. */
+      focus: () => ({ ...structuredClone(store.get(interactFocusAtom)), lockS: interactControl.lockS, scanning: interactControl.scanning }),
       glance: () => {
         store.set(sampleGlanceAtom);
         return structuredClone(store.get(glanceAtom));

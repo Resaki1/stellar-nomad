@@ -583,42 +583,87 @@ if (DEV) {
   g.__nearFieldPrev = nearField;
 }
 
-let _load: Promise<void> | null = null;
 let _loadState: "idle" | "loading" | "ready" | "failed" = "idle";
 let _loadMs = 0;
 let _loadStartMs = 0;
+let _attempts = 0;
+let _timer: ReturnType<typeof setTimeout> | undefined;
+let _timeouts = 0;
 
-/** Start loading the engine (idempotent). Failure or timeout leaves analytic collisions only. */
-export function loadNearFieldEngine(): Promise<void> {
-  if (_load) return _load;
-  _loadState = "loading";
+function attemptLoad(): void {
+  _attempts++;
   const t0 = performance.now();
-  _loadStartMs = t0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${PHYSICS_LOAD_TIMEOUT_MS} ms`)), PHYSICS_LOAD_TIMEOUT_MS);
-  });
-  _load = Promise.race([import("./rapierBackend").then((m) => m.loadRapierFactory()), timeout])
+  import("./rapierBackend")
+    .then((m) => m.loadRapierFactory())
     .then((factory: PhysicsWorldFactory) => {
+      if (_loadState === "ready") return;
       nearField.attachWorld(factory(physicsWorldConfig()));
+      // A late success after the timeout still restores collisions (the HUD flag clears).
       _loadState = "ready";
-      _loadMs = performance.now() - t0;
+      _loadMs = performance.now() - _loadStartMs;
+      clearTimeout(_timer);
+      if (_attempts > 1 || _timeouts > 0) console.info(`[physics] engine ready after ${Math.round(performance.now() - t0)} ms (attempt ${_attempts})`);
     })
     .catch((e: unknown) => {
+      if (_loadState === "ready") return;
+      if (_attempts < 2) {
+        console.warn("[physics] engine load failed, retrying once:", e);
+        attemptLoad();
+        return;
+      }
       _loadState = "failed";
+      clearTimeout(_timer);
       console.warn("[physics] engine unavailable: celestial bodies keep the analytic sweep, asteroids have NO collision:", e);
-    })
-    .finally(() => clearTimeout(timer));
-  return _load;
+    });
 }
 
-/** True once loading has succeeded or given up (the loading gate's condition). */
+/** Start loading the engine (idempotent). A failed import is retried once; see `armNearFieldLoadTimeout`. */
+export function loadNearFieldEngine(): void {
+  if (_loadState !== "idle") return;
+  _loadState = "loading";
+  _loadStartMs = performance.now();
+  attemptLoad();
+}
+
+/**
+ * Start the load bound at game MOUNT (B2): from module eval it also counted a cold dev server
+ * compiling everything else. The gate opens after one window; the second runs in play behind
+ * the "physics loading" flag, then gives up ("failed").
+ */
+export function armNearFieldLoadTimeout(): void {
+  loadNearFieldEngine();
+  if (_loadState !== "loading" || _timer !== undefined) return;
+  const arm = (): void => {
+    _timer = setTimeout(() => {
+      if (_loadState !== "loading") return;
+      _timeouts++;
+      if (_timeouts < 2) {
+        console.warn(`[physics] engine load exceeded ${PHYSICS_LOAD_TIMEOUT_MS} ms, waiting once more`);
+        arm();
+        return;
+      }
+      _loadState = "failed";
+      console.warn(`[physics] engine unavailable after ${2 * PHYSICS_LOAD_TIMEOUT_MS} ms: asteroids have NO collision until it loads`);
+    }, PHYSICS_LOAD_TIMEOUT_MS);
+  };
+  arm();
+}
+
+/** Collisions are off for a reason the player should see: load failed, or a non-transit suspension. */
+export function collisionsOffReason(): "loading" | "unavailable" | "dev-speed" | "over-speed" | null {
+  if (_loadState === "failed") return "unavailable";
+  if (_loadState === "loading") return "loading";
+  const r = nearField.suspended;
+  return r === "dev-speed" || r === "over-speed" ? r : null;
+}
+
+/** The loading gate's condition: loaded, given up, or past the first window (still loading, flagged). */
 export function nearFieldLoadSettled(): boolean {
-  return _loadState === "ready" || _loadState === "failed";
+  return _loadState === "ready" || _loadState === "failed" || _timeouts > 0;
 }
 
-export function nearFieldLoadInfo(): { state: string; loadMs: number; startedAtMs: number } {
-  return { state: _loadState, loadMs: Math.round(_loadMs), startedAtMs: Math.round(_loadStartMs) };
+export function nearFieldLoadInfo(): { state: string; loadMs: number; startedAtMs: number; attempts: number; timeouts: number } {
+  return { state: _loadState, loadMs: Math.round(_loadMs), startedAtMs: Math.round(_loadStartMs), attempts: _attempts, timeouts: _timeouts };
 }
 
 export function physicsWorldConfig(dt = FIXED_DT): { dt: number; restitution: number; friction: number } {

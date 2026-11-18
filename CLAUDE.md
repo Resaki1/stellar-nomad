@@ -125,6 +125,8 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `GAME_PARTS=sessionA SESSION_PART=1|2|3`, `sessionB` parts 1–5, `sessionC` parts 1–2 — the three end-to-end sessions, one world carried between parts in `.captures/m37-sessions.json` (run the parts in order); `m37shots` / `m37narrow` (`--size 390x844`) captures
 - `GAME_PARTS=place,activate,death,recover,salvage,migrate4 pnpm drive -- --keep --no-isolate reload run:scripts/drive-examples/gameplay-check.mjs` — M3.6 replication points, death/recovery, wreck salvage, schema 4 (`GAME_PARTS=live36` real-input run; `m36shots` captures)
 
+- Playtest-1 polish (`--keep --no-isolate`, `gameplay-check.mjs`): `GAME_PARTS=hud`, `panels` (run each at default size and `--size 390x844`), `hudTransit`, `hudSite`, `hudKeys,hudHotbar`, `marks,repairEdge`, `transitBelt,transitSpool`; `PHYS_PARTS=devFlag` and `liveOwner` (physics-check, `--no-isolate`); `SHELL_PARTS=lock`
+- `GAME_PARTS=pace` — first-milestone pacing (fresh world → drive → lunar field; resumable, re-run until it reports done; bands: bot 25–50 min, new-player estimate 60–90)
 - `GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3.3/M3.4 discovery research: content audit, loadout fit vs fuel/cargo, findings, requirements, effective-config preview, schema-3 migration
 - `GAME_PARTS=playA` / `GAME_PARTS=playB` (same command, one per run) — fresh-save playthroughs to transit (survey first / extraction+cooling first); `GAME_PARTS=m33shots` captures, `m33narrow` with `--size 390x844`
 

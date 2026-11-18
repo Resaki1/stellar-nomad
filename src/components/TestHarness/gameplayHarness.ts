@@ -12,7 +12,7 @@ import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
 import { Vector3 } from "three";
-import { frameOriginKm } from "@/sim/frames";
+import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/cargo";
 import { devTeleportAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom, wrecksMirrorAtom } from "@/store/death";
@@ -55,10 +55,11 @@ import {
 } from "@/store/shipResources";
 import { Quaternion } from "three";
 import { simulateTransit, type TransitScript } from "@/sim/ship/transitSim";
-import { computeTransitPreview, targetedPOIAtom, transitDriveBuffer, transitInputs, transitPreviewPlan } from "@/store/transit";
+import { bodyTransitTarget, computeTransitPreview, targetedPOIAtom, transitDriveBuffer, transitInputs, transitPreviewPlan } from "@/store/transit";
 import { allBodyDefs } from "@/sim/celestialConstants";
 import { nearField } from "@/sim/physics/nearField";
 import { poiBuffer } from "@/store/poi";
+import { replicationPointStats } from "@/components/Replication/ReplicationPoints";
 import { probeClearance, absoluteKm, type Obstruction } from "@/sim/replication/clearance";
 import { checkPlacement, resolveRecovery, type PlacementCheck } from "@/sim/replication/placement";
 import { REPLICATION_TUNING, emergencePose, starterPoint } from "@/sim/replication/points";
@@ -320,6 +321,13 @@ export function createGameplayHarness(store: Store) {
       tap(): void {
         transitDriveBuffer.keyTapped = true;
       },
+      /** A pinned destination at a frame-relative point (as a menu "Set destination" pins one). */
+      targetProbe(frameId: string, positionKm: [number, number, number], arrivalOffsetKm = 0): void {
+        const id = `probe:${frameId}`;
+        store.set(targetedPOIAtom, { id, name: "probe", positionKm, frameId: frameId as FrameId, arrivalOffsetKm });
+        poiBuffer.targetedId = id;
+        poiBuffer.pinnedId = id;
+      },
       /** Record per-frame samples (min distance to bodies, frame, phase) until stop() or `maxFrames`. */
       record(bodyIds: string[], maxFrames = 100000) {
         const bodies = allBodyDefs().filter((b) => bodyIds.includes(b.id) && b.positionKm);
@@ -482,7 +490,7 @@ export function createGameplayHarness(store: Store) {
       targetBody(bodyId: string): boolean {
         const b = allBodyDefs().find((x) => x.id === bodyId);
         if (!b?.positionKm) return false;
-        store.set(targetedPOIAtom, { id: `body:${b.id}`, name: b.name, positionKm: b.positionKm, arrivalOffsetKm: Math.max(100, b.radiusKm * 2) });
+        store.set(targetedPOIAtom, bodyTransitTarget(b, store.get(systemConfigAtom).asteroidFields));
         return true;
       },
       /** Starter-belt hydrate economics over the loaded chunks within `radiusKm` of the ship. */
@@ -600,6 +608,8 @@ export function createGameplayHarness(store: Store) {
         const p = getActiveSave()?.data.players[playerId];
         if (p) p.ship = structuredClone(pose);
       },
+      /** Replication point instances drawn last frame (the origin point draws none, D1). */
+      drawn: () => replicationPointStats.drawn,
       /** Projected POI markers (id, name) the HUD shows now. */
       pois: (prefix = "") => poiBuffer.pois.filter((p) => p.id.startsWith(prefix)).map((p) => ({ id: p.id, name: p.name, distanceKm: p.distanceKm })),
       /** The death screen's recover action. */

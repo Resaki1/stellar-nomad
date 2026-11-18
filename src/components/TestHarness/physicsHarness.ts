@@ -18,7 +18,8 @@ import {
   type InstanceTransform,
 } from "@/sim/physics/asteroidColliders";
 import { impactLog, liveImpactCounters } from "@/sim/physics/impactDamage";
-import { getPhysicsTuning, setPhysicsTuning, type PhysicsTuning } from "@/sim/physics/physicsTuning";
+import { DEFAULT_PHYSICS_TUNING, getPhysicsTuning, setPhysicsTuning, type PhysicsTuning } from "@/sim/physics/physicsTuning";
+import { devTuningActive } from "@/store/devTuning";
 import type { NearFieldColliderId } from "@/sim/physics/nearField";
 
 import { shipHealthAtom } from "@/store/store";
@@ -263,6 +264,9 @@ export function createPhysicsHarness(store: Store) {
     /** Live tuning table (docs/PHYSICS_PLAN.md §7.3). */
     tuning: {
       get: (): PhysicsTuning => ({ ...getPhysicsTuning() }),
+      defaults: (): PhysicsTuning => ({ ...DEFAULT_PHYSICS_TUNING }),
+      /** Any dev tuning table (flight, camera, physics, resources) off its defaults. */
+      devActive: (): boolean => devTuningActive(),
       set: (p: Partial<PhysicsTuning>): PhysicsTuning => {
         setPhysicsTuning(p);
         const t = getPhysicsTuning();

@@ -6,6 +6,7 @@
  */
 
 import type { FrameId } from "@/sim/frames";
+import type { TransitFieldArrival } from "@/sim/ship/transitDrive";
 
 export type POIDef = {
   id: string;
@@ -21,6 +22,10 @@ export type POIDef = {
    *  is their radius + padding so the ship arrives above the surface rather
    *  than at the center. Defaults to 0 (arrive at the exact position). */
   arrivalOffsetKm?: number;
+  /** A body's anchored field: a trip from afar ends there (see `bodyTransitTarget`). */
+  field?: TransitFieldArrival;
+  /** Drawn object's radius (km): the marker label sits below its on-screen disc, not on its glow. */
+  objectRadiusKm?: number;
 };
 
 export type ProjectedPOI = {
@@ -38,6 +43,8 @@ export type ProjectedPOI = {
   edgeAngle: number;
   /** True when the POI is near the screen center (crosshair). */
   focused: boolean;
+  /** On-screen radius of the drawn object as a fraction of viewport height (0 when none). */
+  objectRadiusFrac: number;
 };
 
 /**

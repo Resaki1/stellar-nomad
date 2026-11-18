@@ -115,7 +115,9 @@ function computeYieldAmount(
 ): number {
   const y = def.yield;
   const ref = Math.max(1e-6, y.referenceRadiusM);
-  const base = y.baseAmount * Math.pow(Math.max(0, radiusM) / ref, y.exponent);
+  let base = y.baseAmount * Math.pow(Math.max(0, radiusM) / ref, y.exponent);
+  // Beam throughput cap on the BASE duration (speed upgrades shorten time, not the yield).
+  if (typeof y.throughputPerS === "number") base = Math.min(base, y.throughputPerS * computeMiningDurationS(radiusM));
 
   const variance = Math.max(0, Math.min(1, y.variance ?? 0));
   let amount = base;

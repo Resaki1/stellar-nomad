@@ -11,10 +11,37 @@ const rel = (a, b) => (b === 0 ? (a === 0 ? 0 : Infinity) : Math.abs(a - b) / Ma
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Synthetic Earth–Moon: ship behind Earth, so the direct line is blocked. */
-const EARTH = { id: "earth", posKm: [0, 0, 0], radiusKm: 6371 };
+const EARTH = { id: "earth", posKm: [0, 0, 0], radiusKm: 6371, atmosphereTopKm: 100 };
 const MOON_KM = [384400, 0, 0];
 const MOON = { id: "luna", posKm: MOON_KM, radiusKm: 1737 };
 const SHIP_BEHIND = [-17000, 0, 3000];
+/** Route hazard shells (transitDrive `hazardKm`): R + atmosphere + max(2 % R, 200 km). */
+const EARTH_HAZARD_KM = 6371 + 100 + 200;
+const LUNA_HAZARD_KM = 1737 + 200;
+/** Lunar field: anchor offset from Luna (sol.json) and its outer radius. */
+const BELT_OFFSET_KM = [3400, 0, 0];
+const BELT_OUTER_KM = 4000;
+const FIELD_DEPTH_KM = 1500;
+
+/** Closest approach of segment a→b to point c, km. */
+function segDist(a, b, c) {
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+  const k = l2 > 0 ? Math.max(0, Math.min(1, ((c[0] - a[0]) * d[0] + (c[1] - a[1]) * d[1] + (c[2] - a[2]) * d[2]) / l2)) : 0;
+  return Math.hypot(a[0] + d[0] * k - c[0], a[1] + d[1] * k - c[1], a[2] + d[2] * k - c[2]);
+}
+
+/** Deterministic RNG (mulberry32). */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 export async function transitPureGates(d) {
   const ev = (s) => d.evaluate(s);
@@ -45,13 +72,36 @@ export async function transitPureGates(d) {
     };
   }
 
-  // (d, pure) Blocked line: one clearance waypoint, two legs, never inside 2 R of Earth, prediction holds.
+  // (d, pure) Blocked line: one clearance waypoint, two legs, never inside Earth's hazard shell, prediction holds.
   {
     const r = await sim({ shipKm: SHIP_BEHIND, bodies: [EARTH, MOON], target: { id: "body:luna", positionKm: MOON_KM, arrivalOffsetKm: 3474 } });
     const c = cmp(r);
     g.d_clearancePure = {
-      ...c, via: r.plan.viaBodyId, minEarthKm: r4(r.minBodyDistKm.earth), safeKm: 2 * EARTH.radiusKm, hit: r.hit, legsDone: r.events.legDone,
-      pass: within(c) && r.plan.legCount === 2 && r.plan.viaBodyId === "earth" && r.minBodyDistKm.earth >= 2 * EARTH.radiusKm && !r.hit && r.events.legDone === 1,
+      ...c, via: r.plan.viaBodyId, minEarthKm: r4(r.minBodyDistKm.earth), hazardKm: EARTH_HAZARD_KM, hit: r.hit, legsDone: r.events.legDone,
+      pass: within(c) && r.plan.legCount === 2 && r.plan.viaBodyId === "earth" && r.minBodyDistKm.earth >= EARTH_HAZARD_KM && !r.hit && r.events.legDone === 1,
+    };
+  }
+
+  // B6 (pure): a line 9,999 km from Earth's centre (3,300 km above the hazard shell) is direct.
+  {
+    const r = await sim({ shipKm: [0, 0, 10000], bodies: [EARTH, MOON], target: { id: "body:luna", positionKm: MOON_KM, arrivalOffsetKm: 3474 } });
+    const c = cmp(r);
+    g.b6_directPure = { ...c, minEarthKm: r4(r.minBodyDistKm.earth), hit: r.hit, pass: within(c) && r.plan.legCount === 1 && r.minBodyDistKm.earth >= EARTH_HAZARD_KM && !r.hit };
+  }
+
+  // D11 (pure): beyond 50,000 km a body with a field is reached 1,500 km inside the field; nearer, at its standoff.
+  {
+    const fieldKm = MOON_KM.map((x, i) => x + BELT_OFFSET_KM[i]);
+    const tgt = { id: "body:luna", positionKm: MOON_KM, arrivalOffsetKm: 3474, fieldKm };
+    const far = await sim({ shipKm: [0, 0, 10000], bodies: [EARTH, MOON], target: tgt });
+    const near = await sim({ shipKm: [MOON_KM[0] - 30000, 0, 0], bodies: [EARTH, MOON], target: tgt });
+    const farToField = dist(far.final.posKm, fieldKm);
+    const nearToMoon = dist(near.final.posKm, MOON_KM);
+    g.d11_fieldArrivalPure = {
+      far: { fieldArrival: far.plan.fieldArrival, legs: far.plan.legCount, toFieldKm: r4(farToField), minMoonKm: r4(far.minBodyDistKm.luna), arrived: far.events.arrived },
+      near: { fieldArrival: near.plan.fieldArrival, toMoonKm: r4(nearToMoon), arrived: near.events.arrived },
+      pass: far.plan.fieldArrival === true && Math.abs(farToField - FIELD_DEPTH_KM) < 5 && far.events.arrived === 1 && !far.hit &&
+        near.plan.fieldArrival === false && Math.abs(nearToMoon - 3474) < 5 && near.events.arrived === 1,
     };
   }
 
@@ -70,9 +120,9 @@ export async function transitPureGates(d) {
       zeroOrdinaryManual: { engaged: zeroManual.engaged, refusal: zeroManual.refusal },
       pass: within(c) && part.plan.fuelLimited && part.phaseAt.coasting !== undefined && part.etaS > ideal.etaS && part.minOrdinaryKg >= 0 &&
         part.protectedKg === T.recoveryAllowanceKg && part.endSpeedKmps === 0 &&
-        !tiny.engaged && /Too little propellant/.test(tiny.refusal ?? "") && tiny.fuelKg === 0 &&
-        !zero.engaged && /No ordinary propellant/.test(zero.refusal ?? "") && zero.protectedKg === T.recoveryAllowanceKg &&
-        !zeroManual.engaged && /No ordinary/.test(zeroManual.refusal ?? ""),
+        !tiny.engaged && /Needs \d+ kg fuel/.test(tiny.refusal ?? "") && tiny.fuelKg === 0 &&
+        !zero.engaged && /No fuel/.test(zero.refusal ?? "") && zero.protectedKg === T.recoveryAllowanceKg &&
+        !zeroManual.engaged && /No fuel/.test(zeroManual.refusal ?? ""),
     };
   }
 
@@ -104,7 +154,7 @@ export async function transitPureGates(d) {
   // Out of range on a full tank is worded as range, not as "too little propellant".
   {
     const r = await sim({ target: { positionKm: [0, 0, 78e6] } });
-    g.outOfRange = { engaged: r.engaged, refusal: r.refusal, pass: !r.engaged && /Out of range for this tank/.test(r.refusal ?? "") };
+    g.outOfRange = { engaged: r.engaged, refusal: r.refusal, pass: !r.engaged && /Out of range: needs/.test(r.refusal ?? "") };
   }
 
   // (b) Abort in every phase ends at rest; every kg billed is the transit meter's; ordinary never negative.
@@ -165,11 +215,71 @@ export async function transitPureGates(d) {
   return { ...g, pass: Object.values(g).every((x) => x.pass) };
 }
 
+/**
+ * B7 (pure): random pairs inside the lunar field (Luna at the origin), a third of the targets at
+ * 50-200 km altitude. Never refused; a clearance leg exactly when the straight line dips below
+ * min(hazard, its two ends); a sample flown end to end stays above that floor and arrives.
+ */
+export async function transitBeltGates(d) {
+  const ev = (s) => d.evaluate(s);
+  const LUNA = { id: "luna", posKm: [0, 0, 0], radiusKm: 1737 };
+  const rand = rng(Number(process.env.BELT_SEED ?? 7));
+  const inBelt = () => {
+    for (;;) {
+      const p = [(rand() * 2 - 1) * BELT_OUTER_KM, (rand() * 2 - 1) * BELT_OUTER_KM, (rand() * 2 - 1) * BELT_OUTER_KM].map((x, i) => x + BELT_OFFSET_KM[i]);
+      if (dist(p, BELT_OFFSET_KM) <= BELT_OUTER_KM && Math.hypot(...p) >= 1737 + 50) return p;
+    }
+  };
+  const lowAlt = () => {
+    for (;;) {
+      const u = [rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1];
+      const l = Math.hypot(...u);
+      if (l < 0.1 || l > 1) continue;
+      const r = 1737 + 50 + rand() * 150;
+      const p = u.map((x) => (x / l) * r);
+      if (dist(p, BELT_OFFSET_KM) <= BELT_OUTER_KM) return p;
+    }
+  };
+  const N = Number(process.env.BELT_PAIRS ?? 300);
+  const rows = [];
+  let refused = 0, viaWrong = 0, vias = 0, low = 0;
+  for (let i = 0; i < N; i++) {
+    const ship = inBelt();
+    const isLow = i % 3 === 0;
+    const tgt = isLow ? lowAlt() : inBelt();
+    if (isLow) low++;
+    const r = await ev(`${TR}.simulate(${JSON.stringify({ planOnly: true, shipKm: ship, bodies: [LUNA], target: { id: `probe:${i}`, positionKm: tgt } })})`);
+    const floor = Math.min(LUNA_HAZARD_KM, Math.hypot(...ship), Math.hypot(...tgt)) * 0.999;
+    const crosses = segDist(ship, tgt, [0, 0, 0]) < floor;
+    const via = r.plan.legCount === 2;
+    if (!r.plan.ok && r.plan.reason) refused++;
+    if (via) vias++;
+    if (via !== crosses && r.plan.legCount > 0) viaWrong++;
+    rows.push({ ship, tgt, ok: r.plan.legCount > 0, via, crosses, reason: r.plan.reason, altKm: Math.round(Math.hypot(...tgt) - 1737) });
+  }
+  // Fly a sample: every low target among the first 30 pairs plus every clearance route among them.
+  const flown = [];
+  for (const row of rows.slice(0, 30).filter((x, i) => x.ok && (i % 3 === 0 || x.via)).slice(0, 12)) {
+    const r = await ev(`${TR}.simulate(${JSON.stringify({ shipKm: row.ship, bodies: [LUNA], target: { id: "probe:f", positionKm: row.tgt } })})`);
+    const floor = Math.min(LUNA_HAZARD_KM, Math.hypot(...row.ship), Math.hypot(...row.tgt));
+    flown.push({ altKm: row.altKm, via: row.via, arrived: r.events.arrived, stoppedShort: r.events.stoppedShort, proximity: r.events.proximity, hit: r.hit,
+      minLunaKm: r4(r.minBodyDistKm.luna), floorKm: r4(floor), missKm: r4(r.finalAimDistKm) });
+  }
+  const inside = await ev(`${TR}.simulate(${JSON.stringify({ planOnly: true, shipKm: [5000, 0, 0], bodies: [LUNA], target: { id: "probe:in", positionKm: [0, 1737 + 10, 0] } })})`);
+  const flownOk = flown.every((f) => f.arrived === 1 && !f.hit && f.stoppedShort === 0 && f.minLunaKm >= 0.99 * f.floorKm);
+  return {
+    pairs: N, lowTargets: low, refused, vias, viaWrong, flown, flownOk,
+    targetInside: inside.plan.reason,
+    firstRefusals: rows.filter((x) => !x.ok).slice(0, 3),
+    pass: refused === 0 && viaWrong === 0 && flown.length >= 8 && flownOk && /Target inside luna/i.test(inside.plan.reason ?? ""),
+  };
+}
 
-const DEFAULT_EPOCH_MS = Date.UTC(2024, 3, 8, 18, 17, 0);
+
+/** New-world default (src/sim/ephemeris.ts DEFAULT_SIM_EPOCH_MS, M3 playtest 1 D10). */
+const DEFAULT_EPOCH_MS = Date.UTC(2941, 8, 22, 0, 0, 0);
 /** A second date: two weeks on, the Moon is on the other side of Earth. */
-const SECOND_EPOCH_MS = Date.UTC(2024, 3, 22, 6, 0, 0);
-const MOON_STANDOFF_KM = 1737 * 2;
+const SECOND_EPOCH_MS = Date.UTC(2941, 9, 6, 12, 0, 0);
 
 /** Fixture: default start (no saved pose), transit drive owned, full tanks, at `epochMs`. */
 function transitWorld(ctx, epochMs, o = {}) {
@@ -240,9 +350,16 @@ export async function transitLiveGates(d, ctx) {
     const r1 = await res();
     const p1 = await phys();
     await ev("__phys.dev.clear()");
-    const b = await ev(`${TR}.bodies(["earth", "luna"])`);
     const s = await d.state();
-    const toMoon = dist(s.ship.posKm, b.luna.posKm);
+    const f = await ev(`${TR}.fields(["luna_belt"])`);
+    const toField = dist(s.ship.posKm, f.luna_belt.posKm);
+    // Rocks stream in after arrival: wait for the nearest to load (≤ 10 s).
+    let nearest = null;
+    for (let i = 0; i < 20 && !nearest; i++) {
+      const rk = await ev(`${G}.m33.rocks(1)`);
+      if (rk.length) nearest = { distKm: r4(rk[0].distKm), surfaceKm: r4(rk[0].distKm - rk[0].radiusM / 1000), fieldId: rk[0].fieldId };
+      else await d.frames(30);
+    }
     const exeEtaS = (fly.rec.endStep - fly.rec.engageStep) / 120;
     const kg = r0.ordinaryKg + r0.protectedKg - r1.ordinaryKg - r1.protectedKg;
     const row = {
@@ -250,15 +367,15 @@ export async function transitLiveGates(d, ctx) {
       preview: { ok: pre?.ok, reason: pre?.reason, via: pre?.viaName, legs: pre?.legCount, etaS: r4(pre?.etaS), fuelKg: r4(pre?.fuelKg), balanceKg: r4(pre?.arrivalOrdinaryKg), heat: r4(pre?.peakHeat01) },
       executed: { etaS: r4(exeEtaS), fuelKg: r4(kg), balanceKg: r4(r1.ordinaryKg), heat: r4(fly.rec.maxHeat01), wallS: r4(fly.wallS) },
       err: { eta: r4(rel(exeEtaS, pre?.etaS ?? 0)), fuel: r4(rel(kg, pre?.fuelKg ?? 0)), heat: r4(Math.abs(fly.rec.maxHeat01 - (pre?.peakHeat01 ?? 0))) },
-      arrival: { toMoonCentreKm: r4(toMoon), standoffKm: MOON_STANDOFF_KM, errKm: r4(toMoon - MOON_STANDOFF_KM), frameId: s.ship.frameId, transitKmps: fly.st.speedKmps, shipMps: r4(s.ship.speedMps), arrived: fly.st.ev.arrived, legsDone: fly.st.ev.legDone },
-      minEarthKm: r4(fly.rec.minDistKm.earth), earthSafeKm: 2 * 6371, minMoonKm: r4(fly.rec.minDistKm.luna), phases: fly.rec.phases, frames: fly.rec.frameIds,
+      arrival: { fieldArrival: pre?.targetName, toFieldAnchorKm: r4(toField), depthKm: FIELD_DEPTH_KM, nearestRock: nearest, frameId: s.ship.frameId, transitKmps: fly.st.speedKmps, shipMps: r4(s.ship.speedMps), arrived: fly.st.ev.arrived, legsDone: fly.st.ev.legDone },
+      minEarthKm: r4(fly.rec.minDistKm.earth), earthHazardKm: EARTH_HAZARD_KM, minMoonKm: r4(fly.rec.minDistKm.luna), phases: fly.rec.phases, frames: fly.rec.frameIds,
       nearField: { suspended: fly.rec.suspended, reseeds: p1.counters.reseeds - p0.counters.reseeds, ownerViolations: p1.counters.ownerViolations, after: p1.suspended },
       dead: s.dead ?? null,
     };
     row.pass = locked && pre?.ok && fly.st.ev.arrived === 1 && row.err.eta <= 0.05 && row.err.fuel <= 0.05 && row.err.heat <= 0.05 &&
-      Math.abs(row.arrival.errKm) <= Math.max(50, 0.05 * MOON_STANDOFF_KM) && s.ship.frameId === "luna" && fly.st.speedKmps === 0 &&
-      fly.rec.minDistKm.earth >= 2 * 6371 && fly.rec.suspended.includes("transit") && p1.suspended === null && p1.counters.reseeds > p0.counters.reseeds &&
-      p1.counters.ownerViolations === 0 && (label !== "defaultEpoch" || pre?.legCount === 2);
+      Math.abs(toField - FIELD_DEPTH_KM) <= 50 && toField <= BELT_OUTER_KM && !!nearest && nearest.surfaceKm < 50 && s.ship.frameId === "luna" && fly.st.speedKmps === 0 &&
+      fly.rec.minDistKm.earth >= EARTH_HAZARD_KM && fly.rec.minDistKm.luna >= LUNA_HAZARD_KM && fly.rec.suspended.includes("transit") && p1.suspended === null && p1.counters.reseeds > p0.counters.reseeds &&
+      p1.counters.ownerViolations === 0 && (label !== "defaultEpoch" || pre?.legCount === 1);
     out[label] = row;
     if (label === "defaultEpoch") out.lunarHydrates = await lunarHydrates(d, ctx);
   }
@@ -267,30 +384,89 @@ export async function transitLiveGates(d, ctx) {
   return { ...out, pass: Object.values(out).every((x) => x.pass) };
 }
 
-/** At the Moon: what hydrate rocks are in reach today, and process one rock's worth into the tank. */
+/** Hold T through the spool while sampling the live preview; then sample every phase until idle. */
+async function flySampled(d, maxS = 150) {
+  const ev = (s) => d.evaluate(s);
+  const sample = () => ev(`(() => { const p = ${TR}.preview(); const s = ${TR}.state(); return { ok: p ? p.ok : null, reason: p ? p.reason : null, live: p ? p.live : null, phase: s.phase, leg: s.legIndex, legs: s.legCount, ev: s.ev }; })()`);
+  const samples = [];
+  const st0 = await ev(`${TR}.state()`);
+  await d.send("Input.dispatchKeyEvent", { type: "keyDown", key: "t", code: "KeyT", windowsVirtualKeyCode: 84, text: "t" });
+  const t0 = Date.now();
+  let engaged = false;
+  try {
+    while (Date.now() - t0 < 3600) {
+      const x = await sample();
+      if (x.phase !== "idle") { engaged = true; samples.push(x); }
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  } finally {
+    await d.send("Input.dispatchKeyEvent", { type: "keyUp", key: "t", code: "KeyT", windowsVirtualKeyCode: 84 });
+  }
+  let last = await sample();
+  while (engaged && Date.now() - t0 < maxS * 1000 && last.phase !== "idle") {
+    samples.push(last);
+    await new Promise((r) => setTimeout(r, 150));
+    last = await sample();
+  }
+  const bad = samples.filter((x) => x.ok !== true);
+  const phases = [...new Set(samples.map((x) => `${x.phase}#${x.leg}`))];
+  return {
+    engaged, samples: samples.length, phases, refusedSamples: bad.length, firstBad: bad[0] ?? null,
+    arrived: last.ev.arrived - st0.ev.arrived, legsDone: last.ev.legDone - st0.ev.legDone, legs: samples[0]?.legs ?? 0,
+  };
+}
+
+/**
+ * B8: the live preview during every phase of three trips in one session (Earth → lunar field, an
+ * in-field hop, then a two-leg trip round Luna): the spool after an arrival used to read "Too
+ * little propellant to move".
+ */
+export async function transitSpoolGates(d, ctx) {
+  const { ev, boot, fixture } = ctx;
+  const id = await fixture("transit-spool", transitWorld(ctx, DEFAULT_EPOCH_MS));
+  await boot(id);
+  await d.frames(60);
+  const out = {};
+  out.locked = await gazeLock(d, "body:luna", "luna");
+  out.trip1 = await flySampled(d);
+  await d.frames(30);
+  const rel = async () => {
+    const s = await d.state();
+    const b = await ev(`${TR}.bodies(["luna"])`);
+    return s.ship.posKm.map((x, i) => x - b.luna.posKm[i]);
+  };
+  // Trip 2: 2,500 km across the field, perpendicular to the Luna direction (one leg).
+  let r = await rel();
+  const up = Math.abs(r[1]) < 0.9 * Math.hypot(...r) ? [0, 1, 0] : [1, 0, 0];
+  const cr = [r[1] * up[2] - r[2] * up[1], r[2] * up[0] - r[0] * up[2], r[0] * up[1] - r[1] * up[0]];
+  const cl = Math.hypot(...cr);
+  await ev(`${TR}.targetProbe("luna", ${JSON.stringify(r.map((x, i) => x + (cr[i] / cl) * 2500))})`);
+  await d.frames(20);
+  out.trip2 = await flySampled(d);
+  await d.frames(30);
+  // Trip 3: the far side of Luna at the same height (the line crosses Luna: a clearance leg).
+  r = await rel();
+  const k = -Math.max(2600, Math.hypot(...r)) / Math.hypot(...r);
+  await ev(`${TR}.targetProbe("luna", ${JSON.stringify(r.map((x) => x * k))})`);
+  await d.frames(20);
+  out.trip3 = await flySampled(d, 200);
+  const ok = (t, legs) => t.engaged && t.refusedSamples === 0 && t.arrived === 1 && (legs === undefined || t.legs === legs);
+  out.pass = out.locked && ok(out.trip1, 1) && ok(out.trip2, 1) && ok(out.trip3, 2) && out.trip3.legsDone === 1;
+  return out;
+}
+
+/** In the lunar field on arrival: what hydrate rocks are in reach, and process one rock's worth into the tank. */
 async function lunarHydrates(d, ctx) {
   const { ev } = ctx;
   await d.frames(60);
-  const atStandoff = (await ev(`${G}.res.starterReach(5)`)).rocksLoaded;
-  // A short transit to the lunar field (the standoff is on the Earth side; the field is behind the Moon).
-  const locked = await gazeLock(d, "field:luna_belt", "luna_belt", "fields");
-  await d.frames(20);
-  const pre = await ev(`${TR}.preview()`);
-  const fly = locked && pre?.ok ? await flyTargeted(d, { maxS: 120 }) : null;
-  const f = await ev(`${TR}.fields(["luna_belt"])`);
-  const s = await d.state();
-  const hop = {
-    locked, preview: pre && { ok: pre.ok, reason: pre.reason, via: pre.viaName, etaS: r4(pre.etaS), fuelKg: r4(pre.fuelKg) },
-    executed: fly && { etaS: r4((fly.rec.endStep - fly.rec.engageStep) / 120), fuelKg: r4(fly.rec.kgUsed), arrived: fly.st.ev.arrived, minMoonKm: r4(fly.rec.minDistKm.luna) },
-    toAnchorKm: r4(dist(s.ship.posKm, f.luna_belt.posKm)),
-  };
+  // D11: the Earth → Luna trip already ended inside the lunar field; no hop.
   for (let i = 0; i < 20; i++) {
     await d.frames(30);
     if ((await ev(`${G}.res.starterReach(1)`)).rocksLoaded > 0) break;
   }
   const reach = await ev(`${G}.res.starterReach(5)`);
   const near = reach.nearest.filter((r) => r.fieldId === "luna_belt");
-  const out = { rocksAtStandoff: atStandoff, hop, rocksLoaded: reach.rocksLoaded, hydrateRocks: reach.hydrateRocks, nearest: near.slice(0, 3).map((r) => ({ distKm: r4(r.distKm), hydrates: r.hydrates, radiusM: r4(r.radiusM), mineS: r4(r.mineS) })) };
+  const out = { rocksLoaded: reach.rocksLoaded, hydrateRocks: reach.hydrateRocks, nearest: near.slice(0, 3).map((r) => ({ distKm: r4(r.distKm), hydrates: r.hydrates, radiusM: r4(r.radiusM), mineS: r4(r.mineS) })) };
   const rock = near.find((r) => r.mineS < 14) ?? near[0];
   if (!rock) return { ...out, note: "no lunar hydrate rock loaded within reach of the standoff", pass: true };
   // Extraction via the mining claim (aiming skipped); then the real processing action.
@@ -305,8 +481,7 @@ async function lunarHydrates(d, ctx) {
   const s1 = await ev(`${G}.res.state()`);
   const T = await ev(`${G}.res.tuning()`);
   out.mined = { rockDistKm: r4(rock.distKm), status: m?.status, hydrates: hyd, process: p?.status ?? null, ordinaryBefore: r4(s0.ordinaryKg), ordinaryAfter: r4(s1.ordinaryKg), expectGainKg: Math.min(hyd * T.processingKgPerUnit, T.tankKg - s0.ordinaryKg) };
-  out.pass = m?.status === "accepted" && (hyd === 0 || Math.abs(s1.ordinaryKg - s0.ordinaryKg - out.mined.expectGainKg) < 1e-6) &&
-    (!fly || (fly.st.ev.arrived >= 1 && rel(fly.rec.kgUsed, pre.fuelKg) <= 0.05));
+  out.pass = m?.status === "accepted" && (hyd === 0 || Math.abs(s1.ordinaryKg - s0.ordinaryKg - out.mined.expectGainKg) < 1e-6);
   return out;
 }
 
@@ -422,5 +597,5 @@ export async function transitShotGates(d, ctx, narrow) {
   await wait(600);
   const fly = flyTargeted(d, { shotName: "m3-transit-flying", maxS: 120 });
   shots.flying = (await fly).shot;
-  return { lockedA, lockedB, refusal, shots, pass: lockedA && lockedB && /Too little/.test(refusal ?? "") && !!shots.flying };
+  return { lockedA, lockedB, refusal, shots, pass: lockedA && lockedB && /Needs \d+ kg fuel|Not enough fuel/.test(refusal ?? "") && !!shots.flying };
 }

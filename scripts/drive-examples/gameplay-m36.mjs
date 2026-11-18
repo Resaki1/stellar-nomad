@@ -88,7 +88,7 @@ export async function placeGates(d, ctx) {
 
   const crafted = await craftKits(ctx, 3);
   const p0 = await player();
-  out.craft = { crafted, kits: p0.modules.consumables[KIT], hotbar: p0.modules.hotbar, pass: crafted.every((s) => s === "accepted") && p0.modules.consumables[KIT] === 3 && !p0.modules.hotbar.includes(KIT) };
+  out.craft = { crafted, kits: p0.modules.consumables[KIT], hotbar: p0.modules.hotbar, pass: crafted.every((s) => s === "accepted") && p0.modules.consumables[KIT] === 3 && p0.modules.hotbar.includes(KIT) };
 
   const pv = await findClearPreview(d, ctx);
   const opId = "m36-place-1";
@@ -297,11 +297,11 @@ export async function deathGates(d, ctx) {
   await d.frames(10);
   const w1 = (await world()).wrecks;
   const pd = await player();
-  const lossText = await ev(`document.querySelector(".death-screen__subtitle")?.textContent ?? ""`);
+  const lossText = await ev(`document.querySelector("[data-testid=wreck-row]")?.textContent ?? ""`);
   out.reloadDead = {
     wrecks: w1.length, dead: pd.isDead, lossText,
     pass: w1.length === 1 && eq(w1[0], k1.wreck) && pd.isDead && eq(pd.cargo.items, {}) && eq(pd.modules.consumables, {}) && pd.propellant.ordinaryKg === 0 &&
-      eq(pd.lastLoss?.items, k1.wreck.items) && /cargo units/.test(lossText),
+      eq(pd.lastLoss?.items, k1.wreck.items) && /^Wreck/.test(lossText) && !/empty/.test(lossText),
   };
 
   // Recover via the death screen, then reload right away.
@@ -482,9 +482,9 @@ export async function recoverGates(d, ctx) {
   const s5 = await ev(`${R}.ship()`);
   const p5 = await player();
   out.isolatedFallback = {
-    placed: oF.status, preview: pvF.valid, farFrame: far.frameId, abandoned: screen.ok, offersFallback: /Emergency fallback/i.test(screen.text), recovered: r5.rec?.pointId, fallback: r5.rec?.fallback,
+    placed: oF.status, preview: pvF.valid, farFrame: far.frameId, abandoned: screen.ok, offersFallback: /Respawn at Origin/i.test(screen.text), recovered: r5.rec?.pointId, fallback: r5.rec?.fallback,
     active: p5.replication.activeId, fuel: p5.propellant, offStarterKm: r3(dist(s5.posKm, stEm.positionKm)),
-    pass: oF.status === "accepted" && screen.ok && /Emergency fallback/i.test(screen.text) && r5.clicked && r5.rec?.pointId === "starter" && r5.rec.fallback === "chosen" && p5.replication.activeId === far.id &&
+    pass: oF.status === "accepted" && screen.ok && /Respawn at Origin/i.test(screen.text) && r5.clicked && r5.rec?.pointId === "starter" && r5.rec.fallback === "chosen" && p5.replication.activeId === far.id &&
       p5.propellant.ordinaryKg === 0 && p5.propellant.protectedKg === 60 && dist(s5.posKm, stEm.positionKm) < 0.01,
   };
 
@@ -544,12 +544,14 @@ export async function salvageGates(d, ctx) {
   const w1 = (await world()).wrecks.find((w) => w.id === "w-mixed");
   const c1b = await submit({ type: "wreck.collect", opId: "m36-c1", wreckId: "w-mixed" });
   const p1b = await player();
+  // A salvaged kit takes a free hotbar slot (D16) and a hint may be shown in between: neither is salvage state.
+  const noHotbar = (p) => ({ ...p, commsPlayed: null, modules: { ...p.modules, hotbar: null } });
   out.partial = {
     status: c1.status, taken: c1.result?.taken, left: w1 && { items: w1.items, consumables: w1.consumables, fuelKg: w1.fuelKg }, fuel: p1.propellant, dup: c1b.status,
     pass: c1.status === "accepted" && eq(c1.result.taken.items, { fe_ni_metal: 40 }) && eq(c1.result.taken.consumables, { [KIT]: 2 }) && c1.result.taken.fuelKg === 50 && !c1.result.removed &&
       eq(w1.items, { fe_ni_metal: 60, silicates: 20 }) && eq(w1.consumables, { [PATCH]: 3 }) && w1.fuelKg === 200 && p1.propellant.ordinaryKg === 600 && p1.propellant.protectedKg === 60 &&
       p1.modules.consumables[PATCH] === 10 && p1.modules.consumables[KIT] === 2 && p1.cargo.items.fe_ni_metal === 40 && p0.propellant.protectedKg === 60 &&
-      c1b.status === "duplicate" && eq(p1b, p1),
+      c1b.status === "duplicate" && eq(noHotbar(p1b), noHotbar(p1)) && p1b.modules.hotbar.includes(KIT),
   };
   // Nothing fits: refused, nothing changes.
   const c2 = await submit({ type: "wreck.collect", opId: "m36-c2", wreckId: "w-mixed" });
@@ -559,14 +561,14 @@ export async function salvageGates(d, ctx) {
   await d.frames(10);
   const pois = await ev(`${R}.pois("wreck:")`);
   const nameOf = (wid) => pois.find((p) => p.id === `wreck:${wid}`)?.name ?? null;
-  out.markers = { mixed: nameOf("w-mixed"), fuel: nameOf("w-fuel"), cons: nameOf("w-cons"), pass: /fuel only, 40 kg/.test(nameOf("w-fuel") ?? "") && nameOf("w-cons") === "Wreck · consumables" && /200 kg fuel/.test(nameOf("w-mixed") ?? "") };
+  out.markers = { mixed: nameOf("w-mixed"), fuel: nameOf("w-fuel"), cons: nameOf("w-cons"), pass: ["w-mixed", "w-fuel", "w-cons"].every((w) => nameOf(w) === "Wreck") }; // contents are on the Target Card (§1.11)
 
-  // Make room the way a player does: jettison, burn, use three patch kits (hotbar key 1).
+  // Make room the way a player does: jettison, burn, use three patch kits (slot 1 = hotbar key 2).
   await ev(`${G}.jettison("silicates")`);
   await ev(`${G}.res.set({ ordinaryKg: 0 })`);
   await ev("__phys.game.setHealth(20)");
   for (let i = 0; i < 6 && ((await player()).modules.consumables[PATCH] ?? 0) > 7; i++) {
-    await d.press("1");
+    await d.press("2");
     await ctx.wait(300);
   }
   const p2 = await player();
@@ -743,15 +745,15 @@ export async function live36Gates(d, ctx) {
   const out = {};
   const t = () => Date.now();
   let t0 = t();
-  // Craft a kit in the crafting panel (F, click the kit's Craft button). Material granted (mining is gated elsewhere).
+  // Craft a kit in the crafting panel (C, click the kit's Craft button). Material granted (mining is gated elsewhere).
   await grant(ctx, { fe_ni_metal: 150, silicates: 100 });
-  await d.press("f");
+  await d.press("c");
   await d.frames(10);
   const btn = await centerOf(ctx, ".crafting-panel__item", "Replication Kit");
   const craftBtn = btn && (await ev(`(() => { const it = [...document.querySelectorAll(".crafting-panel__item")].find((e) => e.textContent.includes("Replication Kit")); const b = it?.querySelector(".crafting-panel__craft-btn"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`));
   if (craftBtn) await d.click(craftBtn.x, craftBtn.y);
   await d.frames(10);
-  await d.press("f");
+  await d.press("c");
   const kits = (await player()).modules.consumables[KIT] ?? 0;
   T.craftS = (t() - t0) / 1000;
   out.craft = { kits, pass: kits === 1 };
@@ -765,9 +767,11 @@ export async function live36Gates(d, ctx) {
   T.flyOutS = (t() - t0) / 1000;
   out.flyOut = { km: r3(dist(s0.posKm, s1.posKm)), pass: dist(s0.posKm, s1.posKm) > 0.3 };
 
-  // Place: B opens the preview, name it, Enter places.
+  // Place: the kit's hotbar key opens the preview with the name selected, type, Enter places (D16).
   t0 = t();
-  await d.press("b");
+  const kitSlot = (await player()).modules.hotbar.indexOf(KIT);
+  out.kitSlot = kitSlot;
+  await d.press(String((kitSlot + 1) % 10));
   await ctx.wait(400);
   let pv = await ev(`${R}.preview()`);
   for (let i = 0; i < 6 && !pv.valid; i++) {
@@ -775,9 +779,7 @@ export async function live36Gates(d, ctx) {
     await ctx.wait(300);
     pv = await ev(`${R}.preview()`);
   }
-  const input = await centerOf(ctx, ".replication-hud__name input");
-  if (input) await d.click(input.x, input.y);
-  await ev(`(() => { const i = document.querySelector(".replication-hud__name input"); i.select(); })()`);
+  out.inputFocused = await ev(`document.activeElement?.classList.contains("target-card__input") ?? false`);
   await d.type("Forward camp");
   await d.press("Enter");
   await d.frames(10);
@@ -886,10 +888,13 @@ export async function m36ShotGates(d, ctx, narrow) {
   await ev(`${G}.res.set({ ordinaryKg: 180 })`);
   await d.press("Escape");
   await ctx.wait(400);
-  const ab = await ev(`(() => { const b = [...document.querySelectorAll(".settings-menu__button--danger")].find((e) => /abandon/i.test(e.textContent)); if (!b) return false; b.click(); return true; })()`);
+  const ab = await ev(`(() => { const b = [...document.querySelectorAll(".settings-menu__button--danger")].find((e) => e.dataset.action === "respawn"); if (!b) return false; b.click(); return true; })()`);
   await ctx.wait(300);
   shots.abandon = await rawShot(d, "m3-abandon-confirm");
-  await ev(`(() => { const b = [...document.querySelectorAll(".settings-menu__button")].find((e) => /keep flying/i.test(e.textContent)); b?.click(); })()`);
+  const cancelled = await ev(`(() => { const b = document.querySelector('[data-action="respawn-cancel"]'); if (!b) return false; b.click(); return true; })()`);
+  await ctx.wait(200);
+  const abandonCancel = { cancelled, confirmClosed: await ev(`!document.querySelector(".settings-menu__abandon")`), alive: !(await ctx.player()).isDead };
+  abandonCancel.pass = abandonCancel.cancelled && abandonCancel.confirmClosed && abandonCancel.alive;
   await d.press("Escape");
   await d.frames(10);
 
@@ -911,5 +916,5 @@ export async function m36ShotGates(d, ctx, narrow) {
   }
   await ctx.wait(600);
   shots.wreckPartial = await d.shot("m3-wreck-partial");
-  return { previewValid: pv.valid, abandonOpened: ab, wreckLeft: left?.items ?? null, shots };
+  return { previewValid: pv.valid, abandonOpened: ab, abandonCancel, wreckLeft: left?.items ?? null, shots };
 }

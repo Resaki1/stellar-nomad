@@ -22,6 +22,7 @@ import {
 import { FIXED_DT } from "@/sim/ship/shipConstants";
 import { getShipTuning, shipRes, shipReq } from "@/store/shipResources";
 import { getLocalPlayerShip } from "@/sim/entities";
+import type { AsteroidFieldDef, CelestialBodyDef } from "@/sim/systemTypes";
 
 export {
   TRANSIT_ACCEL_KMPS2,
@@ -55,6 +56,24 @@ export const transitDriveOwnedAtom = atom((get) => get(modulesAtom).ownedModules
 
 /** Targeted POI for autopilot. */
 export const targetedPOIAtom = atom<TransitTarget | null>(null);
+
+/** Arrival stand-off at a body: two radii from its centre (min 100 km). */
+export const bodyArrivalOffsetKm = (radiusKm: number): number => Math.max(100, radiusKm * 2);
+
+/**
+ * The transit target for a body, as every caller (gaze, menus, tests) builds it: a body that
+ * anchors an enabled asteroid field carries it, so a trip from afar ends in the field (D11).
+ */
+export function bodyTransitTarget(body: Readonly<CelestialBodyDef>, fields: readonly AsteroidFieldDef[] | undefined, withField = true): TransitTarget {
+  const f = withField ? fields?.find((x) => x.enabled !== false && x.anchorBody === body.id) : undefined;
+  return {
+    id: `body:${body.id}`,
+    name: body.name,
+    positionKm: body.positionKm,
+    arrivalOffsetKm: bodyArrivalOffsetKm(body.radiusKm),
+    field: f ? { positionKm: f.anchorKm, name: f.name } : undefined,
+  };
+}
 
 export const isTransitBurning = (phase: TransitPhase): boolean =>
   phase === "accelerating" || phase === "coasting" || phase === "decelerating";
@@ -142,7 +161,7 @@ export function computeTransitPreview(store: Store): TransitPreview | null {
   else planTransit(p, _ship, target, rt.bodies, shipRes, transitInputs, t, FIXED_DT);
   return {
     targetId: target.id,
-    targetName: target.name,
+    targetName: p.fieldArrival && target.field ? `${target.name} · ${target.field.name.toLowerCase()}` : target.name,
     live,
     ok: p.ok,
     reason: p.reason,

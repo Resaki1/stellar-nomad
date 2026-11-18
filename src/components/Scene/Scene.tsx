@@ -51,6 +51,7 @@ import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
 import SpaceRenderer from "../space/SpaceRenderer";
 import MiningSystem from "../Mining/MiningSystem";
+import InteractFocus from "@/components/Mining/InteractFocus";
 import PingBrackets3D from "../Mining/PingBrackets3D";
 import AsteroidVFX from "../VFX/AsteroidVFX";
 import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
@@ -216,6 +217,7 @@ const Scene = () => {
         {process.env.NODE_ENV === "development" ? <PhysicsDebugView /> : null}
         <AsteroidField />
         <MiningSystem />
+        <InteractFocus />
         <PingBrackets3D />
         <AsteroidVFX />
         <TimedEffectsTicker />

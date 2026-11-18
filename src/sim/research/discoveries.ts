@@ -47,9 +47,11 @@ export function planInspection(
   let sources = [...d.sources, record];
   let evicted: string | null = null;
   if (sources.length > MAX_SOURCES) {
-    // Oldest unbookmarked depleted, then oldest unbookmarked, then oldest depleted.
-    let i = sources.findIndex((s) => s.depleted && !protectedIds.has(s.id) && s.id !== id);
-    if (i < 0) i = sources.findIndex((s) => !protectedIds.has(s.id) && s.id !== id);
+    // Oldest unbookmarked depleted, then oldest unbookmarked, then oldest depleted. The last
+    // record of a class is kept: `sourceClass` requirements read it, so evicting it would re-lock a met step.
+    const lastOfClass = (s: SourceFinding): boolean => !sources.some((o) => o !== s && o.classId === s.classId);
+    let i = sources.findIndex((s) => s.depleted && !protectedIds.has(s.id) && s.id !== id && !lastOfClass(s));
+    if (i < 0) i = sources.findIndex((s) => !protectedIds.has(s.id) && s.id !== id && !lastOfClass(s));
     if (i < 0) i = sources.findIndex((s) => s.depleted && s.id !== id);
     if (i < 0) i = 0;
     evicted = sources[i].id;

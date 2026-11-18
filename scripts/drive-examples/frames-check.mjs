@@ -202,7 +202,7 @@ export default async function framesCheck(d) {
     const startFrame = (await d.state()).ship.frameId;
     const transitRate = Number(process.env.FRAMES_TRANSIT_RATE ?? 1);
     await rate(transitRate);
-    const eng = await ev('__test.transitTo("luna")');
+    const eng = await ev('__test.transitTo("luna", { field: false })');
     const t0 = Date.now();
     let phase = "accelerating";
     while (Date.now() - t0 < 120_000) {

@@ -403,6 +403,22 @@ export const AUDIO_EVENTS = [
     variants: ["/audio/workshop/mining_target_lost_s24017.opus"],
     priority: 65, maxInstances: 1, cooldownMs: 350, preloadTier: 0, gainDb: 0
   },
+  // Close inspection (B11). Placeholders from `pnpm gen:audio-placeholders inspect` until real assets exist.
+  {
+    id: "mining.inspect.start", bus: "ui", tier: "ui",
+    variants: ["/audio/sfx2d/mining_inspect_start.opus"],
+    priority: 80, maxInstances: 1, cooldownMs: 150, preloadTier: 1, gainDb: -6
+  },
+  {
+    id: "mining.inspect.loop", bus: "ui", tier: "ui", loop: true,
+    variants: ["/audio/sfx2d/mining_inspect_loop.opus"],
+    priority: 40, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -14
+  },
+  {
+    id: "mining.inspect.complete", bus: "ui", tier: "ui",
+    variants: ["/audio/sfx2d/mining_inspect_complete.opus"],
+    priority: 85, maxInstances: 1, cooldownMs: 150, preloadTier: 1, gainDb: -6
+  },
   {
     id: "mining.target.lock",
     bus: "ui",

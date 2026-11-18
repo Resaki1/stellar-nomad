@@ -13,6 +13,7 @@ import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources } from "@/store/shipResources";
 import { replicationPointsAtom } from "@/store/replicationMirror";
 import { resetReposition } from "@/sim/ship/reposition";
+import { targetedPOIAtom } from "@/store/transit";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -42,9 +43,17 @@ export function installWorldBridge(store: Store): void {
       case "research.changed":
         store.set(sharedResearchMirrorAtom, getWorldState().research.completedNodes);
         break;
-      case "discoveries.changed":
-        store.set(discoveriesMirrorAtom, getWorldState().discoveries);
+      case "discoveries.changed": {
+        const d = getWorldState().discoveries;
+        store.set(discoveriesMirrorAtom, d);
+        // A destination rock that was mined or destroyed (by anyone) is no place to go.
+        const t = store.get(targetedPOIAtom);
+        if (t?.id.startsWith("source:")) {
+          const s = d.sources.find((x) => `source:${x.id}` === t.id);
+          if (!s || s.depleted) store.set(targetedPOIAtom, null);
+        }
         break;
+      }
       case "replication.changed":
         store.set(replicationPointsAtom, getWorldState().replication.points);
         break;

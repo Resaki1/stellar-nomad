@@ -5,17 +5,23 @@
  *
  *   GAME_PARTS=migrate,tx,shared pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
  *   GAME_PARTS=live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs
- *   GAME_PARTS=res,m32,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
- *   GAME_PARTS=transit,transitLive,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
+ *   GAME_PARTS=res,m32,repairEdge,reach,shots   M3.2 ship-resource gates (gameplay-m32.mjs)
+ *   GAME_PARTS=transit,transitLive,transitBelt,transitSpool,transitShots   M3.5 transit gates (gameplay-transit.mjs); transitNarrow with --size 390x844
  *   GAME_PARTS=audit,fit,evidence,reqs,config,migrate3 / playA / playB / m33shots   M3.3+M3.4 gates (gameplay-m33.mjs); m33narrow with --size 390x844
  *   GAME_PARTS=place,activate,death,recover,salvage,migrate4 / live36 / m36shots   M3.6 gates (gameplay-m36.mjs); m36narrow with --size 390x844
+ *   GAME_PARTS=hud (also --size 390x844) / hudTransit / hudSite / hudKeys / hudHotbar   playtest-1 WP3 HUD gates (gameplay-hud.mjs)
+ *   GAME_PARTS=panels (also --size 390x844)   playtest-1 WP4 panel gates (gameplay-panels.mjs)
+ *   GAME_PARTS=pace   timed real-input first trip to the lunar field (gameplay-pace.mjs; resumable, rerun until done)
  *   GAME_PARTS=seeds / regions / site / guidance / difficulty / sessionA / sessionB / sessionC / exploits / m37shots   M3.7+M3.8 gates (gameplay-m37.mjs); m37narrow with --size 390x844
  */
-import { m32Gates, reachGates, resGates, shotGates } from "./gameplay-m32.mjs";
-import { transitLiveGates, transitPureGates, transitShotGates } from "./gameplay-transit.mjs";
+import { m32Gates, reachGates, repairEdgeGates, resGates, shotGates } from "./gameplay-m32.mjs";
+import { transitBeltGates, transitLiveGates, transitPureGates, transitShotGates, transitSpoolGates } from "./gameplay-transit.mjs";
 import { activateGates, deathGates, live36Gates, m36ShotGates, migrate4Gates, placeGates, recoverGates, salvageGates } from "./gameplay-m36.mjs";
 import * as m37 from "./gameplay-m37.mjs";
-import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
+import { auditGates, configGates, fitGates, evidenceGates, m33ShotGates, marksGates, migrate3Gates, playGates, reqGates } from "./gameplay-m33.mjs";
+import { paceGates } from "./gameplay-pace.mjs";
+import { hudGates, hudHotbarGates, hudKeysGates, hudSiteGates, hudTransitGates } from "./gameplay-hud.mjs";
+import { panelGates } from "./gameplay-panels.mjs";
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** JSON with NaN/±Infinity kept as JS literals, for malformed fixtures. */
@@ -90,8 +96,16 @@ export default async function gameplayCheck(d) {
 
   const ctx = { ev, wait, player, world, submit, idb, boot, fixture, me, v1, v1Player, v1World, created };
   try {
+    if (parts.includes("pace")) out.pace = await paceGates(d, ctx);
+    if (parts.includes("hud")) out.hud = await hudGates(d, ctx);
+    if (parts.includes("hudTransit")) out.hudTransit = await hudTransitGates(d, ctx);
+    if (parts.includes("hudSite")) out.hudSite = await hudSiteGates(d, ctx);
+    if (parts.includes("hudKeys")) out.hudKeys = await hudKeysGates(d, ctx);
+    if (parts.includes("hudHotbar")) out.hudHotbar = await hudHotbarGates(d, ctx);
+    if (parts.includes("panels")) out.panels = await panelGates(d, ctx);
     if (parts.includes("audit")) out.audit = await auditGates(d, ctx);
     if (parts.includes("fit")) out.fit = await fitGates(d, ctx);
+    if (parts.includes("marks")) out.marks = await marksGates(d, ctx);
     if (parts.includes("evidence")) out.evidence = await evidenceGates(d, ctx);
     if (parts.includes("reqs")) out.reqs = await reqGates(d, ctx);
     if (parts.includes("config")) out.config = await configGates(d, ctx);
@@ -112,8 +126,11 @@ export default async function gameplayCheck(d) {
     if (parts.includes("res")) out.res = await resGates(d);
     if (parts.includes("transit")) out.transit = await transitPureGates(d);
     if (parts.includes("transitLive")) out.transitLive = await transitLiveGates(d, ctx);
+    if (parts.includes("transitBelt")) out.transitBelt = await transitBeltGates(d);
+    if (parts.includes("transitSpool")) out.transitSpool = await transitSpoolGates(d, ctx);
     if (parts.includes("transitShots") || parts.includes("transitNarrow")) out.transitShots = await transitShotGates(d, ctx, parts.includes("transitNarrow"));
     if (parts.includes("m32")) out.m32 = await m32Gates(d, ctx);
+    if (parts.includes("repairEdge")) out.repairEdge = await repairEdgeGates(d, ctx);
     if (parts.includes("reach")) out.reach = await reachGates(d, ctx);
     if (parts.includes("shots") || parts.includes("narrow")) out.shots = await shotGates(d, ctx, parts.includes("narrow"));
     if (parts.includes("migrate")) {
@@ -253,13 +270,13 @@ export default async function gameplayCheck(d) {
       const lockedRej = await submit({ type: "item.craft", opId: "craft-locked", itemId: "module_ping_array_mk1" });
       t.craftLocked = { reason: lockedRej.reason, pass: lockedRej.reason === "locked" && eq(p0, await player()) };
       // Accepted once; the same id again has no effect.
-      for (const [r, n] of [["fe_ni_metal", 50], ["silicates", 25]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
+      for (const [r, n] of [["fe_ni_metal", 70], ["silicates", 25]]) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
       const ok1 = await submit({ type: "item.craft", opId: "craft-1", itemId: item });
       const ok2 = await submit({ type: "item.craft", opId: "craft-1", itemId: item });
       const p2 = await player();
       t.craftOnce = {
         statuses: [ok1.status, ok2.status], cargo: p2.cargo.items, count: p2.modules.consumables[item], hotbar: p2.modules.hotbar.indexOf(item), mirrors: await mirrorsMatch(),
-        pass: ok1.status === "accepted" && ok2.status === "duplicate" && p2.modules.consumables[item] === 1 && eq(p2.cargo.items, { fe_ni_metal: 35, silicates: 15 }) && p2.modules.hotbar.includes(item) && (await mirrorsMatch()),
+        pass: ok1.status === "accepted" && ok2.status === "duplicate" && p2.modules.consumables[item] === 1 && eq(p2.cargo.items, { fe_ni_metal: 55, silicates: 15 }) && p2.modules.hotbar.includes(item) && (await mirrorsMatch()),
       };
       // Reload immediately after (pagehide flush): complete result, and the receipt survives.
       await ev(`${G}.submit({ type: "item.craft", opId: "craft-2", itemId: ${JSON.stringify(item)} })`);
@@ -269,11 +286,11 @@ export default async function gameplayCheck(d) {
       const dupAfterReload = await submit({ type: "item.craft", opId: "craft-2", itemId: item });
       t.craftReload = {
         count: p3.modules.consumables[item], cargo: p3.cargo.items, dup: dupAfterReload.status,
-        pass: p3.modules.consumables[item] === 2 && eq(p3.cargo.items, { fe_ni_metal: 20, silicates: 5 }) && dupAfterReload.status === "duplicate",
+        pass: p3.modules.consumables[item] === 2 && eq(p3.cargo.items, { fe_ni_metal: 40, silicates: 5 }) && dupAfterReload.status === "duplicate",
       };
 
       // Research (M3.3): missing evidence rejected by name; a trial and an unlock accepted once; retry after reload has no effect.
-      const node = "lg1_bulk_handling"; // trials first_batch + first_fabrication (the craft above recorded it); 10 fe_ni_metal
+      const node = "lg1_bulk_handling"; // trials first_batch + first_fabrication (the craft above recorded it); 30 fe_ni_metal
       const poor = await submit({ type: "research.unlock", opId: "ru-0", nodeId: node });
       const tr1 = await submit({ type: "trial.record", opId: "tr-1", trialId: "first_batch" });
       const tr1dup = await submit({ type: "trial.record", opId: "tr-1", trialId: "first_batch" });
@@ -397,16 +414,16 @@ export default async function gameplayCheck(d) {
 
     if (parts.includes("shared")) {
       const id = await fixture("shared", v1({
-        [me]: v1Player({ cargo: { capacityUnits: 2000, items: { silicates: 12, carbon: 5 } } }),
+        [me]: v1Player({ cargo: { capacityUnits: 2000, items: { silicates: 22, carbon: 5 } } }),
         "player-b": v1Player({ research: { assaySamples: 6, completedNodes: [], activeResearch: null }, cargo: { capacityUnits: 2000, items: { silicates: 200, fe_ni_metal: 80, carbon: 30, sulfur: 10 } } }),
       }));
       await boot(id);
       const a0 = await player();
       const b0 = await player("player-b");
       const bLocked = await submit({ type: "item.craft", opId: "b-craft-0", itemId: "module_prospector_scanner_mk1" }, "player-b");
-      // A's inspections (shared findings) make Composition Survey available to both; A pays the analysis.
-      const inspected = { firstAt: 1, by: me, inspected: true, extracted: false, sourceId: null };
-      await ev(`${G}.m33.devSetWorld(${JSON.stringify({ discoveries: { families: { silicates: inspected, fe_ni_metal: inspected, hydrates: inspected }, sources: [], sites: {}, trials: {} } })})`);
+      // A's inspections (shared findings: one rock per class) make Composition Survey available to both; A pays the analysis.
+      const src = (i, classId) => ({ id: `origin_belt:0,0,0:${i}`, fieldId: "origin_belt", chunkKey: "0,0,0", asteroidId: i, classId, frameId: "earth", positionKm: [0, 0, 0], radiusM: 10, composition: {}, depleted: false, foundAt: 1, by: me });
+      await ev(`${G}.m33.devSetWorld(${JSON.stringify({ discoveries: { families: {}, sources: [src(1, "s_type"), src(2, "c_type"), src(3, "x_type")], sites: {}, trials: {} } })})`);
       const done = await submit({ type: "research.unlock", opId: "a-ru", nodeId: "sv1_composition_survey" });
       const bCraft = await submit({ type: "item.craft", opId: "b-craft-1", itemId: "module_prospector_scanner_mk1" }, "player-b");
       const bLate = await submit({ type: "research.unlock", opId: "b-ru", nodeId: "sv1_composition_survey" }, "player-b");

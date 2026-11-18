@@ -2,7 +2,7 @@
  * Tracked-project evaluation (M3.7): pure, shared by the tracker UI and the gates.
  * A research step expands into the option's missing evidence and analysis material.
  */
-import { getItemDef, getResearchNode, getSiteDef, materialName } from "@/data/content";
+import { RESEARCH_NODES, getItemDef, getResearchNode, getSiteDef, materialName, type Requirement } from "@/data/content";
 import { getProjectDef, type ProjectStep } from "@/data/projects";
 import { evaluateNode, missingAnalysis, type EvidenceView } from "./requirements";
 
@@ -19,10 +19,26 @@ export interface ProjectView extends EvidenceView {
   fuelUse: number;
 }
 
-export interface ProjectLine {
+/** One piece of a research step: a requirement, an any-of group, or analysis material. */
+export interface ProjectSub {
   text: string;
   met: boolean;
-  sub: { text: string; met: boolean }[];
+  req?: Requirement;
+  any?: { req: Requirement; met: boolean }[];
+  analysis?: { material: string; need: number; have: number };
+}
+
+export type ProjectLineIcon = "research" | "craft" | "fuel" | "field" | "site" | "point";
+
+export interface ProjectLine {
+  icon: ProjectLineIcon;
+  text: string;
+  /** Entity name inside `text` (UI renders it as a name, not prose). */
+  name?: string;
+  /** Hover text (the fuel step's purpose). */
+  tip?: string;
+  met: boolean;
+  sub: ProjectSub[];
 }
 
 export interface ProjectStatus {
@@ -34,18 +50,27 @@ export interface ProjectStatus {
   complete: boolean;
 }
 
+/** A prerequisite added after a world unlocked its dependant (playtest 1: th1/lg1 → pr1, sv2 → ln1) counts as met. */
+function supersededByCompleted(nodeId: string, completed: ReadonlySet<string>): boolean {
+  return RESEARCH_NODES.some((n) => completed.has(n.id) && n.all.some((r) => r.kind === "research" && r.nodeId === nodeId));
+}
+
 function stepLine(s: ProjectStep, v: ProjectView): ProjectLine {
   switch (s.kind) {
     case "research": {
       const node = getResearchNode(s.nodeId);
-      if (!node) return { text: s.nodeId, met: false, sub: [] };
-      if (v.completed.has(node.id)) return { text: `${node.name} unlocked`, met: true, sub: [] };
+      if (!node) return { icon: "research", text: s.nodeId, met: false, sub: [] };
+      const name = node.name;
+      if (v.completed.has(node.id)) return { icon: "research", text: `${name} unlocked`, name, met: true, sub: [] };
+      if (supersededByCompleted(node.id, v.completed)) return { icon: "research", text: `${name} not needed`, name, met: true, sub: [] };
       const ev = evaluateNode(node, v);
-      const sub = [...ev.all.map((r) => ({ text: r.text, met: r.met }))];
-      if (ev.any.length > 0) sub.push({ text: `One of: ${ev.any.map((r) => r.text).join(" / ")}`, met: ev.anyMet });
+      const sub: ProjectSub[] = ev.all.map((r) => ({ text: r.text, met: r.met, req: r.req }));
+      if (ev.any.length > 0) sub.push({ text: `One of: ${ev.any.map((r) => r.text).join(" / ")}`, met: ev.anyMet, any: ev.any.map((r) => ({ req: r.req, met: r.met })) });
       const short = missingAnalysis(node, v.cargo);
-      for (const [k, need] of Object.entries(node.analysis)) sub.push({ text: `Carry ${need} ${materialName(k)} for the analysis`, met: !short[k] });
-      return { text: `Unlock ${node.name} (Research, R)`, met: false, sub };
+      for (const [k, need] of Object.entries(node.analysis)) {
+        sub.push({ text: `Carry ${need} ${materialName(k)} for the analysis`, met: !short[k], analysis: { material: k, need, have: Math.floor(v.cargo[k] ?? 0) } });
+      }
+      return { icon: "research", text: `Research ${name}`, name, met: false, sub };
     }
     case "own": {
       const def = getItemDef(s.itemId);
@@ -53,29 +78,29 @@ function stepLine(s: ProjectStep, v: ProjectView): ProjectLine {
       const have = def?.type === "consumable" ? (v.consumables[s.itemId] ?? 0) > 0 : v.owned.has(s.itemId);
       // A kit already placed counts: the step is "have built one".
       const met = have || (s.itemId === "consumable_replication_kit" && v.myPointFrames.length > 0);
-      return { text: met ? `${name} built` : `Fabricate the ${name} (Craft, F)`, met, sub: [] };
+      return { icon: "craft", text: met ? `${name} built` : `Craft ${name}`, name, met, sub: [] };
     }
     case "fuel": {
       const kg = Math.round(s.kg * v.fuelUse);
       // Spent on the way: once in lunar space the fuel step stays met.
       const met = v.ordinaryKg >= kg || v.shipFrameId === "luna";
-      return { text: `Ordinary propellant ${Math.floor(v.ordinaryKg)} / ${kg} kg (${s.label})`, met, sub: [] };
+      return { icon: "fuel", text: `${Math.floor(v.ordinaryKg)} / ${kg} kg`, tip: s.label, met, sub: [] };
     }
     case "inFrame":
-      return { text: s.label, met: v.shipFrameId === s.frameId, sub: [] };
+      return { icon: "field", text: s.label, met: v.shipFrameId === s.frameId, sub: [] };
     case "siteInspected": {
       const site = getSiteDef(s.siteId);
       const met = !!v.discoveries.inspectedSites[s.siteId];
-      return { text: met ? `${site?.name ?? s.siteId} inspected` : `Approach the ${site?.signalName ?? s.siteId} and inspect it (G)`, met, sub: [] };
+      return { icon: "site", text: met ? `${site?.name ?? s.siteId} inspected` : `Inspect the ${(site?.name ?? s.siteId).toLowerCase()}`, met, sub: [] };
     }
     case "siteRecovered": {
       const site = getSiteDef(s.siteId);
       const met = !!v.discoveries.sites[s.siteId];
-      return { text: met ? `${site?.name ?? s.siteId} recovered` : `Recover the ${site?.name ?? s.siteId} (G, within ${site?.recoverRangeKm ?? 1} km)`, met, sub: [] };
+      return { icon: "site", text: met ? `${site?.name ?? s.siteId} recovered` : `Recover the ${(site?.name ?? s.siteId).toLowerCase()}`, met, sub: [] };
     }
     case "point": {
       const met = s.frameId ? v.myPointFrames.includes(s.frameId) : v.myPointFrames.length > 0;
-      return { text: s.label, met, sub: [] };
+      return { icon: "point", text: s.label, met, sub: [] };
     }
   }
 }

@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Content (M3.3 / M3.4): items, research options and their typed evidence requirements.
-// The recipe/research matrix is docs/M3_GAMEPLAY_PLAN.md §13.5; every number is a tuning
+// The recipe/research matrix is docs/M3_GAMEPLAY_PLAN.md §13.5 (revised after playtest 1, §13); every number is a tuning
 // default. `auditContent` (src/sim/research/requirements.ts) checks the invariants.
 // ---------------------------------------------------------------------------
 
@@ -44,10 +44,12 @@ export type ItemDef = {
   icon?: string;
   effects?: ItemEffect[];
   useEffects?: ConsumableUseEffect[];
+  /** Effect keys `uiDesc` already states; craft cards do not repeat them as chips (R1). */
+  descStates?: string[];
   useDurationS?: number;
   cooldownS?: number;
   stackMax?: number;
-  /** Counted deployable (replication kit): placed by its own action, never from the hotbar. */
+  /** Counted deployable (replication kit): its hotbar slot opens placement instead of consuming it. */
   deployable?: boolean;
   /** resourceId → integer cargo units consumed. */
   recipe: Record<string, number>;
@@ -85,7 +87,7 @@ export type TrialDef = { id: string; name: string; howTo: string };
 
 /** One meaningful safe use each: never damage, stranding or repetition. */
 export const TRIALS: TrialDef[] = [
-  { id: "first_batch", name: "First propellant batch", howTo: "Complete a propellant processing batch (the tank needs room: fly a little first if it is full)" },
+  { id: "first_batch", name: "First propellant batch", howTo: "Complete a propellant processing batch" },
   { id: "sustained_beam", name: "Sustained extraction", howTo: "Keep the mining laser on one rock for 8 s without overheating" },
   { id: "first_fabrication", name: "First fabrication", howTo: "Fabricate any item" },
   { id: "transit_leg", name: "Transit calibration run", howTo: "Complete a transit leg to a destination" },
@@ -108,32 +110,32 @@ export type SiteDef = {
   positionKm: [number, number, number];
   /** Regional indication: the marker shows within this distance, km. */
   signalRangeKm: number;
-  /** Close inspection within this range, km. */
+  /** Close inspection within this range, km (one [G] inspects and recovers: keep it = recoverRangeKm). */
   inspectRangeKm: number;
   /** Recovery (one accepted operation) within this range, km. */
   recoverRangeKm: number;
   /** One-time reward into cargo (units); recovery is refused if the hold cannot take it. */
   reward: Record<string, number>;
-  /** Shown after inspection: what the site is and what recovering it gives. */
-  inspectText: string;
 };
 
 /**
  * Authored sites (M3.7). The lunar canister sits at luna_belt's thinning edge, outside the Moon's
  * 2 R route-clearance sphere: a target inside it needed a 26,000 km detour from the near-side standoff.
+ * 1,900 km off the ecliptic: the Moon's shadow (a ≤ 1,753 km cylinder along the anti-Sun line, which
+ * stays in the ecliptic) never reaches it. At [5200, 1200, 0] it sat in the umbra for weeks around the
+ * default start date and the canister and ship drew black. Nearest loaded rocks ~7 km.
  */
 export const SITES: SiteDef[] = [
   {
     id: "luna_survey_canister",
-    name: "Lunar survey canister",
-    signalName: "Automated survey signal",
+    name: "Survey canister",
+    signalName: "Survey signal",
     frameId: "luna",
-    positionKm: [5200, 1200, 0],
+    positionKm: [3400, 1900, 0],
     signalRangeKm: 120_000,
     inspectRangeKm: 2,
-    recoverRangeKm: 1,
+    recoverRangeKm: 2,
     reward: { titanium: 30 },
-    inspectText: "An abandoned automated survey installation. Its instrument canister is intact: recovering it yields titanium stock and the design data of an integrated sensor suite.",
   },
 ];
 
@@ -192,11 +194,11 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     branch: "survey",
     purpose: "Faster, longer-range inspections and composition bands at target lock.",
     all: [
-      { kind: "family", material: "silicates", inspected: true },
-      { kind: "family", material: "fe_ni_metal", inspected: true },
-      { kind: "family", material: "hydrates", inspected: true },
+      { kind: "sourceClass", classId: "s_type" },
+      { kind: "sourceClass", classId: "c_type" },
+      { kind: "sourceClass", classId: "x_type" },
     ],
-    analysis: { silicates: 10 },
+    analysis: { silicates: 20 },
     unlocks: { items: ["module_prospector_scanner_mk1"] },
   },
   {
@@ -206,11 +208,10 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     purpose: "A ping that marks nearby rocks and inspects from far away.",
     all: [
       { kind: "research", nodeId: "sv1_composition_survey" },
-      { kind: "sourceClass", classId: "c_type" },
-      { kind: "sourceClass", classId: "x_type" },
+      { kind: "family", material: "hydrates", inspected: true },
       { kind: "family", material: "carbon" },
     ],
-    analysis: { hydrates: 2, carbon: 2 },
+    analysis: { hydrates: 5, carbon: 5 },
     unlocks: { items: ["module_ping_array_mk1"] },
   },
   {
@@ -219,10 +220,10 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     branch: "extraction",
     purpose: "A faster, hotter cutting beam for large rocks.",
     all: [
-      { kind: "family", material: "fe_ni_metal" },
+      { kind: "family", material: "fe_ni_metal", inspected: true },
       { kind: "trial", trialId: "sustained_beam" },
     ],
-    analysis: { fe_ni_metal: 15 },
+    analysis: { fe_ni_metal: 30 },
     unlocks: { items: ["module_beam_focuser_mk1"] },
   },
   {
@@ -238,7 +239,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
       { kind: "family", material: "carbon" },
       { kind: "sourceClass", classId: "c_type" },
     ],
-    analysis: { sulfur: 2 },
+    analysis: { sulfur: 5 },
     unlocks: { items: ["module_yield_extractor_mk1"] },
   },
   {
@@ -250,7 +251,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
       { kind: "trial", trialId: "sustained_beam" },
       { kind: "family", material: "silicates" },
     ],
-    analysis: { silicates: 15 },
+    analysis: { silicates: 30 },
     unlocks: { items: ["module_radiator_strips_mk1", "module_coolant_circulator_mk1"] },
   },
   {
@@ -262,7 +263,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
       { kind: "trial", trialId: "first_batch" },
       { kind: "trial", trialId: "first_fabrication" },
     ],
-    analysis: { fe_ni_metal: 10 },
+    analysis: { fe_ni_metal: 30 },
     unlocks: { items: ["module_cargo_rack_mk1", "module_aux_tank_mk1", "module_electrolysis_cell_mk1"] },
   },
   {
@@ -271,11 +272,12 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     branch: "propulsion",
     purpose: "Fabricate the transit drive for travel between regions.",
     all: [
+      { kind: "research", nodeId: "th1_heat_rejection" },
+      { kind: "research", nodeId: "lg1_bulk_handling" },
+      { kind: "sourceClass", classId: "c_type" },
       { kind: "family", material: "hydrates" },
-      { kind: "trial", trialId: "first_batch" },
-      { kind: "trial", trialId: "first_fabrication" },
     ],
-    analysis: { hydrates: 2 },
+    analysis: { hydrates: 15, fe_ni_metal: 40 },
     unlocks: { items: ["special_transit_drive"] },
   },
   {
@@ -287,7 +289,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
       { kind: "research", nodeId: "pr1_transit_calibration" },
       { kind: "trial", trialId: "transit_leg" },
     ],
-    analysis: { fe_ni_metal: 10 },
+    analysis: { fe_ni_metal: 20, sulfur: 5 },
     unlocks: { items: ["module_thruster_nozzles_mk1"] },
   },
   {
@@ -299,7 +301,7 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
       { kind: "family", material: "fe_ni_metal", inspected: true },
       { kind: "trial", trialId: "first_fabrication" },
     ],
-    analysis: { fe_ni_metal: 10 },
+    analysis: { fe_ni_metal: 20 },
     unlocks: { items: ["module_ablative_plating_mk1", "module_nanite_repair_mk1"] },
   },
   {
@@ -307,8 +309,11 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     name: "Survey Instrument Recovery",
     branch: "lunar",
     purpose: "Optional specialist scanner decoded from the recovered lunar survey canister.",
-    all: [{ kind: "site", siteId: "luna_survey_canister" }],
-    analysis: {},
+    all: [
+      { kind: "site", siteId: "luna_survey_canister" },
+      { kind: "research", nodeId: "sv2_volatile_mapping" },
+    ],
+    analysis: { titanium: 10 },
     unlocks: { items: ["module_integrated_sensor_suite"] },
   },
 ];
@@ -322,7 +327,8 @@ export const ITEMS: ItemDef[] = [
   {
     id: "consumable_hull_patch_kit",
     name: "Hull Patch Kit",
-    uiDesc: "Field repair: restores 15 hull HP",
+    uiDesc: "Restores 15 hull",
+    descStates: ["ship.currentHealth"],
     slot: "utility",
     type: "consumable",
     starter: true,
@@ -334,7 +340,8 @@ export const ITEMS: ItemDef[] = [
   {
     id: "consumable_heat_sink_cartridge",
     name: "Heat Sink Cartridge",
-    uiDesc: "Emergency heat dump: vents half the ship's heat at once",
+    uiDesc: "Dumps half the heat",
+    descStates: ["mining.currentHeat"],
     slot: "utility",
     type: "consumable",
     starter: true,
@@ -345,7 +352,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "consumable_replication_kit",
     name: "Replication Kit",
-    uiDesc: "Deployable replication point: place it (B) to make a new recovery location",
+    uiDesc: "Places a respawn point",
     slot: "utility",
     type: "consumable",
     starter: true,
@@ -359,7 +366,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_prospector_scanner_mk1",
     name: "Prospector Scanner Mk1",
-    uiDesc: "Inspects twice as fast from further away; target lock shows composition bands",
+    uiDesc: "Faster, longer-range inspection",
     slot: "scanner",
     type: "module",
     effects: [
@@ -372,7 +379,8 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_ping_array_mk1",
     name: "Ping Array Mk1",
-    uiDesc: "Marks nearby rocks and inspects from long range",
+    uiDesc: "Marks nearby rocks",
+    descStates: ["scanner.pingHighlightEnabled"],
     slot: "scanner",
     type: "module",
     effects: [
@@ -388,7 +396,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_beam_focuser_mk1",
     name: "Beam Focuser Mk1",
-    uiDesc: "Cuts 30 % faster but draws more power and runs hotter",
+    uiDesc: "Cuts faster, runs hotter",
     slot: "mining",
     type: "module",
     effects: [
@@ -401,7 +409,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_yield_extractor_mk1",
     name: "Yield Extractor Mk1",
-    uiDesc: "Recovers 25 % more material per rock, 10 % slower",
+    uiDesc: "More material per rock",
     slot: "mining",
     type: "module",
     icon: "module_beam_focuser_mk1",
@@ -416,7 +424,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_radiator_strips_mk1",
     name: "Radiator Strips Mk1",
-    uiDesc: "Laser heats slower; the ship cools a little faster",
+    uiDesc: "Slower laser heating",
     slot: "cooling",
     type: "module",
     effects: [
@@ -428,7 +436,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_coolant_circulator_mk1",
     name: "Coolant Circulator Mk1",
-    uiDesc: "Much faster cooling and a larger thermal buffer",
+    uiDesc: "Much faster cooling",
     slot: "cooling",
     type: "module",
     icon: "module_radiator_strips_mk1",
@@ -452,7 +460,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_aux_tank_mk1",
     name: "Auxiliary Tank Mk1",
-    uiDesc: "More propellant capacity in the cargo slot, at the cost of hold space",
+    uiDesc: "More fuel, less cargo",
     slot: "cargo",
     type: "module",
     icon: "module_cargo_rack_mk1",
@@ -465,7 +473,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_electrolysis_cell_mk1",
     name: "Electrolysis Cell Mk1",
-    uiDesc: "Faster propellant processing and a little more reactor output",
+    uiDesc: "Faster fuel processing",
     slot: "utility",
     type: "module",
     icon: "module_spectral_mapper_mk1",
@@ -479,17 +487,17 @@ export const ITEMS: ItemDef[] = [
   // ── Propulsion ──────────────────────────────────────────────────────────
   {
     id: "special_transit_drive",
-    name: "Interplanetary Transit Drive",
-    uiDesc: "Fuel-aware transit to distant destinations",
+    name: "Transit Drive",
+    uiDesc: "Travel between regions",
     slot: "utility",
     type: "special",
     icon: "module_thruster_nozzles_mk1",
-    recipe: { silicates: 160, fe_ni_metal: 120, hydrates: 4, carbon: 4 },
+    recipe: { silicates: 600, fe_ni_metal: 550, hydrates: 30, carbon: 20, sulfur: 12 },
   },
   {
     id: "module_thruster_nozzles_mk1",
     name: "Thruster Nozzles Mk1",
-    uiDesc: "Faster acceleration and a higher top speed",
+    uiDesc: "Quicker, faster flight",
     slot: "propulsion",
     type: "module",
     effects: [
@@ -503,7 +511,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_ablative_plating_mk1",
     name: "Ablative Plating Mk1",
-    uiDesc: "More hull HP, collisions hurt less",
+    uiDesc: "More hull, softer impacts",
     slot: "hull",
     type: "module",
     effects: [
@@ -515,7 +523,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_nanite_repair_mk1",
     name: "Nanite Repair System",
-    uiDesc: "Automatic hull repair while damaged (pays Fe-Ni metal like manual repair)",
+    uiDesc: "Self-repair using Fe-Ni",
     slot: "hull",
     type: "module",
     icon: "module_ablative_plating_mk1",
@@ -527,7 +535,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: "module_integrated_sensor_suite",
     name: "Integrated Sensor Suite",
-    uiDesc: "Every scanner capability: long range, fast lock and inspection, ping",
+    uiDesc: "Every scanner ability, improved",
     slot: "scanner",
     type: "module",
     icon: "module_spectral_mapper_mk1",
@@ -539,7 +547,7 @@ export const ITEMS: ItemDef[] = [
       { key: "scanner.lockSpeedMultiplier", op: "multiply", value: 0.7 },
       { key: "scanner.allRangeMultiplier", op: "multiply", value: 1.25 },
     ],
-    recipe: { silicates: 200, fe_ni_metal: 80, titanium: 30 },
+    recipe: { silicates: 200, fe_ni_metal: 100, titanium: 60 },
   },
 ];
 
@@ -558,8 +566,8 @@ export type ProcessingRecipeDef = {
 export const PROCESSING_RECIPES: ProcessingRecipeDef[] = [
   {
     id: "hydrate_propellant",
-    name: "Propellant from hydrates",
-    uiDesc: "Electrolyses hydrate feedstock into ordinary propellant",
+    name: "Fuel processing",
+    uiDesc: "Hydrates into fuel",
     inputId: "hydrates",
   },
 ];
@@ -614,6 +622,19 @@ export const SLOT_LABELS: Record<ItemSlot, string> = {
   utility: "Utility",
 };
 
+/** Crafting filter (D14): the drive is a special item, never equipped, so it gets its own tab. */
+export type CraftCategory = "drive" | ItemSlot | "consumables" | "processing";
+
+export const CRAFT_CATEGORIES: CraftCategory[] = ["drive", "scanner", "mining", "cooling", "cargo", "propulsion", "hull", "utility", "consumables", "processing"];
+
+export const CRAFT_CATEGORY_LABELS: Record<CraftCategory, string> = {
+  ...SLOT_LABELS, drive: "Drive", consumables: "Consumables", processing: "Processing",
+};
+
+export function craftCategory(item: Pick<ItemDef, "type" | "slot">): CraftCategory {
+  return item.type === "special" ? "drive" : item.type === "consumable" ? "consumables" : item.slot;
+}
+
 // ---------------------------------------------------------------------------
 // Human-readable effect descriptions
 // ---------------------------------------------------------------------------
@@ -626,31 +647,31 @@ function fmtPct(multiplier: number): string {
 const signed = (v: number): string => `${v >= 0 ? "+" : ""}${v}`;
 
 const EFFECT_DESCRIPTIONS: Record<string, (value: number | boolean, op: string) => string> = {
-  "scanner.pingHighlightEnabled": () => "Ping marks nearby rocks",
-  "scanner.lockShowsCompositionBands": () => "Target lock shows composition bands",
-  "scanner.inspectTimeMultiplier": (v) => `Inspection time ${fmtPct(v as number)}`,
-  "scanner.inspectRangeMultiplier": (v) => `Inspection range ${fmtPct(v as number)}`,
-  "scanner.lockSpeedMultiplier": (v) => `Target lock time ${fmtPct(v as number)}`,
+  "scanner.pingHighlightEnabled": () => "Ping highlight",
+  "scanner.lockShowsCompositionBands": () => "Composition bands",
+  "scanner.inspectTimeMultiplier": (v) => `Inspect time ${fmtPct(v as number)}`,
+  "scanner.inspectRangeMultiplier": (v) => `Inspect range ${fmtPct(v as number)}`,
+  "scanner.lockSpeedMultiplier": (v) => `Lock time ${fmtPct(v as number)}`,
   "scanner.allRangeMultiplier": (v) => `Sensor range ${fmtPct(v as number)}`,
-  "ship.cargoCapacity": (v) => `Cargo ${signed(v as number)} units`,
-  "ship.tankKg": (v) => `Propellant tank ${signed(v as number)} kg`,
+  "ship.cargoCapacity": (v) => `Cargo ${signed(v as number)}`,
+  "ship.tankKg": (v) => `Tank ${signed(v as number)} kg`,
   "ship.reactorKW": (v) => `Reactor ${signed(v as number)} kW`,
-  "ship.heatCapacityMultiplier": (v) => `Thermal buffer ${fmtPct(v as number)}`,
-  "processing.rateMultiplier": (v) => `Processing rate ${fmtPct(v as number)} (power and heat too)`,
+  "ship.heatCapacityMultiplier": (v) => `Heat buffer ${fmtPct(v as number)}`,
+  "processing.rateMultiplier": (v) => `Processing ${fmtPct(v as number)}`,
   "mining.timePerAsteroidMultiplier": (v) => `Mining time ${fmtPct(v as number)}`,
-  "mining.powerMultiplier": (v) => `Laser power draw ${fmtPct(v as number)}`,
+  "mining.powerMultiplier": (v) => `Laser power ${fmtPct(v as number)}`,
   "mining.heatBuildUpRateMultiplier": (v) => `Laser heating ${fmtPct(v as number)}`,
-  "mining.yieldMultiplier": (v) => `Mining yield ${fmtPct(v as number)}`,
+  "mining.yieldMultiplier": (v) => `Yield ${fmtPct(v as number)}`,
   "mining.cooldownSpeedMultiplier": (v) => `Cooling ${fmtPct(v as number)}`,
-  "ship.maxHealthMultiplier": (v) => `Max hull HP ${fmtPct(v as number)}`,
-  "ship.collisionDamageMultiplier": (v) => `Collision damage ${fmtPct(v as number)}`,
-  "ship.hullRegenPerSecond": (v) => `Auto repair ${v} HP/s (paid in Fe-Ni)`,
-  "ship.decelerationMultiplier": (v) => `Braking power ${fmtPct(v as number)}`,
+  "ship.maxHealthMultiplier": (v) => `Max hull ${fmtPct(v as number)}`,
+  "ship.collisionDamageMultiplier": (v) => `Impact damage ${fmtPct(v as number)}`,
+  "ship.hullRegenPerSecond": (v) => `Repair ${v} HP/s`,
+  "ship.decelerationMultiplier": (v) => `Braking ${fmtPct(v as number)}`,
   "ship.accelerationMultiplier": (v) => `Acceleration ${fmtPct(v as number)}`,
   "ship.maxSpeedMultiplier": (v) => `Top speed ${fmtPct(v as number)}`,
   "mining.currentHeat": (v, op) =>
     op === "add" ? `Heat ${(v as number) > 0 ? "+" : ""}${Math.round((v as number) * 100)}%` : op === "set" ? "Full heat reset" : `Heat ×${v}`,
-  "ship.currentHealth": (v, op) => (op === "add" ? `Restore ${v} hull HP` : `Set hull HP to ${v}`),
+  "ship.currentHealth": (v, op) => (op === "add" ? `Hull +${v}` : `Hull = ${v}`),
 };
 
 /** Multipliers where a smaller value is the improvement. */

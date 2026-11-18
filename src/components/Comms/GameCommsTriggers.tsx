@@ -10,16 +10,16 @@ import { useEffect, useMemo } from "react";
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import { COMMS_MESSAGES } from "@/data/commsMessages";
 import { HINTS, type HintDef } from "@/data/guidance";
-import { RESEARCH_NODES } from "@/data/content";
-import { evaluateNode } from "@/sim/research/requirements";
 import { aiNameAtom } from "@/store/aiName";
 import { cargoAtom, isCargoFullAtom } from "@/store/cargo";
-import { activeHintAtom, enqueueCommsAtom, playedMessageIdsAtom, showHintAtom } from "@/store/comms";
+import { enqueueCommsAtom, playedMessageIdsAtom, retireHintAtom, showHintAtom } from "@/store/comms";
+import { toastStackFullAtom } from "@/store/toast";
 import { isDeadAtom } from "@/store/death";
 import { miningStateAtom } from "@/store/mining";
 import { modulesAtom } from "@/store/modules";
-import { kitCountAtom, lastRecoveryAtom } from "@/store/replication";
-import { discoveriesMirrorAtom, evidenceViewAtom } from "@/store/research";
+import { trackedProjectAtom } from "@/store/projects";
+import { lastRecoveryAtom } from "@/store/replication";
+import { discoveriesMirrorAtom } from "@/store/research";
 import { shipResourcesHudAtom } from "@/store/shipResources";
 import { glanceAtom } from "@/store/sites";
 import { shipHealthAtom } from "@/store/store";
@@ -32,28 +32,22 @@ const lowFuelAtom = atom((get) => {
 });
 const hasHydratesAtom = atom((get) => (get(cargoAtom).items.hydrates ?? 0) > 0);
 const hasDriveAtom = atom((get) => get(modulesAtom).ownedModules.includes("special_transit_drive"));
-const researchReadyAtom = atom((get) => {
-  const ev = get(evidenceViewAtom);
-  return RESEARCH_NODES.some((n) => !ev.completed.has(n.id) && evaluateNode(n, ev).met);
-});
 const frameAtom = atom((get) => get(glanceAtom).frameId);
 const damagedAtom = atom((get) => {
   const h = get(shipHealthAtom);
   return h > 0 && h < 99.5;
 });
 
-const siteNearAtom = atom((get) => {
-  const s = get(glanceAtom).site;
-  return !!s && s.distKm <= 2;
-});
 
-/** Show `hint` once while `when` holds (and the ship is alive). */
+/** Show `hint` once while `when` holds (and the ship is alive); it leaves when `when` stops holding. */
 function useHint(hint: HintDef, when: boolean, dead: boolean): void {
   const show = useSetAtom(showHintAtom);
-  const busy = useAtomValue(activeHintAtom) !== null;
+  const retire = useSetAtom(retireHintAtom);
+  const busy = useAtomValue(toastStackFullAtom);
   useEffect(() => {
-    if (when && !dead && !busy) show(hint);
-  }, [hint, when, dead, busy, show]);
+    if (!when) retire(hint.id);
+    else if (!dead && !busy) show(hint);
+  }, [hint, when, dead, busy, show, retire]);
 }
 
 export default function GameCommsTriggers() {
@@ -73,19 +67,19 @@ export default function GameCommsTriggers() {
   }, [aiName, openedHere, enqueue]);
   // Older saves (named before M3.7) get the projects hint without the opening.
   const openingDone = !!aiName && (playedSet.has("opening_002") || !openedHere);
-  useHint(HINTS.projects, openingDone, dead);
+  const untracked = useAtomValue(trackedProjectAtom) === null;
+  useHint(HINTS.projects, openingDone && untracked, dead);
 
   // ── Contextual one-time hints ──
-  useHint(HINTS.lock, useAtomValue(focusedAtom) && openingDone, dead);
-  useHint(HINTS.hydrates, useAtomValue(hasHydratesAtom), dead);
-  useHint(HINTS.research, useAtomValue(researchReadyAtom), dead);
+  useHint(HINTS.lock, !useAtomValue(focusedAtom) && openingDone, dead);
+  const hasHydrates = useAtomValue(hasHydratesAtom);
+  useHint(HINTS.hydrates, hasHydrates, dead);
   useHint(HINTS.heat, useAtomValue(heatWarnAtom), dead);
   useHint(HINTS.cargoFull, useAtomValue(isCargoFullAtom), dead);
-  useHint(HINTS.lowFuel, useAtomValue(lowFuelAtom), dead);
-  useHint(HINTS.kit, useAtomValue(kitCountAtom) > 0, dead);
+  // Only actionable with hydrates aboard (after a respawn the hold is empty: the wreck hint applies).
+  useHint(HINTS.lowFuel, useAtomValue(lowFuelAtom) && hasHydrates, dead);
   useHint(HINTS.drive, useAtomValue(hasDriveAtom), dead);
   useHint(HINTS.recovered, useAtomValue(lastRecoveryAtom) !== null, dead);
-  useHint(HINTS.site, useAtomValue(siteNearAtom), dead);
 
   useHint(HINTS.damage, useAtomValue(damagedAtom) && openingDone, dead);
 

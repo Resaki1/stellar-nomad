@@ -7,6 +7,7 @@
  *   SHELL_PARTS=exit            pnpm drive -- --title --no-isolate run:…
  *   SHELL_PARTS=frames          pnpm drive -- --fresh [--query nogate=1] run:…   (cold cache)
  *   SHELL_PARTS=shots,keys      pnpm drive -- --title [--size 390x844] run:…
+ *   SHELL_PARTS=lock            pnpm drive -- --title run:…   (B12 cursor recapture, trusted input)
  *
  * Parts: title (a), newworld (b), continue (c), frames (d), list (e), exit (f), shots + keys (g).
  */
@@ -368,6 +369,62 @@ export default async function shellCheck(d) {
     await shot("shell-loading");
     await playing();
     out.shots = { pass: true };
+  }
+
+  if (parts.includes("lock")) {
+    // B12, trusted CDP input: closing a panel by click or by its key recaptures the cursor at once;
+    // Escape grants no activation, so it leaves the "click to steer" prompt instead.
+    const PL = "__test.input.pointerLock.state()";
+    const rectOf = (js) => ev(`(() => { const e = ${js}; if (!e) return null; const b = e.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+    const tclick = async (xy) => { for (const type of ["mousePressed", "mouseReleased"]) await d.send("Input.dispatchMouseEvent", { type, x: xy[0], y: xy[1], button: "left", clickCount: 1 }); };
+    const key = async (k, code, vk) => {
+      await d.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: vk });
+      await wait(40);
+      await d.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk });
+    };
+    const locked = async () => (await ev(PL)).locked;
+    await d.send("Page.bringToFront");
+    await title();
+    const start = await rectOf(`[...document.querySelectorAll('.shell-menu__item')].find(x => x.textContent.includes('Continue')) ?? document.querySelector('.shell-menu__item--primary')`);
+    await tclick(start);
+    await playing();
+    await wait(1500);
+    const L = { whenPlaying: await locked() };
+    if (!L.whenPlaying) {
+      await tclick([640, 300]);
+      await wait(300);
+    }
+    L.beforePanels = await locked();
+    await key("c", "KeyC", 67);
+    await wait(400);
+    L.panelOpen = await locked();
+    await tclick(await rectOf(`document.querySelector('.panel__close')`));
+    await wait(500);
+    L.afterCloseClick = await locked();
+    await key("c", "KeyC", 67);
+    await wait(400);
+    await key("c", "KeyC", 67);
+    await wait(500);
+    L.afterCloseKey = await locked();
+    // Esc soon after a key press still has that press's transient activation (Chrome ~5 s): it recaptures.
+    await wait(1200);
+    await key("c", "KeyC", 67);
+    await wait(400);
+    await key("Escape", "Escape", 27);
+    await wait(600);
+    L.afterEscQuick = await locked();
+    // Once the activation has lapsed, Esc cannot lock: the prompt shows instead.
+    await wait(1200);
+    await key("c", "KeyC", 67);
+    await wait(6000);
+    await key("Escape", "Escape", 27);
+    await wait(600);
+    L.afterEsc = await locked();
+    L.escPanelClosed = !(await ev(`!!document.querySelector('.panel__close')`));
+    L.steerPrompt = await ev(`(() => { const h = document.querySelector('.flight-hud__hint--quiet'); return h ? getComputedStyle(h).opacity : null; })()`);
+    L.pass = L.beforePanels && L.panelOpen === false && L.afterCloseClick === true && L.afterCloseKey === true && L.afterEsc === false && L.escPanelClosed && Number(L.steerPrompt) > 0;
+    out.lock = L;
+    log("lock", JSON.stringify(L));
   }
 
   if (parts.includes("keys")) {

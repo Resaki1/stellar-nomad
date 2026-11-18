@@ -511,11 +511,11 @@ export async function m32Gates(d, ctx) {
     const cargoBefore = (await player()).cargo.items;
     const opened = await ev(`(() => { const b = document.querySelector(".settings__open-button"); if (!b) return false; b.click(); return true; })()`);
     await wait(300);
-    const asked = await ev(`(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "emergency: abandon ship"); if (!b) return false; b.click(); return true; })()`);
+    const asked = await ev(`(() => { const b = document.querySelector('[data-action="respawn"]'); if (!b) return false; b.click(); return true; })()`);
     await wait(300);
     const dialog = await ev(`document.querySelector(".settings-menu__abandon")?.textContent ?? null`);
     const shot = await shotNow(d, "m3-abandon-confirm");
-    const confirmed = await ev(`(() => { const b = [...document.querySelectorAll(".settings-menu__abandon button")].find((x) => x.textContent.trim() === "abandon ship"); if (!b) return false; b.click(); return true; })()`);
+    const confirmed = await ev(`(() => { const b = document.querySelector('[data-action="respawn-confirm"]'); if (!b) return false; b.click(); return true; })()`);
     await wait(500);
     const pd = await player();
     const w = (await world()).wrecks.at(-1);
@@ -525,7 +525,7 @@ export async function m32Gates(d, ctx) {
     L.emergency = {
       zeroFuelSpeedMps: r4(drift?.speedMps), opened, asked, dialog, shot, confirmed, dead: pd.isDead, wreck: w ? { items: w.items, fuelKg: w.fuelKg } : null, cargoBefore,
       recovered: { clicked, health: pa.health, propellant: pa.propellant },
-      pass: drift.speedMps < 0.01 && opened && asked && /Abandon ship\?/.test(dialog ?? "") && confirmed && pd.isDead && !!w && eq(w.items, cargoBefore) && w.fuelKg === 0 &&
+      pass: drift.speedMps < 0.01 && opened && asked && /Respawn at .+\?/.test(dialog ?? "") && confirmed && pd.isDead && !!w && eq(w.items, cargoBefore) && w.fuelKg === 0 &&
         clicked && !pa.isDead && pa.health === 100 && pa.propellant.ordinaryKg === 0 && pa.propellant.protectedKg === 60,
     };
   });
@@ -533,6 +533,43 @@ export async function m32Gates(d, ctx) {
 }
 
 /** STARTER REACH: from the starting position with only the protected allowance, reach a hydrate rock, mine, process. */
+/** B5: at 99.7 % hull every repair path agrees it is intact; at 99.4 % every path offers repair. */
+export async function repairEdgeGates(d, ctx) {
+  const { ev, boot, fixture, me, submit } = ctx;
+  const kit = "consumable_hull_patch_kit";
+  const modules = { ownedModules: [], equippedModules: {}, consumables: { [kit]: 2 }, consumableCooldowns: {}, hotbar: [kit, ...Array(9).fill(null)] };
+  const id = await fixture("repair-edge", m32World(ctx, { [me]: m32Player(ctx, { base: { modules, cargo: { capacityUnits: 2000, items: { fe_ni_metal: 20 } } } }) }));
+  await boot(id);
+  await d.scene("belt");
+  await d.frames(30);
+  await ev(`(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c" })); return true; })()`);
+  await d.frames(10);
+  const read = () => ev(`(() => {
+    const row = [...document.querySelectorAll(".ship-dashboard__row")].find((x) => x.querySelector(".ship-dashboard__label")?.textContent === "HULL");
+    const btn = [...document.querySelectorAll(".crafting-panel__workshop button")].find((b) => b.textContent.trim() === "Repair");
+    const slot = document.querySelectorAll(".hotbar__slot")[0];
+    return { dashboard: row ? row.querySelector(".ship-dashboard__value").textContent : null, repairDisabled: btn ? btn.disabled : null, kitUnavailable: slot ? slot.classList.contains("hotbar__slot--unavailable") : null };
+  })()`);
+  const out = {};
+  for (const h of [99.7, 99.4]) {
+    await ev(`__phys.game.setHealth(${h})`);
+    await d.frames(10);
+    const dom = await read();
+    const manual = await ev(`${R}.repair(true)`);
+    await ev(`${R}.repair(false)`);
+    await ev(`__phys.game.setHealth(${h})`);
+    await d.frames(5);
+    const op = await submit({ type: "ship.repair", opId: `edge-${h}`, pct: 1 });
+    const after = (await ctx.player()).health;
+    out[`hull${h}`] = { ...dom, manualRepair: manual, op: op.status, reason: op.reason ?? null, healthAfterOp: r4(after) };
+  }
+  const a = out["hull99.7"], b = out["hull99.4"];
+  await ev(`(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "c" })); return true; })()`);
+  out.pass = a.dashboard === "100%" && a.repairDisabled === true && a.kitUnavailable === true && a.manualRepair === false && a.reason === "full_hull" &&
+    b.dashboard === "99%" && b.repairDisabled === false && b.kitUnavailable === false && b.manualRepair === true && b.op === "accepted" && b.healthAfterOp === 100;
+  return out;
+}
+
 export async function reachGates(d, ctx) {
   const { ev, wait, player, boot, fixture, me } = ctx;
   const st = () => ev(`${R}.state()`);
@@ -651,7 +688,7 @@ export async function shotGates(d, ctx, narrow) {
   await wait(400);
   shots.hot = await d.shot("m3-hud-hot");
   await ev(`${R}.set({ heat01: 0.2 })`);
-  await d.press("f");
+  await d.press("c");
   await wait(800);
   shots.panel = await d.shot("m3-processing-panel");
   await d.press("Escape");

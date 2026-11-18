@@ -148,6 +148,11 @@
   }
 }
 
+.settings-menu__abandon .death-screen__wreck {
+  justify-content: flex-start;
+  margin: 0;
+}
+
 .settings-menu__abandon-title {
   color: s.$accent-crit;
   font-weight: 600;

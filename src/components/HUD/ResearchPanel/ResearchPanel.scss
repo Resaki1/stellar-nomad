@@ -1,16 +1,17 @@
 @use '../../../styles' as s;
 
-// Content inside the Panel shell: research options (M3.3) and the discoveries list.
+// Research panel (spec §4.2): option cards with requirement chips, the unlocked strip, discoveries.
+
+.rp-count {
+  font-family: s.$font-mono;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: s.$text-secondary;
+}
 
 .rp-tabs {
   display: inline-flex;
   gap: s.$space-1;
-
-  // The display-font title and both tabs do not fit one line at phone width.
-  @media (max-width: 520px) {
-    flex-direction: column;
-    align-items: stretch;
-  }
 
   &__btn {
     font-size: 11px;
@@ -22,6 +23,10 @@
     background: rgba(255, 255, 255, 0.04);
     color: s.$text-secondary;
     cursor: pointer;
+
+    @media (max-width: 520px) {
+      padding: s.$space-1 s.$space-2;
+    }
 
     &--active {
       background: rgba(127, 184, 255, 0.15);
@@ -36,13 +41,6 @@
   display: flex;
   flex-direction: column;
   gap: s.$space-3;
-  min-height: 0;
-}
-
-.rp-intro {
-  font-size: 12px;
-  line-height: 1.4;
-  color: s.$text-tertiary;
 }
 
 .rp-branch {
@@ -56,250 +54,289 @@
 
   &__cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: s.$space-2;
 
-    @media (max-width: 560px) {
+    @media (max-width: 600px) {
       grid-template-columns: 1fr;
     }
   }
 }
 
+// Fixed 112 px: head, two chip lines, footer. Overflow is clipped, never grown.
 .rp-card {
-  display: flex;
-  flex-direction: column;
-  gap: s.$space-1 + 2px;
-  padding: s.$space-2 s.$space-3;
+  display: grid;
+  grid-template-rows: 20px 46px 26px;
+  row-gap: 4px;
+  height: 112px;
+  box-sizing: border-box;
+  padding: 6px s.$space-2 6px s.$space-3;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 3px solid transparent;
   border-radius: s.$radius-lg;
+  overflow: hidden;
 
   &--ready {
-    border-color: rgba(127, 184, 255, 0.4);
+    border-left-color: s.$accent-ok;
   }
 
-  &--done {
-    opacity: 0.75;
+  &--locked {
+    opacity: 0.7;
   }
 
   &__head {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: baseline;
     gap: s.$space-2;
+    min-width: 0;
   }
 
   &__name {
     font-size: 13px;
     font-weight: 600;
+    color: s.$text-primary;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  &__status {
-    flex: 0 0 auto;
-    font-size: 10px;
+  &__ready {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: s.$text-tertiary;
+    color: s.$accent-ok;
 
-    &--ready {
-      color: s.$accent-info;
-    }
-
-    &--done {
-      color: s.$accent-ok;
-    }
-
-    &--material {
-      color: s.$accent-warn;
+    &::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: s.$accent-ok;
     }
   }
 
-  &__purpose {
-    font-size: 11px;
-    line-height: 1.35;
-    color: s.$text-secondary;
-  }
-
-  &__label {
-    font-size: 10px;
-    color: s.$text-tertiary;
-  }
-
-  &__evidence {
-    margin: 0;
-    padding: 0;
-    list-style: none;
+  &__chips {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 3px 4px;
+    overflow: hidden;
   }
 
-  &__analysis {
-    font-size: 11px;
-    color: s.$text-tertiary;
-
-    &--short {
-      color: s.$accent-warn;
-    }
+  &__foot {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    min-width: 0;
   }
 
   &__unlocks {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding-top: s.$space-1;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
   }
 
-  &__unlock {
-    display: flex;
-    flex-direction: column;
-  }
-
-  &__unlock-name {
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  &__unlock-desc {
-    font-size: 10px;
+  &__arrow {
     color: s.$text-tertiary;
+    font-size: 11px;
   }
 
   &__btn {
-    align-self: flex-start;
-    margin-top: s.$space-1;
+    flex: 0 0 auto;
     font-size: 11px;
     font-weight: 600;
-    padding: s.$space-1 s.$space-3;
+    padding: 4px s.$space-3;
     border-radius: s.$radius-md;
-    border: 1px solid rgba(127, 184, 255, 0.45);
-    background: rgba(127, 184, 255, 0.16);
+    border: 1px solid rgba(107, 227, 164, 0.5);
+    background: rgba(107, 227, 164, 0.14);
     color: s.$text-primary;
     cursor: pointer;
 
     &:disabled {
-      cursor: default;
-      border-color: rgba(255, 255, 255, 0.1);
-      background: rgba(255, 255, 255, 0.03);
+      border-color: s.$stroke-faint;
+      background: transparent;
       color: s.$text-disabled;
+      cursor: default;
     }
   }
 }
 
-.rp-evidence {
+.rp-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+
+  &__track { fill: none; stroke: rgba(255, 255, 255, 0.12); stroke-width: 2.5; }
+  &__fill { fill: none; stroke: s.$accent-info; stroke-width: 2.5; stroke-linecap: round; }
+
+  &__n {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: s.$text-secondary;
+  }
+}
+
+.rp-unlock {
+  display: inline-flex;
+
+  img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+    border-radius: s.$radius-sm;
+    background: rgba(255, 255, 255, 0.04);
+  }
+}
+
+.rp-done__chips {
   display: flex;
-  align-items: flex-start;
-  gap: s.$space-1 + 2px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rp-done__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 4px 0 6px;
+  border: 1px solid rgba(107, 227, 164, 0.3);
+  border-radius: s.$radius-md;
   font-size: 11px;
-  line-height: 1.35;
   color: s.$text-secondary;
 
-  svg {
-    flex: 0 0 auto;
-    margin-top: 2px;
-    color: s.$text-tertiary;
+  svg { color: s.$accent-ok; }
+  .rp-unlock img { width: 18px; height: 18px; }
+}
+
+// Discoveries
+.rp-mats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: s.$space-2;
+}
+
+.rp-mat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px dashed s.$stroke-faint;
+  border-radius: s.$radius-md;
+  opacity: 0.6;
+
+  &--found {
+    opacity: 1;
+    border-style: solid;
+    border-color: rgba(107, 227, 164, 0.3);
   }
 
-  &--met {
-    color: s.$text-tertiary;
-
-    svg {
-      color: s.$accent-ok;
-    }
+  &__state {
+    display: inline-flex;
+    gap: 2px;
+    min-width: 22px;
+    color: s.$accent-info;
   }
 }
 
-.rp-disc {
-  &__list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 2px s.$space-3;
-  }
+.rp-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: s.$text-tertiary;
+}
 
-  &__how {
-    color: s.$text-tertiary;
-    font-size: 10px;
-  }
-
-  &__sources {
-    display: flex;
-    flex-direction: column;
-    gap: s.$space-2;
-  }
+.rp-disc__sources {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .rp-source {
-  padding: s.$space-2 s.$space-3;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: s.$radius-lg;
+  display: flex;
+  align-items: center;
+  gap: s.$space-2;
+  height: 30px;
+  padding: 0 s.$space-2;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: s.$radius-md;
 
-  &--depleted {
-    opacity: 0.6;
-  }
-
-  &__head {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: s.$space-1 s.$space-2;
-  }
-
-  &__name {
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  &__meta,
-  &__comp {
+  &__badge {
+    min-width: 20px;
+    text-align: center;
     font-family: s.$font-mono;
     font-size: 10px;
-    color: s.$text-tertiary;
+    font-weight: 700;
+    border: 1px solid s.$stroke-strong;
+    border-radius: s.$radius-sm;
+    color: s.$text-primary;
+  }
+
+  &__r {
+    width: 56px;
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: s.$text-secondary;
+    white-space: nowrap;
   }
 
   &__comp {
-    margin-top: 2px;
-    color: s.$text-secondary;
+    display: inline-flex;
+    gap: s.$space-2;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
   &__actions {
-    margin-top: s.$space-1 + 2px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: s.$space-1 + 2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
   }
 
   &__input {
-    flex: 1 1 120px;
-    min-width: 0;
+    width: 96px;
+    height: 22px;
     font-size: 11px;
-    padding: 3px s.$space-2;
-    border-radius: s.$radius-md;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 0 6px;
+    border-radius: s.$radius-sm;
+    border: 1px solid s.$stroke-base;
     background: rgba(0, 0, 0, 0.25);
     color: s.$text-primary;
+
+    @media (max-width: 520px) {
+      width: 64px;
+    }
   }
 
   &__btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 3px s.$space-2;
-    border-radius: s.$radius-md;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(255, 255, 255, 0.05);
+    justify-content: center;
+    width: 24px;
+    height: 22px;
+    border-radius: s.$radius-sm;
+    border: 1px solid s.$stroke-faint;
+    background: rgba(255, 255, 255, 0.04);
     color: s.$text-secondary;
     cursor: pointer;
 
-    &:disabled {
-      cursor: default;
-      color: s.$text-disabled;
+    &--on {
+      color: s.$accent-signal;
+      border-color: rgba(255, 211, 107, 0.4);
     }
   }
 }

@@ -35,14 +35,16 @@ export interface TransitScript {
   /** Initial nose; default +z. */
   facing?: [number, number, number];
   /** null = manual transit (no autopilot). */
-  target?: { positionKm: [number, number, number]; velKmps?: [number, number, number]; arrivalOffsetKm?: number; id?: string; name?: string } | null;
-  bodies?: { id: string; posKm: [number, number, number]; radiusKm: number }[];
+  target?: { positionKm: [number, number, number]; velKmps?: [number, number, number]; arrivalOffsetKm?: number; id?: string; name?: string; fieldKm?: [number, number, number] } | null;
+  bodies?: { id: string; posKm: [number, number, number]; radiusKm: number; atmosphereTopKm?: number }[];
   ordinaryKg?: number;
   protectedKg?: number;
   heat01?: number;
   frameHz?: number;
   hitchAtS?: number;
   hitchS?: number;
+  /** Plan only (route checks over many pairs): the result carries `plan` alone. */
+  planOnly?: boolean;
   /** Key held this long from t = 0 (default spool + 0.5 s). */
   holdKeyS?: number;
   /** Tap the key once `phase` has run for `afterS` (abort / manual brake); "spooling" releases the key instead. */
@@ -90,7 +92,7 @@ export interface TransitSimResult {
   final: { posKm: number[]; speedKmps: number; ordinaryKg: number; protectedKg: number; heat01: number };
 }
 
-export function simulateTransit(script: TransitScript): TransitSimResult {
+export function simulateTransit(script: TransitScript): TransitSimResult | Pick<TransitSimResult, "plan"> {
   const t = getEffectiveTuning();
   const ft = getFlightTuning();
   const ship = createShipState();
@@ -110,7 +112,7 @@ export function simulateTransit(script: TransitScript): TransitSimResult {
   res.heat01 = script.heat01 ?? 0;
   res.capacitor01 = ship.boostCharge;
   const rt = createTransitRuntime();
-  const bodies = (script.bodies ?? []).map((b) => ({ id: b.id, name: b.id, pos: [...b.posKm], radiusKm: b.radiusKm }));
+  const bodies = (script.bodies ?? []).map((b) => ({ id: b.id, name: b.id, pos: [...b.posKm], radiusKm: b.radiusKm, atmosphereTopKm: b.atmosphereTopKm }));
   rt.bodies = bodies;
   const colliders: CelestialCollider[] = bodies.map((b) => ({ id: b.id, x: b.pos[0], y: b.pos[1], z: b.pos[2], r: b.radiusKm }));
   env.colliders = colliders;
@@ -121,7 +123,7 @@ export function simulateTransit(script: TransitScript): TransitSimResult {
   const tgtPos = script.target ? [...script.target.positionKm] : null;
   const tv = script.target?.velKmps ?? [0, 0, 0];
   const target: TransitTarget | null = script.target && tgtPos
-    ? { id: script.target.id ?? "sim:target", name: script.target.name ?? "target", positionKm: tgtPos, arrivalOffsetKm: script.target.arrivalOffsetKm }
+    ? { id: script.target.id ?? "sim:target", name: script.target.name ?? "target", positionKm: tgtPos, arrivalOffsetKm: script.target.arrivalOffsetKm, field: script.target.fieldKm ? { positionKm: [...script.target.fieldKm], name: "field" } : undefined }
     : null;
   inp.target = target;
   inp.aimVelX = tv[0]; inp.aimVelY = tv[1]; inp.aimVelZ = tv[2];
@@ -129,6 +131,7 @@ export function simulateTransit(script: TransitScript): TransitSimResult {
   const plan = createTransitPlan();
   planTransit(plan, ship.absPosKm, target, rt.bodies, res, inp, t, FIXED_DT);
   const planOut = { ...plan, legs: plan.legs.slice(0, plan.legCount).map((l) => ({ ...l, base: [...l.base] })) };
+  if (script.planOnly) return { plan: planOut };
 
   const hz = script.frameHz ?? 60;
   const frameTicks = Math.round(TICKS_PER_S / hz);

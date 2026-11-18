@@ -1,5 +1,6 @@
 "use client";
 
+import { INTERACT_LOCK_KM } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
@@ -36,6 +37,7 @@ import { playerReplicationAtom, replicationPointsAtom } from "@/store/replicatio
 import { REPLICATION_TUNING } from "@/sim/replication/points";
 import { isFrameId, resolveFramePositionKm } from "@/sim/frames";
 import {
+  bodyTransitTarget,
   targetedPOIAtom,
   transitDriveOwnedAtom,
   transitDriveBuffer,
@@ -67,10 +69,8 @@ const POI_UNTARGET_GRACE_S = 0.3;
 const ASTEROID_FIELD_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 50_000 };
 const CELESTIAL_BODY_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 500_000 };
 
-/**
- * Derives POI definitions from the active system config.
- * Sources: celestial bodies (planets, moons) + asteroid fields.
- */
+/** Placed point model: ring 43 m (ReplicationPoints.tsx). */
+const POINT_OBJECT_RADIUS_KM = 0.043;
 const WRECK_DEFAULTS = { minDistanceKm: 0, maxDistanceKm: 100_000 };
 
 /**
@@ -156,11 +156,16 @@ function useNearestStars(): NearestCandidate[] {
   return nearest;
 }
 
+/**
+ * Derives POI definitions from the active system config.
+ * Sources: celestial bodies (planets, moons) + asteroid fields.
+ */
 function usePOIDefs(): POIDef[] {
   const system = useAtomValue(systemConfigAtom);
   const wrecks = useAtomValue(wrecksAtom);
   const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
   const sitePois = useAtomValue(sitePOIsAtom);
+  const target = useAtomValue(targetedPOIAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const starsOn = useAtomValue(starMarkersEnabledAtom);
@@ -181,39 +186,37 @@ function usePOIDefs(): POIDef[] {
     for (const body of system.celestialBodies ?? []) {
       if (body.type === "star") continue;
       if (!body.marker) continue;
-      // Arrival stand-off: radius + 20% padding (minimum 100km).
-      const arrivalOffsetKm = Math.max(100, body.radiusKm * 2);
+      const t = bodyTransitTarget(body, system.asteroidFields);
       pois.push({
-        id: `body:${body.id}`,
-        name: body.name,
+        id: t.id,
+        name: t.name,
         positionKm: body.positionKm,
         minDistanceKm: body.marker.minDistanceKm ?? CELESTIAL_BODY_DEFAULTS.minDistanceKm,
         maxDistanceKm: body.marker.maxDistanceKm ?? CELESTIAL_BODY_DEFAULTS.maxDistanceKm,
-        arrivalOffsetKm,
+        arrivalOffsetKm: t.arrivalOffsetKm,
+        field: t.field,
       });
     }
 
-    // Asteroid fields
+    // Asteroid fields: hidden while the ship is inside the field's outer radius (§8)
     for (const field of system.asteroidFields ?? []) {
       if (field.enabled === false) continue;
+      const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
         id: `field:${field.id}`,
         name: field.name,
         positionKm: field.anchorKm,
-        minDistanceKm: field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm,
+        minDistanceKm: Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
         maxDistanceKm: field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
       });
     }
 
     // Wrecks (death sites with recoverable cargo, consumables and/or fuel)
     for (const wreck of wrecks) {
-      const items = Object.keys(wreck.items).length > 0;
-      const kits = Object.keys(wreck.consumables).length > 0;
-      const fuel = Math.round(wreck.fuelKg);
-      const kind = items ? "" : kits ? " · consumables" : ` · fuel only, ${fuel} kg`;
+      // Contents are on the Target Card when focused (§1.11).
       pois.push({
         id: `wreck:${wreck.id}`,
-        name: `Wreck${kind}${(items || kits) && fuel > 0 ? ` · ${fuel} kg fuel` : ""}`,
+        name: "Wreck",
         positionKm: wreck.positionKm,
         frameId: wreck.frameId,
         minDistanceKm: WRECK_DEFAULTS.minDistanceKm,
@@ -223,23 +226,39 @@ function usePOIDefs(): POIDef[] {
 
     // Replication points: transit destinations; arrival at the emergence distance
     for (const pt of points) {
-      if (!isFrameId(pt.frameId)) continue;
+      // D1: the origin point is the recovery fallback (world spawn), not a place: no marker.
+      if (pt.starter || !isFrameId(pt.frameId)) continue;
       pois.push({
         id: `point:${pt.id}`,
-        name: pt.id === activePointId ? `${pt.name} (active)` : pt.name,
+        name: pt.id === activePointId ? `${pt.name} ◆` : pt.name,
         positionKm: pt.positionKm,
         frameId: pt.frameId,
         minDistanceKm: 0,
         maxDistanceKm: 2e6,
         arrivalOffsetKm: REPLICATION_TUNING.emergenceKm,
+        objectRadiusKm: POINT_OBJECT_RADIUS_KM,
       });
     }
 
     // Bookmarked resource sources (discoveries list)
     for (const b of bookmarkPois) pois.push(b);
 
-    // Authored regional opportunities and site signals
+    // Authored site signals
     for (const p of sitePois) pois.push(p);
+
+    // B3: the current destination always has a marker, even when nothing else lists it.
+    if (target && !pois.some((p) => p.id === target.id)) {
+      pois.push({
+        id: target.id,
+        name: target.name,
+        positionKm: target.positionKm as [number, number, number],
+        frameId: target.frameId,
+        minDistanceKm: 0,
+        maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM,
+        arrivalOffsetKm: target.arrivalOffsetKm,
+        field: target.field,
+      });
+    }
 
     // ── Stars ────────────────────────────────────────────────────────────────
     // ⚠ Includes the PRIMARY, which the celestial-body loop above deliberately
@@ -281,7 +300,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -387,6 +406,11 @@ const POIProjector = memo(function POIProjector() {
         edgeAngle = Math.atan2(ey, ex);
       }
 
+      // projectionMatrix[5] = 1/tan(fov/2): radius over distance → fraction of the half-height.
+      const objectRadiusFrac = inView && poi.objectRadiusKm
+        ? (0.5 * camera.projectionMatrix.elements[5] * poi.objectRadiusKm * 1000) / Math.max(1, _pos.distanceTo(camera.position))
+        : 0;
+
       projected.push({
         id: poi.id,
         name: poi.name,
@@ -396,6 +420,7 @@ const POIProjector = memo(function POIProjector() {
         distanceKm,
         edgeAngle,
         focused,
+        objectRadiusFrac,
       });
     }
 
@@ -406,7 +431,9 @@ const POIProjector = memo(function POIProjector() {
 
     // A POI the ship already stands at (inside its arrival stand-off) is no transit target: gazing
     // at it (recovery emerges facing its point) must not replace the current one.
-    if (focusedPoiDef && focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5) {
+    // An interactable within lock range is a Target Card target, not a transit destination (§2.2).
+    const interactable = !!focusedPoiDef && /^(site|wreck|point):/.test(focusedPoiDef.id) && focusedDistKm <= INTERACT_LOCK_KM;
+    if (focusedPoiDef && (interactable || focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5)) {
       focusedPoiId = null;
       focusedPoiDef = null;
     }
@@ -430,6 +457,7 @@ const POIProjector = memo(function POIProjector() {
               positionKm: focusedPoiDef.positionKm,
               frameId: focusedPoiDef.frameId,
               arrivalOffsetKm: focusedPoiDef.arrivalOffsetKm,
+              field: focusedPoiDef.field,
             });
             poiBuffer.targetedId = focusedPoiDef.id;
           }

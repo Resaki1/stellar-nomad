@@ -8,10 +8,12 @@ import { abandonShipAtom, shipRes } from "@/store/shipResources";
 import { modulesAtom } from "@/store/modules";
 import { previewRecovery } from "@/store/replication";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
+import { unconvertedUnits } from "@/sim/ship/resourceStep";
+import { WreckRow } from "../DeathScreen/DeathScreen";
 
 /**
- * Emergency abandonment (M3 plan §2 rule 9): always reachable, zero fuel included. Same death
- * operation as an impact; the confirmation states what stays at the wreck and what is kept.
+ * Respawn (abandonment, M3 plan §2 rule 9): always reachable, zero fuel included. Same death
+ * operation as an impact; the confirmation shows what the wreck keeps.
  */
 export default function AbandonShip({ onDone }: { onDone: () => void }) {
   const store = useStore();
@@ -24,41 +26,36 @@ export default function AbandonShip({ onDone }: { onDone: () => void }) {
 
   if (!confirming) {
     return (
-      <button className="settings-menu__button settings-menu__button--danger" onClick={() => setConfirming(true)}>
-        emergency: abandon ship
+      <button className="settings-menu__button settings-menu__button--danger" data-action="respawn" onClick={() => setConfirming(true)}>
+        Respawn
       </button>
     );
   }
-  const units = Object.values(cargo.items).reduce((a, v) => a + Math.floor(v), 0);
-  const loose = Object.values(consumables).reduce((a, v) => a + Math.floor(v), 0);
-  const batch = shipRes.processing.active ? shipRes.processing : null;
   const allowance = getEffectiveTuning().recoveryAllowanceKg;
   // The allowance refill is paid from the ordinary fuel first, so abandoning never adds fuel.
   const wreckFuel = Math.max(0, shipRes.ordinaryKg - Math.max(0, allowance - shipRes.protectedKg));
   const dest = previewRecovery(store, "active");
+  // The running batch's unconverted feedstock goes to the wreck too (same rule as ship.destroy).
+  const run = shipRes.processing;
+  const back = run.active ? unconvertedUnits(run.units, run.committedKg, getEffectiveTuning().processingKgPerUnit) : 0;
+  const items = back > 0 ? { ...cargo.items, [run.inputId]: (cargo.items[run.inputId] ?? 0) + back } : cargo.items;
   return (
-    <div className="settings-menu__abandon" role="alertdialog" aria-label="Confirm abandon ship">
-      <p className="settings-menu__abandon-title">Abandon ship?</p>
-      <p>
-        Left at the wreck: {units} cargo units, {loose} consumables, {wreckFuel.toFixed(0)} kg ordinary propellant
-        {batch ? ", and the unprocessed feedstock of the running batch" : ""}. You can fly back to collect it.
-      </p>
-      <p>
-        Kept: modules, research and discoveries. You recover at <strong>{dest.pointName}</strong> with full hull, an
-        empty ordinary tank and the {allowance} kg protected allowance.
-      </p>
+    <div className="settings-menu__abandon" role="alertdialog" aria-label="Confirm respawn">
+      <p className="settings-menu__abandon-title">Respawn at <span data-name="">{dest.pointName}</span>?</p>
+      <WreckRow items={items} consumables={consumables} fuelKg={wreckFuel} label="Wreck keeps" />
       <div className="dev-controls__row">
-        <button className="settings-menu__button" onClick={() => setConfirming(false)}>
-          keep flying
+        <button className="settings-menu__button" data-action="respawn-cancel" onClick={() => setConfirming(false)}>
+          Cancel
         </button>
         <button
           className="settings-menu__button settings-menu__button--danger"
+          data-action="respawn-confirm"
           onClick={() => {
             setConfirming(false);
             if (abandon()) onDone();
           }}
         >
-          abandon ship
+          Respawn
         </button>
       </div>
     </div>

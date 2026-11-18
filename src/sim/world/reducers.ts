@@ -3,6 +3,7 @@
  * Nothing is written before validation finishes, so a rejection changes nothing.
  */
 import { ALL_ITEM_SLOTS, MATERIAL_NAMES, REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, getSiteDef, getTrialDef } from "@/data/content";
+import { hullRepairable } from "@/sim/ship/hull";
 import { MAX_BOOKMARKS } from "@/save/defaults";
 import type { PlayerId, PlayerState, QuatTuple, Vec3Tuple, WorldState, WreckRecord } from "@/save/types";
 import { isFrameId } from "@/sim/frames";
@@ -179,7 +180,11 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const cargo = { ...p.cargo, items };
       const minedLifetime = p.minedLifetime + 1;
       // Evidence from what was actually extracted (overflow left behind still confirms the rock).
-      const plan = planExtraction(world.discoveries, sourceIdOf(op.fieldId, op.chunkKey, op.instanceId), op.yield, by, now);
+      const sourceId = sourceIdOf(op.fieldId, op.chunkKey, op.instanceId);
+      const plan = planExtraction(world.discoveries, sourceId, op.yield, by, now);
+      // B4: a mined rock is gone; the miner's bookmark of it goes in the same transaction.
+      const dropMark = p.bookmarks.some((b) => b.sourceId === sourceId);
+      const bookmarks = dropMark ? p.bookmarks.filter((b) => b.sourceId !== sourceId) : p.bookmarks;
       const events: WorldEvent[] = [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: "mined" }];
       if (plan) events.push(discoveriesEvent(by));
       return {
@@ -188,10 +193,11 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           asteroids.add(op.fieldId, op.chunkKey, op.instanceId);
           p.cargo = cargo;
           p.minedLifetime = minedLifetime;
+          p.bookmarks = bookmarks;
           if (plan) world.discoveries = plan.next;
         },
         events,
-        playerKeys: ["cargo", "minedLifetime"],
+        playerKeys: dropMark ? ["cargo", "minedLifetime", "bookmarks"] : ["cargo", "minedLifetime"],
       };
     }
 
@@ -220,7 +226,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       let modules = m;
       if (def.type === "consumable") {
         const hotbar = [...m.hotbar];
-        if (!def.deployable && !hotbar.includes(def.id)) {
+        if (!hotbar.includes(def.id)) {
           const i = hotbar.indexOf(null);
           if (i !== -1) {
             hotbar[i] = def.id;
@@ -352,8 +358,9 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
 
     case "bookmark.set": {
       if (typeof op.sourceId !== "string" || (op.name !== null && typeof op.name !== "string")) return reject("invalid");
-      // Bookmarks of evicted sources are dropped here, so they never hold capacity.
-      const known = new Set(world.discoveries.sources.map((s) => s.id));
+      // Bookmarks of evicted or depleted sources (destroyed, or mined by anyone) are dropped
+      // here, so a hidden bookmark never holds capacity.
+      const known = new Set(world.discoveries.sources.filter((s) => !s.depleted).map((s) => s.id));
       const rest = p.bookmarks.filter((b) => b.sourceId !== op.sourceId && known.has(b.sourceId));
       let bookmarks = rest;
       if (op.name !== null) {
@@ -651,14 +658,15 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (!isCount(op.pct) || op.pct < 1 || op.pct > 100) return reject("invalid");
       if (p.isDead) return reject("dead");
       const max = persistentShipConfig(p, completedSet(world)).maxHealth;
-      if (!(p.health < max)) return reject("full_hull");
+      if (!hullRepairable(p.health, max)) return reject("full_hull");
       const per = getEffectiveTuning().repairUnitsPerPct;
       const have = Math.floor(p.cargo.items[REPAIR_MATERIAL_ID] ?? 0);
       const missingPct = Math.ceil(((max - p.health) / max) * 100 - 1e-9);
       const pct = Math.min(op.pct, missingPct, Math.floor(have / per));
       if (pct < 1) return reject("materials", { [REPAIR_MATERIAL_ID]: per - have });
       const spentUnits = pct * per;
-      const health = Math.min(max, p.health + (pct / 100) * max);
+      const raw = Math.min(max, p.health + (pct / 100) * max);
+      const health = hullRepairable(raw, max) ? raw : max;
       const items: Record<string, number> = { ...p.cargo.items, [REPAIR_MATERIAL_ID]: have - spentUnits };
       if (items[REPAIR_MATERIAL_ID] <= 0) delete items[REPAIR_MATERIAL_ID];
       const cargo = { ...p.cargo, items };

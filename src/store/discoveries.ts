@@ -12,7 +12,7 @@ import { cargoAtom } from "@/store/cargo";
 import { poiBuffer, type POIDef } from "@/store/poi";
 import { bookmarksAtom, discoveriesMirrorAtom } from "@/store/research";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
-import { targetedPOIAtom } from "@/store/transit";
+import { targetedPOIAtom, transitDriveOwnedAtom } from "@/store/transit";
 
 export const sourceLabel = (s: SourceFinding, name?: string): string => name || `${SOURCE_CLASS_NAMES[s.classId] ?? s.classId} rock`;
 
@@ -25,7 +25,7 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
   const out: POIDef[] = [];
   for (const b of get(bookmarksAtom)) {
     const s = sources.find((x) => x.id === b.sourceId);
-    if (!s) continue;
+    if (!s || s.depleted) continue;
     out.push({
       id: `source:${s.id}`,
       name: sourceLabel(s, b.name),
@@ -42,7 +42,7 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
 /** Discoveries list: make a source the transit destination (stays until another is chosen). */
 export const setDestinationToSourceAtom = atom(null, (get, set, sourceId: string): boolean => {
   const s = get(discoveriesMirrorAtom).sources.find((x) => x.id === sourceId);
-  if (!s) return false;
+  if (!s || s.depleted || !get(transitDriveOwnedAtom)) return false;
   const name = get(bookmarksAtom).find((b) => b.sourceId === sourceId)?.name;
   const id = `source:${s.id}`;
   set(targetedPOIAtom, { id, name: sourceLabel(s, name), positionKm: s.positionKm, frameId: s.frameId as FrameId, arrivalOffsetKm: standoffKm(s) });

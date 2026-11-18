@@ -79,6 +79,40 @@
     position: absolute;
     inset: 0 auto 0 0;
     background: s.$accent-info;
+
+    &--work { background: s.$accent-heat; }
+    &--hull { background: s.$accent-ok; }
+  }
+
+  &__progress--inline {
+    flex: 1 1 auto;
+    margin-top: 0;
+    min-width: 40px;
+  }
+
+  &__bar-row {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    margin-top: s.$space-2;
+    color: s.$text-secondary;
+  }
+
+  &__rate {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: s.$font-mono;
+    font-size: 11px;
+    color: s.$text-secondary;
+  }
+
+  &__num {
+    font-family: s.$font-mono;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: s.$text-secondary;
+    white-space: nowrap;
   }
 
   // ── Slot filters ──

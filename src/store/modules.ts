@@ -37,7 +37,7 @@ const setSlot = (set: Setter, slot: ItemSlot, itemId: string | null): boolean =>
   const o = runOperation({ type: "module.equip", opId: newOpId(), slot, itemId });
   if (o.status === "accepted") set(signalAudioActionAtom, itemId ? "module.equip" : "module.unequip");
   else if (o.status === "rejected" && o.reason !== "already_done") {
-    set(addToastAtom, { audio: "reject", message: itemId ? "Cannot equip module" : "Cannot remove module", detail: describeRejection(o), durationMs: 3000 });
+    set(addToastAtom, { audio: "reject", message: itemId ? "Cannot equip module" : "Cannot remove module", kind: "warn", detail: describeRejection(o) });
   }
   return o.status === "accepted" || (o.status === "rejected" && o.reason === "already_done" && itemId !== null);
 };

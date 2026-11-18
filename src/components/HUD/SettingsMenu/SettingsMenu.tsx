@@ -21,6 +21,7 @@ import { ControlsSettings, GraphicsSettings } from "./SettingsSections";
 import FlightTuningControls from "./FlightTuningControls";
 import PhysicsTuningControls from "./PhysicsTuningControls";
 import ResourceTuningControls from "./ResourceTuningControls";
+import { resetAllDevTuning } from "@/store/devTuning";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
@@ -104,9 +105,7 @@ const renderSubMenu = (
     case SubMenu.Dev:
       return (
         <>
-          <FlightTuningControls />
-          <PhysicsTuningControls />
-          <ResourceTuningControls />
+          <DevTuningControls />
           <SimTimeControls />
 
           <SettingsCheckbox
@@ -191,6 +190,30 @@ function SaveFileControls() {
         onChange={(e) => void onImport(e.target.files?.[0])}
       />
     </div>
+  );
+}
+
+/** The three tuning tables plus one reset for all of them (remounts the tables so their inputs re-read). */
+function DevTuningControls() {
+  const [gen, setGen] = useState(0);
+  return (
+    <>
+      <div className="dev-controls__row">
+        <button
+          className="settings-menu__button settings-menu__button--subtle"
+          data-action="reset-dev-tuning"
+          onClick={() => {
+            resetAllDevTuning();
+            setGen((g) => g + 1);
+          }}
+        >
+          reset all dev tuning
+        </button>
+      </div>
+      <FlightTuningControls key={`f${gen}`} />
+      <PhysicsTuningControls key={`p${gen}`} />
+      <ResourceTuningControls key={`r${gen}`} />
+    </>
   );
 }
 

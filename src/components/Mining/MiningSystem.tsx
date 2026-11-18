@@ -36,7 +36,8 @@ import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
 import { shipRes, shipResControl } from "@/store/shipResources";
-import { INSPECT_RANGE_M, INSPECT_TIME_S, SOURCE_CLASS_NAMES, materialName } from "@/data/content";
+import { INSPECT_RANGE_M, INSPECT_TIME_S } from "@/data/content";
+import { playAudio } from "@/audio";
 import { isSimPaused } from "@/sim/simPause";
 import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 
@@ -777,17 +778,14 @@ const MiningSystem = () => {
       if (!op) return;
       runOperation(op, (o) => {
         if (o.status !== "accepted" || o.result.type !== "survey.inspect") return;
-        const fresh = o.result.newFamilies.map(materialName);
-        signalAudio("click.soft");
-        addToast({
-          audio: "silent",
-          message: `Inspected: ${SOURCE_CLASS_NAMES[op.classId] ?? op.classId}`,
-          detail: fresh.length > 0 ? `New material confirmed: ${fresh.join(", ")}` : "Composition and yield recorded",
-          durationMs: 3500,
-        });
+        playAudio("mining.inspect.complete");
+        // The card's contents row is the result; only a NEW material is worth a notification.
+        if (o.result.newFamilies.length > 0) {
+          addToast({ message: "New material", kind: "success", audio: "silent", values: o.result.newFamilies.map((id) => ({ id })) });
+        }
       });
     },
-    [asteroidRuntime, systemConfig, signalAudio, addToast],
+    [asteroidRuntime, systemConfig, addToast],
   );
 
   const getTargetSnapshot = useCallback(
@@ -1451,7 +1449,11 @@ const MiningSystem = () => {
             .filter((r) => (granted[r.resourceId] ?? 0) > 0)
             .map((r) => ({ ...r, amount: granted[r.resourceId] }));
           spawnVFX({ type: "mined", position: reward.positionLocal, radiusM: reward.radiusM, loot });
-          if (Object.keys(granted).length > 0) signalAudio("loot.acquire");
+          if (Object.keys(granted).length > 0) {
+            signalAudio("loot.acquire");
+            const values = Object.entries(granted).sort((a, b) => b[1] - a[1]).map(([id, amount]) => ({ id, amount }));
+            addToast({ message: "Mined", kind: "success", audio: "silent", values });
+          }
           incrementMinedSignal((c) => c + 1);
         });
       } else {

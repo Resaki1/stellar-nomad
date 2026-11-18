@@ -79,6 +79,9 @@ const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _o = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 
+/** Instances drawn last frame (test harness). */
+export const replicationPointStats = { drawn: 0 };
+
 /** World replication points (instanced placeholder), the placement preview and the arrival gate. */
 const ReplicationPoints = memo(function ReplicationPoints() {
   const store = useStore();
@@ -102,7 +105,7 @@ const ReplicationPoints = memo(function ReplicationPoints() {
     let n = 0;
     for (let i = 0; i < points.length && n < MAX_POINTS; i++) {
       const pt = points[i];
-      if (!isFrameId(pt.frameId)) continue;
+      if (pt.starter || !isFrameId(pt.frameId)) continue; // D1: the origin point has no object
       frameOriginKm(pt.frameId, _o);
       const x = _o.x + pt.positionKm[0], y = _o.y + pt.positionKm[1], z = _o.z + pt.positionKm[2];
       const dx = x - ship.x, dy = y - ship.y, dz = z - ship.z;
@@ -112,6 +115,7 @@ const ReplicationPoints = memo(function ReplicationPoints() {
       mesh.setMatrixAt(n++, _m.compose(_p, _q, _s));
     }
     mesh.count = n;
+    replicationPointStats.drawn = n;
     mesh.instanceMatrix.needsUpdate = true;
 
     // ── Placement preview: follows the (interpolated) nose; colour from the last HUD-rate check ──

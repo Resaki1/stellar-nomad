@@ -32,10 +32,12 @@ const AUTHORED: ProjectDef[] = [
     name: "Reach the Moon",
     summary: "Build the transit drive, fuel up and travel to lunar space.",
     steps: [
+      { kind: "research", nodeId: "th1_heat_rejection" },
+      { kind: "research", nodeId: "lg1_bulk_handling" },
       { kind: "research", nodeId: "pr1_transit_calibration" },
       { kind: "own", itemId: "special_transit_drive" },
-      { kind: "fuel", kg: 280, label: "Enough for Earth to Moon with a margin" },
-      { kind: "inFrame", frameId: "luna", label: "Arrive in lunar space" },
+      { kind: "fuel", kg: 280, label: "Fuel for Earth to Moon" },
+      { kind: "inFrame", frameId: "luna", label: "Reach the lunar field" },
     ],
     destination: { bodyId: "luna" },
   },
@@ -45,7 +47,7 @@ const AUTHORED: ProjectDef[] = [
     summary: "Fabricate a replication kit and place it where you want to recover.",
     steps: [
       { kind: "own", itemId: "consumable_replication_kit" },
-      { kind: "point", label: "Place a replication point (B)" },
+      { kind: "point", label: "Place a replication point" },
     ],
   },
   {
@@ -54,9 +56,9 @@ const AUTHORED: ProjectDef[] = [
     summary: "Follow the automated survey signal near the Moon and recover its instrument canister.",
     steps: [
       { kind: "own", itemId: "special_transit_drive" },
-      { kind: "inFrame", frameId: "luna", label: "Arrive in lunar space" },
-      { kind: "siteInspected", siteId: "luna_survey_canister" },
+      { kind: "inFrame", frameId: "luna", label: "Reach the lunar field" },
       { kind: "siteRecovered", siteId: "luna_survey_canister" },
+      { kind: "research", nodeId: "sv2_volatile_mapping" },
       { kind: "research", nodeId: "ln1_survey_salvage" },
       { kind: "own", itemId: "module_integrated_sensor_suite" },
     ],
@@ -68,9 +70,9 @@ const AUTHORED: ProjectDef[] = [
     summary: "Place a replication point in lunar space, so recovery no longer means Earth.",
     steps: [
       { kind: "own", itemId: "special_transit_drive" },
-      { kind: "inFrame", frameId: "luna", label: "Arrive in lunar space" },
+      { kind: "inFrame", frameId: "luna", label: "Reach the lunar field" },
       { kind: "own", itemId: "consumable_replication_kit" },
-      { kind: "point", frameId: "luna", label: "Place a replication point in lunar space" },
+      { kind: "point", frameId: "luna", label: "Place one in lunar space" },
     ],
     destination: { bodyId: "luna" },
   },

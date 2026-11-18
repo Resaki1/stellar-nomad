@@ -26,19 +26,20 @@
   padding: s.$space-2 s.$space-4;
   background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.6) 10%, rgba(0, 0, 0, 0.6) 90%, transparent);
 
-  // Below ~1118 px a centred 760 px overlay reaches the bottom-right dashboard (fuel/heat rows);
-  // stop its right edge at the dashboard's left edge (16vw, min 140px).
-  @media (min-width: 521px) and (max-width: 1180px) {
+  // Below 1336 px a centred 760 px overlay reaches the 280 px bottom-right dashboard;
+  // stop its right edge at the dashboard's left edge.
+  @media (min-width: 600px) and (max-width: 1336px) {
     left: s.$space-4;
-    right: calc(max(16vw, 140px) + #{s.$space-4});
+    right: calc(280px + #{s.$space-4});
     width: auto;
     transform: none;
     animation-name: commsSlideUpLeft;
   }
 
-  // Phones: the ship dashboard spans most of the width (~170 px tall); sit above it.
-  @media (max-width: 520px) {
-    bottom: 200px;
+  // Phones: 8 px above the full-width dashboard (top 132 px from the bottom), which keeps it
+  // clear of the Target Card below the reticle (card bottom ≤ centre + 144 px).
+  @media (max-width: 599px) {
+    bottom: 140px;
   }
 
   &--accent-comms {

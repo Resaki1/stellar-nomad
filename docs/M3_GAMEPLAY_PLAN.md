@@ -1455,3 +1455,394 @@ only while its condition holds (no stale hint after refuelling). (6) The recover
 options whose requirements cite the site, not a literal. (7) save-check `legacy`/`roundtrip` ignore `hint_`
 ids in `commsPlayed`: a hint can legitimately show after the export/import in real time. Note for this
 machine: something else answers `localhost:3000` over IPv6; run the driver with `--url http://127.0.0.1:3000`.
+
+### Playtest 1 polish, WP1: correctness (as built, 2026-11-17)
+
+Work list `docs/M3_PLAYTEST_1.md`; status per item there. Sim and store fixes, little UI.
+
+**Start date (D10).** New worlds start at **2941-09-22 00:00 UTC** (`DEFAULT_SIM_EPOCH_MS`); existing
+worlds keep theirs; no year is shown. The ephemeris now covers it: JPL *Approximate Positions* table 2a/2b
+(3000 BC – AD 3000, with the b·T² + c·cos fT + s·sin fT terms for Jupiter–Neptune) outside 1800–2050,
+table 1 inside (table 2a alone moved the 2024 greatest eclipse to +1 min 47 s, outside the 1 min
+tolerance; MEASURED step at the 2050 seam ≤ 7.4 arcmin, Uranus). ΔT is Espenak–Meeus to 2150, then the
+Morrison–Stephenson parabola (74 s in 2024, 3,712 s in 2900, 4,066 s in 2950). Earth spins on UT
+(`rotation.ut`, keeping the 69 s offset W₀ was validated with), every other body on TT: the growing ΔT
+would turn Earth 17° by 2950. `ECLIPSE_2024_04_08_MS` is its own literal (bench, `__lum`, dev button).
+Validation: 2024-04-08 greatest eclipse +1 min 16 s, γ 0.3453 (published 0.3435); 2017-08-21 +47 s, γ
+0.4384 (0.4367); perihelion/aphelion 0.98331/1.01670 AU, unchanged. Frame check at far dates: the
+minimum Sun–Moon separation falls −0.7 h (2500), +5.6 h (2941) and +10.6 h (2999) from Meeus's mean new
+moon, inside the ±14 h periodic range (a 13° equinox slip would be ~26 h).
+Search (`scratchpad/eph/search2.js`, hourly 2900-01-01 … 2999-12-31, 876,576 instants, 23,045 pass the
+filters: Luna elongation 75–140°, Luna ≥ 10° outside Earth's disc, no visible planet marker within 8°,
+Earth 50–75 % lit from the start, first Earth → lunar-field line clear of the hazard shells). Chosen:
+Luna 126.5° from the Sun (80 % lit), nearest marker Mars 87°, Luna 129° from Earth's centre, Earth 62 %
+lit (phase angle 75.6°), the start → field line passes Luna at 3,121 km; drifts to 128° / 89° after 3 h.
+
+**Routing (B6, B7).** `hazardKm = R + atmosphere top + max(2 % R, 200 km)` (Earth 6,671, Luna 1,937; the
+atmosphere top comes from the rendered atmosphere, passed in `TransitBody.atmosphereTopKm`). A segment is
+blocked iff its closest approach < min(hazard, d0, d1) × 0.999: a line may descend to its lower end, never
+below the shell in between. Targets less than 20 km above a surface or atmosphere top are refused
+("Target inside Luna"). In autopilot the obstruction brake's sphere shrinks to 0.99 × the nearer of ship
+and aim and ignores entries past the aim, so a legal low target never stops short. `transitRouteClearanceRadii`
+(2 R) is gone from the tuning table.
+
+**Field arrival (D11).** `bodyTransitTarget` (every gaze, menu and test path) gives a body that anchors a
+field a `field` target: from beyond 50,000 km the plan aims at the field anchor and stops 1,500 km short
+on the approach side (preview name `Luna · lunar field`, `plan.fieldArrival`); nearer, the 2 R standoff as
+before. The body is then an obstacle, not skipped. Field markers hide inside radius + falloff; the lunar
+field (renamed `Lunar field`) shows from 4,000 to 50,000 km.
+
+**B8.** `beginSpool` clears `braking`/`arriving`; `predictFromRuntime` passes them only outside the spool.
+
+**Markers (B1, D1, B3, B4).** No pocket markers (pocket composition data unchanged; opening_002 no
+longer mentions marked pockets). The origin point has no POI and no mesh. The current destination is
+always projected (a temporary POI when nothing else lists it). `Set destination` (discoveries, projects)
+is hidden and refused without the drive. Mining a rock drops the miner's bookmark in the `asteroid.mine`
+transaction; `bookmark.set` prunes bookmarks of depleted sources (destroyed by a collision, or mined by
+another player), so a hidden bookmark never holds one of the 24 slots. A destination whose rock is
+depleted is cleared (`discoveries.changed` in `worldBridge`), so no marker stays on empty space.
+Depleted sources have no marker and leave the Discoveries list (their evidence stays).
+
+**B5.** `src/sim/ship/hull.ts`: `hullRepairable = health ≤ max − 0.5 HP`, used by the dashboard, Workshop,
+hotbar slot + context menu, repair request, auto-repair and the `ship.repair` reducer (which also snaps a
+result within 0.5 HP to max). `hullDisplayPct` shows 100 only when not repairable, else floors (1–99).
+Deviation from the spec's plain floor: a plain floor would show 99 % for a hull nothing can repair.
+
+**B14.** No Track button on a completed project; the tracker clears a project when it completes; the
+"Research options" heading only with rows. Sorting (D15) is WP4.
+
+**B12.** `setCursorNeeded(reason, false)` requests the pointer lock when the last reason clears; the
+request only fires while the closing click/key's transient activation lasts, so every close path (panel
+button, backdrop, toggle keys, Settings resume, naming confirm, placement, death screen) recaptures
+without per-handler wiring. A lock that resolves after another UI asked for the cursor is released at
+once. Esc grants no activation: after ~5 s without input an Esc-close leaves the "click to steer" prompt.
+Deviation from the spec's per-handler helper: one rule covers every handler, including ones added later.
+
+**B2.** The owner-path flight hits and damages at every difficulty (below). The silent collision-off
+states are now visible: the dashboard shows `Collisions off · physics loading | physics unavailable | dev
+speed | over speed` (`collisionsOffReason`, 4 Hz). The 20 s load bound starts at game mount
+(`armNearFieldLoadTimeout`); the loading gate holds for one window, a second runs in play behind the
+`physics loading` flag before giving up; a failed import is retried once, and a load that lands after
+the bound still attaches the world (the flag clears).
+
+**Verification (fresh page per run).** `transit` (pure) pass, new: `b6_directPure` (line 9,997 km from
+Earth's centre: 1 leg), `d11_fieldArrivalPure` (far: ends 1,500.02 km from the anchor, 2 legs round Luna,
+min 1,950 km from it; within 50,000 km: the 3,474 km standoff); `d_clearancePure` now asserts the hazard
+shell (min 6,807 ≥ 6,671). `transitBelt` (new, pure): 300 random in-field pairs, 100 targets at 50–200 km
+altitude: 0 refused, 63 clearance legs, 0 where the leg disagrees with the line test; 10 flown, all
+arrived, none stopped short, closest approach equal to the lower endpoint. `transitLive` `defaultEpoch`:
+1 leg, prediction error 0 on ETA/fuel/heat (45.9 s, 206 kg), arrival 1,500.3 km from the field anchor,
+nearest rock surface 3.8 km, min Earth 16,746 km, min Luna 3,121 km, `lunarHydrates` mined and processed
+in the field; `secondEpoch` (2941-10-06 12:00): 1 leg, 214.6 kg, 1,499.7 km, rock 3.6 km. `transitSpool`
+(new, live): Earth → field (302 preview samples), an in-field hop (47) and a 2-leg trip round Luna (106):
+0 refused samples; negative control with the B8 fix reverted: 24/47 and 42/106 refused ("Too little
+propellant to move"). `marks` (new, m33): bookmark → mine leaves 0 `source:` markers and 0 bookmarks;
+without the drive the action is refused and no button shows, with it the target sticks 60 frames with
+its marker; mining that destination rock clears the destination and leaves 0 markers; a bookmarked rock
+destroyed by `asteroid.destroy` (collision) stops holding a slot (both checks fail with their fix
+reverted). `repairEdge` (new, m32): 99.7 HP → 100 %, Repair disabled, kit slot unavailable, manual
+repair refused, `ship.repair` `full_hull`; 99.4 → 99 %, all enabled, the op lands on 100. `regions`: 0
+pocket markers, 0 point markers, 0 point meshes, origin field marker hidden at spawn. Shell `lock` (new):
+close by click and by key relock, Esc without activation leaves the prompt; `title,continue` pass.
+`PHYS_PARTS=liveOwner` (new, one difficulty per run): physics ready in 0.26–0.55 s on the first attempt,
+the flag absent / `Collisions off · dev speed` / absent, real W from spawn into a 299 m rock 6.2 km away
+at 402 m/s: Explorer dv 460–463 m/s → 50 HP (6 of 7 runs; the first, untraced run reached no impact in
+30 s and was not reproduced), Standard dv 461 → 100 HP (fatal), Hard dv 460 → 150 HP (fatal), each equal
+to curve × multiplier. `PHYS_PARTS=sim,damage,hull,asteroids`, `res`, `m32` pass. `__lum.ephemeris()`:
+2024 18:18 / γ 0.3453, 2017 18:27 / γ 0.4384. Fresh-world capture at the new epoch: Earth ~60 % lit with
+the terminator in view from the spawn, Luna's marker alone (the Moon a few pixels under it); the origin
+point's nearby card was also removed (D1). Typecheck clean; lint 0 errors (132 warnings).
+**Not run:** the M3.7 end-to-end sessions (sessionA/B/C) and `transitShots`, which fly Earth → Luna and
+may expect the old standoff arrival; WP3 owns the transit panel captures.
+
+### Playtest 1 polish, WP2: progression content (as built, 2026-11-17)
+
+Items D9, D13 (and the drive rename of D14). Supersedes the §13.5 matrix and recipes where they differ.
+
+**Matrix (`content.ts`).** The transit drive is the first milestone: Transit Drive Calibration (pr1) now
+needs Heat Rejection, Bulk Handling, an inspected C-type and the hydrate family; analysis 15 hydrates +
+40 Fe-Ni. Composition Survey needs one inspected rock of each starter class (S, C, X; was three inspected
+families, which one C-type rock satisfied), 20 silicates. Volatile Mapping: Composition Survey, inspected
+hydrates, carbon; 5 + 5. Controlled Extraction needs *inspected* Fe-Ni; 30 Fe-Ni. Other analyses: ex2
+5 S, th1 30 Si, lg1 30 Fe, pr2 20 Fe + 5 S, hl1 20 Fe. The lunar option (ln1) also needs Volatile
+Mapping and 10 titanium, so the suite caps the survey line instead of bypassing it.
+Recipes: **Transit Drive** (renamed from "Interplanetary Transit Drive"; slot/category unchanged, the
+"Drive" category is WP4) 600 Si, 550 Fe, 30 H, 20 C, 12 S = 1,212 units (was 288); Integrated Sensor
+Suite 200 Si, 100 Fe, 60 Ti (canister 30 Ti − 10 analysis ⇒ ≥ 40 mined in the lunar field). Item
+descriptions per spec §5.4 (≤ 6 words). Start state: **new worlds carry 200 kg** of ordinary propellant
+(`START_PROPELLANT_KG`; tank 600, Earth → lunar field 206 kg), so the first trip needs a processing
+batch and a fresh tank always has room for `first_batch`. Migrated saves keep a full tank.
+Projects: `reach_moon` = th1 → lg1 → pr1 → drive → fuel 280 kg → "Reach the lunar field";
+`lunar_survey` = drive → field → recover canister → Volatile Mapping → ln1 → suite (the separate inspect
+step is dropped; WP3 merges inspect into recovery).
+
+**Pace (new `GAME_PARTS=pace`, `gameplay-pace.mjs`).** A competent-player bot on a fresh Standard world:
+real W/X input for every hop, the live laser on a focused rock for every extraction, T held for the
+transit; class-aware rock choice, surplus jettisoned; harness-instant actions charged a fixed time
+(opening 120 s, inspection 6 s, menu action 12 s). Resumable (`.captures/pace.json`, ~100 s of work per
+run). MEASURED, sim minutes (wall = sim here):
+| Run | pr1 unlocked | drive crafted | in lunar field | rocks | hops |
+|---|---|---|---|---|---|
+| unconstrained (9 runs) | 11.4 | 17.6 | **18.4** | 10 | 7–24 km |
+| rocks ≤ 13 s (cold laser, the spec model's mid-size rocks; `PACE_MAX_MINE_S=13`, 23 runs) | 7.6 | 41.7 | **42.8** | 25 | ~20 km mean |
+Spec §5.5 expert line ≈ 34 min. The capped run lands near the model (25 rocks vs 24 modelled; slower,
+because the starter neighbourhood holds only 5 rocks ≥ 15 m within 12 km, so hops average ~20 km, not
+3.5 km). The unconstrained bot is **2× faster than the model** for a reason the drive's Fe-Ni cannot
+fix: yield grows as 15·(r/50)^1.6 up to 2,500 units while extraction time is capped at 18 s
+(`computeMiningDurationS`), and Radiator Strips lift the laser trip to 18.75 s, so one 450–800 m rock
+gives 500–1,300 units in one pass (the last three rocks paid for most of the drive). Closing that gap
+by Fe-Ni alone would need several thousand more units, beyond the 2,000-unit single-craft rule. **Drive
+Fe-Ni left at 550.** Lever for the lead (out of WP2 scope): cap per-rock yield (sol.json `maxAmount`) or
+let extraction time keep growing past 18 s for large rocks. Flight fuel MEASURED ≈ 16 kg per hop
+(410 kg over 25 hops, net of processing), so processing runs several times before the first trip.
+
+**Verification (fresh page per run).** `audit` pass (10 options, 17 items; no cycles, no unreachable,
+no over-capacity (largest 1,212 ≤ 2,000), no He-3 gates, no lunar-only basics); `reqs` 10/10 (each
+missing piece named, analysis spent once). `playA` / `playB` (fresh-save playthroughs through the shared
+`pathToDrive`, 200 kg start): pass; a premature pr1 is refused naming `research:th1`/`lg1` (A) or
+`lg1` + `sourceClass:c_type` (B); 24 / 39 accepted mines; Earth → Moon preview ok. `seeds`, `guidance`,
+`difficulty`, `exploits`, `site` (ln1 refused without Volatile Mapping, 30 → 20 Ti after the analysis),
+`migrate,tx,shared` pass. `sessionA` 1–3 pass: Earth → Luna 1 leg, 206 kg, arrived in the field; canister
+recovered with real G; sv2 + ln1 + suite crafted and equipped from 2 lunar rocks. `sessionB` part 1 pass.
+Gate fixes: `guidance` expected a completed project to stay tracked (WP1 B14 clears it); `shared`, `tx`,
+`site`, `exploits`, sessions updated to the new matrix. Typecheck clean; lint 0 errors (132 warnings).
+**Not run:** `sessionB` parts 2–5, `sessionC` (they start from part 1's state or grant their own
+material; nothing in them depends on the changed recipes beyond part 1).
+
+**WP2 review fixes (2026-11-17).** (1) `sourceClass` evidence reads the 64-entry source ring, so a
+depleted, oldest C-type could be evicted and re-lock sv1/pr1; `planInspection` now never evicts the last
+record of a class (`fit` gate `classKept`: one C-type survives 70 S-type inspections; negative control
+with the exemption off fails, `cKept: false`). (2) Worlds that unlocked pr1 / ln1 before th1, lg1, sv2
+became prerequisites: a project's research step is met ("… not needed") when a completed option requires
+it (`guidance` gate `legacyPrereqs`); no schema bump. (3) The canister comms line now says the suite
+needs Volatile Mapping and more titanium. (4) The `fit` gate bookmarked a depleted source, which WP1 B4
+refuses; it now bookmarks an unmined one.
+**Pace verdict (unresolved, needs the lead).** The pace gate's minutes are an **expert lower bound**
+(no wandering, misses or deaths). `paceSummary` also reports the spec §5.5 new-player estimate
+(1.4 × real minutes + 18.5 min of new-player overheads) and passes only if the bot lands in 25–50 min
+AND the estimate in the owner's 60–90 min. Fresh default run (11 runs): pr1 7.6, drive 18.4, field
+**21.7 min** (10 rocks, 206 kg trip) → estimate **42.6 min: FAIL**. Capped run (`PACE_MAX_MINE_S=13`):
+42.8 → 70.4 min, pass. Per step (min) default / capped: sink 1.7/1.7, batch 0.2/0.2, th1 0.2/0.2, sv1
+3.1/3.1, lg1 0.2/0.2, pr1 0.2/0.2, radiator 1.8/1.8, rack 3.3/4.7, **drive 5.7/27.6**. Radiator and
+rack do sit between pr1 and the drive, but in the capped economy the drive is a 28-min single grind.
+The lever is not the drive's Fe-Ni (2,000-unit craft rule) but large-rock yield vs the 18 s extraction
+cap. A per-rock yield cap ≈ 185 units in the origin belt (what a 13 s rock yields) would reproduce the
+capped run's economy; alternatives are a lower yield exponent or extraction time that keeps growing.
+Not changed here: it is an economy decision for the lead.
+
+### Playtest 1 polish, WP3: HUD (as built, 2026-11-17)
+
+Items B9, B10, B11, B13, D3, D5, D7, D8, D12, D16, the HUD half of D2 and the shared parts of D6
+(spec `playtest1-design.md` §1.1-1.6, 1.12-1.14, §2, §3.1-3.6).
+
+**Homes (one per concern).** *Target Card* (`HUD/TargetCard`): inside the reticle root, so it follows the
+nose; 232 × 104 px, four fixed 22 px rows (header + distance, facts, contents, actions), flips left near
+the right edge, centred below the reticle under 600 px. Kinds: rock, survey site, wreck, placed point,
+placement preview. It owns the keys: **[M]** mines / stops, **[G]** inspects a rock, recovers the site,
+sets a point active; a refusal plays `ui.reject` and shows its reason on the chip (`2.5 km`, cargo
+`Full`, heat `Cooling`); G with nothing focused only rejects. *Notification Stack*
+(`HUD/NotificationStack`, `store/toast.ts`): replaces the toast column, the hint strip, the cargo delta
+rows and the world-space loot text; top-left under cargo, 300 px, max 4 items (2 under 600 px), fixed
+44 px items, newest on top, one lifetime table (info 4 s, success/warn 6 s, tip 8 s, no per-call
+durations), same-title items within 1.5 s merge their values (`Mined +12 [Si] …`), hover pauses, click
+dismisses. Hints are `tip` items; one is offered only while the stack has room and enters the played
+registry when shown. *Dashboard*: 280 px, fixed rows SPEED, ASSIST (text only when decoupled), FUEL,
+HEAT (bar, tick at 80 %), POWER, BOOST, HULL (floor-rounded, wrench while repairing) and ONE status line
+(collisions off > empty tank > resource reason > reserve > fuel low); the mining heat bar and the
+recovery row are gone, so HEAT is the only heat display. *Transit panel*: 288 px, top-right below the
+settings gear, rows always rendered (plan: name + chips, ETA, FUEL, LEFT, status; active adds phase +
+leg, SPEED, DIST); km/s with one decimal, `8,412 km` / `356k km`, `mm:ss`; a refusal keeps the last good
+numbers greyed and changes only the status line; chips `2 legs`, `Coast`, `Obstacle` (4 s after a
+proximity brake, replacing that toast). Speed and distance are written by a 10 Hz rAF writer into fixed
+slots. Phones: the panel takes the tracker's slot.
+**Focus → act for non-rocks** (`store/interact.ts`, ticked at 20 Hz by `InteractFocus`): sites (until
+recovered), wrecks and non-starter points are ray-tested along the ship's nose, lock cone
+max(angular radius, 1.5°), same lock timing and ring as rocks; a rock in front keeps the rock. Within
+5 km such a marker is a card target, not a transit destination (POIProjector skips it). The canister: one
+G runs a 4 s scan, then `site.inspect` + `site.recover` back to back (ops unchanged for saves); arrival
+1.5 km, inspect = recover range 2 km; the tracker's site row and `hint_site` are gone.
+**Keys.** Craft C, Projects P, pulse mining and place-point unbound, `activatePoint` removed (Interact
+G). `keybinds-v3` migration: actions still on their v2 default move to the new key unless another
+action already holds it (then unbound); custom keys untouched. All in-text keys are `KeyChip`s (follow
+rebinding); panel-button titles read the binding. Hotbar slot i is key `(i + 1) % 10`; digit keys
+`preventDefault` (the kit's key focuses the name input in the same keydown, which typed the digit into
+it: found by the `hud` gate). The replication kit takes a hotbar slot on craft or salvage (count shown);
+its key opens the NEW POINT card with the default name focused and selected; Enter places, Esc / the key
+cancels (Esc never opens Settings while placing); pointer lock stays engaged.
+**Inspect sound.** `mining.inspect.start` / `.loop` (emitter for the scan) / `.complete` on the UI bus,
+synthetic placeholders in `public/audio/sfx2d/` from `pnpm gen:audio-placeholders`; also on the site
+scan; the old `click.soft` is gone.
+**Strings.** Notifications ≤ 4 words + an icon row (`Mined`, `New material`, `Unlocked` + item icons,
+`Crafted`, `Fuel delivered`, `Transit refused` + reason, `Autopilot off`, `Stopped short`, `Point placed`,
+`Canister recovered [Ti] +30` …); hints ≤ 10 words (spec §1.5; `hint_research`, `hint_kit`, `hint_site`
+retired but still valid ids); comms per §1.6 (the canister line keeps WP2's Volatile Mapping note);
+transit refusals short (`Blocked by Luna`, `Needs 8 kg fuel`, `Out of range: needs 900 kg`, `No fuel
+(reserve is for manoeuvring)`, `Not enough fuel`); dashboard reasons per §1.3; replication refusals per
+§1.12; wreck markers are just `Wreck` (contents on the card). Marker distances below 100 km now show one
+decimal, like the card. Panel toasts (craft, research, processing, salvage) use the new API with the
+short §1.7/1.8/1.11 titles; the panels themselves are WP4.
+**Deviations.** The placement card's warn chip reads `No fuel source` (spec `… known`; the longer text
+does not fit the fixed card beside the name input; the full sentence is its tooltip). A placed point's
+card shows a muted `Respawn point` in its otherwise empty contents row. The transit panel sits at top
+72 px, not 16 (the settings gear occupies the corner the spec's wireframe missed); on phones the panel
+buttons move left of the gear and the cargo block narrows to 140 px (they overlapped before WP3).
+Project step texts lost their hard-coded keys (`Research X`, `Craft X`, `Recover the survey canister`);
+the remaining project/tracker wording is WP4.
+
+**Verification (fresh page per run; captures opened and judged).** New `gameplay-hud.mjs`:
+`hud` at 1280×720 and 390×844: 13 states each (idle, rock focused, inspecting, inspected, mining, mined,
+placement, placed point, wreck, survey site, transit plan, transit active); every state: 0 intersections
+among stack items, card, tracker, transit panel, dashboard, hotbar, panel buttons, cargo and the settings
+gear, all inside the viewport, card kind as expected; the name input focused with `Point 1` fully
+selected. Voice table sampled at 10 Hz during a real G inspection: `mining.inspect.start`, `.loop`,
+`.complete` all present (both sizes). `hudTransit` (Earth → Luna far side, 2 legs via Luna, 60 ms
+samples): 1280: 931 samples, width 288 throughout, heights 118 (plan) / 178 (active), 2 height changes,
+0 without a state change; 390: 926 samples, width 366, 78 / 98, 2 changes, 0 without. `hudSite` (real T
+to the lunar field, gaze-lock the signal, real T to it): arrived 1.543 km from the canister, card
+`SURVEY SIGNAL … [G] Recover`, one G → scanning, recovered, Ti 0 → 30, 0 `ui.reject`, stack `Canister
+recovered Ti +30`. `hudKeys`: v2 defaults → C / P / pulse [] / place [] / no activatePoint; custom
+(K, N, J) kept with Projects → P; `brake: c` → Craft left unbound (profile restored after). `hudHotbar`:
+key 1 used the slot-0 patch kit (3 → 2), key 0 the slot-9 heat sink (2 → 1), labels `1234567890`, a
+crafted kit lands in slot 1, its key opens placement with the name selected, typing `Camp 2` (its own
+slot digit) keeps placement open, Enter places `Camp 2`, Esc cancels without Settings.
+Regression (updated for C, the hotbar kit, short refusals, `Wreck` markers, one-G recovery): `site`,
+`guidance`, `transit` (pure), `res`, `repairEdge`, `place`, `salvage` (a salvaged kit now takes a hotbar
+slot and a hint may show mid-test: excluded from the "nothing changed" comparison), `live36`,
+`m37narrow`, `SHELL_PARTS=title,continue,lock`, `PHYS_PARTS=liveOwner` (standard: flag absent / `Collisions off · dev speed` / absent, dv 461 → 100 HP) pass. `pnpm check:audio` 0 problems; `__audio.selftest()`
+true; typecheck clean; lint 0 errors.
+**Not run:** `sessionA` part 3 (updated for the one-G recovery; needs parts 1-2's carried state),
+`m37shots`, `transitShots`, the other session parts.
+
+**WP3 review fixes (2026-11-17).** A kit is slotted once when it arrives (craft, salvage, load), so
+"Clear slot" sticks; a full bar shows `Hotbar full` + the kit (Loadout can drag it in). `G` on a wreck
+in salvage range is a no-op, not a reject. Hints leave the stack when their condition stops holding;
+`hint_lock` shows while nothing is locked (it showed on lock, contradicting the card). Transit panel:
+SPEED cut (the dashboard is speed's one home), `FUEL` → `BURN` (trip cost vs tank), active height 158;
+the marker's `· ~46s transit` suffix cut (ETA lives in the panel). Markers: labels declutter
+(targeted, then focused, then the rest; estimated boxes, no per-frame layout reads) and hide under HUD
+homes; edge arrows slide out of HUD homes (rects read every 100 ms). Card: site/wreck/point use 3 rows
+(82 px), point shows `Respawn point` + `Active`/`[G] Set active`, scrim 0.95. Phone comms sit 8 px above
+the dashboard (clear of the card). Gate fixes: the reject sampler read `v.event`, but voices carry
+`eventId`, so `rejects === 0` could never fail (now fixed, with a positive control `farRejects` 5);
+`hud` homes include comms; `hudHotbar` gains `kitClear` and `kitFull`. Not changed: the round `N`
+bottom-left is the Next.js dev indicator; tracker step wording is §1.10 (WP4).
+Re-run on fresh pages: `hud` 1280 + 390 (13 states, 0 intersections, `wreckG` far 5 / in range 0),
+`hudSite` (1.539 km, recovered, 0 rejects, Ti 0 → 30), `hudTransit` 1280 (913 samples, w 288,
+h 118/158) + 390 (910, w 366, h 78/98), `hudHotbar` + `hudKeys`, `guidance`, `place`, `salvage`.
+
+### Playtest 1 polish, WP4: panels and remaining text (as built, 2026-11-17)
+
+**Shared.** `ReqChip` (state glyph + kind icon + ≤ 3-word label, tooltip = the requirement in ≤ 8
+words; specs from `requirementChip()` in `requirements.ts`, pure), `ReqAnyGroup` (`1 of` bracket),
+`AnalysisChips` (flask + `ResourceIcon`, red `have/need` when short), `ValueChip` (material / fuel /
+item, also used by the stack). `nodeProgress()` counts an option's pieces (evidence, any-of group,
+analysis materials) and is the one fraction shown on research cards, research project rows and the
+tracker. `Panel fixedHeight`: `min(640, 100vh − 96)` (tier 1: 480), body scrolls with a stable
+gutter; on phones the header wraps (tabs and counters under the title).
+**Research.** Header `Research 1/10` + tabs; cards fixed 112 px (name + fraction ring or `Ready`
+dot; chips, research prerequisite first; footer = analysis chips → unlock item icons (tooltip: name
+and effects) + `Unlock`). Ready cards have an ok left rule; cards blocked by an unmet prerequisite
+are at 70 %; per branch: ready, then by fraction, then blocked. Unlocked options leave the grid for
+one `Unlocked` strip. No intro, purpose line or status words. Discoveries: 7 material icons with
+scan/pick glyphs, 4 trial chips (`Beam 8 s`, `First batch`, `First craft`, `Transit leg`),
+`Sources n · mined m`, rows = class badge, `r 140 m`, `ResourceIcon` composition, bookmark toggle
+(name field when bookmarked), `Set destination` icon only with the drive; empty state
+`Inspect rocks with [G]`.
+**Projects.** One list (authored + research), sorted: started by fraction desc, then 0/x, then
+completed collapsed to `✓ name` with no buttons; ties authored first, then name. No subtitle, summary
+or section heading. Step lines: state glyph + kind icon (flask, wrench, fuel, orbit, pin, point) + short
+text (`Research X`, `Craft X`, `412 / 280 kg`, `Reach the lunar field`, `Recover the survey canister`,
+`Place one in lunar space`); an open research step shows its chips. Tracker: same icons and chips (max
+3); a tracked research project shows the option's name, its pieces fraction and chips (it showed
+`Research: X 0/1` with a duplicated step). Records trimmed to the §4.4 texts (`Respawn`, `Survey
+canister` titles).
+**Crafting.** Filters `All · Drive · Scanner · Mining · Cooling · Cargo · Propulsion · Hull · Utility
+· Consumables · Processing`, only categories with an unlocked blueprint (`craftCategory()` in
+`content.ts`; the drive is `Drive`, no `ItemSlot` change). Ingredients and the cargo row are
+`ResourceIcon`s (tooltip name + have/need). Workshop: `Fuel processing` ([H] 1 → 20 kg, tank bar,
+stepper, `200 kg · 20 s`, `Process` / bar + `Cancel`), `Hull repair` ([Fe] 1 / %, hull bar, cost or
+`Hull intact`, `Repair` / `Stop`). Confirm note `Equips automatically` / `Slot in use: equip in
+Loadout [L]`, else none. Loadout preview labels per §1.9.
+**Death / respawn.** Title `Ship destroyed` (abandon: `Respawn`), one `Wreck` row of value chips,
+fallback line `{point} blocked|unavailable: respawn at {Origin}`, buttons `Respawn at {point}` and
+`Respawn at Origin point` → `Respawn at Origin point? {point} stays your active point.` (Back /
+Respawn). Settings button `Respawn` → `Respawn at {point}?` + `Wreck keeps` chips, `Cancel` /
+`Respawn`. `FALLBACK_TEXT` removed. The "kept" sentence lives in the `Respawn` record.
+**Gate** `GAME_PARTS=panels` (gameplay-panels.mjs), fresh world with 2 inspected classes, 1 trial,
+Heat Rejection unlocked, a crafted kit; both sizes PASS:
+- panel box constant across tabs and states: Research 760×624 (options, discoveries, after +40 Si
+  made a card ready, scrolled to the strip), Projects 560×624 (+ Records), Crafting 640×624 over all
+  11 categories; at 390×844 every panel 359×640. Research cards all 112 px.
+- real-mouse hover: requirement chip → `Inspect an S-type rock`; source `ResourceIcon` → `Silicates`;
+  recipe icon → `Fe-Ni metal · 10 / 15`.
+- Projects order (both sizes): `4/5, 3/4, 2/3, 2/3, 1/2 (forward point, authored wins the tie),
+  3/6, 2/4, 1/3, 1/4, 1/4, 1/6, 0/6, 0/3, ✓ Heat Rejection`; the completed row has 0 buttons;
+  `.pp-section` 0; no subtitle.
+- Crafting tabs exactly the 11 in order; `Drive` lists only `Transit Drive`.
+- Death screen `SHIP DESTROYED · WRECK 52 10 14 30 5 ×1 200 kg · RESPAWN AT ORIGIN POINT`;
+  respawn confirm `Respawn at Origin point?` + chips; the Settings button reads `Respawn`.
+- Text budget (scripted, own text of every visible element; numbers, units, key chips and entity
+  names excluded; comms and Records excluded): tracker > 3 words: 0; Research/Projects/Crafting/
+  death/confirm > 8 words: 0, at both sizes.
+Regression on fresh pages: `guidance` (6/6), `m32` (incl. `emergency` via `[data-action=respawn]`),
+`death,recover`, `marks,migrate4` (Set destination is an icon button now: gate reads its
+aria-label), `sessionC` parts 1-2, `hud` 1280 + 390, `SHELL_PARTS=title,continue`. Typecheck clean,
+lint 0 errors / 129 warnings. Gates updated for the new strings: m32, m33, m36, m37.
+**Not changed:** a stale `Unlock` press still raises `Cannot unlock` (spec: reject sound only; kept
+as the only feedback for a race); the respawn confirm's wreck row omits the running batch's
+unconverted feedstock (the reducer still puts it in the wreck); the faint `click to steer` prompt
+under the death screen is the WP1 pointer-lock prompt, untouched here.
+
+### Playtest 1 polish: player-flow walkthrough (2026-11-17)
+A new player's opening played end to end with real keys and clicks where practical (fast-forward to
+the drive only through accepted operations), at 1280×720 and 390×844, every screen captured in
+order (`.captures/walk-NN-*.png`, `-n` = phone) and `__audio.voices()` sampled per step: title →
+new world → opening comms + naming → first rock (lock, G inspect, M mine) → gains → Research →
+first unlock → Craft → fuel batch → Projects (track) → drive → transit plan / spool / cruise /
+arrival → survey canister → kit from the hotbar → ramming death → respawn at the point.
+Fixed from the captures:
+- Tracker `Research ready N` counted evidence only; it now uses the panel's Ready rule (evidence +
+  analysis in the hold). It said 2 while the panel showed one Ready card.
+- Research opens scrolled to the first Ready card (phones: Heat Rejection sat below the fold).
+- `Fuel delivered` carries `N kg` and plays `notify.info`; `Process` / `Repair` click on accept,
+  `Cancel` / `Stop` click soft. Starting and finishing the first batch were silent.
+- A processing refusal no longer parks in the dashboard status line (stack only): it read
+  `Processing refused: Batch running` long after the batch had ended.
+- `Point placed` / `Active point set` play `notify.info` (were silent).
+- Projects hint only while nothing is tracked (it appeared after the player had tracked one).
+- Marker labels hide inside a 96 px box round the reticle while the Target Card shows (the card
+  names the target; the label sat on the placed beacon's glow) and under the spool ring (it
+  crossed the locked target's distance label). Moving the ring down instead put `Hold [T]` on the
+  ship model on phones.
+- Owned one-time items show their recipe neutral (the drive read `172/550` in red next to `Owned`).
+Seen, not changed (outside the spec): ~10 unlabelled off-screen edge arrows on every view (stars and
+planets; doubled arrows where two share a direction); the start view shows only a sliver of Earth at
+the left edge; the comms avatar is `?` for the named AI; on respawn with the fuel in the wreck the
+`Fuel low: process hydrates` hint fires with an empty hold; a just-placed point's label sits on its
+glow until the point is focused.
+
+**Walkthrough re-run (fresh worlds, 1280×720 and 390×844).** Three more fixes from the captures.
+(1) The survey canister moved from Luna-frame [5200, 1200, 0] to [3400, 1900, 0] km: measured at the
+default epoch it sat 18.7° from the anti-Sun direction with the Moon 19.0° wide from there, i.e. in the
+umbra, so the canister and the ship drew black for the whole recovery (weeks either side of the start
+date). The shadow is a ≤ 1,753 km cylinder along the anti-Sun line, which stays in the ecliptic, so a
+point 1,900 km off the ecliptic is never in it. 3,895 km from the Moon's centre (outside 2 R); nearest
+loaded rocks ~7 km (the old spot's were ~200 km); the hop from the field arrival stays one leg. (2) The spool ring is concentric with the 96 px steering ring (112 px,
+text under it); it was offset 60 px and cut through it. (3) While a panel is open the Notification
+Stack keeps to the gutter beside it (newest item only on phones, hidden 600–1047 px): items showed
+through the glass and were cut at its edge. Also: `Fuel low` now needs hydrates aboard (the respawn
+case above), and opening/closing placement plays `click.soft` (was silent). Still seen: the luna_belt
+anchor (+3,400 km on x) is itself in lunar shadow at the default epoch; Projects sorts 3/3 research
+rows above `Reach the Moon` 1/6 (§4.3 rule as written).
+
+**Pace lever: beam throughput cap (playtest 1 follow-up).** Yield grew as r^1.6 while extraction time
+is capped at 18 s, so units per second rose ~25× from a 50 m to an 800 m rock and the default world
+reached the lunar field in 21.7 min (new-player estimate 42.6). A field's `yield.throughputPerS` now
+caps a rock at `throughputPerS × computeMiningDurationS(r)` (base duration: the speed upgrade shortens
+time, not yield), inside the deterministic reward, so inspection, Target Card, discoveries and the mine
+operation agree; ±15 % jitter stays. MEASURED with the pace gate on fresh default worlds: 14 u/s
+→ 22.4 / est 43.5 (fail; WP2's 13 s-capped run only differed by restricting the bot to small rocks),
+7 u/s → 36.3 / 61.9, **6 u/s → 38.9 / 65.3 (pass)**: pr1 13.9, cargo rack 22.3, drive 36.0, arrival
+38.9 min, 25 rocks. origin_belt 6 u/s, luna_belt 17 u/s (lunar refuel and Ti loops unchanged; gates
+pass). The pace bot now refuels below 80 kg from any hydrates aboard (at 6 u/s it flew the tank dry
+keeping hydrates for recipes). playA/playB mine 52/70 rocks (were 24/39); no gate expectation changed.

@@ -38,6 +38,15 @@
     @include s.glass(2);
   }
 
+  &--fixed-h {
+    height: min(640px, calc(100vh - 96px));
+    max-height: none;
+
+    &.panel--tier-1 { height: min(480px, calc(100vh - 96px)); }
+
+    .panel__body { scrollbar-gutter: stable; }
+  }
+
   @include s.chamfer(s.$radius-xl + 4px, ('tl', 'br'));
 }
 
@@ -61,6 +70,12 @@
   padding: s.$space-4 s.$space-5;
   border-bottom: 1px solid s.$stroke-base;
   flex: 0 0 auto;
+}
+
+// Phones: tabs and counters drop below the title instead of crushing it.
+@media (max-width: 520px) {
+  .panel__header { flex-wrap: wrap; row-gap: s.$space-2; padding: s.$space-3 s.$space-4; }
+  .panel__header-right { order: 2; flex: 1 0 100%; }
 }
 
 .panel__header-main {

@@ -45,10 +45,10 @@ export const collectWreckAtom = atom(null, (get, set, payload: { wreckId: string
       out.taken = o.result.taken;
       if (!o.result.removed) {
         const left = get(wrecksMirrorAtom).find((w) => w.id === payload.wreckId);
-        if (left) set(addToastAtom, { audio: "silent", message: "Partial salvage: no room for the rest", detail: `Left at the wreck: ${describeStores(left)}`, durationMs: 5000 });
+        if (left) set(addToastAtom, { audio: "silent", kind: "warn", message: "Salvage partial", detail: `Left: ${describeStores(left)}` });
       }
     } else if (o.status === "rejected" && o.reason === "no_capacity" && !payload.quiet) {
-      set(addToastAtom, { audio: "reject", message: "No room to salvage", detail: "Free cargo, tank or consumable space, then come back", durationMs: 3500 });
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "No room to salvage" });
     }
   });
   return out.taken;

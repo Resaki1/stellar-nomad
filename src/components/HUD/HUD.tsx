@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { Microscope, Shield, Target, Wrench } from "lucide-react";
-import { keybindsAtom } from "@/store/keybinds";
+import { displayKey, keybindsAtom } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
@@ -17,14 +17,14 @@ import DamageVignette from "./DamageVignette/DamageVignette";
 import ResearchPanel from "./ResearchPanel/ResearchPanel";
 import CraftingPanel from "./CraftingPanel/CraftingPanel";
 import LoadoutPanel from "./LoadoutPanel/LoadoutPanel";
-import ToastDisplay from "./ToastDisplay/ToastDisplay";
+import NotificationStack from "./NotificationStack/NotificationStack";
 import Hotbar from "./Hotbar/Hotbar";
 import ObjectiveTracker from "./ObjectiveTracker/ObjectiveTracker";
 import ProjectsPanel from "./ProjectsPanel/ProjectsPanel";
-import HintStrip from "./HintStrip/HintStrip";
 import { sampleGlanceAtom } from "@/store/sites";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
+import { isDeadAtom } from "@/store/death";
 import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
 import HdrCalibration from "./HdrCalibration/HdrCalibration";
@@ -38,6 +38,9 @@ import { audioSettingsAtom } from "@/store/audio";
 
 import "./HUD.scss";
 
+/** First bound key, for button titles (rebinding updates them). */
+const keyLabel = (keys: readonly string[]): string => (keys[0] ? displayKey(keys[0]) : "unbound");
+
 type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | null;
 
 /** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
@@ -47,6 +50,7 @@ export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const dead = useAtomValue(isDeadAtom);
   // Either the persisted setting (which shows a "needs reload" hint when the
   // renderer was built without timestamp queries) or `?perf=1`, which turns
   // profiling on from a cold load and should show the readout too.
@@ -146,7 +150,7 @@ export default function HUD() {
   }, [store]);
 
   return (
-    <div className="hud">
+    <div className={`hud${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
       <POIMarkers />
       <ShipDashboard />
@@ -156,8 +160,7 @@ export default function HUD() {
       <CargoHUD onClick={() => openPanel("cargo")} />
       <ObjectiveTracker />
       <SettingsMenu />
-      <ToastDisplay />
-      <HintStrip />
+      <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
@@ -176,7 +179,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "research" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("research")}
-          title="Research (R)"
+          title={`Research (${keyLabel(keybinds.toggleResearch)})`}
         >
           <Microscope size={14} strokeWidth={1.75} aria-hidden />
           <span>Research</span>
@@ -184,7 +187,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "crafting" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("crafting")}
-          title="Crafting (F)"
+          title={`Crafting (${keyLabel(keybinds.toggleCrafting)})`}
         >
           <Wrench size={14} strokeWidth={1.75} aria-hidden />
           <span>Craft</span>
@@ -192,7 +195,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "loadout" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("loadout")}
-          title="Loadout (L)"
+          title={`Loadout (${keyLabel(keybinds.toggleLoadout)})`}
         >
           <Shield size={14} strokeWidth={1.75} aria-hidden />
           <span>Loadout</span>
@@ -200,7 +203,7 @@ export default function HUD() {
         <button
           className={`hud__panel-btn ${activePanel === "projects" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("projects")}
-          title="Projects and records (O)"
+          title={`Projects and records (${keyLabel(keybinds.toggleProjects)})`}
         >
           <Target size={14} strokeWidth={1.75} aria-hidden />
           <span>Projects</span>

@@ -65,9 +65,8 @@ export default function AppShell() {
               off();
               store.set(addToastAtom, {
                 kind: "warn",
-                message: "The selected world could not be loaded",
-                detail: `Playing “${meta.name}” instead. Details are in the browser console.`,
-                durationMs: 12_000,
+                message: "World failed to load",
+                detail: `Playing “${meta.name}”`,
               });
             });
           }

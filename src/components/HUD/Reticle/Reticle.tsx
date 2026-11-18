@@ -8,8 +8,10 @@ import {
   targetingProgressAtom,
 } from "@/store/mining";
 import { poiBuffer } from "@/store/poi";
-import { keybindsAtom, displayKey } from "@/store/keybinds";
+import { interactFocusAtom } from "@/store/interact";
 import { flightHud } from "../FlightHud/flightHudBuffer";
+import { KeyChip } from "../shared/Chips";
+import TargetCard from "../TargetCard/TargetCard";
 import "./Reticle.scss";
 
 const RING_R = 14;
@@ -19,7 +21,7 @@ export default function Reticle() {
   const miningState = useAtomValue(miningStateAtom);
   const showTargeting = useAtomValue(showTargetingIndicatorAtom);
   const targetingProgress = useAtomValue(targetingProgressAtom);
-  const keybinds = useAtomValue(keybindsAtom);
+  const interact = useAtomValue(interactFocusAtom);
 
   const poiRingContainerRef = useRef<HTMLDivElement>(null);
   const poiRingProgressRef = useRef<SVGCircleElement>(null);
@@ -66,10 +68,11 @@ export default function Reticle() {
 
   const isMining = miningState.isMining;
   const showDefault = !isMining;
-  const showAsteroidRing = showTargeting && !isMining;
-  const showMineHint = miningState.isFocused && !isMining;
-  const mineKey = displayKey(keybinds.mine[0] ?? "m");
-  const transitKey = displayKey(keybinds.transitDrive[0] ?? "t");
+  // Sites, wrecks and points lock with the same ring (the Target Card then shows the action).
+  const interactLocking = !!interact.target && !miningState.targetedAsteroid;
+  const showAsteroidRing = !isMining && (showTargeting || interactLocking);
+  const ringProgress = interactLocking ? interact.progress : targetingProgress;
+  const ringLocked = miningState.isFocused || (interactLocking && interact.focused);
 
   return (
     <div className="reticle" ref={rootRef}>
@@ -88,7 +91,7 @@ export default function Reticle() {
       <div
         className={`reticle__ring reticle__ring--asteroid ${
           showAsteroidRing ? "reticle__ring--visible" : ""
-        } ${miningState.isFocused ? "reticle__ring--locked" : ""}`}
+        } ${ringLocked ? "reticle__ring--locked" : ""}`}
       >
         <svg viewBox="0 0 32 32" aria-hidden="true">
           <circle className="reticle__ring-bg" cx="16" cy="16" r={RING_R} />
@@ -98,7 +101,7 @@ export default function Reticle() {
             cy="16"
             r={RING_R}
             strokeDasharray={RING_C}
-            strokeDashoffset={RING_C * (1 - targetingProgress)}
+            strokeDashoffset={RING_C * (1 - ringProgress)}
           />
         </svg>
       </div>
@@ -119,18 +122,10 @@ export default function Reticle() {
         </svg>
       </div>
 
-      {/* Hints */}
-      <div
-        className={`reticle__hint reticle__hint--mine ${
-          showMineHint ? "reticle__hint--visible" : ""
-        }`}
-      >
-        <span className="reticle__hint-key">[{mineKey}]</span>
-        <span>MINE</span>
-      </div>
+      {/* POI lock: the transit key (the Target Card owns every other action, so no [M] hint here). */}
       <div ref={poiHintRef} className="reticle__hint reticle__hint--transit">
-        <span className="reticle__hint-key">[{transitKey}]</span>
-        <span>TRANSIT</span>
+        <KeyChip action="transitDrive" />
+        <span>Transit</span>
       </div>
 
       {/* Mining brackets */}
@@ -144,6 +139,8 @@ export default function Reticle() {
         <span className="reticle__bracket reticle__bracket--bl" />
         <span className="reticle__bracket reticle__bracket--br" />
       </div>
+
+      <TargetCard />
     </div>
   );
 }

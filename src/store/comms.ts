@@ -6,6 +6,7 @@ import { savedAtom } from "@/store/savedAtom";
 import { RETIRED_COMMS_IDS, type CommsMessage } from "@/data/commsMessages";
 import type { HintDef } from "@/data/guidance";
 import { benchModeAtom } from "@/store/dev";
+import { addToastAtom, toastStackFullAtom, toastsAtom } from "@/store/toast";
 
 // ---------------------------------------------------------------------------
 // Persistent registry of message IDs that have already been shown.
@@ -115,30 +116,39 @@ export const dismissCommsAtom = atom(null, (get, set): void => {
 /**
  * Reset the played registry (useful for "new game" or debug).
  */
-export const resetCommsPlayedAtom = atom(null, (_get, set): void => {
+export const resetCommsPlayedAtom = atom(null, (get, set): void => {
   set(playedMessageIdsAtom, []);
   set(commsQueueAtom, []);
-  set(activeHintAtom, null);
+  set(toastsAtom, get(toastsAtom).filter((t) => t.kind !== "tip"));
 });
 
 // ---------------------------------------------------------------------------
-// Hints (M3.7): one-time, non-blocking lines. Marked played when SHOWN (never repeat after a
-// reload). No queue: an offer made while another hint shows is dropped, and the trigger
-// re-offers once the slot is free only if its condition still holds (no stale hints).
+// Hints (M3.7): one-time `tip` items in the Notification Stack. Marked played when SHOWN (never
+// repeat after a reload). An offer made while the stack is full is dropped; the trigger re-offers
+// once there is room, only if its condition still holds (no stale hints).
 // ---------------------------------------------------------------------------
 
-export const HINT_SHOW_MS = 9000;
-export const activeHintAtom = atom<HintDef | null>(null);
+/** The newest tip still on screen (harness, triggers). */
+export const activeHintAtom = atom<HintDef | null>((get) => {
+  const t = get(toastsAtom).find((x) => x.kind === "tip" && x.hintId);
+  return t ? { id: t.hintId!, text: t.message } : null;
+});
 
 export const showHintAtom = atom(null, (get, set, hint: HintDef): void => {
-  if (get(benchModeAtom) || get(activeHintAtom)) return;
+  if (get(benchModeAtom) || get(toastStackFullAtom)) return;
   const played = get(playedMessageIdsAtom);
   if (played.includes(hint.id)) return;
-  set(activeHintAtom, hint);
+  set(addToastAtom, { kind: "tip", message: hint.text, hintId: hint.id });
   set(playedMessageIdsAtom, [...played, hint.id]);
 });
 
-/** Retire the shown hint; waiting triggers re-offer on the next render. */
-export const nextHintAtom = atom(null, (_get, set): void => {
-  set(activeHintAtom, null);
+/** A shown tip whose condition stopped holding leaves the stack (no stale hints). */
+export const retireHintAtom = atom(null, (get, set, hintId: string): void => {
+  const list = get(toastsAtom);
+  if (list.some((t) => t.hintId === hintId)) set(toastsAtom, list.filter((t) => t.hintId !== hintId));
+});
+
+/** Retire the shown tips; waiting triggers re-offer on the next render. */
+export const nextHintAtom = atom(null, (get, set): void => {
+  set(toastsAtom, get(toastsAtom).filter((t) => t.kind !== "tip"));
 });

@@ -42,15 +42,18 @@ export const kitCountAtom = atom((get) => get(modulesAtom).consumables[REPLICATI
 export const placementModeAtom = atom(false);
 
 export const REFUSAL_TEXT: Record<string, string> = {
-  invalid: "Position cannot hold a point",
-  no_kit: "No replication kit aboard (craft one)",
-  too_far: "Too far from the ship",
+  invalid: "Invalid position",
+  no_kit: "No kit",
+  too_far: "Too far",
   near_body: "Too close to a body",
   near_rock: "Too close to a rock",
-  emergence_blocked: "Emergence area obstructed",
-  no_capacity: "The world holds the maximum number of points",
+  emergence_blocked: "Emergence blocked",
+  no_capacity: "Point limit reached",
   dead: "Ship destroyed",
 };
+
+/** The name typed on the placement card (selected on entry, so typing replaces it). */
+export const placementNameAtom = atom("Point 1");
 
 /** Mutable preview pose (frame-relative), written at render rate by the preview visual. */
 export const placementPreview = {
@@ -137,9 +140,9 @@ export const placePointAtom = atom(null, (_get, set, payload: { name: string; op
     (o) => {
       if (o.status === "accepted" && o.result.type === "replication.place") {
         set(placementModeAtom, false);
-        set(addToastAtom, { audio: "silent", message: `Replication point placed: ${o.result.point.name}`, detail: "Now your active recovery point", durationMs: 4000 });
+        set(addToastAtom, { kind: "success", message: "Point placed", detail: o.result.point.name });
       } else if (o.status === "rejected") {
-        set(addToastAtom, { audio: "reject", message: "Cannot place point", detail: REFUSAL_TEXT[o.reason] ?? describeRejection(o), durationMs: 3500 });
+        set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot place point", detail: REFUSAL_TEXT[o.reason] ?? describeRejection(o) });
       }
     },
   );
@@ -147,14 +150,14 @@ export const placePointAtom = atom(null, (_get, set, payload: { name: string; op
 
 export const activatePointAtom = atom(null, (_get, set, pointId: string): OperationOutcome =>
   runOperation({ type: "replication.activate", opId: newOpId(), pointId }, (o) => {
-    if (o.status === "accepted") set(addToastAtom, { audio: "silent", message: "Active recovery point changed", durationMs: 3000 });
-    else if (o.status === "rejected" && o.reason !== "already_done") set(addToastAtom, { audio: "reject", message: "Cannot activate", detail: describeRejection(o), durationMs: 3000 });
+    if (o.status === "accepted") set(addToastAtom, { kind: "success", message: "Active point set" });
+    else if (o.status === "rejected" && o.reason !== "already_done") set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot activate", detail: describeRejection(o) });
   }),
 );
 
 export const deactivatePointAtom = atom(null, (_get, set): OperationOutcome =>
   runOperation({ type: "replication.deactivate", opId: newOpId() }, (o) => {
-    if (o.status === "accepted") set(addToastAtom, { audio: "silent", message: "Recovery point reset to the origin point", durationMs: 3000 });
+    if (o.status === "accepted") set(addToastAtom, { audio: "silent", message: "Active point: Origin" });
   }),
 );
 
@@ -172,7 +175,8 @@ export function updateNearbyPoint(store: Store): void {
   if (ship && !dead) {
     const activeId = store.get(playerReplicationAtom).activeId;
     for (const pt of store.get(replicationPointsAtom)) {
-      if (!isFrameId(pt.frameId)) continue;
+      // D1: the origin point is not a place you act on (no card, no marker).
+      if (pt.starter || !isFrameId(pt.frameId)) continue;
       const d = ship.absPosKm.distanceTo(absoluteKm(pt.frameId, pt.positionKm, _a));
       if (d <= REPLICATION_TUNING.activateRangeKm && (!best || d < best.distKm)) best = { id: pt.id, name: pt.name, distKm: d, active: pt.id === activeId };
     }
@@ -193,13 +197,6 @@ export function previewRecovery(store: Store, mode: "active" | "starter"): Recov
 /** The last accepted recovery (toast and harness). */
 export const lastRecoveryAtom = atom<RecoveryDestination | null>(null);
 
-export const FALLBACK_TEXT: Record<string, string> = {
-  chosen: "Emergency fallback chosen: expedition location given up",
-  missing: "Active point no longer exists",
-  invalid: "Active point's frame is unavailable",
-  obstructed: "Active point's emergence area is obstructed",
-};
-
 /** The recovery transaction; the accepted destination drives one runtime reposition. */
 export const recoverAtom = atom(null, (_get, set, mode: "active" | "starter"): OperationOutcome =>
   runOperation({ type: "ship.respawn", opId: newOpId(), mode }, (o) => {
@@ -210,7 +207,7 @@ export const recoverAtom = atom(null, (_get, set, mode: "active" | "starter"): O
     requestReposition({ frameId: d.frameId, relKm: [...d.positionKm], quaternion: [...d.quaternion], holdUntilReady: true });
     set(lastRecoveryAtom, d);
     if (d.fallback && d.fallback !== "chosen") {
-      set(addToastAtom, { audio: "reject", message: `Recovered at ${d.pointName}`, detail: FALLBACK_TEXT[d.fallback], durationMs: 6000 });
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "Active point unavailable", detail: d.pointName });
     }
   }),
 );

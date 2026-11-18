@@ -1,5 +1,5 @@
 import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
-import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "@/sim/ship/shipResources";
+import { RECOVERY_ALLOWANCE_KG, START_PROPELLANT_KG } from "@/sim/ship/shipResources";
 import { STARTER_POINT_ID, starterPoint } from "@/sim/replication/points";
 import { DIFFICULTY_TABLE } from "@/sim/difficulty";
 import type {
@@ -33,7 +33,7 @@ export const defaultCargo = (): CargoState => ({ capacityUnits: DEFAULT_CARGO_CA
 export const defaultDiscoveries = (): DiscoveryState => ({ families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} });
 
 export const defaultPropellant = (difficulty: Difficulty = "standard"): PropellantState => ({
-  ordinaryKg: PROPELLANT_TANK_KG,
+  ordinaryKg: START_PROPELLANT_KG,
   protectedKg: RECOVERY_ALLOWANCE_KG * DIFFICULTY_TABLE[difficulty].allowance,
 });
 

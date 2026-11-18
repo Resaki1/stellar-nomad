@@ -1,16 +1,16 @@
 @use '../../../styles' as s;
 
-// Phase 2 flip: the dashboard used to be a bright inverted-glass strip.
-// It's now a thin dark scrim with a 1px rule along the top / left, a
-// chamfered top-left corner as the house signature, and hologram-style
-// text glow. Phase 3 may refine this to a three-column instrument strip
-// per the style guide §7.2.
+// Bottom-right, fixed 280 px wide and fixed rows (§2.5): label | value | bar, one status line.
+// A thin dark scrim with a 1 px rule top / left and the chamfered top-left corner.
 .ship-dashboard {
   position: absolute;
   bottom: 0;
   right: 0;
+  width: 280px;
+  box-sizing: border-box;
+  padding: s.$space-2 s.$space-4 s.$space-2 s.$space-4;
 
-  background: rgba(0, 0, 0, 0.35); // subtle scrim so the chamfer reads
+  background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(s.$blur-sm);
   -webkit-backdrop-filter: blur(s.$blur-sm);
   border-top: 1px solid s.$stroke-base;
@@ -19,132 +19,126 @@
   text-shadow:
     0 0 1px rgba(0, 0, 0, 0.9),
     0 0 8px s.$glow-info;
-
   @include s.chamfer(s.$radius-xl, ('tl'));
 
-  width: 16vw;
-  min-width: 140px;
-  min-height: 64px;
-
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  padding: s.$space-2 s.$space-4;
-  grid-auto-rows: minmax(1.2rem, auto);
-  align-content: center;
-  font-size: 0.8rem;
+  grid-template-rows: repeat(7, 18px) 16px;
+  font-family: s.$font-ui;
 
-  // Phones: two label/value pairs per row, so the taller M3 readout keeps a small footprint.
-  @media (max-width: 520px) {
-    width: 66vw;
-    grid-template-columns: auto 1fr auto 1fr;
+  &__row {
+    display: grid;
+    grid-template-columns: 7ch 9ch 1fr;
     column-gap: s.$space-2;
-    padding: s.$space-1 s.$space-3;
-    font-size: 0.72rem;
+    align-items: center;
+    min-width: 0;
   }
 
-  // Actual speed (fill) against the throttle set-point (tick), both as a fraction of the limit.
-  &__throttle {
-    grid-column: 1 / -1;
+  &__label {
+    @include s.t-xs;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: s.$text-secondary;
+  }
+
+  &__value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px;
+    font-family: s.$font-mono;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+
+    &--warn { color: s.$accent-warn; }
+    &--crit { color: s.$accent-crit; }
+  }
+
+  &__icon { color: s.$accent-ok; }
+
+  &__bar {
+    display: block;
+    min-width: 0;
+  }
+
+  &__fuel {
+    display: grid;
+    grid-template-columns: 1fr 14%;
+    gap: 3px;
+  }
+
+  &__track {
     position: relative;
+    display: block;
     height: 3px;
-    margin: s.$space-1 0;
     background: s.$stroke-faint;
     border-radius: s.$radius-pill;
   }
 
-  &__throttle-fill {
+  &__fill {
     position: absolute;
     inset: 0 auto 0 0;
     background: s.$text-secondary;
     border-radius: s.$radius-pill;
+
+    &--warn { background: s.$accent-warn; }
+    &--reserve { background: s.$accent-info; }
   }
 
-  &__throttle-set {
+  &__tick {
     position: absolute;
     top: -3px;
     width: 2px;
     height: 9px;
     margin-left: -1px;
-    background: s.$accent-info;
-    box-shadow: 0 0 4px s.$glow-info;
-  }
 
-  // Ordinary fuel (fill of the tank) beside the protected allowance (small separate cell).
-  &__fuel {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 1fr 14%;
-    gap: 3px;
-    height: 3px;
-    margin: s.$space-1 0;
-  }
+    &--set {
+      background: s.$accent-info;
+      box-shadow: 0 0 4px s.$glow-info;
+    }
 
-  &__fuel-tank,
-  &__fuel-reserve,
-  &__heat {
-    position: relative;
-    background: s.$stroke-faint;
-    border-radius: s.$radius-pill;
-    overflow: hidden;
-  }
-
-  &__fuel-fill,
-  &__fuel-reserve-fill,
-  &__heat-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: s.$text-secondary;
-    border-radius: s.$radius-pill;
-  }
-
-  &__fuel-fill--low,
-  &__heat-fill--hot {
-    background: s.$accent-warn;
-  }
-
-  &__fuel-reserve-fill {
-    background: s.$accent-info;
-  }
-
-  &__heat {
-    grid-column: 1 / -1;
-    height: 3px;
-    margin: s.$space-1 0;
-    overflow: visible;
-  }
-
-  &__heat-mark {
-    position: absolute;
-    top: -2px;
-    width: 1px;
-    height: 7px;
-    background: s.$accent-warn;
-    opacity: 0.7;
-  }
-
-  &__reason {
-    grid-column: 1 / -1;
-    color: s.$accent-warn;
-    font-size: 0.7rem;
-    line-height: 1.1;
-    white-space: normal;
-
-    &--crit {
-      color: s.$accent-crit;
+    &--heat {
+      width: 1px;
+      margin-left: 0;
+      background: s.$accent-warn;
+      opacity: 0.7;
     }
   }
 
-  &__rec {
+  &__status {
+    @include s.t-xs;
+    line-height: 16px;
+    color: s.$text-secondary;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+
+    &--warn { color: s.$accent-warn; }
+    &--crit { color: s.$accent-crit; }
   }
 
-  &__health--warning {
-    color: s.$accent-warn;
-  }
+  // Phones (§2.7): full width above the hotbar, two instruments per row; ASSIST and the empty slot fold away.
+  @media (max-width: 599px) {
+    left: s.$space-3;
+    right: s.$space-3;
+    bottom: 62px;
+    width: auto;
+    padding: s.$space-1 s.$space-3;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: repeat(3, 16px) 14px;
+    column-gap: s.$space-3;
+    @include s.chamfer(s.$radius-lg, ('tl'));
 
-  &__health--critical {
-    color: s.$accent-crit;
+    &__row {
+      grid-template-columns: 6ch auto 1fr;
+      column-gap: s.$space-1;
+    }
+
+    &__row:nth-child(2) { display: none; }
+
+    &__status {
+      grid-column: 1 / -1;
+      line-height: 14px;
+    }
   }
 }

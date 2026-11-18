@@ -8,13 +8,13 @@
   transform: translateX(-50%);
   z-index: s.$z-hud-base;
   min-width: 240px;
-  max-width: min(440px, calc(100vw - #{s.$space-6}));
+  max-width: min(360px, calc(100vw - #{s.$space-6}));
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: s.$space-1 s.$space-3 s.$space-2;
   // Scrim: the tracker sits in the band where POI labels draw.
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.6);
   pointer-events: none;
   font-family: s.$font-ui;
   color: s.$text-primary;
@@ -36,9 +36,9 @@
     }
   }
 
-  // Phones: below the cargo readout and the icon buttons.
-  @media (max-width: 520px) {
-    top: 100px;
+  // Phones (§2.7): below the 2-item notification stack (top 60 + 2 × 44 + gap); the transit panel takes this slot.
+  @media (max-width: 599px) {
+    top: 160px;
     z-index: s.$z-hud-base + 1;
     min-width: 0;
     width: calc(100vw - #{s.$space-6});
@@ -55,15 +55,22 @@
 
   &__step {
     display: flex;
-    align-items: baseline;
-    gap: s.$space-2;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px s.$space-2;
     padding-left: 22px;
     font-size: 11px;
     color: s.$text-secondary;
 
     svg { flex: 0 0 auto; }
-
-    &--sub { padding-left: 34px; color: s.$text-tertiary; }
+    // Glance tier: chips one step above the panel size, never below it.
+    .pp-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; }
+    .sn-req { height: 22px; font-size: 12px; gap: 4px; }
+    .sn-req__badge { height: 16px; min-width: 18px; font-size: 11px; }
+    .sn-req .sn-res__icon, .sn-req .sn-res__glyph, .sn-res__icon { width: 18px; height: 18px; }
+    .sn-res { font-size: 12px; }
+    .sn-req svg, .sn-analysis svg { width: 14px; height: 14px; }
+    .sn-req .sn-req__state { width: 11px; height: 11px; }
   }
 
   &__icon {

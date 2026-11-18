@@ -20,7 +20,7 @@ export const PENDING_CLOUD_BAKES = 2;
 export const PENDING_BLUE_NOISE = 4;
 export const PENDING_NETWORK = 8;
 export const PENDING_RESOURCES = 16;
-/** Physics engine still loading (bounded by PHYSICS_LOAD_TIMEOUT_MS, then analytic only). */
+/** Physics engine still loading: holds one PHYSICS_LOAD_TIMEOUT_MS window; a second runs in play, flagged. */
 export const PENDING_PHYSICS = 32;
 
 /** Resident texture/geometry counts must hold this many frames. */

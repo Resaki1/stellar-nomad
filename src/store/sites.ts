@@ -3,7 +3,7 @@
  * (nearest site, recovery destination, return fuel) sampled at 4 Hz, and the site actions.
  */
 import { atom } from "jotai";
-import { RESEARCH_NODES, SITES, getSiteDef, materialName, type SiteDef } from "@/data/content";
+import { SITES, getSiteDef } from "@/data/content";
 import type { FrameId } from "@/sim/frames";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { poseDistanceKm } from "@/sim/replication/placement";
@@ -14,38 +14,15 @@ import { poiBuffer } from "@/store/poi";
 import { discoveriesMirrorAtom } from "@/store/research";
 import { activePointAtom } from "@/store/replication";
 import { systemConfigAtom } from "@/store/system";
-import { targetedPOIAtom } from "@/store/transit";
-import { addToastAtom } from "@/store/toast";
-import { describeRejection, newOpId, runOperation } from "@/store/operations";
-import type { OperationOutcome } from "@/sim/world/commands";
+import { bodyTransitTarget, targetedPOIAtom, transitDriveOwnedAtom } from "@/store/transit";
 
-const POCKET_MARKER_MAX_KM = 2500;
-const SITE_ARRIVAL_KM = 3;
+/** Inside the 2 km action range, so the first [G] after a transit works (B10). */
+const SITE_ARRIVAL_KM = 1.5;
 
-/** Regional indications: authored debris pockets (Earth) and site signals (lunar). */
+/** Site signals as POI markers. Debris pockets have none (B1: a pocket re-classes chunks, it is not a place). */
 export const sitePOIsAtom = atom((get): POIDef[] => {
-  const system = get(systemConfigAtom);
   const disc = get(discoveriesMirrorAtom);
-  const chunkKm = system.defaults?.streaming?.chunkSizeKm ?? 20;
   const out: POIDef[] = [];
-  for (const f of system.asteroidFields ?? []) {
-    const anchored = !!f.anchorBody && !!f.anchorOffsetKm;
-    for (const p of f.resources?.pockets ?? []) {
-      // Marker at the centre of the pocket's chunks, in the field's anchor frame.
-      const c = [0, 0, 0];
-      for (const k of p.chunks) k.split(",").forEach((v, i) => (c[i] += (Number(v) + 0.5) * chunkKm / p.chunks.length));
-      const base = anchored && f.anchorOffsetKm ? f.anchorOffsetKm : f.anchorKm;
-      out.push({
-        id: `pocket:${p.id}`,
-        name: p.name,
-        positionKm: [base[0] + c[0], base[1] + c[1], base[2] + c[2]],
-        frameId: anchored ? (f.anchorBody as FrameId) : undefined,
-        minDistanceKm: 1,
-        maxDistanceKm: POCKET_MARKER_MAX_KM,
-        arrivalOffsetKm: 2,
-      });
-    }
-  }
   for (const s of SITES) {
     if (disc.sites[s.id]) continue;
     out.push({
@@ -98,42 +75,11 @@ export const sampleGlanceAtom = atom(null, (get, set): void => {
   if (!same) set(glanceAtom, { frameId: ship.frameId, site, recovery, returnKg });
 });
 
-function rejectionText(site: SiteDef, o: Extract<OperationOutcome, { status: "rejected" }>): string {
-  if (o.reason === "too_far") return `Within ${site.inspectRangeKm} km to inspect, ${site.recoverRangeKm} km to recover`;
-  if (o.reason === "not_inspected") return "Inspect it first (G)";
-  if (o.reason === "no_capacity") return `Needs ${Object.values(site.reward).reduce((a, v) => a + v, 0)} units of free cargo`;
-  return describeRejection(o);
-}
-
-/** Names of the research options a site's recovery opens (read from their requirements). */
-function siteUnlockText(siteId: string): string {
-  const names = RESEARCH_NODES.filter((n) => n.all.some((r) => r.kind === "site" && r.siteId === siteId)).map((n) => n.name);
-  return names.length ? `. New research option: ${names.join(", ")}` : "";
-}
-
-/** G near a site: inspect it, or recover it once inspected. Returns the outcome (null if none in range). */
-export const interactSiteAtom = atom(null, (get, set, opId?: string): OperationOutcome | null => {
-  const g = get(glanceAtom).site;
-  const site = g ? getSiteDef(g.id) : undefined;
-  if (!site || !g || g.distKm > site.inspectRangeKm) return null;
-  const inspected = !!get(discoveriesMirrorAtom).inspectedSites[site.id];
-  const op = inspected ? { type: "site.recover" as const, opId: opId ?? newOpId(), siteId: site.id } : { type: "site.inspect" as const, opId: opId ?? newOpId(), siteId: site.id };
-  return runOperation(op, (o) => {
-    if (o.status === "accepted" && o.result.type === "site.inspect") {
-      set(addToastAtom, { message: `Inspected: ${site.name}`, detail: site.inspectText, kind: "success", durationMs: 7000 });
-    } else if (o.status === "accepted" && o.result.type === "site.recover") {
-      const got = Object.entries(o.result.reward).map(([k, n]) => `${n} ${materialName(k)}`).join(", ");
-      set(addToastAtom, { message: `Recovered: ${site.name}`, detail: `${got} aboard${siteUnlockText(site.id)}`, kind: "success", durationMs: 7000 });
-    } else if (o.status === "rejected") {
-      set(addToastAtom, { message: site.name, detail: rejectionText(site, o), kind: "warn", audio: "reject", durationMs: 3500 });
-    }
-  });
-});
-
 export type Destination = { siteId: string } | { bodyId: string } | { fieldId: string };
 
 /** Tracker / records: make a site, a body or a field the transit destination. */
 export const setDestinationAtom = atom(null, (get, set, dest: Destination): boolean => {
+  if (!get(transitDriveOwnedAtom)) return false;
   if ("siteId" in dest) {
     const s = getSiteDef(dest.siteId);
     if (!s) return false;
@@ -155,7 +101,7 @@ export const setDestinationAtom = atom(null, (get, set, dest: Destination): bool
   const body = (get(systemConfigAtom).celestialBodies ?? []).find((b) => b.id === dest.bodyId);
   if (!body) return false;
   const id = `body:${body.id}`;
-  set(targetedPOIAtom, { id, name: body.name, positionKm: body.positionKm, arrivalOffsetKm: Math.max(100, body.radiusKm * 2) });
+  set(targetedPOIAtom, bodyTransitTarget(body, get(systemConfigAtom).asteroidFields));
   poiBuffer.targetedId = id;
   poiBuffer.pinnedId = id;
   return true;

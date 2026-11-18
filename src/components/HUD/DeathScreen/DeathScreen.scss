@@ -28,53 +28,42 @@
     margin: 0 0 s.$space-3;
   }
 
-  &__subtitle {
-    font-size: 0.95rem;
-    color: rgba(255, 255, 255, 0.5); // close to $text-tertiary; keep raw to preserve visuals
-    margin: 0 0 40px; // TODO(phase-3): normalize spacing
-    font-weight: 400;
-    line-height: 1.45;
-  }
-
-  &__dest {
-    margin: 0 0 s.$space-3;
-
-    dt {
-      @include s.label;
-      color: s.$text-tertiary;
-      margin-bottom: s.$space-1;
-    }
-
-    dd {
-      margin: 0;
-    }
-  }
-
-  &__dest-name {
-    font-size: 1.4rem;
+  &__title--respawn {
     color: s.$accent-info;
-    text-shadow: 0 0 8px s.$glow-info;
-    letter-spacing: 0.04em;
   }
 
-  &__warn {
-    margin-top: s.$space-2 !important;
-    font-family: s.$font-mono;
-    font-size: 12px;
-    color: s.$accent-warn;
-    text-shadow: 0 0 6px s.$glow-warn;
+  &__wreck {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: s.$space-2 s.$space-3;
+    margin: 0 0 s.$space-6;
+
+    .sn-res { font-size: 13px; }
   }
 
-  &__note {
-    margin-top: s.$space-1 !important;
+  &__wreck-label {
+    @include s.label;
+    color: s.$text-tertiary;
+  }
+
+  &__wreck-empty {
     font-size: 12px;
     color: s.$text-tertiary;
   }
 
-  &__kept {
-    font-size: 0.85rem;
-    color: s.$text-secondary;
-    margin: 0 0 s.$space-5;
+  &__dest-name {
+    color: inherit;
+    font-weight: 600;
+  }
+
+  &__warn {
+    margin: 0 0 s.$space-3;
+    font-family: s.$font-mono;
+    font-size: 12px;
+    color: s.$accent-warn;
+    text-shadow: 0 0 6px s.$glow-warn;
   }
 
   &__fallback {

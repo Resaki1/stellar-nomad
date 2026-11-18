@@ -56,8 +56,6 @@ export interface ResourceTuning {
   transitBurnHeatKW: number;
   /** A trip predicted longer than this is refused (too little fuel), s. */
   transitMaxTripS: number;
-  /** Routes stay outside this many body radii (the clearance waypoint's sphere). */
-  transitRouteClearanceRadii: number;
 
   /** Fraction of max hull per second while repairing. */
   repairPerS: number;
@@ -102,7 +100,6 @@ export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
   transitSpoolHeatKW: 120,
   transitBurnHeatKW: 95,
   transitMaxTripS: 600,
-  transitRouteClearanceRadii: 2,
 
   repairPerS: 0.02,
   repairUnitsPerPct: 1,
@@ -131,7 +128,7 @@ export function getEffectiveTuning(): Readonly<ResourceTuning> {
 }
 
 const POSITIVE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>([
-  "tankKg", "heatCapacityKJ", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS", "transitRouteClearanceRadii",
+  "tankKg", "heatCapacityKJ", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS",
 ]);
 const UNIT_RANGE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["exhaustedAngularScale", "heatWarn01", "heatThrottle01"]);
 const INTEGER: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["processingMaxBatchUnits", "repairUnitsPerPct"]);

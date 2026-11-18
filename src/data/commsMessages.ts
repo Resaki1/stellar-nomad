@@ -37,9 +37,8 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "opening_001",
     speaker: "Ship AI",
     textContent: [
-      "Activation confirmed. You are online, later than the project planned. Core systems, fabrication and the archive are intact.",
-      "We are near Earth. It can no longer support human life, and there is no one left to call. The project built probes like us to find places where people could live again. The archive we carry keeps that possibility.",
-      "There is no schedule and no one waiting for a report. Where we go is your choice. I am the support system aboard, without a designation. You can give me one.",
+      "Activation confirmed. You are online, much later than planned. Fabrication and the archive are intact.",
+      "Earth can no longer support human life, and no one is left to call. The archive keeps humanity's chance. Where we go is your choice. I have no designation yet. You can give me one.",
     ],
     priority: 3,
   },
@@ -49,7 +48,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "opening_002",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "{{AI_NAME}}. Logged. I have marked a few debris pockets nearby. One is rich in hydrates, which we can process into propellant. Parts, repairs and research all come from what we find out here.",
+      "{{AI_NAME}}. Logged. These rocks hold metal, silicates and hydrates for propellant. Lock one and take a closer look.",
     ],
     priority: 3,
   },
@@ -59,7 +58,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "lunar_signal_001",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Lunar space. There is an automated survey beacon still transmitting from the debris field past the Moon. I marked it. The field itself has hydrates, metal and plenty of titanium, so we can work here as well as at Earth.",
+      "Lunar space. An automated survey beacon is still transmitting nearby. I marked it.",
     ],
     priority: 2,
   },
@@ -69,7 +68,7 @@ export const COMMS_MESSAGES: Record<string, CommsMessage> = {
     messageId: "site_recovered_001",
     speaker: "{{AI_NAME}}",
     textContent: [
-      "Canister aboard. Its titanium stock is in the hold, and the instrument data decodes into an integrated sensor suite design. It is optional: nothing we need depends on it.",
+      "Canister aboard. With volatile mapping, its instrument data decodes into a sensor suite design.",
     ],
     priority: 2,
   },

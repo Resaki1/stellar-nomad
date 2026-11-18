@@ -309,6 +309,8 @@ export type RotationDef = {
   periodHours?: number;
   /** Explicit spin rate, deg/day (IAU `Ẇ`). Overrides `periodHours`. */
   spinDegPerDay?: number;
+  /** Spin runs on UT rather than TT (Earth: its rotation IS the UT clock; ΔT grows to ~1 h by 2950). */
+  ut?: boolean;
   /**
    * Prime-meridian angle at J2000, degrees (IAU `W₀`).
    *
@@ -528,6 +530,8 @@ export type ResourceYieldDef = {
   variance?: number;
   minAmount?: number;
   maxAmount?: number;
+  /** Beam throughput cap (units/s at the base mining duration): a rock yields at most this × duration. */
+  throughputPerS?: number;
 };
 
 /**

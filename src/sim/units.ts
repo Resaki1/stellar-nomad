@@ -99,6 +99,8 @@ export function formatDistance(km: number): string {
   if (abs < 1) {
     return `${thinSpaceFormat(Math.round(km * 1000))} m`;
   }
+  // One decimal below 100 km, like the Target Card (a marker reading "2 km" beside a card's "1.5 km").
+  if (abs < 100) return `${thinSpaceFormat(km, 1)} km`;
   if (abs < AU_IN_KM) {
     return `${thinSpaceFormat(Math.round(km))} km`;
   }

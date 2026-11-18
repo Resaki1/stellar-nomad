@@ -1,26 +1,28 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useMemo, useState } from "react";
-import { Bookmark, Check, Circle, Crosshair } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bookmark, BookmarkCheck, Check, Crosshair, Pickaxe, ScanLine } from "lucide-react";
 import { playAudio } from "@/audio";
 
 import {
   BRANCH_LABELS,
   MATERIAL_NAMES,
   RESEARCH_NODES,
-  SOURCE_CLASS_NAMES,
   TRIALS,
+  describeEffect,
   getItemDef,
-  materialName,
+  getItemIconUrl,
   type ResearchBranch,
   type ResearchNodeDef,
 } from "@/data/content";
-import { evaluateNode, missingAnalysis, type RequirementStatus } from "@/sim/research/requirements";
+import { evaluateNode, missingAnalysis, nodeProgress, sourceClassBadge, type EvidenceView } from "@/sim/research/requirements";
 import { cargoAtom } from "@/store/cargo";
-import { setDestinationToSourceAtom, sourceLabel } from "@/store/discoveries";
+import { setDestinationToSourceAtom } from "@/store/discoveries";
+import { transitDriveOwnedAtom } from "@/store/transit";
 import { newOpId, runOperation } from "@/store/operations";
 import { bookmarksAtom, discoveriesMirrorAtom, evidenceViewAtom, unlockResearchAtom } from "@/store/research";
+import { AnalysisChips, KeyChip, ReqAnyGroup, ReqChip, ResourceGlyph, ResourceIcon, Tooltip } from "../shared/Chips";
 import Panel from "../Shell/Panel";
 
 import "./ResearchPanel.scss";
@@ -29,75 +31,71 @@ type Tab = "options" | "discoveries";
 
 const BRANCH_ORDER: ResearchBranch[] = ["survey", "extraction", "thermal", "logistics", "propulsion", "hull", "lunar"];
 
-function EvidenceLine({ s }: { s: RequirementStatus }) {
+/** Fraction ring: met / total pieces (analysis included). */
+function Ring({ met, total }: { met: number; total: number }) {
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  const f = total > 0 ? met / total : 0;
   return (
-    <li className={`rp-evidence ${s.met ? "rp-evidence--met" : ""}`}>
-      {s.met ? <Check size={11} strokeWidth={2.25} aria-hidden /> : <Circle size={11} strokeWidth={2} aria-hidden />}
-      <span>{s.text}</span>
-    </li>
+    <span className="rp-ring" aria-label={`${met} of ${total}`}>
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
+        <circle cx="9" cy="9" r={r} className="rp-ring__track" />
+        <circle cx="9" cy="9" r={r} className="rp-ring__fill" strokeDasharray={`${c * f} ${c}`} transform="rotate(-90 9 9)" />
+      </svg>
+      <span className="rp-ring__n">{met}/{total}</span>
+    </span>
   );
 }
 
-function OptionCard({ node }: { node: ResearchNodeDef }) {
+/** Item icon; tooltip = name and effect chips (the old purpose line lives here). */
+function UnlockIcon({ id }: { id: string }) {
+  const item = getItemDef(id);
+  if (!item) return null;
+  const effects = [...(item.effects ?? []), ...(item.useEffects ?? [])].map(describeEffect);
+  return (
+    <Tooltip text={[item.name, ...effects].join(" · ")} className="rp-unlock">
+      <img src={getItemIconUrl(item)} alt={item.name} />
+    </Tooltip>
+  );
+}
+
+type CardState = "ready" | "progress" | "locked";
+
+function cardState(node: ResearchNodeDef, ev: EvidenceView, cargo: Readonly<Record<string, number>>): CardState {
+  const e = evaluateNode(node, ev);
+  if (e.met && Object.keys(missingAnalysis(node, cargo)).length === 0) return "ready";
+  return e.all.some((s) => s.req.kind === "research" && !s.met) ? "locked" : "progress";
+}
+
+function OptionCard({ node, state }: { node: ResearchNodeDef; state: CardState }) {
   const ev = useAtomValue(evidenceViewAtom);
   const cargo = useAtomValue(cargoAtom);
   const unlock = useSetAtom(unlockResearchAtom);
   const [busy, setBusy] = useState(false);
-  const done = ev.completed.has(node.id);
   const e = evaluateNode(node, ev);
-  const short = missingAnalysis(node, cargo.items);
-  const shortKeys = Object.keys(short);
-  const missingCount = e.missing.length;
-  const status = done ? "Unlocked" : missingCount > 0 ? `${missingCount} missing` : shortKeys.length > 0 ? "Needs material" : "Ready";
-  const tone = done ? "done" : missingCount > 0 ? "missing" : shortKeys.length > 0 ? "material" : "ready";
-  const analysis = Object.entries(node.analysis);
+  const p = nodeProgress(node, ev, cargo.items);
+  // A research prerequisite leads the chips (it is what blocks the card).
+  const chips = [...e.all].sort((a, b) => Number(b.req.kind === "research") - Number(a.req.kind === "research"));
 
   return (
-    <div className={`rp-card rp-card--${tone}`} data-node={node.id}>
+    <div className={`rp-card rp-card--${state}`} data-node={node.id}>
       <div className="rp-card__head">
-        <span className="rp-card__name">{node.name}</span>
-        <span className={`rp-card__status rp-card__status--${tone}`}>{status}</span>
+        <span className="rp-card__name" data-name="">{node.name}</span>
+        {state === "ready" ? <span className="rp-card__ready">Ready</span> : <Ring met={p.met} total={p.total} />}
       </div>
-      <div className="rp-card__purpose">{node.purpose}</div>
-      {!done && (
-        <>
-          <ul className="rp-card__evidence">
-            {e.all.map((s) => (
-              <EvidenceLine key={s.key} s={s} />
-            ))}
-          </ul>
-          {e.any.length > 0 && (
-            <>
-              <div className="rp-card__label">{e.anyMet ? "One of (done):" : "Any one of:"}</div>
-              <ul className="rp-card__evidence">
-                {e.any.map((s) => (
-                  <EvidenceLine key={s.key} s={s} />
-                ))}
-              </ul>
-            </>
-          )}
-          <div className={`rp-card__analysis ${shortKeys.length > 0 ? "rp-card__analysis--short" : ""}`}>
-            {analysis.length === 0
-              ? "Analysis needs no material."
-              : `Analysis uses ${analysis.map(([k, n]) => `${n} ${materialName(k)} (have ${Math.floor(cargo.items[k] ?? 0)})`).join(", ")}.`}
-          </div>
-        </>
-      )}
-      <div className="rp-card__unlocks">
-        {node.unlocks.items.map((id) => {
-          const item = getItemDef(id);
-          return (
-            <div key={id} className="rp-card__unlock">
-              <span className="rp-card__unlock-name">{item?.name ?? id}</span>
-              {item && <span className="rp-card__unlock-desc">{item.uiDesc}</span>}
-            </div>
-          );
-        })}
+      <div className="rp-card__chips">
+        {chips.map((s) => <ReqChip key={s.key} req={s.req} met={s.met} />)}
+        {e.any.length > 0 && <ReqAnyGroup items={e.any.map((s) => ({ req: s.req, met: s.met }))} met={e.anyMet} />}
       </div>
-      {!done && (
+      <div className="rp-card__foot">
+        <AnalysisChips analysis={node.analysis} cargo={cargo.items} />
+        <span className="rp-card__unlocks">
+          <span className="rp-card__arrow" aria-hidden>→</span>
+          {node.unlocks.items.map((id) => <UnlockIcon key={id} id={id} />)}
+        </span>
         <button
           className="rp-card__btn"
-          disabled={missingCount > 0 || shortKeys.length > 0 || busy}
+          disabled={state !== "ready" || busy}
           onClick={() => {
             setBusy(true);
             unlock({
@@ -109,33 +107,57 @@ function OptionCard({ node }: { node: ResearchNodeDef }) {
             });
           }}
         >
-          {missingCount > 0 ? "Evidence missing" : shortKeys.length > 0 ? "Not enough material" : "Analyse and unlock"}
+          Unlock
         </button>
-      )}
+      </div>
     </div>
   );
 }
 
+const STATE_RANK: Record<CardState, number> = { ready: 0, progress: 1, locked: 2 };
+
 function OptionsTab() {
   const ev = useAtomValue(evidenceViewAtom);
-  const groups = useMemo(() => BRANCH_ORDER.map((b) => ({ branch: b, nodes: RESEARCH_NODES.filter((n) => n.branch === b) })), []);
-  const unlocked = RESEARCH_NODES.filter((n) => ev.completed.has(n.id)).length;
+  const cargo = useAtomValue(cargoAtom);
+  const groups = useMemo(() => BRANCH_ORDER.map((b) => {
+    const nodes = RESEARCH_NODES.filter((n) => n.branch === b && !ev.completed.has(n.id)).map((n) => {
+      const p = nodeProgress(n, ev, cargo.items);
+      return { node: n, state: cardState(n, ev, cargo.items), frac: p.total > 0 ? p.met / p.total : 0 };
+    });
+    nodes.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || b.frac - a.frac);
+    return { branch: b, nodes };
+  }).filter((g) => g.nodes.length > 0), [ev, cargo.items]);
+  const unlocked = RESEARCH_NODES.filter((n) => ev.completed.has(n.id));
+  // Opening: bring the first Ready card into view (on phones a later branch sits below the fold
+  // while the tracker says "Research ready").
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    rootRef.current?.querySelector(".rp-card--ready")?.scrollIntoView({ block: "nearest" });
+  }, []);
   return (
-    <div className="rp-options">
-      <div className="rp-intro">
-        Research adapts known technology to this ship from evidence you gather: inspect and mine new materials, and try equipment once safely.
-        Unlocked {unlocked} of {RESEARCH_NODES.length}.
-      </div>
+    <div className="rp-options" ref={rootRef}>
       {groups.map((g) => (
         <section key={g.branch} className={`rp-branch rp-branch--${g.branch}`}>
           <div className="rp-branch__label">{BRANCH_LABELS[g.branch]}</div>
           <div className="rp-branch__cards">
-            {g.nodes.map((n) => (
-              <OptionCard key={n.id} node={n} />
-            ))}
+            {g.nodes.map((n) => <OptionCard key={n.node.id} node={n.node} state={n.state} />)}
           </div>
         </section>
       ))}
+      {unlocked.length > 0 && (
+        <section className="rp-branch rp-done" data-testid="research-unlocked">
+          <div className="rp-branch__label">Unlocked</div>
+          <div className="rp-done__chips">
+            {unlocked.map((n) => (
+              <span key={n.id} className="rp-done__chip" data-node={n.id}>
+                <Check size={10} strokeWidth={2.5} aria-hidden />
+                <span data-name="">{n.name}</span>
+                {n.unlocks.items.map((id) => <UnlockIcon key={id} id={id} />)}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -144,98 +166,90 @@ function SourceRow({ id }: { id: string }) {
   const d = useAtomValue(discoveriesMirrorAtom);
   const bookmarks = useAtomValue(bookmarksAtom);
   const setDestination = useSetAtom(setDestinationToSourceAtom);
+  // B3: without the drive a destination is cleared at once, so the button would do nothing.
+  const driveOwned = useAtomValue(transitDriveOwnedAtom);
   const s = d.sources.find((x) => x.id === id);
   const mark = bookmarks.find((b) => b.sourceId === id);
   const [name, setName] = useState(mark?.name ?? "");
   if (!s) return null;
-  const total = Object.values(s.composition).reduce((a, v) => a + v, 0);
-  const parts = Object.entries(s.composition)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([k, n]) => `${materialName(k)} ${n}`);
+  const parts = Object.entries(s.composition).sort((a, b) => b[1] - a[1]).slice(0, 4);
   const save = (next: string | null) => runOperation({ type: "bookmark.set", opId: newOpId(), sourceId: id, name: next });
   return (
-    <div className={`rp-source ${s.depleted ? "rp-source--depleted" : ""}`} data-source={id}>
-      <div className="rp-source__head">
-        <span className="rp-source__name">{sourceLabel(s, mark?.name)}</span>
-        <span className="rp-source__meta">
-          {SOURCE_CLASS_NAMES[s.classId] ?? s.classId} · r {Math.round(s.radiusM)} m · {s.depleted ? "depleted" : `${total} units`}
-        </span>
-      </div>
-      <div className="rp-source__comp">{parts.join(" · ")}</div>
-      <div className="rp-source__actions">
-        {mark ? (
-          <>
-            <input
-              className="rp-source__input"
-              value={name}
-              maxLength={40}
-              placeholder="Name"
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() => name !== mark.name && save(name)}
-              onKeyDown={(e) => e.stopPropagation()}
-            />
-            <button className="rp-source__btn" onClick={() => save(null)} title="Remove bookmark">
-              Unmark
-            </button>
-          </>
-        ) : (
-          <button className="rp-source__btn" disabled={s.depleted} onClick={() => save("")}>
-            <Bookmark size={11} aria-hidden /> Bookmark
-          </button>
+    <div className="rp-source" data-source={id}>
+      <span className="rp-source__badge">{sourceClassBadge(s.classId)}</span>
+      <span className="rp-source__r">r {Math.round(s.radiusM)} m</span>
+      <span className="rp-source__comp">
+        {parts.map(([k, n]) => <ResourceIcon key={k} id={k} amount={n} />)}
+      </span>
+      <span className="rp-source__actions">
+        {mark && (
+          <input
+            className="rp-source__input"
+            value={name}
+            maxLength={40}
+            placeholder="Name"
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => name !== mark.name && save(name)}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
         )}
-        <button className="rp-source__btn" disabled={s.depleted} onClick={() => {
-            if (setDestination(id)) playAudio("click.soft");
-          }}>
-          <Crosshair size={11} aria-hidden /> Set destination
-        </button>
-      </div>
+        <Tooltip text={mark ? "Remove bookmark" : "Bookmark"}>
+          <button className={`rp-source__btn${mark ? " rp-source__btn--on" : ""}`} aria-label={mark ? "Unmark" : "Bookmark"} onClick={() => save(mark ? null : "")}>
+            {mark ? <BookmarkCheck size={12} aria-hidden /> : <Bookmark size={12} aria-hidden />}
+          </button>
+        </Tooltip>
+        {driveOwned && (
+          <Tooltip text="Set destination">
+            <button className="rp-source__btn" aria-label="Set destination" onClick={() => {
+              if (setDestination(id)) playAudio("click.soft");
+            }}>
+              <Crosshair size={12} aria-hidden />
+            </button>
+          </Tooltip>
+        )}
+      </span>
     </div>
   );
 }
 
 function DiscoveriesTab() {
   const d = useAtomValue(discoveriesMirrorAtom);
-  const sources = useMemo(() => [...d.sources].reverse(), [d.sources]);
+  // B4: a mined (depleted) rock is gone; its evidence stays in Materials above.
+  const sources = useMemo(() => d.sources.filter((s) => !s.depleted).reverse(), [d.sources]);
+  const mined = d.sources.length - sources.length;
   return (
     <div className="rp-disc">
       <section className="rp-branch">
         <div className="rp-branch__label">Materials</div>
-        <ul className="rp-disc__list">
+        <div className="rp-mats">
           {Object.keys(MATERIAL_NAMES).map((m) => {
             const f = d.families[m];
-            const how = f ? [f.inspected ? "inspected" : null, f.extracted ? "mined" : null].filter(Boolean).join(", ") : "not confirmed yet";
+            const how = f ? [f.inspected ? "inspected" : null, f.extracted ? "mined" : null].filter(Boolean).join(" · ") : "not found yet";
             return (
-              <li key={m} className={`rp-evidence ${f ? "rp-evidence--met" : ""}`}>
-                {f ? <Check size={11} strokeWidth={2.25} aria-hidden /> : <Circle size={11} strokeWidth={2} aria-hidden />}
-                <span>
-                  {materialName(m)} <span className="rp-disc__how">{how}</span>
+              <Tooltip key={m} text={`${MATERIAL_NAMES[m]} · ${how}`} className={`rp-mat${f ? " rp-mat--found" : ""}`}>
+                <ResourceGlyph id={m} />
+                <span className="rp-mat__state">
+                  {f?.inspected && <ScanLine size={10} strokeWidth={2} aria-label="inspected" />}
+                  {f?.extracted && <Pickaxe size={10} strokeWidth={2} aria-label="mined" />}
                 </span>
-              </li>
+              </Tooltip>
             );
           })}
-        </ul>
+        </div>
       </section>
       <section className="rp-branch">
         <div className="rp-branch__label">Trials</div>
-        <ul className="rp-disc__list">
-          {TRIALS.map((t) => (
-            <li key={t.id} className={`rp-evidence ${d.trials[t.id] ? "rp-evidence--met" : ""}`}>
-              {d.trials[t.id] ? <Check size={11} strokeWidth={2.25} aria-hidden /> : <Circle size={11} strokeWidth={2} aria-hidden />}
-              <span>{d.trials[t.id] ? t.name : t.howTo}</span>
-            </li>
-          ))}
-        </ul>
+        <div className="rp-card__chips">
+          {TRIALS.map((t) => <ReqChip key={t.id} req={{ kind: "trial", trialId: t.id }} met={!!d.trials[t.id]} />)}
+        </div>
       </section>
       <section className="rp-branch">
-        <div className="rp-branch__label">Inspected sources ({sources.length})</div>
+        <div className="rp-branch__label">Sources {sources.length}{mined > 0 ? ` · mined ${mined}` : ""}</div>
         {sources.length === 0 ? (
-          <div className="rp-intro">Lock a rock and inspect it (G) to record its composition here.</div>
+          <div className="rp-empty">Inspect rocks with <KeyChip action="inspect" /></div>
         ) : (
           <div className="rp-disc__sources">
-            {sources.map((s) => (
-              <SourceRow key={s.id} id={s.id} />
-            ))}
+            {sources.map((s) => <SourceRow key={s.id} id={s.id} />)}
           </div>
         )}
       </section>
@@ -245,29 +259,35 @@ function DiscoveriesTab() {
 
 export default function ResearchPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>("options");
+  const ev = useAtomValue(evidenceViewAtom);
+  const unlocked = RESEARCH_NODES.filter((n) => ev.completed.has(n.id)).length;
   return (
     <Panel
       title="Research"
       tier={2}
       width={760}
+      fixedHeight
       onClose={onClose}
       headerRight={
-        <div className="rp-tabs" role="tablist">
-          {(["options", "discoveries"] as const).map((t) => (
-            <button
-              key={t}
-              role="tab"
-              aria-selected={tab === t}
-              className={`rp-tabs__btn ${tab === t ? "rp-tabs__btn--active" : ""}`}
-              onClick={() => {
-                playAudio("click.soft");
-                setTab(t);
-              }}
-            >
-              {t === "options" ? "Options" : "Discoveries"}
-            </button>
-          ))}
-        </div>
+        <>
+          <span className="rp-count" data-testid="research-count">{unlocked}/{RESEARCH_NODES.length}</span>
+          <div className="rp-tabs" role="tablist">
+            {(["options", "discoveries"] as const).map((t) => (
+              <button
+                key={t}
+                role="tab"
+                aria-selected={tab === t}
+                className={`rp-tabs__btn ${tab === t ? "rp-tabs__btn--active" : ""}`}
+                onClick={() => {
+                  playAudio("click.soft");
+                  setTab(t);
+                }}
+              >
+                {t === "options" ? "Options" : "Discoveries"}
+              </button>
+            ))}
+          </div>
+        </>
       }
     >
       {tab === "options" ? <OptionsTab /> : <DiscoveriesTab />}

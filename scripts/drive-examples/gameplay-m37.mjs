@@ -10,7 +10,7 @@
  *   m37shots   (h) captures at 1280×720; m37narrow at 390×844 (--size 390x844)
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { burnFuel, gather, loadedRocks, waitFor } from "./gameplay-m33.mjs";
+import { gather, loadedRocks, pathToDrive, topUp, waitFor } from "./gameplay-m33.mjs";
 import { centerOf, findClearPreview, flyTo, waitArrival } from "./gameplay-m36.mjs";
 
 
@@ -79,6 +79,10 @@ export async function seedGates(d, ctx) {
 export async function regionGates(d, ctx) {
   const { ev } = ctx;
   await freshWorld(d, ctx, "m37-regions");
+  // B1/D1: no pocket markers, no origin-point marker or mesh, the field marker hidden inside the field.
+  await d.frames(30);
+  const markers = { pocket: await ev(`${G}.rep.pois("pocket:")`), point: await ev(`${G}.rep.pois("point:")`), drawn: await ev(`${G}.rep.drawn()`), field: await ev(`${G}.rep.pois("field:origin_belt")`) };
+  const markersPass = markers.pocket.length === 0 && markers.point.length === 0 && markers.drawn === 0 && markers.field.length === 0;
   const audit = await ev(`${M}.audit()`);
   const earth = await ev(`${M}.shares("origin_belt")`);
   const site = (await ev(`${M}.site.defs()`)).find((s) => s.id === SITE);
@@ -91,7 +95,8 @@ export async function regionGates(d, ctx) {
     audit: { he3Classes: audit.he3Classes, he3Recipes: audit.he3Recipes, lunarSelf: audit.lunarSelf, dependsOnLn1: audit.dependsOnLn1, titaniumEssentials: audit.titaniumEssentials, contentPass: audit.content.pass, provides: audit.provides },
     shares: { earth, luna },
     siteClearance: { rockClearM: Math.round(clear.rockClearM), bodyAltKm: Math.round(clear.bodyAltKm), bodyId: clear.bodyId },
-    pass: audit.pass && (luna.shares.titanium ?? 0) > 0.15 && (luna.shares.hydrates ?? 0) > 0.05 && !("helium_3" in luna.shares) && clear.rockClearM >= 1000,
+    markers: { pocket: markers.pocket.length, point: markers.point.length, pointMeshes: markers.drawn, fieldInside: markers.field.length, pass: markersPass },
+    pass: markersPass && audit.pass && (luna.shares.titanium ?? 0) > 0.15 && (luna.shares.hydrates ?? 0) > 0.05 && !("helium_3" in luna.shares) && clear.rockClearM >= 1000,
   };
 }
 
@@ -131,37 +136,38 @@ export async function siteGates(d, ctx) {
   const projErr = m1.proj === null ? null : Math.abs(m1.proj - Math.hypot(...m1.a.map((v, i) => v - m1.ship[i])));
   out.marker = { movedKm: r2(movedKm), relDriftKm: r2(relDrift), projectedKm: r2(m1.proj), projErrKm: r2(projErr), pass: movedKm > 100 && relDrift < 1e-3 && projErr !== null && projErr < 1 };
 
-  // Out of range: G does nothing.
-  const far = await nearSite(d, ctx, 5);
+  // Out of range (2.5 km): G does nothing. At 1.5 km one G inspects and recovers (playtest 1 §3.1).
+  const far = await nearSite(d, ctx, 2.5);
   const gFar = await ev(`${M}.site.interact()`);
-  // Inspect at 1.5 km; recover refused there.
   await nearSite(d, ctx, 1.5);
   const recEarly = await submit({ type: "site.recover", opId: "m37-rec-early", siteId: SITE });
-  const ins = await ev(`${M}.site.interact()`);
-  const ins2 = await submit({ type: "site.inspect", opId: "m37-ins-2", siteId: SITE });
-  const recFar = await ev(`${M}.site.interact()`);
-  await nearSite(d, ctx, 0.6);
   const p0 = await player();
   const rec = await ev(`${M}.site.interact("m37-rec-1")`);
   const p1 = await player();
+  const inspected = !!(await world()).discoveries.inspectedSites[SITE];
+  const ins2 = await submit({ type: "site.inspect", opId: "m37-ins-2", siteId: SITE });
   const dup = await submit({ type: "site.recover", opId: "m37-rec-1", siteId: SITE });
   const again = await submit({ type: "site.recover", opId: "m37-rec-2", siteId: SITE });
   const p2 = await player();
   out.interact = {
-    farKm: 5, gFar, recBeforeInspect: recEarly.status === "rejected" ? recEarly.reason : recEarly.status, inspect: ins?.status, inspectAgain: ins2.status === "rejected" ? ins2.reason : ins2.status,
-    recoverAt15: recFar?.status === "rejected" ? recFar.reason : recFar?.status, recover: rec?.status, dup: dup.status, again: again.status === "rejected" ? again.reason : again.status,
+    farKm: 2.5, gFar, recBeforeInspect: recEarly.status === "rejected" ? recEarly.reason : recEarly.status, inspected, inspectAgain: ins2.status === "rejected" ? ins2.reason : ins2.status,
+    recover: rec?.status, dup: dup.status, again: again.status === "rejected" ? again.reason : again.status,
     titanium: [p0.cargo.items.titanium ?? 0, p1.cargo.items.titanium ?? 0, p2.cargo.items.titanium ?? 0],
-    pass: gFar === null && recEarly.reason === "not_inspected" && ins?.status === "accepted" && ins2.reason === "already_done" && recFar?.reason === "too_far" &&
+    pass: gFar === null && recEarly.reason === "not_inspected" && inspected && ins2.reason === "already_done" &&
       rec?.status === "accepted" && dup.status === "duplicate" && again.reason === "already_done" && (p1.cargo.items.titanium ?? 0) === 30 && (p2.cargo.items.titanium ?? 0) === 30,
   };
   void far;
 
-  // Optional unlock: research, craft and equip the suite.
+  // Optional unlock: research (after Volatile Mapping, 10 of the canister's titanium), craft and equip the suite.
+  const noSv2 = await submit({ type: "research.unlock", opId: "m37-ln1-early", nodeId: "ln1_survey_salvage" });
+  await ev(`${G}.m33.devSetWorld({ completedNodes: ["sv1_composition_survey", "sv2_volatile_mapping"] })`);
   const unlock = await submit({ type: "research.unlock", opId: "m37-ln1", siteId: undefined, nodeId: "ln1_survey_salvage" });
-  await grant(ctx, { silicates: 200, fe_ni_metal: 80 });
+  const tiAfterUnlock = (await player()).cargo.items.titanium ?? 0;
+  await grant(ctx, { silicates: 200, fe_ni_metal: 100, titanium: 40 });
   const craft = await ev(`${G}.craft("module_integrated_sensor_suite")`);
   const p3 = await player();
-  out.unlock = { unlock: unlock.status, craft: craft?.status, equipped: p3.modules.equippedModules.scanner, pass: unlock.status === "accepted" && craft?.status === "accepted" && p3.modules.equippedModules.scanner === "module_integrated_sensor_suite" };
+  out.unlock = { noSv2: noSv2.reason, unlock: unlock.status, tiAfterUnlock, craft: craft?.status, equipped: p3.modules.equippedModules.scanner,
+    pass: noSv2.reason === "evidence" && unlock.status === "accepted" && tiAfterUnlock === 20 && craft?.status === "accepted" && p3.modules.equippedModules.scanner === "module_integrated_sensor_suite" };
 
   // Persistence: death + recovery, reload, export/import.
   const s0 = await siteState(ctx);
@@ -205,8 +211,9 @@ export async function guidanceGates(d, ctx) {
   const second = await c("active()");
   await c("dismiss()");
   await d.frames(10);
-  const hint1 = await c("hint()");
-  out.opening = { first, nameBefore, nameShown, second, hint: hint1, pass: first === "opening_001" && !nameBefore && nameShown && second === "opening_002" && hint1 === "hint_projects" };
+  // hint_lock (no rock locked yet) can show beside it: read every tip on screen.
+  const hint1 = await ev(`[...document.querySelectorAll(".notif-stack__item[data-hint]")].map((e) => e.dataset.hint)`);
+  out.opening = { first, nameBefore, nameShown, second, hint: hint1, pass: first === "opening_001" && !nameBefore && nameShown && second === "opening_002" && hint1.includes("hint_projects") };
 
   // Hints: once, and never again after a reload.
   await c("nextHint()");
@@ -261,13 +268,15 @@ export async function guidanceGates(d, ctx) {
   const place = await ev(`${R}.place("Tracker test", "m37-guide-place")`);
   await ev(`${R}.setMode(false)`);
   await d.frames(10);
-  const fp2 = await ev(`${M}.project.status()`);
+  // B14: a completed project stops being tracked; its evaluation stays complete.
+  const trackedAtDone = await ev(`${M}.project.tracked()`);
+  const fp2 = await ev(`${M}.project.evaluate("forward_point")`);
   const trackedAfterReload = (await boot(id), await ev(`${M}.project.tracked()`));
   out.projects = {
     sv1: { done: sv1?.done, total: sv1?.total, sub: sv1?.lines[0]?.sub.map((x) => `${x.met ? "✓" : "·"} ${x.text}`) },
     forwardPoint: [fp0 && `${fp0.done}/${fp0.total}`, fp1 && `${fp1.done}/${fp1.total}`, fp2 && `${fp2.done}/${fp2.total} complete=${fp2.complete}`],
-    trackerText0, craft: craft?.status, previewValid: pv.valid, place: place?.status, trackedAfterReload,
-    pass: !!sv1 && sv1.lines[0].sub.length === 4 && sv1.lines[0].sub.slice(0, 3).every((x) => !x.met) && fp0.done === 0 && fp1.done === 1 && fp2.complete === true && trackedAfterReload === "forward_point" && !!trackerText0 && trackerText0.includes("forward replication point"),
+    trackerText0, craft: craft?.status, previewValid: pv.valid, place: place?.status, trackedAtDone, trackedAfterReload,
+    pass: !!sv1 && sv1.lines[0].sub.length === 4 && sv1.lines[0].sub.slice(0, 3).every((x) => !x.met) && fp0.done === 0 && fp1.done === 1 && fp2.complete === true && trackedAtDone === null && trackedAfterReload === null && !!trackerText0 && trackerText0.includes("forward replication point"),
   };
 
   // A comms entry open: fuel / heat warnings stay visible, emergency recovery stays operable.
@@ -287,11 +296,19 @@ export async function guidanceGates(d, ctx) {
   })()`);
   const abandon = await ev(`${G}.res.abandon()`);
   await d.frames(10);
-  const dead = await ev(`(() => { const c = document.querySelector(".comms-overlay"); const b = Array.from(document.querySelectorAll("button")).find((x) => /recover|replicate/i.test(x.textContent)); const r = b && b.getBoundingClientRect(); const top = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { commsVisible: !!c, recoverButton: b ? b.textContent : null, onTop: !!b && (b === top || b.contains(top)) }; })()`);
+  const dead = await ev(`(() => { const c = document.querySelector(".comms-overlay"); const b = Array.from(document.querySelectorAll("button")).find((x) => /respawn|recover|replicate/i.test(x.textContent)); const r = b && b.getBoundingClientRect(); const top = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { commsVisible: !!c, recoverButton: b ? b.textContent : null, onTop: !!b && (b === top || b.contains(top)) }; })()`);
   const rec = await ev(`${R}.recover("active")`);
   await settle(ctx, 1000);
   out.overlays = { ...overlap, abandon, dead, recover: rec.status,
     pass: overlap.comms && !!overlap.warnText && overlap.warnOnTop && overlap.dashOnTop && !overlap.commsHitsDash && abandon === true && !dead.commsVisible && dead.onTop && rec.status === "accepted" };
+
+  // A pre-playtest world that unlocked pr1 / ln1 before th1, lg1, sv2 were their prerequisites.
+  await ev(`${G}.m33.devSetWorld({ completedNodes: ["pr1_transit_calibration", "ln1_survey_salvage"] })`);
+  await d.frames(3);
+  const rm = await ev(`${M}.project.evaluate("reach_moon")`);
+  const ls = await ev(`${M}.project.evaluate("lunar_survey")`);
+  out.legacyPrereqs = { reachMoon: rm.lines.slice(0, 3).map((l) => `${l.met ? "✓" : "·"} ${l.text}`), survey: ls.lines.slice(3, 5).map((l) => `${l.met ? "✓" : "·"} ${l.text}`),
+    pass: rm.lines.slice(0, 3).every((l) => l.met) && ls.lines.slice(3, 5).every((l) => l.met) };
   return out;
 }
 
@@ -437,11 +454,11 @@ function stepper() {
 }
 
 /** Mine via the accepted claim and log each rock's extraction time and distance (play-time estimate). */
-async function gatherLogged(ctx, rocks, need, used, playLog) {
+async function gatherLogged(ctx, rocks, need, used, playLog, trim = false) {
   const before = new Set(used);
   let ops = 0;
   try {
-    ops = await gather(ctx, rocks, need, used);
+    ops = await gather(ctx, rocks, need, used, trim);
   } catch (e) {
     playLog.push({ kind: "gatherFailed", error: String(e.message ?? e), need, have: (await ctx.player()).cargo.items });
   }
@@ -498,24 +515,14 @@ export async function sessionAGates(d, ctx) {
       S.ok(`inspect ${cls}`, await ev(`${G}.m33.inspect(${JSON.stringify(r)})`));
       playLog.push({ kind: "inspect", s: 4, km: r.distKm });
     }
-    await gatherLogged(ctx, rocks, { silicates: 130, fe_ni_metal: 40 }, used, playLog);
+    await gatherLogged(ctx, rocks, { silicates: 140, fe_ni_metal: 40 }, used, playLog);
     S.ok("unlock sv1", await ev(`${G}.m33.unlock("sv1_composition_survey")`));
     S.ok("craft prospector", await ev(`${G}.craft("module_prospector_scanner_mk1")`));
-    const tb = Date.now();
-    const burned = await burnFuel(d, ctx, 22);
-    playLog.push({ kind: "fly", s: (Date.now() - tb) / 1000, km: 0 });
-    await gatherLogged(ctx, rocks, { hydrates: 7, carbon: 4, silicates: 160, fe_ni_metal: 120 }, used, playLog);
-    S.ok("process 1 unit", await ev(`${G}.res.startProcessing(1)`));
-    S.ok("first batch", await waitFor(ctx, async () => !!(await world()).discoveries.trials.first_batch, 15000));
-    S.ok("unlock pr1", await ev(`${G}.m33.unlock("pr1_transit_calibration")`));
-    S.ok("craft drive", await ev(`${G}.craft("special_transit_drive")`));
-    const tank = (await ev(`${G}.m33.liveTuning()`)).tankKg;
-    const room = Math.floor((tank - (await ev(`${G}.res.state()`)).ordinaryKg) / 20);
-    if (room > 0) {
-      await gatherLogged(ctx, rocks, { hydrates: room }, used, playLog);
-      S.ok(`process ${room}`, await ev(`${G}.res.startProcessing(${room})`));
-      await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, 30000);
-    }
+    const before = new Set(used);
+    await pathToDrive(d, ctx, rocks, used, S.ok);
+    await topUp(ctx, rocks, used, S.ok);
+    for (const r of rocks) if (used.has(r.instanceId) && !before.has(r.instanceId)) playLog.push({ kind: "mine", s: r.mineS, km: r.distKm });
+    const burned = 0;
     const proj = await ev(`${M}.project.evaluate("lunar_survey")`);
     const w1 = await world();
     state.A = { id, receipts0: w0.receipts.length, fuel0: p0.propellant.ordinaryKg, playLog, burnedKg: burned, part1: { steps: S.steps, ops: opsSince(w1, w0.receipts.length), project: proj.lines.map((l) => `${l.met ? "✓" : "·"} ${l.text}`) } };
@@ -563,18 +570,27 @@ export async function sessionAGates(d, ctx) {
   const fly = await flyTo(d, ctx, site.frameId, site.positionKm, 0.7, 70);
   st.playLog.push({ kind: "approach", s: (Date.now() - t0) / 1000, km: 0 });
   await d.frames(10);
+  // Lock the canister (Target Card), then ONE G: a 4 s scan inspects and recovers (playtest 1 §3.1).
+  await waitFor(ctx, async () => {
+    await ev(`${G}.res.face(${M}.site.absKm(${JSON.stringify(SITE)}))`);
+    const f = await ev(`${M}.site.focus()`);
+    return f.focused && f.target?.kind === "site";
+  }, 6000);
   await d.press("g");
-  await settle(ctx, 300);
+  const recovered = await waitFor(ctx, async () => !!(await world()).discoveries.sites[SITE], 9000);
   const inspected = !!(await world()).discoveries.inspectedSites[SITE];
-  await d.press("g");
-  await settle(ctx, 300);
-  const recovered = !!(await world()).discoveries.sites[SITE];
   S.ok("G inspect", inspected);
   S.ok("G recover", recovered);
-  S.ok("unlock ln1", await ev(`${G}.m33.unlock("ln1_survey_salvage")`));
+  // ln1 needs Volatile Mapping and 10 titanium; the suite 60 more: lunar rocks supply the rest.
   const rocks = await loadedRocks(ctx);
   const used = new Set();
-  await gatherLogged(ctx, rocks, { silicates: 200, fe_ni_metal: 80, titanium: 30 }, used, st.playLog);
+  await gatherLogged(ctx, rocks, { hydrates: 5, carbon: 5 }, used, st.playLog);
+  S.ok("unlock sv2", await ev(`${G}.m33.unlock("sv2_volatile_mapping")`));
+  S.ok("unlock ln1", await ev(`${G}.m33.unlock("ln1_survey_salvage")`));
+  st.titaniumMined = 0;
+  const ti0 = (await player()).cargo.items.titanium ?? 0;
+  await gatherLogged(ctx, rocks, { silicates: 200, fe_ni_metal: 100, titanium: 60 }, used, st.playLog);
+  st.titaniumMined = ((await player()).cargo.items.titanium ?? 0) - ti0;
   S.ok("craft suite", await ev(`${G}.craft("module_integrated_sensor_suite")`));
   if ((await player()).modules.equippedModules.scanner !== "module_integrated_sensor_suite") S.ok("equip suite", await ev(`${G}.m33.equipOp("module_integrated_sensor_suite", "scanner")`));
   const p = await player();
@@ -591,7 +607,7 @@ export async function sessionAGates(d, ctx) {
   const fails = S.failed();
   const gatherFails = st.playLog.filter((x) => x.kind === "gatherFailed");
   const res = {
-    part: 3, gatherFails, approach: { reached: fly.reached, s: r2(fly.s) }, inspected, recovered, owned: p.modules.ownedModules, equipped: p.modules.equippedModules,
+    part: 3, gatherFails, titaniumMined: st.titaniumMined, approach: { reached: fly.reached, s: r2(fly.s) }, inspected, recovered, owned: p.modules.ownedModules, equipped: p.modules.equippedModules,
     projectComplete: proj.complete, opsTotal: ops, rocksMined: mines.length, extractionS: r2(mineS), estimateMin: r2(estimateMin), fuelNowKg: r2(p.propellant.ordinaryKg), transit: st.transit,
     part1: st.part1, fails,
     pass: fails.length === 0 && fly.reached && p.modules.equippedModules.scanner === "module_integrated_sensor_suite" && proj.complete,
@@ -617,11 +633,12 @@ export async function sessionBGates(d, ctx) {
     const playLog = [];
     const rocks = await loadedRocks(ctx);
     const used = new Set();
-    // Live sustained beam on a large cold-mineable metal-bearing rock (the extraction trial).
+    // Live sustained beam on a large cold-mineable metal-bearing rock (the extraction trial), inspected first.
     const big = rocks.find((x) => x.mineS >= 9 && x.mineS < 13.5 && (x.composition.fe_ni_metal ?? 0) >= 3);
     used.add(big.instanceId);
     await ev(`${G}.m33.approach(${JSON.stringify(big)}, ${big.radiusM / 1000 + 0.35})`);
     await d.frames(10);
+    S.ok("inspect metal rock", await ev(`${G}.m33.inspect(${JSON.stringify(big)})`));
     await ev(`${G}.res.face(${JSON.stringify(big)})`);
     const focused = await waitFor(ctx, async () => (await ev(`${G}.res.mining()`)).focused, 8000);
     await ev(`${G}.res.startMining()`);
@@ -629,24 +646,13 @@ export async function sessionBGates(d, ctx) {
     await waitFor(ctx, async () => !(await ev(`${G}.res.mining()`)).mining, 8000);
     S.ok("live sustained beam", focused && trial);
     playLog.push({ kind: "mine", s: big.mineS, km: big.distKm });
-    await gatherLogged(ctx, rocks, { fe_ni_metal: 15 + 90 + 40, silicates: 15 + 80 + 140 }, used, playLog);
+    await gatherLogged(ctx, rocks, { fe_ni_metal: 30 + 90 + 40, silicates: 30 + 80 + 140 }, used, playLog);
     S.ok("unlock ex1", await ev(`${G}.m33.unlock("ex1_controlled_extraction")`));
     S.ok("unlock th1", await ev(`${G}.m33.unlock("th1_heat_rejection")`));
     S.ok("craft focuser", await ev(`${G}.craft("module_beam_focuser_mk1")`));
     S.ok("craft radiator", await ev(`${G}.craft("module_radiator_strips_mk1")`));
-    await burnFuel(d, ctx, 22);
-    await gatherLogged(ctx, rocks, { hydrates: 7, carbon: 4, silicates: 160, fe_ni_metal: 120 }, used, playLog);
-    S.ok("process 1 unit", await ev(`${G}.res.startProcessing(1)`));
-    S.ok("first batch", await waitFor(ctx, async () => !!(await world()).discoveries.trials.first_batch, 15000));
-    S.ok("unlock pr1", await ev(`${G}.m33.unlock("pr1_transit_calibration")`));
-    S.ok("craft drive", await ev(`${G}.craft("special_transit_drive")`));
-    const tank = (await ev(`${G}.m33.liveTuning()`)).tankKg;
-    const room = Math.floor((tank - (await ev(`${G}.res.state()`)).ordinaryKg) / 20);
-    if (room > 0) {
-      await gatherLogged(ctx, rocks, { hydrates: room }, used, playLog);
-      S.ok(`process ${room}`, await ev(`${G}.res.startProcessing(${room})`));
-      await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, 30000);
-    }
+    await pathToDrive(d, ctx, rocks, used, S.ok);
+    await topUp(ctx, rocks, used, S.ok);
     S.ok("track foothold", (await ev(`(${M}.project.track("lunar_foothold"), true)`)) === true);
     const w1 = await world();
     state.B = { id, receipts0: w0.receipts.length, playLog, part1: { steps: S.steps, ops: opsSince(w1, w0.receipts.length), fuelKg: r2((await ev(`${G}.res.state()`)).ordinaryKg) } };
@@ -680,9 +686,9 @@ export async function sessionBGates(d, ctx) {
   const st = await bootSession(d, ctx, "B");
   const rocks = await loadedRocks(ctx);
   const used = new Set(st.usedRocks ?? []);
-  const mineLunar = async (need) => {
+  const mineLunar = async (need, trim = false) => {
     const before = (await player()).cargo.items;
-    await gatherLogged(ctx, rocks.filter((r) => r.fieldId === "luna_belt"), need, used, st.playLog);
+    await gatherLogged(ctx, rocks.filter((r) => r.fieldId === "luna_belt"), need, used, st.playLog, trim);
     const after = (await player()).cargo.items;
     for (const k of Object.keys(after)) st.lunarMined[k] = (st.lunarMined[k] ?? 0) + Math.max(0, (after[k] ?? 0) - (before[k] ?? 0));
   };
@@ -725,7 +731,8 @@ export async function sessionBGates(d, ctx) {
       await ev(`${M}.damage(20)`);
       await ev("__test.save.flush()");
       out.damageInjected = (await player()).health;
-      await mineLunar({ fe_ni_metal: 170, silicates: 100 });
+      // Five parts of refuel cycles fill the hold (2,600): make room, as a player would.
+      await mineLunar({ fe_ni_metal: 170, silicates: 100 }, true);
       if (out.damageInjected < 100) {
         await ev(`${G}.res.repair(true)`);
         await waitFor(ctx, async () => (await player()).health >= 100, 20000);
@@ -839,7 +846,7 @@ export async function sessionCGates(d, ctx) {
     S.ok("abandon again", (await ev(`${G}.res.abandon()`)) === true);
     const usable0 = after.propellant.ordinaryKg + after.propellant.protectedKg;
     await ctx.wait(400);
-    const fb = await centerOf(ctx, ".death-screen__fallback", "Emergency fallback");
+    const fb = await centerOf(ctx, ".death-screen__fallback", "Respawn at");
     if (fb) await d.click(fb.x, fb.y);
     await d.frames(5);
     const confirm = await centerOf(ctx, ".death-screen__fallback-confirm");
@@ -898,7 +905,8 @@ export async function exploitGates(d, ctx) {
     pass: rec.status === "accepted" && dupAfterReload.status === "duplicate" && newAfterReload.reason === "already_done" && afterDeath.reason === "already_done" && tiA === 30 && !otherWorldSite && !!backA };
 
   // 2. Duplicate opIds on craft / unlock / processing / placement.
-  await grant(ctx, { fe_ni_metal: 400, silicates: 300, hydrates: 10 });
+  await grant(ctx, { fe_ni_metal: 400, silicates: 300, hydrates: 10, titanium: 10 });
+  await ev(`${G}.m33.devSetWorld({ completedNodes: ["sv1_composition_survey", "sv2_volatile_mapping"] })`);
   const c1 = await submit({ type: "item.craft", opId: "x-craft", itemId: "consumable_hull_patch_kit" });
   const p1 = await player();
   const c2 = await submit({ type: "item.craft", opId: "x-craft", itemId: "consumable_hull_patch_kit" });
@@ -928,7 +936,7 @@ export async function exploitGates(d, ctx) {
   out.cancelLoops = { v0, loops, pass: loops.every((l) => l.value <= v0 + 0.01) };
 
   // 4. Equip swaps: an overflowing loadout is refused; swapping never changes stores.
-  await grant(ctx, { silicates: 200, fe_ni_metal: 80, titanium: 30 });
+  await grant(ctx, { silicates: 200, fe_ni_metal: 100, titanium: 60 });
   const fit = await submit({ type: "item.craft", opId: "x-suite", itemId: "module_integrated_sensor_suite" });
   const pq0 = await player();
   const swaps = [];
@@ -1011,14 +1019,10 @@ export async function shotGates(d, ctx) {
   await d.frames(30);
   await settle(ctx, 1500);
   shots.approach = await d.shot("m3-lunar-site-approach");
+  await ev(`${G}.res.face(${M}.site.absKm(${JSON.stringify(SITE)}))`);
+  await settle(ctx, 1200);
   await d.press("g");
-  await nearSite(d, ctx, 0.45);
-  await ev(`${G}.res.face(${JSON.stringify(await ev(`${M}.site.absKm(${JSON.stringify(SITE)})`))})`);
-  await d.frames(30);
-  await settle(ctx, 800);
-  await d.press("g");
-  await d.frames(15);
-  await settle(ctx, 500);
+  await settle(ctx, 6000);
   shots.recover = await d.shot("m3-lunar-site-recover");
   void id;
   void site;
@@ -1045,11 +1049,9 @@ export async function narrowGates(d, ctx) {
   await settle(ctx, 300);
   shots.refused = await d.shot("m3-transit-refused-narrow");
   const overlap = await ev(`(() => {
-    const t = [...document.querySelectorAll(".toast-display__item")].map((e) => e.getBoundingClientRect());
+    const t = [...document.querySelectorAll(".notif-stack__item")].map((e) => e.getBoundingClientRect()).filter((x) => x.height > 0);
     const panel = document.querySelector(".transit-hud--preview");
-    const title = panel && panel.querySelector(".transit-hud__phase-label");
-    const name = panel && panel.querySelector(".transit-hud__target-name");
-    const r = title && name && { left: Math.min(title.getBoundingClientRect().left, name.getBoundingClientRect().left), right: Math.max(title.getBoundingClientRect().right, name.getBoundingClientRect().right), top: title.getBoundingClientRect().top, bottom: name.getBoundingClientRect().bottom };
+    const r = panel && panel.getBoundingClientRect();
     const btns = document.querySelector(".hud__panel-buttons")?.getBoundingClientRect();
     const cargo = document.querySelector(".cargo-hud")?.getBoundingClientRect();
     const hit = (a, b) => !!a && !!b && !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top);

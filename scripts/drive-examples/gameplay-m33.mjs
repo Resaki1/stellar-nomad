@@ -7,6 +7,7 @@
  *   config     loadout preview vs the deterministic resource harness and hand-computed tables
  *   migrate3   schema 1 and 2 fixtures → 3 (mapping table, inert legacy, round trip, refusals)
  *   fit        loadout swaps vs fuel/cargo, forged inspect/mine claims, bookmark-protected eviction
+ *   marks      B3/B4: bookmark → mine drops marker and bookmark; Set destination sticks with a marker, absent without the drive
  *   m33shots   captures (1280×720); m33narrow the research panel at 390×844 (--size 390x844)
  */
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -87,13 +88,13 @@ export async function fitGates(d, ctx) {
   F.forged = { fake: fake.reason, spam: spam.reason, mineFake: mineFake.reason, families: Object.keys((await ctx.world()).discoveries.families),
     pass: fake.reason === "invalid" && spam.reason === "invalid" && mineFake.reason === "invalid" };
 
-  // A (mine, depleted) and B (player-b) are bookmarked; 70 more inspections must not evict them.
+  // A (mine) and B (player-b) are bookmarked; 70 more inspections must not evict them. A depleted
+  // source cannot be bookmarked since WP1 B4, so A stays unmined.
   const srcId = (i) => `fit-field:1,0,0:${i}`;
   const okA = await submit(inspectOp(10, { silicates: 90, fe_ni_metal: 10 }));
   const okB = await submit(inspectOp(11, { silicates: 90, fe_ni_metal: 10 }));
   await submit(inspectOp(12, { silicates: 90, fe_ni_metal: 10 }));
   await submit({ type: "asteroid.mine", fieldId: "fit-field", chunkKey: "1,0,0", instanceId: 12, yield: {} });
-  await submit({ type: "asteroid.mine", fieldId: "fit-field", chunkKey: "1,0,0", instanceId: 10, yield: {} });
   const bmA = await ev(`${G}.m33.bookmark(${JSON.stringify(srcId(10))}, "A")`);
   const bmB = await submit({ type: "bookmark.set", sourceId: srcId(11), name: "B" }, "player-b");
   for (let i = 0; i < 70; i++) await submit(inspectOp(100 + i, { silicates: 90, fe_ni_metal: 10 }));
@@ -101,7 +102,81 @@ export async function fitGates(d, ctx) {
   const ids = new Set(w.discoveries.sources.map((s) => s.id));
   F.bookmarks = { okA: okA.status, okB: okB.status, bmA: bmA.status, bmB: bmB.status, count: ids.size, keptA: ids.has(srcId(10)), keptB: ids.has(srcId(11)), evictedDepleted: !ids.has(srcId(12)),
     pass: bmA.status === "accepted" && bmB.status === "accepted" && ids.size === 64 && ids.has(srcId(10)) && ids.has(srcId(11)) && !ids.has(srcId(12)) };
+
+  // Class evidence survives the ring: the only (depleted, oldest) C-type outlives 70 more S-type inspections.
+  const cOp = { ...inspectOp(13, { hydrates: 60, carbon: 40 }), classId: "c_type" };
+  const cMet = async () => (await ev(`${G}.m33.evaluate("pr1_transit_calibration")`)).all.find((r) => r.key === "sourceClass:c_type")?.met;
+  const okC = await submit(cOp);
+  await submit({ type: "asteroid.mine", fieldId: "fit-field", chunkKey: "1,0,0", instanceId: 13, yield: {} });
+  const cMet0 = await cMet();
+  for (let i = 0; i < 70; i++) await submit(inspectOp(300 + i, { silicates: 90, fe_ni_metal: 10 }));
+  const w2 = await ctx.world();
+  const cKept = w2.discoveries.sources.some((s) => s.id === srcId(13));
+  const cMet1 = await cMet();
+  F.classKept = { okC: okC.status, count: w2.discoveries.sources.length, cKept, cMet0, cMet1,
+    pass: okC.status === "accepted" && w2.discoveries.sources.length === 64 && cKept && cMet0 === true && cMet1 === true };
   return { ...F, pass: Object.values(F).every((x) => x.pass) };
+}
+
+// ── marks: B4 bookmark of a mined rock, B3 Set destination with and without the drive ──
+export async function marksGates(d, ctx) {
+  const { ev } = ctx;
+  const out = {};
+  await freshWorld(d, ctx, "m33-marks");
+  const rocks = (await loadedRocks(ctx, 40)).filter((r) => r.radiusM > 8);
+  const id = (r) => `${r.fieldId}:${r.chunkKey}:${r.instanceId}`;
+  const [a, b] = rocks;
+  const ia = await ev(`${G}.m33.inspect(${JSON.stringify(a)})`);
+  const ib = await ev(`${G}.m33.inspect(${JSON.stringify(b)})`);
+  const bm = await ev(`${G}.m33.bookmark(${JSON.stringify(id(a))}, "B4 test")`);
+  await d.frames(20);
+  const poiBefore = await ev(`${G}.rep.pois("source:")`);
+  const m = await ev(`${G}.mine(${JSON.stringify(a)})`);
+  await d.frames(30);
+  const poiAfter = await ev(`${G}.rep.pois("source:")`);
+  const marksAfter = (await ev(`${G}.player()`)).bookmarks;
+  out.b4 = { inspect: ia.status, bookmark: bm.status, mine: m.status, poiBefore: poiBefore.length, poiAfter: poiAfter.length, bookmarksAfter: marksAfter.length,
+    pass: ia.status === "accepted" && bm.status === "accepted" && m.status === "accepted" && poiBefore.some((p) => p.id === `source:${id(a)}`) && poiAfter.length === 0 && marksAfter.length === 0 };
+
+  // B3 without the drive: refused by the action, and the Discoveries tab shows no button.
+  const noDrive = await ev(`${G}.m33.setDestination(${JSON.stringify(id(b))})`);
+  await d.frames(60);
+  const targetedNo = (await ev(`${G}.transit.state()`)).targeted;
+  await ev(`(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "r" })); return true; })()`);
+  await d.frames(10);
+  await ev(`(() => { const t = [...document.querySelectorAll(".rp-tabs__btn")].find((x) => x.textContent === "Discoveries"); t && t.click(); return !!t; })()`);
+  await d.frames(10);
+  const btnNo = await ev(`document.querySelectorAll('.rp-source__btn[aria-label="Set destination"]').length`);
+  const rowsNo = await ev(`document.querySelectorAll(".rp-source").length`);
+  // With the drive: the button shows, the target sticks for 60 frames and has a projected marker.
+  await ev(`${G}.m33.setLoadout(["special_transit_drive"])`);
+  await d.frames(10);
+  const btnYes = await ev(`document.querySelectorAll('.rp-source__btn[aria-label="Set destination"]').length`);
+  await ev(`(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "r" })); return true; })()`);
+  await d.frames(10);
+  const yes = await ev(`${G}.m33.setDestination(${JSON.stringify(id(b))})`);
+  await d.frames(60);
+  const targetedYes = (await ev(`${G}.transit.state()`)).targeted;
+  const poiYes = await ev(`${G}.rep.pois("source:")`);
+  out.b3 = { inspect: ib.status, noDrive, targetedNo, rowsNo, btnNo, btnYes, yes, targetedYes, marker: poiYes.map((p) => p.id),
+    pass: ib.status === "accepted" && noDrive === false && targetedNo === null && rowsNo >= 1 && btnNo === 0 && btnYes >= 1 && yes === true && targetedYes === `source:${id(b)}` && poiYes.some((p) => p.id === `source:${id(b)}`) };
+  // Review F2: mining the destination rock clears the destination and leaves no marker.
+  const mb = await ev(`${G}.mine(${JSON.stringify(b)})`);
+  await d.frames(30);
+  const targetedAfter = (await ev(`${G}.transit.state()`)).targeted;
+  const poiGone = await ev(`${G}.rep.pois("source:")`);
+  out.b3mined = { mine: mb.status, targetedAfter, markers: poiGone.length, pass: mb.status === "accepted" && targetedAfter === null && poiGone.length === 0 };
+  // Review F1: a bookmark of a rock destroyed by a non-mining cause stops holding a slot.
+  const c = rocks[2], e = rocks[3];
+  await ev(`${G}.m33.inspect(${JSON.stringify(c)})`);
+  await ev(`${G}.m33.inspect(${JSON.stringify(e)})`);
+  await ev(`${G}.m33.bookmark(${JSON.stringify(id(c))}, "F1 c")`);
+  const ds = await ev(`${G}.submit({ type: "asteroid.destroy", fieldId: ${JSON.stringify(c.fieldId)}, chunkKey: ${JSON.stringify(c.chunkKey)}, instanceId: ${c.instanceId}, cause: "collision" })`);
+  const be = await ev(`${G}.m33.bookmark(${JSON.stringify(id(e))}, "F1 e")`);
+  const marks = (await ev(`${G}.player()`)).bookmarks.map((x) => x.sourceId);
+  out.destroyPrune = { destroy: ds.status, bookmark: be.status, marks, pass: ds.status === "accepted" && be.status === "accepted" && marks.length === 1 && marks[0] === id(e) };
+  out.pass = out.b4.pass && out.b3.pass && out.b3mined.pass && out.destroyPrune.pass;
+  return out;
 }
 
 // ── (a) evidence ────────────────────────────────────────────────────────────
@@ -288,11 +363,28 @@ export async function reqGates(d, ctx) {
 
 // ── (c) playthroughs ───────────────────────────────────────────────────────
 
-/** Mine (fast-forward, accepted operations) nearest rocks until `need` is in cargo. */
-export async function gather(ctx, rocks, need, used) {
+/** Jettison by-products beyond `need` when the hold has less than `minFree` room (what a player does). */
+export async function trimHold(ctx, need, minFree = 300) {
+  const p = await ctx.player();
+  const cap = await ctx.ev(`${G}.mirrors().cargoCapacity`);
+  if (cap - sum(p.cargo.items) >= minFree) return 0;
+  let dropped = 0;
+  for (const [k, n] of Object.entries(p.cargo.items)) {
+    const extra = n - (need[k] ?? 0);
+    if (extra > 0) {
+      await ctx.ev(`${G}.jettison(${JSON.stringify(k)}, ${extra})`);
+      dropped += extra;
+    }
+  }
+  return dropped;
+}
+
+/** Mine (fast-forward, accepted operations) nearest rocks until `need` is in cargo; `trim` drops surplus when the hold fills. */
+export async function gather(ctx, rocks, need, used, trim = false) {
   const { ev } = ctx;
   let ops = 0;
   for (let guard = 0; guard < 400; guard++) {
+    if (trim) await trimHold(ctx, need);
     const have = (await ctx.player()).cargo.items;
     const short = Object.keys(need).filter((k) => (have[k] ?? 0) < need[k]);
     if (short.length === 0) return ops;
@@ -326,9 +418,84 @@ export async function waitFor(ctx, fn, ms) {
   return false;
 }
 
+/** A live sustained beam on a large cold-mineable metal rock (the extraction trial), inspected first. */
+export async function liveSustainedBeam(d, ctx, rocks, used) {
+  const { ev } = ctx;
+  const big = rocks.find((x) => !used.has(x.instanceId) && x.mineS >= 9.5 && x.mineS < 13.5 && x.distKm < 30 && familiesOf(x.composition).includes("fe_ni_metal"));
+  used.add(big.instanceId);
+  await ev(`${G}.m33.approach(${JSON.stringify(big)}, ${big.radiusM / 1000 + 0.35})`);
+  await d.frames(10);
+  const inspect = await ev(`${G}.m33.inspect(${JSON.stringify(big)})`);
+  await ev(`${G}.res.face(${JSON.stringify(big)})`);
+  const focused = await waitFor(ctx, async () => (await ev(`${G}.res.mining()`)).focused, 8000);
+  await ev(`${G}.res.startMining()`);
+  const trial = await waitFor(ctx, async () => !!(await ctx.world()).discoveries.trials.sustained_beam, 16000);
+  await waitFor(ctx, async () => !(await ev(`${G}.res.mining()`)).mining, 8000);
+  return { label: "live sustained beam", inspect: inspect.status, focused, trial, mineS: r3(big.mineS) };
+}
+
+/** Inspect the nearest unused rock of `cls` (C-type: one carrying hydrates). */
+export async function inspectClass(d, ctx, rocks, used, cls) {
+  const r = rocks.find((x) => x.classId === cls && !used.has(x.instanceId) && (cls !== "c_type" || familiesOf(x.composition).includes("hydrates")));
+  used.add(r.instanceId);
+  await ctx.ev(`${G}.m33.approach(${JSON.stringify(r)}, ${r.radiusM / 1000 + 0.5})`);
+  await d.frames(5);
+  return ctx.ev(`${G}.m33.inspect(${JSON.stringify(r)})`);
+}
+
+/**
+ * The shared path from any start to an owned transit drive (playtest-1 matrix, plan §13 WP2):
+ * sustained beam, C-type, first batch (the 200 kg start tank has room), Heat Rejection, Bulk
+ * Handling + Cargo Rack, Transit Drive Calibration, the drive. `accept(label, outcome)` logs.
+ */
+export async function pathToDrive(d, ctx, rocks, used, accept) {
+  const { ev } = ctx;
+  const w = await ctx.world();
+  const okOf = (b) => ({ status: b ? "accepted" : "failed" });
+  if (!w.discoveries.trials.sustained_beam) {
+    const b = await liveSustainedBeam(d, ctx, rocks, used);
+    accept("live sustained beam", okOf(b.focused && b.trial));
+  }
+  if (!(w.discoveries.sources ?? []).some((s) => s.classId === "c_type")) accept("inspect c_type", await inspectClass(d, ctx, rocks, used, "c_type"));
+  const done = new Set((await ctx.world()).research.completedNodes);
+  const owned = new Set((await ctx.player()).modules.ownedModules);
+  if (!done.has("th1_heat_rejection")) {
+    await gather(ctx, rocks, { silicates: 30 }, used, true);
+    accept("unlock th1", await ev(`${G}.m33.unlock("th1_heat_rejection")`));
+  }
+  if (!(await ctx.world()).discoveries.trials.first_fabrication) {
+    await gather(ctx, rocks, { silicates: 20, fe_ni_metal: 5 }, used, true);
+    accept("craft heat sink", await ev(`${G}.craft("consumable_heat_sink_cartridge")`));
+  }
+  await gather(ctx, rocks, { hydrates: 1 }, used, true);
+  accept("process 1 unit", await ev(`${G}.res.startProcessing(1)`));
+  accept("first batch trial", okOf(await waitFor(ctx, async () => !!(await ctx.world()).discoveries.trials.first_batch, 15000)));
+  await gather(ctx, rocks, { fe_ni_metal: 30 + 150, silicates: 50 }, used, true);
+  accept("unlock lg1", await ev(`${G}.m33.unlock("lg1_bulk_handling")`));
+  if (!owned.has("module_cargo_rack_mk1")) accept("craft cargo rack", await ev(`${G}.craft("module_cargo_rack_mk1")`));
+  await gather(ctx, rocks, { hydrates: 15, fe_ni_metal: 40 }, used, true);
+  accept("unlock pr1", await ev(`${G}.m33.unlock("pr1_transit_calibration")`));
+  await gather(ctx, rocks, { silicates: 600, fe_ni_metal: 550, hydrates: 30, carbon: 20, sulfur: 12 }, used, true);
+  accept("craft drive", await ev(`${G}.craft("special_transit_drive")`));
+}
+
+/** Fill the tank with local hydrates (one batch up to the batch cap), waiting for it to finish. */
+export async function topUp(ctx, rocks, used, accept) {
+  const { ev } = ctx;
+  const tank = (await ev(`${G}.m33.liveTuning()`)).tankKg;
+  const room = Math.min(50, Math.floor((tank - (await ev(`${G}.res.state()`)).ordinaryKg) / 20));
+  if (room <= 0) return 0;
+  await gather(ctx, rocks, { hydrates: room }, used, true);
+  accept(`process ${room} units`, await ev(`${G}.res.startProcessing(${room})`));
+  await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, 40000);
+  return room;
+}
+
 async function playthrough(d, ctx, path) {
   const { ev } = ctx;
   await freshWorld(d, ctx, `m33-play-${path}`);
+  // A v1 fixture migrates with a full tank; a new world starts at 200 kg (§13 WP2).
+  await ev(`${G}.res.set({ ordinaryKg: 200 })`);
   const w0 = await ctx.world();
   const p0 = await ctx.player();
   const rocks = await loadedRocks(ctx);
@@ -341,52 +508,23 @@ async function playthrough(d, ctx, path) {
 
   if (path === "A") {
     // Survey first: inspect one rock of each class, then the prospector scanner.
-    for (const cls of ["s_type", "c_type", "x_type"]) {
-      const r = rocks.find((x) => x.classId === cls && !used.has(x.instanceId) && (cls !== "c_type" || familiesOf(x.composition).includes("hydrates")));
-      used.add(r.instanceId);
-      await ev(`${G}.m33.approach(${JSON.stringify(r)}, ${r.radiusM / 1000 + 0.5})`);
-      await d.frames(5);
-      accept(`inspect ${cls}`, await ev(`${G}.m33.inspect(${JSON.stringify(r)})`));
-    }
-    await gather(ctx, rocks, { silicates: 130, fe_ni_metal: 40 }, used);
+    for (const cls of ["s_type", "c_type", "x_type"]) accept(`inspect ${cls}`, await inspectClass(d, ctx, rocks, used, cls));
+    await gather(ctx, rocks, { silicates: 140, fe_ni_metal: 40 }, used);
     accept("unlock sv1", await ev(`${G}.m33.unlock("sv1_composition_survey")`));
     accept("craft prospector", await ev(`${G}.craft("module_prospector_scanner_mk1")`));
   } else {
-    // Extraction/cooling first: one sustained live beam on a large cold-mineable rock.
-    const big = rocks.find((x) => x.mineS >= 9.5 && x.mineS < 13.5 && x.distKm < 30 && familiesOf(x.composition).includes("fe_ni_metal"));
-    used.add(big.instanceId);
-    await ev(`${G}.m33.approach(${JSON.stringify(big)}, ${big.radiusM / 1000 + 0.35})`);
-    await d.frames(10);
-    await ev(`${G}.res.face(${JSON.stringify(big)})`);
-    const focused = await waitFor(ctx, async () => (await ev(`${G}.res.mining()`)).focused, 8000);
-    await ev(`${G}.res.startMining()`);
-    const trial = await waitFor(ctx, async () => !!(await ctx.world()).discoveries.trials.sustained_beam, 16000);
-    await waitFor(ctx, async () => !(await ev(`${G}.res.mining()`)).mining, 8000);
-    steps.push({ label: "live sustained beam", focused, trial, mineS: r3(big.mineS) });
-    await gather(ctx, rocks, { fe_ni_metal: 15 + 90 + 40, silicates: 15 + 80 + 140 }, used);
+    // Extraction/cooling first: one inspected, sustained live beam on a large cold-mineable rock.
+    steps.push(await liveSustainedBeam(d, ctx, rocks, used));
+    await gather(ctx, rocks, { fe_ni_metal: 30 + 90 + 40, silicates: 30 + 80 + 140 }, used);
     accept("unlock ex1", await ev(`${G}.m33.unlock("ex1_controlled_extraction")`));
     accept("unlock th1", await ev(`${G}.m33.unlock("th1_heat_rejection")`));
     accept("craft focuser", await ev(`${G}.craft("module_beam_focuser_mk1")`));
     accept("craft radiator", await ev(`${G}.craft("module_radiator_strips_mk1")`));
   }
-
-  // Shared short path to transit: a first propellant batch (needs tank room: real flying first).
-  const burned = await burnFuel(d, ctx, 22);
-  await gather(ctx, rocks, { hydrates: 1 + 2 + 4, carbon: 4, silicates: 160, fe_ni_metal: 120 }, used);
-  accept("process 1 unit", await ev(`${G}.res.startProcessing(1)`));
-  const batch = await waitFor(ctx, async () => !!(await ctx.world()).discoveries.trials.first_batch, 15000);
-  steps.push({ label: "first batch trial", ok: batch });
-  accept("unlock pr1", await ev(`${G}.m33.unlock("pr1_transit_calibration")`));
-  accept("craft drive", await ev(`${G}.craft("special_transit_drive")`));
-
-  // Top the tank up with local hydrates, then check the Earth → Moon plan.
-  const tank = (await ev(`${G}.m33.liveTuning()`)).tankKg;
-  const room = Math.floor((tank - (await ev(`${G}.res.state()`)).ordinaryKg) / 20);
-  if (room > 0) {
-    await gather(ctx, rocks, { hydrates: room }, used);
-    accept(`process ${room} units`, await ev(`${G}.res.startProcessing(${room})`));
-    await waitFor(ctx, async () => !(await ev(`${G}.res.state()`)).processing.active, 30000);
-  }
+  // Before the drive exists, a premature unlock is refused naming the missing research.
+  const early = await ev(`${G}.m33.unlock("pr1_transit_calibration")`);
+  await pathToDrive(d, ctx, rocks, used, accept);
+  await topUp(ctx, rocks, used, accept);
   await ev(`${G}.m33.targetBody("luna")`);
   await d.frames(10);
   const pv = await ev(`${G}.transit.preview()`);
@@ -398,16 +536,18 @@ async function playthrough(d, ctx, path) {
   const owned = p1.modules.ownedModules;
   const res = {
     steps: steps.filter((s) => s.status !== "accepted" && s.ok !== true && s.trial !== true),
+    earlyPr1: { status: early?.status, reason: early?.reason, evidence: early?.evidence },
     operations: { total: receipts.length, byType },
     unlocked: w1.research.completedNodes, owned, trials: Object.keys(w1.discoveries.trials), families: Object.keys(w1.discoveries.families),
-    fuel: { startKg: r3(p0.propellant.ordinaryKg), burnedFlyingKg: r3(burned), endKg: r3(p1.propellant.ordinaryKg), tankKg: tank },
+    fuel: { startKg: r3(p0.propellant.ordinaryKg), endKg: r3(p1.propellant.ordinaryKg) },
     moon: pv ? { ok: pv.ok, reason: pv.reason, etaS: r3(pv.etaS), fuelKg: r3(pv.fuelKg), arrivalOrdinaryKg: r3(pv.arrivalOrdinaryKg), legs: pv.legCount } : null,
     cargoLeft: p1.cargo.items,
   };
   const first = path === "A" ? ["sv1_composition_survey"] : ["ex1_controlled_extraction", "th1_heat_rejection"];
-  res.pass = steps.every((s) => s.status === undefined || s.status === "accepted") && steps.every((s) => s.ok !== false && s.trial !== false) &&
+  res.pass = steps.every((s) => s.status === undefined || s.status === "accepted") && steps.every((s) => s.ok !== false && s.trial !== false && s.focused !== false) &&
+    early?.status === "rejected" && early.reason === "evidence" && (early.evidence ?? []).includes("research:lg1_bulk_handling") &&
     first.every((n) => w1.research.completedNodes.includes(n)) && w1.research.completedNodes.includes("pr1_transit_calibration") && owned.includes("special_transit_drive") &&
-    !!pv && pv.ok && pv.fuelKg > 0 && pv.arrivalOrdinaryKg >= 0 && Object.keys(p1.modules.consumables).length === 0;
+    !!pv && pv.ok && pv.fuelKg > 0 && pv.arrivalOrdinaryKg >= 0 && p0.propellant.ordinaryKg === 200;
   if (!res.pass) res.allSteps = steps;
   return res;
 }
@@ -589,7 +729,10 @@ export async function m33ShotGates(d, ctx, narrow) {
   const shots = {};
   if (!narrow) {
     // A little progress: inspected rocks of each class, one mined, a bookmark.
-    const picks = ["s_type", "c_type", "x_type"].map((cls) => rocks.find((x) => x.classId === cls && x.radiusM > 20 && x.distKm < 15));
+    // WP1 thinned the starter neighbourhood: fall back to the nearest rock of the class.
+    const near = [...rocks].sort((a, b) => a.distKm - b.distKm);
+    const picks = ["s_type", "c_type", "x_type"].map((cls) => near.find((x) => x.classId === cls && x.radiusM > 20 && x.distKm < 15) ?? near.find((x) => x.classId === cls));
+    if (picks.some((p) => !p)) return { pass: false, error: `no rock of class ${["s_type", "c_type", "x_type"][picks.indexOf(undefined)]} among ${rocks.length}` };
     for (const r of picks) await ev(`${G}.m33.inspect(${JSON.stringify(r)})`);
     await ev(`${G}.mine(${JSON.stringify(picks[0])})`);
     await ev(`${G}.m33.bookmark(${JSON.stringify(`${picks[1].fieldId}:${picks[1].chunkKey}:${picks[1].instanceId}`)}, "Hydrate rock")`);

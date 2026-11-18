@@ -43,10 +43,9 @@ export const unlockResearchAtom = atom(null, (_get, set, payload: { nodeId: stri
     const node = getResearchNode(payload.nodeId);
     if (o.status === "accepted" && o.result.type === "research.unlock") {
       set(lastCompletedResearchIdAtom, o.result.nodeId);
-      const names = o.result.unlockedItems.map((id) => getItemDef(id)?.name ?? id).join(", ");
-      set(addToastAtom, { audio: "silent", message: `Unlocked: ${node?.name ?? o.result.nodeId}`, detail: names ? `Blueprints: ${names}` : undefined, durationMs: 5000 });
+      set(addToastAtom, { audio: "silent", kind: "success", message: "Unlocked", detail: node?.name ?? o.result.nodeId, values: o.result.unlockedItems.filter((id) => getItemDef(id)).map((id) => ({ id })) });
     } else if (o.status === "rejected") {
-      set(addToastAtom, { audio: "reject", message: `Cannot unlock ${node?.name ?? payload.nodeId}`, detail: describeUnlockRejection(o), durationMs: 4000 });
+      set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot unlock", detail: node?.name ?? payload.nodeId });
     }
     payload.onSettled?.(o);
   });
