@@ -489,7 +489,70 @@ async function pilotActions() {
   return { pass: Object.values(checks).every(Boolean), checks };
 }
 
+async function sharedLoop() {
+  const repo = newWorld();
+  const seed = repo.peek();
+  const pilot = seed.data.players[HOST_ID];
+  pilot.cargo.items.hydrates = 5;
+  pilot.modules.consumables.consumable_replication_kit = 1;
+  pilot.propellant.ordinaryKg = 0;
+  await repo.commit(seed.meta, seed.data);
+  let { rig, h, g } = await joinedPair(repo);
+  const gid = g.session.playerId;
+  const submit = (c, type, args) => c.session.submit({ type, opId: "loop-" + (++opN), ...args });
+  const run = async (c, type, args) => { submit(c, type, args); await rig.settle(); return c.settled.at(-1); };
+  const checks = { privateSnapshot: Object.keys(g.session.mirror.data.players).join() === gid &&
+    Object.values(g.session.mirror.data.world.members).every(m => m.verifier === null) };
+  const batch = await run(h, "processing.start", { recipeId: "hydrate_propellant", units: 3 });
+  const { batchId, outputKg } = batch.result;
+  h.telemetry = { processing: { id: batchId, elapsedS: 1, committedKg: outputKg / 3 }, propellant: { ordinaryKg: outputKg / 3, protectedKg: 0 } };
+  h.session.sendTelemetry();
+  await rig.settle();
+  await rig.host.close();
+  await rig.settle();
+  await rig.startHost();
+  const partial = h.telemetry;
+  h = rig.client("Host", { local: true, store: h.store });
+  g = rig.client("Guest", { store: g.store });
+  h.telemetry = partial;
+  h.join(); g.join(); await rig.settle();
+  checks.resumedBatch = h.session.mirror.data.players[HOST_ID].processing?.committedKg === outputKg / 3;
+  h.telemetry.processing.committedKg = outputKg;
+  h.telemetry.propellant.ordinaryKg = outputKg;
+  await run(h, "trial.record", { trialId: "first_batch" });
+  checks.finishedOnce = !rig.host.player(HOST_ID).processing && rig.host.player(HOST_ID).cargo.items.hydrates === 2;
+  delete h.telemetry;
+  h.pose = { frameId: "earth", positionKm: [30000, 0, 0], quaternion: [0,0,0,1] };
+  const point = await run(h, "replication.place", { ...h.pose, name: "Earth rendezvous" });
+  checks.privateRecovery = point.status === "accepted" && rig.host.player(HOST_ID).replication.activeId === point.result.point.id &&
+    rig.host.player(gid).replication.activeId !== point.result.point.id;
+  const site = { siteId: "luna_survey_canister" };
+  h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0, 0, 0, 1] };
+  await run(h, "site.inspect", site);
+  submit(g, "site.recover", site); submit(h, "site.recover", site); await rig.settle();
+  const winner = g.settled.at(-1).status === "accepted" ? g : h;
+  const winnerId = winner.session.playerId;
+  checks.siteRace = [g,h].filter(c => c.settled.at(-1).status === "accepted").length === 1 &&
+    rig.host.player(winnerId).cargo.items.titanium === 30;
+  const crash = await run(winner, "ship.destroy", winner.pose);
+  const wreck = { wreckId: crash.result.wreckId };
+  const rock = rocks("luna_belt", 1)[0];
+  const resolved = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, rig.host.player(winnerId));
+  winner.pose = poseAt(resolved);
+  const deadMine = await run(winner, "asteroid.mine", { ...rock, beamS: resolved.requiredBeamS });
+  checks.deadMine = deadMine.reason === "dead" && !destroyed(rig.host.world, rock);
+  await run(winner, "ship.respawn", { mode: "starter" });
+  winner.pose = poseAt(resolved);
+  checks.distantSalvage = (await run(winner, "wreck.collect", wreck)).reason === "too_far";
+  h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0,0,0,1] };
+  submit(g, "wreck.collect", wreck); submit(h, "wreck.collect", wreck); await rig.settle();
+  checks.salvageConserved = [gid, HOST_ID].reduce((n,id) => n + (rig.host.player(id).cargo.items.titanium ?? 0), 0) === 30 &&
+    !rig.host.world.wrecks.some(w => w.items.titanium);
+  return { pass: Object.values(checks).every(Boolean), checks };
+}
+
 const SCENARIOS = {
+  sharedLoop,
   pilotActions,
   shipLifecycle,
   raceHostFirst: () => race("host"),

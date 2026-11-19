@@ -376,3 +376,7 @@ The Node transcript also covers three arriving guests and clock resume without c
 - Hosted TURN stays off. A two-player forced loopback relay forwarded 391,892 outbound UDP payload bytes to both browsers over 34.504 seconds of presence, flying and contested mining. That projects to roughly 41 MB per two-player hour, or 24,000 relayed pair-hours per 1,000 decimal GB. Direct gameplay consumes zero relay bandwidth. The sample is short and excludes IP/UDP headers. Provider metering, packet loss, additional guests and future gameplay can change that estimate.
 
 [Staging setup and playtest](../services/coop-signal/README.md) · [Automated checks](AUTOMATED_TESTING.md#two-browsers-co-op)
+
+### M4.2 · Shared M3 loop
+
+The worker loads the same placement-clearance probe as solo, resolves inspection results from the field generator, and checks salvage range. Snapshots contain the receiving pilot's record and public death flags. Batch completion reaches the host with its original batch ID and final converted mass. The headless sharedLoop scenario covers restart during processing, independent recovery selection, simultaneous site recovery and wreck salvage, and mining after death.

@@ -11,6 +11,7 @@ import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
+import { shipRes } from "@/store/shipResources";
 import { hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
@@ -30,7 +31,9 @@ export function collectTelemetry(): Telemetry | undefined {
     prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject },
   };
   if (p.ship) tel.pose = { frameId: p.ship.frameId, positionKm: [...p.ship.positionKm], quaternion: [...p.ship.quaternion] };
-  if (p.processing) tel.processing = { id: p.processing.id, elapsedS: p.processing.elapsedS, committedKg: p.processing.committedKg };
+  // A finished runtime retains the batch ID and final yield until the next batch starts.
+  const batch = shipRes.processing;
+  if (batch.id) tel.processing = { id: batch.id, elapsedS: batch.elapsedS, committedKg: batch.committedKg };
   return tel;
 }
 

@@ -3,6 +3,12 @@
  * pipeline (one durable write per command, stream + effect together), commit fan-out, telemetry,
  * clock samples and pose relay. Runs in a worker in the browser and under Node in the transcript.
  */
+import { INSPECT_RANGE_M, WRECK_SALVAGE_KM } from "@/data/content";
+import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
+import { resolveHeadlessRock } from "@/sim/asteroids/headlessChunks";
+import "@/sim/replication/clearance";
+import { persistentShipConfig } from "@/sim/ship/loadout";
+import { isFrameId } from "@/sim/frames";
 import { defaultPlayerState } from "@/save/defaults";
 import type { PlayerId, PlayerState, ShipPose, SaveData, SaveMeta, WorldState } from "@/save/types";
 import { parseSaveData } from "@/save/validate";
@@ -360,10 +366,16 @@ export class HostSession {
     this.broadcast("cmd", { t: "members", gen: this.gen, names });
   }
 
-  /** Full world record (epoch set to the live host clock) in bounded parts. */
+  /** Each peer gets public world state and its own private pilot record. */
   private sendSnapshot(conn: ConnId): void {
-    const data = { ...this.data, world: { ...this.data.world, simEpochMs: this.epochMs() } };
-    const json = JSON.stringify({ meta: this.meta, data });
+    const pid = this.conns.get(conn)?.playerId;
+    if (!pid) return;
+    const members = Object.fromEntries(Object.entries(this.data.world.members).map(([id, member]) =>
+      [id, { ...member, verifier: null }]));
+    const data = { ...this.data, players: { [pid]: this.data.players[pid] },
+      world: { ...this.data.world, members, receipts: [], simEpochMs: this.epochMs() } };
+    const deadPilots = Object.keys(this.data.players).filter(id => this.data.players[id].isDead);
+    const json = JSON.stringify({ meta: this.meta, data, deadPilots });
     const of = Math.max(1, Math.ceil(json.length / SNAPSHOT_PART_CHARS));
     for (let part = 0; part < of; part++) {
       this.send(conn, { t: "snap", gen: this.gen, revision: this.data.world.revision, part, of, json: json.slice(part * SNAPSHOT_PART_CHARS, (part + 1) * SNAPSHOT_PART_CHARS) });
@@ -400,7 +412,14 @@ export class HostSession {
     if (msg.tel) this.applyTelemetry(pid, msg.tel);
     const revision = this.data.world.revision;
     this.captured.length = 0;
-    const op = msg.op;
+    let op = msg.op;
+    if (op.type === "survey.inspect") {
+      const rock = resolveHeadlessRock(op.fieldId, op.chunkKey, op.instanceId);
+      const scan = rock && buildInspectOperation(this.o.system(), { ...op, radiusM: rock.radiusM,
+        chunkOriginKm: rock.localKm, localM: [0, 0, 0] }, op.opId);
+      if (scan) op = scan;
+    }
+    updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
     let outcome: OperationOutcome;
     const refusal = pid !== this.o.hostPlayerId && HOST_ONLY.has(op.type) ? "not_allowed" : this.checkActivity(op, player);
     if (refusal) {
@@ -444,7 +463,19 @@ export class HostSession {
   }
 
   /** Activity bounds for a mine claim (friends-only: bounds, not anti-cheat). */
-  private checkActivity(op: WorldOperation, player: PlayerState): "no_activity" | "too_far" | null {
+  private checkActivity(op: WorldOperation, player: PlayerState): "no_activity" | "too_far" | "not_found" | "dead" | null {
+    if (player.isDead && op.type === "asteroid.mine") return "dead";
+    if (op.type === "wreck.collect" || op.type === "survey.inspect") {
+      const pose = player.ship;
+      const target = op.type === "wreck.collect" ? this.world.wrecks.find(w => w.id === op.wreckId)
+        : this.resolver(op.fieldId, op.chunkKey, op.instanceId, player);
+      if (!target) return "not_found";
+      if (!pose || !isFrameId(pose.frameId)) return "too_far";
+      const range = "radiusM" in target
+        ? (target.radiusM + INSPECT_RANGE_M * persistentShipConfig(player).scannerInspectRangeMult) / 1000
+        : WRECK_SALVAGE_KM;
+      return poseDistanceKm(pose.frameId, pose.positionKm, target.frameId, target.positionKm) <= range ? null : "too_far";
+    }
     if (op.type !== "asteroid.mine") return null;
     const rock = this.resolver(op.fieldId, op.chunkKey, op.instanceId, player);
     if (!rock) return null; // the reducer answers not_found
@@ -496,7 +527,7 @@ export class HostSession {
     if (t.processing && p.processing && p.processing.id === t.processing.id) {
       // Conversion only advances, and never past the reserved feedstock: committedKg sets cancel's refund.
       const maxKg = Object.values(p.processing.reserved).reduce((a, u) => a + u, 0) * getEffectiveTuning().processingKgPerUnit;
-      p.processing = {
+      p.processing = t.processing.committedKg >= maxKg ? null : {
         ...p.processing,
         elapsedS: Math.max(p.processing.elapsedS, t.processing.elapsedS),
         committedKg: Math.min(maxKg, Math.max(p.processing.committedKg, t.processing.committedKg)),

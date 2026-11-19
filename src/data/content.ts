@@ -95,6 +95,7 @@ export const TRIALS: TrialDef[] = [
 
 /** Close inspection, starter scanner: hold time on a locked rock and maximum range. */
 export const INSPECT_TIME_S = 4;
+export const WRECK_SALVAGE_KM = 0.3;
 export const INSPECT_RANGE_M = 2500;
 
 /** Continuous beam seconds on one rock for `sustained_beam`. */

@@ -14,7 +14,7 @@ import { audioShipBuffer } from "@/audio/shipBuffer";
 
 // ── Tuning ───────────────────────────────────────────────────────────
 /** Beam locks on when ship is within this range (km). */
-const BEAM_ACTIVATION_KM = 0.3; // 300 meters
+import { WRECK_SALVAGE_KM as BEAM_ACTIVATION_KM } from "@/data/content";
 /** Cargo collected when cube reaches this distance from ship (km). */
 const COLLECTION_DIST_KM = 0.01; // 10 meters
 /** Pull speed — fraction of remaining distance closed per second. */

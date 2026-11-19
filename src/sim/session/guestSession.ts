@@ -242,7 +242,7 @@ export class GuestSession {
     if (this.parts.length !== s.of || this.parts[s.part] !== undefined) return;
     this.parts[s.part] = s.json;
     if (++this.partsGot < s.of) return;
-    const rec = JSON.parse(this.parts.join("")) as { meta: SaveMeta; data: SaveData };
+    const rec = JSON.parse(this.parts.join("")) as { meta: SaveMeta; data: SaveData; deadPilots: PlayerId[] };
     this.parts = [];
     const pid = this.playerId;
     const me = pid ? rec.data.players[pid] : undefined;
@@ -250,7 +250,7 @@ export class GuestSession {
     this.mirror = rec;
     this.revision = this.snapshotRevision = s.revision;
     this.poseFloor.clear();
-    for (const [id, p] of Object.entries(rec.data.players)) if (p.isDead) this.poseFloor.set(id, Infinity);
+    for (const id of rec.deadPilots) this.poseFloor.set(id, Infinity);
     this.streamSeq = me.stream.seq;
     const p = this.rec.pending;
     // An intent older than the stream (and not its last entry) can never execute: drop it.

@@ -55,7 +55,7 @@ const MIN_LOCK_ANGLE_RAD = (1.5 * Math.PI) / 180;
 const LOCK_GRACE_S = 0.18;
 const TICK_S = 0.05;
 /** The wreck tractor (WreckCollector BEAM_ACTIVATION_KM). */
-export const WRECK_SALVAGE_KM = 0.3;
+import { WRECK_SALVAGE_KM } from "@/data/content";
 const SITE_RADIUS_M = 150;
 const POINT_RADIUS_M = 40;
 const WRECK_RADIUS_M = 2;
