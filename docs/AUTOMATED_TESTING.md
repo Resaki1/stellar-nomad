@@ -214,6 +214,22 @@ COOP_SIGNAL_ORIGIN=http://127.0.0.1:8791 COOP_PARTS=race,pilotActions,joinLifecy
 
 The hosted-only `inviteRenewal` check closes the invitation while both pilots are flying, then rejoins the same pilot using the replacement code. The driver records the selected WebRTC route from the guest's ICE candidate pair. Set `COOP_FORCE_RELAY=1` to require the Worker's TURN servers and fail setup unless the selected route is relayed. Alternatively, set `COOP_TEST_TURN_URL`, `COOP_TEST_TURN_USER` and `COOP_TEST_TURN_PASSWORD` for an existing test TURN service. Those overrides apply only to the development browser harness. For the corresponding two-device preview check, use the service guide.
 
+### Expedition and release checks
+
+Run `pnpm coop:transcript` for the headless authority, including contested salvage, recovery selection, gifts, paused authority and retry after a failed write. For the browser checks start a dev server and use separate disposable profiles.
+
+```sh
+COOP_PARTS=exchange,capacity,soak,race,lunar,dropReply,restart,leave pnpm drive:coop -- --perf --four --size 768x432 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+COOP_PARTS=roughLink,leave pnpm drive:coop -- --perf --size 768x432 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+pnpm drive:coop -- --perf --four --size 1280x720 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-perf.mjs
+```
+
+The soak exchanges supplies in both directions for 30 minutes. Keep the dev server source fixed during the run. The extra capacity clients open real WebRTC connections and publish a pose from the title screen. The performance comparison uses one rendered game and three local network clients. Separate guest devices are required for the hardware release gate.
+
+To exercise a future material, apply `scripts/fixtures/m4-content.patch` to a disposable checkout with dependencies installed. Run `pnpm coop:transcript contentFixture`, start its dev server and point the browser driver there with `COOP_PARTS=contentFixture,leave`. The guest mines the new ore, gives one unit to the host, and rejoins after the host crafts the new recipe. The fixture changes only the content catalogue and system configuration.
+
+For a deployed game, `COOP_PUBLIC_ORIGIN=https://stellar-nomad.com pnpm drive:coop -- --perf --size 768x432 run:scripts/drive-examples/coop-public.mjs` opens a room, joins through the invite card, reads the direct route from Friends and closes the room. Use disposable Chrome profiles for this smoke test.
+
 ---
 
 ## 3. Quality-goal loops

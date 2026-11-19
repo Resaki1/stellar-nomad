@@ -892,6 +892,60 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     return { pass: Object.values(checks).every(Boolean), checks };
   }
 
+  async function roughLink() {
+    // Impair the live browser data channels. Reliable messages keep order; every 50th pose is lost.
+    function install() {
+      const original = RTCDataChannel.prototype.send;
+      const due = new WeakMap();
+      const m = { poses: 0, dropped: 0, scheduled: 0, peakScheduled: 0, peakBuffered: 0, bytes: 0 };
+      let sequence = 0;
+      RTCDataChannel.prototype.send = function(message) {
+        if (this.label !== "pose" && this.label !== "cmd") return original.call(this, message);
+        if (this.label === "pose" && ++m.poses % 50 === 0) { m.dropped++; return; }
+        const now = performance.now();
+        let at = now + 60 + ((++sequence * 17) % 61) - 30;
+        if (this.ordered) { at = Math.max(at, due.get(this) ?? 0); due.set(this, at); }
+        m.peakScheduled = Math.max(m.peakScheduled, ++m.scheduled);
+        setTimeout(() => {
+          m.scheduled--;
+          if (this.readyState !== "open") return;
+          m.bytes += new TextEncoder().encode(message).byteLength;
+          original.call(this, message);
+          m.peakBuffered = Math.max(m.peakBuffered, this.bufferedAmount);
+        }, Math.max(0, at - now));
+      };
+      window.__endImpairment = () => { RTCDataChannel.prototype.send = original; return m; };
+    }
+    for (const page of [host, guest]) await page.evaluate("(" + install.toString() + ")()");
+    const start = Date.now();
+    try {
+      const swap = await exchange();
+      const ms = Date.now();
+      await settledCommand(guest, { type: "expedition.mark", name: "Latency check", sourceId: null });
+      const settlementMs = Date.now() - ms;
+      await guest.evaluate(`${C}.holdIncoming(2000)`);
+      const outageAt = Date.now();
+      await settledCommand(guest, { type: "expedition.mark", name: "After outage", sourceId: null });
+      const outageSettlementMs = Date.now() - outageAt;
+      const during = await exchange();
+      // A longer authoritative silence crosses the HUD wait threshold and must reject new spends.
+      await guest.evaluate(`${C}.holdIncoming(4500)`);
+      const waiting = await waitFor(async () => (await guest.evaluate(`${C}.status()`)).session.waiting, 4200, 100);
+      const refused = await guest.evaluate('__test.gameplay.submit({type:"expedition.mark", name:"stale", sourceId:null})');
+      const resumed = await waitFor(async () => !(await guest.evaluate(`${C}.status()`)).session.waiting, 4000);
+      const routes = await guest.evaluate(`${C}.route()`);
+      const age = (await guest.evaluate(`${C}.status()`)).remotes[0]?.ageMs;
+      const traffic = await Promise.all([host, guest].map(p => p.evaluate("window.__endImpairment()")));
+      const elapsed = Date.now() - start;
+      const checks = { conserved: swap.pass && during.pass, waited: !!waiting && !!resumed && outageSettlementMs >= 1950,
+        prevented: refused.reason === "host_unavailable", impaired: traffic.every(t => t.dropped > 0) };
+      return { pass: Object.values(checks).every(Boolean), checks, route: routes, settlementMs, outageSettlementMs, finalPoseAgeMs: age,
+        payloadBytesPerSecond: Math.round(1000 * traffic.reduce((sum,t) => sum + t.bytes,0) / elapsed), traffic };
+    } finally {
+      for (const page of [host,guest]) await page.evaluate("window.__endImpairment?.(); delete window.__endImpairment; true");
+    }
+  }
+
   async function soak() {
     const start = Date.now(), duration = 30 * 60_000;
     let rounds = 0;
@@ -1254,7 +1308,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await host.ready();
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
-    if (parts.some(p => ["pilotActions", "soak", "exchange"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
+    if (parts.some(p => ["pilotActions", "soak", "exchange", "roughLink"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
     if (parts.includes("settingsSpawn")) {
       await menu(host, true);
       pauseChecks.soloPaused = await framesWhilePaused();
@@ -1276,7 +1330,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
-      exchange, soak, capacity, contentFixture,
+      exchange, soak, capacity, contentFixture, roughLink,
       settingsSpawn,
       presence,
       jitter,

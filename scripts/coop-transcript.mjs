@@ -501,6 +501,9 @@ async function sharedLoop() {
   const seed = repo.peek();
   const pilot = seed.data.players[HOST_ID];
   pilot.cargo.items.hydrates = 5;
+  pilot.cargo.items.fe_ni_metal = 240;
+  pilot.cargo.items.silicates = 85;
+  pilot.health = 70;
   pilot.modules.consumables.consumable_replication_kit = 1;
   pilot.propellant.ordinaryKg = 0;
   await repo.commit(seed.meta, seed.data);
@@ -529,10 +532,27 @@ async function sharedLoop() {
   await run(h, "trial.record", { trialId: "first_batch" });
   checks.finishedOnce = !rig.host.player(HOST_ID).processing && rig.host.player(HOST_ID).cargo.items.hydrates === 2;
   delete h.telemetry;
+  const repair = await run(h, "ship.repair", { pct: 2 });
+  const patch = await run(h, "item.craft", { itemId: "consumable_hull_patch_kit" });
+  const research = await run(h, "research.unlock", { nodeId: "lg1_bulk_handling" });
+  const metalBefore = rig.host.player(HOST_ID).cargo.items.fe_ni_metal;
+  submit(h, "item.craft", { itemId: "module_cargo_rack_mk1" });
+  submit(h, "module.equip", { slot: "cargo", itemId: null });
+  await rig.settle();
+  const rack = rig.host.player(HOST_ID);
+  checks.sharedResearch = patch.status === "accepted" && research.status === "accepted" &&
+    g.session.mirror.data.world.research.completedNodes.includes("lg1_bulk_handling");
+  checks.queuedLoadout = rack.cargo.items.fe_ni_metal === metalBefore - 150 && rack.modules.ownedModules.includes("module_cargo_rack_mk1") && !rack.modules.equippedModules.cargo;
+  checks.repair = repair.status === "accepted" && rack.health === 72;
   h.pose = { frameId: "earth", positionKm: [30000, 0, 0], quaternion: [0,0,0,1] };
   const point = await run(h, "replication.place", { ...h.pose, name: "Earth rendezvous" });
   checks.privateRecovery = point.status === "accepted" && rig.host.player(HOST_ID).replication.activeId === point.result.point.id &&
     rig.host.player(gid).replication.activeId !== point.result.point.id;
+  g.pose = h.pose;
+  const activate = await run(g, "replication.activate", { pointId: point.result.point.id });
+  const deactivate = await run(g, "replication.deactivate", {});
+  checks.independentSelection = activate.status === "accepted" && deactivate.status === "accepted" &&
+    rig.host.player(gid).replication.activeId === "starter" && rig.host.player(HOST_ID).replication.activeId === point.result.point.id;
   const site = { siteId: "luna_survey_canister" };
   h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0, 0, 0, 1] };
   await run(h, "site.inspect", site);
@@ -548,7 +568,8 @@ async function sharedLoop() {
   winner.pose = poseAt(resolved);
   const deadMine = await run(winner, "asteroid.mine", { ...rock, beamS: resolved.requiredBeamS });
   checks.deadMine = deadMine.reason === "dead" && !destroyed(rig.host.world, rock);
-  await run(winner, "ship.respawn", { mode: "starter" });
+  const recovered = await run(winner, "ship.respawn", { mode: "active" });
+  checks.recovery = recovered.result.destination.pointId === rig.host.player(winnerId).replication.activeId;
   winner.pose = poseAt(resolved);
   checks.distantSalvage = (await run(winner, "wreck.collect", wreck)).reason === "too_far";
   h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0,0,0,1] };
@@ -594,6 +615,10 @@ async function expedition() {
   g.telemetry.propellant.ordinaryKg = 17;
   checks.short = (await submit(h, give("cargo", "silicates", 8))).reason === "materials";
   const cargoBefore = rig.host.player(HOST_ID).cargo.items.silicates;
+  g.telemetry.propellant.ordinaryKg = 1e7;
+  g.session.sendTelemetry(); await rig.settle();
+  checks.tankFull = (await submit(h, give("fuel", "fuel", 1))).reason === "tank_full" && rig.host.player(HOST_ID).propellant.ordinaryKg === 41;
+  g.telemetry.propellant.ordinaryKg = 17;
   g.telemetry.pose = { ...pose, positionKm: [30001,0,0] };
   g.session.sendTelemetry(); await rig.settle();
   checks.range = (await submit(h, give("cargo", "silicates", 2))).reason === "too_far" &&
@@ -670,7 +695,29 @@ async function contentFixture() {
   return { pass: Object.values(checks).every(Boolean), checks, granted: remote.result.granted };
 }
 
+async function suspendedHost() {
+  let ms = 0;
+  const clock = { monoMs: () => ms, nowMs: () => Date.now() };
+  const rig = new Rig();
+  await rig.startHost(clock);
+  const h = rig.client("Host", { local: true }), g = rig.client("Guest");
+  for (const c of [h,g]) { c.session.o.clock = clock; c.join(); }
+  await rig.settle();
+  rig.host.tick(); await rig.settle();
+  const epoch = rig.host.epochMs(), revision = rig.host.world.revision;
+  ms += 120_000;
+  const refused = g.session.submit({ type: "trial.record", trialId: "first_batch", opId: "while-asleep" });
+  const waited = g.session.waiting() && refused.reason === "host_unavailable" && !g.session.pending;
+  rig.host.tick(); await rig.settle();
+  const bounded = rig.host.epochMs() - epoch <= 3000 && !g.session.waiting() && rig.host.world.revision === revision;
+  ms += 1000; rig.host.tick();
+  g.session.submit({ type: "trial.record", trialId: "first_batch", opId: "awake" });
+  await rig.settle();
+  return { pass: waited && bounded && g.settled.at(-1)?.status === "accepted", waited, bounded, epochAdvanceMs: rig.host.epochMs() - epoch };
+}
+
 const SCENARIOS = {
+  suspendedHost,
   ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),
   expedition,
   sharedLoop,

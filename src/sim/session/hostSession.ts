@@ -66,6 +66,7 @@ export interface HostSessionOptions {
   hostName: string;
   system: () => SystemConfig;
   content: string;
+  onTiming?: (kind: "tickLateMs" | "writeMs", ms: number) => void;
   onPlayerCount?: (count: number) => void;
   onState?: (state: HostState, detail?: string) => void;
 }
@@ -194,6 +195,7 @@ export class HostSession {
   /** 1 Hz from the adapter: clock samples to everyone, plus the periodic telemetry checkpoint. */
   tick(): void {
     if (this.state !== "open" && this.state !== "storage_failed") return;
+    this.o.onTiming?.("tickLateMs", Math.max(0, this.o.clock.monoMs() - this.lastHeartbeat - 1000));
     this.epoch0 = this.epochMs();
     this.lastHeartbeat = this.mono0 = this.o.clock.monoMs();
     this.conns.forEach(m => {
@@ -519,9 +521,11 @@ export class HostSession {
   /** One durable write. On failure: restore the pre-command state, stop mutations, publish nothing. */
   private async persist(backup: SaveData): Promise<boolean> {
     this.data.world.simEpochMs = this.epochMs();
+    const start = this.o.onTiming ? this.o.clock.monoMs() : 0;
     try {
       await this.o.repo.commit(this.meta, this.data);
       this.lastCheckpoint = this.o.clock.monoMs();
+      this.o.onTiming?.("writeMs", this.lastCheckpoint - start);
       return true;
     } catch (err) {
       this.data = backup;

@@ -53,7 +53,7 @@ export default function ExpeditionControls({ discoveries }: { discoveries?: stri
     <div className="coop-settings__expedition">
       {discoveries && <div>{discoveries}</div>}
       <button className="settings-menu__button" disabled={pending} onClick={() =>
-        submit({ type: "expedition.mark", sourceId: null, name: "Rendezvous · " + getWorldState().members[getLocalPlayerId()].name, opId: newOpId() }, "Position shared")}>Share my position</button>
+        submit({ type: "expedition.mark", sourceId: null, name: "Rendezvous · " + (getWorldState().members[getLocalPlayerId()]?.name || "Pilot"), opId: newOpId() }, "Position shared")}>Share my position</button>
       {fix && <button className="settings-menu__button" disabled={pending} onClick={() =>
         submit({ type: "expedition.mark", sourceId: null, name: "", clear: true, opId: newOpId() }, "Marker cleared")}>Clear my marker</button>}
       {to && <form onSubmit={e => {
