@@ -11,8 +11,8 @@ import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
-import { shipRes } from "@/store/shipResources";
-import { hostClock, pushRemotePose, remotePoses } from "./coopState";
+import { shipRes, shipReq } from "@/store/shipResources";
+import { setCoop, hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
 const POSE_MS = 1000 / 15;
@@ -25,7 +25,7 @@ export function collectTelemetry(): Telemetry | undefined {
   sampleCollectors();
   const p = getLocalPlayerState();
   const tel: Telemetry = {
-    health: p.health,
+    health: p.health, receivedFuelKg: p.receivedFuelKg, reservedFuelKg: shipReq.reservedKg,
     propellant: { ordinaryKg: p.propellant.ordinaryKg, protectedKg: p.propellant.protectedKg },
     power: { capacitor01: p.power.capacitor01, heat01: p.power.heat01 },
     prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject },
@@ -48,6 +48,13 @@ export interface SessionClientHooks {
 }
 
 export function createSessionClient(h: SessionClientHooks): GuestSession {
+  // Use the host timestamps embedded in discoveries, so device clock skew cannot hide a finding.
+  let visitKey = "";
+  const latest = (data: SaveData) => Math.max(0, ...data.world.discoveries.sources.map(s => s.foundAt),
+    ...Object.values(data.world.discoveries.sites).map(s => s.at), ...Object.values(data.world.discoveries.families).map(f => f.firstAt));
+  const remember = (data: SaveData) => {
+    try { localStorage.setItem(visitKey, String(latest(data))); } catch { /* storage unavailable */ }
+  };
   return new GuestSession({
     clock: systemClock,
     name: h.name,
@@ -61,6 +68,8 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
         remotePoses.delete(e.by);
         if (e.by === getLocalPlayerId()) localRenderPose.atMs = -1;
       }
+      const active = getActiveSave();
+      if (active && visitKey && e.type === "discoveries.changed") remember(active.data);
       worldAuthority.deliver(e);
     },
     onAsteroid: (fieldId, chunkKey, instanceId) => {
@@ -74,6 +83,16 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
       hostClock.at = performance.now();
     },
     onSnapshot: (rec, welcome) => {
+      visitKey = "coop-findings:" + welcome.worldId + ":" + welcome.playerId;
+      let previous: string | null = null;
+      try { previous = localStorage.getItem(visitKey); } catch { /* storage unavailable */ }
+      const d = rec.data.world.discoveries;
+      const since = previous === null ? Infinity : Number(previous);
+      const changes = [d.sources.filter(s => s.foundAt > since).length + " sources",
+        Object.values(d.families).filter(f => f.firstAt > since).length + " material families",
+        Object.values(d.sites).filter(s => s.at > since).length + " recovered sites"].filter(label => !label.startsWith("0 "));
+      setCoop({ discoveries: changes.length ? "Since your last visit · " + changes.join(", ") : undefined });
+      remember(rec.data);
       remotePoses.clear();
       h.onSnapshot?.(rec, welcome);
     },

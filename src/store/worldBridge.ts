@@ -7,7 +7,9 @@ import { getWorldState, inSession, registerCollector } from "@/save/activeSave";
 import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
+import { addToastAtom } from "@/store/toast";
 import { wrecksMirrorAtom } from "@/store/death";
+import { rendezvousAtom } from "@/store/discoveries";
 import { discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources } from "@/store/shipResources";
@@ -27,6 +29,7 @@ export function installWorldBridge(store: Store): void {
   store.set(simEpochMsAtom, world.simEpochMs);
   store.set(simRateAtom, world.simRate);
   store.set(wrecksMirrorAtom, world.wrecks);
+  store.set(rendezvousAtom, world.rendezvous);
   store.set(sharedResearchMirrorAtom, world.research.completedNodes);
   store.set(discoveriesMirrorAtom, world.discoveries);
   store.set(replicationPointsAtom, world.replication.points);
@@ -35,6 +38,13 @@ export function installWorldBridge(store: Store): void {
 
   const unsubscribe = worldAuthority.subscribe((e) => {
     switch (e.type) {
+      case "expedition.given":
+        if (e.to === local) store.set(addToastAtom, { kind: "success", message: "Supplies received",
+          detail: getWorldState().members[e.by]?.name, values: [{ id: e.itemId, amount: e.amount, unit: e.kind === "fuel" ? "kg" : undefined }] });
+        break;
+      case "expedition.marked":
+        store.set(rendezvousAtom, getWorldState().rendezvous);
+        break;
       case "wreck.created":
       case "wreck.changed":
       case "wreck.removed":

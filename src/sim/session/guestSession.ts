@@ -297,11 +297,18 @@ export class GuestSession {
           break;
       }
     }
+    if (c.slices.world?.rendezvous) w.rendezvous = c.slices.world.rendezvous;
     if (c.slices.world?.discoveries) w.discoveries = c.slices.world.discoveries;
     if (c.slices.world?.replication) w.replication = c.slices.world.replication;
     const pid = this.playerId;
     const me = pid ? m.data.players[pid] : undefined;
-    if (me && c.slices.player) Object.assign(me, c.slices.player);
+    if (me && c.slices.player) {
+      // The receiver may have flown since its last sample. Keep that burn when a delivery crosses it.
+      const fuel = c.events.find(e => e.type === "expedition.given" && e.to === pid && e.kind === "fuel");
+      const live = fuel && this.o.telemetry?.()?.propellant;
+      Object.assign(me, c.slices.player);
+      if (live && fuel?.type === "expedition.given") me.propellant = { ...live, ordinaryKg: live.ordinaryKg + fuel.amount };
+    }
     c.events.forEach((e) => this.o.onEvent?.(e));
   }
 

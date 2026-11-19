@@ -146,6 +146,8 @@ export interface WorldState {
   research: SharedResearchState;
   discoveries: DiscoveryState;
   replication: ReplicationState;
+  /** Latest shared navigation fix per pilot, in its orbital frame. */
+  rendezvous: Record<PlayerId, Rendezvous>;
   /** Bounded, oldest first (MAX_RECEIPTS). */
   receipts: OperationReceipt[];
   /** Committed-operation counter (schema 6); a co-op mirror is valid at one revision. */
@@ -154,6 +156,13 @@ export interface WorldState {
   session: { generation: number };
   /** Admitted pilots. The host's own entry has no verifier (it never authenticates). */
   members: Record<PlayerId, WorldMember>;
+}
+
+export interface Rendezvous {
+  frameId: string;
+  positionKm: Vec3Tuple;
+  name: string;
+  sourceId: string | null;
 }
 
 export interface WorldMember {
@@ -300,6 +309,8 @@ export interface PlayerState {
   commsPlayed: string[];
   starMarkers: string[];
   minedLifetime: number;
+  /** Cumulative inbound gifts, allowing an older fuel sample to retain a crossed delivery. */
+  receivedFuelKg: number;
   propellant: PropellantState;
   power: PowerState;
   processing: ProcessingBatch | null;

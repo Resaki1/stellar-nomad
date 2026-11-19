@@ -15,6 +15,7 @@ export interface CoopSnapshot {
   code: string | null;
   detail: string | null;
   players: number;
+  discoveries?: string;
 }
 
 export interface PoseSample {

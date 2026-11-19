@@ -21,6 +21,7 @@ export interface Authority {
  * ship.repair is not: two per second of repair would evict the bounded log within minutes.
  */
 export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
+  "expedition.give",
   "asteroid.mine",
   "item.craft",
   "item.consume",
@@ -52,6 +53,8 @@ export class LocalAuthority implements Authority {
       /** `urgent` for operations a reload must not lose. */
       markDirty: (urgent: boolean) => void;
       resolveMine?: MineResolver;
+      nearbyPilot?: (id: PlayerId) => PlayerState | null;
+      reservedFuel?: (id: PlayerId) => number;
     },
   ) {}
 
@@ -107,7 +110,7 @@ export class LocalAuthority implements Authority {
       const now = Date.now();
       const getPlayers = this.deps.getPlayers;
       const bookmarked = (): Set<string> => new Set(getPlayers().flatMap((p) => p.bookmarks.map((b) => b.sourceId)));
-      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, resolveMine: this.deps.resolveMine });
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, nearbyPilot: this.deps.nearbyPilot, reservedFuel: this.deps.reservedFuel, resolveMine: this.deps.resolveMine });
       if ("reason" in r) {
         outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing, evidence: r.evidence };
       } else {

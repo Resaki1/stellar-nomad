@@ -88,7 +88,14 @@ class Rig {
     this.clients.push(c);
     return c;
   }
-  settle() { return this.net.settle(); }
+  async settle() {
+    // Handshakes hash credentials asynchronously. An empty wire alone does not mean the host is idle.
+    for (let turn = 0; turn < 2; turn++) {
+      await this.net.settle();
+      await this.host.chain;
+    }
+    await this.net.settle();
+  }
 }
 
 /** A pose `offsetKm` from the rock in the rock's own frame. */
@@ -551,7 +558,75 @@ async function sharedLoop() {
   return { pass: Object.values(checks).every(Boolean), checks };
 }
 
+async function expedition() {
+  const repo = newWorld();
+  const seed = repo.peek();
+  const pilot = seed.data.players[HOST_ID];
+  const patch = "consumable_hull_patch_kit";
+  pilot.cargo.items.silicates = 7;
+  pilot.modules.consumables[patch] = 2;
+  await repo.commit(seed.meta, seed.data);
+  const { rig, h, g } = await joinedPair(repo);
+  const gid = g.session.playerId;
+  const observer = rig.client("Observer");
+  observer.join(); await rig.settle();
+  const pose = { frameId: "earth", positionKm: [30000,0,0], quaternion: [0,0,0,1] };
+  const sample = (kg, reserve = 0) => ({ pose, receivedFuelKg: 0, reservedFuelKg: reserve, propellant: { ordinaryKg: kg, protectedKg: 2 } });
+  h.telemetry = sample(50, 40);
+  g.telemetry = sample(10);
+  g.session.sendTelemetry();
+  await rig.settle();
+  const submit = async (c, op) => {
+    c.session.submit({ opId: "trip-" + (++opN), ...op });
+    await rig.settle(); return c.settled.at(-1);
+  };
+  const give = (kind, itemId, amount) => ({ type: "expedition.give", to: gid, kind, itemId, amount });
+  const checks = {};
+  checks.brakingReserve = (await submit(h, give("fuel", "fuel", 11))).reason === "materials";
+  checks.fuel = (await submit(h, give("fuel", "fuel", 9))).status === "accepted" &&
+    rig.host.player(HOST_ID).propellant.ordinaryKg === 41 && rig.host.player(gid).propellant.ordinaryKg === 19;
+  h.telemetry.propellant.ordinaryKg = 41;
+  // A sample that crossed the delivery can include real burns but cannot erase the gift.
+  g.telemetry.propellant.ordinaryKg = 8;
+  g.session.sendTelemetry(); await rig.settle();
+  checks.crossedFuel = rig.host.player(gid).propellant.ordinaryKg === 17;
+  g.telemetry.receivedFuelKg = 9;
+  g.telemetry.propellant.ordinaryKg = 17;
+  checks.short = (await submit(h, give("cargo", "silicates", 8))).reason === "materials";
+  const cargoBefore = rig.host.player(HOST_ID).cargo.items.silicates;
+  g.telemetry.pose = { ...pose, positionKm: [30001,0,0] };
+  g.session.sendTelemetry(); await rig.settle();
+  checks.range = (await submit(h, give("cargo", "silicates", 2))).reason === "too_far" &&
+    rig.host.player(HOST_ID).cargo.items.silicates === cargoBefore;
+  g.telemetry.pose = pose;
+  g.session.sendTelemetry(); await rig.settle();
+  rig.net.duplicateNextToHost(h.conn);
+  checks.cargoOnce = (await submit(h, give("cargo", "silicates", 3))).status === "accepted" &&
+    rig.host.player(HOST_ID).cargo.items.silicates === 4 && rig.host.player(gid).cargo.items.silicates === 3;
+  checks.consumable = (await submit(h, give("consumable", patch, 1))).status === "accepted" &&
+    g.session.mirror.data.players[gid].modules.consumables[patch] === 1;
+  const fix = await submit(h, { type: "expedition.mark", sourceId: null, name: "Rendezvous" });
+  checks.marker = fix.status === "accepted" && g.session.mirror.data.world.rendezvous[HOST_ID]?.frameId === "earth";
+  const messages = rig.net.toClientLog.filter(([id,m]) => id === observer.conn && m.t === "commit");
+  checks.privateCommits = messages.length > 0 && messages.every(([,m]) => !m.slices.player && m.events.every(e => e.type !== "player.changed"));
+  rig.net.disconnect(g.conn); await rig.settle();
+  checks.offline = (await submit(h, give("fuel","fuel",1))).reason === "not_active";
+  const g2 = rig.client("Guest", { store: g.store });
+  g2.join(); await rig.settle();
+  checks.rejoin = g2.session.mirror.data.players[gid].receivedFuelKg === 9 && g2.session.mirror.data.players[gid].cargo.items.silicates === 3;
+  g2.telemetry = sample(17); g2.telemetry.receivedFuelKg = 9;
+  g2.session.sendTelemetry(); await rig.settle();
+  rig.repo.failNext = 1;
+  h.session.submit({ ...give("cargo","silicates",2), opId: "failed-gift" });
+  await rig.settle();
+  const durable = repo.peek().data.players;
+  checks.atomicFailure = rig.host.status === "storage_failed" && durable[HOST_ID].cargo.items.silicates === 4 &&
+    durable[gid].cargo.items.silicates === 3 && rig.host.player(gid).cargo.items.silicates === 3;
+  return { pass: Object.values(checks).every(Boolean), checks };
+}
+
 const SCENARIOS = {
+  expedition,
   sharedLoop,
   pilotActions,
   shipLifecycle,

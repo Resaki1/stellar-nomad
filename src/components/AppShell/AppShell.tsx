@@ -117,6 +117,24 @@ export default function AppShell() {
         const [g, c] = await Promise.all([import("@/net/guestController"), import("@/net/coopState")]);
         return { ...g.joinActivity(), sent: g.guestSentCount(), snapshot: c.coopSnapshot(), log: c.coopLog.slice(-12) };
       },
+      /** Real guest connection without mounting a third/fourth renderer on the test host. */
+      async networkPilot(code: string) {
+        const { joinAndBoot, guestState } = await import("@/net/guestController");
+        await joinAndBoot(code);
+        const client = guestState()!.client;
+        const id = client.playerId!;
+        const pose = client.mirror!.data.players[id].ship!;
+        let seq = 0;
+        const timer = setInterval(() => client.sendPose({ seq: ++seq, tick: performance.now(), f: pose.frameId,
+          p: pose.positionKm, q: pose.quaternion, v: [0, 0, 0], fl: 0 }), 1000 / 15);
+        window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
+        client.submit({ type: "expedition.mark", name: "Capacity pilot", sourceId: null, opId: crypto.randomUUID() });
+        return id;
+      },
+      async networkRevision() {
+        const { guestState } = await import("@/net/guestController");
+        return guestState()?.client.revision;
+      },
       async ready(timeoutMs?: number): Promise<unknown> {
         while ((window as DevWindow).__test === stub) await new Promise((r) => setTimeout(r, 100));
         const full = (window as DevWindow).__test as { ready(t?: number): Promise<unknown> };

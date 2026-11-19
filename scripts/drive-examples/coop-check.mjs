@@ -116,7 +116,7 @@ async function waitFor(fn, ms, step = 200) {
   }
 }
 
-export default async function coopCheck({ host, guest, log }) {
+export default async function coopCheck({ host, guest, extraGuests = [], log }) {
   const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
@@ -162,23 +162,23 @@ export default async function coopCheck({ host, guest, log }) {
   }
 
   /** Guest: open the invite link, wait for a good card, press Join, wait for the game and the session. */
-  async function joinByCard(c = code) {
+  async function joinByCard(c = code, page = guest) {
     const t0 = Date.now();
-    await guest.load({ join: c });
+    await page.load({ join: c });
     const card = await waitFor(async () => {
-      const k = await guest.evaluate(CARD);
+      const k = await page.evaluate(CARD);
       return k && k.state === "room" && k.joinEnabled ? k : null;
     }, 30_000, 250);
-    if (!card) throw new Error(`join card never offered Join: ${J(await guest.evaluate(CARD))}`);
+    if (!card) throw new Error(`join card never offered Join: ${J(await page.evaluate(CARD))}`);
     const clicked = Date.now();
-    await guest.evaluate(`document.querySelector("[data-coop-join]").click(), true`);
-    await guest.ready();
+    await page.evaluate(`document.querySelector("[data-coop-join]").click(), true`);
+    await page.ready();
     const ready = Date.now();
     const st = await waitFor(async () => {
-      const g = await guest.evaluate(`${C}.status()`);
+      const g = await page.evaluate(`${C}.status()`);
       return g.status === "joined" ? g : null;
     }, 30_000, 250);
-    if (!st) throw new Error(`guest never joined: ${J(await guest.evaluate(`${C}.log()`))}`);
+    if (!st) throw new Error(`guest never joined: ${J(await page.evaluate(`${C}.log()`))}`);
     return { card, status: st, ms: { card: clicked - t0, toReady: ready - clicked }, readyAt: ready };
   }
 
@@ -847,6 +847,72 @@ export default async function coopCheck({ host, guest, log }) {
     return { pass: Object.values(checks).every(Boolean), checks, field, before, seen, seenMs, fallback, hostMembers: hostRec, shots, ms: Date.now() - p0 };
   }
 
+  async function settledCommand(page, op) {
+    const id = "drive-" + crypto.randomUUID();
+    await page.evaluate(`__test.gameplay.submit(${J({ ...op, opId: id })})`);
+    const stream = await waitFor(async () => {
+      const current = await page.evaluate(`${C}.mirror()?.stream`);
+      return current?.opId === id && current;
+    }, 10000);
+    if (!stream || stream.outcome?.status !== "accepted") throw new Error(op.type + " " + J(stream?.outcome));
+    return stream.outcome.result;
+  }
+
+  async function exchange() {
+    await guest.evaluate(`${C}.meetRemote(0.08)`);
+    await guest.sleep(2500);
+    await settledCommand(guest, { type: "expedition.mark", name: "Crew rendezvous", sourceId: null });
+    const before = await snapshot();
+    const give = { type: "expedition.give", kind: "cargo", itemId: "silicates", amount: 1 };
+    await settledCommand(host, { ...give, to: ids.guest });
+    const received = await snapshot();
+    await settledCommand(guest, { ...give, to: ids.host });
+    const after = await snapshot();
+    const checks = { received: (received.guest.mirror.silicates ?? 0) === (before.guest.mirror.silicates ?? 0) + 1,
+      conserved: sameItems(before.host.record, after.host.record) && sameItems(before.guest.record, after.guest.record),
+      mirrors: sameItems(after.host.mirror, after.host.record) && sameItems(after.guest.mirror, after.guest.record),
+      revision: after.revision === after.clientRevision.host && after.revision === after.clientRevision.guest };
+    return { pass: Object.values(checks).every(Boolean), checks };
+  }
+
+  async function soak() {
+    const start = Date.now(), duration = 30 * 60_000;
+    let rounds = 0;
+    while (Date.now() - start < duration) {
+      const round = await exchange();
+      if (!round.pass) return { pass: false, rounds, round };
+      log({ part: "soak-checkpoint", rounds: ++rounds, elapsedMs: Date.now() - start });
+      await host.sleep(Math.min(60_000, Math.max(0, duration - (Date.now() - start))));
+    }
+    const final = await exchange();
+    return { pass: final.pass, rounds, elapsedMs: Date.now() - start, final };
+  }
+
+  async function capacity() {
+    if (extraGuests.length !== 2) throw new Error("Use --four for the capacity run");
+    try {
+      const extraIds = [];
+      for (const page of extraGuests) {
+        await page.load({ title: 1 });
+        extraIds.push(await page.evaluate(`__test.networkPilot(${J(code)})`));
+      }
+      const four = await waitFor(async () => {
+        const st = await host.evaluate(`${C}.status()`);
+        return st.players === 4 && st.remotes.filter(r => r.ageMs < 5000).length === 3;
+      }, 30000);
+      const revisions = await waitFor(async () => {
+        const values = await Promise.all([host, guest].map(p => p.evaluate(`${C}.status().session.revision`)));
+        values.push(...await Promise.all(extraGuests.map(p => p.evaluate("__test.networkRevision()"))));
+        return new Set(values).size === 1 && values;
+      }, 10000);
+      const records = await Promise.all(extraIds.map(record));
+      return { pass: !!four && new Set([ids.host, ids.guest, ...extraIds]).size === 4 && !!revisions &&
+        records.every(p => p?.stream.outcome?.status === "accepted"), revisions };
+    } finally {
+      for (const page of extraGuests) await page.load({ title: 1 });
+    }
+  }
+
   async function pilotActions() {
     const patch = "consumable_hull_patch_kit";
     const before = await record(ids.host);
@@ -1171,7 +1237,7 @@ export default async function coopCheck({ host, guest, log }) {
     await host.ready();
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
-    if (parts.includes("pilotActions")) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
+    if (parts.some(p => ["pilotActions", "soak", "exchange"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
     if (parts.includes("settingsSpawn")) {
       await menu(host, true);
       pauseChecks.soloPaused = await framesWhilePaused();
@@ -1193,6 +1259,7 @@ export default async function coopCheck({ host, guest, log }) {
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
+      exchange, soak, capacity,
       settingsSpawn,
       presence,
       jitter,

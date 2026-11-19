@@ -72,6 +72,9 @@ interface Member {
   fenced: boolean;
   closeAfter?: number;
   lastPose?: PoseMsg;
+  telemetryAt?: number;
+  poseAt?: number;
+  reservedFuelKg?: number;
 }
 
 function b64url(bytes: Uint8Array): string {
@@ -146,6 +149,17 @@ export class HostSession {
       getPlayers: () => Object.values(this.data.players),
       markDirty: () => {},
       resolveMine: this.resolver,
+      nearbyPilot: id => {
+        const member = this.conns.get(this.bound.get(id) ?? "");
+        if (!member || member.fenced || this.o.clock.monoMs() - (member.telemetryAt ?? -Infinity) > 5000) return null;
+        const peer = this.data.players[id];
+        if (peer && member.lastPose && (member.poseAt ?? 0) > (member.telemetryAt ?? 0)) {
+          const pose = member.lastPose;
+          peer.ship = { frameId: pose.f, positionKm: pose.p, quaternion: pose.q };
+        }
+        return peer ?? null;
+      },
+      reservedFuel: id => this.conns.get(this.bound.get(id) ?? "")?.reservedFuelKg ?? 0,
     });
     this.authority.subscribe((e) => this.captured.push(e));
     this.epoch0 = w.simEpochMs;
@@ -227,7 +241,9 @@ export class HostSession {
     } else if (msg.t === "impact") {
       if (channel === "cmd" && msg.by === pid && !this.data.players[pid]?.isDead) this.broadcast("cmd", msg);
     } else if (msg.t === "tel") {
-      this.applyTelemetry(pid, msg.tel);
+      this.enqueue(() => {
+        if (this.state === "open" && !m.fenced && this.bound.get(pid) === conn) this.applyTelemetry(pid, msg.tel);
+      });
     } else if (msg.t === "name") {
       this.rename(pid, msg.name);
     } else if (msg.t === "cmd") {
@@ -442,20 +458,21 @@ export class HostSession {
       const worldSlices: CommitSlices["world"] = {};
       if (shared.some((e) => e.type === "discoveries.changed")) worldSlices.discoveries = this.data.world.discoveries;
       if (shared.some((e) => e.type === "replication.changed")) worldSlices.replication = this.data.world.replication;
-      const mine = events.filter((e): e is Extract<WorldEvent, { type: "player.changed" }> => e.type === "player.changed" && e.playerId === pid);
-      const keys = Array.from(new Set(mine.flatMap((e) => e.keys)));
-      const playerSlices: Record<string, unknown> = {};
-      for (const k of keys) playerSlices[k] = this.data.players[pid][k];
+      if (shared.some(e => e.type === "expedition.marked")) worldSlices.rendezvous = this.data.world.rendezvous;
       this.conns.forEach((other, conn) => {
-        if (!other.playerId || other.fenced) return;
-        const actor = other.playerId === pid;
+        const owner = other.playerId;
+        if (!owner || other.fenced) return;
+        const mine = events.filter((e): e is Extract<WorldEvent, { type: "player.changed" }> =>
+          e.type === "player.changed" && e.playerId === owner);
+        const playerSlices: Record<string, unknown> = {};
+        for (const change of mine) for (const key of change.keys) playerSlices[key] = this.data.players[owner][key];
         this.send(conn, {
           t: "commit",
           gen: this.gen,
           revision: this.data.world.revision,
           by: pid,
-          events: actor ? [...shared, ...mine] : shared,
-          slices: actor ? { world: worldSlices, player: playerSlices } : { world: worldSlices },
+          events: [...shared, ...mine],
+          slices: mine.length ? { world: worldSlices, player: playerSlices } : { world: worldSlices },
         });
       });
     }
@@ -482,7 +499,6 @@ export class HostSession {
     if (!(typeof op.beamS === "number" && op.beamS >= MIN_BEAM_SHARE * rock.requiredBeamS)) return "no_activity";
     const pose = player.ship;
     if (!pose) return "too_far";
-    if (pose.frameId !== rock.frameId) updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
     const d = poseDistanceKm(pose.frameId, pose.positionKm, rock.frameId, rock.positionKm);
     const range = MINE_RANGE_KM * player.shipConfig.scannerRangeMult + MINE_SLACK_KM + rock.radiusM / 1000;
     return d <= range ? null : "too_far";
@@ -514,12 +530,15 @@ export class HostSession {
   private applyTelemetry(pid: PlayerId, t: Telemetry): void {
     const p = this.data.players[pid];
     if (!p) return;
+    const member = this.conns.get(this.bound.get(pid) ?? "");
+    if (member && t.pose && t.propellant && !p.isDead) member.telemetryAt = this.o.clock.monoMs();
+    if (member && t.reservedFuelKg !== undefined) member.reservedFuelKg = t.reservedFuelKg;
     if (t.pose && !p.isDead) p.ship = { frameId: t.pose.frameId, positionKm: t.pose.positionKm, quaternion: t.pose.quaternion };
     if (t.health !== undefined && !p.isDead) p.health = Math.min(t.health, p.shipConfig.maxHealth);
     // Bounds, not anti-cheat: never above the tank, and the protected reserve only drains.
-    if (t.propellant) {
+    if (t.propellant && !p.isDead) {
       p.propellant = {
-        ordinaryKg: Math.min(t.propellant.ordinaryKg, tankCapacityKg(p, this.data.world)),
+        ordinaryKg: Math.min(t.propellant.ordinaryKg + Math.max(0, p.receivedFuelKg - (t.receivedFuelKg ?? 0)), tankCapacityKg(p, this.data.world)),
         protectedKg: Math.min(t.propellant.protectedKg, p.propellant.protectedKg),
       };
     }
@@ -544,6 +563,7 @@ export class HostSession {
   private relayPose(m: Member, pid: PlayerId, pose: PoseMsg): void {
     if (this.data.players[pid]?.isDead || pose.id !== pid || pose.seq <= (m.lastPose?.seq ?? -1)) return;
     m.lastPose = pose;
+    m.poseAt = this.o.clock.monoMs();
     this.conns.forEach((other, conn) => {
       if (conn !== m.conn && other.playerId && !other.fenced) this.o.transport.send(conn, "pose", pose);
     });

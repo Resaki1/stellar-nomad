@@ -148,6 +148,7 @@ export function sanitizeWorld(v: unknown): WorldState {
       completedNodes: uniqueStrings(isObj(v.research) ? v.research.completedNodes : undefined),
       legacy: uniqueStrings(isObj(v.research) ? v.research.legacy : undefined).slice(0, MAX_LEGACY_IDS),
     },
+    rendezvous: sanitizeRendezvous(v.rendezvous),
     discoveries: sanitizeDiscoveries(v.discoveries),
     replication: sanitizeReplication(v.replication),
     receipts: sanitizeReceipts(v.receipts),
@@ -158,6 +159,15 @@ export function sanitizeWorld(v: unknown): WorldState {
 }
 
 const MAX_MEMBERS = 64;
+function sanitizeRendezvous(v: unknown): WorldState["rendezvous"] {
+  if (!isObj(v)) return {};
+  const entries = Object.entries(v).slice(0, MAX_MEMBERS).flatMap(([id, fix]) => {
+    if (!isObj(fix) || typeof fix.frameId !== "string" || typeof fix.name !== "string") return [];
+    const positionKm = position(fix.positionKm);
+    return positionKm ? [[id, { frameId: fix.frameId, positionKm, name: fix.name.slice(0, 40), sourceId: typeof fix.sourceId === "string" ? fix.sourceId : null }]] : [];
+  });
+  return Object.fromEntries(entries);
+}
 function sanitizeMembers(v: unknown): Record<string, WorldMember> {
   const out: Record<string, WorldMember> = {};
   if (!isObj(v)) return out;
@@ -366,6 +376,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
     commsPlayed: strArray(v.commsPlayed),
     starMarkers: strArray(v.starMarkers),
     minedLifetime: Math.max(0, Math.floor(num(v.minedLifetime, 0))),
+    receivedFuelKg: Math.max(0, num(v.receivedFuelKg, 0)),
     propellant: {
       ordinaryKg: fuelKg(propellant.ordinaryKg, d.propellant.ordinaryKg),
       protectedKg: fuelKg(propellant.protectedKg, d.propellant.protectedKg),
