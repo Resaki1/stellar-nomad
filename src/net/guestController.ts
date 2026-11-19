@@ -75,7 +75,7 @@ export const JOIN_MESSAGES: Record<JoinFailure, string> = {
   content: "Different game version",
   credential: "Not recognised by the host",
   kicked: "Removed by the host",
-  replaced: "This pilot joined from another tab",
+  replaced: "This replicant joined from another tab",
   relay: "Relay unavailable",
   closed: "Session closed",
   timeout: "Can't reach host",

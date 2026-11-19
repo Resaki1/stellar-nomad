@@ -189,7 +189,11 @@ from 7 km, hit an asteroid, die on a second approach, then respawn. `pnpm coop:t
 delivers delayed poses across death and respawn and adds an observer while the pilot is dead.
 For Settings cursor capture, run `SHELL_PARTS=lock pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs`.
 The gate opens Settings with Escape, waits for the previous input activation to expire, then closes
-with Escape and reads `document.pointerLockElement`. It also checks Enter to resume flight.
+with Escape and reads `document.pointerLockElement`. It also checks Enter to resume flight
+and opens every settings category after a browser pointer unlock. Escape from each category
+must return to the ship menu with the cursor free. The next Escape must return to flight.
+Run `COOP_PARTS=shipMenu,crewUi,crewAdmin` with the co-op driver to check the same sequence
+while connected, badge clearance at 390–1440 px, and the replicant roster on both clients.
 
 The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test
 hooks: `__test.coop.holdIncoming(ms)` (latency spike: the race loser still sends its claim)

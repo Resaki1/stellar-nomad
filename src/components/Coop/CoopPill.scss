@@ -1,9 +1,5 @@
-// Top-right, the connection corner: left of the settings gear (2vmax, 32 px), vertically centred
-// on it. The top centre belongs to the panel buttons and the objective tracker.
+// The connection indicator and ship menu share a flex container in the HUD.
 .coop-pill {
-  position: fixed;
-  top: calc(2vmax + 4px);
-  right: calc(2vmax + 40px);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -15,7 +11,6 @@
   font: 600 12px/1 ui-monospace, monospace;
   letter-spacing: 0.08em;
   pointer-events: none;
-  z-index: 20;
 
   &__dot {
     width: 8px;
@@ -32,12 +27,10 @@
     opacity: 0.6;
   }
 
-  // Below 1048 px the centred panel buttons reach this far (phones: they sit left of the gear).
-  // The pill shrinks to a status dot centred under the gear, clear of it and of the toasts
-  // (phones: from 60 px); code and pilots live in Settings → friends.
+  // The outer gutter stays clear of the toolbar to the left and notifications below.
   @media (max-width: 1047px) {
-    top: calc(2vmax + 34px);
-    right: calc(2vmax + 12px);
+    position: absolute;
+    left: calc(100% + 4px);
     width: 8px;
     height: 8px;
     padding: 0;

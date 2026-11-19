@@ -385,8 +385,13 @@ export default async function shellCheck(d) {
     const locked = async () => (await ev(PL)).locked;
     await d.send("Page.bringToFront");
     await title();
-    const start = await rectOf(`[...document.querySelectorAll('.shell-menu__item')].find(x => x.textContent.includes('Continue')) ?? document.querySelector('.shell-menu__item--primary')`);
+    const needsWorld = !(await menu()).some(item => item.text === "Continue");
+    const start = await rectOf(`document.querySelector('.shell-menu__item--primary')`);
     await tclick(start);
+    if (needsWorld) {
+      await waitFor("!!document.querySelector('#shell-new-world')");
+      await tclick(await rectOf(`document.querySelector('button[form="shell-new-world"]')`));
+    }
     await playing();
     await wait(1500);
     const L = { whenPlaying: await locked() };
@@ -441,8 +446,27 @@ export default async function shellCheck(d) {
     await key("Enter", "Enter", 13);
     await wait(400);
     L.enterResumed = await locked() && !(await ev(`!!document.querySelector('.settings-menu')`));
+    // Exercise the browser's unlock event as well as the game's Escape keydown path.
+    // CDP key events alone do not reliably produce the browser-owned pointerlockchange.
+    await ev("document.exitPointerLock()");
+    await waitFor("!!document.querySelector('.settings-menu__nav')");
+    const categories = await ev('[...document.querySelectorAll(".settings-menu__categories button")].map(b => b.textContent)');
+    L.settingsBack = {};
+    for (const category of categories) {
+      await tclick(await rectOf(`[...document.querySelectorAll(".settings-menu__categories button")].find(b => b.textContent === ${JSON.stringify(category)})`));
+      await waitFor("!!document.querySelector('.settings-menu__content')");
+      await key("Escape", "Escape", 27);
+      await waitFor("!!document.querySelector('.settings-menu__nav')");
+      L.settingsBack[category] = !await locked() && await ev('document.querySelector("#panel-title").textContent === "Ship menu"');
+    }
+    await wait(6000);
+    await key("Escape", "Escape", 27);
+    await wait(600);
+    L.nativeUnlockResumed = !(await ev("!!document.querySelector('.settings-menu')")) &&
+      (await locked() || await ev("Number(getComputedStyle(document.querySelector('.flight-hud__hint--quiet')).opacity) > 0"));
     L.pass = L.beforePanels && !L.panelOpen && L.afterCloseClick && L.afterCloseKey && L.escPanelClosed &&
-      (L.afterEsc || Number(L.steerPrompt) > 0) && L.settingsReleased && L.settingsClosed && L.settingsFallback && L.enterResumed;
+      (L.afterEsc || Number(L.steerPrompt) > 0) && L.settingsReleased && L.settingsClosed && L.settingsFallback && L.enterResumed &&
+      Object.values(L.settingsBack).every(Boolean) && L.nativeUnlockResumed;
     out.lock = L;
     log("lock", JSON.stringify(L));
   }

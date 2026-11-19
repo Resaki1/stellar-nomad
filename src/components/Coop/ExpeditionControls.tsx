@@ -82,7 +82,7 @@ export default function ExpeditionControls({ discoveries }: { discoveries?: stri
     <div className="coop-settings__expedition">
       {!recipient && <>
       {discoveries && <div>{discoveries}</div>}
-      <section className="crew-members"><h3>Connected pilots <small>{pilots.length}</small></h3>
+      <section className="crew-members"><h3>Connected replicants <small>{pilots.length}</small></h3>
         <ul>{pilots.map(p => <li key={p.id} data-crew-id={p.id}>
           <div><strong>{p.name}</strong> <small>{[p.host && "Host", p.id === localId && "You"].filter(Boolean).join(" · ")}</small></div>
           <span className="crew-ping" title="Round-trip time to the host">{p.host ? "0 ms" : p.pingMs === null ? "Measuring…" : p.pingMs + " ms"}</span>
@@ -97,23 +97,23 @@ export default function ExpeditionControls({ discoveries }: { discoveries?: stri
               const { kickPilot } = await import("@/net/hostController");
               kickPilot(p.id);
               setConfirmKick(null);
-            }}>Remove pilot</button>
+            }}>Remove replicant</button>
           </div>}
         </li>)}</ul>
       </section>
       <section className="crew-fix">
         <MapPin size={20} aria-hidden />
-        <div><h3>Rendezvous</h3><p>{fix ? fix.name : "Mark your position for every pilot."}</p></div>
+        <div><h3>Rendezvous</h3><p>{fix ? fix.name : "Mark your position for every replicant."}</p></div>
         <div className="crew-actions"><button disabled={pending} onClick={() =>
-          submit({ type: "expedition.mark", sourceId: null, name: "Rendezvous · " + (getWorldState().members[getLocalPlayerId()]?.name || "Pilot"), opId: newOpId() }, "Position shared")}>{fix ? "Move marker here" : "Share my position"}</button>
+          submit({ type: "expedition.mark", sourceId: null, name: "Rendezvous · " + (getWorldState().members[getLocalPlayerId()]?.name || "Replicant"), opId: newOpId() }, "Position shared")}>{fix ? "Move marker here" : "Share my position"}</button>
         {fix && <button disabled={pending} onClick={() =>
           submit({ type: "expedition.mark", sourceId: null, name: "", clear: true, opId: newOpId() }, "Marker cleared")}>Clear my marker</button>}</div>
       </section>
       </>}
       {recipient && <section>
-        <button className="crew-back" disabled={pending} onClick={() => { setRecipient(""); setNotice(""); }}>‹ All pilots</button>
-        <h3>{target ? `Supplies for ${target.name}` : "Pilot disconnected"}</h3>
-        {target ? <p>{target.km === null ? "Position unavailable" : target.km < 1 ? Math.round(target.km * 1000) + " m away" : target.km.toLocaleString(undefined, {maximumFractionDigits: 1}) + " km away"} · Transfer range {GIFT_RANGE_KM * 1000} m</p> : <p>Return to the pilot list to choose another recipient.</p>}
+        <button className="crew-back" disabled={pending} onClick={() => { setRecipient(""); setNotice(""); }}>‹ All replicants</button>
+        <h3>{target ? `Supplies for ${target.name}` : "Replicant disconnected"}</h3>
+        {target ? <p>{target.km === null ? "Position unavailable" : target.km < 1 ? Math.round(target.km * 1000) + " m away" : target.km.toLocaleString(undefined, {maximumFractionDigits: 1}) + " km away"} · Transfer range {GIFT_RANGE_KM * 1000} m</p> : <p>Return to the crew list to choose another recipient.</p>}
         {target &&
         <form onSubmit={e => {
           e.preventDefault();
@@ -131,7 +131,7 @@ export default function ExpeditionControls({ discoveries }: { discoveries?: stri
             <button type="button" disabled={pending || !available} onClick={() => setAmount(String(Math.max(1, Math.floor(available / 2))))}>Half</button>
             <button type="button" disabled={pending || !available} onClick={() => setAmount(String(available))}>Max</button></div>
           <button className="crew-send" disabled={pending || !valid || !nearby} type="submit"><Send size={15} />
-            {nearby ? `Send ${amount || "0"} ${unit} to ${target.name}` : !target ? "Select a pilot" : "Move within " + GIFT_RANGE_KM * 1000 + " m to transfer"}</button>
+            {nearby ? `Send ${amount || "0"} ${unit} to ${target.name}` : !target ? "Select a replicant" : "Move within " + GIFT_RANGE_KM * 1000 + " m to transfer"}</button>
         </form>}</section>}
       {notice && <div role="status">{notice}</div>}
     </div>

@@ -405,7 +405,7 @@ export function parseSaveData(raw: unknown): SaveData {
   if (version < 1 || !Number.isInteger(version)) throw new Error(`bad schemaVersion ${String(data.schemaVersion)}`);
   if (version > SCHEMA_VERSION) throw new Error(`save is from a newer build (schema ${version} > ${SCHEMA_VERSION})`);
   for (let v = version; v < SCHEMA_VERSION; v++) data = MIGRATIONS[v - 1](data);
-  if (!isObj(data.world) || !isObj(data.players)) throw new Error("save data has no world or players");
+  if (!isObj(data.world) || !isObj(data.players)) throw new Error("save data is missing world or replicant records");
   const players: Record<string, PlayerState> = {};
   const world = sanitizeWorld(data.world);
   const known = new Set(world.discoveries.sources.map((s) => s.id));

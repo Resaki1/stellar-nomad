@@ -212,7 +212,7 @@ export class HostSession {
     const roster = Array.from(this.bound, ([id, conn]) => {
       const peer = this.conns.get(conn);
       const fresh = peer?.pingAt !== undefined && now - peer.pingAt < 5000;
-      return { id, name: this.data.world.members[id]?.name ?? "Pilot", host: id === this.o.hostPlayerId,
+      return { id, name: this.data.world.members[id]?.name ?? "Replicant", host: id === this.o.hostPlayerId,
         pingMs: fresh ? peer.pingMs ?? null : null };
     });
     const msg: HostMsg = { roster, t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.clockPaused ? 0 : this.data.world.simRate, hostMonoMs: now };

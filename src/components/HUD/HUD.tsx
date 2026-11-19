@@ -4,7 +4,6 @@ import ExpeditionControls from "@/components/Coop/ExpeditionControls";
 import Panel from "./Shell/Panel";
 import { coopSnapshot, subscribeCoop } from "@/net/coopState";
 import { titleUrl } from "@/components/AppShell/appState";
-import CoopPill from "@/components/Coop/CoopPill";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
@@ -151,7 +150,7 @@ export default function HUD() {
     };
     return <Panel title="Removed by the host" onClose={leave} width={400}
       primaryAction={{ label: "Return to title", onClick: leave }}>
-      Your pilot can return when the host opens a new session.
+      Your replicant can return when the host opens a new session.
     </Panel>;
   }
   const availablePanels = SHIP_PANELS.filter(({ id }) => id !== "crew" || crew.status === "joined");
@@ -184,7 +183,6 @@ export default function HUD() {
       <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
-      <CoopPill />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
           chain's output node, because HTML cannot exceed reference white. */}
       <HdrCalibration />

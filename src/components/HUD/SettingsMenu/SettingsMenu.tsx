@@ -63,6 +63,7 @@ import {
   type NearbyStar,
 } from "@/sim/nearbyStars";
 
+import CoopPill from "@/components/Coop/CoopPill";
 import CoopSettings from "@/components/Coop/CoopSettings";
 
 enum SubMenu {
@@ -989,7 +990,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
   }, [resetKeybinds]);
 
   const handleResetWorld = useCallback(async () => {
-    if (!window.confirm("Reset this world? All world and player progress in it will be lost.")) return;
+    if (!window.confirm("Reset this world? All progress for this world and its replicants will be lost.")) return;
     await resetActiveWorld();
     window.location.reload();
   }, []);
@@ -1050,17 +1051,22 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
 
   const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
 
-  // Hotkey handler: when closed, toggle key opens settings. When open, Panel
-  // handles Esc / backdrop close.
+  // Finish Escape navigation on keyup: the opener must not also close the menu,
+  // and steering must not reacquire pointer lock while the browser still owns Escape.
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
 
   useEffect(() => {
+    let escapePressedInMenu = false;
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (isOpenRef.current) {
+        if (e.key === "Escape" && !e.defaultPrevented && !e.repeat) {
+          e.preventDefault();
+          escapePressedInMenu = true;
+        }
         if (!e.repeat && e.key === "Enter" && (e.target === menuRoot.current || tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
           e.preventDefault();
           resumeFlight();
@@ -1075,9 +1081,24 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
         setIsOpen(true);
       }
     };
+    const cancelEscape = () => { escapePressedInMenu = false; };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !escapePressedInMenu) return;
+      cancelEscape();
+      if (!isOpenRef.current) return;
+      e.preventDefault();
+      if (activeSubMenu !== null) setActiveSubMenu(null);
+      else resumeFlight();
+    };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [resumeFlight, setIsOpen]);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", cancelEscape);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", cancelEscape);
+    };
+  }, [activeSubMenu, resumeFlight, setIsOpen]);
 
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
@@ -1086,15 +1107,18 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
 
   return (
     <>
-      <button
-        className="settings__open-button"
-        onClick={toggleMenu}
-        aria-label="Open ship menu"
-      >
-        <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
-        <span>Menu</span>
-        {keybinds.toggleSettings[0] && <kbd>{displayKey(keybinds.toggleSettings[0])}</kbd>}
-      </button>
+      <div className="hud__session-menu">
+        <CoopPill />
+        <button
+          className="settings__open-button"
+          onClick={toggleMenu}
+          aria-label="Open ship menu"
+        >
+          <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
+          <span>Menu</span>
+          {keybinds.toggleSettings[0] && <kbd>{displayKey(keybinds.toggleSettings[0])}</kbd>}
+        </button>
+      </div>
 
       {isOpen && (
         <Panel
@@ -1102,6 +1126,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
           eyebrow={eyebrow}
           tier={2}
           width={560}
+          closeOnEsc={false}
           onClose={resumeFlight}
           primaryAction={{ label: "Resume flight", keyHint: "↵", onClick: resumeFlight, variant: "primary" }}
           secondaryAction={

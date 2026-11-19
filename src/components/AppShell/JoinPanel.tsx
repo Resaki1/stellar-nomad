@@ -28,7 +28,7 @@ const MESSAGE: Record<Refusal, string> = {
   credential: "Not recognised by host",
   closed: "Session closed",
   kicked: "Removed by the host for this session",
-  replaced: "This pilot joined from another tab",
+  replaced: "This replicant joined from another tab",
   relay: "Relay unavailable",
 };
 type Action = "edit" | "retry" | "reload" | "back";
@@ -222,7 +222,7 @@ export default function JoinPanel({
             <span
               className="shell-join__slots"
               data-coop-slots={info ? `${info.players}/${info.maxPlayers}` : ""}
-              aria-label={info ? `${info.players} of ${info.maxPlayers} pilots` : "pilots"}
+              aria-label={info ? `${info.players} of ${info.maxPlayers} replicants` : "replicants"}
             >
               {Array.from({ length: info?.maxPlayers ?? 4 }, (_, i) => (
                 <i key={i} className={info && i < info.players ? "on" : ""} />

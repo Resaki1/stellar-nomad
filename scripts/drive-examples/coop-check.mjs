@@ -72,7 +72,9 @@ const PILL_LAYOUT = `(() => {
   }
   const box = (r) => r && [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
   const t = document.querySelector(".objective-tracker");
-  return { pill: box(p), tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null, overlaps };
+  const menu = document.querySelector(".settings__open-button").getBoundingClientRect();
+  const gap = Math.round(Math.max(menu.left - p.right, p.left - menu.right));
+  return { pill: box(p), gap, onScreen: p.left >= 0 && p.right <= innerWidth && p.top >= 0 && p.bottom <= innerHeight, tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null, overlaps };
 })()`;
 const LOCAL_STORAGE = `JSON.stringify(Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)])))`;
 const IDB_WORLDS = `new Promise((res) => { const r = indexedDB.open("stellar-nomad"); r.onsuccess = () => { const db = r.result;
@@ -881,6 +883,59 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       granted: mined.grant, transferred: 1, crafted: goods.modules.consumables.consumable_fixture_patch };
   }
 
+  async function shipMenu() {
+    const layout = {};
+    for (const width of [1440, 1100, 1048, 1024, 768, 600, 390]) {
+      const page = width === 390 ? guest : host;
+      if (width === 390) await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await page.send("Emulation.setDeviceMetricsOverride", width === 390 ? PHONE : { ...DESKTOP, width });
+      layout[width] = await page.evaluate(PILL_LAYOUT);
+      if (width === 1440 || width === 390) await page.shot("coop/ship-menu-hud-" + width);
+    }
+    await guest.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    for (const page of [host, guest]) await page.send("Emulation.setDeviceMetricsOverride", DESKTOP);
+
+    const clickAt = async (x, y) => {
+      for (const type of ["mousePressed", "mouseReleased"])
+        await host.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+    };
+    const state = () => host.evaluate(`({ title: document.querySelector("#panel-title")?.textContent ?? null,
+      ...__test.input.pointerLock.state() })`);
+    await host.send("Page.bringToFront");
+    await clickAt(620, 320);
+    await host.sleep(350);
+    const initial = await state();
+    await host.press("Escape");
+    await host.sleep(500);
+    const opened = await state();
+    const xy = await host.evaluate(`(() => {
+      const button = [...document.querySelectorAll(".settings-menu__categories button")].find(b => b.textContent === "controls");
+      const r = button.getBoundingClientRect();
+      return [r.x + r.width / 2, r.y + r.height / 2];
+    })()`);
+    await clickAt(...xy);
+    await host.sleep(300);
+    const settings = await state();
+    await host.press("Escape");
+    await host.sleep(400);
+    const back = await state();
+    await host.keyDown("Escape");
+    await host.sleep(180);
+    const held = await state();
+    await host.keyUp("Escape");
+    await host.sleep(650);
+    const resumed = await state();
+    const checks = {
+      clear: Object.values(layout).every(l => l.onScreen && l.gap >= 4 && !l.overlaps.length),
+      fromFlight: initial.locked && opened.title === "Ship menu" && !opened.locked,
+      selected: settings.title === "Controls",
+      backedOut: back.title === "Ship menu" && back.cursorNeeded && !back.locked,
+      heldEscape: held.title === "Ship menu" && !held.locked,
+      resumed: !resumed.title && !resumed.cursorNeeded && resumed.locked,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, layout, initial, opened, settings, back, held, resumed };
+  }
+
   async function crewUi() {
     await host.evaluate(`${C}.meetRemote(0.08)`);
     await guest.evaluate('__test.gameplay.res.set({ordinaryKg: 5})');
@@ -906,6 +961,8 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       return true;
     })()`);
     if (!opened || !await waitFor(crewOpen, 3000)) throw Error("Ship menu did not open Crew with its displayed shortcut");
+    const rosterTitle = await host.evaluate('document.querySelector(".crew-members h3")?.textContent');
+    if (!rosterTitle?.includes("Connected replicants")) throw Error("Missing replicant roster");
     const pointer = await host.evaluate("__test.input.pointerLock.state()");
     if (!pointer.cursorNeeded || pointer.locked) throw Error("Crew did not keep the menu cursor");
     await waitFor(() => host.evaluate('!!document.querySelector("[data-give-to]")'), 4000);
@@ -1421,7 +1478,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
-      crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
+      shipMenu, crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
       settingsSpawn,
       presence,
       jitter,

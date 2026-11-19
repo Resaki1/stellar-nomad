@@ -133,7 +133,7 @@ export default function AppShell() {
             p: at.positionKm, q: at.quaternion, v: [0, 0, 0], fl: 0 });
         }, 1000 / 15);
         window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
-        client.submit({ type: "expedition.mark", name: "Capacity pilot", sourceId: null, opId: crypto.randomUUID() });
+        client.submit({ type: "expedition.mark", name: "Capacity replicant", sourceId: null, opId: crypto.randomUUID() });
         return id;
       },
       async networkRevision() {
