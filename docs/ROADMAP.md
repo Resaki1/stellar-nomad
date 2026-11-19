@@ -1,6 +1,6 @@
 # Stellar Nomad — Roadmap
 
-**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 host and join is in local verification. The next gate is a Vercel preview with two devices on different networks.
+**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 passed its Vercel preview invite test from a Wi-Fi Mac to a cellular iPhone. Hosted TURN stays off.
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -382,10 +382,11 @@ The same command transcript must run under Node without a renderer. [Detailed M4
 - **M4.1 · Host and join.** Open a solo world to 1–3 friends by invite link or code.
   WebRTC connects each guest to the host. Reliable commands and disposable frame-relative
   poses use separate channels. Signaling supports admission and reconnects, with STUN and
-  a TURN fallback. The host worker runs the shared clock and commits changes. Each pilot
+  optional TURN support. The host worker runs the shared clock and commits changes. Each pilot
   flies locally. Suspension leads to a visible wait and a checkpointed resume.
-  Direct and forced-relay Chrome sessions pass with the local signaling Worker. The remaining
-  M4.1 gate is a deployed preview with two networks, real TURN credentials and host sleep/wake.
+  Direct and forced-relay Chrome sessions pass with the local signaling Worker. A Mac host on Wi-Fi and an iPhone guest on cellular connected via the preview invite and the guest saw the host ship.
+  Hosted TURN is deferred. Local relay egress projected to ~41 MB per two-player hour, or ~24,000
+  relayed pair-hours per 1,000 GB. Physical sleep/wake remains in the M4.4 device matrix.
   [Staging verification](../services/coop-signal/README.md)
 - **M4.2 · Shared M3 loop.** World-owned depletion, wrecks, knowledge and placed points
   coexist with individual ships, stores and recovery selections. The host validates intents
@@ -538,7 +539,7 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 
 ## 7. Current implementation handoff
 
-1. Verify M4.1 with the [staging playtest](../services/coop-signal/README.md), including a forced relay and host sleep/wake.
+1. Keep the direct [staging playtest](../services/coop-signal/README.md) and local relay regression available. Leave hosted TURN disabled.
 2. Continue with the M4.2 shared M3 loop and M4.3 expedition in the [M4 co-op plan](M4_COOP_PLAN.md). Keep the shared-rock and solo expedition checks passing as gameplay evolves.
 3. Complete the co-op expedition and headless parity gates before building M5's first
    shared depot and fuel route. Use playtests to revise the gameplay catalogue and rules.
