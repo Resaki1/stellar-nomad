@@ -954,13 +954,19 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await host.press("Escape");
     const launcher = ".settings-menu__panels";
     if (!await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000)) throw Error("Ship menu did not open");
-    const opened = await host.evaluate(`(() => {
-      const button = document.querySelector('[data-ship-panel="crew"]');
-      if (button?.querySelector("kbd")?.textContent !== "U") return false;
-      button.click();
-      return true;
-    })()`);
-    if (!opened || !await waitFor(crewOpen, 3000)) throw Error("Ship menu did not open Crew with its displayed shortcut");
+    const titles = { cargo: "Cargo Hold", research: "Research", crafting: "Crafting", loadout: "Ship Loadout", projects: "Projects", crew: "Crew" };
+    for (const [id, title] of Object.entries(titles)) {
+      const shown = await host.evaluate(`document.querySelector('[data-ship-panel="${id}"] kbd')?.textContent`);
+      if (!shown) throw Error("Missing shortcut for " + id);
+      await host.press(shown.toLowerCase());
+      if (!await waitFor(() => host.evaluate(`document.querySelector("#panel-title")?.textContent === ${J(title)}`), 3000))
+        throw Error(shown + " did not open " + title);
+      if (id === "crew") break; // Continue the transfer test in the roster.
+      await host.press(shown.toLowerCase());
+      await waitFor(() => host.evaluate('!document.querySelector("#panel-title")'), 3000);
+      await host.press("Escape");
+      await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000);
+    }
     const rosterTitle = await host.evaluate('document.querySelector(".crew-members h3")?.textContent');
     if (!rosterTitle?.includes("Connected replicants")) throw Error("Missing replicant roster");
     const pointer = await host.evaluate("__test.input.pointerLock.state()");

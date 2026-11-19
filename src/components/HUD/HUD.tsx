@@ -55,6 +55,9 @@ const SHIP_PANELS = [
   { id: "projects", label: "Projects", action: "toggleProjects", icon: Target },
 ] as const satisfies readonly { id: string; label: string; action: KeybindAction; icon: typeof Package }[];
 
+// Keep Tab available for focus navigation when the action also has a letter binding.
+const menuKey = (keys: readonly string[]) => keys.find(key => key !== "tab") ?? keys[0];
+
 type OverlayPanel = (typeof SHIP_PANELS)[number]["id"] | null;
 
 /** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
@@ -112,6 +115,13 @@ export default function HUD() {
     setActivePanel((prev) => (prev === panel ? null : panel));
   }, [store]);
 
+  const menuPanels = useRef<HTMLElement>(null);
+  const selectFromMenu = useCallback((panel: NonNullable<OverlayPanel>) => {
+    setCursorNeeded("panel", true);
+    setActivePanel(panel);
+    store.set(settingsIsOpenAtom, false);
+  }, [store]);
+
   const closePanel = useCallback(() => setActivePanel(null), []);
 
   // Hotkeys for panels
@@ -120,16 +130,19 @@ export default function HUD() {
       if (isTypingTarget(e.target)) return;
       const key = keyFromEvent(e);
 
-      // Settings menu is modal — it swallows all non-settings hotkeys so the
-      // player can't toggle gameplay panels while paused.
-      if (store.get(settingsIsOpenAtom)) return;
+      const inMenu = store.get(settingsIsOpenAtom);
+      if (inMenu && (!menuPanels.current || e.defaultPrevented || e.metaKey || e.ctrlKey || (key === "tab" && e.shiftKey))) return;
 
       const panel = SHIP_PANELS.find(({ action, id }) =>
-        (id !== "crew" || coopSnapshot().status === "joined") && keybindsRef.current[action].includes(key)
+        (id !== "crew" || coopSnapshot().status === "joined") && keybindsRef.current[action].includes(key) &&
+        (!inMenu || key !== "tab" || menuKey(keybindsRef.current[action]) === "tab")
       );
       if (panel) {
         e.preventDefault();
-        if (!e.repeat) openPanel(panel.id);
+        if (!e.repeat) {
+          if (inMenu) selectFromMenu(panel.id);
+          else openPanel(panel.id);
+        }
         return;
       }
 
@@ -140,7 +153,7 @@ export default function HUD() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openPanel, store]);
+  }, [openPanel, selectFromMenu, store]);
 
   if (removed) {
     const leave = async () => {
@@ -165,17 +178,12 @@ export default function HUD() {
       <CargoHUD onClick={() => openPanel("cargo")} />
       <ObjectiveTracker />
       <SettingsMenu>
-        <nav className="settings-menu__panels" aria-label="Ship panels">
+        <nav ref={menuPanels} className="settings-menu__panels" aria-label="Ship panels">
           {availablePanels.map(({ id, label, action, icon: Icon }) => (
-            <button key={id} data-ship-panel={id} onClick={() => {
-              // Transfer cursor ownership before closing the menu to avoid a steering grab between panels.
-              setCursorNeeded("panel", true);
-              setActivePanel(id);
-              store.set(settingsIsOpenAtom, false);
-            }}>
+            <button key={id} data-ship-panel={id} onClick={() => selectFromMenu(id)}>
               <Icon size={16} aria-hidden />
               {label}
-              {keybinds[action][0] && <kbd>{displayKey(keybinds[action][0])}</kbd>}
+              {menuKey(keybinds[action]) && <kbd>{displayKey(menuKey(keybinds[action]))}</kbd>}
             </button>
           ))}
         </nav>
