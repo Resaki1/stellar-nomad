@@ -891,7 +891,23 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       Promise.all([host, guest].map(page => waitFor(() => toastCount(page), 2500, 40))),
       Promise.all([host, guest].map(page => waitFor(() => page.evaluate('__audio.voices().some(v => v.eventId === "research.complete")'), 2500, 40))),
     ]);
-    await host.evaluate(`document.querySelector('[aria-label="Crew"]').click()`);
+    const crewOpen = () => host.evaluate('document.querySelector("#panel-title")?.textContent === "Crew"');
+    await host.press("u");
+    if (!await waitFor(crewOpen, 3000)) throw Error("Default Crew shortcut did not open the roster");
+    await host.press("u");
+    if (!await waitFor(async () => !await crewOpen(), 3000)) throw Error("Crew shortcut did not close the roster");
+    await host.press("Escape");
+    const launcher = ".settings-menu__panels";
+    if (!await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000)) throw Error("Ship menu did not open");
+    const opened = await host.evaluate(`(() => {
+      const button = document.querySelector('[data-ship-panel="crew"]');
+      if (button?.querySelector("kbd")?.textContent !== "U") return false;
+      button.click();
+      return true;
+    })()`);
+    if (!opened || !await waitFor(crewOpen, 3000)) throw Error("Ship menu did not open Crew with its displayed shortcut");
+    const pointer = await host.evaluate("__test.input.pointerLock.state()");
+    if (!pointer.cursorNeeded || pointer.locked) throw Error("Crew did not keep the menu cursor");
     await waitFor(() => host.evaluate('!!document.querySelector("[data-give-to]")'), 4000);
     await host.sleep(450);
     await host.shot("coop/connected-crew");

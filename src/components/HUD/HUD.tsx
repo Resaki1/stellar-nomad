@@ -7,12 +7,13 @@ import { titleUrl } from "@/components/AppShell/appState";
 import CoopPill from "@/components/Coop/CoopPill";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Microscope, Shield, Target, Users, Wrench } from "lucide-react";
-import { displayKey, keybindsAtom } from "@/store/keybinds";
+import { Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
+import { displayKey, keybindsAtom, type KeybindAction } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import FlightHud from "./FlightHud/FlightHud";
+import { isTypingTarget, keyFromEvent } from "@/input/keyboard";
 import { setCursorNeeded } from "@/input/pointerLock";
 import MiningHUD from "./MiningHUD/MiningHUD";
 import CargoHUD from "./CargoHUD/CargoHUD";
@@ -46,7 +47,16 @@ import "./HUD.scss";
 /** First bound key, for button titles (rebinding updates them). */
 const keyLabel = (keys: readonly string[]): string => (keys[0] ? displayKey(keys[0]) : "unbound");
 
-type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | "crew" | null;
+const SHIP_PANELS = [
+  { id: "cargo", label: "Inventory", action: "toggleCargo", icon: Package },
+  { id: "crew", label: "Crew", action: "toggleCrew", icon: Users },
+  { id: "research", label: "Research", action: "toggleResearch", icon: Microscope },
+  { id: "crafting", label: "Crafting", action: "toggleCrafting", icon: Wrench },
+  { id: "loadout", label: "Loadout", action: "toggleLoadout", icon: Shield },
+  { id: "projects", label: "Projects", action: "toggleProjects", icon: Target },
+] as const satisfies readonly { id: string; label: string; action: KeybindAction; icon: typeof Package }[];
+
+type OverlayPanel = (typeof SHIP_PANELS)[number]["id"] | null;
 
 /** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
 const GLANCE_MS = 250;
@@ -108,42 +118,19 @@ export default function HUD() {
   // Hotkeys for panels
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      const key = e.key.toLowerCase();
+      if (isTypingTarget(e.target)) return;
+      const key = keyFromEvent(e);
 
       // Settings menu is modal — it swallows all non-settings hotkeys so the
       // player can't toggle gameplay panels while paused.
       if (store.get(settingsIsOpenAtom)) return;
 
-      if (keybindsRef.current.toggleCargo.includes(key)) {
+      const panel = SHIP_PANELS.find(({ action, id }) =>
+        (id !== "crew" || coopSnapshot().status === "joined") && keybindsRef.current[action].includes(key)
+      );
+      if (panel) {
         e.preventDefault();
-        setActivePanel((prev) => (prev === "cargo" ? null : "cargo"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleResearch.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "research" ? null : "research"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleCrafting.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "crafting" ? null : "crafting"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleLoadout.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "loadout" ? null : "loadout"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleProjects.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "projects" ? null : "projects"));
+        if (!e.repeat) openPanel(panel.id);
         return;
       }
 
@@ -154,7 +141,7 @@ export default function HUD() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [store]);
+  }, [openPanel, store]);
 
   if (removed) {
     const leave = async () => {
@@ -167,6 +154,7 @@ export default function HUD() {
       Your pilot can return when the host opens a new session.
     </Panel>;
   }
+  const availablePanels = SHIP_PANELS.filter(({ id }) => id !== "crew" || crew.status === "joined");
   return (
     <div className={`hud${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
@@ -177,7 +165,22 @@ export default function HUD() {
       <MiningHUD />
       <CargoHUD onClick={() => openPanel("cargo")} />
       <ObjectiveTracker />
-      <SettingsMenu />
+      <SettingsMenu>
+        <nav className="settings-menu__panels" aria-label="Ship panels">
+          {availablePanels.map(({ id, label, action, icon: Icon }) => (
+            <button key={id} data-ship-panel={id} onClick={() => {
+              // Transfer cursor ownership before closing the menu to avoid a steering grab between panels.
+              setCursorNeeded("panel", true);
+              setActivePanel(id);
+              store.set(settingsIsOpenAtom, false);
+            }}>
+              <Icon size={16} aria-hidden />
+              {label}
+              {keybinds[action][0] && <kbd>{displayKey(keybinds[action][0])}</kbd>}
+            </button>
+          ))}
+        </nav>
+      </SettingsMenu>
       <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
@@ -195,40 +198,14 @@ export default function HUD() {
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">
-        {crew.status === "joined" && <button className={`hud__panel-btn ${activePanel === "crew" ? "hud__panel-btn--active" : ""}`}
-          aria-label="Crew" title="Crew and supplies" onClick={() => openPanel("crew")}><Users size={15} /><span>Crew</span></button>}
-        <button
-          className={`hud__panel-btn ${activePanel === "research" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("research")}
-          title={`Research (${keyLabel(keybinds.toggleResearch)})`}
-        >
-          <Microscope size={14} strokeWidth={1.75} aria-hidden />
-          <span>Research</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "crafting" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("crafting")}
-          title={`Crafting (${keyLabel(keybinds.toggleCrafting)})`}
-        >
-          <Wrench size={14} strokeWidth={1.75} aria-hidden />
-          <span>Craft</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "loadout" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("loadout")}
-          title={`Loadout (${keyLabel(keybinds.toggleLoadout)})`}
-        >
-          <Shield size={14} strokeWidth={1.75} aria-hidden />
-          <span>Loadout</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "projects" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("projects")}
-          title={`Projects and records (${keyLabel(keybinds.toggleProjects)})`}
-        >
-          <Target size={14} strokeWidth={1.75} aria-hidden />
-          <span>Projects</span>
-        </button>
+        {availablePanels.filter(({ id }) => id !== "cargo").map(({ id, label, action, icon: Icon }) => (
+          <button key={id} aria-label={label}
+            className={`hud__panel-btn ${activePanel === id ? "hud__panel-btn--active" : ""}`}
+            onClick={() => openPanel(id)} title={`${label} (${keyLabel(keybinds[action])})`}>
+            <Icon size={14} strokeWidth={1.75} aria-hidden />
+            <span>{id === "crafting" ? "Craft" : label}</span>
+          </button>
+        ))}
       </div>
 
       {activePanel === "crew" && <Panel title="Crew" onClose={closePanel} width={440}>

@@ -23,7 +23,9 @@ export default async function touchFlight({ host, sleep }) {
       await sleep(200);
     }
     await tap("#ai-name-input"); await host.send("Input.insertText",{text:"Kepler"}); await tap(".ai-name-overlay__confirm");
-    await tap('.hud__panel-btn[title^="Research"]');
+    await tap(".settings__open-button");
+    if (await host.evaluate(`!!document.querySelector('[data-ship-panel="crew"]')`)) throw Error("Solo ship menu showed Crew");
+    await tap('[data-ship-panel="research"]');
     const panel = await host.evaluate('document.querySelector("#panel-title")?.textContent');
     if (!panel?.includes("Research")) throw Error("Research failed to open");
     await tap(".panel__close");

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, type ReactNode } from "react";
 import { playAudio } from "@/audio";
 import {
   ECLIPSE_2024_04_08_MS,
@@ -8,7 +8,7 @@ import {
 } from "@/store/simTime";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
-import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
+import { ChevronLeft, Menu as MenuIcon } from "lucide-react";
 import {
   SetAtom,
   Settings,
@@ -25,7 +25,7 @@ import { resetAllDevTuning } from "@/store/devTuning";
 import { setCursorNeeded } from "@/input/pointerLock";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
-import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
+import { displayKey, keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
 import { newOpId, runOperation } from "@/store/operations";
@@ -909,10 +909,14 @@ function DevControls({
 }
 
 
-const SettingsMenu = () => {
+const SettingsMenu = ({ children }: { children: ReactNode }) => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isOpen && activeSubMenu === null) menuRoot.current?.focus({ preventScroll: true });
+  }, [isOpen, activeSubMenu]);
   const gpu = useDetectGPU();
 
   const keybinds = useAtomValue(keybindsAtom);
@@ -1057,7 +1061,7 @@ const SettingsMenu = () => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (isOpenRef.current) {
-        if (!e.repeat && e.key === "Enter" && (tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
+        if (!e.repeat && e.key === "Enter" && (e.target === menuRoot.current || tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
           e.preventDefault();
           resumeFlight();
         }
@@ -1077,7 +1081,7 @@ const SettingsMenu = () => {
 
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
-    : "Settings";
+    : "Ship menu";
   const eyebrow = activeSubMenu ? "Settings" : undefined;
 
   return (
@@ -1085,9 +1089,11 @@ const SettingsMenu = () => {
       <button
         className="settings__open-button"
         onClick={toggleMenu}
-        aria-label="Open settings"
+        aria-label="Open ship menu"
       >
-        <SettingsIcon size={16} strokeWidth={1.75} aria-hidden />
+        <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
+        <span>Menu</span>
+        {keybinds.toggleSettings[0] && <kbd>{displayKey(keybinds.toggleSettings[0])}</kbd>}
       </button>
 
       {isOpen && (
@@ -1111,16 +1117,20 @@ const SettingsMenu = () => {
         >
           <div className="settings-menu">
             {!activeSubMenu ? (
-              <div className="settings-menu__nav">
-                {availableSubMenus.map((subMenu) => (
-                  <button
-                    key={subMenu}
-                    className="settings-menu__button"
-                    onClick={() => { playAudio("click.soft"); setActiveSubMenu(subMenu); }}
-                  >
-                    {subMenu}
-                  </button>
-                ))}
+              <div className="settings-menu__nav" ref={menuRoot} tabIndex={-1}>
+                {children}
+                <h3 className="settings-menu__group-title">Settings</h3>
+                <div className="settings-menu__categories">
+                  {availableSubMenus.map((subMenu) => (
+                    <button
+                      key={subMenu}
+                      className="settings-menu__button"
+                      onClick={() => { playAudio("click.soft"); setActiveSubMenu(subMenu); }}
+                    >
+                      {subMenu}
+                    </button>
+                  ))}
+                </div>
                 <button
                   className="settings-menu__button settings-menu__button--exit"
                   disabled={exiting}
