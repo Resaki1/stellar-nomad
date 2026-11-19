@@ -115,6 +115,15 @@ export function createCoopHarness(store: Store) {
       ship.angVel.set(0, 0, 0);
       return true;
     },
+    /** Per-frame rendered remote-ship rows for `ms` (see remoteShipProbe for the columns). */
+    async probe(ms = 3000): Promise<number[][]> {
+      const { remoteShipProbe } = await import("@/components/Coop/CoopLayer");
+      remoteShipProbe.rows = [];
+      remoteShipProbe.on = true;
+      await new Promise((r) => setTimeout(r, ms));
+      remoteShipProbe.on = false;
+      return remoteShipProbe.rows;
+    },
     /** Active world id (fixture cleanup). */
     worldId: (): string | null => getActiveSave()?.meta.id ?? null,
     worldName: (): string | null => getActiveSave()?.meta.name ?? null,

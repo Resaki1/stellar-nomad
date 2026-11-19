@@ -14,9 +14,10 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { getActiveSave } from "@/save/activeSave";
 import "./CoopPill.scss";
 import { frameOriginKm, isFrameId } from "@/sim/frames";
-import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
+import { simEpochMsAtom, simEpochNudge, simRateAtom } from "@/store/simTime";
 import { REMOTE_STALE_MS, coopSnapshot, hostClock, logCoop, remotePoses, type PoseSample } from "@/net/coopState";
 import { MAX_PLAYERS } from "@/sim/session/protocol";
+import { getLocalPlayerShip } from "@/sim/entities";
 import { compileLocalSubtree } from "@/components/space/SpaceRenderer";
 
 const INTERP_DELAY_MS = 100;
@@ -60,6 +61,9 @@ function samplePose(buf: readonly PoseSample[], t: number, outP: THREE.Vector3, 
   outQ.slerpQuaternions(_qa, _qb, k);
   return a.f;
 }
+
+/** Test probe: per-frame rendered remote positions while `on` (scripts read and clear `rows`). */
+export const remoteShipProbe = { on: false, rows: [] as number[][] };
 
 function memberName(id: string): string {
   return getActiveSave()?.data.world.members[id]?.name ?? "Pilot";
@@ -109,6 +113,12 @@ const RemoteShip = memo(function RemoteShip({ slot, slots, ready }: { slot: numb
     frameOriginKm(f, _o);
     const wo = worldOrigin.worldOriginKm;
     g.position.set((_o.x + p.current.x - wo.x) * 1000, (_o.y + p.current.y - wo.y) * 1000, (_o.z + p.current.z - wo.z) * 1000);
+    if (remoteShipProbe.on && buf) {
+      const l = buf[buf.length - 1];
+      const s = getLocalPlayerShip();
+      remoteShipProbe.rows.push([now, slot, g.position.x, g.position.y, g.position.z, p.current.x, p.current.y, p.current.z, buf.length, l.seq, now - l.at, l.p[0], l.p[1], l.p[2],
+        wo.x, wo.y, wo.z, _o.x, _o.y, _o.z, s?.posKm.x ?? 0, s?.posKm.y ?? 0, s?.posKm.z ?? 0, s?.prevPosKm.x ?? 0, s?.prevPosKm.y ?? 0, s?.prevPosKm.z ?? 0, s ? s.velKmps.length() * 1000 : -1]);
+    }
     if (!el) return;
     _ndc.copy(g.position).project(camera);
     const onScreen = _ndc.z < 1 && Math.abs(_ndc.x) < 1 && Math.abs(_ndc.y) < 1;
@@ -159,8 +169,8 @@ function ClockFollower() {
     const est = hostClock.epochMs + hostClock.rate * (performance.now() - hostClock.at);
     const local = store.get(simEpochMsAtom);
     const err = est - local;
-    if (Math.abs(err) < 1) return;
-    store.set(simEpochMsAtom, Math.abs(err) > CLOCK_SNAP_MS ? est : local + err * Math.min(1, dt * CLOCK_EASE_PER_S));
+    // Applied by the next sim-clock tick, never mid-frame (see simEpochNudge).
+    simEpochNudge.ms = Math.abs(err) < 1 ? 0 : Math.abs(err) > CLOCK_SNAP_MS ? err : err * Math.min(1, dt * CLOCK_EASE_PER_S);
   });
   return null;
 }

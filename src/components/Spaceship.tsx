@@ -20,7 +20,7 @@ import { collectShipPose, holdSavedPose, loadShipState } from "@/sim/shipPersist
 import { frameOriginKm } from "@/sim/frames";
 import { updateShipFrame } from "@/sim/ship/shipFrame";
 import type { CelestialCollider } from "@/sim/celestialCollision";
-import { LOCAL_PLAYER_ID, registerEntity, unregisterEntity } from "@/sim/entities";
+import { LOCAL_PLAYER_ID, localRenderPose, registerEntity, unregisterEntity } from "@/sim/entities";
 import { createShipState, resetShipMotion, updateShipAbsolute, type ShipState } from "@/sim/ship/shipState";
 import { createShipInput } from "@/sim/ship/shipInput";
 import { createShipStepEnv, shipBodyAxes, stepShip } from "@/sim/ship/stepShip";
@@ -516,7 +516,15 @@ const SpaceShip = memo(() => {
 
     // Interpolate in frame-relative km, add the CURRENT frame origin, and put the world
     // origin there so the ship sits at local (0,0,0).
-    _localRel.lerpVectors(ship.prevPosKm, ship.posKm, alpha).add(_frameOrigin);
+    _localRel.lerpVectors(ship.prevPosKm, ship.posKm, alpha);
+    {
+      const rp = localRenderPose, q = shipRef.current.quaternion;
+      rp.atMs = performance.now();
+      rp.frameId = ship.frameId;
+      rp.relKm[0] = _localRel.x; rp.relKm[1] = _localRel.y; rp.relKm[2] = _localRel.z;
+      rp.quat[0] = q.x; rp.quat[1] = q.y; rp.quat[2] = q.z; rp.quat[3] = q.w;
+    }
+    _localRel.add(_frameOrigin);
     worldOrigin.setShipPosKm(ship.absPosKm);
     worldOrigin.setWorldOriginKm(_localRel);
     shipRef.current.position.set(0, 0, 0);

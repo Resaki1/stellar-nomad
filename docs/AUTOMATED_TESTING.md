@@ -176,7 +176,7 @@ can attach to a kept one). A `run:` script gets `{ host, guest }`, each with `lo
 unless `--keep`; `pnpm drive:coop -- --stop` stops kept ones.
 
 ```bash
-COOP_PARTS=presence,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 ```
 
 The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test

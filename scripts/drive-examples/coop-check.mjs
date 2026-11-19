@@ -1,6 +1,6 @@
 /**
  * M4.0 exit gate in two real browsers (docs/M4_COOP_PLAN.md §1). Run with drive-coop.mjs:
- *   COOP_PARTS=presence,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
+ *   COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
  *     pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
  * The host opens a fresh disposable `[gc] coop` world to friends; the guest joins through the join
  * card (invite link, Join button). cancelJoin, handoff, hostFail and leave change the session: keep them last. Mining
@@ -117,7 +117,7 @@ async function waitFor(fn, ms, step = 200) {
 }
 
 export default async function coopCheck({ host, guest, log }) {
-  const parts = (process.env.COOP_PARTS ?? "presence,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
+  const parts = (process.env.COOP_PARTS ?? "presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
   let worldId = null;
@@ -257,6 +257,59 @@ export default async function coopCheck({ host, guest, log }) {
       pass: Object.values(checks).every(Boolean), checks,
       remotes: { host: hs.remotes, guest: gs.remotes }, firstAgeMs, distKm: dist, pipelineErrors: errs.length ? errs : undefined, shots, ms: Date.now() - p0,
     };
+  }
+
+  /**
+   * The other ship as drawn, per frame (CoopLayer probe). Parked: it must not move at all (the
+   * co-op clock once re-solved the ephemeris mid-frame: 1–10 m jumps every frame). Flying: the
+   * residual against a ±50 ms straight-line fit is the visible twitch.
+   */
+  async function jitter() {
+    const p0 = Date.now();
+    await guest.evaluate(`${C}.meetRemote(0.06)`);
+    await guest.frames(30);
+    await guest.sleep(2000);
+    const pos = (rows) => rows.map((r) => [r[0], r[2], r[3], r[4]]);
+    const maxDev = (rows) => {
+      const P = pos(rows);
+      if (P.length < 10) return null;
+      const m = [1, 2, 3].map((i) => P.reduce((a, r) => a + r[i], 0) / P.length);
+      return Math.max(...P.map((r) => Math.hypot(r[1] - m[0], r[2] - m[1], r[3] - m[2])));
+    };
+    const residual = (rows) => {
+      const P = pos(rows);
+      const res = [];
+      for (let i = 0; i < P.length; i++) {
+        const w = P.filter((r) => Math.abs(r[0] - P[i][0]) <= 50);
+        if (P[i][0] - P[0][0] < 50 || P[P.length - 1][0] - P[i][0] < 50) continue;
+        // Local straight-line fit in time, evaluated at this frame's own time (frames are uneven).
+        const tm = w.reduce((a, r) => a + r[0], 0) / w.length;
+        const stt = w.reduce((a, r) => a + (r[0] - tm) ** 2, 0) || 1;
+        const m = [1, 2, 3].map((k) => {
+          const xm = w.reduce((a, r) => a + r[k], 0) / w.length;
+          const slope = w.reduce((a, r) => a + (r[0] - tm) * (r[k] - xm), 0) / stt;
+          return xm + slope * (P[i][0] - tm);
+        });
+        res.push(Math.hypot(P[i][1] - m[0], P[i][2] - m[1], P[i][3] - m[2]));
+      }
+      res.sort((a, b) => a - b);
+      const dt = (P[P.length - 1][0] - P[0][0]) / 1000;
+      const d = Math.hypot(P[P.length - 1][1] - P[0][1], P[P.length - 1][2] - P[0][2], P[P.length - 1][3] - P[0][3]);
+      return res.length ? { p50: +res[res.length >> 1].toFixed(3), p95: +res[Math.floor(res.length * 0.95)].toFixed(3), max: +res[res.length - 1].toFixed(3), speedMps: +(d / dt).toFixed(1), n: P.length } : null;
+    };
+    const [hs, gs] = await Promise.all([host.evaluate(`${C}.probe(3000)`), guest.evaluate(`${C}.probe(3000)`)]);
+    const still = { host: maxDev(hs), guest: maxDev(gs) };
+    // Guest flies past the parked host for a few seconds.
+    await guest.keyDown("w");
+    await guest.sleep(1500);
+    const moving = residual(await host.evaluate(`${C}.probe(3000)`));
+    await guest.keyUp("w");
+    const checks = {
+      stillHost: still.host !== null && still.host < 0.01,
+      stillGuest: still.guest !== null && still.guest < 0.01,
+      movingSmooth: moving !== null && moving.speedMps > 5 && moving.p95 < 0.25,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, stillMaxDevM: still, moving, ms: Date.now() - p0 };
   }
 
   /** Both pilots beam the same rock; `first` starts OFFSET_MS earlier and must win. */
@@ -799,6 +852,7 @@ export default async function coopCheck({ host, guest, log }) {
 
     const run = {
       presence,
+      jitter,
       race: () => race("host", "race"),
       raceRev: () => race("guest", "raceRev"),
       dropReply,

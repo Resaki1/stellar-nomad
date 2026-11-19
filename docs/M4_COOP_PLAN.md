@@ -305,5 +305,13 @@ transaction as the change.
   pipeline). Ship slots now mount once per session and precompile before they are shown. One raceRev run
   on a 3.9 s rock went to the pilot who pressed second; commit order is arrival order at the host, which
   is the rule, so the gate now uses rocks of ≥ 5 s to keep the expected winner deterministic.
+- **Remote ships twitched (owner playtest).** Two causes, both measured with a per-frame probe of the
+  drawn position (`coop-check` part `jitter`). (1) The co-op clock follower wrote the epoch mid-frame,
+  which re-solves the ephemeris after the local ship placed the world origin: Earth moves ~30 km/s, so a
+  parked friend jumped 1.4 m (host) to 10 m (guest) every frame while the interpolated pose was
+  constant. The correction now rides the next sim-clock tick (`simEpochNudge`): 0 m. (2) Poses carried
+  the raw 120 Hz step and were stamped on arrival. They now carry the drawn, interpolated pose and the
+  sender's frame time, mapped to local time by the minimum recent delay: a friend flying at ~320 m/s
+  deviates from a smooth path 3 cm p50 / 9 cm p95 (was 17 cm / 95 cm, max 2.9 m).
 - **Open for M4.1.** Hosted signaling with per-peer tokens, STUN/TURN, commands for jettison and
   consumables, hotbar as a pilot pref, browser coverage of post-Join refusals (credential, closed).

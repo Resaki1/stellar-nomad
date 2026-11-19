@@ -18,7 +18,7 @@ export interface CoopSnapshot {
 }
 
 export interface PoseSample {
-  /** Local receive time, ms (performance.now). */
+  /** Sender's frame time mapped to local performance.now, ms. */
   at: number;
   seq: number;
   gen: number;
@@ -53,6 +53,23 @@ export function setCoop(patch: Partial<CoopSnapshot>): void {
 /** Remote pilots' recent poses, newest last. */
 export const remotePoses = new Map<PlayerId, PoseSample[]>();
 
+/** Per pilot: recent (arrival − sender tick), ms. Its minimum is the least-delayed path. */
+const clockOffsets = new Map<PlayerId, number[]>();
+const OFFSET_WINDOW = 45;
+
+/**
+ * Sender time → local time. Arrival stamps carried the network's jitter into the interpolation
+ * (MEASURED: 0.9 m p50 / 3 m p95 twitch at 324 m/s); the sender's frame time does not.
+ */
+function localTimeOf(id: PlayerId, tick: number, reset: boolean): number {
+  const now = performance.now();
+  let w = clockOffsets.get(id);
+  if (!w || reset) clockOffsets.set(id, (w = []));
+  w.push(now - tick);
+  if (w.length > OFFSET_WINDOW) w.shift();
+  return tick + Math.min(...w);
+}
+
 export function pushRemotePose(m: PoseMsg): void {
   let buf = remotePoses.get(m.id);
   if (!buf) remotePoses.set(m.id, (buf = []));
@@ -61,8 +78,12 @@ export function pushRemotePose(m: PoseMsg): void {
   // So is any lower seq after a silence: a reload rejoins long before its new counter catches up.
   const restarted = last !== undefined && m.seq <= last.seq && (last.seq - m.seq > SEQ_RESTART_GAP || performance.now() - last.at > SILENCE_RESTART_MS);
   if (last && last.gen === m.gen && m.seq <= last.seq && !restarted) return;
-  if (last && (last.gen !== m.gen || restarted)) buf.length = 0;
-  buf.push({ at: performance.now(), seq: m.seq, gen: m.gen, f: m.f, p: m.p, v: m.v, q: m.q, fl: m.fl });
+  const reset = !last || last.gen !== m.gen || restarted;
+  if (last && reset) buf.length = 0;
+  const at = localTimeOf(m.id, m.tick, reset);
+  // Same frame sent twice (the sender's frames stalled): nothing new to interpolate toward.
+  if (!reset && last && at <= last.at) return;
+  buf.push({ at, seq: m.seq, gen: m.gen, f: m.f, p: m.p, v: m.v, q: m.q, fl: m.fl });
   if (buf.length > POSE_BUFFER) buf.shift();
 }
 

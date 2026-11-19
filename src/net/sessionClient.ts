@@ -4,7 +4,7 @@
  */
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
-import { getLocalPlayerShip } from "@/sim/entities";
+import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
@@ -71,13 +71,16 @@ export function startSessionLoops(gs: GuestSession): () => void {
   const pose = setInterval(() => {
     const s = getLocalPlayerShip();
     if (!s || gs.status !== "joined") return;
+    // The pose as drawn, stamped with its frame time: receivers interpolate on this timeline.
+    const rp = localRenderPose;
+    const drawn = rp.atMs >= 0 && rp.frameId === s.frameId;
     gs.sendPose({
       seq: ++seq,
-      tick: performance.now(),
+      tick: drawn ? rp.atMs : performance.now(),
       f: s.frameId,
-      p: [s.posKm.x, s.posKm.y, s.posKm.z],
+      p: drawn ? [rp.relKm[0], rp.relKm[1], rp.relKm[2]] : [s.posKm.x, s.posKm.y, s.posKm.z],
       v: [s.velKmps.x, s.velKmps.y, s.velKmps.z],
-      q: [s.quat.x, s.quat.y, s.quat.z, s.quat.w],
+      q: drawn ? [rp.quat[0], rp.quat[1], rp.quat[2], rp.quat[3]] : [s.quat.x, s.quat.y, s.quat.z, s.quat.w],
       fl: s.boosting ? 2 : 0,
     });
   }, POSE_MS);

@@ -26,3 +26,14 @@ export function getEntity(id: string): SimEntity | undefined {
 export function getLocalPlayerShip(): ShipState | null {
   return entities.get(LOCAL_PLAYER_ID)?.ship ?? null;
 }
+
+/**
+ * The local ship as drawn this frame (interpolated between fixed steps), stamped with the
+ * frame time. Co-op poses send this, not the raw 120 Hz step: a step is up to 8.3 ms old.
+ */
+export const localRenderPose = {
+  atMs: -1,
+  frameId: "",
+  relKm: [0, 0, 0] as [number, number, number],
+  quat: [0, 0, 0, 1] as [number, number, number, number],
+};
