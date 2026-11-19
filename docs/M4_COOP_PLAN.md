@@ -336,3 +336,20 @@ transaction as the change.
   tick, so a rename loop costs at most one `members` broadcast per second per pilot. Gate:
   transcript `renameHardening`. Known: a disconnected pilot's hull and marker stay at the last pose
   until `REMOTE_STALE_MS` (5 s); an explicit leave signal would clear both at once.
+- **Warm draw replaces the async precompile.** `compileAsync` caches a pipeline entry before
+  `createRenderPipelineAsync` resolves, keyed by material and lights. The remote plume and beam share
+  materials with our own ship, so our ship could draw the pending entry ("setPipeline ... not of
+  type GPURenderPipeline", 1 of 2 fresh-page runs). Remote slots are now drawn once, behind the
+  camera, in a single warm-up frame at session start: 0 errors in 6 fresh-page runs and 3 full runs.
+- **Follow-ups (not scheduled in a slice yet).**
+  - Spatial audio for other pilots' engines and beams: needs mono world-tier loops placed at each
+    remote slot (today's engine and beam loops are single-instance ship sounds).
+  - Transit to a friend: aim with the target's own velocity, a stand-off distance, and a rule for a
+    friend who moves away. Natural fit for M4.3's shared locations.
+  - Light from remote plumes: measure the recompile at session start and the per-fragment cost first.
+  - Remote plume shows main-engine throttle only (no boost or strafe), as the local one does.
+  - Join card shows the host name stored when the room was created; renaming while hosting does
+    not update it for new guests (needs a signaling room update, M4.1).
+  - An explicit leave message, so a departing pilot vanishes at once instead of after 5 s.
+  - Flakes seen once each in long full runs (rerun clean): `handoff` (guest did not rejoin within
+    60 s) and `dropReply` (retry did not settle, which then blocked `restart`). Watch for repeats.
