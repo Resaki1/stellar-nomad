@@ -380,3 +380,9 @@ The Node transcript also covers three arriving guests and clock resume without c
 ### M4.2 · Shared M3 loop
 
 The worker loads the same placement-clearance probe as solo, resolves inspection results from the field generator, and checks salvage range. Snapshots contain the receiving pilot's record and public death flags. Batch completion reaches the host with its original batch ID and final converted mass. The headless sharedLoop scenario covers restart during processing, independent recovery selection, simultaneous site recovery and wreck salvage, and mining after death.
+
+### M4.3 · Cooperative expedition
+
+Each pilot can publish one frame-relative marker from Friends or share an inspected source from Research → Discoveries. Rendezvous markers are persisted with the world. Returning pilots see a summary of new sources, material families and recovered sites in Friends. At up to 300 m, a pilot can give whole units of cargo, loose consumables or ordinary fuel. The host checks both pilots, range, available stores, braking reserve, batch commitments, and the receiving tank, hold or stack. One durable transaction covers both pilots and the command outcome. The receiving pilot sees the delivery in the HUD. The transport carries catalogue IDs.
+
+The capacity exercise used two rendered games and two additional browser WebRTC pilots on the same machine. All four admitted distinct pilots, received poses and reached revision 5. The first attempt with four full local renderers exhausted the machine's resources and was stopped. The frame-budget comparison in §8 calls for separate guest devices.

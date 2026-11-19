@@ -34,12 +34,14 @@ export const computedModifiersAtom = atom((get): ComputedModifiers => moduleModi
 /** Equip (or with `itemId: null` empty) a slot through the authority, which refuses a fit
  * that would leave fuel above the new tank or cargo above the new hold. */
 const setSlot = (set: Setter, slot: ItemSlot, itemId: string | null): boolean => {
-  const o = runOperation({ type: "module.equip", opId: newOpId(), slot, itemId });
-  if (o.status === "accepted") set(signalAudioActionAtom, itemId ? "module.equip" : "module.unequip");
-  else if (o.status === "rejected" && o.reason !== "already_done") {
-    set(addToastAtom, { audio: "reject", message: itemId ? "Cannot equip module" : "Cannot remove module", kind: "warn", detail: describeRejection(o) });
-  }
-  return o.status === "accepted" || (o.status === "rejected" && o.reason === "already_done" && itemId !== null);
+  const first = runOperation({ type: "module.equip", opId: newOpId(), slot, itemId }, o => {
+    if (o.status === "accepted") set(signalAudioActionAtom, itemId ? "module.equip" : "module.unequip");
+    else if (o.status === "rejected" && o.reason !== "already_done") {
+      set(addToastAtom, { audio: "reject", message: itemId ? "Cannot equip module" : "Cannot remove module", kind: "warn", detail: describeRejection(o) });
+    }
+  });
+  return first.status === "pending" || first.status === "accepted" ||
+    (first.status === "rejected" && first.reason === "already_done" && itemId !== null);
 };
 
 export const equipModuleAtom = atom(null, (_get, set, itemId: string): boolean => {

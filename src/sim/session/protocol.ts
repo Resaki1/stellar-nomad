@@ -8,6 +8,8 @@ import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/sav
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
 export const PROTOCOL_VERSION = 4;
+/** Three missed worker heartbeats suspend prediction and new resource spends. */
+export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
 /** Snapshot JSON is sent in parts of this many characters. */
 export const SNAPSHOT_PART_CHARS = 16_000;

@@ -1,6 +1,6 @@
 # Stellar Nomad — Roadmap
 
-**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 passed its Vercel preview invite test from a Wi-Fi Mac to a cellular iPhone. Hosted TURN stays off.
+**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 passed its Vercel preview invite test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. M4.4 verification is in progress. Hosted TURN stays off.
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -540,6 +540,6 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 ## 7. Current implementation handoff
 
 1. Keep the direct [staging playtest](../services/coop-signal/README.md) and local relay regression available. Leave hosted TURN disabled.
-2. Continue with the M4.2 shared M3 loop and M4.3 expedition in the [M4 co-op plan](M4_COOP_PLAN.md). Keep the shared-rock and solo expedition checks passing as gameplay evolves.
+2. See the [M4 co-op plan](M4_COOP_PLAN.md) for M4.2–M4.4 implementation and playtest evidence. Keep the shared-rock and solo expedition checks passing as gameplay evolves.
 3. Complete the co-op expedition and headless parity gates before building M5's first
    shared depot and fuel route. Use playtests to revise the gameplay catalogue and rules.

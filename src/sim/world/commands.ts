@@ -106,6 +106,7 @@ export type OperationResult =
 export type RejectReason =
   | "invalid"
   | "unknown_player"
+  | "host_unavailable"
   | "dead"
   | "not_dead"
   | "already_done"

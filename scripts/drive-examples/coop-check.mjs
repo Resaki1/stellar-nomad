@@ -858,6 +858,23 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     return stream.outcome.result;
   }
 
+  async function contentFixture() {
+    const mined = await guestMineDropped("contentFixture", null, "origin_belt");
+    if (!mined.pass || !(mined.grant.fixture_ore >= 1)) return { pass: false, mined };
+    await guest.evaluate(`${C}.meetRemote(0.08)`);
+    await guest.sleep(2500);
+    await settledCommand(guest, { type: "expedition.give", to: ids.host, amount: 1, kind: "cargo", itemId: "fixture_ore" });
+    await settledCommand(host, { type: "item.craft", itemId: "consumable_fixture_patch" });
+    const goods = await record(ids.host);
+    const stores = await snapshot();
+    const acquired = goods.modules.consumables.consumable_fixture_patch === 1 && !goods.cargo.items.fixture_ore &&
+      (stores.guest.record.fixture_ore ?? 0) === mined.grant.fixture_ore - 1;
+    const rejoined = await joinByCard();
+    const after = await snapshot();
+    return { pass: acquired && rejoined.status.playerId === ids.guest && sameItems(after.guest.mirror, stores.guest.record),
+      granted: mined.grant, transferred: 1, crafted: goods.modules.consumables.consumable_fixture_patch };
+  }
+
   async function exchange() {
     await guest.evaluate(`${C}.meetRemote(0.08)`);
     await guest.sleep(2500);
@@ -1259,7 +1276,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
-      exchange, soak, capacity,
+      exchange, soak, capacity, contentFixture,
       settingsSpawn,
       presence,
       jitter,

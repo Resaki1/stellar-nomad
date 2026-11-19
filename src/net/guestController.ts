@@ -265,7 +265,6 @@ export function joinAndBoot(code: string, signaling: Signaling = gameSignaling):
               leaveSession();
               fail(new JoinError(detail ?? "closed"));
             } else {
-              j.stopLoops();
               j.link?.close();
               remotePoses.clear();
               setCoop({ status: "refused", detail: detail ?? "closed" });

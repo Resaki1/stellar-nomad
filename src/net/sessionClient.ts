@@ -5,6 +5,7 @@
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import { getLocalPlayerShip, localBeamPose, localRenderPose } from "@/sim/entities";
+import { setSimPaused } from "@/sim/simPause";
 import { repositionState } from "@/sim/ship/reposition";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
@@ -104,6 +105,9 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
 export function startSessionLoops(gs: GuestSession): () => void {
   let seq = 0;
   const pose = setInterval(() => {
+    const unavailable = gs.status !== "joined" || gs.waiting() || gs.hostClosing || gs.storageFailed;
+    setSimPaused(unavailable, "coop-authority");
+    if (unavailable) return;
     const s = getLocalPlayerShip();
     if (!s || gs.status !== "joined" || getLocalPlayerState().isDead || localRenderPose.atMs < 0) return;
     // The respawn commit arrives before its reply queues the runtime reposition.
@@ -130,6 +134,7 @@ export function startSessionLoops(gs: GuestSession): () => void {
   // The device-wide name changed (Settings): the host relabels us for everyone.
   const offName = onPilotNameChange((n) => gs.rename(n));
   return () => {
+    setSimPaused(false, "coop-authority");
     clearInterval(pose);
     clearInterval(tel);
     offName();

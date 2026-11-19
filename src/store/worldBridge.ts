@@ -36,6 +36,16 @@ export function installWorldBridge(store: Store): void {
   resetReposition();
   const local = getLocalPlayerId();
 
+  const refreshFixTarget = () => {
+    const target = store.get(targetedPOIAtom);
+    if (!target?.id.startsWith("rendezvous:")) return;
+    const world = getWorldState();
+    const fix = world.rendezvous[target.id.slice("rendezvous:".length)];
+    if (!fix || (fix.sourceId && !world.discoveries.sources.some(s => s.id === fix.sourceId && !s.depleted)) ||
+        fix.frameId !== target.frameId || fix.positionKm.some((x, i) => x !== target.positionKm[i])) {
+      store.set(targetedPOIAtom, null);
+    }
+  };
   const unsubscribe = worldAuthority.subscribe((e) => {
     switch (e.type) {
       case "expedition.given":
@@ -44,6 +54,7 @@ export function installWorldBridge(store: Store): void {
         break;
       case "expedition.marked":
         store.set(rendezvousAtom, getWorldState().rendezvous);
+        refreshFixTarget();
         break;
       case "wreck.created":
       case "wreck.changed":
@@ -56,6 +67,7 @@ export function installWorldBridge(store: Store): void {
       case "discoveries.changed": {
         const d = getWorldState().discoveries;
         store.set(discoveriesMirrorAtom, d);
+        refreshFixTarget();
         // A destination rock that was mined or destroyed (by anyone) is no place to go.
         const t = store.get(targetedPOIAtom);
         if (t?.id.startsWith("source:")) {

@@ -625,7 +625,53 @@ async function expedition() {
   return { pass: Object.values(checks).every(Boolean), checks };
 }
 
+/** Run only in the disposable checkout with scripts/fixtures/m4-content.patch applied. */
+async function contentFixture() {
+  const { LocalAuthority } = await S("sim/world/authority.ts");
+  const ore = "fixture_ore", patch = "consumable_fixture_patch";
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  const rock = rocks("origin_belt", 1)[0];
+  const resolved = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, rig.host.player(gid));
+  if (!(resolved.yield[ore] > 0)) throw new Error("Apply the content fixture in a disposable checkout first");
+  const pose = poseAt(resolved);
+  const solo = defaults.defaultSaveData(HOST_ID);
+  const authority = new LocalAuthority({ getWorld: () => solo.world, getPlayer: id => solo.players[id],
+    getPlayers: () => Object.values(solo.players), markDirty: () => {}, resolveMine: soloResolver });
+  const mined = authority.submit(mineOp(rock, resolved.requiredBeamS), HOST_ID);
+  const craft = { type: "item.craft", opId: "fixture-craft", itemId: patch };
+  const crafted = authority.submit(craft, HOST_ID);
+  const submit = async (c, op) => { c.session.submit(op); await rig.settle(); return c.settled.at(-1); };
+  for (const c of [h,g]) {
+    c.telemetry = { pose, propellant: { ordinaryKg: 10, protectedKg: 0 } };
+    c.session.sendTelemetry();
+  }
+  await rig.settle();
+  const scan = await submit(g, { ...rock, type: "survey.inspect", opId: "fixture-scan" });
+  const fix = await submit(g, { type: "expedition.mark", sourceId: scan.result.sourceId, name: "Test ore", opId: "fixture-share" });
+  const remote = await submit(g, mineOp(rock, resolved.requiredBeamS));
+  const gift = await submit(g, { type: "expedition.give", kind: "cargo", itemId: ore, amount: 1, to: HOST_ID, opId: "fixture-give" });
+  const made = await submit(h, craft);
+  const wrong = rig.client("Old content");
+  wrong.session.o.content += "-old";
+  wrong.join(); await rig.settle();
+  const before = rig.host.world.revision;
+  await rig.host.close(); await rig.settle();
+  await rig.startHost();
+  const again = rig.client("Returning", { store: g.store });
+  again.join(); await rig.settle();
+  const checks = { generated: same(mined.result.granted, remote.result.granted), surveyed: scan.status === "accepted" && fix.status === "accepted",
+    craft: made.status === "accepted" && crafted.status === "accepted" && gift.status === "accepted",
+    stores: rig.host.player(HOST_ID).modules.consumables[patch] === 1 &&
+      again.session.mirror.data.players[gid].cargo.items[ore] === solo.players[HOST_ID].cargo.items[ore],
+    findings: rig.host.world.discoveries.families[ore]?.extracted && solo.world.discoveries.families[ore]?.extracted,
+    oldContent: wrong.session.refusal === "content" && Object.keys(rig.host.world.members).length === 2,
+    restart: rig.host.world.revision === before && rig.host.world.rendezvous[gid]?.sourceId === scan.result.sourceId };
+  return { pass: Object.values(checks).every(Boolean), checks, granted: remote.result.granted };
+}
+
 const SCENARIOS = {
+  ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),
   expedition,
   sharedLoop,
   pilotActions,

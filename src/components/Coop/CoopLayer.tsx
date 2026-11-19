@@ -5,6 +5,7 @@
  * with their plume and mining beam, their POI markers, and the host clock follower. Renders
  * nothing while solo.
  */
+import { HOST_SILENCE_MS } from "@/sim/session/protocol";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import * as THREE from "three";
@@ -206,7 +207,7 @@ function ClockFollower() {
   useFrame((_, dt) => {
     if (hostClock.at < 0 || coopSnapshot().role === "solo") return;
     if (store.get(simRateAtom) !== hostClock.rate) store.set(simRateAtom, hostClock.rate);
-    const est = hostClock.epochMs + hostClock.rate * (performance.now() - hostClock.at);
+    const est = hostClock.epochMs + hostClock.rate * Math.min(HOST_SILENCE_MS, performance.now() - hostClock.at);
     const local = store.get(simEpochMsAtom);
     const err = est - local;
     // Applied by the next sim-clock tick, never mid-frame (see simEpochNudge).

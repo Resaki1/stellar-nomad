@@ -23,6 +23,7 @@ import { LocalAuthority } from "@/sim/world/authority";
 import { tankCapacityKg } from "@/sim/world/reducers";
 import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
 import {
+  HOST_SILENCE_MS,
   MAX_NAME,
   MAX_PLAYERS,
   PROTOCOL_VERSION,
@@ -49,6 +50,11 @@ const CHECKPOINT_MS = 10_000;
 const RENAME_MIN_MS = 1_000;
 /** Guests may not send these: dev tools and the host-owned clock. */
 const HOST_ONLY: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["type"]>(["time.set", "research.devSet"]);
+
+const SPATIAL_OPS: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["type"]>([
+  "asteroid.mine", "survey.inspect", "expedition.give", "wreck.collect", "site.inspect", "site.recover",
+  "replication.place", "replication.activate", "ship.respawn",
+]);
 
 export type HostState = "starting" | "open" | "storage_failed" | "closed";
 
@@ -105,6 +111,7 @@ export class HostSession {
   private clockPaused = false;
   private epoch0 = 0;
   private mono0 = 0;
+  private lastHeartbeat = 0;
   private lastCheckpoint = 0;
   private readonly captured: WorldEvent[] = [];
   private readonly renamedAt = new Map<PlayerId, number>();
@@ -163,7 +170,7 @@ export class HostSession {
     });
     this.authority.subscribe((e) => this.captured.push(e));
     this.epoch0 = w.simEpochMs;
-    this.mono0 = this.o.clock.monoMs();
+    this.lastHeartbeat = this.mono0 = this.o.clock.monoMs();
     await this.o.repo.commit(this.meta, this.data);
     this.lastCheckpoint = this.o.clock.monoMs();
     this.setState("open");
@@ -172,7 +179,8 @@ export class HostSession {
   /** Live astronomical epoch: the host owns it while the session is open. */
   epochMs(): number {
     if (this.clockPaused) return this.epoch0;
-    return this.epoch0 + this.data.world.simRate * (this.o.clock.monoMs() - this.mono0);
+    const liveUntil = Math.min(this.o.clock.monoMs(), this.lastHeartbeat + HOST_SILENCE_MS);
+    return this.epoch0 + this.data.world.simRate * Math.max(0, liveUntil - this.mono0);
   }
 
   setClockPaused(paused: boolean): void {
@@ -186,6 +194,8 @@ export class HostSession {
   /** 1 Hz from the adapter: clock samples to everyone, plus the periodic telemetry checkpoint. */
   tick(): void {
     if (this.state !== "open" && this.state !== "storage_failed") return;
+    this.epoch0 = this.epochMs();
+    this.lastHeartbeat = this.mono0 = this.o.clock.monoMs();
     this.conns.forEach(m => {
       if (m.closeAfter !== undefined && this.o.clock.monoMs() >= m.closeAfter) this.o.transport.close(m.conn);
     });
@@ -428,22 +438,14 @@ export class HostSession {
     if (msg.tel) this.applyTelemetry(pid, msg.tel);
     const revision = this.data.world.revision;
     this.captured.length = 0;
-    let op = msg.op;
-    if (op.type === "survey.inspect") {
-      const rock = resolveHeadlessRock(op.fieldId, op.chunkKey, op.instanceId);
-      const scan = rock && buildInspectOperation(this.o.system(), { ...op, radiusM: rock.radiusM,
-        chunkOriginKm: rock.localKm, localM: [0, 0, 0] }, op.opId);
-      if (scan) op = scan;
-    }
-    updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
+    const op = msg.op.type === "survey.inspect" ? this.resolveInspection(msg.op) : msg.op;
     let outcome: OperationOutcome;
-    const refusal = pid !== this.o.hostPlayerId && HOST_ONLY.has(op.type) ? "not_allowed" : this.checkActivity(op, player);
-    if (refusal) {
-      outcome = { status: "rejected", opId: msg.opId, by: pid, reason: refusal };
+    const refusal = !op ? "not_found" : pid !== this.o.hostPlayerId && HOST_ONLY.has(op.type) ? "not_allowed" : this.checkActivity(op, player);
+    if (!op || refusal) {
+      outcome = { status: "rejected", opId: msg.opId, by: pid, reason: refusal ?? "not_found" };
     } else {
       outcome = this.authority.submit(op, pid);
       if (op.type === "time.set" && outcome.status === "accepted") {
-        // The live clock restarts from the committed epoch/rate.
         this.epoch0 = this.data.world.simEpochMs;
         this.mono0 = this.o.clock.monoMs();
       }
@@ -479,13 +481,23 @@ export class HostSession {
     this.send(m.conn, { t: "settled", gen: this.gen, seq: msg.seq, opId: msg.opId, outcome });
   }
 
+  private resolveInspection(op: Extract<WorldOperation, { type: "survey.inspect" }>): typeof op | null {
+    if (typeof op.fieldId !== "string" || typeof op.chunkKey !== "string" || !Number.isInteger(op.instanceId) ||
+        op.instanceId < 0 || op.instanceId > 0xffffffff) return null;
+    const rock = resolveHeadlessRock(op.fieldId, op.chunkKey, op.instanceId);
+    return rock && buildInspectOperation(this.o.system(), {
+      ...op, radiusM: rock.radiusM, chunkOriginKm: rock.localKm, localM: [0, 0, 0],
+    }, op.opId);
+  }
+
   /** Activity bounds for a mine claim (friends-only: bounds, not anti-cheat). */
   private checkActivity(op: WorldOperation, player: PlayerState): "no_activity" | "too_far" | "not_found" | "dead" | null {
+    if (SPATIAL_OPS.has(op.type)) updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
     if (player.isDead && op.type === "asteroid.mine") return "dead";
     if (op.type === "wreck.collect" || op.type === "survey.inspect") {
       const pose = player.ship;
       const target = op.type === "wreck.collect" ? this.world.wrecks.find(w => w.id === op.wreckId)
-        : this.resolver(op.fieldId, op.chunkKey, op.instanceId, player);
+        : op;
       if (!target) return "not_found";
       if (!pose || !isFrameId(pose.frameId)) return "too_far";
       const range = "radiusM" in target
