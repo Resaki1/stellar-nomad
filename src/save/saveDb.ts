@@ -3,6 +3,7 @@
  * world list never loads full saves; `putWorld` writes both in ONE transaction.
  */
 import { SCHEMA_VERSION } from "./defaults";
+import { rekeySolePlayer } from "./rekey";
 import { parseSaveData, parseSaveMeta } from "./validate";
 import type { SaveData, SaveMeta, SaveRecord, WorldId } from "./types";
 
@@ -113,10 +114,7 @@ export async function importWorld(json: string, localPlayerId: string): Promise<
   }
   const p = parsed as { meta?: unknown; data?: unknown };
   const data = parseSaveData(p.data);
-  const ids = Object.keys(data.players);
-  if (ids.length === 1 && ids[0] !== localPlayerId) {
-    data.players = { [localPlayerId]: data.players[ids[0]] };
-  }
+  rekeySolePlayer(data, localPlayerId);
   const meta = { ...parseSaveMeta(p.meta, ""), id: newWorldId(), schemaVersion: SCHEMA_VERSION };
   await putWorld(meta, data);
   return meta;

@@ -166,6 +166,32 @@ ship parked at rest is genuinely near-silent: don't mistake that for a broken ca
 Fire an event to test the chain end to end, for example `audio:click:1000:click.hard`.
 `__audio.selftest()` (offline DSP assertions) still applies, see `AUDIO_PLAN.md` §10.
 
+### Two browsers (co-op)
+
+`scripts/drive-coop.mjs` runs a host and a guest Chrome side by side (headless, muted,
+own profiles `.captures/.chrome-profile-{host,guest}`, CDP ports 9341/9342, pidfiles
+`.captures/.chrome-{host,guest}.pid`, so `DRIVE_PROFILE=host DRIVE_CDP_PORT=9341 pnpm drive`
+can attach to a kept one). A `run:` script gets `{ host, guest }`, each with `load(query)`,
+`ready()`, `evaluate`, `press`, `frames`, `shot`, `canvas`. Both Chromes stop at the end
+unless `--keep`; `pnpm drive:coop -- --stop` stops kept ones.
+
+```bash
+COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+```
+
+The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test
+hooks: `__test.coop.holdIncoming(ms)` (latency spike: the race loser still sends its claim)
+and `__test.coop.cutAfterCommit()` (the link dies after the host commits, before the reply).
+Delay faults set before the action: `window.__coopFault = { hostStartDelayMs }` (slow host
+worker start: handoff) and `{ joinSnapshotDelayMs }` (welcome/snapshot held: Back while
+"Joining…"). At the title only the stub harness exists; `__test.coopTitle()` reads join state there.
+presence and race fail on any WebGPU `setPipeline` console error and require the first pose
+sample after first sight under 200 ms (the remote ship is precompiled at session start).
+remoteFx reads `__test.coop.fx(ms)` (what each remote slot drew: beam frames/length, plume) and
+`__test.coop.bursts()` (destruction bursts shown for another pilot's mine); pilotMarker reads
+`__test.coop.markers()` (green pilot POI markers and edge triangles as drawn, plus the gaze
+target); rename types into Settings → friends. Captures go to `.captures/coop/`.
+
 ---
 
 ## 3. Quality-goal loops

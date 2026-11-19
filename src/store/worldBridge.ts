@@ -3,7 +3,7 @@
  * active save, keeps the mirrors in sync from events, and samples the sim clock at flush.
  */
 import type { createStore } from "jotai";
-import { getWorldState, registerCollector } from "@/save/activeSave";
+import { getWorldState, inSession, registerCollector } from "@/save/activeSave";
 import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
@@ -70,7 +70,9 @@ export function installWorldBridge(store: Store): void {
     }
   });
   // The clock advances every frame through the atom; persist it by sampling.
+  // In a session the host owns the clock (ClockFollower eases toward it): never write it back.
   const unregister = registerCollector(() => {
+    if (inSession()) return;
     const w = getWorldState();
     w.simEpochMs = store.get(simEpochMsAtom);
     w.simRate = store.get(simRateAtom);

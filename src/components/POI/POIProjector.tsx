@@ -9,7 +9,7 @@ import { useAtomValue, useStore } from "jotai";
 import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
-import { poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import { pilotPOIsAtom, poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
 import { bookmarkPOIsAtom } from "@/store/discoveries";
 import { sitePOIsAtom } from "@/store/sites";
 import {
@@ -165,6 +165,7 @@ function usePOIDefs(): POIDef[] {
   const wrecks = useAtomValue(wrecksAtom);
   const bookmarkPois = useAtomValue(bookmarkPOIsAtom);
   const sitePois = useAtomValue(sitePOIsAtom);
+  const pilotPois = useAtomValue(pilotPOIsAtom);
   const target = useAtomValue(targetedPOIAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
@@ -246,6 +247,9 @@ function usePOIDefs(): POIDef[] {
     // Authored site signals
     for (const p of sitePois) pois.push(p);
 
+    // Other pilots (co-op): live frame-relative positions
+    for (const p of pilotPois) pois.push(p);
+
     // B3: the current destination always has a marker, even when nothing else lists it.
     if (target && !pois.some((p) => p.id === target.id)) {
       pois.push({
@@ -300,7 +304,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -386,7 +390,7 @@ const POIProjector = memo(function POIProjector() {
 
       // Nearest the nose wins: in an eclipse the Moon and the Sun share the focus box.
       const noseOff = focused ? Math.hypot(_ndc.x - _noseNdc.x, _ndc.y - _noseNdc.y) : Infinity;
-      if (focused && noseOff < focusedNoseOff) {
+      if (focused && poi.targetable !== false && noseOff < focusedNoseOff) {
         focusedNoseOff = noseOff;
         focusedPoiId = poi.id;
         focusedPoiDef = poi;
@@ -421,6 +425,7 @@ const POIProjector = memo(function POIProjector() {
         edgeAngle,
         focused,
         objectRadiusFrac,
+        kind: poi.kind,
       });
     }
 

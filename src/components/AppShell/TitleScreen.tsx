@@ -11,10 +11,11 @@ import type { Difficulty, SaveMeta } from "@/save/types";
 import { markTitleInteractive } from "./appState";
 import StarBackdrop from "./StarBackdrop";
 import type { StartTarget } from "./AppShell";
+import JoinPanel from "./JoinPanel";
 
 const TitleSettings = lazy(() => import("./TitleSettings"));
 
-type View = "menu" | "new" | "load" | "settings";
+type View = "menu" | "new" | "load" | "settings" | "join";
 
 const DIFFICULTIES: { id: Difficulty; label: string; blurb: string }[] = [
   { id: "explorer", label: "Explorer", blurb: "Forgiving: 25 % less propellant use, half collision damage, cooler work, richer yields, a larger recovery allowance." },
@@ -73,12 +74,13 @@ async function download(world: SaveMeta): Promise<void> {
   URL.revokeObjectURL(a.href);
 }
 
-type Props = { onStart: (t: StartTarget) => Promise<void> };
+type Props = { onStart: (t: StartTarget) => Promise<void>; joinCode?: string | null };
 
-export default function TitleScreen({ onStart }: Props) {
+export default function TitleScreen({ onStart, joinCode = null }: Props) {
   const [worlds, setWorlds] = useState<SaveMeta[] | null>(null);
   const [continueId, setContinueId] = useState<string | null>(null);
-  const [view, setView] = useState<View>("menu");
+  // An invite link (`?join=CODE`) opens straight onto the join card.
+  const [view, setView] = useState<View>(joinCode ? "join" : "menu");
   const [status, setStatus] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -104,7 +106,8 @@ export default function TitleScreen({ onStart }: Props) {
   useEffect(() => {
     if (worlds === null) return;
     markTitleInteractive();
-    menuRef.current?.querySelector<HTMLElement>("[data-nav]")?.focus();
+    if (view === "menu") menuRef.current?.querySelector<HTMLElement>("[data-nav]")?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- first focus only, once the list is in
   }, [worlds]);
 
   const open = (v: View) => {
@@ -177,6 +180,9 @@ export default function TitleScreen({ onStart }: Props) {
                   </span>
                 </button>
               )}
+              <button type="button" data-nav className="shell-menu__item" data-coop-open onClick={() => open("join")}>
+                <span className="shell-menu__label">Join friend</span>
+              </button>
               <button type="button" data-nav data-sfx="soft" className="shell-menu__item" onClick={() => fileRef.current?.click()}>
                 <span className="shell-menu__label">Import save</span>
               </button>
@@ -225,6 +231,7 @@ export default function TitleScreen({ onStart }: Props) {
           onChanged={refresh}
         />
       )}
+      {view === "join" && <JoinPanel initialCode={joinCode ?? ""} onBack={back} onJoined={(meta) => void onStart({ kind: "joined", meta })} />}
       {view === "settings" && (
         <Suspense fallback={null}>
           <TitleSettings onClose={back} />

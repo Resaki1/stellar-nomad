@@ -9,8 +9,11 @@ export type AsteroidDestroyCause = "mined" | "collision";
  */
 export type WorldOperation =
   | { type: "asteroid.destroy"; opId: string; fieldId: string; chunkKey: string; instanceId: number; cause: AsteroidDestroyCause }
-  /** `yield` is the miner's computed reward; the authority bounds it by capacity. */
-  | { type: "asteroid.mine"; opId: string; fieldId: string; chunkKey: string; instanceId: number; yield: Record<string, number> }
+  /**
+   * `yield` is the miner's preview; an authority with a mine resolver ignores it and re-derives the
+   * reward. `beamS`: executed beam seconds (activity reference, checked by the host).
+   */
+  | { type: "asteroid.mine"; opId: string; fieldId: string; chunkKey: string; instanceId: number; yield?: Record<string, number>; beamS?: number }
   | { type: "item.craft"; opId: string; itemId: string }
   /**
    * Close inspection of a targeted rock. The claim (class, composition estimate, pose) is the
@@ -114,7 +117,11 @@ export type RejectReason =
   | "near_body"
   | "near_rock"
   | "emergence_blocked"
-  | "not_inspected";
+  | "not_inspected"
+  /** Co-op host: the reported activity (beam time) cannot have produced this result. */
+  | "no_activity"
+  /** Co-op host: a local-only operation (dev tools, clock) sent by a guest. */
+  | "not_allowed";
 
 /**
  * A remote authority (M4) answers `pending` and settles later through an `op.settled` event:

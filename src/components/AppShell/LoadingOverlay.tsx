@@ -77,7 +77,7 @@ export default function LoadingOverlay() {
         </h1>
         {progress.error ? (
           <div className="shell-loading__error" role="alert">
-            <p>Could not load the save: {progress.error}</p>
+            <p>{typeof window !== "undefined" && new URLSearchParams(window.location.search).has("join") ? progress.error : `Could not load the save: ${progress.error}`}</p>
             {/* The button that started the load has unmounted; focus must land here. */}
             <button type="button" className="shell-btn" autoFocus onClick={() => window.location.assign(titleUrl())}>
               Back to title

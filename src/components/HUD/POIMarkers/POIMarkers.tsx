@@ -135,7 +135,7 @@ export default function POIMarkers() {
 
           let marker = markerEls.get(poi.id);
           if (!marker) {
-            marker = createMarkerElement(poi.id);
+            marker = createMarkerElement(poi.id, poi.kind);
             el.appendChild(marker);
             markerEls.set(poi.id, marker);
             // Fade in next frame.
@@ -162,11 +162,11 @@ export default function POIMarkers() {
             if (distEl.textContent !== text) distEl.textContent = text;
           }
 
-          // Name label — show when focused OR targeted.
+          // Name label — show when focused OR targeted; a pilot's always (who is that?).
           const nameEl = marker.querySelector(".poi-marker__name") as HTMLElement;
           if (nameEl) {
-            nameEl.style.display = (poi.focused || isTargeted) ? "" : "none";
-            nameEl.textContent = poi.name;
+            nameEl.style.display = (poi.focused || isTargeted || poi.kind === "pilot") ? "" : "none";
+            if (nameEl.textContent !== poi.name) nameEl.textContent = poi.name;
           }
 
           // Diamond highlight when targeted.
@@ -182,7 +182,7 @@ export default function POIMarkers() {
 
           let arrow = arrowEls.get(poi.id);
           if (!arrow) {
-            arrow = createArrowElement(poi.id);
+            arrow = createArrowElement(poi.id, poi.kind);
             el.appendChild(arrow);
             arrowEls.set(poi.id, arrow);
             const a = arrow;
@@ -250,9 +250,9 @@ export default function POIMarkers() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function createMarkerElement(id: string): HTMLDivElement {
+function createMarkerElement(id: string, kind?: "pilot"): HTMLDivElement {
   const el = document.createElement("div");
-  el.className = "poi-marker";
+  el.className = kind ? `poi-marker poi-marker--${kind}` : "poi-marker";
   el.dataset.id = id;
   el.style.opacity = "0";
 
@@ -276,9 +276,9 @@ function createMarkerElement(id: string): HTMLDivElement {
   return el;
 }
 
-function createArrowElement(id: string): HTMLDivElement {
+function createArrowElement(id: string, kind?: "pilot"): HTMLDivElement {
   const el = document.createElement("div");
-  el.className = "poi-arrow";
+  el.className = kind ? `poi-arrow poi-arrow--${kind}` : "poi-arrow";
   el.dataset.id = id;
   el.style.opacity = "0";
   return el;

@@ -7,6 +7,7 @@
 
 import type { FrameId } from "@/sim/frames";
 import type { TransitFieldArrival } from "@/sim/ship/transitDrive";
+import { atom } from "jotai";
 
 export type POIDef = {
   id: string;
@@ -26,6 +27,10 @@ export type POIDef = {
   field?: TransitFieldArrival;
   /** Drawn object's radius (km): the marker label sits below its on-screen disc, not on its glow. */
   objectRadiusKm?: number;
+  /** "pilot": another player's ship (green, name always shown). */
+  kind?: "pilot";
+  /** False: gaze never makes it a transit destination. */
+  targetable?: boolean;
 };
 
 export type ProjectedPOI = {
@@ -45,7 +50,16 @@ export type ProjectedPOI = {
   focused: boolean;
   /** On-screen radius of the drawn object as a fraction of viewport height (0 when none). */
   objectRadiusFrac: number;
+  kind?: "pilot";
 };
+
+/**
+ * Other pilots in a co-op session (CoopLayer). Each def's `positionKm` / `frameId` are LIVE:
+ * rewritten every frame from the interpolated pose, before the projector runs. Not targetable:
+ * transit aims at a frame's velocity only (store/transit.ts updateAimVelocity), so a moving
+ * friend would be missed, and the destination would outlive them.
+ */
+export const pilotPOIsAtom = atom<POIDef[]>([]);
 
 /**
  * Mutable shared buffer — written by POIProjector every frame.

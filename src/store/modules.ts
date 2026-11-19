@@ -5,6 +5,7 @@ import { atom, type Setter } from "jotai";
 import { signalAudioActionAtom } from "./audioSignals";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultModules } from "@/save/defaults";
+import { canWriteSlice } from "@/save/activeSave";
 import { getItemDef, type ItemSlot } from "@/data/content";
 import { moduleModifiers, type ComputedModifiers } from "@/sim/ship/loadout";
 import type { OperationOutcome } from "@/sim/world/commands";
@@ -128,6 +129,8 @@ export const useConsumableAtom = atom(
   (get, set, itemId: string): boolean => {
     const def = getItemDef(itemId);
     if (!def || def.type !== "consumable" || def.deployable) return false;
+    // Co-op: the count is the host's (no consume command yet), so no free use either.
+    if (!canWriteSlice("player", "modules")) return false;
 
     const state = get(modulesAtom);
     const count = state.consumables[itemId] ?? 0;

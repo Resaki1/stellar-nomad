@@ -75,3 +75,25 @@
   will-change: left, top, transform, opacity;
   transition: opacity s.$dur-fast ease-out;
 }
+
+// ─── Other pilots (co-op): the session's green ───────────────────
+
+$pilot: #5fd38a; // the co-op pill's colour
+
+.poi-marker--pilot {
+  .poi-marker__diamond {
+    border-color: rgba($pilot, 0.85);
+    background: rgba($pilot, 0.15);
+  }
+  .poi-marker__name {
+    color: rgba($pilot, 0.95);
+    text-transform: none;
+  }
+  .poi-marker__distance {
+    color: rgba($pilot, 0.65);
+  }
+}
+
+.poi-arrow--pilot {
+  border-left-color: rgba($pilot, 0.75);
+}

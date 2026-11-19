@@ -16,7 +16,7 @@ import type {
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;
@@ -92,6 +92,7 @@ export function defaultPlayerState(difficulty: Difficulty = "standard"): PlayerS
     replication: { activeId: STARTER_POINT_ID },
     lastLoss: null,
     trackedProject: null,
+    stream: { seq: 0, opId: null, outcome: null },
   };
 }
 
@@ -105,13 +106,16 @@ export function defaultWorldState(): WorldState {
     discoveries: defaultDiscoveries(),
     replication: { points: [starterPoint()] },
     receipts: [],
+    revision: 0,
+    session: { generation: 0 },
+    members: {},
   };
 }
 
 export function defaultSaveData(playerId: string, difficulty: Difficulty = "standard"): SaveData {
   return {
     schemaVersion: SCHEMA_VERSION,
-    world: defaultWorldState(),
+    world: { ...defaultWorldState(), members: { [playerId]: { name: "", verifier: null, joinedAt: 0 } } },
     players: { [playerId]: defaultPlayerState(difficulty) },
   };
 }

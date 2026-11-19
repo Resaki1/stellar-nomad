@@ -169,6 +169,7 @@ export function titleUrl(): string {
   const url = new URL(window.location.href);
   url.searchParams.delete("autostart");
   url.searchParams.delete("world");
+  url.searchParams.delete("join");
   return url.toString();
 }
 

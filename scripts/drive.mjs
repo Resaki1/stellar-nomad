@@ -80,8 +80,10 @@ for (let i = 0; i < argv.length; i++) {
   else steps.push(a);
 }
 const OUT = path.resolve(ROOT, opt.out);
-const PROFILE = path.join(ROOT, ".captures", ".chrome-profile");
-const PIDFILE = path.join(ROOT, ".captures", ".chrome.pid");
+// DRIVE_PROFILE runs a second, isolated Chrome (co-op: host + guest); pair it with DRIVE_CDP_PORT.
+const PROFILE_NAME = process.env.DRIVE_PROFILE ?? "";
+const PROFILE = path.join(ROOT, ".captures", PROFILE_NAME ? `.chrome-profile-${PROFILE_NAME}` : ".chrome-profile");
+const PIDFILE = path.join(ROOT, ".captures", PROFILE_NAME ? `.chrome-${PROFILE_NAME}.pid` : ".chrome.pid");
 mkdirSync(OUT, { recursive: true });
 const [VW, VH] = opt.size.split("x").map(Number);
 
@@ -181,6 +183,8 @@ if (!reused) {
       "--autoplay-policy=no-user-gesture-required",
       // Silent speakers: the Web Audio graph and __test.audio.record still run.
       "--mute-audio",
+      // Co-op: two local Chromes must see each other's real host candidates (no mDNS names).
+      "--disable-features=WebRtcHideLocalIpsWithMdns",
       "--no-first-run",
       "--no-default-browser-check",
       `--remote-debugging-port=${PORT}`,

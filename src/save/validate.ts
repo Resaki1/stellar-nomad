@@ -9,6 +9,7 @@ import { MAX_BOOKMARKS, MAX_LEGACY_IDS, MAX_RECEIPTS, MAX_SOURCES, SCHEMA_VERSIO
 import { MIGRATIONS } from "./migrations";
 import type {
   AsteroidDeltas,
+  CommandStream,
   Difficulty,
   DiscoveryState,
   EvidenceStamp,
@@ -28,6 +29,7 @@ import type {
   ShipConfig,
   ShipPose,
   Vec3Tuple,
+  WorldMember,
   WorldState,
   WreckRecord,
 } from "./types";
@@ -149,7 +151,42 @@ export function sanitizeWorld(v: unknown): WorldState {
     discoveries: sanitizeDiscoveries(v.discoveries),
     replication: sanitizeReplication(v.replication),
     receipts: sanitizeReceipts(v.receipts),
+    revision: isNum(v.revision) && v.revision >= 0 ? Math.floor(v.revision) : 0,
+    session: { generation: isObj(v.session) && isNum(v.session.generation) && v.session.generation >= 0 ? Math.floor(v.session.generation) : 0 },
+    members: sanitizeMembers(v.members),
   };
+}
+
+const MAX_MEMBERS = 64;
+function sanitizeMembers(v: unknown): Record<string, WorldMember> {
+  const out: Record<string, WorldMember> = {};
+  if (!isObj(v)) return out;
+  for (const id of Object.keys(v).slice(0, MAX_MEMBERS)) {
+    const m = v[id];
+    if (!isObj(m) || id === "") continue;
+    out[id] = {
+      name: typeof m.name === "string" ? m.name.slice(0, 32) : "",
+      verifier: typeof m.verifier === "string" && m.verifier.length <= 128 ? m.verifier : null,
+      joinedAt: num(m.joinedAt, 0),
+    };
+  }
+  return out;
+}
+
+/** Loose, bounded: the stored outcome is replayed verbatim, so only its size and id are checked. */
+const MAX_OUTCOME_CHARS = 16384;
+function sanitizeStream(v: unknown): CommandStream {
+  if (!isObj(v) || !isNum(v.seq) || v.seq < 0) return { seq: 0, opId: null, outcome: null };
+  const opId = typeof v.opId === "string" && v.opId.length <= 128 ? v.opId : null;
+  let outcome: unknown = null;
+  if (isObj(v.outcome) && typeof v.outcome.status === "string") {
+    try {
+      if (JSON.stringify(v.outcome).length <= MAX_OUTCOME_CHARS) outcome = v.outcome;
+    } catch {
+      outcome = null;
+    }
+  }
+  return { seq: Math.floor(v.seq), opId, outcome };
 }
 
 function sanitizePoint(v: unknown): ReplicationPoint | null {
@@ -340,6 +377,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
     replication: { activeId: isObj(v.replication) && typeof v.replication.activeId === "string" && v.replication.activeId !== "" ? v.replication.activeId : STARTER_POINT_ID },
     lastLoss: sanitizeLoss(v.lastLoss),
     trackedProject: typeof v.trackedProject === "string" && v.trackedProject.length <= 64 ? v.trackedProject : null,
+    stream: sanitizeStream(v.stream),
   };
 }
 

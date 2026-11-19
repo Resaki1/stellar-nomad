@@ -213,4 +213,24 @@ function v4ToV5(data: Obj): Obj {
   return { ...data, schemaVersion: 5, world, players };
 }
 
-export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4, v4ToV5];
+/**
+ * 5 → 6 (M4.0): revision counter, session generation, members (every existing player becomes an
+ * owner-style member without a verifier) and an empty command stream per player.
+ */
+function v5ToV6(data: Obj): Obj {
+  const world: Obj = isObj(data.world) ? { ...data.world } : {};
+  const playersIn: Obj = isObj(data.players) ? data.players : {};
+  const players: Obj = {};
+  const members: Obj = {};
+  for (const pid of Object.keys(playersIn)) {
+    const p = playersIn[pid];
+    players[pid] = isObj(p) ? { ...p, stream: { seq: 0, opId: null, outcome: null } } : p;
+    members[pid] = { name: "", verifier: null, joinedAt: 0 };
+  }
+  world.revision = 0;
+  world.session = { generation: 0 };
+  world.members = members;
+  return { ...data, schemaVersion: 6, world, players };
+}
+
+export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4, v4ToV5, v5ToV6];

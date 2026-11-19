@@ -1,4 +1,5 @@
 import { MAX_RECEIPTS } from "@/save/defaults";
+import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { PlayerId, PlayerState, WorldState } from "@/save/types";
 import { AsteroidDeltaIndex } from "./asteroidDeltas";
 import type { OperationOutcome, OperationType, WorldEvent, WorldOperation } from "./commands";
@@ -19,7 +20,7 @@ export interface Authority {
  * Retryable transfers. time.set / collision destroys are idempotent by state, so not logged.
  * ship.repair is not: two per second of repair would evict the bounded log within minutes.
  */
-const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
+export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "asteroid.mine",
   "item.craft",
   "survey.inspect",
@@ -48,6 +49,7 @@ export class LocalAuthority implements Authority {
       getPlayers: () => readonly PlayerState[];
       /** `urgent` for operations a reload must not lose. */
       markDirty: (urgent: boolean) => void;
+      resolveMine?: MineResolver;
     },
   ) {}
 
@@ -103,7 +105,7 @@ export class LocalAuthority implements Authority {
       const now = Date.now();
       const getPlayers = this.deps.getPlayers;
       const bookmarked = (): Set<string> => new Set(getPlayers().flatMap((p) => p.bookmarks.map((b) => b.sourceId)));
-      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked });
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, resolveMine: this.deps.resolveMine });
       if ("reason" in r) {
         outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing, evidence: r.evidence };
       } else {

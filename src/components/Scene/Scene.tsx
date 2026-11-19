@@ -1,6 +1,7 @@
 // src/components/Scene/Scene.tsx
 "use client";
 
+import CoopLayer from "@/components/Coop/CoopLayer";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
@@ -225,6 +226,7 @@ const Scene = () => {
         <POIProjector />
         <WreckCollector />
         <ReplicationPoints />
+        <CoopLayer />
         <SurveySite />
       </>
     ),

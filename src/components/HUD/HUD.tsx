@@ -1,5 +1,6 @@
 "use client";
 
+import CoopPill from "@/components/Coop/CoopPill";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { Microscope, Shield, Target, Wrench } from "lucide-react";
@@ -163,6 +164,7 @@ export default function HUD() {
       <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
+      <CoopPill />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
           chain's output node, because HTML cannot exceed reference white. */}
       <HdrCalibration />

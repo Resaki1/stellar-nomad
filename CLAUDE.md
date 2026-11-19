@@ -117,6 +117,11 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `PHYS_PARTS=sim,damage,hull,asteroids pnpm drive -- --keep run:scripts/drive-examples/physics-check.mjs` — collisions (deterministic contact gates + live asteroid hits); design in `docs/PHYSICS_PLAN.md` §7
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
+- `pnpm coop:transcript [scenario,...]` — M4 co-op session core under plain Node (no browser): host/guest
+  sessions over the memory transport + repository; shared-rock race both orders, dropped reply + retry,
+  host restart, remote lunar mine, receipt eviction, old generation, storage failure, activity bounds.
+  Loader: `scripts/lib/ts-hooks.mjs` (runs `src/` TypeScript in Node, zero deps)
+- `COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs` — M4.0 exit gate in two headless muted Chromes (host :9341, guest :9342; fresh `[gc] coop` world, deleted after; ~2 min); `pnpm drive:coop -- --stop` stops both
 - `SHELL_PARTS=title,continue pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs` — title + loading gate
 - `GAME_PARTS=migrate,tx,shared,live pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — M3 ownership, transactions, migration, live loop (disposable `[gc] ` fixture worlds)
 - `GAME_PARTS=res,m32,reach pnpm drive -- --keep --no-isolate run:scripts/drive-examples/gameplay-check.mjs` — ship resources (fuel, heat, processing, repair)

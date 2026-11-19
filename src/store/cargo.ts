@@ -1,6 +1,7 @@
 import { atom } from "jotai";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultCargo } from "@/save/defaults";
+import { canWriteSlice } from "@/save/activeSave";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { signalAudioActionAtom } from "./audioSignals";
 
@@ -46,6 +47,7 @@ export const addCargoAtom = atom(
 
     const amount = Math.max(0, Math.floor(rawAmount));
     if (!resourceId || amount <= 0) return;
+    if (!canWriteSlice("player", "cargo")) return;
 
     const remaining = get(cargoRemainingUnitsAtom);
     if (remaining <= 0) return;
@@ -74,7 +76,7 @@ export const removeCargoAtom = atom(
   null,
   (get, set, update: { resourceId: string; amount?: number }): void => {
     const { resourceId, amount } = update;
-    if (!resourceId) return;
+    if (!resourceId || !canWriteSlice("player", "cargo")) return;
 
     const state = get(cargoAtom);
     const current = Math.max(0, Math.floor(state.items[resourceId] ?? 0));

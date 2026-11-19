@@ -66,13 +66,23 @@ export const simEpochMsAtom = atom(
  */
 export const simRateAtom = atom<number>(1);
 
-/** Advance sim time by one real frame. No-op while the rate is 0 or the sim is paused. Called once per frame (SpaceRenderer). */
+/**
+ * Co-op clock steering, ms added at the next tick. Writing the epoch mid-frame re-solves the
+ * ephemeris after the ship placed the world origin: Earth moves ~30 km/s, so remote ships
+ * drawn later in that frame jumped 1–10 m every frame (MEASURED, M4 playtest).
+ */
+export const simEpochNudge = { ms: 0 };
+
+/** Advance sim time by one real frame (plus any nudge). Called once per frame (SpaceRenderer). */
 export const advanceSimTimeAtom = atom(
   null,
   (get, set, realDeltaSeconds: number) => {
+    if (isSimPaused()) return;
     const rate = get(simRateAtom);
-    if (rate === 0 || isSimPaused()) return;
-    set(simEpochMsAtom, get(simEpochMsAtom) + realDeltaSeconds * rate * 1000);
+    const nudge = simEpochNudge.ms;
+    simEpochNudge.ms = 0;
+    if (rate === 0 && nudge === 0) return;
+    set(simEpochMsAtom, get(simEpochMsAtom) + realDeltaSeconds * rate * 1000 + nudge);
   },
 );
 
