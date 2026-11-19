@@ -2,7 +2,7 @@
  * Ship-resource tuning (docs/M3_GAMEPLAY_PLAN.md §5, §13.3). Defaults plus a live copy the dev
  * panel edits. Units: kg, s, kW, kJ; heat is an effective store, `heatCapacityKJ` = 100 %.
  */
-import { PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "./shipResources";
+import { MAX_HEAT_FRACTION, PROPELLANT_TANK_KG, RECOVERY_ALLOWANCE_KG } from "./shipResources";
 import { applyDifficulty, difficultyMults, difficultyVersion } from "@/sim/difficulty";
 
 export interface ResourceTuning {
@@ -93,7 +93,7 @@ export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
   radiatorPerHeatKW: 50,
   heatWarn01: 0.8,
   heatThrottle01: 0.9,
-  heatMax01: 1.3,
+  heatMax01: MAX_HEAT_FRACTION,
   heatDamageGraceS: 2,
   heatDamagePerS: 0.02,
 

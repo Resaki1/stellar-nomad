@@ -253,6 +253,7 @@ export function createCoopHarness(store: Store) {
     },
     /** Destruction bursts shown here for other pilots' mined rocks. */
     collisions: () => store.get(vfxEventsAtom).filter((e) => e.type === "collision"),
+    route: () => guestState()?.link?.route() ?? null,
     bursts: () => remoteBurstLog.map((b) => ({ ...b, ageMs: Math.round(performance.now() - b.at) })),
     /** The chosen name ("" = default) and the default. */
     nameInfo: () => ({ chosen: chosenPilotName(), fallback: defaultPilotName(), effective: pilotName() }),

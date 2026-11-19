@@ -17,7 +17,7 @@ import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/carg
 import { devTeleportAtom } from "@/store/dev";
 import { dieAtom, isDeadAtom, wrecksMirrorAtom } from "@/store/death";
 import { asteroidsMinedLifetimeAtom } from "@/store/mining";
-import { craftItemAtom, modulesAtom } from "@/store/modules";
+import { craftItemAtom, modulesAtom, setHotbarSlotAtom } from "@/store/modules";
 import { bookmarksAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom, unlockResearchAtom } from "@/store/research";
 import { RESEARCH_NODES, getResearchNode } from "@/data/content";
 import { DEFAULT_CARGO_CAPACITY_UNITS, SCHEMA_VERSION, defaultSaveData, defaultShipConfig } from "@/save/defaults";
@@ -172,6 +172,7 @@ export function createGameplayHarness(store: Store) {
       const s = testProbe.ship;
       return store.set(dieAtom, { frameId: s.frameId, positionKm: [s.relPosKm[0], s.relPosKm[1], s.relPosKm[2]] });
     },
+    assignHotbar: (index: number, itemId: string | null): void => store.set(setHotbarSlotAtom, { index, itemId }),
     /** The cargo panel's jettison. */
     jettison: (resourceId: string, amount?: number): void => store.set(removeCargoAtom, { resourceId, amount }),
     /** Teleport by an offset from the ship's current system-frame position, km. */

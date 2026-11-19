@@ -11,10 +11,10 @@ import { MAX_PLAYERS, PROTOCOL_VERSION } from "@/sim/session/protocol";
 import type { HostWorkerToMain, MainToHostWorker } from "@/workers/hostWorkerProtocol";
 import { coopSnapshot, logCoop, setCoop } from "./coopState";
 import { createSessionClient, installSessionAuthority, startSessionLoops } from "./sessionClient";
-import { POLL_FAST_MS, POLL_IDLE_MS, localSignaling, type RoomInfo, type Signaling } from "./signaling";
+import { POLL_FAST_MS, POLL_IDLE_MS, gameSignaling, type RoomInfo, type Signaling } from "./signaling";
 import { hostOffer, type PeerLink } from "./webrtc";
 import { createIncomingDelay } from "./latencyFault";
-import { pilotName } from "./pilotName";
+import { onPilotNameChange, pilotName } from "./pilotName";
 import { devFaultMs } from "./devFault";
 
 const LOCAL = "local";
@@ -54,7 +54,7 @@ export function isHosting(): boolean {
 const post = (w: Worker, m: MainToHostWorker): void => w.postMessage(m);
 
 /** Open the current world to friends. Resolves with the room code. */
-export async function startHosting(signaling: Signaling = localSignaling, hostName = pilotName()): Promise<string> {
+export async function startHosting(signaling: Signaling = gameSignaling, hostName = pilotName()): Promise<string> {
   if (hosting) return hosting.code;
   const rec = getActiveSave();
   if (!rec) throw new Error("no world");
@@ -149,7 +149,7 @@ async function openSession(worker: Worker, worldId: string, signaling: Signaling
     } else if (m.t === "players" && m.count !== h.info.players && !h.stopPoll) {
       h.info = { ...h.info, players: m.count };
       setCoop({ players: m.count });
-      signaling.create(h.info, h.code).catch(() => logCoop("room update failed"));
+      signaling.update(h.code, h.info).catch(() => logCoop("room update failed"));
     } else if (m.t === "state") {
       if (m.state === "storage_failed") setCoop({ status: "error", detail: "storage" });
     } else if (m.t === "inspect") {
@@ -164,13 +164,19 @@ async function openSession(worker: Worker, worldId: string, signaling: Signaling
   // Intents held during the hand-off go first, in order (the session settles them).
   for (const op of held.splice(0)) client.submit(op);
   installSessionAuthority(client);
-  h.stopLoops = startSessionLoops(client);
+  const stop = startSessionLoops(client);
+  const offName = onPilotNameChange(hostName => {
+    h.info = { ...h.info, hostName };
+    void signaling.update(h.code, h.info).catch(() => logCoop("room update failed"));
+  });
+  h.stopLoops = () => { stop(); offName(); };
   setCoop({ role: "host", status: "joined", code, players: 1 });
   void pollLoop(h, signaling);
   return code;
 }
 
 async function pollLoop(h: Hosting, signaling: Signaling): Promise<void> {
+  let invitesOffline = false;
   while (!h.stopPoll) {
     const now = performance.now();
     h.offers.forEach((o, peer) => {
@@ -180,7 +186,35 @@ async function pollLoop(h: Hosting, signaling: Signaling): Promise<void> {
       }
     });
     const msgs = await signaling.poll(h.code, "host");
-    for (const m of msgs ?? []) void onSignal(h, signaling, m.from, m.data as { t?: string; sdp?: string });
+    if (h.stopPoll) break;
+    if (msgs === null) {
+      invitesOffline = true;
+      if (coopSnapshot().detail === null) setCoop({ detail: "invites_offline" });
+      // An existing WebRTC link is independent of the invitation service.
+      const room = await signaling.info(h.code);
+      if (room.kind === "no_room" && !h.stopPoll) {
+        try {
+          const oldCode = h.code;
+          const code = await signaling.create(h.info);
+          if (h.stopPoll) { await signaling.close(code); break; }
+          signaling.detach?.(oldCode, "host");
+          h.code = code;
+          try { localStorage.setItem(roomKey(h.info.worldId), code); } catch { /* memory-only host */ }
+          setCoop({ code });
+        } catch { /* retry after the service recovers */ }
+      }
+      await new Promise(r => setTimeout(r, 5000));
+      continue;
+    }
+    if (invitesOffline) {
+      try {
+        await signaling.update(h.code, h.info);
+        invitesOffline = false;
+        if (coopSnapshot().detail === "invites_offline") setCoop({ detail: null });
+      } catch { /* try again on the next poll */ }
+    }
+    for (const m of msgs) void onSignal(h, signaling, m.from, m.data as { t?: string; sdp?: string })
+      .catch(() => logCoop("peer negotiation failed"));
     await new Promise((r) => setTimeout(r, h.offers.size > 0 ? POLL_FAST_MS : POLL_IDLE_MS));
   }
 }
@@ -190,7 +224,14 @@ async function onSignal(h: Hosting, signaling: Signaling, peer: string, data: { 
   if (data.t === "join") {
     // No capacity check here: the worker refuses "full" itself and lets a member rebind its slot.
     if (h.offers.size >= MAX_OFFERS) return;
-    const o = await hostOffer();
+    let config: RTCConfiguration | undefined;
+    try { config = await signaling.ice?.(h.code, "host"); }
+    catch {
+      await signaling.send(h.code, "host", peer, { t: "relay_unavailable" });
+      return;
+    }
+    const o = await hostOffer(config);
+    if (h.stopPoll) return o.abort();
     h.offers.get(peer)?.abort();
     h.offers.set(peer, { accept: o.accept, abort: o.abort, at: performance.now() });
     await signaling.send(h.code, "host", peer, { t: "offer", sdp: o.sdp });
@@ -227,7 +268,7 @@ async function onSignal(h: Hosting, signaling: Signaling, peer: string, data: { 
 }
 
 /** Close the session (worker drains + saves + releases the lock), then reload into solo. */
-export async function stopHosting(signaling: Signaling = localSignaling, reload = true): Promise<void> {
+export async function stopHosting(signaling: Signaling = gameSignaling, reload = true): Promise<void> {
   const h = hosting;
   if (!h) return;
   h.stopPoll = true;

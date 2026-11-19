@@ -3,7 +3,7 @@
 /** HUD connection pill: room code and pilots while hosting, link state while a guest. Hidden solo. */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { coopSnapshot, subscribeCoop } from "@/net/coopState";
-import { guestState } from "@/net/guestController";
+import { guestState, JOIN_MESSAGES } from "@/net/guestController";
 import { MAX_PLAYERS } from "@/sim/session/protocol";
 import "./CoopPill.scss";
 
@@ -17,6 +17,11 @@ export default function CoopPill() {
   }, [c.role]);
   if (c.role === "solo") return null;
   const down = c.status !== "joined" || waiting;
+  let guestLabel = c.code;
+  if (c.status === "refused") guestLabel = JOIN_MESSAGES[c.detail as keyof typeof JOIN_MESSAGES] ?? "Session ended";
+  else if (guestState()?.client.hostClosing || c.detail === "closed") guestLabel = "Host closed the world";
+  else if (waiting) guestLabel = "Waiting for host";
+  else if (c.status !== "joined") guestLabel = "Reconnecting";
   return (
     <div className={`coop-pill${down ? " coop-pill--down" : ""}`} data-status={waiting ? "waiting" : c.status}>
       <span className="coop-pill__dot" />
@@ -28,7 +33,7 @@ export default function CoopPill() {
           </span>
         </>
       ) : (
-        <span>{waiting ? "Waiting for host" : c.status === "joined" ? c.code : "Reconnecting"}</span>
+        <span>{guestLabel}</span>
       )}
     </div>
   );

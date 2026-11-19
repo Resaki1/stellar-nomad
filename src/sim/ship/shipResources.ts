@@ -11,3 +11,6 @@ export const START_PROPELLANT_KG = 200;
 export const RECOVERY_ALLOWANCE_KG = 60;
 /** Sanitiser bound for any stored fuel amount, kg. */
 export const MAX_STORED_FUEL_KG = 1e6;
+
+/** Default thermal shutdown limit, as a multiple of nominal heat capacity. */
+export const MAX_HEAT_FRACTION = 1.3;

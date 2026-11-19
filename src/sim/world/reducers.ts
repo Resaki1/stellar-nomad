@@ -138,6 +138,9 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       };
     }
 
+    case "cargo.jettison":
+    case "item.consume":
+    case "hotbar.assign":
     case "wreck.collect":
     case "asteroid.mine":
     case "item.craft":
@@ -164,6 +167,60 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
   const p = player;
 
   switch (op.type) {
+    case "cargo.jettison": {
+      if (p.isDead) return reject("dead");
+      if (typeof op.resourceId !== "string" || !has(p.cargo.items, op.resourceId)) return reject("not_found");
+      if (op.amount !== undefined && (!isCount(op.amount) || op.amount === 0)) return reject("invalid");
+      const count = p.cargo.items[op.resourceId];
+      const removed = Math.min(count, op.amount ?? count);
+      if (removed <= 0) return reject("not_found");
+      const items = { ...p.cargo.items, [op.resourceId]: count - removed };
+      if (!items[op.resourceId]) delete items[op.resourceId];
+      return { result: { type: op.type, removed }, apply: () => { p.cargo = { ...p.cargo, items }; }, events: [], playerKeys: ["cargo"] };
+    }
+
+    case "hotbar.assign": {
+      if (!isCount(op.index) || op.index >= p.modules.hotbar.length) return reject("invalid");
+      if (op.itemId !== null && getItemDef(op.itemId)?.type !== "consumable") return reject("unknown_item");
+      const hotbar = p.modules.hotbar.map(id => id === op.itemId ? null : id);
+      hotbar[op.index] = op.itemId;
+      return { result: { type: op.type }, apply: () => { p.modules = { ...p.modules, hotbar }; }, events: [], playerKeys: ["modules"] };
+    }
+
+    case "item.consume": {
+      if (p.isDead) return reject("dead");
+      const def = getItemDef(op.itemId);
+      if (def?.type !== "consumable" || def.deployable) return reject("unknown_item");
+      const count = p.modules.consumables[def.id] ?? 0;
+      if (count < 1) return reject("not_found");
+      const last = p.modules.consumableCooldowns[def.id] ?? 0;
+      if (now >= last && now - last < (def.cooldownS ?? 0) * 1000) return reject("busy");
+      const consumables = { ...p.modules.consumables, [def.id]: count - 1 };
+      if (count === 1) delete consumables[def.id];
+      const modules = { ...p.modules, consumables, consumableCooldowns: { ...p.modules.consumableCooldowns, [def.id]: now } };
+      const playerKeys: Commit["playerKeys"] = ["modules"];
+      let health = p.health;
+      let heat01 = p.power.heat01;
+      for (const effect of def.useDurationS ? [] : def.useEffects ?? []) {
+        if (effect.key === "ship.currentHealth" && effect.op === "add" && typeof effect.value === "number") {
+          const max = persistentShipConfig(p, completedSet(world)).maxHealth;
+          if (!hullRepairable(health, max)) return reject("full_hull");
+          health = Math.min(max, health + effect.value);
+          playerKeys.push("health");
+        }
+        if (effect.key === "mining.currentHeat" && typeof effect.value === "number") {
+          if (heat01 <= 0) return reject("already_done");
+          if (effect.op === "add") heat01 += effect.value;
+          else if (effect.op === "multiply") heat01 *= effect.value;
+          else if (effect.op === "set") heat01 = effect.value;
+          heat01 = Math.max(0, Math.min(shipTuning(p, world).heatMax01, heat01));
+          playerKeys.push("power");
+        }
+      }
+      return { result: { type: op.type, itemId: def.id }, events: [], playerKeys,
+        apply: () => { p.modules = modules; p.health = health; p.power = { ...p.power, heat01 }; } };
+    }
+
     case "asteroid.mine": {
       if (!validAsteroid(op)) return reject("invalid");
       if (op.beamS !== undefined && !(isNum(op.beamS) && op.beamS >= 0)) return reject("invalid");

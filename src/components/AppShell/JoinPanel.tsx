@@ -13,7 +13,7 @@ import { PILOT_NAME_MAX, chosenPilotName, defaultPilotName, setPilotName } from 
 import type { RoomInfo } from "@/net/signaling";
 import type { SaveMeta } from "@/save/types";
 
-type Refusal = "no_room" | "unreachable" | "full" | "version" | "credential" | "closed";
+type Refusal = "no_room" | "unreachable" | "full" | "version" | "credential" | "closed" | "relay" | "replaced";
 type Card =
   | { s: "empty" }
   | { s: "checking" }
@@ -27,6 +27,8 @@ const MESSAGE: Record<Refusal, string> = {
   version: "Different game version",
   credential: "Not recognised by host",
   closed: "Session closed",
+  replaced: "This pilot joined from another tab",
+  relay: "Relay unavailable",
 };
 type Action = "edit" | "retry" | "reload" | "back";
 const ACTION: Record<Refusal, Action> = {
@@ -36,6 +38,8 @@ const ACTION: Record<Refusal, Action> = {
   version: "reload",
   credential: "back",
   closed: "retry",
+  relay: "retry",
+  replaced: "back",
 };
 const ACTION_LABEL: Record<Action, string> = { edit: "Edit code", retry: "Retry", reload: "Reload", back: "Back" };
 
@@ -48,6 +52,8 @@ function toRefusal(reason: string): Refusal {
     case "full":
     case "credential":
     case "closed":
+    case "relay":
+    case "replaced":
     case "unreachable":
       return reason;
     case "timeout":
@@ -133,7 +139,8 @@ export default function JoinPanel({
       .then(onJoined, (e: unknown) => {
         setJoining(false);
         const reason = (e as { reason?: string })?.reason ?? "unreachable";
-        setCard({ s: "refused", refusal: toRefusal(reason) });
+        // Join was enabled by a successful preview. The room disappearing now means the host closed it.
+        setCard({ s: "refused", refusal: reason === "no_room" ? "closed" : toRefusal(reason) });
       });
   };
 

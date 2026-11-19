@@ -3,10 +3,11 @@
  * bounds. Two channels: `cmd` (reliable, ordered) and `pose` (unordered, no retransmits).
  * Nothing here knows about WebRTC, workers or React.
  */
+import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const MAX_PLAYERS = 4;
 /** Snapshot JSON is sent in parts of this many characters. */
 export const SNAPSHOT_PART_CHARS = 16_000;
@@ -16,7 +17,7 @@ const MAX_ID = 128;
 export const MAX_NAME = 32;
 
 export type Channel = "cmd" | "pose";
-export type RefuseReason = "full" | "protocol" | "content" | "credential" | "closed";
+export type RefuseReason = "full" | "protocol" | "content" | "credential" | "replaced" | "closed";
 
 /** Pilot-owned values a client reports; the host bounds them and writes them without a revision. */
 export interface Telemetry {
@@ -136,7 +137,7 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
   if (v.power !== undefined) {
     const p = v.power;
     if (!isObj(p) || !isNum(p.capacitor01) || !isNum(p.heat01)) return null;
-    out.power = { capacitor01: Math.min(1, Math.max(0, p.capacitor01)), heat01: Math.min(1, Math.max(0, p.heat01)) };
+    out.power = { capacitor01: Math.min(1, Math.max(0, p.capacitor01)), heat01: Math.min(MAX_HEAT_FRACTION, Math.max(0, p.heat01)) };
   }
   if (v.processing !== undefined) {
     const p = v.processing;
@@ -256,7 +257,7 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       if (raw.difficulty !== "explorer" && raw.difficulty !== "standard" && raw.difficulty !== "hard") return null;
       return raw as unknown as HostMsg;
     case "refuse":
-      return ["full", "protocol", "content", "credential", "closed"].includes(raw.reason as string) ? (raw as unknown as HostMsg) : null;
+      return ["full", "protocol", "content", "credential", "replaced", "closed"].includes(raw.reason as string) ? (raw as unknown as HostMsg) : null;
     case "snap":
       if (!isInt(raw.gen) || !isInt(raw.revision) || !isInt(raw.of, MAX_SNAPSHOT_PARTS) || !isInt(raw.part) || raw.part >= raw.of) return null;
       return typeof raw.json === "string" && raw.json.length <= SNAPSHOT_PART_CHARS ? (raw as unknown as HostMsg) : null;

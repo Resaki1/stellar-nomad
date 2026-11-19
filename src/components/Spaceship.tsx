@@ -48,7 +48,7 @@ import { getResourceTuning } from "@/sim/ship/resourceTuning";
 import { difficultyMults } from "@/sim/difficulty";
 import { propellantGate, stepShipResources, worstStepKg } from "@/sim/ship/resourceStep";
 import { loadResourcePrefs } from "@/store/resourceTuningPrefs";
-import { heatSinkBuffer, miningBeamRequest } from "@/store/mining";
+import { miningBeamRequest } from "@/store/mining";
 import {
   buildShipResourcesHud,
   getShipTuning,
@@ -102,23 +102,6 @@ const HUD_PUBLISH_S = 0.1;
 
 
 const EXHAUST_SMOOTH_RATE = 6.0; // higher = faster response
-
-/** Hotbar heat-sink consumables act on the one ship thermal store. */
-function applyHeatSinks(): void {
-  const b = heatSinkBuffer;
-  if (b.pendingSet !== null) {
-    shipRes.heat01 = Math.max(0, Math.min(1, b.pendingSet));
-    b.pendingSet = b.pendingMultiplier = b.pendingAdd = null;
-  }
-  if (b.pendingMultiplier !== null) {
-    shipRes.heat01 = Math.max(0, shipRes.heat01 * b.pendingMultiplier);
-    b.pendingMultiplier = null;
-  }
-  if (b.pendingAdd !== null) {
-    shipRes.heat01 = Math.max(0, Math.min(getResourceTuning().heatMax01, shipRes.heat01 + b.pendingAdd));
-    b.pendingAdd = null;
-  }
-}
 
 function killTransitDrive(): void {
   resetTransit(transitDriveBuffer);
@@ -401,7 +384,6 @@ const SpaceShip = memo(() => {
       ship.boostCharge = shipRes.capacitor01;
       shipResControl.capacitorDirty = false;
     }
-    applyHeatSinks();
     updateShipRequests(store, devSpeed !== null, miningBeamRequest.on);
     updateTransitInputs(store, _input);
     const rt = getShipTuning();

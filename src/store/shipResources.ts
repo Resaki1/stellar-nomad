@@ -104,7 +104,7 @@ export function adoptShipResources(keys?: readonly (keyof PlayerState)[]): void 
 function collectShipResources(): void {
   const p = getLocalPlayerState();
   samplePlayerSlice("propellant", { ordinaryKg: shipRes.ordinaryKg, protectedKg: shipRes.protectedKg });
-  samplePlayerSlice("power", { capacitor01: shipRes.capacitor01, heat01: Math.min(1, shipRes.heat01) });
+  samplePlayerSlice("power", { capacitor01: shipRes.capacitor01, heat01: shipRes.heat01 });
   const run = shipRes.processing;
   if (!run.active) {
     if (p.processing !== null) samplePlayerSlice("processing", null);

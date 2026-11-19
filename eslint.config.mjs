@@ -44,6 +44,7 @@ export default defineConfig([
   },
   globalIgnores([
     ".next/**",
+    "services/coop-signal/.wrangler/**",
     ".claude/**",
     "out/**",
     "build/**",

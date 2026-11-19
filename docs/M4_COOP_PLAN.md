@@ -14,9 +14,7 @@ Compare the lunar rock's identity, position and yield against solo play. The hos
 resolve the operation from world data while continuing to render Earth. This second run proves that
 friends can go on independent expeditions in one solar system.
 
-**Status, 2026-11-18.** M4 implementation starts when the owner confirms M3 has merged into `main`.
-Reconcile the code references below against that revision and record it with the first test results. M3
-playtest changes supply the gameplay rules for these tests. [Roadmap](ROADMAP.md) ·
+**Status, 2026-11-19.** M3 and M4.0 are on `main`, including the co-op playtest fixes in `35f7bd4`. M4.1 has passed local direct and relay tests. Its remaining exit gate is the two-device staging playtest. [Roadmap](ROADMAP.md) ·
 [M3 design and as-built log](M3_GAMEPLAY_PLAN.md)
 
 **Release target.** One host plus up to three guests in a private world. Players can invite a friend
@@ -313,7 +311,7 @@ transaction as the change.
   the raw 120 Hz step and were stamped on arrival. They now carry the drawn, interpolated pose and the
   sender's frame time, mapped to local time by the minimum recent delay: a friend flying at ~320 m/s
   deviates from a smooth path 3 cm p50 / 9 cm p95 (was 17 cm / 95 cm, max 2.9 m).
-- **Open for M4.1.** Hosted signaling with per-peer tokens, STUN/TURN, commands for jettison and
+- **Carried from M4.0 into M4.1.** Hosted signaling with per-peer tokens, STUN/TURN, commands for jettison and
   consumables, hotbar as a pilot pref, browser coverage of post-Join refusals (credential, closed).
 - **Other pilots' activity, markers and names (owner playtest 3).** Poses carry optional bounded
   activity: `th` (plume throttle 0..255) and `b` (beam endpoint in the sender's frame, dropped beyond
@@ -354,8 +352,6 @@ transaction as the change.
     friend who moves away. Natural fit for M4.3's shared locations.
   - Light from remote plumes: measure the recompile at session start and the per-fragment cost first.
   - Remote plume shows main-engine throttle only (no boost or strafe), as the local one does.
-  - Join card shows the host name stored when the room was created; renaming while hosting does
-    not update it for new guests (needs a signaling room update, M4.1).
   - An explicit leave message, so a departing pilot vanishes at once instead of after 5 s.
   - Flakes seen once each in long full runs (rerun clean): `handoff` (guest did not rejoin within
     60 s) and `dropReply` (retry did not settle, which then blocked `restart`). Watch for repeats.
@@ -369,3 +365,13 @@ other pilots. A returning player keeps their saved pose. The muted two-browser r
 measured 80 m between the first pair and passed `settingsSpawn,race,reloadPose,leave`.
 The Node transcript also covers three arriving guests and clock resume without catch-up.
 [Two-browser test instructions](AUTOMATED_TESTING.md#two-browsers-co-op)
+
+### M4.1 · Host and join (2026-11-19, local verification)
+
+- The game can use a Cloudflare Worker for invite lookup, negotiation and reconnect. The host browser retains the save and runs the authority. A hibernating Durable Object per code remembers the host, the room preview and expiring guest grants. A returning host can reclaim its code during a ten-minute grace period. Closing a room disables joining immediately. Host renames and seat counts update the join card.
+- Each endpoint gathers ICE candidates with the supplied STUN/TURN configuration. Only the Worker holds the TURN API token. Settings → friends reports the selected route on the guest. A signaling interruption can prevent a new join while an established WebRTC session continues.
+- Protocol v3 adds per-pilot commands for cargo jettison, hotbar assignment and consumable use. The host commits the spend and immediate hull or heat effect together, using catalogue IDs. A duplicate command replays its outcome. Opening a second connection with the same pilot credential visibly retires the older one. The join card distinguishes a world that closes after preview from an unknown code.
+- During a guest reload, the loading overlay could submit a draw while WebGPU was still compiling the scene pipelines. Scene draws now wait for both compile passes. The relayed join, reconnect and host-restart run completed with zero pipeline errors.
+- Two muted Chrome profiles connected through the local Worker on a direct path and through a forced loopback TURN relay. The shared-rock race passed over the relay. Browser and headless tests cover pilot actions, reconnect and refusal paths. Expiring the invitation during an active game preserved the WebRTC link and the same pilot could rejoin on the replacement code. The public Worker, actual provider-issued TURN credentials, separate-network join, and physical host sleep/wake still need a staging run to close M4.1.
+
+[Staging setup and playtest](../services/coop-signal/README.md) · [Automated checks](AUTOMATED_TESTING.md#two-browsers-co-op)

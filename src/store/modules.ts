@@ -5,7 +5,6 @@ import { atom, type Setter } from "jotai";
 import { signalAudioActionAtom } from "./audioSignals";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultModules } from "@/save/defaults";
-import { canWriteSlice } from "@/save/activeSave";
 import { getItemDef, type ItemSlot } from "@/data/content";
 import { moduleModifiers, type ComputedModifiers } from "@/sim/ship/loadout";
 import type { OperationOutcome } from "@/sim/world/commands";
@@ -126,40 +125,8 @@ export const addCraftedItemAtom = atom(
 
 export const useConsumableAtom = atom(
   null,
-  (get, set, itemId: string): boolean => {
-    const def = getItemDef(itemId);
-    if (!def || def.type !== "consumable" || def.deployable) return false;
-    // Co-op: the count is the host's (no consume command yet), so no free use either.
-    if (!canWriteSlice("player", "modules")) return false;
-
-    const state = get(modulesAtom);
-    const count = state.consumables[itemId] ?? 0;
-    if (count <= 0) return false;
-
-    // Check cooldown (guard against stale timestamps from previous sessions —
-    // performance.now() resets on reload but consumableCooldowns are persisted)
-    const cooldownS = def.cooldownS ?? 0;
-    if (cooldownS > 0) {
-      const lastUse = state.consumableCooldowns[itemId] ?? 0;
-      const elapsed = performance.now() - lastUse;
-      if (elapsed >= 0 && elapsed < cooldownS * 1000) return false;
-    }
-
-    // Consume
-    const newConsumables = { ...state.consumables };
-    newConsumables[itemId] = count - 1;
-    if (newConsumables[itemId] <= 0) delete newConsumables[itemId];
-
-    set(modulesAtom, {
-      ...state,
-      consumables: newConsumables,
-      consumableCooldowns: {
-        ...state.consumableCooldowns,
-        [itemId]: performance.now(),
-      },
-    });
-
-    return true;
+  (_get, _set, request: { itemId: string; onSettled: (outcome: OperationOutcome) => void }): void => {
+    runOperation({ type: "item.consume", opId: newOpId(), itemId: request.itemId }, request.onSettled);
   },
 );
 
@@ -191,16 +158,7 @@ export const HOTBAR_SOURCE_SLOT_MIME = "application/x-sn-hotbar-source";
 
 export const setHotbarSlotAtom = atom(
   null,
-  (get, set, update: { index: number; itemId: string | null }): void => {
-    const state = get(modulesAtom);
-    const newHotbar = [...state.hotbar];
-    // Clear this item from any other slot first
-    if (update.itemId) {
-      for (let i = 0; i < newHotbar.length; i++) {
-        if (newHotbar[i] === update.itemId) newHotbar[i] = null;
-      }
-    }
-    newHotbar[update.index] = update.itemId;
-    set(modulesAtom, { ...state, hotbar: newHotbar });
+  (_get, _set, update: { index: number; itemId: string | null }): void => {
+    runOperation({ type: "hotbar.assign", opId: newOpId(), ...update });
   },
 );

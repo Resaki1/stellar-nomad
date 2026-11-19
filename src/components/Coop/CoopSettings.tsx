@@ -7,11 +7,23 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { coopSnapshot, subscribeCoop } from "@/net/coopState";
 import { PILOT_NAME_MAX, chosenPilotName, defaultPilotName, setPilotName } from "@/net/pilotName";
+import { guestState } from "@/net/guestController";
 import { titleUrl } from "@/components/AppShell/appState";
 
 export default function CoopSettings() {
   const c = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
   const [busy, setBusy] = useState(false);
+  const [route, setRoute] = useState<string | null>(null);
+  useEffect(() => {
+    if (c.role !== "guest" || c.status !== "joined") return;
+    let active = true;
+    const sample = () => {
+      void guestState()?.link?.route().then(value => { if (active) setRoute(value); }).catch(() => {});
+    };
+    sample();
+    const timer = setInterval(sample, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [c.role, c.status]);
   const [name, setName] = useState(chosenPilotName);
   const [fallback] = useState(defaultPilotName);
   // Applied on Enter, Escape, leaving the field or the menu closing (a live session relabels
@@ -71,8 +83,9 @@ export default function CoopSettings() {
       )}
       {c.role === "host" && c.code && (
         <>
+          {c.detail === "invites_offline" && <div role="status">Invites offline. Reconnecting…</div>}
           <div className="coop-settings__code" aria-label="room code">{c.code}</div>
-          <button className="settings-menu__button settings-menu__button--subtle" onClick={() => void navigator.clipboard?.writeText(link)}>
+          <button className="settings-menu__button settings-menu__button--subtle" disabled={c.detail === "invites_offline"} onClick={() => void navigator.clipboard?.writeText(link)}>
             copy link
           </button>
           <button
@@ -84,6 +97,7 @@ export default function CoopSettings() {
           </button>
         </>
       )}
+      {c.role === "guest" && c.status === "joined" && route && <div>{route === "relay" ? "Relay connection" : "Direct connection"}</div>}
       {c.role === "guest" && (
         <button
           className="settings-menu__button settings-menu__button--subtle"

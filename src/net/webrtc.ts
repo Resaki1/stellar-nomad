@@ -5,13 +5,24 @@
  */
 import type { Channel } from "@/sim/session/protocol";
 
-const GATHER_TIMEOUT_MS = 3000;
+const GATHER_TIMEOUT_MS = 8000;
 const OPEN_TIMEOUT_MS = 15_000;
-// M4.1 adds STUN/TURN from the hosted service; M4.0 targets one machine / one LAN.
+// Local prototype rooms gather only host candidates. Hosted rooms supply short-lived ICE credentials.
 const RTC_CONFIG: RTCConfiguration = { iceServers: [] };
+
+function peerConnection(config: RTCConfiguration): RTCPeerConnection {
+  // The two-browser regression can use an ephemeral loopback TURN service.
+  const fixture = process.env.NODE_ENV === "development"
+    ? (window as { __coopTestIce?: RTCConfiguration }).__coopTestIce : undefined;
+  const settings = fixture ?? config;
+  const forceRelay = new URLSearchParams(window.location.search).get("coopRelay") === "1" ||
+    (process.env.NODE_ENV === "development" && (window as { __coopForceRelay?: boolean }).__coopForceRelay);
+  return new RTCPeerConnection(forceRelay ? { ...settings, iceTransportPolicy: "relay" } : settings);
+}
 
 export interface PeerLink {
   send(channel: Channel, msg: unknown): void;
+  route(): Promise<string | null>;
   close(): void;
   onMessage: ((channel: Channel, msg: unknown) => void) | null;
   onClose: (() => void) | null;
@@ -38,6 +49,13 @@ function link(pc: RTCPeerConnection, cmd: RTCDataChannel, pose: RTCDataChannel):
     send(channel, msg) {
       const ch = channel === "pose" ? pose : cmd;
       if (ch.readyState === "open") ch.send(JSON.stringify(msg));
+    },
+    async route() {
+      const stats = await pc.getStats();
+      const transport = Array.from(stats.values()).find(s => s.type === "transport" && s.selectedCandidatePairId);
+      const pair = transport && stats.get(transport.selectedCandidatePairId);
+      if (!pair) return null;
+      return [pair.localCandidateId, pair.remoteCandidateId].some(id => stats.get(id)?.candidateType === "relay") ? "relay" : "direct";
     },
     close() {
       if (closed) return;
@@ -75,12 +93,17 @@ function bothOpen(cmd: RTCDataChannel, pose: RTCDataChannel): Promise<void> {
 }
 
 /** Host side: make the offer; `accept(answer)` resolves with an open link. */
-export async function hostOffer(): Promise<{ sdp: string; accept: (answer: string) => Promise<PeerLink>; abort: () => void }> {
-  const pc = new RTCPeerConnection(RTC_CONFIG);
+export async function hostOffer(config: RTCConfiguration = RTC_CONFIG): Promise<{ sdp: string; accept: (answer: string) => Promise<PeerLink>; abort: () => void }> {
+  const pc = peerConnection(config);
   const cmd = pc.createDataChannel("cmd", { ordered: true });
   const pose = pc.createDataChannel("pose", { ordered: false, maxRetransmits: 0 });
-  await pc.setLocalDescription(await pc.createOffer());
-  await gathered(pc);
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await gathered(pc);
+  } catch (error) {
+    pc.close();
+    throw error;
+  }
   return {
     sdp: pc.localDescription?.sdp ?? "",
     async accept(answer) {
@@ -93,8 +116,8 @@ export async function hostOffer(): Promise<{ sdp: string; accept: (answer: strin
 }
 
 /** Guest side: answer an offer; `open` resolves once both channels are up. */
-export async function guestAnswer(offer: string): Promise<{ sdp: string; open: Promise<PeerLink>; abort: () => void }> {
-  const pc = new RTCPeerConnection(RTC_CONFIG);
+export async function guestAnswer(offer: string, config: RTCConfiguration = RTC_CONFIG): Promise<{ sdp: string; open: Promise<PeerLink>; abort: () => void }> {
+  const pc = peerConnection(config);
   const chans = new Map<string, RTCDataChannel>();
   const got = new Promise<void>((resolve) => {
     pc.ondatachannel = (ev) => {
@@ -102,9 +125,14 @@ export async function guestAnswer(offer: string): Promise<{ sdp: string; open: P
       if (chans.has("cmd") && chans.has("pose")) resolve();
     };
   });
-  await pc.setRemoteDescription({ type: "offer", sdp: offer });
-  await pc.setLocalDescription(await pc.createAnswer());
-  await gathered(pc);
+  try {
+    await pc.setRemoteDescription({ type: "offer", sdp: offer });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await gathered(pc);
+  } catch (error) {
+    pc.close();
+    throw error;
+  }
   const open = got.then(async () => {
     const cmd = chans.get("cmd")!;
     const pose = chans.get("pose")!;

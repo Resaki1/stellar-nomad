@@ -132,14 +132,6 @@ export const pingWorldBuffer: {
 /** MiningSystem's beam request for the next fixed steps; the resource step grants the work. */
 export const miningBeamRequest = { on: false };
 
-/** Heat-sink consumables (Hotbar); applied to the ship thermal store by Spaceship. */
-export const heatSinkBuffer: {
-  pendingMultiplier: number | null;
-  pendingAdd: number | null;
-  /** Set heat to an exact value (0.0 for full reset). Takes priority over multiply/add. */
-  pendingSet: number | null;
-} = { pendingMultiplier: null, pendingAdd: null, pendingSet: null };
-
 // ---------------------------------------------------------------------------
 // Mining-completed signal — incremented by MiningSystem each time an asteroid
 // is fully mined. GameCommsTriggers watches this to fire comms messages.

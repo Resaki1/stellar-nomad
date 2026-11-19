@@ -24,6 +24,9 @@ export type RoomLookup = { kind: "ok"; info: RoomInfo } | { kind: "no_room" } | 
 
 export interface Signaling {
   create(info: RoomInfo, code?: string): Promise<string>;
+  update(code: string, info: RoomInfo): Promise<void>;
+  ice?(code: string, peer: string): Promise<RTCConfiguration>;
+  detach?(code: string, peer: string): void;
   info(code: string): Promise<RoomLookup>;
   join(code: string): Promise<{ peer: string; info: RoomInfo } | null>;
   send(code: string, peer: string, to: string, data: unknown): Promise<void>;
@@ -31,6 +34,7 @@ export interface Signaling {
   close(code: string): Promise<void>;
 }
 
+import { hostedSignaling } from "./hostedSignaling";
 import { devFault } from "./devFault";
 
 const URL_PATH = "/api/coop/signal";
@@ -60,6 +64,9 @@ export const localSignaling: Signaling = {
     if (!r) throw new Error("signaling unavailable");
     return r.code;
   },
+  async update(code, info) {
+    if (!(await call({ a: "update", code, info }))) throw new Error("Room update failed");
+  },
   async info(code) {
     const r = await request<{ info: RoomInfo }>({ a: "info", code });
     if (r.ok) return { kind: "ok", info: r.body.info };
@@ -80,3 +87,9 @@ export const localSignaling: Signaling = {
 /** Poll cadence while connecting; slower while idle-hosting. */
 export const POLL_FAST_MS = 250;
 export const POLL_IDLE_MS = 1000;
+
+/** The browser bundle contains the public worker origin only. The local route is for development. */
+const testEndpoint = process.env.NODE_ENV === "development" && typeof window !== "undefined"
+  ? (window as { __coopTestSignalOrigin?: string }).__coopTestSignalOrigin : undefined;
+const endpoint = testEndpoint || process.env.NEXT_PUBLIC_COOP_SIGNAL_URL;
+export const gameSignaling = endpoint ? hostedSignaling(new URL(endpoint).origin) : localSignaling;

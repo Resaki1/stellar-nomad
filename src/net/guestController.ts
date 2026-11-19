@@ -3,6 +3,7 @@
  * world), activate the host's snapshot as a read-only mirror, then keep retrying the room after a
  * link loss. The outstanding intent survives in localStorage and is retried on rejoin.
  */
+import { getItemDef } from "@/data/content";
 import { activateMirror, getActiveSave, PILOT_KEYS } from "@/save/activeSave";
 import { setSessionPlayerId } from "@/save/playerId";
 import type { PlayerState, SaveMeta, WreckRecord } from "@/save/types";
@@ -14,13 +15,13 @@ import { activeSystem } from "@/sim/systemRegistry";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hostClock, logCoop, remotePoses, setCoop } from "./coopState";
 import { createSessionClient, installSessionAuthority, localGuestStore, startSessionLoops } from "./sessionClient";
-import { POLL_FAST_MS, localSignaling, type RoomInfo, type Signaling } from "./signaling";
+import { POLL_FAST_MS, gameSignaling, type RoomInfo, type Signaling } from "./signaling";
 import { pilotName } from "./pilotName";
 import { devFault, devFaultMs } from "./devFault";
 import { guestAnswer, type PeerLink } from "./webrtc";
 import { createIncomingDelay } from "./latencyFault";
 
-const CONNECT_TIMEOUT_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 40_000;
 const RETRY_MS = 2000;
 /** A link that opened but never delivered a snapshot (host stalled or restarting) fails the join. */
 const SNAPSHOT_TIMEOUT_MS = 20_000;
@@ -62,7 +63,7 @@ export const joinActivity = (): { pendingJoin: boolean; joined: boolean; link: b
 let sentMsgs = 0;
 export const guestSentCount = (): number => sentMsgs;
 
-export type JoinFailure = RefuseReason | "no_room" | "version" | "timeout" | "unreachable";
+export type JoinFailure = RefuseReason | "no_room" | "version" | "timeout" | "relay" | "unreachable";
 
 /** One short line per refusal; protocol and content mismatches read the same to a player. */
 export const JOIN_MESSAGES: Record<JoinFailure, string> = {
@@ -72,6 +73,8 @@ export const JOIN_MESSAGES: Record<JoinFailure, string> = {
   version: "Different game version",
   content: "Different game version",
   credential: "Not recognised by the host",
+  replaced: "This pilot joined from another tab",
+  relay: "Relay unavailable",
   closed: "Session closed",
   timeout: "Can't reach host",
   unreachable: "Can't reach host",
@@ -102,7 +105,7 @@ export type RoomPreview =
   | { kind: "unreachable" };
 
 /** Room preview for the join card. Read-only: touches no save, credential or room slot. */
-export async function previewRoom(code: string, signaling: Signaling = localSignaling): Promise<RoomPreview> {
+export async function previewRoom(code: string, signaling: Signaling = gameSignaling): Promise<RoomPreview> {
   const l = await signaling.info(code.trim().toUpperCase());
   if (l.kind !== "ok") return l;
   const forced = devFault("full");
@@ -117,27 +120,35 @@ export async function previewRoom(code: string, signaling: Signaling = localSign
 async function connect(code: string, signaling: Signaling): Promise<{ link: PeerLink; info: RoomInfo }> {
   const j = await signaling.join(code);
   logCoop(`join ${j ? j.peer : "no room"}`);
-  if (!j) throw new JoinError((await signaling.info(code)).kind === "unreachable" ? "unreachable" : "no_room");
-  const deadline = performance.now() + CONNECT_TIMEOUT_MS;
-  while (performance.now() < deadline) {
-    const msgs = (await signaling.poll(code, j.peer)) ?? [];
-    const offer = msgs.map((m) => m.data as { t?: string; sdp?: string }).find((d) => d.t === "offer" && typeof d.sdp === "string");
-    if (offer) {
-      logCoop("offer");
-      const a = await guestAnswer(offer.sdp!);
-      await signaling.send(code, j.peer, "host", { t: "answer", sdp: a.sdp });
-      const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new JoinError("timeout")), Math.max(1000, deadline - performance.now())));
-      try {
-        return { link: await Promise.race([a.open, timeout]), info: j.info };
-      } catch (e) {
-        logCoop(`open failed ${e instanceof Error ? e.message : e}`);
-        a.abort();
-        throw e;
+  if (!j) throw new JoinError((await signaling.info(code)).kind === "no_room" ? "no_room" : "unreachable");
+  try {
+    const deadline = performance.now() + CONNECT_TIMEOUT_MS;
+    while (performance.now() < deadline) {
+      const msgs = (await signaling.poll(code, j.peer)) ?? [];
+      const hostMsgs = msgs.filter(m => m.from === "host").map(m => m.data as { t?: string; sdp?: string });
+      if (hostMsgs.some(d => d?.t === "relay_unavailable")) throw new JoinError("relay");
+      const offer = hostMsgs.find(d => d?.t === "offer" && typeof d.sdp === "string");
+      if (offer) {
+        logCoop("offer");
+        const ice = await signaling.ice?.(code, j.peer).catch(() => { throw new JoinError("relay"); });
+        const a = await guestAnswer(offer.sdp!, ice);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await signaling.send(code, j.peer, "host", { t: "answer", sdp: a.sdp });
+          const timeout = new Promise<never>((_, rej) => {
+            timer = setTimeout(() => rej(new JoinError("timeout")), Math.max(1000, deadline - performance.now()));
+          });
+          return { link: await Promise.race([a.open, timeout]), info: j.info };
+        } catch (e) {
+          logCoop(`open failed ${e instanceof Error ? e.message : e}`);
+          a.abort();
+          throw e;
+        } finally { clearTimeout(timer); }
       }
+      await new Promise((r) => setTimeout(r, POLL_FAST_MS));
     }
-    await new Promise((r) => setTimeout(r, POLL_FAST_MS));
-  }
-  throw new JoinError("timeout");
+    throw new JoinError("timeout");
+  } finally { signaling.detach?.(code, j.peer); }
 }
 
 function bindLink(j: Joined, link: PeerLink, signaling: Signaling): void {
@@ -168,16 +179,26 @@ function bindLink(j: Joined, link: PeerLink, signaling: Signaling): void {
 
 async function reconnect(j: Joined, signaling: Signaling): Promise<void> {
   setCoop({ status: "connecting" });
+  let retryMs = RETRY_MS;
   while (!j.intentional && joined === j && !j.link) {
     try {
-      const { link } = await connect(j.code, signaling);
+      const { link, info } = await connect(j.code, signaling);
+      if (info.worldId !== j.info.worldId) {
+        j.intentional = true;
+        link.close();
+        setCoop({ status: "refused", detail: "closed" });
+        return;
+      }
       // Left (or replaced) while connecting: do not revive an abandoned session.
       if (j.intentional || joined !== j) return link.close();
       bindLink(j, link, signaling);
       return;
     } catch (e) {
+      if (joined !== j || j.intentional) return;
+      if (e instanceof JoinError && e.reason === "no_room") setCoop({ status: "connecting", detail: "closed" });
       logCoop(`retry: ${e instanceof Error ? e.message : e}`);
-      await new Promise((r) => setTimeout(r, RETRY_MS));
+      await new Promise((r) => setTimeout(r, retryMs));
+      retryMs = Math.min(retryMs * 2, 30_000);
     }
   }
 }
@@ -186,7 +207,7 @@ async function reconnect(j: Joined, signaling: Signaling): Promise<void> {
  * Boot path for `?join=CODE`: resolves with the mirrored world's meta once the snapshot is
  * active, so the normal loading gate takes over from there.
  */
-export function joinAndBoot(code: string, signaling: Signaling = localSignaling): Promise<SaveMeta> {
+export function joinAndBoot(code: string, signaling: Signaling = gameSignaling): Promise<SaveMeta> {
   code = code.trim().toUpperCase();
   setCoop({ role: "guest", status: "connecting", code, detail: null });
   const attempt: NonNullable<typeof pendingJoin> = { cancelled: false };
@@ -234,7 +255,7 @@ export function joinAndBoot(code: string, signaling: Signaling = localSignaling)
             return;
           }
           resync(client, rec);
-          setCoop({ status: "joined" });
+          setCoop({ status: "joined", detail: null });
         },
         onState: (s, detail) => {
           if (s === "refused") {
@@ -242,7 +263,12 @@ export function joinAndBoot(code: string, signaling: Signaling = localSignaling)
             if (!booted) {
               leaveSession();
               fail(new JoinError(detail ?? "closed"));
-            } else setCoop({ status: "refused", detail: detail ?? null });
+            } else {
+              j.stopLoops();
+              j.link?.close();
+              remotePoses.clear();
+              setCoop({ status: "refused", detail: detail ?? "closed" });
+            }
           } else if (s === "connecting" && booted) setCoop({ status: "connecting" });
         },
       });
@@ -286,6 +312,13 @@ function resync(client: GuestSession, rec: NonNullable<GuestSession["mirror"]>):
     const p = client.pending;
     const unseen = p && mine.stream.seq === p.seq && mine.stream.opId === p.opId && (mine.stream.outcome as { status?: string } | null)?.status === "accepted";
     const adopt = new Set(unseen ? (OP_PILOT_KEYS[p.op.type] ?? []) : []);
+    if (unseen && p.op.type === "item.consume") {
+      const def = getItemDef(p.op.itemId);
+      for (const effect of def?.useDurationS ? [] : def?.useEffects ?? []) {
+        if (effect.key === "mining.currentHeat") adopt.add("power");
+        if (effect.key === "ship.currentHealth") adopt.add("health");
+      }
+    }
     for (const k of Object.keys(mine) as (keyof PlayerState)[]) {
       // Pilot keys (telemetry prefs included) keep their live local values.
       if (PILOT_KEYS.has(k) && !adopt.has(k)) continue;

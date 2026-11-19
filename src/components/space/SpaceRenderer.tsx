@@ -385,6 +385,7 @@ type WarmupTargets = {
   local: { target: RenderTarget; camera: THREE.Camera };
 };
 let warmupTargets: WarmupTargets | null = null;
+const compilingScenes = new Set<WebGPURenderer>();
 
 /**
  * M0.4 warm-up: `compileAsync` both scene passes against the targets they draw into
@@ -395,13 +396,22 @@ export async function compileScenePipelines(): Promise<number | null> {
   if (!w) return null;
   const t0 = performance.now();
   const prev = w.gl.getRenderTarget();
-  // compileAsync reads the render target synchronously, before its first await.
-  w.gl.setRenderTarget(w.scaled.target);
-  const a = w.gl.compileAsync(scaledScene, w.scaled.camera);
-  w.gl.setRenderTarget(w.local.target);
-  const b = w.gl.compileAsync(localScene, w.local.camera);
-  w.gl.setRenderTarget(prev);
-  await Promise.all([a, b]);
+  // Three may cache a pipeline before its GPU handle resolves. Keep the loading
+  // overlay up and defer draws on this renderer until both scene passes settle.
+  compilingScenes.add(w.gl);
+  try {
+    const compile = async (scene: THREE.Scene, pass: WarmupTargets["scaled"]) => {
+      w.gl.setRenderTarget(pass.target);
+      return w.gl.compileAsync(scene, pass.camera);
+    };
+    const passes = [compile(scaledScene, w.scaled), compile(localScene, w.local)];
+    w.gl.setRenderTarget(prev);
+    for (const result of await Promise.allSettled(passes)) {
+      if (result.status === "rejected") throw result.reason;
+    }
+  } finally {
+    compilingScenes.delete(w.gl);
+  }
   return performance.now() - t0;
 }
 
@@ -901,6 +911,7 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     if (!(gl as unknown as WebGPURenderer).initialized) return;
 
     const renderer = gl as unknown as WebGPURenderer;
+    if (compilingScenes.has(renderer)) return;
     perf.markRenderStart();
 
     // ── D25: pick this frame's SOURCE PRE-EXPOSURE, before anything renders ───
