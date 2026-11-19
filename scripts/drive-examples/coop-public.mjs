@@ -31,13 +31,17 @@ export default async function publicInvite({ host, guest, sleep }) {
     await until(host, "document.querySelector('.coop-pill__n')?.textContent.includes('2/')", "Host seat count");
     await friends(guest);
     await until(guest, "document.querySelector('.coop-settings')?.innerText.includes('Direct connection')", "ICE route");
+    const signalOrigin = await guest.evaluate(`performance.getEntriesByType("resource").map(r => new URL(r.name)).find(u => u.pathname === "/ice" || u.hostname.endsWith(".workers.dev"))?.origin`);
+    if (!signalOrigin || (process.env.COOP_PUBLIC_SIGNAL && signalOrigin !== process.env.COOP_PUBLIC_SIGNAL))
+      throw Error("Unexpected public signaling origin: " + signalOrigin);
     await click(guest, button("share my position"), "Publish rendezvous");
     await until(guest, "document.querySelector('.coop-settings__expedition [role=status]')?.textContent === 'Position shared'", "Marker committed");
     await click(guest, button("clear my marker"), "Clear rendezvous");
     await until(guest, "document.querySelector('.coop-settings__expedition [role=status]')?.textContent === 'Marker cleared'", "Marker cleared");
     await click(host, button("stop hosting"), "Close room");
-    await until(host, button("open to friends") + " !== undefined", "Host returned to solo");
-    return { pass: true, origin, seats: 2, route: "direct", markerRoundTrip: true, closed: true };
+    await until(host, "!document.querySelector('.coop-pill') && !!document.querySelector('.settings__open-button')", "Host returned to solo");
+    await until(guest, "document.querySelector('.coop-pill')?.textContent.includes('Host closed the world')", "Guest saw host close");
+    return { pass: true, origin, signalOrigin, seats: 2, route: "direct", markerRoundTrip: true, closed: true };
   } finally {
     await Promise.all([host, guest].map(page => page.send("Page.navigate", { url: "about:blank" })));
   }

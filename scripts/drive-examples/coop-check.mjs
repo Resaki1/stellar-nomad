@@ -849,13 +849,19 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
 
   async function settledCommand(page, op) {
     const id = "drive-" + crypto.randomUUID();
-    await page.evaluate(`__test.gameplay.submit(${J({ ...op, opId: id })})`);
-    const stream = await waitFor(async () => {
-      const current = await page.evaluate(`${C}.mirror()?.stream`);
-      return current?.opId === id && current;
-    }, 10000);
-    if (!stream || stream.outcome?.status !== "accepted") throw new Error(op.type + " " + J(stream?.outcome));
-    return stream.outcome.result;
+    const outcome = await page.evaluate(`__test.gameplay.settled(${J({ ...op, opId: id })})`, 15_000);
+    if (outcome.status !== "accepted") throw Error(op.type + " " + J(outcome));
+    return outcome.result;
+  }
+
+  // Each peer receives the commit independently. The sender can settle before the recipient catches up.
+  async function synchronizedSnapshot() {
+    const synced = await waitFor(async () => {
+      const s = await snapshot();
+      return s.clientRevision.host === s.revision && s.clientRevision.guest === s.revision ? s : null;
+    }, 5000, 50);
+    if (!synced) throw Error("Pilots did not reach the host revision");
+    return synced;
   }
 
   async function contentFixture() {
@@ -866,11 +872,11 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await settledCommand(guest, { type: "expedition.give", to: ids.host, amount: 1, kind: "cargo", itemId: "fixture_ore" });
     await settledCommand(host, { type: "item.craft", itemId: "consumable_fixture_patch" });
     const goods = await record(ids.host);
-    const stores = await snapshot();
+    const stores = await synchronizedSnapshot();
     const acquired = goods.modules.consumables.consumable_fixture_patch === 1 && !goods.cargo.items.fixture_ore &&
       (stores.guest.record.fixture_ore ?? 0) === mined.grant.fixture_ore - 1;
     const rejoined = await joinByCard();
-    const after = await snapshot();
+    const after = await synchronizedSnapshot();
     return { pass: acquired && rejoined.status.playerId === ids.guest && sameItems(after.guest.mirror, stores.guest.record),
       granted: mined.grant, transferred: 1, crafted: goods.modules.consumables.consumable_fixture_patch };
   }
@@ -879,12 +885,12 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await guest.evaluate(`${C}.meetRemote(0.08)`);
     await guest.sleep(2500);
     await settledCommand(guest, { type: "expedition.mark", name: "Crew rendezvous", sourceId: null });
-    const before = await snapshot();
+    const before = await synchronizedSnapshot();
     const give = { type: "expedition.give", kind: "cargo", itemId: "silicates", amount: 1 };
     await settledCommand(host, { ...give, to: ids.guest });
-    const received = await snapshot();
+    const received = await synchronizedSnapshot();
     await settledCommand(guest, { ...give, to: ids.host });
-    const after = await snapshot();
+    const after = await synchronizedSnapshot();
     const checks = { received: (received.guest.mirror.silicates ?? 0) === (before.guest.mirror.silicates ?? 0) + 1,
       conserved: sameItems(before.host.record, after.host.record) && sameItems(before.guest.record, after.guest.record),
       mirrors: sameItems(after.host.mirror, after.host.record) && sameItems(after.guest.mirror, after.guest.record),

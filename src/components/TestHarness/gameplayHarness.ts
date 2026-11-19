@@ -121,7 +121,11 @@ export function createGameplayHarness(store: Store) {
 
   return {
     localId: (): string => getLocalPlayerId(),
-    /** Submit as `by` (default: local player). Returns the settled outcome. */
+    /** Wait for this exact operation even when another pilot action settles in the same frame. */
+    settled(op: OpInput): Promise<OperationOutcome> {
+      return new Promise(resolve => runOperation(withId(op), resolve));
+    },
+    /** Submit as `by` (default: local player). Networked submissions can return pending. */
     submit(op: OpInput, by?: string): OperationOutcome {
       // As runOperation does: live runtime values into the record before a local-player op.
       if (!by || by === getLocalPlayerId()) sampleCollectors();

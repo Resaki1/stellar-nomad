@@ -391,9 +391,25 @@ The capacity exercise used two rendered games and two additional browser WebRTC 
 
 | Exercise | Result |
 |---|---|
+| Live invite | Two Chrome profiles on `https://stellar-nomad.com` opened a room and joined through the invite card on main revision `34a39e1`. The guest contacted the production Worker, Friends reported a direct route, and the host showed two seats. The guest shared and cleared a location. Closing the room returned the host to solo and displayed the closure to the guest. |
 | Two rendered browsers, direct WebRTC | On an M2 Pro, two Chrome 157 profiles ran for 1,803 seconds on revision `148bc53`. They completed 29 timed rendezvous and round-trip cargo exchanges plus a final exchange. Both private mirrors matched the host records, the original quantities were conserved, and both clients reached the host revision. |
 | Four pilots | One host, one rendered guest and two network-only Chrome guests reached the same world revision. The three connections used distinct pilot identities. |
-| Authority failure and content | The Node transcript exercises a stalled host, refused new spends during a stall, bounded clock advance, failed writes, replay, contested recovery and private records. A disposable content patch added a material and recipe through the catalogue and generator. Solo and the Node host agreed on the yield, transfer, crafting and reload. An old content fingerprint was refused. |
+| Authority failure and content | The Node transcript exercises a stalled host, refused new spends during a stall, bounded clock advance, failed writes, replay, contested recovery and private records. A disposable content patch added a material and recipe through the catalogue and generator. Solo and the Node host agreed on the yield, transfer, crafting and reload. Two browsers mined 17 units of the fixture ore, delivered one, crafted the fixture recipe and retained the guest’s holdings after rejoin. The same scenario passed over direct WebRTC and a forced local relay. An old content fingerprint was refused by the Node authority. |
+| Impaired direct and relay connections | The direct and local relay runs both conserved cargo under 60 ± 30 ms injected one-way delay, 2% pose loss and a two-second inbound outage. With 200 ms polling, a marker settled in 416 ms direct / 215 ms relayed and after 2,036 / 2,060 ms during the outage. Both refused a spend during longer authority silence and recovered. These individual timings are scoped to this test. Direct and relay carried 8.30 and 8.28 kB/s of combined application payload during the scenario. A repeat that timed the operation callback and compared mirrors after both received the same revision measured 291 ms to settle on the local relay and 2,201 ms during the outage. |
+| Mining and reconnect | Contested local mining, remote lunar mining, dropped reply and host restart passed in the two rendered browsers following the soak, with no WebGPU pipeline errors. |
+| Solo regression | Placement, activation, death, recovery, partial and complete salvage, site recovery, transactions and shared-world state all passed in the single-player browser. |
 | Device and playability sign-off | Still open for a physical host sleep/wake, iPhone lock/unlock and network handoff during a session, frame timing with independent guest devices, and an unassisted two-person lunar expedition. The successful Mac-to-cellular-iPhone join is recorded in M4.1. |
 
 The production deployment uses the live signaling Worker for direct invites. The optional relay remains disabled. [Reproduce the checks](AUTOMATED_TESTING.md#expedition-and-release-checks)
+
+**Local host frame measurements.** M2 Pro, macOS 27.0.1, Chrome 157, 1280×720, DPR 1, `earth_650`, vsync, build stamp `4d144e5-dirty`. The checkout contained untracked local notes. All five samples settled. Each guest ran the regular guest session and sent 15 poses/s from a separate local Chrome profile. Only the host rendered the game. GPU entries are sums of timed passes, which can overlap.
+
+| Host workload | Frame p50 / p95 (ms) | CPU p50 / p95 (ms) | GPU pass sum p50 / p95 (ms) |
+|---|---:|---:|---:|
+| Solo | 16.6 / 17.7 | 3.9 / 4.5 | 28.4 / 35.9 |
+| One guest nearby | 16.8 / 21.3 | 4.6 / 7.4 | 22.9 / 36.4 |
+| One guest at Luna | 16.7 / 18.2 | 4.1 / 4.7 | 26.7 / 38.0 |
+| Three nearby | 16.6 / 18.2 | 4.3 / 6.4 | 21.8 / 33.0 |
+| Three at Luna | 16.7 / 17.8 | 4.1 / 5.0 | 22.4 / 31.6 |
+
+The worker recorded p95 tick lateness of 5 ms across 44 samples and p95 durable-write latency of 7.1 ms across 10 writes. The separated p95 frame increases were 0.5 ms and 0.1 ms. Repeat on separate devices and repeat the one-nearby case, which rose by 3.6 ms in this sample.

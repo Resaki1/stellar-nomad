@@ -228,7 +228,7 @@ The soak exchanges supplies in both directions for 30 minutes. Keep the dev serv
 
 To exercise a future material, apply `scripts/fixtures/m4-content.patch` to a disposable checkout with dependencies installed. Run `pnpm coop:transcript contentFixture`, start its dev server and point the browser driver there with `COOP_PARTS=contentFixture,leave`. The guest mines the new ore, gives one unit to the host, and rejoins after the host crafts the new recipe. The fixture changes only the content catalogue and system configuration.
 
-For a deployed game, `COOP_PUBLIC_ORIGIN=https://stellar-nomad.com pnpm drive:coop -- --perf --size 768x432 run:scripts/drive-examples/coop-public.mjs` opens a room, joins through the invite card, reads the direct route from Friends and closes the room. Use disposable Chrome profiles for this smoke test.
+For a deployed game, `COOP_PUBLIC_ORIGIN=https://stellar-nomad.com pnpm drive:coop -- --perf --size 768x432 run:scripts/drive-examples/coop-public.mjs` opens a room, joins through the invite card, reads the direct route from Friends, publishes and clears a rendezvous, and verifies both pilots see the room close. Set `COOP_PUBLIC_SIGNAL` to check the exact Worker origin. Use disposable Chrome profiles for this smoke test.
 
 ---
 
