@@ -7,6 +7,7 @@ import { INSPECT_RANGE_M, WRECK_SALVAGE_KM } from "@/data/content";
 import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 import { resolveHeadlessRock } from "@/sim/asteroids/headlessChunks";
 import "@/sim/replication/clearance";
+import "@/sim/industry/routePlanner";
 import { persistentShipConfig } from "@/sim/ship/loadout";
 import { isFrameId } from "@/sim/frames";
 import { defaultPlayerState } from "@/save/defaults";
@@ -19,6 +20,7 @@ import { emergencePose, starterPoint } from "@/sim/replication/points";
 import { poseDistanceKm } from "@/sim/replication/placement";
 import type { SystemConfig } from "@/sim/systemTypes";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
+import { advanceIndustry, hasIndustryDelta } from "@/sim/industry/simulation";
 import { LocalAuthority } from "@/sim/world/authority";
 import { tankCapacityKg } from "@/sim/world/reducers";
 import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
@@ -30,6 +32,8 @@ import {
   SNAPSHOT_PART_CHARS,
   cleanName,
   decodeClientMsg,
+  frameReliableUpdate,
+  jsonParts,
   type Channel,
   type ClientMsg,
   type CommitSlices,
@@ -39,6 +43,7 @@ import {
   type Telemetry,
 } from "./protocol";
 import type { Clock, ConnId, HostTransport, WorldRepository } from "./ports";
+import { PilotContacts, type PilotTrack } from "./pilotContact";
 
 /** Beam time a mine claim must show, as a share of the rock's required duration. */
 const MIN_BEAM_SHARE = 0.8;
@@ -54,6 +59,7 @@ const HOST_ONLY: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["t
 const SPATIAL_OPS: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["type"]>([
   "asteroid.mine", "survey.inspect", "expedition.give", "wreck.collect", "site.inspect", "site.recover",
   "replication.place", "replication.activate", "ship.respawn",
+  "depot.place", "depot.transfer", "depot.fabricate", "drone.configure",
 ]);
 
 export type HostState = "starting" | "open" | "storage_failed" | "closed";
@@ -79,6 +85,10 @@ interface Member {
   fenced: boolean;
   closeAfter?: number;
   lastPose?: PoseMsg;
+  previousPose?: PoseMsg;
+  /** Recent monotonic clock offsets. The shortest RTT is least affected by queuing. */
+  motionClocks?: { offset: number; rtt: number; at: number }[];
+  poseFloor?: number;
   telemetryAt?: number;
   poseAt?: number;
   pingMs?: number;
@@ -114,6 +124,7 @@ export class HostSession {
   private authority!: LocalAuthority;
   private resolver!: MineResolver;
   private clockPaused = false;
+  private lastIndustryTick = 0;
   private epoch0 = 0;
   private mono0 = 0;
   private lastHeartbeat = 0;
@@ -121,6 +132,8 @@ export class HostSession {
   private readonly captured: WorldEvent[] = [];
   private readonly renamedAt = new Map<PlayerId, number>();
   private readonly pendingNames = new Map<PlayerId, string>();
+  private readonly pilotContacts = new PilotContacts();
+  private pilotContactId = 0;
 
   constructor(private readonly o: HostSessionOptions) {}
 
@@ -177,7 +190,7 @@ export class HostSession {
     this.epoch0 = w.simEpochMs;
     this.lastHeartbeat = this.mono0 = this.o.clock.monoMs();
     await this.o.repo.commit(this.meta, this.data);
-    this.lastCheckpoint = this.o.clock.monoMs();
+    this.lastCheckpoint = this.lastIndustryTick = this.o.clock.monoMs();
     this.setState("open");
   }
 
@@ -193,6 +206,7 @@ export class HostSession {
     this.epoch0 = this.epochMs();
     this.mono0 = this.o.clock.monoMs();
     this.clockPaused = paused;
+    this.lastIndustryTick = this.mono0;
     this.tick();
   }
 
@@ -207,6 +221,22 @@ export class HostSession {
     });
     if (this.pendingNames.size > 0) this.flushRenames();
     const now = this.o.clock.monoMs();
+    const elapsedS = (now - this.lastIndustryTick) / 1000;
+    this.lastIndustryTick = now;
+    if (elapsedS > 0 && this.state === "open" && !this.clockPaused && this.world.industry.depots.length) {
+      // Serialize with player commands, admissions and checkpoints. Publish only changed records
+      // and persist with the normal checkpoint instead of making a disk transaction per tick.
+      this.enqueue(async () => {
+        if (this.state !== "open" || this.clockPaused) return;
+        if (this.world.industry.drones.length) updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
+        const stepped = advanceIndustry(this.data.world.industry, elapsedS);
+        if (!stepped) return;
+        const backup = stepped.economic ? structuredClone(this.data) : null;
+        this.data.world.industry = stepped.state;
+        if (backup && !(await this.persist(backup))) return;
+        if (hasIndustryDelta(stepped.delta)) this.broadcast("cmd", { t: "industry", gen: this.gen, delta: stepped.delta });
+      });
+    }
     this.clockStamps.push(now);
     if (this.clockStamps.length > 5) this.clockStamps.shift();
     const roster = Array.from(this.bound, ([id, conn]) => {
@@ -257,6 +287,7 @@ export class HostSession {
     const m = this.conns.get(conn);
     this.conns.delete(conn);
     if (m?.playerId && this.bound.get(m.playerId) === conn) {
+      this.pilotContacts.forget(m.playerId);
       this.bound.delete(m.playerId);
       this.o.onPlayerCount?.(this.bound.size);
       if (this.state === "open") this.enqueue(() => this.checkpoint());
@@ -275,9 +306,18 @@ export class HostSession {
     const pid = m.playerId;
     if (pid === null || msg.gen !== this.gen) return;
     if (msg.t === "pong") {
-      if (channel === "cmd" && !m.local && this.clockStamps.includes(msg.stamp)) {
-        m.pingAt = this.o.clock.monoMs();
-        m.pingMs = Math.max(0, Math.round(m.pingAt - msg.stamp));
+      if (channel === "cmd" && this.clockStamps.includes(msg.stamp)) {
+        const at = this.o.clock.monoMs();
+        const rtt = at - msg.stamp;
+        if (!m.local) {
+          m.pingAt = at;
+          m.pingMs = Math.max(0, Math.round(rtt));
+        }
+        if (msg.localMonoMs !== undefined && rtt >= 0 && rtt <= 200) {
+          const samples = m.motionClocks ??= [];
+          samples.push({ offset: msg.stamp + rtt * 0.5 - msg.localMonoMs, rtt, at });
+          if (samples.length > 5) samples.shift();
+        }
       }
     } else if (msg.t === "pose") {
       if (channel !== "pose") return;
@@ -437,9 +477,9 @@ export class HostSession {
       world: { ...this.data.world, members, receipts: [], simEpochMs: this.epochMs() } };
     const deadPilots = Object.keys(this.data.players).filter(id => this.data.players[id].isDead);
     const json = JSON.stringify({ meta: this.meta, data, deadPilots });
-    const of = Math.max(1, Math.ceil(json.length / SNAPSHOT_PART_CHARS));
-    for (let part = 0; part < of; part++) {
-      this.send(conn, { t: "snap", gen: this.gen, revision: this.data.world.revision, part, of, json: json.slice(part * SNAPSHOT_PART_CHARS, (part + 1) * SNAPSHOT_PART_CHARS) });
+    const parts = jsonParts(json, SNAPSHOT_PART_CHARS);
+    for (let part = 0; part < parts.length; part++) {
+      this.send(conn, { t: "snap", gen: this.gen, revision: this.data.world.revision, part, of: parts.length, json: parts[part] });
     }
   }
 
@@ -492,6 +532,11 @@ export class HostSession {
 
     if (outcome.status === "accepted") {
       const shared = events.filter((e) => e.type !== "op.settled" && e.type !== "player.changed");
+      if (shared.some(e => e.type === "ship.destroyed" || e.type === "ship.respawned")) {
+        m.previousPose = m.lastPose = undefined;
+        m.poseFloor = this.data.world.revision;
+        this.pilotContacts.forget(pid);
+      }
       const worldSlices: CommitSlices["world"] = {};
       if (shared.some((e) => e.type === "discoveries.changed")) worldSlices.discoveries = this.data.world.discoveries;
       if (shared.some((e) => e.type === "replication.changed")) worldSlices.replication = this.data.world.replication;
@@ -586,8 +631,10 @@ export class HostSession {
     if (t.health !== undefined && !p.isDead) p.health = Math.min(t.health, p.shipConfig.maxHealth);
     // Bounds, not anti-cheat: never above the tank, and the protected reserve only drains.
     if (t.propellant && !p.isDead) {
+      const awaitingCredit = Math.max(0, p.receivedFuelKg - (t.receivedFuelKg ?? 0));
+      const awaitingDebit = Math.max(0, p.depositedFuelKg - (t.depositedFuelKg ?? 0));
       p.propellant = {
-        ordinaryKg: Math.min(t.propellant.ordinaryKg + Math.max(0, p.receivedFuelKg - (t.receivedFuelKg ?? 0)), tankCapacityKg(p, this.data.world)),
+        ordinaryKg: Math.max(0, Math.min(t.propellant.ordinaryKg + awaitingCredit - awaitingDebit, tankCapacityKg(p, this.data.world))),
         protectedKg: Math.min(t.propellant.protectedKg, p.propellant.protectedKg),
       };
     }
@@ -610,12 +657,48 @@ export class HostSession {
   }
 
   private relayPose(m: Member, pid: PlayerId, pose: PoseMsg): void {
-    if (this.data.players[pid]?.isDead || pose.id !== pid || pose.seq <= (m.lastPose?.seq ?? -1)) return;
+    if (this.data.players[pid]?.isDead || pose.id !== pid || pose.revision < (m.poseFloor ?? 0) || pose.seq <= (m.lastPose?.seq ?? -1)) return;
+    m.previousPose = m.lastPose;
     m.lastPose = pose;
     m.poseAt = this.o.clock.monoMs();
     this.conns.forEach((other, conn) => {
-      if (conn !== m.conn && other.playerId && !other.fenced) this.o.transport.send(conn, "pose", pose);
+      if (conn !== m.conn && other.playerId && !other.fenced) {
+        this.o.transport.send(conn, "pose", pose);
+        this.resolvePilotContact(m, pid, other, other.playerId, m.poseAt!);
+      }
     });
+  }
+
+  private resolvePilotContact(one: Member, oneId: PlayerId, two: Member, twoId: PlayerId, now: number): void {
+    const onePose = one.lastPose!, twoPose = two.lastPose;
+    if (this.state !== "open" || this.clockPaused || this.data.players[twoId]?.isDead || !twoPose || onePose.f !== twoPose.f) return;
+    // Two normal-flight hulls stay within 400 m over the allowed sample window. No track work for distant pilots.
+    if (Math.hypot(onePose.p[0] - twoPose.p[0], onePose.p[1] - twoPose.p[1], onePose.p[2] - twoPose.p[2]) > 0.4) return;
+    const [a, aId, b, bId] = oneId < twoId ? [one, oneId, two, twoId] as const : [two, twoId, one, oneId] as const;
+    const track = (m: Member): { track: PilotTrack; rtt: number } | null => {
+      const pose = m.lastPose, previous = m.previousPose;
+      if (!pose || !previous || !isFrameId(pose.f) || pose.motion === undefined) return null;
+      const samples = m.motionClocks;
+      if (!samples) return null;
+      const timing = samples.reduce<(typeof samples)[number] | null>((best, s) =>
+        now - s.at <= 4000 && (!best || s.rtt < best.rtt) ? s : best, null);
+      if (!timing) return null;
+      const at = timing.offset + pose.tick;
+      if (at > now + 25 || now - at > 220) return null;
+      return { track: { latest: { pose, at }, previous: { pose: previous, at: timing.offset + previous.tick } }, rtt: timing.rtt };
+    };
+    const ta = track(a), tb = track(b);
+    if (!ta || !tb) return;
+    const hit = this.pilotContacts.observe(JSON.stringify([aId, bId]), ta.track, tb.track, now, (ta.rtt + tb.rtt) * 0.5);
+    if (!hit) return;
+    const id = ++this.pilotContactId;
+    const send = (m: Member, other: PlayerId, direction: typeof hit.normal): void => {
+      const p = m.lastPose!;
+      this.send(m.conn, { t: "pilotContact", gen: this.gen, id, other, motion: p.motion!, tick: p.tick,
+        correctionM: hit.correctionM, damage: hit.damage, contact: { frameId: p.f, positionKm: hit.positionKm, direction, dvMps: hit.dvMps } });
+    };
+    send(a, bId, hit.normal);
+    send(b, aId, [-hit.normal[0], -hit.normal[1], -hit.normal[2]]);
   }
 
   // ── plumbing ─────────────────────────────────────────────────────────────
@@ -632,12 +715,16 @@ export class HostSession {
   }
 
   private send(conn: ConnId, msg: HostMsg): void {
-    this.o.transport.send(conn, "cmd", msg);
+    const parts = msg.t === "commit" ? frameReliableUpdate(msg) : [msg];
+    for (const part of parts) this.o.transport.send(conn, "cmd", part);
   }
 
   private broadcast(channel: Channel, msg: HostMsg): void {
+    const parts = msg.t === "industry" ? frameReliableUpdate(msg) : [msg];
     this.conns.forEach((m, conn) => {
-      if (m.playerId && !m.fenced) this.o.transport.send(conn, channel, msg);
+      if (m.playerId && !m.fenced) {
+        for (const part of parts) this.o.transport.send(conn, channel, part);
+      }
     });
   }
 

@@ -2,6 +2,7 @@
 // M4.0 shared-rock transcript under plain Node: HostSession + GuestSessions over the memory
 // transport and repository. No DOM, WebGPU, React, save singleton or signaling.
 // Usage: pnpm coop:transcript [scenario,...]   Prints one JSON object; exit 1 if any scenario fails.
+import assert from "node:assert/strict";
 import { register } from "node:module";
 
 register(new URL("./lib/ts-hooks.mjs", import.meta.url));
@@ -716,7 +717,351 @@ async function suspendedHost() {
   return { pass: waited && bounded && g.settled.at(-1)?.status === "accepted", waited, bounded, epochAdvanceMs: rig.host.epochMs() - epoch };
 }
 
+
+async function industry() {
+  const [{ getIndustrySource, INDUSTRY_TUNING }, { estimateDroneRoute }, { parseSaveData }, { emergencePose, starterPoint }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/route.ts"), S("save/validate.ts"), S("sim/replication/points.ts"),
+  ]);
+  let ms = 0;
+  const clock = { monoMs: () => ms, nowMs: () => Date.UTC(2026, 0, 1) + ms };
+  const seeded = newWorld().peek();
+  seeded.data.players[HOST_ID].cargo.items = { fe_ni_metal: 500, silicates: 400, carbon: 20 };
+  const repo = new MemoryRepository(seeded);
+  const rig = new Rig(repo);
+  await rig.startHost(clock);
+  const join = async (client) => {
+    client.session.o.clock = clock;
+    client.join();
+    await rig.settle();
+    return client;
+  };
+  let h = await join(rig.client("Host", { local: true }));
+  let g = await join(rig.client("Guest"));
+  const pid = g.session.playerId;
+  const run = async (client, op) => {
+    client.session.submit({ ...op, opId: op.opId ?? `industry-${++opN}` });
+    await rig.settle();
+    return client.settled.at(-1);
+  };
+  const accepted = async (client, op) => {
+    const o = await run(client, op);
+    assert.equal(o?.status, "accepted", JSON.stringify({ op, outcome: o }));
+    return o.result;
+  };
+  const ticks = async (n, stepMs = 1000) => {
+    for (let i = 0; i < n; i++) {
+      ms += stepMs;
+      rig.host.tick();
+      await rig.settle();
+    }
+  };
+
+  const source = getIndustrySource("earth_hydrates");
+  const lunar = getIndustrySource("luna_hydrates");
+  const pose = s => ({ frameId: s.frameId, positionKm: [...s.positionKm], quaternion: [0,0,0,1] });
+  const kit = { type: "item.craft", itemId: "consumable_depot_kit" };
+  const place = async (s, name) => {
+    const p = pose(s);
+    h.pose = poseAt(p, 0.8);
+    return (await accepted(h, { type: "depot.place", name, ...p })).depotId;
+  };
+  await accepted(h, kit);
+  const starter = starterPoint();
+  const spawn = { frameId: starter.frameId, ...emergencePose(starter, 0) };
+  h.pose = poseAt(spawn, 0.8);
+  const collision = await run(h, { type: "depot.place", name: "Blocked emergence", ...spawn });
+  assert.equal(collision.reason, "near_ship");
+  const origin = await place(source, "Production");
+  await accepted(h, kit);
+  const relay = await place(lunar, "Relay");
+  const depot = id => rig.host.world.industry.depots.find(d => d.id === id);
+  const send = (depotId, direction, itemId, amount, kind = "cargo") => ({ type: "depot.transfer", depotId, direction, kind, itemId, amount });
+  h.pose = poseAt(source, 0.8);
+  g.telemetry = { pose: poseAt(source, -0.8), propellant: { ordinaryKg: 30, protectedKg: 0 }, depositedFuelKg: 0, receivedFuelKg: 0 };
+  await accepted(h, send(origin, "deposit", "fe_ni_metal", 165));
+  await accepted(h, send(origin, "deposit", "silicates", 110));
+  await accepted(h, send(origin, "deposit", "carbon", 20));
+  const build = recipeId => accepted(h, { type: "depot.fabricate", depotId: origin, recipeId });
+  await build("refinery");
+  const { droneId: extract } = await build("drone");
+  const { droneId: haul } = await build("drone");
+  const configure = (droneId, kind, targetId, priorities, reserveKg, stopAt) =>
+    ({ type: "drone.configure", droneId, job: { kind, targetId, priorities, reserveKg, stopAt, enabled: true } });
+  assert.equal((await run(h, configure(extract, "extract", lunar.id, ["hydrates"], 0, 20))).reason, "source_out_of_range");
+  await accepted(h, configure(extract, "extract", source.id, ["hydrates"], 0, 200));
+  await accepted(g, configure(haul, "haul", relay, ["propellant"], 8, 600));
+  const transfer = { ...send(origin, "deposit", "fuel", 12, "fuel"), opId: "bootstrap" };
+  await accepted(g, transfer);
+  assert.equal((await run(g, transfer)).status, "duplicate", "replayed op cannot debit the ship twice");
+  g.session.sendTelemetry();
+  await rig.settle();
+  assert.equal(rig.host.player(pid).propellant.ordinaryKg, 18, "earlier fuel telemetry cannot erase the debit");
+  assert.equal(depot(origin).storage.fuelKg, 12);
+  g.telemetry = { pose: poseAt(lunar, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
+  assert.equal((await run(g, send(origin, "withdraw", "fuel", 1, "fuel"))).reason, "too_far");
+
+  const hauler = () => rig.host.world.industry.drones.find(d => d.id === haul);
+  const route = estimateDroneRoute(depot(origin), depot(relay));
+  assert.ok(route.legSeconds > 40 && route.roundTripFuelKg > 12);
+  for (let i = 0; hauler().phase !== "outbound" && i < 75; i++) await ticks(1);
+  assert.equal(hauler().phase, "outbound");
+  const payload = hauler().cargo.fuelKg;
+  assert.ok(payload > 0);
+  assert.deepEqual(repo.peek().data.world.industry.drones.find(d => d.id === haul), hauler(), "visible departure persisted");
+  assert.equal(g.session.mirror.data.world.industry.drones.find(d => d.id === haul).cargo.fuelKg, payload);
+
+  const outbound = structuredClone(hauler());
+  const paused = JSON.stringify(rig.host.world.industry);
+  rig.host.setClockPaused(true);
+  await ticks(1, 1000);
+  rig.host.setClockPaused(false);
+  await rig.settle();
+  assert.equal(JSON.stringify(rig.host.world.industry), paused, "settings pause freezes automation");
+  await ticks(1, 60_000);
+  assert.deepEqual(hauler(), outbound, "suspension produces no active time");
+
+  rig.net.detachHost();
+  await rig.settle();
+  ms += 1_800_000;
+  await rig.startHost(clock);
+  h = await join(rig.client("Host", { local: true }));
+  g = await join(rig.client("Guest", { store: g.store }));
+  assert.equal(g.session.playerId, pid);
+  assert.deepEqual(hauler(), outbound, "host restarted with the same funded round trip");
+  await ticks(outbound.remainingS + INDUSTRY_TUNING.deliverySeconds);
+  assert.equal(depot(relay).storage.fuelKg, payload);
+  assert.equal(repo.peek().data.world.industry.depots.find(d => d.id === relay).storage.fuelKg, payload);
+  assert.equal(g.session.mirror.data.world.industry.depots.find(d => d.id === relay).storage.fuelKg, payload);
+  const fiscal = repo.commits;
+  await ticks(outbound.durationS - 1);
+  assert.ok(repo.commits - fiscal < outbound.durationS - 1, "countdowns avoid disk writes");
+
+  for (let i = 0; depot(relay).storage.fuelKg === payload && i < 2 * route.legSeconds + 30; i++) await ticks(1);
+  const delivered = depot(relay).storage.fuelKg;
+  assert.ok(delivered > payload && delivered <= 600, "next delivery needs no manual supplies");
+  const stored = repo.peek().data;
+  stored.world.industry.depots[0].storage.items.old_ore = 1;
+  assert.equal(parseSaveData(stored).world.industry.depots[0].storage.items.old_ore, 1);
+
+  g.telemetry = { pose: poseAt(lunar, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
+  await accepted(g, send(relay, "withdraw", "fuel", 5, "fuel"));
+  assert.equal(rig.host.player(pid).propellant.ordinaryKg, 23);
+  assert.equal(depot(relay).storage.fuelKg, delivered - 5);
+  return { pass: true, routeKm: Math.round(route.pathKm), roundTripKg: route.roundTripFuelKg, payload, delivered, bootstrapKg: 12 };
+}
+
+async function industryBounds() {
+  const [{ LocalAuthority }, { getIndustrySource, INDUSTRY_TUNING: T }, { parseSaveData }] = await Promise.all([
+    S("sim/world/authority.ts"), S("sim/industry/catalog.ts"), S("save/validate.ts"),
+  ]);
+  const save = defaults.defaultSaveData(HOST_ID);
+  const p = save.players[HOST_ID];
+  p.cargo.items = { silicates: p.cargo.capacityUnits };
+  p.modules.consumables.consumable_hull_patch_kit = 10;
+  p.propellant = { ordinaryKg: 7, protectedKg: 100 };
+  p.processing = { id: "batch", recipeId: "hydrate_propellant", reserved: { hydrates: 30 }, elapsedS: 0, committedKg: 0 };
+  const source = getIndustrySource("earth_hydrates");
+  p.ship = poseAt(source, 0.8);
+  const depot = { id: "depot", ...source, by: HOST_ID, quaternion: [0, 0, 0, 1], refinery: false, refineProgressS: 0,
+    storage: { items: { silicates: T.cargoCapacity - 1 }, consumables: { consumable_hull_patch_kit: 1 }, fuelKg: T.fuelCapacityKg } };
+  save.world.industry.depots = [depot];
+  const authority = new LocalAuthority({ getWorld: () => save.world, getPlayer: () => p, getPlayers: () => [p],
+    markDirty: () => {}, reservedFuel: () => 4 });
+  const transfer = (direction, kind, itemId, amount) =>
+    authority.submit({ type: "depot.transfer", opId: `bounds-${++opN}`, depotId: depot.id, direction, kind, itemId, amount }, HOST_ID);
+  const before = JSON.stringify(save);
+  assert.equal(transfer("deposit", "cargo", "silicates", 1).reason, "depot_full");
+  assert.equal(transfer("withdraw", "cargo", "silicates", 1).reason, "no_capacity");
+  assert.equal(transfer("withdraw", "consumable", "consumable_hull_patch_kit", 1).reason, "stack_full");
+  assert.equal(transfer("withdraw", "fuel", "fuel", 1).reason, "tank_full", "onboard batch retains its reserved tank space");
+  assert.equal(transfer("deposit", "fuel", "fuel", 1).reason, "depot_full");
+  assert.equal(transfer("deposit", "fuel", "fuel", 4).reason, "materials", "never spends protected fuel or the braking reserve");
+  assert.equal(JSON.stringify(save), before, "rejected transfers leave both stores intact");
+
+  const old = structuredClone(save);
+  old.schemaVersion = 6;
+  delete old.world.industry;
+  delete old.players[HOST_ID].depositedFuelKg;
+  const migrated = parseSaveData(old);
+  assert.deepEqual(migrated.world.industry.depots, []);
+  assert.deepEqual(migrated.players[HOST_ID].cargo, p.cargo);
+  assert.deepEqual(migrated.players[HOST_ID].propellant, p.propellant);
+  assert.equal(migrated.players[HOST_ID].depositedFuelKg, 0);
+  return { pass: true };
+}
+
+async function industryDroneBounds() {
+  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { advanceIndustry }, { emptyIndustry, emptyStorage }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"), S("sim/industry/types.ts"),
+  ]);
+  const source = getIndustrySource("earth_hydrates");
+  const depot = (id, offsetKm, fuelKg = 0, items = {}) => ({
+    ...source, id, name: id, by: HOST_ID, positionKm: [source.positionKm[0] + offsetKm, ...source.positionKm.slice(1)],
+    quaternion: [0, 0, 0, 1], refinery: false, refineProgressS: 0, storage: { ...emptyStorage(), fuelKg, items },
+  });
+  const drone = (id, homeId, job) => ({
+    id, homeId, job: { enabled: true, ...job }, phase: "idle", status: "departing", returnS: 0, via: null,
+    remainingS: 0, durationS: 0, fuelKg: 0, cargo: emptyStorage(),
+  });
+  const home = depot("home", 1, 500);
+  const relay = depot("relay", 4, T.fuelCapacityKg - 100);
+  const hauler = drone("hauler", home.id, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 499, stopAt: T.fuelCapacityKg });
+  let world = { ...emptyIndustry(), depots: [home, relay], drones: [hauler] };
+  const step = (seconds = 1) => { for (let i = 0; i < seconds; i++) world = advanceIndustry(world, 1).state; };
+  const ship = () => world.drones[0];
+  const editStores = (id, edit) => {
+    world.depots = world.depots.map(d => d.id === id ? { ...d, storage: edit(d.storage) } : d);
+  };
+
+  step();
+  assert.equal(ship().status, "needs_fuel");
+  assert.equal(world.depots[0].storage.fuelKg, 500);
+  world.drones = [{ ...ship(), job: { ...ship().job, reserveKg: 100 } }];
+  step();
+  assert.equal(ship().phase, "outbound");
+  assert.equal(ship().cargo.fuelKg, 100);
+  assert.equal(world.depots[0].storage.fuelKg, 500 - 100 - 2 * ship().fuelKg);
+
+  // Players fill both tanks while the manifest is in flight, and recall the ship safely.
+  const trip = ship().returnS;
+  world.drones = [{ ...ship(), job: { ...ship().job, enabled: false } }];
+  for (const id of [home.id, relay.id]) editStores(id, s => ({ ...s, fuelKg: T.fuelCapacityKg }));
+  step(2 * trip + T.deliverySeconds);
+  assert.equal(ship().status, "unload_blocked");
+  assert.equal(ship().cargo.fuelKg, 100);
+  assert.equal(world.depots[1].storage.fuelKg, T.fuelCapacityKg);
+  step(4);
+  assert.equal(ship().cargo.fuelKg, 100);
+  editStores(home.id, s => ({ ...s, fuelKg: s.fuelKg - 40 }));
+  step();
+  assert.equal(ship().status, "unload_blocked");
+  assert.equal(ship().cargo.fuelKg, 60);
+  editStores(home.id, s => ({ ...s, fuelKg: s.fuelKg - 60 }));
+  step(2);
+  assert.equal(ship().phase, "idle");
+  assert.equal(ship().status, "paused");
+  assert.equal(ship().cargo.fuelKg, 0);
+  assert.equal(world.depots[0].storage.fuelKg, T.fuelCapacityKg);
+
+  // Carbon is first, but has met its destination stop condition. Silicates take the slot.
+  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 500, { carbon: 100, silicates: 80, hydrates: 50 }), depot(relay.id, 4, 0, { carbon: 20 })],
+    drones: [drone("priority", home.id, { kind: "haul", targetId: relay.id, priorities: ["carbon", "silicates"], reserveKg: 0, stopAt: 20 })] };
+  step();
+  assert.deepEqual(ship().cargo.items, { silicates: 20 });
+  assert.equal(world.depots[0].storage.items.hydrates, 50);
+
+  // Two depots can draw from one prospect, with one shared pool and one recharge rate.
+  const config = { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: T.cargoCapacity };
+  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 100), depot(relay.id, 4, 100)],
+    drones: [drone("extract-1", home.id, config), drone("extract-2", relay.id, config)] };
+  step();
+  step(ship().returnS + T.extractSeconds);
+  assert.deepEqual(world.drones.map(d => d.cargo.items.hydrates), [8, 4]);
+  assert.equal(world.sources[source.id].available, 0);
+  step(T.sourceSecondsPerUnit);
+  assert.equal(world.sources[source.id].available, 1);
+  step(ship().remainingS);
+  assert.equal(world.depots.reduce((n, d) => n + d.storage.items.hydrates, 0), T.sourceCapacity);
+  return { pass: true };
+}
+
+async function industryWire() {
+  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { RELIABLE_UPDATE_BYTES }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/session/protocol.ts"),
+  ]);
+  const source = getIndustrySource("earth_hydrates");
+  const seeded = newWorld().peek();
+  const industry = seeded.data.world.industry;
+  const longId = (prefix, i) => `${prefix}:${i}:${"x".repeat(120)}`;
+  // Unknown warehouse stock remains on import and can require a larger command patch.
+  const imported = Object.fromEntries(Array.from({ length: 155 }, (_, i) => [longId("legacy", i), 1]));
+  for (let i = 0; i < T.maxDepots; i++) {
+    industry.depots.push({
+      ...source, id: longId("depot", i), name: "倉".repeat(32), by: HOST_ID,
+      quaternion: [0, 0, 0, 1],
+      positionKm: [source.positionKm[0] + i + 1, ...source.positionKm.slice(1)],
+      refinery: false, refineProgressS: 0, storage: { items: i === 0 ? imported : {}, fuelKg: 0, consumables: {} },
+    });
+    for (let j = 0; j < T.dronesPerDepot; j++) {
+      industry.drones.push({
+        id: longId("drone", i * T.dronesPerDepot + j), homeId: longId("depot", i),
+        job: { kind: "haul", targetId: longId("depot", (i + 1) % T.maxDepots), priorities: ["propellant", "carbon", "silicates"], enabled: true, reserveKg: 0, stopAt: 600 },
+        phase: "outbound", status: "departing", remainingS: 50, durationS: 80, returnS: 80, via: null,
+        fuelKg: 16, cargo: { fuelKg: T.loadFuelKg, items: {}, consumables: {} },
+      });
+    }
+  }
+  const rig = new Rig(new MemoryRepository(seeded));
+  let ms = 0;
+  await rig.startHost({ monoMs: () => ms, nowMs: () => ms });
+  const c = rig.client("Browser", { local: true });
+  c.join();
+  await rig.settle();
+  let cursor = 0;
+  let largestPacket = 0;
+  function checkPackets() {
+    const messages = rig.net.toClientLog.slice(cursor).map(([, m]) => m);
+    cursor = rig.net.toClientLog.length;
+    largestPacket = Math.max(largestPacket, ...messages.map(m => Buffer.byteLength(JSON.stringify(m))));
+    assert.ok(largestPacket <= RELIABLE_UPDATE_BYTES);
+    return messages.filter(m => m.t === "fragment");
+  }
+  assert.equal(c.session.mirror.data.world.industry.drones.length, T.maxDepots * T.dronesPerDepot);
+  checkPackets();
+  ms += 1_000;
+  rig.host.tick();
+  await rig.settle();
+  const auto = checkPackets();
+  assert.ok(auto.length > 1, "maximum drone update exceeds an unfragmented command packet");
+  assert.ok(c.session.mirror.data.world.industry.drones.every(d => d.remainingS === 49));
+  assert.equal(c.events.filter(e => e.type === "industry.changed").length, 1, "fragments publish one atomic patch");
+
+  const depot = industry.depots[0];
+  c.pose = poseAt(depot, 0.8);
+  c.session.submit({ type: "depot.transfer", opId: "wire-commit", depotId: depot.id, direction: "deposit", kind: "fuel", itemId: "fuel", amount: 1 });
+  await rig.settle();
+  const commit = checkPackets();
+  assert.ok(commit.length > 1, "the large imported depot commit is fragmented too");
+  assert.equal(c.settled.at(-1).status, "accepted");
+  assert.equal(c.session.mirror.data.world.industry.depots[0].storage.fuelKg, 1);
+  assert.deepEqual(c.session.mirror.data.world.industry.depots[0].storage.items, imported);
+  return { pass: true, largestPacket, droneDeltaBytes: Buffer.byteLength(auto.map(m => m.json).join("")),
+    commitDeltaBytes: Buffer.byteLength(commit.map(m => m.json).join("")) };
+}
+
+async function industrySaveFailure() {
+  const { getIndustrySource } = await S("sim/industry/catalog.ts");
+  const stored = newWorld().peek();
+  const source = getIndustrySource("earth_hydrates");
+  stored.data.world.industry.depots = [{
+    ...source, id: "refinery", by: HOST_ID, quaternion: [0,0,0,1], refinery: true,
+    storage: { items: { hydrates: 1 }, fuelKg: 0, consumables: {} }, refineProgressS: 1,
+  }];
+  const repo = new MemoryRepository(stored);
+  const rig = new Rig(repo);
+  let ms = 0;
+  await rig.startHost({ monoMs: () => ms, nowMs: () => ms });
+  const h = rig.client("Host", { local: true });
+  h.join();
+  await rig.settle();
+  repo.failNext = 1;
+  ms += 1000;
+  rig.host.tick();
+  await rig.settle();
+  assert.equal(rig.host.status, "storage_failed");
+  const unchanged = { items: { hydrates: 1 }, fuelKg: 0, consumables: {} };
+  assert.deepEqual(rig.host.world.industry.depots[0].storage, unchanged);
+  assert.deepEqual(repo.peek().data.world.industry.depots[0].storage, unchanged);
+  assert.deepEqual(h.session.mirror.data.world.industry.depots[0].storage, unchanged);
+  return { pass: true };
+}
+
 const SCENARIOS = {
+  industry,
+  industrySaveFailure,
+  industryBounds,
+  industryDroneBounds,
+  industryWire,
   suspendedHost,
   ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),
   expedition,

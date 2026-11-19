@@ -1,3 +1,4 @@
+import { emptyIndustry } from "@/sim/industry/types";
 import { DEFAULT_SIM_EPOCH_MS } from "@/sim/ephemeris";
 import { RECOVERY_ALLOWANCE_KG, START_PROPELLANT_KG } from "@/sim/ship/shipResources";
 import { STARTER_POINT_ID, starterPoint } from "@/sim/replication/points";
@@ -16,7 +17,7 @@ import type {
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;
@@ -85,6 +86,7 @@ export function defaultPlayerState(difficulty: Difficulty = "standard"): PlayerS
     starMarkers: [],
     minedLifetime: 0,
     receivedFuelKg: 0,
+    depositedFuelKg: 0,
     propellant: defaultPropellant(difficulty),
     power: defaultPower(),
     processing: null,
@@ -107,6 +109,7 @@ export function defaultWorldState(): WorldState {
     discoveries: defaultDiscoveries(),
     rendezvous: {},
     replication: { points: [starterPoint()] },
+    industry: emptyIndustry(),
     receipts: [],
     revision: 0,
     session: { generation: 0 },

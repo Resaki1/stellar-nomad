@@ -17,6 +17,8 @@ import { isCargoFullAtom } from "@/store/cargo";
 import { systemConfigAtom } from "@/store/system";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
+import { industryAtom } from "@/store/industry";
+import { depotPlacementAtom, industryPanelOpenAtom } from "@/store/industryHud";
 import { isDeadAtom, wrecksAtom } from "@/store/death";
 import { settingsIsOpenAtom } from "@/store/store";
 import { interactControl, interactFocusAtom, interactFocused, siteHoldFull, type InteractFocus } from "@/store/interact";
@@ -33,7 +35,7 @@ export function fmtDistKm(km: number): string {
   return `${Math.round(km).toLocaleString("en-US")} km`;
 }
 
-type Kind = "rock" | "site" | "wreck" | "point" | "place";
+type Kind = "rock" | "site" | "wreck" | "point" | "depot" | "place";
 
 function Act({ action, keyName, label, off, why }: { action?: KeybindAction; keyName?: string; label: string; off?: boolean; why?: ReactNode }) {
   return (
@@ -64,8 +66,10 @@ export default function TargetCard() {
   const focus = useAtomValue(interactFocusAtom);
   const placing = useAtomValue(placementModeAtom);
   const dead = useAtomValue(isDeadAtom);
+  const placingDepot = useAtomValue(depotPlacementAtom);
+  const industryOpen = useAtomValue(industryPanelOpenAtom);
 
-  const kind: Kind | null = dead ? null : placing ? "place" : focus.focused && focus.target ? focus.target.kind : mining.targetedAsteroid && (mining.isFocused || mining.isMining) ? "rock" : null;
+  const kind: Kind | null = dead || placingDepot || industryOpen ? null : placing ? "place" : focus.focused && focus.target ? focus.target.kind : mining.targetedAsteroid && (mining.isFocused || mining.isMining) ? "rock" : null;
 
   // ── keys: [M] mines, [G] does everything else (R5) ──
   const stateRef = useRef({ mining, focus, kind });
@@ -74,7 +78,7 @@ export default function TargetCard() {
   });
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (isTypingTarget(e.target) || e.repeat || store.get(settingsIsOpenAtom) || store.get(isDeadAtom)) return;
+      if (isTypingTarget(e.target) || e.repeat || store.get(settingsIsOpenAtom) || store.get(isDeadAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom)) return;
       const key = e.key.toLowerCase();
       const kb = store.get(keybindsAtom);
       const { mining: m, kind: k, focus: f } = stateRef.current;
@@ -272,6 +276,8 @@ function InteractRows({ focus }: { focus: InteractFocus }) {
     );
   }
 
+  if (t.kind === "depot") return <DepotRows depotId={t.refId} dist={dist} inRange={t.inRange} rangeKm={t.actionRangeKm} />;
+
   const p = points.find((x) => x.id === t.refId);
   if (!p) return null;
   const active = p.id === activeId;
@@ -287,6 +293,25 @@ function InteractRows({ focus }: { focus: InteractFocus }) {
       <div className="target-card__row target-card__row--actions">
         {active ? <span className="target-card__tag"><CircleCheck size={12} aria-hidden /> Active</span>
           : <Act action="inspect" label="Set active" off={!t.inRange} why={!t.inRange ? fmtDistKm(t.actionRangeKm) : null} />}
+      </div>
+    </>
+  );
+}
+
+function DepotRows({ depotId, dist, inRange, rangeKm }: { depotId: string; dist: ReactNode; inRange: boolean; rangeKm: number }) {
+  const depot = useAtomValue(industryAtom).depots.find(d => d.id === depotId);
+  if (!depot) return null;
+  return (
+    <>
+      <div className="target-card__row target-card__row--head">
+        <span className="target-card__name">{depot.name}</span>
+        {dist}
+      </div>
+      <div className="target-card__row target-card__row--contents">
+        <span className="target-card__muted">{depot.refinery ? "Refinery depot" : "Depot"}</span>
+      </div>
+      <div className="target-card__row target-card__row--actions">
+        <Act action="inspect" label="Open depot" off={!inRange} why={!inRange ? fmtDistKm(rangeKm) : null} />
       </div>
     </>
   );

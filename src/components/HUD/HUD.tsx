@@ -1,12 +1,13 @@
 "use client";
 
 import ExpeditionControls from "@/components/Coop/ExpeditionControls";
+import CoopPill from "@/components/Coop/CoopPill";
 import Panel from "./Shell/Panel";
 import { coopSnapshot, subscribeCoop } from "@/net/coopState";
 import { titleUrl } from "@/components/AppShell/appState";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
+import { Factory, Menu as MenuIcon, Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
 import { displayKey, keybindsAtom, type KeybindAction } from "@/store/keybinds";
 import { hudHiddenAtom, settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
@@ -34,6 +35,10 @@ import CommsOverlay from "./CommsOverlay/CommsOverlay";
 import AINameOverlay from "./AINameOverlay/AINameOverlay";
 import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
+import IndustryPanel from "./IndustryPanel/IndustryPanel";
+import DepotPlacement from "./IndustryPanel/DepotPlacement";
+import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom, sampleDepotPlacementPose } from "@/store/industryHud";
+import { placementModeAtom } from "@/store/replication";
 import ReplicationHUD from "./ReplicationHUD/ReplicationHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
 import PerfHUD from "./PerfHUD/PerfHUD";
@@ -53,6 +58,7 @@ const SHIP_PANELS = [
   { id: "crafting", label: "Crafting", action: "toggleCrafting", icon: Wrench },
   { id: "loadout", label: "Loadout", action: "toggleLoadout", icon: Shield },
   { id: "projects", label: "Projects", action: "toggleProjects", icon: Target },
+  { id: "industry", label: "Industry", action: "toggleIndustry", icon: Factory },
 ] as const satisfies readonly { id: string; label: string; action: KeybindAction; icon: typeof Package }[];
 
 // Keep Tab available for focus navigation when the action also has a letter binding.
@@ -66,6 +72,7 @@ const GLANCE_MS = 250;
 export default function HUD() {
   const hudHidden = useAtomValue(hudHiddenAtom);
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
+  const [industryOpenRequest, setIndustryOpenRequest] = useState<{ depotId?: string; build?: boolean; name?: string; sequence: number }>({ sequence: 0 });
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
   const crew = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
@@ -103,8 +110,23 @@ export default function HUD() {
       setActivePanel(null);
     }
   }, [settingsIsOpen]);
+  useEffect(() => {
+    if (dead && activePanelRef.current === "industry") setActivePanel(null);
+  }, [dead]);
 
-  useEffect(() => setCursorNeeded("panel", activePanel !== null || removed), [activePanel, removed]);
+  useEffect(() => {
+    store.set(industryPanelOpenAtom, activePanel === "industry");
+    setCursorNeeded("panel", activePanel !== null || removed);
+  }, [activePanel, removed, store]);
+
+  useEffect(() => store.sub(industryRequestAtom, () => {
+    const request = store.get(industryRequestAtom);
+    if (!request || store.get(settingsIsOpenAtom) || store.get(isDeadAtom)) return;
+    store.set(placementModeAtom, false);
+    store.set(hudHiddenAtom, false);
+    setIndustryOpenRequest(previous => ({ ...request, sequence: previous.sequence + 1 }));
+    setActivePanel("industry");
+  }), [store]);
 
   useEffect(() => {
     const t = setInterval(() => store.set(sampleGlanceAtom), GLANCE_MS);
@@ -112,12 +134,25 @@ export default function HUD() {
   }, [store]);
 
   const openPanel = useCallback((panel: OverlayPanel) => {
-    if (store.get(settingsIsOpenAtom)) return;
+    if (store.get(settingsIsOpenAtom) || store.get(depotPlacementAtom)) return;
+    if (panel === "industry") {
+      if (store.get(isDeadAtom)) return;
+      store.set(placementModeAtom, false);
+      store.set(hudHiddenAtom, false);
+      setIndustryOpenRequest(previous => ({ sequence: previous.sequence + 1 }));
+    }
     setActivePanel((prev) => (prev === panel ? null : panel));
   }, [store]);
 
   const menuPanels = useRef<HTMLElement>(null);
   const selectFromMenu = useCallback((panel: NonNullable<OverlayPanel>) => {
+    if (panel === "industry") {
+      if (store.get(isDeadAtom)) return;
+      store.set(placementModeAtom, false);
+      store.set(industryPanelOpenAtom, true);
+      store.set(hudHiddenAtom, false);
+      setIndustryOpenRequest(previous => ({ sequence: previous.sequence + 1 }));
+    }
     setCursorNeeded("panel", true);
     setActivePanel(panel);
     store.set(settingsIsOpenAtom, false);
@@ -133,12 +168,19 @@ export default function HUD() {
   }, [hudHidden, store]);
 
   const closePanel = useCallback(() => setActivePanel(null), []);
+  const aimDepot = useCallback((name: string) => {
+    store.set(placementModeAtom, false);
+    sampleDepotPlacementPose();
+    store.set(depotPlacementAtom, name);
+    closePanel();
+  }, [closePanel, store]);
 
   // Hotkeys for panels
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
+      if (isTypingTarget(e.target) || e.defaultPrevented || e.metaKey || e.ctrlKey || store.get(depotPlacementAtom)) return;
       const key = keyFromEvent(e);
+      if (activePanelRef.current === "industry" && key === "tab") return;
 
       const inMenu = store.get(settingsIsOpenAtom);
       if (inMenu && (!menuPanels.current || e.defaultPrevented || e.metaKey || e.ctrlKey || (key === "tab" && e.shiftKey))) return;
@@ -186,6 +228,7 @@ export default function HUD() {
     </Panel>;
   }
   const availablePanels = SHIP_PANELS.filter(({ id }) => id !== "crew" || crew.status === "joined");
+  const shipMenuKey = keybinds.toggleSettings.find(key => key !== "escape") ?? keybinds.toggleSettings[0];
   return (
     <div className={`hud${hudHidden ? " hud--hidden" : ""}${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
@@ -194,7 +237,28 @@ export default function HUD() {
       <FlightHud />
       <Reticle />
       <MiningHUD />
-      <CargoHUD onClick={() => openPanel("cargo")} />
+      <div className="hud__toolbar">
+        <CargoHUD onClick={() => openPanel("cargo")} />
+        <div className="hud__panel-buttons">
+          {availablePanels.filter(({ id }) => id !== "cargo").map(({ id, label, action, icon: Icon }) => (
+            <button key={id} type="button" aria-label={label}
+              className={`hud__panel-btn ${activePanel === id ? "hud__panel-btn--active" : ""}`}
+              onClick={() => openPanel(id)} title={`${label} (${keyLabel(keybinds[action])})`}>
+              <Icon size={14} strokeWidth={1.75} aria-hidden />
+              <span>{id === "crafting" ? "Craft" : label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="hud__session-menu">
+          <CoopPill />
+          <button type="button" className="settings__open-button" aria-label="Open ship menu"
+            onClick={() => store.set(settingsIsOpenAtom, open => !open)}>
+            <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
+            <span>Menu</span>
+            {shipMenuKey && <kbd>{displayKey(shipMenuKey)}</kbd>}
+          </button>
+        </div>
+      </div>
       <ObjectiveTracker />
       <SettingsMenu>
         <nav ref={menuPanels} className="settings-menu__panels" aria-label="Ship panels">
@@ -218,20 +282,9 @@ export default function HUD() {
       <Hotbar />
       <TransitHUD />
       <ReplicationHUD />
+      <DepotPlacement />
       {perfHudOn && <PerfHUD />}
       {audioHudOn && <AudioHUD />}
-
-      {/* Quick-access buttons */}
-      <div className="hud__panel-buttons">
-        {availablePanels.filter(({ id }) => id !== "cargo").map(({ id, label, action, icon: Icon }) => (
-          <button key={id} aria-label={label}
-            className={`hud__panel-btn ${activePanel === id ? "hud__panel-btn--active" : ""}`}
-            onClick={() => openPanel(id)} title={`${label} (${keyLabel(keybinds[action])})`}>
-            <Icon size={14} strokeWidth={1.75} aria-hidden />
-            <span>{id === "crafting" ? "Craft" : label}</span>
-          </button>
-        ))}
-      </div>
 
       {activePanel === "crew" && <Panel title="Crew" onClose={closePanel} width={440}>
         {crew.status === "joined" ? <ExpeditionControls discoveries={crew.discoveries} /> : <p>Session disconnected</p>}
@@ -243,6 +296,8 @@ export default function HUD() {
       {activePanel === "crafting" && <CraftingPanel onClose={closePanel} />}
       {activePanel === "loadout" && <LoadoutPanel onClose={closePanel} />}
       {activePanel === "projects" && <ProjectsPanel onClose={closePanel} />}
+      {activePanel === "industry" && !dead && <IndustryPanel key={industryOpenRequest.sequence} onClose={closePanel}
+        onAim={aimDepot} initialDepotId={industryOpenRequest.depotId} build={industryOpenRequest.build} initialName={industryOpenRequest.name} />}
     </div>
   );
 }

@@ -58,23 +58,39 @@ const typeCode = (c) => `(() => {
   set.call(el, ${JSON.stringify(c)}); el.dispatchEvent(new Event("input", { bubbles: true }));
   return true;
 })()`;
-/** The co-op pill's box against every other top-of-screen HUD region: overlaps must be empty. */
+/** Check the crew pill against nearby HUD regions, and every toolbar control against its peers. */
 const PILL_LAYOUT = `(() => {
   const vis = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden" ? r : null; };
   const pill = document.querySelector(".coop-pill");
   const p = pill && vis(pill);
   if (!p) return { pill: null, overlaps: [] };
-  const sel = [".hud__panel-btn", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".poi-marker--pilot"];
+  const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const onScreen = r => r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
+  const sel = [".hud__panel-btn", ".cargo-hud", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".poi-marker--pilot"];
   const overlaps = [];
   for (const s of sel) for (const el of document.querySelectorAll(s)) {
     const r = vis(el);
-    if (r && r.left < p.right && p.left < r.right && r.top < p.bottom && p.top < r.bottom) overlaps.push(s);
+    if (r && hit(r, p)) overlaps.push(s);
   }
   const box = (r) => r && [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
   const t = document.querySelector(".objective-tracker");
   const menu = document.querySelector(".settings__open-button").getBoundingClientRect();
   const gap = Math.round(Math.max(menu.left - p.right, p.left - menu.right));
-  return { pill: box(p), gap, onScreen: p.left >= 0 && p.right <= innerWidth && p.top >= 0 && p.bottom <= innerHeight, tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null, overlaps };
+  const controls = [...document.querySelectorAll(".cargo-hud, .hud__panel-btn, .settings__open-button")]
+    .map(el => ({ el, r: vis(el), label: el.getAttribute("aria-label") || "Cargo" }))
+    .filter(({ r }) => r);
+  const controlOverlaps = [];
+  for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++) {
+    const a = controls[i];
+    const b = controls[j];
+    if (hit(a.r, b.r)) controlOverlaps.push([a.label, b.label]);
+  }
+  const outside = controls.filter(({ r }) => !onScreen(r)).map(({ label }) => label);
+  const occluded = controls.filter(({ el, r }) => !el.contains(document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2)))
+    .map(({ label }) => label);
+  const quickActions = controls.filter(({ el }) => el.matches(".hud__panel-btn")).map(({ label }) => label);
+  return { width: innerWidth, pill: box(p), gap, onScreen: onScreen(p), tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null,
+    overlaps, controlOverlaps, outside, occluded, quickActions };
 })()`;
 const LOCAL_STORAGE = `JSON.stringify(Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)])))`;
 const IDB_WORLDS = `new Promise((res) => { const r = indexedDB.open("stellar-nomad"); r.onsuccess = () => { const db = r.result;
@@ -836,10 +852,6 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     const hostRec = (await session())?.members ?? null;
     // Back to the setup name (programmatic path: same setPilotName → session rename).
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
-    if (parts.includes("industry")) {
-      const { stockConstructionShip } = await import("./industry-coop.mjs");
-      await stockConstructionShip(host);
-    }
     const restored = await waitFor(async () => {
       await guest.evaluate(`${C}.faceRemote()`);
       return (await guest.evaluate(`${C}.labels()`)).includes(HOST_NAME);
@@ -889,10 +901,11 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
 
   async function shipMenu() {
     const layout = {};
-    for (const width of [1440, 1100, 1048, 1024, 768, 600, 390]) {
-      const page = width === 390 ? guest : host;
-      if (width === 390) await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-      await page.send("Emulation.setDeviceMetricsOverride", width === 390 ? PHONE : { ...DESKTOP, width });
+    await guest.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    for (const width of [1440, 1150, 1149, 1100, 1048, 1047, 1024, 844, 768, 681, 680, 600, 599, 450, 390, 375, 320]) {
+      const phone = width < 600;
+      const page = phone ? guest : host;
+      await page.send("Emulation.setDeviceMetricsOverride", { ...(phone ? PHONE : DESKTOP), width });
       layout[width] = await page.evaluate(PILL_LAYOUT);
       if (width === 1440 || width === 390) await page.shot("coop/ship-menu-hud-" + width);
     }
@@ -909,7 +922,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await clickAt(620, 320);
     await host.sleep(350);
     const initial = await state();
-    await host.press("Escape");
+    await host.press("h");
+    const hudHidden = await host.evaluate(`document.querySelector(".hud__toolbar").getClientRects().length === 0`);
+    await host.press("h");
+    await host.press("o");
     await host.sleep(500);
     const opened = await state();
     const xy = await host.evaluate(`(() => {
@@ -929,8 +945,23 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await host.keyUp("Escape");
     await host.sleep(650);
     const resumed = await state();
+    // Release the cursor via the flight control, then use the relocated Industry button.
+    for (const type of ["mousePressed", "mouseReleased"])
+      await host.send("Input.dispatchMouseEvent", { type, x: 620, y: 320, button: "right", clickCount: 1 });
+    await host.sleep(200);
+    const quickAction = await host.evaluate(`(() => {
+      const r = document.querySelector('.hud__panel-btn[aria-label="Industry"]').getBoundingClientRect();
+      return [r.x + r.width / 2, r.y + r.height / 2];
+    })()`);
+    await clickAt(...quickAction);
+    await host.sleep(250);
+    const industry = await state();
+    await host.press("Escape");
     const checks = {
-      clear: Object.values(layout).every(l => l.onScreen && l.gap >= 4 && !l.overlaps.length),
+      clear: Object.entries(layout).every(([width, l]) => l.width === Number(width) && l.onScreen && l.gap >= 4 && !l.overlaps.length &&
+        !l.controlOverlaps.length && !l.outside.length && !l.occluded.length && l.quickActions.length === 6 && l.quickActions.includes("Industry")),
+      hudHidden,
+      industryAccess: industry.title === "Industry",
       fromFlight: initial.locked && opened.title === "Ship menu" && !opened.locked,
       selected: settings.title === "Controls",
       backedOut: back.title === "Ship menu" && back.cursorNeeded && !back.locked,
@@ -955,10 +986,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     if (!await waitFor(crewOpen, 3000)) throw Error("Default Crew shortcut did not open the roster");
     await host.press("u");
     if (!await waitFor(async () => !await crewOpen(), 3000)) throw Error("Crew shortcut did not close the roster");
-    await host.press("Escape");
+    await host.press("o");
     const launcher = ".settings-menu__panels";
     if (!await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000)) throw Error("Ship menu did not open");
-    const titles = { cargo: "Cargo Hold", research: "Research", crafting: "Crafting", loadout: "Ship Loadout", projects: "Projects", crew: "Crew" };
+    const titles = { cargo: "Cargo Hold", research: "Research", crafting: "Crafting", loadout: "Ship Loadout", projects: "Projects", industry: "Industry", crew: "Crew" };
     for (const [id, title] of Object.entries(titles)) {
       const shown = await host.evaluate(`document.querySelector('[data-ship-panel="${id}"] kbd')?.textContent`);
       if (!shown) throw Error("Missing shortcut for " + id);
@@ -968,7 +999,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       if (id === "crew") break; // Continue the transfer test in the roster.
       await host.press(shown.toLowerCase());
       await waitFor(() => host.evaluate('!document.querySelector("#panel-title")'), 3000);
-      await host.press("Escape");
+      await host.press("o");
       await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000);
     }
     const rosterTitle = await host.evaluate('document.querySelector(".crew-members h3")?.textContent');
@@ -1455,6 +1486,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     await host.load();
     await host.ready();
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
+    if (parts.includes("industry")) {
+      const { stockConstructionShip } = await import("./industry-coop.mjs");
+      await stockConstructionShip(host);
+    }
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
     if (parts.some(p => ["pilotActions", "soak", "exchange", "roughLink"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
     if (parts.includes("crewUi")) {
@@ -1506,6 +1541,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       lateName,
       remoteFx,
       crash,
+      pilotContact: async () => {
+        const { pilotContactGate } = await import("./m5-physics.mjs");
+        return pilotContactGate({ host, guest });
+      },
       pilotMarker,
       rename,
       pilotActions,

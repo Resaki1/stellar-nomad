@@ -6,7 +6,7 @@ import type { QuatTuple, ReplicationPoint, Vec3Tuple } from "@/save/types";
 import { frameOriginXyzKm, isFrameId, selectFrame } from "@/sim/frames";
 import { EMERGENCE_CANDIDATES, REPLICATION_TUNING as T, STARTER_POINT_ID, emergencePose, starterPoint } from "./points";
 
-export type PlacementRefusal = "invalid" | "no_kit" | "too_far" | "near_body" | "near_rock" | "emergence_blocked";
+export type PlacementRefusal = "near_depot" | "invalid" | "no_kit" | "too_far" | "near_body" | "near_rock" | "emergence_blocked";
 
 export interface DestroyedLookup {
   has(fieldId: string, chunkKey: string, id: number): boolean;
@@ -56,6 +56,8 @@ export function poseDistanceKm(fa: string, pa: readonly number[], fb: string, pb
   return Math.hypot(_a.x - _b.x, _a.y - _b.y, _a.z - _b.z);
 }
 
+type OccupiedPoseCheck = (pose: { frameId: string; positionKm: Vec3Tuple }) => boolean;
+
 export interface PlacementCheck {
   refusal: PlacementRefusal | null;
   /** Point altitude over the nearest body / rock clearance, for the preview readout. */
@@ -74,6 +76,7 @@ export function checkPlacement(
   kits: number,
   destroyed: DestroyedLookup | null,
   out: PlacementCheck,
+  occupied?: OccupiedPoseCheck,
 ): PlacementCheck {
   out.refusal = null;
   out.bodyAltKm = Infinity;
@@ -94,7 +97,9 @@ export function checkPlacement(
   out.rockClearM = _probe.rockClearM;
   if (_probe.bodyAltKm < T.minBodyAltitudeKm) return ((out.refusal = "near_body"), out);
   if (_probe.rockClearM < T.pointRockClearanceM) return ((out.refusal = "near_rock"), out);
+  if (occupied?.({ frameId, positionKm: p as Vec3Tuple })) return ((out.refusal = "near_depot"), out);
   const e = emergencePose({ positionKm: p as Vec3Tuple, quaternion: pose.quaternion as QuatTuple }, 0);
+  if (occupied?.({ frameId, positionKm: e.positionKm })) return ((out.refusal = "emergence_blocked"), out);
   if (!emergenceClear(frameId, e.positionKm, destroyed)) out.refusal = "emergence_blocked";
   return out;
 }
@@ -119,12 +124,12 @@ export interface RecoveryDestination {
   fallback: RecoveryFallback | null;
 }
 
-function emergeAt(point: ReplicationPoint, destroyed: DestroyedLookup | null): RecoveryDestination | null {
+function emergeAt(point: ReplicationPoint, destroyed: DestroyedLookup | null, occupied?: OccupiedPoseCheck): RecoveryDestination | null {
   if (!validPose(point.frameId, point.positionKm, point.quaternion)) return null;
   if (probeClearance && probeClearance(point.frameId, point.positionKm, 0, null, _probe).bodyAltKm < 0) return null;
   for (let i = 0; i < EMERGENCE_CANDIDATES; i++) {
     const e = emergencePose(point, i);
-    if (!emergenceClear(point.frameId, e.positionKm, destroyed)) continue;
+    if (occupied?.({ frameId: point.frameId, positionKm: e.positionKm }) || !emergenceClear(point.frameId, e.positionKm, destroyed)) continue;
     return { pointId: point.id, pointName: point.name, frameId: point.frameId, positionKm: e.positionKm, quaternion: e.quaternion, candidate: i, fallback: null };
   }
   return null;
@@ -134,7 +139,10 @@ function emergeAt(point: ReplicationPoint, destroyed: DestroyedLookup | null): R
  * Recovery destination: the active point, revalidated (a safe nearby offset when the default
  * emergence is obstructed), else the protected starter point with the reason.
  */
-export function resolveRecovery(points: readonly ReplicationPoint[], activeId: string, mode: "active" | "starter", destroyed: DestroyedLookup | null): RecoveryDestination {
+export function resolveRecovery(
+  points: readonly ReplicationPoint[], activeId: string, mode: "active" | "starter", destroyed: DestroyedLookup | null,
+  occupied?: OccupiedPoseCheck,
+): RecoveryDestination {
   const starter = points.find((p) => p.id === STARTER_POINT_ID) ?? starterPoint();
   let fallback: RecoveryFallback | null = null;
   if (mode === "starter") fallback = activeId === STARTER_POINT_ID ? null : "chosen";
@@ -143,12 +151,12 @@ export function resolveRecovery(points: readonly ReplicationPoint[], activeId: s
     if (!active) fallback = "missing";
     else if (!validPose(active.frameId, active.positionKm, active.quaternion)) fallback = "invalid";
     else {
-      const d = emergeAt(active, destroyed);
+      const d = emergeAt(active, destroyed, occupied);
       if (d) return d;
       fallback = "obstructed";
     }
   }
-  const d = emergeAt(starter, destroyed);
+  const d = emergeAt(starter, destroyed, occupied);
   if (d) return { ...d, fallback };
   // The starter is protected: emerge at its default offset even if something drifted into it.
   const e = emergencePose(starter, 0);

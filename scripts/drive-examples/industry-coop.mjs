@@ -43,6 +43,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   }
   const sourceDepot = await place("Prospect works", src);
   const relay = await place("Lunar relay", dst);
+  console.log(JSON.stringify({ stage: "commissioned", source: sourceDepot.id, relay: relay.id }));
   await visit(host, sourceDepot);
   await visit(guest, sourceDepot, [0.5, 0, 0]);
   const transfer = (depotId, direction, kind, itemId, amount) => ({ type: "depot.transfer", depotId, direction, kind, itemId, amount });
@@ -88,13 +89,14 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   }, 120000, 300);
   assert.ok(outbound, "self-funded first shipment left Earth");
   const generation = (await host.evaluate(`${C}.status()`)).session.gen;
+  console.log(JSON.stringify({ stage: "first departure", payloadKg: outbound.cargo.fuelKg, legS: outbound.durationS }));
   await host.load();
   await host.ready();
   assert.equal(await host.evaluate(`${C}.worldId()`), worldId);
   const reopened = await state(host);
-  assert.equal(reopened.depots.length, 2);
-  assert.equal(reopened.drones.length, 2);
-  assert.equal(flight(reopened).phase, "outbound");
+  assert.equal(reopened.depots.length, 2, "both depots survived the host reload");
+  assert.equal(reopened.drones.length, 2, "both drones survived the host reload");
+  assert.equal(flight(reopened).phase, "outbound", "host reload restored the outgoing leg");
   assert.equal(flight(reopened).cargo.fuelKg, outbound.cargo.fuelKg, "in-flight payload survives restart");
   assert.equal(await host.evaluate(`${C}.host()`), code);
   assert.ok(await waitFor(async () => {
@@ -111,13 +113,14 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   }
   const first = await readRelayAtBoth(n => n > 0, 180000);
   assert.equal(first, outbound.cargo.fuelKg, "first manifest unloaded exactly once");
+  console.log(JSON.stringify({ stage: "first delivery after rejoin", fuelKg: first }));
   const usedKg = Math.min(5, first);
   await settledCommand(guest, transfer(relay.id, "withdraw", "fuel", "fuel", usedKg));
   assert.ok(Math.abs(await shipFuel() - guestFuelBefore - usedKg) < 0.01, "relay supplied the waiting ship");
   const second = await readRelayAtBoth(n => n > first - usedKg, 260000);
   assert.ok(second, "extraction, refining and transport funded a second delivery without player input");
   const final = await state(host);
-  const saved = await host.evaluate(`JSON.parse(await ${G}.fixtures.export(${json(worldId)})).data.world.industry`);
+  const saved = await host.evaluate(`${G}.fixtures.export(${json(worldId)}).then(s => JSON.parse(s).data.world.industry)`);
   assert.equal(stores(saved), second);
   assert.equal(stores(final), second);
   return { pass: true, frames: [sourceDepot.frameId, relay.frameId], contestedUnit: race.map(r => r.status),

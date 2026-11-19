@@ -28,7 +28,7 @@ export type POIDef = {
   /** Drawn object's radius (km): the marker label sits below its on-screen disc, not on its glow. */
   objectRadiusKm?: number;
   /** "pilot": another player's ship (green, name always shown). */
-  kind?: "pilot";
+  kind?: "pilot" | "depot";
   /** False: gaze never makes it a transit destination. */
   targetable?: boolean;
 };
@@ -50,7 +50,7 @@ export type ProjectedPOI = {
   focused: boolean;
   /** On-screen radius of the drawn object as a fraction of viewport height (0 when none). */
   objectRadiusFrac: number;
-  kind?: "pilot";
+  kind?: "pilot" | "depot";
 };
 
 /**

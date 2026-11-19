@@ -21,6 +21,8 @@ import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
 import { isTypingTarget } from "@/input/keyboard";
 import { REPLICATION_KIT_ID } from "@/sim/replication/points";
 import { placementModeAtom } from "@/store/replication";
+import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
+import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
 import { togglePlacement } from "../ReplicationHUD/ReplicationHUD";
 
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
@@ -116,6 +118,12 @@ export default function Hotbar() {
         return;
       }
 
+      if (itemId === DEPOT_KIT_ID) {
+        if ((modulesState.consumables[itemId] ?? 0) > 0) store.set(industryRequestAtom, { build: true });
+        else signalAudio("ui.reject");
+        return;
+      }
+
       // D16: the replication kit's slot opens (or closes) placement; placing consumes it.
       if (def.deployable) {
         if ((modulesState.consumables[itemId] ?? 0) > 0 || store.get(placementModeAtom)) togglePlacement(store);
@@ -170,7 +178,7 @@ export default function Hotbar() {
   // Keys 1…9 then 0 (names with digits are typed, never activate a slot).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (store.get(settingsIsOpenAtom) || isTypingTarget(e.target) || e.repeat) return;
+      if (store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom) || isTypingTarget(e.target) || e.repeat) return;
       const key = e.key;
       if (key.length === 1 && key >= "0" && key <= "9") {
         // The kit's slot focuses the name input in this same keydown: without this the digit is typed into it.

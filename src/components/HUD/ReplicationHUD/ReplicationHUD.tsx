@@ -4,6 +4,7 @@ import { useCallback, useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { keybindsAtom } from "@/store/keybinds";
 import { settingsIsOpenAtom } from "@/store/store";
+import { depotPlacementAtom, industryPanelOpenAtom } from "@/store/industryHud";
 import { isDeadAtom } from "@/store/death";
 import { playAudio } from "@/audio";
 import { isTypingTarget } from "@/input/keyboard";
@@ -55,7 +56,7 @@ export default function ReplicationHUD() {
   useEffect(() => {
     // Capture phase: Esc while placing cancels placement only (it must not open Settings).
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (store.get(settingsIsOpenAtom) || store.get(isDeadAtom)) return;
+      if (store.get(settingsIsOpenAtom) || store.get(isDeadAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom)) return;
       const key = e.key.toLowerCase();
       const placing = store.get(placementModeAtom);
       if (placing && key === "escape") {

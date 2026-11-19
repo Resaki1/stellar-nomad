@@ -20,6 +20,10 @@ export interface PhysicsWorld {
   addFixedCollider(shape: ColliderShape, pose: Readonly<BodyPose>): ColliderHandle;
   setFixedColliderPose(handle: ColliderHandle, pose: Readonly<BodyPose>): void;
   removeFixedCollider(handle: ColliderHandle): void;
+  addDebris(radiusM: number, pose: Readonly<BodyPose>, velocity: Readonly<BodyVelocity>): ColliderHandle;
+  readDebris(handle: ColliderHandle, out: BodyPose): boolean;
+  removeDebris(handle: ColliderHandle): void;
+  translateDebris(dx: number, dy: number, dz: number): void;
   /** Where the engine has the collider (harness cross-check). */
   readFixedColliderPose(handle: ColliderHandle, out: BodyPose): boolean;
   fixedColliderCount(): number;

@@ -10,30 +10,29 @@
   visibility: hidden;
 }
 
-.hud__panel-buttons {
+.hud__toolbar {
   position: absolute;
-  top: s.$space-3;
-  left: 50%;
-  transform: translateX(-50%);
+  inset: s.$space-3 max(16px, 2vmax) auto s.$space-4;
   z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+  align-items: center;
+  gap: s.$space-2;
+  pointer-events: none;
+}
+
+.hud__session-menu {
+  position: relative;
+  justify-self: end;
   display: flex;
-  gap: s.$space-1 + 2px; // 6px — TODO(phase-3): normalize spacing
+  align-items: center;
+  gap: s.$space-2;
+}
+
+.hud__panel-buttons {
+  display: flex;
+  gap: s.$space-1 + 2px;
   pointer-events: auto;
-
-  // Phones: icon-only, right-aligned between the cargo readout and the settings gear (2vmax, 32 px).
-  @media (max-width: 599px) {
-    left: auto;
-    right: calc(2vmax + 40px);
-    transform: none;
-
-    .hud__panel-btn {
-      padding: s.$space-1 + 2px;
-    }
-
-    .hud__panel-btn span {
-      display: none;
-    }
-  }
 }
 
 .hud__panel-btn {
@@ -72,6 +71,25 @@
     border-color: rgba(127, 184, 255, 0.45);
     color: rgba(160, 210, 255, 0.95);
   }
+}
+
+// Share the row with the full crew pill and menu at tablet and small laptop widths.
+@media (max-width: 1149px) {
+  .hud__panel-btn {
+    padding-inline: s.$space-1 + 2px;
+    span { display: none; }
+  }
+}
+
+@media (max-width: 599px) {
+  .hud__toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .hud__panel-buttons { gap: s.$space-1; }
+}
+
+@media (max-width: 375px) {
+  .hud__toolbar { gap: s.$space-1; }
+  .hud__panel-buttons { gap: 3px; }
+  .hud__panel-btn { padding-inline: 5px; }
 }
 
 // Keep the simulation and HUD event subscriptions alive while composing a screenshot.

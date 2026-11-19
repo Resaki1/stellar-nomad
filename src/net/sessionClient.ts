@@ -5,14 +5,17 @@
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import { getLocalPlayerShip, localBeamPose, localRenderPose } from "@/sim/entities";
-import { setSimPaused } from "@/sim/simPause";
+import { isSimPaused, setSimPaused } from "@/sim/simPause";
 import { repositionState } from "@/sim/ship/reposition";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
-import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
+import { POSE_NO_CONTACT, type RefuseReason, type Telemetry, type WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
 import { shipRes, shipReq } from "@/store/shipResources";
+import { transitDriveBuffer, isTransitBurning } from "@/store/transit";
+import { nearField } from "@/sim/physics/nearField";
+import { clearPilotContacts, receivePilotContact, resetPilotContactInbox } from "@/sim/physics/pilotContactInbox";
 import { updateCrew, setCoop, hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
@@ -26,7 +29,7 @@ export function collectTelemetry(): Telemetry | undefined {
   sampleCollectors();
   const p = getLocalPlayerState();
   const tel: Telemetry = {
-    health: p.health, receivedFuelKg: p.receivedFuelKg, reservedFuelKg: shipReq.reservedKg,
+    health: p.health, receivedFuelKg: p.receivedFuelKg, depositedFuelKg: p.depositedFuelKg, reservedFuelKg: shipReq.reservedKg,
     propellant: { ordinaryKg: p.propellant.ordinaryKg, protectedKg: p.propellant.protectedKg },
     power: { capacitor01: p.power.capacitor01, heat01: p.power.heat01 },
     prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject },
@@ -78,6 +81,7 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
       worldAuthority.asteroids.add(fieldId, chunkKey, instanceId);
     },
     onPose: pushRemotePose,
+    onPilotContact: receivePilotContact,
     onClock: (c) => {
       updateCrew(c.roster);
       hostClock.epochMs = c.epochMs;
@@ -96,6 +100,7 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
       setCoop({ discoveries: changes.length ? "Since your last visit · " + changes.join(", ") : undefined });
       remember(rec.data);
       remotePoses.clear();
+      clearPilotContacts();
       h.onSnapshot?.(rec, welcome);
     },
     onState: h.onState,
@@ -119,6 +124,8 @@ export function startSessionLoops(gs: GuestSession): () => void {
     const b = localBeamPose;
     // A beam drawn within the last few frames, in the frame the pose is sent in.
     const beam = b.on && b.frameId === s.frameId && performance.now() - b.atMs < BEAM_FRESH_MS;
+    const contactDisabled = !drawn || isSimPaused() || nearField.suspended === "dev-speed" ||
+      isTransitBurning(transitDriveBuffer.phase) || transitDriveBuffer.speedKmps > 0;
     gs.sendPose({
       seq: ++seq,
       tick: drawn ? rp.atMs : performance.now(),
@@ -126,7 +133,8 @@ export function startSessionLoops(gs: GuestSession): () => void {
       p: drawn ? [rp.relKm[0], rp.relKm[1], rp.relKm[2]] : [s.posKm.x, s.posKm.y, s.posKm.z],
       v: [s.velKmps.x, s.velKmps.y, s.velKmps.z],
       q: drawn ? [rp.quat[0], rp.quat[1], rp.quat[2], rp.quat[3]] : [s.quat.x, s.quat.y, s.quat.z, s.quat.w],
-      fl: (s.boosting ? 2 : 0) | (beam ? 1 : 0) | (beam && b.dim ? 4 : 0),
+      fl: (s.boosting ? 2 : 0) | (beam ? 1 : 0) | (beam && b.dim ? 4 : 0) | (contactDisabled ? POSE_NO_CONTACT : 0),
+      motion: localRenderPose.motion,
       th: Math.round(Math.min(1, Math.max(0, drawn ? rp.throttle : 0)) * 255),
       ...(beam ? { b: [b.relKm[0], b.relKm[1], b.relKm[2]] as [number, number, number] } : {}),
     });
@@ -135,6 +143,7 @@ export function startSessionLoops(gs: GuestSession): () => void {
   // The device-wide name changed (Settings): the host relabels us for everyone.
   const offName = onPilotNameChange((n) => gs.rename(n));
   return () => {
+    resetPilotContactInbox();
     setSimPaused(false, "coop-authority");
     clearInterval(pose);
     clearInterval(tel);

@@ -3,15 +3,18 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
-import type { VFXEventType } from "@/store/vfx";
+import type { AsteroidVFXEvent, VFXEventType } from "@/store/vfx";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { DEBRIS_LIFETIME_S, nearField } from "@/sim/physics/nearField";
+import type { ColliderHandle } from "@/sim/physics/types";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 
 // ---------------------------------------------------------------------------
 // Tuning
 // ---------------------------------------------------------------------------
 const PARTICLE_COUNT = 24;
-const LIFETIME_S = 1.8;
+const DYNAMIC_PARTICLES = 8;
 const BASE_SPEED_M = 55; // meters/s for a medium-sized asteroid
 const DECELERATION = 0.93; // per-frame velocity multiplier (drag)
 const MIN_SCALE = 0.3;
@@ -90,6 +93,7 @@ type Props = {
   radiusM: number;
   type: VFXEventType;
   impactDirection?: [number, number, number];
+  dynamicAnchor?: AsteroidVFXEvent["debrisAt"];
   onComplete: () => void;
 };
 
@@ -101,11 +105,14 @@ const DebrisEffect = memo(function DebrisEffect({
   radiusM,
   type,
   impactDirection,
+  dynamicAnchor,
   onComplete,
 }: Props) {
   const meshRef = useRef<THREE.InstancedMesh>(null!);
   const elapsedRef = useRef(0);
   const doneRef = useRef(false);
+  const bodies = useRef<(ColliderHandle | null)[]>([]);
+  const worldOrigin = useWorldOrigin();
 
   // Generate particle initial states once
   const particles = useMemo<ParticleState[]>(() => {
@@ -168,6 +175,19 @@ const DebrisEffect = memo(function DebrisEffect({
     return arr;
   }, [radiusM, type, impactDirection, position]);
 
+  useEffect(() => {
+    if (!dynamicAnchor) return;
+    const { frameId, positionKm: p } = dynamicAnchor;
+    const handles = particles.slice(0, DYNAMIC_PARTICLES).map(part => nearField.addDebris(frameId,
+      [p[0] + part.px / 1000, p[1] + part.py / 1000, p[2] + part.pz / 1000], part.scale,
+      { vx: part.vx, vy: part.vy, vz: part.vz, wx: part.tumbleX, wy: part.tumbleY, wz: part.tumbleZ }));
+    bodies.current = handles;
+    return () => {
+      for (const h of handles) if (h !== null) nearField.removeDebris(h);
+      bodies.current = [];
+    };
+  }, [dynamicAnchor, particles]);
+
   // Initialize instance matrices on mount (prevents 1-frame flash).
   useEffect(() => {
     const mesh = meshRef.current;
@@ -192,19 +212,28 @@ const DebrisEffect = memo(function DebrisEffect({
     elapsedRef.current += delta;
     const t = elapsedRef.current;
 
-    if (t >= LIFETIME_S) {
+    if (t >= DEBRIS_LIFETIME_S) {
       doneRef.current = true;
       mesh.visible = false;
       onComplete();
       return;
     }
 
-    const progress = t / LIFETIME_S;
+    const progress = t / DEBRIS_LIFETIME_S;
     // Opacity fade-out: particles shrink to nothing in the last 40%
     const fadeScale = progress > 0.6 ? 1 - (progress - 0.6) / 0.4 : 1;
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const p = particles[i];
+      const body = bodies.current[i];
+      if (body !== null && body !== undefined) {
+        const visible = nearField.readDebris(body, worldOrigin.worldOriginKm, _dPos, _dQuat);
+        if (visible && mesh.parent) _dPos.sub(mesh.parent.position);
+        _dScale.setScalar(visible ? p.scale * fadeScale : 0);
+        _dMat.compose(_dPos, _dQuat, _dScale);
+        mesh.setMatrixAt(i, _dMat);
+        continue;
+      }
 
       // Integrate position directly from state (no getMatrixAt/decompose).
       p.px += p.vx * delta;
@@ -212,9 +241,10 @@ const DebrisEffect = memo(function DebrisEffect({
       p.pz += p.vz * delta;
 
       // Drag
-      p.vx *= DECELERATION;
-      p.vy *= DECELERATION;
-      p.vz *= DECELERATION;
+      const drag = DECELERATION ** (delta * 60);
+      p.vx *= drag;
+      p.vy *= drag;
+      p.vz *= drag;
 
       // Tumble rotation
       _dEuler.set(p.tumbleX * t, p.tumbleY * t, p.tumbleZ * t);

@@ -1,10 +1,9 @@
 @use '../../../styles' as s;
 
 .cargo-hud {
-  position: absolute;
-  left: s.$space-4;
-  top: s.$space-4;
-  min-width: 180px;
+  justify-self: start;
+  width: min(100%, 180px);
+  min-width: 0;
   padding: s.$space-2 s.$space-3;
   font-family: s.$font-ui;
   color: s.$text-primary;
@@ -21,7 +20,9 @@
   }
 
   @media (max-width: 599px) {
-    min-width: 140px;
+    padding-inline: s.$space-2;
+    width: min(100%, 140px);
+
   }
 
   &__row {
@@ -29,6 +30,7 @@
     align-items: baseline;
     justify-content: space-between;
     gap: s.$space-3;
+    @media (max-width: 599px) { gap: s.$space-1; }
   }
 
   &__label {
@@ -37,9 +39,14 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: s.$text-tertiary;
+    @media (max-width: 375px) { display: none; }
   }
 
   &__amount {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-family: s.$font-mono;
     font-variant-numeric: tabular-nums;
     font-size: 13px;

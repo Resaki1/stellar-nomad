@@ -38,6 +38,9 @@ const SHIP_FALLBACK_MIN_M = [-3.9, -0.3, -3.13] as const;
 const SHIP_FALLBACK_MAX_M = [3.88, 1.66, 3.44] as const;
 /** Contacts kept for consumers between drains (M2b damage). */
 const CONTACT_QUEUE = 64;
+export const MAX_DYNAMIC_DEBRIS = 48;
+const DEBRIS_RANGE_KM = 3;
+export const DEBRIS_LIFETIME_S = 1.8;
 /** Engine load bound; past it the game runs on analytic collisions only. */
 export const PHYSICS_LOAD_TIMEOUT_MS = 20_000;
 
@@ -103,6 +106,7 @@ export class NearField {
   private world: PhysicsWorld | null = null;
   private readonly entries = new Map<NearFieldColliderId, Entry>();
   private readonly byHandle = new Map<ColliderHandle, Entry>();
+  private readonly debris = new Map<ColliderHandle, number>();
   private nextId = 1;
   /** Colliders registered in a frame other than the physics origin's; repositioned every step. */
   private foreign = 0;
@@ -191,7 +195,49 @@ export class NearField {
     this.world?.dispose();
     this.world = null;
     this.byHandle.clear();
+    this.debris.clear();
     this.entries.forEach((e) => (e.handle = null));
+  }
+
+  addDebris(frameId: FrameId, relKm: readonly number[], radiusM: number, velocity: Readonly<ReturnType<typeof createVelocity>>): ColliderHandle | null {
+    if (!this.world || this.suspended !== null || this.needsReseed || this.frameId === null || this.debris.size >= MAX_DYNAMIC_DEBRIS) return null;
+    const a = this.anchorKm;
+    _w.set(relKm[0] - a.x, relKm[1] - a.y, relKm[2] - a.z);
+    if (frameId !== this.frameId) {
+      frameOriginKm(frameId, _colOrigin);
+      frameOriginKm(this.frameId, _shipOrigin);
+      _w.add(_colOrigin.sub(_shipOrigin));
+    }
+    if (_w.lengthSq() > DEBRIS_RANGE_KM ** 2) return null;
+    _pose.x = _w.x * 1000; _pose.y = _w.y * 1000; _pose.z = _w.z * 1000;
+    _pose.qx = _pose.qy = _pose.qz = 0; _pose.qw = 1;
+    const h = this.world.addDebris(radiusM, _pose, velocity);
+    this.debris.set(h, DEBRIS_LIFETIME_S);
+    return h;
+  }
+
+  /** Position in the scene's floating origin, metres. */
+  readDebris(handle: ColliderHandle, worldOriginKm: Vector3, outPos: Vector3, outQuat: Quaternion): boolean {
+    if (!this.world || this.frameId === null || !this.debris.has(handle) || !this.world.readDebris(handle, _readPose)) return false;
+    frameOriginKm(this.frameId, _colOrigin);
+    _colOrigin.sub(worldOriginKm).add(this.anchorKm).multiplyScalar(1000);
+    const p = _readPose;
+    outPos.set(p.x + _colOrigin.x, p.y + _colOrigin.y, p.z + _colOrigin.z);
+    outQuat.set(p.qx, p.qy, p.qz, p.qw);
+    return true;
+  }
+
+  removeDebris(handle: ColliderHandle): void {
+    if (this.debris.delete(handle)) this.world?.removeDebris(handle);
+  }
+
+  private clearDebris(): void {
+    this.debris.forEach((_, h) => this.world?.removeDebris(h));
+    this.debris.clear();
+  }
+
+  debrisCount(): number {
+    return this.debris.size;
   }
 
   setShipShape(shape: ColliderShape, source: "fallback" | "mesh"): void {
@@ -312,6 +358,7 @@ export class NearField {
   /** Re-seed on the next step (teleport, respawn, external world change). */
   markReseed(): void {
     this.needsReseed = true;
+    this.clearDebris();
   }
 
   onReseed(f: () => void): () => void {
@@ -343,6 +390,7 @@ export class NearField {
 
     const reason = this.reason(ship);
     if (reason !== null) {
+      if (this.debris.size > 0) this.clearDebris();
       if (this.suspended !== reason) {
         if (this.suspended === null) this.counters.suspensions++;
         this.suspended = reason;
@@ -352,8 +400,11 @@ export class NearField {
     }
     this.suspended = null;
     const world = this.world!;
-    if (this.entries.size === 0) {
-      this.needsReseed = true;
+    if (this.entries.size === 0 && this.debris.size === 0) {
+      // Keep a valid origin so a debris burst can start in a collider-free area.
+      if (this.needsReseed || this.frameId !== ship.frameId || ship.prevPosKm.distanceTo(this.anchorKm) > this.rebaseKm) {
+        this.reseed(ship.frameId, ship.prevPosKm);
+      }
       return this.own("analytic");
     }
     if (this.needsReseed || this.frameId !== ship.frameId) this.reseed(ship.frameId, ship.prevPosKm);
@@ -371,6 +422,12 @@ export class NearField {
     _vel.wx = _w.x; _vel.wy = _w.y; _vel.wz = _w.z;
     world.setShipState(_pose, _vel);
     world.step();
+    if (this.debris.size > 0) {
+      this.debris.forEach((left, h) => {
+        if (left <= this.dt) this.removeDebris(h);
+        else this.debris.set(h, left - this.dt);
+      });
+    }
     const ms = world.lastStepMs();
     this.lastStepMs = ms;
     this.frameStepMs += ms;
@@ -550,6 +607,10 @@ export class NearField {
 
   private reanchor(frameId: FrameId, posKm: Vector3): void {
     const t0 = performance.now();
+    if (frameId !== this.frameId) this.clearDebris();
+    else if (this.debris.size > 0) {
+      this.world?.translateDebris((this.anchorKm.x - posKm.x) * 1000, (this.anchorKm.y - posKm.y) * 1000, (this.anchorKm.z - posKm.z) * 1000);
+    }
     this.frameId = frameId;
     this.anchorKm.copy(posKm);
     let foreign = 0;

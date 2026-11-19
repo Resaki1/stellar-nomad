@@ -33,6 +33,7 @@ export function getLocalPlayerShip(): ShipState | null {
  */
 export const localRenderPose = {
   atMs: -1,
+  motion: 0,
   frameId: "",
   relKm: [0, 0, 0] as [number, number, number],
   quat: [0, 0, 0, 1] as [number, number, number, number],

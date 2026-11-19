@@ -1,4 +1,5 @@
 import type { PlayerId, PlayerState, QuatTuple, ReplicationPoint, Vec3Tuple, WreckRecord } from "@/save/types";
+import type { IndustryDelta, IndustryOperation, IndustryResult } from "@/sim/industry/types";
 import type { RecoveryDestination } from "@/sim/replication/placement";
 
 export type AsteroidDestroyCause = "mined" | "collision";
@@ -9,6 +10,7 @@ export type AsteroidDestroyCause = "mined" | "collision";
  */
 export type GiftKind = "cargo" | "consumable" | "fuel";
 export type WorldOperation =
+  | IndustryOperation
   | { type: "expedition.give"; opId: string; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
   | { type: "expedition.mark"; opId: string; sourceId: string | null; name: string; clear?: boolean }
   | { type: "cargo.jettison"; opId: string; resourceId: string; amount?: number }
@@ -75,6 +77,7 @@ export interface Transfer {
 }
 
 export type OperationResult =
+  | IndustryResult
   | { type: "expedition.give"; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
   | { type: "expedition.mark" }
   | { type: "cargo.jettison"; removed: number }
@@ -128,6 +131,13 @@ export type RejectReason =
   | "no_kit"
   | "near_body"
   | "near_rock"
+  | "near_ship"
+  | "near_depot"
+  | "depot_limit"
+  | "drone_limit"
+  | "depot_full"
+  | "source_out_of_range"
+  | "route_out_of_range"
   | "emergence_blocked"
   | "not_inspected"
   /** Co-op host: the reported activity (beam time) cannot have produced this result. */
@@ -149,6 +159,8 @@ export type OperationOutcome =
 export type ShipContact = { frameId: string; positionKm: Vec3Tuple; direction: Vec3Tuple; dvMps: number };
 
 export type WorldEvent =
+  | { type: "industry.changed"; by: PlayerId; delta: IndustryDelta }
+  | { type: "industry.fuelTransferred"; by: PlayerId; deltaKg: number }
   | ({ type: "ship.contact"; by: PlayerId } & ShipContact)
   | { type: "ship.destroyed"; by: PlayerId; frameId: string; positionKm: Vec3Tuple; cause: "impact" | "abandon" }
   | { type: "ship.respawned"; by: PlayerId }

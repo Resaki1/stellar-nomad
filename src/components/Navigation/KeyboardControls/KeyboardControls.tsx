@@ -1,4 +1,6 @@
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
+import { industryPanelOpenAtom } from "@/store/industryHud";
+import { onSteeringRelease } from "@/input/pointerLock";
 import { keybindsAtom } from "@/store/keybinds";
 import { transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { miningStateAtom } from "@/store/mining";
@@ -25,7 +27,7 @@ const KeyboardControls = () => {
   useEffect(() => {
     const device = attachKeyboard({
       bindings: () => keybindsRef.current,
-      blocked: () => store.get(settingsIsOpenAtom),
+      blocked: () => store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom),
       onPress(action) {
         if (action !== "transitDrive") return;
         const phase = transitDriveBuffer.phase;
@@ -45,7 +47,11 @@ const KeyboardControls = () => {
       },
     });
     deviceRef.current = device;
+    const offRelease = onSteeringRelease(() => {
+      if (store.get(industryPanelOpenAtom)) device.releaseAll();
+    });
     return () => {
+      offRelease();
       device.detach();
       deviceRef.current = null;
     };

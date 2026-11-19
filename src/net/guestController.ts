@@ -313,7 +313,7 @@ function resync(client: GuestSession, rec: NonNullable<GuestSession["mirror"]>):
     const p = client.pending;
     const unseen = p && mine.stream.seq === p.seq && mine.stream.opId === p.opId && (mine.stream.outcome as { status?: string } | null)?.status === "accepted";
     const adopt = new Set(unseen ? (OP_PILOT_KEYS[p.op.type] ?? []) : []);
-    if (mine.receivedFuelKg !== me.receivedFuelKg) adopt.add("propellant");
+    if (mine.receivedFuelKg !== me.receivedFuelKg || mine.depositedFuelKg !== me.depositedFuelKg) adopt.add("propellant");
     if (unseen && p.op.type === "item.consume") {
       const def = getItemDef(p.op.itemId);
       for (const effect of def?.useDurationS ? [] : def?.useEffects ?? []) {
@@ -351,6 +351,7 @@ function refreshWorldMirrors(prev: NonNullable<GuestSession["mirror"]>["data"]["
   worldAuthority.deliver({ type: "expedition.marked", by: "" });
   worldAuthority.deliver({ type: "discoveries.changed", by: "" });
   worldAuthority.deliver({ type: "replication.changed", by: "" });
+  worldAuthority.deliver({ type: "industry.changed", by: "", delta: next.industry });
 }
 
 /** Test faults on the guest transport. */

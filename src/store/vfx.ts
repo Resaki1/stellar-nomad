@@ -11,6 +11,8 @@ export type AsteroidVFXEvent = {
   type: VFXEventType;
   /** World position in local render-space meters */
   position: [number, number, number];
+  /** Committed rock destruction, anchored in its own frame through local origin shifts. */
+  debrisAt?: { frameId: string; positionKm: [number, number, number] };
   /** Asteroid radius in meters */
   radiusM: number;
   /** Normalized direction of impact (from asteroid toward ship) for collision bias */
@@ -21,8 +23,6 @@ export type AsteroidVFXEvent = {
   shake?: number;
   /** Collision: no impact sound (a second visual of a hit that already played one). */
   silent?: boolean;
-  /** Resource info for loot popup (multi-resource) */
-  loot?: { resourceId: string; amount: number; name: string; icon: string }[];
   /** Timestamp (ms) when the event was created */
   createdAt: number;
 };

@@ -1,3 +1,4 @@
+import { cancelDepotPlacementAtom, depotPlacementAtom } from "@/store/industryHud";
 import { placementModeAtom } from "@/store/replication";
 import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
@@ -30,8 +31,9 @@ const MouseControls = () => {
     const device = attachMouse();
     // During loading the menu would be hidden behind the overlay and would stall the gate (frameloop "never").
     setUserUnlockHandler(() => {
-      // Esc while placing a point cancels the placement only.
-      if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
+      // Escape can be consumed by the browser before the placement prompt sees a key event.
+      if (store.get(depotPlacementAtom)) store.set(cancelDepotPlacementAtom);
+      else if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
       else if (getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
     });
     // Some browsers open their context menu on press, others on release.

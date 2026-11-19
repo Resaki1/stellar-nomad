@@ -1,3 +1,4 @@
+import { advanceIndustry, hasIndustryDelta } from "@/sim/industry/simulation";
 import { MAX_RECEIPTS } from "@/save/defaults";
 import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { PlayerId, PlayerState, WorldState } from "@/save/types";
@@ -22,6 +23,10 @@ export interface Authority {
  */
 export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "expedition.give",
+  "depot.place",
+  "depot.transfer",
+  "depot.fabricate",
+  "drone.configure",
   "asteroid.mine",
   "item.craft",
   "item.consume",
@@ -98,6 +103,18 @@ export class LocalAuthority implements Authority {
     });
   }
 
+  tickIndustry(elapsedS: number): void {
+    const world = this.deps.getWorld();
+    const stepped = advanceIndustry(world.industry, elapsedS);
+    if (!stepped) return;
+    world.industry = stepped.state;
+    if (!hasIndustryDelta(stepped.delta)) return;
+    this.emit({ type: "industry.changed", by: "", delta: stepped.delta });
+    // Durably schedule resource-changing transitions. Countdown and recharge-only updates
+    // are sampled by the normal live-world checkpoint.
+    if (stepped.economic) this.deps.markDirty(true);
+  }
+
   /** Validate → commit (one synchronous task, so no save flush can land in between) → publish. */
   submit(op: WorldOperation, by: PlayerId): OperationOutcome {
     const w = this.world();
@@ -110,7 +127,7 @@ export class LocalAuthority implements Authority {
       const now = Date.now();
       const getPlayers = this.deps.getPlayers;
       const bookmarked = (): Set<string> => new Set(getPlayers().flatMap((p) => p.bookmarks.map((b) => b.sourceId)));
-      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, nearbyPilot: this.deps.nearbyPilot, reservedFuel: this.deps.reservedFuel, resolveMine: this.deps.resolveMine });
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, players: getPlayers, nearbyPilot: this.deps.nearbyPilot, reservedFuel: this.deps.reservedFuel, resolveMine: this.deps.resolveMine });
       if ("reason" in r) {
         outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing, evidence: r.evidence };
       } else {

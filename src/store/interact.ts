@@ -3,6 +3,9 @@
  * points join the reticle's focus → act pattern. A small registry is ray-tested along the ship's
  * nose (never the camera: it lags), locked with the rock timing, and acted on with [G].
  */
+import { industryAtom } from "@/store/industry";
+import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
+import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { WRECK_SALVAGE_KM } from "@/data/content";
 import { atom, type createStore } from "jotai";
 import { playAudio } from "@/audio";
@@ -27,7 +30,7 @@ import { transitDriveBuffer } from "@/store/transit";
 
 type Store = ReturnType<typeof createStore>;
 
-export type InteractKind = "site" | "wreck" | "point";
+export type InteractKind = "site" | "wreck" | "point" | "depot";
 
 export interface InteractTarget {
   /** `${kind}:${refId}` */
@@ -93,6 +96,7 @@ function pick(store: Store): InteractTarget | null {
   for (const s of SITES) if (!disc.sites[s.id]) consider("site", s.id, s.frameId, s.positionKm, SITE_RADIUS_M, s.recoverRangeKm, best);
   for (const w of store.get(wrecksAtom)) consider("wreck", w.id, w.frameId, w.positionKm, WRECK_RADIUS_M, WRECK_SALVAGE_KM, best);
   for (const p of store.get(replicationPointsAtom)) if (!p.starter) consider("point", p.id, p.frameId, p.positionKm, POINT_RADIUS_M, REPLICATION_TUNING.activateRangeKm, best);
+  for (const depot of store.get(industryAtom).depots) consider("depot", depot.id, depot.frameId, depot.positionKm, 50, INDUSTRY_TUNING.interactRangeKm, best);
   return best.t;
 }
 
@@ -113,7 +117,7 @@ export function tickInteractFocus(store: Store, dt: number): void {
   const step = c.acc;
   c.acc = 0;
   const mining = store.get(miningStateAtom);
-  if (store.get(isDeadAtom) || mining.isMining || transitDriveBuffer.phase !== "idle" || store.get(placementModeAtom)) return clear(store);
+  if (store.get(isDeadAtom) || mining.isMining || transitDriveBuffer.phase !== "idle" || store.get(placementModeAtom) || store.get(depotPlacementAtom) || store.get(industryPanelOpenAtom)) return clear(store);
   let t = pick(store);
   // A rock in front of it keeps the rock's focus.
   if (t && mining.targetedAsteroid && mining.targetedAsteroid.distanceM / 1000 < t.distKm) t = null;
@@ -193,6 +197,10 @@ export function interactFocused(store: Store): boolean {
     if (!t.inRange || !siteRecoverable(store, t.refId)) return false;
     interactControl.scanning = true;
     interactControl.scanS = 0;
+    return true;
+  }
+  if (t.kind === "depot" && t.inRange) {
+    store.set(industryRequestAtom, { depotId: t.refId });
     return true;
   }
   if (t.kind === "point") {

@@ -18,11 +18,14 @@ export interface RemoteAuthority {
  * session is the mirror the session keeps up to date.
  */
 class AuthorityFacade implements Authority {
+  localFuelReserveKg = (): number => 0;
+
   readonly local = new LocalAuthority({
     getWorld: getWorldState,
     getPlayer: getPlayerState,
     getPlayers: getPlayerStates,
     markDirty,
+    reservedFuel: () => this.localFuelReserveKg(),
     resolveMine: makeMineResolver(activeSystem, getDifficulty),
   });
   private remote: RemoteAuthority | null = null;

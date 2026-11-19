@@ -44,6 +44,7 @@ import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 import { localBeamPose, localRenderPose } from "@/sim/entities";
 import { getLocalPlayerId } from "@/save/playerId";
 import { onLoadedRockDestroyed } from "@/sim/asteroids/runtimeContext";
+import { isFrameId, SYSTEM_FRAME_ID } from "@/sim/frames";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -725,8 +726,6 @@ const MiningSystem = () => {
     {
       instanceId: number;
       fieldId: string;
-      resources: { resourceId: string; amount: number; name: string; icon: string }[];
-      positionLocal: [number, number, number];
       radiusM: number;
     } | null
   >(null);
@@ -763,24 +762,34 @@ const MiningSystem = () => {
   type RawPingEntry = { instanceId: number; x: number; y: number; z: number; radiusM: number };
   const pingRawRef = useRef<RawPingEntry[]>([]);
 
-  // Another pilot's mine committed on a rock loaded here: the same burst, no loot (theirs).
+  // Every accepted destruction of a loaded rock plays once, including the local player's mine.
   // Resync deltas (by "") are rocks gone while away, not something seen happening.
   useEffect(
     () =>
       onLoadedRockDestroyed((r) => {
-        if (r.cause !== "mined" || r.by === "" || r.by === getLocalPlayerId()) return;
-        const a = fieldAnchorMap.get(r.fieldId) ?? [0, 0, 0];
+        if (r.by === "") return;
+        const field = systemConfig.asteroidFields?.find(f => f.id === r.fieldId);
+        if (!field) return;
+        const a = field.anchorKm;
         const wo = worldOrigin.worldOriginKm;
         const position: [number, number, number] = [
           (a[0] + r.chunkOriginKm[0] - wo.x) * 1000 + r.localM[0],
           (a[1] + r.chunkOriginKm[1] - wo.y) * 1000 + r.localM[1],
           (a[2] + r.chunkOriginKm[2] - wo.z) * 1000 + r.localM[2],
         ];
-        spawnVFX({ type: "mined", position, radiusM: r.radiusM });
-        remoteBurstLog.push({ at: performance.now(), fieldId: r.fieldId, chunkKey: r.chunkKey, instanceId: r.instanceId, position, radiusM: r.radiusM });
-        if (remoteBurstLog.length > 16) remoteBurstLog.shift();
+        const frameId = field.anchorOffsetKm && isFrameId(field.anchorBody) ? field.anchorBody : SYSTEM_FRAME_ID;
+        const rel = frameId === SYSTEM_FRAME_ID ? a : field.anchorOffsetKm!;
+        spawnVFX({ type: r.cause, position, radiusM: r.radiusM, shake: 0, silent: true, debrisAt: { frameId, positionKm: [
+          rel[0] + r.chunkOriginKm[0] + r.localM[0] / 1000,
+          rel[1] + r.chunkOriginKm[1] + r.localM[1] / 1000,
+          rel[2] + r.chunkOriginKm[2] + r.localM[2] / 1000,
+        ] } });
+        if (r.cause === "mined" && r.by !== getLocalPlayerId()) {
+          remoteBurstLog.push({ at: performance.now(), fieldId: r.fieldId, chunkKey: r.chunkKey, instanceId: r.instanceId, position, radiusM: r.radiusM });
+          if (remoteBurstLog.length > 16) remoteBurstLog.shift();
+        }
       }),
-    [fieldAnchorMap, worldOrigin, spawnVFX],
+    [systemConfig, worldOrigin, spawnVFX],
   );
 
   // Location captured at completion: the chunk may stream out before this runs.
@@ -1359,13 +1368,6 @@ const MiningSystem = () => {
               pendingMiningRewardRef.current = {
                 instanceId: snapshot.instanceId,
                 fieldId,
-                resources: reward.resources.map((r) => ({
-                  resourceId: r.resourceId,
-                  amount: r.amount,
-                  name: r.resource?.name ?? r.resourceId,
-                  icon: r.resource?.icon ?? "",
-                })),
-                positionLocal: snapshot.positionLocal,
                 radiusM: snapshot.radiusM,
               };
             }
@@ -1489,10 +1491,6 @@ const MiningSystem = () => {
         runOperation(op, (o) => {
           if (o.status !== "accepted" || o.result.type !== "asteroid.mine") return;
           const granted = o.result.granted;
-          const loot = reward.resources
-            .filter((r) => (granted[r.resourceId] ?? 0) > 0)
-            .map((r) => ({ ...r, amount: granted[r.resourceId] }));
-          spawnVFX({ type: "mined", position: reward.positionLocal, radiusM: reward.radiusM, loot });
           if (Object.keys(granted).length > 0) {
             signalAudio("loot.acquire");
             const values = Object.entries(granted).sort((a, b) => b[1] - a[1]).map(([id, amount]) => ({ id, amount }));

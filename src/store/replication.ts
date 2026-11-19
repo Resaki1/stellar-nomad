@@ -7,6 +7,7 @@ import { Vector3 } from "three";
 import type { ReplicationPoint, SourceFinding } from "@/save/types";
 import { getWorldState } from "@/save/activeSave";
 import { getLocalPlayerShip } from "@/sim/entities";
+import { depotBlocksPose } from "@/sim/industry/placement";
 import { isFrameId } from "@/sim/frames";
 import { holdSavedPose } from "@/sim/shipPersistence";
 import { absoluteKm } from "@/sim/replication/clearance";
@@ -47,6 +48,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   too_far: "Too far",
   near_body: "Too close to a body",
   near_rock: "Too close to a rock",
+  near_depot: "Too close to a depot",
   emergence_blocked: "Emergence blocked",
   no_capacity: "Point limit reached",
   dead: "Ship destroyed",
@@ -117,7 +119,7 @@ export function updatePlacementPreview(store: Store): void {
   p.emergenceKm[2] = e[2];
   worldAuthority.world();
   const kits = store.get(kitCountAtom);
-  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check);
+  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check, pose => depotBlocksPose(getWorldState().industry.depots, pose));
   p.valid = p.check.refusal === null;
   const sources = getWorldState().discoveries.sources;
   store.set(placementStatusAtom, {
@@ -191,7 +193,7 @@ export function updateNearbyPoint(store: Store): void {
 /** Where recovery would put the ship now (death screen preview; the authority decides). */
 export function previewRecovery(store: Store, mode: "active" | "starter"): RecoveryDestination {
   worldAuthority.world();
-  return resolveRecovery(store.get(replicationPointsAtom), store.get(playerReplicationAtom).activeId, mode, worldAuthority.asteroids);
+  return resolveRecovery(store.get(replicationPointsAtom), store.get(playerReplicationAtom).activeId, mode, worldAuthority.asteroids, pose => depotBlocksPose(getWorldState().industry.depots, pose));
 }
 
 /** The last accepted recovery (toast and harness). */

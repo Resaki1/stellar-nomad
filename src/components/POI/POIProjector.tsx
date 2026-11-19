@@ -1,5 +1,6 @@
 "use client";
 
+import { depotPoisAtom, industrySourcePois } from "@/store/industryHud";
 import { INTERACT_LOCK_KM } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -167,6 +168,7 @@ function usePOIDefs(): POIDef[] {
   const sitePois = useAtomValue(sitePOIsAtom);
   const pilotPois = useAtomValue(pilotPOIsAtom);
   const target = useAtomValue(targetedPOIAtom);
+  const depotPois = useAtomValue(depotPoisAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const starsOn = useAtomValue(starMarkersEnabledAtom);
@@ -250,6 +252,9 @@ function usePOIDefs(): POIDef[] {
     // Other pilots (co-op): live frame-relative positions
     for (const p of pilotPois) pois.push(p);
 
+    for (const p of depotPois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
+    for (const p of industrySourcePois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
+
     // B3: the current destination always has a marker, even when nothing else lists it.
     if (target && !pois.some((p) => p.id === target.id)) {
       pois.push({
@@ -304,7 +309,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -437,7 +442,7 @@ const POIProjector = memo(function POIProjector() {
     // A POI the ship already stands at (inside its arrival stand-off) is no transit target: gazing
     // at it (recovery emerges facing its point) must not replace the current one.
     // An interactable within lock range is a Target Card target, not a transit destination (§2.2).
-    const interactable = !!focusedPoiDef && /^(site|wreck|point):/.test(focusedPoiDef.id) && focusedDistKm <= INTERACT_LOCK_KM;
+    const interactable = !!focusedPoiDef && /^(site|wreck|point|depot):/.test(focusedPoiDef.id) && focusedDistKm <= INTERACT_LOCK_KM;
     if (focusedPoiDef && (interactable || focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5)) {
       focusedPoiId = null;
       focusedPoiDef = null;
@@ -525,17 +530,17 @@ const POIProjector = memo(function POIProjector() {
         poiBuffer.targetedEtaS = null;
       }
     } else {
-      // Drive not owned — clear targeting and gaze state.
+      // A manually tracked Industry bearing remains usable before a drive is installed.
       gazeIdRef.current = null;
       gazeTimeRef.current = 0;
       untargetGraceRef.current = 0;
       poiBuffer.gazeProgress = 0;
       poiBuffer.gazeActive = false;
-      if (poiBuffer.targetedId) {
-        poiBuffer.targetedId = null;
-        poiBuffer.targetedEtaS = null;
-        store.set(targetedPOIAtom, null);
-      }
+      const targeted = store.get(targetedPOIAtom);
+      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|industry-source):/.test(targeted.id);
+      if (!industryBearing && poiBuffer.targetedId) store.set(targetedPOIAtom, null);
+      poiBuffer.targetedId = industryBearing ? targeted.id : null;
+      poiBuffer.targetedEtaS = null;
     }
 
     poiBuffer.pois = projected;

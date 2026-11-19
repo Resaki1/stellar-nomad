@@ -61,6 +61,7 @@ import TimedEffectsTicker from "../Effects/TimedEffectsTicker";
 import TransitTicker from "../Transit/TransitTicker";
 import POIProjector from "../POI/POIProjector";
 import ReplicationPoints from "@/components/Replication/ReplicationPoints";
+import IndustryWorld from "@/components/Industry/IndustryWorld";
 import SurveySite from "@/components/Sites/SurveySite";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe from "../TestHarness/TestFrameProbe";
@@ -230,6 +231,7 @@ const Scene = () => {
         <POIProjector />
         <WreckCollector />
         <ReplicationPoints />
+        <IndustryWorld />
         <CoopLayer />
         <SurveySite />
       </>

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * In-Canvas co-op views: other pilots' ships at interpolated poses (visual only, no colliders)
+ * In-Canvas co-op views: other pilots' ships at interpolated poses (host-confirmed contacts use a separate path)
  * with their plume and mining beam, their POI markers, and the host clock follower. Renders
  * nothing while solo.
  */

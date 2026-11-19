@@ -5,6 +5,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { activeCommsMessageAtom, dismissCommsAtom } from "@/store/comms";
 import { aiNameAtom } from "@/store/aiName";
 import { isShipAISpeaker, signalAudioActionAtom } from "@/store/audioSignals";
+import { depotPlacementAtom, industryPanelOpenAtom } from "@/store/industryHud";
 import { isDeadAtom } from "@/store/death";
 import { settingsIsOpenAtom } from "@/store/store";
 
@@ -16,12 +17,14 @@ function resolveAiName(text: string, name: string | null): string {
   return text.replaceAll("{{AI_NAME}}", name);
 }
 
-/** Hidden (queue kept) while dead or in settings, so it never covers recovery or abandonment. */
+/** Hide comms where recovery, settings or Industry owns the controls. Keep the queued message. */
 export default function CommsOverlay() {
   const queued = useAtomValue(activeCommsMessageAtom);
   const dead = useAtomValue(isDeadAtom);
   const settingsOpen = useAtomValue(settingsIsOpenAtom);
-  const message = dead || settingsOpen ? null : queued;
+  const industryOpen = useAtomValue(industryPanelOpenAtom);
+  const aimingDepot = useAtomValue(depotPlacementAtom);
+  const message = dead || settingsOpen || industryOpen || aimingDepot ? null : queued;
   const dismiss = useSetAtom(dismissCommsAtom);
   const signalAudio = useSetAtom(signalAudioActionAtom);
   const aiName = useAtomValue(aiNameAtom);
@@ -31,7 +34,7 @@ export default function CommsOverlay() {
   // Reset page when a new message arrives
   useEffect(() => {
     setPageIndex(0);
-  }, [message?.messageId]);
+  }, [queued?.messageId]);
 
   const pages = message?.textContent ?? [];
   // Clamp in case the active message changed but the effect hasn't reset pageIndex yet
