@@ -836,6 +836,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     const hostRec = (await session())?.members ?? null;
     // Back to the setup name (programmatic path: same setPilotName → session rename).
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
+    if (parts.includes("industry")) {
+      const { stockConstructionShip } = await import("./industry-coop.mjs");
+      await stockConstructionShip(host);
+    }
     const restored = await waitFor(async () => {
       await guest.evaluate(`${C}.faceRemote()`);
       return (await guest.evaluate(`${C}.labels()`)).includes(HOST_NAME);
@@ -1485,6 +1489,10 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
 
     const run = {
       shipMenu, crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
+      industry: async () => {
+        const { supplyRoute } = await import("./industry-coop.mjs");
+        return supplyRoute({ host, guest, code, worldId, settledCommand, waitFor });
+      },
       settingsSpawn,
       presence,
       jitter,

@@ -35,6 +35,7 @@ import { systemConfigAtom } from "@/store/system";
 import { runOperation } from "@/store/operations";
 import { testProbe } from "./testProbe";
 import { createM37Harness } from "./m37Harness";
+import { DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { getLocalPlayerShip } from "@/sim/entities";
@@ -121,6 +122,9 @@ export function createGameplayHarness(store: Store) {
 
   return {
     localId: (): string => getLocalPlayerId(),
+    industry: {
+      catalog: () => structuredClone({ sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
+    },
     /** Wait for this exact operation even when another pilot action settles in the same frame. */
     settled(op: OpInput): Promise<OperationOutcome> {
       return new Promise(resolve => runOperation(withId(op), resolve));
