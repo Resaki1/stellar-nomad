@@ -60,6 +60,7 @@ import { getLocalPlayerId, setLastWorldId } from "@/save/playerId";
 import type { WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
 import { createGameplayHarness } from "./gameplayHarness";
+import { createCoopHarness } from "./coopHarness";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { bodyTransitTarget, isTransitBurning, targetedPOIAtom, transitDriveBuffer, transitDriveOwnedAtom } from "@/store/transit";
 import { poiBuffer } from "@/store/poi";
@@ -773,7 +774,8 @@ export function createTestHarness(store: Store) {
     /** Active world save (M0.3). Writes respect isolate(): flush() is a no-op while isolated. */
     save: {
       info: () => saveInfo(),
-      flush: () => flush(),
+      /** `force` as export/reset use it (refused in a co-op session). Resolves true when written. */
+      flush: (force = false) => flush(force),
       /** Deep copy of the in-memory save data. */
       data: () => snapshotActiveData(),
       async export(): Promise<string> {
@@ -795,6 +797,7 @@ export function createTestHarness(store: Store) {
     /** M3 domain operations and save fixtures (gameplay-check.mjs). */
 
     gameplay: createGameplayHarness(store),
+    coop: createCoopHarness(store),
 
 
     world: {

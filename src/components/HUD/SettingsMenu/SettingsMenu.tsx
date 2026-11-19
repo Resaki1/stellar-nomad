@@ -29,7 +29,7 @@ import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
 import { newOpId, runOperation } from "@/store/operations";
 import { getLocalPlayerId } from "@/save/playerId";
-import { flush, getActiveSave, resetActiveWorld, saveInfo, switchWorld } from "@/save/activeSave";
+import { flush, getActiveSave, inSession, resetActiveWorld, saveInfo, switchWorld } from "@/save/activeSave";
 import { titleUrl } from "@/components/AppShell/appState";
 import { exportWorld, importWorld } from "@/save/saveDb";
 import { devTeleportAtom, devMaxSpeedOverrideAtom, devSpeedUnitAtom } from "@/store/dev";
@@ -62,10 +62,13 @@ import {
   type NearbyStar,
 } from "@/sim/nearbyStars";
 
+import CoopSettings from "@/components/Coop/CoopSettings";
+
 enum SubMenu {
   Graphics = "graphics",
   Audio = "audio",
   Controls = "controls",
+  Friends = "friends",
   Dev = "dev",
 }
 
@@ -100,6 +103,8 @@ const renderSubMenu = (
     // production. A player-facing submenu must not be threaded through it.
     case SubMenu.Audio:
       return <AudioSettings />;
+    case SubMenu.Friends:
+      return <CoopSettings />;
     case SubMenu.Controls:
       return <ControlsSettings settings={settings} setSettings={setSettings} onResetKeybinds={onResetKeybinds} />;
     case SubMenu.Dev:
@@ -136,8 +141,9 @@ const renderSubMenu = (
             audio workshop
           </a>
           {devHandlers && <DevControls {...devHandlers} />}
-          <SaveFileControls />
-          {onResetWorld && (
+          {/* A co-op session's record is a mirror the host owns: no export, no reset. */}
+          {!inSession() && <SaveFileControls />}
+          {onResetWorld && !inSession() && (
             <button
               className="settings-menu__button settings-menu__button--danger"
               onClick={onResetWorld}

@@ -269,6 +269,18 @@ export function createGameplayHarness(store: Store) {
         ship.angVel.set(0, 0, 0);
         return true;
       },
+      /** Dev warp: park `standoffKm` short of a rock / point on the current line of sight, facing it. */
+      warpNear(target: number[] | RockRef, standoffKm: number): boolean {
+        const ship = getLocalPlayerShip();
+        const t = resolveKm(target);
+        if (!ship || !t) return false;
+        const tv = new Vector3(t[0], t[1], t[2]);
+        const d = tv.clone().sub(ship.absPosKm).normalize();
+        const p = tv.clone().addScaledVector(d, -standoffKm);
+        const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), d);
+        store.set(devTeleportAtom, { positionKm: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] });
+        return true;
+      },
       /** Distance (km) and speed (m/s) to a system-frame point; closing speed > 0 when approaching. */
       nav(target: number[] | RockRef) {
         const ship = getLocalPlayerShip();

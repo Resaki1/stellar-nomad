@@ -1,7 +1,7 @@
 # Stellar Nomad — Roadmap
 
-**Status:** active roadmap; original proposal 2026-11-13, gameplay/story direction and
-M3 scope agreed 2026-11-15. M0/M1 are built as recorded below; M2 is in progress.
+**Status, 2026-11-18.** M0–M2 are built as recorded below. M3 is in playtest and
+merge preparation. M4 implementation starts when the owner confirms the M3 merge to `main`.
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -12,9 +12,10 @@ fixes order, scope and the seams between them.
 
 **Gameplay handoff:** [GAMEPLAY_AND_STORY.md](GAMEPLAY_AND_STORY.md) records the agreed
 sandbox, nomadic progression, replication, and Von Neumann premise.
-[M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md) is the detailed M3 design and ordered
-implementation plan. These documents include the discussion absent from the original
-M0–M2 implementation context. They supersede the old root story/progression documents;
+[M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md) is the detailed M3 design and as-built log.
+[M4_COOP_PLAN.md](M4_COOP_PLAN.md) defines the shared-rock test, co-op architecture,
+implementation slices and release gates. These documents include the discussion absent
+from the original M0–M2 implementation context. They supersede the old root story/progression documents;
 the following historical survey is not a description of the current code.
 
 ---
@@ -114,7 +115,7 @@ comms and prescribed progression parts of `GAME_DESIGN.md`, `CURRENT_PLAN.md`, a
 | Flight model | sim extraction (F1) · velocity-vector 6DOF + flight assist · mouse/input layer · camera rig · atmospheric drag | M0, M1, (drag: M7) |
 | Physics | near-field collision + response (`PHYSICS_PLAN` P0–P3) · ship-vs-ship, debris (P4) · terrain heightfield collision | M2, M5, M7 |
 | Game loop | nomadic solo survival, discovery-based research, simple replication · industrial stations, fuel routes, drones · branching regional/interstellar opportunities | M3, M5, then with each world milestone |
-| Multiplayer | state/authority split (F3) · presence · shared world deltas · shared structures · dedicated server | M0, M4, M5, later |
+| Multiplayer | state/authority split (F3) · shared-rock test and private co-op · shared structures/drones · optional community or official host | M0, M4, M5, later |
 | Asteroid fields v2 | chunk-keyed deltas (F3) · new shapes + density functions + multi-scale grid · rings · system-wide belts | M0, M6 |
 | Terrain | rotating frames · quadtree LOD + real data (Moon) · collision + landing · Mars · Earth · walking | M7, later |
 | Clouds | perf/look polish (parallel, optional) · un-singleton per body · gas giants | track C, M8 |
@@ -291,11 +292,10 @@ which supersedes that document's older P0–P3 details where they differ. Keep o
 integrator and a near-field contact resolve step, frame-relative local metres, a speed
 gate, and the raw Rapier facade (`@dimforge/rapier3d-simd-compat`). Asteroids stay fixed
 and are not destroyed by ramming; damage follows the contact-normal delta-v curve.
-Celestial swept collisions stay lethal until terrain/landing. **Exit gates:** §7.4,
-including M0/M1 regressions. Record as-built results when actually verified; this
-gameplay documentation update does not mark M2 complete.
+Celestial swept collisions stay lethal until terrain/landing. The §7.4 exit gates
+include M0/M1 regressions. See the as-built results above for verification.
 
-### M3 — Solo exploration and survival · size L · design ready
+### M3 — Solo exploration and survival · size L · in playtest before merge
 
 Detailed design, code map, migrations, ordered phases M3.0–M3.8, and verification:
 [`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md). Agreed gameplay/story decisions:
@@ -369,37 +369,36 @@ details and every measurement: [`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md) §13
   menu-pinned destination, narrow-screen overlaps.
 - M3.8: three scripted sessions pass (survey-first to the lunar unlock; one-way relocation with five
   lunar refuel cycles, a repair and a lunar kit; out-of-fuel abandonment, salvage and the origin
-  fallback); exploit sweep yields nothing. Open: the owner's playtest (is the loop understandable and
-  enjoyable; the scripted survey-first path is ~10 min of actions against the 60–90 min target).
+  fallback); exploit sweep yields nothing. These are the 2026-11-17 gate results. Subsequent playtests
+  changed opening progression, extraction pace and transit fuel costs. Use the later entries in
+  [the M3 as-built log](M3_GAMEPLAY_PLAN.md) for current tuning.
 
-### M4 — Co-op v1 · size L · *own plan doc*
+### M4 — Private co-op worlds · size L · planned after M3
 
-- **N0 session + transport** (D1): host-authoritative; the host's game applies commands.
-  **WebRTC data channels**, star topology (host ↔ each guest), behind a small `Transport`
-  interface so a dedicated server can speak something else later. Two channels: reliable
-  ordered for commands, unreliable unordered for pose snapshots (WebSockets cannot do the
-  second; one lost packet would stall every pose behind it). Native browser API, no library.
-  - Needs **signalling** only while connecting: a join code plus an offer/answer exchange.
-    Short-lived HTTP requests against a small key-value store are enough, so this fits
-    serverless hosting and needs no always-on process.
-  - Needs public **STUN** (free) and a **TURN** fallback for the minority of networks where
-    a direct connection fails. TURN relays traffic and can cost money; pick a provider in
-    the M4 plan and verify its current free tier then.
-  - ⚠ Browsers throttle background tabs. If the host tabs away, the authority stalls for
-    everyone. Either run the authority in a Web Worker or pause the session; decide in the
-    M4 plan with a measurement, since it shapes where F3's `Authority` lives.
-- **N1 presence**: remote ships as entities; pose snapshots in frame-relative coordinates
-  at ~15 Hz with an interpolation buffer; shared sim clock from the host; remote exhaust,
-  lights and spatial audio. Each client simulates its own ship. No rollback, no lockstep.
-- **N2 shared world**: asteroid deltas, mining locks, cargo/fuel wrecks, M3 replication
-  points, discoveries/evidence and research unlocks through host commands; join-in-progress
-  sends the world save. Do not reintroduce individual research grinding.
-- **N3 player persistence** (D2), individual active replication selections, and item/fuel
-  transfer between players. All essential activities remain possible solo; no compulsory
-  crew roles or synchronized progression attendance.
-- Scale target: a handful of ships. Friends only, so no anti-cheat.
-- **Exit gate:** two browsers mine the same field for 30 minutes; world saves are identical
-  afterwards; a late joiner sees the same destroyed asteroids.
+**M4.0 starts with one shared rock.** Two browsers race to mine it. The winning guest
+loses the acknowledgement, reconnects and retries. After the host restarts there is one
+depletion and one cargo award. Repeat with the host at Earth and the guest mining at Luna.
+The same command transcript must run under Node without a renderer. [Detailed M4 plan](M4_COOP_PLAN.md)
+
+- **M4.1 · Host and join.** Open a solo world to 1–3 friends by invite link or code.
+  WebRTC connects each guest to the host. Reliable commands and disposable frame-relative
+  poses use separate channels. Signaling supports admission and reconnects, with STUN and
+  a TURN fallback. The host worker runs the shared clock and commits changes. Each pilot
+  flies locally. Suspension leads to a visible wait and a checkpointed resume.
+- **M4.2 · Shared M3 loop.** World-owned depletion, wrecks, knowledge and placed points
+  coexist with individual ships, stores and recovery selections. The host validates intents
+  and persists each consequential outcome. Late joins receive a revisioned snapshot of the
+  public world and their own player record. Content IDs and catalogue rules carry new
+  resources and recipes through existing actions. Check version compatibility on join.
+- **M4.3 · Expedition.** Share a location, transfer ordinary fuel or items nearby, travel
+  independently and resume each player's ship on a later visit. Solo retains the same rules.
+- **M4.4 · Exit gate.** Complete a 30-minute two-player expedition and a four-player
+  capacity run. Verify shared state at the same revision, correct private progress,
+  relayed and impaired connections, host restart, iPhone guest rejoin and frame costs on
+  an M2 Pro. Exercise an extra material and recipe without changing the networking code.
+
+The browser hosts the first release. A portable TypeScript authority, isolated storage and
+transport, and headless parity tests leave community-hosted and official servers open later.
 
 ### M5 — Industrial structures, sustainable routes, and drones · size L · own plan doc
 
@@ -501,7 +500,7 @@ values are in its plan; D4/D8 and later feature details remain appropriately def
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | **Who hosts a co-op world?** | ✅ **Decided 2026-11-13:** a player's browser hosts; dedicated servers only once there are players beyond friends. Transport: WebRTC data channels, see M4 |
+| D1 | **Who hosts a co-op world?** | Private worlds run on a player's browser for 2–4 people. WebRTC connects guests. A render-independent authority also runs in a Node test, preserving a path to a community or official host if players want persistent worlds. [M4 plan](M4_COOP_PLAN.md) |
 | D2 | **Where does progress live in co-op?** | ✅ **Decided 2026-11-13; refined 2026-11-15:** individual ships/equipment/supplies live in the world save keyed by player (Minecraft model); research/evidence/discoveries and structures are shared world state (D11). |
 | D3 | **Survival pressures and player identity** | ✅ **Direction decided 2026-11-13; refined 2026-11-15:** propellant, power/capacitor, hull, heat; no safe-idle upkeep. Player is an autonomous Von Neumann probe intelligence, with a distinct companion AI. No crew/oxygen/food/archive care. |
 | D4 | **Transit/interstellar travel** | Exact technology remains open before M9. Real-scale short journeys already need an explicit fictional concession; do not label present performance conventional physics or revive a compulsory relativistic/time-dilation campaign. M3 implements honest fuel/ETA/braking rules without settling the final interstellar drive. |
@@ -537,14 +536,10 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 
 ## 7. Current implementation handoff
 
-1. Finish/verify M2 against its current `PHYSICS_PLAN.md` §7 contract and record actual
-   as-built results. Preserve the existing M0/M1 flight, frame, save and loading seams.
-2. Read [GAMEPLAY_AND_STORY.md](GAMEPLAY_AND_STORY.md) for decisions made after the
-   original roadmap discussion. Root story/progression documents are historical.
-3. Follow [M3_GAMEPLAY_PLAN.md](M3_GAMEPLAY_PLAN.md), starting with M3.0's current-code
-   reconciliation, save migration policy, tuning tables, and measured baseline.
-4. Implement M3 in its ordered, gated slices. Record deviations and playtest evidence;
-   do not expand it into M5 automation or M7 terrain.
-
-The 2026-11-15 update adds documentation only. It neither implements M3 nor certifies
-the active M2 working tree. Exact source/gate APIs must be re-read when M3 starts.
+1. Finish M3 playtest changes and verify the solo expedition, recovery and save gates
+   against the [M3 as-built log](M3_GAMEPLAY_PLAN.md).
+2. After the owner confirms M3 is merged into `main`, reconcile the
+   merged command, save and generation contracts. Begin with the two-browser shared-rock test
+   in the [M4 co-op plan](M4_COOP_PLAN.md).
+3. Complete the co-op expedition and headless parity gates before building M5's first
+   shared depot and fuel route. Use playtests to revise the gameplay catalogue and rules.

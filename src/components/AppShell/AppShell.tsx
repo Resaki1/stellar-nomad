@@ -6,7 +6,7 @@ import { bootActiveWorld, bootNewWorld } from "@/save/boot";
 import { unlockAudio } from "@/audio/engine";
 import { requestGamePointerLock } from "@/input/pointerLock";
 import { musicDebug } from "@/audio/music";
-import type { Difficulty } from "@/save/types";
+import type { Difficulty, SaveMeta } from "@/save/types";
 import { addToastAtom } from "@/store/toast";
 import {
   app,
@@ -27,7 +27,9 @@ const loadGame = () => import("@/components/Game/Game");
 
 export type StartTarget =
   | { kind: "world"; worldId: string | null }
-  | { kind: "new"; name: string; seed: number; difficulty: Difficulty };
+  | { kind: "new"; name: string; seed: number; difficulty: Difficulty }
+  /** A co-op session already admitted us (join card): its mirror is the active world. */
+  | { kind: "joined"; meta: SaveMeta };
 
 type DevWindow = Window & { __test?: unknown };
 
@@ -40,6 +42,7 @@ export default function AppShell() {
   const store = useStore();
   const phase = useSyncExternalStore(subscribeApp, getAppPhase, () => "title" as const);
   const [entry, setEntry] = useState<"pending" | "title" | "direct">("pending");
+  const [joinCode, setJoinCode] = useState<string | null>(null);
   // Not next/dynamic or lazy: their Suspense boundary would catch the Canvas's own
   // suspension and hide (and stall) the whole game while assets load.
   const [Game, setGame] = useState<ComponentType | null>(null);
@@ -54,7 +57,9 @@ export default function AppShell() {
       const booted =
         target.kind === "new"
           ? bootNewWorld({ name: target.name, seed: target.seed, difficulty: target.difficulty })
-          : bootActiveWorld(target.worldId);
+          : target.kind === "joined"
+            ? Promise.resolve(target.meta)
+            : bootActiveWorld(target.worldId);
       return Promise.all([booted, import("@/store/worldBridge"), loadGame()])
         .then(([meta, { installWorldBridge }, game]) => {
           installWorldBridge(store);
@@ -85,7 +90,12 @@ export default function AppShell() {
     setStartHandler((worldId) => start({ kind: "world", worldId: worldId ?? null }));
     const q = new URLSearchParams(window.location.search);
     const urlWorld = q.get("world");
-    if (q.get("autostart") === "1" || urlWorld) {
+    const join = q.get("join");
+    if (join) {
+      // An invite link opens the join card; nothing connects before the player presses Join.
+      setJoinCode(join);
+      setEntry("title");
+    } else if (q.get("autostart") === "1" || urlWorld) {
       setEntry("direct");
       void start({ kind: "world", worldId: urlWorld });
     } else {
@@ -102,6 +112,11 @@ export default function AppShell() {
     const stub = {
       app,
       titleMusic: musicDebug,
+      /** Co-op state readable at the title (join card): session activity, sends, log. */
+      async coopTitle() {
+        const [g, c] = await Promise.all([import("@/net/guestController"), import("@/net/coopState")]);
+        return { ...g.joinActivity(), sent: g.guestSentCount(), snapshot: c.coopSnapshot(), log: c.coopLog.slice(-12) };
+      },
       async ready(timeoutMs?: number): Promise<unknown> {
         while ((window as DevWindow).__test === stub) await new Promise((r) => setTimeout(r, 100));
         const full = (window as DevWindow).__test as { ready(t?: number): Promise<unknown> };
@@ -133,7 +148,7 @@ export default function AppShell() {
       {phase === "title" && entry === "title" && (
         <>
           <TitleAudio />
-          <TitleScreen onStart={start} />
+          <TitleScreen onStart={start} joinCode={joinCode} />
         </>
       )}
       {(phase === "loading" || (phase === "playing" && entry !== "pending")) && <LoadingOverlay />}

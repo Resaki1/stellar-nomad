@@ -1441,6 +1441,8 @@ const MiningSystem = () => {
           { ...removal, radiusM: reward.radiusM },
           { miningEfficiencyMult: cfg.miningEfficiencyMult },
           newOpId(),
+          // Executed beam seconds: progress only grows by granted work, so a finished rock took its duration.
+          miningDurationSRef.current,
         );
         runOperation(op, (o) => {
           if (o.status !== "accepted" || o.result.type !== "asteroid.mine") return;

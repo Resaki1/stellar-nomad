@@ -148,6 +148,29 @@ export interface WorldState {
   replication: ReplicationState;
   /** Bounded, oldest first (MAX_RECEIPTS). */
   receipts: OperationReceipt[];
+  /** Committed-operation counter (schema 6); a co-op mirror is valid at one revision. */
+  revision: number;
+  /** Bumped each time hosting starts; packets from an older generation are ignored. */
+  session: { generation: number };
+  /** Admitted pilots. The host's own entry has no verifier (it never authenticates). */
+  members: Record<PlayerId, WorldMember>;
+}
+
+export interface WorldMember {
+  name: string;
+  /** base64url SHA-256 of the guest's credential, or null for the owner. */
+  verifier: string | null;
+  joinedAt: number;
+}
+
+/**
+ * Per-player command stream (schema 6): the last executed seq and its stored outcome, written in
+ * the same commit as its effect, so a retry after a lost reply replays instead of re-running.
+ */
+export interface CommandStream {
+  seq: number;
+  opId: string | null;
+  outcome: unknown;
 }
 
 export type CargoState = {
@@ -286,6 +309,7 @@ export interface PlayerState {
   lastLoss: LossRecord | null;
   /** Schema 5: the player's tracked project id (src/data/projects.ts), or null. */
   trackedProject: string | null;
+  stream: CommandStream;
 }
 
 export interface SaveData {

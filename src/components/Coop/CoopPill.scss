@@ -1,0 +1,87 @@
+// Top-right, the connection corner: left of the settings gear (2vmax, 32 px), vertically centred
+// on it. The top centre belongs to the panel buttons and the objective tracker.
+.coop-pill {
+  position: fixed;
+  top: calc(2vmax + 4px);
+  right: calc(2vmax + 40px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: rgba(8, 12, 20, 0.6);
+  color: rgba(220, 235, 255, 0.85);
+  font: 600 12px/1 ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  z-index: 20;
+
+  &__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #5fd38a;
+  }
+
+  &--down &__dot {
+    background: #e0a040;
+  }
+
+  &__n {
+    opacity: 0.6;
+  }
+
+  // Below 1048 px the centred panel buttons reach this far (phones: they sit left of the gear).
+  // The pill shrinks to a status dot centred under the gear, clear of it and of the toasts
+  // (phones: from 60 px); code and pilots live in Settings → friends.
+  @media (max-width: 1047px) {
+    top: calc(2vmax + 34px);
+    right: calc(2vmax + 12px);
+    width: 8px;
+    height: 8px;
+    padding: 0;
+    border-radius: 50%;
+    background: none;
+    gap: 0;
+
+    > :not(.coop-pill__dot) {
+      display: none;
+    }
+
+    &__dot {
+      flex: 0 0 auto;
+      box-shadow: 0 0 0 2px rgba(8, 12, 20, 0.8);
+    }
+  }
+}
+
+.coop-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+
+  &__code {
+    font: 700 20px/1 ui-monospace, monospace;
+    letter-spacing: 0.2em;
+  }
+
+  &__error {
+    color: #e08060;
+  }
+}
+
+.coop-marker {
+  position: fixed;
+  left: 0;
+  top: 0;
+  margin: 10px 0 0 10px;
+  padding: 2px 6px;
+  border-left: 2px solid #5fd38a;
+  color: rgba(220, 235, 255, 0.9);
+  font: 600 11px/1.2 ui-monospace, monospace;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 15;
+}

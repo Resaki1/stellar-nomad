@@ -405,6 +405,23 @@ export async function compileScenePipelines(): Promise<number | null> {
   return performance.now() - t0;
 }
 
+/**
+ * Compile one local-scene subtree's pipelines off the frame (createRenderPipelineAsync), with
+ * the local scene's lights and the local pass target, so its first visible frame neither stalls
+ * nor finds a pending pipeline. Only `root` is compiled: compiling the whole scene mid-play
+ * would hand pending pipelines to objects drawn before the promise resolves (setPipeline TypeError).
+ * `root` must be visible for the synchronous part of the call; the caller hides it after.
+ */
+export function compileLocalSubtree(root: THREE.Object3D): Promise<void> | null {
+  const w = warmupTargets;
+  if (!w) return null;
+  const prev = w.gl.getRenderTarget();
+  w.gl.setRenderTarget(w.local.target);
+  const p = w.gl.compileAsync(root, w.local.camera, localScene);
+  w.gl.setRenderTarget(prev);
+  return p;
+}
+
 const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
   const settings = useAtomValue(settingsAtom);
   // Phase 6d: the calibration wedge replaces the output node, so the post graph has to know.

@@ -5,6 +5,7 @@
  */
 import { atom, type PrimitiveAtom, type SetStateAction, type WritableAtom, type createStore } from "jotai";
 import {
+  canWriteSlice,
   readPlayerSlice,
   readWorldSlice,
   registerCollector,
@@ -30,6 +31,8 @@ const registry = new Map<string, Entry>();
 
 function make<T>(
   id: string,
+  scope: "player" | "world",
+  key: string,
   read: () => T | undefined,
   write: ((v: T) => void) | null,
   defaultValue: T,
@@ -40,6 +43,8 @@ function make<T>(
   const a = atom(
     (get) => get(base),
     (get, set, update: SetStateAction<T>) => {
+      // In a session the host owns non-pilot slices: leave atom and mirror as the host has them.
+      if (write && !canWriteSlice(scope, key)) return;
       const next = typeof update === "function" ? (update as (prev: T) => T)(get(base)) : update;
       set(base, next);
       write?.(next);
@@ -72,11 +77,11 @@ export function savedAtom(
     const put = (v: unknown) => writePlayerSlice(k, v as PlayerState[typeof k]);
     const sample = (v: unknown) => samplePlayerSlice(k, v as PlayerState[typeof k]);
     return opts?.sampled
-      ? make(`player:${k}`, () => readPlayerSlice(k), null, defaultValue, sample)
-      : make(`player:${k}`, () => readPlayerSlice(k), put, defaultValue);
+      ? make(`player:${k}`, "player", k, () => readPlayerSlice(k), null, defaultValue, sample)
+      : make(`player:${k}`, "player", k, () => readPlayerSlice(k), put, defaultValue);
   }
   const k = key as keyof WorldState;
-  return make(`world:${k}`, () => readWorldSlice(k), (v) => writeWorldSlice(k, v as WorldState[typeof k]), defaultValue);
+  return make(`world:${k}`, "world", k, () => readWorldSlice(k), (v) => writeWorldSlice(k, v as WorldState[typeof k]), defaultValue);
 }
 
 /**

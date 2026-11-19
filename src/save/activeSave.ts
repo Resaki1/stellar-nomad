@@ -8,6 +8,7 @@
 import { SCHEMA_VERSION, defaultPlayerState, defaultSaveData } from "./defaults";
 import { listWorlds, loadWorld, newWorldId, putWorld, requestPersistentStorage } from "./saveDb";
 import { getLocalPlayerId, setLastWorldId } from "./playerId";
+import { rekeySolePlayer } from "./rekey";
 import { isSimPaused } from "@/sim/simPause";
 import { getDifficulty, setDifficulty } from "@/sim/difficulty";
 import type { Difficulty, PlayerId, PlayerState, SaveData, SaveMeta, SaveRecord, WorldId, WorldState } from "./types";
@@ -28,6 +29,8 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushChain: Promise<boolean> = Promise.resolve(false);
 let lifecycleInstalled = false;
 const collectors = new Set<() => void>();
+/** Resolves the held writer lock's callback (hand-off to the host worker). */
+let releaseLock: (() => void) | null = null;
 
 export function getActiveSave(): SaveRecord | null {
   return active;
@@ -63,15 +66,48 @@ export function readPlayerSlice<K extends keyof PlayerState>(key: K): PlayerStat
   return active ? getLocalPlayerState()[key] : undefined;
 }
 
+/**
+ * Pilot-owned slices: in a session they reach the host as validated telemetry (design §3). Every
+ * other slice (cargo, modules, shipConfig, replication, bookmarks, minedLifetime, isDead,
+ * lastLoss, stream, legacy) and every world slice changes only through a command.
+ */
+export const PILOT_KEYS: ReadonlySet<keyof PlayerState> = new Set<keyof PlayerState>([
+  "ship", "health", "propellant", "power", "processing", "commsPlayed", "starMarkers", "aiName", "trackedProject",
+]);
+
+/** A co-op session (host's own tab or guest) holds the active record as a mirror. */
+export const inSession = (): boolean => suspendedBy.has("session");
+
+const blockedWarned = new Set<string>();
+/** Local writes refused because a session's host owns the slice (tests read it). */
+export const sessionBlocked = { count: 0, last: "" };
+
+/**
+ * May this tab write `scope.key` directly? In a session only pilot-owned player slices: anything
+ * else would fork the mirror from the host (and vanish on the next resync). Warns once per slice
+ * in development.
+ */
+export function canWriteSlice(scope: "player" | "world", key: string): boolean {
+  if (!inSession() || (scope === "player" && PILOT_KEYS.has(key as keyof PlayerState))) return true;
+  const what = `${scope}.${key}`;
+  sessionBlocked.count++;
+  sessionBlocked.last = what;
+  if (process.env.NODE_ENV === "development" && !blockedWarned.has(what)) {
+    blockedWarned.add(what);
+    console.warn(`[coop] ${what}: direct write ignored in a co-op session (the host owns it; use a command)`);
+  }
+  return false;
+}
+
 export function writePlayerSlice<K extends keyof PlayerState>(key: K, value: PlayerState[K]): void {
-  if (!active) return;
+  if (!active || !canWriteSlice("player", key)) return;
   getLocalPlayerState()[key] = value;
   markDirty();
 }
 
 /** Collector-only write: stores a sampled value without dirtying the save. */
 export function samplePlayerSlice<K extends keyof PlayerState>(key: K, value: PlayerState[K]): void {
-  if (active) getLocalPlayerState()[key] = value;
+  if (active && canWriteSlice("player", key)) getLocalPlayerState()[key] = value;
 }
 
 export function readWorldSlice<K extends keyof WorldState>(key: K): WorldState[K] | undefined {
@@ -79,7 +115,7 @@ export function readWorldSlice<K extends keyof WorldState>(key: K): WorldState[K
 }
 
 export function writeWorldSlice<K extends keyof WorldState>(key: K, value: WorldState[K]): void {
-  if (!active) return;
+  if (!active || !canWriteSlice("world", key)) return;
   active.data.world[key] = value;
   markDirty();
 }
@@ -151,7 +187,9 @@ async function doFlush(force: boolean, skipCollectors = false): Promise<boolean>
     flushTimer = null;
   }
   const rec = active;
-  if (!rec || (isSuspended() && !force)) return false;
+  // A session's record is a mirror: the worker (or the remote host) owns the stored world, so
+  // not even a forced write may land (export / reset would clobber it or copy it locally).
+  if (!rec || inSession() || (isSuspended() && !force)) return false;
   runCollectors(rec, skipCollectors);
   if (!dirty && !force) return false;
   dirty = false;
@@ -202,7 +240,7 @@ function acquireWriterLock(id: WorldId): Promise<boolean> {
     locks
       .request(`stellar-nomad-world:${id}`, { signal: AbortSignal.timeout(WRITER_LOCK_WAIT_MS) }, () => {
         resolve(true);
-        return new Promise<never>(() => {});
+        return new Promise<void>((r) => (releaseLock = r));
       })
       .catch(() => resolve(false));
   });
@@ -219,14 +257,49 @@ async function setActive(rec: SaveRecord): Promise<SaveMeta> {
   lastCollectMs = 0;
   rec.meta.schemaVersion = SCHEMA_VERSION;
   // localStorage (and with it the device id) can be cleared independently of IndexedDB.
-  const ids = Object.keys(rec.data.players);
-  const local = getLocalPlayerId();
-  if (ids.length === 1 && ids[0] !== local) {
-    rec.data.players = { [local]: rec.data.players[ids[0]] };
-    markDirty();
-  }
+  if (rekeySolePlayer(rec.data, getLocalPlayerId())) markDirty();
   getLocalPlayerState();
   setLastWorldId(rec.meta.id);
+  installLifecycle();
+  return rec.meta;
+}
+
+/**
+ * Hosting hand-off: write the record now, stop this tab writing, release the world lock so the
+ * host worker can take it. The in-memory record stays as the session mirror.
+ */
+export async function releaseToHost(): Promise<void> {
+  // Without the lock a forced write would clobber the tab that holds it.
+  if (suspendedBy.has("other-tab")) throw new Error("world is open in another tab");
+  const run = () => doFlush(true);
+  flushChain = flushChain.then(run, run);
+  // The worker loads what is in IndexedDB: hosting from a stale record would drop solo progress.
+  if (!(await flushChain)) throw new Error("could not save the world");
+  suspendSaveWrites(true, "session");
+  releaseLock?.();
+  releaseLock = null;
+}
+
+/** Hosting failed to start: take the lock back and resume solo saving from the in-memory record. */
+export async function reclaimFromHost(): Promise<void> {
+  const rec = active;
+  if (!rec) return;
+  if (!(await acquireWriterLock(rec.meta.id))) {
+    suspendSaveWrites(true, "other-tab");
+    console.warn("[save] could not take the world back after hosting failed: this tab will not save");
+  }
+  suspendSaveWrites(false, "session");
+  markDirty();
+}
+
+/** Guest: the host's snapshot becomes the active record. No lock, no writes: the host owns it. */
+export function activateMirror(rec: SaveRecord): SaveMeta {
+  suspendSaveWrites(true, "session");
+  active = rec;
+  setDifficulty(rec.meta.difficulty);
+  dirty = false;
+  lastCollectMs = 0;
+  getLocalPlayerState();
   installLifecycle();
   return rec.meta;
 }
@@ -261,6 +334,7 @@ export async function activateWorld(id: WorldId): Promise<SaveMeta> {
  * live atoms and collectors still hold pre-reset values, so writes stay suspended until then.
  */
 export async function resetActiveWorld(): Promise<void> {
+  if (inSession()) throw new Error("[save] cannot reset a world during a co-op session");
   const rec = requireActive();
   rec.data = defaultSaveData(getLocalPlayerId(), rec.meta.difficulty);
   rec.meta.playTimeS = 0;

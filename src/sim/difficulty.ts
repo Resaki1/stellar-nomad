@@ -38,7 +38,8 @@ export function setDifficulty(d: Difficulty): void {
 }
 
 export const getDifficulty = (): Difficulty => current;
-export const difficultyMults = (): Readonly<DifficultyMultipliers> => DIFFICULTY_TABLE[current];
+/** `d` explicit for an authority that serves a world other than the process's active one. */
+export const difficultyMults = (d?: Difficulty): Readonly<DifficultyMultipliers> => DIFFICULTY_TABLE[d ?? current];
 /** Bumps on every change, so cached tables can refresh. */
 export const difficultyVersion = (): number => version;
 

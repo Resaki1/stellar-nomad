@@ -6,65 +6,13 @@
 import { Vector3 } from "three";
 import { allBodyDefs } from "@/sim/celestialConstants";
 import { frameOriginKm } from "@/sim/frames";
-import { generateAsteroidChunk } from "@/sim/asteroids/generation";
+import { headlessChunk as chunk, headlessFields as fields } from "@/sim/asteroids/headlessChunks";
 import { makeChunkKey } from "@/sim/asteroids/runtimeTypes";
-import { prepareFieldShape, type PreparedFieldShape } from "@/sim/asteroids/shapes";
-import { activeSystem } from "@/sim/systemRegistry";
-import {
-  resolveFieldGeneration,
-  resolveFieldModels,
-  resolveFieldRender,
-  resolveFieldStreaming,
-  type AsteroidFieldDef,
-  type SystemConfig,
-  type WeightedModelRef,
-} from "@/sim/systemTypes";
-import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { registerClearanceProbe, type DestroyedLookup, type Obstruction } from "./placement";
 
 export type { DestroyedLookup, Obstruction };
 
-interface FieldGen {
-  field: AsteroidFieldDef;
-  shape: PreparedFieldShape;
-  models: WeightedModelRef[];
-  chunkSizeKm: number;
-  maxPerChunk: number;
-}
-
-let _fields: FieldGen[] | null = null;
-const _chunks = new Map<string, AsteroidChunkData>();
-const CHUNK_CACHE_MAX = 512;
 const _o = new Vector3();
-
-function fields(): FieldGen[] {
-  if (_fields) return _fields;
-  const system = activeSystem() as SystemConfig;
-  _fields = (system.asteroidFields ?? [])
-    .filter((f) => f.enabled !== false)
-    .map((field) => {
-      const render = resolveFieldRender(system, field);
-      return {
-        field,
-        shape: prepareFieldShape(field.shape),
-        models: resolveFieldModels(system, field),
-        chunkSizeKm: resolveFieldStreaming(system, field, render.drawRadiusKm).chunkSizeKm,
-        maxPerChunk: resolveFieldGeneration(system, field).maxAsteroidsPerChunk,
-      };
-    });
-  return _fields;
-}
-
-function chunk(g: FieldGen, x: number, y: number, z: number): AsteroidChunkData {
-  const key = makeChunkKey(g.field.id, { x, y, z });
-  let c = _chunks.get(key);
-  if (!c) {
-    if (_chunks.size >= CHUNK_CACHE_MAX) _chunks.clear();
-    c = generateAsteroidChunk({ field: g.field, fieldId: g.field.id, models: g.models, shape: g.shape, coord: { x, y, z }, chunkSizeKm: g.chunkSizeKm, maxAsteroidsPerChunk: g.maxPerChunk });
-    _chunks.set(key, c);
-  }
-  return c;
-}
 
 /** Nearest intact rock surface from a system-frame point, m, searching `searchM` beyond the largest rock. */
 function rockClearanceM(ax: number, ay: number, az: number, searchM: number, destroyed: DestroyedLookup | null): number {

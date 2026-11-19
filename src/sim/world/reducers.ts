@@ -15,6 +15,7 @@ import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from
 import type { AsteroidDeltaIndex } from "./asteroidDeltas";
 import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, type PlacementCheck } from "@/sim/replication/placement";
 import { MAX_POINTS, REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, cleanPointName } from "@/sim/replication/points";
+import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
 
 export interface ReduceCtx {
@@ -27,6 +28,8 @@ export interface ReduceCtx {
   now: number;
   /** Source ids any player has bookmarked (eviction protection). */
   bookmarked: () => ReadonlySet<string>;
+  /** Re-derives a mined rock's yield; when present the op's `yield` claim is ignored. */
+  resolveMine?: MineResolver;
 }
 
 export interface Commit {
@@ -65,6 +68,11 @@ const _placement: PlacementCheck = { refusal: null, bodyAltKm: 0, bodyId: null, 
 /** The live resource table with this player's equipment applied (tank, reactor, rates). */
 function shipTuning(player: PlayerState, world: WorldState): Readonly<ResourceTuning> {
   return equipTuning(getEffectiveTuning(), persistentShipConfig(player, completedSet(world)), _tuning);
+}
+
+/** This player's tank capacity with equipment and research applied (kg). */
+export function tankCapacityKg(player: PlayerState, world: WorldState): number {
+  return shipTuning(player, world).tankKg;
 }
 
 const discoveriesEvent = (by: PlayerId): WorldEvent => ({ type: "discoveries.changed", by });
@@ -158,16 +166,27 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
   switch (op.type) {
     case "asteroid.mine": {
       if (!validAsteroid(op)) return reject("invalid");
-      if (typeof op.yield !== "object" || op.yield === null) return reject("invalid");
-      for (const k of Object.keys(op.yield)) if (!has(MATERIAL_NAMES, k) || !isCount(op.yield[k])) return reject("invalid");
+      if (op.beamS !== undefined && !(isNum(op.beamS) && op.beamS >= 0)) return reject("invalid");
+      let yieldUnits: Record<string, number>;
+      if (ctx.resolveMine) {
+        if (p.isDead) return reject("dead");
+        if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
+        const rock = ctx.resolveMine(op.fieldId, op.chunkKey, op.instanceId, p);
+        if (!rock) return reject("not_found");
+        yieldUnits = rock.yield;
+      } else {
+        if (typeof op.yield !== "object" || op.yield === null) return reject("invalid");
+        yieldUnits = op.yield;
+      }
+      for (const k of Object.keys(yieldUnits)) if (!has(MATERIAL_NAMES, k) || !isCount(yieldUnits[k])) return reject("invalid");
       if (p.isDead) return reject("dead");
       if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
       let room = cargoRemaining(p, world);
       const granted: Record<string, number> = {};
       const overflow: Record<string, number> = {};
       const items = { ...p.cargo.items };
-      for (const k of Object.keys(op.yield)) {
-        const want = op.yield[k];
+      for (const k of Object.keys(yieldUnits)) {
+        const want = yieldUnits[k];
         if (want <= 0) continue;
         const n = Math.min(want, room);
         room -= n;
@@ -181,7 +200,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const minedLifetime = p.minedLifetime + 1;
       // Evidence from what was actually extracted (overflow left behind still confirms the rock).
       const sourceId = sourceIdOf(op.fieldId, op.chunkKey, op.instanceId);
-      const plan = planExtraction(world.discoveries, sourceId, op.yield, by, now);
+      const plan = planExtraction(world.discoveries, sourceId, yieldUnits, by, now);
       // B4: a mined rock is gone; the miner's bookmark of it goes in the same transaction.
       const dropMark = p.bookmarks.some((b) => b.sourceId === sourceId);
       const bookmarks = dropMark ? p.bookmarks.filter((b) => b.sourceId !== sourceId) : p.bookmarks;

@@ -5,8 +5,15 @@ const PLAYER_ID_KEY = "player-id-v1";
 const LAST_WORLD_KEY = "last-world-id";
 
 let cached: PlayerId | null = null;
+/** A guest plays as the id the host assigned (world-scoped), not as this device. */
+let sessionId: PlayerId | null = null;
 
-export function getLocalPlayerId(): PlayerId {
+export function setSessionPlayerId(id: PlayerId | null): void {
+  sessionId = id;
+}
+
+/** This device's own id, ignoring any session override (the host admits itself by it). */
+export function getDevicePlayerId(): PlayerId {
   if (cached) return cached;
   try {
     const stored = localStorage.getItem(PLAYER_ID_KEY);
@@ -17,6 +24,10 @@ export function getLocalPlayerId(): PlayerId {
     cached ??= crypto.randomUUID();
   }
   return cached;
+}
+
+export function getLocalPlayerId(): PlayerId {
+  return sessionId ?? getDevicePlayerId();
 }
 
 export function getLastWorldId(): WorldId | null {

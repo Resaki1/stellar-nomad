@@ -589,3 +589,106 @@ $z-shell: s.$z-vignette + 100;
     transition-duration: s.$dur-fast;
   }
 }
+
+// ─── Join card (fixed height: preview, refusal and joining never resize it) ───
+.shell-join__code {
+  flex: 0 0 auto;
+  font-size: 22px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.shell-join {
+  display: grid;
+  grid-template-rows: 28px 20px 40px;
+  gap: s.$space-2;
+  height: 104px;
+  padding: s.$space-3 s.$space-4;
+  border: 1px solid s.$stroke-faint;
+  border-radius: s.$radius-md;
+  background: rgba(255, 255, 255, 0.02);
+  box-sizing: content-box;
+}
+
+.shell-join__world {
+  @include s.t-lg;
+  color: s.$text-primary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-join__meta {
+  display: flex;
+  align-items: center;
+  gap: s.$space-4;
+  @include s.t-sm;
+  color: s.$text-secondary;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.shell-join__host {
+  display: inline-flex;
+  align-items: center;
+  gap: s.$space-1;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell-join__slots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+
+  i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px solid s.$stroke-strong;
+  }
+
+  i.on {
+    background: s.$accent-ok;
+    border-color: s.$accent-ok;
+  }
+
+  span {
+    margin-left: 4px;
+  }
+}
+
+.shell-join__ver {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  color: s.$text-tertiary;
+
+  &--ok {
+    color: s.$accent-ok;
+  }
+
+  &--bad {
+    color: s.$accent-crit;
+  }
+}
+
+.shell-join__status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: s.$space-3;
+}
+
+.shell-join__msg {
+  @include s.t-md;
+  color: s.$accent-warn;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
