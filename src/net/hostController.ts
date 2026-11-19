@@ -47,6 +47,10 @@ export function setHostClockPaused(paused: boolean): void {
   hosting?.worker.postMessage({ t: "pauseClock", paused } satisfies MainToHostWorker);
 }
 
+export function kickPilot(id: string): void {
+  if (hosting) post(hosting.worker, { t: "kick", id });
+}
+
 export function isHosting(): boolean {
   return hosting !== null;
 }

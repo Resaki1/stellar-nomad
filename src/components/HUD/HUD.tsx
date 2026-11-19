@@ -1,9 +1,13 @@
 "use client";
 
+import ExpeditionControls from "@/components/Coop/ExpeditionControls";
+import Panel from "./Shell/Panel";
+import { coopSnapshot, subscribeCoop } from "@/net/coopState";
+import { titleUrl } from "@/components/AppShell/appState";
 import CoopPill from "@/components/Coop/CoopPill";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Microscope, Shield, Target, Wrench } from "lucide-react";
+import { Microscope, Shield, Target, Users, Wrench } from "lucide-react";
 import { displayKey, keybindsAtom } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
@@ -42,7 +46,7 @@ import "./HUD.scss";
 /** First bound key, for button titles (rebinding updates them). */
 const keyLabel = (keys: readonly string[]): string => (keys[0] ? displayKey(keys[0]) : "unbound");
 
-type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | null;
+type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | "crew" | null;
 
 /** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
 const GLANCE_MS = 250;
@@ -51,6 +55,8 @@ export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const crew = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
+  const removed = crew.role === "guest" && crew.status === "refused" && crew.detail === "kicked";
   const dead = useAtomValue(isDeadAtom);
   // Either the persisted setting (which shows a "needs reload" hint when the
   // renderer was built without timestamp queries) or `?perf=1`, which turns
@@ -85,7 +91,7 @@ export default function HUD() {
     }
   }, [settingsIsOpen]);
 
-  useEffect(() => setCursorNeeded("panel", activePanel !== null), [activePanel]);
+  useEffect(() => setCursorNeeded("panel", activePanel !== null || removed), [activePanel, removed]);
 
   useEffect(() => {
     const t = setInterval(() => store.set(sampleGlanceAtom), GLANCE_MS);
@@ -150,6 +156,17 @@ export default function HUD() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [store]);
 
+  if (removed) {
+    const leave = async () => {
+      const { leaveSession } = await import("@/net/guestController");
+      leaveSession();
+      window.location.assign(titleUrl());
+    };
+    return <Panel title="Removed by the host" onClose={leave} width={400}
+      primaryAction={{ label: "Return to title", onClick: leave }}>
+      Your pilot can return when the host opens a new session.
+    </Panel>;
+  }
   return (
     <div className={`hud${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
@@ -178,6 +195,8 @@ export default function HUD() {
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">
+        {crew.status === "joined" && <button className={`hud__panel-btn ${activePanel === "crew" ? "hud__panel-btn--active" : ""}`}
+          aria-label="Crew" title="Crew and supplies" onClick={() => openPanel("crew")}><Users size={15} /><span>Crew</span></button>}
         <button
           className={`hud__panel-btn ${activePanel === "research" ? "hud__panel-btn--active" : ""}`}
           onClick={() => openPanel("research")}
@@ -211,6 +230,10 @@ export default function HUD() {
           <span>Projects</span>
         </button>
       </div>
+
+      {activePanel === "crew" && <Panel title="Crew" onClose={closePanel} width={440}>
+        {crew.status === "joined" ? <ExpeditionControls discoveries={crew.discoveries} /> : <p>Session disconnected</p>}
+      </Panel>}
 
       {/* Overlay panels */}
       {activePanel === "cargo" && <CargoDetail onClose={closePanel} />}

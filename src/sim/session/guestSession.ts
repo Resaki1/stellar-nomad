@@ -142,6 +142,7 @@ export class GuestSession {
         if (this.rec.pending && this.rec.pending.seq >= msg.from) this.sendPending();
         return;
       case "clock":
+        if (!this.o.local) this.link?.send("cmd", { t: "pong", gen: this.gen, stamp: msg.hostMonoMs });
         this.o.onClock?.(msg);
         this.pump();
         return;

@@ -8,7 +8,6 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { coopSnapshot, subscribeCoop } from "@/net/coopState";
 import { PILOT_NAME_MAX, chosenPilotName, defaultPilotName, setPilotName } from "@/net/pilotName";
 import { guestState } from "@/net/guestController";
-import ExpeditionControls from "./ExpeditionControls";
 import { titleUrl } from "@/components/AppShell/appState";
 
 export default function CoopSettings() {
@@ -112,7 +111,6 @@ export default function CoopSettings() {
           leave
         </button>
       )}
-      {c.role !== "solo" && c.status === "joined" && <ExpeditionControls discoveries={c.discoveries} />}
       {c.status === "error" && c.detail && <div className="coop-settings__error">{c.detail}</div>}
     </div>
   );

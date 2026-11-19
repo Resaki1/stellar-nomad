@@ -115,3 +115,8 @@
     transform: translateX(-50%) translateY(0);
   }
 }
+
+@media (pointer: coarse) {
+  .ai-name-overlay__input { font-size: 16px; }
+  .ai-name-overlay__key-hint { display: none; }
+}

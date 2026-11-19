@@ -13,7 +13,7 @@ import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
 import { shipRes, shipReq } from "@/store/shipResources";
-import { setCoop, hostClock, pushRemotePose, remotePoses } from "./coopState";
+import { updateCrew, setCoop, hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
 const POSE_MS = 1000 / 15;
@@ -79,6 +79,7 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
     },
     onPose: pushRemotePose,
     onClock: (c) => {
+      updateCrew(c.roster);
       hostClock.epochMs = c.epochMs;
       hostClock.rate = c.rate;
       hostClock.at = performance.now();

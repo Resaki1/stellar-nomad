@@ -27,7 +27,7 @@ export function isTouchDevice(): boolean {
 }
 
 export function isPointerLocked(): boolean {
-  return typeof document !== "undefined" && document.pointerLockElement !== null;
+  return typeof document !== "undefined" && !!document.pointerLockElement;
 }
 
 export function isCursorNeeded(): boolean {
@@ -88,7 +88,7 @@ function requestLock(closingMenu: boolean): void {
 }
 
 export function releaseGamePointerLock(): void {
-  if (!isPointerLocked()) return;
+  if (!isPointerLocked() || typeof document.exitPointerLock !== "function") return;
   releasing = true;
   pointerLock.releases++;
   document.exitPointerLock();

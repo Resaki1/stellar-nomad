@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { aiNameAtom } from "@/store/aiName";
-import { setCursorNeeded } from "@/input/pointerLock";
+import { isTouchDevice, setCursorNeeded } from "@/input/pointerLock";
 import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
 import { NAMING_AFTER_IDS } from "@/data/commsMessages";
 
@@ -31,7 +31,7 @@ export default function AINameOverlay() {
   const greetingPlayed = NAMING_AFTER_IDS.some((id) => playedIds.includes(id));
   const visible = !isNamed && !activeMessage && greetingPlayed;
   useEffect(() => {
-    if (visible) inputRef.current?.focus();
+    if (visible && !isTouchDevice()) inputRef.current?.focus();
   }, [visible]);
   useEffect(() => setCursorNeeded("ai-name", visible), [visible]);
 

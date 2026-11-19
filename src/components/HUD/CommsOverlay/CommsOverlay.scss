@@ -208,3 +208,11 @@
     }
   }
 }
+
+// Keep the radio transcript and its advance target clear of both flight thumbs.
+@media (pointer: coarse) and (orientation: portrait) {
+  .comms-overlay { bottom: calc(260px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) and (orientation: landscape) {
+  .comms-overlay { width: min(620px, calc(100vw - 252px)); }
+}

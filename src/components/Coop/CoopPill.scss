@@ -110,18 +110,43 @@
 
 
 .coop-settings__expedition {
-  flex-basis: 100%;
   display: grid;
-  gap: 6px;
-
-  form {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: end;
-    gap: 6px;
+  gap: 20px;
+  color: #d7e6ef;
+  h3, p { margin: 0; }
+  h3 { font-size: 1rem; }
+  p, label, .crew-quantity { font-size: .82rem; color: #a4b8c7; }
+  p { margin-top: 5px; }
+  section + section { border-top: 1px solid #314553; padding-top: 16px; }
+  button, select, input {
+    font: inherit; color: inherit; border: 1px solid #435965; border-radius: 6px;
+    background: #172630; padding: 8px 12px; box-sizing: border-box;
   }
+  button { cursor: pointer; }
+  button:disabled { opacity: .55; cursor: default; }
+  :focus-visible { outline: 2px solid #9ad7fa; outline-offset: 2px; }
+  .crew-fix { display: grid; grid-template-columns: 22px 1fr; gap: 8px; }
+  .crew-fix > svg { color: #83d3ae; }
+  .crew-actions, .crew-quantity { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; grid-column: 1 / -1; }
+  form { margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, .55fr); gap: 10px; }
+  label { display: grid; gap: 4px; }
+  .crew-send { grid-column: 1 / -1; }
+  input, select { width: 100%; min-width: 0; color-scheme: dark; font-size: 16px; }
+  .crew-back { margin-bottom: 12px; color: #b1d3e8; }
+  .crew-quantity span { margin-right: auto; }
+  .crew-send { display: flex; align-items: center; justify-content: center; gap: 8px; background: #244b40; border-color: #528976; min-height: 44px; }
+  [role=status] { color: #c4e7d9; }
+  @media (pointer: coarse) { button, select, input { min-height: 44px; } }
+}
 
-  label { display: grid; gap: 3px; }
-  input { width: 6em; }
-  input, select { color-scheme: dark; font: inherit; }
+.crew-members {
+  ul { list-style: none; margin: 8px 0 0; padding: 0; }
+  li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 36px; padding-block: 4px; }
+  li + li { border-top: 1px solid #293b47; }
+  small { color: #acc2d0; font-size: .8rem; font-weight: normal; }
+  .crew-ping { margin-left: auto; font-size: .8rem; font-variant-numeric: tabular-nums; color: #a8d2bc; }
+  button { font-size: .8rem; }
+  .crew-confirm { flex: 1 0 100%; padding-block: 4px; }
+  .crew-confirm p { margin: 0 0 8px; }
+  .crew-remove { margin-left: 8px; color: #ffc1ae; border-color: #9e644d; }
 }

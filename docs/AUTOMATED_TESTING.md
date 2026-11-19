@@ -224,6 +224,12 @@ COOP_PARTS=roughLink,leave pnpm drive:coop -- --perf --size 768x432 --url http:/
 pnpm drive:coop -- --perf --four --size 1280x720 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-perf.mjs
 ```
 
+Use `COOP_PARTS=crewUi,crewAdmin` with the co-op driver to verify fuel delivery through the Crew HUD, marker sharing, and one unlock toast and research audio voice on both peers. The admin scenario checks roster visibility, ping, cancellation, host-only removal, refusal on rejoin, and admission as the same pilot after the host restarts. For AI naming, menu opening without the Pointer Lock API, simultaneous touch steering and thrust, cancellation and braking, run:
+
+```sh
+pnpm drive:coop -- --perf --size 390x844 --url http://127.0.0.1:3001/ run:scripts/drive-examples/touch-flight.mjs
+```
+
 The soak exchanges supplies in both directions for 30 minutes. Keep the dev server source fixed during the run. The extra capacity clients open real WebRTC connections and publish a pose from the title screen. The performance comparison uses one rendered game and three local network clients. Separate guest devices are required for the hardware release gate.
 
 To exercise a future material, apply `scripts/fixtures/m4-content.patch` to a disposable checkout with dependencies installed. Run `pnpm coop:transcript contentFixture`, start its dev server and point the browser driver there with `COOP_PARTS=contentFixture,leave`. The guest mines the new ore, gives one unit to the host, and rejoins after the host crafts the new recipe. The fixture changes only the content catalogue and system configuration.

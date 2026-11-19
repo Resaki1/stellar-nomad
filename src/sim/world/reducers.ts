@@ -463,7 +463,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           world.research = { completedNodes, legacy: world.research.legacy };
           p.cargo = cargo;
         },
-        events: [{ type: "research.changed", by, completedNodes }],
+        events: [{ type: "research.changed", by, completedNodes, unlockedNodeId: node.id }],
         playerKeys: ["cargo"],
       };
     }

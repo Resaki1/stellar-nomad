@@ -8,6 +8,7 @@ export type MainToHostWorker =
   | { t: "open"; conn: ConnId; local: boolean }
   | { t: "msg"; conn: ConnId; ch: Channel; msg: unknown }
   | { t: "pauseClock"; paused: boolean }
+  | { t: "kick"; id: PlayerId }
   | { t: "gone"; conn: ConnId }
   | { t: "close" }
   | { t: "inspect"; req: number; playerId?: PlayerId };

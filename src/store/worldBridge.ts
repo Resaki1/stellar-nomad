@@ -10,7 +10,7 @@ import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
 import { addToastAtom } from "@/store/toast";
 import { wrecksMirrorAtom } from "@/store/death";
 import { rendezvousAtom } from "@/store/discoveries";
-import { discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
+import { announceResearchAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources } from "@/store/shipResources";
 import { replicationPointsAtom } from "@/store/replicationMirror";
@@ -62,6 +62,7 @@ export function installWorldBridge(store: Store): void {
         store.set(wrecksMirrorAtom, getWorldState().wrecks);
         break;
       case "research.changed":
+        if (e.unlockedNodeId) store.set(announceResearchAtom, e.unlockedNodeId);
         store.set(sharedResearchMirrorAtom, getWorldState().research.completedNodes);
         break;
       case "discoveries.changed": {

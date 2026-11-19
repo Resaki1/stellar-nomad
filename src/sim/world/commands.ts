@@ -156,7 +156,7 @@ export type WorldEvent =
   | { type: "wreck.created"; by: PlayerId; wreck: WreckRecord }
   | { type: "wreck.changed"; by: PlayerId; wreck: WreckRecord }
   | { type: "wreck.removed"; by: PlayerId; wreckId: string }
-  | { type: "research.changed"; by: PlayerId; completedNodes: readonly string[] }
+  | { type: "research.changed"; unlockedNodeId?: string; by: PlayerId; completedNodes: readonly string[] }
   | { type: "discoveries.changed"; by: PlayerId }
   | { type: "expedition.marked"; by: PlayerId }
   | { type: "expedition.given"; by: PlayerId; to: PlayerId; kind: GiftKind; itemId: string; amount: number }

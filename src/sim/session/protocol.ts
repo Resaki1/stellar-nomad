@@ -7,7 +7,7 @@ import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 /** Three missed worker heartbeats suspend prediction and new resource spends. */
 export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
@@ -19,7 +19,9 @@ const MAX_ID = 128;
 export const MAX_NAME = 32;
 
 export type Channel = "cmd" | "pose";
-export type RefuseReason = "full" | "protocol" | "content" | "credential" | "replaced" | "closed";
+export type RefuseReason = "full" | "protocol" | "content" | "credential" | "replaced" | "kicked" | "closed";
+
+export interface CrewMember { id: PlayerId; name: string; host: boolean; pingMs: number | null }
 
 /** Pilot-owned values a client reports; the host bounds them and writes them without a revision. */
 export interface Telemetry {
@@ -62,6 +64,7 @@ export type ImpactMsg = { t: "impact"; gen: number; by: PlayerId; contact: ShipC
 export type ClientMsg =
   | { t: "hello"; protocol: number; content: string; name: string; playerId?: PlayerId; credential?: string }
   | { t: "cmd"; gen: number; seq: number; opId: string; op: WorldOperation; tel?: Telemetry }
+  | { t: "pong"; gen: number; stamp: number }
   | { t: "tel"; gen: number; tel: Telemetry }
   | { t: "name"; gen: number; name: string }
   | ImpactMsg
@@ -94,7 +97,7 @@ export type HostMsg =
   | { t: "settled"; gen: number; seq: number; opId: string; outcome: OperationOutcome; replay?: boolean }
   | { t: "watermark"; gen: number; seq: number }
   | { t: "resend"; gen: number; from: number }
-  | { t: "clock"; gen: number; epochMs: number; rate: number; hostMonoMs: number }
+  | { t: "clock"; gen: number; epochMs: number; rate: number; hostMonoMs: number; roster: CrewMember[] }
   | { t: "status"; gen: number; state: "ok" | "storage_failed" | "closing" }
   | { t: "members"; gen: number; names: Record<PlayerId, string> }
   | ImpactMsg
@@ -240,6 +243,8 @@ export function decodeClientMsg(raw: unknown): ClientMsg | null {
       }
       return { t: "cmd", gen: raw.gen, seq: raw.seq, opId: raw.opId, op: op as unknown as WorldOperation, ...(tel ? { tel } : {}) };
     }
+    case "pong":
+      return isInt(raw.gen) && isNum(raw.stamp) ? { t: "pong", gen: raw.gen, stamp: raw.stamp } : null;
     case "tel": {
       const tel = isInt(raw.gen) ? decodeTelemetry(raw.tel) : null;
       return tel ? { t: "tel", gen: raw.gen as number, tel } : null;
@@ -269,7 +274,7 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       if (raw.difficulty !== "explorer" && raw.difficulty !== "standard" && raw.difficulty !== "hard") return null;
       return raw as unknown as HostMsg;
     case "refuse":
-      return ["full", "protocol", "content", "credential", "replaced", "closed"].includes(raw.reason as string) ? (raw as unknown as HostMsg) : null;
+      return ["full", "protocol", "content", "credential", "replaced", "kicked", "closed"].includes(raw.reason as string) ? (raw as unknown as HostMsg) : null;
     case "snap":
       if (!isInt(raw.gen) || !isInt(raw.revision) || !isInt(raw.of, MAX_SNAPSHOT_PARTS) || !isInt(raw.part) || raw.part >= raw.of) return null;
       return typeof raw.json === "string" && raw.json.length <= SNAPSHOT_PART_CHARS ? (raw as unknown as HostMsg) : null;
@@ -282,6 +287,9 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
     case "resend":
       return isInt(raw.gen) && isInt(raw.from) ? (raw as unknown as HostMsg) : null;
     case "clock":
+      if (!Array.isArray(raw.roster) || raw.roster.length > MAX_PLAYERS ||
+          !raw.roster.every(p => isObj(p) && isStr(p.id) && isStr(p.name, MAX_NAME) && typeof p.host === "boolean" &&
+            (p.pingMs === null || isInt(p.pingMs)))) return null;
       return isInt(raw.gen) && isNum(raw.epochMs) && isNum(raw.rate) && isNum(raw.hostMonoMs) ? (raw as unknown as HostMsg) : null;
     case "status":
       return isInt(raw.gen) && ["ok", "storage_failed", "closing"].includes(raw.state as string) ? (raw as unknown as HostMsg) : null;

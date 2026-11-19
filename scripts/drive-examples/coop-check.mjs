@@ -881,6 +881,65 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       granted: mined.grant, transferred: 1, crafted: goods.modules.consumables.consumable_fixture_patch };
   }
 
+  async function crewUi() {
+    await host.evaluate(`${C}.meetRemote(0.08)`);
+    await guest.evaluate('__test.gameplay.res.set({ordinaryKg: 5})');
+    await host.sleep(2600);
+    await settledCommand(host, { type: "research.unlock", nodeId: "sv1_composition_survey" });
+    const toastCount = page => page.evaluate(`[...document.querySelectorAll(".notif-stack__detail")].filter(e => e.textContent === "Composition Survey").length`);
+    const [notices, sounds] = await Promise.all([
+      Promise.all([host, guest].map(page => waitFor(() => toastCount(page), 2500, 40))),
+      Promise.all([host, guest].map(page => waitFor(() => page.evaluate('__audio.voices().some(v => v.eventId === "research.complete")'), 2500, 40))),
+    ]);
+    await host.evaluate(`document.querySelector('[aria-label="Crew"]').click()`);
+    await waitFor(() => host.evaluate('!!document.querySelector("[data-give-to]")'), 4000);
+    await host.sleep(450);
+    await host.shot("coop/connected-crew");
+    await host.evaluate('document.querySelector("[data-give-to]").click()');
+    const send = await waitFor(() => host.evaluate('!!document.querySelector(".crew-send:not(:disabled)")'), 5000);
+    if (!send) throw Error(await host.evaluate('document.querySelector(".coop-settings__expedition")?.innerText'));
+    await host.shot("coop/crew-transfer");
+    const before = await record(ids.guest);
+    await host.evaluate('document.querySelector(".crew-send").click()');
+    const delivered = await waitFor(async () => (await record(ids.guest)).receivedFuelKg === before.receivedFuelKg + 1, 5000);
+    await host.evaluate('document.querySelector(".crew-back").click()');
+    await host.evaluate('document.querySelector(".crew-actions button").click()');
+    const marker = await waitFor(() => host.evaluate('document.querySelector(".coop-settings__expedition [role=status]")?.textContent === "Position shared"'), 4000);
+    await host.evaluate('document.querySelector(".panel__close").click()');
+    return { pass: notices.every(n => n === 1) && sounds.every(Boolean) && !!delivered && !!marker, notices, sounds, delivered, marker };
+  }
+
+  async function crewAdmin() {
+    for (const page of [host, guest]) await page.evaluate(`document.querySelector('[aria-label="Crew"]').click()`);
+    const roster = page => page.evaluate(`[...document.querySelectorAll(".crew-members li")].map(li => ({
+      id: li.dataset.crewId, ping: li.querySelector(".crew-ping").textContent, remove: !!li.querySelector('[aria-label^="Remove "]')
+    }))`);
+    const lists = await Promise.all([host, guest].map(page => waitFor(async () => {
+      const rows = await roster(page);
+      return rows.length === 2 && rows.every(row => /^\d+ ms$/.test(row.ping)) && rows;
+    }, 8000)));
+    if (!lists.every(Boolean)) throw Error("Missing live roster or host ping");
+    const hostOnly = lists[0].filter(row => row.remove).map(row=>row.id).join() === ids.guest && !lists[1].some(row=>row.remove);
+    const remove = () => host.evaluate('document.querySelector(".crew-members button[aria-label]").click()');
+    await remove();
+    await host.evaluate('document.querySelector(".crew-confirm button").click()');
+    const cancelled = (await roster(host)).length === 2 && !(await host.evaluate('!!document.querySelector(".crew-confirm")'));
+    await remove();
+    await host.evaluate('document.querySelector(".crew-remove").click()');
+    const kicked = await waitFor(() => guest.evaluate('document.querySelector("#panel-title")?.textContent === "Removed by the host"'), 8000);
+    const freed = await waitFor(async () => (await roster(host)).length === 1, 4000);
+    await guest.load({join:code});
+    await waitFor(async () => (await guest.evaluate(CARD))?.joinEnabled, 10000);
+    await guest.evaluate('document.querySelector("[data-coop-join]").click()');
+    const blocked = await waitFor(async () => (await guest.evaluate(CARD))?.refusal === "kicked", 12000);
+    await host.evaluate('document.querySelector(".panel__close").click()');
+    await host.evaluate(`${C}.close(false)`); await host.load(); await host.ready();
+    code = await host.evaluate(`${C}.host()`);
+    const returned = (await joinByCard(code)).status.playerId === ids.guest;
+    const checks = { hostOnly, cancelled, kicked, freed, blocked, returned };
+    return {pass:Object.values(checks).every(Boolean), checks, lists};
+  }
+
   async function exchange() {
     await guest.evaluate(`${C}.meetRemote(0.08)`);
     await guest.sleep(2500);
@@ -1315,6 +1374,16 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
     if (parts.some(p => ["pilotActions", "soak", "exchange", "roughLink"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
+    if (parts.includes("crewUi")) {
+      await host.evaluate(`(() => {
+        const sources = ["s_type","c_type","x_type"].map((classId,i) => ({ id: "origin_belt:0,0,0:"+i,
+          fieldId:"origin_belt",chunkKey:"0,0,0",asteroidId:i,classId,frameId:"earth",positionKm:[0,0,0],
+          radiusM:10,composition:{},depleted:false,foundAt:1,by:__test.gameplay.localId() }));
+        __test.gameplay.m33.devSetWorld({discoveries:{sources,families:{},sites:{},trials:{}}});
+        __dev.grantCargo("silicates",20);
+        __test.gameplay.res.set({ordinaryKg:100});
+      })()`);
+    }
     if (parts.includes("settingsSpawn")) {
       await menu(host, true);
       pauseChecks.soloPaused = await framesWhilePaused();
@@ -1336,7 +1405,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
-      exchange, soak, capacity, contentFixture, roughLink,
+      crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
       settingsSpawn,
       presence,
       jitter,

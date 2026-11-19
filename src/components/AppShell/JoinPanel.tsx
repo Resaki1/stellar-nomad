@@ -13,7 +13,7 @@ import { PILOT_NAME_MAX, chosenPilotName, defaultPilotName, setPilotName } from 
 import type { RoomInfo } from "@/net/signaling";
 import type { SaveMeta } from "@/save/types";
 
-type Refusal = "no_room" | "unreachable" | "full" | "version" | "credential" | "closed" | "relay" | "replaced";
+type Refusal = "no_room" | "unreachable" | "full" | "version" | "credential" | "closed" | "relay" | "replaced" | "kicked";
 type Card =
   | { s: "empty" }
   | { s: "checking" }
@@ -27,6 +27,7 @@ const MESSAGE: Record<Refusal, string> = {
   version: "Different game version",
   credential: "Not recognised by host",
   closed: "Session closed",
+  kicked: "Removed by the host for this session",
   replaced: "This pilot joined from another tab",
   relay: "Relay unavailable",
 };
@@ -40,6 +41,7 @@ const ACTION: Record<Refusal, Action> = {
   closed: "retry",
   relay: "retry",
   replaced: "back",
+  kicked: "back",
 };
 const ACTION_LABEL: Record<Action, string> = { edit: "Edit code", retry: "Retry", reload: "Reload", back: "Back" };
 
@@ -53,6 +55,7 @@ function toRefusal(reason: string): Refusal {
     case "credential":
     case "closed":
     case "relay":
+    case "kicked":
     case "replaced":
     case "unreachable":
       return reason;

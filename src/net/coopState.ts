@@ -4,7 +4,7 @@
  * the session outlives any one component.
  */
 import type { PlayerId } from "@/save/types";
-import type { PoseMsg } from "@/sim/session/protocol";
+import type { CrewMember, PoseMsg } from "@/sim/session/protocol";
 
 export type CoopRole = "solo" | "host" | "guest";
 export type CoopStatus = "idle" | "starting" | "connecting" | "joined" | "waiting" | "refused" | "error" | "closed";
@@ -50,7 +50,12 @@ export function subscribeCoop(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+// Sampled by the open Crew panel. A heartbeat need not re-render the flight HUD.
+export let connectedCrew: readonly CrewMember[] = [];
+export function updateCrew(roster: readonly CrewMember[]): void { connectedCrew = roster; }
+
 export function setCoop(patch: Partial<CoopSnapshot>): void {
+  if (patch.role && patch.role !== snap.role || patch.status && patch.status !== "joined") connectedCrew = [];
   snap = { ...snap, ...patch };
   listeners.forEach((l) => l());
 }
