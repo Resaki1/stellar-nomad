@@ -14,6 +14,7 @@ import {
   Settings,
   settingsAtom,
   settingsIsOpenAtom,
+  hudHiddenAtom,
 } from "@/store/store";
 import SettingsCheckbox from "./SettingsCheckbox/SettingsCheckbox";
 import AudioSettings from "./AudioSettings";
@@ -63,6 +64,7 @@ import {
   type NearbyStar,
 } from "@/sim/nearbyStars";
 
+import FullscreenControl, { useFullscreenMode } from "@/components/AppShell/FullscreenControl";
 import CoopPill from "@/components/Coop/CoopPill";
 import CoopSettings from "@/components/Coop/CoopSettings";
 
@@ -914,6 +916,8 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
+  const [hudHidden, setHudHidden] = useAtom(hudHiddenAtom);
+  const fullscreen = useFullscreenMode() === "fullscreen";
   const menuRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (isOpen && activeSubMenu === null) menuRoot.current?.focus({ preventScroll: true });
@@ -1060,12 +1064,19 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     let escapePressedInMenu = false;
+    let escapeStartedFullscreen = false;
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (isOpenRef.current) {
         if (e.key === "Escape" && !e.defaultPrevented && !e.repeat) {
           e.preventDefault();
           escapePressedInMenu = true;
+          escapeStartedFullscreen = !!document.fullscreenElement;
+        } else if (e.key !== "Escape" && !e.repeat && !e.defaultPrevented && !e.metaKey && !e.ctrlKey &&
+          tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT" &&
+          keybindsRef.current.toggleSettings.includes(e.key.toLowerCase())) {
+          e.preventDefault();
+          resumeFlight();
         }
         if (!e.repeat && e.key === "Enter" && (e.target === menuRoot.current || tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
           e.preventDefault();
@@ -1085,7 +1096,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !escapePressedInMenu) return;
       cancelEscape();
-      if (!isOpenRef.current) return;
+      if (!isOpenRef.current || (escapeStartedFullscreen && !document.fullscreenElement)) return;
       e.preventDefault();
       if (activeSubMenu !== null) setActiveSubMenu(null);
       else resumeFlight();
@@ -1100,6 +1111,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
     };
   }, [activeSubMenu, resumeFlight, setIsOpen]);
 
+  const menuKey = (fullscreen && keybinds.toggleSettings.find(key => key !== "escape")) || keybinds.toggleSettings[0];
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
     : "Ship menu";
@@ -1116,7 +1128,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
         >
           <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
           <span>Menu</span>
-          {keybinds.toggleSettings[0] && <kbd>{displayKey(keybinds.toggleSettings[0])}</kbd>}
+          {menuKey && <kbd>{displayKey(menuKey)}</kbd>}
         </button>
       </div>
 
@@ -1144,6 +1156,16 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
             {!activeSubMenu ? (
               <div className="settings-menu__nav" ref={menuRoot} tabIndex={-1}>
                 {children}
+                <div className="settings-menu__display-actions">
+                  <FullscreenControl />
+                  <button className="settings-menu__button settings-menu__button--subtle" onClick={() => {
+                    setHudHidden(!hudHidden);
+                    resumeFlight();
+                  }}>
+                    {hudHidden ? "Show HUD" : "Hide HUD"}
+                    {!hudHidden && <small className="settings-menu__touch-hint">Tap the scene to restore</small>}
+                  </button>
+                </div>
                 <h3 className="settings-menu__group-title">Settings</h3>
                 <div className="settings-menu__categories">
                   {availableSubMenus.map((subMenu) => (

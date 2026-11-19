@@ -1,0 +1,27 @@
+@use '../../styles' as s;
+
+.display-mode {
+  display: grid;
+  gap: s.$space-1;
+  justify-items: start;
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: s.$space-2;
+    padding: s.$space-2 s.$space-3;
+    background: s.$surface-glass-1;
+    color: s.$text-primary;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-md;
+    font: 600 13px s.$font-ui;
+    cursor: pointer;
+    &:hover, &:focus-visible { border-color: s.$stroke-active; }
+    @media (pointer: coarse) { min-height: 44px; }
+  }
+}
+
+.shell-title > .display-mode {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  top: max(12px, env(safe-area-inset-top));
+}

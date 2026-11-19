@@ -27,6 +27,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  appleWebApp: { capable: true, title: "Stellar Nomad" },
   title: "Stellar Nomad",
   description:
     "A space exploration game built with React Three Fiber and Next.js",

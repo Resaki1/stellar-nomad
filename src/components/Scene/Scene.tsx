@@ -4,7 +4,7 @@
 import CoopLayer from "@/components/Coop/CoopLayer";
 import { useSettingsPause } from "@/net/useSettingsPause";
 import { setHostClockPaused } from "@/net/hostController";
-import { settingsAtom } from "@/store/store";
+import { hudHiddenAtom, settingsAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
@@ -127,6 +127,7 @@ function PerfProbe() {
 const SYSTEM_STARS = systemStars();
 
 const Scene = () => {
+  const hudHidden = useAtomValue(hudHiddenAtom);
   const settings = useAtomValue(settingsAtom);
   const settingsPause = useSettingsPause();
   useEffect(() => setHostClockPaused(settingsPause === "host"), [settingsPause]);
@@ -307,7 +308,7 @@ const Scene = () => {
           return renderer;
         }}
     >
-          {settings.fps ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
+          {settings.fps && !hudHidden ? (isSafari ? <Stats /> : <StatsGl />) : <></>}
           {perfOn ? <PerfProbe /> : null}
           {process.env.NODE_ENV === "development" ? <TestFrameProbe /> : null}
 

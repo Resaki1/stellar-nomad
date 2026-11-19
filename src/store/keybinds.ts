@@ -9,6 +9,7 @@ export type KeybindAction =
   | "toggleResearch"
   | "toggleCrafting"
   | "toggleLoadout"
+  | "toggleHud"
   | "toggleCrew"
   | "toggleProjects"
   | "mine"
@@ -58,6 +59,7 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
   { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
   { id: "placePoint", label: "Replication Point: Place", category: "actions" },
+  { id: "toggleHud", label: "Show / hide HUD", category: "menu" },
   { id: "toggleSettings", label: "Ship menu", category: "menu" },
 ];
 
@@ -98,7 +100,8 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   transitDrive: ["t"],
   // The kit is used from the hotbar (D16); kept for rebinding.
   placePoint: [],
-  toggleSettings: ["escape"],
+  toggleHud: ["h"],
+  toggleSettings: ["escape", "o"],
 };
 
 // Max number of keys per action shown in the UI
@@ -129,12 +132,18 @@ const V2_MOVED: Record<string, string[]> = { toggleCrafting: ["f"], toggleProjec
 const V2_DEFAULTS: Record<string, string[]> = { ...DEFAULT_KEYBINDS, ...V2_MOVED };
 // Crew did not exist in v2. A legacy custom U binding belongs to its original action.
 delete V2_DEFAULTS.toggleCrew;
+delete V2_DEFAULTS.toggleHud;
+V2_DEFAULTS.toggleSettings = ["escape"];
 
 const sameKeys = (a: readonly string[] | undefined, b: readonly string[]): boolean => !!a && a.length === b.length && a.every((k, i) => k === b[i]);
 
 /** Add bindings introduced after this save, preserving keys the player already assigned. */
 function withMissingBindings(saved: Partial<KeybindConfig>): KeybindConfig {
   const result = { ...saved };
+  if (!saved.toggleHud && sameKeys(saved.toggleSettings, ["escape"]) &&
+      !Object.values(saved).some(keys => keys?.includes("o"))) {
+    result.toggleSettings = DEFAULT_KEYBINDS.toggleSettings;
+  }
   for (const action of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
     if (!Array.isArray(result[action])) {
       result[action] = DEFAULT_KEYBINDS[action].filter(key =>

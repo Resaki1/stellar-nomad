@@ -73,3 +73,9 @@
     color: rgba(160, 210, 255, 0.95);
   }
 }
+
+// Keep the simulation and HUD event subscriptions alive while composing a screenshot.
+// Interactive dialogs remain usable, including naming and recovery if either interrupts flight.
+.hud--hidden > :not(.panel__backdrop, .ai-name-overlay, .death-screen, .hdr-cal) {
+  display: none !important;
+}

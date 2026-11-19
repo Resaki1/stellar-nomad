@@ -4,6 +4,7 @@
  * Settings sections that work without the game mounted (graphics, controls), shared by the
  * in-game settings menu and the title screen's settings.
  */
+import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import type { SetStateAction } from "jotai";
 import { useAtom, useSetAtom } from "jotai";
 import { mouseSettingsAtom, withMouseDefaults, type MouseMode } from "@/store/mouseSettings";
@@ -30,6 +31,7 @@ type SectionProps = {
 export function GraphicsSettings({ settings, setSettings }: SectionProps) {
   return (
     <>
+      <FullscreenControl displaySettings />
       {/* D14. Applies to the scaled scene (planets, asteroids, stars), which
           is where the aliasing was reported; the ship's own pass is not
           multisampled — see the note in SpaceRenderer. Costs GPU memory and a

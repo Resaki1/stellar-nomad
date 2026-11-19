@@ -5,6 +5,7 @@
  * one Join button. The preview is read-only; nothing connects, stores a credential or takes a
  * slot before Join. Each refusal is one short line with one action, in a fixed-size slot.
  */
+import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import { Check, User, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { unlockAudio } from "@/audio/engine";
@@ -163,6 +164,7 @@ export default function JoinPanel({
   return (
     <Panel
       title="Join"
+      headerRight={<FullscreenControl />}
       tier={2}
       width={440}
       onClose={back}

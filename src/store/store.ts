@@ -3,6 +3,9 @@ import { atomWithStorage } from "jotai/utils";
 import { savedAtom } from "@/store/savedAtom";
 import { DEFAULT_HEALTH } from "@/save/defaults";
 
+/** Screenshot mode is local to the current game session. */
+export const hudHiddenAtom = atom(false);
+
 export type SetAtom<Args extends unknown[], Result> = (...args: Args) => Result;
 
 export type Settings = {

@@ -1,6 +1,7 @@
 "use client";
 
 // Not the "@/audio" barrel: it pulls the emitter graph (three.js) into the title bundle.
+import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import { playAudio } from "@/audio/voices";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import Panel from "@/components/HUD/Shell/Panel";
@@ -141,6 +142,7 @@ export default function TitleScreen({ onStart, joinCode = null }: Props) {
   return (
     <div className="shell-title" onClickCapture={clickSfx}>
       <StarBackdrop />
+      {view === "menu" && <FullscreenControl />}
       <main className="shell-title__main" inert={view !== "menu"}>
         <header className="shell-title__brand">
           <h1 className="shell-title__name">Stellar Nomad</h1>

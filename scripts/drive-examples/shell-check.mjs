@@ -371,6 +371,67 @@ export default async function shellCheck(d) {
     out.shots = { pass: true };
   }
 
+  if (parts.includes("display")) {
+    await title();
+    await d.send("Page.bringToFront");
+    const trustedClick = async selector => {
+      await waitFor(`!!document.querySelector(${JSON.stringify(selector)})`);
+      const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [r.x+r.width/2,r.y+r.height/2]; })()`);
+      await d.click(x, y);
+      await wait(250);
+    };
+    const fullscreen = "document.fullscreenElement === document.documentElement";
+    await trustedClick(".shell-title > .display-mode button");
+    await waitFor(fullscreen);
+    await trustedClick("[data-coop-open]");
+    await waitFor("!!document.querySelector('[data-coop-back]')");
+    await trustedClick(".panel__header .display-mode button");
+    await waitFor("!document.fullscreenElement");
+    await trustedClick(".panel__header .display-mode button");
+    await waitFor(fullscreen);
+    await trustedClick("[data-coop-back]");
+    const needsWorld = !(await menu()).some(item => item.text === "Continue");
+    await trustedClick(".shell-menu__item--primary");
+    if (needsWorld) {
+      await waitFor("!!document.querySelector('#shell-new-world')");
+      await trustedClick('button[form="shell-new-world"]');
+    }
+    await playing();
+    await waitFor(fullscreen);
+    await d.press("h");
+    await waitFor("!!document.querySelector('.hud--hidden') && document.querySelector('.hud__panel-buttons').getClientRects().length === 0");
+    await d.press("o");
+    await waitFor("!!document.querySelector('.settings-menu__nav') && !!document.fullscreenElement && !document.pointerLockElement");
+    await d.press("o");
+    await waitFor("!document.querySelector('.settings-menu') && !!document.fullscreenElement && !!document.pointerLockElement");
+    await d.press("h");
+    await waitFor("document.querySelector('.hud__panel-buttons').getClientRects().length > 0");
+    await waitFor("document.querySelector('.settings__open-button kbd')?.textContent === 'O'");
+    await d.press("o");
+    await trustedClick(".settings-menu__nav .display-mode button");
+    await waitFor("!document.fullscreenElement && !!document.querySelector('.settings-menu__nav')");
+    await trustedClick(".settings-menu__nav .display-mode button");
+    await d.press("o");
+    await waitFor("!!document.pointerLockElement && !!document.fullscreenElement");
+    // Exercise browser-owned exits (CDP Escape alone may only reach the page).
+    await ev("document.exitFullscreen()");
+    await ev("if (document.pointerLockElement) document.exitPointerLock()");
+    await waitFor("!document.fullscreenElement && !document.pointerLockElement && !!document.querySelector('.settings-menu__nav')");
+    await trustedClick(".settings-menu__nav .display-mode button");
+    const tab = await d.send("Target.createTarget", { url: "about:blank" });
+    try {
+      await d.send("Target.activateTarget", { targetId: tab.targetId });
+      await wait(350);
+      await d.send("Page.bringToFront");
+      await waitFor(`document.querySelector(".settings-menu__nav .display-mode button")?.textContent ===
+        (document.fullscreenElement ? "Exit fullscreen" : "Enter fullscreen")`);
+    } finally {
+      await d.send("Target.closeTarget", { targetId: tab.targetId });
+    }
+    if (await ev("!!document.fullscreenElement")) await trustedClick(".settings-menu__nav .display-mode button");
+    out.display = { pass: true };
+  }
+
   if (parts.includes("lock")) {
     // B12, trusted CDP input: closing a panel by click or by its key recaptures the cursor at once;
     // Programmatic menu releases and the browser’s native Escape unlock have different lock rules.

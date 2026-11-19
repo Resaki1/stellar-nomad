@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useAtomValue, useStore } from "jotai";
 import { Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
 import { displayKey, keybindsAtom, type KeybindAction } from "@/store/keybinds";
-import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
+import { hudHiddenAtom, settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import FlightHud from "./FlightHud/FlightHud";
@@ -64,6 +64,7 @@ type OverlayPanel = (typeof SHIP_PANELS)[number]["id"] | null;
 const GLANCE_MS = 250;
 
 export default function HUD() {
+  const hudHidden = useAtomValue(hudHiddenAtom);
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
@@ -122,6 +123,15 @@ export default function HUD() {
     store.set(settingsIsOpenAtom, false);
   }, [store]);
 
+  useEffect(() => {
+    if (!hudHidden) return;
+    const restoreOnTouch = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.target instanceof HTMLCanvasElement) store.set(hudHiddenAtom, false);
+    };
+    window.addEventListener("pointerdown", restoreOnTouch);
+    return () => window.removeEventListener("pointerdown", restoreOnTouch);
+  }, [hudHidden, store]);
+
   const closePanel = useCallback(() => setActivePanel(null), []);
 
   // Hotkeys for panels
@@ -132,6 +142,15 @@ export default function HUD() {
 
       const inMenu = store.get(settingsIsOpenAtom);
       if (inMenu && (!menuPanels.current || e.defaultPrevented || e.metaKey || e.ctrlKey || (key === "tab" && e.shiftKey))) return;
+
+      if (!inMenu && !e.metaKey && !e.ctrlKey && keybindsRef.current.toggleHud.includes(key)) {
+        if (!e.repeat) {
+          setActivePanel(null);
+          store.set(hudHiddenAtom, hidden => !hidden);
+        }
+        e.preventDefault();
+        return;
+      }
 
       const panel = SHIP_PANELS.find(({ action, id }) =>
         (id !== "crew" || coopSnapshot().status === "joined") && keybindsRef.current[action].includes(key) &&
@@ -168,7 +187,7 @@ export default function HUD() {
   }
   const availablePanels = SHIP_PANELS.filter(({ id }) => id !== "crew" || crew.status === "joined");
   return (
-    <div className={`hud${dead ? " hud--dead" : ""}`}>
+    <div className={`hud${hudHidden ? " hud--hidden" : ""}${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
       <POIMarkers />
       <ShipDashboard />

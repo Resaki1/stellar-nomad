@@ -424,3 +424,15 @@
   color: s.$text-secondary;
   border: 1px solid s.$stroke-base;
 }
+
+.settings-menu__display-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: s.$space-2;
+}
+
+.settings-menu__touch-hint {
+  display: none;
+  @media (pointer: coarse) { display: block; font-weight: normal; text-transform: none; }
+}

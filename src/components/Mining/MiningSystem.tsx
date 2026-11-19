@@ -3,6 +3,7 @@
 import { shipView } from "@/components/Camera/shipView";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
+import { hudHiddenAtom } from "@/store/store";
 import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
@@ -671,6 +672,7 @@ const MiningSystem = () => {
   const worldOrigin = useWorldOrigin();
   const asteroidRuntime = useAsteroidRuntime();
   const store = useStore();
+  const hudHidden = useAtomValue(hudHiddenAtom);
   const systemConfig = useAtomValue(systemConfigAtom);
 
   const [miningState, setMiningState] = useAtom(miningStateAtom);
@@ -1520,7 +1522,7 @@ const MiningSystem = () => {
 
   return (
     <>
-      {showHighlight && miningState.targetedAsteroid && (
+      {!hudHidden && showHighlight && miningState.targetedAsteroid && (
         <AsteroidHighlight
           positionLocal={miningState.targetedAsteroid.positionLocal}
           radiusM={miningState.targetedAsteroid.radiusM}
