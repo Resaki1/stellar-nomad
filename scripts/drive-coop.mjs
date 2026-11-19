@@ -29,9 +29,10 @@ const ROLES = { host: 9341, guest: 9342 };
 const argv = process.argv.slice(2);
 const opt = { url: "http://127.0.0.1:3001/", size: "1280x720", out: ".captures", keep: false, stop: false, fresh: false };
 const steps = [];
+if (argv.includes("--four")) Object.assign(ROLES, { guest2: 9343, guest3: 9344 });
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === "--") continue;
+  if (a === "--" || a === "--four" || a === "--perf") continue;
   if (a === "--keep") opt.keep = true;
   else if (a === "--stop") opt.stop = true;
   else if (a === "--fresh") opt.fresh = true;
@@ -106,8 +107,7 @@ async function launch(role) {
       "--headless=new",
       "--enable-unsafe-webgpu",
       "--use-angle=metal",
-      "--disable-gpu-vsync",
-      "--disable-frame-rate-limit",
+      ...(argv.includes("--perf") ? [] : ["--disable-gpu-vsync", "--disable-frame-rate-limit"]),
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
       "--disable-backgrounding-occluded-windows",
@@ -251,8 +251,8 @@ async function attach(role) {
 let failed = false;
 let pages = [];
 try {
-  await Promise.all([launch("host"), launch("guest")]);
-  pages = await Promise.all([attach("host"), attach("guest")]);
+  await Promise.all(Object.keys(ROLES).map(launch));
+  pages = await Promise.all(Object.keys(ROLES).map(attach));
   const [host, guest] = pages;
   for (const s of steps) {
     const t0 = Date.now();
@@ -260,7 +260,7 @@ try {
     try {
       if (cmd !== "run") throw new Error(`unknown step "${s}" (only run:<file.mjs>)`);
       const mod = await import(pathToFileURL(path.resolve(process.cwd(), rest.join(":"))).href);
-      const result = await mod.default({ host, guest, sleep, out: OUT, log });
+      const result = await mod.default({ host, guest, extraGuests: pages.slice(2), sleep, out: OUT, log });
       log({ step: s, ok: true, ms: Date.now() - t0, result });
       if (result && result.pass === false) failed = true;
     } catch (e) {
@@ -278,8 +278,7 @@ try {
   if (!opt.keep) {
     children.forEach((c) => c.kill());
     // A Chrome reused from an earlier --keep run is not our child: stop it too.
-    await stopRole("host");
-    await stopRole("guest");
+    await Promise.all(Object.keys(ROLES).map(stopRole));
   }
 }
 process.exit(failed ? 1 : 0);

@@ -7,7 +7,9 @@ import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
+/** Three missed worker heartbeats suspend prediction and new resource spends. */
+export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
 /** Snapshot JSON is sent in parts of this many characters. */
 export const SNAPSHOT_PART_CHARS = 16_000;
@@ -23,6 +25,9 @@ export type RefuseReason = "full" | "protocol" | "content" | "credential" | "rep
 export interface Telemetry {
   pose?: { frameId: string; positionKm: Vec3Tuple; quaternion: QuatTuple };
   health?: number;
+  /** Sender's inbound fuel counter and ordinary fuel reserved for braking. */
+  receivedFuelKg?: number;
+  reservedFuelKg?: number;
   propellant?: { ordinaryKg: number; protectedKg: number };
   power?: { capacitor01: number; heat01: number };
   processing?: { id: string; elapsedS: number; committedKg: number };
@@ -77,7 +82,7 @@ export interface WelcomeMsg {
 
 /** Changed slices that ride with a commit: world slices for everyone, player slices for the actor only. */
 export interface CommitSlices {
-  world?: { discoveries?: SaveData["world"]["discoveries"]; replication?: SaveData["world"]["replication"] };
+  world?: { rendezvous?: SaveData["world"]["rendezvous"]; discoveries?: SaveData["world"]["discoveries"]; replication?: SaveData["world"]["replication"] };
   player?: Record<string, unknown>;
 }
 
@@ -124,6 +129,13 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
     const p = v.pose;
     if (!isObj(p) || !isStr(p.frameId, 32) || !vec(p.positionKm, 3, BIG_KM) || !vec(p.quaternion, 4, 1.01)) return null;
     out.pose = { frameId: p.frameId, positionKm: [...(p.positionKm as Vec3Tuple)], quaternion: [...(p.quaternion as QuatTuple)] };
+  }
+  for (const key of ["receivedFuelKg", "reservedFuelKg"] as const) {
+    const value = v[key];
+    if (value !== undefined) {
+      if (!isNum(value) || value < 0) return null;
+      out[key] = value;
+    }
   }
   if (v.health !== undefined) {
     if (!isNum(v.health) || v.health < 0 || v.health > 1e6) return null;

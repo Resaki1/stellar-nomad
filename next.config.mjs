@@ -33,17 +33,17 @@ const gitState = (() => {
   }
 })();
 
-// This PR has one dedicated signaling deployment. A configured project URL
-// takes precedence when additional preview branches or production enable co-op.
-const coopPreview = process.env.VERCEL_ENV === "preview" &&
-  process.env.VERCEL_GIT_COMMIT_REF === "codex/m4-1-host-and-join";
+// Public signal origins. Credentials for optional TURN are managed solely on the Worker.
+const coopPreviews = new Set(["codex/m4-1-host-and-join", "codex/m4-shared-expedition"]);
+const signalWorker = process.env.VERCEL_ENV === "production" ? "production"
+  : process.env.VERCEL_ENV === "preview" && coopPreviews.has(process.env.VERCEL_GIT_COMMIT_REF) ? "staging" : null;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   env: {
     NEXT_PUBLIC_GIT_STATE: gitState,
-    ...(coopPreview && !process.env.NEXT_PUBLIC_COOP_SIGNAL_URL && {
-      NEXT_PUBLIC_COOP_SIGNAL_URL: "https://stellar-nomad-coop-staging.christian-reski.workers.dev",
+    ...(signalWorker && !process.env.NEXT_PUBLIC_COOP_SIGNAL_URL && {
+      NEXT_PUBLIC_COOP_SIGNAL_URL: `https://stellar-nomad-coop-${signalWorker}.christian-reski.workers.dev`,
     }),
   },
   sassOptions: {

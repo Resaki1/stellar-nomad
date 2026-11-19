@@ -5,13 +5,15 @@
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import { getLocalPlayerShip, localBeamPose, localRenderPose } from "@/sim/entities";
+import { setSimPaused } from "@/sim/simPause";
 import { repositionState } from "@/sim/ship/reposition";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
-import { hostClock, pushRemotePose, remotePoses } from "./coopState";
+import { shipRes, shipReq } from "@/store/shipResources";
+import { setCoop, hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
 const POSE_MS = 1000 / 15;
@@ -24,13 +26,15 @@ export function collectTelemetry(): Telemetry | undefined {
   sampleCollectors();
   const p = getLocalPlayerState();
   const tel: Telemetry = {
-    health: p.health,
+    health: p.health, receivedFuelKg: p.receivedFuelKg, reservedFuelKg: shipReq.reservedKg,
     propellant: { ordinaryKg: p.propellant.ordinaryKg, protectedKg: p.propellant.protectedKg },
     power: { capacitor01: p.power.capacitor01, heat01: p.power.heat01 },
     prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject },
   };
   if (p.ship) tel.pose = { frameId: p.ship.frameId, positionKm: [...p.ship.positionKm], quaternion: [...p.ship.quaternion] };
-  if (p.processing) tel.processing = { id: p.processing.id, elapsedS: p.processing.elapsedS, committedKg: p.processing.committedKg };
+  // A finished runtime retains the batch ID and final yield until the next batch starts.
+  const batch = shipRes.processing;
+  if (batch.id) tel.processing = { id: batch.id, elapsedS: batch.elapsedS, committedKg: batch.committedKg };
   return tel;
 }
 
@@ -45,6 +49,13 @@ export interface SessionClientHooks {
 }
 
 export function createSessionClient(h: SessionClientHooks): GuestSession {
+  // Use the host timestamps embedded in discoveries, so device clock skew cannot hide a finding.
+  let visitKey = "";
+  const latest = (data: SaveData) => Math.max(0, ...data.world.discoveries.sources.map(s => s.foundAt),
+    ...Object.values(data.world.discoveries.sites).map(s => s.at), ...Object.values(data.world.discoveries.families).map(f => f.firstAt));
+  const remember = (data: SaveData) => {
+    try { localStorage.setItem(visitKey, String(latest(data))); } catch { /* storage unavailable */ }
+  };
   return new GuestSession({
     clock: systemClock,
     name: h.name,
@@ -58,6 +69,8 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
         remotePoses.delete(e.by);
         if (e.by === getLocalPlayerId()) localRenderPose.atMs = -1;
       }
+      const active = getActiveSave();
+      if (active && visitKey && e.type === "discoveries.changed") remember(active.data);
       worldAuthority.deliver(e);
     },
     onAsteroid: (fieldId, chunkKey, instanceId) => {
@@ -71,6 +84,16 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
       hostClock.at = performance.now();
     },
     onSnapshot: (rec, welcome) => {
+      visitKey = "coop-findings:" + welcome.worldId + ":" + welcome.playerId;
+      let previous: string | null = null;
+      try { previous = localStorage.getItem(visitKey); } catch { /* storage unavailable */ }
+      const d = rec.data.world.discoveries;
+      const since = previous === null ? Infinity : Number(previous);
+      const changes = [d.sources.filter(s => s.foundAt > since).length + " sources",
+        Object.values(d.families).filter(f => f.firstAt > since).length + " material families",
+        Object.values(d.sites).filter(s => s.at > since).length + " recovered sites"].filter(label => !label.startsWith("0 "));
+      setCoop({ discoveries: changes.length ? "Since your last visit · " + changes.join(", ") : undefined });
+      remember(rec.data);
       remotePoses.clear();
       h.onSnapshot?.(rec, welcome);
     },
@@ -82,6 +105,9 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
 export function startSessionLoops(gs: GuestSession): () => void {
   let seq = 0;
   const pose = setInterval(() => {
+    const unavailable = gs.status !== "joined" || gs.waiting() || gs.hostClosing || gs.storageFailed;
+    setSimPaused(unavailable, "coop-authority");
+    if (unavailable) return;
     const s = getLocalPlayerShip();
     if (!s || gs.status !== "joined" || getLocalPlayerState().isDead || localRenderPose.atMs < 0) return;
     // The respawn commit arrives before its reply queues the runtime reposition.
@@ -108,6 +134,7 @@ export function startSessionLoops(gs: GuestSession): () => void {
   // The device-wide name changed (Settings): the host relabels us for everyone.
   const offName = onPilotNameChange((n) => gs.rename(n));
   return () => {
+    setSimPaused(false, "coop-authority");
     clearInterval(pose);
     clearInterval(tel);
     offName();

@@ -28,6 +28,8 @@ export function runOperation(op: WorldOperation, onSettled?: (o: OperationOutcom
 
 export function describeRejection(o: Extract<OperationOutcome, { status: "rejected" }>): string {
   switch (o.reason) {
+    case "host_unavailable":
+      return "Waiting for host";
     case "materials":
       return `Missing: ${Object.entries(o.missing ?? {}).map(([k, n]) => `${n} ${k}`).join(", ")}`;
     case "locked":

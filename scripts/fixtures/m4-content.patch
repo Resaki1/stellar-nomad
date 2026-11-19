@@ -1,0 +1,101 @@
+--- a/src/data/content.ts
++++ b/src/data/content.ts
+@@ -63,6 +63,7 @@
+ export const FAMILY_MIN_SHARE = 0.03;
+ 
+ export const MATERIAL_NAMES: Record<string, string> = {
++  fixture_ore: "Test ore",
+   silicates: "Silicates",
+   fe_ni_metal: "Fe-Ni metal",
+   sulfur: "Sulfur",
+@@ -324,6 +325,8 @@
+ // ---------------------------------------------------------------------------
+ 
+ export const ITEMS: ItemDef[] = [
++  { id: "consumable_fixture_patch", type: "consumable", name: "Test patch", uiDesc: "Content fixture",
++    slot: "utility", starter: true, icon: "module_ablative_plating_mk1", stackMax: 10, recipe: { fixture_ore: 1 } },
+   // ── Starter: no research ────────────────────────────────────────────────
+   {
+     id: "consumable_hull_patch_kit",
+--- a/src/sim/systems/sol.json
++++ b/src/sim/systems/sol.json
+@@ -291,6 +291,7 @@
+ 
+   "resources": {
+     "types": [
++      { "id": "fixture_ore", "name": "Test ore" },
+       { "id": "silicates", "name": "Silicates", "icon": "/assets/resources/silicates.png" },
+       { "id": "fe_ni_metal", "name": "Fe–Ni Metal", "icon": "/assets/resources/fe_ni_metal.png" },
+       { "id": "sulfur", "name": "Sulfur", "icon": "/assets/resources/sulfur.png" },
+@@ -329,6 +330,7 @@
+             "name": "S-Type",
+             "weight": 0.55,
+             "resources": [
++              { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+               { "resourceId": "silicates",    "min": 0.65, "max": 0.80 },
+               { "resourceId": "fe_ni_metal",  "min": 0.12, "max": 0.25 },
+               { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+@@ -341,6 +343,7 @@
+             "name": "C-Type",
+             "weight": 0.25,
+             "resources": [
++              { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+               { "resourceId": "silicates",    "min": 0.45, "max": 0.65 },
+               { "resourceId": "hydrates",     "min": 0.05, "max": 0.15 },
+               { "resourceId": "carbon",       "min": 0.02, "max": 0.06 },
+@@ -353,6 +356,7 @@
+             "name": "X-Type",
+             "weight": 0.20,
+             "resources": [
++              { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+               { "resourceId": "fe_ni_metal",  "min": 0.60, "max": 0.90 },
+               { "resourceId": "silicates",    "min": 0.08, "max": 0.30 },
+               { "resourceId": "sulfur",       "min": 0.01, "max": 0.06 },
+@@ -369,6 +373,7 @@
+               {
+                 "id": "c_type", "name": "C-Type", "weight": 1.0,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "silicates",    "min": 0.35, "max": 0.50 },
+                   { "resourceId": "hydrates",     "min": 0.20, "max": 0.32 },
+                   { "resourceId": "carbon",       "min": 0.03, "max": 0.07 },
+@@ -385,6 +390,7 @@
+               {
+                 "id": "x_type", "name": "X-Type", "weight": 0.8,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "fe_ni_metal",  "min": 0.65, "max": 0.90 },
+                   { "resourceId": "silicates",    "min": 0.08, "max": 0.25 },
+                   { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+@@ -395,6 +401,7 @@
+               {
+                 "id": "s_type", "name": "S-Type", "weight": 0.2,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "silicates",    "min": 0.60, "max": 0.75 },
+                   { "resourceId": "fe_ni_metal",  "min": 0.20, "max": 0.30 },
+                   { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+@@ -411,6 +418,7 @@
+               {
+                 "id": "s_type", "name": "S-Type", "weight": 0.4,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "silicates",    "min": 0.65, "max": 0.80 },
+                   { "resourceId": "fe_ni_metal",  "min": 0.12, "max": 0.25 },
+                   { "resourceId": "sulfur",       "min": 0.02, "max": 0.06 },
+@@ -421,6 +429,7 @@
+               {
+                 "id": "c_type", "name": "C-Type", "weight": 0.35,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "silicates",    "min": 0.45, "max": 0.65 },
+                   { "resourceId": "hydrates",     "min": 0.05, "max": 0.15 },
+                   { "resourceId": "carbon",       "min": 0.02, "max": 0.06 },
+@@ -431,6 +440,7 @@
+               {
+                 "id": "x_type", "name": "X-Type", "weight": 0.25,
+                 "resources": [
++                  { "resourceId": "fixture_ore", "min": 2, "max": 2 },
+                   { "resourceId": "fe_ni_metal",  "min": 0.60, "max": 0.90 },
+                   { "resourceId": "silicates",    "min": 0.08, "max": 0.30 },
+                   { "resourceId": "sulfur",       "min": 0.01, "max": 0.06 },

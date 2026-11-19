@@ -2,7 +2,7 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, BookmarkCheck, Check, Crosshair, Pickaxe, ScanLine } from "lucide-react";
+import { Bookmark, BookmarkCheck, Share2, Check, Crosshair, Pickaxe, ScanLine } from "lucide-react";
 import { playAudio } from "@/audio";
 
 import {
@@ -17,6 +17,8 @@ import {
   type ResearchNodeDef,
 } from "@/data/content";
 import { evaluateNode, missingAnalysis, nodeProgress, sourceClassBadge, type EvidenceView } from "@/sim/research/requirements";
+import { inSession } from "@/save/activeSave";
+import { addToastAtom } from "@/store/toast";
 import { cargoAtom } from "@/store/cargo";
 import { setDestinationToSourceAtom } from "@/store/discoveries";
 import { transitDriveOwnedAtom } from "@/store/transit";
@@ -169,6 +171,7 @@ function SourceRow({ id }: { id: string }) {
   // B3: without the drive a destination is cleared at once, so the button would do nothing.
   const driveOwned = useAtomValue(transitDriveOwnedAtom);
   const s = d.sources.find((x) => x.id === id);
+  const toast = useSetAtom(addToastAtom);
   const mark = bookmarks.find((b) => b.sourceId === id);
   const [name, setName] = useState(mark?.name ?? "");
   if (!s) return null;
@@ -198,6 +201,13 @@ function SourceRow({ id }: { id: string }) {
             {mark ? <BookmarkCheck size={12} aria-hidden /> : <Bookmark size={12} aria-hidden />}
           </button>
         </Tooltip>
+        {inSession() && !s.depleted && <Tooltip text="Share source with crew">
+          <button className="rp-source__btn" aria-label="Share source" onClick={() => {
+            runOperation({ type: "expedition.mark", sourceId: id, name: name || "Surveyed source", opId: newOpId() }, o => {
+              toast({ kind: o.status === "accepted" ? "success" : "warn", message: o.status === "accepted" ? "Source shared with crew" : "Source unavailable" });
+            });
+          }}><Share2 size={12} aria-hidden /></button>
+        </Tooltip>}
         {driveOwned && (
           <Tooltip text="Set destination">
             <button className="rp-source__btn" aria-label="Set destination" onClick={() => {

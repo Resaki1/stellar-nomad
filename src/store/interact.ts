@@ -3,6 +3,7 @@
  * points join the reticle's focus → act pattern. A small registry is ray-tested along the ship's
  * nose (never the camera: it lags), locked with the rock timing, and acted on with [G].
  */
+import { WRECK_SALVAGE_KM } from "@/data/content";
 import { atom, type createStore } from "jotai";
 import { playAudio } from "@/audio";
 import { Vector3 } from "three";
@@ -54,8 +55,6 @@ export const INTERACT_LOCK_KM = 5;
 const MIN_LOCK_ANGLE_RAD = (1.5 * Math.PI) / 180;
 const LOCK_GRACE_S = 0.18;
 const TICK_S = 0.05;
-/** The wreck tractor (WreckCollector BEAM_ACTIVATION_KM). */
-export const WRECK_SALVAGE_KM = 0.3;
 const SITE_RADIUS_M = 150;
 const POINT_RADIUS_M = 40;
 const WRECK_RADIUS_M = 2;

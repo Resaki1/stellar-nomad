@@ -7,7 +7,10 @@ export type AsteroidDestroyCause = "mined" | "collision";
  * Typed domain operations. `opId` is stable per intent: a retry reuses it, and an accepted id
  * has no second effect (receipt log + durable object state).
  */
+export type GiftKind = "cargo" | "consumable" | "fuel";
 export type WorldOperation =
+  | { type: "expedition.give"; opId: string; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
+  | { type: "expedition.mark"; opId: string; sourceId: string | null; name: string; clear?: boolean }
   | { type: "cargo.jettison"; opId: string; resourceId: string; amount?: number }
   | { type: "item.consume"; opId: string; itemId: string }
   | { type: "hotbar.assign"; opId: string; index: number; itemId: string | null }
@@ -72,6 +75,8 @@ export interface Transfer {
 }
 
 export type OperationResult =
+  | { type: "expedition.give"; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
+  | { type: "expedition.mark" }
   | { type: "cargo.jettison"; removed: number }
   | { type: "item.consume"; itemId: string }
   | { type: "hotbar.assign" }
@@ -101,6 +106,7 @@ export type OperationResult =
 export type RejectReason =
   | "invalid"
   | "unknown_player"
+  | "host_unavailable"
   | "dead"
   | "not_dead"
   | "already_done"
@@ -152,6 +158,8 @@ export type WorldEvent =
   | { type: "wreck.removed"; by: PlayerId; wreckId: string }
   | { type: "research.changed"; by: PlayerId; completedNodes: readonly string[] }
   | { type: "discoveries.changed"; by: PlayerId }
+  | { type: "expedition.marked"; by: PlayerId }
+  | { type: "expedition.given"; by: PlayerId; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
   | { type: "replication.changed"; by: PlayerId }
   /** The listed slices of `playerId` were replaced by a committed operation. */
   | { type: "player.changed"; by: PlayerId; playerId: PlayerId; keys: readonly (keyof PlayerState)[] }

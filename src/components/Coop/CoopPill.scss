@@ -108,3 +108,20 @@
   }
 }
 
+
+.coop-settings__expedition {
+  flex-basis: 100%;
+  display: grid;
+  gap: 6px;
+
+  form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 6px;
+  }
+
+  label { display: grid; gap: 3px; }
+  input { width: 6em; }
+  input, select { color-scheme: dark; font: inherit; }
+}

@@ -7,5 +7,73 @@
   "vars": { "GAME_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001" },
   "ratelimits": [
     { "name": "INVITES", "namespace_id": "1001", "simple": { "limit": 24, "period": 60 } }
-  ]
+  ],
+  "env": {
+    "production": {
+      "name": "stellar-nomad-coop-production",
+      "workers_dev": true,
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ROOMS",
+            "class_name": "InviteRoom"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "InviteRoom"
+          ]
+        }
+      ],
+      "vars": {
+        "GAME_ORIGINS": "https://stellar-nomad.com,https://www.stellar-nomad.com"
+      },
+      "ratelimits": [
+        {
+          "name": "INVITES",
+          "namespace_id": "1002",
+          "simple": {
+            "limit": 24,
+            "period": 60
+          }
+        }
+      ]
+    },
+    "staging": {
+      "name": "stellar-nomad-coop-staging",
+      "workers_dev": true,
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ROOMS",
+            "class_name": "InviteRoom"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "InviteRoom"
+          ]
+        }
+      ],
+      "vars": {
+        "GAME_ORIGINS": "https://stellar-nomad-git-codex-m4-1-host-and-join-resaki1s-projects.vercel.app,https://stellar-nomad-git-codex-m4-shared-expedition-resaki1s-projects.vercel.app"
+      },
+      "ratelimits": [
+        {
+          "name": "INVITES",
+          "namespace_id": "1001",
+          "simple": {
+            "limit": 24,
+            "period": 60
+          }
+        }
+      ]
+    }
+  }
 }

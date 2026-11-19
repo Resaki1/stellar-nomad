@@ -88,7 +88,14 @@ class Rig {
     this.clients.push(c);
     return c;
   }
-  settle() { return this.net.settle(); }
+  async settle() {
+    // Handshakes hash credentials asynchronously. An empty wire alone does not mean the host is idle.
+    for (let turn = 0; turn < 2; turn++) {
+      await this.net.settle();
+      await this.host.chain;
+    }
+    await this.net.settle();
+  }
 }
 
 /** A pose `offsetKm` from the rock in the rock's own frame. */
@@ -489,7 +496,231 @@ async function pilotActions() {
   return { pass: Object.values(checks).every(Boolean), checks };
 }
 
+async function sharedLoop() {
+  const repo = newWorld();
+  const seed = repo.peek();
+  const pilot = seed.data.players[HOST_ID];
+  pilot.cargo.items.hydrates = 5;
+  pilot.cargo.items.fe_ni_metal = 240;
+  pilot.cargo.items.silicates = 85;
+  pilot.health = 70;
+  pilot.modules.consumables.consumable_replication_kit = 1;
+  pilot.propellant.ordinaryKg = 0;
+  await repo.commit(seed.meta, seed.data);
+  let { rig, h, g } = await joinedPair(repo);
+  const gid = g.session.playerId;
+  const submit = (c, type, args) => c.session.submit({ type, opId: "loop-" + (++opN), ...args });
+  const run = async (c, type, args) => { submit(c, type, args); await rig.settle(); return c.settled.at(-1); };
+  const checks = { privateSnapshot: Object.keys(g.session.mirror.data.players).join() === gid &&
+    Object.values(g.session.mirror.data.world.members).every(m => m.verifier === null) };
+  const batch = await run(h, "processing.start", { recipeId: "hydrate_propellant", units: 3 });
+  const { batchId, outputKg } = batch.result;
+  h.telemetry = { processing: { id: batchId, elapsedS: 1, committedKg: outputKg / 3 }, propellant: { ordinaryKg: outputKg / 3, protectedKg: 0 } };
+  h.session.sendTelemetry();
+  await rig.settle();
+  await rig.host.close();
+  await rig.settle();
+  await rig.startHost();
+  const partial = h.telemetry;
+  h = rig.client("Host", { local: true, store: h.store });
+  g = rig.client("Guest", { store: g.store });
+  h.telemetry = partial;
+  h.join(); g.join(); await rig.settle();
+  checks.resumedBatch = h.session.mirror.data.players[HOST_ID].processing?.committedKg === outputKg / 3;
+  h.telemetry.processing.committedKg = outputKg;
+  h.telemetry.propellant.ordinaryKg = outputKg;
+  await run(h, "trial.record", { trialId: "first_batch" });
+  checks.finishedOnce = !rig.host.player(HOST_ID).processing && rig.host.player(HOST_ID).cargo.items.hydrates === 2;
+  delete h.telemetry;
+  const repair = await run(h, "ship.repair", { pct: 2 });
+  const patch = await run(h, "item.craft", { itemId: "consumable_hull_patch_kit" });
+  const research = await run(h, "research.unlock", { nodeId: "lg1_bulk_handling" });
+  const metalBefore = rig.host.player(HOST_ID).cargo.items.fe_ni_metal;
+  submit(h, "item.craft", { itemId: "module_cargo_rack_mk1" });
+  submit(h, "module.equip", { slot: "cargo", itemId: null });
+  await rig.settle();
+  const rack = rig.host.player(HOST_ID);
+  checks.sharedResearch = patch.status === "accepted" && research.status === "accepted" &&
+    g.session.mirror.data.world.research.completedNodes.includes("lg1_bulk_handling");
+  checks.queuedLoadout = rack.cargo.items.fe_ni_metal === metalBefore - 150 && rack.modules.ownedModules.includes("module_cargo_rack_mk1") && !rack.modules.equippedModules.cargo;
+  checks.repair = repair.status === "accepted" && rack.health === 72;
+  h.pose = { frameId: "earth", positionKm: [30000, 0, 0], quaternion: [0,0,0,1] };
+  const point = await run(h, "replication.place", { ...h.pose, name: "Earth rendezvous" });
+  checks.privateRecovery = point.status === "accepted" && rig.host.player(HOST_ID).replication.activeId === point.result.point.id &&
+    rig.host.player(gid).replication.activeId !== point.result.point.id;
+  g.pose = h.pose;
+  const activate = await run(g, "replication.activate", { pointId: point.result.point.id });
+  const deactivate = await run(g, "replication.deactivate", {});
+  checks.independentSelection = activate.status === "accepted" && deactivate.status === "accepted" &&
+    rig.host.player(gid).replication.activeId === "starter" && rig.host.player(HOST_ID).replication.activeId === point.result.point.id;
+  const site = { siteId: "luna_survey_canister" };
+  h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0, 0, 0, 1] };
+  await run(h, "site.inspect", site);
+  submit(g, "site.recover", site); submit(h, "site.recover", site); await rig.settle();
+  const winner = g.settled.at(-1).status === "accepted" ? g : h;
+  const winnerId = winner.session.playerId;
+  checks.siteRace = [g,h].filter(c => c.settled.at(-1).status === "accepted").length === 1 &&
+    rig.host.player(winnerId).cargo.items.titanium === 30;
+  const crash = await run(winner, "ship.destroy", winner.pose);
+  const wreck = { wreckId: crash.result.wreckId };
+  const rock = rocks("luna_belt", 1)[0];
+  const resolved = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, rig.host.player(winnerId));
+  winner.pose = poseAt(resolved);
+  const deadMine = await run(winner, "asteroid.mine", { ...rock, beamS: resolved.requiredBeamS });
+  checks.deadMine = deadMine.reason === "dead" && !destroyed(rig.host.world, rock);
+  const recovered = await run(winner, "ship.respawn", { mode: "active" });
+  checks.recovery = recovered.result.destination.pointId === rig.host.player(winnerId).replication.activeId;
+  winner.pose = poseAt(resolved);
+  checks.distantSalvage = (await run(winner, "wreck.collect", wreck)).reason === "too_far";
+  h.pose = g.pose = { frameId: "luna", positionKm: [1629, 4605, 393], quaternion: [0,0,0,1] };
+  submit(g, "wreck.collect", wreck); submit(h, "wreck.collect", wreck); await rig.settle();
+  checks.salvageConserved = [gid, HOST_ID].reduce((n,id) => n + (rig.host.player(id).cargo.items.titanium ?? 0), 0) === 30 &&
+    !rig.host.world.wrecks.some(w => w.items.titanium);
+  return { pass: Object.values(checks).every(Boolean), checks };
+}
+
+async function expedition() {
+  const repo = newWorld();
+  const seed = repo.peek();
+  const pilot = seed.data.players[HOST_ID];
+  const patch = "consumable_hull_patch_kit";
+  pilot.cargo.items.silicates = 7;
+  pilot.modules.consumables[patch] = 2;
+  await repo.commit(seed.meta, seed.data);
+  const { rig, h, g } = await joinedPair(repo);
+  const gid = g.session.playerId;
+  const observer = rig.client("Observer");
+  observer.join(); await rig.settle();
+  const pose = { frameId: "earth", positionKm: [30000,0,0], quaternion: [0,0,0,1] };
+  const sample = (kg, reserve = 0) => ({ pose, receivedFuelKg: 0, reservedFuelKg: reserve, propellant: { ordinaryKg: kg, protectedKg: 2 } });
+  h.telemetry = sample(50, 40);
+  g.telemetry = sample(10);
+  g.session.sendTelemetry();
+  await rig.settle();
+  const submit = async (c, op) => {
+    c.session.submit({ opId: "trip-" + (++opN), ...op });
+    await rig.settle(); return c.settled.at(-1);
+  };
+  const give = (kind, itemId, amount) => ({ type: "expedition.give", to: gid, kind, itemId, amount });
+  const checks = {};
+  checks.brakingReserve = (await submit(h, give("fuel", "fuel", 11))).reason === "materials";
+  checks.fuel = (await submit(h, give("fuel", "fuel", 9))).status === "accepted" &&
+    rig.host.player(HOST_ID).propellant.ordinaryKg === 41 && rig.host.player(gid).propellant.ordinaryKg === 19;
+  h.telemetry.propellant.ordinaryKg = 41;
+  // A sample that crossed the delivery can include real burns but cannot erase the gift.
+  g.telemetry.propellant.ordinaryKg = 8;
+  g.session.sendTelemetry(); await rig.settle();
+  checks.crossedFuel = rig.host.player(gid).propellant.ordinaryKg === 17;
+  g.telemetry.receivedFuelKg = 9;
+  g.telemetry.propellant.ordinaryKg = 17;
+  checks.short = (await submit(h, give("cargo", "silicates", 8))).reason === "materials";
+  const cargoBefore = rig.host.player(HOST_ID).cargo.items.silicates;
+  g.telemetry.propellant.ordinaryKg = 1e7;
+  g.session.sendTelemetry(); await rig.settle();
+  checks.tankFull = (await submit(h, give("fuel", "fuel", 1))).reason === "tank_full" && rig.host.player(HOST_ID).propellant.ordinaryKg === 41;
+  g.telemetry.propellant.ordinaryKg = 17;
+  g.telemetry.pose = { ...pose, positionKm: [30001,0,0] };
+  g.session.sendTelemetry(); await rig.settle();
+  checks.range = (await submit(h, give("cargo", "silicates", 2))).reason === "too_far" &&
+    rig.host.player(HOST_ID).cargo.items.silicates === cargoBefore;
+  g.telemetry.pose = pose;
+  g.session.sendTelemetry(); await rig.settle();
+  rig.net.duplicateNextToHost(h.conn);
+  checks.cargoOnce = (await submit(h, give("cargo", "silicates", 3))).status === "accepted" &&
+    rig.host.player(HOST_ID).cargo.items.silicates === 4 && rig.host.player(gid).cargo.items.silicates === 3;
+  checks.consumable = (await submit(h, give("consumable", patch, 1))).status === "accepted" &&
+    g.session.mirror.data.players[gid].modules.consumables[patch] === 1;
+  const fix = await submit(h, { type: "expedition.mark", sourceId: null, name: "Rendezvous" });
+  checks.marker = fix.status === "accepted" && g.session.mirror.data.world.rendezvous[HOST_ID]?.frameId === "earth";
+  const messages = rig.net.toClientLog.filter(([id,m]) => id === observer.conn && m.t === "commit");
+  checks.privateCommits = messages.length > 0 && messages.every(([,m]) => !m.slices.player && m.events.every(e => e.type !== "player.changed"));
+  rig.net.disconnect(g.conn); await rig.settle();
+  checks.offline = (await submit(h, give("fuel","fuel",1))).reason === "not_active";
+  const g2 = rig.client("Guest", { store: g.store });
+  g2.join(); await rig.settle();
+  checks.rejoin = g2.session.mirror.data.players[gid].receivedFuelKg === 9 && g2.session.mirror.data.players[gid].cargo.items.silicates === 3;
+  g2.telemetry = sample(17); g2.telemetry.receivedFuelKg = 9;
+  g2.session.sendTelemetry(); await rig.settle();
+  rig.repo.failNext = 1;
+  h.session.submit({ ...give("cargo","silicates",2), opId: "failed-gift" });
+  await rig.settle();
+  const durable = repo.peek().data.players;
+  checks.atomicFailure = rig.host.status === "storage_failed" && durable[HOST_ID].cargo.items.silicates === 4 &&
+    durable[gid].cargo.items.silicates === 3 && rig.host.player(gid).cargo.items.silicates === 3;
+  return { pass: Object.values(checks).every(Boolean), checks };
+}
+
+/** Run only in the disposable checkout with scripts/fixtures/m4-content.patch applied. */
+async function contentFixture() {
+  const { LocalAuthority } = await S("sim/world/authority.ts");
+  const ore = "fixture_ore", patch = "consumable_fixture_patch";
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  const rock = rocks("origin_belt", 1)[0];
+  const resolved = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, rig.host.player(gid));
+  if (!(resolved.yield[ore] > 0)) throw new Error("Apply the content fixture in a disposable checkout first");
+  const pose = poseAt(resolved);
+  const solo = defaults.defaultSaveData(HOST_ID);
+  const authority = new LocalAuthority({ getWorld: () => solo.world, getPlayer: id => solo.players[id],
+    getPlayers: () => Object.values(solo.players), markDirty: () => {}, resolveMine: soloResolver });
+  const mined = authority.submit(mineOp(rock, resolved.requiredBeamS), HOST_ID);
+  const craft = { type: "item.craft", opId: "fixture-craft", itemId: patch };
+  const crafted = authority.submit(craft, HOST_ID);
+  const submit = async (c, op) => { c.session.submit(op); await rig.settle(); return c.settled.at(-1); };
+  for (const c of [h,g]) {
+    c.telemetry = { pose, propellant: { ordinaryKg: 10, protectedKg: 0 } };
+    c.session.sendTelemetry();
+  }
+  await rig.settle();
+  const scan = await submit(g, { ...rock, type: "survey.inspect", opId: "fixture-scan" });
+  const fix = await submit(g, { type: "expedition.mark", sourceId: scan.result.sourceId, name: "Test ore", opId: "fixture-share" });
+  const remote = await submit(g, mineOp(rock, resolved.requiredBeamS));
+  const gift = await submit(g, { type: "expedition.give", kind: "cargo", itemId: ore, amount: 1, to: HOST_ID, opId: "fixture-give" });
+  const made = await submit(h, craft);
+  const wrong = rig.client("Old content");
+  wrong.session.o.content += "-old";
+  wrong.join(); await rig.settle();
+  const before = rig.host.world.revision;
+  await rig.host.close(); await rig.settle();
+  await rig.startHost();
+  const again = rig.client("Returning", { store: g.store });
+  again.join(); await rig.settle();
+  const checks = { generated: same(mined.result.granted, remote.result.granted), surveyed: scan.status === "accepted" && fix.status === "accepted",
+    craft: made.status === "accepted" && crafted.status === "accepted" && gift.status === "accepted",
+    stores: rig.host.player(HOST_ID).modules.consumables[patch] === 1 &&
+      again.session.mirror.data.players[gid].cargo.items[ore] === solo.players[HOST_ID].cargo.items[ore],
+    findings: rig.host.world.discoveries.families[ore]?.extracted && solo.world.discoveries.families[ore]?.extracted,
+    oldContent: wrong.session.refusal === "content" && Object.keys(rig.host.world.members).length === 2,
+    restart: rig.host.world.revision === before && rig.host.world.rendezvous[gid]?.sourceId === scan.result.sourceId };
+  return { pass: Object.values(checks).every(Boolean), checks, granted: remote.result.granted };
+}
+
+async function suspendedHost() {
+  let ms = 0;
+  const clock = { monoMs: () => ms, nowMs: () => Date.now() };
+  const rig = new Rig();
+  await rig.startHost(clock);
+  const h = rig.client("Host", { local: true }), g = rig.client("Guest");
+  for (const c of [h,g]) { c.session.o.clock = clock; c.join(); }
+  await rig.settle();
+  rig.host.tick(); await rig.settle();
+  const epoch = rig.host.epochMs(), revision = rig.host.world.revision;
+  ms += 120_000;
+  const refused = g.session.submit({ type: "trial.record", trialId: "first_batch", opId: "while-asleep" });
+  const waited = g.session.waiting() && refused.reason === "host_unavailable" && !g.session.pending;
+  rig.host.tick(); await rig.settle();
+  const bounded = rig.host.epochMs() - epoch <= 3000 && !g.session.waiting() && rig.host.world.revision === revision;
+  ms += 1000; rig.host.tick();
+  g.session.submit({ type: "trial.record", trialId: "first_batch", opId: "awake" });
+  await rig.settle();
+  return { pass: waited && bounded && g.settled.at(-1)?.status === "accepted", waited, bounded, epochAdvanceMs: rig.host.epochMs() - epoch };
+}
+
 const SCENARIOS = {
+  suspendedHost,
+  ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),
+  expedition,
+  sharedLoop,
   pilotActions,
   shipLifecycle,
   raceHostFirst: () => race("host"),

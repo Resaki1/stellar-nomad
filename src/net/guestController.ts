@@ -27,6 +27,7 @@ const RETRY_MS = 2000;
 const SNAPSHOT_TIMEOUT_MS = 20_000;
 /** Pilot keys an authority op writes (its reducer's playerKeys): adopted from the host when it committed unseen. */
 const OP_PILOT_KEYS: Partial<Record<WorldOperation["type"], (keyof PlayerState)[]>> = {
+  "expedition.give": ["propellant"],
   "ship.destroy": ["health", "propellant", "processing"],
   "ship.respawn": ["health", "ship", "propellant", "power", "processing"],
   "wreck.collect": ["propellant"],
@@ -264,7 +265,6 @@ export function joinAndBoot(code: string, signaling: Signaling = gameSignaling):
               leaveSession();
               fail(new JoinError(detail ?? "closed"));
             } else {
-              j.stopLoops();
               j.link?.close();
               remotePoses.clear();
               setCoop({ status: "refused", detail: detail ?? "closed" });
@@ -312,6 +312,7 @@ function resync(client: GuestSession, rec: NonNullable<GuestSession["mirror"]>):
     const p = client.pending;
     const unseen = p && mine.stream.seq === p.seq && mine.stream.opId === p.opId && (mine.stream.outcome as { status?: string } | null)?.status === "accepted";
     const adopt = new Set(unseen ? (OP_PILOT_KEYS[p.op.type] ?? []) : []);
+    if (mine.receivedFuelKg !== me.receivedFuelKg) adopt.add("propellant");
     if (unseen && p.op.type === "item.consume") {
       const def = getItemDef(p.op.itemId);
       for (const effect of def?.useDurationS ? [] : def?.useEffects ?? []) {
@@ -346,6 +347,7 @@ function refreshWorldMirrors(prev: NonNullable<GuestSession["mirror"]>["data"]["
   }
   before.forEach((_, wreckId) => worldAuthority.deliver({ type: "wreck.removed", by: "", wreckId }));
   worldAuthority.deliver({ type: "research.changed", by: "", completedNodes: next.research.completedNodes });
+  worldAuthority.deliver({ type: "expedition.marked", by: "" });
   worldAuthority.deliver({ type: "discoveries.changed", by: "" });
   worldAuthority.deliver({ type: "replication.changed", by: "" });
 }

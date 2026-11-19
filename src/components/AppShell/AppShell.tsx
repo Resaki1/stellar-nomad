@@ -6,7 +6,7 @@ import { bootActiveWorld, bootNewWorld } from "@/save/boot";
 import { unlockAudio } from "@/audio/engine";
 import { requestGamePointerLock } from "@/input/pointerLock";
 import { musicDebug } from "@/audio/music";
-import type { Difficulty, SaveMeta } from "@/save/types";
+import type { Difficulty, SaveMeta, ShipPose } from "@/save/types";
 import { addToastAtom } from "@/store/toast";
 import {
   app,
@@ -109,6 +109,7 @@ export default function AppShell() {
     if (process.env.NODE_ENV !== "development") return;
     const w = window as DevWindow;
     if (w.__test) return;
+    let networkPose: ShipPose | null = null;
     const stub = {
       app,
       titleMusic: musicDebug,
@@ -116,6 +117,28 @@ export default function AppShell() {
       async coopTitle() {
         const [g, c] = await Promise.all([import("@/net/guestController"), import("@/net/coopState")]);
         return { ...g.joinActivity(), sent: g.guestSentCount(), snapshot: c.coopSnapshot(), log: c.coopLog.slice(-12) };
+      },
+      /** Real guest connection without mounting a third/fourth renderer on the test host. */
+      moveNetworkPilot(pose: ShipPose) { networkPose = pose; },
+      async networkPilot(code: string) {
+        const { joinAndBoot, guestState } = await import("@/net/guestController");
+        await joinAndBoot(code);
+        const client = guestState()!.client;
+        const id = client.playerId!;
+        const pose = client.mirror!.data.players[id].ship!;
+        let seq = 0;
+        const timer = setInterval(() => {
+          const at = networkPose ?? pose;
+          client.sendPose({ seq: ++seq, tick: performance.now(), f: at.frameId,
+            p: at.positionKm, q: at.quaternion, v: [0, 0, 0], fl: 0 });
+        }, 1000 / 15);
+        window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
+        client.submit({ type: "expedition.mark", name: "Capacity pilot", sourceId: null, opId: crypto.randomUUID() });
+        return id;
+      },
+      async networkRevision() {
+        const { guestState } = await import("@/net/guestController");
+        return guestState()?.client.revision;
       },
       async ready(timeoutMs?: number): Promise<unknown> {
         while ((window as DevWindow).__test === stub) await new Promise((r) => setTimeout(r, 100));

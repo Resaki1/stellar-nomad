@@ -5,11 +5,10 @@
  */
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
-import { PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
+import { HOST_SILENCE_MS, PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
 import type { ClientLink, Clock } from "./ports";
 
-/** No host message for this long → "Waiting for host" (new commands queue). */
-export const HOST_SILENCE_MS = 3_000;
+export { HOST_SILENCE_MS } from "./protocol";
 
 export interface PendingIntent {
   seq: number;
@@ -121,7 +120,6 @@ export class GuestSession {
     if (!this.link) return; // A queued transport message may arrive after leave.
     const msg = decodeHostMsg(raw);
     if (!msg) return;
-    this.lastHostMs = this.o.clock.monoMs();
     if (msg.t === "welcome") return this.onWelcome(msg);
     if (msg.t === "refuse") {
       this.refusal = msg.reason;
@@ -130,6 +128,7 @@ export class GuestSession {
       return;
     }
     if (msg.gen !== this.gen) return;
+    if (channel === "cmd") this.lastHostMs = this.o.clock.monoMs();
     switch (msg.t) {
       case "snap":
         return this.onSnap(msg);
@@ -144,6 +143,7 @@ export class GuestSession {
         return;
       case "clock":
         this.o.onClock?.(msg);
+        this.pump();
         return;
       case "status":
         this.hostClosing = msg.state === "closing";
@@ -170,6 +170,8 @@ export class GuestSession {
   /** Queue an intent; it settles later through an `op.settled` event. */
   submit(op: WorldOperation): OperationOutcome {
     if (this.state === "refused") return { status: "rejected", opId: op.opId, by: this.playerId ?? "", reason: "not_allowed" };
+    if (this.welcome && (this.state !== "joined" || this.waiting() || this.hostClosing || this.storageFailed))
+      return { status: "rejected", opId: op.opId, by: this.playerId ?? "", reason: "host_unavailable" };
     this.queue.push(op);
     this.pump();
     return { status: "pending", opId: op.opId, by: this.playerId ?? "" };
@@ -177,7 +179,7 @@ export class GuestSession {
 
   sendTelemetry(): void {
     // A later sample must observe this pilot’s pending spend or repair before it can overwrite the result.
-    if (this.rec.pending || this.state !== "joined") return;
+    if (this.rec.pending || this.state !== "joined" || this.waiting() || this.storageFailed || this.hostClosing) return;
     const tel = this.o.telemetry?.();
     if (tel) this.link?.send("cmd", { t: "tel", gen: this.gen, tel });
   }
@@ -203,7 +205,7 @@ export class GuestSession {
   }
 
   private pump(): void {
-    if (this.rec.pending || this.state !== "joined") return;
+    if (this.rec.pending || this.state !== "joined" || this.waiting() || this.storageFailed || this.hostClosing) return;
     const op = this.queue.shift();
     if (!op) return;
     this.rec.pending = { seq: this.streamSeq + 1, opId: op.opId, op };
@@ -221,7 +223,7 @@ export class GuestSession {
   // ── host messages ────────────────────────────────────────────────────────
 
   private onWelcome(w: WelcomeMsg): void {
-    this.hostClosing = false;
+    this.hostClosing = this.storageFailed = false;
     this.welcome = w;
     this.gen = w.gen;
     this.parts = [];
@@ -242,7 +244,7 @@ export class GuestSession {
     if (this.parts.length !== s.of || this.parts[s.part] !== undefined) return;
     this.parts[s.part] = s.json;
     if (++this.partsGot < s.of) return;
-    const rec = JSON.parse(this.parts.join("")) as { meta: SaveMeta; data: SaveData };
+    const rec = JSON.parse(this.parts.join("")) as { meta: SaveMeta; data: SaveData; deadPilots: PlayerId[] };
     this.parts = [];
     const pid = this.playerId;
     const me = pid ? rec.data.players[pid] : undefined;
@@ -250,7 +252,7 @@ export class GuestSession {
     this.mirror = rec;
     this.revision = this.snapshotRevision = s.revision;
     this.poseFloor.clear();
-    for (const [id, p] of Object.entries(rec.data.players)) if (p.isDead) this.poseFloor.set(id, Infinity);
+    for (const id of rec.deadPilots) this.poseFloor.set(id, Infinity);
     this.streamSeq = me.stream.seq;
     const p = this.rec.pending;
     // An intent older than the stream (and not its last entry) can never execute: drop it.
@@ -297,11 +299,18 @@ export class GuestSession {
           break;
       }
     }
+    if (c.slices.world?.rendezvous) w.rendezvous = c.slices.world.rendezvous;
     if (c.slices.world?.discoveries) w.discoveries = c.slices.world.discoveries;
     if (c.slices.world?.replication) w.replication = c.slices.world.replication;
     const pid = this.playerId;
     const me = pid ? m.data.players[pid] : undefined;
-    if (me && c.slices.player) Object.assign(me, c.slices.player);
+    if (me && c.slices.player) {
+      // The receiver may have flown since its last sample. Keep that burn when a delivery crosses it.
+      const fuel = c.events.find(e => e.type === "expedition.given" && e.to === pid && e.kind === "fuel");
+      const live = fuel && this.o.telemetry?.()?.propellant;
+      Object.assign(me, c.slices.player);
+      if (live && fuel?.type === "expedition.given") me.propellant = { ...live, ordinaryKg: live.ordinaryKg + fuel.amount };
+    }
     c.events.forEach((e) => this.o.onEvent?.(e));
   }
 

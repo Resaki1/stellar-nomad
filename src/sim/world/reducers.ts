@@ -30,6 +30,8 @@ export interface ReduceCtx {
   bookmarked: () => ReadonlySet<string>;
   /** Re-derives a mined rock's yield; when present the op's `yield` claim is ignored. */
   resolveMine?: MineResolver;
+  nearbyPilot?: (id: PlayerId) => PlayerState | null;
+  reservedFuel?: (id: PlayerId) => number;
 }
 
 export interface Commit {
@@ -51,6 +53,7 @@ export type Reduction = Commit | Rejection;
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const isCount = (v: unknown): v is number => isNum(v) && v >= 0 && Number.isInteger(v);
 const reject = (reason: RejectReason, missing?: Record<string, number>): Rejection => (missing ? { reason, missing } : { reason });
+export const GIFT_RANGE_KM = 0.3;
 const DEFAULT_STACK_MAX = 99;
 const has = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -138,6 +141,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       };
     }
 
+    case "expedition.mark":
+    case "expedition.give":
     case "cargo.jettison":
     case "item.consume":
     case "hotbar.assign":
@@ -167,6 +172,77 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
   const p = player;
 
   switch (op.type) {
+    case "expedition.mark": {
+      if (typeof op.name !== "string" || (op.sourceId !== null && typeof op.sourceId !== "string")) return reject("invalid");
+      const fixes = { ...world.rendezvous };
+      if (op.clear === true) {
+        delete fixes[by];
+      } else {
+        const source = op.sourceId === null ? null : world.discoveries.sources.find(s => s.id === op.sourceId && !s.depleted);
+        if (op.sourceId !== null && !source) return reject("not_found");
+        const location = source ?? p.ship;
+        if (!location || !isFrameId(location.frameId) || p.isDead) return reject("not_active");
+        fixes[by] = { name: op.name.trim().slice(0, 40) || "Rendezvous", frameId: location.frameId,
+          positionKm: [...location.positionKm], sourceId: op.sourceId };
+      }
+      return { result: { type: op.type }, apply: () => { world.rendezvous = fixes; },
+        events: [{ type: "expedition.marked", by }], playerKeys: [] };
+    }
+
+    case "expedition.give": {
+      if (typeof op.to !== "string" || op.to === by || typeof op.itemId !== "string" ||
+          !Number.isSafeInteger(op.amount) || op.amount < 1) return reject("invalid");
+      const peer = ctx.nearbyPilot?.(op.to);
+      if (!peer) return reject("not_active");
+      if (p.isDead || peer.isDead) return reject("dead");
+      if (!p.ship || !peer.ship || !isFrameId(p.ship.frameId) || !isFrameId(peer.ship.frameId) ||
+          poseDistanceKm(p.ship.frameId, p.ship.positionKm, peer.ship.frameId, peer.ship.positionKm) > GIFT_RANGE_KM) return reject("too_far");
+      const { amount, itemId, kind, to } = op;
+      let apply: () => void;
+      let key: keyof PlayerState;
+      if (kind === "fuel") {
+        if (itemId !== "fuel") return reject("invalid");
+        const available = Math.max(0, p.propellant.ordinaryKg - (ctx.reservedFuel?.(by) ?? 0));
+        if (available < amount) return reject("materials", { fuel: amount - Math.floor(available) });
+        const pendingKg = peer.processing ? Object.values(peer.processing.reserved).reduce((a, b) => a + b, 0) *
+          getEffectiveTuning().processingKgPerUnit - peer.processing.committedKg : 0;
+        if (peer.propellant.ordinaryKg + Math.max(0, pendingKg) + amount > tankCapacityKg(peer, world)) return reject("tank_full");
+        key = "propellant";
+        apply = () => {
+          p.propellant = { ...p.propellant, ordinaryKg: p.propellant.ordinaryKg - amount };
+          peer.propellant = { ...peer.propellant, ordinaryKg: peer.propellant.ordinaryKg + amount };
+          peer.receivedFuelKg += amount;
+        };
+      } else if (kind === "cargo" || kind === "consumable") {
+        const cargo = kind === "cargo";
+        const from = cargo ? p.cargo.items : p.modules.consumables;
+        const into = cargo ? peer.cargo.items : peer.modules.consumables;
+        const def = cargo ? undefined : getItemDef(itemId);
+        if (!cargo && def?.type !== "consumable") return reject("unknown_item");
+        const aboard = has(from, itemId) ? from[itemId] : 0;
+        if (amount > aboard) return reject("materials", { [itemId]: amount - aboard });
+        const held = has(into, itemId) ? into[itemId] : 0;
+        const room = cargo ? cargoRemaining(peer, world) : (def?.stackMax ?? DEFAULT_STACK_MAX) - held;
+        if (amount > room) return reject("no_capacity");
+        const debit = { ...from, [itemId]: aboard - amount };
+        if (!debit[itemId]) delete debit[itemId];
+        const credit = { ...into, [itemId]: held + amount };
+        key = cargo ? "cargo" : "modules";
+        apply = () => {
+          if (cargo) {
+            p.cargo = { ...p.cargo, items: debit };
+            peer.cargo = { ...peer.cargo, items: credit };
+          } else {
+            p.modules = { ...p.modules, consumables: debit };
+            peer.modules = { ...peer.modules, consumables: credit };
+          }
+        };
+      } else return reject("invalid");
+      return { result: { type: op.type, to, amount, itemId, kind }, apply, playerKeys: [key],
+        events: [{ type: "player.changed", by, playerId: to, keys: kind === "fuel" ? [key, "receivedFuelKg"] : [key] },
+          { type: "expedition.given", by, to, amount, itemId, kind }] };
+    }
+
     case "cargo.jettison": {
       if (p.isDead) return reject("dead");
       if (typeof op.resourceId !== "string" || !has(p.cargo.items, op.resourceId)) return reject("not_found");

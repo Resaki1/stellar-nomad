@@ -323,5 +323,6 @@ export const abandonShipAtom = atom(null, (get, set): boolean => {
   const ship = getLocalPlayerShip();
   if (get(isDeadAtom) || !ship) return false;
   const p = ship.posKm;
-  return set(dieAtom, { frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" })?.status === "accepted";
+  const outcome = set(dieAtom, { frameId: ship.frameId, positionKm: [p.x, p.y, p.z], cause: "abandon" });
+  return outcome?.status === "pending" || outcome?.status === "accepted";
 });

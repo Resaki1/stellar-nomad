@@ -13,6 +13,7 @@ import type { HostWorkerToMain, MainToHostWorker } from "./hostWorkerProtocol";
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const LOCK_WAIT_MS = 5000;
 const TICK_MS = 1000;
+const timings = { tickLateMs: [] as number[], writeMs: [] as number[] };
 
 let host: HostSession | null = null;
 let releaseLock: (() => void) | null = null;
@@ -45,6 +46,10 @@ async function init(m: Extract<MainToHostWorker, { t: "init" }>): Promise<void> 
     hostName: m.hostName,
     system: activeSystem,
     content,
+    onTiming: process.env.NODE_ENV === "development" ? (kind, ms) => {
+      timings[kind].push(ms);
+      if (timings[kind].length > 120) timings[kind].shift();
+    } : undefined,
     onPlayerCount: (count) => post({ t: "players", count }),
     onState: (state, detail) => post({ t: "state", state, detail }),
   });
@@ -97,6 +102,7 @@ scope.onmessage = (ev: MessageEvent<MainToHostWorker>) => {
           : {
               gen: host.generation,
               status: host.status,
+              timings,
               revision: host.world.revision,
               members: structuredClone(host.world.members),
               // "field:chunk:id" of every depleted rock (gates count and look up depletions).

@@ -93,6 +93,9 @@ export const TRIALS: TrialDef[] = [
   { id: "transit_leg", name: "Transit calibration run", howTo: "Complete a transit leg to a destination" },
 ];
 
+/** Tractor acquisition radius, measured from the wreck in its own orbital frame. */
+export const WRECK_SALVAGE_KM = 0.3;
+
 /** Close inspection, starter scanner: hold time on a locked rock and maximum range. */
 export const INSPECT_TIME_S = 4;
 export const INSPECT_RANGE_M = 2500;

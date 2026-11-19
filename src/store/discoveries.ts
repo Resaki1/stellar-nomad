@@ -4,8 +4,8 @@
  */
 import { atom } from "jotai";
 import { SOURCE_CLASS_NAMES } from "@/data/content";
-import type { SourceFinding } from "@/save/types";
-import type { FrameId } from "@/sim/frames";
+import type { SourceFinding, WorldState } from "@/save/types";
+import { isFrameId, type FrameId } from "@/sim/frames";
 import { computeLoadoutPreview, type LoadoutPreview } from "@/sim/ship/loadoutPreview";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 import { cargoAtom } from "@/store/cargo";
@@ -15,6 +15,8 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { targetedPOIAtom, transitDriveOwnedAtom } from "@/store/transit";
 
 export const sourceLabel = (s: SourceFinding, name?: string): string => name || `${SOURCE_CLASS_NAMES[s.classId] ?? s.classId} rock`;
+
+export const rendezvousAtom = atom<WorldState["rendezvous"]>({});
 
 /** Arrival stand-off: outside the rock with room to inspect or mine it. */
 const standoffKm = (s: SourceFinding): number => Math.max(0.3, (s.radiusM / 1000) * 4);
@@ -35,6 +37,12 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
       maxDistanceKm: 1e6,
       arrivalOffsetKm: standoffKm(s),
     });
+  }
+  for (const [owner, fix] of Object.entries(get(rendezvousAtom))) {
+    const source = fix.sourceId ? sources.find(s => s.id === fix.sourceId) : null;
+    if (!isFrameId(fix.frameId) || (fix.sourceId && (!source || source.depleted))) continue;
+    out.push({ id: `rendezvous:${owner}`, name: fix.name, positionKm: fix.positionKm, frameId: fix.frameId,
+      minDistanceKm: 0, maxDistanceKm: Infinity, arrivalOffsetKm: source ? standoffKm(source) : 0.1 });
   }
   return out;
 });
