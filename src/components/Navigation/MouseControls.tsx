@@ -3,9 +3,9 @@ import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { hdrCalibrationOpenAtom, settingsIsOpenAtom } from "@/store/store";
 import { isDeadAtom } from "@/store/death";
-import { mouseSettingsAtom, withMouseDefaults } from "@/store/mouseSettings";
+import { mouseSettingsAtom, usedCursorReleaseAtom, withMouseDefaults } from "@/store/mouseSettings";
 import { attachMouse, mouseConfig, resetMouseSteering } from "@/input/mouse";
-import { requestGamePointerLock, setCursorNeeded, setUserUnlockHandler } from "@/input/pointerLock";
+import { isCursorNeeded, isPointerLocked, releaseGamePointerLock, requestGamePointerLock, setCursorNeeded, setUserUnlockHandler } from "@/input/pointerLock";
 import { getAppPhase } from "@/components/AppShell/appState";
 
 /** Desktop mouse device: pointer lock, steering preferences, and the UIs that need the cursor back. */
@@ -34,12 +34,32 @@ const MouseControls = () => {
       if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
       else if (getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
     });
+    // Some browsers open their context menu on press, others on release.
+    // Consume only the secondary click that started while steering.
+    let releasingWithMouse = false;
+    const onPointerDown = (e: PointerEvent): void => {
+      releasingWithMouse = e.button === 2 && isPointerLocked() && !isCursorNeeded() && getAppPhase() === "playing";
+      if (!releasingWithMouse) return;
+      e.preventDefault();
+      releaseGamePointerLock();
+      if (!store.get(usedCursorReleaseAtom)) store.set(usedCursorReleaseAtom, true);
+    };
+    const onContextMenu = (e: MouseEvent): void => {
+      if (!releasingWithMouse || e.button !== 2) return;
+      releasingWithMouse = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("contextmenu", onContextMenu, true);
     const onClick = (e: MouseEvent): void => {
       if (e.button === 0 && e.target instanceof HTMLCanvasElement) requestGamePointerLock();
     };
     window.addEventListener("click", onClick);
     return () => {
       window.removeEventListener("click", onClick);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("contextmenu", onContextMenu, true);
       setUserUnlockHandler(null);
       device.detach();
     };

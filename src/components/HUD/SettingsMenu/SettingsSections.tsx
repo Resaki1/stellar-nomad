@@ -197,6 +197,7 @@ function MouseSettingsSection() {
           ? "The mouse moves a marker around the nose; its offset sets the turn rate, so leaving it off-centre keeps the ship turning."
           : "The mouse places a marker in space and the ship turns its nose onto it, then stops."}
       </div>
+      <p className="dev-controls__hint">Right-click while steering to use the HUD. Click empty space to steer again.</p>
       <label className="dev-controls__label">
         mouse sensitivity {m.sensitivity.toFixed(2)}×
         <input

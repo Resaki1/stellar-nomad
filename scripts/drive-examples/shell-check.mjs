@@ -380,6 +380,7 @@ export default async function shellCheck(d) {
       await d.click(x, y);
       await wait(250);
     };
+    await ev('localStorage.removeItem("used-flight-cursor-release")');
     const fullscreen = "document.fullscreenElement === document.documentElement";
     await trustedClick(".shell-title > .display-mode button");
     await waitFor(fullscreen);
@@ -398,6 +399,23 @@ export default async function shellCheck(d) {
     }
     await playing();
     await waitFor(fullscreen);
+    const releaseCursor = async () => {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await d.send("Input.dispatchMouseEvent", { type, x: 640, y: 300, button: "right", clickCount: 1 });
+      }
+      await waitFor("!document.pointerLockElement && !!document.fullscreenElement && !document.querySelector('.panel__backdrop')");
+    };
+    await waitFor(`[...document.querySelectorAll(".flight-hud__hint")].some(el =>
+      el.textContent.includes("Right-click for cursor") && Number(getComputedStyle(el).opacity) > 0.5)`);
+    await releaseCursor();
+    await waitFor(`localStorage.getItem("used-flight-cursor-release") === "true" && !document.querySelector(".flight-hud").textContent.includes("Right-click")`);
+    await trustedClick('.hud__panel-btn[aria-label="Research"]');
+    await waitFor("document.querySelector('#panel-title')?.textContent === 'Research'");
+    await trustedClick(".panel__close");
+    await waitFor("!!document.pointerLockElement");
+    await releaseCursor();
+    await d.click(640, 300);
+    await waitFor("!!document.pointerLockElement");
     await d.press("h");
     await waitFor("!!document.querySelector('.hud--hidden') && document.querySelector('.hud__panel-buttons').getClientRects().length === 0");
     await d.press("o");
@@ -410,6 +428,10 @@ export default async function shellCheck(d) {
     await d.press("o");
     await trustedClick(".settings-menu__nav .display-mode button");
     await waitFor("!document.fullscreenElement && !!document.querySelector('.settings-menu__nav')");
+    await d.press("o");
+    await waitFor("!!document.pointerLockElement && document.querySelector('.settings__open-button kbd')?.textContent === 'O'");
+    await d.press("o");
+    await waitFor("!document.pointerLockElement && !!document.querySelector('.settings-menu__nav')");
     await trustedClick(".settings-menu__nav .display-mode button");
     await d.press("o");
     await waitFor("!!document.pointerLockElement && !!document.fullscreenElement");

@@ -3,12 +3,15 @@
 import { useEffect, useRef } from "react";
 import { useAtomValue } from "jotai";
 import { keybindsAtom, displayKey } from "@/store/keybinds";
+import { usedCursorReleaseAtom } from "@/store/mouseSettings";
 import { flightHud } from "./flightHudBuffer";
 import "./FlightHud.scss";
 
 /** Stick ring + marker, aim marker, velocity marker, free-look and click-to-steer hints. Positioned by drawFlightHud. */
 export default function FlightHud() {
   const keybinds = useAtomValue(keybindsAtom);
+  const usedCursorRelease = useAtomValue(usedCursorReleaseAtom);
+  const hintRelease = useRef<HTMLDivElement>(null);
   const ring = useRef<HTMLDivElement>(null);
   const stick = useRef<HTMLDivElement>(null);
   const aim = useRef<HTMLDivElement>(null);
@@ -24,10 +27,11 @@ export default function FlightHud() {
     e.velocity = velocity.current;
     e.hintFreeLook = hintFreeLook.current;
     e.hintLock = hintLock.current;
+    e.hintRelease = hintRelease.current;
     return () => {
-      e.ring = e.stick = e.aim = e.velocity = e.hintFreeLook = e.hintLock = null;
+      e.ring = e.stick = e.aim = e.velocity = e.hintFreeLook = e.hintLock = e.hintRelease = null;
     };
-  }, []);
+  }, [usedCursorRelease]);
 
   const freeLookKey = displayKey(keybinds.freeLook[0] ?? "alt");
 
@@ -47,6 +51,9 @@ export default function FlightHud() {
       <div ref={hintLock} className="flight-hud__hint flight-hud__hint--quiet" style={{ opacity: 0 }}>
         click to steer
       </div>
+      {!usedCursorRelease && <div ref={hintRelease} className="flight-hud__hint flight-hud__hint--quiet" style={{ opacity: 0 }}>
+        Right-click for cursor
+      </div>}
     </div>
   );
 }

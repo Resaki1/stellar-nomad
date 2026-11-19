@@ -1,5 +1,7 @@
 import { atomWithStorage } from "jotai/utils";
 
+export const usedCursorReleaseAtom = atomWithStorage("used-flight-cursor-release", false);
+
 export type MouseMode = "stick" | "aim";
 
 /** Mouse steering preferences (Settings → Controls). Per device, so localStorage rather than the save. */

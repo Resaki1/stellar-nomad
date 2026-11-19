@@ -101,7 +101,7 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   // The kit is used from the hotbar (D16); kept for rebinding.
   placePoint: [],
   toggleHud: ["h"],
-  toggleSettings: ["escape", "o"],
+  toggleSettings: ["o", "escape"],
 };
 
 // Max number of keys per action shown in the UI

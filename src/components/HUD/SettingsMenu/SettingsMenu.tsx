@@ -64,7 +64,7 @@ import {
   type NearbyStar,
 } from "@/sim/nearbyStars";
 
-import FullscreenControl, { useFullscreenMode } from "@/components/AppShell/FullscreenControl";
+import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import CoopPill from "@/components/Coop/CoopPill";
 import CoopSettings from "@/components/Coop/CoopSettings";
 
@@ -917,7 +917,6 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
   const [hudHidden, setHudHidden] = useAtom(hudHiddenAtom);
-  const fullscreen = useFullscreenMode() === "fullscreen";
   const menuRoot = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (isOpen && activeSubMenu === null) menuRoot.current?.focus({ preventScroll: true });
@@ -1111,7 +1110,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
     };
   }, [activeSubMenu, resumeFlight, setIsOpen]);
 
-  const menuKey = (fullscreen && keybinds.toggleSettings.find(key => key !== "escape")) || keybinds.toggleSettings[0];
+  const menuKey = keybinds.toggleSettings.find(key => key !== "escape") ?? keybinds.toggleSettings[0];
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
     : "Ship menu";
