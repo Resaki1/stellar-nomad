@@ -29,3 +29,5 @@ pnpm dlx wrangler@4 deploy
 pnpm dlx wrangler@4 secret put TURN_KEY_ID
 pnpm dlx wrangler@4 secret put TURN_API_TOKEN
 ```
+
+PR #38 uses a dedicated staging Worker, `stellar-nomad-coop-staging`. Its allowed game origin is the stable Vercel branch URL. The Next.js configuration supplies the public Worker URL for that branch's Vercel preview builds. A project-supplied `NEXT_PUBLIC_COOP_SIGNAL_URL` takes precedence. Cloudflare Realtime activation and its secrets can be added later to test TURN on the same preview.

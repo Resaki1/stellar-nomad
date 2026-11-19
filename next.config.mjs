@@ -33,9 +33,19 @@ const gitState = (() => {
   }
 })();
 
+// This PR has one dedicated signaling deployment. A configured project URL
+// takes precedence when additional preview branches or production enable co-op.
+const coopPreview = process.env.VERCEL_ENV === "preview" &&
+  process.env.VERCEL_GIT_COMMIT_REF === "codex/m4-1-host-and-join";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  env: { NEXT_PUBLIC_GIT_STATE: gitState },
+  env: {
+    NEXT_PUBLIC_GIT_STATE: gitState,
+    ...(coopPreview && !process.env.NEXT_PUBLIC_COOP_SIGNAL_URL && {
+      NEXT_PUBLIC_COOP_SIGNAL_URL: "https://stellar-nomad-coop-staging.christian-reski.workers.dev",
+    }),
+  },
   sassOptions: {
     // Modern Sass API name (Sass >=1.33). Next 16 / Turbopack may or
     // may not honor this — components should use relative paths to
