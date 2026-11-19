@@ -31,7 +31,7 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
-import { spawnVFXEventAtom } from "@/store/vfx";
+import { remoteBurstLog, spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addToastAtom } from "@/store/toast";
 import { computedModifiersAtom, getFlag, getMultiplier } from "@/store/modules";
@@ -40,6 +40,9 @@ import { INSPECT_RANGE_M, INSPECT_TIME_S } from "@/data/content";
 import { playAudio } from "@/audio";
 import { isSimPaused } from "@/sim/simPause";
 import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
+import { localBeamPose, localRenderPose } from "@/sim/entities";
+import { getLocalPlayerId } from "@/save/playerId";
+import { onLoadedRockDestroyed } from "@/sim/asteroids/runtimeContext";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -325,7 +328,7 @@ function computeRayToAsteroidSurfacePoint(
  * Computes a stable "nose point" in the ship root's local space.
  * Ship forward is assumed to be +Z in model space.
  */
-function computeShipNoseLocal(root: THREE.Object3D, out: THREE.Vector3): boolean {
+export function computeShipNoseLocal(root: THREE.Object3D, out: THREE.Vector3): boolean {
   _shipBox.makeEmpty();
 
   root.updateMatrixWorld(true);
@@ -367,9 +370,11 @@ type MiningBeamProps = {
   start: THREE.Vector3;
   end: THREE.Vector3;
   progress01: number;
+  /** Another pilot's beam (mutable): skipped while off; its pulse phase rides in `dim`. */
+  remote?: { on: boolean; dim: boolean };
 };
 
-const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
+export const MiningBeam = ({ start, end, progress01, remote }: MiningBeamProps) => {
   const coreRef = useRef<NativeLineHandle>(null);
   const haloRef = useRef<NativeLineHandle>(null);
 
@@ -455,6 +460,7 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
   }, [spriteMats]);
 
   useFrame(({ clock }) => {
+    if (remote && !remote.on) return;
     const t = clock.elapsedTime;
 
     // Update line geometry every frame
@@ -473,7 +479,7 @@ const MiningBeam = ({ start, end, progress01 }: MiningBeamProps) => {
     const len = Math.sqrt(dxSE * dxSE + dySE * dySE + dzSE * dzSE);
 
     // Pulse mining: fade beam during "off" phase
-    const pulseOn = pulseCycleBuffer.beamOn;
+    const pulseOn = remote ? !remote.dim : pulseCycleBuffer.beamOn;
     const pulseFade = pulseOn ? 1.0 : 0.08; // dim but visible during off-phase
 
     // Beam intensity (keep subtle flicker for the beam itself)
@@ -754,6 +760,26 @@ const MiningSystem = () => {
   // Nearby asteroid data for ping bracket overlay (written to atom)
   type RawPingEntry = { instanceId: number; x: number; y: number; z: number; radiusM: number };
   const pingRawRef = useRef<RawPingEntry[]>([]);
+
+  // Another pilot's mine committed on a rock loaded here: the same burst, no loot (theirs).
+  // Resync deltas (by "") are rocks gone while away, not something seen happening.
+  useEffect(
+    () =>
+      onLoadedRockDestroyed((r) => {
+        if (r.cause !== "mined" || r.by === "" || r.by === getLocalPlayerId()) return;
+        const a = fieldAnchorMap.get(r.fieldId) ?? [0, 0, 0];
+        const wo = worldOrigin.worldOriginKm;
+        const position: [number, number, number] = [
+          (a[0] + r.chunkOriginKm[0] - wo.x) * 1000 + r.localM[0],
+          (a[1] + r.chunkOriginKm[1] - wo.y) * 1000 + r.localM[1],
+          (a[2] + r.chunkOriginKm[2] - wo.z) * 1000 + r.localM[2],
+        ];
+        spawnVFX({ type: "mined", position, radiusM: r.radiusM });
+        remoteBurstLog.push({ at: performance.now(), fieldId: r.fieldId, chunkKey: r.chunkKey, instanceId: r.instanceId, position, radiusM: r.radiusM });
+        if (remoteBurstLog.length > 16) remoteBurstLog.shift();
+      }),
+    [fieldAnchorMap, worldOrigin, spawnVFX],
+  );
 
   // Location captured at completion: the chunk may stream out before this runs.
   const removeAsteroid = useCallback(
@@ -1379,6 +1405,20 @@ const MiningSystem = () => {
     }
     if (!isMiningNow || cancelMining) miningBeamRequest.on = false;
     if (!miningBeamRequest.on) takeMiningWork();
+
+    // The beam as drawn, in the ship's frame: co-op poses show it to the other pilots.
+    {
+      const bp = localBeamPose, rp = localRenderPose, e = beamEndLocalRef.current;
+      bp.on = isMiningNow && !cancelMining && miningStateRef.current.targetedAsteroid !== null && rp.atMs >= 0;
+      if (bp.on) {
+        bp.dim = !pulseCycleBuffer.beamOn;
+        bp.atMs = rp.atMs;
+        bp.frameId = rp.frameId;
+        bp.relKm[0] = rp.relKm[0] + e.x / 1000;
+        bp.relKm[1] = rp.relKm[1] + e.y / 1000;
+        bp.relKm[2] = rp.relKm[2] + e.z / 1000;
+      }
+    }
 
     // Force an immediate state commit if we just cancelled or completed mining
     if (cancelMining || pendingRemovalIdRef.current !== null) {

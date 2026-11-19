@@ -13,7 +13,7 @@ export const SNAPSHOT_PART_CHARS = 16_000;
 const MAX_SNAPSHOT_PARTS = 2_000;
 const MAX_OP_CHARS = 8_192;
 const MAX_ID = 128;
-const MAX_NAME = 32;
+export const MAX_NAME = 32;
 
 export type Channel = "cmd" | "pose";
 export type RefuseReason = "full" | "protocol" | "content" | "credential" | "closed";
@@ -38,14 +38,22 @@ export interface PoseMsg {
   p: Vec3Tuple;
   v: Vec3Tuple;
   q: QuatTuple;
-  /** Bit 0 beam, bit 1 boost. */
+  /** Bit 0 beam, bit 1 boost, bit 2 beam in a pulse's off phase (dim). */
   fl: number;
+  /** Main-engine throttle 0..255 (the plume others draw). */
+  th?: number;
+  /** Beam endpoint on the rock, sender's frame km (with fl bit 0). */
+  b?: Vec3Tuple;
 }
+
+/** A beam endpoint farther than this from the sender is dropped (mining range is well under it). */
+export const MAX_BEAM_KM = 5;
 
 export type ClientMsg =
   | { t: "hello"; protocol: number; content: string; name: string; playerId?: PlayerId; credential?: string }
   | { t: "cmd"; gen: number; seq: number; opId: string; op: WorldOperation; tel?: Telemetry }
   | { t: "tel"; gen: number; tel: Telemetry }
+  | { t: "name"; gen: number; name: string }
   | PoseMsg;
 
 export interface WelcomeMsg {
@@ -151,7 +159,29 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
 export function decodePose(v: Obj): PoseMsg | null {
   if (!isStr(v.id) || !isInt(v.seq) || !isInt(v.gen) || !isNum(v.tick) || !isStr(v.f, 32)) return null;
   if (!vec(v.p, 3, BIG_KM) || !vec(v.v, 3, 1e6) || !vec(v.q, 4, 1.01) || !isInt(v.fl, 255)) return null;
-  return { t: "pose", id: v.id, seq: v.seq, gen: v.gen, tick: v.tick, f: v.f, p: v.p as Vec3Tuple, v: v.v as Vec3Tuple, q: v.q as QuatTuple, fl: v.fl };
+  const out: PoseMsg = { t: "pose", id: v.id, seq: v.seq, gen: v.gen, tick: v.tick, f: v.f, p: v.p as Vec3Tuple, v: v.v as Vec3Tuple, q: v.q as QuatTuple, fl: v.fl };
+  // Optional activity: a malformed field is dropped, the pose kept.
+  if (isInt(v.th, 255)) out.th = v.th;
+  if (vec(v.b, 3, BIG_KM)) {
+    const b = v.b as Vec3Tuple;
+    if (Math.hypot(b[0] - out.p[0], b[1] - out.p[1], b[2] - out.p[2]) <= MAX_BEAM_KM) out.b = [b[0], b[1], b[2]];
+  }
+  return out;
+}
+
+/** Control and format characters (zero-width, bidi overrides) never reach a label. */
+const INVISIBLE_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]|\udb40[\udc00-\udc7f]/g;
+
+/** A pilot's display name: invisible characters stripped, whitespace collapsed, bounded; "" when nothing is left. */
+export function cleanName(v: string): string {
+  return v.replace(INVISIBLE_RE, "").replace(/\s+/g, " ").trim().slice(0, MAX_NAME).trim();
+}
+
+/** A pilot's display name: cleaned, bounded, never empty. */
+export function decodeName(v: unknown): string | null {
+  if (!isStr(v, 64)) return null;
+  const n = cleanName(v);
+  return n ? n : null;
 }
 
 /** Untrusted guest input → a typed message, or null (dropped). Op contents are the reducer's to validate. */
@@ -166,7 +196,7 @@ export function decodeClientMsg(raw: unknown): ClientMsg | null {
         t: "hello",
         protocol: raw.protocol,
         content: raw.content,
-        name: raw.name.slice(0, MAX_NAME),
+        name: cleanName(raw.name),
         ...(raw.playerId !== undefined ? { playerId: raw.playerId as string } : {}),
         ...(raw.credential !== undefined ? { credential: raw.credential as string } : {}),
       };
@@ -186,6 +216,10 @@ export function decodeClientMsg(raw: unknown): ClientMsg | null {
     case "tel": {
       const tel = isInt(raw.gen) ? decodeTelemetry(raw.tel) : null;
       return tel ? { t: "tel", gen: raw.gen as number, tel } : null;
+    }
+    case "name": {
+      const name = isInt(raw.gen) ? decodeName(raw.name) : null;
+      return name ? { t: "name", gen: raw.gen as number, name } : null;
     }
     case "pose":
       return decodePose(raw);

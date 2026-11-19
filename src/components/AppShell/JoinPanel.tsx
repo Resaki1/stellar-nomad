@@ -9,7 +9,7 @@ import { Check, User, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { unlockAudio } from "@/audio/engine";
 import Panel from "@/components/HUD/Shell/Panel";
-import { PILOT_NAME_MAX, pilotName, setPilotName } from "@/net/pilotName";
+import { PILOT_NAME_MAX, chosenPilotName, defaultPilotName, setPilotName } from "@/net/pilotName";
 import type { RoomInfo } from "@/net/signaling";
 import type { SaveMeta } from "@/save/types";
 
@@ -67,7 +67,9 @@ export default function JoinPanel({
   onJoined: (meta: SaveMeta) => void;
 }) {
   const [code, setCode] = useState(() => normal(initialCode));
-  const [name, setName] = useState(pilotName);
+  // The device-wide name (Settings edits the same value); empty plays as the default.
+  const [name, setName] = useState(chosenPilotName);
+  const [fallback] = useState(defaultPilotName);
   const [card, setCard] = useState<Card>({ s: "empty" });
   const [joining, setJoining] = useState(false);
   const codeRef = useRef<HTMLInputElement>(null);
@@ -115,7 +117,7 @@ export default function JoinPanel({
     if (card.s === "room" && !card.refusal) joinRef.current?.focus();
   }, [card]);
 
-  const canJoin = card.s === "room" && !card.refusal && !joining && name.trim().length > 0;
+  const canJoin = card.s === "room" && !card.refusal && !joining;
 
   const join = () => {
     if (!canJoin) return;
@@ -243,6 +245,7 @@ export default function JoinPanel({
           <input
             className="shell-input"
             value={name}
+            placeholder={fallback}
             maxLength={PILOT_NAME_MAX}
             data-coop-name
             autoComplete="off"

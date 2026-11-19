@@ -36,6 +36,12 @@ type Props = {
    * thrust intensity in [0, 1]. 0 = no thrust, 1 = full thrust.
    */
   intensityRef: React.RefObject<number>;
+  /**
+   * Nozzle glow lights (default true). Remote pilots pass false: a light added to the scene
+   * changes the lights hash, so EVERY lit material recompiles (see the toggle note below) when
+   * a session starts, and each costs every lit fragment for the session. Their plume still draws.
+   */
+  castLight?: boolean;
 };
 
 // ── Tuning ───────────────────────────────────────────────────────────
@@ -152,6 +158,7 @@ const LIGHT_COLOR = (() => {
 const EngineExhaust = memo(function EngineExhaust({
   configs,
   intensityRef,
+  castLight = true,
 }: Props) {
   // Refs for per-frame mutation (no React re-renders)
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
@@ -295,13 +302,13 @@ const EngineExhaust = memo(function EngineExhaust({
             frustumCulled={false}
           />
           {/* Nozzle glow light — illuminates nearby hull */}
-          <pointLight
+          {castLight && <pointLight
             ref={(l) => { lightRefs.current[i] = l; }}
             color={LIGHT_COLOR}
             intensity={0}
             distance={LIGHT_DISTANCE}
             decay={2}
-          />
+          />}
         </group>
       ))}
     </>

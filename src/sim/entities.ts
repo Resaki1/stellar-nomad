@@ -36,4 +36,16 @@ export const localRenderPose = {
   frameId: "",
   relKm: [0, 0, 0] as [number, number, number],
   quat: [0, 0, 0, 1] as [number, number, number, number],
+  /** Smoothed main-engine plume intensity 0..1 (what the local exhaust draws). */
+  throttle: 0,
+};
+
+/** The local mining beam as drawn this frame: endpoint in the ship's frame (km), for co-op poses. */
+export const localBeamPose = {
+  on: false,
+  /** Pulse mining's off phase: the beam is drawn dim. */
+  dim: false,
+  atMs: -1,
+  frameId: "",
+  relKm: [0, 0, 0] as [number, number, number],
 };

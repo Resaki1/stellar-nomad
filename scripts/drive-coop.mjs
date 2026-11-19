@@ -230,8 +230,8 @@ async function attach(role) {
     },
     frames: (n) => evaluate(`__test.frames(${Number(n)}).then(()=>__test.frameCount)`),
     async shot(name) {
-      // At the title only the stub harness exists (no frame loop yet).
-      await evaluate("typeof __test.frames === 'function' ? __test.frames(2) : new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
+      // At the title only the stub harness exists (no frame loop yet); an open Settings menu stops it.
+      await evaluate("typeof __test.frames === 'function' && !document.querySelector('.settings-menu') ? __test.frames(2) : new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
       const r = await send("Page.captureScreenshot", { format: "png" });
       mkdirSync(path.dirname(outPath(name)), { recursive: true });
       writeFileSync(outPath(name), Buffer.from(r.data, "base64"));

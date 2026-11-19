@@ -16,9 +16,11 @@ import { LocalAuthority } from "@/sim/world/authority";
 import { tankCapacityKg } from "@/sim/world/reducers";
 import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
 import {
+  MAX_NAME,
   MAX_PLAYERS,
   PROTOCOL_VERSION,
   SNAPSHOT_PART_CHARS,
+  cleanName,
   decodeClientMsg,
   type Channel,
   type ClientMsg,
@@ -36,6 +38,8 @@ const MIN_BEAM_SHARE = 0.8;
 const MINE_RANGE_KM = 10;
 const MINE_SLACK_KM = 5;
 const CHECKPOINT_MS = 10_000;
+/** A pilot's renames closer together than this are coalesced (the last one lands on the 1 Hz tick). */
+const RENAME_MIN_MS = 1_000;
 /** Guests may not send these: dev tools and the host-owned clock. */
 const HOST_ONLY: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["type"]>(["time.set", "research.devSet"]);
 
@@ -90,6 +94,8 @@ export class HostSession {
   private mono0 = 0;
   private lastCheckpoint = 0;
   private readonly captured: WorldEvent[] = [];
+  private readonly renamedAt = new Map<PlayerId, number>();
+  private readonly pendingNames = new Map<PlayerId, string>();
 
   constructor(private readonly o: HostSessionOptions) {}
 
@@ -120,7 +126,8 @@ export class HostSession {
     w.session = { generation: w.session.generation + 1 };
     this.gen = w.session.generation;
     const hid = this.o.hostPlayerId;
-    w.members[hid] = { name: this.o.hostName, verifier: null, joinedAt: w.members[hid]?.joinedAt || this.o.clock.nowMs() };
+    w.members[hid] = { name: "", verifier: null, joinedAt: w.members[hid]?.joinedAt || this.o.clock.nowMs() };
+    w.members[hid].name = this.uniqueName(hid, cleanName(this.o.hostName) || "Host");
     this.data.players[hid] ??= defaultPlayerState(this.meta.difficulty);
     this.resolver = makeMineResolver(this.o.system, () => this.meta.difficulty);
     this.authority = new LocalAuthority({
@@ -146,6 +153,7 @@ export class HostSession {
   /** 1 Hz from the adapter: clock samples to everyone, plus the periodic telemetry checkpoint. */
   tick(): void {
     if (this.state !== "open" && this.state !== "storage_failed") return;
+    if (this.pendingNames.size > 0) this.flushRenames();
     const msg: HostMsg = { t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.data.world.simRate, hostMonoMs: this.o.clock.monoMs() };
     this.broadcast("cmd", msg);
     if (this.state === "open" && this.o.clock.monoMs() - this.lastCheckpoint >= CHECKPOINT_MS) this.enqueue(() => this.checkpoint());
@@ -195,6 +203,8 @@ export class HostSession {
       this.relayPose(m, pid, msg);
     } else if (msg.t === "tel") {
       this.applyTelemetry(pid, msg.tel);
+    } else if (msg.t === "name") {
+      this.rename(pid, msg.name);
     } else if (msg.t === "cmd") {
       if (msg.tel) this.applyTelemetry(pid, msg.tel);
       this.enqueue(() => this.execute(m, pid, msg));
@@ -232,11 +242,12 @@ export class HostSession {
       pid = newId();
       credential = b64url(crypto.getRandomValues(new Uint8Array(32)));
       const backup = structuredClone(this.data);
-      w.members[pid] = { name: hello.name, verifier: await sha256(credential), joinedAt: this.o.clock.nowMs() };
+      w.members[pid] = { name: "", verifier: await sha256(credential), joinedAt: this.o.clock.nowMs() };
+      w.members[pid].name = this.uniqueName(pid, hello.name || "Replicant");
       this.data.players[pid] = defaultPlayerState(this.meta.difficulty);
       if (!(await this.persist(backup))) return refuse("closed");
     } else if (w.members[pid] && hello.name) {
-      w.members[pid].name = hello.name;
+      w.members[pid].name = this.uniqueName(pid, hello.name);
     }
     // Fence the previous connection of this player: its late messages are ignored.
     const old = this.bound.get(pid);
@@ -260,6 +271,50 @@ export class HostSession {
     });
     this.sendSnapshot(m.conn);
     this.broadcastMembers();
+  }
+
+  /** A pilot renamed mid-session: a label, no revision; the next checkpoint persists it. Rate-limited per pilot. */
+  private rename(pid: PlayerId, name: string): void {
+    if (!this.data.world.members[pid]) return;
+    if (this.o.clock.monoMs() - (this.renamedAt.get(pid) ?? -Infinity) < RENAME_MIN_MS) {
+      this.pendingNames.set(pid, name);
+      return;
+    }
+    this.pendingNames.delete(pid);
+    if (this.applyName(pid, name)) this.broadcastMembers();
+  }
+
+  /** Coalesced renames whose cooldown has passed (from the 1 Hz tick). */
+  private flushRenames(): void {
+    let changed = false;
+    const now = this.o.clock.monoMs();
+    for (const [pid, name] of Array.from(this.pendingNames)) {
+      if (now - (this.renamedAt.get(pid) ?? -Infinity) < RENAME_MIN_MS) continue;
+      this.pendingNames.delete(pid);
+      changed = this.applyName(pid, name) || changed;
+    }
+    if (changed) this.broadcastMembers();
+  }
+
+  private applyName(pid: PlayerId, requested: string): boolean {
+    const mem = this.data.world.members[pid];
+    const name = mem ? this.uniqueName(pid, requested) : "";
+    if (!mem || mem.name === name) return false;
+    mem.name = name;
+    this.renamedAt.set(pid, this.o.clock.monoMs());
+    return true;
+  }
+
+  /** Labels stay distinguishable: a name another member holds gets " 2", " 3"... */
+  private uniqueName(pid: PlayerId, name: string): string {
+    const taken = new Set<string>();
+    for (const [id, mem] of Object.entries(this.data.world.members)) if (id !== pid) taken.add(mem.name.toLowerCase());
+    if (!taken.has(name.toLowerCase())) return name;
+    for (let i = 2; ; i++) {
+      const sfx = ` ${i}`;
+      const n = name.slice(0, MAX_NAME - sfx.length).trimEnd() + sfx;
+      if (!taken.has(n.toLowerCase())) return n;
+    }
   }
 
   /** Member names for everyone's mirror (labels): admission writes no commit. */

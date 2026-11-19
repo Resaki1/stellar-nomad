@@ -60,6 +60,8 @@ export class GuestSession {
   private streamSeq = 0;
   private readonly queue: WorldOperation[] = [];
   private rec: GuestRecord;
+  /** Sent in hello; a rename updates it so a rejoin keeps it. */
+  private name: string;
   mirror: { meta: SaveMeta; data: SaveData } | null = null;
   revision = 0;
   storageFailed = false;
@@ -67,6 +69,7 @@ export class GuestSession {
 
   constructor(private readonly o: GuestSessionOptions) {
     this.rec = o.store.load();
+    this.name = o.name;
   }
 
   get playerId(): PlayerId | null {
@@ -99,7 +102,7 @@ export class GuestSession {
       t: "hello",
       protocol: PROTOCOL_VERSION,
       content: this.o.content,
-      name: this.o.name,
+      name: this.name,
       ...(id ? { playerId: id } : {}),
       ...(!this.o.local && this.rec.credential ? { credential: this.rec.credential } : {}),
     });
@@ -159,6 +162,13 @@ export class GuestSession {
   sendTelemetry(): void {
     const tel = this.o.telemetry?.();
     if (tel && this.state === "joined") this.link?.send("cmd", { t: "tel", gen: this.gen, tel });
+  }
+
+  /** The pilot renamed: tell the host now (members reach everyone), and use it on rejoin. */
+  rename(name: string): void {
+    if (name === this.name) return;
+    this.name = name;
+    if (this.state === "joined") this.link?.send("cmd", { t: "name", gen: this.gen, name });
   }
 
   sendPose(p: Omit<PoseMsg, "t" | "id" | "gen">): void {

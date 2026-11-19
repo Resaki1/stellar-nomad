@@ -5,3 +5,5 @@
  */
 export const FRAME_PRIORITY_SIM_CLOCK = -2;
 export const FRAME_PRIORITY_PLAYER_SHIP = -1;
+/** Remote pilots' ships (co-op): after the player ship moved the origin, before POIs project them. */
+export const FRAME_PRIORITY_REMOTE_SHIPS = -0.5;

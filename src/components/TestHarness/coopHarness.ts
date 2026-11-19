@@ -3,7 +3,9 @@ import { getActiveSave, inSession, saveInfo, sessionBlocked } from "@/save/activ
 import { getLocalPlayerId } from "@/save/playerId";
 import { coopLog, coopSnapshot, remotePoses } from "@/net/coopState";
 import { guestFaults, guestSentCount, guestState, leaveSession } from "@/net/guestController";
-import { pilotName, setPilotName } from "@/net/pilotName";
+import { chosenPilotName, defaultPilotName, pilotName, setPilotName } from "@/net/pilotName";
+import { remoteBurstLog } from "@/store/vfx";
+import { poiBuffer } from "@/store/poi";
 import type { CoopFault } from "@/net/devFault";
 import { titleUrl } from "@/components/AppShell/appState";
 import { holdHostIncoming, hostClient, inspectHost, startHosting, stopHosting } from "@/net/hostController";
@@ -33,6 +35,22 @@ function remoteAbsKm(id?: string): Vector3 | null {
 }
 
 type Store = ReturnType<typeof createStore>;
+
+/** Green pilot POI markers in the DOM (POIMarkers). */
+function pilotMarkers() {
+  return Array.from(document.querySelectorAll<HTMLElement>(".poi-marker--pilot")).map((el) => {
+    const name = el.querySelector<HTMLElement>(".poi-marker__name");
+    const r = el.getBoundingClientRect();
+    return {
+      id: el.dataset.id ?? "",
+      shown: el.style.opacity === "1",
+      name: name && name.style.display !== "none" ? name.textContent ?? "" : "",
+      distance: el.querySelector(".poi-marker__distance")?.textContent ?? "",
+      x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+      color: name ? getComputedStyle(name).color : "",
+    };
+  });
+}
 
 export function createCoopHarness(store: Store) {
   return {
@@ -104,12 +122,24 @@ export function createCoopHarness(store: Store) {
       store.set(devTeleportAtom, { positionKm: [pos.x, pos.y, pos.z], quaternion: [face.x, face.y, face.z, face.w] });
       return true;
     },
-    /** Dev aim: point our nose at a remote pilot (no rotation charge). */
-    faceRemote(id?: string): boolean {
+    /** Dev aim: point our nose at a system-km point (no rotation charge). */
+    faceKm(p: [number, number, number]): boolean {
+      const ship = getLocalPlayerShip();
+      if (!ship) return false;
+      const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), new Vector3(...p).sub(ship.absPosKm).normalize());
+      ship.quat.copy(q);
+      ship.prevQuat.copy(q);
+      ship.angVel.set(0, 0, 0);
+      return true;
+    },
+    /** Dev aim: point our nose at a remote pilot, or straight away from it (no rotation charge). */
+    faceRemote(id?: string, away = false): boolean {
       const r = remoteAbsKm(id);
       const ship = getLocalPlayerShip();
       if (!r || !ship) return false;
-      const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), r.sub(ship.absPosKm).normalize());
+      const dir = r.sub(ship.absPosKm).normalize();
+      if (away) dir.negate();
+      const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), dir);
       ship.quat.copy(q);
       ship.prevQuat.copy(q);
       ship.angVel.set(0, 0, 0);
@@ -188,7 +218,7 @@ export function createCoopHarness(store: Store) {
       w.__coopFault = { ...w.__coopFault, [k]: on };
       return on;
     },
-    /** The name other pilots see (applies at the next hosting start or join). */
+    /** The name other pilots see (device-wide; a live session relabels us at once). */
     name: (n?: string): string => {
       if (n !== undefined) setPilotName(n);
       return pilotName();
@@ -198,11 +228,33 @@ export function createCoopHarness(store: Store) {
       const i = saveInfo();
       return { suspended: i.suspended, inSession: inSession(), blocked: { ...sessionBlocked } };
     },
-    /** Name markers on screen right now (what a player reads). */
-    labels: (): string[] =>
-      Array.from(document.querySelectorAll<HTMLElement>(".coop-marker"))
-        .filter((el) => el.style.display !== "none")
-        .map((el) => el.textContent ?? ""),
+    /** Pilot names on screen right now (green POI markers, what a player reads). */
+    labels: (): string[] => pilotMarkers().filter((m) => m.shown).map((m) => m.name),
+    /** Pilot POI markers and edge triangles as drawn: name, distance text, box, shown. */
+    markers: () => ({
+      targetedId: poiBuffer.targetedId,
+      markers: pilotMarkers(),
+      arrows: Array.from(document.querySelectorAll<HTMLElement>(".poi-arrow--pilot")).map((el) => {
+        const r = el.getBoundingClientRect();
+        return { id: el.dataset.id ?? "", shown: el.style.opacity === "1", x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), color: getComputedStyle(el).borderLeftColor };
+      }),
+    }),
+    /** Remote slots' drawn plume/beam over `ms` (CoopLayer remoteFxProbe). */
+    async fx(ms = 1000) {
+      const { remoteFxProbe } = await import("@/components/Coop/CoopLayer");
+      remoteFxProbe.reset();
+      await new Promise((r) => setTimeout(r, ms));
+      return remoteFxProbe.slots.filter((x) => x.id).map((x) => ({ ...x }));
+    },
+    /** Remote slots' drawn plume/beam right now (no reset). */
+    async fxNow() {
+      const { remoteFxProbe } = await import("@/components/Coop/CoopLayer");
+      return remoteFxProbe.slots.filter((x) => x.id).map((x) => ({ ...x }));
+    },
+    /** Destruction bursts shown here for other pilots' mined rocks. */
+    bursts: () => remoteBurstLog.map((b) => ({ ...b, ageMs: Math.round(performance.now() - b.at) })),
+    /** The chosen name ("" = default) and the default. */
+    nameInfo: () => ({ chosen: chosenPilotName(), fallback: defaultPilotName(), effective: pilotName() }),
     /** Messages handed to the guest link so far. */
     sent: (): number => guestSentCount(),
     /**

@@ -337,6 +337,63 @@ async function hardening() {
   return { pass, members, lateName, ordinaryKg: prop.ordinaryKg, protectedKg: prop.protectedKg };
 }
 
+/** Playtest 3: a rename reaches the host and every mirror; pose activity fields are bounded. */
+async function renameAndActivity() {
+  const { decodePose, decodeClientMsg } = await S("sim/session/protocol.ts");
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  g.session.rename("  Lyra  ");
+  h.session.rename("Altair");
+  rig.net.injectToHost(g.conn, "cmd", { t: "name", gen: g.session.generation, name: "   " });
+  await rig.settle();
+  const names = { host: rig.host.world.members[gid]?.name, hostSelf: rig.host.world.members[HOST_ID]?.name, hostMirror: h.session.mirror.data.world.members[gid]?.name, guestMirror: g.session.mirror.data.world.members[HOST_ID]?.name };
+  const base = { t: "pose", id: gid, seq: 1, gen: 1, tick: 0, f: "earth", p: [10, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 1 };
+  const ok = decodePose({ ...base, th: 200, b: [10.5, 0, 0] });
+  const far = decodePose({ ...base, th: 999, b: [100, 0, 0] });
+  const bad = decodePose({ ...base, b: ["x", 0, 0] });
+  const longName = decodeClientMsg({ t: "name", gen: 1, name: "x".repeat(65) });
+  const checks = {
+    renamed: names.host === "Lyra" && names.hostSelf === "Altair" && names.hostMirror === "Lyra" && names.guestMirror === "Altair",
+    poseFields: ok?.th === 200 && ok?.b?.[0] === 10.5,
+    farBeamDropped: !!far && far.b === undefined && far.th === undefined,
+    malformedKeepsPose: !!bad && bad.b === undefined,
+    longNameRefused: longName === null,
+  };
+  return { pass: Object.values(checks).every(Boolean), checks, names };
+}
+
+/** Review 3: renames are cleaned of invisible characters, made unique, and coalesced per pilot. */
+async function renameHardening() {
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  const sends = () => rig.host.world.members[gid]?.name;
+  // Taking the host's own name gets a suffix; zero-width / bidi / control characters are stripped.
+  const hostName = rig.host.world.members[HOST_ID]?.name;
+  g.session.rename(hostName);
+  await rig.settle();
+  const dup = sends();
+  await new Promise((r) => setTimeout(r, 1100));
+  g.session.rename("Ly\u200bra\u202e\u0007");
+  await rig.settle();
+  const clean = sends();
+  // A burst inside the cooldown: nothing lands until the tick, then only the last name.
+  for (let i = 0; i < 20; i++) g.session.rename(`Spam ${i}`);
+  await rig.settle();
+  const duringBurst = sends();
+  await new Promise((r) => setTimeout(r, 1100));
+  rig.host.tick();
+  await rig.settle();
+  const afterTick = sends();
+  const guestMirror = h.session.mirror.data.world.members[gid]?.name;
+  const checks = {
+    dupSuffixed: dup === `${hostName} 2`,
+    invisibleStripped: clean === "Lyra",
+    burstHeld: duringBurst === "Lyra",
+    lastLands: afterTick === "Spam 19" && guestMirror === "Spam 19",
+  };
+  return { pass: Object.values(checks).every(Boolean), checks, names: { dup, clean, duringBurst, afterTick, guestMirror } };
+}
+
 const SCENARIOS = {
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),
@@ -348,6 +405,8 @@ const SCENARIOS = {
   storageFailure,
   activityBounds,
   hardening,
+  renameAndActivity,
+  renameHardening,
 };
 
 const pick = process.argv[2] ? process.argv[2].split(",") : Object.keys(SCENARIOS);

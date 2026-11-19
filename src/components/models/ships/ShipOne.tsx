@@ -81,6 +81,12 @@ type GLTFResult = GLTF & {
 // ~5.5 stops. The hull was never the problem. See LIGHTING_PLAN D26.
 const HULL_EMISSIVE_INTENSITY = 0.0;
 
+/** Engine nozzles (model-local, inside the 0.3× group; +Z forward): the player's and remote pilots' plumes. */
+export const SHIP_ONE_EXHAUST: { position: [number, number, number]; radius: number }[] = [
+  { position: [4.1, 1.2, -9.5], radius: 1.32 }, // left nozzle
+  { position: [-4.1, 1.2, -9.5], radius: 1.32 }, // right nozzle
+];
+
 /** Hull mesh scale relative to the ship body (group 0.3 × mesh 0.01): vertices × this = metres. */
 const SHIP_ONE_MESH_SCALE = 0.3 * 0.01;
 

@@ -176,7 +176,7 @@ can attach to a kept one). A `run:` script gets `{ host, guest }`, each with `lo
 unless `--keep`; `pnpm drive:coop -- --stop` stops kept ones.
 
 ```bash
-COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 ```
 
 The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test
@@ -187,7 +187,10 @@ worker start: handoff) and `{ joinSnapshotDelayMs }` (welcome/snapshot held: Bac
 "Joining…"). At the title only the stub harness exists; `__test.coopTitle()` reads join state there.
 presence and race fail on any WebGPU `setPipeline` console error and require the first pose
 sample after first sight under 200 ms (the remote ship is precompiled at session start).
-Captures go to `.captures/coop/`.
+remoteFx reads `__test.coop.fx(ms)` (what each remote slot drew: beam frames/length, plume) and
+`__test.coop.bursts()` (destruction bursts shown for another pilot's mine); pilotMarker reads
+`__test.coop.markers()` (green pilot POI markers and edge triangles as drawn, plus the gaze
+target); rename types into Settings → friends. Captures go to `.captures/coop/`.
 
 ---
 

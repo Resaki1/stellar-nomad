@@ -315,3 +315,24 @@ transaction as the change.
   deviates from a smooth path 3 cm p50 / 9 cm p95 (was 17 cm / 95 cm, max 2.9 m).
 - **Open for M4.1.** Hosted signaling with per-peer tokens, STUN/TURN, commands for jettison and
   consumables, hotbar as a pilot pref, browser coverage of post-Join refusals (credential, closed).
+- **Other pilots' activity, markers and names (owner playtest 3).** Poses carry optional bounded
+  activity: `th` (plume throttle 0..255) and `b` (beam endpoint in the sender's frame, dropped beyond
+  5 km of the ship; `fl` bit 2 = a pulse's dim phase). Each remote slot draws the local plume and the
+  local mining beam from them, inside the precompiled slot subtree. A rock another pilot mines plays
+  the same destruction burst for everyone who has it loaded (read from the chunk just before the
+  event drops it; no loot). Remote plumes cast **no light**: a light added to the scene changes the
+  lights hash, so every lit material recompiles when a session starts, and each light costs every
+  lit fragment for the session. Remote pilots are green POI markers (name and distance always shown,
+  green edge triangle) with live frame-relative positions. Gaze never makes one a transit target:
+  transit aims with the destination frame's velocity only, so a moving friend would be missed. The
+  pilot name is device-wide (default "Replicant XXXX", never required), edited in Settings → friends
+  and on the join card. A rename mid-session sends a bounded `name` message; the host relabels the
+  member and broadcasts `members`. Gates: `coop-check` parts remoteFx, pilotMarker, rename and
+  transcript `renameAndActivity`. No remote engine or beam audio yet: see follow-ups.
+- **Name hardening (review 3).** The Settings name field also commits on Escape and when the menu
+  unmounts (no blur fires then). The host cleans every name (control, zero-width and bidi characters
+  stripped, whitespace collapsed, 32 chars), keeps labels distinct (a taken name, case-insensitive,
+  gets " 2", " 3"...) and coalesces a pilot's renames within 1 s: the last one lands on the 1 Hz
+  tick, so a rename loop costs at most one `members` broadcast per second per pilot. Gate:
+  transcript `renameHardening`. Known: a disconnected pilot's hull and marker stay at the last pose
+  until `REMOTE_STALE_MS` (5 s); an explicit leave signal would clear both at once.

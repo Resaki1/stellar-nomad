@@ -27,6 +27,10 @@ export interface PoseSample {
   v: [number, number, number];
   q: [number, number, number, number];
   fl: number;
+  /** Throttle 0..1. */
+  th: number;
+  /** Beam endpoint, sender frame km (null when no beam). */
+  b: [number, number, number] | null;
 }
 
 const POSE_BUFFER = 8;
@@ -83,7 +87,7 @@ export function pushRemotePose(m: PoseMsg): void {
   const at = localTimeOf(m.id, m.tick, reset);
   // Same frame sent twice (the sender's frames stalled): nothing new to interpolate toward.
   if (!reset && last && at <= last.at) return;
-  buf.push({ at, seq: m.seq, gen: m.gen, f: m.f, p: m.p, v: m.v, q: m.q, fl: m.fl });
+  buf.push({ at, seq: m.seq, gen: m.gen, f: m.f, p: m.p, v: m.v, q: m.q, fl: m.fl, th: (m.th ?? 0) / 255, b: m.fl & 1 && m.b ? m.b : null });
   if (buf.length > POSE_BUFFER) buf.shift();
 }
 

@@ -1,6 +1,6 @@
 /**
  * M4.0 exit gate in two real browsers (docs/M4_COOP_PLAN.md §1). Run with drive-coop.mjs:
- *   COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
+ *   COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
  *     pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
  * The host opens a fresh disposable `[gc] coop` world to friends; the guest joins through the join
  * card (invite link, Join button). cancelJoin, handoff, hostFail and leave change the session: keep them last. Mining
@@ -64,7 +64,7 @@ const PILL_LAYOUT = `(() => {
   const pill = document.querySelector(".coop-pill");
   const p = pill && vis(pill);
   if (!p) return { pill: null, overlaps: [] };
-  const sel = [".hud__panel-btn", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".coop-marker"];
+  const sel = [".hud__panel-btn", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".poi-marker--pilot"];
   const overlaps = [];
   for (const s of sel) for (const el of document.querySelectorAll(s)) {
     const r = vis(el);
@@ -117,7 +117,7 @@ async function waitFor(fn, ms, step = 200) {
 }
 
 export default async function coopCheck({ host, guest, log }) {
-  const parts = (process.env.COOP_PARTS ?? "presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
+  const parts = (process.env.COOP_PARTS ?? "presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
   let worldId = null;
@@ -601,6 +601,184 @@ export default async function coopCheck({ host, guest, log }) {
     return { pass: Object.values(checks).every(Boolean), checks, labels: last, layout, shots, ms: Date.now() - p0 };
   }
 
+  /**
+   * Other pilots' activity (playtest 3): the guest beams a rock beside the host. The host draws the
+   * guest's beam from its ship to the rock, the guest's plume while it thrusts, and a destruction
+   * burst at the rock when the guest's mine commits (no loot for the host).
+   */
+  async function remoteFx() {
+    const p0 = Date.now();
+    const r = await pickRock(host, undefined, 6);
+    const t = ref(r);
+    await warpTo(host, r, 2);
+    await guestTo(r);
+    const hostCargo0 = (await record(ids.host)).cargo.items;
+    const burstsBefore = (await host.evaluate(`${C}.bursts()`)).length;
+    await aim(guest, r);
+    // The host parks behind and above the guest, facing it, as a friend watching would: the beam
+    // runs from the guest's nose away into the rock. fx/fxNow load their module once first.
+    await host.evaluate(`${C}.fxNow()`);
+    const viewed = await host.evaluate(`${C}.meetRemote(0.12)`);
+    await host.frames(30);
+    await host.sleep(800);
+    await host.evaluate(`${C}.faceRemote()`);
+    await host.frames(10);
+    const rockKm = (await host.evaluate(`${C}.rocks(${J(r.fieldId)}, 400)`)).find((x) => x.chunkKey === r.chunkKey && x.instanceId === r.instanceId)?.distKm ?? null;
+    const m0 = Date.now();
+    await guest.press("m");
+    // Poll both sides while the beam runs; capture the host's view once it draws the beam.
+    const trace = [];
+    const shots = {};
+    let beamFx = null;
+    while (Date.now() - m0 < r.mineS * 1000 + 4000) {
+      const [gm, hf] = await Promise.all([guest.evaluate(`${R}.mining()`), host.evaluate(`${C}.fxNow()`)]);
+      const s0 = hf.find((x) => x.id === ids.guest);
+      trace.push([Date.now() - m0, gm.mining ? 1 : 0, s0?.beam ? 1 : 0, Math.round(s0?.beamLenM ?? 0)]);
+      if (s0?.beam && !shots.beam) {
+        await host.sleep(300);
+        await host.evaluate(`${C}.faceRemote()`);
+        shots.beam = await host.shot("coop/remotefx-host-beam");
+        beamFx = (await host.evaluate(`${C}.fx(600)`)).find((x) => x.id === ids.guest) ?? null;
+        break;
+      }
+      await host.sleep(150);
+    }
+    // The burst is short-lived: poll fast and capture as soon as it is logged.
+    const burst = await waitFor(async () => {
+      const b = await host.evaluate(`${C}.bursts()`);
+      return b.length > burstsBefore ? b[b.length - 1] : null;
+    }, r.mineS * 1000 + 15_000, 100);
+    if (burst) shots.burst = await host.shot("coop/remotefx-host-burst");
+    await settle(guest);
+    const guestOwn = (await guest.evaluate(`${C}.bursts()`)).filter((b) => b.instanceId === r.instanceId && b.chunkKey === r.chunkKey);
+    // Plume: the guest thrusts away from the rock for a moment.
+    await guest.keyDown("w");
+    await guest.sleep(500);
+    const thrustFx = (await host.evaluate(`${C}.fx(800)`)).find((x) => x.id === ids.guest) ?? null;
+    await guest.keyUp("w");
+    if (thrustFx) shots.thrust = await host.shot("coop/remotefx-host-thrust");
+    const hostCargo1 = (await record(ids.host)).cargo.items;
+    const burstDistM = burst ? Math.hypot(...burst.position) : null;
+    const checks = {
+      beamDrawn: !!viewed && !!beamFx && beamFx.beamFrames > 5 && beamFx.beamLenMax > 5 && beamFx.beamLenMax < 5000,
+      burstAtRock: !!burst && burst.instanceId === r.instanceId && burst.chunkKey === r.chunkKey && rockKm !== null && Math.abs(burstDistM - rockKm * 1000) < r.radiusM + 60,
+      noOwnBurstOnGuest: guestOwn.length === 0,
+      exhaust: !!thrustFx && thrustFx.exhaustMax > 0.05,
+      hostNoLoot: sameItems(hostCargo0, hostCargo1),
+      noPipelineErrors: pipelineErrors(host, guest).length === 0,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, rock: { ...t, radiusM: r.radiusM, mineS: r.mineS, hostDistKm: rockKm }, trace: trace.slice(-25), beamFx, thrustFx, burst: burst && { ...burst, distM: burstDistM }, shots, ms: Date.now() - p0 };
+  }
+
+  /** The guest as the host sees it: a green POI marker with name and distance, and a green edge triangle when behind. */
+  async function pilotMarker() {
+    const p0 = Date.now();
+    const guestName = await guest.evaluate(`${C}.name()`);
+    await guest.evaluate(`${C}.meetRemote(0.4)`);
+    await guest.frames(30);
+    await guest.sleep(1000);
+    const shots = {};
+    const out = {};
+    for (const [label, size] of [["1280", DESKTOP], ["390", PHONE]]) {
+      await host.send("Emulation.setDeviceMetricsOverride", size);
+      await host.sleep(500);
+      const seen = await waitFor(async () => {
+        await host.evaluate(`${C}.faceRemote()`);
+        await host.frames(5);
+        const m = await host.evaluate(`${C}.markers()`);
+        const k = m.markers.find((x) => x.id === `pilot:${ids.guest}` && x.shown);
+        return k && k.name ? { ...m, k } : null;
+      }, 10_000, 250);
+      shots[`front${label}`] = await host.shot(`coop/pilotmarker-front-${label}`);
+      // Gaze stays on the pilot: it must never become a transit destination.
+      await host.sleep(2000);
+      const targeted = (await host.evaluate(`${C}.markers()`)).targetedId;
+      const behind = await waitFor(async () => {
+        await host.evaluate(`${C}.faceRemote(undefined, true)`);
+        await host.frames(5);
+        const m = await host.evaluate(`${C}.markers()`);
+        const a = m.arrows.find((x) => x.id === `pilot:${ids.guest}` && x.shown);
+        return a ? a : null;
+      }, 10_000, 250);
+      shots[`edge${label}`] = await host.shot(`coop/pilotmarker-edge-${label}`);
+      const vw = size.width, vh = size.height;
+      out[label] = {
+        marker: seen?.k ?? null, arrow: behind, targeted,
+        // At the edge, or slid along it out of a HUD region (POIMarkers' avoid pass).
+        arrowOnEdge: !!behind && (behind.x <= 72 || behind.x >= vw - 72 || behind.y <= 72 || behind.y >= vh - 72),
+      };
+    }
+    await host.send("Emulation.setDeviceMetricsOverride", DESKTOP);
+    await host.sleep(300);
+    const green = (c) => /^rgba?\(95, 211, 138/.test(c ?? "");
+    const checks = {};
+    for (const [label, o] of Object.entries(out)) {
+      checks[`name${label}`] = !!o.marker && o.marker.name === guestName;
+      checks[`distance${label}`] = !!o.marker && /\d/.test(o.marker.distance) && /(m|km|AU|ly)$/.test(o.marker.distance.trim());
+      checks[`green${label}`] = !!o.marker && green(o.marker.color) && !!o.arrow && green(o.arrow.color);
+      checks[`edge${label}`] = o.arrowOnEdge;
+      checks[`notTargeted${label}`] = !String(o.targeted ?? "").startsWith("pilot:");
+    }
+    return { pass: Object.values(checks).every(Boolean), checks, guestName, out, shots, ms: Date.now() - p0 };
+  }
+
+  /** The host renames in Settings → friends while hosting; the guest's marker follows within 2 s. */
+  async function rename() {
+    const p0 = Date.now();
+    const NEW = "Altair";
+    const fallback = (await guest.evaluate(`${C}.nameInfo()`)).fallback;
+    await guest.evaluate(`${C}.meetRemote(0.4)`);
+    await guest.frames(30);
+    const before = await waitFor(async () => {
+      await guest.evaluate(`${C}.faceRemote()`);
+      await guest.frames(5);
+      const l = await guest.evaluate(`${C}.labels()`);
+      return l.length ? l : null;
+    }, 10_000, 250);
+    // As a player: open Settings, Friends, type the name, press Enter.
+    if (!(await host.evaluate("!!document.querySelector('.settings-menu')"))) await host.press("Escape");
+    await host.sleep(300);
+    await host.evaluate(`[...document.querySelectorAll(".settings-menu__button")].find((e) => e.textContent.trim().toLowerCase().startsWith("friends"))?.click(), true`);
+    await host.sleep(300);
+    const field = await host.evaluate(`(() => { const el = document.querySelector("[data-coop-settings-name]"); return el ? { value: el.value, placeholder: el.placeholder } : null; })()`);
+    const shots = { settings: await host.shot("coop/rename-settings") };
+    await host.evaluate(`(() => {
+      const el = document.querySelector("[data-coop-settings-name]");
+      el.focus();
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      set.call(el, ${J(NEW)}); el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`);
+    await host.press("Enter");
+    const t0 = Date.now();
+    shots.typed = await host.shot("coop/rename-settings-typed");
+    const seen = await waitFor(async () => {
+      await guest.evaluate(`${C}.faceRemote()`);
+      const l = await guest.evaluate(`${C}.labels()`);
+      return l.includes(NEW) ? l : null;
+    }, 5000, 100);
+    const seenMs = seen ? Date.now() - t0 : null;
+    shots.guest = await guest.shot("coop/rename-guest");
+    for (let i = 0; i < 3 && (await host.evaluate("!!document.querySelector('.settings-menu')")); i++) {
+      await host.press("Escape");
+      await host.sleep(250);
+    }
+    const hostRec = (await session())?.members ?? null;
+    // Back to the setup name (programmatic path: same setPilotName → session rename).
+    await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
+    const restored = await waitFor(async () => {
+      await guest.evaluate(`${C}.faceRemote()`);
+      return (await guest.evaluate(`${C}.labels()`)).includes(HOST_NAME);
+    }, 5000, 100);
+    const checks = {
+      fieldShown: !!field && field.value === HOST_NAME,
+      within2s: seenMs !== null && seenMs <= 2000,
+      defaultPattern: /^Replicant [0-9A-F]{4}$/.test(fallback),
+      restored: !!restored,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, field, before, seen, seenMs, fallback, hostMembers: hostRec, shots, ms: Date.now() - p0 };
+  }
+
   /** Direct writes to host-owned slices are inert in a session, on both tabs. */
   async function writeGate() {
     const out = {};
@@ -861,6 +1039,9 @@ export default async function coopCheck({ host, guest, log }) {
       joinCard,
       reloadPose,
       lateName,
+      remoteFx,
+      pilotMarker,
+      rename,
       writeGate,
       exportHidden,
       cancelJoin,

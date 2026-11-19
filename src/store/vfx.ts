@@ -29,6 +29,9 @@ export type AsteroidVFXEvent = {
 
 let nextEventId = 1;
 
+/** Bursts shown for OTHER pilots' mined rocks (tests read it; newest last, bounded). */
+export const remoteBurstLog: { at: number; fieldId: string; chunkKey: string; instanceId: number; position: [number, number, number]; radiusM: number }[] = [];
+
 // ---------------------------------------------------------------------------
 // Atoms
 // ---------------------------------------------------------------------------

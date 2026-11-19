@@ -2,9 +2,8 @@ import { useFrame } from "@react-three/fiber";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { MathUtils, Vector3, Mesh, type BufferGeometry, type PerspectiveCamera } from "three";
 import { getCameraTuning } from "./Camera/cameraTuning";
-import { ShipOne } from "./models/ships/ShipOne";
+import { SHIP_ONE_EXHAUST, ShipOne } from "./models/ships/ShipOne";
 import EngineExhaust from "./VFX/EngineExhaust";
-import type { ExhaustConfig } from "./VFX/EngineExhaust";
 import { useStore } from "jotai";
 import { hudInfoAtom, shipHealthAtom } from "@/store/store";
 import { cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
@@ -100,12 +99,6 @@ const _motion: ShipMotion = {
 /** HUD readout cadence; the atom write re-renders the dashboard. */
 const HUD_PUBLISH_S = 0.1;
 
-// Engine exhaust nozzle config (model-local space, inside 0.3x group); edit when swapping models.
-const EXHAUST_CONFIGS: ExhaustConfig[] = [
-  // position: [X, Y, Z], +X is left, +Y is up, +Z is forward
-  { position: [4.1, 1.2, -9.5], radius: 1.32 }, // left nozzle
-  { position: [-4.1, 1.2, -9.5], radius: 1.32 },  // right nozzle
-];
 
 const EXHAUST_SMOOTH_RATE = 6.0; // higher = faster response
 
@@ -523,6 +516,7 @@ const SpaceShip = memo(() => {
       rp.frameId = ship.frameId;
       rp.relKm[0] = _localRel.x; rp.relKm[1] = _localRel.y; rp.relKm[2] = _localRel.z;
       rp.quat[0] = q.x; rp.quat[1] = q.y; rp.quat[2] = q.z; rp.quat[3] = q.w;
+      rp.throttle = exhaustIntensity.current;
     }
     _localRel.add(_frameOrigin);
     worldOrigin.setShipPosKm(ship.absPosKm);
@@ -590,7 +584,7 @@ const SpaceShip = memo(() => {
     <mesh ref={shipRef} name="playerShip">
       <ShipOne ref={modelRef} name="playerShipModel" onHullGeometry={onHullGeometry}>
         <EngineExhaust
-          configs={EXHAUST_CONFIGS}
+          configs={SHIP_ONE_EXHAUST}
           intensityRef={exhaustIntensity}
         />
       </ShipOne>

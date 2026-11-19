@@ -4,15 +4,17 @@
  */
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
-import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
+import { getLocalPlayerShip, localBeamPose, localRenderPose } from "@/sim/entities";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hostClock, pushRemotePose } from "./coopState";
+import { onPilotNameChange } from "./pilotName";
 
 const POSE_MS = 1000 / 15;
 const TELEMETRY_MS = 2000;
+const BEAM_FRESH_MS = 200;
 
 /** Pilot-owned values from the local record (collectors sampled first). */
 export function collectTelemetry(): Telemetry | undefined {
@@ -74,6 +76,9 @@ export function startSessionLoops(gs: GuestSession): () => void {
     // The pose as drawn, stamped with its frame time: receivers interpolate on this timeline.
     const rp = localRenderPose;
     const drawn = rp.atMs >= 0 && rp.frameId === s.frameId;
+    const b = localBeamPose;
+    // A beam drawn within the last few frames, in the frame the pose is sent in.
+    const beam = b.on && b.frameId === s.frameId && performance.now() - b.atMs < BEAM_FRESH_MS;
     gs.sendPose({
       seq: ++seq,
       tick: drawn ? rp.atMs : performance.now(),
@@ -81,13 +86,18 @@ export function startSessionLoops(gs: GuestSession): () => void {
       p: drawn ? [rp.relKm[0], rp.relKm[1], rp.relKm[2]] : [s.posKm.x, s.posKm.y, s.posKm.z],
       v: [s.velKmps.x, s.velKmps.y, s.velKmps.z],
       q: drawn ? [rp.quat[0], rp.quat[1], rp.quat[2], rp.quat[3]] : [s.quat.x, s.quat.y, s.quat.z, s.quat.w],
-      fl: s.boosting ? 2 : 0,
+      fl: (s.boosting ? 2 : 0) | (beam ? 1 : 0) | (beam && b.dim ? 4 : 0),
+      th: Math.round(Math.min(1, Math.max(0, drawn ? rp.throttle : 0)) * 255),
+      ...(beam ? { b: [b.relKm[0], b.relKm[1], b.relKm[2]] as [number, number, number] } : {}),
     });
   }, POSE_MS);
   const tel = setInterval(() => gs.sendTelemetry(), TELEMETRY_MS);
+  // The device-wide name changed (Settings): the host relabels us for everyone.
+  const offName = onPilotNameChange((n) => gs.rename(n));
   return () => {
     clearInterval(pose);
     clearInterval(tel);
+    offName();
   };
 }
 
