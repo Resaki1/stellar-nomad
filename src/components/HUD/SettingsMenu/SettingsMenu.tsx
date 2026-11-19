@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, type ReactNode } from "react";
 import { playAudio } from "@/audio";
 import {
   ECLIPSE_2024_04_08_MS,
@@ -8,7 +8,7 @@ import {
 } from "@/store/simTime";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
-import { ChevronLeft, Settings as SettingsIcon } from "lucide-react";
+import { ChevronLeft, Menu as MenuIcon } from "lucide-react";
 import {
   SetAtom,
   Settings,
@@ -25,7 +25,7 @@ import { resetAllDevTuning } from "@/store/devTuning";
 import { setCursorNeeded } from "@/input/pointerLock";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
-import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
+import { displayKey, keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
 import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
 import { newOpId, runOperation } from "@/store/operations";
@@ -63,6 +63,7 @@ import {
   type NearbyStar,
 } from "@/sim/nearbyStars";
 
+import CoopPill from "@/components/Coop/CoopPill";
 import CoopSettings from "@/components/Coop/CoopSettings";
 
 enum SubMenu {
@@ -909,10 +910,14 @@ function DevControls({
 }
 
 
-const SettingsMenu = () => {
+const SettingsMenu = ({ children }: { children: ReactNode }) => {
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isOpen && activeSubMenu === null) menuRoot.current?.focus({ preventScroll: true });
+  }, [isOpen, activeSubMenu]);
   const gpu = useDetectGPU();
 
   const keybinds = useAtomValue(keybindsAtom);
@@ -985,7 +990,7 @@ const SettingsMenu = () => {
   }, [resetKeybinds]);
 
   const handleResetWorld = useCallback(async () => {
-    if (!window.confirm("Reset this world? All world and player progress in it will be lost.")) return;
+    if (!window.confirm("Reset this world? All progress for this world and its replicants will be lost.")) return;
     await resetActiveWorld();
     window.location.reload();
   }, []);
@@ -1046,18 +1051,23 @@ const SettingsMenu = () => {
 
   const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
 
-  // Hotkey handler: when closed, toggle key opens settings. When open, Panel
-  // handles Esc / backdrop close.
+  // Finish Escape navigation on keyup: the opener must not also close the menu,
+  // and steering must not reacquire pointer lock while the browser still owns Escape.
   const keybindsRef = useRef(keybinds);
   keybindsRef.current = keybinds;
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
 
   useEffect(() => {
+    let escapePressedInMenu = false;
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (isOpenRef.current) {
-        if (!e.repeat && e.key === "Enter" && (tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
+        if (e.key === "Escape" && !e.defaultPrevented && !e.repeat) {
+          e.preventDefault();
+          escapePressedInMenu = true;
+        }
+        if (!e.repeat && e.key === "Enter" && (e.target === menuRoot.current || tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
           e.preventDefault();
           resumeFlight();
         }
@@ -1071,24 +1081,44 @@ const SettingsMenu = () => {
         setIsOpen(true);
       }
     };
+    const cancelEscape = () => { escapePressedInMenu = false; };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !escapePressedInMenu) return;
+      cancelEscape();
+      if (!isOpenRef.current) return;
+      e.preventDefault();
+      if (activeSubMenu !== null) setActiveSubMenu(null);
+      else resumeFlight();
+    };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [resumeFlight, setIsOpen]);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", cancelEscape);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", cancelEscape);
+    };
+  }, [activeSubMenu, resumeFlight, setIsOpen]);
 
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
-    : "Settings";
+    : "Ship menu";
   const eyebrow = activeSubMenu ? "Settings" : undefined;
 
   return (
     <>
-      <button
-        className="settings__open-button"
-        onClick={toggleMenu}
-        aria-label="Open settings"
-      >
-        <SettingsIcon size={16} strokeWidth={1.75} aria-hidden />
-      </button>
+      <div className="hud__session-menu">
+        <CoopPill />
+        <button
+          className="settings__open-button"
+          onClick={toggleMenu}
+          aria-label="Open ship menu"
+        >
+          <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
+          <span>Menu</span>
+          {keybinds.toggleSettings[0] && <kbd>{displayKey(keybinds.toggleSettings[0])}</kbd>}
+        </button>
+      </div>
 
       {isOpen && (
         <Panel
@@ -1096,6 +1126,7 @@ const SettingsMenu = () => {
           eyebrow={eyebrow}
           tier={2}
           width={560}
+          closeOnEsc={false}
           onClose={resumeFlight}
           primaryAction={{ label: "Resume flight", keyHint: "↵", onClick: resumeFlight, variant: "primary" }}
           secondaryAction={
@@ -1111,16 +1142,20 @@ const SettingsMenu = () => {
         >
           <div className="settings-menu">
             {!activeSubMenu ? (
-              <div className="settings-menu__nav">
-                {availableSubMenus.map((subMenu) => (
-                  <button
-                    key={subMenu}
-                    className="settings-menu__button"
-                    onClick={() => { playAudio("click.soft"); setActiveSubMenu(subMenu); }}
-                  >
-                    {subMenu}
-                  </button>
-                ))}
+              <div className="settings-menu__nav" ref={menuRoot} tabIndex={-1}>
+                {children}
+                <h3 className="settings-menu__group-title">Settings</h3>
+                <div className="settings-menu__categories">
+                  {availableSubMenus.map((subMenu) => (
+                    <button
+                      key={subMenu}
+                      className="settings-menu__button"
+                      onClick={() => { playAudio("click.soft"); setActiveSubMenu(subMenu); }}
+                    >
+                      {subMenu}
+                    </button>
+                  ))}
+                </div>
                 <button
                   className="settings-menu__button settings-menu__button--exit"
                   disabled={exiting}

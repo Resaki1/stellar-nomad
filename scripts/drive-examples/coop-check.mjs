@@ -72,7 +72,9 @@ const PILL_LAYOUT = `(() => {
   }
   const box = (r) => r && [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
   const t = document.querySelector(".objective-tracker");
-  return { pill: box(p), tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null, overlaps };
+  const menu = document.querySelector(".settings__open-button").getBoundingClientRect();
+  const gap = Math.round(Math.max(menu.left - p.right, p.left - menu.right));
+  return { pill: box(p), gap, onScreen: p.left >= 0 && p.right <= innerWidth && p.top >= 0 && p.bottom <= innerHeight, tracker: t ? box(vis(t)) : null, trackerText: t?.textContent.trim().slice(0, 40) ?? null, overlaps };
 })()`;
 const LOCAL_STORAGE = `JSON.stringify(Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)])))`;
 const IDB_WORLDS = `new Promise((res) => { const r = indexedDB.open("stellar-nomad"); r.onsuccess = () => { const db = r.result;
@@ -881,6 +883,142 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       granted: mined.grant, transferred: 1, crafted: goods.modules.consumables.consumable_fixture_patch };
   }
 
+  async function shipMenu() {
+    const layout = {};
+    for (const width of [1440, 1100, 1048, 1024, 768, 600, 390]) {
+      const page = width === 390 ? guest : host;
+      if (width === 390) await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await page.send("Emulation.setDeviceMetricsOverride", width === 390 ? PHONE : { ...DESKTOP, width });
+      layout[width] = await page.evaluate(PILL_LAYOUT);
+      if (width === 1440 || width === 390) await page.shot("coop/ship-menu-hud-" + width);
+    }
+    await guest.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    for (const page of [host, guest]) await page.send("Emulation.setDeviceMetricsOverride", DESKTOP);
+
+    const clickAt = async (x, y) => {
+      for (const type of ["mousePressed", "mouseReleased"])
+        await host.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+    };
+    const state = () => host.evaluate(`({ title: document.querySelector("#panel-title")?.textContent ?? null,
+      ...__test.input.pointerLock.state() })`);
+    await host.send("Page.bringToFront");
+    await clickAt(620, 320);
+    await host.sleep(350);
+    const initial = await state();
+    await host.press("Escape");
+    await host.sleep(500);
+    const opened = await state();
+    const xy = await host.evaluate(`(() => {
+      const button = [...document.querySelectorAll(".settings-menu__categories button")].find(b => b.textContent === "controls");
+      const r = button.getBoundingClientRect();
+      return [r.x + r.width / 2, r.y + r.height / 2];
+    })()`);
+    await clickAt(...xy);
+    await host.sleep(300);
+    const settings = await state();
+    await host.press("Escape");
+    await host.sleep(400);
+    const back = await state();
+    await host.keyDown("Escape");
+    await host.sleep(180);
+    const held = await state();
+    await host.keyUp("Escape");
+    await host.sleep(650);
+    const resumed = await state();
+    const checks = {
+      clear: Object.values(layout).every(l => l.onScreen && l.gap >= 4 && !l.overlaps.length),
+      fromFlight: initial.locked && opened.title === "Ship menu" && !opened.locked,
+      selected: settings.title === "Controls",
+      backedOut: back.title === "Ship menu" && back.cursorNeeded && !back.locked,
+      heldEscape: held.title === "Ship menu" && !held.locked,
+      resumed: !resumed.title && !resumed.cursorNeeded && resumed.locked,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, layout, initial, opened, settings, back, held, resumed };
+  }
+
+  async function crewUi() {
+    await host.evaluate(`${C}.meetRemote(0.08)`);
+    await guest.evaluate('__test.gameplay.res.set({ordinaryKg: 5})');
+    await host.sleep(2600);
+    await settledCommand(host, { type: "research.unlock", nodeId: "sv1_composition_survey" });
+    const toastCount = page => page.evaluate(`[...document.querySelectorAll(".notif-stack__detail")].filter(e => e.textContent === "Composition Survey").length`);
+    const [notices, sounds] = await Promise.all([
+      Promise.all([host, guest].map(page => waitFor(() => toastCount(page), 2500, 40))),
+      Promise.all([host, guest].map(page => waitFor(() => page.evaluate('__audio.voices().some(v => v.eventId === "research.complete")'), 2500, 40))),
+    ]);
+    const crewOpen = () => host.evaluate('document.querySelector("#panel-title")?.textContent === "Crew"');
+    await host.press("u");
+    if (!await waitFor(crewOpen, 3000)) throw Error("Default Crew shortcut did not open the roster");
+    await host.press("u");
+    if (!await waitFor(async () => !await crewOpen(), 3000)) throw Error("Crew shortcut did not close the roster");
+    await host.press("Escape");
+    const launcher = ".settings-menu__panels";
+    if (!await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000)) throw Error("Ship menu did not open");
+    const titles = { cargo: "Cargo Hold", research: "Research", crafting: "Crafting", loadout: "Ship Loadout", projects: "Projects", crew: "Crew" };
+    for (const [id, title] of Object.entries(titles)) {
+      const shown = await host.evaluate(`document.querySelector('[data-ship-panel="${id}"] kbd')?.textContent`);
+      if (!shown) throw Error("Missing shortcut for " + id);
+      await host.press(shown.toLowerCase());
+      if (!await waitFor(() => host.evaluate(`document.querySelector("#panel-title")?.textContent === ${J(title)}`), 3000))
+        throw Error(shown + " did not open " + title);
+      if (id === "crew") break; // Continue the transfer test in the roster.
+      await host.press(shown.toLowerCase());
+      await waitFor(() => host.evaluate('!document.querySelector("#panel-title")'), 3000);
+      await host.press("Escape");
+      await waitFor(() => host.evaluate(`!!document.querySelector(${J(launcher)})`), 3000);
+    }
+    const rosterTitle = await host.evaluate('document.querySelector(".crew-members h3")?.textContent');
+    if (!rosterTitle?.includes("Connected replicants")) throw Error("Missing replicant roster");
+    const pointer = await host.evaluate("__test.input.pointerLock.state()");
+    if (!pointer.cursorNeeded || pointer.locked) throw Error("Crew did not keep the menu cursor");
+    await waitFor(() => host.evaluate('!!document.querySelector("[data-give-to]")'), 4000);
+    await host.sleep(450);
+    await host.shot("coop/connected-crew");
+    await host.evaluate('document.querySelector("[data-give-to]").click()');
+    const send = await waitFor(() => host.evaluate('!!document.querySelector(".crew-send:not(:disabled)")'), 5000);
+    if (!send) throw Error(await host.evaluate('document.querySelector(".coop-settings__expedition")?.innerText'));
+    await host.shot("coop/crew-transfer");
+    const before = await record(ids.guest);
+    await host.evaluate('document.querySelector(".crew-send").click()');
+    const delivered = await waitFor(async () => (await record(ids.guest)).receivedFuelKg === before.receivedFuelKg + 1, 5000);
+    await host.evaluate('document.querySelector(".crew-back").click()');
+    await host.evaluate('document.querySelector(".crew-actions button").click()');
+    const marker = await waitFor(() => host.evaluate('document.querySelector(".coop-settings__expedition [role=status]")?.textContent === "Position shared"'), 4000);
+    await host.evaluate('document.querySelector(".panel__close").click()');
+    return { pass: notices.every(n => n === 1) && sounds.every(Boolean) && !!delivered && !!marker, notices, sounds, delivered, marker };
+  }
+
+  async function crewAdmin() {
+    for (const page of [host, guest]) await page.evaluate(`document.querySelector('[aria-label="Crew"]').click()`);
+    const roster = page => page.evaluate(`[...document.querySelectorAll(".crew-members li")].map(li => ({
+      id: li.dataset.crewId, ping: li.querySelector(".crew-ping").textContent, remove: !!li.querySelector('[aria-label^="Remove "]')
+    }))`);
+    const lists = await Promise.all([host, guest].map(page => waitFor(async () => {
+      const rows = await roster(page);
+      return rows.length === 2 && rows.every(row => /^\d+ ms$/.test(row.ping)) && rows;
+    }, 8000)));
+    if (!lists.every(Boolean)) throw Error("Missing live roster or host ping");
+    const hostOnly = lists[0].filter(row => row.remove).map(row=>row.id).join() === ids.guest && !lists[1].some(row=>row.remove);
+    const remove = () => host.evaluate('document.querySelector(".crew-members button[aria-label]").click()');
+    await remove();
+    await host.evaluate('document.querySelector(".crew-confirm button").click()');
+    const cancelled = (await roster(host)).length === 2 && !(await host.evaluate('!!document.querySelector(".crew-confirm")'));
+    await remove();
+    await host.evaluate('document.querySelector(".crew-remove").click()');
+    const kicked = await waitFor(() => guest.evaluate('document.querySelector("#panel-title")?.textContent === "Removed by the host"'), 8000);
+    const freed = await waitFor(async () => (await roster(host)).length === 1, 4000);
+    await guest.load({join:code});
+    await waitFor(async () => (await guest.evaluate(CARD))?.joinEnabled, 10000);
+    await guest.evaluate('document.querySelector("[data-coop-join]").click()');
+    const blocked = await waitFor(async () => (await guest.evaluate(CARD))?.refusal === "kicked", 12000);
+    await host.evaluate('document.querySelector(".panel__close").click()');
+    await host.evaluate(`${C}.close(false)`); await host.load(); await host.ready();
+    code = await host.evaluate(`${C}.host()`);
+    const returned = (await joinByCard(code)).status.playerId === ids.guest;
+    const checks = { hostOnly, cancelled, kicked, freed, blocked, returned };
+    return {pass:Object.values(checks).every(Boolean), checks, lists};
+  }
+
   async function exchange() {
     await guest.evaluate(`${C}.meetRemote(0.08)`);
     await guest.sleep(2500);
@@ -1315,6 +1453,16 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
     if (parts.some(p => ["pilotActions", "soak", "exchange", "roughLink"].includes(p))) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
+    if (parts.includes("crewUi")) {
+      await host.evaluate(`(() => {
+        const sources = ["s_type","c_type","x_type"].map((classId,i) => ({ id: "origin_belt:0,0,0:"+i,
+          fieldId:"origin_belt",chunkKey:"0,0,0",asteroidId:i,classId,frameId:"earth",positionKm:[0,0,0],
+          radiusM:10,composition:{},depleted:false,foundAt:1,by:__test.gameplay.localId() }));
+        __test.gameplay.m33.devSetWorld({discoveries:{sources,families:{},sites:{},trials:{}}});
+        __dev.grantCargo("silicates",20);
+        __test.gameplay.res.set({ordinaryKg:100});
+      })()`);
+    }
     if (parts.includes("settingsSpawn")) {
       await menu(host, true);
       pauseChecks.soloPaused = await framesWhilePaused();
@@ -1336,7 +1484,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
-      exchange, soak, capacity, contentFixture, roughLink,
+      shipMenu, crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
       settingsSpawn,
       presence,
       jitter,

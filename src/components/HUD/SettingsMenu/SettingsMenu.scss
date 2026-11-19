@@ -5,19 +5,48 @@
 // open button and the settings content that lives inside Panel's body.
 
 // ─── Open button (top-right, always visible) ────────────────────
-.settings__open-button {
+.hud__session-menu {
   position: absolute;
   top: 2vmax;
   right: 2vmax;
-  z-index: 1;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: s.$space-2;
+  pointer-events: none;
 
+  @media (max-width: 1047px) {
+    // Leave room for the compact connection dot on the outward side.
+    right: max(16px, 2vmax);
+  }
+}
+
+.settings__open-button {
+  pointer-events: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   height: s.$space-6;
-  width: s.$space-6;
-  padding: 0;
-  border-radius: 50%;
+  gap: s.$space-2;
+  padding: 0 s.$space-3;
+  border-radius: s.$radius-xl;
+  font: 600 12px s.$font-ui;
+
+  @media (pointer: coarse) {
+    kbd { display: none; }
+  }
+
+  @media (max-width: 680px) {
+    padding: 0;
+    width: s.$space-6;
+    span { display: none; }
+    @media (pointer: fine) {
+      flex-direction: column;
+      height: auto;
+      min-height: s.$space-6;
+      gap: 0;
+    }
+  }
   cursor: pointer;
 
   // Matches the dashboard strip until Phase 3 flips both to hologram.
@@ -57,6 +86,56 @@
   flex-direction: column;
   gap: s.$space-2;
   align-items: stretch;
+
+  // The wrapper anchors Tab navigation when opened. Focus rings belong to its buttons.
+  &[tabindex="-1"]:focus { outline: none; }
+}
+
+.settings-menu__panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 132px), 1fr));
+  gap: s.$space-2;
+
+  button {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    min-height: 44px;
+    padding: s.$space-2 s.$space-3;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-md;
+    background: s.$surface-glass-1;
+    color: s.$text-primary;
+    font: 600 13px s.$font-ui;
+    cursor: pointer;
+
+    svg { flex-shrink: 0; color: s.$accent-info; }
+    &:hover, &:focus-visible { border-color: s.$stroke-active; }
+  }
+
+  kbd { margin-left: auto; }
+  @media (pointer: coarse) { kbd { display: none; } }
+}
+
+.settings__open-button kbd, .settings-menu__panels kbd {
+  padding: 2px 4px;
+  border: 1px solid s.$stroke-base;
+  border-radius: s.$radius-sm;
+  color: s.$text-secondary;
+  background: s.$surface-glass-1;
+  font: 11px s.$font-mono;
+}
+
+.settings-menu__group-title {
+  margin: s.$space-2 0 0;
+  color: s.$text-secondary;
+  font: 600 12px s.$font-ui;
+}
+
+.settings-menu__categories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 128px), 1fr));
+  gap: s.$space-2;
 }
 
 .settings-menu__content {

@@ -34,6 +34,8 @@ export default async function publicInvite({ host, guest, sleep }) {
     const signalOrigin = await guest.evaluate(`performance.getEntriesByType("resource").map(r => new URL(r.name)).find(u => u.pathname === "/ice" || u.hostname.endsWith(".workers.dev"))?.origin`);
     if (!signalOrigin || (process.env.COOP_PUBLIC_SIGNAL && signalOrigin !== process.env.COOP_PUBLIC_SIGNAL))
       throw Error("Unexpected public signaling origin: " + signalOrigin);
+    await click(guest, button("resume flight"), "Resume flight");
+    await click(guest, select('[aria-label="Crew"]'), "Crew");
     await click(guest, button("share my position"), "Publish rendezvous");
     await until(guest, "document.querySelector('.coop-settings__expedition [role=status]')?.textContent === 'Position shared'", "Marker committed");
     await click(guest, button("clear my marker"), "Clear rendezvous");

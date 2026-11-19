@@ -1,14 +1,18 @@
 "use client";
 
-import CoopPill from "@/components/Coop/CoopPill";
-import { useCallback, useEffect, useRef, useState } from "react";
+import ExpeditionControls from "@/components/Coop/ExpeditionControls";
+import Panel from "./Shell/Panel";
+import { coopSnapshot, subscribeCoop } from "@/net/coopState";
+import { titleUrl } from "@/components/AppShell/appState";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { Microscope, Shield, Target, Wrench } from "lucide-react";
-import { displayKey, keybindsAtom } from "@/store/keybinds";
+import { Package, Microscope, Shield, Target, Users, Wrench } from "lucide-react";
+import { displayKey, keybindsAtom, type KeybindAction } from "@/store/keybinds";
 import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
 import ShipDashboard from "./ShipDashboard/ShipDashboard";
 import Reticle from "./Reticle/Reticle";
 import FlightHud from "./FlightHud/FlightHud";
+import { isTypingTarget, keyFromEvent } from "@/input/keyboard";
 import { setCursorNeeded } from "@/input/pointerLock";
 import MiningHUD from "./MiningHUD/MiningHUD";
 import CargoHUD from "./CargoHUD/CargoHUD";
@@ -42,7 +46,19 @@ import "./HUD.scss";
 /** First bound key, for button titles (rebinding updates them). */
 const keyLabel = (keys: readonly string[]): string => (keys[0] ? displayKey(keys[0]) : "unbound");
 
-type OverlayPanel = "cargo" | "research" | "crafting" | "loadout" | "projects" | null;
+const SHIP_PANELS = [
+  { id: "cargo", label: "Inventory", action: "toggleCargo", icon: Package },
+  { id: "crew", label: "Crew", action: "toggleCrew", icon: Users },
+  { id: "research", label: "Research", action: "toggleResearch", icon: Microscope },
+  { id: "crafting", label: "Crafting", action: "toggleCrafting", icon: Wrench },
+  { id: "loadout", label: "Loadout", action: "toggleLoadout", icon: Shield },
+  { id: "projects", label: "Projects", action: "toggleProjects", icon: Target },
+] as const satisfies readonly { id: string; label: string; action: KeybindAction; icon: typeof Package }[];
+
+// Keep Tab available for focus navigation when the action also has a letter binding.
+const menuKey = (keys: readonly string[]) => keys.find(key => key !== "tab") ?? keys[0];
+
+type OverlayPanel = (typeof SHIP_PANELS)[number]["id"] | null;
 
 /** Glance read model (site, recovery destination, return fuel): human rate, not per frame. */
 const GLANCE_MS = 250;
@@ -51,6 +67,8 @@ export default function HUD() {
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const crew = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
+  const removed = crew.role === "guest" && crew.status === "refused" && crew.detail === "kicked";
   const dead = useAtomValue(isDeadAtom);
   // Either the persisted setting (which shows a "needs reload" hint when the
   // renderer was built without timestamp queries) or `?perf=1`, which turns
@@ -85,7 +103,7 @@ export default function HUD() {
     }
   }, [settingsIsOpen]);
 
-  useEffect(() => setCursorNeeded("panel", activePanel !== null), [activePanel]);
+  useEffect(() => setCursorNeeded("panel", activePanel !== null || removed), [activePanel, removed]);
 
   useEffect(() => {
     const t = setInterval(() => store.set(sampleGlanceAtom), GLANCE_MS);
@@ -97,47 +115,34 @@ export default function HUD() {
     setActivePanel((prev) => (prev === panel ? null : panel));
   }, [store]);
 
+  const menuPanels = useRef<HTMLElement>(null);
+  const selectFromMenu = useCallback((panel: NonNullable<OverlayPanel>) => {
+    setCursorNeeded("panel", true);
+    setActivePanel(panel);
+    store.set(settingsIsOpenAtom, false);
+  }, [store]);
+
   const closePanel = useCallback(() => setActivePanel(null), []);
 
   // Hotkeys for panels
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (isTypingTarget(e.target)) return;
+      const key = keyFromEvent(e);
 
-      const key = e.key.toLowerCase();
+      const inMenu = store.get(settingsIsOpenAtom);
+      if (inMenu && (!menuPanels.current || e.defaultPrevented || e.metaKey || e.ctrlKey || (key === "tab" && e.shiftKey))) return;
 
-      // Settings menu is modal — it swallows all non-settings hotkeys so the
-      // player can't toggle gameplay panels while paused.
-      if (store.get(settingsIsOpenAtom)) return;
-
-      if (keybindsRef.current.toggleCargo.includes(key)) {
+      const panel = SHIP_PANELS.find(({ action, id }) =>
+        (id !== "crew" || coopSnapshot().status === "joined") && keybindsRef.current[action].includes(key) &&
+        (!inMenu || key !== "tab" || menuKey(keybindsRef.current[action]) === "tab")
+      );
+      if (panel) {
         e.preventDefault();
-        setActivePanel((prev) => (prev === "cargo" ? null : "cargo"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleResearch.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "research" ? null : "research"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleCrafting.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "crafting" ? null : "crafting"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleLoadout.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "loadout" ? null : "loadout"));
-        return;
-      }
-
-      if (keybindsRef.current.toggleProjects.includes(key)) {
-        e.preventDefault();
-        setActivePanel((prev) => (prev === "projects" ? null : "projects"));
+        if (!e.repeat) {
+          if (inMenu) selectFromMenu(panel.id);
+          else openPanel(panel.id);
+        }
         return;
       }
 
@@ -148,8 +153,20 @@ export default function HUD() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [store]);
+  }, [openPanel, selectFromMenu, store]);
 
+  if (removed) {
+    const leave = async () => {
+      const { leaveSession } = await import("@/net/guestController");
+      leaveSession();
+      window.location.assign(titleUrl());
+    };
+    return <Panel title="Removed by the host" onClose={leave} width={400}
+      primaryAction={{ label: "Return to title", onClick: leave }}>
+      Your replicant can return when the host opens a new session.
+    </Panel>;
+  }
+  const availablePanels = SHIP_PANELS.filter(({ id }) => id !== "crew" || crew.status === "joined");
   return (
     <div className={`hud${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
@@ -160,11 +177,20 @@ export default function HUD() {
       <MiningHUD />
       <CargoHUD onClick={() => openPanel("cargo")} />
       <ObjectiveTracker />
-      <SettingsMenu />
+      <SettingsMenu>
+        <nav ref={menuPanels} className="settings-menu__panels" aria-label="Ship panels">
+          {availablePanels.map(({ id, label, action, icon: Icon }) => (
+            <button key={id} data-ship-panel={id} onClick={() => selectFromMenu(id)}>
+              <Icon size={16} aria-hidden />
+              {label}
+              {menuKey(keybinds[action]) && <kbd>{displayKey(menuKey(keybinds[action]))}</kbd>}
+            </button>
+          ))}
+        </nav>
+      </SettingsMenu>
       <NotificationStack />
       <AINameOverlay />
       <CommsOverlay />
-      <CoopPill />
       {/* Phase 6d. Only the controls live here — the wedge itself replaces the post
           chain's output node, because HTML cannot exceed reference white. */}
       <HdrCalibration />
@@ -178,39 +204,19 @@ export default function HUD() {
 
       {/* Quick-access buttons */}
       <div className="hud__panel-buttons">
-        <button
-          className={`hud__panel-btn ${activePanel === "research" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("research")}
-          title={`Research (${keyLabel(keybinds.toggleResearch)})`}
-        >
-          <Microscope size={14} strokeWidth={1.75} aria-hidden />
-          <span>Research</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "crafting" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("crafting")}
-          title={`Crafting (${keyLabel(keybinds.toggleCrafting)})`}
-        >
-          <Wrench size={14} strokeWidth={1.75} aria-hidden />
-          <span>Craft</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "loadout" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("loadout")}
-          title={`Loadout (${keyLabel(keybinds.toggleLoadout)})`}
-        >
-          <Shield size={14} strokeWidth={1.75} aria-hidden />
-          <span>Loadout</span>
-        </button>
-        <button
-          className={`hud__panel-btn ${activePanel === "projects" ? "hud__panel-btn--active" : ""}`}
-          onClick={() => openPanel("projects")}
-          title={`Projects and records (${keyLabel(keybinds.toggleProjects)})`}
-        >
-          <Target size={14} strokeWidth={1.75} aria-hidden />
-          <span>Projects</span>
-        </button>
+        {availablePanels.filter(({ id }) => id !== "cargo").map(({ id, label, action, icon: Icon }) => (
+          <button key={id} aria-label={label}
+            className={`hud__panel-btn ${activePanel === id ? "hud__panel-btn--active" : ""}`}
+            onClick={() => openPanel(id)} title={`${label} (${keyLabel(keybinds[action])})`}>
+            <Icon size={14} strokeWidth={1.75} aria-hidden />
+            <span>{id === "crafting" ? "Craft" : label}</span>
+          </button>
+        ))}
       </div>
+
+      {activePanel === "crew" && <Panel title="Crew" onClose={closePanel} width={440}>
+        {crew.status === "joined" ? <ExpeditionControls discoveries={crew.discoveries} /> : <p>Session disconnected</p>}
+      </Panel>}
 
       {/* Overlay panels */}
       {activePanel === "cargo" && <CargoDetail onClose={closePanel} />}

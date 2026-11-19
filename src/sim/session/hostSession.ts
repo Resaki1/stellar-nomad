@@ -81,6 +81,8 @@ interface Member {
   lastPose?: PoseMsg;
   telemetryAt?: number;
   poseAt?: number;
+  pingMs?: number;
+  pingAt?: number;
   reservedFuelKg?: number;
 }
 
@@ -105,6 +107,8 @@ export class HostSession {
   private state: HostState = "starting";
   private gen = 0;
   private readonly conns = new Map<ConnId, Member>();
+  private readonly kicked = new Set<PlayerId>();
+  private readonly clockStamps: number[] = [];
   private readonly bound = new Map<PlayerId, ConnId>();
   private chain: Promise<void> = Promise.resolve();
   private authority!: LocalAuthority;
@@ -202,7 +206,16 @@ export class HostSession {
       if (m.closeAfter !== undefined && this.o.clock.monoMs() >= m.closeAfter) this.o.transport.close(m.conn);
     });
     if (this.pendingNames.size > 0) this.flushRenames();
-    const msg: HostMsg = { t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.clockPaused ? 0 : this.data.world.simRate, hostMonoMs: this.o.clock.monoMs() };
+    const now = this.o.clock.monoMs();
+    this.clockStamps.push(now);
+    if (this.clockStamps.length > 5) this.clockStamps.shift();
+    const roster = Array.from(this.bound, ([id, conn]) => {
+      const peer = this.conns.get(conn);
+      const fresh = peer?.pingAt !== undefined && now - peer.pingAt < 5000;
+      return { id, name: this.data.world.members[id]?.name ?? "Replicant", host: id === this.o.hostPlayerId,
+        pingMs: fresh ? peer.pingMs ?? null : null };
+    });
+    const msg: HostMsg = { roster, t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.clockPaused ? 0 : this.data.world.simRate, hostMonoMs: now };
     this.broadcast("cmd", msg);
     if (this.state === "open" && this.o.clock.monoMs() - this.lastCheckpoint >= CHECKPOINT_MS) this.enqueue(() => this.checkpoint());
   }
@@ -226,6 +239,20 @@ export class HostSession {
     this.conns.set(conn, { conn, local: info.local, playerId: null, fenced: false });
   }
 
+  /** Host adapter only. The admission credential and the ship remain valid next session. */
+  kick(id: PlayerId): void {
+    this.enqueue(() => {
+      const conn = this.bound.get(id);
+      const member = conn === undefined ? undefined : this.conns.get(conn);
+      if (this.state !== "open" || !member || member.local || id === this.o.hostPlayerId) return;
+      this.kicked.add(id);
+      this.refuse(member, "kicked");
+      this.bound.delete(id);
+      this.o.onPlayerCount?.(this.bound.size);
+      this.enqueue(() => this.checkpoint());
+    });
+  }
+
   disconnect(conn: ConnId): void {
     const m = this.conns.get(conn);
     this.conns.delete(conn);
@@ -247,7 +274,12 @@ export class HostSession {
     }
     const pid = m.playerId;
     if (pid === null || msg.gen !== this.gen) return;
-    if (msg.t === "pose") {
+    if (msg.t === "pong") {
+      if (channel === "cmd" && !m.local && this.clockStamps.includes(msg.stamp)) {
+        m.pingAt = this.o.clock.monoMs();
+        m.pingMs = Math.max(0, Math.round(m.pingAt - msg.stamp));
+      }
+    } else if (msg.t === "pose") {
       if (channel !== "pose") return;
       this.relayPose(m, pid, msg);
     } else if (msg.t === "impact") {
@@ -281,6 +313,7 @@ export class HostSession {
     } else if (hello.playerId !== undefined) {
       const member = w.members[hello.playerId];
       if (!member?.verifier || !hello.credential || (await sha256(hello.credential)) !== member.verifier) return refuse("credential");
+      if (this.kicked.has(hello.playerId)) return refuse("kicked");
       pid = hello.playerId;
     } else {
       pid = "";

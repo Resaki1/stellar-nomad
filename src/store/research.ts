@@ -37,14 +37,19 @@ export function describeUnlockRejection(o: Extract<OperationOutcome, { status: "
   return describeRejection(o);
 }
 
+/** Feedback for the committed unlock. Snapshot hydration and developer overrides stay quiet. */
+export const announceResearchAtom = atom(null, (_get, set, id: string) => {
+  const node = getResearchNode(id);
+  set(lastCompletedResearchIdAtom, id);
+  set(addToastAtom, { audio: "silent", kind: "success", message: "Unlocked", detail: node?.name ?? id,
+    values: node?.unlocks.items.filter(item => getItemDef(item)).map(item => ({ id: item })) });
+});
+
 /** Unlock an option through the authority; feedback comes from the settled outcome only. */
 export const unlockResearchAtom = atom(null, (_get, set, payload: { nodeId: string; onSettled?: (o: OperationOutcome) => void }): void => {
   runOperation({ type: "research.unlock", opId: newOpId(), nodeId: payload.nodeId }, (o) => {
     const node = getResearchNode(payload.nodeId);
-    if (o.status === "accepted" && o.result.type === "research.unlock") {
-      set(lastCompletedResearchIdAtom, o.result.nodeId);
-      set(addToastAtom, { audio: "silent", kind: "success", message: "Unlocked", detail: node?.name ?? o.result.nodeId, values: o.result.unlockedItems.filter((id) => getItemDef(id)).map((id) => ({ id })) });
-    } else if (o.status === "rejected") {
+    if (o.status === "rejected") {
       set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot unlock", detail: node?.name ?? payload.nodeId });
     }
     payload.onSettled?.(o);

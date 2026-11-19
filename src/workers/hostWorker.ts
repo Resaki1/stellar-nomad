@@ -88,6 +88,9 @@ scope.onmessage = (ev: MessageEvent<MainToHostWorker>) => {
     case "pauseClock":
       host?.setClockPaused(m.paused);
       return;
+    case "kick":
+      host?.kick(m.id);
+      return;
     case "gone":
       host?.disconnect(m.conn);
       return;

@@ -9,6 +9,7 @@ export type KeybindAction =
   | "toggleResearch"
   | "toggleCrafting"
   | "toggleLoadout"
+  | "toggleCrew"
   | "toggleProjects"
   | "mine"
   | "inspect"
@@ -50,13 +51,14 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "toggleResearch", label: "Research", category: "actions" },
   { id: "toggleCrafting", label: "Crafting", category: "actions" },
   { id: "toggleLoadout", label: "Loadout", category: "actions" },
+  { id: "toggleCrew", label: "Crew", category: "actions" },
   { id: "toggleProjects", label: "Projects and records", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
   { id: "inspect", label: "Interact", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
   { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
   { id: "placePoint", label: "Replication Point: Place", category: "actions" },
-  { id: "toggleSettings", label: "Settings", category: "menu" },
+  { id: "toggleSettings", label: "Ship menu", category: "menu" },
 ];
 
 export const CATEGORY_LABELS: Record<KeybindCategory, string> = {
@@ -88,6 +90,7 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   toggleCrafting: ["c"],
   toggleLoadout: ["l"],
   toggleProjects: ["p"],
+  toggleCrew: ["u"],
   mine: ["m"],
   inspect: ["g"],
   // Dormant (no item grants pulse mining yet): unbound so P can open Projects (D5).
@@ -124,8 +127,23 @@ export function migrateKeybindsV1(saved: Partial<Record<string, string[]>>): Rec
 /** The v2 defaults of the actions playtest 1 moved (D5, D16); everything else kept its default. */
 const V2_MOVED: Record<string, string[]> = { toggleCrafting: ["f"], toggleProjects: ["o"], togglePulseMining: ["p"], placePoint: ["b"], activatePoint: ["h"] };
 const V2_DEFAULTS: Record<string, string[]> = { ...DEFAULT_KEYBINDS, ...V2_MOVED };
+// Crew did not exist in v2. A legacy custom U binding belongs to its original action.
+delete V2_DEFAULTS.toggleCrew;
 
 const sameKeys = (a: readonly string[] | undefined, b: readonly string[]): boolean => !!a && a.length === b.length && a.every((k, i) => k === b[i]);
+
+/** Add bindings introduced after this save, preserving keys the player already assigned. */
+function withMissingBindings(saved: Partial<KeybindConfig>): KeybindConfig {
+  const result = { ...saved };
+  for (const action of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
+    if (!Array.isArray(result[action])) {
+      result[action] = DEFAULT_KEYBINDS[action].filter(key =>
+        !Object.values(result).some(keys => keys?.includes(key))
+      );
+    }
+  }
+  return result as KeybindConfig;
+}
 
 /**
  * v2 → v3 (playtest 1): an action still on its OLD default moves to the new one, unless that key is
@@ -133,11 +151,12 @@ const sameKeys = (a: readonly string[] | undefined, b: readonly string[]): boole
  * never touched. `activatePoint` is dropped (merged into Interact).
  */
 export function migrateKeybindsV2(saved: Partial<Record<string, string[]>>): KeybindConfig {
-  const result = { ...DEFAULT_KEYBINDS };
+  const known: Partial<KeybindConfig> = {};
   for (const action of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
     const keys = saved[action];
-    if (Array.isArray(keys)) result[action] = keys;
+    if (Array.isArray(keys)) known[action] = keys;
   }
+  const result = withMissingBindings(known);
   // Free every untouched old default first: Projects' new P is Pulse Mining's old P.
   const moving = (Object.keys(V2_MOVED).filter((a) => a in DEFAULT_KEYBINDS) as KeybindAction[]).filter(
     (a) => saved[a] === undefined || sameKeys(saved[a], V2_MOVED[a]),
@@ -169,19 +188,7 @@ const _rawKeybindsAtom = atomWithStorage<KeybindConfig>(KEYBINDS_KEY, DEFAULT_KE
  * default bindings even when loading an older saved config from localStorage.
  */
 export const keybindsAtom = atom(
-  (get): KeybindConfig => {
-    const raw = get(_rawKeybindsAtom);
-    // Fill in defaults for any missing actions
-    let patched = false;
-    const result = { ...raw };
-    for (const key of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
-      if (!(key in result)) {
-        result[key] = DEFAULT_KEYBINDS[key];
-        patched = true;
-      }
-    }
-    return result;
-  },
+  (get): KeybindConfig => withMissingBindings(get(_rawKeybindsAtom)),
   (_get, set, value: KeybindConfig) => {
     set(_rawKeybindsAtom, value);
   },

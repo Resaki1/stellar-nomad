@@ -189,7 +189,11 @@ from 7 km, hit an asteroid, die on a second approach, then respawn. `pnpm coop:t
 delivers delayed poses across death and respawn and adds an observer while the pilot is dead.
 For Settings cursor capture, run `SHELL_PARTS=lock pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs`.
 The gate opens Settings with Escape, waits for the previous input activation to expire, then closes
-with Escape and reads `document.pointerLockElement`. It also checks Enter to resume flight.
+with Escape and reads `document.pointerLockElement`. It also checks Enter to resume flight
+and opens every settings category after a browser pointer unlock. Escape from each category
+must return to the ship menu with the cursor free. The next Escape must return to flight.
+Run `COOP_PARTS=shipMenu,crewUi,crewAdmin` with the co-op driver to check the same sequence
+while connected, badge clearance at 390–1440 px, and the replicant roster on both clients.
 
 The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test
 hooks: `__test.coop.holdIncoming(ms)` (latency spike: the race loser still sends its claim)
@@ -222,6 +226,12 @@ Run `pnpm coop:transcript` for the headless authority, including contested salva
 COOP_PARTS=exchange,capacity,soak,race,lunar,dropReply,restart,leave pnpm drive:coop -- --perf --four --size 768x432 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 COOP_PARTS=roughLink,leave pnpm drive:coop -- --perf --size 768x432 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 pnpm drive:coop -- --perf --four --size 1280x720 --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-perf.mjs
+```
+
+Use `COOP_PARTS=crewUi,crewAdmin` with the co-op driver to verify fuel delivery through the Crew HUD, marker sharing, and one unlock toast and research audio voice on both peers. The admin scenario checks roster visibility, ping, cancellation, host-only removal, refusal on rejoin, and admission as the same pilot after the host restarts. For AI naming, menu opening without the Pointer Lock API, simultaneous touch steering and thrust, cancellation and braking, run:
+
+```sh
+pnpm drive:coop -- --perf --size 390x844 --url http://127.0.0.1:3001/ run:scripts/drive-examples/touch-flight.mjs
 ```
 
 The soak exchanges supplies in both directions for 30 minutes. Keep the dev server source fixed during the run. The extra capacity clients open real WebRTC connections and publish a pose from the title screen. The performance comparison uses one rendered game and three local network clients. Separate guest devices are required for the hardware release gate.
