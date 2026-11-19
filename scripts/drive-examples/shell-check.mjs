@@ -405,8 +405,18 @@ export default async function shellCheck(d) {
       }
       await waitFor("!document.pointerLockElement && !!document.fullscreenElement && !document.querySelector('.panel__backdrop')");
     };
+    const hint = 'document.querySelector(".flight-hud__hint--release")';
+    await waitFor(`!!document.pointerLockElement && Number(getComputedStyle(${hint}).opacity) === 0`);
+    await d.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 645, y: 300, movementX: 5, movementY: 0 });
     await waitFor(`[...document.querySelectorAll(".flight-hud__hint")].some(el =>
       el.textContent.includes("Right-click for cursor") && Number(getComputedStyle(el).opacity) > 0.5)`);
+    await d.press("o");
+    await waitFor("!!document.querySelector('.settings-menu__nav')");
+    await wait(5600);
+    await waitFor(`!!${hint} && Number(getComputedStyle(${hint}).opacity) === 0`);
+    await d.press("o");
+    await waitFor(`Number(getComputedStyle(${hint}).opacity) > 0.5`);
+    await waitFor(`!${hint}`);
     await releaseCursor();
     await waitFor(`localStorage.getItem("used-flight-cursor-release") === "true" && !document.querySelector(".flight-hud").textContent.includes("Right-click")`);
     await trustedClick('.hud__panel-btn[aria-label="Research"]');

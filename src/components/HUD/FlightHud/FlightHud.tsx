@@ -1,16 +1,21 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useStore } from "jotai";
 import { keybindsAtom, displayKey } from "@/store/keybinds";
 import { usedCursorReleaseAtom } from "@/store/mouseSettings";
+import { hudHiddenAtom } from "@/store/store";
+import { getAppPhase } from "@/components/AppShell/appState";
+import { mouseState } from "@/input/mouse";
+import { isCursorNeeded, isPointerLocked, onSteeringRelease } from "@/input/pointerLock";
 import { flightHud } from "./flightHudBuffer";
 import "./FlightHud.scss";
 
 /** Stick ring + marker, aim marker, velocity marker, free-look and click-to-steer hints. Positioned by drawFlightHud. */
 export default function FlightHud() {
   const keybinds = useAtomValue(keybindsAtom);
-  const usedCursorRelease = useAtomValue(usedCursorReleaseAtom);
+  const [hintRetired, retireHint] = useAtom(usedCursorReleaseAtom);
+  const store = useStore();
   const hintRelease = useRef<HTMLDivElement>(null);
   const ring = useRef<HTMLDivElement>(null);
   const stick = useRef<HTMLDivElement>(null);
@@ -27,11 +32,51 @@ export default function FlightHud() {
     e.velocity = velocity.current;
     e.hintFreeLook = hintFreeLook.current;
     e.hintLock = hintLock.current;
-    e.hintRelease = hintRelease.current;
     return () => {
-      e.ring = e.stick = e.aim = e.velocity = e.hintFreeLook = e.hintLock = e.hintRelease = null;
+      e.ring = e.stick = e.aim = e.velocity = e.hintFreeLook = e.hintLock = null;
     };
-  }, [usedCursorRelease]);
+  }, []);
+
+  useEffect(() => {
+    const el = hintRelease.current;
+    if (hintRetired || !el) return;
+    let started = false;
+    let visibleMs = 0;
+    let lastFrame = 0;
+    const eligible = () => isPointerLocked() && !isCursorNeeded() && !mouseState.freeLook &&
+      !document.hidden && !store.get(hudHiddenAtom) && getAppPhase() === "playing";
+    const start = (e: MouseEvent) => {
+      if ((e.movementX || e.movementY) && eligible()) {
+        started = true;
+        document.removeEventListener("mousemove", start);
+      }
+    };
+    const pause = () => {
+      lastFrame = 0;
+      el.style.opacity = "0";
+    };
+    const offRelease = onSteeringRelease(pause);
+    document.addEventListener("mousemove", start);
+    flightHud.updateCursorHint = () => {
+      if (!started) return;
+      if (!eligible()) {
+        if (lastFrame) pause();
+        return;
+      }
+      const now = performance.now();
+      // A stalled renderer or background tab does not count as reading time.
+      if (lastFrame) visibleMs += Math.min(now - lastFrame, 100);
+      lastFrame = now;
+      const opacity = visibleMs < 5000 ? "1" : "0";
+      if (el.style.opacity !== opacity) el.style.opacity = opacity;
+      if (visibleMs >= 5500) retireHint(true);
+    };
+    return () => {
+      offRelease();
+      document.removeEventListener("mousemove", start);
+      flightHud.updateCursorHint = null;
+    };
+  }, [hintRetired, retireHint, store]);
 
   const freeLookKey = displayKey(keybinds.freeLook[0] ?? "alt");
 
@@ -51,7 +96,7 @@ export default function FlightHud() {
       <div ref={hintLock} className="flight-hud__hint flight-hud__hint--quiet" style={{ opacity: 0 }}>
         click to steer
       </div>
-      {!usedCursorRelease && <div ref={hintRelease} className="flight-hud__hint flight-hud__hint--quiet" style={{ opacity: 0 }}>
+      {!hintRetired && <div ref={hintRelease} className="flight-hud__hint flight-hud__hint--quiet flight-hud__hint--release" style={{ opacity: 0 }}>
         Right-click for cursor
       </div>}
     </div>

@@ -22,9 +22,10 @@ export const flightHud = {
     aim: null as HTMLElement | null,
     velocity: null as HTMLElement | null,
     hintFreeLook: null as HTMLElement | null,
-    hintRelease: null as HTMLElement | null,
+
     hintLock: null as HTMLElement | null,
   },
+  updateCursorHint: null as (() => void) | null,
   /** Probe for the test harness (same numbers the DOM was given). */
   reticle: marker(),
   stick: marker(),
@@ -124,6 +125,6 @@ export function drawFlightHud(
   place(e.velocity, h.velocity);
 
   show(e.hintFreeLook, mouseState.attached && mouseState.freeLook);
-  show(e.hintRelease, mouseState.attached && !mouseState.freeLook && isPointerLocked() && !isCursorNeeded());
+  h.updateCursorHint?.();
   show(e.hintLock, mouseState.attached && !mouseState.freeLook && !isPointerLocked() && !isCursorNeeded());
 }
