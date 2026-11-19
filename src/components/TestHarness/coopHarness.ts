@@ -4,7 +4,7 @@ import { getLocalPlayerId } from "@/save/playerId";
 import { coopLog, coopSnapshot, remotePoses } from "@/net/coopState";
 import { guestFaults, guestSentCount, guestState, leaveSession } from "@/net/guestController";
 import { chosenPilotName, defaultPilotName, pilotName, setPilotName } from "@/net/pilotName";
-import { remoteBurstLog } from "@/store/vfx";
+import { remoteBurstLog, vfxEventsAtom } from "@/store/vfx";
 import { poiBuffer } from "@/store/poi";
 import type { CoopFault } from "@/net/devFault";
 import { titleUrl } from "@/components/AppShell/appState";
@@ -252,6 +252,7 @@ export function createCoopHarness(store: Store) {
       return remoteFxProbe.slots.filter((x) => x.id).map((x) => ({ ...x }));
     },
     /** Destruction bursts shown here for other pilots' mined rocks. */
+    collisions: () => store.get(vfxEventsAtom).filter((e) => e.type === "collision"),
     bursts: () => remoteBurstLog.map((b) => ({ ...b, ageMs: Math.round(performance.now() - b.at) })),
     /** The chosen name ("" = default) and the default. */
     nameInfo: () => ({ chosen: chosenPilotName(), fallback: defaultPilotName(), effective: pilotName() }),

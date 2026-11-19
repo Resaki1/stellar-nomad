@@ -466,7 +466,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           p.processing = null;
           p.lastLoss = { items: { ...dropped.items }, consumables: { ...dropped.consumables }, fuelKg: dropped.fuelKg, cause: op.cause ?? "impact" };
         },
-        events: wreck ? [{ type: "wreck.created", by, wreck }] : [],
+        events: [{ type: "ship.destroyed", by, frameId: op.frameId, positionKm: pos, cause: op.cause ?? "impact" },
+          ...(wreck ? [{ type: "wreck.created" as const, by, wreck }] : [])],
         playerKeys: ["isDead", "health", "cargo", "modules", "propellant", "processing", "lastLoss"],
       };
     }
@@ -495,7 +496,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           p.replication = replication;
           p.lastLoss = null;
         },
-        events: [],
+        events: [{ type: "ship.respawned", by }],
         playerKeys: ["isDead", "health", "ship", "propellant", "power", "processing", "replication", "lastLoss"],
       };
     }

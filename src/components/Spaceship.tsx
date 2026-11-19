@@ -16,6 +16,7 @@ import { isTransitBurning, transitDriveBuffer, transitInputs, updateTransitInput
 import { resetTransit, stepTransit, transitReserveKg } from "@/sim/ship/transitDrive";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { collectShipPose, holdSavedPose, loadShipState } from "@/sim/shipPersistence";
+import { worldAuthority } from "@/sim/world/worldAuthority";
 import { frameOriginKm } from "@/sim/frames";
 import { updateShipFrame } from "@/sim/ship/shipFrame";
 import type { CelestialCollider } from "@/sim/celestialCollision";
@@ -252,7 +253,15 @@ const SpaceShip = memo(() => {
       impactDvMps: im.dvMps,
       shake: Math.min(1, im.dvMps / 60),
     });
-    if (!fatal) return false;
+    if (!fatal) {
+      worldAuthority.reportImpact({
+        frameId: im.hasPoint ? im.frameId : ship.frameId,
+        positionKm: im.hasPoint ? [im.pxKm, im.pyKm, im.pzKm] : [ship.posKm.x, ship.posKm.y, ship.posKm.z],
+        direction: [im.nx, im.ny, im.nz],
+        dvMps: im.dvMps,
+      });
+      return false;
+    }
     killTransitDrive();
     // The contact-point event above already played the impact sound and shake.
     store.set(spawnVFXEventAtom, { type: "collision", position: [0, 0, 0], radiusM: 120, shake: 0, silent: true });

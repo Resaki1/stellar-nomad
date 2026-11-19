@@ -22,7 +22,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useAtomValue } from "jotai";
 
 import { audioSettingsAtom } from "@/store/audio";
-import { settingsIsOpenAtom } from "@/store/store";
+import { useSettingsPause } from "@/net/useSettingsPause";
 import {
   applyBlurState,
   ensureEngine,
@@ -38,9 +38,9 @@ import { getAppPhase, subscribeApp } from "@/components/AppShell/appState";
 
 export default function AudioSystem({ authoring = false }: { authoring?: boolean }) {
   const settings = useAtomValue(audioSettingsAtom);
-  const settingsOpen = useAtomValue(settingsIsOpenAtom);
+  const settingsPaused = useSettingsPause() !== "running";
   const loading = useSyncExternalStore(subscribeApp, () => getAppPhase() === "loading", () => false);
-  const paused = (settingsOpen || loading) && !authoring;
+  const paused = (settingsPaused || loading) && !authoring;
   const wasLoading = useRef(false);
 
   // ── 1. Unlock on the first gesture ───────────────────────────────────────
@@ -83,7 +83,7 @@ export default function AudioSystem({ authoring = false }: { authoring?: boolean
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [settings.onBlur]);
 
-  // The settings menu IS the pause menu (it stops the render loop).
+  // Solo Settings pauses the scene and fades its audio.
   // Behind the loading overlay the world is silent; it fades in as the overlay fades out.
   useEffect(() => {
     setGamePaused(paused, wasLoading.current && !loading ? 0.25 : 0.1);

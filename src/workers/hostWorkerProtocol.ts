@@ -7,11 +7,13 @@ export type MainToHostWorker =
   | { t: "init"; worldId: string; hostPlayerId: PlayerId; hostName: string }
   | { t: "open"; conn: ConnId; local: boolean }
   | { t: "msg"; conn: ConnId; ch: Channel; msg: unknown }
+  | { t: "pauseClock"; paused: boolean }
   | { t: "gone"; conn: ConnId }
   | { t: "close" }
   | { t: "inspect"; req: number; playerId?: PlayerId };
 
 export type HostWorkerToMain =
+  | { t: "players"; count: number }
   | { t: "ready"; gen: number; worldName: string; content: string }
   | { t: "error"; message: string }
   | { t: "send"; conn: ConnId; ch: Channel; msg: unknown }

@@ -19,6 +19,7 @@ export const pointerLock = {
 const cursorNeeded = new Set<string>();
 const releaseListeners = new Set<() => void>();
 let releasing = false;
+let releasedByGame = false;
 let userUnlockHandler: (() => void) | null = null;
 
 export function isTouchDevice(): boolean {
@@ -50,12 +51,16 @@ export function setUserUnlockHandler(fn: (() => void) | null): void {
 
 /** Must run inside a user gesture. Locks `document.body` so it works before the canvas exists. */
 export function requestGamePointerLock(): void {
+  requestLock(false);
+}
+
+function requestLock(closingMenu: boolean): void {
   if (typeof document === "undefined" || isTouchDevice() || isCursorNeeded() || isPointerLocked()) return;
   const el = document.body as LockableElement;
   if (!el.requestPointerLock) return;
   // Without a gesture (autostart) the request only produces a console error.
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  if (activation && !activation.isActive) {
+  if (!(closingMenu && releasedByGame) && activation && !activation.isActive) {
     pointerLock.lastResult = "no-gesture";
     return;
   }
@@ -92,7 +97,7 @@ export function releaseGamePointerLock(): void {
 /**
  * Register/unregister a reason the cursor is needed. Turning one on releases the lock and recentres.
  * Clearing the last one recaptures (B12) while the closing click/key's transient activation lasts;
- * Esc grants none, so an Esc-close keeps the "click to steer" prompt.
+ * after an app-initiated release the browser can also allow recapture without fresh activation.
  */
 export function setCursorNeeded(reason: string, on: boolean): void {
   if (on) {
@@ -101,7 +106,7 @@ export function setCursorNeeded(reason: string, on: boolean): void {
     releaseGamePointerLock();
     notifyRelease();
   } else if (cursorNeeded.delete(reason) && cursorNeeded.size === 0) {
-    requestGamePointerLock();
+    requestLock(true);
   }
 }
 
@@ -113,6 +118,7 @@ if (typeof document !== "undefined") {
       return;
     }
     const ours = releasing;
+    releasedByGame = ours;
     releasing = false;
     notifyRelease();
     // A blur/alt-tab unlock is not a pause request.

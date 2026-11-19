@@ -2,7 +2,7 @@
 // TimedEffectsTicker — decrements timed consumable effect durations each frame.
 //
 // Lives inside the R3F <Canvas> to get useFrame, but renders nothing.
-// Does NOT tick while the settings menu (pause overlay) is open.
+// Solo Settings stops the Canvas frame loop. Shared sessions keep ticking.
 // ---------------------------------------------------------------------------
 "use client";
 
@@ -11,15 +11,12 @@ import { isSimPaused } from "@/sim/simPause";
 import { useStore } from "jotai";
 
 import { tickTimedEffectsAtom, activeTimedEffectsAtom } from "@/store/timedEffects";
-import { settingsIsOpenAtom } from "@/store/store";
 
 export default function TimedEffectsTicker() {
   const store = useStore();
 
   useFrame((_, delta) => {
     if (isSimPaused()) return;
-    // Don't tick while paused
-    if (store.get(settingsIsOpenAtom)) return;
 
     // Only tick if there are active effects
     const effects = store.get(activeTimedEffectsAtom);

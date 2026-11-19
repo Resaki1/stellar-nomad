@@ -22,6 +22,7 @@ import FlightTuningControls from "./FlightTuningControls";
 import PhysicsTuningControls from "./PhysicsTuningControls";
 import ResourceTuningControls from "./ResourceTuningControls";
 import { resetAllDevTuning } from "@/store/devTuning";
+import { setCursorNeeded } from "@/input/pointerLock";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
@@ -1038,6 +1039,11 @@ const SettingsMenu = () => {
     setActiveSubMenu(null);
   }, [setIsOpen]);
 
+  const resumeFlight = useCallback(() => {
+    setCursorNeeded("settings", false);
+    handleClose();
+  }, [handleClose]);
+
   const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
 
   // Hotkey handler: when closed, toggle key opens settings. When open, Panel
@@ -1049,18 +1055,25 @@ const SettingsMenu = () => {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isOpenRef.current) return;
       const tag = (e.target as HTMLElement)?.tagName;
+      if (isOpenRef.current) {
+        if (!e.repeat && e.key === "Enter" && (tag === "BODY" || tag === "CANVAS" || tag === "HTML")) {
+          e.preventDefault();
+          resumeFlight();
+        }
+        return;
+      }
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       const key = e.key.toLowerCase();
-      if (keybindsRef.current.toggleSettings.includes(key)) {
+      if (!e.repeat && keybindsRef.current.toggleSettings.includes(key)) {
+        setCursorNeeded("settings", true);
         setIsOpen(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setIsOpen]);
+  }, [resumeFlight, setIsOpen]);
 
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
@@ -1083,7 +1096,8 @@ const SettingsMenu = () => {
           eyebrow={eyebrow}
           tier={2}
           width={560}
-          onClose={handleClose}
+          onClose={resumeFlight}
+          primaryAction={{ label: "Resume flight", keyHint: "↵", onClick: resumeFlight, variant: "primary" }}
           secondaryAction={
             activeSubMenu
               ? {

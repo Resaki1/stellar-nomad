@@ -1,6 +1,6 @@
 /**
  * M4.0 exit gate in two real browsers (docs/M4_COOP_PLAN.md §1). Run with drive-coop.mjs:
- *   COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
+ *   COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
  *     pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
  * The host opens a fresh disposable `[gc] coop` world to friends; the guest joins through the join
  * card (invite link, Join button). cancelJoin, handoff, hostFail and leave change the session: keep them last. Mining
@@ -117,7 +117,7 @@ async function waitFor(fn, ms, step = 200) {
 }
 
 export default async function coopCheck({ host, guest, log }) {
-  const parts = (process.env.COOP_PARTS ?? "presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
+  const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
   let worldId = null;
@@ -220,6 +220,34 @@ export default async function coopCheck({ host, guest, log }) {
       }
     }
     await warpTo(guest, r, 1.4);
+  }
+
+  const menu = (page, open) => page.evaluate(`${R}.setSettingsOpen(${open}), true`);
+  const pauseChecks = {};
+  async function framesWhilePaused() {
+    await host.sleep(350);
+    const before = await host.evaluate("__test.frameCount");
+    await host.sleep(400);
+    return await host.evaluate("__test.frameCount") === before;
+  }
+
+  async function settingsSpawn() {
+    const [h, g] = await Promise.all([host, guest].map(p => p.evaluate("__test.state()")));
+    const separationM = Math.hypot(...g.ship.relPosKm.map((x, i) => x - h.ship.relPosKm[i])) * 1000;
+    try {
+      await menu(host, true);
+      await menu(guest, true);
+      await Promise.all([host.frames(10), guest.frames(10)]);
+      const [afterH, afterG] = await Promise.all([host, guest].map(p => p.evaluate("__test.state()")));
+      const checks = { ...pauseChecks,
+        nearbyDistinctSpawn: h.ship.frameId === g.ship.frameId && separationM >= 35 && separationM < 250,
+        hostAdvanced: afterH.ship.steps > h.ship.steps && afterH.simEpochMs > h.simEpochMs,
+        guestAdvanced: afterG.ship.steps > g.ship.steps && afterG.simEpochMs > g.simEpochMs,
+      };
+      return { pass: Object.values(checks).every(Boolean), checks, separationM };
+    } finally {
+      await Promise.all([host, guest].map(p => menu(p, false)));
+    }
   }
 
   async function presence() {
@@ -612,6 +640,9 @@ export default async function coopCheck({ host, guest, log }) {
     const t = ref(r);
     await warpTo(host, r, 2);
     await guestTo(r);
+    // Inside the starter laser range, beyond the former 5 km network cutoff.
+    await guest.evaluate(`${R}.warpNear(${J(t)}, 7)`);
+    await guest.frames(30);
     const hostCargo0 = (await record(ids.host)).cargo.items;
     const burstsBefore = (await host.evaluate(`${C}.bursts()`)).length;
     await aim(guest, r);
@@ -660,7 +691,7 @@ export default async function coopCheck({ host, guest, log }) {
     const hostCargo1 = (await record(ids.host)).cargo.items;
     const burstDistM = burst ? Math.hypot(...burst.position) : null;
     const checks = {
-      beamDrawn: !!viewed && !!beamFx && beamFx.beamFrames > 5 && beamFx.beamLenMax > 5 && beamFx.beamLenMax < 5000,
+      beamDrawn: !!viewed && !!beamFx && beamFx.beamFrames > 5 && beamFx.beamLenMax > 5000 && beamFx.beamLenMax < 8000,
       burstAtRock: !!burst && burst.instanceId === r.instanceId && burst.chunkKey === r.chunkKey && rockKm !== null && Math.abs(burstDistM - rockKm * 1000) < r.radiusM + 60,
       noOwnBurstOnGuest: guestOwn.length === 0,
       exhaust: !!thrustFx && thrustFx.exhaustMax > 0.05,
@@ -668,6 +699,43 @@ export default async function coopCheck({ host, guest, log }) {
       noPipelineErrors: pipelineErrors(host, guest).length === 0,
     };
     return { pass: Object.values(checks).every(Boolean), checks, rock: { ...t, radiusM: r.radiusM, mineS: r.mineS, hostDistKm: rockKm }, trace: trace.slice(-25), beamFx, thrustFx, burst: burst && { ...burst, distM: burstDistM }, shots, ms: Date.now() - p0 };
+  }
+
+  /** Fly the guest into a loaded asteroid twice. Observe the host's actual VFX and hull visibility. */
+  async function crash() {
+    const rock = await pickRock(guest);
+    const id = rock.instanceId;
+    const approach = async (distM, holdMs) => {
+      await guest.evaluate(`__phys.asteroids.standoff(${id}, ${distM})`);
+      await guest.frames(10);
+      if (!await waitFor(() => guest.evaluate(`__phys.asteroids.state(${id}).collider?.inEngine`), 10_000)) throw new Error("asteroid collider missing");
+      await guest.evaluate("__phys.impacts.clear()");
+      await guest.keyDown("w");
+      await guest.sleep(holdMs);
+      await guest.keyUp("w");
+    };
+    await guest.evaluate(`__phys.asteroids.standoff(${id}, 120)`);
+    await guest.frames(30);
+    await guest.sleep(500);
+    await host.evaluate(`${C}.meetRemote(0.4)`);
+    const visible = () => host.evaluate(`${C}.fxNow().then(slots => slots.some(s => s.id === ${J(ids.guest)} && s.shown))`);
+    const shownBefore = await waitFor(visible, 10_000);
+    const health = await host.evaluate("__phys.game.health().health");
+    await approach(120, 100);
+    const sparks = await waitFor(() => host.evaluate(`${C}.collisions().find(e => e.impactDvMps > 0 && e.shake === 0)`), 18_000, 50);
+    await guest.press("x");
+    const survived = !(await guest.evaluate("__phys.game.isDead()"));
+    await guest.evaluate("__phys.game.setHealth(1)");
+    await approach(1500, 1500);
+    const burst = await waitFor(() => host.evaluate(`${C}.collisions().find(e => e.radiusM === 120 && e.shake === 0)`), 24_000, 50);
+    const dead = await waitFor(() => guest.evaluate("__phys.game.isDead()"), 10_000);
+    await host.sleep(700);
+    const hidden = !(await visible());
+    const healthyObserver = health === await host.evaluate("__phys.game.health().health");
+    if (dead) await guest.evaluate("__phys.game.respawn()");
+    const reappeared = await waitFor(visible, 12_000);
+    const checks = { shownBefore, sparks: !!sparks, survived, burst: !!burst, dead, hidden, healthyObserver, reappeared };
+    return { pass: Object.values(checks).every(Boolean), checks, sparks, burst };
   }
 
   /** The guest as the host sees it: a green POI marker with name and distance, and a green edge triangle when behind. */
@@ -981,6 +1049,7 @@ export default async function coopCheck({ host, guest, log }) {
   async function leave() {
     const p0 = Date.now();
     await waitFor(async () => (await guest.evaluate(`${C}.status()`)).status === "joined", 30_000, 500);
+    if (parts.includes("settingsSpawn")) await menu(host, true);
     const sentBefore = await guest.evaluate(`${C}.sent()`);
     await guest.sleep(1500);
     const live = (await guest.evaluate(`${C}.sent()`)) > sentBefore;
@@ -993,7 +1062,10 @@ export default async function coopCheck({ host, guest, log }) {
       const r = h.remotes.find((x) => x.id === ids.guest);
       return h.players === 1 && (!r || r.ageMs > 3000) ? h : null;
     }, 15_000, 500);
+    const hostPausedAgain = parts.includes("settingsSpawn") ? await framesWhilePaused() : true;
+    if (parts.includes("settingsSpawn")) await menu(host, false);
     const checks = {
+      hostPausedAgain,
       wasSending: live,
       nothingSentAfterLeave: res.after === res.at,
       disconnected: !res.connected && res.role === "solo" && res.remotes === 0,
@@ -1015,7 +1087,12 @@ export default async function coopCheck({ host, guest, log }) {
     await host.ready();
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
+    if (parts.includes("settingsSpawn")) {
+      await menu(host, true);
+      pauseChecks.soloPaused = await framesWhilePaused();
+    }
     code = await host.evaluate(`${C}.host()`);
+    if (parts.includes("settingsSpawn")) pauseChecks.hostAlonePaused = await framesWhilePaused();
     await guest.load({ title: 1 });
     await guest.evaluate(`localStorage.setItem("coop-name", ${J(GUEST_NAME)}); true`);
     await joinByCard(code);
@@ -1029,6 +1106,7 @@ export default async function coopCheck({ host, guest, log }) {
     log({ part: "setup", ok: true, worldId, code, ids, ms: Date.now() - s0 });
 
     const run = {
+      settingsSpawn,
       presence,
       jitter,
       race: () => race("host", "race"),
@@ -1040,6 +1118,7 @@ export default async function coopCheck({ host, guest, log }) {
       reloadPose,
       lateName,
       remoteFx,
+      crash,
       pilotMarker,
       rename,
       writeGate,

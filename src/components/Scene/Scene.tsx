@@ -2,7 +2,9 @@
 "use client";
 
 import CoopLayer from "@/components/Coop/CoopLayer";
-import { settingsAtom, settingsIsOpenAtom } from "@/store/store";
+import { useSettingsPause } from "@/net/useSettingsPause";
+import { setHostClockPaused } from "@/net/hostController";
+import { settingsAtom } from "@/store/store";
 import { Stats, StatsGl, AdaptiveEvents } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
@@ -126,7 +128,8 @@ const SYSTEM_STARS = systemStars();
 
 const Scene = () => {
   const settings = useAtomValue(settingsAtom);
-  const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
+  const settingsPause = useSettingsPause();
+  useEffect(() => setHostClockPaused(settingsPause === "host"), [settingsPause]);
   // Read once and independently of the atom: the `gl` factory below decides
   // `trackTimestamp` from the same value, and the two must not disagree.
   const perfOn = useMemo(() => isPerfEnabled(), []);
@@ -237,7 +240,7 @@ const Scene = () => {
     <Canvas
       style={{ background: "black" }}
       camera={{ near: 0.01, far: 20_000 }}
-      frameloop={settingsIsOpen ? "never" : "always"}
+      frameloop={settingsPause !== "running" ? "never" : "always"}
       // `?dpr=N` pins the resolution for a measurement; otherwise the usual clamp
       // (1.5 on a Retina M-series). See dprOverride() for what it is for.
       dpr={dprPinned ?? [0.5, 1.5]}

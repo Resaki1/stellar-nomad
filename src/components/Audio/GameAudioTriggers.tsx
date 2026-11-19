@@ -34,7 +34,8 @@ import { registerAlert, updateAlert, unregisterAlert } from "@/audio/alerts";
 import { audioShipBuffer } from "@/audio/shipBuffer";
 import { resetWind, windLayerGain, windState } from "@/audio/wind";
 import { setMusicDucked, setMusicSuppressed, setMusicTraveling } from "@/audio/music";
-import { shipHealthAtom, settingsIsOpenAtom } from "@/store/store";
+import { useSettingsPause } from "@/net/useSettingsPause";
+import { shipHealthAtom } from "@/store/store";
 import { vfxEventsAtom } from "@/store/vfx";
 import { miningStateAtom, asteroidMinedSignalAtom, targetingProgressAtom, pulseCycleBuffer } from "@/store/mining";
 import { isCargoFullAtom } from "@/store/cargo";
@@ -66,7 +67,7 @@ export default function GameAudioTriggers() {
   const health = useAtomValue(shipHealthAtom);
   const dead = useAtomValue(isDeadAtom);
   const isDead = dead || health <= 0;
-  const settingsOpen = useAtomValue(settingsIsOpenAtom);
+  const settingsPaused = useSettingsPause() !== "running";
 
   // Thrust-only engine beds: no RCS clicks, cabin bed, or idle floor. Coasting
   // can be completely silent. Layers still share an audio-clock phase.
@@ -110,7 +111,7 @@ export default function GameAudioTriggers() {
 
   // Mining audio is cutter hardware aboard our ship, not sound travelling back
   // from the distant rock along a laser beam. Stop the sustain on pause/death.
-  const mining = useAtomValue(isMiningAtom) && !isDead && !settingsOpen;
+  const mining = useAtomValue(isMiningAtom) && !isDead && !settingsPaused;
   useEffect(() => {
     if (!mining) return;
     const pitch = () => cutterPitchCents(store.get(miningStateAtom).laserHeat);
@@ -184,7 +185,7 @@ export default function GameAudioTriggers() {
   const isFocused = useAtomValue(isFocusedAtom);
   const target = useAtomValue(targetKeyAtom);
   const step = useAtomValue(targetingStepAtom);
-  const feedbackEnabled = !isDead && !settingsOpen;
+  const feedbackEnabled = !isDead && !settingsPaused;
   const previousTarget = useRef({ target, step, focused: isFocused, mined: minedCount, enabled: feedbackEnabled });
   useEffect(() => {
     const next = { target, step, focused: isFocused, mined: store.get(asteroidMinedSignalAtom), enabled: feedbackEnabled };

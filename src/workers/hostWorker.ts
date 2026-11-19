@@ -45,6 +45,7 @@ async function init(m: Extract<MainToHostWorker, { t: "init" }>): Promise<void> 
     hostName: m.hostName,
     system: activeSystem,
     content,
+    onPlayerCount: (count) => post({ t: "players", count }),
     onState: (state, detail) => post({ t: "state", state, detail }),
   });
   try {
@@ -78,6 +79,9 @@ scope.onmessage = (ev: MessageEvent<MainToHostWorker>) => {
       return;
     case "msg":
       host?.receive(m.conn, m.ch, m.msg);
+      return;
+    case "pauseClock":
+      host?.setClockPaused(m.paused);
       return;
     case "gone":
       host?.disconnect(m.conn);

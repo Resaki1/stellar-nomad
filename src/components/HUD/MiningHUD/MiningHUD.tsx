@@ -3,6 +3,7 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useRef } from "react";
 import { isTypingTarget } from "@/input/keyboard";
+import { settingsIsOpenAtom } from "@/store/store";
 import { keybindsAtom } from "@/store/keybinds";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
 import { pulseMiningActiveAtom, togglePulseMiningAtom } from "@/store/mining";
@@ -15,6 +16,7 @@ import "./MiningHUD.scss";
  */
 export default function MiningHUD() {
   const modifiers = useAtomValue(computedModifiersAtom);
+  const settingsOpen = useAtomValue(settingsIsOpenAtom);
   const unlocked = getFlag(modifiers, "ability.pulseMiningEnabled");
   const active = useAtomValue(pulseMiningActiveAtom);
   const toggle = useSetAtom(togglePulseMiningAtom);
@@ -25,14 +27,14 @@ export default function MiningHUD() {
   });
 
   useEffect(() => {
-    if (!unlocked) return;
+    if (!unlocked || settingsOpen) return;
     const onKeyDown = (e: KeyboardEvent): void => {
       if (isTypingTarget(e.target)) return;
       if (keybindsRef.current.togglePulseMining.includes(e.key.toLowerCase())) toggle();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [unlocked, toggle]);
+  }, [unlocked, settingsOpen, toggle]);
 
   if (!unlocked) return null;
   return (

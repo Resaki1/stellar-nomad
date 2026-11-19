@@ -4,11 +4,12 @@
  * clock samples and pose relay. Runs in a worker in the browser and under Node in the transcript.
  */
 import { defaultPlayerState } from "@/save/defaults";
-import type { PlayerId, PlayerState, SaveData, SaveMeta, WorldState } from "@/save/types";
+import type { PlayerId, PlayerState, ShipPose, SaveData, SaveMeta, WorldState } from "@/save/types";
 import { parseSaveData } from "@/save/validate";
 import { makeMineResolver, type MineResolver } from "@/sim/asteroids/mineResolve";
 import { updateEphemerisPositions } from "@/sim/celestialConstants";
 import { jdFromUnixMs } from "@/sim/ephemeris";
+import { emergencePose, starterPoint } from "@/sim/replication/points";
 import { poseDistanceKm } from "@/sim/replication/placement";
 import type { SystemConfig } from "@/sim/systemTypes";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
@@ -53,6 +54,7 @@ export interface HostSessionOptions {
   hostName: string;
   system: () => SystemConfig;
   content: string;
+  onPlayerCount?: (count: number) => void;
   onState?: (state: HostState, detail?: string) => void;
 }
 
@@ -62,7 +64,7 @@ interface Member {
   playerId: PlayerId | null;
   /** Superseded by a newer connection of the same player: its messages are ignored. */
   fenced: boolean;
-  lastPoseSeq: number;
+  lastPose?: PoseMsg;
 }
 
 function b64url(bytes: Uint8Array): string {
@@ -90,6 +92,7 @@ export class HostSession {
   private chain: Promise<void> = Promise.resolve();
   private authority!: LocalAuthority;
   private resolver!: MineResolver;
+  private clockPaused = false;
   private epoch0 = 0;
   private mono0 = 0;
   private lastCheckpoint = 0;
@@ -147,14 +150,23 @@ export class HostSession {
 
   /** Live astronomical epoch: the host owns it while the session is open. */
   epochMs(): number {
+    if (this.clockPaused) return this.epoch0;
     return this.epoch0 + this.data.world.simRate * (this.o.clock.monoMs() - this.mono0);
+  }
+
+  setClockPaused(paused: boolean): void {
+    if (paused === this.clockPaused) return;
+    this.epoch0 = this.epochMs();
+    this.mono0 = this.o.clock.monoMs();
+    this.clockPaused = paused;
+    this.tick();
   }
 
   /** 1 Hz from the adapter: clock samples to everyone, plus the periodic telemetry checkpoint. */
   tick(): void {
     if (this.state !== "open" && this.state !== "storage_failed") return;
     if (this.pendingNames.size > 0) this.flushRenames();
-    const msg: HostMsg = { t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.data.world.simRate, hostMonoMs: this.o.clock.monoMs() };
+    const msg: HostMsg = { t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.clockPaused ? 0 : this.data.world.simRate, hostMonoMs: this.o.clock.monoMs() };
     this.broadcast("cmd", msg);
     if (this.state === "open" && this.o.clock.monoMs() - this.lastCheckpoint >= CHECKPOINT_MS) this.enqueue(() => this.checkpoint());
   }
@@ -175,7 +187,7 @@ export class HostSession {
   // ── transport events ─────────────────────────────────────────────────────
 
   connect(conn: ConnId, info: { local: boolean }): void {
-    this.conns.set(conn, { conn, local: info.local, playerId: null, fenced: false, lastPoseSeq: -1 });
+    this.conns.set(conn, { conn, local: info.local, playerId: null, fenced: false });
   }
 
   disconnect(conn: ConnId): void {
@@ -183,6 +195,7 @@ export class HostSession {
     this.conns.delete(conn);
     if (m?.playerId && this.bound.get(m.playerId) === conn) {
       this.bound.delete(m.playerId);
+      this.o.onPlayerCount?.(this.bound.size);
       if (this.state === "open") this.enqueue(() => this.checkpoint());
     }
   }
@@ -201,6 +214,8 @@ export class HostSession {
     if (msg.t === "pose") {
       if (channel !== "pose") return;
       this.relayPose(m, pid, msg);
+    } else if (msg.t === "impact") {
+      if (channel === "cmd" && msg.by === pid && !this.data.players[pid]?.isDead) this.broadcast("cmd", msg);
     } else if (msg.t === "tel") {
       this.applyTelemetry(pid, msg.tel);
     } else if (msg.t === "name") {
@@ -244,7 +259,9 @@ export class HostSession {
       const backup = structuredClone(this.data);
       w.members[pid] = { name: "", verifier: await sha256(credential), joinedAt: this.o.clock.nowMs() };
       w.members[pid].name = this.uniqueName(pid, hello.name || "Replicant");
-      this.data.players[pid] = defaultPlayerState(this.meta.difficulty);
+      const player = defaultPlayerState(this.meta.difficulty);
+      player.ship = this.newGuestSpawn();
+      this.data.players[pid] = player;
       if (!(await this.persist(backup))) return refuse("closed");
     } else if (w.members[pid] && hello.name) {
       w.members[pid].name = this.uniqueName(pid, hello.name);
@@ -258,6 +275,7 @@ export class HostSession {
     }
     m.playerId = pid;
     this.bound.set(pid, m.conn);
+    this.o.onPlayerCount?.(this.bound.size);
     this.send(m.conn, {
       t: "welcome",
       playerId: pid,
@@ -271,6 +289,25 @@ export class HostSession {
     });
     this.sendSnapshot(m.conn);
     this.broadcastMembers();
+  }
+
+  /** Admission is serialized. Check live pilots, including a new arrival awaiting its first pose. */
+  private newGuestSpawn(): ShipPose {
+    const point = starterPoint();
+    const start = { frameId: point.frameId, ...emergencePose(point, 0) };
+    updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
+    const occupied = Array.from(this.bound, ([pid, conn]) => {
+      const pose = this.conns.get(conn)?.lastPose;
+      return pose ? { frameId: pose.f, positionKm: pose.p } : this.data.players[pid].ship ?? start;
+    });
+    // Try the authored start, then nearby berths 80 m apart. Each pilot can block at most one.
+    for (let berth = 0; ; berth++) {
+      const [x, y, z] = start.positionKm;
+      const positionKm: ShipPose["positionKm"] = [x + berth * 0.08, y, z];
+      if (occupied.every(p => poseDistanceKm(p.frameId, p.positionKm, start.frameId, positionKm) >= 0.035)) {
+        return { ...start, positionKm };
+      }
+    }
   }
 
   /** A pilot renamed mid-session: a label, no revision; the next checkpoint persists it. Rate-limited per pilot. */
@@ -473,8 +510,8 @@ export class HostSession {
   }
 
   private relayPose(m: Member, pid: PlayerId, pose: PoseMsg): void {
-    if (pose.id !== pid || pose.seq <= m.lastPoseSeq) return;
-    m.lastPoseSeq = pose.seq;
+    if (this.data.players[pid]?.isDead || pose.id !== pid || pose.seq <= (m.lastPose?.seq ?? -1)) return;
+    m.lastPose = pose;
     this.conns.forEach((other, conn) => {
       if (conn !== m.conn && other.playerId && !other.fenced) this.o.transport.send(conn, "pose", pose);
     });

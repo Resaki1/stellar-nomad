@@ -5,11 +5,13 @@
 import { getActiveSave, getLocalPlayerState, sampleCollectors } from "@/save/activeSave";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import { getLocalPlayerShip, localBeamPose, localRenderPose } from "@/sim/entities";
+import { repositionState } from "@/sim/ship/reposition";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
 import type { RefuseReason, Telemetry, WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
-import { hostClock, pushRemotePose } from "./coopState";
+import { getLocalPlayerId } from "@/save/playerId";
+import { hostClock, pushRemotePose, remotePoses } from "./coopState";
 import { onPilotNameChange } from "./pilotName";
 
 const POSE_MS = 1000 / 15;
@@ -51,7 +53,13 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
     local: h.local,
     playerId: h.playerId,
     telemetry: collectTelemetry,
-    onEvent: (e) => worldAuthority.deliver(e),
+    onEvent: (e) => {
+      if (e.type === "ship.destroyed" || e.type === "ship.respawned") {
+        remotePoses.delete(e.by);
+        if (e.by === getLocalPlayerId()) localRenderPose.atMs = -1;
+      }
+      worldAuthority.deliver(e);
+    },
     onAsteroid: (fieldId, chunkKey, instanceId) => {
       worldAuthority.world();
       worldAuthority.asteroids.add(fieldId, chunkKey, instanceId);
@@ -62,7 +70,10 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
       hostClock.rate = c.rate;
       hostClock.at = performance.now();
     },
-    onSnapshot: h.onSnapshot,
+    onSnapshot: (rec, welcome) => {
+      remotePoses.clear();
+      h.onSnapshot?.(rec, welcome);
+    },
     onState: h.onState,
   });
 }
@@ -72,7 +83,9 @@ export function startSessionLoops(gs: GuestSession): () => void {
   let seq = 0;
   const pose = setInterval(() => {
     const s = getLocalPlayerShip();
-    if (!s || gs.status !== "joined") return;
+    if (!s || gs.status !== "joined" || getLocalPlayerState().isDead || localRenderPose.atMs < 0) return;
+    // The respawn commit arrives before its reply queues the runtime reposition.
+    if (gs.pending?.op.type === "ship.respawn" || repositionState.pending) return;
     // The pose as drawn, stamped with its frame time: receivers interpolate on this timeline.
     const rp = localRenderPose;
     const drawn = rp.atMs >= 0 && rp.frameId === s.frameId;
@@ -103,7 +116,7 @@ export function startSessionLoops(gs: GuestSession): () => void {
 
 /** Install the session as the authority: submissions go to the host and settle later. */
 export function installSessionAuthority(gs: GuestSession): void {
-  worldAuthority.setRemote({ submit: (op) => gs.submit(op) });
+  worldAuthority.setRemote({ submit: (op) => gs.submit(op), sendImpact: (contact) => gs.sendImpact(contact) });
 }
 
 export function localGuestStore(key: string): GuestStore {

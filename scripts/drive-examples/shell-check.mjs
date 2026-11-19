@@ -373,7 +373,7 @@ export default async function shellCheck(d) {
 
   if (parts.includes("lock")) {
     // B12, trusted CDP input: closing a panel by click or by its key recaptures the cursor at once;
-    // Escape grants no activation, so it leaves the "click to steer" prompt instead.
+    // Programmatic menu releases and the browser’s native Escape unlock have different lock rules.
     const PL = "__test.input.pointerLock.state()";
     const rectOf = (js) => ev(`(() => { const e = ${js}; if (!e) return null; const b = e.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
     const tclick = async (xy) => { for (const type of ["mousePressed", "mouseReleased"]) await d.send("Input.dispatchMouseEvent", { type, x: xy[0], y: xy[1], button: "left", clickCount: 1 }); };
@@ -413,7 +413,7 @@ export default async function shellCheck(d) {
     await key("Escape", "Escape", 27);
     await wait(600);
     L.afterEscQuick = await locked();
-    // Once the activation has lapsed, Esc cannot lock: the prompt shows instead.
+    // App-initiated release: try Esc after the opening key’s activation expires.
     await wait(1200);
     await key("c", "KeyC", 67);
     await wait(6000);
@@ -422,7 +422,27 @@ export default async function shellCheck(d) {
     L.afterEsc = await locked();
     L.escPanelClosed = !(await ev(`!!document.querySelector('.panel__close')`));
     L.steerPrompt = await ev(`(() => { const h = document.querySelector('.flight-hud__hint--quiet'); return h ? getComputedStyle(h).opacity : null; })()`);
-    L.pass = L.beforePanels && L.panelOpen === false && L.afterCloseClick === true && L.afterCloseKey === true && L.afterEsc === false && L.escPanelClosed && Number(L.steerPrompt) > 0;
+    if (!L.afterEsc) await tclick([640, 300]);
+    await wait(1200);
+    await key("Escape", "Escape", 27);
+    await waitFor(`!!document.querySelector('.settings-menu__nav')`);
+    L.settingsReleased = !await locked();
+    await wait(6000);
+    await key("Escape", "Escape", 27);
+    await wait(400);
+    L.settingsClosed = !(await ev(`!!document.querySelector('.settings-menu')`));
+    L.settingsEscLocked = await locked();
+    L.settingsFallback = L.settingsEscLocked || await ev(`Number(getComputedStyle(document.querySelector('.flight-hud__hint--quiet')).opacity) > 0`);
+    if (!L.settingsEscLocked) await tclick([640, 300]);
+    await wait(1200);
+    await key("Escape", "Escape", 27);
+    await waitFor(`!!document.querySelector('.settings-menu__nav')`);
+    await wait(1300);
+    await key("Enter", "Enter", 13);
+    await wait(400);
+    L.enterResumed = await locked() && !(await ev(`!!document.querySelector('.settings-menu')`));
+    L.pass = L.beforePanels && !L.panelOpen && L.afterCloseClick && L.afterCloseKey && L.escPanelClosed &&
+      (L.afterEsc || Number(L.steerPrompt) > 0) && L.settingsReleased && L.settingsClosed && L.settingsFallback && L.enterResumed;
     out.lock = L;
     log("lock", JSON.stringify(L));
   }

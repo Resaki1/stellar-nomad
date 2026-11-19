@@ -317,7 +317,7 @@ transaction as the change.
   consumables, hotbar as a pilot pref, browser coverage of post-Join refusals (credential, closed).
 - **Other pilots' activity, markers and names (owner playtest 3).** Poses carry optional bounded
   activity: `th` (plume throttle 0..255) and `b` (beam endpoint in the sender's frame, dropped beyond
-  5 km of the ship; `fl` bit 2 = a pulse's dim phase). Each remote slot draws the local plume and the
+  50 km of the ship; `fl` bit 2 = a pulse's dim phase). Each remote slot draws the local plume and the
   local mining beam from them, inside the precompiled slot subtree. A rock another pilot mines plays
   the same destruction burst for everyone who has it loaded (read from the chunk just before the
   event drops it; no loot). Remote plumes cast **no light**: a light added to the scene changes the
@@ -329,6 +329,12 @@ transaction as the change.
   and on the join card. A rename mid-session sends a bounded `name` message; the host relabels the
   member and broadcasts `members`. Gates: `coop-check` parts remoteFx, pilotMarker, rename and
   transcript `renameAndActivity`. No remote engine or beam audio yet: see follow-ups.
+- **Pilot impacts and recovery.** Nearby friends see contact sparks at the physics contact point.
+  A committed impact death plays one destruction burst, including when the ship drops no wreck.
+  Death clears the remote hull, plume, beam and pilot marker. Protocol v2 stamps each pose with
+  the sender’s world revision so poses delayed across a respawn cannot restore the old ship.
+  Joining a world with a dead pilot uses the snapshot’s dead state. The browser gates are
+  `crash` (survivable and fatal asteroid contacts) and `remoteFx` (a starter laser at 7 km).
 - **Name hardening (review 3).** The Settings name field also commits on Escape and when the menu
   unmounts (no blur fires then). The host cleans every name (control, zero-width and bidi characters
   stripped, whitespace collapsed, 32 chars), keeps labels distinct (a taken name, case-insensitive,
@@ -353,3 +359,13 @@ transaction as the change.
   - An explicit leave message, so a departing pilot vanishes at once instead of after 5 s.
   - Flakes seen once each in long full runs (rerun clean): `handoff` (guest did not rejoin within
     60 s) and `dropReply` (retry did not settle, which then blocked `restart`). Watch for repeats.
+
+**M4.0 playtest fixes (2026-11-19).** Settings pauses the scene and clock in solo play
+and while hosting alone. Admitting a guest resumes a host who has Settings open. Both
+pilots can leave their menus open while the simulation advances. If the last guest
+leaves, a host still in Settings pauses again. On first admission the host tries the
+authored start, then spots 80 m apart until one has at least 35 m of clearance from
+other pilots. A returning player keeps their saved pose. The muted two-browser run
+measured 80 m between the first pair and passed `settingsSpawn,race,reloadPose,leave`.
+The Node transcript also covers three arriving guests and clock resume without catch-up.
+[Two-browser test instructions](AUTOMATED_TESTING.md#two-browsers-co-op)

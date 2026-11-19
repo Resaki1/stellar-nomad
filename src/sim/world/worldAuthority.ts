@@ -4,10 +4,11 @@ import { getDifficulty } from "@/sim/difficulty";
 import { activeSystem } from "@/sim/systemRegistry";
 import type { PlayerId, WorldState } from "@/save/types";
 import { LocalAuthority, type Authority, type WorldListener } from "./authority";
-import type { OperationOutcome, WorldEvent, WorldOperation } from "./commands";
+import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "./commands";
 
 /** A connected session: submissions answer "pending" and settle through `deliver`. */
 export interface RemoteAuthority {
+  sendImpact?(contact: ShipContact): void;
   submit(op: WorldOperation): OperationOutcome;
 }
 
@@ -46,6 +47,10 @@ class AuthorityFacade implements Authority {
 
   setRemote(r: RemoteAuthority | null): void {
     this.remote = r;
+  }
+
+  reportImpact(contact: ShipContact): void {
+    this.remote?.sendImpact?.(contact);
   }
 
   submit(op: WorldOperation, by: PlayerId): OperationOutcome {

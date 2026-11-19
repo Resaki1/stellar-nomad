@@ -4,7 +4,7 @@
  * and heartbeat. Used by guests and by the host's own main thread.
  */
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
-import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
+import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 import { PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
 import type { ClientLink, Clock } from "./ports";
 
@@ -58,6 +58,9 @@ export class GuestSession {
   private partsGot = 0;
   private lastHostMs = -Infinity;
   private streamSeq = 0;
+  // Infinity hides a dead pilot. Respawn fences pre-death poses still in the unordered channel.
+  private readonly poseFloor = new Map<PlayerId, number>();
+  private snapshotRevision = 0;
   private readonly queue: WorldOperation[] = [];
   private rec: GuestRecord;
   /** Sent in hello; a rename updates it so a rejoin keeps it. */
@@ -114,6 +117,7 @@ export class GuestSession {
   }
 
   receive(channel: Channel, raw: unknown): void {
+    if (!this.link) return; // A queued transport message may arrive after leave.
     const msg = decodeHostMsg(raw);
     if (!msg) return;
     this.lastHostMs = this.o.clock.monoMs();
@@ -144,9 +148,17 @@ export class GuestSession {
         return;
       case "members":
         return this.onMembers(msg.names);
-      case "pose":
-        if (channel === "pose" && msg.id !== this.playerId) this.o.onPose?.(msg);
+      case "impact":
+        if (this.state === "joined" && channel === "cmd" && msg.by !== this.playerId) {
+          this.o.onEvent?.({ type: "ship.contact", by: msg.by, ...msg.contact });
+        }
         return;
+      case "pose": {
+        if (this.state !== "joined" || channel !== "pose" || msg.id === this.playerId) return;
+        const minRevision = this.poseFloor.get(msg.id) ?? this.snapshotRevision;
+        if (msg.revision >= minRevision) this.o.onPose?.(msg);
+        return;
+      }
     }
   }
 
@@ -171,9 +183,13 @@ export class GuestSession {
     if (this.state === "joined") this.link?.send("cmd", { t: "name", gen: this.gen, name });
   }
 
-  sendPose(p: Omit<PoseMsg, "t" | "id" | "gen">): void {
+  sendImpact(contact: ShipContact): void {
+    if (this.playerId && this.state === "joined") this.link?.send("cmd", { t: "impact", by: this.playerId, gen: this.gen, contact });
+  }
+
+  sendPose(p: Omit<PoseMsg, "t" | "id" | "gen" | "revision">): void {
     const id = this.playerId;
-    if (id && this.state === "joined") this.link?.send("pose", { t: "pose", id, gen: this.gen, ...p });
+    if (id && this.state === "joined") this.link?.send("pose", { t: "pose", id, gen: this.gen, revision: this.revision, ...p });
   }
 
   close(): void {
@@ -225,7 +241,9 @@ export class GuestSession {
     const me = pid ? rec.data.players[pid] : undefined;
     if (!me || !this.welcome) return;
     this.mirror = rec;
-    this.revision = s.revision;
+    this.revision = this.snapshotRevision = s.revision;
+    this.poseFloor.clear();
+    for (const [id, p] of Object.entries(rec.data.players)) if (p.isDead) this.poseFloor.set(id, Infinity);
     this.streamSeq = me.stream.seq;
     const p = this.rec.pending;
     // An intent older than the stream (and not its last entry) can never execute: drop it.
@@ -247,6 +265,12 @@ export class GuestSession {
         case "asteroid.destroyed":
           if (this.o.onAsteroid) this.o.onAsteroid(e.fieldId, e.chunkKey, e.instanceId);
           else ((w.asteroidDeltas[e.fieldId] ??= {})[e.chunkKey] ??= []).push(e.instanceId);
+          break;
+        case "ship.destroyed":
+          this.poseFloor.set(e.by, Infinity);
+          break;
+        case "ship.respawned":
+          this.poseFloor.set(e.by, c.revision);
           break;
         case "wreck.created":
           w.wrecks = [...w.wrecks, e.wreck];

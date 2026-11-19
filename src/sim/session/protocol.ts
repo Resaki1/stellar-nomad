@@ -4,9 +4,9 @@
  * Nothing here knows about WebRTC, workers or React.
  */
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
-import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
+import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAX_PLAYERS = 4;
 /** Snapshot JSON is sent in parts of this many characters. */
 export const SNAPSHOT_PART_CHARS = 16_000;
@@ -32,6 +32,8 @@ export interface PoseMsg {
   t: "pose";
   id: PlayerId;
   seq: number;
+  /** Last commit seen by the sender. Peers discard poses from before its latest respawn. */
+  revision: number;
   gen: number;
   tick: number;
   f: string;
@@ -46,14 +48,17 @@ export interface PoseMsg {
   b?: Vec3Tuple;
 }
 
-/** A beam endpoint farther than this from the sender is dropped (mining range is well under it). */
-export const MAX_BEAM_KM = 5;
+/** A beam endpoint farther than this from the sender is dropped (wire sanity bound above base and upgraded mining ranges, including surface offsets). */
+export const MAX_BEAM_KM = 50;
+
+export type ImpactMsg = { t: "impact"; gen: number; by: PlayerId; contact: ShipContact };
 
 export type ClientMsg =
   | { t: "hello"; protocol: number; content: string; name: string; playerId?: PlayerId; credential?: string }
   | { t: "cmd"; gen: number; seq: number; opId: string; op: WorldOperation; tel?: Telemetry }
   | { t: "tel"; gen: number; tel: Telemetry }
   | { t: "name"; gen: number; name: string }
+  | ImpactMsg
   | PoseMsg;
 
 export interface WelcomeMsg {
@@ -86,6 +91,7 @@ export type HostMsg =
   | { t: "clock"; gen: number; epochMs: number; rate: number; hostMonoMs: number }
   | { t: "status"; gen: number; state: "ok" | "storage_failed" | "closing" }
   | { t: "members"; gen: number; names: Record<PlayerId, string> }
+  | ImpactMsg
   | PoseMsg;
 
 type Obj = Record<string, unknown>;
@@ -156,10 +162,18 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
   return out;
 }
 
+function decodeImpact(raw: Obj): ImpactMsg | null {
+  const c = raw.contact;
+  if (!isInt(raw.gen) || !isStr(raw.by) || !isObj(c) || !isStr(c.frameId, 32)
+    || !vec(c.positionKm, 3, BIG_KM) || !vec(c.direction, 3, 1.01)
+    || !isNum(c.dvMps) || c.dvMps < 0 || c.dvMps > 1e6) return null;
+  return { t: "impact", gen: raw.gen, by: raw.by, contact: { frameId: c.frameId, positionKm: c.positionKm as Vec3Tuple, direction: c.direction as Vec3Tuple, dvMps: c.dvMps } };
+}
+
 export function decodePose(v: Obj): PoseMsg | null {
-  if (!isStr(v.id) || !isInt(v.seq) || !isInt(v.gen) || !isNum(v.tick) || !isStr(v.f, 32)) return null;
+  if (!isStr(v.id) || !isInt(v.seq) || !isInt(v.revision) || !isInt(v.gen) || !isNum(v.tick) || !isStr(v.f, 32)) return null;
   if (!vec(v.p, 3, BIG_KM) || !vec(v.v, 3, 1e6) || !vec(v.q, 4, 1.01) || !isInt(v.fl, 255)) return null;
-  const out: PoseMsg = { t: "pose", id: v.id, seq: v.seq, gen: v.gen, tick: v.tick, f: v.f, p: v.p as Vec3Tuple, v: v.v as Vec3Tuple, q: v.q as QuatTuple, fl: v.fl };
+  const out: PoseMsg = { t: "pose", id: v.id, seq: v.seq, revision: v.revision, gen: v.gen, tick: v.tick, f: v.f, p: v.p as Vec3Tuple, v: v.v as Vec3Tuple, q: v.q as QuatTuple, fl: v.fl };
   // Optional activity: a malformed field is dropped, the pose kept.
   if (isInt(v.th, 255)) out.th = v.th;
   if (vec(v.b, 3, BIG_KM)) {
@@ -221,6 +235,7 @@ export function decodeClientMsg(raw: unknown): ClientMsg | null {
       const name = isInt(raw.gen) ? decodeName(raw.name) : null;
       return name ? { t: "name", gen: raw.gen as number, name } : null;
     }
+    case "impact": return decodeImpact(raw);
     case "pose":
       return decodePose(raw);
     default:
@@ -263,6 +278,7 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       if (entries.length > MAX_PLAYERS * 4 || !entries.every(([k, n]) => isStr(k) && isStr(n, MAX_NAME))) return null;
       return raw as unknown as HostMsg;
     }
+    case "impact": return decodeImpact(raw);
     case "pose":
       return decodePose(raw);
     default:

@@ -62,8 +62,8 @@ class Rig {
     this.repo = repo ?? newWorld();
     this.clients = [];
   }
-  async startHost() {
-    this.host = new HostSession({ repo: this.repo, transport: null, clock: systemClock, hostPlayerId: HOST_ID, hostName: "Host", system: reg.activeSystem, content: CONTENT });
+  async startHost(clock = systemClock) {
+    this.host = new HostSession({ repo: this.repo, transport: null, clock, hostPlayerId: HOST_ID, hostName: "Host", system: reg.activeSystem, content: CONTENT });
     const transport = this.net.attachHost(this.host);
     this.host.o.transport = transport;
     await this.host.start();
@@ -72,10 +72,11 @@ class Rig {
   /** A client (guest, or the host's own when `local`); `store` persists across reconnects. */
   client(name, { local = false, store } = {}) {
     const st = store ?? { rec: {}, load() { return structuredClone(this.rec); }, save(r) { this.rec = structuredClone(r); } };
-    const c = { name, store: st, pose: null, events: [], settled: [], local };
+    const c = { name, store: st, pose: null, poses: [], events: [], settled: [], local };
     c.session = new GuestSession({
       clock: systemClock, name, content: CONTENT, store: st, local, playerId: local ? HOST_ID : undefined,
       telemetry: () => (c.pose ? { pose: c.pose } : undefined),
+      onPose: (p) => c.poses.push(p),
       onEvent: (e) => { c.events.push(e); if (e.type === "op.settled") c.settled.push(e.outcome); },
     });
     c.join = () => {
@@ -251,9 +252,37 @@ async function receiptEviction() {
   return { pass, ops: list.length, accepted, receipts: rig.host.world.receipts.length, oldEvicted, replayOldSeq: old.seq, reply: reply.slice(0, 2), unchanged };
 }
 
+async function menuClock() {
+  const rig = new Rig();
+  let ms = 0;
+  const session = await rig.startHost({ ...systemClock, monoMs: () => ms });
+  ms += 1500;
+  session.setClockPaused(true);
+  const pausedAt = session.epochMs();
+  ms += 6000;
+  const held = session.epochMs() === pausedAt;
+  session.setClockPaused(false);
+  const resumedAt = session.epochMs();
+  ms += 1000;
+  return { pass: held && resumedAt === pausedAt && session.epochMs() === resumedAt + 1000 };
+}
+
+/** Fill the last two berths before either new pilot sends a pose or telemetry. */
+async function guestBerths() {
+  const { rig, g } = await joinedPair();
+  const others = [rig.client("Guest 2"), rig.client("Guest 3")];
+  for (const guest of others) guest.join();
+  await rig.settle();
+  const poses = [g, ...others].map(c => rig.host.player(c.session.playerId).ship);
+  const distancesM = poses.flatMap((a, i) => poses.slice(i + 1).map(b =>
+    Math.hypot(...a.positionKm.map((coord, axis) => coord - b.positionKm[axis])) * 1000));
+  return { pass: poses.every(p => p.frameId === poses[0].frameId) && distancesM.every(d => d >= 35 && d < 250), distancesM };
+}
+
 async function oldGeneration() {
   const { rig, g } = await joinedPair();
   const gid = g.session.playerId;
+  const savedPose = structuredClone(rig.host.player(gid).ship);
   const gen1 = rig.host.generation;
   rig.net.detachHost();
   await rig.settle();
@@ -264,11 +293,12 @@ async function oldGeneration() {
   const rock = rocks("origin_belt", 5)[4];
   const res = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, rig.host.player(gid));
   rig.net.injectToHost(g2.conn, "cmd", { t: "cmd", gen: gen1, seq: rig.host.player(gid).stream.seq + 1, opId: "stale-op", op: { ...mineOp(rock, res.requiredBeamS), opId: "stale-op" }, tel: { pose: poseAt(res) } });
-  rig.net.injectToHost(g2.conn, "pose", { t: "pose", id: gid, seq: 1, gen: gen1, tick: 0, f: "earth", p: [0, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 0 });
+  rig.net.injectToHost(g2.conn, "pose", { t: "pose", id: gid, seq: 1, revision: 0, gen: gen1, tick: 0, f: "earth", p: [0, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 0 });
   await rig.settle();
   const seq = rig.host.player(gid).stream.seq;
-  const pass = rig.host.generation === gen1 + 1 && g2.session.generation === gen1 + 1 && seq === 0 && !destroyed(rig.host.world, rock) && rig.host.player(gid).ship === null;
-  return { pass, gens: [gen1, rig.host.generation], streamSeq: seq, rockIntact: !destroyed(rig.host.world, rock), poseIgnored: rig.host.player(gid).ship === null };
+  const poseIgnored = savedPose !== null && same(rig.host.player(gid).ship, savedPose);
+  const pass = rig.host.generation === gen1 + 1 && g2.session.generation === gen1 + 1 && seq === 0 && !destroyed(rig.host.world, rock) && poseIgnored;
+  return { pass, gens: [gen1, rig.host.generation], streamSeq: seq, rockIntact: !destroyed(rig.host.world, rock), poseIgnored };
 }
 
 async function storageFailure() {
@@ -347,7 +377,7 @@ async function renameAndActivity() {
   rig.net.injectToHost(g.conn, "cmd", { t: "name", gen: g.session.generation, name: "   " });
   await rig.settle();
   const names = { host: rig.host.world.members[gid]?.name, hostSelf: rig.host.world.members[HOST_ID]?.name, hostMirror: h.session.mirror.data.world.members[gid]?.name, guestMirror: g.session.mirror.data.world.members[HOST_ID]?.name };
-  const base = { t: "pose", id: gid, seq: 1, gen: 1, tick: 0, f: "earth", p: [10, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 1 };
+  const base = { t: "pose", id: gid, seq: 1, revision: 0, gen: 1, tick: 0, f: "earth", p: [10, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 1 };
   const ok = decodePose({ ...base, th: 200, b: [10.5, 0, 0] });
   const far = decodePose({ ...base, th: 999, b: [100, 0, 0] });
   const bad = decodePose({ ...base, b: ["x", 0, 0] });
@@ -355,6 +385,7 @@ async function renameAndActivity() {
   const checks = {
     renamed: names.host === "Lyra" && names.hostSelf === "Altair" && names.hostMirror === "Lyra" && names.guestMirror === "Altair",
     poseFields: ok?.th === 200 && ok?.b?.[0] === 10.5,
+    upgradedRange: decodePose({ ...base, b: [22.5, 0, 0] })?.b?.[0] === 22.5,
     farBeamDropped: !!far && far.b === undefined && far.th === undefined,
     malformedKeepsPose: !!bad && bad.b === undefined,
     longNameRefused: longName === null,
@@ -394,13 +425,47 @@ async function renameHardening() {
   return { pass: Object.values(checks).every(Boolean), checks, names: { dup, clean, duringBurst, afterTick, guestMirror } };
 }
 
+// Deliver old unreliable poses on either side of reliable death and respawn commits.
+async function shipLifecycle() {
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  const pose = { t: "pose", id: gid, gen: g.session.generation, seq: 10, revision: g.session.revision,
+    tick: 0, f: "earth", p: [10, 0, 0], v: [0, 0, 0], q: [0, 0, 0, 1], fl: 0 };
+  const contact = { frameId: "earth", positionKm: [10, 0, 0], direction: [0, 1, 0], dvMps: 12 };
+  g.session.sendImpact(contact);
+  await rig.settle();
+  const sparks = h.events.filter(e => e.type === "ship.contact" && e.by === gid).length === 1 &&
+    !g.events.some(e => e.type === "ship.contact");
+  g.session.submit({ type: "ship.destroy", opId: "crash", frameId: "earth", positionKm: pose.p });
+  await rig.settle();
+  h.session.receive("pose", pose);
+  const late = rig.client("Late");
+  late.join();
+  await rig.settle();
+  late.session.receive("pose", { ...pose, revision: late.session.revision });
+  g.session.sendImpact(contact);
+  await rig.settle();
+  const hidden = rig.host.player(gid).isDead && !h.poses.length && !late.poses.length && h.events.filter(e => e.type === "ship.contact").length === 1;
+  g.session.submit({ type: "ship.respawn", opId: "recover", mode: "starter" });
+  await rig.settle();
+  for (const observer of [h, late]) observer.session.receive("pose", pose);
+  const noOldLife = !h.poses.length && !late.poses.length;
+  g.session.sendPose({ seq: 11, tick: 20, f: "earth", p: [20, 0, 0], v: pose.v, q: pose.q, fl: 0 });
+  await rig.settle();
+  const recovered = !rig.host.player(gid).isDead && [h, late].every(c => c.poses.length === 1 && c.poses[0].p[0] === 20);
+  return { pass: sparks && hidden && noOldLife && recovered, sparks, hidden, noOldLife, recovered };
+}
+
 const SCENARIOS = {
+  shipLifecycle,
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),
   dropReplyRetry,
   hostRestart,
   lunarRemote,
   receiptEviction,
+  guestBerths,
+  menuClock,
   oldGeneration,
   storageFailure,
   activityBounds,

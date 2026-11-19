@@ -14,6 +14,9 @@ import { SHIP_ONE_EXHAUST, ShipOne } from "@/components/models/ships/ShipOne";
 import EngineExhaust from "@/components/VFX/EngineExhaust";
 import { MiningBeam, computeShipNoseLocal } from "@/components/Mining/MiningSystem";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { getLocalPlayerId } from "@/save/playerId";
+import { worldAuthority } from "@/sim/world/worldAuthority";
+import { spawnVFXEventAtom } from "@/store/vfx";
 import { getActiveSave } from "@/save/activeSave";
 import { frameOriginKm, isFrameId, type FrameId } from "@/sim/frames";
 import { simEpochMsAtom, simEpochNudge, simRateAtom } from "@/store/simTime";
@@ -231,6 +234,27 @@ const CoopLayer = memo(function CoopLayer() {
 function RemoteShips() {
   const root = useRef<THREE.Group>(null);
   const store = useStore();
+  const worldOrigin = useWorldOrigin();
+  useEffect(() => worldAuthority.subscribe((e) => {
+    if (e.type !== "ship.contact" && e.type !== "ship.destroyed") return;
+    if (e.by === getLocalPlayerId() || !isFrameId(e.frameId)) return;
+    if (e.type === "ship.destroyed" && e.cause !== "impact") return;
+    const origin = frameOriginKm(e.frameId, _o);
+    const wo = worldOrigin.worldOriginKm;
+    const position: [number, number, number] = [
+      (origin.x + e.positionKm[0] - wo.x) * 1000,
+      (origin.y + e.positionKm[1] - wo.y) * 1000,
+      (origin.z + e.positionKm[2] - wo.z) * 1000,
+    ];
+    // Skip distant sparks when the pilots are exploring different parts of the system.
+    if (Math.hypot(...position) > 50_000) return;
+    store.set(spawnVFXEventAtom, {
+      type: "collision", position, shake: 0, silent: true,
+      ...(e.type === "ship.contact"
+        ? { radiusM: Math.min(40, 2 + e.dvMps * 0.3), impactDirection: e.direction, impactDvMps: e.dvMps }
+        : { radiusM: 120 }),
+    });
+  }), [store, worldOrigin]);
   const slots = useMemo<(string | null)[]>(() => new Array(SLOTS).fill(null), []);
   const defs = useMemo(() => new Map<string, POIDef>(), []);
   const ready = useRef(false);

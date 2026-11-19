@@ -134,7 +134,12 @@ export type OperationOutcome =
   | { status: "duplicate"; opId: string; by: PlayerId }
   | { status: "pending"; opId: string; by: PlayerId };
 
+export type ShipContact = { frameId: string; positionKm: Vec3Tuple; direction: Vec3Tuple; dvMps: number };
+
 export type WorldEvent =
+  | ({ type: "ship.contact"; by: PlayerId } & ShipContact)
+  | { type: "ship.destroyed"; by: PlayerId; frameId: string; positionKm: Vec3Tuple; cause: "impact" | "abandon" }
+  | { type: "ship.respawned"; by: PlayerId }
   | { type: "asteroid.destroyed"; by: PlayerId; fieldId: string; chunkKey: string; instanceId: number; cause: AsteroidDestroyCause }
   | { type: "wreck.created"; by: PlayerId; wreck: WreckRecord }
   | { type: "wreck.changed"; by: PlayerId; wreck: WreckRecord }

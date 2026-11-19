@@ -42,6 +42,11 @@ interface Hosting {
 let hosting: Hosting | null = null;
 let inspectSeq = 0;
 
+/** Keep the worker epoch at the lone pilot's paused instant. */
+export function setHostClockPaused(paused: boolean): void {
+  hosting?.worker.postMessage({ t: "pauseClock", paused } satisfies MainToHostWorker);
+}
+
 export function isHosting(): boolean {
   return hosting !== null;
 }
@@ -141,6 +146,10 @@ async function openSession(worker: Worker, worldId: string, signaling: Signaling
       else h.peers.get(m.conn)?.send(m.ch, m.msg);
     } else if (m.t === "drop") {
       if (m.conn !== LOCAL) h.peers.get(m.conn)?.close();
+    } else if (m.t === "players" && m.count !== h.info.players && !h.stopPoll) {
+      h.info = { ...h.info, players: m.count };
+      setCoop({ players: m.count });
+      signaling.create(h.info, h.code).catch(() => logCoop("room update failed"));
     } else if (m.t === "state") {
       if (m.state === "storage_failed") setCoop({ status: "error", detail: "storage" });
     } else if (m.t === "inspect") {
@@ -212,17 +221,9 @@ async function onSignal(h: Hosting, signaling: Signaling, peer: string, data: { 
       if (h.peers.get(peer) !== link) return;
       h.peers.delete(peer);
       post(h.worker, { t: "gone", conn: peer });
-      updatePlayers(h, signaling);
     };
     post(h.worker, { t: "open", conn: peer, local: false });
-    updatePlayers(h, signaling);
   }
-}
-
-function updatePlayers(h: Hosting, signaling: Signaling): void {
-  h.info = { ...h.info, players: 1 + h.peers.size };
-  setCoop({ players: h.info.players });
-  signaling.create(h.info, h.code).catch(() => logCoop("room update failed"));
 }
 
 /** Close the session (worker drains + saves + releases the lock), then reload into solo. */

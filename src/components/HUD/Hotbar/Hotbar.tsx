@@ -12,7 +12,7 @@ import {
   HOTBAR_SOURCE_SLOT_MIME,
 } from "@/store/modules";
 import { heatSinkBuffer, miningStateAtom } from "@/store/mining";
-import { shipHealthAtom } from "@/store/store";
+import { settingsIsOpenAtom, shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
@@ -210,7 +210,7 @@ export default function Hotbar() {
   // Keys 1…9 then 0 (names with digits are typed, never activate a slot).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || e.repeat) return;
+      if (store.get(settingsIsOpenAtom) || isTypingTarget(e.target) || e.repeat) return;
       const key = e.key;
       if (key.length === 1 && key >= "0" && key <= "9") {
         // The kit's slot focuses the name input in this same keydown: without this the digit is typed into it.
@@ -221,7 +221,7 @@ export default function Hotbar() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activateSlot]);
+  }, [activateSlot, store]);
 
   // ── Drag-and-drop wiring ─────────────────────────────────────────
   const hasConsumableDragType = (dt: DataTransfer): boolean => {

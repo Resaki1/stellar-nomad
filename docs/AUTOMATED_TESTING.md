@@ -176,8 +176,20 @@ can attach to a kept one). A `run:` script gets `{ host, guest }`, each with `lo
 unless `--keep`; `pnpm drive:coop -- --stop` stops kept ones.
 
 ```bash
-COOP_PARTS=presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 ```
+
+For Settings and starting positions, run `COOP_PARTS=settingsSpawn,reloadPose,leave` with
+the same command. The host keeps Settings open as the first guest joins. The gate measures
+both ships' simulation steps and spawn separation, then checks the host pauses again when
+the last guest leaves.
+
+For crashes and laser visibility, run `COOP_PARTS=remoteFx,crash`. The host watches a guest mine
+from 7 km, hit an asteroid, die on a second approach, then respawn. `pnpm coop:transcript shipLifecycle`
+delivers delayed poses across death and respawn and adds an observer while the pilot is dead.
+For Settings cursor capture, run `SHELL_PARTS=lock pnpm drive -- --title run:scripts/drive-examples/shell-check.mjs`.
+The gate opens Settings with Escape, waits for the previous input activation to expire, then closes
+with Escape and reads `document.pointerLockElement`. It also checks Enter to resume flight.
 
 The gate mines through MiningSystem (aim, focus, the [M] key). Faults are in-page test
 hooks: `__test.coop.holdIncoming(ms)` (latency spike: the race loser still sends its claim)
