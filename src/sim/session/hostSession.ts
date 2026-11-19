@@ -64,6 +64,7 @@ interface Member {
   playerId: PlayerId | null;
   /** Superseded by a newer connection of the same player: its messages are ignored. */
   fenced: boolean;
+  closeAfter?: number;
   lastPose?: PoseMsg;
 }
 
@@ -165,6 +166,9 @@ export class HostSession {
   /** 1 Hz from the adapter: clock samples to everyone, plus the periodic telemetry checkpoint. */
   tick(): void {
     if (this.state !== "open" && this.state !== "storage_failed") return;
+    this.conns.forEach(m => {
+      if (m.closeAfter !== undefined && this.o.clock.monoMs() >= m.closeAfter) this.o.transport.close(m.conn);
+    });
     if (this.pendingNames.size > 0) this.flushRenames();
     const msg: HostMsg = { t: "clock", gen: this.gen, epochMs: this.epochMs(), rate: this.clockPaused ? 0 : this.data.world.simRate, hostMonoMs: this.o.clock.monoMs() };
     this.broadcast("cmd", msg);
@@ -221,7 +225,6 @@ export class HostSession {
     } else if (msg.t === "name") {
       this.rename(pid, msg.name);
     } else if (msg.t === "cmd") {
-      if (msg.tel) this.applyTelemetry(pid, msg.tel);
       this.enqueue(() => this.execute(m, pid, msg));
     }
   }
@@ -231,10 +234,7 @@ export class HostSession {
   private async admit(m: Member, hello: Extract<ClientMsg, { t: "hello" }>): Promise<void> {
     // A repeated hello queued before the first admission finished: already admitted.
     if (m.playerId !== null || m.fenced || !this.conns.has(m.conn)) return;
-    const refuse = (reason: RefuseReason): void => {
-      this.send(m.conn, { t: "refuse", reason });
-      this.o.transport.close(m.conn);
-    };
+    const refuse = (reason: RefuseReason): void => this.refuse(m, reason);
     if (this.state !== "open") return refuse("closed");
     if (hello.protocol !== PROTOCOL_VERSION) return refuse("protocol");
     if (hello.content !== this.o.content) return refuse("content");
@@ -270,8 +270,7 @@ export class HostSession {
     const old = this.bound.get(pid);
     if (old !== undefined && old !== m.conn) {
       const om = this.conns.get(old);
-      if (om) om.fenced = true;
-      this.o.transport.close(old);
+      if (om) this.refuse(om, "replaced");
     }
     m.playerId = pid;
     this.bound.set(pid, m.conn);
@@ -397,6 +396,8 @@ export class HostSession {
     }
 
     const backup = structuredClone(this.data);
+    // A replay may carry hull/heat sampled before an already committed consumable.
+    if (msg.tel) this.applyTelemetry(pid, msg.tel);
     const revision = this.data.world.revision;
     this.captured.length = 0;
     const op = msg.op;
@@ -521,6 +522,13 @@ export class HostSession {
 
   private enqueue(fn: () => Promise<void> | void): void {
     this.chain = this.chain.then(fn).catch((err) => console.error("[host] task failed", err));
+  }
+
+  /** Fence immediately. The client closes after reading the reason; a silent client times out. */
+  private refuse(m: Member, reason: RefuseReason): void {
+    m.fenced = true;
+    m.closeAfter = this.o.clock.monoMs() + 5000;
+    this.send(m.conn, { t: "refuse", reason });
   }
 
   private send(conn: ConnId, msg: HostMsg): void {

@@ -3,7 +3,7 @@
  * SaveData / SaveMeta. Missing or malformed fields fall back to defaults; structurally
  * unusable input throws.
  */
-import { MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
+import { MAX_HEAT_FRACTION, MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
 import { MAX_POINTS, STARTER_POINT_ID, cleanPointName, starterPoint } from "@/sim/replication/points";
 import { MAX_BOOKMARKS, MAX_LEGACY_IDS, MAX_RECEIPTS, MAX_SOURCES, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
 import { MIGRATIONS } from "./migrations";
@@ -370,7 +370,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
       ordinaryKg: fuelKg(propellant.ordinaryKg, d.propellant.ordinaryKg),
       protectedKg: fuelKg(propellant.protectedKg, d.propellant.protectedKg),
     },
-    power: { capacitor01: unit01(power.capacitor01, d.power.capacitor01), heat01: unit01(power.heat01, d.power.heat01) },
+    power: { capacitor01: unit01(power.capacitor01, d.power.capacitor01), heat01: Math.min(MAX_HEAT_FRACTION, Math.max(0, num(power.heat01, d.power.heat01))) },
     processing: sanitizeProcessing(v.processing),
     bookmarks: sanitizeBookmarks(v.bookmarks),
     legacy: sanitizeLegacy(v.legacy),

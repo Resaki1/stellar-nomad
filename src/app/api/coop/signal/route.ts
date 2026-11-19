@@ -73,6 +73,10 @@ export async function POST(req: Request): Promise<Response> {
       rooms.set(c, { code: c, info: b.info, hostSeen: now, inbox: new Map(), nextPeer: 1 });
       return json({ code: c });
     }
+    case "update":
+      if (!room) return json({ error: "no room" }, 404);
+      room.info = b.info;
+      return json({ ok: true });
     case "info":
       return room ? json({ info: room.info }) : json({ error: "no room" }, 404);
     case "join": {

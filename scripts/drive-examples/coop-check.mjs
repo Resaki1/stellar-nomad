@@ -1,6 +1,6 @@
 /**
  * M4.0 exit gate in two real browsers (docs/M4_COOP_PLAN.md §1). Run with drive-coop.mjs:
- *   COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
+ *   COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
  *     pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
  * The host opens a fresh disposable `[gc] coop` world to friends; the guest joins through the join
  * card (invite link, Join button). cancelJoin, handoff, hostFail and leave change the session: keep them last. Mining
@@ -117,7 +117,7 @@ async function waitFor(fn, ms, step = 200) {
 }
 
 export default async function coopCheck({ host, guest, log }) {
-  const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
+  const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
   let worldId = null;
@@ -819,13 +819,13 @@ export default async function coopCheck({ host, guest, log }) {
     })()`);
     await host.press("Enter");
     const t0 = Date.now();
-    shots.typed = await host.shot("coop/rename-settings-typed");
     const seen = await waitFor(async () => {
       await guest.evaluate(`${C}.faceRemote()`);
       const l = await guest.evaluate(`${C}.labels()`);
       return l.includes(NEW) ? l : null;
     }, 5000, 100);
     const seenMs = seen ? Date.now() - t0 : null;
+    shots.typed = await host.shot("coop/rename-settings-typed");
     shots.guest = await guest.shot("coop/rename-guest");
     for (let i = 0; i < 3 && (await host.evaluate("!!document.querySelector('.settings-menu')")); i++) {
       await host.press("Escape");
@@ -847,13 +847,90 @@ export default async function coopCheck({ host, guest, log }) {
     return { pass: Object.values(checks).every(Boolean), checks, field, before, seen, seenMs, fallback, hostMembers: hostRec, shots, ms: Date.now() - p0 };
   }
 
+  async function pilotActions() {
+    const patch = "consumable_hull_patch_kit";
+    const before = await record(ids.host);
+    await host.evaluate('__test.gameplay.jettison("silicates", 3)');
+    const jettisoned = await waitFor(async () => (await record(ids.host)).cargo.items.silicates === before.cargo.items.silicates - 3, 5000);
+    await host.evaluate(`__test.gameplay.craft(${J(patch)})`);
+    const crafted = await waitFor(async () => (await record(ids.host)).modules.consumables[patch] === 1, 5000);
+    await host.evaluate(`__test.gameplay.assignHotbar(6, ${J(patch)})`);
+    const assigned = await waitFor(async () => (await record(ids.host)).modules.hotbar[6] === patch, 5000);
+    await host.evaluate("__phys.game.setHealth(60)");
+    await host.press("7");
+    const used = await waitFor(async () => {
+      const p = await record(ids.host);
+      return !p.modules.consumables[patch] && p.health >= 75 && p.health < 77;
+    }, 5000);
+    const checks = { jettisoned, crafted, assigned, used };
+    return { pass: Object.values(checks).every(Boolean), checks };
+  }
+
+  /** A room closes after preview. A rejected returning pilot then restores its own fixture credential. */
+  async function joinLifecycle() {
+    const openCard = async () => {
+      await guest.load({ join: code });
+      if (!await waitFor(async () => (await guest.evaluate(CARD))?.joinEnabled, 15_000)) throw new Error("no join card");
+    };
+    const click = () => guest.evaluate(`document.querySelector("[data-coop-join]").click(), true`);
+    await openCard();
+    await host.evaluate(`${C}.close(false)`);
+    await click();
+    const closed = await waitFor(async () => (await guest.evaluate(CARD))?.refusal === "closed", 10_000);
+    await host.load();
+    await host.ready();
+    const sameCode = code === await host.evaluate(`${C}.host()`);
+    await openCard();
+    const storage = J("coop-guest:" + worldId);
+    await guest.evaluate(`(() => {
+      const saved = localStorage.getItem(${storage});
+      sessionStorage.setItem("test-guest-backup", saved);
+      localStorage.setItem(${storage}, JSON.stringify({ ...JSON.parse(saved), credential: "expired-test-credential" }));
+    })()`);
+    let credential;
+    try {
+      await click();
+      credential = await waitFor(async () => (await guest.evaluate(CARD))?.refusal === "credential", 30_000);
+    } finally {
+      await guest.evaluate(`localStorage.setItem(${storage}, sessionStorage.getItem("test-guest-backup")); sessionStorage.removeItem("test-guest-backup"); true`);
+    }
+    await openCard();
+    const j = await joinByCard(code);
+    const checks = { closed, sameCode, credential, restored: j.status.playerId === ids.guest };
+    return { pass: Object.values(checks).every(Boolean), checks };
+  }
+
+  /** Close only the invitation. The live game keeps its authority and accepts a rejoin on a fresh code. */
+  async function inviteRenewal() {
+    const origin = process.env.COOP_SIGNAL_ORIGIN;
+    if (!origin) throw new Error("inviteRenewal needs COOP_SIGNAL_ORIGIN");
+    const previous = code;
+    const closed = await host.evaluate(`(async () => {
+      const key = "coop-owner:" + ${J(origin)} + "/" + ${J(previous)};
+      const response = await fetch(${J(origin + "/rooms/" + previous + "/close")}, {
+        method: "POST", headers: { Authorization: "Bearer " + localStorage.getItem(key) }
+      });
+      return response.ok;
+    })()`);
+    const renewed = await waitFor(async () => {
+      const status = await host.evaluate(`${C}.status()`);
+      return status.code !== previous && status.detail !== "invites_offline" && status.code;
+    }, 30_000);
+    if (!renewed) throw new Error("invitation failed to renew");
+    code = renewed;
+    const live = await guest.evaluate(`${C}.status()`);
+    const rejoined = await joinByCard(code);
+    const checks = { closed, stayedJoined: live.status === "joined", samePilot: rejoined.status.playerId === ids.guest };
+    return { pass: Object.values(checks).every(Boolean), checks };
+  }
+
   /** Direct writes to host-owned slices are inert in a session, on both tabs. */
   async function writeGate() {
     const out = {};
     for (const [role, page, pid] of [["guest", guest, ids.guest], ["host", host, ids.host]]) {
       const before = { mirror: (await page.evaluate(`${C}.mirror()`)).cargo.items, record: (await record(pid)).cargo.items, w: await page.evaluate(`${C}.writes()`) };
       const res = Object.keys(before.mirror)[0] ?? "silicates";
-      await page.evaluate(`__test.gameplay.jettison(${J(res)}, 1)`);
+      await page.evaluate(`__dev.grantCargo(${J(res)}, 1)`);
       await page.sleep(500);
       const after = { mirror: (await page.evaluate(`${C}.mirror()`)).cargo.items, record: (await record(pid)).cargo.items, w: await page.evaluate(`${C}.writes()`) };
       out[role] = {
@@ -1076,6 +1153,13 @@ export default async function coopCheck({ host, guest, log }) {
   }
 
   try {
+    if (process.env.COOP_SIGNAL_ORIGIN || process.env.COOP_TEST_TURN_URL || process.env.COOP_FORCE_RELAY) {
+      const ice = process.env.COOP_TEST_TURN_URL ? { iceTransportPolicy: "relay", iceServers: [{
+        urls: process.env.COOP_TEST_TURN_URL, username: process.env.COOP_TEST_TURN_USER, credential: process.env.COOP_TEST_TURN_PASSWORD,
+      }] } : null;
+      const source = `window.__coopTestSignalOrigin = ${J(process.env.COOP_SIGNAL_ORIGIN ?? null)}; window.__coopTestIce = ${J(ice)}; window.__coopForceRelay = ${process.env.COOP_FORCE_RELAY === "1"};`;
+      for (const page of [host, guest]) await page.send("Page.addScriptToEvaluateOnNewDocument", { source });
+    }
     // ── setup: fresh disposable world on the host, guest joins by code ──
     const s0 = Date.now();
     await host.load();
@@ -1087,6 +1171,7 @@ export default async function coopCheck({ host, guest, log }) {
     await host.ready();
     if ((await host.evaluate(`${C}.worldId()`)) !== worldId) throw new Error("fixture world did not boot");
     await host.evaluate(`${C}.name(${J(HOST_NAME)})`);
+    if (parts.includes("pilotActions")) await host.evaluate('__dev.grantCargo("fe_ni_metal", 20); __dev.grantCargo("silicates", 20); true');
     if (parts.includes("settingsSpawn")) {
       await menu(host, true);
       pauseChecks.soloPaused = await framesWhilePaused();
@@ -1101,9 +1186,11 @@ export default async function coopCheck({ host, guest, log }) {
       return g.status === "joined" && h.remotes.length === 1 && g.remotes.length === 1 ? { h, g } : null;
     }, 60_000, 500);
     if (!joined) throw new Error(`guest never joined: ${J(await guest.evaluate(`${C}.log()`))}`);
+    const route = await waitFor(() => guest.evaluate(`${C}.route()`), 5000);
+    if (!route || ((process.env.COOP_TEST_TURN_URL || process.env.COOP_FORCE_RELAY === "1") && route !== "relay")) throw new Error("Unexpected ICE route: " + route);
     ids.host = joined.h.playerId;
     ids.guest = joined.g.playerId;
-    log({ part: "setup", ok: true, worldId, code, ids, ms: Date.now() - s0 });
+    log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
       settingsSpawn,
@@ -1121,6 +1208,9 @@ export default async function coopCheck({ host, guest, log }) {
       crash,
       pilotMarker,
       rename,
+      pilotActions,
+      joinLifecycle,
+      inviteRenewal,
       writeGate,
       exportHidden,
       cancelJoin,
@@ -1155,6 +1245,7 @@ export default async function coopCheck({ host, guest, log }) {
     }
     log({ part: "cleanup", worldRemoved: removed });
   }
-  const pass = parts.every((p) => results[p]?.pass);
-  return { pass, parts: Object.fromEntries(parts.map((p) => [p, !!results[p]?.pass])), ms: Date.now() - t0 };
+  const renderErrors = pipelineErrors(host, guest);
+  const pass = parts.every((p) => results[p]?.pass) && renderErrors.length === 0;
+  return { pass, renderErrors, parts: Object.fromEntries(parts.map((p) => [p, !!results[p]?.pass])), ms: Date.now() - t0 };
 }

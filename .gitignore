@@ -51,3 +51,7 @@ AUDIO/music/
 
 # scripted verification output (scripts/drive.mjs, __test.*.save)
 /.captures/
+
+# Local Cloudflare development state and Worker secrets
+/services/coop-signal/.wrangler/
+/services/coop-signal/.dev.vars*

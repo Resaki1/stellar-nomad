@@ -8,6 +8,9 @@ export type AsteroidDestroyCause = "mined" | "collision";
  * has no second effect (receipt log + durable object state).
  */
 export type WorldOperation =
+  | { type: "cargo.jettison"; opId: string; resourceId: string; amount?: number }
+  | { type: "item.consume"; opId: string; itemId: string }
+  | { type: "hotbar.assign"; opId: string; index: number; itemId: string | null }
   | { type: "asteroid.destroy"; opId: string; fieldId: string; chunkKey: string; instanceId: number; cause: AsteroidDestroyCause }
   /**
    * `yield` is the miner's preview; an authority with a mine resolver ignores it and re-derives the
@@ -69,6 +72,9 @@ export interface Transfer {
 }
 
 export type OperationResult =
+  | { type: "cargo.jettison"; removed: number }
+  | { type: "item.consume"; itemId: string }
+  | { type: "hotbar.assign" }
   | { type: "asteroid.destroy" }
   | { type: "asteroid.mine"; granted: Record<string, number>; overflow: Record<string, number>; newFamilies: string[]; depletedSource: string | null }
   | { type: "item.craft"; itemId: string; spent: Record<string, number>; autoEquipped: boolean; hotbarIndex: number | null; newTrial: boolean }

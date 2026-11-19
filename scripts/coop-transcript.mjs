@@ -75,7 +75,7 @@ class Rig {
     const c = { name, store: st, pose: null, poses: [], events: [], settled: [], local };
     c.session = new GuestSession({
       clock: systemClock, name, content: CONTENT, store: st, local, playerId: local ? HOST_ID : undefined,
-      telemetry: () => (c.pose ? { pose: c.pose } : undefined),
+      telemetry: () => c.telemetry ?? (c.pose ? { pose: c.pose } : undefined),
       onPose: (p) => c.poses.push(p),
       onEvent: (e) => { c.events.push(e); if (e.type === "op.settled") c.settled.push(e.outcome); },
     });
@@ -456,7 +456,41 @@ async function shipLifecycle() {
   return { pass: sparks && hidden && noOldLife && recovered, sparks, hidden, noOldLife, recovered };
 }
 
+async function pilotActions() {
+  const repo = newWorld();
+  const seed = repo.peek();
+  const patch = "consumable_hull_patch_kit", sink = "consumable_heat_sink_cartridge";
+  const pilot = seed.data.players[HOST_ID];
+  pilot.health = 60;
+  pilot.power.heat01 = 1.2;
+  pilot.cargo.items.silicates = 9;
+  pilot.modules.consumables = { [patch]: 2, [sink]: 1 };
+  await repo.commit(seed.meta, seed.data);
+  const { rig, h, g } = await joinedPair(repo);
+  const run = async (client, op) => { client.session.submit({ opId: "pilot-" + (++opN), ...op }); await rig.settle(); return client.settled.at(-1); };
+  await run(h, { type: "hotbar.assign", index: 3, itemId: patch });
+  await run(h, { type: "hotbar.assign", index: 2, itemId: patch });
+  await run(h, { type: "cargo.jettison", resourceId: "silicates", amount: 4 });
+  await run(g, { type: "cargo.jettison", resourceId: "silicates", amount: 1 });
+  await run(h, { type: "item.consume", itemId: sink });
+  // Both copies carry the same pre-repair sample. A replay must leave the durable hull repaired.
+  h.telemetry = { health: 60 };
+  rig.net.duplicateNextToHost(h.conn);
+  await run(h, { type: "item.consume", itemId: patch });
+  const p = repo.peek().data.players[HOST_ID];
+  const checks = { privateStores: g.settled.at(-1)?.status === "rejected" && p.cargo.items.silicates === 5,
+    hotbar: p.modules.hotbar[2] === patch && p.modules.hotbar[3] === null,
+    cooled: Math.abs(p.power.heat01 - 0.7) < 1e-8 && !p.modules.consumables[sink],
+    patchedOnce: p.health === 75 && p.modules.consumables[patch] === 1 };
+  const replacement = rig.client("Replacement", { store: g.store });
+  replacement.join();
+  await rig.settle();
+  checks.replaced = g.session.refusal === "replaced" && replacement.session.playerId === g.session.playerId;
+  return { pass: Object.values(checks).every(Boolean), checks };
+}
+
 const SCENARIOS = {
+  pilotActions,
   shipLifecycle,
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),

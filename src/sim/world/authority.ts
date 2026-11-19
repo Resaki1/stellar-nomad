@@ -23,6 +23,8 @@ export interface Authority {
 export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "asteroid.mine",
   "item.craft",
+  "item.consume",
+  "cargo.jettison",
   "survey.inspect",
   "research.unlock",
   "trial.record",

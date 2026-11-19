@@ -68,6 +68,7 @@ export class GuestSession {
   mirror: { meta: SaveMeta; data: SaveData } | null = null;
   revision = 0;
   storageFailed = false;
+  hostClosing = false;
   refusal: RefuseReason | null = null;
 
   constructor(private readonly o: GuestSessionOptions) {
@@ -125,6 +126,7 @@ export class GuestSession {
     if (msg.t === "refuse") {
       this.refusal = msg.reason;
       this.setState("refused", msg.reason);
+      this.link?.close();
       return;
     }
     if (msg.gen !== this.gen) return;
@@ -144,6 +146,7 @@ export class GuestSession {
         this.o.onClock?.(msg);
         return;
       case "status":
+        this.hostClosing = msg.state === "closing";
         this.storageFailed = msg.state === "storage_failed";
         return;
       case "members":
@@ -166,14 +169,17 @@ export class GuestSession {
 
   /** Queue an intent; it settles later through an `op.settled` event. */
   submit(op: WorldOperation): OperationOutcome {
+    if (this.state === "refused") return { status: "rejected", opId: op.opId, by: this.playerId ?? "", reason: "not_allowed" };
     this.queue.push(op);
     this.pump();
     return { status: "pending", opId: op.opId, by: this.playerId ?? "" };
   }
 
   sendTelemetry(): void {
+    // A later sample must observe this pilot’s pending spend or repair before it can overwrite the result.
+    if (this.rec.pending || this.state !== "joined") return;
     const tel = this.o.telemetry?.();
-    if (tel && this.state === "joined") this.link?.send("cmd", { t: "tel", gen: this.gen, tel });
+    if (tel) this.link?.send("cmd", { t: "tel", gen: this.gen, tel });
   }
 
   /** The pilot renamed: tell the host now (members reach everyone), and use it on rejoin. */
@@ -215,6 +221,7 @@ export class GuestSession {
   // ── host messages ────────────────────────────────────────────────────────
 
   private onWelcome(w: WelcomeMsg): void {
+    this.hostClosing = false;
     this.welcome = w;
     this.gen = w.gen;
     this.parts = [];

@@ -1,6 +1,7 @@
 import { atom } from "jotai";
 import { savedAtom } from "@/store/savedAtom";
 import { defaultCargo } from "@/save/defaults";
+import { newOpId, runOperation } from "./operations";
 import { canWriteSlice } from "@/save/activeSave";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { signalAudioActionAtom } from "./audioSignals";
@@ -74,30 +75,13 @@ export const addCargoAtom = atom(
  */
 export const removeCargoAtom = atom(
   null,
-  (get, set, update: { resourceId: string; amount?: number }): void => {
-    const { resourceId, amount } = update;
-    if (!resourceId || !canWriteSlice("player", "cargo")) return;
-
-    const state = get(cargoAtom);
-    const current = Math.max(0, Math.floor(state.items[resourceId] ?? 0));
-    if (current <= 0) return;
-
-    const toRemove =
-      amount === undefined || !Number.isFinite(amount)
-        ? current
-        : Math.max(0, Math.floor(amount));
-
-    const remaining = current - toRemove;
-
-    const newItems = { ...state.items };
-    if (remaining <= 0) {
-      delete newItems[resourceId];
-    } else {
-      newItems[resourceId] = remaining;
-    }
-
-    set(cargoAtom, { ...state, items: newItems });
-  }
+  (_get, set, update: { resourceId: string; amount?: number }): void => {
+    const amount = update.amount === undefined || !Number.isFinite(update.amount) ? undefined : Math.floor(update.amount);
+    if (amount !== undefined && amount <= 0) return;
+    runOperation({ type: "cargo.jettison", opId: newOpId(), resourceId: update.resourceId, amount }, o => {
+      if (o.status === "accepted") set(signalAudioActionAtom, "cargo.jettison");
+    });
+  },
 );
 
 export const clearCargoAtom = atom(null, (get, set) => {

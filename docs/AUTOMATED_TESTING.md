@@ -176,7 +176,7 @@ can attach to a kept one). A `run:` script gets `{ host, guest }`, each with `lo
 unless `--keep`; `pnpm drive:coop -- --stop` stops kept ones.
 
 ```bash
-COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
 ```
 
 For Settings and starting positions, run `COOP_PARTS=settingsSpawn,reloadPose,leave` with
@@ -203,6 +203,16 @@ remoteFx reads `__test.coop.fx(ms)` (what each remote slot drew: beam frames/len
 `__test.coop.bursts()` (destruction bursts shown for another pilot's mine); pilotMarker reads
 `__test.coop.markers()` (green pilot POI markers and edge triangles as drawn, plus the gaze
 target); rename types into Settings → friends. Captures go to `.captures/coop/`.
+
+`pilotActions` jettisons cargo, crafts and slots a hull patch, then activates it through the flight hotkey and checks the saved hull and count. `joinLifecycle` closes an invite after preview, checks the refusal, reopens the same room and exercises a refused returning credential followed by a successful rejoin.
+
+To exercise the hosted adapter against a local Worker, start Wrangler as described in the [service guide](../services/coop-signal/README.md), then run:
+
+```sh
+COOP_SIGNAL_ORIGIN=http://127.0.0.1:8791 COOP_PARTS=race,pilotActions,joinLifecycle,inviteRenewal,dropReply,restart,leave pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
+```
+
+The hosted-only `inviteRenewal` check closes the invitation while both pilots are flying, then rejoins the same pilot using the replacement code. The driver records the selected WebRTC route from the guest's ICE candidate pair. Set `COOP_FORCE_RELAY=1` to require the Worker's TURN servers and fail setup unless the selected route is relayed. Alternatively, set `COOP_TEST_TURN_URL`, `COOP_TEST_TURN_USER` and `COOP_TEST_TURN_PASSWORD` for an existing test TURN service. Those overrides apply only to the development browser harness. For the corresponding two-device preview check, use the service guide.
 
 ---
 

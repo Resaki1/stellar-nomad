@@ -11,7 +11,7 @@ import {
   HOTBAR_DRAG_MIME,
   HOTBAR_SOURCE_SLOT_MIME,
 } from "@/store/modules";
-import { heatSinkBuffer, miningStateAtom } from "@/store/mining";
+import { miningStateAtom } from "@/store/mining";
 import { settingsIsOpenAtom, shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addTimedEffectAtom } from "@/store/timedEffects";
@@ -56,51 +56,33 @@ export default function Hotbar() {
   // Plain action dispatcher, not a hook — named without the `use` prefix so
   // rules-of-hooks doesn't flag calls from inside callbacks.
   const consumeItem = useSetAtom(useConsumableAtom);
-  const setShipHealth = useSetAtom(shipHealthAtom);
   const addTimedEffect = useSetAtom(addTimedEffectAtom);
   const addToast = useSetAtom(addToastAtom);
   const signalAudio = useSetAtom(signalAudioActionAtom);
   const setHotbarSlot = useSetAtom(setHotbarSlotAtom);
 
-  // Tick counter to force re-render while any cooldown is active
-  const [, setTick] = useState(0);
-  const rafRef = useRef<number | null>(null);
+  const [now, setNow] = useState(Date.now);
 
   // DnD + right-click UI state
   const [dragOverSlot, setDragOverSlot] = useState<number | null>(null);
   const [justAssignedSlot, setJustAssignedSlot] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
 
-  // Track whether any cooldown is active to drive the rAF loop
-  const hasActiveCooldown = useMemo(() => {
-    const now = performance.now();
-    for (const itemId of modulesState.hotbar) {
-      if (!itemId) continue;
-      const def = getItemDef(itemId);
-      if (!def?.cooldownS) continue;
-      const lastUse = modulesState.consumableCooldowns[itemId] ?? 0;
-      if ((now - lastUse) / 1000 < def.cooldownS) return true;
-    }
-    return false;
-  }, [modulesState.hotbar, modulesState.consumableCooldowns]);
+  const cooldownEnd = useMemo(() => modulesState.hotbar.reduce((end, id) => {
+    if (!id) return end;
+    const duration = getItemDef(id)?.cooldownS ?? 0;
+    return Math.max(end, (modulesState.consumableCooldowns[id] ?? 0) + duration * 1000);
+  }, 0), [modulesState.hotbar, modulesState.consumableCooldowns]);
 
-  // Re-render at ~10 fps while a cooldown is active so the timer updates
   useEffect(() => {
-    if (!hasActiveCooldown) return;
-    let active = true;
-    const loop = () => {
-      if (!active) return;
-      setTick((t) => t + 1);
-      rafRef.current = window.setTimeout(() => {
-        if (active) requestAnimationFrame(loop);
-      }, 100) as unknown as number;
-    };
-    requestAnimationFrame(loop);
-    return () => {
-      active = false;
-      if (rafRef.current !== null) clearTimeout(rafRef.current);
-    };
-  }, [hasActiveCooldown]);
+    if (cooldownEnd <= Date.now()) return;
+    const timer = window.setInterval(() => {
+      const time = Date.now();
+      setNow(time);
+      if (time >= cooldownEnd) clearInterval(timer);
+    }, 100);
+    return () => clearInterval(timer);
+  }, [cooldownEnd]);
 
   // A kit that arrives (craft, salvage, a loaded save) gets a slot once; a manual removal sticks.
   // The hotbar is its only control, so a full bar says so (Loadout can drag it in later).
@@ -141,28 +123,20 @@ export default function Hotbar() {
         return;
       }
 
-      // Block heat-related consumables when there's no heat
-      if (requiresHeat(def) && miningState.laserHeat <= 0) {
-        addToast({ audio: "reject", kind: "warn", message: "Heat already low" });
-        return;
-      }
-
-      // Block hull repair when at full health
-      if (def.useEffects?.some((e) => e.key === "ship.currentHealth") && !hullRepairable(shipHealth, shipConfig.maxHealth)) {
-        addToast({ audio: "reject", kind: "warn", message: "Hull intact" });
-        return;
-      }
-
-      // Information consumables — stub: consume the item
-      if (isInfoConsumable(def)) {
-        const ok = consumeItem(itemId);
-        if (ok) addToast({ message: "Used", values: [{ id: itemId }] });
-        else signalAudio("ui.reject");
-        return;
-      }
-
-      const ok = consumeItem(itemId);
-      if (ok) {
+      // The command samples live hull and heat. HUD values are refreshed less frequently.
+      consumeItem({ itemId, onSettled(outcome) {
+        if (outcome.status !== "accepted") {
+          if (outcome.status === "rejected" && outcome.reason === "full_hull") {
+            addToast({ audio: "reject", kind: "warn", message: "Hull intact" });
+          } else if (outcome.status === "rejected" && outcome.reason === "already_done" && requiresHeat(def)) {
+            addToast({ audio: "reject", kind: "warn", message: "Heat already low" });
+          } else signalAudio("ui.reject");
+          return;
+        }
+        if (isInfoConsumable(def)) {
+          addToast({ message: "Used", values: [{ id: itemId }] });
+          return;
+        }
         // Timed consumables: add to timed effects system
         if (isTimedConsumable(def) && def.useEffects) {
           addTimedEffect({
@@ -181,30 +155,16 @@ export default function Hotbar() {
           for (const eff of def.useEffects) {
             if (eff.key === "mining.currentHeat") {
               cue = eff.op === "set" ? "mining.purge.vent" : "mining.heatsink.vent";
-              if (eff.op === "set") {
-                heatSinkBuffer.pendingSet = eff.value as number;
-              } else if (eff.op === "multiply") {
-                heatSinkBuffer.pendingMultiplier = eff.value as number;
-              } else if (eff.op === "add") {
-                heatSinkBuffer.pendingAdd = eff.value as number;
-              }
             } else if (eff.key === "ship.currentHealth") {
               cue = "ship.hull.repair";
-              if (eff.op === "add") {
-                const newHealth = Math.min(shipConfig.maxHealth, shipHealth + (eff.value as number));
-                setShipHealth(newHealth);
-              }
             }
           }
         }
         if (cue) signalAudio(cue);
         addToast({ message: "Used", values: [{ id: itemId }], audio: cue ? "silent" : undefined });
-      } else {
-        // Out of stock or on cooldown.
-        signalAudio("ui.reject");
-      }
+      } });
     },
-    [store, modulesState.hotbar, modulesState.consumables, miningState.laserHeat, shipHealth, shipConfig.maxHealth, consumeItem, setShipHealth, addTimedEffect, addToast, signalAudio],
+    [store, modulesState.hotbar, modulesState.consumables, consumeItem, addTimedEffect, addToast, signalAudio],
   );
 
   // Keys 1…9 then 0 (names with digits are typed, never activate a slot).
@@ -298,7 +258,7 @@ export default function Hotbar() {
         const cdS = def.cooldownS ?? 0;
         if (cdS > 0) {
           const last = modulesState.consumableCooldowns[itemId] ?? 0;
-          if ((performance.now() - last) / 1000 < cdS) return true;
+          if ((Date.now() - last) / 1000 < cdS) return true;
         }
         return false;
       })(),
@@ -321,8 +281,6 @@ export default function Hotbar() {
   );
 
   if (!hasConsumables) return null;
-
-  const now = performance.now();
 
   return (
     <>

@@ -1,7 +1,6 @@
 # Stellar Nomad — Roadmap
 
-**Status, 2026-11-18.** M0–M2 are built as recorded below. M3 is in playtest and
-merge preparation. M4 implementation starts when the owner confirms the M3 merge to `main`.
+**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 passed its Vercel preview invite test from a Wi-Fi Mac to a cellular iPhone. Hosted TURN stays off.
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -373,9 +372,9 @@ details and every measurement: [`M3_GAMEPLAY_PLAN.md`](M3_GAMEPLAY_PLAN.md) §13
   changed opening progression, extraction pace and transit fuel costs. Use the later entries in
   [the M3 as-built log](M3_GAMEPLAY_PLAN.md) for current tuning.
 
-### M4 — Private co-op worlds · size L · planned after M3
+### M4 — Private co-op worlds · size L · in progress
 
-**M4.0 starts with one shared rock.** Two browsers race to mine it. The winning guest
+**M4.0 · Shared rock is on main.** Two browsers race to mine it. The winning guest
 loses the acknowledgement, reconnects and retries. After the host restarts there is one
 depletion and one cargo award. Repeat with the host at Earth and the guest mining at Luna.
 The same command transcript must run under Node without a renderer. [Detailed M4 plan](M4_COOP_PLAN.md)
@@ -383,8 +382,12 @@ The same command transcript must run under Node without a renderer. [Detailed M4
 - **M4.1 · Host and join.** Open a solo world to 1–3 friends by invite link or code.
   WebRTC connects each guest to the host. Reliable commands and disposable frame-relative
   poses use separate channels. Signaling supports admission and reconnects, with STUN and
-  a TURN fallback. The host worker runs the shared clock and commits changes. Each pilot
+  optional TURN support. The host worker runs the shared clock and commits changes. Each pilot
   flies locally. Suspension leads to a visible wait and a checkpointed resume.
+  Direct and forced-relay Chrome sessions pass with the local signaling Worker. A Mac host on Wi-Fi and an iPhone guest on cellular connected via the preview invite and the guest saw the host ship.
+  Hosted TURN is deferred. Local relay egress projected to ~41 MB per two-player hour, or ~24,000
+  relayed pair-hours per 1,000 GB. Physical sleep/wake remains in the M4.4 device matrix.
+  [Staging verification](../services/coop-signal/README.md)
 - **M4.2 · Shared M3 loop.** World-owned depletion, wrecks, knowledge and placed points
   coexist with individual ships, stores and recovery selections. The host validates intents
   and persists each consequential outcome. Late joins receive a revisioned snapshot of the
@@ -536,10 +539,7 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 
 ## 7. Current implementation handoff
 
-1. Finish M3 playtest changes and verify the solo expedition, recovery and save gates
-   against the [M3 as-built log](M3_GAMEPLAY_PLAN.md).
-2. After the owner confirms M3 is merged into `main`, reconcile the
-   merged command, save and generation contracts. Begin with the two-browser shared-rock test
-   in the [M4 co-op plan](M4_COOP_PLAN.md).
+1. Keep the direct [staging playtest](../services/coop-signal/README.md) and local relay regression available. Leave hosted TURN disabled.
+2. Continue with the M4.2 shared M3 loop and M4.3 expedition in the [M4 co-op plan](M4_COOP_PLAN.md). Keep the shared-rock and solo expedition checks passing as gameplay evolves.
 3. Complete the co-op expedition and headless parity gates before building M5's first
    shared depot and fuel route. Use playtests to revise the gameplay catalogue and rules.
