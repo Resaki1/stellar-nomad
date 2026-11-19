@@ -14,7 +14,7 @@ Compare the lunar rock's identity, position and yield against solo play. The hos
 resolve the operation from world data while continuing to render Earth. This second run proves that
 friends can go on independent expeditions in one solar system.
 
-**Status, 2026-11-19.** M3 and M4.0 are on `main`, including the co-op playtest fixes in `35f7bd4`. M4.1 passed the two-network invite test on the Vercel preview. Production TURN is deferred. Physical sleep and network-change recovery remain in the M4.4 device matrix. [Roadmap](ROADMAP.md) ·
+**Status, 2026-11-19.** M4.1 passed the Mac-to-iPhone cellular invite test. M4.2 and M4.3 implement shared progression, private per-pilot stores, rendezvous markers and nearby supply transfers. The live game uses its own direct-invite signaling Worker. Hosted TURN stays off. The M4.4 results and remaining device checks are recorded below. [Roadmap](ROADMAP.md) ·
 [M3 design and as-built log](M3_GAMEPLAY_PLAN.md)
 
 **Release target.** One host plus up to three guests in a private world. Players can invite a friend
@@ -386,3 +386,14 @@ The worker loads the same placement-clearance probe as solo, resolves inspection
 Each pilot can publish one frame-relative marker from Friends or share an inspected source from Research → Discoveries. Rendezvous markers are persisted with the world. Returning pilots see a summary of new sources, material families and recovered sites in Friends. At up to 300 m, a pilot can give whole units of cargo, loose consumables or ordinary fuel. The host checks both pilots, range, available stores, braking reserve, batch commitments, and the receiving tank, hold or stack. One durable transaction covers both pilots and the command outcome. The receiving pilot sees the delivery in the HUD. The transport carries catalogue IDs.
 
 The capacity exercise used two rendered games and two additional browser WebRTC pilots on the same machine. All four admitted distinct pilots, received poses and reached revision 5. The first attempt with four full local renderers exhausted the machine's resources and was stopped. The frame-budget comparison in §8 calls for separate guest devices.
+
+### M4.4 · Release verification, 2026-11-19
+
+| Exercise | Result |
+|---|---|
+| Two rendered browsers, direct WebRTC | On an M2 Pro, two Chrome 157 profiles ran for 1,803 seconds on revision `148bc53`. They completed 29 timed rendezvous and round-trip cargo exchanges plus a final exchange. Both private mirrors matched the host records, the original quantities were conserved, and both clients reached the host revision. |
+| Four pilots | One host, one rendered guest and two network-only Chrome guests reached the same world revision. The three connections used distinct pilot identities. |
+| Authority failure and content | The Node transcript exercises a stalled host, refused new spends during a stall, bounded clock advance, failed writes, replay, contested recovery and private records. A disposable content patch added a material and recipe through the catalogue and generator. Solo and the Node host agreed on the yield, transfer, crafting and reload. An old content fingerprint was refused. |
+| Device and playability sign-off | Still open for a physical host sleep/wake, iPhone lock/unlock and network handoff during a session, frame timing with independent guest devices, and an unassisted two-person lunar expedition. The successful Mac-to-cellular-iPhone join is recorded in M4.1. |
+
+The production deployment uses the live signaling Worker for direct invites. The optional relay remains disabled. [Reproduce the checks](AUTOMATED_TESTING.md#expedition-and-release-checks)

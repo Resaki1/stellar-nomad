@@ -1,6 +1,6 @@
 # Stellar Nomad — Roadmap
 
-**Status, 2026-11-19.** M3 and the M4.0 shared-rock milestone are on `main`. M4.1 passed its Vercel preview invite test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. M4.4 verification is in progress. Hosted TURN stays off.
+**Status, 2026-11-19.** Direct invites are enabled for the live game. M4.1 passed its preview test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. The 30-minute cargo-conservation run and four-pilot capacity check passed. M4.4 device and playability checks remain open. Hosted TURN stays off.
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -387,7 +387,7 @@ The same command transcript must run under Node without a renderer. [Detailed M4
   Direct and forced-relay Chrome sessions pass with the local signaling Worker. A Mac host on Wi-Fi and an iPhone guest on cellular connected via the preview invite and the guest saw the host ship.
   Hosted TURN is deferred. Local relay egress projected to ~41 MB per two-player hour, or ~24,000
   relayed pair-hours per 1,000 GB. Physical sleep/wake remains in the M4.4 device matrix.
-  [Staging verification](../services/coop-signal/README.md)
+  [Live and preview signaling](../services/coop-signal/README.md)
 - **M4.2 · Shared M3 loop.** World-owned depletion, wrecks, knowledge and placed points
   coexist with individual ships, stores and recovery selections. The host validates intents
   and persists each consequential outcome. Late joins receive a revisioned snapshot of the

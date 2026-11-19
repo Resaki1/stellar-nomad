@@ -31,9 +31,13 @@ export default async function publicInvite({ host, guest, sleep }) {
     await until(host, "document.querySelector('.coop-pill__n')?.textContent.includes('2/')", "Host seat count");
     await friends(guest);
     await until(guest, "document.querySelector('.coop-settings')?.innerText.includes('Direct connection')", "ICE route");
+    await click(guest, button("share my position"), "Publish rendezvous");
+    await until(guest, "document.querySelector('.coop-settings__expedition [role=status]')?.textContent === 'Position shared'", "Marker committed");
+    await click(guest, button("clear my marker"), "Clear rendezvous");
+    await until(guest, "document.querySelector('.coop-settings__expedition [role=status]')?.textContent === 'Marker cleared'", "Marker cleared");
     await click(host, button("stop hosting"), "Close room");
     await until(host, button("open to friends") + " !== undefined", "Host returned to solo");
-    return { pass: true, origin, seats: 2, route: "direct", closed: true };
+    return { pass: true, origin, seats: 2, route: "direct", markerRoundTrip: true, closed: true };
   } finally {
     await Promise.all([host, guest].map(page => page.send("Page.navigate", { url: "about:blank" })));
   }
