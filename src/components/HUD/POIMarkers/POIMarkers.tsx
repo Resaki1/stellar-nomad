@@ -10,7 +10,7 @@ import "./POIMarkers.scss";
 const EDGE_PADDING = 32;
 /** HUD homes: edge arrows slide out of them and marker labels under them hide. */
 const AVOID_SELECTOR =
-  ".cargo-hud, .hud__panel-buttons, .industry-placement, .objective-tracker, .transit-hud--side, .ship-dashboard, .hotbar, .notif-stack__item, .settings__open-button, .target-card--visible, .comms-overlay, .transit-hud--spooling";
+  ".cargo-hud, .hud__panel-buttons, .placement-card, .objective-tracker, .transit-hud--side, .ship-dashboard, .hotbar, .notif-stack__item, .settings__open-button, .target-card--visible, .comms-overlay, .transit-hud--spooling";
 const AVOID_REFRESH_MS = 100;
 const MAX_LABELS = 128;
 /** Half-size of the box around the reticle whose labels hide while the Target Card shows. */

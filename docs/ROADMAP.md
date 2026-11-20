@@ -2,7 +2,7 @@
 
 **Status, 2026-11-19.** Direct invites passed a two-browser check on the live game, including join, marker sharing and host shutdown. M4.1 passed its preview test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. The 30-minute cargo-conservation run and four-pilot capacity check passed. M4.4 device and playability checks remain open. Hosted TURN stays off.
 
-M5's first Earth–Moon fuel route passed the two-browser exit gate on the feature branch. Two drones kept the lunar depot supplied across a host restart. The receiving replicant withdrew fuel between shipments and both ships agreed with the saved depot balance. [M5 results and reproduction steps](M5_INDUSTRY_PLAN.md)
+M5's feature branch supports depot storage, refining and automated supply between nearby depots. Playtesting replaced the prototype's interbody drone speeds with local thrusters. Two browsers followed a 4 km supply route through a host restart and rejoin. Both replicants and the saved world agreed on the receiving depot’s final balance. [M5 results and reproduction steps](M5_INDUSTRY_PLAN.md)
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -408,7 +408,9 @@ transport, and headless parity tests leave community-hosted and official servers
 ### M5 — Industrial structures, sustainable routes, and drones · size L
 
 [M5 design and verification](M5_INDUSTRY_PLAN.md). The first route connects a
-hydrate-producing depot to a relay. The host owns the cargo in both stores and
+hydrate-producing depot to a nearby relay. Standard utility drones use local thrusters
+with a 30 km operating range. Long-distance freight is a future progression option.
+The host owns the cargo in both stores and
 aboard each drone. A friend can draw fuel at the relay while the builder explores.
 
 - Extend the simple M3 placeable/authority model into **depots** with shared storage,

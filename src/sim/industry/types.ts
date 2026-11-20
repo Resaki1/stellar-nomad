@@ -47,6 +47,7 @@ export interface DroneRecord {
   /** Escrow for the return leg, funded before departure. Separate from delivery cargo. */
   fuelKg: number;
   returnS: number;
+  /** Retained for funded routes written before local drone routing. */
   via: DroneWaypoint | null;
   cargo: Transfer;
 }
@@ -73,12 +74,14 @@ export interface IndustryDelta {
 
 export type IndustryOperation =
   | ({ type: "depot.place"; opId: string; name: string } & ShipPose)
+  | { type: "depot.rename"; opId: string; depotId: string; name: string }
   | { type: "depot.transfer"; opId: string; depotId: string; direction: "deposit" | "withdraw"; kind: GiftKind; itemId: string; amount: number }
   | { type: "depot.fabricate"; opId: string; depotId: string; recipeId: string }
   | { type: "drone.configure"; opId: string; droneId: string; job: DroneJob };
 
 export type IndustryResult =
   | { type: "depot.place"; depotId: string }
+  | { type: "depot.rename"; depotId: string; name: string }
   | { type: "depot.transfer"; depotId: string; direction: "deposit" | "withdraw"; kind: GiftKind; itemId: string; amount: number }
   | { type: "depot.fabricate"; depotId: string; recipeId: string; droneId?: string }
   | { type: "drone.configure"; droneId: string };

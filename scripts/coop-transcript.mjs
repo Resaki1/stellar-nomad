@@ -114,9 +114,9 @@ const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
 const same = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
 const destroyed = (world, r) => (world.asteroidDeltas[r.fieldId]?.[r.chunkKey] ?? []).includes(r.instanceId);
 
-async function joinedPair(repo) {
+async function joinedPair(repo, clock = systemClock) {
   const rig = new Rig(repo);
-  await rig.startHost();
+  await rig.startHost(clock);
   const h = rig.client("Host", { local: true });
   const g = rig.client("Guest");
   h.join();
@@ -403,7 +403,8 @@ async function renameAndActivity() {
 
 /** Review 3: renames are cleaned of invisible characters, made unique, and coalesced per pilot. */
 async function renameHardening() {
-  const { rig, h, g } = await joinedPair();
+  let ms = 0;
+  const { rig, h, g } = await joinedPair(undefined, { ...systemClock, monoMs: () => ms });
   const gid = g.session.playerId;
   const sends = () => rig.host.world.members[gid]?.name;
   // Taking the host's own name gets a suffix; zero-width / bidi / control characters are stripped.
@@ -411,7 +412,7 @@ async function renameHardening() {
   g.session.rename(hostName);
   await rig.settle();
   const dup = sends();
-  await new Promise((r) => setTimeout(r, 1100));
+  ms += 1100;
   g.session.rename("Ly\u200bra\u202e\u0007");
   await rig.settle();
   const clean = sends();
@@ -419,7 +420,7 @@ async function renameHardening() {
   for (let i = 0; i < 20; i++) g.session.rename(`Spam ${i}`);
   await rig.settle();
   const duringBurst = sends();
-  await new Promise((r) => setTimeout(r, 1100));
+  ms += 1100;
   rig.host.tick();
   await rig.settle();
   const afterTick = sends();
@@ -719,13 +720,13 @@ async function suspendedHost() {
 
 
 async function industry() {
-  const [{ getIndustrySource, INDUSTRY_TUNING }, { estimateDroneRoute }, { parseSaveData }, { emergencePose, starterPoint }] = await Promise.all([
-    S("sim/industry/catalog.ts"), S("sim/industry/route.ts"), S("save/validate.ts"), S("sim/replication/points.ts"),
+  const [{ getIndustrySource, INDUSTRY_TUNING }, { estimateDroneRoute }, { parseSaveData }, { emergencePose, starterPoint }, { advanceIndustry }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/route.ts"), S("save/validate.ts"), S("sim/replication/points.ts"), S("sim/industry/simulation.ts"),
   ]);
   let ms = 0;
   const clock = { monoMs: () => ms, nowMs: () => Date.UTC(2026, 0, 1) + ms };
   const seeded = newWorld().peek();
-  seeded.data.players[HOST_ID].cargo.items = { fe_ni_metal: 500, silicates: 400, carbon: 20 };
+  seeded.data.players[HOST_ID].cargo.items = { fe_ni_metal: 600, silicates: 400, carbon: 20 };
   const repo = new MemoryRepository(seeded);
   const rig = new Rig(repo);
   await rig.startHost(clock);
@@ -758,6 +759,9 @@ async function industry() {
 
   const source = getIndustrySource("earth_hydrates");
   const lunar = getIndustrySource("luna_hydrates");
+  const site = eastKm => ({ frameId: source.frameId, positionKm: [source.positionKm[0] + eastKm, ...source.positionKm.slice(1)] });
+  const originSite = site(1.4);
+  const relaySite = site(5.4);
   const pose = s => ({ frameId: s.frameId, positionKm: [...s.positionKm], quaternion: [0,0,0,1] });
   const kit = { type: "item.craft", itemId: "consumable_depot_kit" };
   const place = async (s, name) => {
@@ -771,13 +775,15 @@ async function industry() {
   h.pose = poseAt(spawn, 0.8);
   const collision = await run(h, { type: "depot.place", name: "Blocked emergence", ...spawn });
   assert.equal(collision.reason, "near_ship");
-  const origin = await place(source, "Production");
+  const origin = await place(originSite, "Production");
   await accepted(h, kit);
-  const relay = await place(lunar, "Relay");
+  const relay = await place(relaySite, "Relay");
+  await accepted(h, kit);
+  const moonDepot = await place(lunar, "Lunar depot");
   const depot = id => rig.host.world.industry.depots.find(d => d.id === id);
   const send = (depotId, direction, itemId, amount, kind = "cargo") => ({ type: "depot.transfer", depotId, direction, kind, itemId, amount });
-  h.pose = poseAt(source, 0.8);
-  g.telemetry = { pose: poseAt(source, -0.8), propellant: { ordinaryKg: 30, protectedKg: 0 }, depositedFuelKg: 0, receivedFuelKg: 0 };
+  h.pose = poseAt(originSite, 0.8);
+  g.telemetry = { pose: poseAt(originSite, -0.8), propellant: { ordinaryKg: 30, protectedKg: 0 }, depositedFuelKg: 0, receivedFuelKg: 0 };
   await accepted(h, send(origin, "deposit", "fe_ni_metal", 165));
   await accepted(h, send(origin, "deposit", "silicates", 110));
   await accepted(h, send(origin, "deposit", "carbon", 20));
@@ -788,6 +794,8 @@ async function industry() {
   const configure = (droneId, kind, targetId, priorities, reserveKg, stopAt) =>
     ({ type: "drone.configure", droneId, job: { kind, targetId, priorities, reserveKg, stopAt, enabled: true } });
   assert.equal((await run(h, configure(extract, "extract", lunar.id, ["hydrates"], 0, 20))).reason, "source_out_of_range");
+  assert.equal((await run(h, configure(haul, "haul", moonDepot, ["propellant"], 8, 600))).reason, "route_out_of_range");
+  assert.equal(estimateDroneRoute(depot(origin), site(31.5)), null, "a same-frame depot beyond local operating range is refused");
   await accepted(h, configure(extract, "extract", source.id, ["hydrates"], 0, 200));
   await accepted(g, configure(haul, "haul", relay, ["propellant"], 8, 600));
   const transfer = { ...send(origin, "deposit", "fuel", 12, "fuel"), opId: "bootstrap" };
@@ -797,12 +805,13 @@ async function industry() {
   await rig.settle();
   assert.equal(rig.host.player(pid).propellant.ordinaryKg, 18, "earlier fuel telemetry cannot erase the debit");
   assert.equal(depot(origin).storage.fuelKg, 12);
-  g.telemetry = { pose: poseAt(lunar, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
+  g.telemetry = { pose: poseAt(relaySite, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
   assert.equal((await run(g, send(origin, "withdraw", "fuel", 1, "fuel"))).reason, "too_far");
 
   const hauler = () => rig.host.world.industry.drones.find(d => d.id === haul);
   const route = estimateDroneRoute(depot(origin), depot(relay));
-  assert.ok(route.legSeconds > 40 && route.roundTripFuelKg > 12);
+  assert.equal(route.legSeconds, 37, "4 km leg includes limited acceleration and braking");
+  assert.equal(route.roundTripFuelKg, 4);
   for (let i = 0; hauler().phase !== "outbound" && i < 75; i++) await ticks(1);
   assert.equal(hauler().phase, "outbound");
   const payload = hauler().cargo.fuelKg;
@@ -843,11 +852,54 @@ async function industry() {
   stored.world.industry.depots[0].storage.items.old_ore = 1;
   assert.equal(parseSaveData(stored).world.industry.depots[0].storage.items.old_ore, 1);
 
-  g.telemetry = { pose: poseAt(lunar, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
+  g.telemetry = { pose: poseAt(relaySite, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
   await accepted(g, send(relay, "withdraw", "fuel", 5, "fuel"));
   assert.equal(rig.host.player(pid).propellant.ordinaryKg, 23);
   assert.equal(depot(relay).storage.fuelKg, delivered - 5);
-  return { pass: true, routeKm: Math.round(route.pathKm), roundTripKg: route.roundTripFuelKg, payload, delivered, bootstrapKg: 12 };
+
+  const legacy = structuredClone(stored);
+  const legacyTrip = {
+    ...outbound, job: configure(haul, "haul", moonDepot, ["propellant"], 8, 600).job,
+    durationS: 204, returnS: 204, remainingS: 1, fuelKg: 41,
+    via: { frameId: "earth", positionKm: [0, 8000, 0], fraction: 0.6 },
+    cargo: { ...outbound.cargo, fuelKg: 25 },
+  };
+  legacy.world.industry.drones = [legacyTrip];
+  for (const d of legacy.world.industry.depots) {
+    d.refinery = false;
+    d.storage.fuelKg = d.id === moonDepot ? 590 : 0;
+  }
+  let oldTrip = parseSaveData(legacy).world.industry;
+  assert.deepEqual(oldTrip.drones[0], legacyTrip, "the old maximum countdown, return escrow, waypoint and payload survive loading");
+  const simulate = n => {
+    for (let i = 0; i < n; i++) oldTrip = advanceIndustry(oldTrip, 1).state;
+  };
+  const balance = id => oldTrip.depots.find(d => d.id === id).storage.fuelKg;
+  simulate(1 + INDUSTRY_TUNING.deliverySeconds);
+  assert.equal(balance(moonDepot), 600, "a funded pre-change delivery completes up to the saved limit");
+  assert.equal(oldTrip.drones[0].remainingS, 204);
+  assert.equal(oldTrip.drones[0].cargo.fuelKg, 15);
+  simulate(205);
+  assert.equal(balance(moonDepot), 600, "the completed trip does not duplicate its delivery");
+  assert.equal(balance(origin), 15, "overflow comes back to the original depot");
+  assert.equal(oldTrip.drones[0].cargo.fuelKg, 0);
+  assert.equal(oldTrip.drones[0].status, "route_out_of_range", "the old job remains visible but cannot dispatch again");
+  assert.equal(oldTrip.drones[0].job.targetId, moonDepot);
+
+  const farRelay = legacy.world.industry.depots.find(d => d.id === relay);
+  farRelay.positionKm = site(31.39).positionKm;
+  const longRoute = estimateDroneRoute(depot(origin), farRelay);
+  assert.equal(longRoute.legSeconds, 223, "a long local trip can outlast the old save bound");
+  const longTrip = {
+    ...legacyTrip, job: outbound.job, via: null,
+    durationS: longRoute.legSeconds, remainingS: longRoute.legSeconds, returnS: longRoute.legSeconds,
+    fuelKg: longRoute.roundTripFuelKg / 2,
+  };
+  legacy.world.industry.drones = [longTrip];
+  assert.deepEqual(parseSaveData(legacy).world.industry.drones[0], longTrip, "maximum local countdown survives a save round trip");
+
+  return { pass: true, routeKm: Math.round(route.pathKm), legS: route.legSeconds, roundTripKg: route.roundTripFuelKg,
+    payload, delivered, bootstrapKg: 12, legacyReturnedKg: balance(origin) };
 }
 
 async function industryBounds() {
@@ -993,9 +1045,9 @@ async function industryDroneBounds() {
   assert.deepEqual(ship().cargo.items, { silicates: 20 });
   assert.equal(world.depots[0].storage.items.hydrates, 50);
 
-  // Two depots can draw from one prospect, with one shared pool and one recharge rate.
+  // Equidistant depots arrive together and draw from one shared pool and recharge rate.
   const config = { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: T.cargoCapacity };
-  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 100), depot(relay.id, 4, 100)],
+  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 100), depot(relay.id, -1, 100)],
     drones: [drone("extract-1", home.id, config), drone("extract-2", relay.id, config)] };
   step();
   step(ship().returnS + T.extractSeconds);
@@ -1019,6 +1071,42 @@ async function industryDroneBounds() {
   step();
   assert.equal(ship().status, "destination_full");
   return { pass: true };
+}
+
+async function industryDroneClock() {
+  const { DroneMotion } = await S("components/Industry/droneMotion.ts");
+  const dt = 1 / 60;
+  const legS = 22;
+  const motion = new DroneMotion();
+  const report = elapsedS => ({
+    phase: "outbound", remainingS: legS - elapsedS, durationS: legS, returnS: legS, via: null,
+    job: { kind: "extract", targetId: "earth_hydrates" },
+  });
+  let stoppedS = 0, longestStopS = 0, peakRate = 0;
+  for (let frame = 0; frame <= 600; frame++) {
+    const wallS = frame * dt;
+    // The first late packet arrives two seconds after the last one and confirms one second.
+    const confirmedS = wallS >= 8 ? Math.floor(wallS) - 1 : Math.min(6, Math.floor(wallS));
+    const before = motion.timeS;
+    motion.advance(report(confirmedS), dt);
+    if (wallS < 6) continue;
+    const rate = (motion.timeS - before) / dt;
+    stoppedS = rate < 0.015 ? stoppedS + dt : 0;
+    longestStopS = Math.max(longestStopS, stoppedS);
+    peakRate = Math.max(peakRate, rate);
+  }
+  assert.ok(longestStopS < 0.15, `the fractional countdown correction stopped for ${longestStopS} s`);
+  assert.ok(peakRate <= 1.5 + 1e-6, "snapshot catch-up stays within the visual speed budget");
+
+  // An isolated late packet is distinct from a dead feed. Unsupported prediction
+  // still tapers to a stop instead of entering the next phase on its own.
+  const finalSnapshot = report(9);
+  for (let frame = 0; frame < 300; frame++) motion.advance(finalSnapshot, dt);
+  const settledS = motion.timeS;
+  assert.ok(settledS <= 11 + 1e-6, "the clock predicts at most two seconds ahead");
+  motion.advance(finalSnapshot, dt);
+  assert.ok(motion.timeS - settledS < 1e-6, "prediction stops during a prolonged disconnect");
+  return { pass: true, longestStopMs: Math.round(longestStopS * 1000), peakRate };
 }
 
 async function industryWire() {
@@ -1112,12 +1200,42 @@ async function industrySaveFailure() {
   return { pass: true };
 }
 
+async function structureNames() {
+  const save = newWorld().peek();
+  const pose = { frameId: "earth", positionKm: [10000, 0, 0], quaternion: [0, 0, 0, 1], by: HOST_ID };
+  save.data.world.industry.depots.push({ ...pose, id: "kiln", name: "Depot 1", refinery: false, refineProgressS: 0,
+    storage: { fuelKg: 75, items: {}, consumables: {} } });
+  save.data.world.replication.points.push({ ...pose, id: "refuge", name: "Point 1", starter: false, createdAt: 1 });
+  const repo = new MemoryRepository(save);
+  const { rig, h, g } = await joinedPair(repo);
+  const depot = { type: "depot.rename", depotId: "kiln", name: "  Lunar   kiln ", opId: "name-kiln" };
+  const point = { type: "replication.rename", pointId: "refuge", name: "Lunar refuge", opId: "name-refuge" };
+  const rename = async (client, op) => {
+    client.session.submit(op);
+    await rig.settle();
+    return client.settled.at(-1);
+  };
+  assert.equal((await rename(g, depot)).status, "accepted");
+  assert.equal((await rename(h, point)).status, "accepted");
+  assert.equal((await rename(g, { ...depot, opId: "rename-again", name: "Kiln II" })).status, "accepted");
+  assert.equal((await rename(g, depot)).status, "duplicate");
+  assert.equal((await rename(h, { ...depot, name: "  ", opId: "empty-name" })).reason, "invalid");
+  for (const world of [h.session.mirror.data.world, g.session.mirror.data.world, repo.peek().data.world]) {
+    assert.equal(world.replication.points.find(p => p.id === "refuge").name, "Lunar refuge");
+    assert.equal(world.industry.depots[0].name, "Kiln II");
+    assert.equal(world.industry.depots[0].storage.fuelKg, 75);
+  }
+  return { pass: true };
+}
+
 const SCENARIOS = {
+  structureNames,
   industry,
   industrySaveFailure,
   industryBounds,
   industryProspects,
   industryDroneBounds,
+  industryDroneClock,
   industryWire,
   suspendedHost,
   ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),

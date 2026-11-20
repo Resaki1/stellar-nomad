@@ -23,9 +23,10 @@ export const INDUSTRY_TUNING = {
   loadFuelKg: 120,
   deliverySeconds: 2,
   minLegSeconds: 4,
-  cruiseKmPerS: 5000,
-  maxRouteKm: 1_000_000,
-  legFuelDistanceKm: 25_000,
+  cruiseKmPerS: 0.14,
+  accelerationKmPerS2: 0.018,
+  maxRouteKm: 30,
+  legFuelDistanceKm: 15,
   /** Drop long timer gaps instead of awarding production after sleep or a suspended page. */
   maxTickGapS: 3,
 };
@@ -45,7 +46,7 @@ function fieldSource(id: string, name: string, fieldId: string, offsetKm: Vec3Tu
   if (!field?.anchorBody || !field.anchorOffsetKm) throw new Error(`Missing field anchor for ${id}`);
   const [x, y, z] = field.anchorOffsetKm;
   const positionKm: Vec3Tuple = [x + offsetKm[0], y + offsetKm[1], z + offsetKm[2]];
-  return { id, name, fieldId, frameId: field.anchorBody, positionKm, materialId: "hydrates", rangeKm: 30 };
+  return { id, name, fieldId, frameId: field.anchorBody, positionKm, materialId: "hydrates", rangeKm: INDUSTRY_TUNING.maxRouteKm };
 }
 
 /** Deposits sampled by drones in the two volatile-bearing fields. The pool is the work

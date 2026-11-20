@@ -21,10 +21,10 @@ import { signalAudioActionAtom, type AudioAction } from "@/store/audioSignals";
 import { getItemDef, getItemIconUrl, type ItemDef } from "@/data/content";
 import { isTypingTarget } from "@/input/keyboard";
 import { REPLICATION_KIT_ID } from "@/sim/replication/points";
-import { placementModeAtom } from "@/store/replication";
+import { placementModeAtom, pointPlacementPendingAtom } from "@/store/replication";
 import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
 import { industryAtom } from "@/store/industry";
-import { cancelDepotPlacementAtom, depotPlacementAtom, depotPlacementPendingAtom, industryPanelOpenAtom, nextDepotName, sampleDepotPlacementPose } from "@/store/industryHud";
+import { cancelDepotPlacementAtom, depotPlacementAtom, depotPlacementPendingAtom, industryPanelOpenAtom, nextDepotName, startDepotPlacementAtom } from "@/store/industryHud";
 import { togglePlacement } from "../ReplicationHUD/ReplicationHUD";
 
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
@@ -119,10 +119,7 @@ export default function Hotbar() {
       if (store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom) || store.get(isDeadAtom)) return;
       const { hotbar, consumables } = store.get(modulesAtom);
       const itemId = hotbar[index];
-      if (store.get(depotPlacementAtom)) {
-        if (itemId === DEPOT_KIT_ID) store.set(cancelDepotPlacementAtom);
-        return;
-      }
+      const aimingDepot = store.get(depotPlacementAtom);
       const def = itemId ? getItemDef(itemId) : null;
       // An empty slot's key did nothing; say so rather than drop the input.
       if (!itemId || !def) {
@@ -131,11 +128,11 @@ export default function Hotbar() {
       }
 
       if (itemId === DEPOT_KIT_ID) {
-        if ((consumables[itemId] ?? 0) > 0 && !store.get(depotPlacementPendingAtom)) {
+        if (aimingDepot) store.set(cancelDepotPlacementAtom);
+        else if ((consumables[itemId] ?? 0) > 0 && !store.get(depotPlacementPendingAtom) && !store.get(pointPlacementPendingAtom)) {
           store.set(placementModeAtom, false);
           store.set(hudHiddenAtom, false);
-          sampleDepotPlacementPose();
-          store.set(depotPlacementAtom, { name: nextDepotName(store.get(industryAtom).depots), fromIndustry: false });
+          store.set(startDepotPlacementAtom, nextDepotName(store.get(industryAtom).depots), false);
         } else signalAudio("ui.reject");
         return;
       }
@@ -146,6 +143,8 @@ export default function Hotbar() {
         else signalAudio("ui.reject");
         return;
       }
+
+      if (aimingDepot) return;
 
       // The command samples live hull and heat. HUD values are refreshed less frequently.
       consumeItem({ itemId, onSettled(outcome) {

@@ -15,6 +15,7 @@ import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
 import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
 import { PROSPECT_PARTS, PROSPECT_RADIUS_M, prospectWorksite } from "@/sim/industry/prospects";
+import { droneFlightProgress, minimumDroneFlightS } from "@/sim/industry/route";
 import type { DepotRecord, DroneRecord, IndustryState } from "@/sim/industry/types";
 import { DEPOT_HULL } from "@/sim/physics/depotShape";
 import { nearField, type NearFieldColliderId } from "@/sim/physics/nearField";
@@ -64,7 +65,6 @@ const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
 
 const materials = { core: SHELL, spine: FRAME, front: FRAME, tank: TANK, outrigger: FRAME, radiator: RADIATOR };
 const _from = new Vector3(), _to = new Vector3();
-const _via = new Vector3();
 const _origin = new Vector3(), _droneOffset = new Vector3(), _direction = new Vector3(), _offset = new Vector3();
 const _orientation = new Quaternion();
 const _forward = new Vector3(0, 0, 1);
@@ -312,18 +312,18 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     const timeS = motion.timeS;
     const returnStartS = motion.legS + motion.workS;
     const returning = timeS >= returnStartS;
-    const onTrip = target.current && motion.legS > 0 && timeS < returnStartS + motion.legS;
+    const onTrip = motion.legS > 0 && timeS < returnStartS + motion.legS;
+    const destination = target.current;
+    let visibleFlight = !onTrip;
     let strength = 0;
 
-    if (!onTrip || !target.current) {
+    if (!onTrip || !destination || motion.via || home.frameId !== destination.frameId) {
       g.position.copy(_from);
     } else {
-      const destination = target.current;
-      if (motion.via) scenePosition(motion.via, w, _via);
       scenePosition(destination, w, _to);
       if (motion.extracting) {
         // Approach from the near side of the rocks, keeping both drone lanes out of the hulls.
-        _direction.subVectors(motion.via ? _via : _from, _to).normalize();
+        _direction.subVectors(_from, _to).normalize();
         _droneOffset.crossVectors(_up, _direction);
         if (_droneOffset.lengthSq() < 1e-6) _droneOffset.set(1, 0, 0);
         _to.addScaledVector(_direction, PROSPECT_RADIUS_M + 6)
@@ -333,7 +333,12 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
         _to.add(_droneOffset.set(lane * 7, 10, -13).applyQuaternion(_orientation));
       }
 
-      if (timeS >= motion.legS && !returning) {
+      const pathKm = _from.distanceTo(_to) / 1000;
+      // Legacy funded trips still settle in the authority. Draw only trips the physical profile can fly.
+      visibleFlight = minimumDroneFlightS(pathKm) <= motion.legS;
+      if (!visibleFlight) {
+        g.position.copy(_from);
+      } else if (timeS >= motion.legS && !returning) {
         g.position.copy(_to);
         if (motion.extracting) {
           const workS = timeS - motion.legS;
@@ -346,18 +351,9 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
           _orientation.setFromUnitVectors(_forward, _direction);
         }
       } else {
-        let routeFraction = returning ? 1 - (timeS - returnStartS) / motion.legS : timeS / motion.legS;
-        if (motion.via) {
-          const fraction = motion.via.fraction;
-          if (routeFraction <= fraction) {
-            _to.copy(_via);
-            routeFraction /= fraction;
-          } else {
-            _from.copy(_via);
-            routeFraction = (routeFraction - fraction) / (1 - fraction);
-          }
-        }
-        g.position.lerpVectors(_from, _to, smoothProgress(routeFraction));
+        const elapsedS = returning ? timeS - returnStartS : timeS;
+        const fraction = droneFlightProgress(pathKm, elapsedS, motion.legS);
+        g.position.lerpVectors(_from, _to, returning ? 1 - fraction : fraction);
         _direction.subVectors(_to, _from).multiplyScalar(returning ? -1 : 1);
         if (_direction.lengthSq() > 1) _orientation.setFromUnitVectors(_forward, _direction.normalize());
       }
@@ -370,7 +366,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       g.quaternion.slerp(_orientation, -Math.expm1(-dt / 0.15));
     }
 
-    g.visible = g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
+    g.visible = visibleFlight && g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
     ray.visible = g.visible && strength > 0.001;
     if (ray.visible) {
       _droneOffset.copy(_forward).multiplyScalar(2.25).applyQuaternion(g.quaternion).add(g.position);

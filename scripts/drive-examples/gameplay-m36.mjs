@@ -779,8 +779,8 @@ export async function live36Gates(d, ctx) {
     await ctx.wait(300);
     pv = await ev(`${R}.preview()`);
   }
-  await ev('document.querySelector(".target-card__input")?.focus()');
-  out.inputFocused = await ev(`document.activeElement?.classList.contains("target-card__input") ?? false`);
+  await d.press("Tab");
+  out.inputFocused = await ev(`!!document.activeElement?.matches('.placement-card[data-placement="point"] input')`);
   await d.type("Forward camp");
   await d.press("Enter");
   await d.frames(10);

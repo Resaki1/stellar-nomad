@@ -4,6 +4,7 @@ import { cleanPointName } from "@/sim/replication/points";
 import type { Transfer } from "@/sim/world/commands";
 import { getIndustrySource, INDUSTRY_TUNING as T } from "./catalog";
 import { decodeDroneJob } from "./reducer";
+import { droneLegSeconds } from "./route";
 import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneRecord, type DroneWaypoint, type IndustryState } from "./types";
 
 type Obj = Record<string, unknown>;
@@ -46,8 +47,9 @@ function depot(v: unknown): DepotRecord | null {
   };
 }
 
-const maxLegS = T.minLegSeconds + Math.ceil(T.maxRouteKm / T.cruiseKmPerS);
-const maxLegKg = Math.ceil(1 + T.maxRouteKm / T.legFuelDistanceKm);
+// Existing funded trips keep the original countdown, waypoint, payload and return escrow.
+const maxLegS = Math.max(204, droneLegSeconds(T.maxRouteKm));
+const maxLegKg = Math.max(41, Math.ceil(1 + T.maxRouteKm / T.legFuelDistanceKm));
 
 function waypoint(v: unknown): DroneWaypoint | null {
   if (!obj(v) || !isFrameId(v.frameId) || !position(v.positionKm) || !finite(v.fraction) || v.fraction <= 0 || v.fraction >= 1) return null;

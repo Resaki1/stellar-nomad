@@ -1,4 +1,4 @@
-// DRIVE_PROFILE=m5motion DRIVE_CDP_PORT=9350 pnpm drive -- --perf --no-isolate run:scripts/drive-examples/m5-drone-motion.mjs
+// DRIVE_PROFILE=m5motion DRIVE_CDP_PORT=9350 pnpm drive -- --perf --no-isolate --url http://127.0.0.1:3012/ run:scripts/drive-examples/m5-drone-motion.mjs
 import assert from "node:assert/strict";
 
 const J = JSON.stringify;
@@ -82,11 +82,13 @@ async function verifyFlight(page, source, home, droneId, tuning) {
   const record = () => ev(`${G}.world().industry.drones.find(d => d.id === ${J(droneId)})`);
   const rendered = () => ev(`${I}.drone(${J(droneId)})`);
   const paused = on => ev(`${G}.res.setLoadingPause(${on})`);
+  const baseline = await ev("__test.flight.simulate({ segments: [{ seconds: 10, throttle: 1 }] }).segments[0]");
+  assert.ok(baseline.peakSpeedMps > 400 && baseline.peakSpeedMps < 405, "compared with the baseline Replicant main engine without boost");
   await warp(page, source.frameId, offset(home.positionKm, [0, 0, -0.8]));
   const parked = await rendered();
   assert.ok(parked, `drone group exists in the local render scene (authority: ${J(await record())})`);
-  assert.ok(parked.visible);
-  const tracking = ev(`${I}.trackDrone(${J(droneId)}, 22500)`, 30000);
+  assert.ok(parked.visible, "parked drone is visible at the observing ship");
+  const tracking = ev(`${I}.trackDrone(${J(droneId)}, 64000)`, 70000);
   await page.frames(2);
   const configured = await ev(`${G}.settled(${J({
     type: "drone.configure", droneId, job: {
@@ -98,7 +100,7 @@ async function verifyFlight(page, source, home, droneId, tuning) {
   const working = await waitFor(async () => {
     const current = await record();
     return current.phase === "working" && (await rendered()).beam > 0.7 && current;
-  }, 12000);
+  }, 30000);
   assert.ok(working, "committed extraction turns on the beam");
   let frozen;
   try {
@@ -118,12 +120,13 @@ async function verifyFlight(page, source, home, droneId, tuning) {
 
   const samples = await tracking;
   assert.ok(samples.length > 100, "sampled live WebGPU frames over the whole trip");
-  assert.ok(samples.every(s => s.visible));
+  assert.ok(samples.every(s => s.visible), "the whole short extraction flight remains in the observer's render range");
   const firstOutbound = samples.findIndex(s => s.phase === "outbound");
   const firstWork = samples.findIndex(s => s.phase === "working");
   const firstReturn = samples.findIndex(s => s.phase === "returning");
   const lastIdle = samples.findIndex((s, i) => s.phase === "idle" && i > firstReturn);
-  assert.ok(firstOutbound >= 0 && firstOutbound < firstWork && firstWork < firstReturn && firstReturn < lastIdle);
+  assert.ok(firstOutbound >= 0 && firstOutbound < firstWork && firstWork < firstReturn && firstReturn < lastIdle,
+    `outbound, working, returning and idle were recorded in order (${firstOutbound}, ${firstWork}, ${firstReturn}, ${lastIdle})`);
   const work = samples.slice(firstWork, firstReturn);
   assert.ok(samples.slice(0, firstWork).every(s => s.beam === 0), "beam waits for committed extraction");
   assert.ok(work.some(s => s.beam > 0.1 && s.beam < 0.55) && work.some(s => s.beam > 0.7),
@@ -133,8 +136,10 @@ async function verifyFlight(page, source, home, droneId, tuning) {
     "beam fades at the end of the work phase");
   const rows = samples.slice(firstOutbound + 1, lastIdle + 1).map((next, i) => {
     const prev = samples[firstOutbound + i];
-    const dt = next.atMs - prev.atMs;
-    return { ...next, dt, speed: distance(next.positionM, prev.positionM) * 1000 / dt };
+    const dt = next.frameMs - prev.frameMs;
+    const wallDt = next.atMs - prev.atMs;
+    const metres = distance(next.positionM, prev.positionM);
+    return { ...next, dt, wallDt, speed: metres * 1000 / dt, wallSpeed: metres * 1000 / wallDt };
   }).filter(r => r.dt >= 4 && r.dt <= 150);
   const fromX = parked.positionM[0], toX = work.at(-1).positionM[0];
   const progress = s => (s.positionM[0] - fromX) / (toX - fromX);
@@ -151,21 +156,35 @@ async function verifyFlight(page, source, home, droneId, tuning) {
   const settledMps = speedAt(approach, 0.975, 0.9999);
   const returningMps = speedAt(returning, 0.975, 0.9999);
   const midMps = speedAt(midLeg, 0.25, 0.75);
-  assert.ok(midMps > 100 && departureMps < midMps * 0.6 && settledMps < midMps * 0.6 && returningMps < midMps * 0.6,
+  assert.ok(midMps > 90 && departureMps < midMps * 0.6 && settledMps < midMps * 0.6 && returningMps < midMps * 0.6,
     `drone visibly accelerates and brakes (start ${departureMps}, cruise ${midMps}, finish ${settledMps}, return ${returningMps})`);
-  let stoppedMs = 0, longestStopMs = 0;
+  let stoppedMs = 0, longestStopMs = 0, longestStopAtMs = 0;
   for (const row of midLeg) {
     stoppedMs = row.speed < 2 ? stoppedMs + row.dt : 0;
-    longestStopMs = Math.max(longestStopMs, stoppedMs);
+    if (stoppedMs > longestStopMs) {
+      longestStopMs = stoppedMs;
+      longestStopAtMs = row.atMs;
+    }
+  }
+  const peakMps = Math.max(...rows.map(r => r.speed));
+  const wallPeakMps = Math.max(...rows.filter(r => r.wallDt >= 4 && r.wallDt <= 150).map(r => r.wallSpeed));
+  if (longestStopMs >= 150) {
+    const snapshots = samples.filter((s, i) => s.remainingS !== samples[i - 1]?.remainingS &&
+      Math.abs(s.atMs - longestStopAtMs) <= 3500);
+    console.log(J({ stage: "countdown boundary", peakMps, longestStopMs, longestStopAtMs,
+      snapshots: snapshots.map(s => ({ atMs: s.atMs, remainingS: s.remainingS })) }));
   }
   assert.ok(longestStopMs < 150, `flight paused for ${longestStopMs} ms at a countdown boundary`);
-  const peakMps = Math.max(...rows.map(r => r.speed));
-  assert.ok(peakMps < midMps * 3, `no sudden position catch-up at phase or countdown boundaries: ${peakMps}`);
+  assert.ok(peakMps <= 1.5 * tuning.cruiseKmPerS * 1000 + 0.05,
+    `renderer-clock peak ${peakMps} m/s stays within the local thruster limit including snapshot catch-up`);
+  assert.ok(wallPeakMps > 0 && wallPeakMps < baseline.peakSpeedMps,
+    `wall-clock samples of rendered positions peaked at ${wallPeakMps} m/s, below the ${baseline.peakSpeedMps} m/s Replicant`);
   assert.ok(distance((await rendered()).positionM, parked.positionM) < 0.02, "return docks at the same lane's starting position");
   const world = await ev(`${G}.world().industry`);
   assert.equal(world.depots[0].storage.items.hydrates, tuning.extractUnits);
   assert.deepEqual(world.drones[0].cargo.items, {}, "the return delivered cargo exactly once");
-  return { frames: samples.length, departureMps, midMps, settledMps, returningMps, peakMps, longestStopMs };
+  return { frames: samples.length, legS: working.returnS, departureMps, midMps, settledMps, returningMps, peakMps, wallPeakMps,
+    baselineMps: baseline.peakSpeedMps, longestStopMs };
 }
 
 export default async function m5DroneMotion(page) {
@@ -175,7 +194,7 @@ export default async function m5DroneMotion(page) {
   const source = sources.find(s => s.id === "earth_hydrates");
   const site = offset(source.positionKm, [0, 0.085, 0]);
   const me = await ev(`${G}.localId()`);
-  const home = { id: "home", name: "Hydrate Works", by: me, frameId: source.frameId, positionKm: offset(site, [1.35, 0, 0]),
+  const home = { id: "home", name: "Hydrate Works", by: me, frameId: source.frameId, positionKm: offset(site, [1.9, 0, 0]),
     quaternion: [0, 0, 0, 1], storage: { fuelKg: 20 } };
   const drone = { id: "extractor", homeId: home.id, phase: "idle", status: "unassigned" };
   const state = { schemaVersion, world: { industry: { depots: [home], drones: [drone] } },

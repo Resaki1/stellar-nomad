@@ -1,19 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAtomValue, useStore } from "jotai";
-import { CircleCheck, TriangleAlert } from "lucide-react";
+import { useAtom, useAtomValue, useStore } from "jotai";
 import { playAudio } from "@/audio/voices";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { DEPOT_KIT_ID, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
-import { canExtractAt, checkDepotPlacement } from "@/sim/industry/placement";
+import { checkDepotPlacement } from "@/sim/industry/placement";
+import { estimateDroneExtractionRoute } from "@/sim/industry/route";
 import { emergencePose } from "@/sim/replication/points";
-import { formatDistance } from "@/sim/units";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { isDeadAtom } from "@/store/death";
 import { industryAtom } from "@/store/industry";
-import { cancelDepotPlacementAtom, clearDepotPlacementAtom, depotPlacementAtom, depotPlacementPendingAtom, depotPlacementPreview, industryRequestAtom, sampleDepotPlacementPose } from "@/store/industryHud";
-import { keybindsAtom } from "@/store/keybinds";
+import { cancelDepotPlacementAtom, clearDepotPlacementAtom, depotPlacementAtom, depotPlacementNameAtom, depotPlacementPendingAtom, depotPlacementPreview, industryRequestAtom, sampleDepotPlacementPose } from "@/store/industryHud";
 import { miningStateAtom } from "@/store/mining";
 import { modulesAtom } from "@/store/modules";
 import { newOpId, runOperation } from "@/store/operations";
@@ -21,8 +19,7 @@ import { pilotPOIsAtom } from "@/store/poi";
 import { replicationPointsAtom } from "@/store/replication";
 import { settingsIsOpenAtom } from "@/store/store";
 import { transitDriveBuffer } from "@/store/transit";
-import { KeyChip } from "../shared/Chips";
-import { handlePlacementKey, PlacementCancelKeys, PlacementMouseHint } from "../shared/PlacementControls";
+import { PlacementCard } from "../shared/PlacementControls";
 import { industryMessage, industryRejection } from "./industryActions";
 
 type Store = ReturnType<typeof useStore>;
@@ -32,6 +29,7 @@ function readPreview(store: Store) {
   const preview = depotPlacementPreview;
   if (!ship || !sampleDepotPlacementPose()) return { obstruction: "Waiting for ship position.", source: null };
   worldAuthority.world();
+  const depots = store.get(industryAtom).depots;
   const occupied = store.get(replicationPointsAtom).flatMap(point => [
     point, { frameId: point.frameId, positionKm: emergencePose(point, 0).positionKm },
   ]);
@@ -39,9 +37,9 @@ function readPreview(store: Store) {
   const obstruction = transitDriveBuffer.phase !== "idle" ? "Finish transit before deploying."
     : store.get(miningStateAtom).isMining ? "Stop mining before deploying."
     : checkDepotPlacement(preview, { frameId: ship.frameId, positionKm: ship.posKm.toArray() },
-      store.get(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, store.get(industryAtom).depots, occupied);
+      store.get(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, depots, occupied);
   preview.valid = obstruction === null;
-  const source = INDUSTRY_SOURCES.find(prospect => canExtractAt(preview, prospect.id))?.name ?? null;
+  const source = INDUSTRY_SOURCES.find(prospect => estimateDroneExtractionRoute(preview, prospect, depots))?.name ?? null;
   return { obstruction: obstruction && industryMessage(obstruction), source };
 }
 
@@ -51,12 +49,13 @@ export default function DepotPlacement() {
   return placement ? <AimDepot placement={placement} /> : null;
 }
 
-function AimDepot({ placement }: { placement: { name: string; fromIndustry: boolean } }) {
-  const { name, fromIndustry } = placement;
+function AimDepot({ placement }: { placement: { fromIndustry: boolean } }) {
   const store = useStore();
   const dead = useAtomValue(isDeadAtom);
   const menu = useAtomValue(settingsIsOpenAtom);
-  const [status, setStatus] = useState<ReturnType<typeof readPreview>>({ obstruction: "Checking clearance…", source: null });
+  const kits = useAtomValue(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0;
+  const [name, setName] = useAtom(depotPlacementNameAtom);
+  const [status, setStatus] = useState<ReturnType<typeof readPreview> | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const pending = useAtomValue(depotPlacementPendingAtom);
 
@@ -67,22 +66,22 @@ function AimDepot({ placement }: { placement: { name: string; fromIndustry: bool
   useEffect(() => {
     const refresh = () => {
       const next = readPreview(store);
-      setStatus(before => before.obstruction === next.obstruction && before.source === next.source ? before : next);
+      setStatus(before => before && before.obstruction === next.obstruction && before.source === next.source ? before : next);
     };
     refresh();
     const timer = window.setInterval(refresh, 100);
     return () => window.clearInterval(timer);
   }, [store]);
 
-  const cancel = useCallback(() => {
-    store.set(cancelDepotPlacementAtom);
-  }, [store]);
+  const isActive = useCallback(() => store.get(depotPlacementAtom) === placement, [placement, store]);
+  const cancel = useCallback(() => store.set(cancelDepotPlacementAtom), [store]);
 
   const confirm = useCallback(() => {
-    if (store.get(depotPlacementPendingAtom) || store.get(isDeadAtom) || store.get(settingsIsOpenAtom)) return;
+    if (!isActive() || store.get(depotPlacementPendingAtom) || store.get(isDeadAtom) || store.get(settingsIsOpenAtom)) return;
+    const name = store.get(depotPlacementNameAtom).trim();
     const current = readPreview(store);
     setStatus(current);
-    if (current.obstruction) {
+    if (!name || current.obstruction) {
       playAudio("ui.reject");
       return;
     }
@@ -95,35 +94,17 @@ function AimDepot({ placement }: { placement: { name: string; fromIndustry: bool
         playAudio("click.hard");
         if (store.get(depotPlacementAtom) === placement) {
           store.set(clearDepotPlacementAtom);
-          if (fromIndustry) store.set(industryRequestAtom, { depotId: outcome.result.depotId });
+          if (placement.fromIndustry) store.set(industryRequestAtom, { depotId: outcome.result.depotId });
         }
       } else if (outcome.status === "rejected") {
         playAudio("ui.reject");
         setRefusal(industryRejection(outcome));
       }
     });
-  }, [fromIndustry, name, placement, store]);
+  }, [isActive, placement, store]);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (store.get(depotPlacementAtom) !== placement || store.get(settingsIsOpenAtom)) return;
-      handlePlacementKey(e, store.get(keybindsAtom).toggleSettings, cancel, confirm);
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [cancel, confirm, placement, store]);
-
-  return <section className="industry-placement" aria-label="Deploy depot">
-    <div><h3>{name}</h3><p>Aim the ship to place {formatDistance(INDUSTRY_TUNING.placeDistanceKm)} ahead.</p></div>
-    <div className={`industry-placement__status${status.obstruction || refusal ? " industry-placement__status--blocked" : ""}`}
-      role={refusal ? "alert" : "status"} data-industry-clear={status.obstruction === null}>
-      {status.obstruction || refusal ? <TriangleAlert size={14} aria-hidden /> : <CircleCheck size={14} aria-hidden />}
-      {pending ? "Waiting for confirmation…" : refusal ?? status.obstruction ?? (status.source ? `${status.source} in range` : "Clear · relay site")}
-    </div>
-    <div className="industry-placement__buttons">
-      <button type="button" className="industry__action" data-placement-control data-industry-action="cancel-placement" disabled={pending} onClick={cancel}>Cancel <PlacementCancelKeys /></button>
-      <button type="button" className="industry__action industry__action--primary" data-placement-control data-industry-action="place" disabled={pending || !!status.obstruction} onClick={confirm}>Deploy depot <KeyChip keyName="enter" /></button>
-    </div>
-    {!pending && <PlacementMouseHint />}
-  </section>;
+  return <PlacementCard kind="depot" distanceKm={INDUSTRY_TUNING.placeDistanceKm} kits={kits}
+    name={name} onNameChange={setName} ready={status?.obstruction === null} blocked={status?.obstruction}
+    clearMessage={status?.source ? `${status.source} in range` : "Clear · relay site"} refusal={refusal}
+    pending={pending} isActive={isActive} cancel={cancel} confirm={confirm} />;
 }

@@ -7,7 +7,6 @@ import { INSPECT_RANGE_M, WRECK_SALVAGE_KM } from "@/data/content";
 import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 import { resolveHeadlessRock } from "@/sim/asteroids/headlessChunks";
 import "@/sim/replication/clearance";
-import "@/sim/industry/routePlanner";
 import { persistentShipConfig } from "@/sim/ship/loadout";
 import { isFrameId } from "@/sim/frames";
 import { defaultPlayerState } from "@/save/defaults";

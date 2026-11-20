@@ -136,12 +136,12 @@ export function createGameplayHarness(store: Store) {
       catalog: () => structuredClone({ sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
       drone: sampleDrone,
       trackDrone(id: string, ms: number) {
-        return new Promise<(NonNullable<ReturnType<typeof sampleDrone>> & { atMs: number; phase: string; remainingS: number })[]>(resolve => {
+        return new Promise<(NonNullable<ReturnType<typeof sampleDrone>> & { atMs: number; frameMs: number; phase: string; remainingS: number })[]>(resolve => {
           const samples: Parameters<typeof resolve>[0] = [];
-          const record = () => {
+          const record = (frameMs: number) => {
             const drawn = sampleDrone(id);
             const drone = getActiveSave()?.data.world.industry.drones.find(d => d.id === id);
-            if (drawn && drone) samples.push({ ...drawn, atMs: performance.now(), phase: drone.phase, remainingS: drone.remainingS });
+            if (drawn && drone) samples.push({ ...drawn, atMs: performance.now(), frameMs, phase: drone.phase, remainingS: drone.remainingS });
           };
           testProbe.frameHooks.add(record);
           setTimeout(() => {

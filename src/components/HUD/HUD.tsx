@@ -37,7 +37,7 @@ import HdrCalibration from "./HdrCalibration/HdrCalibration";
 import TransitHUD from "./TransitHUD/TransitHUD";
 import IndustryPanel from "./IndustryPanel/IndustryPanel";
 import DepotPlacement from "./IndustryPanel/DepotPlacement";
-import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom, sampleDepotPlacementPose } from "@/store/industryHud";
+import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom, startDepotPlacementAtom } from "@/store/industryHud";
 import { placementModeAtom } from "@/store/replication";
 import ReplicationHUD from "./ReplicationHUD/ReplicationHUD";
 import GameCommsTriggers from "../Comms/GameCommsTriggers";
@@ -72,7 +72,7 @@ const GLANCE_MS = 250;
 export default function HUD() {
   const hudHidden = useAtomValue(hudHiddenAtom);
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
-  const [industryOpenRequest, setIndustryOpenRequest] = useState<{ depotId?: string; build?: boolean; name?: string; sequence: number }>({ sequence: 0 });
+  const [industryOpenRequest, setIndustryOpenRequest] = useState<{ depotId?: string; renamePointId?: string; build?: boolean; name?: string; sequence: number }>({ sequence: 0 });
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
   const crew = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
@@ -170,8 +170,7 @@ export default function HUD() {
   const closePanel = useCallback(() => setActivePanel(null), []);
   const aimDepot = useCallback((name: string) => {
     store.set(placementModeAtom, false);
-    sampleDepotPlacementPose();
-    store.set(depotPlacementAtom, { name, fromIndustry: true });
+    store.set(startDepotPlacementAtom, name, true);
     closePanel();
   }, [closePanel, store]);
 
@@ -297,7 +296,7 @@ export default function HUD() {
       {activePanel === "loadout" && <LoadoutPanel onClose={closePanel} />}
       {activePanel === "projects" && <ProjectsPanel onClose={closePanel} />}
       {activePanel === "industry" && !dead && <IndustryPanel key={industryOpenRequest.sequence} onClose={closePanel}
-        onAim={aimDepot} initialDepotId={industryOpenRequest.depotId} build={industryOpenRequest.build} initialName={industryOpenRequest.name} />}
+        onAim={aimDepot} initialDepotId={industryOpenRequest.depotId} renamePointId={industryOpenRequest.renamePointId} build={industryOpenRequest.build} initialName={industryOpenRequest.name} />}
     </div>
   );
 }

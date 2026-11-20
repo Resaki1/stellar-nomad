@@ -1,5 +1,184 @@
 @use '../../../styles' as s;
 
+.placement-card {
+  @include s.glass(1);
+  position: fixed;
+  z-index: s.$z-hud-overlay;
+  inset: 50% max(s.$space-4, 3vw) auto auto;
+  transform: translateY(-50%);
+  display: grid;
+  gap: s.$space-3;
+  box-sizing: border-box;
+  width: min(310px, calc(100vw - 2 * #{s.$space-4}));
+  padding: s.$space-4;
+  border-top-color: s.$accent-info;
+  border-radius: s.$radius-lg;
+  background: s.$surface-glass-2;
+  color: s.$text-primary;
+  font-family: s.$font-ui;
+  pointer-events: auto;
+
+  h3 {
+    margin: 0 0 s.$space-1;
+    font: 600 14px/1.3 s.$font-display;
+  }
+
+  p { margin: 0; }
+
+  &__header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: s.$space-2;
+    padding-bottom: s.$space-3;
+    border-bottom: 1px solid s.$stroke-base;
+
+    p { @include s.t-xs; color: s.$text-secondary; }
+  }
+
+  &__icon {
+    display: grid;
+    place-items: center;
+    width: s.$space-6;
+    height: s.$space-6;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-md;
+    color: s.$accent-info;
+    background: s.$stroke-faint;
+  }
+
+  &__count {
+    align-self: start;
+    white-space: nowrap;
+    font: 500 11px/1.5 s.$font-mono;
+    color: s.$text-secondary;
+  }
+
+  &__name {
+    display: grid;
+    gap: s.$space-1;
+    @include s.t-sm;
+    color: s.$text-secondary;
+
+    > span {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    input {
+      width: 100%;
+      min-height: s.$space-6;
+      box-sizing: border-box;
+      padding: s.$space-1 s.$space-2;
+      border: 1px solid s.$stroke-strong;
+      border-radius: s.$radius-md;
+      background: s.$surface-solid;
+      color: s.$text-primary;
+      font: 500 14px/1.35 s.$font-ui;
+    }
+  }
+
+  &__feedback {
+    display: grid;
+    gap: s.$space-1;
+    @include s.t-sm;
+  }
+
+  &__status, &__warning {
+    display: flex;
+    align-items: center;
+    gap: s.$space-2;
+    color: s.$text-secondary;
+
+    svg { flex: 0 0 auto; }
+  }
+
+  &__status--ready { color: s.$accent-ok; }
+  &__status--blocked, &__warning { color: s.$accent-warn; }
+
+  &__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: s.$space-2;
+
+    button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: s.$space-2;
+      min-height: s.$space-6;
+      padding: s.$space-1 s.$space-2;
+      border: 1px solid s.$stroke-strong;
+      border-radius: s.$radius-md;
+      background: s.$stroke-faint;
+      color: s.$text-primary;
+      font: 600 12px/1.25 s.$font-ui;
+      cursor: pointer;
+
+      &:hover:enabled { border-color: s.$stroke-active; background: s.$stroke-base; }
+      &:disabled { cursor: default; opacity: 0.5; }
+    }
+
+    .placement-card__primary {
+      border-color: s.$accent-ok;
+      background: s.$glow-ok;
+
+      &:hover:enabled { border-color: s.$accent-ok; background: s.$glow-ok; color: white; }
+    }
+  }
+
+  :focus-visible {
+    outline: 2px solid s.$accent-info;
+    outline-offset: 1px;
+  }
+
+  &:has(input:focus) {
+    .placement-card__name-key { visibility: hidden; }
+    .placement-keys__back { display: none; }
+    .placement-keys__escape-fallback { display: inline-flex; }
+  }
+
+  .placement-mouse-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: s.$space-1;
+    @include s.t-xs;
+    color: s.$text-secondary;
+  }
+
+  @media (max-width: 640px) and (orientation: portrait) {
+    inset: 52% auto auto 50%;
+    transform: translateX(-50%);
+    padding: s.$space-3;
+    gap: s.$space-2;
+  }
+
+  @media (orientation: landscape) and (max-height: 500px) {
+    inset-inline-end: s.$space-3;
+    padding: s.$space-3;
+    gap: s.$space-2;
+    width: min(290px, 42vw);
+  }
+
+  @media (pointer: coarse) {
+    &__name input { min-height: 44px; font-size: 16px; }
+    &__actions button { min-height: 44px; }
+    .placement-mouse-hint, .sn-key, .placement-keys { display: none; }
+  }
+
+  @media (pointer: coarse) and (max-width: 640px) and (orientation: portrait) {
+    inset-block: auto 52%;
+  }
+
+  @media (pointer: coarse) and (orientation: landscape) and (max-height: 500px) {
+    // Between the touch stick and the aiming reticle, clear of the dashboard and engine controls.
+    inset-inline: 112px auto;
+    width: min(290px, calc(50vw - 132px));
+  }
+}
+
 .placement-keys {
   display: inline-flex;
   align-items: center;
@@ -7,18 +186,12 @@
   &__escape-fallback { display: none; }
 }
 
-.target-card:has(.target-card__input:focus) .placement-keys {
-  &__back { display: none; }
-  &__escape-fallback { display: inline-flex; }
+// The placement card owns the mouse gestures while a kit is being aimed.
+.hud:has(.placement-card) :is(.flight-hud__hint--lock, .flight-hud__hint--release) {
+  visibility: hidden;
 }
 
-.placement-mouse-hint {
-  @include s.t-xs;
-  color: s.$text-secondary;
-}
-
-.industry-placement > .placement-mouse-hint { justify-self: end; }
-
-@media (pointer: coarse) {
-  .placement-keys, .placement-mouse-hint, [data-placement-control] .sn-key { display: none; }
+@media (pointer: coarse) and (max-width: 640px) and (orientation: portrait) {
+  // Both panels use the upper HUD band. Keep steering controls clear below the aim marker.
+  .hud:has(.placement-card) .objective-tracker { visibility: hidden; }
 }

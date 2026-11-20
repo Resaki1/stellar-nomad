@@ -19,9 +19,9 @@ export default function TestFrameProbe(): null {
       testProbe.renderer = null;
     };
   }, [gl]);
-  useFrame(() => {
+  useFrame(({ clock }) => {
     testProbe.frames++;
-    testProbe.frameHooks.forEach((hook) => hook());
+    testProbe.frameHooks.forEach((hook) => hook(clock.elapsedTime * 1000));
   });
   return null;
 }

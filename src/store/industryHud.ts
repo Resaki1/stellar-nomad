@@ -10,8 +10,9 @@ import { targetedPOIAtom, transitDriveBuffer } from "@/store/transit";
 import { poiBuffer, type POIDef } from "@/store/poi";
 
 export const industryPanelOpenAtom = atom(false);
-export const industryRequestAtom = atom<{ depotId?: string; build?: boolean; name?: string } | null>(null);
-export const depotPlacementAtom = atom<{ name: string; fromIndustry: boolean } | null>(null);
+export const industryRequestAtom = atom<{ depotId?: string; renamePointId?: string; build?: boolean; name?: string } | null>(null);
+export const depotPlacementAtom = atom<{ fromIndustry: boolean } | null>(null);
+export const depotPlacementNameAtom = atom("");
 export const depotPlacementPendingAtom = atom(false);
 export const clearDepotPlacementAtom = atom(null, (_get, set) => {
   depotPlacementPreview.ready = false;
@@ -21,7 +22,14 @@ export const cancelDepotPlacementAtom = atom(null, (get, set) => {
   const placement = get(depotPlacementAtom);
   if (!placement || get(depotPlacementPendingAtom)) return;
   set(clearDepotPlacementAtom);
-  if (placement.fromIndustry) set(industryRequestAtom, { build: true, name: placement.name });
+  if (placement.fromIndustry) set(industryRequestAtom, { build: true, name: get(depotPlacementNameAtom) });
+});
+
+export const startDepotPlacementAtom = atom(null, (_get, set, name: string, fromIndustry: boolean) => {
+  depotPlacementPreview.valid = false;
+  sampleDepotPlacementPose();
+  set(depotPlacementNameAtom, name);
+  set(depotPlacementAtom, { fromIndustry });
 });
 
 export function nextDepotName(depots: readonly DepotRecord[]): string {
@@ -92,7 +100,6 @@ export function depotPoi(depot: DepotRecord): POIDef {
     minDistanceKm: 0,
     maxDistanceKm: 2e6,
     arrivalOffsetKm: 0.8,
-    objectRadiusKm: 0.05,
     kind: "depot",
   };
 }

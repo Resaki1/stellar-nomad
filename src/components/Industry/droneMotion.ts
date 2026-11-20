@@ -6,7 +6,7 @@ import type { DroneRecord } from "@/sim/industry/types";
 const SNAPSHOT_GRACE_S = 1.25;
 const PREDICTION_BRAKE_S = 1.5;
 const SMOOTHING_S = 0.1;
-const MAX_CATCH_UP_RATE = 2;
+const MAX_CATCH_UP_RATE = 1.5;
 const PHASE_ORDER = { outbound: 0, working: 1, returning: 2, idle: 3 };
 
 function predictedLead(ageS: number): number {
@@ -56,6 +56,7 @@ export class DroneMotion {
     }
 
     if (!prev || prev.phase !== drone.phase || prev.remainingS !== drone.remainingS || prev.durationS !== drone.durationS) {
+      const predictedS = this.confirmedS + predictedLead(this.ageS + deltaS);
       if (drone.phase === "working") this.workS = drone.durationS;
       const legS = this.legS;
       const returnStartS = legS + this.workS;
@@ -67,7 +68,9 @@ export class DroneMotion {
         case "idle": this.phaseEndS = endS; break;
       }
       this.confirmedS = Math.max(0, this.phaseEndS - drone.remainingS);
-      this.ageS = 0;
+      // A late countdown can confirm less than the rendered clock has already predicted.
+      // Keep up to one second of progress within the phase so the next frame can keep moving.
+      this.ageS = prev?.phase === drone.phase ? Math.max(0, Math.min(1, predictedS - this.confirmedS)) : 0;
       if (!prev) this.timeS = this.filteredS = this.confirmedS;
       this.snapshot = drone;
     } else {
@@ -81,7 +84,7 @@ export class DroneMotion {
     // Two stages absorb the timing correction without stepping either position or speed.
     const blend = -Math.expm1(-deltaS / SMOOTHING_S);
     this.filteredS += Math.min(Math.max(0, goal - this.filteredS) * blend, deltaS * MAX_CATCH_UP_RATE);
-    this.timeS += (this.filteredS - this.timeS) * blend;
+    this.timeS += Math.min((this.filteredS - this.timeS) * blend, deltaS * MAX_CATCH_UP_RATE);
     if (this.phaseEndS - this.timeS < 0.001) this.timeS = this.filteredS = this.phaseEndS;
   }
 }

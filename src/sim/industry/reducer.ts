@@ -5,8 +5,8 @@ import { cleanPointName, emergencePose } from "@/sim/replication/points";
 import type { RejectReason } from "@/sim/world/commands";
 import type { Commit, ReduceCtx, Reduction } from "@/sim/world/reducers";
 import { DEPOT_KIT_ID, DEPOT_RECIPES, DRONE_FUEL_ID, getIndustrySource, INDUSTRY_TUNING as T } from "./catalog";
-import { canExtractAt, checkDepotPlacement, depotDistanceKm } from "./placement";
-import { estimateDroneRoute } from "./route";
+import { checkDepotPlacement, depotDistanceKm } from "./placement";
+import { estimateDroneExtractionRoute, estimateDroneRoute } from "./route";
 import { applyIndustryDelta, changedCount, storageUnits } from "./simulation";
 import { emptyStorage, type DepotRecord, type DroneJob, type DroneRecord, type IndustryDelta, type IndustryOperation, type IndustryResult } from "./types";
 
@@ -168,7 +168,10 @@ function fabricate(
 }
 
 function validateTarget(job: DroneJob, home: DepotRecord, depots: readonly DepotRecord[]): RejectReason | null {
-  if (job.kind === "extract") return canExtractAt(home, job.targetId) ? null : "source_out_of_range";
+  if (job.kind === "extract") {
+    const source = getIndustrySource(job.targetId);
+    return source && estimateDroneExtractionRoute(home, source, depots) ? null : "source_out_of_range";
+  }
   const target = depots.find(d => d.id === job.targetId && d.id !== home.id);
   if (!target) return "not_found";
   return estimateDroneRoute(home, target) ? null : "route_out_of_range";
@@ -186,15 +189,23 @@ export function reduceIndustry(op: IndustryOperation, ctx: IndustryContext, limi
     if (!usableDepot(player, home)) return { reason: "too_far" };
     const job = decodeDroneJob(op.job);
     if (!job) return { reason: "invalid" };
-    if (drone.phase !== "idle" && JSON.stringify({ ...drone.job, enabled: job.enabled }) !== JSON.stringify(job)) return { reason: "busy" };
-    // An in-flight crew may request a stop without the route having to remain viable for new departures.
-    const reason = drone.phase === "idle" ? validateTarget(job, home, depots) : null;
+    const sameAssignment = JSON.stringify({ ...drone.job, enabled: job.enabled }) === JSON.stringify(job);
+    if (drone.phase !== "idle" && !sameAssignment) return { reason: "busy" };
+    // A crew can stop an existing assignment even if it can no longer dispatch.
+    const stopping = sameAssignment && !job.enabled;
+    const reason = drone.phase === "idle" && !stopping ? validateTarget(job, home, depots) : null;
     if (reason) return { reason };
     const status = drone.phase === "idle" ? (job.enabled ? "departing" : "paused") : drone.status;
     return commit(ctx, { type: op.type, droneId: drone.id }, [], [{ ...drone, job, status }]);
   }
   const depot = depots.find(d => d.id === op.depotId);
   if (!depot) return { reason: "not_found" };
+  if (op.type === "depot.rename") {
+    const name = cleanPointName(op.name, "");
+    if (!name) return { reason: "invalid" };
+    if (name === depot.name) return { reason: "already_done" };
+    return commit(ctx, { type: op.type, depotId: depot.id, name }, [{ ...depot, name }], []);
+  }
   if (!usableDepot(player, depot)) return { reason: "too_far" };
   return op.type === "depot.transfer" ? transfer(op, ctx, depot, limits) : fabricate(op, ctx, depot);
 }

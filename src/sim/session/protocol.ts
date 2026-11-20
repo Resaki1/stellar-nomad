@@ -9,7 +9,7 @@ import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 /** Three missed worker heartbeats suspend prediction and new resource spends. */
 export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;

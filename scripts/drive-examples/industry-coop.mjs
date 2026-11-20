@@ -22,17 +22,17 @@ async function visit(page, pose, offset = [0, 0, -0.8]) {
 }
 
 export async function supplyRoute({ host, guest, code, worldId, settledCommand, waitFor }) {
-  const { sources, recipes } = await host.evaluate(`${G}.industry.catalog()`);
+  const { sources, recipes, tuning } = await host.evaluate(`${G}.industry.catalog()`);
   const source = sources.find(s => s.id === "earth_hydrates");
-  const lunar = sources.find(s => s.frameId === "luna");
-  const src = { frameId: source.frameId, positionKm: source.positionKm };
-  const dst = { frameId: lunar.frameId, positionKm: lunar.positionKm.map((x, i) => x + (i === 0 ? 95 : 0)) };
+  const site = eastKm => ({
+    frameId: source.frameId, positionKm: source.positionKm.map((x, i) => x + (i === 0 ? eastKm : 0)),
+  });
 
   async function place(name, centre) {
     await settledCommand(host, { type: "item.craft", itemId: "consumable_depot_kit" });
     // Find open space inside the same region; the candidate can land inside a rock.
     for (let i = 0; i < 8; i++) {
-      const pose = { ...centre, positionKm: centre.positionKm.map((x, k) => x + (k === 0 ? i : 0)), quaternion: [0, 0, 0, 1] };
+      const pose = { ...centre, positionKm: centre.positionKm.map((x, k) => x + (k === 1 ? i * 0.2 : 0)), quaternion: [0, 0, 0, 1] };
       const obstruction = await host.evaluate(`${G}.rep.probe(${json(pose.frameId)},${json(pose.positionKm)})`);
       if (Number.isFinite(obstruction.rockClearM) && obstruction.rockClearM < 300) continue;
       await visit(host, pose);
@@ -41,9 +41,10 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     }
     throw Error("No clear placement candidate near " + name);
   }
-  const sourceDepot = await place("Prospect works", src);
-  const relay = await place("Lunar relay", dst);
-  console.log(JSON.stringify({ stage: "commissioned", source: sourceDepot.id, relay: relay.id }));
+  const sourceDepot = await place("Prospect works", site(1.4));
+  const relay = await place("Belt relay", site(5.4));
+  const routeKm = Math.hypot(...relay.positionKm.map((x, i) => x - sourceDepot.positionKm[i]));
+  console.log(JSON.stringify({ stage: "commissioned", frameId: source.frameId, routeKm, source: sourceDepot.id, relay: relay.id }));
   await visit(host, sourceDepot);
   await visit(guest, sourceDepot, [0.5, 0, 0]);
   const transfer = (depotId, direction, kind, itemId, amount) => ({ type: "depot.transfer", depotId, direction, kind, itemId, amount });
@@ -72,14 +73,15 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   const assign = (page, droneId, job) => settledCommand(page, { type: "drone.configure", droneId, job: { enabled: true, ...job } });
   await assign(host, extractor, { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: 200 });
   await assign(guest, hauler, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 8, stopAt: 600 });
-  // This is the only hand refuel in the run. It cannot cover even the first interbody round trip.
+  // This is the only hand refuel in the run. Once the extractor departs, the hauler's
+  // configured reserve makes it wait for the refinery before carrying its first load.
   await settledCommand(guest, transfer(sourceDepot.id, "deposit", "fuel", "fuel", 12));
 
   // Observe an actual rendered flight with the worker still ticking while this guest's
-  // incoming messages are held. Sample the middle of the leg, away from take-off and braking.
+  // incoming messages are held. Sample within its approach, clear of docking and the worksite.
   const onLeg = await waitFor(async () => {
     const drone = (await state(guest)).drones.find(d => d.id === extractor);
-    return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 1;
+    return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 6;
   }, 40000, 50);
   assert.ok(onLeg, "guest observed the extraction drone leave");
   assert.ok(await guest.evaluate(`${C}.holdIncoming(1650)`));
@@ -89,7 +91,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   for (let i = 1; i < samples.length; i++) {
     const prev = samples[i - 1], next = samples[i];
     assert.ok(prev.visible && next.visible, "the guest can see the extractor throughout its approach");
-    const dt = next.atMs - prev.atMs;
+    const dt = next.frameMs - prev.frameMs;
     if (dt <= 0) continue;
     const metres = Math.hypot(...next.positionM.map((x, j) => x - prev.positionM[j]));
     const speed = metres * 1000 / dt;
@@ -101,7 +103,8 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   speeds.sort((a, b) => a - b);
   const median = speeds[Math.floor(speeds.length / 2)], peak = speeds.at(-1);
   assert.ok(median > 1 && longestStopMs < 250, `mid-flight stall lasted ${longestStopMs} ms`);
-  assert.ok(peak < 4 * median, `snapshot catch-up produced a speed spike: ${peak} m/s, median ${median}`);
+  assert.ok(peak <= 1.5 * tuning.cruiseKmPerS * 1000 + 0.05,
+    `snapshot catch-up produced a speed spike: ${peak} m/s, median ${median}`);
   console.log(JSON.stringify({ stage: "guest extractor flight", heldMs: 1650, frames: samples.length,
     longestStopMs: Math.round(longestStopMs), medianMps: Math.round(median), peakMps: Math.round(peak) }));
   await visit(guest, relay);
@@ -117,7 +120,8 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     const s = await state(host);
     return flight(s)?.phase === "outbound" && flight(s).cargo.fuelKg > 0 ? flight(s) : null;
   }, 120000, 300);
-  assert.ok(outbound, "self-funded first shipment left Earth");
+  assert.ok(outbound, "self-funded first shipment left the prospect depot");
+  assert.ok(outbound.durationS >= 36 && outbound.durationS <= 39, "4 km basic-engine leg has a local ETA");
   const generation = (await host.evaluate(`${C}.status()`)).session.gen;
   console.log(JSON.stringify({ stage: "first departure", payloadKg: outbound.cargo.fuelKg, legS: outbound.durationS }));
   await host.load();
@@ -153,7 +157,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   const saved = await host.evaluate(`${G}.fixtures.export(${json(worldId)}).then(s => JSON.parse(s).data.world.industry)`);
   assert.equal(stores(saved), second);
   assert.equal(stores(final), second);
-  return { pass: true, frames: [sourceDepot.frameId, relay.frameId], contestedUnit: race.map(r => r.status),
+  return { pass: true, frames: [sourceDepot.frameId, relay.frameId], routeKm, legS: outbound.durationS, contestedUnit: race.map(r => r.status),
     restartGeneration: generation + 1, bootstrapKg: 12, firstDeliveryKg: first, withdrawnKg: usedKg,
     secondDeliveryKg: second - first + usedKg, durableRelayKg: stores(saved) };
 }

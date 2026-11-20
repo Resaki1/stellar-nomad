@@ -144,6 +144,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       };
     }
 
+    case "depot.rename":
     case "depot.place":
     case "depot.transfer":
     case "depot.fabricate":
@@ -179,6 +180,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
   const p = player;
 
   switch (op.type) {
+    case "depot.rename":
     case "depot.place":
     case "depot.transfer":
     case "depot.fabricate":

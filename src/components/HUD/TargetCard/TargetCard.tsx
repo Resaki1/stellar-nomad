@@ -1,8 +1,8 @@
 "use client";
 
-import { useAtom, useAtomValue, useStore } from "jotai";
+import { useAtomValue, useStore } from "jotai";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { CircleCheck, Clock, FlaskConical, Fuel, Package, Thermometer, TriangleAlert } from "lucide-react";
+import { CircleCheck, Clock, FlaskConical, Fuel, Package, Thermometer } from "lucide-react";
 import { INSPECT_RANGE_M, SOURCE_CLASS_NAMES, getSiteDef } from "@/data/content";
 import { sourceIdOf } from "@/sim/research/discoveries";
 import { getAsteroidClass, computeMiningDurationS } from "@/sim/asteroids/resources";
@@ -18,14 +18,12 @@ import { systemConfigAtom } from "@/store/system";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { computedModifiersAtom, getFlag } from "@/store/modules";
 import { industryAtom } from "@/store/industry";
-import { depotPlacementAtom, industryPanelOpenAtom } from "@/store/industryHud";
+import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
 import { isDeadAtom, wrecksAtom } from "@/store/death";
 import { settingsIsOpenAtom } from "@/store/store";
 import { interactControl, interactFocusAtom, interactFocused, siteHoldFull, type InteractFocus } from "@/store/interact";
-import { RESOURCE_WARN_KM, kitCountAtom, placementModeAtom, placementNameAtom, placementStatusAtom, playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
+import { placementModeAtom, playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
 import { KeyChip, ResourceIcon } from "../shared/Chips";
-import { PlacementCancelKeys, PlacementMouseHint } from "../shared/PlacementControls";
-import { confirmPointPlacement } from "../ReplicationHUD/ReplicationHUD";
 import { startInspectAudio, stopInspectAudio } from "./inspectAudio";
 
 import "./TargetCard.scss";
@@ -37,7 +35,7 @@ export function fmtDistKm(km: number): string {
   return `${Math.round(km).toLocaleString("en-US")} km`;
 }
 
-type Kind = "rock" | "site" | "wreck" | "point" | "depot" | "place";
+type Kind = "rock" | "site" | "wreck" | "point" | "depot";
 
 function Act({ action, keyName, label, off, why }: { action?: KeybindAction; keyName?: string; label: string; off?: boolean; why?: ReactNode }) {
   return (
@@ -59,8 +57,7 @@ function Bar({ value, tone }: { value: number; tone: "info" | "heat" | "signal" 
 
 /**
  * The one panel for "what I am looking at + what I can do with it" (rocks, the survey site, wrecks,
- * placed points, the placement preview), attached right of the reticle (inside the nose root, so it
- * follows the nose, not screen centre). Fixed rows per kind (rock/placement 4, others 3). Owns [M] and [G].
+ * placed points and depots), attached right of the ship-nose reticle. Owns [M] and [G].
  */
 export default function TargetCard() {
   const store = useStore();
@@ -71,7 +68,7 @@ export default function TargetCard() {
   const placingDepot = useAtomValue(depotPlacementAtom);
   const industryOpen = useAtomValue(industryPanelOpenAtom);
 
-  const kind: Kind | null = dead || placingDepot || industryOpen ? null : placing ? "place" : focus.focused && focus.target ? focus.target.kind : mining.targetedAsteroid && (mining.isFocused || mining.isMining) ? "rock" : null;
+  const kind: Kind | null = dead || placingDepot || industryOpen || placing ? null : focus.focused && focus.target ? focus.target.kind : mining.targetedAsteroid && (mining.isFocused || mining.isMining) ? "rock" : null;
 
   // ── keys: [M] mines, [G] does everything else (R5) ──
   const stateRef = useRef({ mining, focus, kind });
@@ -91,7 +88,7 @@ export default function TargetCard() {
         return;
       }
       if (!kb.inspect.includes(key)) return;
-      if (k !== "rock" && k !== null && k !== "place") {
+      if (k !== "rock" && k !== null) {
         // In range the wreck salvages itself (the card says `Salvaging`): G has nothing to refuse.
         if (k === "wreck" && f.target?.inRange) return;
         if (!interactFocused(store)) playAudio("ui.reject");
@@ -116,9 +113,9 @@ export default function TargetCard() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [store]);
 
-  const body = kind === "rock" ? <RockRows /> : kind === "place" ? <PlaceRows /> : kind ? <InteractRows focus={focus} /> : null;
+  const body = kind === "rock" ? <RockRows /> : kind ? <InteractRows focus={focus} /> : null;
   return (
-    <div className={`target-card ${kind ? `target-card--visible target-card--${kind}` : ""}${kind && kind !== "rock" && kind !== "place" ? " target-card--rows3" : ""}`} data-testid="target-card" data-kind={kind ?? ""}>
+    <div className={`target-card ${kind ? `target-card--visible target-card--${kind}` : ""}${kind && kind !== "rock" ? " target-card--rows3" : ""}`} data-testid="target-card" data-kind={kind ?? ""}>
       {body}
     </div>
   );
@@ -291,6 +288,7 @@ function InteractRows({ focus }: { focus: InteractFocus }) {
       </div>
       <div className="target-card__row target-card__row--contents">
         <span className="target-card__muted">Respawn point</span>
+        <button type="button" className="target-card__rename" onClick={() => store.set(industryRequestAtom, { renamePointId: p.id })}>Rename</button>
       </div>
       <div className="target-card__row target-card__row--actions">
         {active ? <span className="target-card__tag"><CircleCheck size={12} aria-hidden /> Active</span>
@@ -315,40 +313,6 @@ function DepotRows({ depotId, dist, inRange, rangeKm }: { depotId: string; dist:
       <div className="target-card__row target-card__row--actions">
         <Act action="inspect" label="Open depot" off={!inRange} why={!inRange ? fmtDistKm(rangeKm) : null} />
       </div>
-    </>
-  );
-}
-
-function PlaceRows() {
-  const store = useStore();
-  const status = useAtomValue(placementStatusAtom);
-  const kits = useAtomValue(kitCountAtom);
-  const [name, setName] = useAtom(placementNameAtom);
-  const noFuel = !!status && (status.fuelSourceKm === null || status.fuelSourceKm > RESOURCE_WARN_KM);
-  return (
-    <>
-      <div className="target-card__row target-card__row--head">
-        <span className="target-card__name">NEW POINT</span>
-        <span className="target-card__dist">×{kits}</span>
-      </div>
-      <div className="target-card__row target-card__row--facts">
-        {status ? (
-          status.refusal ? <span className="target-card__state target-card__state--bad"><TriangleAlert size={12} aria-hidden /> {status.refusal}</span>
-            : <span className="target-card__state target-card__state--ok"><CircleCheck size={12} aria-hidden /> Clear</span>
-        ) : null}
-      </div>
-      <div className="target-card__row target-card__row--contents">
-        <input className="target-card__input" value={name} maxLength={32} placeholder="Name" spellCheck={false}
-          onFocus={e => e.currentTarget.select()} onChange={e => setName(e.target.value)} aria-label="Point name" />
-        {noFuel && <span className="target-card__warn" title="No inspected hydrate rock within 50 km"><TriangleAlert size={11} aria-hidden /> No fuel source</span>}
-      </div>
-      <div className="target-card__row target-card__row--actions">
-        <button type="button" className="target-card__placement-button" data-placement-control
-          data-point-action="cancel" onClick={() => store.set(placementModeAtom, false)}>Cancel <PlacementCancelKeys /></button>
-        <button type="button" className="target-card__placement-button target-card__placement-button--primary" data-placement-control
-          data-point-action="place" disabled={!status || !!status.refusal} onClick={() => confirmPointPlacement(store)}>Place <KeyChip keyName="enter" /></button>
-      </div>
-      <PlacementMouseHint />
     </>
   );
 }

@@ -4,6 +4,7 @@
  *
  * DRIVE_PROFILE=m5ux DRIVE_CDP_PORT=9351 pnpm drive -- --url http://127.0.0.1:3012/ --no-isolate run:scripts/drive-examples/industry-ui.mjs
  * INDUSTRY_UI_TOUCH=1 runs the walkthrough at a portrait touch size and checks the landscape layout.
+ * INDUSTRY_UI_TOUCH=layout runs those layout and dispatch checks without waiting for the live delivery.
  */
 import assert from "node:assert/strict";
 
@@ -16,12 +17,14 @@ const stock = name => `[data-industry-stock="${name}"]`;
 
 export default async function industryUi(d) {
   const ev = src => d.evaluate(src);
-  const touch = process.env.INDUSTRY_UI_TOUCH === "1";
+  const layoutOnly = process.env.INDUSTRY_UI_TOUCH === "layout";
+  const touch = layoutOnly || process.env.INDUSTRY_UI_TOUCH === "1";
   const capture = name => d.shot(`m5-industry-${name}${touch ? "-touch" : ""}`);
   const setSize = (width, height) => d.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
   const shown = selector => ev(`!!document.querySelector(${J(selector)})?.getClientRects().length`);
   const enabled = selector => ev(`document.querySelector(${J(selector)})?.disabled === false`);
   const text = selector => ev(`document.querySelector(${J(selector)})?.textContent.trim()`);
+  const value = selector => ev(`document.querySelector(${J(selector)})?.value`);
   const optionIds = selector => ev(`[...document.querySelector(${J(selector)}).options].map(o => o.value)`);
   const state = () => ev(`${G}.world().industry`);
   const record = () => ev(`${G}.player()`);
@@ -51,7 +54,11 @@ export default async function industryUi(d) {
   const fill = async (selector, value) => {
     await click(selector);
     await d.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["SelectAll"] });
-    await d.type(String(value));
+    if (value === "") {
+      const backspace = { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 };
+      await d.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...backspace, commands: ["DeleteBackward"] });
+      await d.send("Input.dispatchKeyEvent", { type: "keyUp", ...backspace });
+    } else await d.type(String(value));
     assert.equal(await ev(`document.querySelector(${J(selector)}).value`), String(value));
   };
   const select = async (selector, value) => {
@@ -88,7 +95,8 @@ export default async function industryUi(d) {
     await d.frames(30);
     const catalog = await ev(`${G}.industry.catalog()`);
     const source = catalog.sources.find(s => s.id === "earth_hydrates");
-    assert.ok(source);
+    const lunar = catalog.sources.find(s => s.id === "luna_hydrates");
+    assert.ok(source && lunar);
 
     if (touch) {
       await setSize(390, 844);
@@ -151,12 +159,12 @@ export default async function industryUi(d) {
       await closeIndustry();
     }
 
-    for (const [id, n] of Object.entries({ fe_ni_metal: 480, silicates: 360, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
+    for (const [id, n] of Object.entries({ fe_ni_metal: 600, silicates: 420, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
       await ev(`__dev.grantCargo(${J(id)}, ${n})`);
     }
-    const place = async (name, xOffset, isSource) => {
-      const position = source.positionKm.map((axis, i) => axis + (i === 0 ? xOffset : 0));
-      await teleport(source.frameId, position);
+    const place = async (name, xOffset, { near = true, checkCancel = false, region = source } = {}) => {
+      const position = region.positionKm.map((axis, i) => axis + (i === 0 ? xOffset : 0));
+      await teleport(region.frameId, position);
       await openIndustry();
       await find("Industry reopens", () => shown(".industry"));
       await click("[data-industry-build]");
@@ -165,8 +173,8 @@ export default async function industryUi(d) {
       await fill("[data-industry-name]", name);
       await click(action("aim"));
       await find("deployment clearance", () => shown('[data-industry-clear="true"]'));
-      assert.equal(await ev(`document.querySelector("[data-industry-clear]").textContent.includes(${J(isSource ? source.name : "relay site")})`), true);
-      if (isSource) {
+      assert.equal(await ev(`document.querySelector("[data-industry-clear]").textContent.includes(${J(near ? region.name : "relay site")})`), true);
+      if (checkCancel) {
         captures.push(await capture("placement"));
         if (touch) await click(action("cancel-placement"));
         else await d.press("Escape");
@@ -183,7 +191,9 @@ export default async function industryUi(d) {
       return { ...depot, placementPosition: position };
     };
 
-    const works = await place("Hydrate Works", 2, true);
+    const works = await place("Hydrate Works", 2, { checkCancel: true });
+    const depotRole = id => text(`${inPanel(id)} [data-industry-depot-role]`);
+    assert.equal(await depotRole(works.id), "Storage depot", "Site proximity leaves an unequipped depot for storage");
     const moveStock = async (depot, id, amount, direction) => {
       const stored = async () => {
         const { storage } = (await state()).depots.find(d => d.id === depot.id);
@@ -202,6 +212,9 @@ export default async function industryUi(d) {
       const panel = footer.closest(".panel").getBoundingClientRect();
       const content = scroll.getBoundingClientRect();
       const r = footer.getBoundingClientRect();
+      const rename = document.querySelector(".industry__rename-trigger");
+      const name = rename.getBoundingClientRect();
+      const track = document.querySelector(${J(action("track-depot"))}).getBoundingClientRect();
       const buttons = [...footer.querySelectorAll("button")].map(button => button.getBoundingClientRect());
       const visibleRows = [...scroll.querySelectorAll(".industry__manifest-row")].filter(row => {
         const rect = row.getBoundingClientRect();
@@ -210,7 +223,9 @@ export default async function industryUi(d) {
       return { width: innerWidth, height: innerHeight, scrollable: scroll.scrollHeight > scroll.clientHeight,
         scrollTop: scroll.scrollTop, top: r.top, bottom: r.bottom, bottomGap: panel.bottom - r.bottom,
         visible: buttons.every(b => b.left >= panel.left && b.right <= panel.right && b.top >= panel.top && b.bottom <= panel.bottom),
-        minTap: Math.min(...buttons.map(b => b.height)), visibleRows };
+        minTap: Math.min(...buttons.map(b => b.height)), visibleRows,
+        renameVisible: name.top >= panel.top && name.right <= panel.right && (name.right <= track.left || name.bottom <= track.top) &&
+          rename.contains(document.elementFromPoint(name.left + name.width / 2, name.top + name.height / 2)) };
     })()`);
     const assertPinnedActions = async (minRows = 0) => {
       await find("storage panel animation settled", () => ev(
@@ -223,6 +238,7 @@ export default async function industryUi(d) {
       assert.ok(first.scrollable && last.scrollTop > first.scrollTop && first.visible && last.visible && last.bottomGap < 2, JSON.stringify(last));
       assert.equal(last.top, first.top);
       assert.equal(last.bottom, first.bottom);
+      assert.ok(first.renameVisible && last.renameVisible, "Depot name stays within reach above Storage");
       if (touch) assert.ok(last.minTap >= 44);
       storageLayouts.push({ ...last, visibleRowsAtTop: first.visibleRows });
       await ev('document.querySelector(".industry__storage .industry__content").scrollTop = 0');
@@ -235,6 +251,12 @@ export default async function industryUi(d) {
         captures.push(await d.shot(`m5-industry-storage-${width}x${height}`));
         await assertPinnedActions(minRows);
       }
+      await click(".industry__rename-trigger");
+      await find("landscape depot rename dialog", () => shown(".industry__rename-form"));
+      assert.equal(await value(".industry__rename-form input"), works.name);
+      captures.push(await d.shot("m5-industry-rename-568x320"));
+      await click('.panel__close[aria-label="Close"]');
+      await find("return to landscape Storage", () => shown(".industry__storage"));
       await setSize(390, 844);
     }
     assert.match(await text(".industry__capacity"), /3,000 kg.*6,000 units/);
@@ -269,6 +291,7 @@ export default async function industryUi(d) {
     const fabricate = id => click(`[data-industry-recipe="${id}"] ${action("fabricate")}`);
     await fabricate("refinery");
     await find("refinery installed", async () => (await state()).depots[0].refinery);
+    assert.equal(await depotRole(works.id), "Refinery");
     await fabricate("drone");
     await find("first drone built", async () => (await state()).drones.length === 1);
     await fabricate("drone");
@@ -278,6 +301,10 @@ export default async function industryUi(d) {
 
     await click(tab("drones"));
     const [extractor, hauler] = (await state()).drones.map(drone => `[data-industry-drone=${J(drone.id)}]`);
+    await select(`${hauler} [data-industry-job-kind]`, "haul");
+    assert.equal(await enabled(`${hauler} [data-industry-job-target]`), false);
+    assert.equal(await enabled(`${hauler} ${action("start-job")}`), false);
+    assert.match(await text(hauler), /Build another depot within 30(?:\.0)? km in this region/);
     const limit = `${extractor} [data-industry-job-stop]`;
     assert.deepEqual(await optionIds(`${extractor} [data-industry-job-target]`), [source.id]);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
@@ -286,6 +313,7 @@ export default async function industryUi(d) {
     await click(`${extractor} ${action("start-job")}`);
     await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("propellant")`));
     assert.equal((await state()).drones[0].job.stopAt, 400);
+    assert.equal(await depotRole(works.id), "Refinery · Hydrate extraction");
     assert.match(await text(`${extractor} .industry__route`), /Hydrate limit: 400 units/);
     await click(`${extractor} ${action("edit-job")}`);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "400");
@@ -295,11 +323,17 @@ export default async function industryUi(d) {
     await find("extraction set to fill storage", async () => (await state()).drones[0].job.stopAt === 6000);
     assert.match(await text(`${extractor} .industry__route`), /all free cargo space/);
     await click(tab("storage"));
-    await moveStock(works, "propellant", 20, "deposit");
+    // The extractor can spend the fuel immediately, before the next depot stock read.
+    const expectedDepositedFuel = (await record()).depositedFuelKg + 20;
+    await click(stock("propellant"));
+    await fill("[data-industry-amount]", 20);
+    await click(action("deposit"));
+    await find("bootstrap fuel deposited", async () => (await record()).depositedFuelKg === expectedDepositedFuel);
     await find("extractor departs after bootstrap fuel", async () => (await state()).drones[0].phase === "outbound");
     await closeIndustry();
 
-    const relay = await place("Transfer Relay", 42, false);
+    const relay = await place("Transfer Relay", 6);
+    assert.equal(await depotRole(relay.id), "Storage depot");
     for (const [id, amount] of Object.entries({ fe_ni_metal: 45, silicates: 30, carbon: 10 })) {
       await moveStock(relay, id, amount, "deposit");
     }
@@ -308,9 +342,14 @@ export default async function industryUi(d) {
     const relayDrone = await find("relay drone built", async () => (await state()).drones.find(drone => drone.homeId === relay.id));
     const relayWork = `[data-industry-drone=${J(relayDrone.id)}]`;
     await click(tab("drones"));
-    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-kind]`), ["haul"]);
-    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-target]`), [works.id]);
-    assert.match(await text(relayWork), /No hydrate site is in range/);
+    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-kind]`), ["extract", "haul"]);
+    await select(`${relayWork} [data-industry-job-kind]`, "haul");
+    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-target]`), ["", works.id]);
+    await closeIndustry();
+    const outpost = await place("Lunar Outpost", 42, { near: false, region: lunar });
+    await closeIndustry();
+    await teleport(source.frameId, relay.placementPosition);
+    await openIndustry();
     await click(inPanel(works.id));
     await find("remote access displayed", () => shown('[data-industry-access="remote"]'));
     assert.equal(await enabled(action("deposit-max")), false);
@@ -333,16 +372,89 @@ export default async function industryUi(d) {
     await find("Interact opens the depot in local range", () => shown('[data-industry-access="available"]'));
     await click(tab("drones"));
 
+    const haulTarget = `${hauler} [data-industry-job-target]`;
+    const haulItems = `${hauler} [data-industry-job-filter]`;
+    const haulLimit = `${hauler} [data-industry-job-stop]`;
+    const haulReserve = `${hauler} [data-industry-job-reserve]`;
+    const haulStart = `${hauler} ${action("start-job")}`;
+    const cargoOrder = () => ev(`[...document.querySelectorAll(${J(`${hauler} ol li span`)})].map(el => el.textContent)`);
     await select(`${hauler} [data-industry-job-kind]`, "haul");
-    await select(`${hauler} [data-industry-job-target]`, relay.id);
-    await select(`${hauler} [data-industry-job-filter]`, "hydrates");
+    assert.equal(await value(haulTarget), "");
+    assert.deepEqual(await optionIds(haulTarget), ["", relay.id], `Cross-body destination ${outpost.name} is unavailable`);
+    assert.equal(await value(haulLimit), "");
+    assert.deepEqual(await cargoOrder(), []);
+    assert.equal(await enabled(haulStart), false);
+    assert.match(await text(hauler), /Add at least one item/);
+    if (touch) {
+      const fits = await ev(`(() => {
+        const [kind, target, reserve, limit] = ${J([`${hauler} [data-industry-job-kind]`, haulTarget, haulReserve, haulLimit])}
+          .map(selector => document.querySelector(selector).getBoundingClientRect());
+        return kind.bottom <= target.top && reserve.bottom <= limit.top;
+      })()`);
+      assert.equal(fits, true, "Dispatch fields stack so the longer labels fit on a portrait phone");
+    }
+    await ev(`document.querySelector(${J(haulItems)}).scrollIntoView({ block: "center" })`);
+    captures.push(await capture("empty-delivery"));
+    await select(haulTarget, relay.id);
+    assert.equal(await enabled(haulStart), false, "Destination alone is insufficient");
+    await select(haulItems, "propellant");
+    assert.equal(await enabled(haulStart), true);
+    await select(haulItems, "hydrates");
     await click(`${hauler} [aria-label="Move Hydrates up"]`);
+    assert.deepEqual(await cargoOrder(), ["Hydrates", "Propellant"]);
     await click(`${hauler} [aria-label="Move Hydrates down"]`);
-    await fill(`${hauler} [data-industry-job-reserve]`, 12);
-    await fill(`${hauler} [data-industry-job-stop]`, 80);
-    await ev(`document.querySelector(${J(`${hauler} ${action("start-job")}`)}).scrollIntoView({ block: "nearest" })`);
+    await fill(haulReserve, 12);
+    await fill(haulLimit, "e");
+    assert.equal(await enabled(haulStart), false, "Invalid input can't be treated as a blank limit");
+    await fill(haulLimit, 80);
+    for (const view of ["storage", "fabrication"]) {
+      await click(tab(view));
+      await click(tab("drones"));
+      assert.equal(await value(haulLimit), "80");
+    }
+    await click(inPanel(relay.id));
+    await click(tab("drones"));
+    assert.equal(await value(`${relayWork} [data-industry-job-reserve]`), "0", "A different drone has its own draft");
+    await click(inPanel(works.id));
+    await click(tab("drones"));
+    assert.equal(await value(haulLimit), "80");
+    assert.equal(await value(haulTarget), relay.id);
+    assert.equal(await value(haulReserve), "12");
+    assert.deepEqual(await cargoOrder(), ["Propellant", "Hydrates"]);
+
+    // A live authoritative assignment while the draft is hidden keeps the edits intact
+    // and requires the player to review the current job before saving.
+    await click(tab("storage"));
+    const droneId = (await state()).drones[1].id;
+    const changedJob = { kind: "haul", targetId: relay.id, priorities: ["hydrates"], reserveKg: 25, stopAt: 95, enabled: false };
+    const configure = job => ev(`${G}.submit({ type: "drone.configure", droneId: ${J(droneId)}, job: ${J(job)} })`);
+    assert.equal((await configure(changedJob)).status, "accepted");
+    await click(tab("drones"));
+    assert.match(await text(`${hauler} .industry__route`), /Delivery limit: 95 per item/);
+    assert.equal(await value(haulLimit), "80");
+    assert.equal(await enabled(haulStart), false);
+    await ev(`document.querySelector(${J(`${hauler} .industry__job-review`)}).scrollIntoView({ block: "center" })`);
+    captures.push(await capture("job-changed"));
+    await click(`${hauler} ${action("keep-job-draft")}`);
+    assert.equal(await enabled(haulStart), true);
+    assert.deepEqual(await cargoOrder(), ["Propellant", "Hydrates"]);
+    assert.equal((await configure({ ...changedJob, reserveKg: 26 })).status, "accepted");
+    await click(`${hauler} ${action("use-current-job")}`);
+    assert.equal(await shown(haulStart), false);
+    await click(`${hauler} ${action("edit-job")}`);
+    assert.equal(await value(haulLimit), "95", "A stored numeric cap is still editable");
+    assert.equal(await value(haulReserve), "26");
+    assert.deepEqual(await cargoOrder(), ["Hydrates"]);
+    await select(haulItems, "propellant");
+    await click(`${hauler} [aria-label="Move Propellant up"]`);
+    await fill(haulReserve, 12);
+    await fill(haulLimit, "");
+    await ev(`document.querySelector(${J(haulStart)}).scrollIntoView({ block: "nearest" })`);
     captures.push(await capture("plan"));
-    await click(`${hauler} ${action("start-job")}`);
+    if (layoutOnly) return { pass: true, touch, captures, storageLayouts };
+    await click(haulStart);
+    await find("unlimited delivery saved", async () => (await state()).drones[1].job.stopAt === catalog.tuning.cargoCapacity);
+    assert.match(await text(`${hauler} .industry__route`), /Uses all free space at the receiving depot/);
     await find("fuel delivery at relay", async () => (await state()).depots.find(d => d.id === relay.id).storage.fuelKg > 0, 60000);
     await click(`${hauler} ${action("stop-job")}`);
     await find("hauler stopped at depot", async () => (await state()).drones[1].status === "paused", 60000);

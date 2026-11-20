@@ -1,7 +1,6 @@
 import type { Transfer } from "@/sim/world/commands";
 import { DRONE_FUEL_ID, getIndustrySource, INDUSTRY_SOURCES, INDUSTRY_TUNING as T } from "./catalog";
-import { canExtractAt } from "./placement";
-import { estimateDroneRoute } from "./route";
+import { estimateDroneExtractionRoute, estimateDroneRoute } from "./route";
 import { emptyStorage, type DepotRecord, type DroneRecord, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
 
 export function storageUnits(storage: Transfer): number {
@@ -97,10 +96,9 @@ class IndustryStep {
 
     const source = job.kind === "extract" ? getIndustrySource(job.targetId) : undefined;
     const destination = job.kind === "haul" ? this.depotMap.get(job.targetId) : undefined;
-    if (job.kind === "extract" && (!source || !canExtractAt(home, source.id))) return standBy(drone, "source_out_of_range");
-    const target = source ?? destination;
-    const route = target && estimateDroneRoute(home, target);
-    if (!route) return standBy(drone, "route_out_of_range");
+    const route = source ? estimateDroneExtractionRoute(home, source, this.state.depots)
+      : destination && estimateDroneRoute(home, destination);
+    if (!route) return standBy(drone, job.kind === "extract" ? "source_out_of_range" : "route_out_of_range");
     const surplusKg = home.storage.fuelKg - route.roundTripFuelKg - job.reserveKg;
     if (surplusKg < 0) return standBy(drone, "needs_fuel");
     const cargo = emptyStorage();
@@ -131,7 +129,7 @@ class IndustryStep {
     storage.fuelKg -= route.roundTripFuelKg;
     if (loadId) move(storage, cargo, loadId, amount);
     return { ...inPhase(drone, "outbound", "departing", route.legSeconds), cargo,
-      fuelKg: route.roundTripFuelKg / 2, returnS: route.legSeconds, via: route.via };
+      fuelKg: route.roundTripFuelKg / 2, returnS: route.legSeconds, via: null };
   }
 
   private completeWork(drone: DroneRecord, home: DepotRecord): DroneRecord {

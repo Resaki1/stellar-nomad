@@ -7,8 +7,8 @@ import type { Scene } from "three";
 export const testProbe: {
   /** Rendered R3F frames since load. */
   frames: number;
-  /** Dev hooks run once per frame AFTER the sim clock and the ship (priority 0). */
-  frameHooks: Set<() => void>;
+  /** Dev hooks run at priority 0 with the R3F clock timestamp, after the sim clock and ship. */
+  frameHooks: Set<(frameMs: number) => void>;
   /** The live renderer, for resident-resource counts. Null until the Canvas mounts. */
   renderer: { info: { memory: { textures: number; geometries: number } } } | null;
   scene: Scene | null;

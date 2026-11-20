@@ -19,7 +19,6 @@ import { targetedPOIAtom } from "@/store/transit";
 import { industryAtom } from "@/store/industry";
 import { settingsIsOpenAtom } from "@/store/store";
 import { isSimPaused } from "@/sim/simPause";
-import "@/sim/industry/routePlanner";
 
 type Store = ReturnType<typeof createStore>;
 

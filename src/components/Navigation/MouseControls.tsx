@@ -1,5 +1,5 @@
 import { cancelDepotPlacementAtom, depotPlacementAtom } from "@/store/industryHud";
-import { placementModeAtom } from "@/store/replication";
+import { cancelPointPlacementAtom, placementModeAtom } from "@/store/replication";
 import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { hdrCalibrationOpenAtom, settingsIsOpenAtom } from "@/store/store";
@@ -31,7 +31,7 @@ const MouseControls = () => {
     const device = attachMouse();
     const cancelPlacement = (): boolean => {
       if (store.get(depotPlacementAtom)) store.set(cancelDepotPlacementAtom);
-      else if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
+      else if (store.get(placementModeAtom)) store.set(cancelPointPlacementAtom);
       else return false;
       return true;
     };

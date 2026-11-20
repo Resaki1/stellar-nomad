@@ -323,6 +323,14 @@ const POIProjector = memo(function POIProjector() {
   const pois = usePOIDefs();
   const store = useStore();
 
+  // A renamed station or recovery point keeps its current navigation lock and bearing.
+  useEffect(() => {
+    const target = store.get(targetedPOIAtom);
+    if (!target || !(target.id.startsWith("depot:") || target.id.startsWith("point:"))) return;
+    const poi = pois.find(p => p.id === target.id);
+    if (poi && poi.name !== target.name) store.set(targetedPOIAtom, { ...target, name: poi.name });
+  }, [pois, store]);
+
   // Gaze tracking for POI targeting.
   const gazeIdRef = { current: null as string | null };
   const gazeTimeRef = { current: 0 };
