@@ -2,6 +2,7 @@
  * Point tank installation, stable transfer controls, drone setup, and recovery via the visible HUD.
  * DRIVE_PROFILE=m5pointfuel DRIVE_CDP_PORT=9353 pnpm drive -- --perf --no-isolate --url http://127.0.0.1:3012/ run:scripts/drive-examples/replication-fuel.mjs
  * Set POINT_FUEL_TOUCH=1 for the same flow with a 390×844 touch viewport.
+ * Set POINT_FUEL_LAYOUT_ONLY=1 to stop after the delivery draft and skip the simulated flight.
  */
 import assert from "node:assert/strict";
 
@@ -20,6 +21,7 @@ const aimFor = `${G}.rep.teleportRel(${j(frameId)}, ${j(near)}, [0,0,0,1])`;
 
 export default async function replicationFuel(d) {
   const touch = process.env.POINT_FUEL_TOUCH === "1";
+  const layoutOnly = process.env.POINT_FUEL_LAYOUT_ONLY === "1";
   const ev = expression => d.evaluate(expression);
   const previous = await ev("__test.save.info().id");
   const fixture = await ev(`(async () => {
@@ -87,6 +89,19 @@ export default async function replicationFuel(d) {
     })()`);
   };
   const amountSelector = `${details} [data-point-tank-amount]`;
+  const pointRosterItem = "[data-industry-points]";
+  const depotRosterItem = `[data-industry-depot="${depotId}"]`;
+  const reveal = selector => until(`Fully visible active roster entry: ${selector}`, `(() => {
+    const list = document.querySelector(".industry__roster");
+    const item = list?.querySelector(${j(selector)});
+    if (!item || item.getAttribute("aria-current") !== "true") return false;
+    const entry = item.getBoundingClientRect(), viewport = list.getBoundingClientRect();
+    const left = viewport.left + list.clientLeft, right = left + list.clientWidth;
+    return entry.left >= left - 0.75 && entry.right <= right + 0.75
+      ? { left: entry.left, right: entry.right, viewport: [left, right], scrollX: list.scrollLeft }
+      : false;
+  })()`);
+  const detailScroll = 'document.querySelector(".industry__detail").scrollTop';
 
   try {
     if (touch) {
@@ -104,6 +119,22 @@ export default async function replicationFuel(d) {
       return ship?.frameId === ${j(frameId)} && Math.hypot(...ship.posKm.map((axis,i) => axis - ${j(near)}[i])) < 0.05;
     })()`);
     await click('[data-point-fuel-open]');
+    let directlyOpenedRoster;
+    if (touch) {
+      directlyOpenedRoster = await reveal(pointRosterItem);
+      assert.ok(directlyOpenedRoster.scrollX > 0, "Opening a point directly reveals the last item of the narrow roster");
+      const before = await ev(`(() => {
+        document.querySelector(".panel__close").focus({ preventScroll: true });
+        const top = ${detailScroll};
+        document.querySelector(${j(depotRosterItem)}).click();
+        return top;
+      })()`);
+      await reveal(depotRosterItem);
+      assert.equal(await ev('document.activeElement?.matches(".panel__close")'), true, "Revealing a new roster item keeps focus in place");
+      assert.equal(await ev(detailScroll), before);
+      await ev(`document.querySelector(${j(pointRosterItem)}).click()`);
+      await reveal(pointRosterItem);
+    }
     assert.equal(await ev(`document.querySelector(${j(details)})?.open`), true, "Fuel opens the matching point directly");
     assert.match(await text(`${details} [data-required-research]`), /Bulk Handling/);
     assert.equal(await ev(`document.querySelector(${j(transfer("install"))})?.disabled`), true);
@@ -124,26 +155,30 @@ export default async function replicationFuel(d) {
     await until("5 kg withdrawn", `${stock} === 80`);
     assert.equal(await depositHeight(), before, "An accepted transfer leaves panel layout stable");
     assert.deepEqual(await ev(`${G}.player().propellant`), { ordinaryKg: 120, protectedKg: 25 });
-    if (touch) {
-      assert.equal(await ev(`(() => {
-        const tank = document.querySelector(${j(details)});
-        return [...tank.querySelectorAll("summary,input,button")].every(control => {
-          const r = control.getBoundingClientRect();
-          return r.height >= 44 && r.left >= 0 && r.right <= innerWidth;
-        });
-      })()`), true, "Tank controls fit the phone screen with 44 px targets");
-    }
     const stockShot = await d.shot(`point-tank-stock${touch ? "-phone" : ""}`);
+    if (touch) {
+      const controls = await ev(`(() => {
+        const tank = document.querySelector(${j(details)});
+        return [...tank.querySelectorAll("summary,input,button")].map(control => {
+          const r = control.getBoundingClientRect();
+          return { name: control.dataset.pointTankAction ?? control.tagName, h: r.height, l: r.left, r: r.right };
+        });
+      })()`);
+      assert.ok(controls.every(control => control.h >= 44 && control.l >= 0 && control.r <= 390),
+        `Tank controls fit the phone screen with 44 px targets: ${JSON.stringify(controls)}`);
+    }
 
     await click(transfer("request"));
     assert.match(await text("[data-industry-delivery-request]"), /Cinder Refuge/);
     await select("[data-industry-request-source]", depotId);
     await select("[data-industry-request-drone]", droneId);
     await click('[data-industry-action="edit-requested-delivery"]');
+    const deliveryRoster = touch ? await reveal(depotRosterItem) : undefined;
     assert.equal(await ev('document.querySelector("[data-industry-job-target]")?.selectedOptions[0]?.textContent.includes("Cinder Refuge")'), true);
     await fill("[data-industry-job-reserve]", "20");
     await fill("[data-industry-job-stop]", "118");
     const requestShot = await d.shot(`point-tank-delivery-draft${touch ? "-phone" : ""}`);
+    if (layoutOnly) return { pass: true, touch, directlyOpenedRoster, deliveryRoster, stockShot, requestShot };
     await click('[data-industry-action="start-job"]');
     const job = await until("funded point delivery started", `${G}.world().industry.drones[0]?.job`);
     assert.deepEqual(job, { kind: "haul", targetKind: "point", targetId: pointId, priorities: ["propellant"], reserveKg: 20, stopAt: 118, enabled: true });

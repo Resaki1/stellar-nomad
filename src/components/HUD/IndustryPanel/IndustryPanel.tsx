@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowDownLeft, ArrowUp, ArrowUpRight, Box, Crosshair, Factory, Fuel, MapPin, Pencil, PackagePlus, Radio, Truck } from "lucide-react";
 import { getItemDef, industryResearchNode, MATERIAL_NAMES, materialName } from "@/data/content";
 import { playAudio } from "@/audio/voices";
@@ -160,6 +160,21 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
   const driveOwned = useAtomValue(transitDriveOwnedAtom);
   const content = useRef<HTMLDivElement>(null);
   const renameForm = useRef<HTMLFormElement>(null);
+  const roster = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const list = roster.current;
+    const active = list?.querySelector('[aria-current="true"]');
+    if (!list || !active) return;
+    const viewport = list.getBoundingClientRect();
+    const entry = active.getBoundingClientRect();
+    const left = viewport.left + list.clientLeft;
+    const top = viewport.top + list.clientTop;
+    // Reveal the selection in this scrollport alone. The details and focus keep their own position.
+    if (entry.left < left) list.scrollLeft += entry.left - left;
+    else if (entry.right > left + list.clientWidth) list.scrollLeft += entry.right - left - list.clientWidth;
+    if (entry.top < top) list.scrollTop += entry.top - top;
+    else if (entry.bottom > top + list.clientHeight) list.scrollTop += entry.bottom - top - list.clientHeight;
+  }, [depots.length, points.length, renaming, selected, showPoints]);
   useEffect(() => {
     const dialog = (content.current ?? renameForm.current)?.closest(".panel");
     if (!dialog) return;
@@ -238,7 +253,7 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
   return <Panel title="Industry" width={875} fixedHeight noBodyPadding onClose={onClose}>
     <div className="industry" ref={content} aria-busy={pending}>
       <div className="industry__layout">
-        <nav className="industry__roster" aria-label="Industry locations">
+        <nav ref={roster} className="industry__roster" aria-label="Industry locations">
           {depots.map(d => {
             const km = distance(position, d);
             return <button key={d.id} type="button" data-industry-depot={d.id} aria-current={!showPoints && selected === d.id}

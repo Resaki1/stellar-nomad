@@ -95,7 +95,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   // incoming messages are held. Sample within its approach, clear of docking and the worksite.
   const onLeg = await waitFor(async () => {
     const drone = (await state(guest)).drones.find(d => d.id === extractor);
-    return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 6;
+    return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 6 ? drone : null;
   }, 40000, 50);
   assert.ok(onLeg, "guest observed the extraction drone leave");
   assert.equal(onLeg.flight.rock.instanceId, source.instanceId);

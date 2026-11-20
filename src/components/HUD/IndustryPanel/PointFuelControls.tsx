@@ -83,7 +83,7 @@ export default function PointFuelControls({ point, inRange, onRequestFuel, initi
       {installed ? <>
         <p>Stores ordinary propellant for ship transfers and recovery at this point.</p>
         <div className="point-fuel__transfer">
-          <label>Transfer kg
+          <label>Amount (kg)
             <input type="number" step="1" min="1" inputMode="numeric" value={amount} disabled={blocked}
               data-point-tank-amount onChange={e => setAmount(e.target.value)} />
           </label>
