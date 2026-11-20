@@ -567,8 +567,13 @@ export default async function industryUi(d) {
     await click(`${hauler} ${action("stop-job")}`);
     await find("hauler stopped at depot", async () => (await state()).drones[1].status === "paused", 60000);
     assert.deepEqual((await state()).drones[1].job.priorities, ["propellant", "hydrates"]);
-    await find("mining deposits finite rock co-products", async () => Object.entries((await state()).depots[0].storage.items)
-      .some(([id, n]) => id !== "hydrates" && n > 0), 120000);
+    const activeMine = (await state()).drones[0];
+    const miningTimeoutMs = Math.max(120000, (activeMine.remainingS + (activeMine.flight?.rock?.workSeconds ?? 0) + 30) * 1000);
+    await find("miner recovers finite rock co-products", async () => {
+      const current = await state();
+      return [current.drones[0].cargo.items, current.depots[0].storage.items]
+        .some(items => Object.entries(items).some(([id, n]) => id !== "hydrates" && n > 0));
+    }, miningTimeoutMs);
     await find("obsolete stop confirmation clears", () => ev(`document.querySelector(".industry__feedback").textContent === ""`), 6500);
     captures.push(await capture("route"));
 
