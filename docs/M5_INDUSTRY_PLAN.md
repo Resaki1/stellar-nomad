@@ -78,6 +78,9 @@ pnpm drive -- --perf --no-isolate --url http://127.0.0.1:3000/ run:scripts/drive
 
 | Check | Observed result |
 | --- | --- |
+| Nearest asteroid across a chunk boundary | A depot 12 m inside its chunk had a one-hydrate rock 14.3 km away in that chunk. The miner selected the one-hydrate X-type in the neighbouring chunk, 519 m from its surface. The search took two simulation ticks. |
+| Mining trips and cargo selection | A two-rock trip delivered exactly seven hydrates with the cargo filter set to keep only hydrates. A mid-flight recall with six hydrates braked and returned in 25 s. The second asteroid remained available. |
+| Tracking in flight | Muted WebGPU Chrome followed a miner from its berth to a real worksite and back. The bearing also followed a restored hauler on a 2,150 km route from outside the mesh’s visibility range. |
 | Finite mining | A C-type rock yielded 12 silicates, 6 hydrates, 3 Fe–Ni metal, 1 sulfur and 1 carbon. Two finishing drones could collect it only once. Both peers and the reopened save agreed on depletion. A failed disk write left the rock and journal intact. |
 | Research and remote access | A two-replicant authority test opened a version 7 world with an existing kit. The kit could be placed. Fabrication of new hardware required the appropriate crew research. A replicant at Luna could commission a refinery using the Earth depot’s materials after their crewmate unlocked it. A remote request to withdraw materials to their ship was refused. |
 | Recovery in the cockpit | Desktop and 390 × 844 touch Chrome both opened the targeted point, installed its tank, transferred fuel, requested a delivery and reloaded. A respawn drew the resulting 118 kg of ordinary fuel from the point and retained 60 kg protected. |
