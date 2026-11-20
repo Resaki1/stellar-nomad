@@ -39,6 +39,11 @@
   &--point,
   &--place { border-left-color: s.$accent-ok; }
 
+  &--place {
+    height: 120px;
+    grid-template-rows: repeat(4, 22px) 16px;
+  }
+
   // Flipped to the reticle's left when it would cross the right edge (drawFlightHud sets data-flip).
   .reticle[data-flip='1'] & {
     left: auto;
@@ -174,6 +179,37 @@
     &:focus {
       border-color: s.$accent-ok;
     }
+  }
+
+  &__placement-button {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 20px;
+    padding: 0 3px;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-sm;
+    background: rgba(255, 255, 255, 0.06);
+    color: s.$text-primary;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+
+    &--primary { border-color: s.$accent-ok; }
+    &:disabled { opacity: 0.55; cursor: default; }
+    &:enabled:hover { background: rgba(255, 255, 255, 0.16); }
+    &:focus-visible { outline: 1px solid s.$accent-info; outline-offset: -2px; }
+  }
+
+  @media (pointer: coarse) {
+    &--place {
+      height: 130px;
+      grid-template-rows: repeat(3, 22px) 48px;
+    }
+
+    &__placement-button { min-height: 44px; padding-inline: s.$space-3; }
+    &__input { font-size: 16px; }
   }
 
   &__warn {

@@ -75,6 +75,8 @@ export const poiBuffer = {
   targetedId: null as string | null,
   /** A destination chosen from a menu: looking away does not clear it. */
   pinnedId: null as string | null,
+  /** A manually cleared target stays clear while the nose still points at it. */
+  ignoreGazeUntilLookAway: null as string | null,
   /** Transit ETA in seconds for the targeted POI (null if not targeted). */
   targetedEtaS: null as number | null,
   /** Gaze progress 0..1 toward locking a new POI target. */

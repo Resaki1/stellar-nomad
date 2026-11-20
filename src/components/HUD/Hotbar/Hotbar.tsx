@@ -12,7 +12,8 @@ import {
   HOTBAR_SOURCE_SLOT_MIME,
 } from "@/store/modules";
 import { miningStateAtom } from "@/store/mining";
-import { settingsIsOpenAtom, shipHealthAtom } from "@/store/store";
+import { hudHiddenAtom, settingsIsOpenAtom, shipHealthAtom } from "@/store/store";
+import { isDeadAtom } from "@/store/death";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { addTimedEffectAtom } from "@/store/timedEffects";
 import { addToastAtom } from "@/store/toast";
@@ -22,7 +23,8 @@ import { isTypingTarget } from "@/input/keyboard";
 import { REPLICATION_KIT_ID } from "@/sim/replication/points";
 import { placementModeAtom } from "@/store/replication";
 import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
-import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
+import { industryAtom } from "@/store/industry";
+import { cancelDepotPlacementAtom, depotPlacementAtom, depotPlacementPendingAtom, industryPanelOpenAtom, nextDepotName, sampleDepotPlacementPose } from "@/store/industryHud";
 import { togglePlacement } from "../ReplicationHUD/ReplicationHUD";
 
 import ContextMenu, { type ContextMenuItem } from "../ContextMenu/ContextMenu";
@@ -32,6 +34,7 @@ import "./Hotbar.scss";
 /** D8: slot i is key `(i + 1) % 10`, so the labels read 1…9, 0 like the keyboard. */
 export const slotKey = (index: number): string => String((index + 1) % 10);
 const slotOfKey = (key: string): number => (key === "0" ? 9 : Number(key) - 1);
+const PLACEMENT_KITS = [REPLICATION_KIT_ID, DEPOT_KIT_ID] as const;
 
 /** Returns true if this item requires heat to be usable. */
 function requiresHeat(def: ItemDef): boolean {
@@ -52,6 +55,7 @@ export default function Hotbar() {
   const store = useStore();
   const modulesState = useAtomValue(modulesAtom);
   const placing = useAtomValue(placementModeAtom);
+  const placingDepot = useAtomValue(depotPlacementAtom);
   const miningState = useAtomValue(miningStateAtom);
   const shipHealth = useAtomValue(shipHealthAtom);
   const shipConfig = useAtomValue(effectiveShipConfigAtom);
@@ -86,19 +90,21 @@ export default function Hotbar() {
     return () => clearInterval(timer);
   }, [cooldownEnd]);
 
-  // A kit that arrives (craft, salvage, a loaded save) gets a slot once; a manual removal sticks.
-  // The hotbar is its only control, so a full bar says so (Loadout can drag it in later).
-  const kits = modulesState.consumables[REPLICATION_KIT_ID] ?? 0;
-  const kitSlotted = modulesState.hotbar.includes(REPLICATION_KIT_ID);
-  const freeSlot = modulesState.hotbar.indexOf(null);
-  const prevKits = useRef(0);
+  // Make a newly acquired kit available from the hotbar, including when a save is loaded.
+  // Removing the slot manually sticks until another kit arrives.
+  const prevKits = useRef<Record<string, number>>({});
   useEffect(() => {
-    const arrived = kits > prevKits.current;
-    prevKits.current = kits;
-    if (!arrived || kitSlotted) return;
-    if (freeSlot !== -1) setHotbarSlot({ index: freeSlot, itemId: REPLICATION_KIT_ID });
-    else addToast({ kind: "warn", message: "Hotbar full", values: [{ id: REPLICATION_KIT_ID }] });
-  }, [kits, kitSlotted, freeSlot, setHotbarSlot, addToast]);
+    const freeSlots = modulesState.hotbar.flatMap((id, index) => id === null ? [index] : []);
+    for (const itemId of PLACEMENT_KITS) {
+      const count = modulesState.consumables[itemId] ?? 0;
+      const arrived = count > (prevKits.current[itemId] ?? 0);
+      prevKits.current[itemId] = count;
+      if (!arrived || modulesState.hotbar.includes(itemId)) continue;
+      const index = freeSlots.shift();
+      if (index !== undefined) setHotbarSlot({ index, itemId });
+      else addToast({ kind: "warn", message: "Hotbar full", values: [{ id: itemId }] });
+    }
+  }, [modulesState.consumables, modulesState.hotbar, setHotbarSlot, addToast]);
 
   // Clear the "just assigned" pulse class after the animation finishes
   useEffect(() => {
@@ -110,7 +116,13 @@ export default function Hotbar() {
   // Activate a hotbar slot by index
   const activateSlot = useCallback(
     (index: number) => {
-      const itemId = modulesState.hotbar[index];
+      if (store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom) || store.get(isDeadAtom)) return;
+      const { hotbar, consumables } = store.get(modulesAtom);
+      const itemId = hotbar[index];
+      if (store.get(depotPlacementAtom)) {
+        if (itemId === DEPOT_KIT_ID) store.set(cancelDepotPlacementAtom);
+        return;
+      }
       const def = itemId ? getItemDef(itemId) : null;
       // An empty slot's key did nothing; say so rather than drop the input.
       if (!itemId || !def) {
@@ -119,14 +131,18 @@ export default function Hotbar() {
       }
 
       if (itemId === DEPOT_KIT_ID) {
-        if ((modulesState.consumables[itemId] ?? 0) > 0) store.set(industryRequestAtom, { build: true });
-        else signalAudio("ui.reject");
+        if ((consumables[itemId] ?? 0) > 0 && !store.get(depotPlacementPendingAtom)) {
+          store.set(placementModeAtom, false);
+          store.set(hudHiddenAtom, false);
+          sampleDepotPlacementPose();
+          store.set(depotPlacementAtom, { name: nextDepotName(store.get(industryAtom).depots), fromIndustry: false });
+        } else signalAudio("ui.reject");
         return;
       }
 
       // D16: the replication kit's slot opens (or closes) placement; placing consumes it.
       if (def.deployable) {
-        if ((modulesState.consumables[itemId] ?? 0) > 0 || store.get(placementModeAtom)) togglePlacement(store);
+        if ((consumables[itemId] ?? 0) > 0 || store.get(placementModeAtom)) togglePlacement(store);
         else signalAudio("ui.reject");
         return;
       }
@@ -172,16 +188,16 @@ export default function Hotbar() {
         addToast({ message: "Used", values: [{ id: itemId }], audio: cue ? "silent" : undefined });
       } });
     },
-    [store, modulesState.hotbar, modulesState.consumables, consumeItem, addTimedEffect, addToast, signalAudio],
+    [store, consumeItem, addTimedEffect, addToast, signalAudio],
   );
 
   // Keys 1…9 then 0 (names with digits are typed, never activate a slot).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom) || isTypingTarget(e.target) || e.repeat) return;
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || e.repeat ||
+          store.get(settingsIsOpenAtom) || store.get(industryPanelOpenAtom)) return;
       const key = e.key;
       if (key.length === 1 && key >= "0" && key <= "9") {
-        // The kit's slot focuses the name input in this same keydown: without this the digit is typed into it.
         e.preventDefault();
         activateSlot(slotOfKey(key));
       }
@@ -329,7 +345,7 @@ export default function Hotbar() {
             unavailable && "hotbar__slot--unavailable",
             isDragOver && "hotbar__slot--drag-over",
             justAssigned && "hotbar__slot--just-assigned",
-            placing && def?.deployable && "hotbar__slot--active",
+            (itemId === DEPOT_KIT_ID ? placingDepot : itemId === REPLICATION_KIT_ID && placing) && "hotbar__slot--active",
           ].filter(Boolean).join(" ");
 
           return (

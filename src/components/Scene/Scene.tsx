@@ -64,7 +64,7 @@ import ReplicationPoints from "@/components/Replication/ReplicationPoints";
 import IndustryWorld from "@/components/Industry/IndustryWorld";
 import SurveySite from "@/components/Sites/SurveySite";
 import WreckCollector from "../WreckCollector";
-import TestFrameProbe from "../TestHarness/TestFrameProbe";
+import TestFrameProbe, { TestLocalSceneProbe } from "../TestHarness/TestFrameProbe";
 import LoadingGate from "../Loading/LoadingGate";
 import PhysicsDebugView from "../Physics/PhysicsDebugView";
 import { loadFailed } from "../AppShell/appState";
@@ -221,6 +221,7 @@ const Scene = () => {
         <SkyLight />
         <SpaceShip />
         {process.env.NODE_ENV === "development" ? <PhysicsDebugView /> : null}
+        {process.env.NODE_ENV === "development" ? <TestLocalSceneProbe /> : null}
         <AsteroidField />
         <MiningSystem />
         <InteractFocus />

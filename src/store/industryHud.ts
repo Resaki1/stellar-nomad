@@ -11,15 +11,25 @@ import { poiBuffer, type POIDef } from "@/store/poi";
 
 export const industryPanelOpenAtom = atom(false);
 export const industryRequestAtom = atom<{ depotId?: string; build?: boolean; name?: string } | null>(null);
-export const depotPlacementAtom = atom<string | null>(null);
+export const depotPlacementAtom = atom<{ name: string; fromIndustry: boolean } | null>(null);
 export const depotPlacementPendingAtom = atom(false);
-export const cancelDepotPlacementAtom = atom(null, (get, set) => {
-  const name = get(depotPlacementAtom);
-  if (!name || get(depotPlacementPendingAtom)) return;
+export const clearDepotPlacementAtom = atom(null, (_get, set) => {
   depotPlacementPreview.ready = false;
   set(depotPlacementAtom, null);
-  set(industryRequestAtom, { build: true, name });
 });
+export const cancelDepotPlacementAtom = atom(null, (get, set) => {
+  const placement = get(depotPlacementAtom);
+  if (!placement || get(depotPlacementPendingAtom)) return;
+  set(clearDepotPlacementAtom);
+  if (placement.fromIndustry) set(industryRequestAtom, { build: true, name: placement.name });
+});
+
+export function nextDepotName(depots: readonly DepotRecord[]): string {
+  const names = new Set(depots.map(depot => depot.name.toLowerCase()));
+  let number = 1;
+  while (names.has(`depot ${number}`)) number++;
+  return `Depot ${number}`;
+}
 
 /** Frame-relative preview shared by the placement prompt and local scene. */
 export const depotPlacementPreview = {
@@ -50,8 +60,17 @@ export function sampleDepotPlacementPose(): boolean {
   return true;
 }
 
-export const trackIndustryPoiAtom = atom(null, (_get, set, poi: POIDef): boolean => {
+export const trackIndustryPoiAtom = atom(null, (get, set, poi: POIDef): boolean => {
   if (transitDriveBuffer.phase !== "idle") return false;
+  if (get(targetedPOIAtom)?.id === poi.id) {
+    poiBuffer.pinnedId = null;
+    poiBuffer.targetedId = null;
+    poiBuffer.targetedEtaS = null;
+    poiBuffer.ignoreGazeUntilLookAway = poi.id;
+    set(targetedPOIAtom, null);
+    return true;
+  }
+  poiBuffer.ignoreGazeUntilLookAway = null;
   poiBuffer.targetedId = poi.id;
   poiBuffer.pinnedId = poi.id;
   set(targetedPOIAtom, {

@@ -7,6 +7,7 @@ import { aiNameAtom } from "@/store/aiName";
 import { isShipAISpeaker, signalAudioActionAtom } from "@/store/audioSignals";
 import { depotPlacementAtom, industryPanelOpenAtom } from "@/store/industryHud";
 import { isDeadAtom } from "@/store/death";
+import { placementModeAtom } from "@/store/replication";
 import { settingsIsOpenAtom } from "@/store/store";
 
 import "./CommsOverlay.scss";
@@ -17,14 +18,15 @@ function resolveAiName(text: string, name: string | null): string {
   return text.replaceAll("{{AI_NAME}}", name);
 }
 
-/** Hide comms where recovery, settings or Industry owns the controls. Keep the queued message. */
+/** Hide comms while recovery, settings, industry or placement owns the controls. */
 export default function CommsOverlay() {
   const queued = useAtomValue(activeCommsMessageAtom);
   const dead = useAtomValue(isDeadAtom);
   const settingsOpen = useAtomValue(settingsIsOpenAtom);
   const industryOpen = useAtomValue(industryPanelOpenAtom);
   const aimingDepot = useAtomValue(depotPlacementAtom);
-  const message = dead || settingsOpen || industryOpen || aimingDepot ? null : queued;
+  const aimingPoint = useAtomValue(placementModeAtom);
+  const message = dead || settingsOpen || industryOpen || aimingDepot || aimingPoint ? null : queued;
   const dismiss = useSetAtom(dismissCommsAtom);
   const signalAudio = useSetAtom(signalAudioActionAtom);
   const aiName = useAtomValue(aiNameAtom);

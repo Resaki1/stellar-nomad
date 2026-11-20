@@ -171,14 +171,14 @@ export default function HUD() {
   const aimDepot = useCallback((name: string) => {
     store.set(placementModeAtom, false);
     sampleDepotPlacementPose();
-    store.set(depotPlacementAtom, name);
+    store.set(depotPlacementAtom, { name, fromIndustry: true });
     closePanel();
   }, [closePanel, store]);
 
   // Hotkeys for panels
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || e.defaultPrevented || e.metaKey || e.ctrlKey || store.get(depotPlacementAtom)) return;
+      if (isTypingTarget(e.target) || e.defaultPrevented || e.metaKey || e.ctrlKey || store.get(depotPlacementAtom) || store.get(placementModeAtom)) return;
       const key = keyFromEvent(e);
       if (activePanelRef.current === "industry" && key === "tab") return;
 

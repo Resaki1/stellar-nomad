@@ -7,7 +7,7 @@
  *   hudSite      real keys from a transit arrival: lock the canister, one G, recovered
  *   lunarShots   captures at the field arrival (Luna, nearest big rock) and at the canister (lighting check)
  *   hudKeys      keybinds v2 → v3: untouched defaults move to C/P, custom bindings stay (restores storage)
- *   hudHotbar    keys 1…9, 0; a crafted kit fills a slot; its key opens placement with the name selected
+ *   hudHotbar    keys 1…9, 0; a crafted kit fills a slot; its key opens placement with editable name
  */
 import { freshWorld } from "./gameplay-m37.mjs";
 import { findClearPreview, waitArrival } from "./gameplay-m36.mjs";
@@ -43,8 +43,8 @@ const LAYOUT = `(() => {
     cardText: card ? card.innerText.replace(/\\s+/g, " ").trim() : "", stack: [...document.querySelectorAll(".notif-stack__item")].map((e) => e.innerText.replace(/\\s+/g, " ").trim()) };
 })()`;
 
-async function state(d, ctx, name, expectCard, narrow) {
-  await ctx.wait(350);
+async function state(d, ctx, name, expectCard, narrow, settleMs = 350) {
+  if (settleMs) await ctx.wait(settleMs);
   const shot = await d.shot(`wp3-hud-${name}${narrow ? "-narrow" : ""}`);
   const l = await ctx.ev(LAYOUT);
   const pass = l.hits.length === 0 && l.outside.length === 0 && (expectCard === undefined || l.card === expectCard);
@@ -88,8 +88,9 @@ export async function hudGates(d, ctx) {
     for (const v of (__audio.emitters() ?? [])) window.__wp3Ev.add(v.event ?? v.id ?? JSON.stringify(v));
   }, 100); })()`);
   await d.press("g");
-  await ctx.wait(900);
-  out.inspecting = await state(d, ctx, "inspecting", "rock", narrow);
+  const inspecting = await waitFor(ctx, () => ev('!!document.querySelector(".target-card__bar--info")'), 6000);
+  out.inspecting = await state(d, ctx, "inspecting", "rock", narrow, 0);
+  out.inspecting.pass &&= inspecting && out.inspecting.cardText.endsWith("Stop");
   const inspected = await waitFor(ctx, async () => (await ev(`document.querySelectorAll(".target-card__row--contents .sn-res__n").length`)) > 0, 9000);
   await ctx.wait(400);
   const events = await ev(`(() => { clearInterval(window.__wp3T); return [...window.__wp3Ev].filter((x) => /inspect/.test(x)); })()`);
@@ -104,14 +105,15 @@ export async function hudGates(d, ctx) {
 
   // Mining: the card's bar, then the Mined item in the stack.
   await d.press("m");
-  await ctx.wait(1500);
-  out.mining = await state(d, ctx, "mining", "rock", narrow);
+  const mining = await waitFor(ctx, () => ev('!!document.querySelector(".target-card__bar--heat")'), 6000);
+  out.mining = await state(d, ctx, "mining", "rock", narrow, 0);
+  out.mining.pass &&= mining && out.mining.cardText.endsWith("Stop");
   await waitFor(ctx, async () => !(await ev(`${G}.res.mining()`)).mining, 30000);
   await ctx.wait(300);
   out.mined = await state(d, ctx, "mined", undefined, narrow);
   out.mined.pass &&= out.mined.stack.some((s) => s.startsWith("Mined"));
 
-  // Placement: a crafted kit's hotbar key opens the NEW POINT card with the name selected.
+  // A crafted kit's hotbar key opens the NEW POINT card; focus selects the name.
   for (const [r, n] of Object.entries({ fe_ni_metal: 150, silicates: 100 })) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
   await ev(`${G}.craft(${JSON.stringify(KIT)})`);
   await findClearPreview(d, ctx);
@@ -120,6 +122,7 @@ export async function hudGates(d, ctx) {
   const kitSlot = (await ctx.player()).modules.hotbar.indexOf(KIT);
   await d.press(slotKey(kitSlot));
   await d.frames(10);
+  await ev('document.querySelector(".target-card__input")?.focus()');
   const input = await ev(`(() => { const i = document.activeElement; return i && i.classList.contains("target-card__input") ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
   out.placement = { kitSlot, input, ...(await state(d, ctx, "placement", "place", narrow)) };
   out.placement.pass &&= !!input?.all;
@@ -421,6 +424,7 @@ export async function hudHotbarGates(d, ctx) {
   await d.frames(10);
   await d.press(slotKey(kitSlot));
   await d.frames(10);
+  await ev('document.querySelector(".target-card__input")?.focus()');
   const input = await ev(`(() => { const i = document.activeElement; return i && i.classList.contains("target-card__input") ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
   // A digit typed into the name must not press the kit's own slot key.
   await d.type(`Camp ${slotKey(kitSlot)}`);

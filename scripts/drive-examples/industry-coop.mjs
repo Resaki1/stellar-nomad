@@ -74,6 +74,36 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   await assign(guest, hauler, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 8, stopAt: 600 });
   // This is the only hand refuel in the run. It cannot cover even the first interbody round trip.
   await settledCommand(guest, transfer(sourceDepot.id, "deposit", "fuel", "fuel", 12));
+
+  // Observe an actual rendered flight with the worker still ticking while this guest's
+  // incoming messages are held. Sample the middle of the leg, away from take-off and braking.
+  const onLeg = await waitFor(async () => {
+    const drone = (await state(guest)).drones.find(d => d.id === extractor);
+    return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 1;
+  }, 40000, 50);
+  assert.ok(onLeg, "guest observed the extraction drone leave");
+  assert.ok(await guest.evaluate(`${C}.holdIncoming(1650)`));
+  const samples = await guest.evaluate(`${G}.industry.trackDrone(${json(extractor)}, 2400)`);
+  const speeds = [];
+  let stoppedMs = 0, longestStopMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const prev = samples[i - 1], next = samples[i];
+    assert.ok(prev.visible && next.visible, "the guest can see the extractor throughout its approach");
+    const dt = next.atMs - prev.atMs;
+    if (dt <= 0) continue;
+    const metres = Math.hypot(...next.positionM.map((x, j) => x - prev.positionM[j]));
+    const speed = metres * 1000 / dt;
+    speeds.push(speed);
+    stoppedMs = speed < 0.1 ? stoppedMs + dt : 0;
+    longestStopMs = Math.max(longestStopMs, stoppedMs);
+  }
+  assert.ok(speeds.length > 10, "sampled individual rendered frames on the guest");
+  speeds.sort((a, b) => a - b);
+  const median = speeds[Math.floor(speeds.length / 2)], peak = speeds.at(-1);
+  assert.ok(median > 1 && longestStopMs < 250, `mid-flight stall lasted ${longestStopMs} ms`);
+  assert.ok(peak < 4 * median, `snapshot catch-up produced a speed spike: ${peak} m/s, median ${median}`);
+  console.log(JSON.stringify({ stage: "guest extractor flight", heldMs: 1650, frames: samples.length,
+    longestStopMs: Math.round(longestStopMs), medianMps: Math.round(median), peakMps: Math.round(peak) }));
   await visit(guest, relay);
   const denied = await guest.evaluate(`${G}.settled(${json(transfer(sourceDepot.id, "withdraw", "fuel", "fuel", 1))})`);
   assert.equal(denied.status, "rejected");

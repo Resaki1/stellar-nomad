@@ -17,7 +17,7 @@ export interface DroneJob {
   priorities: string[];
   /** Ordinary fuel, kg, left in the home tank after departure, beyond the funded round trip. */
   reserveKg: number;
-  /** Stop loading at this amount of a selected resource at the destination, in units or kg. */
+  /** Maximum of each selected resource at the receiving depot, in units or kg. */
   stopAt: number;
   enabled: boolean;
 }

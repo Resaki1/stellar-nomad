@@ -11,7 +11,7 @@ import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
-import { Vector3 } from "three";
+import { Mesh, MeshBasicMaterial, Vector3 } from "three";
 import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/cargo";
 import { devTeleportAtom } from "@/store/dev";
@@ -102,6 +102,16 @@ type TransitRecord = {
 let transitRecorder: { rec: TransitRecord; stop: () => TransitRecord } | null = null;
 
 export function createGameplayHarness(store: Store) {
+  const sampleDrone = (id: string) => {
+    const model = testProbe.scene?.getObjectByName(`drone:${id}`);
+    const beam = testProbe.scene?.getObjectByName(`droneBeam:${id}`);
+    if (!model || !(beam instanceof Mesh) || !(beam.material instanceof MeshBasicMaterial)) return null;
+    return {
+      positionM: model.position.toArray(), quaternion: model.quaternion.toArray(),
+      visible: model.visible, beam: beam.visible ? beam.material.opacity : 0,
+    };
+  };
+
   /** Live system-frame position of a rock (fields ride their body), or a fixed point. */
   const resolveKm = (t: number[] | RockRef): number[] | null => {
     if (Array.isArray(t)) return t;
@@ -124,6 +134,42 @@ export function createGameplayHarness(store: Store) {
     localId: (): string => getLocalPlayerId(),
     industry: {
       catalog: () => structuredClone({ sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
+      drone: sampleDrone,
+      trackDrone(id: string, ms: number) {
+        return new Promise<(NonNullable<ReturnType<typeof sampleDrone>> & { atMs: number; phase: string; remainingS: number })[]>(resolve => {
+          const samples: Parameters<typeof resolve>[0] = [];
+          const record = () => {
+            const drawn = sampleDrone(id);
+            const drone = getActiveSave()?.data.world.industry.drones.find(d => d.id === id);
+            if (drawn && drone) samples.push({ ...drawn, atMs: performance.now(), phase: drone.phase, remainingS: drone.remainingS });
+          };
+          testProbe.frameHooks.add(record);
+          setTimeout(() => {
+            testProbe.frameHooks.delete(record);
+            resolve(samples);
+          }, ms);
+        });
+      },
+      prospect(id: string) {
+        const model = testProbe.scene?.getObjectByName(`industrySource:${id}`);
+        if (!model) return null;
+        const colliders: { id: number; pose: ReturnType<typeof nearField.enginePose>; points: number[] }[] = [];
+        nearField.forEachCollider((id, _, __, ___, tag) => {
+          if (tag === "prospect") colliders.push({ id, pose: nearField.enginePose(id), points: Array.from(nearField.engineHull(id) ?? []) });
+        });
+        return {
+          visible: model.visible, positionM: model.position.toArray(), colliders,
+          parts: model.children.flatMap(mesh => {
+            if (!(mesh instanceof Mesh)) return [];
+            const geometry = mesh.geometry.getAttribute("position");
+            const points: number[] = [];
+            for (let i = 0; i < geometry.count; i++) {
+              points.push(geometry.getX(i) * mesh.scale.x, geometry.getY(i) * mesh.scale.y, geometry.getZ(i) * mesh.scale.z);
+            }
+            return [{ positionM: mesh.position.toArray(), quaternion: mesh.quaternion.toArray(), points }];
+          }),
+        };
+      },
     },
     /** Wait for this exact operation even when another pilot action settles in the same frame. */
     settled(op: OpInput): Promise<OperationOutcome> {

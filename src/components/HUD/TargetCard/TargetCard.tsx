@@ -24,6 +24,8 @@ import { settingsIsOpenAtom } from "@/store/store";
 import { interactControl, interactFocusAtom, interactFocused, siteHoldFull, type InteractFocus } from "@/store/interact";
 import { RESOURCE_WARN_KM, kitCountAtom, placementModeAtom, placementNameAtom, placementStatusAtom, playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
 import { KeyChip, ResourceIcon } from "../shared/Chips";
+import { PlacementCancelKeys, PlacementMouseHint } from "../shared/PlacementControls";
+import { confirmPointPlacement } from "../ReplicationHUD/ReplicationHUD";
 import { startInspectAudio, stopInspectAudio } from "./inspectAudio";
 
 import "./TargetCard.scss";
@@ -78,7 +80,7 @@ export default function TargetCard() {
   });
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (isTypingTarget(e.target) || e.repeat || store.get(settingsIsOpenAtom) || store.get(isDeadAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom)) return;
+      if (isTypingTarget(e.target) || e.repeat || store.get(settingsIsOpenAtom) || store.get(isDeadAtom) || store.get(industryPanelOpenAtom) || store.get(depotPlacementAtom) || store.get(placementModeAtom)) return;
       const key = e.key.toLowerCase();
       const kb = store.get(keybindsAtom);
       const { mining: m, kind: k, focus: f } = stateRef.current;
@@ -318,15 +320,10 @@ function DepotRows({ depotId, dist, inRange, rangeKm }: { depotId: string; dist:
 }
 
 function PlaceRows() {
+  const store = useStore();
   const status = useAtomValue(placementStatusAtom);
   const kits = useAtomValue(kitCountAtom);
   const [name, setName] = useAtom(placementNameAtom);
-  const input = useRef<HTMLInputElement>(null);
-  // D16: focused with its text selected, so typing replaces the default name.
-  useEffect(() => {
-    input.current?.focus();
-    input.current?.select();
-  }, []);
   const noFuel = !!status && (status.fuelSourceKm === null || status.fuelSourceKm > RESOURCE_WARN_KM);
   return (
     <>
@@ -341,13 +338,17 @@ function PlaceRows() {
         ) : null}
       </div>
       <div className="target-card__row target-card__row--contents">
-        <input ref={input} className="target-card__input" value={name} maxLength={32} placeholder="Name" spellCheck={false} onChange={(e) => setName(e.target.value)} aria-label="Point name" />
+        <input className="target-card__input" value={name} maxLength={32} placeholder="Name" spellCheck={false}
+          onFocus={e => e.currentTarget.select()} onChange={e => setName(e.target.value)} aria-label="Point name" />
         {noFuel && <span className="target-card__warn" title="No inspected hydrate rock within 50 km"><TriangleAlert size={11} aria-hidden /> No fuel source</span>}
       </div>
       <div className="target-card__row target-card__row--actions">
-        <Act label="Cancel" keyName="escape" />
-        <Act label="Place" keyName="enter" off={!!status?.refusal} />
+        <button type="button" className="target-card__placement-button" data-placement-control
+          data-point-action="cancel" onClick={() => store.set(placementModeAtom, false)}>Cancel <PlacementCancelKeys /></button>
+        <button type="button" className="target-card__placement-button target-card__placement-button--primary" data-placement-control
+          data-point-action="place" disabled={!status || !!status.refusal} onClick={() => confirmPointPlacement(store)}>Place <KeyChip keyName="enter" /></button>
       </div>
+      <PlacementMouseHint />
     </>
   );
 }

@@ -21,6 +21,8 @@ export default async function industryUi(d) {
   const setSize = (width, height) => d.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
   const shown = selector => ev(`!!document.querySelector(${J(selector)})?.getClientRects().length`);
   const enabled = selector => ev(`document.querySelector(${J(selector)})?.disabled === false`);
+  const text = selector => ev(`document.querySelector(${J(selector)})?.textContent.trim()`);
+  const optionIds = selector => ev(`[...document.querySelector(${J(selector)}).options].map(o => o.value)`);
   const state = () => ev(`${G}.world().industry`);
   const record = () => ev(`${G}.player()`);
   const find = async (label, check, limit = 12000) => {
@@ -77,6 +79,7 @@ export default async function industryUi(d) {
   const openIndustry = () => touch ? click('.hud__panel-btn[aria-label="Industry"]') : d.press("b");
   const closeIndustry = () => touch ? click('.panel__close[aria-label="Close"]') : d.press("Escape");
   const captures = [];
+  const storageLayouts = [];
 
   try {
     await ev(`${G}.fixtures.activate(${J(fixture)})`);
@@ -126,9 +129,20 @@ export default async function industryUi(d) {
     await fill("[data-industry-name]", "Hydrate Works");
     await d.press("b");
     assert.equal(await shown(".industry"), true, "Industry hotkey doesn't close a focused name field");
-    await click(action("track-earth_hydrates"));
-    await find("prospect pinned", () => ev(`${G}.transit.state().targeted === "industry-source:earth_hydrates"`));
+    const prospect = action("track-earth_hydrates");
+    const prospectId = "industry-source:earth_hydrates";
+    const tracked = id => ev(`${G}.transit.state().targeted === ${J(id)}`);
+    assert.ok(!(await record()).modules.ownedModules.includes("special_transit_drive"));
+    await click(prospect);
+    await find("hydrate site tracked", () => tracked(prospectId));
     assert.equal(await shown(".industry"), false);
+    await openIndustry();
+    await find("hydrate site untrack control", async () => await text(prospect) === "Untrack");
+    await click(prospect);
+    await find("hydrate site cleared", () => tracked(null));
+    assert.equal(await text(prospect), "Track");
+    await click(prospect);
+    await find("hydrate site tracked again", () => tracked(prospectId));
     if (!touch) {
       await d.press("h");
       assert.equal(await ev(`!!document.querySelector(".hud--hidden")`), true);
@@ -137,7 +151,7 @@ export default async function industryUi(d) {
       await closeIndustry();
     }
 
-    for (const [id, n] of Object.entries({ fe_ni_metal: 480, silicates: 360, carbon: 40, hydrates: 10 })) {
+    for (const [id, n] of Object.entries({ fe_ni_metal: 480, silicates: 360, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
       await ev(`__dev.grantCargo(${J(id)}, ${n})`);
     }
     const place = async (name, xOffset, isSource) => {
@@ -170,18 +184,85 @@ export default async function industryUi(d) {
     };
 
     const works = await place("Hydrate Works", 2, true);
-    const moveStock = async (id, amount, direction) => {
+    const moveStock = async (depot, id, amount, direction) => {
+      const stored = async () => {
+        const { storage } = (await state()).depots.find(d => d.id === depot.id);
+        return id === "propellant" ? storage.fuelKg : storage.items[id] ?? 0;
+      };
+      const expected = await stored() + (direction === "deposit" ? amount : -amount);
       await click(stock(id));
       await fill("[data-industry-amount]", amount);
       await click(action(direction));
-      await find(`${direction} confirmed`, () => ev(`document.querySelector(".industry__feedback")?.textContent.includes(${J(direction === "deposit" ? "Deposited" : "Withdrawn")})`));
+      await find(`${direction} saved`, async () => await stored() === expected);
+      assert.equal(await text(".industry__feedback"), "", "Transfer amounts confirm success");
     };
-    await moveStock("propellant", 50, "deposit");
+    const storageLayout = () => ev(`(() => {
+      const scroll = document.querySelector(".industry__storage .industry__content");
+      const footer = document.querySelector(".industry__transfer");
+      const panel = footer.closest(".panel").getBoundingClientRect();
+      const content = scroll.getBoundingClientRect();
+      const r = footer.getBoundingClientRect();
+      const buttons = [...footer.querySelectorAll("button")].map(button => button.getBoundingClientRect());
+      const visibleRows = [...scroll.querySelectorAll(".industry__manifest-row")].filter(row => {
+        const rect = row.getBoundingClientRect();
+        return rect.top >= content.top && rect.bottom <= content.bottom;
+      }).length;
+      return { width: innerWidth, height: innerHeight, scrollable: scroll.scrollHeight > scroll.clientHeight,
+        scrollTop: scroll.scrollTop, top: r.top, bottom: r.bottom, bottomGap: panel.bottom - r.bottom,
+        visible: buttons.every(b => b.left >= panel.left && b.right <= panel.right && b.top >= panel.top && b.bottom <= panel.bottom),
+        minTap: Math.min(...buttons.map(b => b.height)), visibleRows };
+    })()`);
+    const assertPinnedActions = async (minRows = 0) => {
+      await find("storage panel animation settled", () => ev(
+        `document.querySelector(".industry").closest(".panel").getAnimations().every(animation => animation.playState === "finished")`,
+      ));
+      const first = await storageLayout();
+      assert.ok(first.visibleRows >= minRows, JSON.stringify(first));
+      await ev('document.querySelector(".industry__storage .industry__content").scrollTop = 2000');
+      const last = await storageLayout();
+      assert.ok(first.scrollable && last.scrollTop > first.scrollTop && first.visible && last.visible && last.bottomGap < 2, JSON.stringify(last));
+      assert.equal(last.top, first.top);
+      assert.equal(last.bottom, first.bottom);
+      if (touch) assert.ok(last.minTap >= 44);
+      storageLayouts.push({ ...last, visibleRowsAtTop: first.visibleRows });
+      await ev('document.querySelector(".industry__storage .industry__content").scrollTop = 0');
+    };
+    await assertPinnedActions();
+    if (touch) {
+      for (const [width, height, minRows] of [[844, 390, 2], [568, 320, 1]]) {
+        await setSize(width, height);
+        await wait(200);
+        captures.push(await d.shot(`m5-industry-storage-${width}x${height}`));
+        await assertPinnedActions(minRows);
+      }
+      await setSize(390, 844);
+    }
+    assert.match(await text(".industry__capacity"), /3,000 kg.*6,000 units/);
+    await moveStock(works, "propellant", 50, "deposit");
     assert.equal((await state()).depots[0].storage.fuelKg, 50);
-    await moveStock("propellant", 5, "withdraw");
+    await moveStock(works, "propellant", 5, "withdraw");
     assert.equal((await state()).depots[0].storage.fuelKg, 45);
+
+    // Model a state change between the visible counts and submission. The authority must
+    // refuse the stale click, keep both sides consistent, and show the reason in place.
+    const beforeRefusal = await storageLayout();
+    await fill("[data-industry-amount]", 45);
+    const firstWithdrawal = await ev(`(() => {
+      const button = document.querySelector(${J(action("withdraw"))});
+      const prior = ${G}.submit({ type: "depot.transfer", depotId: ${J(works.id)},
+        direction: "withdraw", kind: "fuel", itemId: "fuel", amount: 1 });
+      button.click();
+      return prior.status;
+    })()`);
+    assert.equal(firstWithdrawal, "accepted");
+    await find("transfer refusal displayed", async () => (await text(".industry__feedback [role=alert]"))?.includes("The depot is short by 1 kg"));
+    assert.deepEqual(await storageLayout(), beforeRefusal);
+    assert.equal((await state()).depots[0].storage.fuelKg, 44);
+    captures.push(await capture("refusal"));
+    await moveStock(works, "propellant", 1, "deposit");
+
     for (const [id, amount] of Object.entries({ fe_ni_metal: 165, silicates: 110, carbon: 20 })) {
-      await moveStock(id, amount, "deposit");
+      await moveStock(works, id, amount, "deposit");
     }
     captures.push(await capture("manifest"));
     await click(tab("fabrication"));
@@ -197,22 +278,53 @@ export default async function industryUi(d) {
 
     await click(tab("drones"));
     const [extractor, hauler] = (await state()).drones.map(drone => `[data-industry-drone=${J(drone.id)}]`);
-    await select(`${extractor} [data-industry-job-target]`, source.id);
+    const limit = `${extractor} [data-industry-job-stop]`;
+    assert.deepEqual(await optionIds(`${extractor} [data-industry-job-target]`), [source.id]);
+    assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
     await fill(`${extractor} [data-industry-job-reserve]`, 50);
-    await fill(`${extractor} [data-industry-job-stop]`, 20);
+    await fill(limit, 400);
     await click(`${extractor} ${action("start-job")}`);
-    await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("Deposit")`));
+    await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("propellant")`));
+    assert.equal((await state()).drones[0].job.stopAt, 400);
+    assert.match(await text(`${extractor} .industry__route`), /Hydrate limit: 400 units/);
+    await click(`${extractor} ${action("edit-job")}`);
+    assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "400");
+    await click(`${extractor} ${action("clear-hydrate-limit")}`);
+    assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
+    await click(`${extractor} ${action("start-job")}`);
+    await find("extraction set to fill storage", async () => (await state()).drones[0].job.stopAt === 6000);
+    assert.match(await text(`${extractor} .industry__route`), /all free cargo space/);
     await click(tab("storage"));
-    await moveStock("propellant", 20, "deposit");
+    await moveStock(works, "propellant", 20, "deposit");
     await find("extractor departs after bootstrap fuel", async () => (await state()).drones[0].phase === "outbound");
     await closeIndustry();
 
     const relay = await place("Transfer Relay", 42, false);
+    for (const [id, amount] of Object.entries({ fe_ni_metal: 45, silicates: 30, carbon: 10 })) {
+      await moveStock(relay, id, amount, "deposit");
+    }
+    await click(tab("fabrication"));
+    await fabricate("drone");
+    const relayDrone = await find("relay drone built", async () => (await state()).drones.find(drone => drone.homeId === relay.id));
+    const relayWork = `[data-industry-drone=${J(relayDrone.id)}]`;
+    await click(tab("drones"));
+    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-kind]`), ["haul"]);
+    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-target]`), [works.id]);
+    assert.match(await text(relayWork), /No hydrate site is in range/);
     await click(inPanel(works.id));
     await find("remote access displayed", () => shown('[data-industry-access="remote"]'));
     assert.equal(await enabled(action("deposit-max")), false);
+    const depotTarget = `depot:${works.id}`;
     await click(action("track-depot"));
-    await find("depot target handed to navigation", () => ev(`${G}.transit.state().targeted === ${J(`depot:${works.id}`)}`));
+    await find("depot target handed to navigation", () => tracked(depotTarget));
+    await openIndustry();
+    await click(inPanel(works.id));
+    assert.equal(await text(action("track-depot")), "Untrack depot");
+    await click(action("track-depot"));
+    await find("depot tracking cleared", () => tracked(null));
+    assert.equal(await text(action("track-depot")), "Track depot");
+    await click(action("track-depot"));
+    await find("depot tracked again", () => tracked(depotTarget));
     await find("depot POI on HUD", () => shown(`.poi-markers [data-id=${J(`depot:${works.id}`)}]`));
     await teleport(source.frameId, works.placementPosition);
     await find("depot in reticle", () => shown('[data-testid="target-card"][data-kind="depot"]'));
@@ -237,7 +349,31 @@ export default async function industryUi(d) {
     assert.deepEqual((await state()).drones[1].job.priorities, ["propellant", "hydrates"]);
     await find("obsolete stop confirmation clears", () => ev(`document.querySelector(".industry__feedback").textContent === ""`), 6500);
     captures.push(await capture("route"));
-    console.log("[industry-ui]", JSON.stringify({ pass: true, touch, captures, fuelKg: (await state()).depots[1].storage.fuelKg }));
+
+    await ev("__dev.grantAllItems()");
+    assert.ok((await record()).modules.ownedModules.includes("special_transit_drive"));
+    await click("[data-industry-build]");
+    assert.doesNotMatch(await text(".industry__build"), /Add a Transit Drive/);
+    await click(prospect);
+    await find("hydrate site tracked with transit drive", () => tracked(prospectId));
+    await openIndustry();
+    await click("[data-industry-build]");
+    assert.equal(await text(prospect), "Untrack");
+    await click(prospect);
+    await find("hydrate site cleared with transit drive", () => tracked(null));
+    await click(inPanel(relay.id));
+    await click(action("track-depot"));
+    const relayTarget = `depot:${relay.id}`;
+    await find("depot tracked with transit drive", () => tracked(relayTarget));
+    await openIndustry();
+    await click(inPanel(relay.id));
+    assert.equal(await text(action("track-depot")), "Untrack depot");
+    await click(action("track-depot"));
+    await find("depot cleared with transit drive", () => tracked(null));
+    console.log("[industry-ui]", JSON.stringify({ pass: true, touch, captures, storageLayouts, fuelKg: (await state()).depots[1].storage.fuelKg }));
+  } catch (error) {
+    console.error(error.stack);
+    throw error;
   } finally {
     if (oldWorld) {
       await ev(`${G}.fixtures.activate(${J(oldWorld)})`);

@@ -7,7 +7,7 @@ import { getItemDef, MATERIAL_NAMES, materialName } from "@/data/content";
 import { playAudio } from "@/audio/voices";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { DRONE_FUEL_ID, DEPOT_KIT_ID, DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
-import type { DepotRecord, DroneJob, DroneRecord } from "@/sim/industry/types";
+import type { DepotRecord, DroneJob, DroneRecord, DroneStatus } from "@/sim/industry/types";
 import { estimateDroneRoute } from "@/sim/industry/route";
 import { canExtractAt, depotDistanceKm } from "@/sim/industry/placement";
 import { storageUnits } from "@/sim/industry/simulation";
@@ -16,7 +16,7 @@ import { formatDistance, formatDuration } from "@/sim/units";
 import type { WorldOperation } from "@/sim/world/commands";
 import { cargoAtom, cargoRemainingUnitsAtom } from "@/store/cargo";
 import { industryAtom } from "@/store/industry";
-import { depotPoi, industrySourcePois, trackIndustryPoiAtom } from "@/store/industryHud";
+import { depotPoi, industrySourcePois, nextDepotName, trackIndustryPoiAtom } from "@/store/industryHud";
 import { modulesAtom } from "@/store/modules";
 import { newOpId, runOperation } from "@/store/operations";
 import { shipReq, shipResourcesHudAtom } from "@/store/shipResources";
@@ -34,7 +34,7 @@ const quantity = (n: number): string => n.toLocaleString("en-US", { maximumFract
 
 type IndustryOp = Extract<WorldOperation, { type: "depot.transfer" | "depot.fabricate" | "drone.configure" | "item.craft" }>;
 type OperationArgs<Op = IndustryOp> = Op extends IndustryOp ? Omit<Op, "opId"> : never;
-type Submit = (op: OperationArgs, success: string) => void;
+type Submit = (op: OperationArgs, success?: string) => void;
 type Coordinates = Pick<ShipPose, "frameId" | "positionKm">;
 
 function distance(a: Coordinates | null, b: Coordinates): number {
@@ -60,7 +60,7 @@ function usePosition(): Coordinates | null {
 
 function loadLabel(depot: DepotRecord): string {
   if (depot.refinery) return "Refinery";
-  return INDUSTRY_SOURCES.some(source => canExtractAt(depot, source.id)) ? "Source depot" : "Relay depot";
+  return INDUSTRY_SOURCES.some(source => canExtractAt(depot, source.id)) ? "Extraction depot" : "Supply depot";
 }
 
 function Requirements({ items, have }: { items: Record<string, number>; have: Record<string, number> }) {
@@ -97,8 +97,8 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
   const inRange = !!depot && distanceKm <= INDUSTRY_TUNING.interactRangeKm;
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   useEffect(() => {
-    if (!feedback || feedback.error) return;
-    const timer = window.setTimeout(() => setFeedback(current => current === feedback ? null : current), 4000);
+    if (!feedback) return;
+    const timer = window.setTimeout(() => setFeedback(current => current === feedback ? null : current), feedback.error ? 8000 : 4000);
     return () => window.clearTimeout(timer);
   }, [feedback]);
   const [pending, setPending] = useState(false);
@@ -106,7 +106,6 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
   const track = useSetAtom(trackIndustryPoiAtom);
   const selectedTarget = useAtomValue(targetedPOIAtom);
   const driveOwned = useAtomValue(transitDriveOwnedAtom);
-  const [navigation, setNavigation] = useState<string | null>(null);
   const content = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const dialog = content.current?.closest(".panel");
@@ -127,8 +126,12 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
     return () => window.removeEventListener("keydown", cycleFocus);
   }, []);
   const navigate = (poi: POIDef) => {
-    if (track(poi)) onClose();
-    else setNavigation("Wait for transit to finish before changing destination.");
+    if (track(poi)) {
+      if (selectedTarget?.id !== poi.id) onClose();
+      else setFeedback(null);
+    } else {
+      setFeedback({ text: "Finish transit before changing your target.", error: true });
+    }
   };
   const submit: Submit = (op, success) => {
     if (pendingRef.current) return;
@@ -139,7 +142,11 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
       if (outcome.status === "pending") return;
       pendingRef.current = false;
       setPending(false);
-      setFeedback({ text: outcome.status === "rejected" ? industryRejection(outcome) : success, error: outcome.status === "rejected" });
+      if (outcome.status === "rejected") setFeedback({
+        text: industryRejection(outcome, op.type === "depot.transfer" ? op : undefined),
+        error: true,
+      });
+      else if (success) setFeedback({ text: success, error: false });
       playAudio(outcome.status === "accepted" ? "click.hard" : "ui.reject");
     });
   };
@@ -147,8 +154,13 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
     select(id);
     setView("storage");
     setFeedback(null);
-    setNavigation(null);
   };
+  const poi = depot && depotPoi(depot);
+  const depotTracked = !!poi && selectedTarget?.id === poi.id;
+  const operationFeedback = <div className="industry__feedback">
+    <div role="status">{pending ? "Waiting for confirmation…" : !feedback?.error && feedback?.text}</div>
+    <div role="alert">{feedback?.error && feedback.text}</div>
+  </div>;
 
   return <Panel title="Industry" width={875} fixedHeight noBodyPadding onClose={onClose}>
     <div className="industry" ref={content} aria-busy={pending}>
@@ -170,34 +182,36 @@ export default function IndustryPanel({ initialDepotId, initialName, build, onCl
         </nav>
 
         <section className="industry__detail" aria-label={depot?.name ?? "Build depot"}>
-          <div className="industry__feedback" role={feedback?.error || navigation ? "alert" : "status"}>
-            {pending ? "Waiting for confirmation…" : feedback?.text ?? navigation}
-          </div>
-          {depot ? <>
+          {depot && poi && <>
             <header className="industry__depot-head">
               <div>
                 <h3>{depot.name}</h3>
                 <div className="industry__access" data-industry-access={inRange ? "available" : "remote"}>
                   <Radio size={13} aria-hidden />
-                  {inRange ? "Local access" : `Access within ${formatDistance(INDUSTRY_TUNING.interactRangeKm)}`}
+                  {inRange ? "In range" : `Fly within ${formatDistance(INDUSTRY_TUNING.interactRangeKm)} to use this depot`}
                   {Number.isFinite(distanceKm) && <span>{formatDistance(distanceKm)} away</span>}
                 </div>
               </div>
-              {(!inRange || selectedTarget?.id !== depotPoi(depot).id) && <Action action="track-depot" onClick={() => navigate(depotPoi(depot))}>
-                <Crosshair size={14} aria-hidden /> Track depot
-              </Action>}
+              <Action action="track-depot" onClick={() => navigate(poi)}>
+                <Crosshair size={14} aria-hidden /> {depotTracked ? "Untrack depot" : "Track depot"}
+              </Action>
             </header>
             <div className="industry__tabs" aria-label="Depot controls">
               {([["storage", "Storage"], ["fabrication", "Fabrication"], ["drones", "Drones"]] as const).map(([id, label]) =>
-                <button key={id} type="button" data-industry-tab={id} aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>
+                <button key={id} type="button" data-industry-tab={id} aria-pressed={view === id} onClick={() => {
+                  setView(id);
+                  setFeedback(null);
+                }}>{label}</button>
               )}
             </div>
-            <div className="industry__content" key={`${depot.id}:${view}`}>
-              {view === "storage" && <DepotStorage depot={depot} disabled={!inRange || pending} submit={submit} />}
+          </>}
+          {depot && view === "storage" ? <DepotStorage key={depot.id} depot={depot} disabled={!inRange || pending} submit={submit} feedback={operationFeedback} />
+            : <>{depot ? <div className="industry__content" key={`${depot.id}:${view}`}>
               {view === "fabrication" && <Fabrication depot={depot} droneCount={drones.filter(drone => drone.homeId === depot.id).length} disabled={!inRange || pending} submit={submit} />}
               {view === "drones" && <DepotDrones depot={depot} depots={depots} drones={drones} disabled={!inRange || pending} submit={submit} onFabricate={() => setView("fabrication")} />}
-            </div>
-          </> : <BuildDepot count={depots.length} initialName={initialName} position={position} pending={pending} canTransit={driveOwned} submit={submit} onAim={onAim} navigate={navigate} />}
+            </div> : <BuildDepot count={depots.length} initialName={initialName ?? nextDepotName(depots)} position={position} pending={pending} canTransit={driveOwned} trackedId={selectedTarget?.id} submit={submit} onAim={onAim} navigate={navigate} />}
+              {operationFeedback}
+            </>}
         </section>
       </div>
     </div>
@@ -211,13 +225,13 @@ function Action({ children, onClick, disabled, primary, action, label }: {
     data-industry-action={action} aria-label={label} disabled={disabled} onClick={onClick}>{children}</button>;
 }
 
-function BuildDepot({ count, initialName, position, pending, canTransit, submit, onAim, navigate }: {
-  count: number; initialName?: string; position: Coordinates | null; pending: boolean; canTransit: boolean;
+function BuildDepot({ count, initialName, position, pending, canTransit, trackedId, submit, onAim, navigate }: {
+  count: number; initialName: string; position: Coordinates | null; pending: boolean; canTransit: boolean; trackedId?: string;
   submit: Submit; onAim: (name: string) => void; navigate: (poi: POIDef) => void;
 }) {
   const { items } = useAtomValue(cargoAtom);
   const kits = useAtomValue(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0;
-  const [name, setName] = useState(initialName ?? `Depot ${count + 1}`);
+  const [name, setName] = useState(initialName);
   const recipe = kitDef?.recipe ?? {};
   const ready = !!kitDef && kits < (kitDef.stackMax ?? Infinity) && canAfford(recipe, items);
   const sources = INDUSTRY_SOURCES.map((source, i) => ({ source, poi: industrySourcePois[i], km: distance(position, source) }))
@@ -225,7 +239,7 @@ function BuildDepot({ count, initialName, position, pending, canTransit, submit,
 
   return <div className="industry__content industry__build">
     <h3>Build a depot</h3>
-    <p>Share storage and fabricate equipment. A depot near a hydrate prospect can extract its own feedstock.</p>
+    <p>Store supplies and build equipment at a depot. Drones can collect hydrates or deliver supplies.</p>
     <div className="industry__build-steps">
       <section>
         <h4>1. Fabricate a depot kit</h4>
@@ -239,16 +253,16 @@ function BuildDepot({ count, initialName, position, pending, canTransit, submit,
       </section>
       <section>
         <h4>2. Choose a location</h4>
-        <p>Build within prospect range to run extraction drones. A relay can receive stock anywhere along the route.</p>
+        <p>Build within reach of a site below to collect hydrates with drones. A refinery turns them into propellant. Depots farther away can still send and receive deliveries.</p>
         <div className="industry__sources">
           {sources.map(({ source, poi, km }) => <div className="industry__line" key={source.id}>
-            <span><MapPin size={14} aria-hidden /> {source.name}<small>{Number.isFinite(km) ? `${formatDistance(km)} away` : "Position unavailable"} · {formatDistance(source.rangeKm)} extraction range
+            <span><MapPin size={14} aria-hidden /> {source.name}<small>{Number.isFinite(km) ? `${formatDistance(km)} away` : "Position unavailable"} · Build within {formatDistance(source.rangeKm)}
               {position && canExtractAt(position, source.id) && <strong> · In range</strong>}
             </small></span>
-            <Action action={`track-${source.id}`} onClick={() => navigate(poi)}>Track</Action>
+            <Action action={`track-${source.id}`} onClick={() => navigate(poi)}>{trackedId === poi.id ? "Untrack" : "Track"}</Action>
           </div>)}
         </div>
-        {!canTransit && <small>Track marks the bearing. Add a Transit Drive for long trips.</small>}
+        {!canTransit && <small>Track shows the direction in flight. Add a Transit Drive for long trips.</small>}
       </section>
       <section>
         <h4>3. Deploy the depot</h4>
@@ -264,7 +278,7 @@ function BuildDepot({ count, initialName, position, pending, canTransit, submit,
 
 type DepotControls = { depot: DepotRecord; disabled: boolean; submit: Submit };
 
-function DepotStorage({ depot, disabled, submit }: DepotControls) {
+function DepotStorage({ depot, disabled, submit, feedback }: DepotControls & { feedback: ReactNode }) {
   const cargo = useAtomValue(cargoAtom).items;
   const cargoRoom = useAtomValue(cargoRemainingUnitsAtom);
   const { ordinaryKg, tankKg, processing } = useAtomValue(shipResourcesHudAtom);
@@ -290,30 +304,37 @@ function DepotStorage({ depot, disabled, submit }: DepotControls) {
   const n = Number(count);
   const validAmount = Number.isSafeInteger(n) && n > 0;
   const transfer = (direction: "deposit" | "withdraw", amount: number) =>
-    submit({ type: "depot.transfer", depotId: depot.id, direction, kind: selected.kind, itemId: selected.kind === "fuel" ? "fuel" : selected.id, amount },
-      `${direction === "deposit" ? "Deposited" : "Withdrawn"} ${quantity(amount)} ${selected.kind === "fuel" ? "kg" : stockName(selected.id)}.`);
+    submit({ type: "depot.transfer", depotId: depot.id, direction, kind: selected.kind, itemId: selected.kind === "fuel" ? "fuel" : selected.id, amount });
   const nearby = INDUSTRY_SOURCES.find(source => canExtractAt(depot, source.id));
-  return <>
-    <div className="industry__capacity">
-      <span><Fuel size={14} aria-hidden /> {quantity(storage.fuelKg)} / {quantity(INDUSTRY_TUNING.fuelCapacityKg)} kg</span>
-      <span><Box size={14} aria-hidden /> {quantity(holdUsed)} / {quantity(INDUSTRY_TUNING.cargoCapacity)} units</span>
+  const fuelTankFull = INDUSTRY_TUNING.fuelCapacityKg - storage.fuelKg < INDUSTRY_TUNING.refineKgPerHydrate;
+  return <div className="industry__storage">
+    <div className="industry__content">
+      <div className="industry__capacity">
+        <span><Fuel size={14} aria-hidden /> Fuel {quantity(storage.fuelKg)} / {quantity(INDUSTRY_TUNING.fuelCapacityKg)} kg</span>
+        <span><Box size={14} aria-hidden /> Cargo {quantity(holdUsed)} / {quantity(INDUSTRY_TUNING.cargoCapacity)} units</span>
+      </div>
+      <p className="industry__operation">
+        {depot.refinery
+          ? (storage.items.hydrates ?? 0) < 1 ? "Refinery waiting for hydrates." : fuelTankFull ? "Refinery waiting for room in the fuel tank." : "Refinery turning hydrates into propellant."
+          : nearby ? `${nearby.name} is in range. Build a drone to collect hydrates.` : "Bring supplies by ship or set up a drone delivery."}
+      </p>
+      <div className="industry__manifest" role="group" aria-label="Select an item to transfer">
+        <div className="industry__manifest-head" aria-hidden="true"><span>Item</span><span>Ship</span><span>Depot</span></div>
+        {rows.map(row => <button key={`${row.kind}:${row.id}`} type="button" className="industry__manifest-row" data-industry-stock={row.id}
+          aria-pressed={selected === row} onClick={() => { select(`${row.kind}:${row.id}`); if (row.kind === "consumable") setCount("1"); }}>
+          <span>{row.kind === "fuel" ? <Fuel size={14} aria-hidden /> : row.kind === "cargo" ? <ResourceGlyph id={row.id} /> : <Box size={14} aria-hidden />}{stockName(row.id)}</span>
+          <span aria-label={`${quantity(row.ship)} aboard`}>{quantity(row.ship)}</span>
+          <span aria-label={`${quantity(row.depot)} at depot`}>{quantity(row.depot)}</span>
+        </button>)}
+      </div>
+      {selected.kind === "fuel" && (pendingKg > 0 || shipReq.reservedKg > 0) &&
+        <small>Fuel reserved for flight or processing reduces how much you can move.</small>}
     </div>
-    <p className="industry__operation">
-      {depot.refinery
-        ? (storage.items.hydrates ?? 0) < 1 ? "Refinery waiting for hydrates." : INDUSTRY_TUNING.fuelCapacityKg - storage.fuelKg < INDUSTRY_TUNING.refineKgPerHydrate ? "Refinery paused. Withdraw or ship propellant." : "Refinery converting hydrates to propellant."
-        : nearby ? `${nearby.name} in range. Fabricate refinery and drone to start production.` : "Relay depot. Stock by hand or set as a haul destination."}
-    </p>
-    <div className="industry__manifest" role="group" aria-label="Select stock to transfer">
-      <div className="industry__manifest-head" aria-hidden="true"><span>Stock</span><span>Aboard</span><span>Depot</span></div>
-      {rows.map(row => <button key={`${row.kind}:${row.id}`} type="button" className="industry__manifest-row" data-industry-stock={row.id}
-        aria-pressed={selected === row} onClick={() => { select(`${row.kind}:${row.id}`); if (row.kind === "consumable") setCount("1"); }}>
-        <span>{row.kind === "fuel" ? <Fuel size={14} aria-hidden /> : row.kind === "cargo" ? <ResourceGlyph id={row.id} /> : <Box size={14} aria-hidden />}{stockName(row.id)}</span>
-        <span aria-label={`${quantity(row.ship)} aboard`}>{quantity(row.ship)}</span>
-        <span aria-label={`${quantity(row.depot)} at depot`}>{quantity(row.depot)}</span>
-      </button>)}
-    </div>
+    {feedback}
     <div className="industry__transfer">
-      <label>Amount ({selected.kind === "fuel" ? "kg" : "units"})<input type="number" data-industry-amount value={count} min={1} step={1} onChange={e => setCount(e.target.value)} /></label>
+      <label><span>{stockName(selected.id)} ({selected.kind === "fuel" ? "kg" : "units"})</span>
+        <input type="number" data-industry-amount value={count} min={1} step={1} onChange={e => setCount(e.target.value)} />
+      </label>
       <div className="industry__transfer-group">
         <Action action="withdraw" disabled={disabled || !validAmount || n > maxOut} onClick={() => transfer("withdraw", n)}><ArrowDownLeft size={14} aria-hidden /> Withdraw</Action>
         <Action action="withdraw-max" label={`Withdraw up to ${quantity(maxOut)}`} disabled={disabled || maxOut <= 0} onClick={() => transfer("withdraw", maxOut)}>Max {quantity(maxOut)}</Action>
@@ -323,9 +344,7 @@ function DepotStorage({ depot, disabled, submit }: DepotControls) {
         <Action action="deposit-max" label={`Deposit up to ${quantity(maxIn)}`} disabled={disabled || maxIn <= 0} onClick={() => transfer("deposit", maxIn)}>Max {quantity(maxIn)}</Action>
       </div>
     </div>
-    {selected.kind === "fuel" && (pendingKg > 0 || shipReq.reservedKg > 0) &&
-      <small>Processing batches and reserved flight fuel reduce the amount you can move.</small>}
-  </>;
+  </div>;
 }
 
 function Fabrication({ depot, droneCount, disabled, submit }: DepotControls & { droneCount: number }) {
@@ -352,18 +371,18 @@ function Fabrication({ depot, droneCount, disabled, submit }: DepotControls & { 
   </>;
 }
 
-const DRONE_STATUS: Record<string, string> = {
-  unassigned: "Awaiting assignment",
+const DRONE_STATUS: Record<DroneStatus, string> = {
+  unassigned: "Choose a job to get started",
   paused: "Stopped at depot",
-  needs_fuel: "Low fuel. Deposit propellant or lower the reserve.",
-  source_out_of_range: "Prospect out of range. Select a closer prospect.",
-  destination_full: "Destination at stock limit. Withdraw stock or raise the stop level.",
-  no_cargo: "No matching stock. Supply the depot or edit the filter.",
-  route_out_of_range: "Route too long. Choose a nearer depot.",
-  extracting: "Extracting hydrates",
+  needs_fuel: "Add propellant to this depot or lower the fuel reserve.",
+  source_out_of_range: "This hydrate site is out of reach. Edit the job to collect from a nearby site or deliver supplies.",
+  destination_full: "The receiving depot has no room for this delivery.",
+  no_cargo: "Nothing to deliver. Add a listed item to this depot.",
+  route_out_of_range: "The drone can't reach this destination. Edit the job to choose another.",
+  extracting: "Collecting hydrates",
   delivering: "Delivering cargo",
   returning: "Returning to depot",
-  unload_blocked: "Home storage full. Withdraw cargo to unload.",
+  unload_blocked: "Make room at this depot so the drone can unload.",
   departing: "Departing depot",
 };
 
@@ -373,7 +392,7 @@ function DepotDrones({ depot, depots, drones, disabled, submit, onFabricate }: D
   const homeDrones = drones.filter(drone => drone.homeId === depot.id);
   if (!homeDrones.length) return <div className="industry__empty">
     <Truck size={22} aria-hidden />
-    <div><h4>No drones at this depot</h4><p>Fabricate a drone to extract hydrates or deliver stock.</p></div>
+    <div><h4>No drones at this depot</h4><p>Build a drone to collect hydrates or deliver supplies.</p></div>
     <Action onClick={onFabricate}>View fabrication</Action>
   </div>;
   return <div className="industry__fleet">{homeDrones.map((drone, i) => <DroneControl
@@ -384,41 +403,76 @@ function DepotDrones({ depot, depots, drones, disabled, submit, onFabricate }: D
 
 const defaultReserve = (kind: DroneJob["kind"]): number => kind === "haul" ? 10 : 0;
 
+function droneStatus(drone: DroneRecord, depot: DepotRecord, destination?: DepotRecord): string {
+  const { job, status } = drone;
+  if (!job) return DRONE_STATUS[status];
+  if (status === "needs_fuel") {
+    const target = job.kind === "extract"
+      ? INDUSTRY_SOURCES.find(source => source.id === job.targetId)
+      : destination;
+    const route = target && estimateDroneRoute(depot, target);
+    if (route) {
+      const shortKg = Math.ceil(job.reserveKg + route.roundTripFuelKg - depot.storage.fuelKg);
+      if (shortKg > 0) return `Add ${quantity(shortKg)} kg of propellant to this depot or lower the fuel reserve.`;
+    }
+  }
+  if (status === "no_cargo" && job.kind === "extract") return "The site is short on hydrates. The drone will try again as more become available.";
+  if (status === "no_cargo" && job.priorities.length === 1 && job.priorities[0] === propellantId) {
+    return "No spare fuel to deliver. Add propellant or lower the fuel reserve.";
+  }
+  if (status === "destination_full" && job.kind === "extract") {
+    if (job.stopAt < INDUSTRY_TUNING.cargoCapacity && (depot.storage.items.hydrates ?? 0) >= job.stopAt) {
+      return `Hydrate limit reached (${quantity(job.stopAt)} units). Withdraw hydrates or edit the job to change the limit.`;
+    }
+    return "Depot cargo hold is full. Withdraw cargo to collect more hydrates.";
+  }
+  if (status === "destination_full" && destination) {
+    const holdFull = storageUnits(destination.storage) >= INDUSTRY_TUNING.cargoCapacity;
+    const tankFull = destination.storage.fuelKg >= INDUSTRY_TUNING.fuelCapacityKg;
+    if (job.priorities.every(id => id === propellantId ? tankFull : holdFull)) {
+      return "The receiving depot is full. Withdraw supplies there to free up space.";
+    }
+    return "The receiving depot has reached your delivery limit. Withdraw supplies there or edit the limit.";
+  }
+  return DRONE_STATUS[status];
+}
+
 function DroneControl({ index, drone, depot, depots, disabled, submit }: DepotControls & { index: number; drone: DroneRecord; depots: DepotRecord[] }) {
   const job = drone.job;
-  const sources = INDUSTRY_SOURCES.map(s => ({ ...s, km: distance(depot, s), limit: s.rangeKm, reachable: canExtractAt(depot, s.id) }))
-    .sort((a, b) => a.km - b.km);
-  const destinations = depots.filter(d => d.id !== depot.id).map(d => ({ ...d, km: distance(depot, d), limit: INDUSTRY_TUNING.maxRouteKm, reachable: distance(depot, d) <= INDUSTRY_TUNING.maxRouteKm }));
+  const routeChoices = (targets: readonly (Coordinates & { id: string; name: string })[]) => targets.flatMap(target => {
+    const estimate = estimateDroneRoute(depot, target);
+    return estimate ? [{ ...target, estimate }] : [];
+  });
+  const sources = routeChoices(INDUSTRY_SOURCES.filter(source => canExtractAt(depot, source.id)));
   const [editing, setEditing] = useState(!job);
-  const [kind, setKind] = useState<DroneJob["kind"]>(job?.kind ?? (sources.some(s => s.reachable) ? "extract" : "haul"));
-  const [targetId, setTarget] = useState(job?.targetId ?? "");
+  const [draftKind, setKind] = useState<DroneJob["kind"]>(job?.kind ?? (sources.length ? "extract" : "haul"));
+  const kind = sources.length ? draftKind : "haul";
+  const [sourceId, setSource] = useState(job?.kind === "extract" ? job.targetId : "");
+  const [destinationId, setDestination] = useState(job?.kind === "haul" ? job.targetId : "");
   const [priorities, setPriorities] = useState(job?.kind === "haul" ? job.priorities : [propellantId]);
   const [reserve, setReserve] = useState(String(job?.reserveKg ?? defaultReserve(kind)));
-  const [stopAt, setStopAt] = useState(String(job?.stopAt ?? 100));
+  const [hydrateLimit, setHydrateLimit] = useState(job?.kind === "extract" && job.stopAt < INDUSTRY_TUNING.cargoCapacity ? String(job.stopAt) : "");
+  const [deliveryLimit, setDeliveryLimit] = useState(String(job?.kind === "haul" ? job.stopAt : 100));
   const [filter, setFilter] = useState("");
-  const options = kind === "extract" ? sources : destinations;
-  const chosen = options.find(option => option.id === targetId) ?? options[0];
-  const estimate = editing && chosen?.reachable ? estimateDroneRoute(depot, chosen) : null;
+  const options = kind === "extract" ? sources : editing ? routeChoices(depots.filter(d => d.id !== depot.id)) : [];
+  const targetId = kind === "extract" ? sourceId : destinationId;
+  const chosen = targetId ? options.find(option => option.id === targetId) : options[0];
+  const estimate = chosen?.estimate;
   const activeTrip = drone.phase !== "idle";
   const editable = !disabled && !activeTrip;
   const validReserve = reserve.trim() !== "" && Number.isFinite(Number(reserve)) && Number(reserve) >= 0 && Number(reserve) <= INDUSTRY_TUNING.fuelCapacityKg;
-  const maxStop = Math.max(INDUSTRY_TUNING.cargoCapacity, INDUSTRY_TUNING.fuelCapacityKg);
-  const validStop = Number.isSafeInteger(Number(stopAt)) && Number(stopAt) > 0 && Number(stopAt) <= maxStop;
-  const jobs = job?.kind === "extract" ? sources : destinations;
-  const jobTarget = jobs.find(target => target.id === job?.targetId);
+  const stopAt = kind === "extract" ? (hydrateLimit === "" ? INDUSTRY_TUNING.cargoCapacity : Number(hydrateLimit)) : Number(deliveryLimit);
+  const validStop = Number.isSafeInteger(stopAt) && stopAt > 0 && stopAt <= INDUSTRY_TUNING.cargoCapacity;
+  const destination = depots.find(target => target.id === job?.targetId);
+  const jobTarget = job?.kind === "extract" ? INDUSTRY_SOURCES.find(source => source.id === job.targetId) : destination;
   const targetName = jobTarget?.name ?? "Destination unavailable";
-  const blockedRoute = jobTarget && drone.status === "needs_fuel" ? estimateDroneRoute(depot, jobTarget) : null;
-  const neededKg = job && blockedRoute ? job.reserveKg + blockedRoute.roundTripFuelKg : null;
-  const currentStatus = neededKg !== null
-    ? `Waiting for fuel. Deposit ${Math.ceil(Math.max(0, neededKg - depot.storage.fuelKg))} kg at home, or lower the reserve.`
-    : job?.kind === "extract" && drone.status === "no_cargo"
-      ? "Prospect depleted. Extraction resumes as the deposit replenishes."
-      : DRONE_STATUS[drone.status];
+  const canResume = job && !job.enabled && (job.kind === "extract"
+    ? sources.some(source => source.id === job.targetId)
+    : !!(destination && estimateDroneRoute(depot, destination)));
   const payload = [
     ...(drone.cargo.fuelKg > 0 ? [`${quantity(drone.cargo.fuelKg)} kg propellant`] : []),
     ...Object.entries(drone.cargo.items).map(([id, n]) => `${quantity(n)} ${stockName(id)}`),
   ];
-  const defaultPriorities = kind === "extract" ? ["hydrates"] : priorities;
   const send = (next: DroneJob, message: string) => submit({ type: "drone.configure", droneId: drone.id, job: next }, message);
   const move = (index: number, offset: number) => {
     const reordered = priorities.slice();
@@ -430,13 +484,16 @@ function DroneControl({ index, drone, depot, depots, disabled, submit }: DepotCo
     <header className="industry__drone-head">
       <div>
         <h4><Truck size={16} aria-hidden /> Drone {index}</h4>
-        <p data-industry-drone-status={drone.status}>{currentStatus}</p>
+        <p data-industry-drone-status={drone.status}>{droneStatus(drone, depot, destination)}</p>
       </div>
       {activeTrip && <span className="industry__time">{formatDuration(Math.ceil(drone.remainingS))}</span>}
     </header>
     {job && <div className="industry__route">
-      <span>{job.kind === "extract" ? "Extract" : "Haul"} <strong>{job.priorities.map(stockName).join(", ")}</strong></span>
+      <span>{job.kind === "extract" ? "Collect" : "Deliver"} <strong>{job.priorities.map(stockName).join(", ")}</strong></span>
       <span>{job.kind === "extract" ? "from" : "to"} <strong>{targetName}</strong></span>
+      <span>{job.kind === "extract"
+        ? job.stopAt < INDUSTRY_TUNING.cargoCapacity ? `Hydrate limit: ${quantity(job.stopAt)} units` : "Uses all free cargo space"
+        : `Delivery limit: ${quantity(job.stopAt)} per item (units or kg)`}</span>
       {!job.enabled && activeTrip && <span>Stopping after this trip</span>}
       {payload.length > 0 && <span>Carrying {payload.join(", ")}</span>}
       {drone.fuelKg > 0 && <span>{quantity(drone.fuelKg)} kg reserved for return</span>}
@@ -447,7 +504,7 @@ function DroneControl({ index, drone, depot, depots, disabled, submit }: DepotCo
         onClick={() => send({ ...job, enabled: false }, activeTrip ? "Stop requested." : "Drone stopped.")}>
         {activeTrip ? "Stop after trip" : "Stop job"}
       </Action>}
-      {!job.enabled && <Action action="resume-job" primary disabled={!editable} onClick={() => send({ ...job, enabled: true }, "Job resumed.")}>Resume job</Action>}
+      {!job.enabled && <Action action="resume-job" primary disabled={!editable || !canResume} onClick={() => send({ ...job, enabled: true }, "Job resumed.")}>Resume job</Action>}
     </div>}
     {editing && <div className="industry__job">
       <div className="industry__form-row">
@@ -455,27 +512,30 @@ function DroneControl({ index, drone, depot, depots, disabled, submit }: DepotCo
           const next = e.target.value === "extract" ? "extract" : "haul";
           if (!job && Number(reserve) === defaultReserve(kind)) setReserve(String(defaultReserve(next)));
           setKind(next);
-          setTarget("");
         }}>
-          <option value="extract">Extract hydrates</option><option value="haul">Haul stock</option>
+          {sources.length > 0 && <option value="extract">Collect hydrates</option>}<option value="haul">Deliver supplies</option>
         </select></label>
-        <label>{kind === "extract" ? "Prospect" : "Destination"}
-          <select data-industry-job-target value={chosen?.id ?? ""} disabled={!editable || !options.length} onChange={e => setTarget(e.target.value)}>
-            {!options.length && <option value="">Build another depot</option>}
+        <label>{kind === "extract" ? "Hydrate site" : "Receiving depot"}
+          <select data-industry-job-target value={chosen?.id ?? ""} disabled={!editable || !options.length} onChange={e => {
+            (kind === "extract" ? setSource : setDestination)(e.target.value);
+          }}>
+            {!chosen && <option value="" disabled>{options.length ? "Choose a destination" : "No reachable depot"}</option>}
             {options.map(option => <option key={option.id} value={option.id}>
-              {option.name} ({formatDistance(option.km)})
+              {option.name} ({formatDistance(option.estimate.pathKm)})
             </option>)}
           </select>
         </label>
       </div>
-      {kind === "haul" && <div className="industry__priority">
-        <label>Cargo filter
+      {sources.length === 0 && <p>No hydrate site is in range. This drone can deliver supplies to another depot.</p>}
+      {kind === "haul" && options.length === 0 && <p className="industry__warning">{depots.length === 1 ? "Build another depot to set up a delivery." : "No other depot is reachable from here."}</p>}
+      {kind === "haul" && options.length > 0 && <div className="industry__priority">
+        <label>Items to deliver
           <select data-industry-job-filter disabled={!editable} value={filter} onChange={e => {
             const value = e.target.value;
             if (value) setPriorities(items => [...items, value]);
             setFilter("");
           }}>
-            <option value="">Add a resource</option>
+            <option value="">Add an item</option>
             {[propellantId, ...Object.keys(MATERIAL_NAMES)].filter(id => !priorities.includes(id)).map(id =>
               <option key={id} value={id}>{stockName(id)}</option>
             )}
@@ -489,26 +549,33 @@ function DroneControl({ index, drone, depot, depots, disabled, submit }: DepotCo
             <button type="button" disabled={!editable} aria-label={`Remove ${stockName(id)}`} onClick={() => setPriorities(ids => ids.filter(item => item !== id))}>Remove</button>
           </li>)}
         </ol>
-        <small>Higher resources load first.</small>
+        <small>The drone tries the first item on the list before moving to the next.</small>
       </div>}
       <div className="industry__form-row">
-        <label>Home fuel reserve (kg)<input data-industry-job-reserve aria-describedby={`reserve-${drone.id}`} type="number" min={0} max={INDUSTRY_TUNING.fuelCapacityKg} value={reserve}
-          disabled={!editable} onChange={e => setReserve(e.target.value)} /><small id={`reserve-${drone.id}`}>Kept at home after funding the return trip.</small></label>
-        <label>Stop at stock level<input data-industry-job-stop aria-describedby={`stop-${drone.id}`} type="number" min={1} max={maxStop} value={stopAt}
-          disabled={!editable} onChange={e => setStopAt(e.target.value)} /><small id={`stop-${drone.id}`}>{kind === "extract" ? "Pause when home holds this many hydrates." : "Pause when each resource reaches this stock at the destination."}</small></label>
+        <label>Fuel to keep here (kg)<input data-industry-job-reserve aria-describedby={`reserve-${drone.id}`} type="number" min={0} max={INDUSTRY_TUNING.fuelCapacityKg} value={reserve}
+          disabled={!editable} onChange={e => setReserve(e.target.value)} /><small id={`reserve-${drone.id}`}>Stays at this depot after the drone takes fuel for the round trip.</small></label>
+        <div className="industry__job-limit">
+          <label>{kind === "extract" ? "Hydrate limit (optional)" : "Delivery limit per item"}
+            <input data-industry-job-stop aria-describedby={`stop-${drone.id}`} type="number" min={1} max={INDUSTRY_TUNING.cargoCapacity}
+              value={kind === "extract" ? hydrateLimit : deliveryLimit} placeholder={kind === "extract" ? "Use all free space" : undefined}
+              disabled={!editable} onChange={e => (kind === "extract" ? setHydrateLimit : setDeliveryLimit)(e.target.value)} />
+            <small id={`stop-${drone.id}`}>{kind === "extract"
+              ? "Sets the maximum number of hydrate units to keep at this depot."
+              : "Skip each item once the receiving depot holds this much of it (units or kg)."}</small>
+          </label>
+          {kind === "extract" && hydrateLimit !== "" && <Action action="clear-hydrate-limit" disabled={!editable} onClick={() => setHydrateLimit("")}>Use all free space</Action>}
+        </div>
       </div>
-      {chosen && !chosen.reachable && <p className="industry__warning">{kind === "extract" ? `Build within ${formatDistance(chosen.limit)} of this prospect to extract.` : `Choose a destination within ${formatDistance(chosen.limit)}.`}</p>}
       {estimate && <div className="industry__estimate">
         <span>{formatDuration(2 * estimate.legSeconds + (kind === "extract" ? INDUSTRY_TUNING.extractSeconds : INDUSTRY_TUNING.deliverySeconds))} round trip</span>
         <span>{quantity(estimate.roundTripFuelKg)} kg flight fuel</span>
         {validReserve && <span>{quantity(estimate.roundTripFuelKg + Number(reserve))} kg needed to depart</span>}
       </div>}
       {estimate && validReserve && estimate.roundTripFuelKg + Number(reserve) > depot.storage.fuelKg &&
-        <p className="industry__warning">Deposit ship propellant in Storage to start the first trip.</p>}
-      {chosen?.reachable && !estimate && <p className="industry__warning">No clear route to this destination. Choose a closer location.</p>}
-      <Action primary action="start-job" disabled={!editable || !chosen || !validReserve || !validStop || !defaultPriorities.length || !estimate}
+        <p className="industry__warning">Add propellant in Storage so the drone can depart.</p>}
+      <Action primary action="start-job" disabled={!editable || !chosen || !validReserve || !validStop || (kind === "haul" && !priorities.length)}
         onClick={() => {
-          if (chosen) send({ kind, targetId: chosen.id, priorities: defaultPriorities, reserveKg: Number(reserve), stopAt: Number(stopAt), enabled: true }, "Drone job assigned.");
+          if (chosen) send({ kind, targetId: chosen.id, priorities: kind === "extract" ? ["hydrates"] : priorities, reserveKg: Number(reserve), stopAt, enabled: true }, "Drone job saved.");
         }}>
         {job ? "Save and start" : "Start job"}
       </Action>

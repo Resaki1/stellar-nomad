@@ -878,6 +878,15 @@ async function industryBounds() {
   assert.equal(transfer("deposit", "fuel", "fuel", 4).reason, "materials", "never spends protected fuel or the braking reserve");
   assert.equal(JSON.stringify(save), before, "rejected transfers leave both stores intact");
 
+  assert.equal(T.cargoCapacity, 6000);
+  assert.equal(T.fuelCapacityKg, 3000);
+  const job = stopAt => ({ kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt, enabled: true });
+  save.world.industry.drones = [400, T.cargoCapacity].map(stopAt =>
+    ({ id: `extract-${stopAt}`, homeId: depot.id, job: job(stopAt), phase: "idle", status: "departing" }));
+  const savedIndustry = parseSaveData(save).world.industry;
+  assert.deepEqual(savedIndustry.depots[0].storage, depot.storage, "expanded cargo capacity and separate fuel tank survive load");
+  assert.deepEqual(savedIndustry.drones.map(d => d.job), [job(400), job(6000)], "saved hydrate limits survive load");
+
   const old = structuredClone(save);
   old.schemaVersion = 6;
   delete old.world.industry;
@@ -887,6 +896,40 @@ async function industryBounds() {
   assert.deepEqual(migrated.players[HOST_ID].cargo, p.cargo);
   assert.deepEqual(migrated.players[HOST_ID].propellant, p.propellant);
   assert.equal(migrated.players[HOST_ID].depositedFuelKg, 0);
+  return { pass: true };
+}
+
+async function industryProspects() {
+  const [{ getIndustrySource, DEPOT_KIT_ID }, { prospectWorksite }, { parseSaveData }, { LocalAuthority }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/prospects.ts"), S("save/validate.ts"), S("sim/world/authority.ts"),
+  ]);
+  const source = getIndustrySource("earth_hydrates");
+  const [x, y, z] = source.positionKm;
+  const site = [x, y + 0.085, z];
+  const data = defaults.defaultSaveData(HOST_ID);
+  const depot = { id: "old-depot", by: HOST_ID, name: "Works", frameId: source.frameId,
+    positionKm: [x, y + 0.15, z], quaternion: [0, 0, 0, 1] };
+  data.world.industry.depots = [depot];
+  const saved = parseSaveData(data);
+  assert.equal(saved.world.industry.depots.length, 1);
+  assert.deepEqual(prospectWorksite(source, saved.world.industry.depots).positionKm, site,
+    "a saved Earth depot at the legacy 65 m boundary keeps the worksite in place");
+
+  cc.updateEphemerisPositions(eph.jdFromUnixMs(data.world.simEpochMs));
+  const p = data.players[HOST_ID];
+  p.ship = poseAt(source, 0.8);
+  p.modules.consumables[DEPOT_KIT_ID] = 1;
+  data.world.industry.depots = [];
+  const authority = new LocalAuthority({ getWorld: () => data.world, getPlayer: () => p, getPlayers: () => [p], markDirty: () => {} });
+  const { name, frameId, quaternion } = depot;
+  const place = positionKm => authority.submit({ type: "depot.place", opId: `prospect-${++opN}`, name, frameId, quaternion, positionKm }, HOST_ID);
+  // From the rendered centre this candidate rounds just above 65 m. The legacy offset
+  // calculation rounds below 65 m, so allowing it would move the prospect.
+  const nearThreshold = [x + 0.00000003, y + 0.02, z];
+  assert.notDeepEqual(prospectWorksite(source, [{ ...depot, positionKm: nearThreshold }]).positionKm, site);
+  assert.equal(place(nearThreshold).reason, "near_rock");
+  assert.equal(place(source.positionKm).status, "accepted", "the source marker remains clear for a depot");
+  assert.deepEqual(prospectWorksite(source, data.world.industry.depots).positionKm, site);
   return { pass: true };
 }
 
@@ -962,6 +1005,19 @@ async function industryDroneBounds() {
   assert.equal(world.sources[source.id].available, 1);
   step(ship().remainingS);
   assert.equal(world.depots.reduce((n, d) => n + d.storage.items.hydrates, 0), T.sourceCapacity);
+
+  // A configured hydrate limit can stop a drone even when cargo space remains.
+  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 100, { hydrates: 400, carbon: T.cargoCapacity - 402 })],
+    drones: [drone("extract", home.id, { ...config, stopAt: 400 })] };
+  step();
+  assert.equal(ship().status, "destination_full");
+  world.drones = [{ ...ship(), job: { ...config, enabled: true } }];
+  step();
+  assert.equal(ship().phase, "outbound");
+  step(2 * ship().returnS + T.extractSeconds);
+  assert.equal(world.depots[0].storage.items.hydrates, 402, "the full-space setting fills room left by other cargo");
+  step();
+  assert.equal(ship().status, "destination_full");
   return { pass: true };
 }
 
@@ -1060,6 +1116,7 @@ const SCENARIOS = {
   industry,
   industrySaveFailure,
   industryBounds,
+  industryProspects,
   industryDroneBounds,
   industryWire,
   suspendedHost,

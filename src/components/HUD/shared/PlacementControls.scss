@@ -1,0 +1,24 @@
+@use '../../../styles' as s;
+
+.placement-keys {
+  display: inline-flex;
+  align-items: center;
+
+  &__escape-fallback { display: none; }
+}
+
+.target-card:has(.target-card__input:focus) .placement-keys {
+  &__back { display: none; }
+  &__escape-fallback { display: inline-flex; }
+}
+
+.placement-mouse-hint {
+  @include s.t-xs;
+  color: s.$text-secondary;
+}
+
+.industry-placement > .placement-mouse-hint { justify-self: end; }
+
+@media (pointer: coarse) {
+  .placement-keys, .placement-mouse-hint, [data-placement-control] .sn-key { display: none; }
+}

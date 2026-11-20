@@ -448,6 +448,15 @@ const POIProjector = memo(function POIProjector() {
       focusedPoiDef = null;
     }
 
+    if (poiBuffer.ignoreGazeUntilLookAway !== null) {
+      if (focusedPoiId === poiBuffer.ignoreGazeUntilLookAway) {
+        focusedPoiId = null;
+        focusedPoiDef = null;
+      } else {
+        poiBuffer.ignoreGazeUntilLookAway = null;
+      }
+    }
+
     if (driveOwned && !transitBusy) {
       const currentTarget = store.get(targetedPOIAtom);
       const dtClamped = Math.min(delta, 0.1);

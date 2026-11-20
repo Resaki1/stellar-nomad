@@ -2,7 +2,7 @@
  * Operation reducers: validate every affected slice, then return a commit that only assigns.
  * Nothing is written before validation finishes, so a rejection changes nothing.
  */
-import { depotBlocksPose } from "@/sim/industry/placement";
+import { industryObstruction } from "@/sim/industry/placement";
 import { reduceIndustry } from "@/sim/industry/reducer";
 import { ALL_ITEM_SLOTS, MATERIAL_NAMES, REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, getSiteDef, getTrialDef } from "@/data/content";
 import { hullRepairable } from "@/sim/ship/hull";
@@ -630,7 +630,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (op.mode !== "active" && op.mode !== "starter") return reject("invalid");
       if (!p.isDead) return reject("not_dead");
       const health = persistentShipConfig(p, completedSet(world)).maxHealth;
-      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose => depotBlocksPose(world.industry.depots, pose));
+      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose => industryObstruction(world.industry.depots, pose));
       const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
       // Recovery: full hull, empty ordinary tank, exactly the protected allowance, a cold ship.
       const protectedKg = getEffectiveTuning().recoveryAllowanceKg;
@@ -663,7 +663,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (points.some((x) => x.id === id)) return reject("already_done");
       if (points.length >= MAX_POINTS) return reject("no_capacity");
       const kits = Math.floor(p.modules.consumables[REPLICATION_KIT_ID] ?? 0);
-      const check = checkPlacement(op, p.ship, kits, asteroids, _placement, pose => depotBlocksPose(world.industry.depots, pose));
+      const check = checkPlacement(op, p.ship, kits, asteroids, _placement, pose => industryObstruction(world.industry.depots, pose));
       if (check.refusal) return reject(check.refusal);
       const pos = op.positionKm, q = op.quaternion;
       const point = {

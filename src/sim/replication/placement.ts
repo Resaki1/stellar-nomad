@@ -56,7 +56,7 @@ export function poseDistanceKm(fa: string, pa: readonly number[], fb: string, pb
   return Math.hypot(_a.x - _b.x, _a.y - _b.y, _a.z - _b.z);
 }
 
-type OccupiedPoseCheck = (pose: { frameId: string; positionKm: Vec3Tuple }) => boolean;
+type OccupiedPoseCheck = (pose: { frameId: string; positionKm: Vec3Tuple }) => "near_depot" | "near_rock" | null;
 
 export interface PlacementCheck {
   refusal: PlacementRefusal | null;
@@ -97,7 +97,8 @@ export function checkPlacement(
   out.rockClearM = _probe.rockClearM;
   if (_probe.bodyAltKm < T.minBodyAltitudeKm) return ((out.refusal = "near_body"), out);
   if (_probe.rockClearM < T.pointRockClearanceM) return ((out.refusal = "near_rock"), out);
-  if (occupied?.({ frameId, positionKm: p as Vec3Tuple })) return ((out.refusal = "near_depot"), out);
+  const obstruction = occupied?.({ frameId, positionKm: p as Vec3Tuple });
+  if (obstruction) return ((out.refusal = obstruction), out);
   const e = emergencePose({ positionKm: p as Vec3Tuple, quaternion: pose.quaternion as QuatTuple }, 0);
   if (occupied?.({ frameId, positionKm: e.positionKm })) return ((out.refusal = "emergence_blocked"), out);
   if (!emergenceClear(frameId, e.positionKm, destroyed)) out.refusal = "emergence_blocked";

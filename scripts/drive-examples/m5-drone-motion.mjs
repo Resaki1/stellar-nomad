@@ -1,0 +1,197 @@
+// DRIVE_PROFILE=m5motion DRIVE_CDP_PORT=9350 pnpm drive -- --perf --no-isolate run:scripts/drive-examples/m5-drone-motion.mjs
+import assert from "node:assert/strict";
+
+const J = JSON.stringify;
+const G = "__test.gameplay";
+const I = G + ".industry";
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const offset = (a, b) => a.map((x, i) => x + b[i]);
+const distance = (a, b) => Math.hypot(...a.map((x, i) => x - b[i]));
+const tuples = points => Array.from({ length: points.length / 3 }, (_, i) => points.slice(i * 3, i * 3 + 3));
+
+async function waitFor(sample, timeout = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const value = await sample();
+    if (value) return value;
+    await sleep(45);
+  }
+  return null;
+}
+
+async function warp(page, frameId, positionKm, quaternion = [0, 0, 0, 1]) {
+  await page.evaluate(`${G}.rep.teleportRel(${J(frameId)}, ${J(positionKm)}, ${J(quaternion)})`);
+  await page.frames(8);
+}
+
+async function verifyProspect(page, source, site) {
+  const ev = page.evaluate;
+  const rendered = () => ev(`${I}.prospect(${J(source.id)})`);
+  const contact = () => ev("__phys.impacts.log()");
+  const observer = offset(site, [0, 0, 0.055]);
+
+  // Still inside the 30 km extraction range.
+  await warp(page, source.frameId, offset(site, [0, 0, 5]));
+  const far = await waitFor(rendered);
+  assert.ok(far, "prospect group exists in the local render scene");
+  assert.equal(far.visible, false);
+  assert.equal(far.colliders.length, 0, "the extraction radius carries no collision hull");
+
+  await warp(page, source.frameId, observer, [0, 1, 0, 0]);
+  const near = await waitFor(async () => {
+    const geometry = await rendered();
+    return geometry?.visible && geometry.colliders.every(c => c.pose) && geometry.colliders.length === 3 && geometry;
+  });
+  assert.ok(near, "all three rendered rocks share the near-field solver");
+  const poseErrorM = Math.max(...near.parts.map((mesh, i) => {
+    const collider = near.colliders[i];
+    const colliderM = collider.pose.relKm.map((x, k) => (x - observer[k]) * 1000);
+    const drawM = offset(near.positionM, mesh.positionM);
+    const dot = mesh.quaternion.reduce((sum, q, k) => sum + q * collider.pose.quat[k], 0);
+    assert.ok(Math.abs(dot) > 0.99999, "Rapier and renderer use the same mesh rotation");
+    const engineVertices = tuples(collider.points);
+    const meshVertices = tuples(mesh.points);
+    assert.ok(engineVertices.length >= 20, "rock uses a convex hull");
+    const vertexErrorM = Math.max(...engineVertices.map(p => Math.min(...meshVertices.map(m => distance(p, m)))));
+    assert.ok(vertexErrorM < 0.001, "convex hull vertices match the scaled rock mesh");
+    return distance(colliderM, drawM);
+  }));
+  assert.ok(poseErrorM < 0.02, `prospect's meshes align with Rapier to 2 cm, measured ${poseErrorM} m`);
+
+  // Validate both placement authorities where the visible rocks are the obstruction.
+  const place = { name: "Blocked trial", frameId: source.frameId, positionKm: site, quaternion: [0, 0, 0, 1] };
+  await warp(page, source.frameId, offset(site, [0, 0, 0.8]));
+  const depotBlocked = await ev(`${G}.settled(${J({ type: "depot.place", ...place })})`);
+  assert.equal(depotBlocked.reason, "near_rock");
+  const pointBlocked = await ev(`${G}.settled(${J({ type: "replication.place", ...place })})`);
+  assert.equal(pointBlocked.reason, "near_rock");
+
+  await warp(page, source.frameId, observer, [0, 1, 0, 0]);
+  await ev("__phys.impacts.clear(); __phys.m5.coast([0,0,-0.035])");
+  const hit = await waitFor(async () => (await contact()).find(i => near.colliders.some(c => c.id === i.colliderId)));
+  assert.ok(hit?.damageHp > 0, "35 m/s approach hits the rendered prospect");
+  const ship = await ev(`${G}.rep.ship()`);
+  assert.ok(ship.posKm[2] - site[2] > 0.003, "the approaching ship does not tunnel through the rock");
+  await warp(page, source.frameId, offset(site, [0, 0, 5]));
+  assert.equal((await rendered()).colliders.length, 0, "prospect collision unloads outside the near field");
+  return { poseErrorM, impactMps: hit.dvMps };
+}
+
+async function verifyFlight(page, source, home, droneId, tuning) {
+  const ev = page.evaluate;
+  const record = () => ev(`${G}.world().industry.drones.find(d => d.id === ${J(droneId)})`);
+  const rendered = () => ev(`${I}.drone(${J(droneId)})`);
+  const paused = on => ev(`${G}.res.setLoadingPause(${on})`);
+  await warp(page, source.frameId, offset(home.positionKm, [0, 0, -0.8]));
+  const parked = await rendered();
+  assert.ok(parked, `drone group exists in the local render scene (authority: ${J(await record())})`);
+  assert.ok(parked.visible);
+  const tracking = ev(`${I}.trackDrone(${J(droneId)}, 22500)`, 30000);
+  await page.frames(2);
+  const configured = await ev(`${G}.settled(${J({
+    type: "drone.configure", droneId, job: {
+      kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: tuning.extractUnits, enabled: true,
+    },
+  })})`);
+  assert.equal(configured.status, "accepted", J(configured));
+
+  const working = await waitFor(async () => {
+    const current = await record();
+    return current.phase === "working" && (await rendered()).beam > 0.7 && current;
+  }, 12000);
+  assert.ok(working, "committed extraction turns on the beam");
+  let frozen;
+  try {
+    await paused(true);
+    await page.frames(2);
+    frozen = await rendered();
+    const countdown = await record();
+    await sleep(1300);
+    await page.frames(2);
+    const during = await rendered();
+    assert.ok(distance(during.positionM, frozen.positionM) < 0.01, "extraction hover freezes while the sim is paused");
+    assert.equal(during.beam, frozen.beam, "beam fade/scan freezes too");
+    assert.equal((await record()).remainingS, countdown.remainingS, "the authority pauses with the renderer");
+  } finally {
+    await paused(false);
+  }
+
+  const samples = await tracking;
+  assert.ok(samples.length > 100, "sampled live WebGPU frames over the whole trip");
+  assert.ok(samples.every(s => s.visible));
+  const firstOutbound = samples.findIndex(s => s.phase === "outbound");
+  const firstWork = samples.findIndex(s => s.phase === "working");
+  const firstReturn = samples.findIndex(s => s.phase === "returning");
+  const lastIdle = samples.findIndex((s, i) => s.phase === "idle" && i > firstReturn);
+  assert.ok(firstOutbound >= 0 && firstOutbound < firstWork && firstWork < firstReturn && firstReturn < lastIdle);
+  const work = samples.slice(firstWork, firstReturn);
+  assert.ok(samples.slice(0, firstWork).every(s => s.beam === 0), "beam waits for committed extraction");
+  assert.ok(work.some(s => s.beam > 0.1 && s.beam < 0.55) && work.some(s => s.beam > 0.7),
+    "beam ramps up through intermediate opacity");
+  const finalBeam = samples.findLastIndex(s => s.beam > 0);
+  assert.ok(finalBeam > firstWork && finalBeam < lastIdle && samples[finalBeam].beam < 0.1,
+    "beam fades at the end of the work phase");
+  const rows = samples.slice(firstOutbound + 1, lastIdle + 1).map((next, i) => {
+    const prev = samples[firstOutbound + i];
+    const dt = next.atMs - prev.atMs;
+    return { ...next, dt, speed: distance(next.positionM, prev.positionM) * 1000 / dt };
+  }).filter(r => r.dt >= 4 && r.dt <= 150);
+  const fromX = parked.positionM[0], toX = work.at(-1).positionM[0];
+  const progress = s => (s.positionM[0] - fromX) / (toX - fromX);
+  const midLeg = rows.filter(s => s.phase === "outbound" && progress(s) > 0.15 && progress(s) < 0.85);
+  const speedAt = (group, min, max) => {
+    const bucket = group.filter(s => progress(s) >= min && progress(s) <= max).map(r => r.speed).sort((a, b) => a - b);
+    assert.ok(bucket.length > 1, "rendered enough frames in the speed measurement window");
+    return bucket[Math.floor(bucket.length / 2)];
+  };
+  const outbound = rows.filter(s => s.atMs < samples[firstWork].atMs);
+  const approach = rows.filter(s => s.atMs < samples[firstReturn].atMs);
+  const returning = rows.filter(s => s.phase === "returning");
+  const departureMps = speedAt(outbound, 0, 0.025);
+  const settledMps = speedAt(approach, 0.975, 0.9999);
+  const returningMps = speedAt(returning, 0.975, 0.9999);
+  const midMps = speedAt(midLeg, 0.25, 0.75);
+  assert.ok(midMps > 100 && departureMps < midMps * 0.6 && settledMps < midMps * 0.6 && returningMps < midMps * 0.6,
+    `drone visibly accelerates and brakes (start ${departureMps}, cruise ${midMps}, finish ${settledMps}, return ${returningMps})`);
+  let stoppedMs = 0, longestStopMs = 0;
+  for (const row of midLeg) {
+    stoppedMs = row.speed < 2 ? stoppedMs + row.dt : 0;
+    longestStopMs = Math.max(longestStopMs, stoppedMs);
+  }
+  assert.ok(longestStopMs < 150, `flight paused for ${longestStopMs} ms at a countdown boundary`);
+  const peakMps = Math.max(...rows.map(r => r.speed));
+  assert.ok(peakMps < midMps * 3, `no sudden position catch-up at phase or countdown boundaries: ${peakMps}`);
+  assert.ok(distance((await rendered()).positionM, parked.positionM) < 0.02, "return docks at the same lane's starting position");
+  const world = await ev(`${G}.world().industry`);
+  assert.equal(world.depots[0].storage.items.hydrates, tuning.extractUnits);
+  assert.deepEqual(world.drones[0].cargo.items, {}, "the return delivered cargo exactly once");
+  return { frames: samples.length, departureMps, midMps, settledMps, returningMps, peakMps, longestStopMs };
+}
+
+export default async function m5DroneMotion(page) {
+  const ev = page.evaluate;
+  const { id: old, schemaVersion } = await ev("__test.save.info()");
+  const { sources, tuning } = await ev(`${I}.catalog()`);
+  const source = sources.find(s => s.id === "earth_hydrates");
+  const site = offset(source.positionKm, [0, 0.085, 0]);
+  const me = await ev(`${G}.localId()`);
+  const home = { id: "home", name: "Hydrate Works", by: me, frameId: source.frameId, positionKm: offset(site, [1.35, 0, 0]),
+    quaternion: [0, 0, 0, 1], storage: { fuelKg: 20 } };
+  const drone = { id: "extractor", homeId: home.id, phase: "idle", status: "unassigned" };
+  const state = { schemaVersion, world: { industry: { depots: [home], drones: [drone] } },
+    players: { [me]: { modules: { consumables: { consumable_depot_kit: 1, consumable_replication_kit: 1 } } } } };
+  const fixture = await ev(`${G}.fixtures.create("m5-motion", ${J(state)})`);
+  try {
+    await ev(`${G}.fixtures.activate(${J(fixture)})`);
+    await page.reload();
+    assert.equal(await ev("__test.save.info().id"), fixture);
+    const prospect = await verifyProspect(page, source, site);
+    console.log(J({ stage: "prospect contact", ...prospect }));
+    const flight = await verifyFlight(page, source, home, drone.id, tuning);
+    return { pass: true, prospect, flight };
+  } finally {
+    await ev(`${G}.fixtures.activate(${J(old)})`);
+    await page.reload();
+    assert.ok(await ev(`${G}.fixtures.remove(${J(fixture)})`));
+  }
+}

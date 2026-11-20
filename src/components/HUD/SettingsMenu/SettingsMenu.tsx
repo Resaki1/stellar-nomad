@@ -26,7 +26,9 @@ import { resetAllDevTuning } from "@/store/devTuning";
 import { setCursorNeeded } from "@/input/pointerLock";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
+import { depotPlacementAtom } from "@/store/industryHud";
 import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
+import { placementModeAtom } from "@/store/replication";
 import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
 import { newOpId, runOperation } from "@/store/operations";
@@ -912,6 +914,7 @@ function DevControls({
 
 
 const SettingsMenu = ({ children }: { children: ReactNode }) => {
+  const store = useStore();
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
@@ -1080,7 +1083,8 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
         }
         return;
       }
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+          store.get(placementModeAtom) || store.get(depotPlacementAtom)) return;
 
       const key = e.key.toLowerCase();
       if (!e.repeat && keybindsRef.current.toggleSettings.includes(key)) {
@@ -1105,7 +1109,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", cancelEscape);
     };
-  }, [activeSubMenu, resumeFlight, setIsOpen]);
+  }, [activeSubMenu, resumeFlight, setIsOpen, store]);
 
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)

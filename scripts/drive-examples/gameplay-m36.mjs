@@ -767,7 +767,7 @@ export async function live36Gates(d, ctx) {
   T.flyOutS = (t() - t0) / 1000;
   out.flyOut = { km: r3(dist(s0.posKm, s1.posKm)), pass: dist(s0.posKm, s1.posKm) > 0.3 };
 
-  // Place: the kit's hotbar key opens the preview with the name selected, type, Enter places (D16).
+  // Place: open the preview with its hotbar key, focus and type a name, then press Enter (D16).
   t0 = t();
   const kitSlot = (await player()).modules.hotbar.indexOf(KIT);
   out.kitSlot = kitSlot;
@@ -779,6 +779,7 @@ export async function live36Gates(d, ctx) {
     await ctx.wait(300);
     pv = await ev(`${R}.preview()`);
   }
+  await ev('document.querySelector(".target-card__input")?.focus()');
   out.inputFocused = await ev(`document.activeElement?.classList.contains("target-card__input") ?? false`);
   await d.type("Forward camp");
   await d.press("Enter");

@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
 import { memo, useEffect, useMemo, useRef } from "react";
 import {
-  BoxGeometry, BufferGeometry, Color, CylinderGeometry, DodecahedronGeometry, Group, IcosahedronGeometry, Mesh,
+  BoxGeometry, BufferGeometry, Color, CylinderGeometry, DodecahedronGeometry, Euler, Group, IcosahedronGeometry, Mesh,
   MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
 } from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
@@ -14,18 +14,22 @@ import type { ShipPose } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
 import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
+import { PROSPECT_PARTS, PROSPECT_RADIUS_M, prospectWorksite } from "@/sim/industry/prospects";
 import type { DepotRecord, DroneRecord, IndustryState } from "@/sim/industry/types";
 import { DEPOT_HULL } from "@/sim/physics/depotShape";
 import { nearField, type NearFieldColliderId } from "@/sim/physics/nearField";
+import type { ColliderShape } from "@/sim/physics/types";
 import { isSimPaused } from "@/sim/simPause";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { industryAtom } from "@/store/industry";
 import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
+import { DroneMotion, smoothProgress } from "./droneMotion";
 
 const DEPOT_RENDER_KM = 14;
 const DEPOT_COLLISION_KM = 3;
 const DRONE_RENDER_KM = 3;
 const SOURCE_RENDER_KM = 3;
+const BEAM_FADE_S = 0.6;
 const BOX = new BoxGeometry();
 const TANK_BODY = new CylinderGeometry(1, 1, 1, 16).rotateX(Math.PI * 0.5);
 const TANK_CAP = new CylinderGeometry(0.52, 1, 1, 16).rotateX(Math.PI * 0.5);
@@ -44,7 +48,19 @@ const AMBER = new MeshBasicMaterial({ color: new Color(1.8, 0.66, 0.08), toneMap
 const BEAM = new MeshBasicMaterial({ color: new Color(0.05, 0.7, 1.7), transparent: true, opacity: 0.75, depthWrite: false, toneMapped: false });
 const PREVIEW_GOOD = new MeshBasicMaterial({ color: new Color("#43dcb6"), transparent: true, opacity: 0.32, depthWrite: false });
 const PREVIEW_BAD = new MeshBasicMaterial({ color: new Color("#f17e5a"), transparent: true, opacity: 0.32, depthWrite: false });
-for (const material of [LIGHT, AMBER, BEAM]) registerPreExposedEmissive(material);
+for (const material of [LIGHT, AMBER]) registerPreExposedEmissive(material);
+
+const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
+  const vertices = SOURCE_GEOMETRY.getAttribute("position");
+  const points = new Float32Array(vertices.count * 3);
+  for (let i = 0; i < vertices.count; i++) {
+    points[3 * i] = vertices.getX(i) * scale[0];
+    points[3 * i + 1] = vertices.getY(i) * scale[1];
+    points[3 * i + 2] = vertices.getZ(i) * scale[2];
+  }
+  const shape: ColliderShape = { kind: "hull", points };
+  return { position, orientation: new Quaternion().setFromEuler(new Euler(...rotation)), shape };
+});
 
 const materials = { core: SHELL, spine: FRAME, front: FRAME, tank: TANK, outrigger: FRAME, radiator: RADIATOR };
 const _from = new Vector3(), _to = new Vector3();
@@ -52,17 +68,10 @@ const _via = new Vector3();
 const _origin = new Vector3(), _droneOffset = new Vector3(), _direction = new Vector3(), _offset = new Vector3();
 const _orientation = new Quaternion();
 const _forward = new Vector3(0, 0, 1);
+const _up = new Vector3(0, 1, 0);
 
 type Position = Pick<ShipPose, "frameId" | "positionKm">;
-
-function prospectWorksite(source: IndustrySource, depots: readonly DepotRecord[]): IndustrySource {
-  const [x, y, z] = source.positionKm;
-  // A prospect is a field location. Show its local survey pocket clear of any depot erected at the marker.
-  let offsetKm = 0.085;
-  while (depots.some(d => d.frameId === source.frameId &&
-    Math.hypot(d.positionKm[0] - x, d.positionKm[1] - y - offsetKm, d.positionKm[2] - z) < 0.065)) offsetKm += 0.145;
-  return { ...source, positionKm: [x, y + offsetKm, z] };
-}
+type Destination = Position & Partial<Pick<ShipPose, "quaternion">>;
 
 /** Resolve into the view-relative metre frame, keeping the small relative differences in f64. */
 function scenePosition(pose: Position, worldOrigin: Readonly<Vector3>, into: Vector3): Vector3 {
@@ -233,101 +242,144 @@ function withinColliderRange(pose: Position, ship: NonNullable<ReturnType<typeof
   return (p[0] - s.x + _origin.x) ** 2 + (p[1] - s.y + _origin.y) ** 2 + (p[2] - s.z + _origin.z) ** 2 <= km ** 2;
 }
 
-const Prospect = memo(function Prospect({ source }: { source: (typeof INDUSTRY_SOURCES)[number] }) {
+const Prospect = memo(function Prospect({ source }: { source: IndustrySource }) {
   const ref = useRef<Group>(null!);
+  const colliders = useRef<NearFieldColliderId[]>([]);
   const worldOrigin = useWorldOrigin();
+  const [x, y, z] = source.positionKm;
+  useEffect(() => {
+    const handles = colliders.current;
+    return () => {
+      handles.forEach(id => nearField.removeCollider(id));
+      handles.length = 0;
+    };
+  }, [source.frameId, x, y, z]);
   useFrame(() => {
     const g = ref.current;
     if (!g) return;
     scenePosition(source, worldOrigin.worldOriginKm, g.position);
     g.visible = g.position.lengthSq() <= (SOURCE_RENDER_KM * 1000) ** 2;
+    const ship = getLocalPlayerShip();
+    const handles = colliders.current;
+    const range = SOURCE_RENDER_KM * (handles.length ? 1.2 : 1);
+    if (!ship || !withinColliderRange(source, ship, range)) {
+      handles.forEach(id => nearField.removeCollider(id));
+      handles.length = 0;
+    } else if (handles.length === 0) {
+      for (const { position, orientation, shape } of PROSPECT_HULLS) {
+        _offset.set(x + position[0] / 1000, y + position[1] / 1000, z + position[2] / 1000);
+        handles.push(nearField.addCollider(shape, source.frameId, _offset, orientation, "prospect"));
+      }
+    }
   }, FRAME_PRIORITY_REMOTE_SHIPS);
   return <group ref={ref} name={`industrySource:${source.id}`} visible={false}>
-    <mesh geometry={SOURCE_GEOMETRY} material={PROSPECT} scale={[7, 4, 5]} />
-    <mesh geometry={SOURCE_GEOMETRY} material={RADIATOR} position={[3, 1, -1]} rotation={[0.2, 0.1, 0.6]} scale={[3.5, 2.8, 1.4]} />
-    <mesh geometry={SOURCE_GEOMETRY} material={PROSPECT} position={[-10, 3, 7]} rotation={[1, 0.7, 0.4]} scale={[2.8, 2.2, 2.1]} />
+    {PROSPECT_PARTS.map(({ position, rotation, scale, deposit }, i) => (
+      <mesh key={i} geometry={SOURCE_GEOMETRY} material={deposit ? RADIATOR : PROSPECT}
+        position={position} rotation={rotation} scale={scale} />
+    ))}
   </group>;
 });
 
-function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: DepotRecord; dest: Position | undefined; index: number }) {
+function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: DepotRecord; dest: Destination | undefined; index: number }) {
   const ship = useRef<Group>(null!);
-  const beam = useRef<Mesh>(null!);
-  const phase = useRef({ kind: drone.phase, remainingS: drone.remainingS, elapsedS: 0 });
+  const beam = useRef<Mesh<BoxGeometry, MeshBasicMaterial>>(null!);
+  const beamMaterial = useMemo(() => BEAM.clone(), []);
+  const motion = useMemo(() => new DroneMotion(), []);
+  const target = useRef<Destination | undefined>(undefined);
+  const drawn = useRef(false);
   const worldOrigin = useWorldOrigin();
   const lane = index % 2 === 0 ? 1 : -1;
+  useEffect(() => {
+    const unregister = registerPreExposedEmissive(beamMaterial);
+    return () => {
+      unregister();
+      beamMaterial.dispose();
+    };
+  }, [beamMaterial]);
+
   useFrame((_, delta) => {
     const g = ship.current;
     const ray = beam.current;
     if (!g || !ray) return;
     const w = worldOrigin.worldOriginKm;
-    const now = performance.now();
-    const drive = phase.current;
-    const flying = drone.phase === "outbound" || drone.phase === "returning";
-    const work = drone.phase === "working" && drone.status === "extracting" && dest;
-    if (drive.kind !== drone.phase || drive.remainingS !== drone.remainingS) {
-      drive.kind = drone.phase;
-      drive.remainingS = drone.remainingS;
-      drive.elapsedS = 0;
-    } else if (!isSimPaused()) {
-      drive.elapsedS = Math.min(1, drive.elapsedS + Math.min(delta, 0.15));
-    }
-    // Draw up to one second of the current leg. Arrival and work still require a committed phase change.
-    const progress = flying && drone.durationS > 0 ? 1 - Math.max(0, drive.remainingS - drive.elapsedS) / drone.durationS : 0;
+    const dt = isSimPaused() ? 0 : Math.min(delta, 0.15);
+    if (dt > 0 || !drawn.current) motion.advance(drone, dt);
+    if (motion.targetId === drone.job?.targetId && drone.phase !== "idle") target.current = dest;
 
     _orientation.fromArray(home.quaternion);
     _droneOffset.set(lane * 8, 10, -12).applyQuaternion(_orientation);
     scenePosition(home, w, _from).add(_droneOffset);
-    if (dest) scenePosition(dest, w, _to);
-    else _to.copy(_from);
-    if (drone.job?.kind === "extract") {
-      _to.x += lane * 7; _to.y += 11; _to.z += 9;
+    const timeS = motion.timeS;
+    const returnStartS = motion.legS + motion.workS;
+    const returning = timeS >= returnStartS;
+    const onTrip = target.current && motion.legS > 0 && timeS < returnStartS + motion.legS;
+    let strength = 0;
+
+    if (!onTrip || !target.current) {
+      g.position.copy(_from);
     } else {
-      _to.x += lane * 7; _to.y += 10; _to.z -= 13;
+      const destination = target.current;
+      if (motion.via) scenePosition(motion.via, w, _via);
+      scenePosition(destination, w, _to);
+      if (motion.extracting) {
+        // Approach from the near side of the rocks, keeping both drone lanes out of the hulls.
+        _direction.subVectors(motion.via ? _via : _from, _to).normalize();
+        _droneOffset.crossVectors(_up, _direction);
+        if (_droneOffset.lengthSq() < 1e-6) _droneOffset.set(1, 0, 0);
+        _to.addScaledVector(_direction, PROSPECT_RADIUS_M + 6)
+          .addScaledVector(_droneOffset.normalize(), lane * 5);
+      } else if (destination.quaternion) {
+        _orientation.fromArray(destination.quaternion);
+        _to.add(_droneOffset.set(lane * 7, 10, -13).applyQuaternion(_orientation));
+      }
+
+      if (timeS >= motion.legS && !returning) {
+        g.position.copy(_to);
+        if (motion.extracting) {
+          const workS = timeS - motion.legS;
+          strength = smoothProgress(workS / BEAM_FADE_S) * smoothProgress((motion.workS - workS) / BEAM_FADE_S);
+          g.position.y += Math.sin(workS * 2.5 + index) * 0.35 * strength;
+          scenePosition(destination, w, _to);
+          _to.x += Math.sin(workS / 0.84 + index) * 2 * strength;
+          _to.z += Math.cos(workS / 0.69 + index) * 1.5 * strength;
+          _direction.subVectors(_to, g.position).normalize();
+          _orientation.setFromUnitVectors(_forward, _direction);
+        }
+      } else {
+        let routeFraction = returning ? 1 - (timeS - returnStartS) / motion.legS : timeS / motion.legS;
+        if (motion.via) {
+          const fraction = motion.via.fraction;
+          if (routeFraction <= fraction) {
+            _to.copy(_via);
+            routeFraction /= fraction;
+          } else {
+            _from.copy(_via);
+            routeFraction = (routeFraction - fraction) / (1 - fraction);
+          }
+        }
+        g.position.lerpVectors(_from, _to, smoothProgress(routeFraction));
+        _direction.subVectors(_to, _from).multiplyScalar(returning ? -1 : 1);
+        if (_direction.lengthSq() > 1) _orientation.setFromUnitVectors(_forward, _direction.normalize());
+      }
     }
 
-    if (!dest || drone.phase === "idle") {
-      g.position.copy(_from);
+    if (!drawn.current) {
       g.quaternion.copy(_orientation);
-    } else if (drone.phase === "working") {
-      g.position.copy(_to);
-      if (work) {
-        g.position.x += Math.sin(now / 1000 + index) * 0.6;
-        g.position.y += Math.cos(now / 1300 + index) * 0.35;
-      }
+      drawn.current = true;
     } else {
-      const returning = drone.phase === "returning";
-      let legProgress = returning ? 1 - progress : progress;
-      if (drone.via && drone.via.fraction > 0 && drone.via.fraction < 1) {
-        scenePosition(drone.via, w, _via);
-        const fraction = drone.via.fraction;
-        if (legProgress <= fraction) {
-          _to.copy(_via);
-          legProgress /= fraction;
-        } else {
-          _from.copy(_via);
-          legProgress = (legProgress - fraction) / (1 - fraction);
-        }
-      }
-      // Hold direction and pass the same waypoints. Ease departures and arrivals on distant segments
-      // so the drive transition is visible within the close rendering range.
-      if (_from.distanceToSquared(_to) > 20_000 ** 2) {
-        legProgress = legProgress < 0.5 ? 4 * legProgress ** 3 : 1 - 4 * (1 - legProgress) ** 3;
-      }
-      g.position.lerpVectors(_from, _to, legProgress);
-      _direction.subVectors(_to, _from).multiplyScalar(returning ? -1 : 1);
-      if (_direction.lengthSq() > 1) g.quaternion.setFromUnitVectors(_forward, _direction.normalize());
+      g.quaternion.slerp(_orientation, -Math.expm1(-dt / 0.15));
     }
+
     g.visible = g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
-    ray.visible = !!work && g.visible;
-    if (work && g.visible) {
-      scenePosition(dest, w, _to);
-      _to.x += Math.sin(now / 840 + index) * 2;
-      _to.z += Math.cos(now / 690 + index) * 1.5;
-      _direction.subVectors(_to, g.position);
-      ray.position.copy(g.position).addScaledVector(_direction, 0.5);
-      ray.scale.set(0.16, 0.16, _direction.length());
+    ray.visible = g.visible && strength > 0.001;
+    if (ray.visible) {
+      _droneOffset.copy(_forward).multiplyScalar(2.25).applyQuaternion(g.quaternion).add(g.position);
+      _direction.subVectors(_to, _droneOffset);
+      ray.position.copy(_droneOffset).addScaledVector(_direction, 0.5);
+      const width = 0.16 * Math.sqrt(strength);
+      ray.scale.set(width, width, _direction.length());
       ray.quaternion.setFromUnitVectors(_forward, _direction.normalize());
-      g.quaternion.copy(ray.quaternion);
+      ray.material.opacity = BEAM.opacity * strength;
     }
   }, FRAME_PRIORITY_REMOTE_SHIPS);
   return <>
@@ -338,7 +390,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       <mesh geometry={BOX} material={LIGHT} position={[0, 0.12, 2.13]} scale={[0.85, 0.22, 0.24]} />
       <mesh geometry={BOX} material={AMBER} position={[0, 0, -2.13]} scale={[0.95, 0.7, 0.25]} />
     </group>
-    <mesh ref={beam} geometry={BOX} material={BEAM} name={`droneBeam:${drone.id}`} visible={false} />
+    <mesh ref={beam} geometry={BOX} material={beamMaterial} name={`droneBeam:${drone.id}`} visible={false} />
   </>;
 }
 
