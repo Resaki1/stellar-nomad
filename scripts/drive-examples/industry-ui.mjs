@@ -159,7 +159,7 @@ export default async function industryUi(d) {
       await closeIndustry();
     }
 
-    for (const [id, n] of Object.entries({ fe_ni_metal: 600, silicates: 420, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
+    for (const [id, n] of Object.entries({ fe_ni_metal: 850, silicates: 600, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
       await ev(`__dev.grantCargo(${J(id)}, ${n})`);
     }
     const place = async (name, xOffset, { near = true, checkCancel = false, region = source } = {}) => {
@@ -304,7 +304,8 @@ export default async function industryUi(d) {
     await select(`${hauler} [data-industry-job-kind]`, "haul");
     assert.equal(await enabled(`${hauler} [data-industry-job-target]`), false);
     assert.equal(await enabled(`${hauler} ${action("start-job")}`), false);
-    assert.match(await text(hauler), /Build another depot within 30(?:\.0)? km in this region/);
+    assert.match(await text(hauler), /Local routes can span up to 30(?:\.0)? km/);
+    assert.match(await text(hauler), /farther within the same asteroid field/);
     const limit = `${extractor} [data-industry-job-stop]`;
     assert.deepEqual(await optionIds(`${extractor} [data-industry-job-target]`), [source.id]);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
@@ -346,6 +347,10 @@ export default async function industryUi(d) {
     await select(`${relayWork} [data-industry-job-kind]`, "haul");
     assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-target]`), ["", works.id]);
     await closeIndustry();
+    const farBelt = await place("Far Belt Depot", 2002, { near: false });
+    await closeIndustry();
+    const clearSpace = await place("Open Space Depot", -3500, { near: false });
+    await closeIndustry();
     const outpost = await place("Lunar Outpost", 42, { near: false, region: lunar });
     await closeIndustry();
     await teleport(source.frameId, relay.placementPosition);
@@ -380,7 +385,10 @@ export default async function industryUi(d) {
     const cargoOrder = () => ev(`[...document.querySelectorAll(${J(`${hauler} ol li span`)})].map(el => el.textContent)`);
     await select(`${hauler} [data-industry-job-kind]`, "haul");
     assert.equal(await value(haulTarget), "");
-    assert.deepEqual(await optionIds(haulTarget), ["", relay.id], `Cross-body destination ${outpost.name} is unavailable`);
+    assert.deepEqual(await optionIds(haulTarget), ["", relay.id, farBelt.id, clearSpace.id], `Cross-body destination ${outpost.name} is unavailable`);
+    const blockedOption = `${haulTarget} option[value=${J(clearSpace.id)}]`;
+    assert.match(await text(blockedOption), /Outside local range or a shared field/);
+    assert.equal(await enabled(blockedOption), false, "Long routes outside a shared field cannot be selected");
     assert.equal(await value(haulLimit), "");
     assert.deepEqual(await cargoOrder(), []);
     assert.equal(await enabled(haulStart), false);
@@ -395,6 +403,25 @@ export default async function industryUi(d) {
     }
     await ev(`document.querySelector(${J(haulItems)}).scrollIntoView({ block: "center" })`);
     captures.push(await capture("empty-delivery"));
+    await select(haulTarget, farBelt.id);
+    const fieldQuote = await text(`${hauler} .industry__estimate`);
+    assert.match(fieldQuote, /\d+(?:h|m) (?:\d+(?:m|s) )?round trip/);
+    assert.match(fieldQuote, new RegExp(`kg flight fuel \\(${catalog.tuning.droneTankKg} kg tank\\)`));
+    assert.match(fieldQuote, /kg needed at depot/);
+    await select(haulItems, "propellant");
+    const loadedFieldQuote = await text(`${hauler} .industry__estimate`);
+    assert.match(loadedFieldQuote, /kg propellant planned cargo/);
+    assert.doesNotMatch(await text(hauler), /Add propellant in Storage so the drone can depart/, "A funded plan has no fuel warning");
+    const launchKg = quote => Number(quote.match(/([\d.]+) kg flight fuel/)[1]);
+    assert.ok(launchKg(loadedFieldQuote) > launchKg(fieldQuote), "The payload increases the funded flight fuel");
+    await ev(`document.querySelector(${J(`${hauler} .industry__estimate`)}).scrollIntoView({ block: "center" })`);
+    captures.push(await capture("across-field"));
+    const initialReserve = await value(haulReserve);
+    await fill(haulReserve, catalog.tuning.fuelCapacityKg);
+    assert.equal(await enabled(haulStart), false, "A full depot reserve leaves no room for flight fuel");
+    assert.match(await text(hauler), /Lower the reserve to fit the flight fuel/);
+    await fill(haulReserve, initialReserve);
+    await click(`${hauler} [aria-label="Remove Propellant"]`);
     await select(haulTarget, relay.id);
     assert.equal(await enabled(haulStart), false, "Destination alone is insufficient");
     await select(haulItems, "propellant");

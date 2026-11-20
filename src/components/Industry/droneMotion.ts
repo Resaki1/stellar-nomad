@@ -1,5 +1,5 @@
 import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
-import type { DroneRecord } from "@/sim/industry/types";
+import type { DroneFlightProfile, DroneRecord } from "@/sim/industry/types";
 
 // The authority advances in one-second steps. Keep moving through an ordinary late
 // snapshot, then taper prediction to a stop if the feed has gone quiet.
@@ -27,6 +27,7 @@ export class DroneMotion {
   legS = 0;
   workS = 0;
   via: DroneRecord["via"] = null;
+  profile: DroneFlightProfile = "local";
   targetId: string | null = null;
   extracting = false;
 
@@ -52,6 +53,7 @@ export class DroneMotion {
       this.targetId = drone.job?.targetId ?? null;
       this.workS = this.extracting ? INDUSTRY_TUNING.extractSeconds : INDUSTRY_TUNING.deliverySeconds;
       this.via = drone.via;
+      this.profile = drone.flight?.profile ?? "local";
       this.timeS = this.filteredS = 0;
     }
 

@@ -1,7 +1,6 @@
 /**
- * Interactables (playtest-1 §2.2/§3.1, D12/B10): survey sites, wrecks and placed replication
- * points join the reticle's focus → act pattern. A small registry is ray-tested along the ship's
- * nose (never the camera: it lags), locked with the rock timing, and acted on with [G].
+ * Interactables are ray-tested along the ship's nose and acted on with [G].
+ * Sites and wrecks share the rock timing. Depots and recovery points lock in one second.
  */
 import { industryAtom } from "@/store/industry";
 import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
@@ -27,6 +26,7 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { cargoCapacityUnitsAtom, cargoUsedUnitsAtom } from "@/store/cargo";
 import { addToastAtom } from "@/store/toast";
 import { transitDriveBuffer } from "@/store/transit";
+import { isStructurePoi, STRUCTURE_FOCUS_TIME_S } from "@/store/poi";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -100,6 +100,26 @@ function pick(store: Store): InteractTarget | null {
   return best.t;
 }
 
+function pickUnobstructed(store: Store): InteractTarget | null {
+  const target = pick(store);
+  // A rock in front of the interactable keeps the rock's focus.
+  const rock = store.get(miningStateAtom).targetedAsteroid;
+  return target && rock && rock.distanceM / 1000 < target.distKm ? null : target;
+}
+
+export function isInteractFocusBlocked(store: Store): boolean {
+  return store.get(isDeadAtom) || store.get(miningStateAtom).isMining || transitDriveBuffer.phase !== "idle" ||
+    store.get(placementModeAtom) || !!store.get(depotPlacementAtom) || store.get(industryPanelOpenAtom);
+}
+
+/** Actions recheck the aim so a turn between focus ticks cannot use the old lock. */
+export function aimedStructure(store: Store, id: string): InteractTarget | null {
+  const focus = store.get(interactFocusAtom);
+  if (!isStructurePoi(id) || !focus.focused || focus.target?.id !== id || isInteractFocusBlocked(store)) return null;
+  const target = pickUnobstructed(store);
+  return target?.id === id ? target : null;
+}
+
 function clear(store: Store): void {
   interactControl.id = "";
   interactControl.lockS = 0;
@@ -116,13 +136,11 @@ export function tickInteractFocus(store: Store, dt: number): void {
   if (c.acc < TICK_S) return;
   const step = c.acc;
   c.acc = 0;
-  const mining = store.get(miningStateAtom);
-  if (store.get(isDeadAtom) || mining.isMining || transitDriveBuffer.phase !== "idle" || store.get(placementModeAtom) || store.get(depotPlacementAtom) || store.get(industryPanelOpenAtom)) return clear(store);
-  let t = pick(store);
-  // A rock in front of it keeps the rock's focus.
-  if (t && mining.targetedAsteroid && mining.targetedAsteroid.distanceM / 1000 < t.distKm) t = null;
+  if (isInteractFocusBlocked(store)) return clear(store);
+  const t = pickUnobstructed(store);
   if (!t) {
     if (!c.id) return;
+    if (isStructurePoi(c.id)) return clear(store);
     c.lostS += step;
     if (c.lostS <= LOCK_GRACE_S && !c.scanning) return;
     return clear(store);
@@ -134,7 +152,7 @@ export function tickInteractFocus(store: Store, dt: number): void {
     c.scanning = false;
     c.scanS = 0;
   } else c.lockS += step;
-  const need = store.get(effectiveTargetFocusTimeSAtom);
+  const need = isStructurePoi(t.id) ? STRUCTURE_FOCUS_TIME_S : store.get(effectiveTargetFocusTimeSAtom);
   const focused = c.lockS >= need;
   let scan = 0;
   if (c.scanning) {
@@ -199,12 +217,12 @@ export function interactFocused(store: Store): boolean {
     interactControl.scanS = 0;
     return true;
   }
-  if (t.kind === "depot" && t.inRange) {
+  if (t.kind === "depot" && aimedStructure(store, t.id)?.inRange) {
     store.set(industryRequestAtom, { depotId: t.refId });
     return true;
   }
   if (t.kind === "point") {
-    if (!t.inRange || store.get(playerReplicationAtom).activeId === t.refId) return false;
+    if (!aimedStructure(store, t.id)?.inRange || store.get(playerReplicationAtom).activeId === t.refId) return false;
     return store.set(activatePointAtom, t.refId).status === "accepted";
   }
   return false;

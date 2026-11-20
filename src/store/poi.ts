@@ -9,6 +9,13 @@ import type { FrameId } from "@/sim/frames";
 import type { TransitFieldArrival } from "@/sim/ship/transitDrive";
 import { atom } from "jotai";
 
+/** Placed structures use the same aim hold for interaction and navigation. */
+export const STRUCTURE_FOCUS_TIME_S = 1;
+
+export function isStructurePoi(id: string): boolean {
+  return id.startsWith("depot:") || id.startsWith("point:");
+}
+
 export type POIDef = {
   id: string;
   name: string;

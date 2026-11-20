@@ -370,6 +370,7 @@ export function createGameplayHarness(store: Store) {
           phase: r.phase, speedKmps: r.speedKmps, autopilot: r.autopilot, stopping: r.stopping, legIndex: r.legIndex, legCount: r.legCount,
           legBudgetKg: r.legBudgetKg, legSpentKg: r.legSpentKg, distKm: r.distKm, aimKm: [r.aimX, r.aimY, r.aimZ], totalKg: r.totalKg,
           viaBodyId: r.viaBodyId, ev: { ...r.ev }, target: r.target?.id ?? null, targeted: store.get(targetedPOIAtom)?.id ?? null,
+          gazeActive: poiBuffer.gazeActive, gazeProgress: poiBuffer.gazeProgress,
           aimVel: [transitInputs.aimVelX, transitInputs.aimVelY, transitInputs.aimVelZ],
         };
       },
@@ -678,7 +679,7 @@ export function createGameplayHarness(store: Store) {
       /** Replication point instances drawn last frame (the origin point draws none, D1). */
       drawn: () => replicationPointStats.drawn,
       /** Projected POI markers (id, name) the HUD shows now. */
-      pois: (prefix = "") => poiBuffer.pois.filter((p) => p.id.startsWith(prefix)).map((p) => ({ id: p.id, name: p.name, distanceKm: p.distanceKm })),
+      pois: (prefix = "") => poiBuffer.pois.filter((p) => p.id.startsWith(prefix)).map((p) => ({ id: p.id, name: p.name, distanceKm: p.distanceKm, focused: p.focused })),
       /** The death screen's recover action. */
       recover: (mode: "active" | "starter"): OperationOutcome => store.set(recoverAtom, mode),
       lastRecovery: () => store.get(lastRecoveryAtom),

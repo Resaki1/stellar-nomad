@@ -21,7 +21,7 @@ import { industryAtom } from "@/store/industry";
 import { depotPlacementAtom, industryPanelOpenAtom, industryRequestAtom } from "@/store/industryHud";
 import { isDeadAtom, wrecksAtom } from "@/store/death";
 import { settingsIsOpenAtom } from "@/store/store";
-import { interactControl, interactFocusAtom, interactFocused, siteHoldFull, type InteractFocus } from "@/store/interact";
+import { aimedStructure, interactControl, interactFocusAtom, interactFocused, siteHoldFull, type InteractFocus } from "@/store/interact";
 import { placementModeAtom, playerReplicationAtom, replicationPointsAtom } from "@/store/replication";
 import { KeyChip, ResourceIcon } from "../shared/Chips";
 import { startInspectAudio, stopInspectAudio } from "./inspectAudio";
@@ -288,7 +288,9 @@ function InteractRows({ focus }: { focus: InteractFocus }) {
       </div>
       <div className="target-card__row target-card__row--contents">
         <span className="target-card__muted">Respawn point</span>
-        <button type="button" className="target-card__rename" onClick={() => store.set(industryRequestAtom, { renamePointId: p.id })}>Rename</button>
+        <button type="button" className="target-card__rename" onClick={() => {
+          if (aimedStructure(store, t.id)) store.set(industryRequestAtom, { renamePointId: p.id });
+        }}>Rename</button>
       </div>
       <div className="target-card__row target-card__row--actions">
         {active ? <span className="target-card__tag"><CircleCheck size={12} aria-hidden /> Active</span>

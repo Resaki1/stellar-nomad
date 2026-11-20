@@ -1,7 +1,7 @@
 "use client";
 
 import { depotPoisAtom, industrySourcePois } from "@/store/industryHud";
-import { INTERACT_LOCK_KM } from "@/store/interact";
+import { INTERACT_LOCK_KM, isInteractFocusBlocked } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
@@ -10,7 +10,7 @@ import { useAtomValue, useStore } from "jotai";
 import { systemConfigAtom } from "@/store/system";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
-import { pilotPOIsAtom, poiBuffer, type POIDef, type ProjectedPOI } from "@/store/poi";
+import { isStructurePoi, pilotPOIsAtom, poiBuffer, STRUCTURE_FOCUS_TIME_S, type POIDef, type ProjectedPOI } from "@/store/poi";
 import { bookmarkPOIsAtom } from "@/store/discoveries";
 import { sitePOIsAtom } from "@/store/sites";
 import {
@@ -326,16 +326,16 @@ const POIProjector = memo(function POIProjector() {
   // A renamed station or recovery point keeps its current navigation lock and bearing.
   useEffect(() => {
     const target = store.get(targetedPOIAtom);
-    if (!target || !(target.id.startsWith("depot:") || target.id.startsWith("point:"))) return;
+    if (!target || !isStructurePoi(target.id)) return;
     const poi = pois.find(p => p.id === target.id);
     if (poi && poi.name !== target.name) store.set(targetedPOIAtom, { ...target, name: poi.name });
   }, [pois, store]);
 
   // Gaze tracking for POI targeting.
-  const gazeIdRef = { current: null as string | null };
-  const gazeTimeRef = { current: 0 };
+  const gazeIdRef = useRef<string | null>(null);
+  const gazeTimeRef = useRef(0);
   // Grace timer: how long the player has been looking away from the current target.
-  const untargetGraceRef = { current: 0 };
+  const untargetGraceRef = useRef(0);
 
   useFrame((_, delta) => {
     const projected: ProjectedPOI[] = [];
@@ -451,29 +451,23 @@ const POIProjector = memo(function POIProjector() {
     // at it (recovery emerges facing its point) must not replace the current one.
     // An interactable within lock range is a Target Card target, not a transit destination (§2.2).
     const interactable = !!focusedPoiDef && /^(site|wreck|point|depot):/.test(focusedPoiDef.id) && focusedDistKm <= INTERACT_LOCK_KM;
-    if (focusedPoiDef && (interactable || focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5)) {
+    const structureBlocked = focusedPoiDef && isStructurePoi(focusedPoiDef.id) && isInteractFocusBlocked(store);
+    const ignoringGaze = focusedPoiId !== null && focusedPoiId === poiBuffer.ignoreGazeUntilLookAway;
+    if (!ignoringGaze) poiBuffer.ignoreGazeUntilLookAway = null;
+    if (focusedPoiDef && (interactable || structureBlocked || ignoringGaze || focusedDistKm <= (focusedPoiDef.arrivalOffsetKm ?? 0) * 1.2 + 0.5)) {
       focusedPoiId = null;
       focusedPoiDef = null;
-    }
-
-    if (poiBuffer.ignoreGazeUntilLookAway !== null) {
-      if (focusedPoiId === poiBuffer.ignoreGazeUntilLookAway) {
-        focusedPoiId = null;
-        focusedPoiDef = null;
-      } else {
-        poiBuffer.ignoreGazeUntilLookAway = null;
-      }
     }
 
     if (driveOwned && !transitBusy) {
       const currentTarget = store.get(targetedPOIAtom);
       const dtClamped = Math.min(delta, 0.1);
 
-      const gazeNeedS = currentTarget && currentTarget.id === poiBuffer.pinnedId ? POI_PINNED_GAZE_TIME_S : POI_TARGET_GAZE_TIME_S;
+      const gazeNeedS = focusedPoiId && isStructurePoi(focusedPoiId) ? STRUCTURE_FOCUS_TIME_S
+        : currentTarget && currentTarget.id === poiBuffer.pinnedId ? POI_PINNED_GAZE_TIME_S : POI_TARGET_GAZE_TIME_S;
       if (focusedPoiId && focusedPoiId === gazeIdRef.current) {
         // Still gazing at same POI — accumulate time.
         gazeTimeRef.current += dtClamped;
-        untargetGraceRef.current = 0;
 
         if (gazeTimeRef.current >= gazeNeedS) {
           if (currentTarget?.id !== focusedPoiId && focusedPoiDef) {
@@ -493,24 +487,23 @@ const POIProjector = memo(function POIProjector() {
         // Started gazing at a new POI — reset timer.
         gazeIdRef.current = focusedPoiId;
         gazeTimeRef.current = 0;
-        untargetGraceRef.current = 0;
       } else {
         // Not gazing at any POI — reset gaze progress immediately.
         gazeIdRef.current = null;
         gazeTimeRef.current = 0;
-
-        // If a POI is currently targeted, accumulate untarget grace and clear after timeout.
-        // A destination picked from the discoveries list stays until another is chosen.
-        if (currentTarget && currentTarget.id !== poiBuffer.pinnedId) {
-          untargetGraceRef.current += dtClamped;
-          if (untargetGraceRef.current >= POI_UNTARGET_GRACE_S) {
-            store.set(targetedPOIAtom, null);
-            poiBuffer.targetedId = null;
-            poiBuffer.targetedEtaS = null;
-            untargetGraceRef.current = 0;
-          }
-        }
       }
+
+      const targetAfterGaze = store.get(targetedPOIAtom);
+      // A structure's automatic lock expires on look-away, even while starting to aim at
+      // a different POI. An explicitly pinned bearing stays until another is chosen.
+      if (targetAfterGaze && targetAfterGaze.id !== poiBuffer.pinnedId &&
+        (!focusedPoiId || (isStructurePoi(targetAfterGaze.id) && targetAfterGaze.id !== focusedPoiId))) {
+        untargetGraceRef.current += dtClamped;
+        if (untargetGraceRef.current >= POI_UNTARGET_GRACE_S) {
+          store.set(targetedPOIAtom, null);
+          untargetGraceRef.current = 0;
+        }
+      } else untargetGraceRef.current = 0;
 
       // Write gaze progress for the Reticle.
       // Only show progress when actively gazing at a not-yet-targeted POI.

@@ -43,8 +43,10 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   }
   const sourceDepot = await place("Prospect works", site(1.4));
   const relay = await place("Belt relay", site(5.4));
+  const fieldDepot = await place("Far belt depot", site(2001.4));
   const routeKm = Math.hypot(...relay.positionKm.map((x, i) => x - sourceDepot.positionKm[i]));
-  console.log(JSON.stringify({ stage: "commissioned", frameId: source.frameId, routeKm, source: sourceDepot.id, relay: relay.id }));
+  const fieldRouteKm = Math.hypot(...fieldDepot.positionKm.map((x, i) => x - sourceDepot.positionKm[i]));
+  console.log(JSON.stringify({ stage: "commissioned", frameId: source.frameId, routeKm, fieldRouteKm, source: sourceDepot.id, relay: relay.id }));
   await visit(host, sourceDepot);
   await visit(guest, sourceDepot, [0.5, 0, 0]);
   const transfer = (depotId, direction, kind, itemId, amount) => ({ type: "depot.transfer", depotId, direction, kind, itemId, amount });
@@ -71,8 +73,11 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   const hauler = (await fabricate("drone")).droneId;
   assert.ok(extractor && hauler && extractor !== hauler);
   const assign = (page, droneId, job) => settledCommand(page, { type: "drone.configure", droneId, job: { enabled: true, ...job } });
+  await assign(guest, hauler, { kind: "haul", targetId: fieldDepot.id, priorities: ["propellant"], reserveKg: 12, stopAt: 600, enabled: false });
+  assert.equal((await state(host)).drones.find(drone => drone.id === hauler).job.targetId, fieldDepot.id,
+    "the host accepts a guest's field-scale assignment");
   await assign(host, extractor, { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: 200 });
-  await assign(guest, hauler, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 8, stopAt: 600 });
+  await assign(guest, hauler, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 12, stopAt: 600 });
   // This is the only hand refuel in the run. Once the extractor departs, the hauler's
   // configured reserve makes it wait for the refinery before carrying its first load.
   await settledCommand(guest, transfer(sourceDepot.id, "deposit", "fuel", "fuel", 12));
@@ -128,7 +133,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   await host.ready();
   assert.equal(await host.evaluate(`${C}.worldId()`), worldId);
   const reopened = await state(host);
-  assert.equal(reopened.depots.length, 2, "both depots survived the host reload");
+  assert.equal(reopened.depots.length, 3, "all depots survived the host reload");
   assert.equal(reopened.drones.length, 2, "both drones survived the host reload");
   assert.equal(flight(reopened).phase, "outbound", "host reload restored the outgoing leg");
   assert.equal(flight(reopened).cargo.fuelKg, outbound.cargo.fuelKg, "in-flight payload survives restart");
@@ -157,7 +162,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   const saved = await host.evaluate(`${G}.fixtures.export(${json(worldId)}).then(s => JSON.parse(s).data.world.industry)`);
   assert.equal(stores(saved), second);
   assert.equal(stores(final), second);
-  return { pass: true, frames: [sourceDepot.frameId, relay.frameId], routeKm, legS: outbound.durationS, contestedUnit: race.map(r => r.status),
+  return { pass: true, frames: [sourceDepot.frameId, relay.frameId], routeKm, fieldRouteKm, legS: outbound.durationS, contestedUnit: race.map(r => r.status),
     restartGeneration: generation + 1, bootstrapKg: 12, firstDeliveryKg: first, withdrawnKg: usedKg,
     secondDeliveryKg: second - first + usedKg, durableRelayKg: stores(saved) };
 }

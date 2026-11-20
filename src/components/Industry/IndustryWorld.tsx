@@ -335,7 +335,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
 
       const pathKm = _from.distanceTo(_to) / 1000;
       // Legacy funded trips still settle in the authority. Draw only trips the physical profile can fly.
-      visibleFlight = minimumDroneFlightS(pathKm) <= motion.legS;
+      visibleFlight = minimumDroneFlightS(pathKm, motion.profile) <= motion.legS;
       if (!visibleFlight) {
         g.position.copy(_from);
       } else if (timeS >= motion.legS && !returning) {
@@ -352,7 +352,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
         }
       } else {
         const elapsedS = returning ? timeS - returnStartS : timeS;
-        const fraction = droneFlightProgress(pathKm, elapsedS, motion.legS);
+        const fraction = droneFlightProgress(pathKm, elapsedS, motion.legS, motion.profile);
         g.position.lerpVectors(_from, _to, returning ? 1 - fraction : fraction);
         _direction.subVectors(_to, _from).multiplyScalar(returning ? -1 : 1);
         if (_direction.lengthSq() > 1) _orientation.setFromUnitVectors(_forward, _direction.normalize());

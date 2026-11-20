@@ -794,10 +794,10 @@ async function industry() {
   const configure = (droneId, kind, targetId, priorities, reserveKg, stopAt) =>
     ({ type: "drone.configure", droneId, job: { kind, targetId, priorities, reserveKg, stopAt, enabled: true } });
   assert.equal((await run(h, configure(extract, "extract", lunar.id, ["hydrates"], 0, 20))).reason, "source_out_of_range");
-  assert.equal((await run(h, configure(haul, "haul", moonDepot, ["propellant"], 8, 600))).reason, "route_out_of_range");
-  assert.equal(estimateDroneRoute(depot(origin), site(31.5)), null, "a same-frame depot beyond local operating range is refused");
+  assert.equal((await run(h, configure(haul, "haul", moonDepot, ["propellant"], 12, 600))).reason, "route_out_of_range");
+  assert.equal(estimateDroneRoute(depot(origin), site(-1000)), null, "a long same-frame route outside the shared field is refused");
   await accepted(h, configure(extract, "extract", source.id, ["hydrates"], 0, 200));
-  await accepted(g, configure(haul, "haul", relay, ["propellant"], 8, 600));
+  await accepted(g, configure(haul, "haul", relay, ["propellant"], 12, 600));
   const transfer = { ...send(origin, "deposit", "fuel", 12, "fuel"), opId: "bootstrap" };
   await accepted(g, transfer);
   assert.equal((await run(g, transfer)).status, "duplicate", "replayed op cannot debit the ship twice");
@@ -811,7 +811,7 @@ async function industry() {
   const hauler = () => rig.host.world.industry.drones.find(d => d.id === haul);
   const route = estimateDroneRoute(depot(origin), depot(relay));
   assert.equal(route.legSeconds, 37, "4 km leg includes limited acceleration and braking");
-  assert.equal(route.roundTripFuelKg, 4);
+  assert.ok(route.roundTripFuelKg > 0.5 && route.roundTripFuelKg < 0.55, "close propulsion is scaled from the player's actual delta-v cost");
   for (let i = 0; hauler().phase !== "outbound" && i < 75; i++) await ticks(1);
   assert.equal(hauler().phase, "outbound");
   const payload = hauler().cargo.fuelKg;
@@ -855,7 +855,7 @@ async function industry() {
   g.telemetry = { pose: poseAt(relaySite, 0.8), propellant: { ordinaryKg: 18, protectedKg: 0 }, depositedFuelKg: 12, receivedFuelKg: 0 };
   await accepted(g, send(relay, "withdraw", "fuel", 5, "fuel"));
   assert.equal(rig.host.player(pid).propellant.ordinaryKg, 23);
-  assert.equal(depot(relay).storage.fuelKg, delivered - 5);
+  assert.ok(Math.abs(depot(relay).storage.fuelKg - (delivered - 5)) < 1e-9);
 
   const legacy = structuredClone(stored);
   const legacyTrip = {
@@ -864,6 +864,7 @@ async function industry() {
     via: { frameId: "earth", positionKm: [0, 8000, 0], fraction: 0.6 },
     cargo: { ...outbound.cargo, fuelKg: 25 },
   };
+  delete legacyTrip.flight;
   legacy.world.industry.drones = [legacyTrip];
   for (const d of legacy.world.industry.depots) {
     d.refinery = false;
@@ -885,18 +886,6 @@ async function industry() {
   assert.equal(oldTrip.drones[0].cargo.fuelKg, 0);
   assert.equal(oldTrip.drones[0].status, "route_out_of_range", "the old job remains visible but cannot dispatch again");
   assert.equal(oldTrip.drones[0].job.targetId, moonDepot);
-
-  const farRelay = legacy.world.industry.depots.find(d => d.id === relay);
-  farRelay.positionKm = site(31.39).positionKm;
-  const longRoute = estimateDroneRoute(depot(origin), farRelay);
-  assert.equal(longRoute.legSeconds, 223, "a long local trip can outlast the old save bound");
-  const longTrip = {
-    ...legacyTrip, job: outbound.job, via: null,
-    durationS: longRoute.legSeconds, remainingS: longRoute.legSeconds, returnS: longRoute.legSeconds,
-    fuelKg: longRoute.roundTripFuelKg / 2,
-  };
-  legacy.world.industry.drones = [longTrip];
-  assert.deepEqual(parseSaveData(legacy).world.industry.drones[0], longTrip, "maximum local countdown survives a save round trip");
 
   return { pass: true, routeKm: Math.round(route.pathKm), legS: route.legSeconds, roundTripKg: route.roundTripFuelKg,
     payload, delivered, bootstrapKg: 12, legacyReturnedKg: balance(origin) };
@@ -986,8 +975,8 @@ async function industryProspects() {
 }
 
 async function industryDroneBounds() {
-  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { advanceIndustry }, { emptyIndustry, emptyStorage }] = await Promise.all([
-    S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"), S("sim/industry/types.ts"),
+  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { advanceIndustry, planDroneHaul }, { emptyIndustry, emptyStorage }, { estimateDroneRoute }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"), S("sim/industry/types.ts"), S("sim/industry/route.ts"),
   ]);
   const source = getIndustrySource("earth_hydrates");
   const depot = (id, offsetKm, fuelKg = 0, items = {}) => ({
@@ -1000,7 +989,7 @@ async function industryDroneBounds() {
   });
   const home = depot("home", 1, 500);
   const relay = depot("relay", 4, T.fuelCapacityKg - 100);
-  const hauler = drone("hauler", home.id, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 499, stopAt: T.fuelCapacityKg });
+  const hauler = drone("hauler", home.id, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 499.9, stopAt: T.fuelCapacityKg });
   let world = { ...emptyIndustry(), depots: [home, relay], drones: [hauler] };
   const step = (seconds = 1) => { for (let i = 0; i < seconds; i++) world = advanceIndustry(world, 1).state; };
   const ship = () => world.drones[0];
@@ -1012,10 +1001,11 @@ async function industryDroneBounds() {
   assert.equal(ship().status, "needs_fuel");
   assert.equal(world.depots[0].storage.fuelKg, 500);
   world.drones = [{ ...ship(), job: { ...ship().job, reserveKg: 100 } }];
+  const funded = planDroneHaul(home, relay, ship().job, estimateDroneRoute(home, relay)).load;
   step();
   assert.equal(ship().phase, "outbound");
   assert.equal(ship().cargo.fuelKg, 100);
-  assert.equal(world.depots[0].storage.fuelKg, 500 - 100 - 2 * ship().fuelKg);
+  assert.ok(Math.abs(world.depots[0].storage.fuelKg - (500 - 100 - funded.roundTripFuelKg)) < 1e-9);
 
   // Players fill both tanks while the manifest is in flight, and recall the ship safely.
   const trip = ship().returnS;
@@ -1107,6 +1097,113 @@ async function industryDroneClock() {
   motion.advance(finalSnapshot, dt);
   assert.ok(motion.timeS - settledS < 1e-6, "prediction stops during a prolonged disconnect");
   return { pass: true, longestStopMs: Math.round(longestStopS * 1000), peakRate };
+}
+
+async function industryFieldRoute() {
+  const [routes, { INDUSTRY_TUNING: T }, { advanceIndustry, planDroneHaul }, { emptyStorage }, { parseSaveData }] = await Promise.all([
+    S("sim/industry/route.ts"), S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"),
+    S("sim/industry/types.ts"), S("save/validate.ts"),
+  ]);
+  const field = id => system.asteroidFields.find(f => f.id === id);
+  const depot = (f, id, offset, fuelKg = 0, items = {}) => ({
+    id, name: id, by: HOST_ID, frameId: f.anchorBody, quaternion: [0, 0, 0, 1],
+    positionKm: f.anchorOffsetKm.map((n, i) => n + (i === 0 ? offset : 0)),
+    storage: { ...emptyStorage(), fuelKg, items }, refinery: false, refineProgressS: 0,
+  });
+  const earth = field("origin_belt"), moon = field("luna_belt");
+  const home = depot(earth, "Home", -2999, 90, { fe_ni_metal: 55 });
+  const relay = depot(earth, "Relay", -849);
+  const edge = depot(earth, "Earth edge", 2999);
+  const lunarHome = depot(moon, "Lunar home", -1999);
+  const lunarRelay = depot(moon, "Lunar relay", 1999);
+  const route = routes.estimateDroneRoute(home, relay);
+  const acrossEarth = routes.estimateDroneRoute(home, edge);
+  const acrossMoon = routes.estimateDroneRoute(lunarHome, lunarRelay);
+  assert.equal(route.pathKm, 2150);
+  assert.equal(route.profile, "field");
+  assert.equal(route.fieldName, earth.name);
+  assert.equal(acrossEarth.pathKm, 5998, "opposite edges of the authored 6000 km field connect");
+  assert.equal(acrossMoon.pathKm, 3998, "opposite edges of the authored 4000 km field connect");
+  assert.equal(routes.checkDroneRoute(home, depot(earth, "Outside", 3001)).reason, "out_of_field");
+  assert.equal(routes.checkDroneRoute(home, lunarRelay).reason, "different_frame");
+  assert.ok(Math.abs(routes.minimumDroneFlightS(6.0001, "field") - routes.minimumDroneFlightS(5.9999, "field")) < 0.002,
+    "crossing the terminal-zone threshold does not jump the travel time");
+  assert.equal(routes.droneLegSeconds(4, "field"), routes.droneLegSeconds(4, "local"));
+  assert.equal(routes.droneFlightProgress(route.pathKm, route.legSeconds / 2, route.legSeconds, "field"), 0.5);
+  let peakMps = 0, terminalPeakMps = 0;
+  for (let t = 0; t < route.legSeconds; t += 0.25) {
+    const kmBefore = route.pathKm * routes.droneFlightProgress(route.pathKm, t, route.legSeconds, "field");
+    const kmAfter = route.pathKm * routes.droneFlightProgress(route.pathKm, t + 0.25, route.legSeconds, "field");
+    const mps = (kmAfter - kmBefore) * 4000;
+    if (kmAfter <= T.terminalDistanceKm) terminalPeakMps = Math.max(terminalPeakMps, mps);
+    peakMps = Math.max(peakMps, mps);
+  }
+  assert.ok(terminalPeakMps <= 140 + 1e-6 && terminalPeakMps > 130);
+  assert.ok(peakMps > 9500 && peakMps < 11000);
+
+  const fullSolid = routes.planDroneLoad(acrossEarth, "fe_ni_metal", T.loadUnits, Infinity);
+  const fullFuel = routes.planDroneLoad(acrossEarth, "propellant", T.loadFuelKg, Infinity);
+  const leanSolid = routes.planDroneLoad(acrossEarth, "fe_ni_metal", T.loadUnits, 100);
+  assert.ok(fullSolid.amount < T.loadUnits && fullSolid.amount > leanSolid.amount, "a heavy load is trimmed to the flight tank or the depot stock");
+  assert.ok(fullSolid.roundTripFuelKg <= T.droneTankKg);
+  assert.equal(fullFuel.amount, T.loadFuelKg, "transfer propellant cargo uses a separate container");
+  assert.ok(fullFuel.roundTripFuelKg > acrossEarth.roundTripFuelKg && fullFuel.roundTripFuelKg < fullSolid.roundTripFuelKg);
+
+  const save = defaults.defaultSaveData(HOST_ID);
+  const job = { kind: "haul", targetId: relay.id, enabled: true, priorities: ["fe_ni_metal"], reserveKg: 10, stopAt: 6000 };
+  save.world.industry.depots = [home, relay];
+  save.world.industry.drones = [{ id: "field-hauler", homeId: home.id, job, phase: "idle", status: "departing",
+    remainingS: 0, durationS: 0, returnS: 0, fuelKg: 0, via: null, cargo: emptyStorage() }];
+  const manifest = planDroneHaul(home, relay, job, route).load;
+  assert.equal(manifest.amount, 40);
+  let state = save.world.industry;
+  const step = n => { for (let i = 0; i < n; i++) state = advanceIndustry(state, 1).state; };
+  const reload = () => {
+    save.world.industry = state;
+    const restored = parseSaveData(save).world.industry;
+    assert.deepEqual(restored, state);
+    state = restored;
+  };
+  const getDrone = () => state.drones[0];
+  const balance = () => state.depots[0].storage.fuelKg;
+  const returns = () => state.depots[1].storage.items.fe_ni_metal;
+  step(1);
+  const flight = getDrone();
+  assert.equal(flight.phase, "outbound");
+  assert.equal(flight.cargo.items.fe_ni_metal, 40);
+  assert.equal(flight.fuelKg, manifest.returnFuelKg);
+  assert.ok(Math.abs(balance() + manifest.roundTripFuelKg - 90) < 1e-9);
+  assert.ok(balance() >= job.reserveKg);
+  step(127);
+  assert.ok(getDrone().remainingS > 204, "the in-flight countdown exceeds the original validator limit");
+  reload();
+  state.drones[0] = { ...getDrone(), job: { ...job, enabled: false } };
+  step(getDrone().remainingS + T.deliverySeconds);
+  assert.equal(returns(), manifest.amount);
+  assert.equal(getDrone().phase, "returning");
+  const refundKg = manifest.returnFuelKg - route.returnFuelAtDryKg;
+  assert.ok(Math.abs(getDrone().fuelKg - refundKg) < 1e-9 && refundKg > 0);
+  reload();
+  state.depots[0] = { ...state.depots[0], storage: { ...state.depots[0].storage, fuelKg: T.fuelCapacityKg } };
+  step(getDrone().remainingS);
+  assert.equal(getDrone().status, "unload_blocked");
+  reload();
+  step(10);
+  assert.ok(Math.abs(getDrone().fuelKg - refundKg) < 1e-9, "blocked retries and reloads do not consume or duplicate unused fuel");
+  state.depots[0] = { ...state.depots[0], storage: { ...state.depots[0].storage, fuelKg: T.fuelCapacityKg - refundKg / 2 } };
+  step(1);
+  assert.equal(balance(), T.fuelCapacityKg);
+  assert.ok(Math.abs(getDrone().fuelKg - refundKg / 2) < 1e-9, "partial unload saves the still-aboard remainder");
+  reload();
+  state.depots[0] = { ...state.depots[0], storage: { ...state.depots[0].storage, fuelKg: T.fuelCapacityKg - refundKg } };
+  step(10);
+  assert.ok(Math.abs(balance() - (T.fuelCapacityKg - refundKg / 2)) < 1e-9);
+  assert.equal(getDrone().phase, "idle");
+  assert.equal(getDrone().fuelKg, 0);
+  assert.equal(returns(), manifest.amount);
+  return { pass: true, routeKm: route.pathKm, legS: route.legSeconds, peakMps: Math.round(peakMps), emptyKg: route.roundTripFuelKg,
+    loadedKg: manifest.roundTripFuelKg, refundKg, maxEarthLegS: acrossEarth.legSeconds, maxEarthCargoUnits: fullSolid.amount,
+    maxMoonLegS: acrossMoon.legSeconds };
 }
 
 async function industryWire() {
@@ -1236,6 +1333,7 @@ const SCENARIOS = {
   industryProspects,
   industryDroneBounds,
   industryDroneClock,
+  industryFieldRoute,
   industryWire,
   suspendedHost,
   ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),

@@ -1,7 +1,12 @@
 import type { Transfer } from "@/sim/world/commands";
 import { DRONE_FUEL_ID, getIndustrySource, INDUSTRY_SOURCES, INDUSTRY_TUNING as T } from "./catalog";
-import { estimateDroneExtractionRoute, estimateDroneRoute } from "./route";
-import { emptyStorage, type DepotRecord, type DroneRecord, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
+import {
+  dronePayloadMassKg, estimateDroneExtractionRoute, estimateDroneRoute, planDroneExtraction, planDroneLoad,
+  planDroneReturnFuel, type DroneRoute,
+} from "./route";
+import { emptyStorage, type DepotRecord, type DroneJob, type DroneRecord, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
+
+const EPSILON_KG = 1e-9;
 
 export function storageUnits(storage: Transfer): number {
   return Object.values(storage.items).reduce((a, b) => a + b, 0) + Object.values(storage.consumables).reduce((a, b) => a + b, 0);
@@ -35,6 +40,40 @@ function space(storage: Transfer, id: string, stopAt = Infinity): number {
 
 function payloadIds(storage: Transfer): string[] {
   return storage.fuelKg > 0 ? [DRONE_FUEL_ID, ...Object.keys(storage.items)] : Object.keys(storage.items);
+}
+
+function payloadMassKg(storage: Transfer): number {
+  return Object.entries(storage.items).reduce((kg, [id, amount]) => kg + dronePayloadMassKg(id, amount), storage.fuelKg);
+}
+
+type DroneDeparture = { itemId: string; load: ReturnType<typeof planDroneLoad>; status: null } |
+  { load: null; status: "destination_full" | "no_cargo" | "needs_fuel" };
+
+export function planDroneHaul(home: DepotRecord, destination: DepotRecord, job: DroneJob, route: DroneRoute): DroneDeparture {
+  const availableKg = home.storage.fuelKg - job.reserveKg;
+  if (availableKg < route.roundTripFuelKg) return { load: null, status: "needs_fuel" };
+  let hasRoom = false, needsFuel = false;
+  for (const itemId of job.priorities) {
+    const room = space(destination.storage, itemId, job.stopAt);
+    if (room <= 0) continue;
+    hasRoom = true;
+    const request = Math.min(stock(home.storage, itemId), room);
+    if (request <= 0) continue;
+    const load = planDroneLoad(route, itemId, request, availableKg);
+    if (load.amount > EPSILON_KG) return { itemId, load, status: null };
+    if (itemId !== DRONE_FUEL_ID) needsFuel = true;
+  }
+  return { load: null, status: !hasRoom ? "destination_full" : needsFuel ? "needs_fuel" : "no_cargo" };
+}
+
+export function planDroneCollection(
+  home: DepotRecord, itemId: string, job: DroneJob, route: DroneRoute, availableUnits: number = T.sourceCapacity,
+): DroneDeparture {
+  const room = space(home.storage, itemId, job.stopAt);
+  if (room <= 0) return { load: null, status: "destination_full" };
+  if (availableUnits <= 0) return { load: null, status: "no_cargo" };
+  const load = planDroneExtraction(route, itemId, Math.min(room, availableUnits), home.storage.fuelKg - job.reserveKg);
+  return load.amount > 0 ? { itemId, load, status: null } : { load: null, status: "needs_fuel" };
 }
 
 function unload(cargo: Transfer, destination: Transfer, stopAt?: number): boolean {
@@ -99,37 +138,18 @@ class IndustryStep {
     const route = source ? estimateDroneExtractionRoute(home, source, this.state.depots)
       : destination && estimateDroneRoute(home, destination);
     if (!route) return standBy(drone, job.kind === "extract" ? "source_out_of_range" : "route_out_of_range");
-    const surplusKg = home.storage.fuelKg - route.roundTripFuelKg - job.reserveKg;
-    if (surplusKg < 0) return standBy(drone, "needs_fuel");
+    const plan = source ? planDroneCollection(home, source.materialId, job, route, this.sourceMap.get(source.id)?.available)
+      : destination && planDroneHaul(home, destination, job, route);
+    if (!plan) return standBy(drone, "route_out_of_range");
+    if (!plan.load) return standBy(drone, plan.status);
     const cargo = emptyStorage();
-    let loadId: string | undefined;
-    let amount = 0;
-
-    if (source) {
-      if (space(home.storage, source.materialId, job.stopAt) <= 0) return standBy(drone, "destination_full");
-      if (this.sourceMap.get(source.id)?.available === 0) return standBy(drone, "no_cargo");
-    }
-    if (destination) {
-      let hasRoom = false;
-      for (const id of job.priorities) {
-        const room = space(destination.storage, id, job.stopAt);
-        if (room <= 0) continue;
-        hasRoom = true;
-        const available = id === DRONE_FUEL_ID ? surplusKg : stock(home.storage, id);
-        amount = Math.min(available, room, id === DRONE_FUEL_ID ? T.loadFuelKg : T.loadUnits);
-        if (amount > 0) {
-          loadId = id;
-          break;
-        }
-      }
-      if (!loadId) return standBy(drone, hasRoom ? "no_cargo" : "destination_full");
-    }
-
+    const { load, itemId } = plan;
     const storage = this.editStorage(home);
-    storage.fuelKg -= route.roundTripFuelKg;
-    if (loadId) move(storage, cargo, loadId, amount);
+    storage.fuelKg -= load.roundTripFuelKg;
+    if (destination) move(storage, cargo, itemId, load.amount);
     return { ...inPhase(drone, "outbound", "departing", route.legSeconds), cargo,
-      fuelKg: route.roundTripFuelKg / 2, returnS: route.legSeconds, via: null };
+      fuelKg: load.returnFuelKg, returnS: route.legSeconds, via: null,
+      flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg, ...(source && { extractUnits: load.amount }) } };
   }
 
   private completeWork(drone: DroneRecord, home: DepotRecord): DroneRecord {
@@ -139,7 +159,7 @@ class IndustryStep {
       const source = getIndustrySource(job.targetId);
       if (source) {
         const stock = this.sourceMap.get(source.id) ?? { available: T.sourceCapacity, replenishProgressS: 0 };
-        const amount = Math.min(T.extractUnits, stock.available, space(home.storage, source.materialId, job.stopAt));
+        const amount = Math.min(drone.flight?.extractUnits ?? T.extractUnits, stock.available, space(home.storage, source.materialId, job.stopAt));
         if (amount > 0) {
           cargo.items = changedCount(cargo.items, source.materialId, amount);
           this.sourceMap.set(source.id, { ...stock, available: stock.available - amount });
@@ -152,26 +172,34 @@ class IndustryStep {
       }
     }
 
-    return { ...inPhase(drone, "returning", "returning", drone.returnS), cargo, fuelKg: 0 };
+    // Older flights already reserved a fixed burn. New flights use their funded base rate and the actual return load.
+    const unusedKg = drone.flight ? drone.fuelKg - planDroneReturnFuel(drone.flight.returnFuelAtDryKg, payloadMassKg(cargo)) : 0;
+    return { ...inPhase(drone, "returning", "returning", drone.returnS), cargo, fuelKg: unusedKg > EPSILON_KG ? unusedKg : 0 };
   }
 
   private finishReturn(drone: DroneRecord, home: DepotRecord): DroneRecord {
+    const pendingKg = drone.flight ? drone.fuelKg : 0;
     const ids = payloadIds(drone.cargo);
-    if (ids.length > 0 && !ids.some(id => space(home.storage, id) > 0)) {
+    const refund = Math.min(pendingKg, space(home.storage, DRONE_FUEL_ID));
+    const canUnload = ids.some(id => space(home.storage, id) > 0);
+    if (!canUnload && refund <= 0 && (ids.length > 0 || pendingKg > 0)) {
       return drone.status === "unload_blocked" ? drone : { ...drone, status: "unload_blocked", remainingS: 0 };
     }
     const cargo = { ...drone.cargo };
-    if (ids.length > 0 && !unload(cargo, this.editStorage(home))) {
-      return { ...drone, status: "unload_blocked", remainingS: 0, cargo };
+    const fuelKg = pendingKg - refund;
+    if (canUnload || refund > 0) {
+      const storage = this.editStorage(home);
+      storage.fuelKg += refund;
+      if (!unload(cargo, storage) || fuelKg > 0) return { ...drone, status: "unload_blocked", remainingS: 0, cargo, fuelKg };
     }
-    return { ...standBy(drone, drone.job?.enabled ? "departing" : "paused"), cargo, returnS: 0, via: null };
+    return { ...standBy(drone, drone.job?.enabled ? "departing" : "paused"), cargo, fuelKg: 0, returnS: 0, via: null, flight: null };
   }
 
   private stepDrone(drone: DroneRecord): DroneRecord {
     const home = this.depotMap.get(drone.homeId);
     if (!home) return drone;
     if (drone.phase === "idle") {
-      if (payloadIds(drone.cargo).length > 0) return this.finishReturn(drone, home);
+      if (payloadIds(drone.cargo).length > 0 || (drone.flight && drone.fuelKg > 0)) return this.finishReturn(drone, home);
       return this.depart(drone, home);
     }
     if (drone.remainingS > 1) return { ...drone, remainingS: drone.remainingS - 1 };

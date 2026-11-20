@@ -187,6 +187,69 @@ async function verifyFlight(page, source, home, droneId, tuning) {
     baselineMps: baseline.peakSpeedMps, longestStopMs };
 }
 
+async function verifyRestoredFieldFlight(page, fixture, home, relay, droneId) {
+  const ev = page.evaluate;
+  const record = () => ev(`${G}.world().industry.drones.find(d => d.id === ${J(droneId)})`);
+  const configured = await ev(`${G}.settled(${J({
+    type: "drone.configure", droneId, job: {
+      kind: "haul", targetId: relay.id, priorities: ["carbon"], reserveKg: 10, stopAt: 100, enabled: true,
+    },
+  })})`);
+  assert.equal(configured.status, "accepted", J(configured));
+  const flight = await waitFor(async () => {
+    const drone = await record();
+    return drone.phase === "outbound" && drone;
+  });
+  assert.ok(flight, "the shared authority committed the far outbound flight");
+  assert.equal(flight.flight.profile, "field");
+  assert.equal(flight.cargo.items.carbon, 20);
+  assert.ok(flight.durationS > 440 && flight.durationS < 480);
+
+  // Start a replay near the middle of the committed leg to exercise real reload/rendering
+  // without waiting several minutes before reaching the measured portion.
+  const saved = JSON.parse(await ev(`${G}.fixtures.export(${J(fixture)})`)).data;
+  const funded = saved.world.industry.drones.find(d => d.id === droneId);
+  assert.equal(funded.phase, "outbound");
+  const replayS = Math.ceil(funded.durationS / 2) + 5;
+  funded.remainingS = replayS;
+  const replay = await ev(`${G}.fixtures.create("m5-field-midflight", ${J(saved)})`);
+  try {
+    await ev(`${G}.fixtures.activate(${J(replay)})`);
+    await page.reload();
+    const restored = await record();
+    assert.equal(restored.phase, "outbound");
+    assert.deepEqual(restored.flight, flight.flight);
+    assert.equal(restored.fuelKg, flight.fuelKg);
+    assert.equal(restored.cargo.items.carbon, 20);
+    assert.ok(restored.remainingS <= replayS && restored.remainingS > 204);
+    assert.ok(await waitFor(() => ev(`${I}.drone(${J(droneId)})`)), "restored drone is in the scene");
+    const samples = await ev(`(() => {
+      const id = ${J(droneId)};
+      const position = ${I}.drone(id).positionM;
+      const observer = ${G}.rep.ship();
+      const p = observer.posKm.map((km, i) => km + (position[i] + (i === 0 ? 2100 : i === 2 ? 750 : 0)) / 1000);
+      ${G}.rep.teleportRel(${J(home.frameId)}, p, [0,0,0,1]);
+      return ${I}.trackDrone(id, 1100);
+    })()`);
+    const speeds = samples.slice(1).flatMap((s, i) => {
+      const prev = samples[i];
+      const dt = s.frameMs - prev.frameMs;
+      if (!prev.visible || !s.visible || dt < 4 || dt > 120) return [];
+      return [distance(s.positionM, prev.positionM) * 1000 / dt];
+    }).sort((a, b) => a - b);
+    assert.ok(speeds.length > 10, `observed ${speeds.length} rendered frames as the restored drone crossed the ship`);
+    const medianMps = speeds[Math.floor(speeds.length / 2)];
+    assert.ok(medianMps > 8000 && medianMps < 11000, `restored field flight crossed at ${medianMps} m/s`);
+    assert.ok(speeds.at(-1) < 16000, `snapshot correction stayed within field-flight limits: ${speeds.at(-1)} m/s`);
+    return { pathKm: distance(home.positionKm, relay.positionKm), legS: flight.durationS,
+      fuelEscrowKg: flight.fuelKg, frames: speeds.length, medianMps, peakMps: speeds.at(-1) };
+  } finally {
+    await ev(`${G}.fixtures.activate(${J(fixture)})`);
+    await page.reload();
+    assert.ok(await ev(`${G}.fixtures.remove(${J(replay)})`));
+  }
+}
+
 export default async function m5DroneMotion(page) {
   const ev = page.evaluate;
   const { id: old, schemaVersion } = await ev("__test.save.info()");
@@ -195,9 +258,12 @@ export default async function m5DroneMotion(page) {
   const site = offset(source.positionKm, [0, 0.085, 0]);
   const me = await ev(`${G}.localId()`);
   const home = { id: "home", name: "Hydrate Works", by: me, frameId: source.frameId, positionKm: offset(site, [1.9, 0, 0]),
-    quaternion: [0, 0, 0, 1], storage: { fuelKg: 20 } };
+    quaternion: [0, 0, 0, 1], storage: { fuelKg: 100, items: { carbon: 20 } } };
+  const relay = { ...home, id: "field-relay", name: "Field Relay", positionKm: offset(home.positionKm, [2150, 0, 0]),
+    storage: { fuelKg: 0 } };
   const drone = { id: "extractor", homeId: home.id, phase: "idle", status: "unassigned" };
-  const state = { schemaVersion, world: { industry: { depots: [home], drones: [drone] } },
+  const hauler = { ...drone, id: "field-hauler" };
+  const state = { schemaVersion, world: { industry: { depots: [home, relay], drones: [drone, hauler] } },
     players: { [me]: { modules: { consumables: { consumable_depot_kit: 1, consumable_replication_kit: 1 } } } } };
   const fixture = await ev(`${G}.fixtures.create("m5-motion", ${J(state)})`);
   try {
@@ -207,7 +273,9 @@ export default async function m5DroneMotion(page) {
     const prospect = await verifyProspect(page, source, site);
     console.log(J({ stage: "prospect contact", ...prospect }));
     const flight = await verifyFlight(page, source, home, drone.id, tuning);
-    return { pass: true, prospect, flight };
+    console.log(J({ stage: "terminal flight", ...flight }));
+    const fieldFlight = await verifyRestoredFieldFlight(page, fixture, home, relay, hauler.id);
+    return { pass: true, prospect, flight, fieldFlight };
   } finally {
     await ev(`${G}.fixtures.activate(${J(old)})`);
     await page.reload();

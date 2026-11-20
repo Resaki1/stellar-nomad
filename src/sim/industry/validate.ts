@@ -4,8 +4,8 @@ import { cleanPointName } from "@/sim/replication/points";
 import type { Transfer } from "@/sim/world/commands";
 import { getIndustrySource, INDUSTRY_TUNING as T } from "./catalog";
 import { decodeDroneJob } from "./reducer";
-import { droneLegSeconds } from "./route";
-import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneRecord, type DroneWaypoint, type IndustryState } from "./types";
+import { maxDroneLegSeconds } from "./route";
+import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneRecord, type DroneWaypoint, type IndustryState } from "./types";
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
@@ -48,8 +48,16 @@ function depot(v: unknown): DepotRecord | null {
 }
 
 // Existing funded trips keep the original countdown, waypoint, payload and return escrow.
-const maxLegS = Math.max(204, droneLegSeconds(T.maxRouteKm));
-const maxLegKg = Math.max(41, Math.ceil(1 + T.maxRouteKm / T.legFuelDistanceKm));
+const maxLegS = maxDroneLegSeconds();
+const maxLegacyLegKg = 41;
+
+function fundedFlight(v: unknown): DroneFlight | null | undefined {
+  if (v === null) return null;
+  if (!obj(v) || (v.profile !== "local" && v.profile !== "field") ||
+      !finite(v.returnFuelAtDryKg) || v.returnFuelAtDryKg < 0 || v.returnFuelAtDryKg > T.droneTankKg) return undefined;
+  const extractUnits = finite(v.extractUnits) ? Math.floor(num(v.extractUnits, T.extractUnits)) : undefined;
+  return { profile: v.profile, returnFuelAtDryKg: v.returnFuelAtDryKg, ...(extractUnits === undefined ? {} : { extractUnits }) };
+}
 
 function waypoint(v: unknown): DroneWaypoint | null {
   if (!obj(v) || !isFrameId(v.frameId) || !position(v.positionKm) || !finite(v.fraction) || v.fraction <= 0 || v.fraction >= 1) return null;
@@ -67,9 +75,11 @@ function drone(v: unknown, depots: Map<string, DepotRecord>): DroneRecord | null
     ? v.phase : "idle";
   const restored = DRONE_STATUSES.find(s => s === v.status) ?? (job ? "paused" : "unassigned");
   const status = !job && phase !== "idle" && phase !== "returning" ? "returning" : restored;
+  const flight = fundedFlight(v.flight);
   return {
     id: v.id, homeId: v.homeId, job, phase, status, returnS, durationS, via: waypoint(v.via),
-    remainingS: num(v.remainingS, durationS), fuelKg: num(v.fuelKg, maxLegKg),
+    ...(flight === undefined ? {} : { flight }),
+    remainingS: num(v.remainingS, durationS), fuelKg: num(v.fuelKg, flight ? T.droneTankKg : maxLegacyLegKg),
     cargo: storage(v.cargo, Math.max(T.loadUnits, T.extractUnits), T.loadFuelKg),
   };
 }

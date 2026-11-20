@@ -28,6 +28,15 @@ export const DRONE_STATUSES = [
   "route_out_of_range", "extracting", "delivering", "returning", "unload_blocked", "departing",
 ] as const;
 export type DroneStatus = (typeof DRONE_STATUSES)[number];
+export type DroneFlightProfile = "local" | "field";
+
+export interface DroneFlight {
+  profile: DroneFlightProfile;
+  /** Base return burn before adding the actual payload mass. */
+  returnFuelAtDryKg: number;
+  /** Largest amount of hydrates already funded for the return. */
+  extractUnits?: number;
+}
 
 export interface DroneWaypoint {
   frameId: string;
@@ -44,8 +53,10 @@ export interface DroneRecord {
   status: DroneStatus;
   remainingS: number;
   durationS: number;
-  /** Escrow for the return leg, funded before departure. Separate from delivery cargo. */
+  /** Propulsion fuel held for the return, or unused fuel to unload at home. */
   fuelKg: number;
+  /** Older funded trips keep their original schedule and fuel accounting. */
+  flight?: DroneFlight | null;
   returnS: number;
   /** Retained for funded routes written before local drone routing. */
   via: DroneWaypoint | null;
