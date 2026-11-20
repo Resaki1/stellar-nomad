@@ -4,6 +4,7 @@
  * research, recipes, sites, trials), never render settings.
  */
 import { ITEMS, PROCESSING_RECIPES, RESEARCH_NODES, SITES, TRIALS } from "@/data/content";
+import { DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { SCHEMA_VERSION } from "@/save/defaults";
 import type { SystemConfig } from "@/sim/systemTypes";
 import { PROTOCOL_VERSION } from "./protocol";
@@ -59,6 +60,7 @@ export function contentFingerprint(system: SystemConfig): string {
       recipes: PROCESSING_RECIPES,
       sites: SITES,
       trials: TRIALS,
+      industry: { sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING },
     }),
   );
 }

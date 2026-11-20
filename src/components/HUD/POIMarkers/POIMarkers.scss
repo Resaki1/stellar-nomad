@@ -97,3 +97,18 @@ $pilot: #5fd38a; // the co-op pill's colour
 .poi-arrow--pilot {
   border-left-color: rgba($pilot, 0.75);
 }
+
+.poi-marker--depot {
+  .poi-marker__diamond {
+    width: 12px;
+    height: 8px;
+    border-style: double;
+    transform: none;
+  }
+  .poi-marker__name { text-transform: none; }
+}
+
+.poi-arrow--industry-targeted {
+  border-left-color: s.$accent-signal;
+  filter: drop-shadow(0 0 5px s.$glow-signal);
+}

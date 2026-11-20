@@ -3,17 +3,23 @@
  * bounds. Two channels: `cmd` (reliable, ordered) and `pose` (unordered, no retransmits).
  * Nothing here knows about WebRTC, workers or React.
  */
+import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import type { IndustryDelta } from "@/sim/industry/types";
 import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 7;
 /** Three missed worker heartbeats suspend prediction and new resource spends. */
 export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
-/** Snapshot JSON is sent in parts of this many characters. */
-export const SNAPSHOT_PART_CHARS = 16_000;
-const MAX_SNAPSHOT_PARTS = 2_000;
+/** A ship in transit, paused or flying with a dev speed override is ineligible for contact. */
+export const POSE_NO_CONTACT = 8;
+/** Part size allows UTF-8 names and JSON escaping within a 16 KiB command packet. */
+export const SNAPSHOT_PART_CHARS = 5_000;
+const MAX_SNAPSHOT_PARTS = 6_500;
+export const RELIABLE_UPDATE_BYTES = 16 * 1024;
+const MAX_UPDATE_PARTS = 4_000;
 const MAX_OP_CHARS = 8_192;
 const MAX_ID = 128;
 export const MAX_NAME = 32;
@@ -29,6 +35,7 @@ export interface Telemetry {
   health?: number;
   /** Sender's inbound fuel counter and ordinary fuel reserved for braking. */
   receivedFuelKg?: number;
+  depositedFuelKg?: number;
   reservedFuelKg?: number;
   propellant?: { ordinaryKg: number; protectedKg: number };
   power?: { capacitor01: number; heat01: number };
@@ -48,8 +55,10 @@ export interface PoseMsg {
   p: Vec3Tuple;
   v: Vec3Tuple;
   q: QuatTuple;
-  /** Bit 0 beam, bit 1 boost, bit 2 beam in a pulse's off phase (dim). */
+  /** Bit 0 beam, bit 1 boost, bit 2 beam in a pulse's off phase, bit 3 contact disabled. */
   fl: number;
+  /** Changes on reposition, preventing a sweep across a discontinuity. */
+  motion?: number;
   /** Main-engine throttle 0..255 (the plume others draw). */
   th?: number;
   /** Beam endpoint on the rock, sender's frame km (with fl bit 0). */
@@ -60,11 +69,23 @@ export interface PoseMsg {
 export const MAX_BEAM_KM = 50;
 
 export type ImpactMsg = { t: "impact"; gen: number; by: PlayerId; contact: ShipContact };
+/** Host-confirmed contact, stamped against a particular pilot's measured motion. */
+export interface PilotContactMsg {
+  t: "pilotContact";
+  gen: number;
+  id: number;
+  other: PlayerId;
+  motion: number;
+  tick: number;
+  contact: ShipContact;
+  correctionM: number;
+  damage: boolean;
+}
 
 export type ClientMsg =
   | { t: "hello"; protocol: number; content: string; name: string; playerId?: PlayerId; credential?: string }
   | { t: "cmd"; gen: number; seq: number; opId: string; op: WorldOperation; tel?: Telemetry }
-  | { t: "pong"; gen: number; stamp: number }
+  | { t: "pong"; gen: number; stamp: number; localMonoMs?: number }
   | { t: "tel"; gen: number; tel: Telemetry }
   | { t: "name"; gen: number; name: string }
   | ImpactMsg
@@ -97,11 +118,29 @@ export type HostMsg =
   | { t: "settled"; gen: number; seq: number; opId: string; outcome: OperationOutcome; replay?: boolean }
   | { t: "watermark"; gen: number; seq: number }
   | { t: "resend"; gen: number; from: number }
+  | { t: "industry"; gen: number; delta: IndustryDelta }
+  | { t: "fragment"; gen: number; part: number; of: number; json: string }
   | { t: "clock"; gen: number; epochMs: number; rate: number; hostMonoMs: number; roster: CrewMember[] }
   | { t: "status"; gen: number; state: "ok" | "storage_failed" | "closing" }
   | { t: "members"; gen: number; names: Record<PlayerId, string> }
   | ImpactMsg
+  | PilotContactMsg
   | PoseMsg;
+
+type ReliableUpdate = Extract<HostMsg, { t: "commit" | "industry" }>;
+
+export function jsonParts(json: string, maxChars: number): string[] {
+  return Array.from({ length: Math.max(1, Math.ceil(json.length / maxChars)) }, (_, i) =>
+    json.slice(i * maxChars, (i + 1) * maxChars));
+}
+
+/** Small updates travel directly. Larger updates use the snapshot part conventions. */
+export function frameReliableUpdate(msg: ReliableUpdate): HostMsg[] {
+  const json = JSON.stringify(msg);
+  if (json.length <= SNAPSHOT_PART_CHARS || new TextEncoder().encode(json).byteLength <= RELIABLE_UPDATE_BYTES) return [msg];
+  const parts = jsonParts(json, SNAPSHOT_PART_CHARS);
+  return parts.map((part, i) => ({ t: "fragment", gen: msg.gen, part: i, of: parts.length, json: part }));
+}
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -133,7 +172,7 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
     if (!isObj(p) || !isStr(p.frameId, 32) || !vec(p.positionKm, 3, BIG_KM) || !vec(p.quaternion, 4, 1.01)) return null;
     out.pose = { frameId: p.frameId, positionKm: [...(p.positionKm as Vec3Tuple)], quaternion: [...(p.quaternion as QuatTuple)] };
   }
-  for (const key of ["receivedFuelKg", "reservedFuelKg"] as const) {
+  for (const key of ["receivedFuelKg", "depositedFuelKg", "reservedFuelKg"] as const) {
     const value = v[key];
     if (value !== undefined) {
       if (!isNum(value) || value < 0) return null;
@@ -192,6 +231,7 @@ export function decodePose(v: Obj): PoseMsg | null {
   const out: PoseMsg = { t: "pose", id: v.id, seq: v.seq, revision: v.revision, gen: v.gen, tick: v.tick, f: v.f, p: v.p as Vec3Tuple, v: v.v as Vec3Tuple, q: v.q as QuatTuple, fl: v.fl };
   // Optional activity: a malformed field is dropped, the pose kept.
   if (isInt(v.th, 255)) out.th = v.th;
+  if (isInt(v.motion)) out.motion = v.motion;
   if (vec(v.b, 3, BIG_KM)) {
     const b = v.b as Vec3Tuple;
     if (Math.hypot(b[0] - out.p[0], b[1] - out.p[1], b[2] - out.p[2]) <= MAX_BEAM_KM) out.b = [b[0], b[1], b[2]];
@@ -244,7 +284,8 @@ export function decodeClientMsg(raw: unknown): ClientMsg | null {
       return { t: "cmd", gen: raw.gen, seq: raw.seq, opId: raw.opId, op: op as unknown as WorldOperation, ...(tel ? { tel } : {}) };
     }
     case "pong":
-      return isInt(raw.gen) && isNum(raw.stamp) ? { t: "pong", gen: raw.gen, stamp: raw.stamp } : null;
+      return isInt(raw.gen) && isNum(raw.stamp) ? { t: "pong", gen: raw.gen, stamp: raw.stamp,
+        localMonoMs: isNum(raw.localMonoMs) ? raw.localMonoMs : undefined } : null;
     case "tel": {
       const tel = isInt(raw.gen) ? decodeTelemetry(raw.tel) : null;
       return tel ? { t: "tel", gen: raw.gen as number, tel } : null;
@@ -286,6 +327,16 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       return isInt(raw.gen) && isInt(raw.seq) ? (raw as unknown as HostMsg) : null;
     case "resend":
       return isInt(raw.gen) && isInt(raw.from) ? (raw as unknown as HostMsg) : null;
+    case "fragment":
+      return isInt(raw.gen) && isInt(raw.part, MAX_UPDATE_PARTS) && isInt(raw.of, MAX_UPDATE_PARTS) && raw.part < raw.of &&
+        isStr(raw.json, SNAPSHOT_PART_CHARS) ? raw as unknown as HostMsg : null;
+    case "industry": {
+      const d = raw.delta;
+      if (!isInt(raw.gen) || !isObj(d) || !Array.isArray(d.depots) || !Array.isArray(d.drones) || !isObj(d.sources) ||
+          d.depots.length > INDUSTRY_TUNING.maxDepots || d.drones.length > INDUSTRY_TUNING.maxDepots * INDUSTRY_TUNING.dronesPerDepot ||
+          !d.depots.every(x => isObj(x) && isStr(x.id, 160)) || !d.drones.every(x => isObj(x) && isStr(x.id, 160))) return null;
+      return raw as unknown as HostMsg;
+    }
     case "clock":
       if (!Array.isArray(raw.roster) || raw.roster.length > MAX_PLAYERS ||
           !raw.roster.every(p => isObj(p) && isStr(p.id) && isStr(p.name, MAX_NAME) && typeof p.host === "boolean" &&
@@ -300,6 +351,14 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       return raw as unknown as HostMsg;
     }
     case "impact": return decodeImpact(raw);
+    case "pilotContact": {
+      if (!isInt(raw.id) || !isStr(raw.other) || !isInt(raw.motion) || !isNum(raw.tick) ||
+        !isNum(raw.correctionM) || raw.correctionM < 0 || raw.correctionM > 1 || typeof raw.damage !== "boolean") return null;
+      const impact = decodeImpact({ ...raw, by: raw.other });
+      if (!impact || impact.contact.dvMps > 200 || Math.abs(Math.hypot(...impact.contact.direction) - 1) > 1e-3) return null;
+      return { t: "pilotContact", gen: impact.gen, id: raw.id, other: raw.other, motion: raw.motion, tick: raw.tick,
+        contact: impact.contact, correctionM: raw.correctionM, damage: raw.damage };
+    }
     case "pose":
       return decodePose(raw);
     default:

@@ -326,6 +326,18 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
 // ---------------------------------------------------------------------------
 
 export const ITEMS: ItemDef[] = [
+  {
+    id: "consumable_depot_kit",
+    name: "Depot kit",
+    uiDesc: "Deploys a shared storage and fabrication depot",
+    slot: "utility",
+    type: "consumable",
+    starter: true,
+    icon: "module_ping_array_mk1",
+    deployable: true,
+    stackMax: 3,
+    recipe: { fe_ni_metal: 125, silicates: 90 },
+  },
   // ── Starter: no research ────────────────────────────────────────────────
   {
     id: "consumable_hull_patch_kit",

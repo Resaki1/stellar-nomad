@@ -14,5 +14,6 @@ export function rekeySolePlayer(data: SaveData, local: PlayerId): boolean {
   if (m && m.verifier !== null) return false;
   data.players = { [local]: data.players[ids[0]] };
   data.world.members = { [local]: m ?? { name: "", verifier: null, joinedAt: 0 } };
+  data.world.industry.depots = data.world.industry.depots.map(d => d.by === ids[0] ? { ...d, by: local } : d);
   return true;
 }

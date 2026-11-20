@@ -2,6 +2,8 @@
  * Operation reducers: validate every affected slice, then return a commit that only assigns.
  * Nothing is written before validation finishes, so a rejection changes nothing.
  */
+import { industryObstruction } from "@/sim/industry/placement";
+import { reduceIndustry } from "@/sim/industry/reducer";
 import { ALL_ITEM_SLOTS, MATERIAL_NAMES, REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, getSiteDef, getTrialDef } from "@/data/content";
 import { hullRepairable } from "@/sim/ship/hull";
 import { MAX_BOOKMARKS } from "@/save/defaults";
@@ -19,6 +21,7 @@ import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
 
 export interface ReduceCtx {
+  players?: () => readonly PlayerState[];
   world: WorldState;
   /** null when `by` is not a player of this world. */
   player: PlayerState | null;
@@ -141,6 +144,11 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       };
     }
 
+    case "depot.rename":
+    case "depot.place":
+    case "depot.transfer":
+    case "depot.fabricate":
+    case "drone.configure":
     case "expedition.mark":
     case "expedition.give":
     case "cargo.jettison":
@@ -172,6 +180,21 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
   const p = player;
 
   switch (op.type) {
+    case "depot.rename":
+    case "depot.place":
+    case "depot.transfer":
+    case "depot.fabricate":
+    case "drone.configure":
+      return reduceIndustry(op, { ...ctx, player: p }, {
+        cargoRoom: () => cargoRemaining(p, world),
+        fuelRoomKg: () => {
+          const t = shipTuning(p, world);
+          const pendingKg = p.processing
+            ? Object.values(p.processing.reserved).reduce((a, b) => a + b, 0) * t.processingKgPerUnit - p.processing.committedKg
+            : 0;
+          return Math.max(0, t.tankKg - p.propellant.ordinaryKg - Math.max(0, pendingKg));
+        },
+      });
     case "expedition.mark": {
       if (typeof op.name !== "string" || (op.sourceId !== null && typeof op.sourceId !== "string")) return reject("invalid");
       const fixes = { ...world.rendezvous };
@@ -609,7 +632,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (op.mode !== "active" && op.mode !== "starter") return reject("invalid");
       if (!p.isDead) return reject("not_dead");
       const health = persistentShipConfig(p, completedSet(world)).maxHealth;
-      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids);
+      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose => industryObstruction(world.industry.depots, pose));
       const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
       // Recovery: full hull, empty ordinary tank, exactly the protected allowance, a cold ship.
       const protectedKg = getEffectiveTuning().recoveryAllowanceKg;
@@ -642,7 +665,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (points.some((x) => x.id === id)) return reject("already_done");
       if (points.length >= MAX_POINTS) return reject("no_capacity");
       const kits = Math.floor(p.modules.consumables[REPLICATION_KIT_ID] ?? 0);
-      const check = checkPlacement(op, p.ship, kits, asteroids, _placement);
+      const check = checkPlacement(op, p.ship, kits, asteroids, _placement, pose => industryObstruction(world.industry.depots, pose));
       if (check.refusal) return reject(check.refusal);
       const pos = op.positionKm, q = op.quaternion;
       const point = {

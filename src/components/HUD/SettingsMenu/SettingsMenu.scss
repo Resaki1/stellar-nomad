@@ -5,22 +5,6 @@
 // open button and the settings content that lives inside Panel's body.
 
 // ─── Open button (top-right, always visible) ────────────────────
-.hud__session-menu {
-  position: absolute;
-  top: 2vmax;
-  right: 2vmax;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: s.$space-2;
-  pointer-events: none;
-
-  @media (max-width: 1047px) {
-    // Leave room for the compact connection dot on the outward side.
-    right: max(16px, 2vmax);
-  }
-}
-
 .settings__open-button {
   pointer-events: auto;
   display: inline-flex;

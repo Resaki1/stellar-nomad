@@ -638,7 +638,7 @@ export async function migrate4Gates(d, ctx) {
   for (const [name, f] of Object.entries(fx)) {
     const r = await ev(`(() => { const a = ${G}.parse(${js(f.raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
     const a = r.a;
-    const c = { schema: a.schemaVersion === 6, idempotent: r.idempotent, starter: eq(a.world.replication.points, [starter]) };
+    const c = { schema: a.schemaVersion === 7, idempotent: r.idempotent, starter: eq(a.world.replication.points, [starter]) };
     for (const pid of Object.keys(f.raw.players)) {
       const p = a.players[pid];
       const rp = f.raw.players[pid];
@@ -675,7 +675,7 @@ export async function migrate4Gates(d, ctx) {
     const j2 = await ev(`${G}.fixtures.export(${js(id2)})`);
     const x1 = JSON.parse(j1), x2 = JSON.parse(j2);
     const parsedDirect = await ev(`${G}.parse(${js(fx[name].raw)})`);
-    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 6 };
+    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 7 };
     rt[name].pass = rt[name].dataEqual && rt[name].matchesPureParse && rt[name].schema;
   }
   // A dead v1 save at a remote pose boots dead and recovers at the starter point.
@@ -767,7 +767,7 @@ export async function live36Gates(d, ctx) {
   T.flyOutS = (t() - t0) / 1000;
   out.flyOut = { km: r3(dist(s0.posKm, s1.posKm)), pass: dist(s0.posKm, s1.posKm) > 0.3 };
 
-  // Place: the kit's hotbar key opens the preview with the name selected, type, Enter places (D16).
+  // Place: open the preview with its hotbar key, focus and type a name, then press Enter (D16).
   t0 = t();
   const kitSlot = (await player()).modules.hotbar.indexOf(KIT);
   out.kitSlot = kitSlot;
@@ -779,7 +779,8 @@ export async function live36Gates(d, ctx) {
     await ctx.wait(300);
     pv = await ev(`${R}.preview()`);
   }
-  out.inputFocused = await ev(`document.activeElement?.classList.contains("target-card__input") ?? false`);
+  await d.press("Tab");
+  out.inputFocused = await ev(`!!document.activeElement?.matches('.placement-card[data-placement="point"] input')`);
   await d.type("Forward camp");
   await d.press("Enter");
   await d.frames(10);

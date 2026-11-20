@@ -121,9 +121,13 @@ async function openSession(worker: Worker, worldId: string, signaling: Signaling
     content: r.content,
     store: { load: () => ({}), save: () => {} },
     // Our own record already is the world: keep it as the mirror (atoms read from it).
-    onSnapshot: () => {
+    onSnapshot: (rec) => {
       const active = getActiveSave();
-      if (active) client.mirror = active;
+      if (!active) return;
+      // A worker may already have dispatched a saved drone while the room opens.
+      active.data.world.industry = rec.data.world.industry;
+      client.mirror = active;
+      worldAuthority.deliver({ type: "industry.changed", by: "", delta: active.data.world.industry });
     },
   });
   const info: RoomInfo = { worldId, worldName: r.worldName, hostName, players: 1, maxPlayers: MAX_PLAYERS, protocol: PROTOCOL_VERSION, content: r.content };

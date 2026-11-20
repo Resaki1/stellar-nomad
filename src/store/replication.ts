@@ -7,6 +7,7 @@ import { Vector3 } from "three";
 import type { ReplicationPoint, SourceFinding } from "@/save/types";
 import { getWorldState } from "@/save/activeSave";
 import { getLocalPlayerShip } from "@/sim/entities";
+import { industryObstruction } from "@/sim/industry/placement";
 import { isFrameId } from "@/sim/frames";
 import { holdSavedPose } from "@/sim/shipPersistence";
 import { absoluteKm } from "@/sim/replication/clearance";
@@ -40,6 +41,11 @@ export const kitCountAtom = atom((get) => get(modulesAtom).consumables[REPLICATI
 
 /** Preview on/off (B). The pose follows the nose; the check runs at HUD rate. */
 export const placementModeAtom = atom(false);
+export const pointPlacementPendingAtom = atom(false);
+
+export const cancelPointPlacementAtom = atom(null, (get, set) => {
+  if (!get(pointPlacementPendingAtom)) set(placementModeAtom, false);
+});
 
 export const REFUSAL_TEXT: Record<string, string> = {
   invalid: "Invalid position",
@@ -47,6 +53,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   too_far: "Too far",
   near_body: "Too close to a body",
   near_rock: "Too close to a rock",
+  near_depot: "Too close to a depot",
   emergence_blocked: "Emergence blocked",
   no_capacity: "Point limit reached",
   dead: "Ship destroyed",
@@ -97,9 +104,9 @@ function nearestSourceKm(sources: readonly SourceFinding[], material: string): n
 }
 
 /** Recompute the preview pose and its check (HUD rate, preview mode only). */
-export function updatePlacementPreview(store: Store): void {
+export function updatePlacementPreview(store: Store): PlacementStatus | null {
   const ship = getLocalPlayerShip();
-  if (!ship) return;
+  if (!ship) return null;
   const p = placementPreview;
   const d = REPLICATION_TUNING.placeDistanceKm;
   _fwd.set(0, 0, 1).applyQuaternion(ship.quat);
@@ -117,23 +124,29 @@ export function updatePlacementPreview(store: Store): void {
   p.emergenceKm[2] = e[2];
   worldAuthority.world();
   const kits = store.get(kitCountAtom);
-  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check);
+  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check, pose => industryObstruction(getWorldState().industry.depots, pose));
   p.valid = p.check.refusal === null;
   const sources = getWorldState().discoveries.sources;
-  store.set(placementStatusAtom, {
+  const status: PlacementStatus = {
     refusal: p.check.refusal ? REFUSAL_TEXT[p.check.refusal] ?? p.check.refusal : null,
     kits,
     bodyAltKm: p.check.bodyAltKm,
     rockClearM: p.check.rockClearM,
     fuelSourceKm: nearestSourceKm(sources, "hydrates"),
     metalSourceKm: nearestSourceKm(sources, "fe_ni_metal"),
-  });
+  };
+  store.set(placementStatusAtom, status);
+  return status;
 }
 
 // ── Actions ──
 
 /** Place a point at the current preview pose. One operation: kit, record, activation. */
-export const placePointAtom = atom(null, (_get, set, payload: { name: string; opId?: string }): OperationOutcome => {
+export const placePointAtom = atom(null, (_get, set, payload: {
+  name: string;
+  opId?: string;
+  onSettled?: (outcome: OperationOutcome) => void;
+}): OperationOutcome => {
   const p = placementPreview;
   return runOperation(
     { type: "replication.place", opId: payload.opId ?? newOpId(), frameId: p.frameId, positionKm: [...p.positionKm], quaternion: [...p.quaternion], name: payload.name },
@@ -144,6 +157,7 @@ export const placePointAtom = atom(null, (_get, set, payload: { name: string; op
       } else if (o.status === "rejected") {
         set(addToastAtom, { audio: "reject", kind: "warn", message: "Cannot place point", detail: REFUSAL_TEXT[o.reason] ?? describeRejection(o) });
       }
+      payload.onSettled?.(o);
     },
   );
 });
@@ -191,7 +205,7 @@ export function updateNearbyPoint(store: Store): void {
 /** Where recovery would put the ship now (death screen preview; the authority decides). */
 export function previewRecovery(store: Store, mode: "active" | "starter"): RecoveryDestination {
   worldAuthority.world();
-  return resolveRecovery(store.get(replicationPointsAtom), store.get(playerReplicationAtom).activeId, mode, worldAuthority.asteroids);
+  return resolveRecovery(store.get(replicationPointsAtom), store.get(playerReplicationAtom).activeId, mode, worldAuthority.asteroids, pose => industryObstruction(getWorldState().industry.depots, pose));
 }
 
 /** The last accepted recovery (toast and harness). */

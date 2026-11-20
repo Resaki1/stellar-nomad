@@ -3,9 +3,10 @@
  * a durable pending record (a reload or reconnect retries the same seq/opId), commit application
  * and heartbeat. Used by guests and by the host's own main thread.
  */
+import { applyIndustryDelta } from "@/sim/industry/simulation";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
-import { HOST_SILENCE_MS, PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
+import { HOST_SILENCE_MS, PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PilotContactMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
 import type { ClientLink, Clock } from "./ports";
 
 export { HOST_SILENCE_MS } from "./protocol";
@@ -45,6 +46,7 @@ export interface GuestSessionOptions {
   onSnapshot?: (rec: { meta: SaveMeta; data: SaveData }, welcome: WelcomeMsg) => void;
   onState?: (s: GuestState, detail?: RefuseReason) => void;
   onPose?: (p: PoseMsg) => void;
+  onPilotContact?: (c: PilotContactMsg) => void;
   onClock?: (c: Extract<HostMsg, { t: "clock" }>) => void;
 }
 
@@ -55,6 +57,8 @@ export class GuestSession {
   private welcome: WelcomeMsg | null = null;
   private parts: string[] = [];
   private partsGot = 0;
+  private updateParts: string[] = [];
+  private updatePartCount = 0;
   private lastHostMs = -Infinity;
   private streamSeq = 0;
   // Infinity hides a dead pilot. Respawn fences pre-death poses still in the unordered channel.
@@ -134,6 +138,11 @@ export class GuestSession {
         return this.onSnap(msg);
       case "commit":
         return this.onCommit(msg);
+      case "fragment":
+        if (channel === "cmd") this.onFragment(msg);
+        return;
+      case "industry":
+        return this.onIndustry({ type: "industry.changed", by: "", delta: msg.delta });
       case "settled":
         return this.onSettled(msg);
       case "watermark":
@@ -142,7 +151,7 @@ export class GuestSession {
         if (this.rec.pending && this.rec.pending.seq >= msg.from) this.sendPending();
         return;
       case "clock":
-        if (!this.o.local) this.link?.send("cmd", { t: "pong", gen: this.gen, stamp: msg.hostMonoMs });
+        this.link?.send("cmd", { t: "pong", gen: this.gen, stamp: msg.hostMonoMs, localMonoMs: this.o.clock.monoMs() });
         this.o.onClock?.(msg);
         this.pump();
         return;
@@ -156,6 +165,9 @@ export class GuestSession {
         if (this.state === "joined" && channel === "cmd" && msg.by !== this.playerId) {
           this.o.onEvent?.({ type: "ship.contact", by: msg.by, ...msg.contact });
         }
+        return;
+      case "pilotContact":
+        if (this.state === "joined" && !this.storageFailed && !this.hostClosing && channel === "cmd") this.o.onPilotContact?.(msg);
         return;
       case "pose": {
         if (this.state !== "joined" || channel !== "pose" || msg.id === this.playerId) return;
@@ -247,6 +259,8 @@ export class GuestSession {
     if (++this.partsGot < s.of) return;
     const rec = JSON.parse(this.parts.join("")) as { meta: SaveMeta; data: SaveData; deadPilots: PlayerId[] };
     this.parts = [];
+    this.updateParts = [];
+    this.updatePartCount = 0;
     const pid = this.playerId;
     const me = pid ? rec.data.players[pid] : undefined;
     if (!me || !this.welcome) return;
@@ -262,6 +276,32 @@ export class GuestSession {
     this.o.onSnapshot?.(rec, this.welcome);
     if (this.rec.pending) this.sendPending();
     else this.pump();
+  }
+
+  private onFragment(part: Extract<HostMsg, { t: "fragment" }>): void {
+    if (!this.mirror) return;
+    if (part.part === 0) {
+      this.updateParts = [];
+      this.updatePartCount = part.of;
+    }
+    if (part.of !== this.updatePartCount || part.part !== this.updateParts.length) return;
+    this.updateParts.push(part.json);
+    if (this.updateParts.length !== part.of) return;
+    const json = this.updateParts.join("");
+    this.updateParts = [];
+    this.updatePartCount = 0;
+    let msg: HostMsg | null;
+    try { msg = decodeHostMsg(JSON.parse(json)); } catch { return; }
+    if (!msg || (msg.t !== "commit" && msg.t !== "industry") || msg.gen !== this.gen) return;
+    if (msg.t === "commit") this.onCommit(msg);
+    if (msg.t === "industry") this.onIndustry({ type: "industry.changed", by: "", delta: msg.delta });
+  }
+
+  private onIndustry(event: Extract<WorldEvent, { type: "industry.changed" }>): void {
+    const world = this.mirror?.data.world;
+    if (!world) return;
+    world.industry = applyIndustryDelta(world.industry, event.delta);
+    this.o.onEvent?.(event);
   }
 
   private onCommit(c: Extract<HostMsg, { t: "commit" }>): void {
@@ -291,6 +331,9 @@ export class GuestSession {
         case "wreck.removed":
           w.wrecks = w.wrecks.filter((x) => x.id !== e.wreckId);
           break;
+        case "industry.changed":
+          w.industry = applyIndustryDelta(w.industry, e.delta);
+          break;
         case "research.changed":
           w.research = { ...w.research, completedNodes: [...e.completedNodes] };
           break;
@@ -307,10 +350,12 @@ export class GuestSession {
     const me = pid ? m.data.players[pid] : undefined;
     if (me && c.slices.player) {
       // The receiver may have flown since its last sample. Keep that burn when a delivery crosses it.
-      const fuel = c.events.find(e => e.type === "expedition.given" && e.to === pid && e.kind === "fuel");
-      const live = fuel && this.o.telemetry?.()?.propellant;
+      const gift = c.events.find(e => e.type === "expedition.given" && e.to === pid && e.kind === "fuel");
+      const depot = c.events.find(e => e.type === "industry.fuelTransferred" && e.by === pid);
+      const deltaKg = gift?.type === "expedition.given" ? gift.amount : depot?.type === "industry.fuelTransferred" ? depot.deltaKg : 0;
+      const live = deltaKg && this.o.telemetry?.()?.propellant;
       Object.assign(me, c.slices.player);
-      if (live && fuel?.type === "expedition.given") me.propellant = { ...live, ordinaryKg: live.ordinaryKg + fuel.amount };
+      if (live) me.propellant = { ...live, ordinaryKg: Math.max(0, live.ordinaryKg + deltaKg) };
     }
     c.events.forEach((e) => this.o.onEvent?.(e));
   }

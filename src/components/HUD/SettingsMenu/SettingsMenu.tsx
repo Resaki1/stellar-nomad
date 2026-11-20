@@ -8,7 +8,7 @@ import {
 } from "@/store/simTime";
 import "./SettingsMenu.scss";
 import { SetStateAction, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
-import { ChevronLeft, Menu as MenuIcon } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import {
   SetAtom,
   Settings,
@@ -26,7 +26,9 @@ import { resetAllDevTuning } from "@/store/devTuning";
 import { setCursorNeeded } from "@/input/pointerLock";
 import AbandonShip from "./AbandonShip";
 import Panel from "../Shell/Panel";
-import { displayKey, keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
+import { depotPlacementAtom } from "@/store/industryHud";
+import { keybindsAtom, resetKeybindsAtom } from "@/store/keybinds";
+import { placementModeAtom } from "@/store/replication";
 import { useDetectGPU } from "@react-three/drei";
 import { loadShipState, persistedAbsoluteKm } from "@/sim/shipPersistence";
 import { newOpId, runOperation } from "@/store/operations";
@@ -65,7 +67,6 @@ import {
 } from "@/sim/nearbyStars";
 
 import FullscreenControl from "@/components/AppShell/FullscreenControl";
-import CoopPill from "@/components/Coop/CoopPill";
 import CoopSettings from "@/components/Coop/CoopSettings";
 
 enum SubMenu {
@@ -913,6 +914,7 @@ function DevControls({
 
 
 const SettingsMenu = ({ children }: { children: ReactNode }) => {
+  const store = useStore();
   const [settings, setSettings] = useAtom(settingsAtom);
   const [isOpen, setIsOpen] = useAtom(settingsIsOpenAtom);
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenu | null>(null);
@@ -1052,8 +1054,6 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
     handleClose();
   }, [handleClose]);
 
-  const toggleMenu = useCallback(() => setIsOpen((prev) => !prev), [setIsOpen]);
-
   // Finish Escape navigation on keyup: the opener must not also close the menu,
   // and steering must not reacquire pointer lock while the browser still owns Escape.
   const keybindsRef = useRef(keybinds);
@@ -1083,7 +1083,8 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
         }
         return;
       }
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+          store.get(placementModeAtom) || store.get(depotPlacementAtom)) return;
 
       const key = e.key.toLowerCase();
       if (!e.repeat && keybindsRef.current.toggleSettings.includes(key)) {
@@ -1108,9 +1109,8 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", cancelEscape);
     };
-  }, [activeSubMenu, resumeFlight, setIsOpen]);
+  }, [activeSubMenu, resumeFlight, setIsOpen, store]);
 
-  const menuKey = keybinds.toggleSettings.find(key => key !== "escape") ?? keybinds.toggleSettings[0];
   const title = activeSubMenu
     ? activeSubMenu.charAt(0).toUpperCase() + activeSubMenu.slice(1)
     : "Ship menu";
@@ -1118,19 +1118,6 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
 
   return (
     <>
-      <div className="hud__session-menu">
-        <CoopPill />
-        <button
-          className="settings__open-button"
-          onClick={toggleMenu}
-          aria-label="Open ship menu"
-        >
-          <MenuIcon size={16} strokeWidth={1.75} aria-hidden />
-          <span>Menu</span>
-          {menuKey && <kbd>{displayKey(menuKey)}</kbd>}
-        </button>
-      </div>
-
       {isOpen && (
         <Panel
           title={title}

@@ -9,6 +9,13 @@ import type { FrameId } from "@/sim/frames";
 import type { TransitFieldArrival } from "@/sim/ship/transitDrive";
 import { atom } from "jotai";
 
+/** Placed structures use the same aim hold for interaction and navigation. */
+export const STRUCTURE_FOCUS_TIME_S = 1;
+
+export function isStructurePoi(id: string): boolean {
+  return id.startsWith("depot:") || id.startsWith("point:");
+}
+
 export type POIDef = {
   id: string;
   name: string;
@@ -28,7 +35,7 @@ export type POIDef = {
   /** Drawn object's radius (km): the marker label sits below its on-screen disc, not on its glow. */
   objectRadiusKm?: number;
   /** "pilot": another player's ship (green, name always shown). */
-  kind?: "pilot";
+  kind?: "pilot" | "depot";
   /** False: gaze never makes it a transit destination. */
   targetable?: boolean;
 };
@@ -50,7 +57,7 @@ export type ProjectedPOI = {
   focused: boolean;
   /** On-screen radius of the drawn object as a fraction of viewport height (0 when none). */
   objectRadiusFrac: number;
-  kind?: "pilot";
+  kind?: "pilot" | "depot";
 };
 
 /**
@@ -75,6 +82,8 @@ export const poiBuffer = {
   targetedId: null as string | null,
   /** A destination chosen from a menu: looking away does not clear it. */
   pinnedId: null as string | null,
+  /** A manually cleared target stays clear while the nose still points at it. */
+  ignoreGazeUntilLookAway: null as string | null,
   /** Transit ETA in seconds for the targeted POI (null if not targeted). */
   targetedEtaS: null as number | null,
   /** Gaze progress 0..1 toward locking a new POI target. */

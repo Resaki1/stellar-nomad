@@ -34,6 +34,10 @@ const SPECULATIVE_DV_MPS = 0.05;
 const LENGTH_UNIT = 10;
 /** Below this closing speed along the last contact normal, no bounce: thrust adds 1–2 m/s per step, and e > 0 turned resting contact into ±0.3 m/s chatter (MEASURED). */
 const RESTITUTION_MIN_SPEED = 2.5;
+// Debris bounces off fixed geometry but transfers no local-only impulse to a pilot or another fragment.
+const SHIP_GROUP = 0x00010002;
+const FIXED_GROUP = 0x00020005;
+const DEBRIS_GROUP = 0x00040002;
 
 let _loading: Promise<PhysicsWorldFactory> | null = null;
 
@@ -97,6 +101,7 @@ class RapierWorld implements PhysicsWorld {
   private readonly R: Rapier;
   private readonly world: RWorld;
   private readonly fixed = new Map<number, RCollider>();
+  private readonly debris = new Map<ColliderHandle, RBody>();
   private body: RBody | null = null;
   private shipCollider: RCollider | null = null;
   private shipExtents: ShapeBounds | null = null;
@@ -160,12 +165,51 @@ class RapierWorld implements PhysicsWorld {
   }
 
   addFixedCollider(shape: ColliderShape, pose: Readonly<BodyPose>): ColliderHandle {
-    const d = this.material(shapeDesc(this.R, shape));
+    const d = this.material(shapeDesc(this.R, shape)).setCollisionGroups(FIXED_GROUP);
     this._q.x = pose.qx; this._q.y = pose.qy; this._q.z = pose.qz; this._q.w = pose.qw;
     d.setTranslation(pose.x, pose.y, pose.z).setRotation(this._q);
     const c = this.world.createCollider(d);
     this.fixed.set(c.handle, c);
     return c.handle as ColliderHandle;
+  }
+
+  addDebris(radiusM: number, pose: Readonly<BodyPose>, velocity: Readonly<BodyVelocity>): ColliderHandle {
+    this._q.x = pose.qx; this._q.y = pose.qy; this._q.z = pose.qz; this._q.w = pose.qw;
+    this._v.x = velocity.wx; this._v.y = velocity.wy; this._v.z = velocity.wz;
+    const body = this.world.createRigidBody(this.R.RigidBodyDesc.dynamic()
+      .setTranslation(pose.x, pose.y, pose.z).setRotation(this._q)
+      .setLinvel(velocity.vx, velocity.vy, velocity.vz).setAngvel(this._v)
+      .setLinearDamping(0.7).setCcdEnabled(true));
+    const collider = this.world.createCollider(this.R.ColliderDesc.ball(radiusM)
+      .setRestitution(0.45).setFriction(0.2).setCollisionGroups(DEBRIS_GROUP), body);
+    const handle = collider.handle as ColliderHandle;
+    this.debris.set(handle, body);
+    return handle;
+  }
+
+  readDebris(handle: ColliderHandle, out: BodyPose): boolean {
+    const body = this.debris.get(handle);
+    if (!body) return false;
+    const t = body.translation(this._t);
+    out.x = t.x; out.y = t.y; out.z = t.z;
+    const q = body.rotation(this._r);
+    out.qx = q.x; out.qy = q.y; out.qz = q.z; out.qw = q.w;
+    return true;
+  }
+
+  removeDebris(handle: ColliderHandle): void {
+    const body = this.debris.get(handle);
+    if (!body) return;
+    this.debris.delete(handle);
+    this.world.removeRigidBody(body);
+  }
+
+  translateDebris(dx: number, dy: number, dz: number): void {
+    this.debris.forEach(body => {
+      const t = body.translation(this._t);
+      this._v.x = t.x + dx; this._v.y = t.y + dy; this._v.z = t.z + dz;
+      body.setTranslation(this._v, false);
+    });
   }
 
   setFixedColliderPose(handle: ColliderHandle, pose: Readonly<BodyPose>): void {
@@ -242,7 +286,7 @@ class RapierWorld implements PhysicsWorld {
     this._q.x = 0; this._q.y = 0; this._q.z = 0; this._q.w = 1;
     const [cx, cy, cz] = config.comM;
     this.com.x = cx; this.com.y = cy; this.com.z = cz;
-    const d = this.material(shapeDesc(this.R, config.shape))
+    const d = this.material(shapeDesc(this.R, config.shape)).setCollisionGroups(SHIP_GROUP)
       .setMassProperties(config.massKg, { x: cx, y: cy, z: cz }, this._v, this._q);
     this.shipCollider = this.world.createCollider(d, this.body);
     this.shipRestitution = this.config.restitution;
@@ -429,6 +473,7 @@ class RapierWorld implements PhysicsWorld {
 
   dispose(): void {
     this.fixed.clear();
+    this.debris.clear();
     this.body = null;
     this.shipCollider = null;
     this.world.free();

@@ -1,11 +1,11 @@
 /** `__phys` (dev): near-field stats and synthetic colliders around the live ship. */
 import { Quaternion, Vector3 } from "three";
 import { getLocalPlayerShip } from "@/sim/entities";
-import { PHYSICS_MAX_SPEED_KMPS, nearField, nearFieldLoadInfo, type NearFieldContact } from "@/sim/physics/nearField";
+import { MAX_DYNAMIC_DEBRIS, NearField, PHYSICS_MAX_SPEED_KMPS, nearField, nearFieldLoadInfo, physicsWorldConfig, type NearFieldContact } from "@/sim/physics/nearField";
 import { lumpyHullPoints, simulatePhysics } from "@/sim/physics/physicsSim";
 import { shipBodyAxes } from "@/sim/ship/stepShip";
 import { SYSTEM_FRAME_ID, frameOriginKm } from "@/sim/frames";
-import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
+import { CPU_PASS_PHYSICS, PASS, perf } from "@/components/space/perf/perfProfiler";
 import type { ColliderShape } from "@/sim/physics/types";
 import type { createStore } from "jotai";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
@@ -29,6 +29,9 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { cargoAtom } from "@/store/cargo";
 import { physicsDebug } from "@/store/physicsTuningPrefs";
 import { playerInput } from "@/input/playerInput";
+import { loadRapierFactory } from "@/sim/physics/rapierBackend";
+import { createShipState } from "@/sim/ship/shipState";
+import { FIXED_DT } from "@/sim/ship/shipConstants";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -229,6 +232,7 @@ export function createPhysicsHarness(store: Store) {
         colliders: nearField.colliderCount(),
         collidersByTag: nearField.colliderCountsByTag(),
         engineColliders: nearField.engineColliderCount(),
+        debris: nearField.debrisCount(),
         contactsThisStep: contacts,
         lastOwner: nearField.lastOwner,
         stepMs: { last: nearField.lastStepMs, perFrame: nearField.recentStepMs() },
@@ -239,6 +243,52 @@ export function createPhysicsHarness(store: Store) {
         maxSpeedMps: nearField.maxSpeedKmps * 1000,
         rebaseKm: nearField.rebaseKm,
       };
+    },
+    m5: {
+      coast(vKmps: [number, number, number]): void {
+        playerInput.decoupled = true;
+        ship().velKmps.fromArray(vKmps);
+      },
+      async debris() {
+        const field = new NearField();
+        field.attachWorld((await loadRapierFactory())(physicsWorldConfig()));
+        const s = createShipState();
+        s.frameId = SYSTEM_FRAME_ID;
+        const base = 42e6;
+        s.posKm.set(base, 0, 0);
+        s.prevPosKm.copy(s.posKm);
+        const o = s.posKm.clone(), p = new Vector3(), q = new Quaternion();
+        try {
+          field.addCollider({ kind: "box", halfX: 6, halfY: 6, halfZ: 1 }, SYSTEM_FRAME_ID, { x: base, y: 0, z: 0.015 });
+          field.resolve(s, 0);
+          const v = { vx: 0, vy: 0, vz: 45, wx: 0, wy: 1, wz: 0 };
+          const h = field.addDebris(SYSTEM_FRAME_ID, [base, 0, -0.006], 0.5, v);
+          if (h === null) throw new Error("debris did not enter the near field");
+          for (let i = 0; i < MAX_DYNAMIC_DEBRIS; i++) {
+            field.addDebris(SYSTEM_FRAME_ID, [base, 0.085 + i * 0.001, 0], 0.5, v);
+          }
+          const peakBodies = field.debrisCount();
+          let maxZM = -Infinity, lastZM = 0, shipContacts = 0, rebaseDeltaM = 0;
+          for (let i = 1; i <= Math.ceil(1.95 / FIXED_DT); i++) {
+            if (i === 136) {
+              s.posKm.x += 2.01;
+              s.prevPosKm.copy(s.posKm);
+            }
+            field.resolve(s, i);
+            shipContacts += field.lastStepContacts(() => {});
+            const prevX = p.x;
+            if (field.readDebris(h, o, p, q)) {
+              maxZM = Math.max(maxZM, p.z);
+              lastZM = p.z;
+              if (i === 136) rebaseDeltaM = Math.abs(p.x - prevX);
+            }
+          }
+          return { maxZM, lastZM, peakBodies, remaining: field.debrisCount(), shipContacts, rebaseDeltaM,
+            rebases: field.counters.rebases, shipDeltaM: (s.posKm.x - o.x - 2.01) * 1000 };
+        } finally {
+          field.dispose();
+        }
+      },
     },
     /** Flat local hull points of the ship collider (m), for analytic ground truth. */
     shipHull(): number[] {
@@ -511,6 +561,12 @@ export function createPhysicsHarness(store: Store) {
       enabled: (): boolean => perf.enabled,
       reset: (): void => perf.reset(),
       step: () => perf.snapshot().cpuPasses.find((c) => c.label === CPU_PASS_PHYSICS)?.cpu ?? null,
+      local() {
+        const s = perf.snapshot();
+        return { frames: s.frames, droppedFrames: s.droppedFrames, drawCalls: s.counters.drawCalls,
+          physics: s.cpuPasses.find(p => p.label === CPU_PASS_PHYSICS)?.cpu ?? null,
+          localGpu: s.passes.find(p => p.label === PASS.local)?.gpu ?? null, totalCpu: s.cpuTotalMs };
+      },
     },
     dev: {
       /** Drawn dev colliders with their live centre distance from the ship. */

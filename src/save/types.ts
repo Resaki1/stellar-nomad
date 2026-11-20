@@ -3,6 +3,7 @@
  * keyed by player id, so a co-op host's world carries every guest's progress.
  */
 import type { ItemSlot } from "@/data/content";
+import type { IndustryState } from "@/sim/industry/types";
 
 export type PlayerId = string;
 export type WorldId = string;
@@ -146,6 +147,7 @@ export interface WorldState {
   research: SharedResearchState;
   discoveries: DiscoveryState;
   replication: ReplicationState;
+  industry: IndustryState;
   /** Latest shared navigation fix per pilot, in its orbital frame. */
   rendezvous: Record<PlayerId, Rendezvous>;
   /** Bounded, oldest first (MAX_RECEIPTS). */
@@ -311,6 +313,8 @@ export interface PlayerState {
   minedLifetime: number;
   /** Cumulative inbound gifts, allowing an older fuel sample to retain a crossed delivery. */
   receivedFuelKg: number;
+  /** Monotonic outbound depot transfers prevent stale pilot telemetry refunding a deposit. */
+  depositedFuelKg: number;
   propellant: PropellantState;
   power: PowerState;
   processing: ProcessingBatch | null;

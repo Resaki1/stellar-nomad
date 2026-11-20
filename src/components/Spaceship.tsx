@@ -41,6 +41,7 @@ import { isSimPaused } from "@/sim/simPause";
 import { beginArrival, repositionState, resetReposition, takeReposition } from "@/sim/ship/reposition";
 import { resetTimedEffectsAtom } from "@/store/timedEffects";
 import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
+import { clearPilotContacts, drainPilotContacts } from "@/sim/physics/pilotContactInbox";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
 import { CPU_PASS_PHYSICS, perf } from "@/components/space/perf/perfProfiler";
@@ -87,6 +88,7 @@ const _feedContact = (c: Readonly<NearFieldContact>): void => _impacts.contact(c
 const _impactFo = new Vector3();
 const _impactsThisFrame: Impact[] = [];
 const _impactPool: Impact[] = [];
+const _pilotImpacts: Impact[] = [];
 const collectImpact = (im: Readonly<Impact>): void => {
   const k = _impactsThisFrame.length;
   if (!_impactPool[k]) _impactPool[k] = { ...im };
@@ -237,7 +239,8 @@ const SpaceShip = memo(() => {
       shake: Math.min(1, im.dvMps / 60),
     });
     if (!fatal) {
-      worldAuthority.reportImpact({
+      // Both participants receive the host's pilot contact. Only local geometry contacts need a VFX relay.
+      if (im.colliderId >= 0) worldAuthority.reportImpact({
         frameId: im.hasPoint ? im.frameId : ship.frameId,
         positionKm: im.hasPoint ? [im.pxKm, im.pyKm, im.pzKm] : [ship.posKm.x, ship.posKm.y, ship.posKm.z],
         direction: [im.nx, im.ny, im.nz],
@@ -282,6 +285,8 @@ const SpaceShip = memo(() => {
     resetMouseSteering();
     killTransitDrive();
     nearField.markReseed();
+    localRenderPose.motion++;
+    clearPilotContacts();
     _impacts.reset();
     shipView.forward.set(0, 0, 1).applyQuaternion(ship.quat);
     holdSavedPose(false);
@@ -299,6 +304,9 @@ const SpaceShip = memo(() => {
     const dead = store.get(isDeadAtom);
     if (dead) {
       if (!wasDeadRef.current) {
+        localRenderPose.motion++;
+        clearPilotContacts();
+        nearField.markReseed();
         shipRef.current.visible = false;
         wasDeadRef.current = true;
         killTransitDrive();
@@ -394,6 +402,30 @@ const SpaceShip = memo(() => {
     else physicsAcc.current += Math.min(delta, MAX_FRAME_DT);
 
     _vPrev.copy(ship.velKmps);
+    _pilotImpacts.length = 0;
+    if (isSimPaused() || devSpeed !== null || isTransitBurning(tBuf.phase) || tBuf.speedKmps > 0 ||
+      tBuf.keyHeld || tBuf.keyTapped) {
+      clearPilotContacts();
+    } else {
+      drainPilotContacts(ship, localRenderPose.motion, performance.now(), ({ id, correctionM, damage, contact }) => {
+        const [nx, ny, nz] = contact.direction;
+        const dv = contact.dvMps / 1000;
+        ship.velKmps.x += nx * dv;
+        ship.velKmps.y += ny * dv;
+        ship.velKmps.z += nz * dv;
+        if (correctionM > 0) {
+          const dx = nx * correctionM / 1000, dy = ny * correctionM / 1000, dz = nz * correctionM / 1000;
+          ship.posKm.x += dx; ship.posKm.y += dy; ship.posKm.z += dz;
+          ship.prevPosKm.x += dx; ship.prevPosKm.y += dy; ship.prevPosKm.z += dz;
+          updateShipAbsolute(ship);
+        }
+        if (damage && contact.dvMps >= getPhysicsTuning().impactMinSpeedMps) {
+          const [pxKm, pyKm, pzKm] = contact.positionKm;
+          _pilotImpacts.push({ colliderId: -id, dvMps: contact.dvMps, prevDvMps: 0, nx, ny, nz,
+            hasPoint: true, pxKm, pyKm, pzKm, frameId: contact.frameId, contacts: 1, firstStep: _stepSerial });
+        }
+      });
+    }
     let stepsRun = 0;
     while (physicsAcc.current >= FIXED_DT) {
       // Transit first: its speed this step feeds stepShip; the resource step bills it.
@@ -519,6 +551,7 @@ const SpaceShip = memo(() => {
     // ── Asteroid impacts: damage + feedback, once per impact (after the origin moved) ──
     _impactsThisFrame.length = 0;
     _impacts.drain(collectImpact);
+    _impactsThisFrame.push(..._pilotImpacts);
     let died = false;
     for (let i = 0; i < _impactsThisFrame.length; i++) {
       if (applyImpact(_impactsThisFrame[i], ship)) {

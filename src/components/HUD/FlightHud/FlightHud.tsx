@@ -93,7 +93,7 @@ export default function FlightHud() {
       <div ref={hintFreeLook} className="flight-hud__hint" style={{ opacity: 0 }}>
         <span className="flight-hud__hint-key">[{freeLookKey}]</span> free look
       </div>
-      <div ref={hintLock} className="flight-hud__hint flight-hud__hint--quiet" style={{ opacity: 0 }}>
+      <div ref={hintLock} className="flight-hud__hint flight-hud__hint--quiet flight-hud__hint--lock" style={{ opacity: 0 }}>
         click to steer
       </div>
       {!hintRetired && <div ref={hintRelease} className="flight-hud__hint flight-hud__hint--quiet flight-hud__hint--release" style={{ opacity: 0 }}>

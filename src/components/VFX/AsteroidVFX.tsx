@@ -2,6 +2,10 @@
 
 import { memo, useCallback, useEffect, useRef } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
+import { useFrame } from "@react-three/fiber";
+import { Group } from "three";
+import { frameOriginKm } from "@/sim/frames";
+import { useWorldOrigin } from "@/sim/worldOrigin";
 
 import {
   vfxEventsAtom,
@@ -17,6 +21,7 @@ import FlashEffect from "./FlashEffect";
 // ---------------------------------------------------------------------------
 const MAX_CONCURRENT_EFFECTS = 12; // prevent frame drops from too many simultaneous explosions
 const VFX_CLEANUP_TIMEOUT_S = 3; // auto-cleanup stale events
+const ORIGIN: [number, number, number] = [0, 0, 0];
 
 // ---------------------------------------------------------------------------
 // Single-event renderer
@@ -30,6 +35,16 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
 }) {
   const debrisDone = useRef(false);
   const flashDone = useRef(false);
+  const group = useRef<Group>(null!);
+  const worldOrigin = useWorldOrigin();
+  useFrame(() => {
+    const anchor = event.debrisAt;
+    if (!anchor || !group.current) return;
+    const p = frameOriginKm(anchor.frameId, group.current.position);
+    const rel = anchor.positionKm;
+    p.sub(worldOrigin.worldOriginKm);
+    p.set((p.x + rel[0]) * 1000, (p.y + rel[1]) * 1000, (p.z + rel[2]) * 1000);
+  }, -0.25);
 
   const checkAllDone = useCallback(() => {
     if (debrisDone.current && flashDone.current) {
@@ -38,9 +53,10 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
   }, [event.id, onComplete]);
 
   return (
-    <>
+    <group ref={group} position={event.debrisAt ? event.position : ORIGIN}>
       <DebrisEffect
-        position={event.position}
+        position={event.debrisAt ? ORIGIN : event.position}
+        dynamicAnchor={event.debrisAt}
         radiusM={event.radiusM}
         type={event.type}
         impactDirection={event.impactDirection}
@@ -50,7 +66,7 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
         }}
       />
       <FlashEffect
-        position={event.position}
+        position={event.debrisAt ? ORIGIN : event.position}
         radiusM={event.radiusM}
         type={event.type}
         onComplete={() => {
@@ -58,7 +74,7 @@ const VFXEventRenderer = memo(function VFXEventRenderer({
           checkAllDone();
         }}
       />
-    </>
+    </group>
   );
 });
 

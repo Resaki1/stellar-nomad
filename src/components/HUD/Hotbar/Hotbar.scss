@@ -9,6 +9,11 @@
   display: flex;
   gap: s.$space-1;
   pointer-events: auto;
+
+  // Keep all ten slots beside the 280px flight instruments in a smaller desktop window.
+  @media (pointer: fine) and (min-width: 820px) and (max-width: 1099px) {
+    left: calc((100% - 280px) / 2);
+  }
 }
 
 // While a consumable drag is active, lift the hotbar above any open

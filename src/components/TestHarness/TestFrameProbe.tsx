@@ -19,9 +19,19 @@ export default function TestFrameProbe(): null {
       testProbe.renderer = null;
     };
   }, [gl]);
-  useFrame(() => {
+  useFrame(({ clock }) => {
     testProbe.frames++;
-    testProbe.frameHooks.forEach((hook) => hook());
+    testProbe.frameHooks.forEach((hook) => hook(clock.elapsedTime * 1000));
   });
+  return null;
+}
+
+/** Run inside the local-content portal so the harness can sample actual rendered meshes. */
+export function TestLocalSceneProbe(): null {
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    testProbe.scene = scene;
+    return () => { testProbe.scene = null; };
+  }, [scene]);
   return null;
 }

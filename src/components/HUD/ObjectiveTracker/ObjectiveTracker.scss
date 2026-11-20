@@ -36,6 +36,12 @@
     }
   }
 
+  // Allow a gutter for notifications and the transit panel on either side.
+  @media (min-width: 820px) and (max-width: 1023px) {
+    max-width: calc(100vw - 640px);
+    min-width: min(240px, calc(100vw - 640px));
+  }
+
   // Phones (§2.7): below the 2-item notification stack (top 60 + 2 × 44 + gap); the transit panel takes this slot.
   @media (max-width: 599px) {
     top: 160px;

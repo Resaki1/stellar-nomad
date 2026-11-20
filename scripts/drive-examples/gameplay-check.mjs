@@ -180,7 +180,10 @@ export default async function gameplayCheck(d) {
         const r = await ev(`(() => { const a = ${G}.parse(${js(raw)}); const b = ${G}.parse(a); const c = ${G}.parse(JSON.parse(JSON.stringify(b))); return { a, idempotent: JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(b) === JSON.stringify(c) }; })()`);
         const a = r.a;
         const p = a.players[me];
-        const c = { schema: a.schemaVersion === 6, idempotent: r.idempotent, receipts: eq(a.world.receipts, []) };
+        const c = {
+          schema: a.schemaVersion === 7, idempotent: r.idempotent, receipts: eq(a.world.receipts, []),
+          emptyIndustry: !a.world.industry.depots.length && !a.world.industry.drones.length,
+        };
         const v1p = raw.players[me];
         if (name !== "malformed") {
           c.pose = eq(p.ship, v1p.ship);

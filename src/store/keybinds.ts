@@ -12,6 +12,7 @@ export type KeybindAction =
   | "toggleHud"
   | "toggleCrew"
   | "toggleProjects"
+  | "toggleIndustry"
   | "mine"
   | "inspect"
   | "togglePulseMining"
@@ -54,6 +55,7 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "toggleLoadout", label: "Loadout", category: "actions" },
   { id: "toggleCrew", label: "Crew", category: "actions" },
   { id: "toggleProjects", label: "Projects and records", category: "actions" },
+  { id: "toggleIndustry", label: "Industry", category: "actions" },
   { id: "mine", label: "Mine / Cancel", category: "actions" },
   { id: "inspect", label: "Interact", category: "actions" },
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
@@ -92,6 +94,7 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   toggleCrafting: ["c"],
   toggleLoadout: ["l"],
   toggleProjects: ["p"],
+  toggleIndustry: ["b"],
   toggleCrew: ["u"],
   mine: ["m"],
   inspect: ["g"],
@@ -132,6 +135,7 @@ const V2_MOVED: Record<string, string[]> = { toggleCrafting: ["f"], toggleProjec
 const V2_DEFAULTS: Record<string, string[]> = { ...DEFAULT_KEYBINDS, ...V2_MOVED };
 // Crew did not exist in v2. A legacy custom U binding belongs to its original action.
 delete V2_DEFAULTS.toggleCrew;
+delete V2_DEFAULTS.toggleIndustry;
 delete V2_DEFAULTS.toggleHud;
 V2_DEFAULTS.toggleSettings = ["escape"];
 
@@ -173,6 +177,11 @@ export function migrateKeybindsV2(saved: Partial<Record<string, string[]>>): Key
   for (const a of moving) result[a] = [];
   for (const a of moving) {
     result[a] = DEFAULT_KEYBINDS[a].filter((k) => !(Object.keys(result) as KeybindAction[]).some((o) => o !== a && result[o].includes(k)));
+  }
+  if (saved.toggleIndustry === undefined) {
+    result.toggleIndustry = DEFAULT_KEYBINDS.toggleIndustry.filter(key =>
+      !Object.keys(result).some(action => action !== "toggleIndustry" && result[action as KeybindAction].includes(key)),
+    );
   }
   return result;
 }

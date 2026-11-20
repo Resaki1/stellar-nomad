@@ -7,7 +7,7 @@
  *   hudSite      real keys from a transit arrival: lock the canister, one G, recovered
  *   lunarShots   captures at the field arrival (Luna, nearest big rock) and at the canister (lighting check)
  *   hudKeys      keybinds v2 → v3: untouched defaults move to C/P, custom bindings stay (restores storage)
- *   hudHotbar    keys 1…9, 0; a crafted kit fills a slot; its key opens placement with the name selected
+ *   hudHotbar    keys 1…9, 0; a crafted kit fills a slot; its key opens placement with editable name
  */
 import { freshWorld } from "./gameplay-m37.mjs";
 import { findClearPreview, waitArrival } from "./gameplay-m36.mjs";
@@ -27,7 +27,7 @@ const slotKey = (i) => String((i + 1) % 10);
 
 /** In-page: every HUD home's rect; pairs that intersect; homes outside the viewport. */
 const LAYOUT = `(() => {
-  const homes = { card: ".target-card--visible", tracker: ".objective-tracker", transit: ".transit-hud--side", dash: ".ship-dashboard", hotbar: ".hotbar", buttons: ".hud__panel-buttons", cargo: ".cargo-hud", gear: ".settings__open-button", comms: ".comms-overlay" };
+  const homes = { card: ".target-card--visible", placement: ".placement-card", tracker: ".objective-tracker", transit: ".transit-hud--side", dash: ".ship-dashboard", hotbar: ".hotbar", buttons: ".hud__panel-buttons", cargo: ".cargo-hud", gear: ".settings__open-button", comms: ".comms-overlay" };
   const rects = [];
   const vis = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return s.display !== "none" && s.visibility !== "hidden" && r.width > 0 && r.height > 0 ? r : null; };
   for (const [k, sel] of Object.entries(homes)) for (const e of document.querySelectorAll(sel)) { const r = vis(e); if (r) rects.push({ k, r }); }
@@ -38,15 +38,16 @@ const LAYOUT = `(() => {
   const W = innerWidth, H = innerHeight;
   const outside = rects.filter(({ r }) => r.left < -0.5 || r.top < -0.5 || r.right > W + 0.5 || r.bottom > H + 0.5).map(({ k }) => k);
   const box = (r) => [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
-  const card = document.querySelector(".target-card");
-  return { size: [W, H], homes: Object.fromEntries(rects.map(({ k, r }) => [k, box(r)])), hits, outside, card: card ? card.dataset.kind : null,
+  const placement = document.querySelector(".placement-card");
+  const card = placement || document.querySelector(".target-card");
+  return { size: [W, H], homes: Object.fromEntries(rects.map(({ k, r }) => [k, box(r)])), hits, outside, card: placement ? "place" : card?.dataset.kind ?? null,
     cardText: card ? card.innerText.replace(/\\s+/g, " ").trim() : "", stack: [...document.querySelectorAll(".notif-stack__item")].map((e) => e.innerText.replace(/\\s+/g, " ").trim()) };
 })()`;
 
-async function state(d, ctx, name, expectCard, narrow) {
-  await ctx.wait(350);
-  const shot = await d.shot(`wp3-hud-${name}${narrow ? "-narrow" : ""}`);
+async function state(d, ctx, name, expectCard, narrow, settleMs = 350) {
+  if (settleMs) await ctx.wait(settleMs);
   const l = await ctx.ev(LAYOUT);
+  const shot = await d.shot(`wp3-hud-${name}${narrow ? "-narrow" : ""}`);
   const pass = l.hits.length === 0 && l.outside.length === 0 && (expectCard === undefined || l.card === expectCard);
   log(name, pass ? "PASS" : "FAIL", JSON.stringify({ card: l.card, hits: l.hits, outside: l.outside, cardText: l.cardText, stack: l.stack }));
   return { shot, card: l.card, cardText: l.cardText, stack: l.stack, hits: l.hits, outside: l.outside, homes: l.homes, pass };
@@ -88,8 +89,9 @@ export async function hudGates(d, ctx) {
     for (const v of (__audio.emitters() ?? [])) window.__wp3Ev.add(v.event ?? v.id ?? JSON.stringify(v));
   }, 100); })()`);
   await d.press("g");
-  await ctx.wait(900);
-  out.inspecting = await state(d, ctx, "inspecting", "rock", narrow);
+  const inspecting = await waitFor(ctx, () => ev('!!document.querySelector(".target-card__bar--info")'), 6000);
+  out.inspecting = await state(d, ctx, "inspecting", "rock", narrow, 0);
+  out.inspecting.pass &&= inspecting && out.inspecting.cardText.endsWith("Stop");
   const inspected = await waitFor(ctx, async () => (await ev(`document.querySelectorAll(".target-card__row--contents .sn-res__n").length`)) > 0, 9000);
   await ctx.wait(400);
   const events = await ev(`(() => { clearInterval(window.__wp3T); return [...window.__wp3Ev].filter((x) => /inspect/.test(x)); })()`);
@@ -102,16 +104,22 @@ export async function hudGates(d, ctx) {
   out.cardClaim = { card, claim, pass: JSON.stringify(card) === JSON.stringify(claim) };
   log("cardClaim", JSON.stringify(out.cardClaim));
 
-  // Mining: the card's bar, then the Mined item in the stack.
+  // Capture the toast when it is rendered. A GPU screenshot may finish after it expires.
+  await ev(`window.__wp3MinedToast = ""; window.__wp3ToastObserver = new MutationObserver(() => {
+    const toast = [...document.querySelectorAll(".notif-stack__item")].find(e => e.innerText.startsWith("Mined"));
+    if (toast) { window.__wp3MinedToast = toast.innerText; window.__wp3ToastObserver.disconnect(); }
+  }); window.__wp3ToastObserver.observe(document.body, { childList: true, subtree: true, characterData: true }); true`);
   await d.press("m");
-  await ctx.wait(1500);
-  out.mining = await state(d, ctx, "mining", "rock", narrow);
+  const mining = await waitFor(ctx, () => ev('!!document.querySelector(".target-card__bar--heat")'), 6000);
+  out.mining = await state(d, ctx, "mining", "rock", narrow, 0);
+  out.mining.pass &&= mining && out.mining.cardText.endsWith("Stop");
   await waitFor(ctx, async () => !(await ev(`${G}.res.mining()`)).mining, 30000);
-  await ctx.wait(300);
-  out.mined = await state(d, ctx, "mined", undefined, narrow);
-  out.mined.pass &&= out.mined.stack.some((s) => s.startsWith("Mined"));
+  const minedToast = await waitFor(ctx, () => ev("window.__wp3MinedToast"), 5000);
+  await ev("window.__wp3ToastObserver.disconnect()");
+  out.mined = { ...(await state(d, ctx, "mined", undefined, narrow, 0)), toast: minedToast };
+  out.mined.pass &&= !!minedToast;
 
-  // Placement: a crafted kit's hotbar key opens the NEW POINT card with the name selected.
+  // A crafted kit's hotbar key opens the NEW POINT card; focus selects the name.
   for (const [r, n] of Object.entries({ fe_ni_metal: 150, silicates: 100 })) await ev(`__dev.grantCargo(${JSON.stringify(r)}, ${n})`);
   await ev(`${G}.craft(${JSON.stringify(KIT)})`);
   await findClearPreview(d, ctx);
@@ -120,7 +128,8 @@ export async function hudGates(d, ctx) {
   const kitSlot = (await ctx.player()).modules.hotbar.indexOf(KIT);
   await d.press(slotKey(kitSlot));
   await d.frames(10);
-  const input = await ev(`(() => { const i = document.activeElement; return i && i.classList.contains("target-card__input") ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
+  await d.press("Tab");
+  const input = await ev(`(() => { const i = document.activeElement; return i && i.matches('.placement-card[data-placement="point"] input') ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
   out.placement = { kitSlot, input, ...(await state(d, ctx, "placement", "place", narrow)) };
   out.placement.pass &&= !!input?.all;
   await d.type("Camp");
@@ -421,11 +430,12 @@ export async function hudHotbarGates(d, ctx) {
   await d.frames(10);
   await d.press(slotKey(kitSlot));
   await d.frames(10);
-  const input = await ev(`(() => { const i = document.activeElement; return i && i.classList.contains("target-card__input") ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
+  await d.press("Tab");
+  const input = await ev(`(() => { const i = document.activeElement; return i && i.matches('.placement-card[data-placement="point"] input') ? { value: i.value, all: i.selectionStart === 0 && i.selectionEnd === i.value.length } : null; })()`);
   // A digit typed into the name must not press the kit's own slot key.
   await d.type(`Camp ${slotKey(kitSlot)}`);
   await d.frames(5);
-  const stillPlacing = await ev(`document.querySelector(".target-card")?.dataset.kind === "place"`);
+  const stillPlacing = await ev(`!!document.querySelector('.placement-card[data-placement="point"]')`);
   await d.press("Enter");
   await d.frames(20);
   const point = (await world()).replication.points.find((p) => p.name === `Camp ${slotKey(kitSlot)}`);
@@ -437,10 +447,10 @@ export async function hudHotbarGates(d, ctx) {
   await d.frames(10);
   await d.press(slotKey((await player()).modules.hotbar.indexOf(KIT)));
   await d.frames(10);
-  const opened = await ev(`document.querySelector(".target-card")?.dataset.kind === "place"`);
+  const opened = await ev(`!!document.querySelector('.placement-card[data-placement="point"]')`);
   await d.press("Escape");
   await d.frames(10);
-  const esc = await ev(`({ placing: document.querySelector(".target-card")?.dataset.kind === "place", settings: !!document.querySelector(".settings-menu__button") })`);
+  const esc = await ev(`({ placing: !!document.querySelector('.placement-card[data-placement="point"]'), settings: !!document.querySelector(".settings-menu__button") })`);
   out.esc = { opened, ...esc, pass: opened && !esc.placing && !esc.settings };
   // "Clear slot" on the kit sticks (no auto re-add); a kit crafted onto a full bar says so.
   const clearSlot = async (i) => {

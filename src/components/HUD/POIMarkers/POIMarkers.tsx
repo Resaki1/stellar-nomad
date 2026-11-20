@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import { poiBuffer } from "@/store/poi";
+import { poiBuffer, type ProjectedPOI } from "@/store/poi";
 import { formatDistance } from "@/sim/units";
 
 import "./POIMarkers.scss";
@@ -10,7 +10,7 @@ import "./POIMarkers.scss";
 const EDGE_PADDING = 32;
 /** HUD homes: edge arrows slide out of them and marker labels under them hide. */
 const AVOID_SELECTOR =
-  ".cargo-hud, .hud__panel-buttons, .objective-tracker, .transit-hud--side, .ship-dashboard, .hotbar, .notif-stack__item, .settings__open-button, .target-card--visible, .comms-overlay, .transit-hud--spooling";
+  ".cargo-hud, .hud__panel-buttons, .placement-card, .objective-tracker, .transit-hud--side, .ship-dashboard, .hotbar, .notif-stack__item, .settings__open-button, .target-card--visible, .comms-overlay, .transit-hud--spooling";
 const AVOID_REFRESH_MS = 100;
 const MAX_LABELS = 128;
 /** Half-size of the box around the reticle whose labels hide while the Target Card shows. */
@@ -165,7 +165,7 @@ export default function POIMarkers() {
           // Name label — show when focused OR targeted; a pilot's always (who is that?).
           const nameEl = marker.querySelector(".poi-marker__name") as HTMLElement;
           if (nameEl) {
-            nameEl.style.display = (poi.focused || isTargeted || poi.kind === "pilot") ? "" : "none";
+            nameEl.style.display = (poi.focused || isTargeted || (poi.kind === "pilot" || poi.kind === "depot")) ? "" : "none";
             if (nameEl.textContent !== poi.name) nameEl.textContent = poi.name;
           }
 
@@ -191,6 +191,8 @@ export default function POIMarkers() {
           }
 
           arrow.style.opacity = "1";
+          arrow.classList.toggle("poi-arrow--industry-targeted", poi.id === poiBuffer.targetedId &&
+            (poi.kind === "depot" || poi.id.startsWith("industry-source:")));
 
           // Position arrow at viewport edge in the direction of the POI.
           const angle = poi.edgeAngle;
@@ -250,7 +252,7 @@ export default function POIMarkers() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function createMarkerElement(id: string, kind?: "pilot"): HTMLDivElement {
+function createMarkerElement(id: string, kind?: ProjectedPOI["kind"]): HTMLDivElement {
   const el = document.createElement("div");
   el.className = kind ? `poi-marker poi-marker--${kind}` : "poi-marker";
   el.dataset.id = id;
@@ -276,7 +278,7 @@ function createMarkerElement(id: string, kind?: "pilot"): HTMLDivElement {
   return el;
 }
 
-function createArrowElement(id: string, kind?: "pilot"): HTMLDivElement {
+function createArrowElement(id: string, kind?: ProjectedPOI["kind"]): HTMLDivElement {
   const el = document.createElement("div");
   el.className = kind ? `poi-arrow poi-arrow--${kind}` : "poi-arrow";
   el.dataset.id = id;

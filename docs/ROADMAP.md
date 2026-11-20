@@ -1,6 +1,8 @@
 # Stellar Nomad — Roadmap
 
 **Status, 2026-11-19.** Direct invites passed a two-browser check on the live game, including join, marker sharing and host shutdown. M4.1 passed its preview test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. The 30-minute cargo-conservation run and four-pilot capacity check passed. M4.4 device and playability checks remain open. Hosted TURN stays off.
+
+M5 supports depot storage, refining and automated supply between depots in one asteroid field. Drones use local thrusters for docking and a longer burn for cross-field deliveries. Two browsers followed a 4 km supply route through a host restart and rejoin. Both replicants and the saved world agreed on the receiving depot’s final balance. [M5 results and reproduction steps](M5_INDUSTRY_PLAN.md)
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -403,7 +405,13 @@ The same command transcript must run under Node without a renderer. [Detailed M4
 The browser hosts the first release. A portable TypeScript authority, isolated storage and
 transport, and headless parity tests leave community-hosted and official servers open later.
 
-### M5 — Industrial structures, sustainable routes, and drones · size L · own plan doc
+### M5 — Industrial structures, sustainable routes, and drones · size L
+
+[M5 design and verification](M5_INDUSTRY_PLAN.md). The first route connects a
+hydrate-producing depot to a relay. Standard utility drones can cross an asteroid field
+in the same body frame, with a local 30 km reach outside shared fields. Long-distance freight is a future progression option.
+The host owns the cargo in both stores and
+aboard each drone. A friend can draw fuel at the relay while the builder explores.
 
 - Extend the simple M3 placeable/authority model into **depots** with shared storage,
   expanded fabrication and specialized production. Basic ship self-sufficiency remains.
@@ -541,5 +549,5 @@ if a profile shows them hot after moving to a worker: terrain tile decode/meshin
 
 1. Keep the direct [staging playtest](../services/coop-signal/README.md) and local relay regression available. Leave hosted TURN disabled.
 2. See the [M4 co-op plan](M4_COOP_PLAN.md) for M4.2–M4.4 implementation and playtest evidence. Keep the shared-rock and solo expedition checks passing as gameplay evolves.
-3. Complete the co-op expedition and headless parity gates before building M5's first
-   shared depot and fuel route. Use playtests to revise the gameplay catalogue and rules.
+3. Use the [M5 route checks](M5_INDUSTRY_PLAN.md) alongside the M4 shared-rock and
+   restart gates. M4's physical-device and unassisted lunar playtests remain open.

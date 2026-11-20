@@ -3,6 +3,7 @@
  * SaveData / SaveMeta. Missing or malformed fields fall back to defaults; structurally
  * unusable input throws.
  */
+import { sanitizeIndustry } from "@/sim/industry/validate";
 import { MAX_HEAT_FRACTION, MAX_STORED_FUEL_KG } from "@/sim/ship/shipResources";
 import { MAX_POINTS, STARTER_POINT_ID, cleanPointName, starterPoint } from "@/sim/replication/points";
 import { MAX_BOOKMARKS, MAX_LEGACY_IDS, MAX_RECEIPTS, MAX_SOURCES, SCHEMA_VERSION, defaultPlayerState, defaultShipConfig, defaultWorldState } from "./defaults";
@@ -151,6 +152,7 @@ export function sanitizeWorld(v: unknown): WorldState {
     rendezvous: sanitizeRendezvous(v.rendezvous),
     discoveries: sanitizeDiscoveries(v.discoveries),
     replication: sanitizeReplication(v.replication),
+    industry: sanitizeIndustry(v.industry),
     receipts: sanitizeReceipts(v.receipts),
     revision: isNum(v.revision) && v.revision >= 0 ? Math.floor(v.revision) : 0,
     session: { generation: isObj(v.session) && isNum(v.session.generation) && v.session.generation >= 0 ? Math.floor(v.session.generation) : 0 },
@@ -377,6 +379,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
     starMarkers: strArray(v.starMarkers),
     minedLifetime: Math.max(0, Math.floor(num(v.minedLifetime, 0))),
     receivedFuelKg: Math.max(0, num(v.receivedFuelKg, 0)),
+    depositedFuelKg: Math.max(0, num(v.depositedFuelKg, 0)),
     propellant: {
       ordinaryKg: fuelKg(propellant.ordinaryKg, d.propellant.ordinaryKg),
       protectedKg: fuelKg(propellant.protectedKg, d.propellant.protectedKg),

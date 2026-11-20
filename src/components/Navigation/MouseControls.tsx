@@ -1,4 +1,5 @@
-import { placementModeAtom } from "@/store/replication";
+import { cancelDepotPlacementAtom, depotPlacementAtom } from "@/store/industryHud";
+import { cancelPointPlacementAtom, placementModeAtom } from "@/store/replication";
 import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { hdrCalibrationOpenAtom, settingsIsOpenAtom } from "@/store/store";
@@ -28,21 +29,31 @@ const MouseControls = () => {
 
   useEffect(() => {
     const device = attachMouse();
+    const cancelPlacement = (): boolean => {
+      if (store.get(depotPlacementAtom)) store.set(cancelDepotPlacementAtom);
+      else if (store.get(placementModeAtom)) store.set(cancelPointPlacementAtom);
+      else return false;
+      return true;
+    };
     // During loading the menu would be hidden behind the overlay and would stall the gate (frameloop "never").
     setUserUnlockHandler(() => {
-      // Esc while placing a point cancels the placement only.
-      if (store.get(placementModeAtom)) store.set(placementModeAtom, false);
-      else if (getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
+      // Escape can be consumed by the browser before the placement prompt sees a key event.
+      if (!cancelPlacement() && getAppPhase() === "playing") store.set(settingsIsOpenAtom, true);
     });
     // Some browsers open their context menu on press, others on release.
-    // Consume only the secondary click that started while steering.
+    // Consume the secondary click if it released steering or cancelled placement.
     let releasingWithMouse = false;
     const onPointerDown = (e: PointerEvent): void => {
-      releasingWithMouse = e.button === 2 && isPointerLocked() && !isCursorNeeded() && getAppPhase() === "playing";
-      if (!releasingWithMouse) return;
+      releasingWithMouse = false;
+      if (e.button !== 2 || isCursorNeeded() || getAppPhase() !== "playing") return;
+      const locked = isPointerLocked();
+      if (!locked && !(e.target instanceof HTMLCanvasElement)) return;
+      if (locked) releaseGamePointerLock();
+      const cancelledPlacement = cancelPlacement();
+      if (!locked && !cancelledPlacement) return;
+      releasingWithMouse = true;
       e.preventDefault();
-      releaseGamePointerLock();
-      if (!store.get(usedCursorReleaseAtom)) store.set(usedCursorReleaseAtom, true);
+      if (locked && !store.get(usedCursorReleaseAtom)) store.set(usedCursorReleaseAtom, true);
     };
     const onContextMenu = (e: MouseEvent): void => {
       if (!releasingWithMouse || e.button !== 2) return;

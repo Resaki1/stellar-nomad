@@ -1,3 +1,5 @@
+import type { Scene } from "three";
+
 /**
  * Shared state between the in-Canvas `TestFrameProbe` and the `__test` harness.
  * Plain mutable object: written per frame, read by async harness code.
@@ -5,10 +7,11 @@
 export const testProbe: {
   /** Rendered R3F frames since load. */
   frames: number;
-  /** Dev hooks run once per frame AFTER the sim clock and the ship (priority 0). */
-  frameHooks: Set<() => void>;
+  /** Dev hooks run at priority 0 with the R3F clock timestamp, after the sim clock and ship. */
+  frameHooks: Set<(frameMs: number) => void>;
   /** The live renderer, for resident-resource counts. Null until the Canvas mounts. */
   renderer: { info: { memory: { textures: number; geometries: number } } } | null;
+  scene: Scene | null;
   /** Player ship sim pose (system-frame km, frame-relative km, quaternion xyzw), fixed steps run. */
   ship: {
     posKm: [number, number, number];
@@ -29,4 +32,5 @@ export const testProbe: {
   frames: 0,
   frameHooks: new Set(),
   renderer: null,
+  scene: null,
 };

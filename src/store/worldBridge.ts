@@ -3,7 +3,7 @@
  * active save, keeps the mirrors in sync from events, and samples the sim clock at flush.
  */
 import type { createStore } from "jotai";
-import { getWorldState, inSession, registerCollector } from "@/save/activeSave";
+import { getActiveSave, getWorldState, inSession, registerCollector } from "@/save/activeSave";
 import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
@@ -12,10 +12,13 @@ import { wrecksMirrorAtom } from "@/store/death";
 import { rendezvousAtom } from "@/store/discoveries";
 import { announceResearchAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
-import { adoptShipResources, installShipResources } from "@/store/shipResources";
+import { adoptShipResources, installShipResources, shipReq } from "@/store/shipResources";
 import { replicationPointsAtom } from "@/store/replicationMirror";
 import { resetReposition } from "@/sim/ship/reposition";
 import { targetedPOIAtom } from "@/store/transit";
+import { industryAtom } from "@/store/industry";
+import { settingsIsOpenAtom } from "@/store/store";
+import { isSimPaused } from "@/sim/simPause";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -33,6 +36,19 @@ export function installWorldBridge(store: Store): void {
   store.set(sharedResearchMirrorAtom, world.research.completedNodes);
   store.set(discoveriesMirrorAtom, world.discoveries);
   store.set(replicationPointsAtom, world.replication.points);
+  store.set(industryAtom, world.industry);
+  worldAuthority.localFuelReserveKg = () => shipReq.reservedKg;
+  const active = getActiveSave();
+  let last = performance.now();
+  const pulse = setInterval(() => {
+    const now = performance.now();
+    const elapsedS = (now - last) / 1000;
+    last = now;
+    if (getActiveSave() === active && !inSession() && !worldAuthority.connected && !isSimPaused() && !store.get(settingsIsOpenAtom)) {
+      worldAuthority.local.tickIndustry(elapsedS);
+    }
+  }, 1000);
+  const offSettings = store.sub(settingsIsOpenAtom, () => { last = performance.now(); });
   resetReposition();
   const local = getLocalPlayerId();
 
@@ -77,6 +93,9 @@ export function installWorldBridge(store: Store): void {
         }
         break;
       }
+      case "industry.changed":
+        store.set(industryAtom, getWorldState().industry);
+        break;
       case "replication.changed":
         store.set(replicationPointsAtom, getWorldState().replication.points);
         break;
@@ -101,6 +120,8 @@ export function installWorldBridge(store: Store): void {
     w.simRate = store.get(simRateAtom);
   });
   teardown = () => {
+    clearInterval(pulse);
+    offSettings();
     unsubscribe();
     unregister();
     uninstallResources();

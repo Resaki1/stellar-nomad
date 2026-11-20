@@ -36,8 +36,7 @@
 
   &--site,
   &--wreck { border-left-color: s.$accent-signal; }
-  &--point,
-  &--place { border-left-color: s.$accent-ok; }
+  &--point { border-left-color: s.$accent-ok; }
 
   // Flipped to the reticle's left when it would cross the right edge (drawFlightHud sets data-flip).
   .reticle[data-flip='1'] & {
@@ -157,25 +156,6 @@
     transition: width s.$dur-instant linear;
   }
 
-  &__input {
-    pointer-events: auto;
-    width: 112px;
-    height: 18px;
-    box-sizing: border-box;
-    padding: 0 s.$space-1;
-    font-family: s.$font-ui;
-    @include s.t-sm;
-    color: s.$text-primary;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid s.$stroke-strong;
-    border-radius: s.$radius-sm;
-    outline: none;
-
-    &:focus {
-      border-color: s.$accent-ok;
-    }
-  }
-
   &__warn {
     @include s.t-xs;
     letter-spacing: 0.02em;
@@ -186,4 +166,16 @@
     from { opacity: 0.6; }
     to { opacity: 1; }
   }
+}
+
+.target-card__rename {
+  pointer-events: auto;
+  margin-inline-start: auto;
+  padding: 0 s.$space-2;
+  border: 0;
+  background: transparent;
+  color: s.$accent-info;
+  cursor: pointer;
+  font: inherit;
+  &:hover, &:focus-visible { text-decoration: underline; }
 }
