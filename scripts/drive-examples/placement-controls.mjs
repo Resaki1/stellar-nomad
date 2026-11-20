@@ -121,20 +121,10 @@ export default async function placementControls(d) {
     assert.equal(await ev('document.querySelector(".industry-placement h3").textContent'), "Depot 1");
     await click('[data-industry-action="cancel-placement"]');
     await until("windowed depot button cancel", cancelled);
-    await key(pointSlot);
-    await pointReady();
-    await d.press("Escape");
-    await until("windowed point Escape", cancelled);
-    await key(pointSlot);
-    await pointReady();
-    await keyboardFocus(pointName);
-    await d.press("Tab");
-    assert.equal(await ev('document.activeElement?.matches(\'[data-point-action="cancel"]\')'), true);
-    await d.press("Enter");
-    await until("focused Cancel button activates by keyboard", cancelled);
     assert.equal((await kits())[DEPOT], 2);
     assert.equal((await kits())[POINT], 1);
 
+    await d.send("Page.bringToFront");
     await d.press("o");
     await until("ship menu settles with a free cursor", `(() => {
       const panel = document.querySelector(${J(menu)})?.closest(".panel");
@@ -142,7 +132,9 @@ export default async function placementControls(d) {
         panel.getAnimations().every(animation => animation.playState !== "running");
     })()`);
     await click(`${menu} .display-mode button`);
-    await until("fullscreen entered", fullscreen);
+    const display = await until("fullscreen request settles",
+      `${fullscreen} ? "entered" : document.querySelector(".display-mode [role=status]")?.textContent`);
+    assert.equal(display, "entered", `Fullscreen entry: ${display}`);
     await d.press("o");
     await until("flight resumes in fullscreen with steering", `${fullscreen} && ${locked} && !${shown(menu)}`);
 
@@ -178,8 +170,7 @@ export default async function placementControls(d) {
 
     await key(pointSlot);
     await pointReady();
-    await keyboardFocus(pointName);
-    assert.equal(await ev(locked), true);
+    assert.equal(await ev(locked), true, "Right-click starts with steering locked");
     await rightClick();
     await until("right-click cancels and releases steering", `${cancelled} && ${fullscreen} && !${locked}`);
     await click(slotButton(depotSlot));
@@ -208,6 +199,7 @@ export default async function placementControls(d) {
 
     await click(slotButton(pointSlot));
     await pointReady();
+    await keyboardFocus(pointName);
     await click(pointName);
     await d.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["SelectAll"] });
     await d.press("o");
@@ -224,13 +216,25 @@ export default async function placementControls(d) {
       await until("pointer free for touch", `!${locked}`);
     }
 
+    await ev('__dev.grantCargo("fe_ni_metal", 160); __dev.grantCargo("silicates", 115)');
+    assert.equal(await ev(`${G}.craft(${J(POINT)}).status`), "accepted");
+    await shipAt(source.frameId, near(7));
+    await key(pointSlot);
+    await pointReady();
+    await d.press("Escape");
+    await until("windowed point Escape", cancelled);
+    await key(pointSlot);
+    await pointReady();
+    await keyboardFocus(pointName);
+    await d.press("Tab");
+    assert.equal(await ev('document.activeElement?.matches(\'[data-point-action="cancel"]\')'), true);
+    await d.press("Enter");
+    await until("focused Cancel button activates by keyboard", cancelled);
+
     await d.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
     await d.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 3 });
     touch = true;
     await until("portrait touch mode", 'innerWidth === 390 && matchMedia("(pointer: coarse)").matches');
-    await ev('__dev.grantCargo("fe_ni_metal", 160); __dev.grantCargo("silicates", 115)');
-    assert.equal(await ev(`${G}.craft(${J(POINT)}).status`), "accepted");
-    await shipAt(source.frameId, near(7));
     const checkTouchTargets = async selector => {
       assert.equal(await ev(`[...document.querySelectorAll(${J(`${selector} [data-placement-control]`)})].every(button => {
         const r = button.getBoundingClientRect();
