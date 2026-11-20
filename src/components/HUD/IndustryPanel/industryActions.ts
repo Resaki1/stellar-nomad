@@ -12,6 +12,7 @@ export function industryMessage(reason: string): string {
     case "near_ship": return "Aim away from nearby ships.";
     case "depot_full": return "The depot cargo hold needs more room. Withdraw cargo first.";
     case "drone_limit": return "All drone bays are in use.";
+    case "drone_assigned": return "This drone already has a job. Choose another drone for the request.";
     case "source_out_of_range": return "This depot can't reach that hydrate site. Choose a nearby site or deliver supplies to another depot.";
     case "route_out_of_range": return "The drone can't reach this destination. Choose another depot.";
     case "depot_limit": return "This world has reached its depot limit.";

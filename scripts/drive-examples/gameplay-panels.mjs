@@ -85,9 +85,14 @@ export async function panelGates(d, ctx) {
   await d.press("r");
   await ctx.wait(600);
   const opt = await shot(d, ctx, "research-options", narrow, ".panel", 8);
-  const cards = await ev(`[...document.querySelectorAll(".rp-card")].map((e) => Math.round(e.getBoundingClientRect().height))`);
+  const cards = await ev(`[...document.querySelectorAll(".rp-card:not(.rp-card--industry)")].map((e) => Math.round(e.getBoundingClientRect().height))`);
   const research = { options: opt, cardHeights: [...new Set(cards)], intro: await ev(`!!document.querySelector(".rp-intro,.rp-card__purpose")`),
     count: await ev(`document.querySelector("[data-testid=research-count]")?.textContent`), unlockedStrip: await ev(`!!document.querySelector("[data-testid=research-unlocked]")`) };
+  research.industryFits = await ev(`[...document.querySelectorAll(".rp-card--industry")].every(card => {
+    const equipment = card.querySelector(".rp-card__industry");
+    return equipment?.textContent && card.scrollHeight <= card.clientHeight + 1 && card.scrollWidth <= card.clientWidth + 1;
+  })`);
+  const optionCount = await ev(`${G}.m33.audit().nodes`);
   research.chipTip = await hoverTip(d, ctx, ".rp-card .sn-req");
   research.chipTip.pass = !!research.chipTip.tip;
   await ev(clickText(".rp-tabs__btn", "Discoveries"));
@@ -100,7 +105,7 @@ export async function panelGates(d, ctx) {
   await ev(`document.querySelector(".panel__body").scrollTop = 1e6`);
   research.unlockedShot = await shot(d, ctx, "research-unlocked", narrow, ".panel", 8);
   const rBoxes = [opt.box, research.discoveries.box, research.afterGrant.box, research.unlockedShot.box].map(String);
-  research.pass = new Set(rBoxes).size === 1 && research.cardHeights.length === 1 && research.cardHeights[0] === 112 && !research.intro && research.count === "1/10" &&
+  research.pass = new Set(rBoxes).size === 1 && research.cardHeights.length === 1 && research.cardHeights[0] === 112 && !research.intro && research.industryFits && research.count === `1/${optionCount}` &&
     research.unlockedStrip && research.resTip.pass && research.chipTip.pass && [opt, research.discoveries, research.afterGrant, research.unlockedShot].every((x) => x.over.length === 0);
   out.research = research;
   await d.press("Escape");

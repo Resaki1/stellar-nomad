@@ -165,6 +165,16 @@ export type Requirement =
 
 export type ResearchBranch = "survey" | "extraction" | "thermal" | "logistics" | "propulsion" | "hull" | "lunar";
 
+export const INDUSTRY_BLUEPRINTS = {
+  depot_kit: "Depot kit",
+  drone: "Utility drone",
+  refinery: "Depot refinery",
+  mining: "Drone mining",
+  point_tank: "Replication point fuel tank",
+} as const;
+
+export type IndustryBlueprint = keyof typeof INDUSTRY_BLUEPRINTS;
+
 export type ResearchNodeDef = {
   id: string;
   name: string;
@@ -177,7 +187,7 @@ export type ResearchNodeDef = {
   any?: Requirement[];
   /** Matching material consumed by the analysis (cargo units). */
   analysis: Record<string, number>;
-  unlocks: { items: string[] };
+  unlocks: { items: string[]; industry?: IndustryBlueprint[] };
 };
 
 export const BRANCH_LABELS: Record<ResearchBranch, string> = {
@@ -221,13 +231,13 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     id: "ex1_controlled_extraction",
     name: "Controlled Extraction",
     branch: "extraction",
-    purpose: "A faster, hotter cutting beam for large rocks.",
+    purpose: "Fit a faster, hotter beam to your ship and assign drones to mine nearby asteroids.",
     all: [
       { kind: "family", material: "fe_ni_metal", inspected: true },
       { kind: "trial", trialId: "sustained_beam" },
     ],
     analysis: { fe_ni_metal: 30 },
-    unlocks: { items: ["module_beam_focuser_mk1"] },
+    unlocks: { items: ["module_beam_focuser_mk1"], industry: ["mining"] },
   },
   {
     id: "ex2_yield_analysis",
@@ -261,13 +271,28 @@ export const RESEARCH_NODES: ResearchNodeDef[] = [
     id: "lg1_bulk_handling",
     name: "Bulk Handling",
     branch: "logistics",
-    purpose: "Choose more cargo or more propellant, and faster processing.",
+    purpose: "Build your first depot, equip a recovery point with a fuel tank, or expand your ship’s cargo and processing capacity.",
     all: [
       { kind: "trial", trialId: "first_batch" },
       { kind: "trial", trialId: "first_fabrication" },
     ],
     analysis: { fe_ni_metal: 30 },
-    unlocks: { items: ["module_cargo_rack_mk1", "module_aux_tank_mk1", "module_electrolysis_cell_mk1"] },
+    unlocks: {
+      items: ["module_cargo_rack_mk1", "module_aux_tank_mk1", "module_electrolysis_cell_mk1", "consumable_depot_kit"],
+      industry: ["depot_kit", "drone", "point_tank"],
+    },
+  },
+  {
+    id: "lg2_station_refining",
+    name: "Station Refining",
+    branch: "logistics",
+    purpose: "Use depot stock to turn hydrates into ordinary propellant while you explore.",
+    all: [
+      { kind: "research", nodeId: "lg1_bulk_handling" },
+      { kind: "trial", trialId: "first_batch" },
+    ],
+    analysis: { hydrates: 10, fe_ni_metal: 15 },
+    unlocks: { items: [], industry: ["refinery"] },
   },
   {
     id: "pr1_transit_calibration",
@@ -332,7 +357,6 @@ export const ITEMS: ItemDef[] = [
     uiDesc: "Deploys a shared storage and fabrication depot",
     slot: "utility",
     type: "consumable",
-    starter: true,
     icon: "module_ping_array_mk1",
     deployable: true,
     stackMax: 3,
@@ -606,6 +630,13 @@ for (const node of RESEARCH_NODES) _nodeMap.set(node.id, node);
 
 export function getItemDef(id: string): ItemDef | undefined {
   return _itemMap.get(id);
+}
+
+/** Industry and the research screen read the same unlock catalogue. */
+export function industryResearchNode(blueprint: IndustryBlueprint): ResearchNodeDef {
+  const node = RESEARCH_NODES.find(candidate => candidate.unlocks.industry?.includes(blueprint));
+  if (!node) throw new Error(`Missing research for industry blueprint ${blueprint}`);
+  return node;
 }
 
 export function getResearchNode(id: string): ResearchNodeDef | undefined {

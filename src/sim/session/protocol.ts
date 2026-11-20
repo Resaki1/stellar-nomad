@@ -3,13 +3,14 @@
  * bounds. Two channels: `cmd` (reliable, ordered) and `pose` (unordered, no retransmits).
  * Nothing here knows about WebRTC, workers or React.
  */
-import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { INDUSTRY_TUNING, POINT_TANK_CAPACITY_KG } from "@/sim/industry/catalog";
 import type { IndustryDelta } from "@/sim/industry/types";
+import { MAX_POINTS } from "@/sim/replication/points";
 import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 9;
 /** Three missed worker heartbeats suspend prediction and new resource spends. */
 export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
@@ -31,6 +32,8 @@ export interface CrewMember { id: PlayerId; name: string; host: boolean; pingMs:
 
 /** Pilot-owned values a client reports; the host bounds them and writes them without a revision. */
 export interface Telemetry {
+  /** World revision seen when ship values were sampled, used to fence pre-respawn data. */
+  revision?: number;
   pose?: { frameId: string; positionKm: Vec3Tuple; quaternion: QuatTuple };
   health?: number;
   /** Sender's inbound fuel counter and ordinary fuel reserved for braking. */
@@ -167,6 +170,10 @@ function strList(v: unknown, maxN: number): string[] | undefined {
 export function decodeTelemetry(v: unknown): Telemetry | null {
   if (!isObj(v)) return null;
   const out: Telemetry = {};
+  if (v.revision !== undefined) {
+    if (!isInt(v.revision)) return null;
+    out.revision = v.revision;
+  }
   if (v.pose !== undefined) {
     const p = v.pose;
     if (!isObj(p) || !isStr(p.frameId, 32) || !vec(p.positionKm, 3, BIG_KM) || !vec(p.quaternion, 4, 1.01)) return null;
@@ -335,6 +342,17 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       if (!isInt(raw.gen) || !isObj(d) || !Array.isArray(d.depots) || !Array.isArray(d.drones) || !isObj(d.sources) ||
           d.depots.length > INDUSTRY_TUNING.maxDepots || d.drones.length > INDUSTRY_TUNING.maxDepots * INDUSTRY_TUNING.dronesPerDepot ||
           !d.depots.every(x => isObj(x) && isStr(x.id, 160)) || !d.drones.every(x => isObj(x) && isStr(x.id, 160))) return null;
+      if (d.pointTanks !== undefined) {
+        if (!isObj(d.pointTanks)) return null;
+        const tanks = Object.entries(d.pointTanks);
+        if (tanks.length >= MAX_POINTS || !tanks.every(([id, kg]) =>
+          id.length > 0 && isStr(id, 160) && !Object.hasOwn(Object.prototype, id) && isNum(kg) && kg >= 0 && kg <= POINT_TANK_CAPACITY_KG)) return null;
+      }
+      if (d.mined !== undefined && (!Array.isArray(d.mined) ||
+          d.mined.length > INDUSTRY_TUNING.maxDepots * INDUSTRY_TUNING.dronesPerDepot ||
+          !d.mined.every(rock => isObj(rock) && isStr(rock.fieldId, 160) && rock.fieldId.length > 0 &&
+            !Object.hasOwn(Object.prototype, rock.fieldId) && isStr(rock.chunkKey, 160) &&
+            rock.chunkKey.startsWith(rock.fieldId + ":") && isInt(rock.instanceId, 0xffffffff)))) return null;
       return raw as unknown as HostMsg;
     }
     case "clock":

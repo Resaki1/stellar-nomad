@@ -1,7 +1,8 @@
-import { advanceIndustry, hasIndustryDelta } from "@/sim/industry/simulation";
+import { depleteDroneDiscoveries, DroneMiningSearch } from "@/sim/industry/mining";
+import { advanceIndustry, hasIndustryDelta, type IndustryAdvance } from "@/sim/industry/simulation";
 import { MAX_RECEIPTS } from "@/save/defaults";
 import type { MineResolver } from "@/sim/asteroids/mineResolve";
-import type { PlayerId, PlayerState, WorldState } from "@/save/types";
+import type { AsteroidDeltas, Difficulty, PlayerId, PlayerState, WorldState } from "@/save/types";
 import { AsteroidDeltaIndex } from "./asteroidDeltas";
 import type { OperationOutcome, OperationType, WorldEvent, WorldOperation } from "./commands";
 import { reduce } from "./reducers";
@@ -28,6 +29,8 @@ export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
   "replication.rename",
   "depot.transfer",
   "depot.fabricate",
+  "replication.tank.install",
+  "replication.tank.transfer",
   "drone.configure",
   "asteroid.mine",
   "item.craft",
@@ -48,6 +51,8 @@ export const RECEIPTED: ReadonlySet<OperationType> = new Set<OperationType>([
 
 export class LocalAuthority implements Authority {
   readonly asteroids = new AsteroidDeltaIndex();
+  private readonly droneSearch = new DroneMiningSearch();
+  private industryAsteroids: AsteroidDeltas | null = null;
   private readonly listeners = new Set<WorldListener>();
   private receiptSource: WorldState["receipts"] | null = null;
   private readonly receiptIds = new Set<string>();
@@ -60,6 +65,7 @@ export class LocalAuthority implements Authority {
       /** `urgent` for operations a reload must not lose. */
       markDirty: (urgent: boolean) => void;
       resolveMine?: MineResolver;
+      getDifficulty?: () => Difficulty;
       nearbyPilot?: (id: PlayerId) => PlayerState | null;
       reservedFuel?: (id: PlayerId) => number;
     },
@@ -105,12 +111,35 @@ export class LocalAuthority implements Authority {
     });
   }
 
-  tickIndustry(elapsedS: number): void {
-    const world = this.deps.getWorld();
-    const stepped = advanceIndustry(world.industry, elapsedS);
-    if (!stepped) return;
+  planIndustry(elapsedS: number): IndustryAdvance | null {
+    const world = this.world();
+    if (world.asteroidDeltas !== this.industryAsteroids) {
+      this.industryAsteroids = world.asteroidDeltas;
+      this.droneSearch.clear();
+    }
+    return advanceIndustry(world.industry, elapsedS, world.replication.points, {
+      search: this.droneSearch, asteroids: this.asteroids, difficulty: this.deps.getDifficulty?.(),
+    });
+  }
+
+  applyIndustry(stepped: IndustryAdvance): boolean {
+    const world = this.world();
+    const mined = stepped.delta.mined ?? [];
     world.industry = stepped.state;
+    for (const rock of mined) this.asteroids.add(rock.fieldId, rock.chunkKey, rock.instanceId);
+    const discoveries = depleteDroneDiscoveries(world.discoveries, mined);
+    if (discoveries === world.discoveries) return false;
+    world.discoveries = discoveries;
+    return true;
+  }
+
+  tickIndustry(elapsedS: number): void {
+    const stepped = this.planIndustry(elapsedS);
+    if (!stepped) return;
+    const discoveriesChanged = this.applyIndustry(stepped);
     if (!hasIndustryDelta(stepped.delta)) return;
+    for (const rock of stepped.delta.mined ?? []) this.emit({ type: "asteroid.destroyed", by: "", cause: "mined", ...rock });
+    if (discoveriesChanged) this.emit({ type: "discoveries.changed", by: "" });
     this.emit({ type: "industry.changed", by: "", delta: stepped.delta });
     // Durably schedule resource-changing transitions. Countdown and recharge-only updates
     // are sampled by the normal live-world checkpoint.

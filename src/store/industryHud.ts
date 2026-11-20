@@ -5,12 +5,12 @@ import { getLocalPlayerShip } from "@/sim/entities";
 import { INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { industryAtom } from "@/store/industry";
 import { isFrameId } from "@/sim/frames";
-import type { DepotRecord } from "@/sim/industry/types";
+import type { DepotRecord, DroneRecord } from "@/sim/industry/types";
 import { targetedPOIAtom, transitDriveBuffer } from "@/store/transit";
 import { poiBuffer, type POIDef } from "@/store/poi";
 
 export const industryPanelOpenAtom = atom(false);
-export const industryRequestAtom = atom<{ depotId?: string; renamePointId?: string; build?: boolean; name?: string } | null>(null);
+export const industryRequestAtom = atom<{ depotId?: string; renamePointId?: string; pointFuelId?: string; build?: boolean; name?: string } | null>(null);
 export const depotPlacementAtom = atom<{ fromIndustry: boolean } | null>(null);
 export const depotPlacementNameAtom = atom("");
 export const depotPlacementPendingAtom = atom(false);
@@ -103,6 +103,35 @@ export function depotPoi(depot: DepotRecord): POIDef {
     kind: "depot",
   };
 }
+
+/** The projector and the rendered drone share this frame-relative tuple while pinned. */
+export function dronePoi(drone: DroneRecord, home: DepotRecord, number: number): POIDef {
+  return {
+    id: `drone:${drone.id}`,
+    name: `${home.name} · Drone ${number}`,
+    positionKm: [...home.positionKm],
+    frameId: isFrameId(home.frameId) ? home.frameId : undefined,
+    minDistanceKm: 0,
+    maxDistanceKm: Infinity,
+    kind: "drone",
+    targetable: false,
+  };
+}
+
+const droneBearingAtom = atom(get => {
+  const target = get(targetedPOIAtom);
+  if (!target?.id.startsWith("drone:")) return null;
+  const { depots, drones } = get(industryAtom);
+  const drone = drones.find(d => d.id === target.id.slice(6));
+  const home = drone && depots.find(d => d.id === drone.homeId);
+  if (!home || !drone) return null;
+  const number = drones.filter(d => d.homeId === home.id).indexOf(drone) + 1;
+  const poi = dronePoi(drone, home, number);
+  poi.positionKm = target.positionKm as POIDef["positionKm"];
+  return poi;
+});
+export const trackedDronePoiAtom = selectAtom(droneBearingAtom, poi => poi, (a, b) =>
+  a?.id === b?.id && a?.positionKm === b?.positionKm && a?.name === b?.name && a?.frameId === b?.frameId);
 
 export const industrySourcePois: POIDef[] = INDUSTRY_SOURCES.map(source => ({
   id: `industry-source:${source.id}`,

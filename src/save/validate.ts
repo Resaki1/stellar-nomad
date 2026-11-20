@@ -138,6 +138,7 @@ function sanitizeDeltas(v: unknown): AsteroidDeltas {
 export function sanitizeWorld(v: unknown): WorldState {
   const d = defaultWorldState();
   if (!isObj(v)) return d;
+  const replication = sanitizeReplication(v.replication);
   return {
     simEpochMs: isNum(v.simEpochMs) && Math.abs(v.simEpochMs) <= MAX_EPOCH_MS ? v.simEpochMs : d.simEpochMs,
     simRate: Math.max(-MAX_SIM_RATE, Math.min(MAX_SIM_RATE, num(v.simRate, d.simRate))),
@@ -151,8 +152,8 @@ export function sanitizeWorld(v: unknown): WorldState {
     },
     rendezvous: sanitizeRendezvous(v.rendezvous),
     discoveries: sanitizeDiscoveries(v.discoveries),
-    replication: sanitizeReplication(v.replication),
-    industry: sanitizeIndustry(v.industry),
+    replication,
+    industry: sanitizeIndustry(v.industry, replication.points),
     receipts: sanitizeReceipts(v.receipts),
     revision: isNum(v.revision) && v.revision >= 0 ? Math.floor(v.revision) : 0,
     session: { generation: isObj(v.session) && isNum(v.session.generation) && v.session.generation >= 0 ? Math.floor(v.session.generation) : 0 },

@@ -57,6 +57,12 @@ export const transitDriveOwnedAtom = atom((get) => get(modulesAtom).ownedModules
 /** Targeted POI for autopilot. */
 export const targetedPOIAtom = atom<TransitTarget | null>(null);
 
+// A tracked drone is a moving bearing. Autopilot only plans arrivals at stable destinations.
+const transitDestinationAtom = atom(get => {
+  const target = get(targetedPOIAtom);
+  return target?.id.startsWith("drone:") ? null : target;
+});
+
 /** Arrival stand-off at a body: two radii from its centre (min 100 km). */
 export const bodyArrivalOffsetKm = (radiusKm: number): number => Math.max(100, radiusKm * 2);
 
@@ -92,7 +98,7 @@ export function updateTransitInputs(store: Store, input: Readonly<ShipInput>): v
   transitInputs.owned = store.get(transitDriveOwnedAtom);
   transitInputs.blocked = store.get(miningStateAtom).isMining;
   transitInputs.steer = Math.max(Math.abs(input.yaw), Math.abs(input.pitch));
-  transitInputs.target = store.get(targetedPOIAtom);
+  transitInputs.target = store.get(transitDestinationAtom);
   transitInputs.coolingMult = shipReq.coolingMult;
   transitInputs.freeFlight = shipReq.freeFlight;
 }
@@ -154,7 +160,7 @@ export function computeTransitPreview(store: Store): TransitPreview | null {
   const ship = getLocalPlayerShip();
   const rt = transitDriveBuffer;
   const t = getShipTuning();
-  const target = rt.phase !== "idle" && rt.autopilot ? rt.target : store.get(targetedPOIAtom);
+  const target = rt.phase !== "idle" && rt.autopilot ? rt.target : store.get(transitDestinationAtom);
   if (!ship || !target || !store.get(transitDriveOwnedAtom)) return null;
   _ship.copy(ship.absPosKm);
   updateAimVelocity(store, target, ship.frameId);

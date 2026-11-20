@@ -41,6 +41,7 @@ export class AsteroidDeltaIndex {
   add(fieldId: string, chunkKey: string, id: number): void {
     const deltas = this.source;
     if (!deltas) throw new Error("[AsteroidDeltaIndex] add before sync");
+    if (this.has(fieldId, chunkKey, id)) return;
     let f = this.sets.get(fieldId);
     if (!f) this.sets.set(fieldId, (f = new Map()));
     let s = f.get(chunkKey);

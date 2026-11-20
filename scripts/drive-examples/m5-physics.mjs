@@ -45,6 +45,10 @@ async function stationDebrisGate(page) {
   };
   const before = perf ? await bench() : null;
   await ev('__dev.grantCargo("fe_ni_metal", 250); __dev.grantCargo("silicates", 200); true');
+  for (const trialId of ["first_fabrication", "first_batch"]) {
+    await ev(`${G}.settled({type:"trial.record",trialId:${J(trialId)}})`);
+  }
+  assert.equal((await ev(`${G}.settled({type:"research.unlock",nodeId:"lg1_bulk_handling"})`)).status, "accepted");
   const crafted = await ev(`${G}.settled({type:"item.craft",itemId:"consumable_depot_kit"})`);
   assert.equal(crafted.status, "accepted", J(crafted));
   const placed = await ev(`${G}.settled({type:"depot.place",name:"P4 Contact Gate",frameId:"earth",positionKm:[0,10000,0],quaternion:[0,0,0,1]})`);

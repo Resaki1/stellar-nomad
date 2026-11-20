@@ -4,6 +4,8 @@
  */
 import { industryObstruction } from "@/sim/industry/placement";
 import { reduceIndustry } from "@/sim/industry/reducer";
+import { applyIndustryDelta } from "@/sim/industry/simulation";
+import type { IndustryDelta } from "@/sim/industry/types";
 import { ALL_ITEM_SLOTS, MATERIAL_NAMES, REPAIR_MATERIAL_ID, getItemDef, getProcessingRecipe, getResearchNode, getSiteDef, getTrialDef } from "@/data/content";
 import { hullRepairable } from "@/sim/ship/hull";
 import { MAX_BOOKMARKS } from "@/save/defaults";
@@ -148,6 +150,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "depot.place":
     case "depot.transfer":
     case "depot.fabricate":
+    case "replication.tank.install":
+    case "replication.tank.transfer":
     case "drone.configure":
     case "expedition.mark":
     case "expedition.give":
@@ -184,6 +188,8 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "depot.place":
     case "depot.transfer":
     case "depot.fabricate":
+    case "replication.tank.install":
+    case "replication.tank.transfer":
     case "drone.configure":
       return reduceIndustry(op, { ...ctx, player: p }, {
         cargoRoom: () => cargoRemaining(p, world),
@@ -634,15 +640,21 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const health = persistentShipConfig(p, completedSet(world)).maxHealth;
       const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose => industryObstruction(world.industry.depots, pose));
       const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
-      // Recovery: full hull, empty ordinary tank, exactly the protected allowance, a cold ship.
+      // Recover the protected allowance and draw any ordinary fuel from the actual destination.
       const protectedKg = getEffectiveTuning().recoveryAllowanceKg;
-      const propellant = { ordinaryKg: 0, protectedKg };
+      const pointTanks = world.industry.pointTanks;
+      const stock = dest.pointId !== STARTER_POINT_ID && pointTanks && Object.hasOwn(pointTanks, dest.pointId) ? pointTanks[dest.pointId] : 0;
+      const ordinaryKg = Math.min(stock, tankCapacityKg(p, world));
+      const tankDelta: IndustryDelta | null = ordinaryKg > 0
+        ? { depots: [], drones: [], sources: {}, pointTanks: { [dest.pointId]: stock - ordinaryKg } } : null;
+      const propellant = { ordinaryKg, protectedKg };
       const power = { capacitor01: 1, heat01: 0 };
       // A vanished point is forgotten; an obstructed or explicitly bypassed one stays selected.
       const replication = dest.fallback === "missing" ? { activeId: STARTER_POINT_ID } : p.replication;
       return {
-        result: { type: "ship.respawn", health, destination: dest, protectedKg },
+        result: { type: "ship.respawn", health, destination: dest, ordinaryKg, protectedKg },
         apply: () => {
+          if (tankDelta) world.industry = applyIndustryDelta(world.industry, tankDelta);
           p.isDead = false;
           p.health = health;
           p.ship = ship;
@@ -652,7 +664,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
           p.replication = replication;
           p.lastLoss = null;
         },
-        events: [{ type: "ship.respawned", by }],
+        events: [{ type: "ship.respawned", by }, ...(tankDelta ? [{ type: "industry.changed" as const, by, delta: tankDelta }] : [])],
         playerKeys: ["isDead", "health", "ship", "propellant", "power", "processing", "replication", "lastLoss"],
       };
     }

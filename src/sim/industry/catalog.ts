@@ -1,8 +1,11 @@
+import type { IndustryBlueprint } from "@/data/content";
 import type { Vec3Tuple } from "@/save/types";
 import { loadSystem } from "@/sim/systemRegistry";
 
 export const DEPOT_KIT_ID = "consumable_depot_kit";
 export const DRONE_FUEL_ID = "propellant";
+export const POINT_TANK_CAPACITY_KG = 1_200;
+export const POINT_TANK_RECIPE = { fe_ni_metal: 120, silicates: 50 } as const;
 
 export const INDUSTRY_TUNING = {
   maxDepots: 24,
@@ -29,6 +32,7 @@ export const INDUSTRY_TUNING = {
   fieldAccelerationKmPerS2: 0.05,
   maxLocalRouteKm: 30,
   extractionRangeKm: 30,
+  droneMiningSpeedMult: 0.6,
   droneTankKg: 120,
   droneDryMassKg: 1200,
   dronePropellantScale: 0.12,
@@ -55,8 +59,7 @@ function fieldSource(id: string, name: string, fieldId: string, offsetKm: Vec3Tu
   return { id, name, fieldId, frameId: field.anchorBody, positionKm, materialId: "hydrates", rangeKm: INDUSTRY_TUNING.extractionRangeKm };
 }
 
-/** Deposits sampled by drones in the two volatile-bearing fields. The pool is the work
- * reachable from a prospect as the drone surveys new fragments in its surrounding field. */
+/** Navigation landmarks in volatile-rich regions. Older saved extractor trips also refer to their IDs. */
 export const INDUSTRY_SOURCES: IndustrySource[] = [
   // Center of the authored origin_volatile pocket's first 20 km chunk.
   fieldSource("earth_hydrates", "Earth hydrate site", "origin_belt", [-2810, 170, -190]),
@@ -69,6 +72,7 @@ export function getIndustrySource(id: unknown): IndustrySource | undefined {
 }
 
 export interface DepotRecipe {
+  blueprint?: IndustryBlueprint;
   id: string;
   name: string;
   description: string;
@@ -78,14 +82,14 @@ export interface DepotRecipe {
 }
 
 export const DEPOT_RECIPES: DepotRecipe[] = [
-  { id: "refinery", name: "Hydrate refinery", description: "Turn stored hydrates into propellant.",
+  { id: "refinery", blueprint: "refinery", name: "Hydrate refinery", description: "Turn stored hydrates into propellant.",
     recipe: { fe_ni_metal: 75, silicates: 50 }, output: "refinery" },
-  { id: "drone", name: "Utility drone", description: "Collect hydrates nearby or deliver supplies to another depot.",
+  { id: "drone", blueprint: "drone", name: "Utility drone", description: "Mine nearby asteroids or haul supplies between stations.",
     recipe: { fe_ni_metal: 45, silicates: 30, carbon: 10 }, output: "drone" },
   { id: "replication_kit", name: "Replication kit", description: "Fabricate a portable recovery point using depot stock.",
     recipe: { fe_ni_metal: 125, silicates: 80 }, output: "consumable", itemId: "consumable_replication_kit" },
   { id: "hull_patch", name: "Hull patch kit", description: "Fabricate a hull patch using depot stock.",
     recipe: { fe_ni_metal: 12, silicates: 8 }, output: "consumable", itemId: "consumable_hull_patch_kit" },
-  { id: "depot_kit", name: "Depot kit", description: "Fabricate a second depot for a fuel route.",
+  { id: "depot_kit", blueprint: "depot_kit", name: "Depot kit", description: "Fabricate a second depot for a fuel route.",
     recipe: { fe_ni_metal: 100, silicates: 75 }, output: "consumable", itemId: DEPOT_KIT_ID },
 ];

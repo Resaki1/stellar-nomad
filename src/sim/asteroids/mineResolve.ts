@@ -5,7 +5,7 @@
  */
 import type { Difficulty, PlayerState } from "@/save/types";
 import { resolveHeadlessRock } from "@/sim/asteroids/headlessChunks";
-import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
+import { computeMiningDurationS, getAsteroidMiningReward, type ResourceRewardEntry } from "@/sim/asteroids/resources";
 import { difficultyMults } from "@/sim/difficulty";
 import { persistentShipConfig } from "@/sim/ship/loadout";
 import type { SystemConfig } from "@/sim/systemTypes";
@@ -22,6 +22,15 @@ export interface ResolvedMine {
 
 export type MineResolver = (fieldId: string, chunkKey: string, instanceId: number, player: PlayerState) => ResolvedMine | null;
 
+export function scaleRockYield(resources: readonly ResourceRewardEntry[], efficiencyMult: number, difficulty?: Difficulty): Record<string, number> {
+  const mult = efficiencyMult * difficultyMults(difficulty).yield;
+  const out: Record<string, number> = {};
+  for (const r of resources) {
+    out[r.resourceId] = (out[r.resourceId] ?? 0) + Math.max(1, Math.round(r.amount * mult));
+  }
+  return out;
+}
+
 /** Deterministic yield units, rounded exactly as the client's preview (`buildMineOperation`). */
 export function mineYield(
   system: SystemConfig,
@@ -33,12 +42,7 @@ export function mineYield(
   difficulty: Difficulty | undefined,
 ): Record<string, number> {
   const reward = getAsteroidMiningReward(system, fieldId, instanceId, radiusM, chunkKey);
-  const mult = efficiencyMult * difficultyMults(difficulty).yield;
-  const out: Record<string, number> = {};
-  for (const r of reward?.resources ?? []) {
-    out[r.resourceId] = (out[r.resourceId] ?? 0) + Math.max(1, Math.round(r.amount * mult));
-  }
-  return out;
+  return scaleRockYield(reward?.resources ?? [], efficiencyMult, difficulty);
 }
 
 export function makeMineResolver(getSystem: () => SystemConfig, getDifficulty: () => Difficulty): MineResolver {

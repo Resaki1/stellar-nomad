@@ -1,6 +1,6 @@
 "use client";
 
-import { depotPoisAtom, industrySourcePois } from "@/store/industryHud";
+import { depotPoisAtom, industrySourcePois, trackedDronePoiAtom } from "@/store/industryHud";
 import { INTERACT_LOCK_KM, isInteractFocusBlocked } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -168,6 +168,7 @@ function usePOIDefs(): POIDef[] {
   const sitePois = useAtomValue(sitePOIsAtom);
   const pilotPois = useAtomValue(pilotPOIsAtom);
   const target = useAtomValue(targetedPOIAtom);
+  const droneBearing = useAtomValue(trackedDronePoiAtom);
   const depotPois = useAtomValue(depotPoisAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
@@ -204,13 +205,15 @@ function usePOIDefs(): POIDef[] {
     // Asteroid fields: hidden while the ship is inside the field's outer radius (§8)
     for (const field of system.asteroidFields ?? []) {
       if (field.enabled === false) continue;
+      const id = `field:${field.id}`;
+      const tracked = target?.id === id && poiBuffer.pinnedId === id;
       const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
-        id: `field:${field.id}`,
+        id,
         name: field.name,
         positionKm: field.anchorKm,
-        minDistanceKm: Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
-        maxDistanceKm: field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
+        minDistanceKm: tracked ? 0 : Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
+        maxDistanceKm: tracked ? STAR_MARKER_MAX_DISTANCE_KM : field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
       });
     }
 
@@ -252,11 +255,12 @@ function usePOIDefs(): POIDef[] {
     // Other pilots (co-op): live frame-relative positions
     for (const p of pilotPois) pois.push(p);
 
+    if (droneBearing) pois.push(droneBearing);
     for (const p of depotPois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
     for (const p of industrySourcePois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
 
     // B3: the current destination always has a marker, even when nothing else lists it.
-    if (target && !pois.some((p) => p.id === target.id)) {
+    if (target && !target.id.startsWith("drone:") && !pois.some((p) => p.id === target.id)) {
       pois.push({
         id: target.id,
         name: target.name,
@@ -309,7 +313,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, droneBearing, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -326,8 +330,13 @@ const POIProjector = memo(function POIProjector() {
   // A renamed station or recovery point keeps its current navigation lock and bearing.
   useEffect(() => {
     const target = store.get(targetedPOIAtom);
-    if (!target || !isStructurePoi(target.id)) return;
+    if (!target || !(isStructurePoi(target.id) || target.id.startsWith("drone:"))) return;
     const poi = pois.find(p => p.id === target.id);
+    if (!poi && target.id.startsWith("drone:")) {
+      poiBuffer.pinnedId = null;
+      poiBuffer.targetedId = null;
+      store.set(targetedPOIAtom, null);
+    }
     if (poi && poi.name !== target.name) store.set(targetedPOIAtom, { ...target, name: poi.name });
   }, [pois, store]);
 
@@ -547,7 +556,7 @@ const POIProjector = memo(function POIProjector() {
       poiBuffer.gazeProgress = 0;
       poiBuffer.gazeActive = false;
       const targeted = store.get(targetedPOIAtom);
-      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|industry-source):/.test(targeted.id);
+      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|drone|field|industry-source):/.test(targeted.id);
       if (!industryBearing && poiBuffer.targetedId) store.set(targetedPOIAtom, null);
       poiBuffer.targetedId = industryBearing ? targeted.id : null;
       poiBuffer.targetedEtaS = null;

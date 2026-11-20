@@ -1,0 +1,72 @@
+@use '../../../styles' as s;
+
+.point-fuel {
+  min-width: 0;
+  border: 1px solid s.$stroke-base;
+  border-radius: s.$radius-md;
+  background: s.$stroke-faint;
+
+  summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: s.$space-2;
+    min-height: 40px;
+    padding: s.$space-2 s.$space-3;
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+
+    &::-webkit-details-marker { display: none; }
+
+    span {
+      display: flex;
+      align-items: center;
+      gap: s.$space-2;
+    }
+
+    svg { flex: 0 0 auto; color: s.$accent-info; }
+    strong { text-align: end; color: s.$text-secondary; font-variant-numeric: tabular-nums; }
+
+    &::after {
+      content: "";
+      width: 6px;
+      height: 6px;
+      flex: 0 0 auto;
+      border: solid s.$accent-info;
+      border-width: 0 1px 1px 0;
+      transform: rotate(45deg);
+    }
+  }
+
+  &[open] summary {
+    border-bottom: 1px solid s.$stroke-base;
+    &::after { transform: rotate(225deg); }
+  }
+
+  &__body {
+    display: grid;
+    justify-items: start;
+    gap: s.$space-2;
+    padding: s.$space-3;
+    min-width: 0;
+
+    .industry-research { width: 100%; }
+  }
+
+  &__transfer {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: s.$space-2;
+
+    label { width: 94px; }
+  }
+
+  &__feedback[role="alert"] { color: s.$accent-warn; }
+
+  @media (pointer: coarse) {
+    summary { min-height: 44px; }
+    .point-fuel__transfer input { min-height: 44px; }
+  }
+}

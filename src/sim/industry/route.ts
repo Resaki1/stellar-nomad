@@ -35,7 +35,7 @@ const TERMINAL_BURN_S = CRUISE / ACCEL;
 const TERMINAL_S = T.terminalDistanceKm / CRUISE + TERMINAL_BURN_S / 2;
 const FIELD_ACCEL = T.fieldAccelerationKmPerS2;
 const FIELD_START_KM = 2 * T.terminalDistanceKm;
-const FUEL_PER_KMPS = DEFAULT_RESOURCE_TUNING.propellantKgPerMps * 1000 * T.dronePropellantScale;
+export const DRONE_FUEL_PER_KMPS = DEFAULT_RESOURCE_TUNING.propellantKgPerMps * 1000 * T.dronePropellantScale;
 
 const fields = activeSystem().asteroidFields.filter(field => field.enabled !== false).map(field => ({
   field,
@@ -65,7 +65,7 @@ export function minimumDroneFlightS(km: number, profile: DroneFlightProfile = "l
 export const droneLegSeconds = (km: number, profile: DroneFlightProfile = "local"): number =>
   Math.max(T.minLegSeconds, Math.ceil(minimumDroneFlightS(km + ENDPOINT_MARGIN_KM, profile)));
 
-function localPeakKmps(km: number, durationS: number): number {
+export function localDronePeakKmps(km: number, durationS: number): number {
   return 2 * km / (durationS + Math.sqrt(Math.max(0, durationS ** 2 - 4 * km / ACCEL)));
 }
 
@@ -87,7 +87,7 @@ export function droneFlightProgress(km: number, elapsedS: number, durationS: num
     const fraction = fieldDistanceKm(scaledS) / km;
     return elapsedS <= durationS / 2 ? fraction : 1 - fraction;
   }
-  const peak = localPeakKmps(km, durationS);
+  const peak = localDronePeakKmps(km, durationS);
   const burnS = peak / ACCEL;
   const remainingS = durationS - elapsedS;
   if (elapsedS <= burnS) return 0.5 * ACCEL * elapsedS ** 2 / km;
@@ -121,11 +121,12 @@ export function dronePayloadMassKg(itemId: string, amount: number): number {
   return amount * (itemId === DRONE_FUEL_ID ? 1 : T.cargoUnitMassKg);
 }
 
-function fitDroneLoad(route: DroneRoute, itemId: string, request: number, availableKg: number, extracting: boolean): DroneLoad {
+/** Reserve enough propellant to bring an undelivered manifest all the way home. */
+export function planDroneLoad(route: DroneRoute, itemId: string, request: number, availableKg: number): DroneLoad {
   const fuelCargo = itemId === DRONE_FUEL_ID;
   const perUnitKg = dronePayloadMassKg(itemId, 1);
   const emptyKg = route.roundTripFuelKg;
-  const marginalKg = planDroneFuel(route, extracting ? 0 : perUnitKg, perUnitKg).roundTripFuelKg - emptyKg;
+  const marginalKg = planDroneFuel(route, perUnitKg, perUnitKg).roundTripFuelKg - emptyKg;
   // Each added unit increases both trip fuel and, for a fuel manifest, the debit as cargo.
   const tankAmount = marginalKg ? (T.droneTankKg - emptyKg) / marginalKg : Infinity;
   const depotAmount = availableKg < emptyKg ? 0 : (marginalKg || fuelCargo)
@@ -133,17 +134,7 @@ function fitDroneLoad(route: DroneRoute, itemId: string, request: number, availa
   const feasible = Math.max(0, Math.min(request, fuelCargo ? T.loadFuelKg : T.loadUnits, tankAmount, depotAmount));
   const amount = fuelCargo ? feasible : Math.floor(feasible);
   const payloadKg = dronePayloadMassKg(itemId, amount);
-  return { amount, ...planDroneFuel(route, extracting ? 0 : payloadKg, payloadKg) };
-}
-
-/** Reserve enough propellant to bring an undelivered manifest all the way home. */
-export function planDroneLoad(route: DroneRoute, itemId: string, requestedAmount: number, availableAfterReserveKg: number): DroneLoad {
-  return fitDroneLoad(route, itemId, requestedAmount, availableAfterReserveKg, false);
-}
-
-/** An extraction trip starts empty and brings back the funded amount of feedstock. */
-export function planDroneExtraction(route: DroneRoute, itemId: string, requestedUnits: number, availableAfterReserveKg: number): DroneLoad {
-  return fitDroneLoad(route, itemId, Math.min(requestedUnits, T.extractUnits), availableAfterReserveKg, true);
+  return { amount, ...planDroneFuel(route, payloadKg, payloadKg) };
 }
 
 function clearsBodies(home: Position, destination: Position): boolean {
@@ -167,8 +158,8 @@ function makeRoute(pathKm: number, fieldName: string | null): DroneRoute {
   const legSeconds = droneLegSeconds(pathKm, profile);
   const peak = profile === "field" && pathKm > FIELD_START_KM
     ? fieldPeakKmps(pathKm) * minimumDroneFlightS(pathKm, "field") / legSeconds
-    : localPeakKmps(pathKm, legSeconds);
-  const returnFuelAtDryKg = 2 * peak * FUEL_PER_KMPS;
+    : localDronePeakKmps(pathKm, legSeconds);
+  const returnFuelAtDryKg = 2 * peak * DRONE_FUEL_PER_KMPS;
   const { roundTripFuelKg } = planDroneFuel({ returnFuelAtDryKg }, 0, 0);
   return { pathKm, legSeconds, profile, fieldName, returnFuelAtDryKg, roundTripFuelKg };
 }
@@ -197,7 +188,30 @@ export function estimateDroneRoute(home: Position, destination: Position): Drone
 
 export function estimateDroneExtractionRoute(home: Position, source: IndustrySource, depots: readonly DepotRecord[]): DroneRoute | null {
   if (!canExtractAt(home, source.id)) return null;
-  const site = prospectWorksite(source, depots);
-  const pathKm = depotDistanceKm(home, site);
-  return pathKm <= source.rangeKm && clearsBodies(home, site) ? makeRoute(pathKm, null) : null;
+  return estimateDroneWorkRoute(home, prospectWorksite(source, depots));
+}
+
+export function estimateDroneWorkRoute(home: Position, target: Position): DroneRoute | null {
+  if (home.frameId !== target.frameId) return null;
+  const pathKm = depotDistanceKm(home, target);
+  return pathKm <= T.extractionRangeKm && clearsBodies(home, target) ? makeRoute(pathKm, null) : null;
+}
+
+/** The local half-space above each body's clearance sphere contains the whole triangle,
+ * including any abort point on the planned segment and the straight path back home. */
+export function clearsMiningCorridor(home: Position, from: Position, to: Position): boolean {
+  if (home.frameId !== from.frameId || home.frameId !== to.frameId) return false;
+  frameOriginXyzKm(home.frameId, frameOrigin);
+  const [x, y, z] = home.positionKm;
+  const a = from.positionKm, b = to.positionKm;
+  return allBodyDefs().every(body => {
+    const rx = frameOrigin.x + x - body.positionKm[0];
+    const ry = frameOrigin.y + y - body.positionKm[1];
+    const rz = frameOrigin.z + z - body.positionKm[2];
+    const distance = Math.hypot(rx, ry, rz);
+    const margin = distance - (body.radiusKm + REPLICATION_TUNING.minBodyAltitudeKm);
+    const aProjection = (rx * (a[0] - x) + ry * (a[1] - y) + rz * (a[2] - z)) / distance;
+    const bProjection = (rx * (b[0] - x) + ry * (b[1] - y) + rz * (b[2] - z)) / distance;
+    return margin >= 0 && Math.min(aProjection, bProjection) >= -margin;
+  });
 }

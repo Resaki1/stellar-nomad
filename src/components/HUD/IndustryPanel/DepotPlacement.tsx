@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import { playAudio } from "@/audio/voices";
 import { getLocalPlayerShip } from "@/sim/entities";
-import { DEPOT_KIT_ID, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { DEPOT_KIT_ID, INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { checkDepotPlacement } from "@/sim/industry/placement";
-import { estimateDroneExtractionRoute } from "@/sim/industry/route";
+import { miningFieldsAt } from "@/sim/industry/mining";
 import { emergencePose } from "@/sim/replication/points";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { isDeadAtom } from "@/store/death";
@@ -27,7 +27,7 @@ type Store = ReturnType<typeof useStore>;
 function readPreview(store: Store) {
   const ship = getLocalPlayerShip();
   const preview = depotPlacementPreview;
-  if (!ship || !sampleDepotPlacementPose()) return { obstruction: "Waiting for ship position.", source: null };
+  if (!ship || !sampleDepotPlacementPose()) return { obstruction: "Waiting for ship position.", field: null };
   worldAuthority.world();
   const depots = store.get(industryAtom).depots;
   const occupied = store.get(replicationPointsAtom).flatMap(point => [
@@ -39,8 +39,8 @@ function readPreview(store: Store) {
     : checkDepotPlacement(preview, { frameId: ship.frameId, positionKm: ship.posKm.toArray() },
       store.get(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, depots, occupied);
   preview.valid = obstruction === null;
-  const source = INDUSTRY_SOURCES.find(prospect => estimateDroneExtractionRoute(preview, prospect, depots))?.name ?? null;
-  return { obstruction: obstruction && industryMessage(obstruction), source };
+  const field = miningFieldsAt(preview)[0]?.name ?? null;
+  return { obstruction: obstruction && industryMessage(obstruction), field };
 }
 
 /** Aim with the ship and place one pre-fabricated kit. Placement stays live until authority confirms. */
@@ -66,7 +66,7 @@ function AimDepot({ placement }: { placement: { fromIndustry: boolean } }) {
   useEffect(() => {
     const refresh = () => {
       const next = readPreview(store);
-      setStatus(before => before && before.obstruction === next.obstruction && before.source === next.source ? before : next);
+      setStatus(before => before && before.obstruction === next.obstruction && before.field === next.field ? before : next);
     };
     refresh();
     const timer = window.setInterval(refresh, 100);
@@ -105,6 +105,6 @@ function AimDepot({ placement }: { placement: { fromIndustry: boolean } }) {
 
   return <PlacementCard kind="depot" distanceKm={INDUSTRY_TUNING.placeDistanceKm} kits={kits}
     name={name} onNameChange={setName} ready={status?.obstruction === null} blocked={status?.obstruction}
-    clearMessage={status?.source ? `${status.source} in range` : "Clear · relay site"} refusal={refusal}
+    clearMessage={status?.field ? `Nearby field · ${status.field}` : "Clear · outside mining range"} refusal={refusal}
     pending={pending} isActive={isActive} cancel={cancel} confirm={confirm} />;
 }
