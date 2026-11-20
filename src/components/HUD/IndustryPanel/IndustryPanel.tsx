@@ -8,6 +8,7 @@ import { playAudio } from "@/audio/voices";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { isFrameId } from "@/sim/frames";
 import { DRONE_FUEL_ID, DEPOT_KIT_ID, DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING, POINT_TANK_CAPACITY_KG } from "@/sim/industry/catalog";
+import { planFabricationMaterials } from "@/sim/industry/fabrication";
 import { sameDroneAssignment, type DepotRecord, type DroneJob, type DroneRecord, type DroneStatus } from "@/sim/industry/types";
 import { checkDroneRoute, estimateDroneExtractionRoute } from "@/sim/industry/route";
 import { depotDistanceKm } from "@/sim/industry/placement";
@@ -19,7 +20,7 @@ import { activeSystem } from "@/sim/systemRegistry";
 import type { WorldOperation } from "@/sim/world/commands";
 import { cargoAtom, cargoRemainingUnitsAtom } from "@/store/cargo";
 import { industryAtom } from "@/store/industry";
-import { depotPoi, nextDepotName, trackIndustryPoiAtom } from "@/store/industryHud";
+import { depotPoi, dronePoi, nextDepotName, trackIndustryPoiAtom } from "@/store/industryHud";
 import { modulesAtom } from "@/store/modules";
 import { newOpId, runOperation } from "@/store/operations";
 import { shipReq, shipResourcesHudAtom } from "@/store/shipResources";
@@ -31,7 +32,7 @@ import { IndustryResearchRequirement } from "../ResearchPanel/ResearchPanel";
 import StructureNameEditor, { type NamedStructure } from "./StructureNameEditor";
 import PointFuelControls from "./PointFuelControls";
 import RequestDelivery, { DELIVERY_ROUTE_REASON, type DeliveryTarget } from "./RequestDelivery";
-import DroneMiningFilters, { miningFilterForField, type MiningField, type MiningFilterDraft } from "./DroneMiningFilters";
+import DroneMiningFilters, { miningFilterForField, miningRetentionForField, type MiningField, type MiningFilterDraft } from "./DroneMiningFilters";
 import Panel from "../Shell/Panel";
 import { ResourceGlyph } from "../shared/Chips";
 import { industryRejection } from "./industryActions";
@@ -317,9 +318,10 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
           </div> : depot && view === "storage" ? <DepotStorage key={depot.id} depot={depot} inRange={inRange} disabled={!inRange || pending} submit={submit}
             feedback={operationFeedback} onRequestDelivery={() => setDeliveryRequest({ kind: "depot", id: depot.id })} />
             : <>{depot ? <div className="industry__content" key={`${depot.id}:${view}`}>
-              {view === "fabrication" && <Fabrication depot={depot} droneCount={drones.filter(drone => drone.homeId === depot.id).length} disabled={pending} submit={submit} />}
+              {view === "fabrication" && <Fabrication depot={depot} inRange={inRange} droneCount={drones.filter(drone => drone.homeId === depot.id).length} disabled={pending} submit={submit} />}
               {view === "drones" && <DepotDrones depot={depot} depots={depots} targets={deliveryTargets} drones={drones} drafts={droneDrafts} focusedDrone={focusedDrone}
-                saveDraft={saveDroneDraft} disabled={pending} submit={submit} onFabricate={() => setView("fabrication")} />}
+                saveDraft={saveDroneDraft} disabled={pending} submit={submit} onFabricate={() => setView("fabrication")}
+                trackedId={selectedTarget?.id} onTrack={navigate} />}
             </div> : <BuildDepot depots={depots} initialName={initialName ?? nextDepotName(depots)} position={position} pending={pending} canTransit={driveOwned} trackedId={selectedTarget?.id} submit={submit} onAim={onAim} navigate={navigate} />}
               {operationFeedback}
             </>}
@@ -468,21 +470,37 @@ function DepotStorage({ depot, inRange, disabled, submit, feedback, onRequestDel
   </div>;
 }
 
-function Fabrication({ depot, droneCount, disabled, submit }: DepotControls & { droneCount: number }) {
+function Fabrication({ depot, inRange, droneCount, disabled, submit }: DepotControls & { inRange: boolean; droneCount: number }) {
   const completed = useAtomValue(completedNodeSetAtom);
+  const cargo = useAtomValue(cargoAtom).items;
   return <>
-    <p>Deposit recipe materials in depot storage first.</p>
+    <p>Fabrication uses depot stock. Utility drones can draw the remainder from your ship within {formatDistance(INDUSTRY_TUNING.interactRangeKm)}.</p>
     <div className="industry__recipes">{DEPOT_RECIPES.map(recipe => {
       const installed = recipe.output === "refinery" && depot.refinery;
       const baysFull = recipe.output === "drone" && droneCount >= INDUSTRY_TUNING.dronesPerDepot;
-      const enough = canAfford(recipe.recipe, depot.storage.items);
+      const planned = recipe.output === "drone" ? planFabricationMaterials(recipe.recipe, depot.storage.items, inRange ? cargo : undefined) : null;
+      const enough = planned ? Object.keys(planned.missing).length === 0 : canAfford(recipe.recipe, depot.storage.items);
       const locked = !!recipe.blueprint && !completed.has(industryResearchNode(recipe.blueprint).id);
       return <section className="industry__recipe-row" key={recipe.id} data-industry-recipe={recipe.id}>
         <div>
           <h4>{recipe.name}</h4>
           <p>{recipe.description}</p>
           {recipe.blueprint && locked && !installed && <IndustryResearchRequirement blueprint={recipe.blueprint} />}
-          <Requirements items={recipe.recipe} have={depot.storage.items} />
+          {planned ? <dl className="industry__fabrication-cost" aria-label="Utility drone material sources">
+            {Object.entries(recipe.recipe).map(([id, required]) => {
+              const fromDepot = planned.depot[id] ?? 0;
+              const fromShip = planned.ship[id] ?? 0;
+              const missing = planned.missing[id] ?? 0;
+              return <div key={id} data-fabrication-material={id}>
+                <dt><span aria-hidden><ResourceGlyph id={id} /></span> {materialName(id)} <strong>{quantity(required)}</strong></dt>
+                <dd>
+                  <span data-fabrication-from="depot">{quantity(fromDepot)} from depot</span>
+                  {inRange && <span data-fabrication-from="ship">{quantity(fromShip)} from your ship</span>}
+                  {missing > 0 && <span className="industry__warning" data-fabrication-missing>{quantity(missing)} short</span>}
+                </dd>
+              </div>;
+            })}
+          </dl> : <Requirements items={recipe.recipe} have={depot.storage.items} />}
           {baysFull && <small>All drone bays in use.</small>}
         </div>
         <Action primary action="fabricate" disabled={disabled || locked || installed || baysFull || !enough}
@@ -512,9 +530,9 @@ const DRONE_STATUS: Record<DroneStatus, string> = {
   mining: "Mining asteroid",
 };
 
-function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, saveDraft, disabled, submit, onFabricate }: DepotControls & {
+function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, saveDraft, disabled, submit, onFabricate, trackedId, onTrack }: DepotControls & {
   depots: DepotRecord[]; targets: DeliveryTarget[]; drones: DroneRecord[]; drafts: ReadonlyMap<string, DroneDraft>;
-  focusedDrone: string | null; saveDraft: SaveDroneDraft; onFabricate: () => void;
+  focusedDrone: string | null; saveDraft: SaveDroneDraft; onFabricate: () => void; trackedId?: string; onTrack: (poi: POIDef) => void;
 }) {
   const miningUnlocked = useAtomValue(completedNodeSetAtom).has(industryResearchNode("mining").id);
   const homeDrones = drones.filter(drone => drone.homeId === depot.id);
@@ -527,7 +545,7 @@ function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, sav
   return <div className="industry__fleet">{homeDrones.map((drone, i) => <DroneControl
     key={drone.id} index={i + 1} drone={drone} draft={drafts.get(drone.id)} saveDraft={saveDraft}
     depot={depot} depots={depots} targets={targets} fields={fields} miningUnlocked={miningUnlocked} focusRequested={focusedDrone === drone.id}
-    disabled={disabled} submit={submit}
+    disabled={disabled} submit={submit} tracked={trackedId === `drone:${drone.id}`} onTrack={() => onTrack(dronePoi(drone, depot, i + 1))}
   />)}</div>;
 }
 
@@ -547,6 +565,8 @@ function newDroneDraft(job: DroneJob | null, preferMining: boolean): DroneDraft 
       mode: mineFilter?.mode ?? (legacySource ? "resource" : "all"),
       classes: mineFilter?.mode === "class" ? mineFilter.ids : [],
       resources: mineFilter?.mode === "resource" ? mineFilter.ids : legacySource ? [legacySource.materialId] : [],
+      keepMode: job?.keepResourceIds ? "only" : "all",
+      keepResources: job?.keepResourceIds ?? [],
     },
     destinationId: job?.kind === "haul" ? job.targetId : "",
     destinationKind,
@@ -560,6 +580,9 @@ function newDroneDraft(job: DroneJob | null, preferMining: boolean): DroneDraft 
 function droneStatus(drone: DroneRecord, depot: DepotRecord, depots: DepotRecord[], destination?: DeliveryTarget): string {
   const { job, status } = drone;
   if (!job) return DRONE_STATUS[status];
+  if (job.kind === "mine" && drone.phase === "outbound") return "Flying to asteroid";
+  if (job.kind === "extract" && drone.phase === "outbound") return "Flying to hydrate site";
+  if (drone.phase === "scouting") return "Searching for another asteroid";
   if (status === "route_out_of_range" && destination) {
     const { reason } = checkDroneRoute(depot, destination);
     if (reason) return `${DELIVERY_ROUTE_REASON[reason]}. Edit the job to choose another destination.`;
@@ -597,9 +620,9 @@ function droneStatus(drone: DroneRecord, depot: DepotRecord, depots: DepotRecord
   return DRONE_STATUS[status];
 }
 
-function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlocked, focusRequested, draft, saveDraft, disabled, submit }: DepotControls & {
+function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlocked, focusRequested, draft, saveDraft, disabled, submit, tracked, onTrack }: DepotControls & {
   index: number; drone: DroneRecord; depots: DepotRecord[]; targets: DeliveryTarget[]; fields: MiningField[];
-  miningUnlocked: boolean; focusRequested: boolean; draft?: DroneDraft; saveDraft: SaveDroneDraft;
+  miningUnlocked: boolean; focusRequested: boolean; draft?: DroneDraft; saveDraft: SaveDroneDraft; tracked: boolean; onTrack: () => void;
 }) {
   const job = drone.job;
   const card = useRef<HTMLElement>(null);
@@ -625,6 +648,7 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
   const pointDelivery = delivery?.target.kind === "point";
   const field = fields.find(entry => entry.id === (values.fieldId || fields[0]?.id));
   const mineFilter = field && miningFilterForField(field, values.mineFilter);
+  const keepResourceIds = field && miningRetentionForField(field, values.mineFilter);
   const activeTrip = drone.phase !== "idle";
   const editable = !disabled && !activeTrip;
   const reserveKg = Number(reserve);
@@ -636,7 +660,9 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
   const jobBasics = { reserveKg, stopAt, enabled: true };
   let nextJob: DroneJob | null = null;
   if (validReserve && validStop) {
-    if (kind === "mine" && canMine && field && mineFilter) nextJob = { ...jobBasics, kind, targetId: field.id, mineFilter, priorities: [] };
+    if (kind === "mine" && canMine && field && mineFilter && (keepResourceIds === undefined || keepResourceIds.length > 0)) nextJob = {
+      ...jobBasics, kind, targetId: field.id, mineFilter, ...(keepResourceIds && { keepResourceIds }), priorities: [],
+    };
     if (kind === "haul" && delivery?.route && (pointDelivery || priorities.length > 0)) nextJob = {
       ...jobBasics, kind, targetId: delivery.target.id, ...(pointDelivery && { targetKind: "point" as const }),
       priorities: pointDelivery ? [propellantId] : priorities,
@@ -666,6 +692,14 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
     ...(drone.cargo.fuelKg > 0 ? [`${quantity(drone.cargo.fuelKg)} kg propellant`] : []),
     ...Object.entries(drone.cargo.items).map(([id, n]) => `${quantity(n)} ${stockName(id)}`),
   ];
+  const miningJob = job?.kind === "mine" || job?.kind === "extract";
+  const recall = job?.kind === "mine" && !!drone.sortie && activeTrip && drone.phase !== "returning";
+  const stopLabel = miningJob ? recall ? "Recall to depot" : activeTrip ? "Pause at depot" : "Stop mining"
+    : activeTrip ? "Stop after trip" : "Stop job";
+  const remaining = Math.ceil(drone.remainingS);
+  const phaseTime = drone.phase === "outbound" ? "Arrival in" : drone.phase === "returning" ? "Docking in"
+    : drone.phase === "working" ? job?.kind === "extract" ? "Collection finishes in" : "Mining finishes in" : "";
+  const fuelLabel = drone.sortie ? "flight fuel aboard" : drone.flight && drone.phase === "returning" ? "unused flight fuel" : "reserved for return";
   const send = (next: DroneJob, message: string, onAccepted?: () => void) =>
     submit({ type: "drone.configure", droneId: drone.id, job: next }, message, onAccepted);
   const discard = () => saveDraft(drone.id, null);
@@ -675,33 +709,43 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
     update({ priorities: reordered });
   };
 
-  return <section className="industry__drone" data-industry-drone={drone.id} ref={card}>
+  return <section className="industry__drone" data-industry-drone={drone.id} data-industry-drone-phase={drone.phase} ref={card}>
     <header className="industry__drone-head">
       <div>
         <h4><Truck size={16} aria-hidden /> Drone {index}</h4>
         <p data-industry-drone-status={drone.status}>{droneStatus(drone, depot, depots, destination)}</p>
+        {activeTrip && remaining > 0 && (!miningJob || phaseTime) && <time className="industry__time" data-industry-drone-countdown dateTime={`PT${remaining}S`}>
+          {miningJob && `${phaseTime} `}{formatDuration(remaining)}
+        </time>}
       </div>
-      {activeTrip && <span className="industry__time">{formatDuration(Math.ceil(drone.remainingS))}</span>}
+      <Action action="track-drone" label={`${tracked ? "Untrack" : "Track"} Drone ${index}`} onClick={onTrack}>
+        <Crosshair size={14} aria-hidden /> {tracked ? "Untrack" : "Track"}
+      </Action>
     </header>
     {job && <div className="industry__route">
-      <span>{job.kind === "mine" ? "Mine" : job.kind === "extract" ? "Collect" : "Deliver"} <strong>{job.kind === "mine" ? miningSummary : job.priorities.map(stockName).join(", ")}</strong></span>
+      <span>{job.kind === "mine" ? savedFilter?.mode === "resource" ? "Mine asteroids containing" : "Mine"
+        : job.kind === "extract" ? "Collect" : "Deliver"} <strong>{job.kind === "mine" ? miningSummary : job.priorities.map(stockName).join(", ")}</strong></span>
       <span>{job.kind === "mine" ? "in" : job.kind === "extract" ? "from" : "to"} <strong>{targetName}</strong></span>
+      {job.kind === "mine" && <span>{job.keepResourceIds ? <>
+        Keep only <strong>{job.keepResourceIds.map(stockName).join(", ")}</strong>
+      </> : "Keep all resources"}</span>}
       <span>{job.kind === "mine"
         ? job.stopAt < INDUSTRY_TUNING.cargoCapacity ? `Storage limit: ${quantity(job.stopAt)} units per resource` : "Uses all free cargo space"
         : job.kind === "extract"
         ? job.stopAt < INDUSTRY_TUNING.cargoCapacity ? `Hydrate limit: ${quantity(job.stopAt)} units` : "Uses all free cargo space"
         : job.targetKind === "point" ? job.stopAt < POINT_TANK_CAPACITY_KG ? `Tank delivery limit: ${quantity(job.stopAt)} kg` : "Uses all free space in the receiving tank"
         : job.stopAt < maxJobLimit ? `Delivery limit: ${quantity(job.stopAt)} per item (units or kg)` : "Uses all free space at the receiving depot"}</span>
-      {!job.enabled && activeTrip && <span>Stopping after this trip</span>}
+      {!job.enabled && activeTrip && <span>{miningJob ? "Pauses at the depot" : "Stopping after this trip"}</span>}
+      {miningJob && payload.length > 0 && <span data-industry-drone-hold>Cargo hold {quantity(storageUnits(drone.cargo))} / {INDUSTRY_TUNING.loadUnits} units</span>}
       {payload.length > 0 && <span>Carrying {payload.join(", ")}</span>}
-      {drone.fuelKg > 0 && <span>{quantity(drone.fuelKg)} kg {drone.flight && drone.phase === "returning" ? "unused flight fuel" : "reserved for return"}</span>}
+      {drone.fuelKg > 0 && <span>{quantity(drone.fuelKg)} kg {fuelLabel}</span>}
     </div>}
     {job && <div className="industry__line industry__drone-controls">
       <Action action="edit-job" disabled={editing ? disabled : !editable}
         onClick={() => editing ? discard() : saveDraft(drone.id, values)}>{editing ? "Cancel edit" : "Edit job"}</Action>
-      {job.enabled && <Action action="stop-job" disabled={disabled}
-        onClick={() => send({ ...job, enabled: false }, activeTrip ? "Stop requested." : "Drone stopped.")}>
-        {activeTrip ? "Stop after trip" : "Stop job"}
+      {job.enabled && <Action action={recall ? "recall-drone" : "stop-job"} disabled={disabled}
+        onClick={() => send({ ...job, enabled: false }, recall ? "Recall ordered." : activeTrip ? "Stop requested." : "Drone stopped.")}>
+        {stopLabel}
       </Action>}
       {!job.enabled && <Action action="resume-job" primary disabled={!editable || !canResume} onClick={() => send({ ...job, enabled: true }, "Job resumed.")}>Resume job</Action>}
     </div>}
@@ -753,7 +797,7 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
       {canMine && fields.length === 0 && <small>No asteroid field within {formatDistance(INDUSTRY_TUNING.extractionRangeKm)} of this depot.</small>}
       {kind === "mine" && field && <>
         <DroneMiningFilters field={field} draft={values.mineFilter} disabled={!editable || !canMine} onChange={mineFilter => update({ mineFilter })} />
-        <small>The drone searches for rocks within {formatDistance(INDUSTRY_TUNING.extractionRangeKm)} and can carry up to {INDUSTRY_TUNING.loadUnits} units. Time and flight fuel depend on the asteroid.</small>
+        <small>The drone searches for rocks within {formatDistance(INDUSTRY_TUNING.extractionRangeKm)} of its depot and can carry up to {INDUSTRY_TUNING.loadUnits} units. Trip time and fuel depend on the rocks it finds.</small>
       </>}
       {kind === "haul" && options.length === 0 && <p className="industry__warning">
         {targets.length === 1 ? "Build another depot in this region to set up a delivery. " : "No reachable destination in this region. "}

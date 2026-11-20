@@ -17,7 +17,7 @@ import type {
 } from "./types";
 
 /** Bump with a migration appended to `migrations.ts`. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Bound of `WorldState.receipts`. */
 export const MAX_RECEIPTS = 256;

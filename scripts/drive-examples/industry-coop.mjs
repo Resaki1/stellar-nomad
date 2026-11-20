@@ -128,13 +128,71 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     const d = (await state(guest)).drones.find(drone => drone.id === extractor);
     return d.phase === "working" && (await guest.evaluate(`${G}.industry.drone(${json(extractor)})`))?.beam > 0.4;
   }, 35000, 120), "the guest renders the beam at the real rock");
-  const mined = page => page.evaluate(
-    `${G}.world().asteroidDeltas[${json(source.fieldId)}]?.[${json(source.chunkKey)}]?.filter(id => id === ${source.instanceId}).length ?? 0`);
+  const mined = (page, rock = source) => page.evaluate(
+    `${G}.world().asteroidDeltas[${json(rock.fieldId)}]?.[${json(rock.chunkKey)}]?.filter(id => id === ${rock.instanceId}).length ?? 0`);
   assert.ok(await waitFor(async () => (await mined(host)) === 1 && (await mined(guest)) === 1 && !(await present(guest)), 22000, 100),
     "shared mining depletes the streamed rock once on both peers");
-  const miningPayload = (await state(host)).drones.find(d => d.id === extractor).cargo.items;
-  assert.deepEqual(miningPayload, earthMiningLoot, "one rock yields the full material mix");
-  console.log(JSON.stringify({ stage: "finite rock mined", instanceId: source.instanceId, cargo: miningPayload }));
+  const firstPayload = earthMiningLoot;
+  const miner = s => s.drones.find(d => d.id === extractor);
+  const secondOutbound = await waitFor(async () => {
+    const d = miner(await state(guest));
+    const rock = d.flight?.rock;
+    const elapsed = d.durationS - d.remainingS;
+    return d.phase === "outbound" && rock && (rock.instanceId !== source.instanceId || rock.chunkKey !== source.chunkKey) &&
+      d.cargo.items.hydrates > 0 && elapsed >= Math.max(1, Math.floor(d.durationS / 3)) && d.remainingS >= 2 ? d : null;
+  }, 90000, 100);
+  assert.ok(secondOutbound, "The loaded miner departs for another asteroid before returning to the depot");
+  assert.deepEqual(secondOutbound.cargo.items, firstPayload, "The loaded miner keeps the first rock's full yield");
+  assert.deepEqual(secondOutbound.sortie.leg.fromKm, onLeg.sortie.leg.toKm, "The second flight starts at the first asteroid");
+  const secondRock = secondOutbound.flight.rock;
+  console.log(JSON.stringify({ stage: "loaded flight between rocks", fromInstanceId: source.instanceId, toInstanceId: secondRock.instanceId,
+    cargo: secondOutbound.cargo.items, elapsedS: secondOutbound.durationS - secondOutbound.remainingS,
+    remainingS: secondOutbound.remainingS }));
+
+  await assign(guest, extractor, { ...mining, enabled: false });
+  const returning = await waitFor(async () => {
+    const [a, b] = await Promise.all([host, guest].map(state));
+    const left = miner(a), right = miner(b);
+    return left?.phase === "returning" && right?.phase === "returning" &&
+      left.sortie?.leg.brake?.seconds > 0 && right.sortie?.leg.brake?.seconds > 0 ? [left, right] : null;
+  }, 4000, 60);
+  assert.ok(returning, "Both peers see the loaded miner brake and turn back");
+  const original = secondOutbound.sortie.leg;
+  const direction = original.toKm.map((axis, i) => axis - original.fromKm[i]);
+  const length = Math.hypot(...direction);
+  const dot = (a, b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
+  const leg = returning[0].sortie.leg;
+  const fromStart = leg.fromKm.map((axis, i) => axis - original.fromKm[i]);
+  const projection = dot(fromStart, direction) / (length ** 2);
+  assert.ok(projection > 0 && projection < 1, "Recall starts between the two asteroids");
+  assert.ok(Math.hypot(...fromStart.map((axis, i) => axis - direction[i] * projection)) < 1e-5,
+    "Recall starts on the second flight path");
+  assert.deepEqual(leg.toKm, secondOutbound.sortie.homeKm, "Recall aims for the home berth");
+  const speed = Math.hypot(...leg.brake.velocityKmps);
+  assert.ok(dot(leg.brake.velocityKmps, direction) > 0, "The initial brake continues along the outbound direction");
+  assert.ok(Math.abs(speed / leg.brake.seconds - tuning.accelerationKmPerS2) < 1e-8, "Recall brakes at the drone thruster limit");
+  assert.ok(leg.brake.seconds < returning[0].durationS && leg.burnKg > 0, "The diversion funds braking and return");
+  for (const drone of returning) {
+    assert.equal(drone.job.enabled, false);
+    assert.deepEqual(drone.cargo.items, firstPayload, "The recall keeps the first rock's cargo on each peer");
+    assert.deepEqual(drone.sortie.leg, leg, "Both peers agree on the recall trajectory");
+  }
+  const paused = await waitFor(async () => {
+    const [a, b] = await Promise.all([host, guest].map(state));
+    return [miner(a), miner(b)].every(d => d.phase === "idle" && d.status === "paused" && !d.job.enabled) ? [a, b] : null;
+  }, (returning[0].durationS + 15) * 1000, 100);
+  assert.ok(paused, "The loaded miner docks and pauses on both peers");
+  for (const s of paused) {
+    assert.deepEqual(miner(s).cargo.items, {}, "The recovered material unloads at the depot");
+    const unloaded = s.depots.find(depot => depot.id === sourceDepot.id).storage.items;
+    for (const [id, amount] of Object.entries(firstPayload)) {
+      assert.equal(unloaded[id], amount, `The first rock's ${id} reaches the refinery`);
+    }
+  }
+  assert.equal(await mined(host, secondRock), 0, "The cancelled second asteroid is untouched");
+  assert.equal(await mined(guest, secondRock), 0);
+  console.log(JSON.stringify({ stage: "loaded miner recalled and paused", brakeS: leg.brake.seconds, returnS: returning[0].durationS,
+    recallProgress: projection, retainedHydrates: firstPayload.hydrates }));
   await visit(guest, relay);
   const denied = await guest.evaluate(`${G}.settled(${json(transfer(sourceDepot.id, "withdraw", "fuel", "fuel", 1))})`);
   assert.equal(denied.status, "rejected");
@@ -150,6 +208,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   }, 120000, 300);
   assert.ok(outbound, "self-funded first shipment left the prospect depot");
   assert.ok(outbound.durationS >= 36 && outbound.durationS <= 39, "4 km basic-engine leg has a local ETA");
+  await assign(host, extractor, mining);
   const generation = (await host.evaluate(`${C}.status()`)).session.gen;
   console.log(JSON.stringify({ stage: "first departure", payloadKg: outbound.cargo.fuelKg, legS: outbound.durationS }));
   await host.load();
@@ -187,6 +246,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   assert.equal(stores(final), second);
   return { pass: true, frames: [sourceDepot.frameId, relay.frameId], routeKm, fieldRouteKm, legS: outbound.durationS, contestedUnit: race.map(r => r.status),
     contestedDrone: requestRace.map(outcome => outcome.status),
+    recalledHydrates: firstPayload.hydrates, recallBrakeS: leg.brake.seconds,
     restartGeneration: generation + 1, bootstrapKg: 12, firstDeliveryKg: first, withdrawnKg: usedKg,
     secondDeliveryKg: second - first + usedKg, durableRelayKg: stores(saved) };
 }

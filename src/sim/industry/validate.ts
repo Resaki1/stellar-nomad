@@ -6,7 +6,9 @@ import { getIndustrySource, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from 
 import { decodeDroneJob } from "./reducer";
 import { finiteMiningJob } from "./mining";
 import { maxDroneLegSeconds } from "./route";
-import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneRecord, type DroneRockTarget, type DroneWaypoint, type IndustryState } from "./types";
+import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneMiningSortie,
+  type DroneRecord, type DroneRockTarget, type DroneWaypoint, type IndustryState } from "./types";
+import { miningDistanceKm } from "./sortie";
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
@@ -76,14 +78,35 @@ function waypoint(v: unknown): DroneWaypoint | null {
   return { frameId: v.frameId, positionKm: [...v.positionKm], fraction: v.fraction };
 }
 
+function miningSortie(v: unknown, home: DepotRecord): DroneMiningSortie | null | undefined {
+  if (v === null) return null;
+  if (!obj(v) || !position(v.homeKm) || (v.lane !== 1 && v.lane !== -1) ||
+      miningDistanceKm(v.homeKm, home.positionKm) > 0.05 || !obj(v.leg)) return undefined;
+  const { fromKm, toKm, burnKg, brake } = v.leg;
+  if (!position(fromKm) || !position(toKm) || !finite(burnKg) || burnKg < 0 || burnKg > T.droneTankKg ||
+      [fromKm, toKm].some(p => miningDistanceKm(p, home.positionKm) > T.extractionRangeKm + 1)) return undefined;
+  const sortie: DroneMiningSortie = { homeKm: [...v.homeKm], lane: v.lane, leg: { fromKm: [...fromKm], toKm: [...toKm], burnKg } };
+  if (brake !== undefined) {
+    if (!obj(brake) || !position(brake.velocityKmps) || !finite(brake.seconds) || brake.seconds <= 0) return undefined;
+    const speed = Math.hypot(...brake.velocityKmps);
+    if (speed > T.cruiseKmPerS + 1e-9 || Math.abs(brake.seconds * T.accelerationKmPerS2 - speed) > 1e-9) return undefined;
+    sortie.leg.brake = { velocityKmps: [...brake.velocityKmps], seconds: brake.seconds };
+  }
+  if (obj(v.manifest)) sortie.manifest = storage({ items: v.manifest }, T.loadUnits, 0).items;
+  return sortie;
+}
+
 function drone(v: unknown, depots: Map<string, DepotRecord>, pointTanks: IndustryState["pointTanks"]): DroneRecord | null {
-  if (!obj(v) || !id(v.id) || !id(v.homeId) || !depots.has(v.homeId)) return null;
+  if (!obj(v) || !id(v.id) || !id(v.homeId)) return null;
+  const home = depots.get(v.homeId);
+  if (!home) return null;
   const configured = decodeDroneJob(v.job);
   const validDelivery = configured?.targetKind === "point" ? Object.hasOwn(pointTanks, configured.targetId)
     : !!configured && depots.has(configured.targetId) && v.homeId !== configured.targetId;
   const returnS = num(v.returnS, maxLegS);
   const durationS = num(v.durationS, maxLegS);
-  const phase = returnS >= T.minLegSeconds && durationS > 0 &&
+  const sortie = configured?.kind === "mine" ? miningSortie(v.sortie, home) : undefined;
+  const phase = v.phase === "scouting" && sortie ? "scouting" : returnS >= T.minLegSeconds && durationS > 0 &&
       (v.phase === "outbound" || v.phase === "working" || v.phase === "returning")
     ? v.phase : "idle";
   const valid = configured && (configured.kind !== "haul" || validDelivery) ? configured : null;
@@ -94,6 +117,7 @@ function drone(v: unknown, depots: Map<string, DepotRecord>, pointTanks: Industr
   return {
     id: v.id, homeId: v.homeId, job, phase, status, returnS, durationS, via: waypoint(v.via),
     ...(flight === undefined ? {} : { flight }),
+    ...(sortie === undefined ? {} : { sortie }),
     remainingS: num(v.remainingS, durationS), fuelKg: num(v.fuelKg, flight ? T.droneTankKg : maxLegacyLegKg),
     cargo: storage(v.cargo, Math.max(T.loadUnits, T.extractUnits), T.loadFuelKg),
   };

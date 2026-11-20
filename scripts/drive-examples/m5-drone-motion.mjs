@@ -78,6 +78,27 @@ async function verifyProspect(page, source, site) {
   return { poseErrorM, impactMps: hit.dvMps };
 }
 
+async function trackFromDroneCard(page, droneId, homeId) {
+  const click = async selector => {
+    const xy = await waitFor(() => page.evaluate(`(() => {
+      const el = document.querySelector(${J(selector)});
+      if (!el || el.disabled) return null;
+      el.scrollIntoView({ block: "center" });
+      const r = el.getBoundingClientRect();
+      return r.width && r.height ? [r.x + r.width / 2, r.y + r.height / 2] : null;
+    })()`));
+    assert.ok(xy, `visible control ${selector}`);
+    await page.click(...xy);
+  };
+  await page.press("b");
+  await click(`[data-industry-depot=${J(homeId)}]`);
+  await click('[data-industry-tab="drones"]');
+  await click(`[data-industry-drone=${J(droneId)}] [data-industry-action="track-drone"]`);
+  const marker = await waitFor(() => page.evaluate(`${G}.rep.pois(${J("drone:" + droneId)})[0]`));
+  assert.ok(marker, "track from the job card projects a drone bearing");
+  return marker;
+}
+
 async function verifyFlight(page, rock, home, droneId, tuning) {
   const ev = page.evaluate;
   const record = () => ev(`${G}.world().industry.drones.find(d => d.id === ${J(droneId)})`);
@@ -91,7 +112,10 @@ async function verifyFlight(page, rock, home, droneId, tuning) {
   const parked = await rendered();
   assert.ok(parked, `drone group exists in the local render scene (authority: ${J(await record())})`);
   assert.ok(parked.visible, "parked drone is visible at the observing ship");
-  const tracking = ev(`${I}.trackDrone(${J(droneId)}, 64000)`, 70000);
+  await ev(`${G}.m37.comms.nameAi("Vega"); ${G}.m37.comms.dismiss()`);
+  const initialBearing = await trackFromDroneCard(page, droneId, home.id);
+  assert.match(initialBearing.name, /Hydrate Works.*Drone 1/);
+  const tracking = ev(`${I}.trackDrone(${J(droneId)}, 64000)`, 70000).then(samples => ({ samples }), error => ({ error }));
   await page.frames(2);
   const job = { kind: "mine", targetId: rock.fieldId, priorities: [], mineFilter: { mode: "resource", ids: ["hydrates"] },
     reserveKg: 0, stopAt: tuning.cargoCapacity, enabled: true };
@@ -108,10 +132,13 @@ async function verifyFlight(page, rock, home, droneId, tuning) {
   assert.equal(working.flight.rock.chunkKey, rock.chunkKey);
   const liveShip = await ev(`${G}.rep.ship()`);
   const miningPose = await rendered();
+  const bearing = await ev(`${G}.rep.pois(${J("drone:" + droneId)})[0]`);
+  assert.ok(Math.abs(bearing.distanceKm - Math.hypot(...miningPose.positionM) / 1000) < 0.01,
+    "the projected bearing follows the rendered miner to its worksite");
+  assert.ok(Math.abs(initialBearing.distanceKm - bearing.distanceKm) > 0.1);
   const rockCentreM = rock.positionKm.map((km, i) => (km - liveShip.posKm[i]) * 1000);
   assert.ok(Math.abs(distance(rockCentreM, miningPose.positionM) - (rock.radiusM + 14)) < 2,
     "the beam drone hovers just off the generated rock surface");
-  assert.equal((await configure({ ...job, enabled: false })).status, "accepted");
   let frozen;
   try {
     await paused(true);
@@ -128,7 +155,17 @@ async function verifyFlight(page, rock, home, droneId, tuning) {
     await paused(false);
   }
 
-  const samples = await tracking;
+  // Recall after extraction. Cargo already won must make it home, whether the
+  // authority is scouting for another target or has just started the next leg.
+  const loaded = await waitFor(async () => {
+    const drone = await record();
+    return drone.cargo.items.hydrates > 0 && drone;
+  }, 18000);
+  assert.ok(loaded, "first rock yielded cargo before the recall");
+  assert.equal((await configure({ ...job, enabled: false })).status, "accepted");
+  const trace = await tracking;
+  if (trace.error) throw trace.error;
+  const samples = trace.samples;
   assert.ok(samples.length > 100, "sampled live WebGPU frames over the whole trip");
   assert.ok(samples.every(s => s.visible), "the whole short extraction flight remains in the observer's render range");
   const firstOutbound = samples.findIndex(s => s.phase === "outbound");
@@ -236,6 +273,12 @@ async function verifyRestoredFieldFlight(page, fixture, home, relay, droneId) {
     assert.equal(restored.cargo.items.carbon, flight.cargo.items.carbon);
     assert.ok(restored.remainingS <= replayS && restored.remainingS > 204);
     assert.ok(await waitFor(() => ev(`${I}.drone(${J(droneId)})`)), "restored drone is in the scene");
+    const bearing = await trackFromDroneCard(page, droneId, home.id);
+    assert.ok(bearing.distanceKm > 3, "a tracked hauler beyond mesh visibility has a bearing");
+    const distant = await ev(`${I}.drone(${J(droneId)})`);
+    assert.equal(distant.visible, false);
+    assert.ok(Math.abs(Math.hypot(...distant.positionM) / 1000 - bearing.distanceKm) < 5,
+      "distant bearing follows the in-flight hauler, including after reload");
     const samples = await ev(`(() => {
       const id = ${J(droneId)};
       const position = ${I}.drone(id).positionM;

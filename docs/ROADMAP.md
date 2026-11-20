@@ -418,7 +418,7 @@ aboard each drone. A friend can draw fuel at the relay while the builder explore
   A player-built replication point can accept a fuel tank and receive shipments.
   Use existing body frames initially or pull an orbit co-moving frame forward only if
   needed. No compulsory fixed home.
-- **Fuel production and routes:** refineries use stored hydrates. Miners work the same finite rocks as replicants, selecting all rocks, asteroid classes or desired resources. An exhausted field needs supply or relocation. Crew can request an inbound drone or manage a distant depot. Ship transfers require close proximity.
+- **Fuel production and routes:** refineries use stored hydrates. Miners work the same finite rocks as replicants, selecting all rocks, asteroid classes or desired resources. They can visit several rocks per trip, keep selected resources and return when recalled. The crew can track an individual drone in flight. An exhausted field needs supply or relocation. Crew can request an inbound drone or manage a distant depot. Ship transfers require close proximity.
 - **Drones v1:** UI-assigned jobs, resource filters/priorities, destination, return reserve,
   and stop conditions. No required scripting, random breakdowns, or recurring maintenance.
   Advance the same jobs and finite asteroid depletion regardless of camera position. A few

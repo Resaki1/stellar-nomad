@@ -2,9 +2,10 @@ import type { Difficulty, ReplicationPoint } from "@/save/types";
 import type { Transfer } from "@/sim/world/commands";
 import { DRONE_FUEL_ID, getIndustrySource, INDUSTRY_SOURCES, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from "./catalog";
 import {
-  dronePayloadMassKg, estimateDroneRoute, estimateDroneWorkRoute, planDroneFuel, planDroneLoad, planDroneReturnFuel, type DroneRoute,
+  clearsMiningCorridor, dronePayloadMassKg, estimateDroneRoute, estimateDroneWorkRoute, planDroneLoad, planDroneReturnFuel, type DroneRoute,
 } from "./route";
-import { canMineField, droneRockKey, finiteMiningJob, resolveDroneLoot, type DroneMiningSearch } from "./mining";
+import { canMineField, droneRockKey, finiteMiningJob, resolveDroneLoot, retainedDroneLoot, type MiningCandidate, type DroneMiningSearch } from "./mining";
+import { beginMiningReturn, miningApproachPosition, miningBerthPosition, miningReturnFuelAtRestKg, miningTankKg, planMiningHop } from "./sortie";
 import { emptyStorage, type DepotRecord, type DroneJob, type DroneRecord, type DroneRockId, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
 
 const EPSILON_KG = 1e-9;
@@ -49,7 +50,7 @@ function payloadIds(storage: Transfer): string[] {
   return storage.fuelKg > 0 ? [DRONE_FUEL_ID, ...Object.keys(storage.items)] : Object.keys(storage.items);
 }
 
-function payloadMassKg(storage: Transfer): number {
+export function payloadMassKg(storage: Transfer): number {
   return Object.entries(storage.items).reduce((kg, [id, amount]) => kg + dronePayloadMassKg(id, amount), storage.fuelKg);
 }
 
@@ -152,11 +153,11 @@ class IndustryStep {
     this.depotMap.set(depot.id, { ...depot, storage, refineProgressS: 0 });
   }
 
-  private depart(drone: DroneRecord, home: DepotRecord): DroneRecord {
+  private depart(drone: DroneRecord, home: DepotRecord, lane: 1 | -1): DroneRecord {
     const job = drone.job;
     if (!job) return standBy(drone, "unassigned");
     if (!job.enabled) return standBy(drone, "paused");
-    if (job.kind === "mine") return this.departMining(drone, home, job);
+    if (job.kind === "mine") return this.departMining(drone, home, job, lane);
 
     const toPoint = job.kind === "haul" && job.targetKind === "point";
     const point = toPoint && Object.hasOwn(this.pointTanks, job.targetId)
@@ -179,53 +180,93 @@ class IndustryStep {
       flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg } };
   }
 
-  private departMining(drone: DroneRecord, home: DepotRecord, job: DroneJob): DroneRecord {
+  private departMining(drone: DroneRecord, home: DepotRecord, job: DroneJob, lane: 1 | -1): DroneRecord {
+    const scouting = drone.phase === "scouting";
+    const cargoKg = payloadMassKg(drone.cargo);
+    const stop = (status: DroneStatus) => scouting ? beginMiningReturn(drone, home, lane, cargoKg) : standBy(drone, status);
     if (!this.mining || !job.mineFilter || !canMineField(home, job.targetId)) {
-      return standBy(drone, "source_out_of_range");
+      return stop("source_out_of_range");
     }
-    const room = T.cargoCapacity - storageUnits(home.storage);
-    if (room <= 0) return standBy(drone, "destination_full");
-    const fuel = home.storage.fuelKg - job.reserveKg;
-    if (fuel <= 0) return standBy(drone, "needs_fuel");
+    const carried = storageUnits(drone.cargo);
+    const room = Math.min(T.loadUnits - carried, T.cargoCapacity - storageUnits(home.storage) - carried);
+    if (room <= 0) return stop("destination_full");
+    if (job.keepResourceIds?.every(id => space(home.storage, id, job.stopAt) <= stock(drone.cargo, id))) {
+      return stop("destination_full");
+    }
+    const fuel = scouting ? drone.fuelKg : Math.min(miningTankKg, home.storage.fuelKg - job.reserveKg);
+    if (fuel <= 0) return stop("needs_fuel");
+    const berth = drone.sortie?.homeKm ?? miningBerthPosition(home, lane);
+    const fromKm = drone.sortie?.leg.toKm ?? berth;
+    const from = { frameId: home.frameId, positionKm: fromKm };
     let roomNeeded = false, fuelNeeded = false;
-    const { candidate, searching } = this.mining.search.find(home, job.targetId, job.mineFilter, this.mining.difficulty, this.destroyed, candidate => {
-      if (this.claimed.has(droneRockKey(candidate.rock))) return false;
-      if (candidate.units > room || Object.entries(candidate.loot).some(([id, amount]) => amount > space(home.storage, id, job.stopAt))) {
+    const flightFor = (candidate: MiningCandidate) => {
+      if (this.claimed.has(droneRockKey(candidate.rock))) return null;
+      const loot = Object.entries(retainedDroneLoot(candidate.loot, job.keepResourceIds));
+      if (!loot.length) return null;
+      const eligible = loot.filter(([id]) => space(home.storage, id, job.stopAt) > stock(drone.cargo, id));
+      if (!eligible.length) {
         roomNeeded = true;
-        return false;
+        return null;
       }
-      const funded = planDroneFuel(candidate.route, 0, candidate.units * T.cargoUnitMassKg).roundTripFuelKg;
-      if (funded > Math.min(fuel, T.droneTankKg)) {
+      const toKm = miningApproachPosition(fromKm, candidate.rock, lane);
+      if (!clearsMiningCorridor({ frameId: home.frameId, positionKm: berth }, from, { frameId: home.frameId, positionKm: toKm })) return null;
+      const plan = planMiningHop(berth, fromKm, toKm, fuel, cargoKg);
+      if (!plan.loadUnits) {
         fuelNeeded = true;
-        return false;
+        return null;
       }
-      return true;
-    });
-    if (!candidate) return standBy(drone, searching ? "searching" : fuelNeeded ? "needs_fuel" : roomNeeded ? "destination_full" : "no_matching_rock");
+      const preferred = job.mineFilter?.mode === "resource" ? job.mineFilter.ids : [];
+      eligible.sort(([a], [b]) => Number(preferred.includes(b)) - Number(preferred.includes(a)) ||
+        (a < b ? -1 : Number(a !== b)));
+      const manifest: Record<string, number> = {};
+      let left = Math.min(room, plan.loadUnits);
+      for (const [id, amount] of eligible) {
+        const take = Math.min(left, amount, space(home.storage, id, job.stopAt) - stock(drone.cargo, id));
+        if (take > 0) manifest[id] = take;
+        left -= take;
+        if (!left) break;
+      }
+      return { ...plan, manifest };
+    };
+    const { candidate, searching } = this.mining.search.find(home, job.targetId, job.mineFilter,
+      this.mining.difficulty, this.destroyed, candidate => !!flightFor(candidate), fromKm);
+    if (searching) return scouting ? drone : standBy(drone, "searching");
+    const hop = candidate && flightFor(candidate);
+    if (!candidate || !hop) return stop(fuelNeeded ? "needs_fuel" : roomNeeded ? "destination_full" : "no_matching_rock");
     this.claimed.add(droneRockKey(candidate.rock));
-    const { route, rock, units } = candidate;
-    const funded = planDroneFuel(route, 0, units * T.cargoUnitMassKg);
-    this.editStorage(home).fuelKg -= funded.roundTripFuelKg;
-    return { ...inPhase(drone, "outbound", "departing", route.legSeconds), fuelKg: funded.returnFuelKg, returnS: route.legSeconds, via: null,
-      flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg, rock } };
+    if (!scouting) this.editStorage(home).fuelKg -= fuel;
+    return { ...inPhase(drone, "outbound", "departing", hop.durationS), fuelKg: fuel - hop.leg.burnKg, returnS: hop.returnS, via: null,
+      flight: { profile: "local", returnFuelAtDryKg: candidate.route.returnFuelAtDryKg, rock: candidate.rock },
+      sortie: { homeKm: berth, lane, leg: hop.leg, manifest: hop.manifest } };
   }
 
-  private completeWork(drone: DroneRecord, home: DepotRecord): DroneRecord {
+  private completeWork(drone: DroneRecord, home: DepotRecord, lane: 1 | -1): DroneRecord {
     const job = drone.job;
     const cargo = { ...drone.cargo };
     if (job?.kind === "mine" && job.mineFilter && drone.flight?.rock && this.mining) {
       const rock = drone.flight.rock;
-      const loot = job.targetId === rock.fieldId && !this.destroyed(rock) && estimateDroneWorkRoute(home, rock) &&
+      const fullLoot = job.targetId === rock.fieldId && !this.destroyed(rock) && estimateDroneWorkRoute(home, rock) &&
         resolveDroneLoot(rock, this.mining.difficulty, job.mineFilter);
-      if (loot) {
+      const allowed = fullLoot && retainedDroneLoot(fullLoot, job.keepResourceIds);
+      const loot = drone.sortie ? drone.sortie.manifest : allowed;
+      if (allowed && loot && Object.keys(loot).length && Object.entries(loot).every(([id, count]) => count <= (allowed[id] ?? 0))) {
         const items = { ...cargo.items };
         for (const [id, amount] of Object.entries(loot)) items[id] = (items[id] ?? 0) + amount;
         const manifest = { ...cargo, items };
-        const cost = planDroneReturnFuel(drone.flight.returnFuelAtDryKg, payloadMassKg(manifest));
+        const cargoKg = payloadMassKg(manifest);
+        const cost = drone.sortie ? miningReturnFuelAtRestKg(drone.sortie.homeKm, drone.sortie.leg.toKm, cargoKg, drone.fuelKg)
+          : planDroneReturnFuel(drone.flight.returnFuelAtDryKg, cargoKg);
         if (storageUnits(manifest) <= T.loadUnits && cost <= drone.fuelKg + EPSILON_KG) {
           cargo.items = items;
           this.mined.set(droneRockKey(rock), { fieldId: rock.fieldId, chunkKey: rock.chunkKey, instanceId: rock.instanceId });
         }
+      }
+      this.claimed.delete(droneRockKey(rock));
+      if (drone.sortie) {
+        const { homeKm, leg } = drone.sortie;
+        const next = { ...inPhase(drone, "scouting", "searching", 0), cargo, sortie: { homeKm, lane, leg },
+          flight: { profile: "local" as const, returnFuelAtDryKg: 0 } };
+        return storageUnits(cargo) >= T.loadUnits || !job.enabled ? beginMiningReturn(next, home, lane, payloadMassKg(cargo)) : next;
       }
     } else if (job?.kind === "extract") {
       const source = getIndustrySource(job.targetId);
@@ -274,20 +315,28 @@ class IndustryStep {
       if (!unload(cargo, storage) || fuelKg > 0) return { ...drone, status: "unload_blocked", remainingS: 0, cargo, fuelKg };
     }
     return { ...standBy(drone, drone.job?.enabled ? "departing" : "paused"),
-      job: drone.job && finiteMiningJob(drone.job), cargo, fuelKg: 0, returnS: 0, via: null, flight: null };
+      job: drone.job && finiteMiningJob(drone.job), cargo, fuelKg: 0, returnS: 0, via: null, flight: null,
+      ...(drone.sortie && { sortie: null }) };
   }
 
-  private stepDrone(drone: DroneRecord): DroneRecord {
+  private stepDrone(drone: DroneRecord, index: number): DroneRecord {
     const home = this.depotMap.get(drone.homeId);
     if (!home) return drone;
+    const lane = drone.sortie?.lane ?? (index % 2 === 0 ? 1 : -1);
     if (drone.phase === "idle") {
       if (payloadIds(drone.cargo).length > 0 || (drone.flight && drone.fuelKg > 0)) return this.finishReturn(drone, home);
       const job = drone.job && finiteMiningJob(drone.job);
-      return this.depart(job === drone.job ? drone : { ...drone, job }, home);
+      return this.depart(job === drone.job ? drone : { ...drone, job }, home, lane);
     }
+    if (drone.sortie && drone.job?.kind === "mine" && !drone.job.enabled && drone.phase !== "returning") {
+      const returning = beginMiningReturn(drone, home, lane, payloadMassKg(drone.cargo));
+      if (returning !== drone) return returning;
+    }
+    if (drone.phase === "scouting") return drone.job?.kind === "mine" && drone.job.enabled
+      ? this.departMining(drone, home, drone.job, lane) : beginMiningReturn(drone, home, lane, payloadMassKg(drone.cargo));
     if (drone.remainingS > 1) return { ...drone, remainingS: drone.remainingS - 1 };
     if (drone.phase === "returning") return this.finishReturn(drone, home);
-    if (drone.phase === "working") return this.completeWork(drone, home);
+    if (drone.phase === "working") return this.completeWork(drone, home, lane);
     if (drone.job?.kind === "mine" && drone.flight?.rock) return inPhase(drone, "working", "mining", drone.flight.rock.workSeconds);
     return drone.job?.kind === "extract"
       ? inPhase(drone, "working", "extracting", T.extractSeconds)
@@ -302,14 +351,14 @@ class IndustryStep {
     for (const depot of this.state.depots) this.refine(depot);
     const scouts: number[] = [];
     const drones = this.state.drones.map((drone, i) => {
-      if (this.mining && drone.phase === "idle" && drone.job?.enabled &&
+      if (this.mining && (drone.phase === "idle" || drone.phase === "scouting") && drone.job?.enabled &&
           (drone.job.kind === "mine" || drone.job.kind === "extract")) {
         scouts.push(i);
         return drone;
       }
-      return this.stepDrone(drone);
+      return this.stepDrone(drone, i);
     });
-    for (const i of this.mining?.search.orderScouts(scouts) ?? []) drones[i] = this.stepDrone(drones[i]);
+    for (const i of this.mining?.search.orderScouts(scouts) ?? []) drones[i] = this.stepDrone(drones[i], i);
     return { ...this.state, drones, depots: Array.from(this.depotMap.values()), sources: Object.fromEntries(this.sourceMap), pointTanks: this.pointTanks };
   }
 }

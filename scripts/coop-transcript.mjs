@@ -866,9 +866,13 @@ async function industry() {
   assert.equal((await run(g, send(origin, "withdraw", "fuel", 1, "fuel"))).reason, "too_far");
 
   const hauler = () => rig.host.world.industry.drones.find(d => d.id === haul);
+  const miner = () => rig.host.world.industry.drones.find(d => d.id === extract);
   const route = estimateDroneRoute(depot(origin), depot(relay));
   assert.equal(route.legSeconds, 37, "4 km leg includes limited acceleration and braking");
   assert.ok(route.roundTripFuelKg > 0.5 && route.roundTripFuelKg < 0.55, "close propulsion is scaled from the player's actual delta-v cost");
+  for (let i = 0; !miner().cargo.items.hydrates && i < 90; i++) await ticks(1);
+  assert.ok(miner().cargo.items.hydrates, "the miner collected a finite payload before recall");
+  await accepted(h, { type: "drone.configure", droneId: extract, job: { ...miner().job, enabled: false } });
   for (let i = 0; hauler().phase !== "outbound" && i < 75; i++) await ticks(1);
   assert.equal(hauler().phase, "outbound");
   const { fieldId, chunkKey, instanceId } = earthMiningRock;
@@ -1150,6 +1154,31 @@ async function industryDroneClock() {
   return { pass: true, longestStopMs: Math.round(longestStopS * 1000), peakRate };
 }
 
+// This berth is 12 m inside a chunk boundary in the Earth field. Both sides contain a
+// one-hydrate rock. The farther rock is in the same chunk as the depot.
+async function industryNearest() {
+  const { DroneMiningSearch } = await S("sim/industry/mining.ts");
+  const home = { frameId: "earth", positionKm: [-7940.012, 223.08202734375, 14792.539206054687] };
+  const search = new DroneMiningSearch();
+  const find = () => {
+    search.beginTick();
+    return search.find(home, "origin_belt", { mode: "resource", ids: ["hydrates"] }, "standard", () => false, () => true);
+  };
+  let result = find();
+  assert.equal(result.candidate, null, "do not dispatch the 14 km target before checking the neighbouring chunk");
+  let ticks = 1;
+  while (result.searching && ticks++ < 100) result = find();
+  const { rock, loot } = result.candidate;
+  assert.equal(rock.instanceId, 127890041);
+  assert.equal(rock.chunkKey, "origin_belt:-147,11,-11");
+  assert.equal(loot.hydrates, 1);
+  const reward = (await S("sim/asteroids/resources.ts")).getAsteroidMiningReward(system, rock.fieldId, rock.instanceId, rock.radiusM, rock.chunkKey);
+  assert.equal(reward.asteroidClass.id, "x_type");
+  const metres = 1000 * Math.hypot(...rock.positionKm.map((n, i) => n - home.positionKm[i])) - rock.radiusM;
+  assert.ok(metres > 518 && metres < 520);
+  return { pass: true, surfaceMetres: Math.round(metres), ticks, hydrates: loot.hydrates };
+}
+
 async function industryFiniteMining() {
   const [{ LocalAuthority }, { emptyStorage }, { INDUSTRY_TUNING: T }, { planInspection }, { parseSaveData }, { DroneMiningSearch }] = await Promise.all([
     S("sim/world/authority.ts"), S("sim/industry/types.ts"), S("sim/industry/catalog.ts"),
@@ -1183,16 +1212,17 @@ async function industryFiniteMining() {
   const count = world => (world.asteroidDeltas[fieldId]?.[chunkKey] ?? []).filter(id => id === instanceId).length;
   const depleted = world => world.discoveries.sources.find(s => s.id === sourceId)?.depleted;
   const noEvidence = world => Object.values(world.discoveries.families).every(f => !f.extracted);
-  // An entire manifest is required. Setup with two free units and tighten the filter so
-  // the marked C-type target stays intact rather than discarding its co-products.
+  // A nearby larger rock still qualifies when the hold can take just a partial cut.
   const cramped = { ...depot.storage, items: { silicates: T.cargoCapacity - 2 } };
   const spacious = structuredClone(data);
   industry().depots[0] = { ...depot, storage: cramped };
   step(1);
-  assert.notEqual(state().flight?.rock?.instanceId, instanceId);
+  for (let i = 0; state().phase !== "outbound" && i < 8; i++) step(1);
+  assert.equal(state().flight?.rock?.instanceId, instanceId);
+  assert.equal(Object.values(state().sortie.manifest).reduce((a, n) => a + n, 0), 2);
   assert.equal(count(data.world), 0);
   data = spacious;
-  step(1);
+  for (let i = 0; state().phase !== "outbound" && i < 8; i++) step(1);
   assert.equal(state().flight.rock.instanceId, instanceId, "the C-type matches the second member of the class OR filter");
   const legS = state().returnS;
   step(legS);
@@ -1200,7 +1230,6 @@ async function industryFiniteMining() {
   const beamS = state().remainingS;
   step(beamS - 1);
   const beforeCommit = structuredClone(data);
-  beforeCommit.world.industry.drones[0].job.enabled = false;
   data = parseSaveData(structuredClone(beforeCommit));
   assert.deepEqual(state().flight, beforeCommit.world.industry.drones[0].flight);
   assert.equal(state().remainingS, 1);
@@ -1213,7 +1242,11 @@ async function industryFiniteMining() {
   assert.ok(events.some(e => e.type === "discoveries.changed"));
   assert.deepEqual(state().cargo.items, earthMiningLoot);
   assert.deepEqual(industry().drones[1].cargo.items, {});
-  step(legS + 2);
+  for (const d of industry().drones) {
+    assert.equal(solo.submit({ type: "drone.configure", opId: `recall-${d.id}`, droneId: d.id,
+      job: { ...d.job, enabled: false } }, HOST_ID).status, "accepted");
+  }
+  step(Math.max(...industry().drones.map(d => d.remainingS)) + 2);
   assert.deepEqual(industry().depots[0].storage.items, earthMiningLoot);
   assert.equal(count(data.world), 1);
 
@@ -1239,7 +1272,14 @@ async function industryFiniteMining() {
   const again = rig.client("Miner observer", { store: guest.store });
   again.session.o.clock = clock;
   again.join(); await rig.settle();
-  for (let i = 0; i < 1 + legS + 2; i++) { ms += 1000; rig.host.tick(); await rig.settle(); }
+  ms += 1000; rig.host.tick(); await rig.settle();
+  const minedDrone = rig.host.world.industry.drones[0];
+  again.session.submit({ type: "drone.configure", opId: "recall-after-mining", droneId: minedDrone.id,
+    job: { ...minedDrone.job, enabled: false } });
+  await rig.settle();
+  assert.equal(again.settled.at(-1).status, "accepted");
+  const returnS = rig.host.world.industry.drones[0].remainingS;
+  for (let i = 0; i < returnS + 2; i++) { ms += 1000; rig.host.tick(); await rig.settle(); }
   for (const world of [rig.host.world, again.session.mirror.data.world, parseSaveData(repo.peek().data).world]) {
     assert.equal(count(world), 1);
     assert.equal(depleted(world), true);
@@ -1382,6 +1422,113 @@ async function industryFieldRoute() {
   return { pass: true, routeKm: route.pathKm, legS: route.legSeconds, peakMps: Math.round(peakMps), emptyKg: route.roundTripFuelKg,
     loadedKg: manifest.roundTripFuelKg, refundKg, maxEarthLegS: acrossEarth.legSeconds, maxEarthCargoUnits: fullSolid.amount,
     maxMoonLegS: acrossMoon.legSeconds };
+}
+
+async function industryMiningSortie() {
+  const [{ LocalAuthority }, { emptyStorage }, { parseSaveData }, { miningLegPosition, miningLegVelocity, miningDistanceKm }, { planDroneReturnFuel }] =
+    await Promise.all([S("sim/world/authority.ts"), S("sim/industry/types.ts"), S("save/validate.ts"),
+      S("sim/industry/sortie.ts"), S("sim/industry/route.ts")]);
+  const save = defaults.defaultSaveData(HOST_ID);
+  let data = save;
+  const industry = () => data.world.industry;
+  const job = { kind: "mine", targetId: earthMiningRock.fieldId, priorities: [],
+    mineFilter: { mode: "resource", ids: ["hydrates"] }, keepResourceIds: ["hydrates"], reserveKg: 9, stopAt: 7, enabled: true };
+  const home = { ...earthMiningSite(1.9), id: "home", name: "Hydrate works", by: HOST_ID,
+    quaternion: [0, 0, 0, 1], refinery: false, refineProgressS: 0, storage: { ...emptyStorage(), fuelKg: 45 } };
+  const miner = { id: "miner", homeId: home.id, job, phase: "idle", status: "departing", durationS: 0, remainingS: 0, returnS: 0,
+    via: null, fuelKg: 0, cargo: emptyStorage() };
+  industry().depots = [home];
+  industry().drones = [miner];
+  const authority = new LocalAuthority({ getWorld: () => data.world, getPlayer: id => data.players[id], getPlayers: () => [data.players[HOST_ID]],
+    markDirty: () => {}, getDifficulty: () => "standard" });
+  const d = () => industry().drones[0];
+  const storage = () => industry().depots[0].storage;
+  const tick = (n = 1) => { for (let i = 0; i < n; i++) authority.tickIndustry(1); };
+  const until = (predicate, label) => {
+    for (let i = 0; !predicate() && i < 1400; i++) tick();
+    assert.ok(predicate(), label);
+  };
+  const recall = () => {
+    const command = { type: "drone.configure", opId: `sortie-recall-${++opN}`, droneId: miner.id, job: { ...d().job, enabled: false } };
+    assert.equal(authority.submit(command, HOST_ID).status, "accepted");
+  };
+  const depletionCount = rock => (data.world.asteroidDeltas[rock.fieldId]?.[rock.chunkKey] ?? []).filter(id => id === rock.instanceId).length;
+
+  until(() => d().phase === "outbound", "the first mine leg is funded");
+  const first = d().flight.rock;
+  assert.equal(first.instanceId, earthMiningRock.instanceId);
+  assert.deepEqual(d().sortie.manifest, { hydrates: 6 });
+  assert.ok(storage().fuelKg >= job.reserveKg);
+  tick(d().remainingS);
+  const atWork = structuredClone(data);
+  assert.equal(d().phase, "working");
+  recall();
+  assert.equal(d().phase, "returning");
+  assert.equal(d().sortie.leg.brake, undefined, "a stationary mining drone can leave at once");
+  until(() => d().phase === "idle", "the unwanted work ends at home");
+  assert.equal(depletionCount(first), 0, "recall during the beam does not finish mining");
+  assert.deepEqual(storage().items, {});
+
+  data = parseSaveData(structuredClone(atWork));
+  tick(d().remainingS);
+  assert.equal(d().phase, "scouting");
+  assert.deepEqual(d().cargo.items, { hydrates: 6 });
+  assert.equal(depletionCount(first), 1);
+  assert.deepEqual(storage().items, {}, "the first payload is still aboard away from home");
+  const hovering = structuredClone(data);
+  data = parseSaveData(hovering);
+  assert.equal(d().phase, "scouting", "the saved pause between two rocks retains its coordinates and cargo");
+  until(() => d().phase === "outbound", "a second safely funded rock is selected from the last worksite");
+  const second = d().flight.rock;
+  const secondLeg = structuredClone(data);
+  assert.notEqual(second.instanceId, first.instanceId);
+  assert.deepEqual(d().cargo.items, { hydrates: 6 });
+  assert.deepEqual(d().sortie.manifest, { hydrates: 1 }, "remaining resource quota clips the next rock's manifest");
+  assert.deepEqual(d().sortie.leg.fromKm, hovering.world.industry.drones[0].sortie.leg.toKm);
+  assert.equal(storage().fuelKg, hovering.world.industry.depots[0].storage.fuelKg, "each hop debits the onboard tank");
+
+  tick(3);
+  industry().remainderS = 0.25;
+  const elapsed = d().durationS - d().remainingS + industry().remainderS;
+  const expected = miningLegPosition(d().sortie.leg, elapsed, d().durationS, [0, 0, 0]);
+  const velocity = miningLegVelocity(d().sortie.leg, elapsed, d().durationS, [0, 0, 0]);
+  assert.ok(Math.hypot(...velocity) > 0);
+  recall();
+  assert.equal(d().phase, "returning");
+  assert.deepEqual(d().sortie.leg.fromKm, expected, "recall begins at the actual between-rocks position");
+  assert.deepEqual(d().sortie.leg.brake.velocityKmps, velocity);
+  assert.ok(miningDistanceKm(expected, second.positionKm) > 0.15);
+  assert.equal(d().remainingS, d().durationS, "the countdown is the real brake-and-return duration");
+  const returning = structuredClone(d());
+  recall();
+  assert.deepEqual(d(), returning, "recalling an already-returning drone leaves its course, clock and tank intact");
+  data = parseSaveData(structuredClone(data));
+  assert.deepEqual(d().sortie, returning.sortie, "the recall turn survives save/reload");
+  until(() => d().phase === "idle", "the recalled drone docks");
+  assert.equal(depletionCount(second), 0);
+  assert.deepEqual(storage().items, { hydrates: 6 });
+  assert.ok(storage().fuelKg < 45 && storage().fuelKg > 40, "unused onboard fuel is refunded once");
+
+  data = parseSaveData(secondLeg);
+  until(() => d().phase === "returning", "the selected-resource quota triggers automatic return");
+  assert.equal(depletionCount(second), 1);
+  assert.deepEqual(d().cargo.items, { hydrates: 7 });
+  until(() => d().phase === "idle", "the completed sortie docks");
+  assert.deepEqual(storage().items, { hydrates: 7 }, "discarded co-products never reach storage");
+
+  const legacy = structuredClone(atWork);
+  const old = legacy.world.industry.drones[0];
+  delete old.sortie;
+  delete old.job.keepResourceIds;
+  old.job.enabled = false;
+  old.fuelKg = planDroneReturnFuel(old.flight.returnFuelAtDryKg, 23 * 25);
+  data = parseSaveData(legacy);
+  tick(1);
+  assert.equal(d().phase, "working", "a previously funded, already disabled v8 flight keeps its old stop-after-trip meaning");
+  tick(d().remainingS);
+  assert.equal(d().phase, "returning");
+  assert.deepEqual(d().cargo.items, earthMiningLoot);
+  return { pass: true, rocksMined: 2, retainedHydrates: 7, recalledWithHydrates: 6, recallS: returning.durationS };
 }
 
 async function industryWire() {
@@ -1662,7 +1809,106 @@ async function replicationFuelTanks() {
   return { pass: true, droneKg: 120, upgradedRecoveryKg: 1000, secondRecoveryKg: capacity - 1000, failedRecoveryRetried: true, originStockUntouched: true };
 }
 
+async function droneFabricationCargo() {
+  const { INDUSTRY_TUNING: tuning } = await S("sim/industry/catalog.ts");
+  const seed = newWorld().peek();
+  const fixture = (id, x, items) => ({
+    id, name: id, frameId: "earth", positionKm: [x, 10_000, 0], quaternion: [0, 0, 0, 1],
+    by: HOST_ID, refinery: false, refineProgressS: 0, storage: { items, consumables: {}, fuelKg: 0 },
+  });
+  const supply = { fe_ni_metal: 20, silicates: 35, carbon: 3 };
+  const near = fixture("Mixed workshop", 0, supply);
+  const remote = fixture("Remote workshop", 30, { fe_ni_metal: 45, silicates: 30, carbon: 10 });
+  const reserve = fixture("Backup workshop", -1.5, supply);
+  seed.data.world.industry.depots = [near, remote, reserve];
+  seed.data.world.research.completedNodes = ["lg1_bulk_handling"];
+  seed.data.players[HOST_ID].cargo.items = { fe_ni_metal: 200, silicates: 100, carbon: 30 };
+  const repo = new MemoryRepository(seed);
+  const { rig, h, g } = await joinedPair(repo);
+  const gid = g.session.playerId;
+  const hostCargo = () => rig.host.player(HOST_ID).cargo.items;
+  const guestCargo = () => rig.host.player(gid).cargo.items;
+  const stock = depot => rig.host.world.industry.depots.find(d => d.id === depot.id).storage.items;
+  const at = (client, offset) => {
+    client.telemetry = { pose: poseAt(near, offset), propellant: { ordinaryKg: 100, protectedKg: 60 } };
+    client.session.sendTelemetry();
+  };
+  const run = async (client, op) => {
+    client.session.submit({ opId: `fabricate-cargo-${++opN}`, ...op });
+    await rig.settle();
+    return client.settled.at(-1);
+  };
+  const build = (depot, opId) => ({ type: "depot.fabricate", depotId: depot.id, recipeId: "drone", ...(opId && { opId }) });
+  const give = (itemId, amount) => run(h, { type: "expedition.give", to: gid, kind: "cargo", itemId, amount });
+  at(h, 0.8);
+  at(g, 0.9);
+  await rig.settle();
+
+  const friendOnly = await run(g, build(near));
+  assert.equal(friendOnly.reason, "materials");
+  assert.deepEqual(friendOnly.missing, { fe_ni_metal: 25, carbon: 7 });
+  assert.deepEqual(stock(near), supply);
+  assert.deepEqual(hostCargo(), seed.data.players[HOST_ID].cargo.items, "An adjacent friend's cargo cannot fund the operation");
+  assert.equal(rig.host.world.industry.drones.length, 0);
+
+  assert.equal((await give("fe_ni_metal", 30)).status, "accepted");
+  assert.equal((await give("carbon", 6)).status, "accepted");
+  const retryable = build(near, "mixed-fabrication");
+  const insufficient = await run(g, retryable);
+  assert.equal(insufficient.reason, "materials");
+  assert.deepEqual(insufficient.missing, { carbon: 1 });
+  assert.deepEqual(stock(near), supply);
+  assert.deepEqual(guestCargo(), { fe_ni_metal: 30, carbon: 6 });
+  assert.equal((await give("carbon", 3)).status, "accepted");
+  const friendBeforeBuild = { ...hostCargo() };
+
+  at(g, tuning.interactRangeKm + 0.1);
+  const outOfRange = await run(g, retryable);
+  assert.equal(outOfRange.reason, "materials");
+  assert.deepEqual(outOfRange.missing, { fe_ni_metal: 25, carbon: 7 }, "Remote fabrication can only see station stock");
+  assert.deepEqual(stock(near), supply);
+  assert.deepEqual(guestCargo(), { fe_ni_metal: 30, carbon: 9 });
+  at(g, tuning.interactRangeKm - 0.01);
+  const built = await run(g, retryable);
+  assert.equal(built.status, "accepted");
+  assert.equal(built.result.droneId, "drone:mixed-fabrication");
+  assert.deepEqual(stock(near), { silicates: 5 }, "Every ingredient draws from depot stock first");
+  assert.deepEqual(guestCargo(), { fe_ni_metal: 5, carbon: 2 });
+  assert.deepEqual(hostCargo(), friendBeforeBuild);
+  assert.equal((await run(g, retryable)).status, "duplicate");
+  assert.deepEqual(guestCargo(), { fe_ni_metal: 5, carbon: 2 }, "Retry cannot debit the pilot twice");
+
+  const distant = await run(g, build(remote));
+  assert.equal(distant.status, "accepted", "A remote build can still use fully stocked depot materials");
+  assert.deepEqual(stock(remote), {});
+  assert.deepEqual(guestCargo(), { fe_ni_metal: 5, carbon: 2 });
+  assert.deepEqual(g.session.mirror.data.players[gid].cargo.items, guestCargo());
+  assert.deepEqual(h.session.mirror.data.players[HOST_ID].cargo.items, friendBeforeBuild);
+  assert.deepEqual(repo.peek().data.players[gid].cargo.items, guestCargo());
+
+  const recoverable = build(reserve, "storage-failure-fabrication");
+  at(h, -1.0);
+  const beforeFailure = repo.peek();
+  repo.failNext = 1;
+  h.session.submit(recoverable);
+  await rig.settle();
+  assert.equal(rig.host.status, "storage_failed");
+  assert.deepEqual(stock(reserve), supply);
+  assert.deepEqual(hostCargo(), friendBeforeBuild);
+  assert.deepEqual(repo.peek(), beforeFailure);
+
+  const recovered = await joinedPair(repo);
+  recovered.h.pose = poseAt(reserve, 0.5);
+  recovered.h.session.submit(recoverable);
+  await recovered.rig.settle();
+  assert.equal(recovered.h.settled.at(-1).status, "accepted");
+  assert.deepEqual(repo.peek().data.world.industry.depots.find(d => d.id === reserve.id).storage.items, { silicates: 5 });
+  assert.deepEqual(repo.peek().data.players[HOST_ID].cargo.items, { fe_ni_metal: 145, silicates: 100, carbon: 14 });
+  return { pass: true, initiatorOnly: true, depotFirst: true, remoteDepotOnly: true, storageRollback: true };
+}
+
 const SCENARIOS = {
+  droneFabricationCargo,
   replicationFuelTanks,
   industryResearch,
   structureNames,
@@ -1672,8 +1918,10 @@ const SCENARIOS = {
   industryProspects,
   industryDroneBounds,
   industryDroneClock,
+  industryNearest,
   industryFiniteMining,
   industryFieldRoute,
+  industryMiningSortie,
   industryWire,
   suspendedHost,
   ...(process.argv[2]?.split(",").includes("contentFixture") && { contentFixture }),

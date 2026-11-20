@@ -87,23 +87,41 @@ export interface MiningCandidate {
 
 interface Scout {
   chunks: ChunkCoord[];
-  nextChunk: number;
   candidates: MiningCandidate[];
+}
+
+function chunkDistanceSq([x, y, z]: Vec3Tuple, { x: i, y: j, z: k }: ChunkCoord, size: number): number {
+  // Generated positions are stored in Float32 metres. Expand the bounds enough to
+  // keep the nearest-rock proof conservative after decoding that quantization.
+  const offset = (n: number, index: number) => Math.max(0, index * size - n - 1e-5, n - (index + 1) * size - 1e-5);
+  return offset(x, i) ** 2 + offset(y, j) ** 2 + offset(z, k) ** 2;
 }
 
 function nearbyChunks(g: FieldGen, [x, y, z]: Vec3Tuple): ChunkCoord[] {
   const size = g.chunkSizeKm, radius = T.extractionRangeKm;
-  const offset = (n: number, i: number) => Math.max(0, i * size - n, n - (i + 1) * size);
-  const chunks: (ChunkCoord & { distanceSq: number })[] = [];
+  const chunks: ChunkCoord[] = [];
   for (let i = Math.floor((x - radius) / size); i <= Math.floor((x + radius) / size); i++) {
     for (let j = Math.floor((y - radius) / size); j <= Math.floor((y + radius) / size); j++) {
       for (let k = Math.floor((z - radius) / size); k <= Math.floor((z + radius) / size); k++) {
-        const distanceSq = offset(x, i) ** 2 + offset(y, j) ** 2 + offset(z, k) ** 2;
-        if (distanceSq <= RANGE_SQ) chunks.push({ x: i, y: j, z: k, distanceSq });
+        const coord = { x: i, y: j, z: k };
+        if (chunkDistanceSq([x, y, z], coord, size) <= RANGE_SQ) chunks.push(coord);
       }
     }
   }
-  return chunks.sort((a, b) => a.distanceSq - b.distanceSq || a.x - b.x || a.y - b.y || a.z - b.z);
+  return chunks;
+}
+
+function nearestChunk(chunks: readonly ChunkCoord[], from: Vec3Tuple, size: number): { index: number; distanceSq: number } {
+  let index = -1, distanceSq = Infinity;
+  for (let i = 0; i < chunks.length; i++) {
+    const distance = chunkDistanceSq(from, chunks[i], size);
+    if (distance < distanceSq) { index = i; distanceSq = distance; }
+  }
+  return { index, distanceSq };
+}
+
+export function retainedDroneLoot(loot: Record<string, number>, keepResourceIds?: readonly string[]): Record<string, number> {
+  return keepResourceIds ? Object.fromEntries(Object.entries(loot).filter(([id]) => keepResourceIds.includes(id))) : loot;
 }
 
 /** An ephemeral cache per authority. Cached searches don't regenerate the neighborhood
@@ -132,6 +150,7 @@ export class DroneMiningSearch {
   find(
     home: Position, fieldId: string, filter: DroneMineFilter, difficulty: Difficulty | undefined,
     destroyed: (rock: DroneRockId) => boolean, eligible: (candidate: MiningCandidate) => boolean,
+    fromKm: Vec3Tuple = home.positionKm,
   ): { candidate: MiningCandidate | null; searching: boolean } {
     const generator = headlessField(fieldId);
     const origin = generator && fieldPosition(generator, home);
@@ -139,15 +158,33 @@ export class DroneMiningSearch {
     const key = JSON.stringify([fieldId, home.positionKm, filter, difficulty]);
     let scout = this.scouts.get(key);
     if (!scout) {
-      scout = { chunks: nearbyChunks(generator, origin.local), nextChunk: 0, candidates: [] };
+      scout = { chunks: nearbyChunks(generator, origin.local), candidates: [] };
       if (this.scouts.size >= MAX_SCOUTS) this.scouts.delete(this.scouts.keys().next().value!);
     }
     this.scouts.delete(key);
     this.scouts.set(key, scout);
     scout.candidates = scout.candidates.filter(c => !destroyed(c.rock));
-    let pick = scout.candidates.find(eligible);
-    if (!pick && this.budget > 0 && scout.nextChunk < scout.chunks.length) {
-      const { x, y, z } = scout.chunks[scout.nextChunk++];
+    const fromLocal = fromKm.map((n, i) => n - origin.anchor[i]) as Vec3Tuple;
+    const best = { candidate: null as MiningCandidate | null, surfaceKm: Infinity };
+    const consider = (candidate: MiningCandidate) => {
+      const p = candidate.rock.positionKm;
+      const centreKm = Math.hypot(fromKm[0] - p[0], fromKm[1] - p[1], fromKm[2] - p[2]);
+      const surfaceKm = Math.max(0, centreKm - candidate.rock.radiusM / 1000);
+      if (surfaceKm > best.surfaceKm || (surfaceKm === best.surfaceKm && best.candidate &&
+          droneRockKey(candidate.rock) >= droneRockKey(best.candidate.rock))) return;
+      if (eligible(candidate)) {
+        best.candidate = candidate;
+        best.surfaceKm = surfaceKm;
+      }
+    };
+    for (const candidate of scout.candidates) consider(candidate);
+    let next = nearestChunk(scout.chunks, fromLocal, generator.chunkSizeKm);
+    // An unvisited chunk can still contain a closer near-side surface even when
+    // its closest possible centre is farther away than the current worksite.
+    const largestRadiusKm = Math.max(generator.field.size.maxRadiusM, generator.field.size.minRadiusM) / 1000;
+    const unresolved = () => next.index >= 0 && next.distanceSq <= (best.surfaceKm + largestRadiusKm) ** 2;
+    if (this.budget > 0 && unresolved()) {
+      const [{ x, y, z }] = scout.chunks.splice(next.index, 1);
       this.budget--;
       const chunk = headlessChunk(generator, x, y, z);
       const added: MiningCandidate[] = [];
@@ -165,7 +202,7 @@ export class DroneMiningSearch {
           const loot = scaleRockYield(reward.resources, 1, difficulty);
           if (filter.mode === "resource" && !filter.ids.some(resource => loot[resource] > 0)) continue;
           const units = Object.values(loot).reduce((sum, n) => sum + n, 0);
-          if (!units || units > T.loadUnits) continue;
+          if (!units) continue;
           const rock: DroneRockTarget = { ...id, radiusM, frameId: home.frameId,
             positionKm: [origin.anchor[0] + lx, origin.anchor[1] + ly, origin.anchor[2] + lz],
             workSeconds: Math.ceil(computeMiningDurationS(radiusM) / T.droneMiningSpeedMult) };
@@ -173,11 +210,12 @@ export class DroneMiningSearch {
           if (route) added.push({ rock, route, loot, units });
         }
       }
-      added.sort((a, b) => a.route.pathKm - b.route.pathKm || a.rock.instanceId - b.rock.instanceId);
       scout.candidates.push(...added);
-      pick = added.find(eligible);
+      for (const candidate of added) consider(candidate);
+      next = nearestChunk(scout.chunks, fromLocal, generator.chunkSizeKm);
     }
-    return { candidate: pick ?? null, searching: scout.nextChunk < scout.chunks.length };
+    if (unresolved()) return { candidate: null, searching: true };
+    return { candidate: best.candidate, searching: false };
   }
 }
 

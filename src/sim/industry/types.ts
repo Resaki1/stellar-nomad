@@ -19,6 +19,8 @@ export interface DroneJob {
   priorities: string[];
   /** Any selected class or any selected yielded resource qualifies the entire rock. */
   mineFilter?: DroneMineFilter;
+  /** When omitted, retain the full yield of eligible rocks. */
+  keepResourceIds?: string[];
   /** Ordinary fuel, kg, left in the home tank after departure, beyond the funded round trip. */
   reserveKg: number;
   /** Maximum of each selected resource at the receiving depot, in units or kg. */
@@ -34,7 +36,9 @@ export function sameDroneAssignment(a: DroneJob | null, b: DroneJob | null): boo
   const left = a.mineFilter, right = b.mineFilter;
   const sameFilter = left?.mode === right?.mode && (!left || left.mode === "all" ||
     (right && right.mode !== "all" && left.ids.length === right.ids.length && left.ids.every(id => right.ids.includes(id))));
-  return !!sameFilter && a.kind === b.kind && a.targetId === b.targetId && a.targetKind === b.targetKind &&
+  const kept = a.keepResourceIds, otherKept = b.keepResourceIds;
+  const sameKept = kept?.length === otherKept?.length && (!kept || kept.every(id => otherKept?.includes(id)));
+  return !!sameFilter && sameKept && a.kind === b.kind && a.targetId === b.targetId && a.targetKind === b.targetKind &&
     a.reserveKg === b.reserveKg && a.stopAt === b.stopAt &&
     a.priorities.length === b.priorities.length && a.priorities.every((id, i) => id === b.priorities[i]);
 }
@@ -52,7 +56,7 @@ export interface DroneRockTarget extends DroneRockId {
   workSeconds: number;
 }
 
-export type DronePhase = "idle" | "outbound" | "working" | "returning";
+export type DronePhase = "idle" | "outbound" | "working" | "scouting" | "returning";
 export const DRONE_STATUSES = [
   "unassigned", "paused", "needs_fuel", "source_out_of_range", "destination_full", "no_cargo",
   "route_out_of_range", "extracting", "delivering", "returning", "unload_blocked", "departing",
@@ -68,6 +72,22 @@ export interface DroneFlight {
   /** Largest amount of hydrates already funded for the return. */
   extractUnits?: number;
   rock?: DroneRockTarget;
+}
+
+/** Frame-relative, surface-to-surface mining travel. A recall first brakes in its original direction. */
+export interface DroneMiningLeg {
+  fromKm: Vec3Tuple;
+  toKm: Vec3Tuple;
+  burnKg: number;
+  brake?: { velocityKmps: Vec3Tuple; seconds: number };
+}
+
+export interface DroneMiningSortie {
+  homeKm: Vec3Tuple;
+  lane: 1 | -1;
+  leg: DroneMiningLeg;
+  /** Kept yield funded for the current asteroid. Empty while scouting or returning. */
+  manifest?: Record<string, number>;
 }
 
 export interface DroneWaypoint {
@@ -89,6 +109,7 @@ export interface DroneRecord {
   fuelKg: number;
   /** Older funded trips keep their original schedule and fuel accounting. */
   flight?: DroneFlight | null;
+  sortie?: DroneMiningSortie | null;
   returnS: number;
   /** Retained for funded routes written before local drone routing. */
   via: DroneWaypoint | null;

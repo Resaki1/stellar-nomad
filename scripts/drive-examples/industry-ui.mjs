@@ -328,9 +328,13 @@ export default async function industryUi(d) {
     const limit = `${miner} [data-industry-job-stop]`;
     const mineFilter = `${miner} [data-industry-mine-filter]`;
     const mineChoice = id => `${miner} [data-industry-mine-choice=${J(id)}]`;
+    const keepFilter = `${miner} [data-industry-mine-keep]`;
+    const keepChoice = id => `${miner} [data-industry-mine-keep-choice=${J(id)}]`;
+    const checked = selector => ev(`document.querySelector(${J(selector)})?.checked`);
     const mineStart = `${miner} ${action("start-job")}`;
     assert.deepEqual(await optionIds(`${miner} [data-industry-job-target]`), [source.fieldId]);
     assert.equal(await value(mineFilter), "all");
+    assert.equal(await value(keepFilter), "all");
     await select(mineFilter, "class");
     assert.equal(await enabled(mineStart), false);
     await click(mineChoice("s_type"));
@@ -342,11 +346,33 @@ export default async function industryUi(d) {
     await click(mineChoice("hydrates"));
     await click(mineChoice("carbon"));
     assert.equal(await enabled(mineStart), true);
-    assert.match(await text(miner), /brings back everything they yield/);
+    assert.match(await text(miner), /Asteroids matching any selection are eligible/);
     await select(mineFilter, "class");
     assert.equal(await ev(`document.querySelector(${J(mineChoice("s_type"))}).checked`), true, "Class selection persists across modes");
     await select(mineFilter, "resource");
     await click(mineChoice("carbon"));
+    await select(keepFilter, "only");
+    assert.equal(await enabled(mineStart), false, "Selective retention requires at least one resource");
+    await click(keepChoice("hydrates"));
+    await click(keepChoice("silicates"));
+    assert.match(await text(miner), /Other materials are discarded when an asteroid is mined/);
+    if (touch) {
+      const targets = await ev(`(() => {
+        const selector = document.querySelector(${J(keepFilter)});
+        const checkbox = document.querySelector(${J(keepChoice("hydrates"))}).closest("label");
+        return [selector, checkbox].map(element => {
+          const { width, height } = element.getBoundingClientRect();
+          return Math.min(width, height);
+        });
+      })()`);
+      assert.ok(targets.every(size => size >= 44), "Retention controls offer 44px touch targets");
+    }
+    assert.equal(await checked(mineChoice("silicates")), false, "Retaining Silicates does not select silicate-bearing asteroids");
+    await select(keepFilter, "all");
+    await select(keepFilter, "only");
+    await click(tab("fabrication"));
+    await click(tab("drones"));
+    assert.equal(await checked(keepChoice("silicates")), true, "Cargo selection persists across modes and tabs");
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
     await fill(`${miner} [data-industry-job-reserve]`, 50);
     await fill(limit, 400);
@@ -355,14 +381,25 @@ export default async function industryUi(d) {
     await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("propellant")`), 25000);
     assert.equal((await state()).drones[0].job.stopAt, 400);
     assert.deepEqual((await state()).drones[0].job.mineFilter, { mode: "resource", ids: ["hydrates"] });
+    assert.deepEqual(new Set((await state()).drones[0].job.keepResourceIds), new Set(["hydrates", "silicates"]));
     assert.equal(await depotRole(works.id), "Refinery · Asteroid mining");
     assert.match(await text(`${miner} .industry__route`), /Storage limit: 400 units per resource/);
     await click(`${miner} ${action("edit-job")}`);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "400");
+    assert.equal(await checked(keepChoice("silicates")), true, "Saved cargo selection reopens in the editor");
+    await select(keepFilter, "all");
     await click(`${miner} ${action("clear-mining-limit")}`);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
+    const currentMine = (await state()).drones[0].job;
+    const concurrentMine = { ...currentMine, keepResourceIds: ["carbon"] };
+    assert.equal((await ev(`${G}.submit({ type: "drone.configure", droneId: ${J(minerDrone.id)}, job: ${J(concurrentMine)} })`)).status, "accepted");
+    await find("changed retention requires draft review", async () => (await text(miner))?.includes("The saved job changed"));
+    assert.equal(await enabled(mineStart), false);
+    assert.equal(await value(keepFilter), "all");
+    await click(`${miner} ${action("keep-job-draft")}`);
     await click(mineStart);
     await find("mining set to fill storage", async () => (await state()).drones[0].job.stopAt === 6000);
+    assert.equal((await state()).drones[0].job.keepResourceIds, undefined, "Keep all omits the filter from the saved job");
     assert.match(await text(`${miner} .industry__route`), /all free cargo space/);
     await teleport(source.frameId, works.placementPosition);
     await find("returned to transfer range", () => shown('[data-industry-access="available"]'));
@@ -375,6 +412,45 @@ export default async function industryUi(d) {
     await find("bootstrap fuel deposited", async () => (await record()).depositedFuelKg === expectedDepositedFuel);
     const minedTarget = await find("miner dispatches to a finite asteroid", async () => (await state()).drones[0].flight?.rock, 30000);
     assert.equal(minedTarget.fieldId, source.fieldId);
+    await click(tab("drones"));
+    const countdown = `${miner} [data-industry-drone-countdown]`;
+    await find("mining arrival countdown", async () => (await text(countdown))?.startsWith("Arrival in "));
+    await find("miner leaves the depot before recall", async () => {
+      const drone = (await state()).drones[0];
+      return drone.phase === "working" || (drone.phase === "outbound" && drone.durationS - drone.remainingS >= 3);
+    });
+    const recallControl = `${miner} ${action("recall-drone")}`;
+    const trackDrone = `${miner} ${action("track-drone")}`;
+    if (touch) {
+      const minTap = await ev(`Math.min(...${J([recallControl, trackDrone])}.map(selector => {
+        const { width, height } = document.querySelector(selector).getBoundingClientRect();
+        return Math.min(width, height);
+      }))`);
+      assert.ok(minTap >= 44, "Drone recall and tracking offer 44px touch targets");
+    }
+    await click(recallControl);
+    await find("recall immediately turns miner toward depot", async () => {
+      const drone = (await state()).drones[0];
+      return drone.phase === "returning" && !drone.job.enabled;
+    });
+    await find("recall shows docking countdown", async () => (await text(countdown))?.startsWith("Docking in "));
+    captures.push(await capture("mining-recall"));
+    const droneTarget = `drone:${minerDrone.id}`;
+    await click(trackDrone);
+    await find("tracking opens flight for the drone", () => tracked(droneTarget));
+    await find("the drone bearing is projected", () => ev(`${G}.rep.pois(${J(droneTarget)}).some(poi => poi.id === ${J(droneTarget)} && poi.name.endsWith("Drone 1"))`));
+    assert.equal(await shown(".industry"), false);
+    captures.push(await capture("tracked-drone"));
+    await openIndustry();
+    await click(tab("drones"));
+    assert.equal(await text(trackDrone), "Untrack");
+    await click(trackDrone);
+    await find("drone tracking clears from Industry", () => tracked(null));
+    await find("untracked drone bearing is removed", () => ev(`${G}.rep.pois(${J(droneTarget)}).length === 0`));
+    assert.equal(await shown(".industry"), true);
+    await find("recalled miner pauses at its depot", async () => (await state()).drones[0].status === "paused", 30000);
+    await click(`${miner} ${action("resume-job")}`);
+    await find("miner can resume after recall", async () => (await state()).drones[0].job.enabled);
     await closeIndustry();
 
     const relay = await place("Transfer Relay", 6);

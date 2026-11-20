@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useStore } from "jotai";
 import { memo, useEffect, useMemo, useRef } from "react";
 import {
   BoxGeometry, BufferGeometry, Color, CylinderGeometry, DodecahedronGeometry, Euler, Group, IcosahedronGeometry, Mesh,
@@ -10,11 +10,12 @@ import {
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
-import type { ShipPose } from "@/save/types";
+import type { ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
 import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
 import { PROSPECT_PARTS, PROSPECT_RADIUS_M, prospectWorksite } from "@/sim/industry/prospects";
+import { miningLegPosition, miningLegVelocity } from "@/sim/industry/sortie";
 import { droneFlightProgress, minimumDroneFlightS } from "@/sim/industry/route";
 import type { DepotRecord, DroneRecord, IndustryState } from "@/sim/industry/types";
 import { DEPOT_HULL } from "@/sim/physics/depotShape";
@@ -25,8 +26,9 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { industryAtom } from "@/store/industry";
 import { replicationPointsAtom } from "@/store/replicationMirror";
-import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
-import { DroneMotion, smoothProgress } from "./droneMotion";
+import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, trackedDronePoiAtom } from "@/store/industryHud";
+import { poiBuffer } from "@/store/poi";
+import { DroneMotion, MiningLegClock, smoothProgress } from "./droneMotion";
 
 const DEPOT_RENDER_KM = 14;
 const DEPOT_COLLISION_KM = 3;
@@ -287,6 +289,12 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
   const beam = useRef<Mesh<BoxGeometry, MeshBasicMaterial>>(null!);
   const beamMaterial = useMemo(() => BEAM.clone(), []);
   const motion = useMemo(() => new DroneMotion(), []);
+  const clock = useMemo(() => new MiningLegClock(), []);
+  const pose = useMemo(() => ({
+    frameId: home.frameId, positionKm: [0, 0, 0] as Vec3Tuple,
+    velocity: [0, 0, 0] as Vec3Tuple, previous: new Vector3(), correction: new Vector3(), active: false,
+  }), [home.frameId]); // The tuple is rewritten every frame.
+  const store = useStore();
   const target = useRef<Destination | undefined>(undefined);
   const drawn = useRef(false);
   const worldOrigin = useWorldOrigin();
@@ -305,7 +313,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     if (!g || !ray) return;
     const w = worldOrigin.worldOriginKm;
     const dt = isSimPaused() ? 0 : Math.min(delta, 0.15);
-    if (dt > 0 || !drawn.current) motion.advance(drone, dt);
+    if (!drone.sortie && (dt > 0 || !drawn.current)) motion.advance(drone, dt);
     if (motion.targetId === drone.job?.targetId && drone.phase !== "idle") target.current = dest;
 
     _orientation.fromArray(home.quaternion);
@@ -320,7 +328,39 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     let visibleFlight = !onTrip;
     let strength = 0;
 
-    if (!onTrip || !destination || motion.via || home.frameId !== destination.frameId) {
+    const sortie = drone.sortie;
+    if (sortie) {
+      const changed = clock.advance(drone, dt);
+      const flying = drone.phase === "outbound" || drone.phase === "returning";
+      if (flying) {
+        miningLegPosition(sortie.leg, clock.elapsed, drone.durationS, pose.positionKm);
+        miningLegVelocity(sortie.leg, clock.elapsed, drone.durationS, pose.velocity);
+        _direction.fromArray(pose.velocity);
+        if (_direction.lengthSq() > 1e-12) _orientation.setFromUnitVectors(_forward, _direction.normalize());
+        else _orientation.copy(g.quaternion);
+      } else {
+        const at = sortie.leg.toKm;
+        for (let axis = 0; axis < 3; axis++) pose.positionKm[axis] = at[axis];
+        _orientation.copy(g.quaternion);
+      }
+      // The host can recall at a different instant than this client's predicted pose.
+      // Reconcile in the body's frame so a camera movement cannot drag the drone with it.
+      if (changed && pose.active) pose.correction.copy(pose.previous).sub(_offset.fromArray(pose.positionKm));
+      pose.correction.multiplyScalar(Math.exp(-dt / 0.25));
+      pose.previous.fromArray(pose.positionKm).add(pose.correction).toArray(pose.positionKm);
+      pose.active = visibleFlight = true;
+      scenePosition(pose, w, g.position);
+      const workRock = drone.flight?.rock;
+      if (drone.phase === "working" && workRock && !worldAuthority.asteroids.has(workRock.fieldId, workRock.chunkKey, workRock.instanceId)) {
+        const t = clock.elapsed;
+        strength = smoothProgress(t / BEAM_FADE_S) * smoothProgress((drone.durationS - t) / BEAM_FADE_S);
+        g.position.y += Math.sin(t * 2.5 + index) * 0.35 * strength;
+        scenePosition(workRock, w, _to);
+        _to.x += Math.sin(t / 0.84 + index) * 2 * strength;
+        _to.z += Math.cos(t / 0.69 + index) * 1.5 * strength;
+        _orientation.setFromUnitVectors(_forward, _direction.subVectors(_to, g.position).normalize());
+      }
+    } else if (!onTrip || !destination || motion.via || home.frameId !== destination.frameId) {
       g.position.copy(_from);
     } else {
       scenePosition(destination, w, _to);
@@ -364,6 +404,19 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       }
     }
 
+    if (!sortie && pose.active) {
+      pose.active = false;
+      pose.correction.set(0, 0, 0);
+      clock.reset();
+    }
+    if (poiBuffer.pinnedId === g.name) {
+      const bearing = store.get(trackedDronePoiAtom);
+      if (bearing?.id === g.name) {
+        scenePosition(home, w, _origin);
+        _direction.subVectors(g.position, _origin).multiplyScalar(0.001)
+          .add(_offset.fromArray(home.positionKm)).toArray(bearing.positionKm);
+      }
+    }
     if (!drawn.current) {
       g.quaternion.copy(_orientation);
       drawn.current = true;

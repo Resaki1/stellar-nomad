@@ -7,7 +7,7 @@ const SNAPSHOT_GRACE_S = 1.25;
 const PREDICTION_BRAKE_S = 1.5;
 const SMOOTHING_S = 0.1;
 const MAX_CATCH_UP_RATE = 1.5;
-const PHASE_ORDER = { outbound: 0, working: 1, returning: 2, idle: 3 };
+const PHASE_ORDER = { outbound: 0, working: 1, scouting: 1, returning: 2, idle: 3 };
 
 function predictedLead(ageS: number): number {
   if (ageS <= SNAPSHOT_GRACE_S) return ageS;
@@ -90,5 +90,40 @@ export class DroneMotion {
     this.filteredS += Math.min(Math.max(0, goal - this.filteredS) * blend, deltaS * MAX_CATCH_UP_RATE);
     this.timeS += Math.min((this.filteredS - this.timeS) * blend, deltaS * MAX_CATCH_UP_RATE);
     if (this.phaseEndS - this.timeS < 0.001) this.timeS = this.filteredS = this.phaseEndS;
+  }
+}
+
+/** A sortie can change course before its countdown ends. Predict only the current
+ * funded leg, including when the tab is briefly late receiving host updates. */
+export class MiningLegClock {
+  elapsed = 0;
+  private sample: DroneRecord | undefined;
+  private age = 0;
+  private filtered = 0;
+
+  advance(drone: DroneRecord, dt: number): boolean {
+    const prev = this.sample;
+    const changed = !prev || prev.phase !== drone.phase ||
+      prev.flight?.rock?.instanceId !== drone.flight?.rock?.instanceId;
+    const confirmed = drone.durationS - drone.remainingS;
+    if (changed) {
+      this.elapsed = this.filtered = confirmed;
+      this.age = 0;
+    } else {
+      this.age += dt;
+      if (prev.remainingS !== drone.remainingS) {
+        this.age = Math.max(0, Math.min(1, prev.durationS - prev.remainingS + predictedLead(this.age) - confirmed));
+      }
+      const goal = Math.min(drone.durationS, confirmed + predictedLead(this.age));
+      const blend = -Math.expm1(-dt / SMOOTHING_S);
+      this.filtered += Math.min(Math.max(0, goal - this.filtered) * blend, dt * MAX_CATCH_UP_RATE);
+      this.elapsed += Math.min((this.filtered - this.elapsed) * blend, dt * MAX_CATCH_UP_RATE);
+    }
+    this.sample = drone;
+    return changed;
+  }
+
+  reset(): void {
+    this.sample = undefined;
   }
 }

@@ -5,10 +5,12 @@ import { cleanPointName, emergencePose } from "@/sim/replication/points";
 import type { RejectReason } from "@/sim/world/commands";
 import type { Commit, ReduceCtx, Reduction } from "@/sim/world/reducers";
 import { DEPOT_KIT_ID, DEPOT_RECIPES, DRONE_FUEL_ID, getIndustrySource, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG, POINT_TANK_RECIPE } from "./catalog";
+import { planFabricationMaterials } from "./fabrication";
 import { checkDepotPlacement, depotDistanceKm } from "./placement";
 import { canMineField, decodeMineFilter } from "./mining";
 import { estimateDroneExtractionRoute, estimateDroneRoute } from "./route";
-import { applyIndustryDelta, changedCount, storageUnits } from "./simulation";
+import { applyIndustryDelta, changedCount, payloadMassKg, storageUnits } from "./simulation";
+import { beginMiningReturn } from "./sortie";
 import { emptyStorage, sameDroneAssignment, type DepotRecord, type DroneJob, type DroneRecord, type IndustryDelta, type IndustryOperation, type IndustryResult } from "./types";
 
 type IndustryContext = ReduceCtx & { player: PlayerState };
@@ -23,7 +25,7 @@ export function isMaterial(id: string): boolean {
 
 export function decodeDroneJob(v: unknown): DroneJob | null {
   if (!v || typeof v !== "object") return null;
-  const { kind, targetId, targetKind, priorities, mineFilter, reserveKg, stopAt, enabled } = v as Partial<DroneJob>;
+  const { kind, targetId, targetKind, priorities, mineFilter, keepResourceIds, reserveKg, stopAt, enabled } = v as Partial<DroneJob>;
   if ((kind !== "extract" && kind !== "haul" && kind !== "mine") ||
       typeof targetId !== "string" || targetId.length > 160 || !targetId ||
       typeof enabled !== "boolean" || typeof reserveKg !== "number" || !Number.isFinite(reserveKg) || reserveKg < 0 || reserveKg > T.fuelCapacityKg ||
@@ -33,10 +35,13 @@ export function decodeDroneJob(v: unknown): DroneJob | null {
       new Set(priorities).size !== priorities.length) return null;
   if (kind === "mine") {
     const filter = decodeMineFilter(targetId, mineFilter);
+    const kept = keepResourceIds === undefined ? undefined : decodeMineFilter(targetId, { mode: "resource", ids: keepResourceIds });
+    if (keepResourceIds !== undefined && kept?.mode !== "resource") return null;
     return filter && priorities.length === 0 && targetKind === undefined
-      ? { kind, targetId, priorities: [], mineFilter: filter, reserveKg, stopAt, enabled } : null;
+      ? { kind, targetId, priorities: [], mineFilter: filter, ...(kept?.mode === "resource" && { keepResourceIds: kept.ids }),
+        reserveKg, stopAt, enabled } : null;
   }
-  if (priorities.length === 0 || mineFilter !== undefined) return null;
+  if (priorities.length === 0 || mineFilter !== undefined || keepResourceIds !== undefined) return null;
   if (targetKind !== undefined && (targetKind !== "point" || kind !== "haul" ||
       priorities.length !== 1 || priorities[0] !== DRONE_FUEL_ID || stopAt > POINT_TANK_CAPACITY_KG)) return null;
   const source = kind === "extract" ? getIndustrySource(targetId) : undefined;
@@ -153,15 +158,15 @@ function fabricate(
   if (op.opId.length > 128) return { reason: "invalid" };
   if (recipe.output === "drone" && ctx.world.industry.drones.some(d => d.id === droneId)) return { reason: "already_done" };
 
-  const missing: Record<string, number> = {};
+  const player = ctx.player;
+  const shipCargo = recipe.output === "drone" && canAccessStorage(player, depot) ? player.cargo.items : undefined;
+  const plan = planFabricationMaterials(recipe.recipe, depot.storage.items, shipCargo);
+  if (Object.keys(plan.missing).length) return { reason: "materials", missing: plan.missing };
   const items = { ...depot.storage.items };
-  for (const [id, amount] of Object.entries(recipe.recipe)) {
-    const have = items[id] ?? 0;
-    if (have < amount) missing[id] = amount - have;
-    else if (have === amount) delete items[id];
-    else items[id] -= amount;
+  for (const [id, amount] of Object.entries(plan.depot)) {
+    items[id] -= amount;
+    if (items[id] === 0) delete items[id];
   }
-  if (Object.keys(missing).length) return { reason: "materials", missing };
   const storage = { ...depot.storage, items };
   if (recipe.itemId) {
     if (storageUnits(storage) + 1 > T.cargoCapacity) return { reason: "depot_full" };
@@ -172,7 +177,13 @@ function fabricate(
   if (recipe.output === "drone") {
     const drone: DroneRecord = { id: droneId, homeId: depot.id, job: null, phase: "idle", status: "unassigned",
       remainingS: 0, durationS: 0, returnS: 0, via: null, fuelKg: 0, cargo: emptyStorage() };
-    return commit(ctx, { type: op.type, depotId: depot.id, recipeId: recipe.id, droneId }, [next], [drone]);
+    const shipCosts = Object.entries(plan.ship);
+    const result = { type: op.type, depotId: depot.id, recipeId: recipe.id, droneId };
+    if (!shipCosts.length) return commit(ctx, result, [next], [drone]);
+    const cargo = shipCosts.reduce((aboard, [id, amount]) => changedCount(aboard, id, -amount), player.cargo.items);
+    return commit(ctx, result, [next], [drone], ["cargo"], () => {
+      player.cargo = { ...player.cargo, items: cargo };
+    });
   }
   return commit(ctx, { type: op.type, depotId: depot.id, recipeId: recipe.id }, [next], []);
 }
@@ -274,7 +285,11 @@ export function reduceIndustry(op: IndustryOperation, ctx: IndustryContext, limi
     const reason = drone.phase === "idle" && !stopping ? validateTarget(job, home, world) : null;
     if (reason) return { reason };
     const status = drone.phase === "idle" ? (job.enabled ? "departing" : "paused") : drone.status;
-    return commit(ctx, { type: op.type, droneId: drone.id }, [], [{ ...drone, job, status }]);
+    const next = { ...drone, job, status };
+    const lane = drone.sortie?.lane ?? (drones.indexOf(drone) % 2 === 0 ? 1 : -1);
+    const updated = stopping && job.kind === "mine"
+      ? beginMiningReturn(next, home, lane, payloadMassKg(drone.cargo), world.industry.remainderS) : next;
+    return commit(ctx, { type: op.type, droneId: drone.id }, [], [updated]);
   }
   const depot = depots.find(d => d.id === op.depotId);
   if (!depot) return { reason: "not_found" };

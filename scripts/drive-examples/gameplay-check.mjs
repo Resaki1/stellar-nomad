@@ -181,7 +181,7 @@ export default async function gameplayCheck(d) {
         const a = r.a;
         const p = a.players[me];
         const c = {
-          schema: a.schemaVersion === 8, idempotent: r.idempotent, receipts: eq(a.world.receipts, []),
+          schema: a.schemaVersion === 9, idempotent: r.idempotent, receipts: eq(a.world.receipts, []),
           emptyIndustry: !a.world.industry.depots.length && !a.world.industry.drones.length,
         };
         const v1p = raw.players[me];
