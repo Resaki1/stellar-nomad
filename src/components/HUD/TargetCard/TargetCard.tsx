@@ -288,6 +288,9 @@ function InteractRows({ focus }: { focus: InteractFocus }) {
       </div>
       <div className="target-card__row target-card__row--contents">
         <span className="target-card__muted">Respawn point</span>
+        <button type="button" className="target-card__rename" data-point-fuel-open aria-label={`View fuel at ${p.name}`} onClick={() => {
+          if (aimedStructure(store, t.id)) store.set(industryRequestAtom, { pointFuelId: p.id });
+        }}>Fuel</button>
         <button type="button" className="target-card__rename" onClick={() => {
           if (aimedStructure(store, t.id)) store.set(industryRequestAtom, { renamePointId: p.id });
         }}>Rename</button>

@@ -2,7 +2,7 @@
 
 **Status, 2026-11-19.** Direct invites passed a two-browser check on the live game, including join, marker sharing and host shutdown. M4.1 passed its preview test from a Wi-Fi Mac to a cellular iPhone. M4.2–M4.3 implement the shared survival loop, rendezvous markers and nearby supplies. The 30-minute cargo-conservation run and four-pilot capacity check passed. M4.4 device and playability checks remain open. Hosted TURN stays off.
 
-M5 supports depot storage, refining and automated supply between depots in one asteroid field. Drones use local thrusters for docking and a longer burn for cross-field deliveries. Two browsers followed a 4 km supply route through a host restart and rejoin. Both replicants and the saved world agreed on the receiving depot’s final balance. [M5 results and reproduction steps](M5_INDUSTRY_PLAN.md)
+M5 supports shared industrial research, finite local asteroid mining, refinery production and automated supply to depots and equipped replication points. Drones use local thrusters for docking and a longer burn for cross-field deliveries. Two browsers followed a 4 km supply route through a host restart and rejoin. Both replicants and the saved world agreed on the receiving depot’s final balance. [M5 results and reproduction steps](M5_INDUSTRY_PLAN.md)
 Supersedes `CURRENT_PLAN.md` (the old asteroid-streaming brief, long since built).
 
 This document orders the nine big items (multiplayer, physics, game loop, terrain, flight
@@ -415,16 +415,13 @@ aboard each drone. A friend can draw fuel at the relay while the builder explore
 
 - Extend the simple M3 placeable/authority model into **depots** with shared storage,
   expanded fabrication and specialized production. Basic ship self-sufficiency remains.
-  A depot may include replication; respawning is no longer a depot-exclusive feature.
+  A player-built replication point can accept a fuel tank and receive shipments.
   Use existing body frames initially or pull an orbit co-moving frame forward only if
   needed. No compulsory fixed home.
-- **Fuel production and routes:** a refinery at a resource source can supply itself;
-  relay depots receive cargo deliveries. Players carry construction outward and establish
-  longer routes. Adequate production/transport/buffers make a route sustainable without
-  constant manual top-ups.
+- **Fuel production and routes:** refineries use stored hydrates. Miners work the same finite rocks as replicants, selecting all rocks, asteroid classes or desired resources. An exhausted field needs supply or relocation. Crew can request an inbound drone or manage a distant depot. Ship transfers require close proximity.
 - **Drones v1:** UI-assigned jobs, resource filters/priorities, destination, return reserve,
   and stop conditions. No required scripting, random breakdowns, or recurring maintenance.
-  Simulate detailed work nearby and resource-conserving rates/routes remotely. A few
+  Advance the same jobs and finite asteroid depletion regardless of camera position. A few
   detailed drones per station, not hundreds of full rigid bodies.
 - Physics P4: ship-vs-ship and ship-vs-station contact, mining debris.
 - **Exit gate:** two players and two drones operate a depot and a supplied fuel route;

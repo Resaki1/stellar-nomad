@@ -87,6 +87,11 @@ export default async function industryUi(d) {
   const closeIndustry = () => touch ? click('.panel__close[aria-label="Close"]') : d.press("Escape");
   const captures = [];
   const storageLayouts = [];
+  const miningResearch = "ex1_controlled_extraction";
+  const stationResearch = ["lg1_bulk_handling", "lg2_station_refining"];
+  const completeResearch = async nodeIds => {
+    assert.equal((await ev(`${G}.submit({ type: "research.devSet", nodeIds: ${J(nodeIds)} })`)).status, "accepted");
+  };
 
   try {
     await ev(`${G}.fixtures.activate(${J(fixture)})`);
@@ -97,6 +102,8 @@ export default async function industryUi(d) {
     const source = catalog.sources.find(s => s.id === "earth_hydrates");
     const lunar = catalog.sources.find(s => s.id === "luna_hydrates");
     assert.ok(source && lunar);
+    // The Earth field has a finite hydrate-bearing rock here, just west of the fixture depot.
+    const earthSite = { ...source, positionKm: [-7821.917849609375, 183.50833422851562, 14810.796959960937] };
 
     if (touch) {
       await setSize(390, 844);
@@ -111,6 +118,7 @@ export default async function industryUi(d) {
     assert.equal(await shown(".settings-menu__panels"), false);
     assert.equal(await enabled(action("craft-kit")), false, "Missing materials prevent craft");
     assert.equal(await enabled(action("aim")), false, "No kit prevents placement");
+    assert.match(await text('[data-required-research="lg1_bulk_handling"] summary'), /Bulk Handling/);
     captures.push(await capture("build"));
     await d.press("Tab");
     assert.equal(await ev(`document.activeElement.closest(".panel") !== null`), true, "Tab stays in Industry");
@@ -123,7 +131,7 @@ export default async function industryUi(d) {
           const shell = document.querySelector(".industry").closest(".panel");
           const body = shell.querySelector(".industry__content");
           const r = shell.getBoundingClientRect();
-          const action = document.querySelector(${J(action("track-earth_hydrates"))}).getBoundingClientRect();
+          const action = document.querySelector(${J(action(`track-${source.fieldId}`))}).getBoundingClientRect();
           const close = shell.querySelector(".panel__close").getBoundingClientRect();
           return { fit: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight,
             scroll: body.scrollWidth <= body.clientWidth, tap: action.height >= 44 && close.width >= 44 && close.height >= 44 };
@@ -137,20 +145,20 @@ export default async function industryUi(d) {
     await fill("[data-industry-name]", "Hydrate Works");
     await d.press("b");
     assert.equal(await shown(".industry"), true, "Industry hotkey doesn't close a focused name field");
-    const prospect = action("track-earth_hydrates");
-    const prospectId = "industry-source:earth_hydrates";
+    const prospect = action(`track-${source.fieldId}`);
+    const prospectId = `field:${source.fieldId}`;
     const tracked = id => ev(`${G}.transit.state().targeted === ${J(id)}`);
     assert.ok(!(await record()).modules.ownedModules.includes("special_transit_drive"));
     await click(prospect);
-    await find("hydrate site tracked", () => tracked(prospectId));
+    await find("asteroid field tracked", () => tracked(prospectId));
     assert.equal(await shown(".industry"), false);
     await openIndustry();
-    await find("hydrate site untrack control", async () => await text(prospect) === "Untrack");
+    await find("asteroid field untrack control", async () => await text(prospect) === "Untrack");
     await click(prospect);
-    await find("hydrate site cleared", () => tracked(null));
+    await find("asteroid field cleared", () => tracked(null));
     assert.equal(await text(prospect), "Track");
     await click(prospect);
-    await find("hydrate site tracked again", () => tracked(prospectId));
+    await find("asteroid field tracked again", () => tracked(prospectId));
     if (!touch) {
       await d.press("h");
       assert.equal(await ev(`!!document.querySelector(".hud--hidden")`), true);
@@ -159,10 +167,11 @@ export default async function industryUi(d) {
       await closeIndustry();
     }
 
+    await completeResearch(stationResearch);
     for (const [id, n] of Object.entries({ fe_ni_metal: 850, silicates: 600, carbon: 40, hydrates: 10, sulfur: 10, titanium: 10, helium_3: 10 })) {
       await ev(`__dev.grantCargo(${J(id)}, ${n})`);
     }
-    const place = async (name, xOffset, { near = true, checkCancel = false, region = source } = {}) => {
+    const place = async (name, xOffset, { inField = true, checkCancel = false, region = earthSite } = {}) => {
       const position = region.positionKm.map((axis, i) => axis + (i === 0 ? xOffset : 0));
       await teleport(region.frameId, position);
       await openIndustry();
@@ -173,7 +182,7 @@ export default async function industryUi(d) {
       await fill("[data-industry-name]", name);
       await click(action("aim"));
       await find("deployment clearance", () => shown('[data-industry-clear="true"]'));
-      assert.equal(await ev(`document.querySelector("[data-industry-clear]").textContent.includes(${J(near ? region.name : "relay site")})`), true);
+      assert.match(await text("[data-industry-clear]"), inField ? /Nearby field · / : /Clear · outside mining range/);
       if (checkCancel) {
         captures.push(await capture("placement"));
         if (touch) await click(action("cancel-placement"));
@@ -287,10 +296,12 @@ export default async function industryUi(d) {
       await moveStock(works, id, amount, "deposit");
     }
     captures.push(await capture("manifest"));
+    await teleport(source.frameId, works.placementPosition.map((x, i) => x + (i === 0 ? 4 : 0)));
+    await find("depot remotely managed", () => shown('[data-industry-access="remote"]'));
     await click(tab("fabrication"));
     const fabricate = id => click(`[data-industry-recipe="${id}"] ${action("fabricate")}`);
     await fabricate("refinery");
-    await find("refinery installed", async () => (await state()).depots[0].refinery);
+    await find("refinery installed remotely", async () => (await state()).depots[0].refinery);
     assert.equal(await depotRole(works.id), "Refinery");
     await fabricate("drone");
     await find("first drone built", async () => (await state()).drones.length === 1);
@@ -300,29 +311,61 @@ export default async function industryUi(d) {
     captures.push(await capture("fabrication"));
 
     await click(tab("drones"));
-    const [extractor, hauler] = (await state()).drones.map(drone => `[data-industry-drone=${J(drone.id)}]`);
+    const [minerDrone, haulerDrone] = (await state()).drones;
+    const miner = `[data-industry-drone=${J(minerDrone.id)}]`;
+    const hauler = `[data-industry-drone=${J(haulerDrone.id)}]`;
+    assert.equal(await enabled(`${miner} [data-industry-job-kind] option[value="mine"]`), false, "Mining is locked before Controlled Extraction");
+    assert.match(await text(`${miner} [data-required-research="${miningResearch}"] summary`), /Controlled Extraction/);
+    const premature = await ev(`${G}.submit({ type: "drone.configure", droneId: ${J(minerDrone.id)}, job: {
+      kind: "mine", targetId: ${J(source.fieldId)}, priorities: [], mineFilter: { mode: "all" }, reserveKg: 0, stopAt: 6000, enabled: true } })`);
+    assert.equal(premature.reason, "locked");
+    await completeResearch([...stationResearch, miningResearch]);
     await select(`${hauler} [data-industry-job-kind]`, "haul");
     assert.equal(await enabled(`${hauler} [data-industry-job-target]`), false);
     assert.equal(await enabled(`${hauler} ${action("start-job")}`), false);
     assert.match(await text(hauler), /Local routes can span up to 30(?:\.0)? km/);
     assert.match(await text(hauler), /farther within the same asteroid field/);
-    const limit = `${extractor} [data-industry-job-stop]`;
-    assert.deepEqual(await optionIds(`${extractor} [data-industry-job-target]`), [source.id]);
+    const limit = `${miner} [data-industry-job-stop]`;
+    const mineFilter = `${miner} [data-industry-mine-filter]`;
+    const mineChoice = id => `${miner} [data-industry-mine-choice=${J(id)}]`;
+    const mineStart = `${miner} ${action("start-job")}`;
+    assert.deepEqual(await optionIds(`${miner} [data-industry-job-target]`), [source.fieldId]);
+    assert.equal(await value(mineFilter), "all");
+    await select(mineFilter, "class");
+    assert.equal(await enabled(mineStart), false);
+    await click(mineChoice("s_type"));
+    await click(mineChoice("c_type"));
+    assert.equal(await enabled(mineStart), true);
+    captures.push(await capture("mining-classes"));
+    await select(mineFilter, "resource");
+    assert.equal(await enabled(mineStart), false);
+    await click(mineChoice("hydrates"));
+    await click(mineChoice("carbon"));
+    assert.equal(await enabled(mineStart), true);
+    assert.match(await text(miner), /brings back everything they yield/);
+    await select(mineFilter, "class");
+    assert.equal(await ev(`document.querySelector(${J(mineChoice("s_type"))}).checked`), true, "Class selection persists across modes");
+    await select(mineFilter, "resource");
+    await click(mineChoice("carbon"));
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
-    await fill(`${extractor} [data-industry-job-reserve]`, 50);
+    await fill(`${miner} [data-industry-job-reserve]`, 50);
     await fill(limit, 400);
-    await click(`${extractor} ${action("start-job")}`);
-    await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("propellant")`));
+    captures.push(await capture("mining-resources"));
+    await click(mineStart);
+    await find("fuel shortfall displayed", () => ev(`document.querySelector('[data-industry-drone-status="needs_fuel"]')?.textContent.includes("propellant")`), 25000);
     assert.equal((await state()).drones[0].job.stopAt, 400);
-    assert.equal(await depotRole(works.id), "Refinery · Hydrate extraction");
-    assert.match(await text(`${extractor} .industry__route`), /Hydrate limit: 400 units/);
-    await click(`${extractor} ${action("edit-job")}`);
+    assert.deepEqual((await state()).drones[0].job.mineFilter, { mode: "resource", ids: ["hydrates"] });
+    assert.equal(await depotRole(works.id), "Refinery · Asteroid mining");
+    assert.match(await text(`${miner} .industry__route`), /Storage limit: 400 units per resource/);
+    await click(`${miner} ${action("edit-job")}`);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "400");
-    await click(`${extractor} ${action("clear-hydrate-limit")}`);
+    await click(`${miner} ${action("clear-mining-limit")}`);
     assert.equal(await ev(`document.querySelector(${J(limit)}).value`), "");
-    await click(`${extractor} ${action("start-job")}`);
-    await find("extraction set to fill storage", async () => (await state()).drones[0].job.stopAt === 6000);
-    assert.match(await text(`${extractor} .industry__route`), /all free cargo space/);
+    await click(mineStart);
+    await find("mining set to fill storage", async () => (await state()).drones[0].job.stopAt === 6000);
+    assert.match(await text(`${miner} .industry__route`), /all free cargo space/);
+    await teleport(source.frameId, works.placementPosition);
+    await find("returned to transfer range", () => shown('[data-industry-access="available"]'));
     await click(tab("storage"));
     // The extractor can spend the fuel immediately, before the next depot stock read.
     const expectedDepositedFuel = (await record()).depositedFuelKg + 20;
@@ -330,7 +373,8 @@ export default async function industryUi(d) {
     await fill("[data-industry-amount]", 20);
     await click(action("deposit"));
     await find("bootstrap fuel deposited", async () => (await record()).depositedFuelKg === expectedDepositedFuel);
-    await find("extractor departs after bootstrap fuel", async () => (await state()).drones[0].phase === "outbound");
+    const minedTarget = await find("miner dispatches to a finite asteroid", async () => (await state()).drones[0].flight?.rock, 30000);
+    assert.equal(minedTarget.fieldId, source.fieldId);
     await closeIndustry();
 
     const relay = await place("Transfer Relay", 6);
@@ -343,15 +387,47 @@ export default async function industryUi(d) {
     const relayDrone = await find("relay drone built", async () => (await state()).drones.find(drone => drone.homeId === relay.id));
     const relayWork = `[data-industry-drone=${J(relayDrone.id)}]`;
     await click(tab("drones"));
-    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-kind]`), ["extract", "haul"]);
+    assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-kind]`), ["mine", "haul"]);
     await select(`${relayWork} [data-industry-job-kind]`, "haul");
     assert.deepEqual(await optionIds(`${relayWork} [data-industry-job-target]`), ["", works.id]);
     await closeIndustry();
-    const farBelt = await place("Far Belt Depot", 2002, { near: false });
+    const farBelt = await place("Far Belt Depot", 2002);
     await closeIndustry();
-    const clearSpace = await place("Open Space Depot", -3500, { near: false });
+    const clearSpace = await place("Open Space Depot", -3500, { inField: false });
     await closeIndustry();
-    const outpost = await place("Lunar Outpost", 42, { near: false, region: lunar });
+    const outpost = await place("Lunar Outpost", 42, { region: lunar });
+    const request = "[data-industry-delivery-request]";
+    await click(action("request-delivery"));
+    assert.match(await text(request), /Hydrate WorksIn another region/);
+    assert.equal(await enabled(action("edit-requested-delivery")), false);
+    captures.push(await capture("unavailable-delivery-request"));
+    await click(action("cancel-delivery-request"));
+
+    await click(inPanel(works.id));
+    await find("remote management from Luna", () => shown('[data-industry-access="remote"]'));
+    assert.match(await text(".industry__storage-delivery"), /Fly within 2(?:\.0)? km to transfer/);
+    const remoteTransfer = await ev(`${G}.submit({ type: "depot.transfer", depotId: ${J(works.id)}, direction: "deposit", kind: "fuel", itemId: "fuel", amount: 1 })`);
+    assert.equal(remoteTransfer.reason, "too_far");
+    await click(action("request-delivery"));
+    await select("[data-industry-request-source]", relay.id);
+    await select("[data-industry-request-drone]", relayDrone.id);
+    captures.push(await capture("delivery-request"));
+    await click(action("edit-requested-delivery"));
+    await find("request opens source drone remotely", () => shown(`${relayWork} ${action("start-job")}`));
+    assert.equal(await value(`${relayWork} [data-industry-job-target]`), works.id);
+    assert.equal((await state()).drones.find(drone => drone.id === relayDrone.id).job, null);
+    await select(`${relayWork} [data-industry-job-filter]`, "propellant");
+    assert.equal(await enabled(`${relayWork} ${action("start-job")}`), true);
+    const concurrentJob = { kind: "haul", targetId: works.id, priorities: ["hydrates"], reserveKg: 0, stopAt: 53, enabled: false };
+    const guarded = job => ev(`${G}.submit({ type: "drone.configure", droneId: ${J(relayDrone.id)}, onlyIfUnassigned: true, job: ${J(job)} })`);
+    assert.equal((await guarded(concurrentJob)).status, "accepted");
+    const guardedLoss = await guarded({ ...concurrentJob, stopAt: 88 });
+    assert.equal(guardedLoss.reason, "drone_assigned");
+    await find("request cannot replace a newly assigned job", async () => (await text(relayWork))?.includes("This drone now has a job"));
+    assert.equal(await enabled(`${relayWork} ${action("start-job")}`), false);
+    assert.equal(await shown(`${relayWork} ${action("keep-job-draft")}`), false);
+    await click(`${relayWork} ${action("use-current-job")}`);
+    assert.equal((await state()).drones.find(drone => drone.id === relayDrone.id).job.stopAt, 53);
     await closeIndustry();
     await teleport(source.frameId, relay.placementPosition);
     await openIndustry();
@@ -370,11 +446,14 @@ export default async function industryUi(d) {
     await click(action("track-depot"));
     await find("depot tracked again", () => tracked(depotTarget));
     await find("depot POI on HUD", () => shown(`.poi-markers [data-id=${J(`depot:${works.id}`)}]`));
-    await teleport(source.frameId, works.placementPosition);
+    // Exercise the reticle path at the open-space depot where a mineable rock can't occlude it.
+    await teleport(source.frameId, clearSpace.placementPosition);
     await find("depot in reticle", () => shown('[data-testid="target-card"][data-kind="depot"]'));
     if (touch) await openIndustry();
     else await d.press("g");
     await find("Interact opens the depot in local range", () => shown('[data-industry-access="available"]'));
+    assert.equal(await ev('document.querySelector(".industry__detail").getAttribute("aria-label")'), clearSpace.name);
+    await click(inPanel(works.id));
     await click(tab("drones"));
 
     const haulTarget = `${hauler} [data-industry-job-target]`;
@@ -441,7 +520,7 @@ export default async function industryUi(d) {
     }
     await click(inPanel(relay.id));
     await click(tab("drones"));
-    assert.equal(await value(`${relayWork} [data-industry-job-reserve]`), "0", "A different drone has its own draft");
+    assert.match(await text(`${relayWork} .industry__route`), /Delivery limit: 53 per item/, "Other drones retain their saved assignment");
     await click(inPanel(works.id));
     await click(tab("drones"));
     assert.equal(await value(haulLimit), "80");
@@ -479,6 +558,8 @@ export default async function industryUi(d) {
     await ev(`document.querySelector(${J(haulStart)}).scrollIntoView({ block: "nearest" })`);
     captures.push(await capture("plan"));
     if (layoutOnly) return { pass: true, touch, captures, storageLayouts };
+    await teleport(lunar.frameId, outpost.placementPosition);
+    await find("can start the route from another region", () => shown('[data-industry-access="remote"]'));
     await click(haulStart);
     await find("unlimited delivery saved", async () => (await state()).drones[1].job.stopAt === catalog.tuning.cargoCapacity);
     assert.match(await text(`${hauler} .industry__route`), /Uses all free space at the receiving depot/);
@@ -486,6 +567,8 @@ export default async function industryUi(d) {
     await click(`${hauler} ${action("stop-job")}`);
     await find("hauler stopped at depot", async () => (await state()).drones[1].status === "paused", 60000);
     assert.deepEqual((await state()).drones[1].job.priorities, ["propellant", "hydrates"]);
+    await find("mining deposits finite rock co-products", async () => Object.entries((await state()).depots[0].storage.items)
+      .some(([id, n]) => id !== "hydrates" && n > 0), 120000);
     await find("obsolete stop confirmation clears", () => ev(`document.querySelector(".industry__feedback").textContent === ""`), 6500);
     captures.push(await capture("route"));
 

@@ -228,6 +228,8 @@
     svg { color: s.$accent-info; }
   }
 
+  &__storage-delivery { justify-content: flex-start; }
+
   &__manifest {
     display: grid;
     border-block: 1px solid s.$stroke-base;
@@ -376,6 +378,37 @@
     gap: s.$space-2;
   }
 
+  &__job-choice { display: grid; gap: s.$space-2; min-width: 0; }
+
+  &__mine-filters {
+    display: grid;
+    gap: s.$space-2;
+  }
+
+  &__mine-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: s.$space-1 s.$space-3;
+    min-width: 0;
+    margin: 0;
+    padding: s.$space-2;
+    border: 1px solid s.$stroke-base;
+    border-radius: s.$radius-md;
+
+    legend { padding-inline: s.$space-1; }
+    label { flex-direction: row; align-items: center; cursor: pointer; }
+    input { width: 16px; min-height: 16px; flex-shrink: 0; margin: 0; accent-color: s.$accent-info; }
+    small { flex-basis: 100%; }
+  }
+
+  &__request-unavailable {
+    display: grid;
+    gap: s.$space-2;
+    margin: s.$space-2 0 0;
+    padding-inline-start: s.$space-5;
+  }
+
   &__priority {
     display: grid;
     gap: s.$space-1;
@@ -496,6 +529,7 @@
   .industry input, .industry select { font-size: 16px; }
   .industry__action, .industry__tabs button, .industry__manifest-row, .industry__priority li > button { min-height: 44px; }
   .industry__priority li > button { min-width: 44px; }
+  .industry__mine-options label { min-height: 44px; }
 }
 
 @media (orientation: landscape) and (max-height: 500px) {
@@ -522,6 +556,7 @@
     &__access { margin-top: 0; }
     &__content { padding-block: s.$space-1; gap: s.$space-1; }
     &__operation { order: 1; }
+    &__storage-delivery { order: 3; }
     &__manifest-head { padding-block: s.$space-1; }
 
     &__transfer {
@@ -551,7 +586,7 @@
 }
 
 @media (orientation: portrait) and (max-width: 420px) {
-  .industry__job .industry__form-row { grid-template-columns: minmax(0, 1fr); }
+  .industry__job .industry__form-row, .industry__request-fields { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (orientation: landscape) and (max-height: 500px) and (max-width: 600px) {
@@ -595,11 +630,9 @@
   list-style: none;
   margin: s.$space-3 0;
   padding: 0;
-  li {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: s.$space-3;
+  > li {
+    display: grid;
+    gap: s.$space-2;
     padding-block: s.$space-2;
     border-bottom: 1px solid s.$stroke-base;
     overflow-wrap: anywhere;

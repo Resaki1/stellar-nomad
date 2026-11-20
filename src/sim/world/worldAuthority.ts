@@ -26,6 +26,7 @@ class AuthorityFacade implements Authority {
     getPlayers: getPlayerStates,
     markDirty,
     reservedFuel: () => this.localFuelReserveKg(),
+    getDifficulty,
     resolveMine: makeMineResolver(activeSystem, getDifficulty),
   });
   private remote: RemoteAuthority | null = null;

@@ -204,13 +204,15 @@ function usePOIDefs(): POIDef[] {
     // Asteroid fields: hidden while the ship is inside the field's outer radius (§8)
     for (const field of system.asteroidFields ?? []) {
       if (field.enabled === false) continue;
+      const id = `field:${field.id}`;
+      const tracked = target?.id === id && poiBuffer.pinnedId === id;
       const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
-        id: `field:${field.id}`,
+        id,
         name: field.name,
         positionKm: field.anchorKm,
-        minDistanceKm: Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
-        maxDistanceKm: field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
+        minDistanceKm: tracked ? 0 : Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
+        maxDistanceKm: tracked ? STAR_MARKER_MAX_DISTANCE_KM : field.marker?.maxDistanceKm ?? ASTEROID_FIELD_DEFAULTS.maxDistanceKm,
       });
     }
 
@@ -547,7 +549,7 @@ const POIProjector = memo(function POIProjector() {
       poiBuffer.gazeProgress = 0;
       poiBuffer.gazeActive = false;
       const targeted = store.get(targetedPOIAtom);
-      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|industry-source):/.test(targeted.id);
+      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|field|industry-source):/.test(targeted.id);
       if (!industryBearing && poiBuffer.targetedId) store.set(targetedPOIAtom, null);
       poiBuffer.targetedId = industryBearing ? targeted.id : null;
       poiBuffer.targetedEtaS = null;

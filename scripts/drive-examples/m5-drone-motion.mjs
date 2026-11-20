@@ -1,5 +1,6 @@
 // DRIVE_PROFILE=m5motion DRIVE_CDP_PORT=9350 pnpm drive -- --perf --no-isolate --url http://127.0.0.1:3012/ run:scripts/drive-examples/m5-drone-motion.mjs
 import assert from "node:assert/strict";
+import { earthMiningLoot, earthMiningRock, earthMiningSite } from "../lib/industry-rock.mjs";
 
 const J = JSON.stringify;
 const G = "__test.gameplay";
@@ -77,31 +78,40 @@ async function verifyProspect(page, source, site) {
   return { poseErrorM, impactMps: hit.dvMps };
 }
 
-async function verifyFlight(page, source, home, droneId, tuning) {
+async function verifyFlight(page, rock, home, droneId, tuning) {
   const ev = page.evaluate;
   const record = () => ev(`${G}.world().industry.drones.find(d => d.id === ${J(droneId)})`);
   const rendered = () => ev(`${I}.drone(${J(droneId)})`);
   const paused = on => ev(`${G}.res.setLoadingPause(${on})`);
   const baseline = await ev("__test.flight.simulate({ segments: [{ seconds: 10, throttle: 1 }] }).segments[0]");
   assert.ok(baseline.peakSpeedMps > 400 && baseline.peakSpeedMps < 405, "compared with the baseline Replicant main engine without boost");
-  await warp(page, source.frameId, offset(home.positionKm, [0, 0, -0.8]));
+  await warp(page, rock.frameId, offset(home.positionKm, [0, 0, -0.8]));
+  const present = () => ev(`${I}.rockPresent(${J(rock)})`);
+  assert.ok(await waitFor(present), "the generated target is visible to the asteroid streamer before mining");
   const parked = await rendered();
   assert.ok(parked, `drone group exists in the local render scene (authority: ${J(await record())})`);
   assert.ok(parked.visible, "parked drone is visible at the observing ship");
   const tracking = ev(`${I}.trackDrone(${J(droneId)}, 64000)`, 70000);
   await page.frames(2);
-  const configured = await ev(`${G}.settled(${J({
-    type: "drone.configure", droneId, job: {
-      kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: tuning.extractUnits, enabled: true,
-    },
-  })})`);
+  const job = { kind: "mine", targetId: rock.fieldId, priorities: [], mineFilter: { mode: "resource", ids: ["hydrates"] },
+    reserveKg: 0, stopAt: tuning.cargoCapacity, enabled: true };
+  const configure = next => ev(`${G}.settled(${J({ type: "drone.configure", droneId, job: next })})`);
+  const configured = await configure(job);
   assert.equal(configured.status, "accepted", J(configured));
 
   const working = await waitFor(async () => {
     const current = await record();
     return current.phase === "working" && (await rendered()).beam > 0.7 && current;
   }, 30000);
-  assert.ok(working, "committed extraction turns on the beam");
+  assert.ok(working, "committed mining turns on the beam");
+  assert.equal(working.flight.rock.instanceId, rock.instanceId);
+  assert.equal(working.flight.rock.chunkKey, rock.chunkKey);
+  const liveShip = await ev(`${G}.rep.ship()`);
+  const miningPose = await rendered();
+  const rockCentreM = rock.positionKm.map((km, i) => (km - liveShip.posKm[i]) * 1000);
+  assert.ok(Math.abs(distance(rockCentreM, miningPose.positionM) - (rock.radiusM + 14)) < 2,
+    "the beam drone hovers just off the generated rock surface");
+  assert.equal((await configure({ ...job, enabled: false })).status, "accepted");
   let frozen;
   try {
     await paused(true);
@@ -181,8 +191,11 @@ async function verifyFlight(page, source, home, droneId, tuning) {
     `wall-clock samples of rendered positions peaked at ${wallPeakMps} m/s, below the ${baseline.peakSpeedMps} m/s Replicant`);
   assert.ok(distance((await rendered()).positionM, parked.positionM) < 0.02, "return docks at the same lane's starting position");
   const world = await ev(`${G}.world().industry`);
-  assert.equal(world.depots[0].storage.items.hydrates, tuning.extractUnits);
-  assert.deepEqual(world.drones[0].cargo.items, {}, "the return delivered cargo exactly once");
+  assert.deepEqual(world.depots[0].storage.items, { ...earthMiningLoot, carbon: earthMiningLoot.carbon + 20 });
+  assert.deepEqual(world.drones[0].cargo.items, {}, "the return delivered the full manifest exactly once");
+  assert.equal(await present(), false, "the real generated rock disappears from the loaded chunk");
+  const depleted = await ev(`${G}.world().asteroidDeltas[${J(rock.fieldId)}][${J(rock.chunkKey)}]`);
+  assert.equal(depleted.filter(id => id === rock.instanceId).length, 1);
   return { frames: samples.length, legS: working.returnS, departureMps, midMps, settledMps, returningMps, peakMps, wallPeakMps,
     baselineMps: baseline.peakSpeedMps, longestStopMs };
 }
@@ -202,7 +215,7 @@ async function verifyRestoredFieldFlight(page, fixture, home, relay, droneId) {
   });
   assert.ok(flight, "the shared authority committed the far outbound flight");
   assert.equal(flight.flight.profile, "field");
-  assert.equal(flight.cargo.items.carbon, 20);
+  assert.equal(flight.cargo.items.carbon, 20 + earthMiningLoot.carbon);
   assert.ok(flight.durationS > 440 && flight.durationS < 480);
 
   // Start a replay near the middle of the committed leg to exercise real reload/rendering
@@ -220,7 +233,7 @@ async function verifyRestoredFieldFlight(page, fixture, home, relay, droneId) {
     assert.equal(restored.phase, "outbound");
     assert.deepEqual(restored.flight, flight.flight);
     assert.equal(restored.fuelKg, flight.fuelKg);
-    assert.equal(restored.cargo.items.carbon, 20);
+    assert.equal(restored.cargo.items.carbon, flight.cargo.items.carbon);
     assert.ok(restored.remainingS <= replayS && restored.remainingS > 204);
     assert.ok(await waitFor(() => ev(`${I}.drone(${J(droneId)})`)), "restored drone is in the scene");
     const samples = await ev(`(() => {
@@ -257,13 +270,14 @@ export default async function m5DroneMotion(page) {
   const source = sources.find(s => s.id === "earth_hydrates");
   const site = offset(source.positionKm, [0, 0.085, 0]);
   const me = await ev(`${G}.localId()`);
-  const home = { id: "home", name: "Hydrate Works", by: me, frameId: source.frameId, positionKm: offset(site, [1.9, 0, 0]),
+  const home = { id: "home", name: "Hydrate Works", by: me, ...earthMiningSite(1.9),
     quaternion: [0, 0, 0, 1], storage: { fuelKg: 100, items: { carbon: 20 } } };
   const relay = { ...home, id: "field-relay", name: "Field Relay", positionKm: offset(home.positionKm, [2150, 0, 0]),
     storage: { fuelKg: 0 } };
   const drone = { id: "extractor", homeId: home.id, phase: "idle", status: "unassigned" };
   const hauler = { ...drone, id: "field-hauler" };
-  const state = { schemaVersion, world: { industry: { depots: [home, relay], drones: [drone, hauler] } },
+  const state = { schemaVersion, world: { industry: { depots: [home, relay], drones: [drone, hauler] },
+    research: { completedNodes: ["ex1_controlled_extraction"] } },
     players: { [me]: { modules: { consumables: { consumable_depot_kit: 1, consumable_replication_kit: 1 } } } } };
   const fixture = await ev(`${G}.fixtures.create("m5-motion", ${J(state)})`);
   try {
@@ -272,7 +286,7 @@ export default async function m5DroneMotion(page) {
     assert.equal(await ev("__test.save.info().id"), fixture);
     const prospect = await verifyProspect(page, source, site);
     console.log(J({ stage: "prospect contact", ...prospect }));
-    const flight = await verifyFlight(page, source, home, drone.id, tuning);
+    const flight = await verifyFlight(page, earthMiningRock, home, drone.id, tuning);
     console.log(J({ stage: "terminal flight", ...flight }));
     const fieldFlight = await verifyRestoredFieldFlight(page, fixture, home, relay, hauler.id);
     return { pass: true, prospect, flight, fieldFlight };

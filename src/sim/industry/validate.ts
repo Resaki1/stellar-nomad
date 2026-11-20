@@ -1,11 +1,12 @@
-import type { QuatTuple, Vec3Tuple } from "@/save/types";
+import type { QuatTuple, ReplicationPoint, Vec3Tuple } from "@/save/types";
 import { isFrameId } from "@/sim/frames";
 import { cleanPointName } from "@/sim/replication/points";
 import type { Transfer } from "@/sim/world/commands";
-import { getIndustrySource, INDUSTRY_TUNING as T } from "./catalog";
+import { getIndustrySource, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from "./catalog";
 import { decodeDroneJob } from "./reducer";
+import { finiteMiningJob } from "./mining";
 import { maxDroneLegSeconds } from "./route";
-import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneRecord, type DroneWaypoint, type IndustryState } from "./types";
+import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneRecord, type DroneRockTarget, type DroneWaypoint, type IndustryState } from "./types";
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
@@ -51,12 +52,23 @@ function depot(v: unknown): DepotRecord | null {
 const maxLegS = maxDroneLegSeconds();
 const maxLegacyLegKg = 41;
 
+function rockTarget(v: unknown): DroneRockTarget | null {
+  if (!obj(v) || !id(v.fieldId) || !id(v.chunkKey) || !v.chunkKey.startsWith(v.fieldId + ":") ||
+      !finite(v.instanceId) || !Number.isInteger(v.instanceId) || v.instanceId < 0 || v.instanceId > 0xffffffff ||
+      !isFrameId(v.frameId) || !position(v.positionKm) || !finite(v.radiusM) || v.radiusM <= 0 || v.radiusM > 10_000 ||
+      !finite(v.workSeconds) || !Number.isInteger(v.workSeconds) || v.workSeconds < 1 || v.workSeconds > 60) return null;
+  return { fieldId: v.fieldId, chunkKey: v.chunkKey, instanceId: v.instanceId, frameId: v.frameId,
+    positionKm: [...v.positionKm], radiusM: v.radiusM, workSeconds: v.workSeconds };
+}
+
 function fundedFlight(v: unknown): DroneFlight | null | undefined {
   if (v === null) return null;
   if (!obj(v) || (v.profile !== "local" && v.profile !== "field") ||
       !finite(v.returnFuelAtDryKg) || v.returnFuelAtDryKg < 0 || v.returnFuelAtDryKg > T.droneTankKg) return undefined;
   const extractUnits = finite(v.extractUnits) ? Math.floor(num(v.extractUnits, T.extractUnits)) : undefined;
-  return { profile: v.profile, returnFuelAtDryKg: v.returnFuelAtDryKg, ...(extractUnits === undefined ? {} : { extractUnits }) };
+  const rock = rockTarget(v.rock);
+  return { profile: v.profile, returnFuelAtDryKg: v.returnFuelAtDryKg,
+    ...(extractUnits === undefined ? {} : { extractUnits }), ...(rock && { rock }) };
 }
 
 function waypoint(v: unknown): DroneWaypoint | null {
@@ -64,15 +76,18 @@ function waypoint(v: unknown): DroneWaypoint | null {
   return { frameId: v.frameId, positionKm: [...v.positionKm], fraction: v.fraction };
 }
 
-function drone(v: unknown, depots: Map<string, DepotRecord>): DroneRecord | null {
+function drone(v: unknown, depots: Map<string, DepotRecord>, pointTanks: IndustryState["pointTanks"]): DroneRecord | null {
   if (!obj(v) || !id(v.id) || !id(v.homeId) || !depots.has(v.homeId)) return null;
   const configured = decodeDroneJob(v.job);
-  const job = configured && (configured.kind === "extract" || depots.has(configured.targetId) && v.homeId !== configured.targetId) ? configured : null;
+  const validDelivery = configured?.targetKind === "point" ? Object.hasOwn(pointTanks, configured.targetId)
+    : !!configured && depots.has(configured.targetId) && v.homeId !== configured.targetId;
   const returnS = num(v.returnS, maxLegS);
   const durationS = num(v.durationS, maxLegS);
   const phase = returnS >= T.minLegSeconds && durationS > 0 &&
       (v.phase === "outbound" || v.phase === "working" || v.phase === "returning")
     ? v.phase : "idle";
+  const valid = configured && (configured.kind !== "haul" || validDelivery) ? configured : null;
+  const job = valid && phase === "idle" ? finiteMiningJob(valid) : valid;
   const restored = DRONE_STATUSES.find(s => s === v.status) ?? (job ? "paused" : "unassigned");
   const status = !job && phase !== "idle" && phase !== "returning" ? "returning" : restored;
   const flight = fundedFlight(v.flight);
@@ -84,18 +99,27 @@ function drone(v: unknown, depots: Map<string, DepotRecord>): DroneRecord | null
   };
 }
 
-export function sanitizeIndustry(v: unknown): IndustryState {
+export function sanitizeIndustry(v: unknown, points: readonly ReplicationPoint[] = []): IndustryState {
   if (!obj(v)) return emptyIndustry();
   const depots = new Map<string, DepotRecord>();
   for (const value of Array.isArray(v.depots) ? v.depots.slice(0, T.maxDepots) : []) {
     const next = depot(value);
     if (next && !depots.has(next.id)) depots.set(next.id, next);
   }
+  const pointTanks: IndustryState["pointTanks"] = {};
+  const inputTanks = v.pointTanks;
+  if (obj(inputTanks)) {
+    for (const point of points) {
+      if (!point.starter && safeKey(point.id) && Object.hasOwn(inputTanks, point.id) && finite(inputTanks[point.id])) {
+        pointTanks[point.id] = num(inputTanks[point.id], POINT_TANK_CAPACITY_KG);
+      }
+    }
+  }
   const drones: DroneRecord[] = [];
   const droneIds = new Set<string>();
   const counts = new Map<string, number>();
   for (const value of Array.isArray(v.drones) ? v.drones.slice(0, T.maxDepots * T.dronesPerDepot) : []) {
-    const next = drone(value, depots);
+    const next = drone(value, depots, pointTanks);
     if (!next || droneIds.has(next.id)) continue;
     const count = counts.get(next.homeId) ?? 0;
     if (count >= T.dronesPerDepot) continue;
@@ -114,5 +138,5 @@ export function sanitizeIndustry(v: unknown): IndustryState {
       }
     }
   }
-  return { depots: Array.from(depots.values()), drones, sources, remainderS: num(v.remainderS, 1 - Number.EPSILON) };
+  return { depots: Array.from(depots.values()), drones, sources, pointTanks, remainderS: num(v.remainderS, 1 - Number.EPSILON) };
 }

@@ -2,6 +2,7 @@
 // Two rendered browsers, production command paths and real active time. Only the starting
 // building materials and travel between test sites use developer shortcuts.
 import assert from "node:assert/strict";
+import { earthMiningLoot, earthMiningRock, earthMiningSite } from "../lib/industry-rock.mjs";
 
 const json = JSON.stringify;
 const G = "__test.gameplay";
@@ -22,11 +23,9 @@ async function visit(page, pose, offset = [0, 0, -0.8]) {
 }
 
 export async function supplyRoute({ host, guest, code, worldId, settledCommand, waitFor }) {
-  const { sources, recipes, tuning } = await host.evaluate(`${G}.industry.catalog()`);
-  const source = sources.find(s => s.id === "earth_hydrates");
-  const site = eastKm => ({
-    frameId: source.frameId, positionKm: source.positionKm.map((x, i) => x + (i === 0 ? eastKm : 0)),
-  });
+  await settledCommand(host, { type: "research.devSet", nodeIds: ["lg1_bulk_handling", "ex1_controlled_extraction", "lg2_station_refining"] });
+  const { recipes, tuning } = await host.evaluate(`${G}.industry.catalog()`);
+  const source = earthMiningRock;
 
   async function place(name, centre) {
     await settledCommand(host, { type: "item.craft", itemId: "consumable_depot_kit" });
@@ -41,9 +40,9 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     }
     throw Error("No clear placement candidate near " + name);
   }
-  const sourceDepot = await place("Prospect works", site(1.4));
-  const relay = await place("Belt relay", site(5.4));
-  const fieldDepot = await place("Far belt depot", site(2001.4));
+  const sourceDepot = await place("Prospect works", earthMiningSite(1.9));
+  const relay = await place("Belt relay", earthMiningSite(5.9));
+  const fieldDepot = await place("Far belt depot", earthMiningSite(2001.9));
   const routeKm = Math.hypot(...relay.positionKm.map((x, i) => x - sourceDepot.positionKm[i]));
   const fieldRouteKm = Math.hypot(...fieldDepot.positionKm.map((x, i) => x - sourceDepot.positionKm[i]));
   console.log(JSON.stringify({ stage: "commissioned", frameId: source.frameId, routeKm, fieldRouteKm, source: sourceDepot.id, relay: relay.id }));
@@ -73,11 +72,21 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   const hauler = (await fabricate("drone")).droneId;
   assert.ok(extractor && hauler && extractor !== hauler);
   const assign = (page, droneId, job) => settledCommand(page, { type: "drone.configure", droneId, job: { enabled: true, ...job } });
-  await assign(guest, hauler, { kind: "haul", targetId: fieldDepot.id, priorities: ["propellant"], reserveKg: 12, stopAt: 600, enabled: false });
-  assert.equal((await state(host)).drones.find(drone => drone.id === hauler).job.targetId, fieldDepot.id,
-    "the host accepts a guest's field-scale assignment");
-  await assign(host, extractor, { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: 200 });
+  await visit(guest, relay);
+  const requestedJob = { kind: "haul", targetId: fieldDepot.id, priorities: ["propellant"], reserveKg: 12, enabled: false };
+  const requestedStops = [580, 600];
+  const requestRace = await Promise.all([host, guest].map((page, index) => page.evaluate(`${G}.settled(${json({
+    type: "drone.configure", droneId: hauler, onlyIfUnassigned: true, job: { ...requestedJob, stopAt: requestedStops[index] },
+  })})`)));
+  assert.deepEqual(requestRace.map(outcome => outcome.status).sort(), ["accepted", "rejected"]);
+  assert.equal(requestRace.find(outcome => outcome.status === "rejected").reason, "drone_assigned");
+  const winningJob = (await state(host)).drones.find(drone => drone.id === hauler).job;
+  assert.equal(winningJob.targetId, fieldDepot.id);
+  assert.equal(winningJob.stopAt, requestedStops[requestRace.findIndex(outcome => outcome.status === "accepted")]);
   await assign(guest, hauler, { kind: "haul", targetId: relay.id, priorities: ["propellant"], reserveKg: 12, stopAt: 600 });
+  await visit(guest, sourceDepot, [0.5, 0, 0]);
+  const mining = { kind: "mine", targetId: source.fieldId, priorities: [], mineFilter: { mode: "resource", ids: ["hydrates"] }, reserveKg: 0, stopAt: 200 };
+  await assign(host, extractor, mining);
   // This is the only hand refuel in the run. Once the extractor departs, the hauler's
   // configured reserve makes it wait for the refinery before carrying its first load.
   await settledCommand(guest, transfer(sourceDepot.id, "deposit", "fuel", "fuel", 12));
@@ -89,6 +98,9 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     return drone?.phase === "outbound" && drone.remainingS === drone.durationS - 6;
   }, 40000, 50);
   assert.ok(onLeg, "guest observed the extraction drone leave");
+  assert.equal(onLeg.flight.rock.instanceId, source.instanceId);
+  const present = page => page.evaluate(`${G}.industry.rockPresent(${json(source)})`);
+  assert.ok(await waitFor(() => present(guest), 7000, 100), "target rock was streamed on the guest");
   assert.ok(await guest.evaluate(`${C}.holdIncoming(1650)`));
   const samples = await guest.evaluate(`${G}.industry.trackDrone(${json(extractor)}, 2400)`);
   const speeds = [];
@@ -112,6 +124,17 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
     `snapshot catch-up produced a speed spike: ${peak} m/s, median ${median}`);
   console.log(JSON.stringify({ stage: "guest extractor flight", heldMs: 1650, frames: samples.length,
     longestStopMs: Math.round(longestStopMs), medianMps: Math.round(median), peakMps: Math.round(peak) }));
+  assert.ok(await waitFor(async () => {
+    const d = (await state(guest)).drones.find(drone => drone.id === extractor);
+    return d.phase === "working" && (await guest.evaluate(`${G}.industry.drone(${json(extractor)})`))?.beam > 0.4;
+  }, 35000, 120), "the guest renders the beam at the real rock");
+  const mined = page => page.evaluate(
+    `${G}.world().asteroidDeltas[${json(source.fieldId)}]?.[${json(source.chunkKey)}]?.filter(id => id === ${source.instanceId}).length ?? 0`);
+  assert.ok(await waitFor(async () => (await mined(host)) === 1 && (await mined(guest)) === 1 && !(await present(guest)), 22000, 100),
+    "shared mining depletes the streamed rock once on both peers");
+  const miningPayload = (await state(host)).drones.find(d => d.id === extractor).cargo.items;
+  assert.deepEqual(miningPayload, earthMiningLoot, "one rock yields the full material mix");
+  console.log(JSON.stringify({ stage: "finite rock mined", instanceId: source.instanceId, cargo: miningPayload }));
   await visit(guest, relay);
   const denied = await guest.evaluate(`${G}.settled(${json(transfer(sourceDepot.id, "withdraw", "fuel", "fuel", 1))})`);
   assert.equal(denied.status, "rejected");
@@ -163,6 +186,7 @@ export async function supplyRoute({ host, guest, code, worldId, settledCommand, 
   assert.equal(stores(saved), second);
   assert.equal(stores(final), second);
   return { pass: true, frames: [sourceDepot.frameId, relay.frameId], routeKm, fieldRouteKm, legS: outbound.durationS, contestedUnit: race.map(r => r.status),
+    contestedDrone: requestRace.map(outcome => outcome.status),
     restartGeneration: generation + 1, bootstrapKg: 12, firstDeliveryKg: first, withdrawnKg: usedKg,
     secondDeliveryKg: second - first + usedKg, durableRelayKg: stores(saved) };
 }

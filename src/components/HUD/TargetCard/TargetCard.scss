@@ -179,3 +179,7 @@
   font: inherit;
   &:hover, &:focus-visible { text-decoration: underline; }
 }
+
+.target-card__rename + .target-card__rename {
+  margin-inline-start: 0;
+}

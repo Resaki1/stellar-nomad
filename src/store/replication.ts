@@ -223,5 +223,8 @@ export const recoverAtom = atom(null, (_get, set, mode: "active" | "starter"): O
     if (d.fallback && d.fallback !== "chosen") {
       set(addToastAtom, { audio: "reject", kind: "warn", message: "Active point unavailable", detail: d.pointName });
     }
+    if (o.result.ordinaryKg > 0) {
+      set(addToastAtom, { audio: "silent", kind: "success", message: "Recovery fuel received", values: [{ id: "fuel", amount: o.result.ordinaryKg }] });
+    }
   }),
 );

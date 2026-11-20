@@ -63,7 +63,7 @@
   }
 }
 
-// Fixed 112 px: head, two chip lines, footer. Overflow is clipped, never grown.
+// Compact cards share a fixed height. Industrial options have an extra row for station equipment.
 .rp-card {
   display: grid;
   grid-template-rows: 20px 46px 26px;
@@ -76,6 +76,27 @@
   border-left: 3px solid transparent;
   border-radius: s.$radius-lg;
   overflow: hidden;
+
+  &--industry {
+    height: auto;
+    min-height: 112px;
+    grid-template-rows: 20px auto minmax(34px, 1fr) 26px;
+  }
+
+  &__instruction {
+    display: flex;
+    flex: 0 0 100%;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: s.$text-secondary;
+  }
+
+  &__industry {
+    margin: 0;
+    font-size: 12px;
+    color: s.$text-secondary;
+  }
 
   &--ready {
     border-left-color: s.$accent-ok;
@@ -337,6 +358,33 @@
     &--on {
       color: s.$accent-signal;
       border-color: rgba(255, 211, 107, 0.4);
+    }
+  }
+}
+
+
+.industry-research {
+  margin-block: s.$space-2;
+  summary {
+    cursor: pointer;
+    color: s.$accent-info;
+    font-size: 13px;
+    padding-block: s.$space-2;
+  }
+}
+
+@media (pointer: coarse) {
+  .industry-research summary {
+    min-height: 44px;
+    box-sizing: border-box;
+    align-content: center;
+  }
+
+  .rp-card--industry {
+    grid-template-rows: 20px auto minmax(34px, 1fr) auto;
+
+    .rp-card__btn {
+      min-height: 44px;
     }
   }
 }

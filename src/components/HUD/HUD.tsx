@@ -72,7 +72,7 @@ const GLANCE_MS = 250;
 export default function HUD() {
   const hudHidden = useAtomValue(hudHiddenAtom);
   const [activePanel, setActivePanel] = useState<OverlayPanel>(null);
-  const [industryOpenRequest, setIndustryOpenRequest] = useState<{ depotId?: string; renamePointId?: string; build?: boolean; name?: string; sequence: number }>({ sequence: 0 });
+  const [industryOpenRequest, setIndustryOpenRequest] = useState<{ depotId?: string; renamePointId?: string; pointFuelId?: string; build?: boolean; name?: string; sequence: number }>({ sequence: 0 });
   const keybinds = useAtomValue(keybindsAtom);
   const settingsIsOpen = useAtomValue(settingsIsOpenAtom);
   const crew = useSyncExternalStore(subscribeCoop, coopSnapshot, coopSnapshot);
@@ -296,7 +296,8 @@ export default function HUD() {
       {activePanel === "loadout" && <LoadoutPanel onClose={closePanel} />}
       {activePanel === "projects" && <ProjectsPanel onClose={closePanel} />}
       {activePanel === "industry" && !dead && <IndustryPanel key={industryOpenRequest.sequence} onClose={closePanel}
-        onAim={aimDepot} initialDepotId={industryOpenRequest.depotId} renamePointId={industryOpenRequest.renamePointId} build={industryOpenRequest.build} initialName={industryOpenRequest.name} />}
+        onAim={aimDepot} initialDepotId={industryOpenRequest.depotId} renamePointId={industryOpenRequest.renamePointId}
+        pointFuelId={industryOpenRequest.pointFuelId} build={industryOpenRequest.build} initialName={industryOpenRequest.name} />}
     </div>
   );
 }

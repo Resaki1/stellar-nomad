@@ -7,6 +7,9 @@ import { playAudio } from "@/audio";
 
 import {
   BRANCH_LABELS,
+  INDUSTRY_BLUEPRINTS,
+  industryResearchNode,
+  type IndustryBlueprint,
   MATERIAL_NAMES,
   RESEARCH_NODES,
   TRIALS,
@@ -16,7 +19,7 @@ import {
   type ResearchBranch,
   type ResearchNodeDef,
 } from "@/data/content";
-import { evaluateNode, missingAnalysis, nodeProgress, sourceClassBadge, type EvidenceView } from "@/sim/research/requirements";
+import { evaluateNode, missingAnalysis, nodeProgress, requirementChip, sourceClassBadge, type EvidenceView } from "@/sim/research/requirements";
 import { inSession } from "@/save/activeSave";
 import { addToastAtom } from "@/store/toast";
 import { cargoAtom } from "@/store/cargo";
@@ -69,7 +72,7 @@ function cardState(node: ResearchNodeDef, ev: EvidenceView, cargo: Readonly<Reco
   return e.all.some((s) => s.req.kind === "research" && !s.met) ? "locked" : "progress";
 }
 
-function OptionCard({ node, state }: { node: ResearchNodeDef; state: CardState }) {
+function OptionCard({ node, state, explainRequirements = false }: { node: ResearchNodeDef; state: CardState; explainRequirements?: boolean }) {
   const ev = useAtomValue(evidenceViewAtom);
   const cargo = useAtomValue(cargoAtom);
   const unlock = useSetAtom(unlockResearchAtom);
@@ -80,13 +83,16 @@ function OptionCard({ node, state }: { node: ResearchNodeDef; state: CardState }
   const chips = [...e.all].sort((a, b) => Number(b.req.kind === "research") - Number(a.req.kind === "research"));
 
   return (
-    <div className={`rp-card rp-card--${state}`} data-node={node.id}>
+    <div className={`rp-card rp-card--${state}${node.unlocks.industry ? " rp-card--industry" : ""}`} data-node={node.id}>
       <div className="rp-card__head">
         <span className="rp-card__name" data-name="">{node.name}</span>
         {state === "ready" ? <span className="rp-card__ready">Ready</span> : <Ring met={p.met} total={p.total} />}
       </div>
+      {node.unlocks.industry && <p className="rp-card__industry">{node.unlocks.industry.map(id => INDUSTRY_BLUEPRINTS[id]).join(" · ")}</p>}
       <div className="rp-card__chips">
-        {chips.map((s) => <ReqChip key={s.key} req={s.req} met={s.met} />)}
+        {chips.map(s => explainRequirements
+          ? <span key={s.key} className="rp-card__instruction">{s.met && <Check size={12} aria-label="Complete" />} {requirementChip(s.req).tip}</span>
+          : <ReqChip key={s.key} req={s.req} met={s.met} />)}
         {e.any.length > 0 && <ReqAnyGroup items={e.any.map((s) => ({ req: s.req, met: s.met }))} met={e.anyMet} />}
       </div>
       <div className="rp-card__foot">
@@ -117,6 +123,18 @@ function OptionCard({ node, state }: { node: ResearchNodeDef; state: CardState }
 }
 
 const STATE_RANK: Record<CardState, number> = { ready: 0, progress: 1, locked: 2 };
+
+/** A locked depot control can show its real research requirements and unlock in place. */
+export function IndustryResearchRequirement({ blueprint }: { blueprint: IndustryBlueprint }) {
+  const ev = useAtomValue(evidenceViewAtom);
+  const cargo = useAtomValue(cargoAtom);
+  const node = industryResearchNode(blueprint);
+  if (ev.completed.has(node.id)) return null;
+  return <details className="industry-research" data-required-research={node.id}>
+    <summary>Research required · {node.name}</summary>
+    <OptionCard node={node} state={cardState(node, ev, cargo.items)} explainRequirements />
+  </details>;
+}
 
 function OptionsTab() {
   const ev = useAtomValue(evidenceViewAtom);
@@ -151,7 +169,7 @@ function OptionsTab() {
           <div className="rp-branch__label">Unlocked</div>
           <div className="rp-done__chips">
             {unlocked.map((n) => (
-              <span key={n.id} className="rp-done__chip" data-node={n.id}>
+              <span key={n.id} className="rp-done__chip" data-node={n.id} title={n.unlocks.industry?.map(id => INDUSTRY_BLUEPRINTS[id]).join(", ")}>
                 <Check size={10} strokeWidth={2.5} aria-hidden />
                 <span data-name="">{n.name}</span>
                 {n.unlocks.items.map((id) => <UnlockIcon key={id} id={id} />)}

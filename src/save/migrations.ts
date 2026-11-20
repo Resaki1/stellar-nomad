@@ -242,4 +242,11 @@ function v6ToV7(data: Obj): Obj {
   return { ...data, schemaVersion: 7, world, players };
 }
 
-export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4, v4ToV5, v5ToV6, v6ToV7];
+/** 7 → 8: legacy drones retain their jobs and funded legs. Recovery tanks start uninstalled. */
+function v7ToV8(data: Obj): Obj {
+  const world = isObj(data.world) ? { ...data.world } : {};
+  world.industry = { ...(isObj(world.industry) ? world.industry : {}), pointTanks: {} };
+  return { ...data, schemaVersion: 8, world };
+}
+
+export const MIGRATIONS: readonly SaveMigration[] = [v1ToV2, v2ToV3, v3ToV4, v4ToV5, v5ToV6, v6ToV7, v7ToV8];

@@ -135,6 +135,10 @@ export function createGameplayHarness(store: Store) {
     industry: {
       catalog: () => structuredClone({ sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
       drone: sampleDrone,
+      rockPresent({ fieldId, chunkKey, instanceId }: RockRef): boolean {
+        const chunk = getActiveAsteroidRuntime()?.getFieldRuntime(fieldId)?.getChunk(chunkKey);
+        return !!chunk && Object.values(chunk.instancesByModel).some(instances => instances.instanceIds.includes(instanceId));
+      },
       trackDrone(id: string, ms: number) {
         return new Promise<(NonNullable<ReturnType<typeof sampleDrone>> & { atMs: number; frameMs: number; phase: string; remainingS: number })[]>(resolve => {
           const samples: Parameters<typeof resolve>[0] = [];

@@ -22,7 +22,9 @@ import { nearField, type NearFieldColliderId } from "@/sim/physics/nearField";
 import type { ColliderShape } from "@/sim/physics/types";
 import { isSimPaused } from "@/sim/simPause";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { worldAuthority } from "@/sim/world/worldAuthority";
 import { industryAtom } from "@/store/industry";
+import { replicationPointsAtom } from "@/store/replicationMirror";
 import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
 import { DroneMotion, smoothProgress } from "./droneMotion";
 
@@ -313,7 +315,8 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     const returnStartS = motion.legS + motion.workS;
     const returning = timeS >= returnStartS;
     const onTrip = motion.legS > 0 && timeS < returnStartS + motion.legS;
-    const destination = target.current;
+    const rock = motion.rock;
+    const destination: Destination | undefined = rock ?? target.current;
     let visibleFlight = !onTrip;
     let strength = 0;
 
@@ -326,7 +329,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
         _direction.subVectors(_from, _to).normalize();
         _droneOffset.crossVectors(_up, _direction);
         if (_droneOffset.lengthSq() < 1e-6) _droneOffset.set(1, 0, 0);
-        _to.addScaledVector(_direction, PROSPECT_RADIUS_M + 6)
+        _to.addScaledVector(_direction, rock ? rock.radiusM + 14 : PROSPECT_RADIUS_M + 6)
           .addScaledVector(_droneOffset.normalize(), lane * 5);
       } else if (destination.quaternion) {
         _orientation.fromArray(destination.quaternion);
@@ -342,7 +345,9 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
         g.position.copy(_to);
         if (motion.extracting) {
           const workS = timeS - motion.legS;
-          strength = smoothProgress(workS / BEAM_FADE_S) * smoothProgress((motion.workS - workS) / BEAM_FADE_S);
+          if (!rock || !worldAuthority.asteroids.has(rock.fieldId, rock.chunkKey, rock.instanceId)) {
+            strength = smoothProgress(workS / BEAM_FADE_S) * smoothProgress((motion.workS - workS) / BEAM_FADE_S);
+          }
           g.position.y += Math.sin(workS * 2.5 + index) * 0.35 * strength;
           scenePosition(destination, w, _to);
           _to.x += Math.sin(workS / 0.84 + index) * 2 * strength;
@@ -392,6 +397,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
 
 export default function IndustryWorld() {
   const { depots, drones } = useAtomValue(industryAtom);
+  const points = useAtomValue(replicationPointsAtom);
   const prospects = useMemo(() => INDUSTRY_SOURCES.map(source => prospectWorksite(source, depots)), [depots]);
   return <>
     <DepotColliders depots={depots} />
@@ -401,7 +407,9 @@ export default function IndustryWorld() {
     {drones.map((drone, index) => {
       const home = depots.find(d => d.id === drone.homeId);
       const job = drone.job;
-      const dest = !job ? undefined : job.kind === "extract" ? prospects.find(s => s.id === job.targetId) : depots.find(d => d.id === job.targetId);
+      const dest = !job || job.kind === "mine" ? undefined : job.kind === "extract" ? prospects.find(s => s.id === job.targetId)
+        : job.targetKind === "point" ? points.find(p => p.id === job.targetId && !p.starter)
+        : depots.find(d => d.id === job.targetId);
       return home ? <UtilityDrone key={drone.id} drone={drone} home={home} dest={dest} index={index} /> : null;
     })}
   </>;

@@ -1,12 +1,19 @@
+import type { Difficulty, ReplicationPoint } from "@/save/types";
 import type { Transfer } from "@/sim/world/commands";
-import { DRONE_FUEL_ID, getIndustrySource, INDUSTRY_SOURCES, INDUSTRY_TUNING as T } from "./catalog";
+import { DRONE_FUEL_ID, getIndustrySource, INDUSTRY_SOURCES, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from "./catalog";
 import {
-  dronePayloadMassKg, estimateDroneExtractionRoute, estimateDroneRoute, planDroneExtraction, planDroneLoad,
-  planDroneReturnFuel, type DroneRoute,
+  dronePayloadMassKg, estimateDroneRoute, estimateDroneWorkRoute, planDroneFuel, planDroneLoad, planDroneReturnFuel, type DroneRoute,
 } from "./route";
-import { emptyStorage, type DepotRecord, type DroneJob, type DroneRecord, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
+import { canMineField, droneRockKey, finiteMiningJob, resolveDroneLoot, type DroneMiningSearch } from "./mining";
+import { emptyStorage, type DepotRecord, type DroneJob, type DroneRecord, type DroneRockId, type DroneStatus, type IndustryDelta, type IndustryState, type SourceStock } from "./types";
 
 const EPSILON_KG = 1e-9;
+
+export interface IndustryMiningContext {
+  search: DroneMiningSearch;
+  asteroids: { has(fieldId: string, chunkKey: string, instanceId: number): boolean };
+  difficulty?: Difficulty;
+}
 
 export function storageUnits(storage: Transfer): number {
   return Object.values(storage.items).reduce((a, b) => a + b, 0) + Object.values(storage.consumables).reduce((a, b) => a + b, 0);
@@ -66,14 +73,17 @@ export function planDroneHaul(home: DepotRecord, destination: DepotRecord, job: 
   return { load: null, status: !hasRoom ? "destination_full" : needsFuel ? "needs_fuel" : "no_cargo" };
 }
 
-export function planDroneCollection(
-  home: DepotRecord, itemId: string, job: DroneJob, route: DroneRoute, availableUnits: number = T.sourceCapacity,
-): DroneDeparture {
-  const room = space(home.storage, itemId, job.stopAt);
-  if (room <= 0) return { load: null, status: "destination_full" };
-  if (availableUnits <= 0) return { load: null, status: "no_cargo" };
-  const load = planDroneExtraction(route, itemId, Math.min(room, availableUnits), home.storage.fuelKg - job.reserveKg);
-  return load.amount > 0 ? { itemId, load, status: null } : { load: null, status: "needs_fuel" };
+export function planDronePointDelivery(home: DepotRecord, fuelKg: number, job: DroneJob, route: DroneRoute): DroneDeparture {
+  const availableKg = home.storage.fuelKg - job.reserveKg;
+  if (availableKg < route.roundTripFuelKg) return { load: null, status: "needs_fuel" };
+  const room = pointFuelRoom(fuelKg, job.stopAt);
+  if (room <= EPSILON_KG) return { load: null, status: "destination_full" };
+  const load = planDroneLoad(route, DRONE_FUEL_ID, room, availableKg);
+  return load.amount > EPSILON_KG ? { itemId: DRONE_FUEL_ID, load, status: null } : { load: null, status: "no_cargo" };
+}
+
+function pointFuelRoom(fuelKg: number, stopAt: number): number {
+  return Math.max(0, Math.min(POINT_TANK_CAPACITY_KG, stopAt) - fuelKg);
 }
 
 function unload(cargo: Transfer, destination: Transfer, stopAt?: number): boolean {
@@ -94,11 +104,25 @@ function standBy(drone: DroneRecord, status: DroneStatus): DroneRecord {
 class IndustryStep {
   private readonly depotMap = new Map<string, DepotRecord>();
   private readonly sourceMap = new Map<string, SourceStock>();
+  private pointTanks: IndustryState["pointTanks"];
+  private readonly claimed = new Set<string>();
 
-  constructor(private readonly state: IndustryState) {
+  constructor(
+    private readonly state: IndustryState,
+    private readonly points: readonly ReplicationPoint[],
+    private readonly mining: IndustryMiningContext | undefined,
+    private readonly mined: Map<string, DroneRockId>,
+  ) {
     for (const depot of state.depots) this.depotMap.set(depot.id, depot);
     for (const [id, source] of Object.entries(state.sources)) this.sourceMap.set(id, source);
+    this.pointTanks = state.pointTanks ?? {};
+    for (const drone of state.drones) {
+      if (drone.flight?.rock && (drone.phase === "outbound" || drone.phase === "working")) this.claimed.add(droneRockKey(drone.flight.rock));
+    }
   }
+
+  private destroyed = (rock: DroneRockId): boolean =>
+    this.mined.has(droneRockKey(rock)) || !!this.mining?.asteroids.has(rock.fieldId, rock.chunkKey, rock.instanceId);
 
   private editStorage(depot: DepotRecord): Transfer {
     const storage = { ...depot.storage };
@@ -132,13 +156,16 @@ class IndustryStep {
     const job = drone.job;
     if (!job) return standBy(drone, "unassigned");
     if (!job.enabled) return standBy(drone, "paused");
+    if (job.kind === "mine") return this.departMining(drone, home, job);
 
-    const source = job.kind === "extract" ? getIndustrySource(job.targetId) : undefined;
-    const destination = job.kind === "haul" ? this.depotMap.get(job.targetId) : undefined;
-    const route = source ? estimateDroneExtractionRoute(home, source, this.state.depots)
-      : destination && estimateDroneRoute(home, destination);
-    if (!route) return standBy(drone, job.kind === "extract" ? "source_out_of_range" : "route_out_of_range");
-    const plan = source ? planDroneCollection(home, source.materialId, job, route, this.sourceMap.get(source.id)?.available)
+    const toPoint = job.kind === "haul" && job.targetKind === "point";
+    const point = toPoint && Object.hasOwn(this.pointTanks, job.targetId)
+      ? this.points.find(p => p.id === job.targetId && !p.starter) : undefined;
+    const destination = job.kind === "haul" && !toPoint ? this.depotMap.get(job.targetId) : undefined;
+    const target = point ?? destination;
+    const route = target && estimateDroneRoute(home, target);
+    if (!route) return standBy(drone, "route_out_of_range");
+    const plan = point ? planDronePointDelivery(home, this.pointTanks[point.id], job, route)
       : destination && planDroneHaul(home, destination, job, route);
     if (!plan) return standBy(drone, "route_out_of_range");
     if (!plan.load) return standBy(drone, plan.status);
@@ -146,16 +173,61 @@ class IndustryStep {
     const { load, itemId } = plan;
     const storage = this.editStorage(home);
     storage.fuelKg -= load.roundTripFuelKg;
-    if (destination) move(storage, cargo, itemId, load.amount);
+    move(storage, cargo, itemId, load.amount);
     return { ...inPhase(drone, "outbound", "departing", route.legSeconds), cargo,
       fuelKg: load.returnFuelKg, returnS: route.legSeconds, via: null,
-      flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg, ...(source && { extractUnits: load.amount }) } };
+      flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg } };
+  }
+
+  private departMining(drone: DroneRecord, home: DepotRecord, job: DroneJob): DroneRecord {
+    if (!this.mining || !job.mineFilter || !canMineField(home, job.targetId)) {
+      return standBy(drone, "source_out_of_range");
+    }
+    const room = T.cargoCapacity - storageUnits(home.storage);
+    if (room <= 0) return standBy(drone, "destination_full");
+    const fuel = home.storage.fuelKg - job.reserveKg;
+    if (fuel <= 0) return standBy(drone, "needs_fuel");
+    let roomNeeded = false, fuelNeeded = false;
+    const { candidate, searching } = this.mining.search.find(home, job.targetId, job.mineFilter, this.mining.difficulty, this.destroyed, candidate => {
+      if (this.claimed.has(droneRockKey(candidate.rock))) return false;
+      if (candidate.units > room || Object.entries(candidate.loot).some(([id, amount]) => amount > space(home.storage, id, job.stopAt))) {
+        roomNeeded = true;
+        return false;
+      }
+      const funded = planDroneFuel(candidate.route, 0, candidate.units * T.cargoUnitMassKg).roundTripFuelKg;
+      if (funded > Math.min(fuel, T.droneTankKg)) {
+        fuelNeeded = true;
+        return false;
+      }
+      return true;
+    });
+    if (!candidate) return standBy(drone, searching ? "searching" : fuelNeeded ? "needs_fuel" : roomNeeded ? "destination_full" : "no_matching_rock");
+    this.claimed.add(droneRockKey(candidate.rock));
+    const { route, rock, units } = candidate;
+    const funded = planDroneFuel(route, 0, units * T.cargoUnitMassKg);
+    this.editStorage(home).fuelKg -= funded.roundTripFuelKg;
+    return { ...inPhase(drone, "outbound", "departing", route.legSeconds), fuelKg: funded.returnFuelKg, returnS: route.legSeconds, via: null,
+      flight: { profile: route.profile, returnFuelAtDryKg: route.returnFuelAtDryKg, rock } };
   }
 
   private completeWork(drone: DroneRecord, home: DepotRecord): DroneRecord {
     const job = drone.job;
     const cargo = { ...drone.cargo };
-    if (job?.kind === "extract") {
+    if (job?.kind === "mine" && job.mineFilter && drone.flight?.rock && this.mining) {
+      const rock = drone.flight.rock;
+      const loot = job.targetId === rock.fieldId && !this.destroyed(rock) && estimateDroneWorkRoute(home, rock) &&
+        resolveDroneLoot(rock, this.mining.difficulty, job.mineFilter);
+      if (loot) {
+        const items = { ...cargo.items };
+        for (const [id, amount] of Object.entries(loot)) items[id] = (items[id] ?? 0) + amount;
+        const manifest = { ...cargo, items };
+        const cost = planDroneReturnFuel(drone.flight.returnFuelAtDryKg, payloadMassKg(manifest));
+        if (storageUnits(manifest) <= T.loadUnits && cost <= drone.fuelKg + EPSILON_KG) {
+          cargo.items = items;
+          this.mined.set(droneRockKey(rock), { fieldId: rock.fieldId, chunkKey: rock.chunkKey, instanceId: rock.instanceId });
+        }
+      }
+    } else if (job?.kind === "extract") {
       const source = getIndustrySource(job.targetId);
       if (source) {
         const stock = this.sourceMap.get(source.id) ?? { available: T.sourceCapacity, replenishProgressS: 0 };
@@ -163,6 +235,15 @@ class IndustryStep {
         if (amount > 0) {
           cargo.items = changedCount(cargo.items, source.materialId, amount);
           this.sourceMap.set(source.id, { ...stock, available: stock.available - amount });
+        }
+      }
+    } else if (job?.kind === "haul" && job.targetKind === "point") {
+      if (Object.hasOwn(this.pointTanks, job.targetId)) {
+        const fuelKg = this.pointTanks[job.targetId];
+        const delivered = Math.min(cargo.fuelKg, pointFuelRoom(fuelKg, job.stopAt));
+        if (delivered > 0) {
+          cargo.fuelKg -= delivered;
+          this.pointTanks = { ...this.pointTanks, [job.targetId]: fuelKg + delivered };
         }
       }
     } else if (job?.kind === "haul") {
@@ -192,7 +273,8 @@ class IndustryStep {
       storage.fuelKg += refund;
       if (!unload(cargo, storage) || fuelKg > 0) return { ...drone, status: "unload_blocked", remainingS: 0, cargo, fuelKg };
     }
-    return { ...standBy(drone, drone.job?.enabled ? "departing" : "paused"), cargo, fuelKg: 0, returnS: 0, via: null, flight: null };
+    return { ...standBy(drone, drone.job?.enabled ? "departing" : "paused"),
+      job: drone.job && finiteMiningJob(drone.job), cargo, fuelKg: 0, returnS: 0, via: null, flight: null };
   }
 
   private stepDrone(drone: DroneRecord): DroneRecord {
@@ -200,21 +282,35 @@ class IndustryStep {
     if (!home) return drone;
     if (drone.phase === "idle") {
       if (payloadIds(drone.cargo).length > 0 || (drone.flight && drone.fuelKg > 0)) return this.finishReturn(drone, home);
-      return this.depart(drone, home);
+      const job = drone.job && finiteMiningJob(drone.job);
+      return this.depart(job === drone.job ? drone : { ...drone, job }, home);
     }
     if (drone.remainingS > 1) return { ...drone, remainingS: drone.remainingS - 1 };
     if (drone.phase === "returning") return this.finishReturn(drone, home);
     if (drone.phase === "working") return this.completeWork(drone, home);
+    if (drone.job?.kind === "mine" && drone.flight?.rock) return inPhase(drone, "working", "mining", drone.flight.rock.workSeconds);
     return drone.job?.kind === "extract"
       ? inPhase(drone, "working", "extracting", T.extractSeconds)
       : inPhase(drone, "working", "delivering", T.deliverySeconds);
   }
 
   step(): IndustryState {
-    for (const source of INDUSTRY_SOURCES) this.advanceSource(source.id);
+    this.mining?.search.beginTick();
+    for (const source of INDUSTRY_SOURCES) {
+      if (this.state.drones.some(d => d.job?.kind === "extract" && d.job.targetId === source.id && d.phase !== "idle")) this.advanceSource(source.id);
+    }
     for (const depot of this.state.depots) this.refine(depot);
-    const drones = this.state.drones.map(d => this.stepDrone(d));
-    return { ...this.state, drones, depots: Array.from(this.depotMap.values()), sources: Object.fromEntries(this.sourceMap) };
+    const scouts: number[] = [];
+    const drones = this.state.drones.map((drone, i) => {
+      if (this.mining && drone.phase === "idle" && drone.job?.enabled &&
+          (drone.job.kind === "mine" || drone.job.kind === "extract")) {
+        scouts.push(i);
+        return drone;
+      }
+      return this.stepDrone(drone);
+    });
+    for (const i of this.mining?.search.orderScouts(scouts) ?? []) drones[i] = this.stepDrone(drones[i]);
+    return { ...this.state, drones, depots: Array.from(this.depotMap.values()), sources: Object.fromEntries(this.sourceMap), pointTanks: this.pointTanks };
   }
 }
 
@@ -225,20 +321,26 @@ export interface IndustryAdvance {
 }
 
 /** Deterministic one-second substeps, driven by live active time from the owning runtime. */
-export function advanceIndustry(state: IndustryState, elapsedS: number): IndustryAdvance | null {
+export function advanceIndustry(
+  state: IndustryState, elapsedS: number, points: readonly ReplicationPoint[] = [], mining?: IndustryMiningContext,
+): IndustryAdvance | null {
   if (!state.depots.length || !Number.isFinite(elapsedS) || elapsedS <= 0 || elapsedS > T.maxTickGapS) return null;
   const totalS = state.remainderS + elapsedS;
   const steps = Math.floor(totalS + 1e-9);
   if (steps < 1) return { state: { ...state, remainderS: totalS }, delta: { depots: [], drones: [], sources: {} }, economic: false };
 
   let next = state;
-  for (let i = 0; i < steps; i++) next = new IndustryStep(next).step();
+  const mined = new Map<string, DroneRockId>();
+  for (let i = 0; i < steps; i++) next = new IndustryStep(next, points, mining, mined).step();
+  const pointTanks = Object.entries(next.pointTanks).filter(([id, fuelKg]) => fuelKg !== state.pointTanks?.[id]);
   const delta: IndustryDelta = {
     depots: next.depots.filter((d, i) => d !== state.depots[i]),
     drones: next.drones.filter((d, i) => d !== state.drones[i]),
     sources: Object.fromEntries(Object.entries(next.sources).filter(([id, source]) => source !== state.sources[id])),
+    ...(mined.size > 0 && { mined: Array.from(mined.values()) }),
+    ...(pointTanks.length > 0 && { pointTanks: Object.fromEntries(pointTanks) }),
   };
-  const economic = next.depots.some((d, i) => d.storage !== state.depots[i].storage)
+  const economic = mined.size > 0 || pointTanks.length > 0 || next.depots.some((d, i) => d.storage !== state.depots[i].storage)
     || next.drones.some((d, i) => {
       const before = state.drones[i];
       return d.fuelKg !== before.fuelKg || d.cargo.items !== before.cargo.items || d.cargo.fuelKg !== before.cargo.fuelKg;
@@ -247,7 +349,8 @@ export function advanceIndustry(state: IndustryState, elapsedS: number): Industr
 }
 
 export function hasIndustryDelta(delta: IndustryDelta): boolean {
-  return delta.depots.length > 0 || delta.drones.length > 0 || Object.keys(delta.sources).length > 0;
+  return !!delta.mined?.length || delta.depots.length > 0 || delta.drones.length > 0 || Object.keys(delta.sources).length > 0 ||
+    !!delta.pointTanks && Object.keys(delta.pointTanks).length > 0;
 }
 
 function mergeRecords<T extends { id: string }>(before: T[], updated: T[]): T[] {
@@ -263,5 +366,6 @@ export function applyIndustryDelta(state: IndustryState, delta: IndustryDelta): 
     depots: mergeRecords(state.depots, delta.depots),
     drones: mergeRecords(state.drones, delta.drones),
     sources: { ...state.sources, ...delta.sources },
+    pointTanks: delta.pointTanks ? { ...state.pointTanks, ...delta.pointTanks } : state.pointTanks,
   };
 }

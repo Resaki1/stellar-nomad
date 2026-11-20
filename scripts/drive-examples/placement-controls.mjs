@@ -81,7 +81,7 @@ export default async function placementControls(d) {
   const oldWorld = await ev("__test.save.info().id");
   const oldKeybinds = await ev('localStorage.getItem("keybinds-v3")');
   const playerId = await ev(`${G}.localId()`);
-  const fixture = await ev(`${G}.fixtures.create("m5-placement-controls", { schemaVersion: 5, world: {}, players: { [${J(playerId)}]: {} } })`);
+  const fixture = await ev(`${G}.fixtures.create("m5-placement-controls", { schemaVersion: 5, world: { research: { completedNodes: ["lg1_bulk_handling"] } }, players: { [${J(playerId)}]: {} } })`);
   const { identifier } = await d.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const keyboard = navigator.keyboard;
     if (!keyboard?.lock || !keyboard.unlock) return;
@@ -151,9 +151,9 @@ export default async function placementControls(d) {
     await shipAt(source.frameId, [sx, sy - 29.96, sz - 0.8]);
     await key(depotSlot);
     await depotReady();
-    assert.match(await ev('document.querySelector("[data-industry-clear]").textContent'), /relay site/i);
+    assert.match(await ev('document.querySelector("[data-industry-clear]").textContent'), /nearby field/i);
     await key(depotSlot);
-    await until("close route-border preview", cancelled);
+    await until("close field placement preview", cancelled);
     await shipAt(source.frameId, near(2));
 
     await d.send("Page.bringToFront");

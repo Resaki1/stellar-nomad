@@ -689,7 +689,7 @@ export async function migrate3Gates(d, ctx) {
     const p = a.players[me];
     const rp = f.raw.players[me];
     const c = {
-      schema: a.schemaVersion === 7, idempotent: r.idempotent, pose: eq(p.ship, rp.ship), cargo: eq(p.cargo, rp.cargo), deltas: eq(a.world.asteroidDeltas, f.raw.world.asteroidDeltas),
+      schema: a.schemaVersion === 8, idempotent: r.idempotent, pose: eq(p.ship, rp.ship), cargo: eq(p.cargo, rp.cargo), deltas: eq(a.world.asteroidDeltas, f.raw.world.asteroidDeltas),
       wrecks: eq(a.world.wrecks.map((w) => [w.id, w.items, w.positionKm, w.frameId]), f.raw.world.wrecks.map((w) => [w.id, w.items, w.positionKm, w.frameId])),
       noResearchSlice: !("research" in p), discoveriesEmpty: eq(a.world.discoveries, { families: {}, sources: [], sites: {}, trials: {}, inspectedSites: {} }),
       propellant: f.v === 2 ? eq(p.propellant, rp.propellant) : p.propellant.ordinaryKg === 600,
@@ -722,7 +722,7 @@ export async function migrate3Gates(d, ctx) {
     const j2 = await ev(`${G}.fixtures.export(${js(id2)})`);
     const x1 = JSON.parse(j1), x2 = JSON.parse(j2);
     const parsedDirect = await ev(`${G}.parse(${js(fx[name].raw)})`);
-    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 7 };
+    rt[name] = { dataEqual: eq(x1.data, x2.data), matchesPureParse: eq(x1.data, parsedDirect), schema: x1.data.schemaVersion === 8 };
     rt[name].pass = rt[name].dataEqual && rt[name].matchesPureParse && rt[name].schema;
   }
   // Booting a migrated world: the mirrors and HUD config read the new catalogue.

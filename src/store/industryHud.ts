@@ -10,7 +10,7 @@ import { targetedPOIAtom, transitDriveBuffer } from "@/store/transit";
 import { poiBuffer, type POIDef } from "@/store/poi";
 
 export const industryPanelOpenAtom = atom(false);
-export const industryRequestAtom = atom<{ depotId?: string; renamePointId?: string; build?: boolean; name?: string } | null>(null);
+export const industryRequestAtom = atom<{ depotId?: string; renamePointId?: string; pointFuelId?: string; build?: boolean; name?: string } | null>(null);
 export const depotPlacementAtom = atom<{ fromIndustry: boolean } | null>(null);
 export const depotPlacementNameAtom = atom("");
 export const depotPlacementPendingAtom = atom(false);

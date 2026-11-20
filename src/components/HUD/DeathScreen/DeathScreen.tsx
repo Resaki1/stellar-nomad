@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { isDeadAtom, lastLossAtom } from "@/store/death";
+import { industryAtom } from "@/store/industry";
 import { activePointAtom, previewRecovery, recoverAtom, replicationPointsAtom } from "@/store/replication";
+import { shipResourcesHudAtom } from "@/store/shipResources";
 import { STARTER_POINT_ID } from "@/sim/replication/points";
 import { setCursorNeeded } from "@/input/pointerLock";
 import { ValueChip } from "../shared/Chips";
@@ -45,6 +47,8 @@ function RecoveryPanel() {
   const active = useAtomValue(activePointAtom);
   const points = useAtomValue(replicationPointsAtom);
   const loss = useAtomValue(lastLossAtom);
+  const pointTanks = useAtomValue(industryAtom).pointTanks;
+  const { tankKg } = useAtomValue(shipResourcesHudAtom);
   const recover = useSetAtom(recoverAtom);
   const [confirmFallback, setConfirmFallback] = useState(false);
 
@@ -52,6 +56,8 @@ function RecoveryPanel() {
   const dest = previewRecovery(store, "active");
   const starterName = points.find((p) => p.id === STARTER_POINT_ID)?.name ?? "Origin point";
   const atStarter = dest.pointId === STARTER_POINT_ID;
+  const hasTank = !atStarter && Object.hasOwn(pointTanks, dest.pointId);
+  const expectedFuelKg = hasTank ? Math.min(pointTanks[dest.pointId], tankKg) : 0;
   const activeName = active?.name ?? "Active point";
 
   return (
@@ -67,6 +73,11 @@ function RecoveryPanel() {
                 <span data-name="">{activeName}</span> {dest.fallback === "obstructed" ? "blocked" : "unavailable"}: respawn at <span data-name="">{dest.pointName}</span>
               </p>
             )}
+            {hasTank && <p className="death-screen__point-fuel" data-testid="recovery-point-fuel">
+              {expectedFuelKg > 0
+                ? `Up to ${expectedFuelKg.toLocaleString("en-US", { maximumFractionDigits: 2 })} kg ordinary propellant from the shared tank`
+                : "The shared fuel tank is empty"}
+            </p>}
             <button className="death-screen__respawn" onClick={() => recover("active")}>
               Respawn at <span className="death-screen__dest-name" data-name="">{dest.pointName}</span>
             </button>

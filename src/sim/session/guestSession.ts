@@ -3,6 +3,7 @@
  * a durable pending record (a reload or reconnect retries the same seq/opId), commit application
  * and heartbeat. Used by guests and by the host's own main thread.
  */
+import { depleteDroneDiscoveries } from "@/sim/industry/mining";
 import { applyIndustryDelta } from "@/sim/industry/simulation";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
@@ -194,7 +195,7 @@ export class GuestSession {
     // A later sample must observe this pilot’s pending spend or repair before it can overwrite the result.
     if (this.rec.pending || this.state !== "joined" || this.waiting() || this.storageFailed || this.hostClosing) return;
     const tel = this.o.telemetry?.();
-    if (tel) this.link?.send("cmd", { t: "tel", gen: this.gen, tel });
+    if (tel) this.link?.send("cmd", { t: "tel", gen: this.gen, tel: { ...tel, revision: this.revision } });
   }
 
   /** The pilot renamed: tell the host now (members reach everyone), and use it on rejoin. */
@@ -230,7 +231,8 @@ export class GuestSession {
     const p = this.rec.pending;
     if (!p || !this.link || this.state !== "joined") return;
     const tel = this.o.telemetry?.();
-    this.link.send("cmd", { t: "cmd", gen: this.gen, seq: p.seq, opId: p.opId, op: p.op, ...(tel ? { tel } : {}) });
+    this.link.send("cmd", { t: "cmd", gen: this.gen, seq: p.seq, opId: p.opId, op: p.op,
+      ...(tel ? { tel: { ...tel, revision: this.revision } } : {}) });
   }
 
   // ── host messages ────────────────────────────────────────────────────────
@@ -301,6 +303,20 @@ export class GuestSession {
     const world = this.mirror?.data.world;
     if (!world) return;
     world.industry = applyIndustryDelta(world.industry, event.delta);
+    const mined = event.delta.mined ?? [];
+    for (const rock of mined) {
+      const { fieldId, chunkKey, instanceId } = rock;
+      const entries = world.asteroidDeltas[fieldId]?.[chunkKey];
+      if (entries?.includes(instanceId)) continue;
+      if (this.o.onAsteroid) this.o.onAsteroid(fieldId, chunkKey, instanceId);
+      else ((world.asteroidDeltas[fieldId] ??= {})[chunkKey] ??= []).push(instanceId);
+      this.o.onEvent?.({ type: "asteroid.destroyed", by: "", cause: "mined", ...rock });
+    }
+    const discoveries = depleteDroneDiscoveries(world.discoveries, mined);
+    if (discoveries !== world.discoveries) {
+      world.discoveries = discoveries;
+      this.o.onEvent?.({ type: "discoveries.changed", by: "" });
+    }
     this.o.onEvent?.(event);
   }
 

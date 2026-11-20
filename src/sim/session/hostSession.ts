@@ -19,7 +19,7 @@ import { emergencePose, starterPoint } from "@/sim/replication/points";
 import { poseDistanceKm } from "@/sim/replication/placement";
 import type { SystemConfig } from "@/sim/systemTypes";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
-import { advanceIndustry, hasIndustryDelta } from "@/sim/industry/simulation";
+import { hasIndustryDelta } from "@/sim/industry/simulation";
 import { LocalAuthority } from "@/sim/world/authority";
 import { tankCapacityKg } from "@/sim/world/reducers";
 import type { OperationOutcome, WorldEvent, WorldOperation } from "@/sim/world/commands";
@@ -58,6 +58,7 @@ const HOST_ONLY: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["t
 const SPATIAL_OPS: ReadonlySet<WorldOperation["type"]> = new Set<WorldOperation["type"]>([
   "asteroid.mine", "survey.inspect", "expedition.give", "wreck.collect", "site.inspect", "site.recover",
   "replication.place", "replication.activate", "ship.respawn",
+  "replication.tank.install", "replication.tank.transfer",
   "depot.place", "depot.transfer", "depot.fabricate", "drone.configure",
 ]);
 
@@ -172,6 +173,7 @@ export class HostSession {
       getPlayer: (id) => this.data.players[id] ?? null,
       getPlayers: () => Object.values(this.data.players),
       markDirty: () => {},
+      getDifficulty: () => this.meta.difficulty,
       resolveMine: this.resolver,
       nearbyPilot: id => {
         const member = this.conns.get(this.bound.get(id) ?? "");
@@ -228,10 +230,10 @@ export class HostSession {
       this.enqueue(async () => {
         if (this.state !== "open" || this.clockPaused) return;
         if (this.world.industry.drones.length) updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
-        const stepped = advanceIndustry(this.data.world.industry, elapsedS);
+        const stepped = this.authority.planIndustry(elapsedS);
         if (!stepped) return;
         const backup = stepped.economic ? structuredClone(this.data) : null;
-        this.data.world.industry = stepped.state;
+        this.authority.applyIndustry(stepped);
         if (backup && !(await this.persist(backup))) return;
         if (hasIndustryDelta(stepped.delta)) this.broadcast("cmd", { t: "industry", gen: this.gen, delta: stepped.delta });
       });
@@ -623,7 +625,15 @@ export class HostSession {
   private applyTelemetry(pid: PlayerId, t: Telemetry): void {
     const p = this.data.players[pid];
     if (!p) return;
+    if (t.prefs) {
+      if (t.prefs.commsPlayed) p.commsPlayed = t.prefs.commsPlayed;
+      if (t.prefs.starMarkers) p.starMarkers = t.prefs.starMarkers;
+      if (t.prefs.aiName !== undefined) p.aiName = t.prefs.aiName;
+      if (t.prefs.trackedProject !== undefined) p.trackedProject = t.prefs.trackedProject;
+    }
     const member = this.conns.get(this.bound.get(pid) ?? "");
+    // An in-flight sample from the destroyed hull must not replace the committed recovery pose or fuel.
+    if ((t.revision ?? 0) < (member?.poseFloor ?? 0)) return;
     if (member && t.pose && t.propellant && !p.isDead) member.telemetryAt = this.o.clock.monoMs();
     if (member && t.reservedFuelKg !== undefined) member.reservedFuelKg = t.reservedFuelKg;
     if (t.pose && !p.isDead) p.ship = { frameId: t.pose.frameId, positionKm: t.pose.positionKm, quaternion: t.pose.quaternion };
@@ -646,12 +656,6 @@ export class HostSession {
         elapsedS: Math.max(p.processing.elapsedS, t.processing.elapsedS),
         committedKg: Math.min(maxKg, Math.max(p.processing.committedKg, t.processing.committedKg)),
       };
-    }
-    if (t.prefs) {
-      if (t.prefs.commsPlayed) p.commsPlayed = t.prefs.commsPlayed;
-      if (t.prefs.starMarkers) p.starMarkers = t.prefs.starMarkers;
-      if (t.prefs.aiName !== undefined) p.aiName = t.prefs.aiName;
-      if (t.prefs.trackedProject !== undefined) p.trackedProject = t.prefs.trackedProject;
     }
   }
 

@@ -4,6 +4,7 @@
  */
 import {
   FAMILY_MIN_SHARE,
+  INDUSTRY_BLUEPRINTS,
   ITEMS,
   RESEARCH_NODES,
   SITES,
@@ -280,6 +281,10 @@ export function auditContent(starterCargoUnits: number): ContentAudit {
       if (r.kind === "research" && !getResearchNode(r.nodeId)) a.unknownRefs.push(`${n.id}: research ${r.nodeId}`);
     }
     for (const id of n.unlocks.items) if (!getItemDef(id)) a.unknownRefs.push(`${n.id}: item ${id}`);
+  }
+  for (const blueprint of Object.keys(INDUSTRY_BLUEPRINTS)) {
+    const owners = RESEARCH_NODES.filter(n => n.unlocks.industry?.some(id => id === blueprint));
+    if (owners.length !== 1) a.unknownRefs.push(`Industry blueprint ${blueprint} has ${owners.length} research owners`);
   }
   const solve = (materials: readonly string[], classes: readonly string[], withSites: boolean): Set<string> => {
     const done = new Set<string>();

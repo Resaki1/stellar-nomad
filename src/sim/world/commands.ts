@@ -95,7 +95,7 @@ export type OperationResult =
   | { type: "module.equip"; slot: string; itemId: string | null }
   | { type: "research.devSet"; count: number }
   | { type: "ship.destroy"; wreckId: string | null; dropped: Transfer; cause: "impact" | "abandon" }
-  | { type: "ship.respawn"; health: number; destination: RecoveryDestination; protectedKg: number }
+  | { type: "ship.respawn"; health: number; destination: RecoveryDestination; ordinaryKg: number; protectedKg: number }
   | { type: "replication.place"; point: ReplicationPoint }
   | { type: "replication.activate"; pointId: string }
   | { type: "replication.deactivate"; pointId: string }
@@ -135,7 +135,9 @@ export type RejectReason =
   | "near_depot"
   | "depot_limit"
   | "drone_limit"
+  | "drone_assigned"
   | "depot_full"
+  | "point_tank_full"
   | "source_out_of_range"
   | "route_out_of_range"
   | "emergence_blocked"
