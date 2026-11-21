@@ -21,6 +21,8 @@
 > (mostly react-compiler advisories, deliberately non-blocking — see
 > `eslint.config.mjs`); the number that must be **0** is *errors*.
 
+**Custom ships, drones and depots:** Follow [the Blender asset workflow](docs/MODEL_WORKFLOW.md). Use `pnpm model` for reference review sheets, GLB export and QA.
+
 **Audio scripts**
 - `pnpm check:audio` — Tier-1 audio contract tests (§10.1 of the audio plan): manifest
   schema, missing/orphan assets, size budget, mono-where-spatialised, and a grep that

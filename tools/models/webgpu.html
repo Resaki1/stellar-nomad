@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Stellar Nomad model check</title>
+<script type="importmap">{"imports":{"three":"/build/three.webgpu.js"}}</script>
+<script type="module">
+  async function renderCandidate() {
+    const T = await import("three");
+    const { GLTFLoader } = await import("/examples/jsm/loaders/GLTFLoader.js");
+    const renderer = new T.WebGPURenderer();
+    await renderer.init();
+    if (!renderer.backend.isWebGPUBackend) throw new Error("WebGPU backend unavailable");
+
+    const { scene: asset } = await new GLTFLoader().loadAsync("/candidate.glb");
+    const bounds = new T.Box3().setFromObject(asset, true);
+    const center = bounds.getCenter(new T.Vector3());
+    const dimensions = bounds.getSize(new T.Vector3());
+    const span = dimensions.length();
+    if (!Number.isFinite(span) || span <= 0) throw new Error("Empty or non-finite bounds");
+
+    const scene = new T.Scene();
+    scene.add(asset, new T.HemisphereLight(0xffffff, 0x888888, 2));
+    const camera = new T.OrthographicCamera(-span / 2, span / 2, span / 2, -span / 2, span / 1000, span * 5);
+    camera.position.copy(center).addScaledVector(new T.Vector3(1, 0.7, 1.3).normalize(), span * 2);
+    camera.lookAt(center);
+    const target = new T.RenderTarget(128, 128);
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0xdc19ac);
+    renderer.render(scene, camera);
+
+    const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, 128, 128);
+    let coveredPixels = 0;
+    for (let i = 4; i < pixels.length; i += 4) {
+      if (pixels[i] !== pixels[0] || pixels[i + 1] !== pixels[1] || pixels[i + 2] !== pixels[2]) coveredPixels++;
+    }
+    if (!coveredPixels) throw new Error("Rendered frame is uniform");
+    return { threeRevision: T.REVISION, backend: "WebGPU", dimensionsMetres: dimensions.toArray(), coveredPixels };
+  }
+
+  const result = await renderCandidate().catch((error) => ({ error: String(error) }));
+  await fetch("/result", { method: "POST", body: JSON.stringify(result) });
+</script>
