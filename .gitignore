@@ -55,3 +55,6 @@ AUDIO/music/
 # Local Cloudflare development state and Worker secrets
 /services/coop-signal/.wrangler/
 /services/coop-signal/.dev.vars*
+
+# Blender rotating backups; authored masters live under art/.
+*.blend[0-9]*
