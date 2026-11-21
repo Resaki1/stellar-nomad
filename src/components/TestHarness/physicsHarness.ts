@@ -290,16 +290,23 @@ export function createPhysicsHarness(store: Store) {
         }
       },
     },
-    /** Flat local hull points of the ship collider (m), for analytic ground truth. */
+    /** Flat local points (m) spanning the ship collider, for outer-envelope checks. */
     shipHull(): number[] {
       const sh = nearField.shipShapeDesc();
       if (sh.kind === "hull") return Array.from(sh.points);
+      if (sh.kind === "compoundHull") return sh.pieces.flatMap((points) => Array.from(points));
       if (sh.kind === "box") {
         const out: number[] = [];
         for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) out.push(x * sh.halfX, y * sh.halfY, z * sh.halfZ);
         return out;
       }
       return [];
+    },
+    /** Convex pieces in ship-local metres for contact and clearance ground truth. */
+    shipHullParts(): number[][] {
+      const shape = nearField.shipShapeDesc();
+      if (shape.kind === "compoundHull") return shape.pieces.map((points) => Array.from(points));
+      return [this.shipHull()];
     },
     /** Drain the live contact queue (and keep a copy in `contactLog`). */
     drainContacts() {

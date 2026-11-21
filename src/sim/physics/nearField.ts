@@ -9,7 +9,7 @@ import type { ShipState } from "@/sim/ship/shipState";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
 import type { PhysicsWorld, PhysicsWorldFactory } from "./PhysicsWorld";
 import { getPhysicsTuning } from "./physicsTuning";
-import { createPose, createVelocity, type ColliderHandle, type ColliderShape, type ConvexHullData, type PhysicsContact, type ShapeBounds } from "./types";
+import { createPose, createVelocity, type ColliderHandle, type ColliderShape, type ConvexHullData, type PhysicsContact, type ShapeBounds, type ShipColliderShape } from "./types";
 
 /** Re-anchor once the ship is this far from the physics origin. */
 export const PHYSICS_REBASE_KM = 2;
@@ -110,7 +110,7 @@ export class NearField {
   private nextId = 1;
   /** Colliders registered in a frame other than the physics origin's; repositioned every step. */
   private foreign = 0;
-  private shipShape: ColliderShape;
+  private shipShape: ShipColliderShape;
   private shipShapeSource: "fallback" | "mesh" = "fallback";
 
   /** Physics origin: frame + f64 km anchor in it. */
@@ -240,21 +240,25 @@ export class NearField {
     return this.debris.size;
   }
 
-  setShipShape(shape: ColliderShape, source: "fallback" | "mesh"): void {
+  setShipShape(shape: ShipColliderShape, source: "fallback" | "mesh"): void {
+    this.world?.setShipBody({ shape, massKg: SHIP_MASS_KG, gyrationRadiusM: SHIP_GYRATION_RADIUS_M, comM: SHIP_COM_M });
     this.shipShape = shape;
     this.shipShapeSource = source;
-    this.world?.setShipBody({ shape, massKg: SHIP_MASS_KG, gyrationRadiusM: SHIP_GYRATION_RADIUS_M, comM: SHIP_COM_M });
   }
 
-  shipInfo(): { source: string; boundsM: ShapeBounds | null; hullPoints: number } {
+  shipInfo(): { source: string; boundsM: ShapeBounds | null; hullPoints: number; pieces: number } {
+    const shape = this.shipShape;
+    const pieces: readonly Float32Array[] =
+      shape.kind === "compoundHull" ? shape.pieces : shape.kind === "hull" ? [shape.points] : [];
     return {
       source: this.shipShapeSource,
       boundsM: this.world?.shipBounds() ?? null,
-      hullPoints: this.shipShape.kind === "hull" ? this.shipShape.points.length / 3 : 0,
+      hullPoints: pieces.reduce((count, part) => count + part.length / 3, 0),
+      pieces: shape.kind === "compoundHull" ? pieces.length : 1,
     };
   }
 
-  shipShapeDesc(): ColliderShape {
+  shipShapeDesc(): ShipColliderShape {
     return this.shipShape;
   }
 

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import bpy
+import bmesh
 import numpy as np
 from mathutils import Vector
 
@@ -501,6 +502,48 @@ def batch():
     bpy.ops.object.select_all(action="DESELECT")
 
 
+def collision_hulls(source):
+    """Cover the major exterior volumes separately to leave clearance between them."""
+    groups = [
+        ("Core", ("Pressure hull", "Dorsal armor", "Ventral armor", "Dorsal spine armor",
+                  "Dorsal access cover", "Utility bay housing", "Utility bay door", "Survey optic"), 0),
+        ("Nose", ("Sensor head", "Nose instrument bezel"), 0),
+        ("Aft spine", ("Aft structural spine", "Aft service block", "Aft spine load bracket",
+                       "Aft equipment deck", "Spine heat shield", "Ventral protective runner"), 0),
+    ]
+    for sign, side in [(-1, "starboard"), (1, "port")]:
+        groups.append((f"{side} drive", tuple(f"{side} {part}" for part in
+                      ("drive frame", "ceramic shroud", "exhaust flange")), 0))
+        groups.append((f"{side} wing", ("Wing structural tray", "Dorsal solar cell skin",
+                      "Ventral radiator skin", "Wing expansion strip", "Wing tip fitting"), sign))
+
+    # Use the authored cages. Bevel cutbacks and recessed hardware can sit a few
+    # centimetres inside the convex contact surface without changing clearances.
+    radial_stride = {"exhaust flange": 3, "Survey optic": 4}
+    for name, prefixes, sign in groups:
+        points = {}
+        for obj in source.objects:
+            if not obj.name.startswith(prefixes) or (sign and obj.data.vertices[0].co.x * sign <= 0):
+                continue
+            stride = next((step for part, step in radial_stride.items() if part in obj.name), 1)
+            for i in range(0, len(obj.data.vertices), stride):
+                points[tuple(obj.data.vertices[i].co)] = None
+        bm = bmesh.new()
+        try:
+            vertices = [bm.verts.new(point) for point in points]
+            bmesh.ops.convex_hull(bm, input=vertices, use_existing_faces=False)
+            bm.verts.index_update()
+            used = sorted({vertex for face in bm.faces for vertex in face.verts}, key=lambda v: v.index)
+            if len(used) < 4:
+                raise ValueError(f"Missing collision volume for {name}")
+            indices = {vertex: i for i, vertex in enumerate(used)}
+            obj = mesh(f"Collision {name}", [tuple(v.co) for v in used],
+                       [tuple(indices[v] for v in face.verts) for face in bm.faces], None)
+            obj.hide_set(True)
+        finally:
+            bm.free()
+
+
 if __name__ == "__main__":
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.context.scene.unit_settings.system = "METRIC"
@@ -540,17 +583,14 @@ if __name__ == "__main__":
         propulsion()
         batch()
         if lod == 0:
+            editable = parts
             armor_atlas(panel_specs, ceramic_atlas, ceramic_medium)
         if lod != 0:
             for obj in list(parts.objects):
                 bpy.data.objects.remove(obj, do_unlink=True)
             bpy.data.collections.remove(parts)
     parts = collection("COLLISION")
-    proxy = [(0.41,-3.88),(1.62,-2.32),(2.24,-1.51),(2.16,0.34),(1.78,3.62),
-             (-1.78,3.62),(-2.16,0.34),(-2.24,-1.51),(-1.62,-2.32),(-0.41,-3.88)]
-    plate("Center hull collision proxy", proxy, -0.45, 0.46, None, 0)
-    for obj in parts.objects:
-        obj.hide_set(True)
+    collision_hulls(editable)
     for screen in bpy.data.screens:
         for area in screen.areas:
             if area.type == "VIEW_3D":

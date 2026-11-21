@@ -411,9 +411,11 @@ world authority (M0.3) existed. This section is what gets built.
   Shape: a **convex hull built from the model's LOD1 mesh vertices** scaled and rotated per
   instance; ball of `radiiM` only as the fallback until a model's vertices are registered.
   Convex hull, not trimesh: cheap, robust, good enough for lumpy rocks.
-- **The ship is a dynamic body with CCD** and a convex hull from its own mesh. One hull,
-  one size: delete `SHIP_COLLIDER_RADIUS_M = 60` (the model is ~10 m across) and the
-  10 Hz point-in-sphere scan, the per-tick collision cap and the stale-array iteration.
+- **The ship is a dynamic body with CCD.** The starter ship uses one compound
+  collider built from the closed convex pieces in its collision GLB. The wing
+  volumes stay thin while the core, nose, spine and drives cover the thicker solids.
+  Authored mass, inertia and centre of mass apply once to the entire rigid body.
+  The development coverage gate is `PHYS_PARTS=starterProxy`.
 - `asteroid.destroyed` events (mining, another player) remove the collider.
 - **Celestial bodies stay on the analytic swept test and stay lethal.** Landing is M7.
 

@@ -11,6 +11,7 @@ import type {
   PhysicsWorldStats,
   ShapeBounds,
   ShipBodyConfig,
+  ShipColliderShape,
 } from "./types";
 
 type Rapier = typeof import("@dimforge/rapier3d-simd-compat");
@@ -79,18 +80,34 @@ function shapeDesc(R: Rapier, shape: ColliderShape): RColliderDesc {
   }
 }
 
-function bounds(shape: ColliderShape): ShapeBounds {
+function shipShapeDesc(R: Rapier, shape: ShipColliderShape): RColliderDesc {
+  if (shape.kind !== "compoundHull") return shapeDesc(R, shape);
+  const hulls = shape.pieces.map((points, index) => {
+    const hull = R.ColliderDesc.convexHull(points);
+    if (!hull) throw new Error(`Invalid ship collision hull piece ${index + 1}`);
+    return hull.shape;
+  });
+  const origin = { x: 0, y: 0, z: 0 };
+  const rotation = { x: 0, y: 0, z: 0, w: 1 };
+  return R.ColliderDesc.compound(
+    hulls, hulls.map(() => origin), hulls.map(() => rotation), R.CompoundFlags.FIX_INTERNAL_EDGES,
+  );
+}
+
+function bounds(shape: ShipColliderShape): ShapeBounds {
   if (shape.kind === "ball") {
     const r = shape.radiusM;
     return { min: [-r, -r, -r], max: [r, r, r] };
   }
   if (shape.kind === "box") return { min: [-shape.halfX, -shape.halfY, -shape.halfZ], max: [shape.halfX, shape.halfY, shape.halfZ] };
   const b: ShapeBounds = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
-  const p = shape.points;
-  for (let i = 0; i < p.length; i += 3) {
-    for (let k = 0; k < 3; k++) {
-      b.min[k] = Math.min(b.min[k], p[i + k]);
-      b.max[k] = Math.max(b.max[k], p[i + k]);
+  const pieces = shape.kind === "compoundHull" ? shape.pieces : [shape.points];
+  for (const p of pieces) {
+    for (let i = 0; i < p.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        b.min[k] = Math.min(b.min[k], p[i + k]);
+        b.max[k] = Math.max(b.max[k], p[i + k]);
+      }
     }
   }
   return b;
@@ -270,6 +287,7 @@ class RapierWorld implements PhysicsWorld {
   }
 
   setShipBody(config: ShipBodyConfig): void {
+    const d = this.material(shipShapeDesc(this.R, config.shape)).setCollisionGroups(SHIP_GROUP);
     if (!this.body) {
       const bd = this.R.RigidBodyDesc.dynamic()
         .setCcdEnabled(true)
@@ -279,15 +297,14 @@ class RapierWorld implements PhysicsWorld {
         .setAngularDamping(0);
       this.body = this.world.createRigidBody(bd);
     }
-    if (this.shipCollider) this.world.removeCollider(this.shipCollider, false);
     // Isotropic inertia: a free spin has no gyroscopic drift, matching stepShip's rate model.
     const I = config.massKg * config.gyrationRadiusM * config.gyrationRadiusM;
     this._v.x = I; this._v.y = I; this._v.z = I;
     this._q.x = 0; this._q.y = 0; this._q.z = 0; this._q.w = 1;
     const [cx, cy, cz] = config.comM;
     this.com.x = cx; this.com.y = cy; this.com.z = cz;
-    const d = this.material(shapeDesc(this.R, config.shape)).setCollisionGroups(SHIP_GROUP)
-      .setMassProperties(config.massKg, { x: cx, y: cy, z: cz }, this._v, this._q);
+    d.setMassProperties(config.massKg, { x: cx, y: cy, z: cz }, this._v, this._q);
+    if (this.shipCollider) this.world.removeCollider(this.shipCollider, false);
     this.shipCollider = this.world.createCollider(d, this.body);
     this.shipRestitution = this.config.restitution;
     this.shipExtents = bounds(config.shape);

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, type JSX, type RefObject } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { LOD, Mesh, Vector3, type BufferGeometry, type Group } from "three";
+import { LOD, Mesh, Vector3, type Group } from "three";
 import { FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import EngineExhaust, { type ExhaustConfig } from "@/components/VFX/EngineExhaust";
+import type { ShipColliderShape } from "@/sim/physics/types";
 
 const BASE = "/models/ships/starter-survey";
 const HERO = BASE + ".glb";
@@ -14,7 +15,7 @@ const NOZZLE_RADIUS_M = 0.455;
 
 type SurveyProps = Omit<JSX.IntrinsicElements["group"], "children"> & {
   thrust: RefObject<number>;
-  onHullGeometry: (geometry: BufferGeometry) => void;
+  onCollisionShape: (shape: ShipColliderShape) => void;
 };
 
 function hullInstance(source: Group): Group {
@@ -33,17 +34,29 @@ function nozzleConfigs(source: Group): ExhaustConfig[] {
   });
 }
 
-export function StarterSurvey({ thrust, onHullGeometry, ...props }: SurveyProps) {
+export function StarterSurvey({ thrust, onCollisionShape, ...props }: SurveyProps) {
   const hero = useGLTF(HERO, false, false);
   const collision = useGLTF(COLLISION, false, false);
   const hull = useMemo(() => hullInstance(hero.scene), [hero.scene]);
   const nozzles = useMemo(() => nozzleConfigs(hero.scene), [hero.scene]);
   useEffect(() => {
-    const proxy = collision.scene.getObjectByProperty("isMesh", true);
-    if (!(proxy instanceof Mesh)) throw new Error("Starter survey ship has no collision mesh");
-    // The collision export has one mesh at the origin in ship-body metres.
-    onHullGeometry(proxy.geometry);
-  }, [collision.scene, onHullGeometry]);
+    const pieces: Float32Array[] = [];
+    const vertex = new Vector3();
+    collision.scene.updateMatrixWorld(true);
+    collision.scene.traverse((part) => {
+      if (!(part instanceof Mesh)) return;
+      const position = part.geometry.getAttribute("position");
+      const points = new Float32Array(position.count * 3);
+      for (let i = 0; i < position.count; i++) {
+        vertex.fromBufferAttribute(position, i).applyMatrix4(part.matrixWorld);
+        vertex.toArray(points, i * 3);
+      }
+      pieces.push(points);
+    });
+    const [first, ...rest] = pieces;
+    if (!first) throw new Error("Starter survey ship has no collision meshes");
+    onCollisionShape(rest.length ? { kind: "compoundHull", pieces: [first, ...rest] } : { kind: "hull", points: first });
+  }, [collision.scene, onCollisionShape]);
   return (
     <group {...props} dispose={null}>
       <primitive object={hull} />

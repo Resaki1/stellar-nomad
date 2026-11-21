@@ -1,6 +1,6 @@
 import { useFrame } from "@react-three/fiber";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
-import { MathUtils, Vector3, Mesh, type Group, type BufferGeometry, type PerspectiveCamera } from "three";
+import { MathUtils, Vector3, Mesh, type Group, type PerspectiveCamera } from "three";
 import { getCameraTuning } from "./Camera/cameraTuning";
 import { StarterSurvey } from "./models/ships/StarterSurvey";
 import { useStore } from "jotai";
@@ -40,6 +40,7 @@ import { isSimPaused } from "@/sim/simPause";
 import { beginArrival, repositionState, resetReposition, takeReposition } from "@/sim/ship/reposition";
 import { resetTimedEffectsAtom } from "@/store/timedEffects";
 import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
+import type { ShipColliderShape } from "@/sim/physics/types";
 import { clearPilotContacts, drainPilotContacts } from "@/sim/physics/pilotContactInbox";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
@@ -186,15 +187,8 @@ const SpaceShip = memo(() => {
     worldOrigin.setWorldOriginKm(ship.absPosKm);
   }
 
-  const onHullGeometry = useCallback((g: BufferGeometry) => {
-    const pos = g.getAttribute("position");
-    const pts = new Float32Array(pos.count * 3);
-    for (let i = 0; i < pos.count; i++) {
-      pts[i * 3] = pos.getX(i);
-      pts[i * 3 + 1] = pos.getY(i);
-      pts[i * 3 + 2] = pos.getZ(i);
-    }
-    nearField.setShipShape({ kind: "hull", points: pts }, "mesh");
+  const onCollisionShape = useCallback((shape: ShipColliderShape) => {
+    nearField.setShipShape(shape, "mesh");
   }, []);
 
   // Register the sim state in the entity table.
@@ -605,7 +599,7 @@ const SpaceShip = memo(() => {
 
   return (
     <mesh ref={shipRef} name="playerShip">
-      <StarterSurvey ref={modelRef} name="playerShipModel" thrust={exhaustIntensity} onHullGeometry={onHullGeometry} />
+      <StarterSurvey ref={modelRef} name="playerShipModel" thrust={exhaustIntensity} onCollisionShape={onCollisionShape} />
     </mesh>
   );
 });

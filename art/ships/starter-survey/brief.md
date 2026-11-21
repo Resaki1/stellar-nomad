@@ -26,7 +26,7 @@ The solar and radiator split is a visual design decision. It establishes the mat
 
 ## Authoring
 
-`build.py` defines the geometry and `surfaces.py` generates the packed PBR maps. The saved Blender file contains the individual editable parts, three baked export collections grouped by material, and a separate center-hull collision proxy. Generate again after editing the recipe with Blender 5.3:
+`build.py` defines the geometry and `surfaces.py` generates the packed PBR maps. The saved Blender file contains the individual editable parts, three baked export collections grouped by material, and a separate seven-piece collision proxy. Generate again after editing the recipe with Blender 5.3:
 
 ```sh
 blender -b --factory-startup --disable-autoexec --python-exit-code 1 --python art/ships/starter-survey/build.py -- art/ships/starter-survey/starter-survey.blend
@@ -58,15 +58,15 @@ LOD1 keeps the panel and trim pattern in smaller maps and omits the close-up nor
 | Player and close remote (LOD0) | 33,386 | 74,205 | 8 | 6,086,708 |
 | Medium remote (LOD1) | 8,690 | 14,498 | 7 | 1,493,648 |
 | Distant remote (LOD2) | 3,676 | 6,806 | 5 | 210,520 |
-| Physics proxy | 36 | 60 | 1 | 2,560 |
+| Physics proxy | 752 | 1,672 | 7 | 49,528 |
 
-Runtime artifacts are in `public/models/ships/`. Copy each successful run's GLB to its corresponding runtime filename after inspecting the sheet and metrics. The game uses the convex center hull proxy for contact. It covers the central hull and drive assembly, with the outer fins outside the collider. In co-op, remote visuals switch at 90 m and 240 m of distance from the player camera, with 12% hysteresis on approach. The hero LOD is always used for the local ship.
+Runtime artifacts are in `public/models/ships/`. Copy each successful run's GLB to its corresponding runtime filename after inspecting the sheet and metrics. The game mounts seven convex volumes on one rigid body. These cover the core, nose, aft spine, two drives and two wings. The proxy has a 9.28 m span and preserves the thin wing profiles and clearance above and below them. In co-op, remote visuals switch at 90 m and 240 m of distance from the player camera, with 12% hysteresis on approach. The hero LOD is always used for the local ship.
 
 The nozzles have a 0.455 m exit radius and use the existing throttle-driven exhaust. The render hull is authored in its unlit state. For future blinkers, export stable attachment sockets and distinct lamp lenses or an emissive mask. The packed atlas covers baseline wear. A runtime layer can add per-ship localized damage via ship-local projection or the unique panel atlas. For animated parts, export those meshes separately with named hinge pivots and preserve their hierarchy across LODs.
 
 ## Validation
 
-All four runtime GLBs passed the Khronos validator and rendered in the isolated Chrome WebGPU probe. The local game loaded the 60-point center-hull proxy directly in metres. The render LODs have identical engine and tool socket transforms. In the running game, the 12 km Luna scene showed the ship framed from the chase camera and both plumes originating at the nozzle centres under thrust.
+All four runtime GLBs passed the Khronos validator and rendered in the isolated Chrome WebGPU probe. The local game loaded the compound proxy directly in metres. The `starterProxy` physics exercise verifies contact at the nose, both wing tips, underside and a nozzle, plus clearance above and outside the wing. The render LODs have identical engine and tool socket transforms. In the running game, the 12 km Luna scene showed the ship framed from the chase camera and both plumes originating at the nozzle centres under thrust.
 
 The surface pass compared the old and new exports under raking sun at matching bow and chase angles. Both exports blocked all 522 rays sampled through the nozzle apertures. At zero speed and thrust, the matched in-game port nozzle crop went from 220 to 58 pixels above an average RGB code value of 160. A thin reflection remains in the absence of local self-shadowing. The solar coverglass showed a glint in Blender that diminished after a 14° shift of the light.
 
@@ -75,3 +75,5 @@ The cold localhost:3001 run on a fresh Chrome profile transferred 2.98 MB for th
 At `earth_650`, the final headless Metal WebGPU run at 1280 × 720 and DPR 1 measured 16.6 ms p50 and 17.9 ms p95 frame time. The full local scene GPU pass averaged 0.73 ms. That pass includes the ship and other local rendering. The whole scene still exceeds the 60 Hz frame budget at p95 in this run, and the harness's 60 Hz pacing leaves 120 Hz unverified.
 
 The two-player exercise passed remote LOD changes 0 → 1 → 2 → 0, the mining beam and rock break, remote exhaust, and session teardown with zero render errors. To repeat it on the dev server, run `COOP_PARTS=shipLods,remoteFx,leave pnpm drive:coop -- --url http://localhost:3001/ run:scripts/drive-examples/coop-check.mjs`. The driver starts and cleans up a disposable world.
+
+The focused compound-collider check passed both wingtip approaches, an underwing approach, the nose and an aft nozzle. It also passed above-wing and outside-span clearance checks. The broader physics sweep still flags two extreme-speed hull grazes (604 and 891 m/s) with no recorded contact impulse. Trajectory sampling found a deflection in the first case and a CCD position clamp in the second. The sweep also flags static-wall jitter at 0.059 m/s against its 0.05 m/s threshold. The old proxy failed the resting and contact-rebase gates. Rebase, energy and speed-gate checks passed with the compound proxy.

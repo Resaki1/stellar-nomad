@@ -7,6 +7,7 @@
  *   M2b: PHYS_PARTS=damage,hull (sim + gate 8), asteroids (gate 12 live), stream (--perf), look (captures)
  *   PHYS_PARTS=liveOwner [PHYS_DIFFS=explorer,standard,hard] --no-isolate   B2: fresh world, flag, real W into a rock
  *   PHYS_PARTS=devFlag --no-isolate   B2: stored dev tuning shows "Dev tuning active"; Settings → Dev reset clears it
+ *   PHYS_PARTS=starterProxy          shipped proxy hit and clearance checks
  *
  * sim parts run `__test.physics.simulate` (private world + real stepShip, fixed dt): gates
  * 1–4, 6, 7, 9, 10. Analytic ground truth for gate 2 is computed here from the ship hull.
@@ -61,7 +62,9 @@ function lumpy(radiusM, lumps = 0.25, seed = 1, n = 42) {
 export default async function physicsCheck(d) {
   const ev = (js) => d.evaluate(js);
   const sim = async (script) => JSON.parse(await ev(`__test.physics.simulate(${JSON.stringify(script)}).then((r) => JSON.stringify(r))`));
-  const touches = (seg) => seg.contacts.filter((c) => c.impulseNs > 0);
+  // Rapier can solve a speculative contact with a real normal velocity change
+  // while reporting zero impulse. The backend counts this as a touch as well.
+  const touches = (seg) => seg.contacts.filter((c) => c.impulseNs > 0 || c.dvNormalMps > 0.05);
   const out = { gates: {} };
   const g = out.gates;
   const vLim = await ev("__test.flight.speedLimitMps()");
@@ -70,6 +73,33 @@ export default async function physicsCheck(d) {
   out.restitution = 0.2;
   out.friction = 0.5;
   const maxSpeed = phys.maxSpeedMps;
+
+  if (parts.includes("starterProxy")) {
+    const checks = [
+      { name: "nose", posM: [0, -0.08, 12], velocity: [0, 0, 40], hit: true },
+      { name: "port tip", posM: [4.54, -0.08, 12], velocity: [0, 0, 40], hit: true },
+      { name: "starboard tip", posM: [-4.54, -0.08, 12], velocity: [0, 0, 40], hit: true },
+      { name: "underwing", posM: [3.5, 6, 0], velocity: [0, 25, 0], hit: true },
+      { name: "aft nozzle", posM: [1.32, 0.37, -12], velocity: [0, 0, -40], hit: true },
+      // Leave room for the engine's 0.2 m speculative-contact distance.
+      { name: "outside span", posM: [4.99, -0.08, 12], velocity: [0, 0, 40], hit: false },
+      { name: "above wing", posM: [3.35, 0.37, 12], velocity: [0, 0, 40], hit: false },
+    ];
+    const results = [];
+    for (const check of checks) {
+      const r = await sim({
+        startVelocityBodyMps: check.velocity,
+        rocks: [{ kind: "box", posM: check.posM, half: [0.08, 0.08, 0.08] }],
+        segments: [{ decoupled: true, seconds: 0.7 }],
+      });
+      const contact = touches(r.segments[0])[0];
+      results.push({ name: check.name, contact: !!contact, expected: check.hit });
+    }
+    const hitTestsPass = results.every((r) => r.contact === r.expected);
+    const pass = phys.ship.source === "mesh" && phys.ship.pieces === 7 && hitTestsPass;
+    out.starterProxy = { pass, results };
+    if (!pass) throw new Error(`Starter collision coverage failed: ${JSON.stringify(out.starterProxy)}`);
+  }
 
   if (parts.includes("sim")) {
     // 1. Free flight: rock 500 m off the path, 10 s with throttle, turns and a rebase.
@@ -99,16 +129,18 @@ export default async function physicsCheck(d) {
 
     // 2. Tunnelling: straight at the smallest rock (r 8 m) for 50 lateral offsets.
     {
-      const hullPts = await ev("__phys.shipHull()");
-      const ship2 = [];
-      for (let i = 0; i < hullPts.length; i += 3) ship2.push([hullPts[i], hullPts[i + 1]]);
-      const shipPoly = hull2d(ship2);
+      const parts = await ev("__phys.shipHullParts()");
+      const shipPolys = parts.map((pts) => {
+        const xy = [];
+        for (let i = 0; i < pts.length; i += 3) xy.push([pts[i], pts[i + 1]]);
+        return hull2d(xy);
+      });
       const rockPts = lumpy(8);
       const rock2 = [];
       for (let i = 0; i < rockPts.length; i += 3) rock2.push([rockPts[i], rockPts[i + 1]]);
       const rockPoly = hull2d(rock2);
-      const mink = hull2d(shipPoly.flatMap((s) => rockPoly.map((r) => [s[0] - r[0], s[1] - r[1]])));
-      const xMax = Math.max(...ship2.map((p) => Math.abs(p[0]))) + 10;
+      const mink = shipPolys.map((poly) => hull2d(poly.flatMap((s) => rockPoly.map((r) => [s[0] - r[0], s[1] - r[1]]))));
+      const xMax = Math.max(...shipPolys.flat().map((p) => Math.abs(p[0]))) + 10;
       const run = async (speed, kind) => {
         const rows = [];
         for (let i = 0; i < 50; i++) {
@@ -120,7 +152,9 @@ export default async function physicsCheck(d) {
             segments: [{ decoupled: true, seconds: (D + 60) / speed + 0.2 }],
           });
           const seg = r.segments[0];
-          const truth = kind === "ball" ? signedDist(shipPoly, ox, 0) - 8 : signedDist(mink, ox, 0);
+          const truth = kind === "ball"
+            ? Math.min(...shipPolys.map((poly) => signedDist(poly, ox, 0))) - 8
+            : Math.min(...mink.map((poly) => signedDist(poly, ox, 0)));
           const hit = touches(seg).length > 0;
           const ent = touches(seg)[0];
           rows.push({
@@ -152,7 +186,7 @@ export default async function physicsCheck(d) {
       const under = maxSpeed * 0.99;
       const res = [await run(boosted, "ball"), await run(boosted, "hull"), await run(under, "ball"), await run(under, "hull")];
       g.g2_tunnelling = {
-        shipHull2dVertices: shipPoly.length,
+        shipHull2dVertices: shipPolys.reduce((count, poly) => count + poly.length, 0),
         runs: res,
         pass: res.every((r) => r.misses === 0 && r.falseHits === 0 && r.passedThrough === 0 && r.suspendedRuns === 0 && !r.nan),
       };

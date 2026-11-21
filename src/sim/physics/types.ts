@@ -9,6 +9,10 @@ export type ColliderShape =
   | { kind: "hull"; points: Float32Array; indices?: Uint32Array }
   | { kind: "box"; halfX: number; halfY: number; halfZ: number };
 
+/** Multiple convex pieces in ship-body metres, attached to one dynamic body. */
+export type ShipColliderShape = ColliderShape
+  | { kind: "compoundHull"; pieces: readonly [Float32Array, ...Float32Array[]] };
+
 /** Position (m, physics-local) + orientation. Mutable scratch-friendly struct. */
 export interface BodyPose {
   x: number; y: number; z: number;
@@ -43,7 +47,7 @@ export interface ConvexHullData {
 }
 
 export interface ShipBodyConfig {
-  shape: ColliderShape;
+  shape: ShipColliderShape;
   massKg: number;
   /** Isotropic inertia = mass · k². */
   gyrationRadiusM: number;
