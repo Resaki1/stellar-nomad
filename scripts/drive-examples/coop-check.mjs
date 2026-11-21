@@ -1523,6 +1523,22 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     log({ part: "setup", ok: true, worldId, code, ids, route, ms: Date.now() - s0 });
 
     const run = {
+      shipLods: async () => {
+        const samples = [];
+        // Start close, cross both thresholds, then return through the hysteresis.
+        for (const [distKm, level] of [[0.06, 0], [0.14, 1], [0.30, 2], [0.06, 0]]) {
+          const warped = await guest.evaluate(`${C}.meetRemote(${distKm})`);
+          if (!warped) return { pass: false, samples };
+          await guest.frames(8);
+          const actual = await waitFor(async () => {
+            const levels = await guest.evaluate(`${C}.shipLods()`);
+            return levels.length === 1 && levels[0] === level ? levels : null;
+          }, 10_000, 150);
+          samples.push({ distKm, level, actual, shot: await guest.canvas(`survey-remote-${level}`) });
+          if (!actual) return { pass: false, samples };
+        }
+        return { pass: true, samples };
+      },
       shipMenu, crewUi, crewAdmin, exchange, soak, capacity, contentFixture, roughLink,
       industry: async () => {
         const { supplyRoute } = await import("./industry-coop.mjs");

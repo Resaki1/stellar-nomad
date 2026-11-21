@@ -22,7 +22,7 @@ import { getPreExposure } from "@/components/space/photometry";
 
 // ── Types ────────────────────────────────────────────────────────────
 export type ExhaustConfig = {
-  /** Position in ship-model local space (inside the ShipOne 0.3× group) */
+  /** Position in the local space of the exhaust parent */
   position: [number, number, number];
   /** Nozzle radius in model-local units */
   radius: number;

@@ -6,13 +6,12 @@
  * nothing while solo.
  */
 import { HOST_SILENCE_MS } from "@/sim/session/protocol";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, memo, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
-import { SHIP_ONE_EXHAUST, ShipOne } from "@/components/models/ships/ShipOne";
-import EngineExhaust from "@/components/VFX/EngineExhaust";
+import { RemoteStarterSurvey } from "@/components/models/ships/StarterSurvey";
 import { MiningBeam, computeShipNoseLocal } from "@/components/Mining/MiningSystem";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { getLocalPlayerId } from "@/save/playerId";
@@ -152,7 +151,7 @@ const RemoteShip = memo(function RemoteShip({ slot, slots, defs, ready }: { slot
     const bs = s && s.b && t - s.at < BEAM_STALE_MS && isFrameId(s.f) ? s : null;
     const beamOn = show && bs !== null;
     if (bs?.b && beamOn) {
-      // The nose in hull space, once (the GLB is loaded: ShipOne suspends until it is).
+      // The exported mining socket in ship-root space.
       if (!nose.current) {
         const n = new THREE.Vector3();
         nose.current = computeShipNoseLocal(g, n) ? n : new THREE.Vector3();
@@ -180,9 +179,7 @@ const RemoteShip = memo(function RemoteShip({ slot, slots, defs, ready }: { slot
   return (
     <group name={`remoteSlot:${slot}`}>
       <group ref={ref} name={`remoteShip:${slot}`} visible={false}>
-        <ShipOne>
-          <EngineExhaust configs={SHIP_ONE_EXHAUST} intensityRef={throttle} castLight={false} />
-        </ShipOne>
+        <RemoteStarterSurvey thrust={throttle} />
       </group>
       <group ref={beamRef} visible={false}>
         <MiningBeam start={slotBeams[slot].start} end={slotBeams[slot].end} progress01={0.8} remote={slotBeams[slot].remote} />
@@ -226,7 +223,7 @@ const CoopLayer = memo(function CoopLayer() {
   return (
     <>
       <ClockFollower />
-      <RemoteShips />
+      <Suspense fallback={null}><RemoteShips /></Suspense>
     </>
   );
 });

@@ -12,7 +12,8 @@ import { holdHostIncoming, hostClient, inspectHost, startHosting, stopHosting } 
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
-import { Quaternion, Vector3 } from "three";
+import { LOD, Quaternion, Vector3 } from "three";
+import { testProbe } from "./testProbe";
 import type { createStore } from "jotai";
 import { devTeleportAtom } from "@/store/dev";
 import { systemConfigAtom } from "@/store/system";
@@ -93,6 +94,13 @@ export function createCoopHarness(store: Store) {
     mirror() {
       const p = getActiveSave()?.data.players[getLocalPlayerId()];
       return p ? { cargo: structuredClone(p.cargo), minedLifetime: p.minedLifetime, stream: p.stream } : null;
+    },
+    shipLods(): number[] {
+      const levels: number[] = [];
+      testProbe.scene?.traverseVisible((object) => {
+        if (object instanceof LOD && object.name === "starterSurveyLOD") levels.push(object.getCurrentLevel());
+      });
+      return levels;
     },
     /** Distance (km) from our ship to a remote pilot. */
     remoteDistanceKm(id?: string): number | null {

@@ -22,7 +22,7 @@ import TitleScreen from "./TitleScreen";
 import LoadingOverlay from "./LoadingOverlay";
 import "./AppShell.scss";
 
-// Not warmed at the title: evaluating the game modules already starts asset preloads (ShipOne.glb).
+// Load the flight scene and its assets after the player enters the game.
 const loadGame = () => import("@/components/Game/Game");
 
 export type StartTarget =

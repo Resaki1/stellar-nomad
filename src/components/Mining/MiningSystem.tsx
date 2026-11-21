@@ -335,6 +335,11 @@ export function computeShipNoseLocal(root: THREE.Object3D, out: THREE.Vector3): 
 
   root.updateMatrixWorld(true);
   _invRootWorld.copy(root.matrixWorld).invert();
+  const socket = root.getObjectByName("socket_mining");
+  if (socket) {
+    out.setFromMatrixPosition(socket.matrixWorld).applyMatrix4(_invRootWorld);
+    return true;
+  }
 
   let hadAnyMesh = false;
 

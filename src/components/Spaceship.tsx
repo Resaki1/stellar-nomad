@@ -1,9 +1,8 @@
 import { useFrame } from "@react-three/fiber";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
-import { MathUtils, Vector3, Mesh, type BufferGeometry, type PerspectiveCamera } from "three";
+import { MathUtils, Vector3, Mesh, type Group, type BufferGeometry, type PerspectiveCamera } from "three";
 import { getCameraTuning } from "./Camera/cameraTuning";
-import { SHIP_ONE_EXHAUST, ShipOne } from "./models/ships/ShipOne";
-import EngineExhaust from "./VFX/EngineExhaust";
+import { StarterSurvey } from "./models/ships/StarterSurvey";
 import { useStore } from "jotai";
 import { hudInfoAtom, shipHealthAtom } from "@/store/store";
 import { cameraShakeIntensityAtom, spawnVFXEventAtom } from "@/store/vfx";
@@ -129,7 +128,7 @@ const SpaceShip = memo(() => {
   const store = useStore();
   const worldOrigin = useWorldOrigin();
   const shipRef = useRef<Mesh>(null!);
-  const modelRef = useRef<Mesh>(null!);
+  const modelRef = useRef<Group>(null!);
 
   const shipState = useRef<ShipState>(null!);
   if (!shipState.current) shipState.current = createShipState();
@@ -187,13 +186,13 @@ const SpaceShip = memo(() => {
     worldOrigin.setWorldOriginKm(ship.absPosKm);
   }
 
-  const onHullGeometry = useCallback((g: BufferGeometry, scale: number) => {
+  const onHullGeometry = useCallback((g: BufferGeometry) => {
     const pos = g.getAttribute("position");
     const pts = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      pts[i * 3] = pos.getX(i) * scale;
-      pts[i * 3 + 1] = pos.getY(i) * scale;
-      pts[i * 3 + 2] = pos.getZ(i) * scale;
+      pts[i * 3] = pos.getX(i);
+      pts[i * 3 + 1] = pos.getY(i);
+      pts[i * 3 + 2] = pos.getZ(i);
     }
     nearField.setShipShape({ kind: "hull", points: pts }, "mesh");
   }, []);
@@ -606,12 +605,7 @@ const SpaceShip = memo(() => {
 
   return (
     <mesh ref={shipRef} name="playerShip">
-      <ShipOne ref={modelRef} name="playerShipModel" onHullGeometry={onHullGeometry}>
-        <EngineExhaust
-          configs={SHIP_ONE_EXHAUST}
-          intensityRef={exhaustIntensity}
-        />
-      </ShipOne>
+      <StarterSurvey ref={modelRef} name="playerShipModel" thrust={exhaustIntensity} onHullGeometry={onHullGeometry} />
     </mesh>
   );
 });

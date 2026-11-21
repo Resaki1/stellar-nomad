@@ -15,6 +15,7 @@ from mathutils import Matrix, Vector
 VIEWS = {
     "front": (0, -1, 0), "side": (1, 0, 0), "top": (0, 0, 1), "chase": (0.6, 1, 0.5),
     "rear": (0, 1, 0), "opposite": (-1, 0, 0), "bottom": (0, 0, -1), "ventral": (0.7, -1, -0.55),
+    "bow": (0.65, -1, 0.65),
 }
 TO_GLTF = Matrix.Rotation(math.radians(-90), 4, "X")
 
