@@ -211,6 +211,12 @@ export default async function placementControls(d) {
     assert.equal(await ev(locked), true, "Switching kits preserves pointer lock");
     await focusName(depotName);
     await d.type("  Meridian Relay 7  ");
+    const ghost = await until("authored depot outline", `(() => {
+      const preview = ${G}.industry.depotPreview();
+      return preview?.material === "Clear depot outline" && preview;
+    })()`);
+    assert.ok(Math.abs(ghost.sizeM[0] - 26.5) < 0.15 && Math.abs(ghost.sizeM[2] - 38.47) < 0.15,
+      "Placement outline keeps the new depot's solar span and length");
     captures.push(await d.shot("m5-placement-depot-desktop"));
     await canvasClick(true);
     await until("locked canvas deploys named depot", `${cancelled} && ${fullscreen} && ${locked} && ${G}.world().industry.depots.length === 1`);
@@ -219,6 +225,7 @@ export default async function placementControls(d) {
 
     await key(depotSlot);
     await until("occupied depot placement", shown(`${aimDepot} .placement-card__status--blocked`));
+    await until("blocked depot outline", `${G}.industry.depotPreview()?.material === "Blocked depot outline"`);
     await canvasClick(true);
     assert.equal((await kits())[DEPOT], 1, "A refused canvas click preserves the depot kit");
     assert.equal((await world()).industry.depots.length, 1);

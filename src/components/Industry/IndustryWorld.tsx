@@ -1,14 +1,15 @@
 "use client";
 
+import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useAtomValue, useStore } from "jotai";
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, Suspense, useEffect, useMemo, useRef } from "react";
 import {
-  BoxGeometry, BufferGeometry, Color, CylinderGeometry, DodecahedronGeometry, Euler, Group, IcosahedronGeometry, Mesh,
+  BoxGeometry, Color, DodecahedronGeometry, EdgesGeometry, Euler, Group, IcosahedronGeometry, LineBasicMaterial, LineSegments, LOD, Mesh,
   MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
 } from "three";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
+import { FRAME_PRIORITY_PLAYER_SHIP, FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
+import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 import type { ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
@@ -17,8 +18,8 @@ import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
 import { PROSPECT_PARTS, PROSPECT_RADIUS_M, prospectWorksite } from "@/sim/industry/prospects";
 import { miningLegPosition, miningLegVelocity } from "@/sim/industry/sortie";
 import { droneFlightProgress, minimumDroneFlightS } from "@/sim/industry/route";
-import type { DepotRecord, DroneRecord, IndustryState } from "@/sim/industry/types";
-import { DEPOT_HULL } from "@/sim/physics/depotShape";
+import type { DepotRecord, DroneRecord } from "@/sim/industry/types";
+import { readCollisionMeshes } from "@/components/models/collisionMeshes";
 import { nearField, type NearFieldColliderId } from "@/sim/physics/nearField";
 import type { ColliderShape } from "@/sim/physics/types";
 import { isSimPaused } from "@/sim/simPause";
@@ -29,6 +30,7 @@ import { replicationPointsAtom } from "@/store/replicationMirror";
 import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, trackedDronePoiAtom } from "@/store/industryHud";
 import { poiBuffer } from "@/store/poi";
 import { DroneMotion, MiningLegClock, smoothProgress } from "./droneMotion";
+import { DEPOT_COLLISION_ASSET, DEPOT_LOD_ASSETS, DEPOT_LOD_DISTANCES_M, useDepotRenderAssets, type DepotRenderAssets } from "./DepotModel";
 
 const DEPOT_RENDER_KM = 14;
 const DEPOT_COLLISION_KM = 3;
@@ -36,24 +38,19 @@ const DRONE_RENDER_KM = 3;
 const SOURCE_RENDER_KM = 3;
 const BEAM_FADE_S = 0.6;
 const BOX = new BoxGeometry();
-const TANK_BODY = new CylinderGeometry(1, 1, 1, 16).rotateX(Math.PI * 0.5);
-const TANK_CAP = new CylinderGeometry(0.52, 1, 1, 16).rotateX(Math.PI * 0.5);
 const SOURCE_GEOMETRY = new DodecahedronGeometry(1, 0);
 const DRONE_GEOMETRY = new IcosahedronGeometry(1, 0);
 
 const FRAME = new MeshStandardMaterial({ color: "#293745", metalness: 0.75, roughness: 0.62 });
-const SHELL = new MeshStandardMaterial({ color: "#a7b2b9", metalness: 0.48, roughness: 0.57 });
 const TANK = new MeshStandardMaterial({ color: "#986532", metalness: 0.38, roughness: 0.8 });
 const RADIATOR = new MeshStandardMaterial({ color: "#244661", metalness: 0.7, roughness: 0.46 });
-const ROBOTIC = new MeshStandardMaterial({ color: "#637a88", metalness: 0.65, roughness: 0.43 });
-const RUBBER = new MeshStandardMaterial({ color: "#111819", metalness: 0.08, roughness: 0.9 });
 const PROSPECT = new MeshStandardMaterial({ color: "#9da2a5", metalness: 0.2, roughness: 0.94 });
 const LIGHT = new MeshBasicMaterial({ color: new Color(0.22, 0.66, 1.45), toneMapped: false });
 const AMBER = new MeshBasicMaterial({ color: new Color(1.8, 0.66, 0.08), toneMapped: false });
 const BEAM = new MeshBasicMaterial({ color: new Color(0.05, 0.7, 1.7), transparent: true, opacity: 0.75, depthWrite: false, toneMapped: false });
-const PREVIEW_GOOD = new MeshBasicMaterial({ color: new Color("#43dcb6"), transparent: true, opacity: 0.32, depthWrite: false });
-const PREVIEW_BAD = new MeshBasicMaterial({ color: new Color("#f17e5a"), transparent: true, opacity: 0.32, depthWrite: false });
-for (const material of [LIGHT, AMBER]) registerPreExposedEmissive(material);
+const PREVIEW_GOOD = new LineBasicMaterial({ name: "Clear depot outline", color: emitterColor("replication_preview"), transparent: true, opacity: 0.8, depthWrite: false });
+const PREVIEW_BAD = new LineBasicMaterial({ name: "Blocked depot outline", color: emitterColor("replication_preview_bad"), transparent: true, opacity: 0.8, depthWrite: false });
+for (const material of [LIGHT, AMBER, PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(material);
 
 const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
   const vertices = SOURCE_GEOMETRY.getAttribute("position");
@@ -67,7 +64,6 @@ const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
   return { position, orientation: new Quaternion().setFromEuler(new Euler(...rotation)), shape };
 });
 
-const materials = { core: SHELL, spine: FRAME, front: FRAME, tank: TANK, outrigger: FRAME, radiator: RADIATOR };
 const _from = new Vector3(), _to = new Vector3();
 const _origin = new Vector3(), _droneOffset = new Vector3(), _direction = new Vector3(), _offset = new Vector3();
 const _orientation = new Quaternion();
@@ -88,153 +84,122 @@ function scenePosition(pose: Position, worldOrigin: Readonly<Vector3>, into: Vec
   return into.set((into.x + p[0]) * 1000, (into.y + p[1]) * 1000, (into.z + p[2]) * 1000);
 }
 
-type DepotMaterial = MeshStandardMaterial | MeshBasicMaterial;
-
-/** Share one batch per material across depots. The preview keeps the conservative contact outline. */
-function depotMeshes(preview: boolean): { geometry: BufferGeometry; material: DepotMaterial }[] {
-  const batches = new Map<DepotMaterial, BufferGeometry[]>();
-  function part(material: DepotMaterial, p: readonly number[], s: readonly number[], source: BufferGeometry = BOX): void {
-    const existing = batches.get(material);
-    const piece = source.clone().scale(s[0], s[1], s[2]).translate(p[0], p[1], p[2]);
-    if (existing) existing.push(piece);
-    else batches.set(material, [piece]);
-  }
-  if (preview) {
-    for (const { position, size } of DEPOT_HULL) part(PREVIEW_GOOD, position, size);
-  } else {
-    for (const { part: kind, position, size } of DEPOT_HULL) {
-      if (kind === "tank") continue;
-      part(materials[kind], position, size);
-    }
-    // Pressure vessels in square load-bearing racks. Straps and corner rails follow the contact envelope.
-    for (const side of [-1, 1]) {
-      const x = side * 11;
-      part(TANK, [x, -1, 0], [2.9, 3.65, 12.2], TANK_BODY);
-      part(TANK, [x, -1, 7.02], [2.9, 3.65, 1.85], TANK_CAP);
-      part(TANK, [x, -1, -7.02], [2.9, -3.65, -1.85], TANK_CAP);
-      for (const z of [-4.6, 4.6]) part(ROBOTIC, [x, -1, z], [2.98, 3.78, 0.95], TANK_BODY);
-      for (const a of [-1, 1]) {
-        for (const b of [-1, 1]) part(FRAME, [x + a * 2.73, -1 + b * 3.72, 0], [0.52, 0.52, 16]);
-      }
-      for (const z of [-7.72, 7.72]) {
-        for (const b of [-1, 1]) part(ROBOTIC, [x, -1 + b * 3.68, z], [5.75, 0.55, 0.56]);
-      }
-      part(FRAME, [x, -1, 8.02], [0.95, 0.95, 0.13], TANK_BODY);
-
-      // Radiator louvers sit in framed edge supports, with bright navigation lamps at the tips.
-      for (const dx of [-2.82, 2.82]) part(ROBOTIC, [side * 25 + dx, 0, -4], [0.35, 0.7, 12]);
-      for (const z of [-9.8, -6.9, -4, -1.1, 1.8]) part(FRAME, [side * 25, 0.38, z], [5.55, 0.2, 0.28]);
-      part(ROBOTIC, [side * 25, 0.4, -4], [0.31, 0.16, 11.5]);
-      part(AMBER, [side * 27.75, 0.45, 1.65], [0.46, 0.2, 0.46]);
-      for (const z of [-5.2, -2.8]) part(ROBOTIC, [side * 19, 0.92, z], [9.9, 0.52, 0.36]);
-
-      // Hardware and yellow guide brackets around the closed transfer port.
-      part(ROBOTIC, [side * 5.7, 0, 15.83], [0.62, 5.8, 0.46]);
-      part(SHELL, [side * 3.65, -2.25, 16.12], [0.44, 1.0, 0.35]);
-      part(SHELL, [side * 3.65, 2.25, 16.12], [0.44, 1.0, 0.35]);
-      part(LIGHT, [side * 5.65, 1, 16.07], [0.12, 1.7, 0.08]);
-      part(FRAME, [side * 5.4, 3.64, 0], [1.8, 0.9, 21.6]);
-    }
-    part(RUBBER, [0, 0.12, 16.035], [8.8, 4.1, 0.12]);
-    part(ROBOTIC, [0, 0.12, 16.13], [7.05, 3.12, 0.17]);
-    part(RUBBER, [0, 0.12, 16.25], [0.22, 2.65, 0.08]);
-    part(AMBER, [0, -2.27, 16.15], [6.9, 0.11, 0.1]);
-    part(LIGHT, [0, 2.2, 16.12], [6.65, 0.2, 0.13]);
-    part(ROBOTIC, [0, 4.08, -3], [6, 0.42, 13]);
-    for (const z of [-8, -6, -4, -2, 0, 2]) part(FRAME, [0, 4.32, z], [5.55, 0.1, 0.28]);
-    part(SHELL, [0, 3.28, -16], [4.9, 0.65, 4.95]);
-    part(AMBER, [0, 1.72, -19.02], [3.8, 0.22, 0.06]);
-  }
-  return Array.from(batches, ([material, pieces]) => {
-    const geometry = mergeGeometries(pieces);
-    for (const piece of pieces) piece.dispose();
-    return { geometry, material };
-  });
-}
-
-const DEPOT_MESHES = depotMeshes(false);
-const PREVIEW_MESHES = depotMeshes(true);
-
-function DepotHull({ preview = false, refinery = false }: { preview?: boolean; refinery?: boolean }) {
-  const meshes = preview ? PREVIEW_MESHES : DEPOT_MESHES;
-  return <>
-    {meshes.map(({ geometry, material }) => (
-      <mesh key={material.uuid} geometry={geometry} material={material} />
-    ))}
-    {refinery && <mesh geometry={BOX} material={AMBER} position={[0, -2.75, -19.02]} scale={[4.3, 0.83, 0.08]} />}
-  </>;
-}
-
-const Station = memo(function Station({ depot }: { depot: DepotRecord }) {
+const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; assets: DepotRenderAssets }) {
   const ref = useRef<Group>(null!);
   const worldOrigin = useWorldOrigin();
-  useFrame(() => {
-    const g = ref.current;
-    if (!g) return;
-    scenePosition(depot, worldOrigin.worldOriginKm, g.position);
-    g.visible = g.position.lengthSq() <= (DEPOT_RENDER_KM * 1000) ** 2;
+  const lod = useMemo(() => {
+    const model = new LOD();
+    model.autoUpdate = false;
+    assets.scenes.forEach((scene, level) => {
+      const instance = scene.clone(true);
+      instance.name = `depotLOD${level}`;
+      instance.visible = level === 0;
+      model.addLevel(instance, DEPOT_LOD_DISTANCES_M[level], 0.12);
+    });
+    return model;
+  }, [assets]);
+  useFrame(({ camera }) => {
+    const group = ref.current;
+    if (!group) return;
+    scenePosition(depot, worldOrigin.worldOriginKm, group.position);
+    group.visible = group.position.lengthSq() <= (DEPOT_RENDER_KM * 1000) ** 2;
+    if (!group.visible) return;
+    lod.updateWorldMatrix(true, false);
+    lod.update(camera);
   }, FRAME_PRIORITY_REMOTE_SHIPS);
-  return <group ref={ref} name={`depot:${depot.id}`} quaternion={depot.quaternion} visible={false}>
-    <DepotHull refinery={depot.refinery} />
+  return <group ref={ref} name={`depot:${depot.id}`} quaternion={depot.quaternion} visible={false} dispose={null}>
+    <primitive object={lod} name="depotLOD" />
+    {depot.refinery && <mesh geometry={BOX} material={AMBER} position={assets.refineryMount} scale={[1.2, 0.22, 0.48]} />}
   </group>;
 });
 
-function DepotPreview() {
-  const name = useAtomValue(depotPlacementAtom);
+function DepotStations({ depots }: { depots: readonly DepotRecord[] }) {
+  const assets = useDepotRenderAssets();
+  return <>{depots.map(depot => <Station key={depot.id} depot={depot} assets={assets} />)}</>;
+}
+
+function DepotPreviewModel() {
+  const { scene } = useGLTF(DEPOT_LOD_ASSETS[2], false, false);
+  const outline = useMemo(() => {
+    const group = new Group();
+    scene.updateMatrixWorld(true);
+    scene.traverse(object => {
+      if (!(object instanceof Mesh)) return;
+      // Expose the collar, truss and solar trays through the end-on placement view.
+      const edges = new EdgesGeometry(object.geometry, 24).applyMatrix4(object.matrixWorld);
+      group.add(new LineSegments(edges, PREVIEW_GOOD));
+    });
+    return group;
+  }, [scene]);
+  useEffect(() => () => {
+    outline.traverse(part => { if (part instanceof LineSegments) part.geometry.dispose(); });
+  }, [outline]);
   const ref = useRef<Group>(null!);
   const lastValid = useRef<boolean | null>(null);
   const worldOrigin = useWorldOrigin();
   useFrame(() => {
-    if (!name || !ref.current) return;
-    const g = ref.current;
-    g.visible = sampleDepotPlacementPose() && depotPlacementPreview.ready;
-    if (!g.visible) return;
-    scenePosition(depotPlacementPreview, worldOrigin.worldOriginKm, g.position);
-    g.quaternion.fromArray(depotPlacementPreview.quaternion);
+    const group = ref.current;
+    if (!group) return;
+    group.visible = sampleDepotPlacementPose() && depotPlacementPreview.ready;
+    if (!group.visible) return;
+    scenePosition(depotPlacementPreview, worldOrigin.worldOriginKm, group.position);
+    group.quaternion.fromArray(depotPlacementPreview.quaternion);
     if (lastValid.current !== depotPlacementPreview.valid) {
       lastValid.current = depotPlacementPreview.valid;
       const material = lastValid.current ? PREVIEW_GOOD : PREVIEW_BAD;
-      g.traverse(object => { if (object instanceof Mesh) object.material = material; });
+      group.traverse(object => { if (object instanceof LineSegments) object.material = material; });
     }
   }, FRAME_PRIORITY_REMOTE_SHIPS);
-  useEffect(() => () => { lastValid.current = null; }, [name]);
-  return name ? <group ref={ref} name="depotPlacementPreview" visible={false}><DepotHull preview /></group> : null;
+  return <group ref={ref} name="depotPlacementPreview" visible={false}>
+    <primitive object={outline} />
+  </group>;
 }
 
-type StationEntry = { pose: ShipPose; handles: NearFieldColliderId[] };
+function DepotPreview() {
+  const placement = useAtomValue(depotPlacementAtom);
+  return placement ? <Suspense fallback={null}><DepotPreviewModel /></Suspense> : null;
+}
 
-function DepotColliders({ depots }: { depots: IndustryState["depots"] }) {
+type StationEntry = { pose: ShipPose; handle: NearFieldColliderId };
+
+function samePose(a: ShipPose, b: ShipPose): boolean {
+  return a === b || (a.frameId === b.frameId &&
+    a.positionKm.every((n, i) => n === b.positionKm[i]) &&
+    a.quaternion.every((n, i) => n === b.quaternion[i]));
+}
+
+function DepotColliders({ depots }: { depots: readonly DepotRecord[] }) {
+  const { scene } = useGLTF(DEPOT_COLLISION_ASSET, false, false);
+  const shape = useMemo(() => readCollisionMeshes(scene), [scene]);
   const entries = useRef(new Map<string, StationEntry>());
+  const byId = useMemo(() => new Map(depots.map(depot => [depot.id, depot])), [depots]);
+
   useEffect(() => {
     const all = entries.current;
     return () => {
-      all.forEach(entry => entry.handles.forEach(id => nearField.removeCollider(id)));
+      all.forEach(({ handle }) => nearField.removeCollider(handle));
       all.clear();
     };
-  }, []);
+  }, [shape]);
+
   useFrame(() => {
     const ship = getLocalPlayerShip();
     if (!ship) return;
     const all = entries.current;
     all.forEach((entry, key) => {
-      if (!depots.some(depot => depot.id === key) || !withinColliderRange(entry.pose, ship, DEPOT_COLLISION_KM * 1.2)) {
-        entry.handles.forEach(id => nearField.removeCollider(id));
-        all.delete(key);
-      }
+      const depot = byId.get(key);
+      if (depot && samePose(entry.pose, depot) && withinColliderRange(depot, ship, DEPOT_COLLISION_KM * 1.2)) return;
+      nearField.removeCollider(entry.handle);
+      all.delete(key);
     });
     for (const depot of depots) {
       if (all.has(depot.id) || !withinColliderRange(depot, ship, DEPOT_COLLISION_KM)) continue;
-      _orientation.fromArray(depot.quaternion);
-      const handles = DEPOT_HULL.map(({ position, size }) => {
-        const p = depot.positionKm;
-        _offset.fromArray(position).multiplyScalar(0.001).applyQuaternion(_orientation);
-        _offset.set(_offset.x + p[0], _offset.y + p[1], _offset.z + p[2]);
-        return nearField.addCollider({ kind: "box", halfX: size[0] / 2, halfY: size[1] / 2, halfZ: size[2] / 2 },
-          depot.frameId, _offset, _orientation, "depot");
-      });
-      all.set(depot.id, { pose: depot, handles });
+      const handle = nearField.addCollider(
+        shape, depot.frameId, _offset.fromArray(depot.positionKm), _orientation.fromArray(depot.quaternion), "depot",
+      );
+      all.set(depot.id, { pose: depot, handle });
     }
-  }, FRAME_PRIORITY_REMOTE_SHIPS);
+  }, FRAME_PRIORITY_PLAYER_SHIP - 0.1);
   return null;
 }
 
@@ -453,9 +418,11 @@ export default function IndustryWorld() {
   const points = useAtomValue(replicationPointsAtom);
   const prospects = useMemo(() => INDUSTRY_SOURCES.map(source => prospectWorksite(source, depots)), [depots]);
   return <>
-    <DepotColliders depots={depots} />
+    {depots.length > 0 && <>
+      <Suspense fallback={null}><DepotColliders depots={depots} /></Suspense>
+      <Suspense fallback={null}><DepotStations depots={depots} /></Suspense>
+    </>}
     <DepotPreview />
-    {depots.map(depot => <Station key={depot.id} depot={depot} />)}
     {prospects.map(source => <Prospect key={source.id} source={source} />)}
     {drones.map((drone, index) => {
       const home = depots.find(d => d.id === drone.homeId);

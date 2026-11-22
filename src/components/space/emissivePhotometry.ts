@@ -292,6 +292,18 @@ export const EMITTERS = {
     hue: [1.0, 0.34, 0.04],
     why: "Amber mast beacons at their peak during the 450 ms flash every two seconds.",
   },
+  depot_guide: {
+    kind: "design",
+    nits: 18_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "Steady amber depot collar guides and aft telemetry lamps.",
+  },
+  depot_mast_beacon: {
+    kind: "design",
+    nits: 65_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "Depot mast beacons at peak during the 450 ms flash every two seconds.",
+  },
   replication_preview: {
     kind: "design",
     nits: 1200,

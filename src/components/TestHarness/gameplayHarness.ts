@@ -11,7 +11,7 @@ import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
-import { Mesh, MeshBasicMaterial, MeshStandardMaterial, Vector3 } from "three";
+import { Box3, LineBasicMaterial, LineSegments, LOD, Mesh, MeshBasicMaterial, MeshStandardMaterial, Vector3 } from "three";
 import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/cargo";
 import { devTeleportAtom } from "@/store/dev";
@@ -153,6 +153,42 @@ export function createGameplayHarness(store: Store) {
             resolve(samples);
           }, ms);
         });
+      },
+      depotPreview() {
+        const preview = testProbe.scene?.getObjectByName("depotPlacementPreview");
+        if (!preview?.visible) return null;
+        const bounds = new Box3();
+        let material = "";
+        preview.traverse(part => {
+          if (!(part instanceof LineSegments) || !(part.material instanceof LineBasicMaterial)) return;
+          part.geometry.computeBoundingBox();
+          if (part.geometry.boundingBox) bounds.union(part.geometry.boundingBox);
+          material = part.material.name;
+        });
+        return bounds.isEmpty() ? null : { material, sizeM: bounds.getSize(new Vector3()).toArray() };
+      },
+      depotModel(id: string) {
+        const object = testProbe.scene?.getObjectByName(`depot:${id}`);
+        const model = object?.getObjectByName("depotLOD");
+        if (!(model instanceof LOD) || !object?.visible) return null;
+        const level = model.getCurrentLevel();
+        const lights: Record<string, number> = {};
+        model.levels[level].object.traverse(part => {
+          if (part instanceof Mesh && part.material instanceof MeshStandardMaterial &&
+              (part.material.name === "Amber depot guides" || part.material.name === "Amber depot mast beacons")) {
+            lights[part.material.name] = part.material.emissiveIntensity;
+          }
+        });
+        return { level, lights };
+      },
+      depotColliders() {
+        const out: { id: number; inEngine: boolean; pieces: number }[] = [];
+        nearField.forEachCollider((id, shape, _frame, _pos, tag) => {
+          if (tag === "depot") {
+            out.push({ id, inEngine: nearField.colliderInEngine(id), pieces: shape.kind === "compoundHull" ? shape.pieces.length : 1 });
+          }
+        });
+        return out;
       },
       prospect(id: string) {
         const model = testProbe.scene?.getObjectByName(`industrySource:${id}`);
