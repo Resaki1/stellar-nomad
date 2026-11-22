@@ -196,7 +196,8 @@ def core():
         panel("Outer upper shielding", n, 16.82, 17.3, (13.0,2.0,14.25), patched,
               0.40, hit="head", corner=1.47)
         panel("Upper shoulder doubler", n, 16.65, 9.04, (12.55,1.25,2.65), "ceramic", 0.17, hit="head", corner=0.65)
-        seams_and_fasteners(n, 17.83, 17.3, 13.0, 14.25)
+        # Seat the heads just inside the shield face and inboard of its corner bevels.
+        seams_and_fasteners(n, 17.79, 17.3, 13.0, 14.25, inset=(1.58, 1.52))
         signal(n, 11.2, 26.9, count=3)
         for s in (-1,1) if lod < 2 else ():
             panel("Upper panel retainer", n, 17.15, 12.45, (0.69,2.15,7.6), "alloy", 0.12, s*6.3)

@@ -47,7 +47,7 @@ pnpm model build art/stations/replication-r4/replication-r4.blend --asset replic
 
 | Export | GLB dimensions X × Y × Z | Triangles | Primitives | Bytes |
 | --- | --- | ---: | ---: | ---: |
-| LOD0 | 75.40 × 71 × 40.65 m | 42,144 | 4 | 5,934,744 |
+| LOD0 | 75.40 × 71 × 40.65 m | 42,144 | 4 | 5,936,712 |
 | LOD1 | 75.35 × 71 × 40.65 m | 13,656 | 4 | 1,525,464 |
 | LOD2 | 75.55 × 71 × 40.65 m | 5,640 | 4 | 538,380 |
 | Collision | 75.55 × 71 × 40.62 m | 2,714 | 37 | 179,140 |
