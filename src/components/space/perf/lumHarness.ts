@@ -7697,6 +7697,21 @@ export class LumHarness {
    * (the GPU convention `readRenderTargetPixelsAsync` uses), not CSS pixels
    * top-left. Defaults to the centre, which is where the ladder aims its bodies.
    */
+  /**
+   * Raw ALPHA of the pre-tonemap target at a pixel. The canvas is `premultiplied`, so an
+   * effect that writes alpha changes how the compositor (HDR especially) shows the pixel —
+   * the exhaust's bounding volume once did exactly that (VFX_REALISM_PLAN §6 status).
+   */
+  async probeAlpha(x?: number, y?: number): Promise<number | null> {
+    if (!_source) return null;
+    const { renderer, target } = _source;
+    const px = Math.round(x ?? target.width / 2);
+    const py = Math.round(y ?? target.height / 2);
+    const buf = await renderer.readRenderTargetPixelsAsync(target, px, py, 1, 1);
+    const raw = (buf as unknown as ArrayLike<number>)[3] ?? 0;
+    return buf instanceof Uint16Array ? halfToFloat(raw) : buf instanceof Uint8Array ? raw / 255 : raw;
+  }
+
   async probe(x?: number, y?: number): Promise<LumSample | null> {
     if (!_source) {
       console.error("[lum] no render target registered — is the scene mounted?");

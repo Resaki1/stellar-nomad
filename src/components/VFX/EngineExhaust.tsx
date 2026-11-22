@@ -160,6 +160,24 @@ const LIGHT_COLOR_HALF = LIGHT_COLOR.clone().multiplyScalar(0.5);
 
 
 /** erf(x) ≈ tanh(1.202x), with tanh from exp (TSL has none); clamped so exp cannot overflow. */
+/**
+ * Additive COLOUR, untouched ALPHA. ⚠ AdditiveBlending adds src·α to the alpha channel too:
+ * MEASURED alpha 2.0 inside the plume's bounding cylinder and 3.0 where the halo sphere
+ * overlapped (the half-float target does not clamp), against 1.0 everywhere else. The canvas
+ * is `premultiplied`, so the compositor showed every pixel of the bounds differently — the
+ * owner's "bright polygon", and the whole screen once the camera sat inside the halo.
+ * `canvas:` captures read the render target and could not see it.
+ */
+function additiveKeepAlpha(m: NodeMaterial): void {
+  m.blending = THREE.CustomBlending;
+  m.blendEquation = THREE.AddEquation;
+  m.blendSrc = THREE.OneFactor;
+  m.blendDst = THREE.OneFactor;
+  m.blendEquationAlpha = THREE.AddEquation;
+  m.blendSrcAlpha = THREE.ZeroFactor;
+  m.blendDstAlpha = THREE.OneFactor;
+}
+
 /** TSL smoothstep(a, b, x) with node or number edges. */
 const smoothstepN = (a: ReturnType<typeof float> | number, b: ReturnType<typeof float> | number, x: ReturnType<typeof float>) => {
   const A = typeof a === "number" ? float(a) : a;
@@ -318,7 +336,7 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   m.side = THREE.BackSide;
   m.depthWrite = false;
   m.transparent = true;
-  m.blending = THREE.AdditiveBlending;
+  additiveKeepAlpha(m);
 
   m.fragmentNode = Fn(() => {
     // Mesh frame: volume z ∈ [−L, 0]; the nozzle exit plane is at z = +CAP_M.
@@ -464,7 +482,7 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     // Sanitise: one NaN/Inf pixel is smeared over the whole screen by the glare pass.
     const finite = raw.x.equal(raw.x).and(raw.y.equal(raw.y)).and(raw.z.equal(raw.z));
     const rgb = finite.select(tslClamp(raw, 0, 1.0e6), vec3(0));
-    // AdditiveBlending is src·srcAlpha + dst, so alpha must be 1 (0 drew nothing).
+    // Colour is added as-is (blendSrc One); alpha is ignored by additiveKeepAlpha.
     return vec4(rgb, 1);
   })();
   return m;
@@ -479,7 +497,7 @@ function makeHaloMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   m.side = THREE.BackSide;
   m.depthWrite = false;
   m.transparent = true;
-  m.blending = THREE.AdditiveBlending;
+  additiveKeepAlpha(m);
   m.fragmentNode = Fn(() => {
     // Mesh = unit sphere × 2.5a × HALO_MESH_PAD, so its facets strictly ENCLOSE the analytic
     // r = 2.5a sphere; entry and exit are analytic, the mesh only supplies the ray direction

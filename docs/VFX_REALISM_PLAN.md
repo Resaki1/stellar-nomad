@@ -676,6 +676,13 @@ atmospheres"); this section is its spec.
   on output (one NaN pixel is smeared over the screen by the glare pass). Cost A/B: vacuum
   ≈ 0, 3 km +0.2–0.6 ms. Not done: depth-clipping the volume against hull/terrain (needs a
   scene-depth read; today an occluder inside the volume drops that whole ray).
+- **…and the real cause of the polygon (second owner report, HDR display).** AdditiveBlending
+  adds src·α to ALPHA: MEASURED alpha 2.0 inside the plume's bounding cylinder and 3.0 under
+  the halo (half-float targets don't clamp) vs 1.0 elsewhere. The canvas is premultiplied /
+  extended-range, so the compositor drew every pixel of the bounds differently. Fixes: the
+  plume/halo blend colour only (`additiveKeepAlpha`), and the final output is opaque
+  (alpha pinned to 1 in SpaceRenderer, which also covers every other additive effect).
+  Reproduced and verified headless with `--query hdr=1` + `shot:` (old vs fixed A/B).
 
 ---
 

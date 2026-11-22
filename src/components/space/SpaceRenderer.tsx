@@ -9,6 +9,7 @@ import {
   texture,
   screenUV,
   vec2,
+  vec4,
   float,
   screenCoordinate,
   hash,
@@ -793,7 +794,13 @@ const SpaceRenderer = ({ scaled, local }: SpaceRendererProps) => {
     // the worst possible place for it, since deep space is most of our frame. Clamping
     // the floor in-shader is behaviour-identical on SDR and removes the class entirely.
     // 🔑 Only the FLOOR is clamped. The ceiling is what Phase 6b/6c exist to remove.
-    const dithered = OUTPUT_DITHER_LSB > 0 ? mapped.add(dither).max(0) : mapped;
+    const ditheredRgba = OUTPUT_DITHER_LSB > 0 ? mapped.add(dither).max(0) : mapped;
+    // ⚠ OPAQUE OUTPUT. The canvas is `premultiplied` (three's default; see
+    // `canvasAlphaRequested`), so the compositor reads this alpha. Additive effects raise it
+    // (AdditiveBlending adds src·α to alpha; the half-float targets don't clamp) — MEASURED
+    // alpha 2–3 under the engine plume's bounds, which an HDR display showed as a hard-edged
+    // brighter region. The frame is an opaque image: alpha is 1 by definition, not data.
+    const dithered = vec4(ditheredRgba.rgb, 1);
 
     // ── HDR CALIBRATION (Phase 6d, hdrCalibration.ts) ────────────────────────
     // ⚠ Replaces the whole output, tone curve included, and that is the point: the wedge

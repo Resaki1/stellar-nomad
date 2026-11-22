@@ -280,6 +280,13 @@ Thresholds in the example are illustrative, not calibrated.
 
 ## 4. Traps (MEASURED)
 
+- **`canvas:` cannot see alpha bugs.** It reads the render target, not what the browser
+  composites. The canvas is `premultiplied` (and on HDR displays extended-range), so a pass
+  that writes alpha ≠ 1 can look fine in every `canvas:` capture and still show on the
+  owner's screen (the engine plume's bounds showed as a bright polygon, 2026-11-22). For
+  anything blended, also take `shot:` with `--query hdr=1` (the headless HDR canvas is
+  active: `__lum.hdr()`), and read alpha with `__lum.probeAlpha(x, y)`.
+
 - **The hidden pane runs at ~2 fps.** `frames()` will look like a slow scene. Use
   the driver for anything unattended.
 - **Pane screenshots can lag the DOM by a frame or more**: one showed an overlay
