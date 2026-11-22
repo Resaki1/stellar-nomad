@@ -640,6 +640,28 @@ It will also drive plume sweep-back (E2/E3), and any future drag/heating.
 A session card for A1–A3 was proposed separately ("Airspeed relative to rotating
 atmospheres"); this section is its spec.
 
+### Status (2026-11-22)
+
+- **A1–A3 landed.** `src/sim/atmosphere.ts` (`ambientAt`, `airspeedMps`; one gas table shared
+  with the renderer and audio). Wind and emitter propagation read the ship's own air
+  (`audioShipBuffer.atmoBodyId/altitudeKm/airspeedMps`), never the renderer's registry.
+  Gates: `pnpm check:atmo` (co-rotation matches the rendered surface to < 0.02 m/s on Earth).
+  ⚠ Consequence now live: "stopped" means inertially stopped, so near Earth's equator the air
+  sweeps past at ~460 m/s (wind audible, ram intake credited). Co-rotating flight (a "fixed"
+  frame, ROADMAP M7) is what makes "stop" mean "hover"; until then this is correct physics.
+- **V1–V5 landed** (`src/sim/ship/atmoDrive.ts`, `ResourceRequests.atmo/altitudeKm/airspeedMps`,
+  transient `ShipResourceState.drive`, HUD drive glyph + `hint_thin_air`, transit refusal
+  `IN_ATMOSPHERE`). Owner calls taken as recommended: breathing = vacuum price (1.0), cap 10,
+  free coasting accepted, Venus crushed jet and Mars-at-cap kept, **water treated as purified
+  (no sodium tint)**. Live check at 30 km, static: 9.5–10× fuel; overdrive heat stays under the
+  radiators there because co-rotation gives ~460 m/s of ram air.
+- **E1–E4 landed** (`EngineExhaust.tsx` rewrite): ray-marched volume (≤ 14 adaptive steps,
+  twin nozzles in one march), analytic nozzle disc + Mach disk, shock diamonds, rarefied streak,
+  closed-form halo sphere; regime from `drivePlume`, per-ship air from its own position and the
+  DEFAULT tuning. Measured A/B (local-scene pass, 1280×720 headless Metal): vacuum ≈ 0,
+  1 km +0.15–0.3 ms, 40 km (camera inside the bell) +0.4–0.5 ms, 80 km ≈ 0.
+  Not done: nozzle-bell heat glow (needs a model material hook), E5 shimmer, E6, E7.
+
 ---
 
 ## 7. Light-speed delay for co-op (opinion, deferred)

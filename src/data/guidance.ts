@@ -11,6 +11,7 @@ export const HINTS = {
   lock: { id: "hint_lock", text: "Aim at a rock to lock it" },
   hydrates: { id: "hint_hydrates", text: "Hydrates → fuel: {toggleCrafting} Craft › Processing" },
   heat: { id: "hint_heat", text: "Heat high: the laser trips at 100 %" },
+  thinAir: { id: "hint_thin_air", text: "Thin air: thrust burns water and heat. Dive low or climb out" },
   cargoFull: { id: "hint_cargo_full", text: "Hold full: craft, process or jettison {toggleCargo}" },
   lowFuel: { id: "hint_low_fuel", text: "Fuel low: process hydrates {toggleCrafting}" },
   damage: { id: "hint_damage", text: "Hull damaged: repair in {toggleCrafting} Craft" },

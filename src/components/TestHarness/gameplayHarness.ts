@@ -297,7 +297,7 @@ export function createGameplayHarness(store: Store) {
         const r = shipRes;
         return {
           ordinaryKg: r.ordinaryKg, protectedKg: r.protectedKg, heat01: r.heat01, capacitor01: r.capacitor01, tripped: r.miningTripped,
-          processing: { ...r.processing }, meter: { ...r.meter }, powerScale: r.powerScale, heatScale: r.heatScale,
+          processing: { ...r.processing }, meter: { ...r.meter }, drive: { ...r.drive }, powerScale: r.powerScale, heatScale: r.heatScale,
           miningScale: r.miningScale, processingScale: r.processingScale, repairScale: r.repairScale, tankFull: r.tankFull,
           req: { ...shipReq }, control: { ...shipResControl }, hud: store.get(shipResourcesHudAtom),
           boostCharge: getLocalPlayerShip()?.boostCharge ?? null, health: store.get(shipHealthAtom), maxHealth: store.get(effectiveShipConfigAtom).maxHealth,

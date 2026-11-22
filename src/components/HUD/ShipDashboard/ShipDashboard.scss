@@ -55,6 +55,13 @@
   }
 
   &__icon { color: s.$accent-ok; }
+  &__icon--air { color: #6fd8f0; margin-right: 4px; vertical-align: -1px; }
+  &__icon--water {
+    color: #f0b44a;
+    margin-right: 4px;
+    vertical-align: -1px;
+    animation: ship-dashboard-drip 1s ease-in-out infinite;
+  }
 
   &__bar {
     display: block;
@@ -141,4 +148,9 @@
       line-height: 14px;
     }
   }
+}
+
+@keyframes ship-dashboard-drip {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }

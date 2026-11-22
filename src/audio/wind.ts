@@ -7,7 +7,6 @@
 // every per-body difference comes from `sol.json` via `acousticsForBody`.
 // ---------------------------------------------------------------------------
 
-import { getDominantAtmosphereBody } from "@/components/space/atmospherePass";
 import { acousticsForBody, densityAtAltitude } from "./acoustics";
 import { audioShipBuffer } from "./shipBuffer";
 
@@ -177,14 +176,14 @@ function follow(): void {
 
 /**
  * Recompute once per audio tick, before the emitters read it.
- * ⚠ `null` from `getDominantAtmosphereBody()` is vacuum: zero the TARGET and
- * let the cap fade it. The record also drops for a frame during texture loads,
- * and a snap there is an audible hole.
+ * ⚠ No body is vacuum: zero the TARGET and let the cap fade it. The body comes
+ * from the sim's `ambientAt` (nearest body whose air contains the ship), not the
+ * renderer's registry, which picked the airless Moon and dropped during loads.
  */
 export function updateWind(): void {
-  const dominant = getDominantAtmosphereBody();
-  const atmosphere = dominant ? acousticsForBody(dominant.id) : null;
-  if (!dominant || !atmosphere) {
+  const bodyId = audioShipBuffer.atmoBodyId;
+  const atmosphere = bodyId ? acousticsForBody(bodyId) : null;
+  if (!bodyId || !atmosphere) {
     windState.bodyId = null;
     windState.altitudeKm = 0;
     windState.densityKgM3 = 0;
@@ -196,13 +195,14 @@ export function updateWind(): void {
     follow();
     return;
   }
-  const altitudeKm = dominant.distanceKm - dominant.params.groundRadiusKm;
+  const altitudeKm = audioShipBuffer.altitudeKm;
   const densityKgM3 = densityAtAltitude(atmosphere, altitudeKm);
-  const speedMps = audioShipBuffer.speedMps;
+  // Relative to the co-rotating air: hovering over Earth's equator is not Mach 1.4.
+  const speedMps = audioShipBuffer.airspeedMps;
   // ⚠ Isothermal model, so c is the surface value at every altitude.
   const c = atmosphere.surfaceSpeedOfSoundMps;
-  const changedBody = windState.bodyId !== null && windState.bodyId !== dominant.id;
-  windState.bodyId = dominant.id;
+  const changedBody = windState.bodyId !== null && windState.bodyId !== bodyId;
+  windState.bodyId = bodyId;
   windState.altitudeKm = altitudeKm;
   windState.densityKgM3 = densityKgM3;
   windState.speedMps = speedMps;

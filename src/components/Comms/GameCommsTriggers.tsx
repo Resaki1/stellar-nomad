@@ -26,6 +26,7 @@ import { shipHealthAtom } from "@/store/store";
 
 const focusedAtom = atom((get) => get(miningStateAtom).isFocused);
 const heatWarnAtom = atom((get) => get(shipResourcesHudAtom).heatWarn);
+const burningWaterAtom = atom((get) => get(shipResourcesHudAtom).drive === "water");
 const lowFuelAtom = atom((get) => {
   const r = get(shipResourcesHudAtom);
   return r.tankKg > 1 && r.ordinaryKg < r.tankKg * 0.15;
@@ -76,6 +77,7 @@ export default function GameCommsTriggers() {
   const hasHydrates = useAtomValue(hasHydratesAtom);
   useHint(HINTS.hydrates, hasHydrates, dead);
   useHint(HINTS.heat, useAtomValue(heatWarnAtom), dead);
+  useHint(HINTS.thinAir, useAtomValue(burningWaterAtom), dead);
   useHint(HINTS.cargoFull, useAtomValue(isCargoFullAtom), dead);
   // Only actionable with hydrates aboard (after a respawn the hold is empty: the wreck hint applies).
   useHint(HINTS.lowFuel, useAtomValue(lowFuelAtom) && hasHydrates, dead);

@@ -6,6 +6,8 @@
 import type { FlightTuning } from "./flightTuning";
 import type { ResourceTuning } from "./resourceTuning";
 import type { ShipState } from "./shipState";
+import type { AtmosphereModel } from "@/sim/atmosphere";
+import { atmoFuel, createAtmoFuel, type AtmoFuel } from "./atmoDrive";
 
 export interface ProcessingRuntime {
   active: boolean;
@@ -58,6 +60,8 @@ export interface ShipResourceState {
   processingScale: number;
   repairScale: number;
   tankFull: boolean;
+  /** Variable-Isp drive state of the last step (transient: never saved). */
+  drive: AtmoFuel;
 }
 
 export interface ResourceRequests {
@@ -77,6 +81,11 @@ export interface ResourceRequests {
   /** Equipment: mining heat input and radiator multipliers (1 = starter). */
   miningHeatMult: number;
   coolingMult: number;
+  /** Air the ship is in (VFX plan §5.6): null in vacuum, which keeps every charge bit-identical. */
+  atmo: AtmosphereModel | null;
+  altitudeKm: number;
+  /** Speed relative to the co-rotating air, m/s (ram intake). */
+  airspeedMps: number;
 }
 
 export function createResourceMeter(): ResourceMeter {
@@ -89,6 +98,7 @@ export function createProcessingRuntime(): ProcessingRuntime {
 
 export function createShipResourceState(ordinaryKg: number, protectedKg: number): ShipResourceState {
   return {
+    drive: createAtmoFuel(),
     ordinaryKg,
     protectedKg,
     heat01: 0,
@@ -111,7 +121,7 @@ export function createShipResourceState(ordinaryKg: number, protectedKg: number)
 }
 
 export function createResourceRequests(): ResourceRequests {
-  return { miningBeam: false, repair: false, repairPerS: 0, transitDvKmps: 0, transitKm: 0, transitHeatKW: 0, freeFlight: false, reservedKg: 0, miningHeatMult: 1, coolingMult: 1 };
+  return { miningBeam: false, repair: false, repairPerS: 0, transitDvKmps: 0, transitKm: 0, transitHeatKW: 0, freeFlight: false, reservedKg: 0, miningHeatMult: 1, coolingMult: 1, atmo: null, altitudeKm: 0, airspeedMps: 0 };
 }
 
 const EPS_KG = 1e-9;
@@ -146,11 +156,11 @@ export function unconvertedUnits(units: number, committedKg: number, kgPerUnit: 
 }
 
 /** Most propellant one step can deliver (every axis at its limit, boosted, plus rotation), kg. */
-export function worstStepKg(ft: Readonly<FlightTuning>, t: Readonly<ResourceTuning>, accelerationMult: number, decelerationMult: number, dt: number): number {
+export function worstStepKg(ft: Readonly<FlightTuning>, t: Readonly<ResourceTuning>, accelerationMult: number, decelerationMult: number, dt: number, fuelMult = 1): number {
   const fwd = Math.max(ft.mainThrustMps2 * ft.boostThrustMult * accelerationMult, ft.retroThrustMps2 * decelerationMult);
   const side = Math.max(ft.strafeThrustMps2 * accelerationMult, ft.gripMps2 * decelerationMult);
   const dw = 3 * ft.angularAccelDegS2 * (Math.PI / 180) * dt;
-  return (fwd + 2 * side) * dt * t.propellantKgPerMps + dw * t.rotationKgPerRadps;
+  return (fwd + 2 * side) * dt * t.propellantKgPerMps * fuelMult + dw * t.rotationKgPerRadps;
 }
 
 /**
@@ -197,10 +207,17 @@ export function stepShipResources(
     if (dvMps >= t.thrustDeadbandMps) {
       s.dvCarryMps = 0;
       m.dvMps += dvMps;
-      m.thrustKg += spendManoeuvre(s, dvMps * t.propellantKgPerMps, req.reservedKg);
+      const mult = req.atmo ? atmoFuel(req.atmo, req.altitudeKm, req.airspeedMps, dvMps / dt, dt, t, s.drive).fuelMult : 1;
+      m.thrustKg += spendManoeuvre(s, dvMps * t.propellantKgPerMps * mult, req.reservedKg);
     } else {
       s.dvCarryMps = dvMps;
     }
+  }
+  if (req.freeFlight || !req.atmo || s.dvCarryMps > 0) {
+    // Coasting / vacuum / free flight: report the drive's state, charge and heat nothing.
+    atmoFuel(req.atmo, req.altitudeKm, req.airspeedMps, 0, dt, t, s.drive);
+  }
+  if (!req.freeFlight) {
     if (ship.ctlDwRadps > 1e-6) m.rotationKg += spendManoeuvre(s, ship.ctlDwRadps * t.rotationKgPerRadps, req.reservedKg);
   }
 
@@ -237,7 +254,8 @@ export function stepShipResources(
     + (ship.boosting ? t.boostHeatKW : 0)
     + t.processingHeatKW * s.processingScale
     + t.repairHeatKW * s.repairScale
-    + req.transitHeatKW;
+    + req.transitHeatKW
+    + s.drive.heatKW;
   s.heat01 = heatAfter(h, qKW, t, req.coolingMult, dt);
   if (s.miningScale > 0 && s.heat01 >= 1) s.miningTripped = true;
   else if (s.miningTripped && !req.miningBeam && s.heat01 < 1) s.miningTripped = false;

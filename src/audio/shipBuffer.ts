@@ -30,6 +30,15 @@ export const audioShipBuffer = {
    * that silenced the wind would measure the wrong scene.
    */
   speedMps: 0,
+  /**
+   * Speed relative to the co-rotating local air, m/s (VFX plan §6): what the wind
+   * bed hears. Equals `speedMps` in vacuum; ~0 when hovering over a spinning planet.
+   */
+  airspeedMps: 0,
+  /** Body whose atmosphere the SHIP is in (`src/sim/atmosphere.ts` ambientAt), or null. */
+  atmoBodyId: null as string | null,
+  /** Ship altitude above that body's reference surface, km. */
+  altitudeKm: 0,
   /** Salvage tractor beams currently holding a wreck. Written by WreckCollector. */
   tractorBeams: 0,
 };

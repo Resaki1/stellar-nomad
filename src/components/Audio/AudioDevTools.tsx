@@ -410,7 +410,7 @@ export default function AudioDevTools() {
           const rows = allAcoustics().map((a) => ({
             body: a.bodyId,
             gas: `${a.dominantGas} ${(a.dominantFraction * 100).toFixed(0)}%`,
-            "M g/mol": Math.round(a.molarMassKgPerMol * 1e5) / 100,
+            "M g/mol": Math.round(a.molarKgPerMol * 1e5) / 100,
             gamma: Math.round(a.gamma * 1e4) / 1e4,
             "T K": a.surfaceTemperatureK,
             "c m/s": Math.round(a.surfaceSpeedOfSoundMps * 10) / 10,

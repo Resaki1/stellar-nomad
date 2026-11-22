@@ -17,222 +17,34 @@
 // listener — and nothing about how loud a thing is authored to be.
 // ---------------------------------------------------------------------------
 
-import { GASES } from "@/components/celestial/bodies/atmosphereData";
-import { activeSystem } from "@/sim/systemRegistry";
-import type {
-  AtmosphereGasId,
-  CelestialBodyDef,
-} from "@/sim/systemTypes";
-
-/** Universal gas constant, J/(mol·K). */
-const R_GAS = 8.314462618;
+import {
+  allAtmosphereModels,
+  atmosphereModel,
+  densityAtAltitude,
+  type AtmosphereModel,
+} from "@/sim/atmosphere";
 
 /** Earth sea-level reference density, kg/m³ — the yardstick for audibility. */
 export const EARTH_SURFACE_DENSITY = 1.225;
 
-// ---------------------------------------------------------------------------
-// Per-gas thermodynamics
-// ---------------------------------------------------------------------------
-
 /**
- * Heat-capacity ratio γ = Cp/Cv per gas.
- *
- * ⚠ ROOM-TEMPERATURE VALUES. γ for polyatomic gases falls as temperature rises
- * (more vibrational modes activate), so Venus at 737 K and Titan at 94 K are
- * both approximations. The error is a few percent and enters the speed of sound
- * as its square root, i.e. ~1-2% — well below the 5% we already carry against
- * Mars' measured value, so a T-dependent Cp model is not worth it yet.
- *
- * ⚠ Molar masses are NOT duplicated here: they come from `GASES` in
- * atmosphereData.ts, which is the one source of truth. A second table would
- * drift.
+ * A body's acoustic atmosphere. The thermodynamics (molar mass, mixture γ via
+ * Cp, hydrostatic H = RT/(Mg), ρ₀, c₀) moved to `src/sim/atmosphere.ts` so the
+ * drive, exhaust and wind share one model; this alias keeps the audio API.
  */
-const GAMMA: Record<AtmosphereGasId, number> = {
-  n2: 1.4, // diatomic
-  o2: 1.4, // diatomic
-  co2: 1.29, // linear triatomic
-  ar: 1.667, // monatomic
-  ch4: 1.32,
-  h2: 1.41, // diatomic, but rotational modes freeze out when very cold
-  he: 1.667, // monatomic
-  h2o: 1.33,
-  so2: 1.29,
-};
-
-export type AcousticAtmosphere = {
-  bodyId: string;
-  /** Mean molar mass of the mixture, kg/mol. */
-  molarMassKgPerMol: number;
-  /** Mixture heat-capacity ratio. */
-  gamma: number;
-  surfaceTemperatureK: number;
-  surfacePressurePa: number;
-  /** Gas density at the reference surface, kg/m³. */
-  surfaceDensityKgM3: number;
-  /** Speed of sound at the reference surface, m/s. */
-  surfaceSpeedOfSoundMps: number;
-  /**
-   * Density e-folding height, km. Derived from the body's own gravity, so it is
-   * not the renderer's *optical* Rayleigh scale height (which the visuals may
-   * art-direct) but the honest hydrostatic one: H = RT/(Mg).
-   */
-  scaleHeightKm: number;
-  /** Dominant gas by mole fraction, for logging and for absorption dispatch. */
-  dominantGas: AtmosphereGasId;
-  /** Mole fraction of the dominant gas. */
-  dominantFraction: number;
-};
-
-/**
- * Mixture γ, computed the CORRECT way.
- *
- * ⚠⚠ THE TEMPTING SHORTCUT IS WRONG. `γ_mix = Σ xᵢ γᵢ` is not valid — γ is a
- * ratio of two extensive quantities, and ratios do not mole-average. The right
- * route is via molar heat capacities:
- *
- *     Cpᵢ    = γᵢ·R/(γᵢ − 1)
- *     Cp_mix = Σ xᵢ·Cpᵢ
- *     Cv_mix = Cp_mix − R          (ideal gas)
- *     γ_mix  = Cp_mix / Cv_mix
- *
- * For a 95% CO₂ / 5% N₂ mix the naive average gives 1.2955 against the correct
- * 1.2937 — only 0.14%, so the shortcut would have been *harmless here*. It is
- * done properly anyway because the error grows with the spread of the
- * components, and a 90% H₂ / 10% He mixture (γ 1.41 vs 1.667) is exactly that
- * case: naive 1.4357 versus correct 1.4227, a 0.9% error that would push
- * Jupiter's speed of sound the wrong way by ~0.5%.
- */
-function mixtureGamma(
-  composition: Partial<Record<AtmosphereGasId, number>>,
-  totalFraction: number,
-): number {
-  let cpMix = 0;
-  for (const [gas, frac] of Object.entries(composition)) {
-    if (!frac) continue;
-    const g = GAMMA[gas as AtmosphereGasId];
-    if (g === undefined) continue;
-    const cp = (g * R_GAS) / (g - 1);
-    cpMix += (frac / totalFraction) * cp;
-  }
-  if (cpMix <= R_GAS) return 1.4; // degenerate input; fall back to air
-  return cpMix / (cpMix - R_GAS);
-}
-
-/** Standard gravity at a body's reference surface, m/s². */
-function surfaceGravity(body: CelestialBodyDef): number {
-  const G = 6.6743e-11;
-  if (body.massKg == null || !body.radiusKm) return 9.81;
-  return (G * body.massKg) / Math.pow(body.radiusKm * 1000, 2);
-}
-
-/**
- * Derive a body's acoustic atmosphere, or null when it has none.
- *
- * Pure and cheap, but called once per body and cached — the inputs are static
- * per system.
- */
-function deriveAcoustics(body: CelestialBodyDef): AcousticAtmosphere | null {
-  const atm = body.atmosphere;
-  if (!atm) return null;
-
-  // Mole fractions "need not sum to 1 — normalised on read" per AtmosphereDef.
-  let total = 0;
-  let dominantGas: AtmosphereGasId = "n2";
-  let dominantFraction = 0;
-  for (const [gas, frac] of Object.entries(atm.composition)) {
-    if (!frac) continue;
-    total += frac;
-    if (frac > dominantFraction) {
-      dominantFraction = frac;
-      dominantGas = gas as AtmosphereGasId;
-    }
-  }
-  if (total <= 0) return null;
-
-  let molarMass = 0;
-  for (const [gas, frac] of Object.entries(atm.composition)) {
-    if (!frac) continue;
-    const props = GASES[gas as AtmosphereGasId];
-    if (!props) continue;
-    molarMass += (frac / total) * props.molarKgPerMol;
-  }
-  if (molarMass <= 0) return null;
-
-  const gamma = mixtureGamma(atm.composition, total);
-  const T = atm.surfaceTemperatureK;
-  const p = atm.surfacePressureBar * 1e5;
-
-  // Ideal gas. Real-gas corrections matter at Venus' 92 bar / 737 K, but the
-  // compressibility factor there is within a few percent of 1, which is smaller
-  // than the γ approximation above.
-  const rho = (p * molarMass) / (R_GAS * T);
-  const c = Math.sqrt((gamma * R_GAS * T) / molarMass);
-  const g = surfaceGravity(body);
-  const scaleHeightKm = (R_GAS * T) / (molarMass * g) / 1000;
-
-  return {
-    bodyId: body.id,
-    molarMassKgPerMol: molarMass,
-    gamma,
-    surfaceTemperatureK: T,
-    surfacePressurePa: p,
-    surfaceDensityKgM3: rho,
-    surfaceSpeedOfSoundMps: c,
-    scaleHeightKm,
-    dominantGas,
-    dominantFraction: dominantFraction / total,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Cache, keyed by body id
-// ---------------------------------------------------------------------------
-
-let cache: Map<string, AcousticAtmosphere | null> | null = null;
-
-function ensureCache(): Map<string, AcousticAtmosphere | null> {
-  if (cache) return cache;
-  cache = new Map();
-  const bodies = activeSystem().celestialBodies as CelestialBodyDef[];
-  for (const b of bodies) cache.set(b.id, deriveAcoustics(b));
-  return cache;
-}
+export type AcousticAtmosphere = AtmosphereModel;
 
 /** Acoustic properties of a body's atmosphere, or null if it is airless. */
 export function acousticsForBody(bodyId: string): AcousticAtmosphere | null {
-  return ensureCache().get(bodyId) ?? null;
+  return atmosphereModel(bodyId);
 }
 
 /** Every body that has an atmosphere. For the dev harness and the doc table. */
 export function allAcoustics(): AcousticAtmosphere[] {
-  const out: AcousticAtmosphere[] = [];
-  for (const v of Array.from(ensureCache().values())) if (v) out.push(v);
-  return out;
+  return allAtmosphereModels();
 }
 
-// ---------------------------------------------------------------------------
-// Local state at altitude
-// ---------------------------------------------------------------------------
-
-/**
- * Gas density at an altitude above the reference surface, kg/m³.
- *
- * Isothermal hydrostatic profile: ρ(h) = ρ₀·exp(−h/H). Crude above a few scale
- * heights (real atmospheres are not isothermal), but the quantity it feeds —
- * "how much sound can this medium carry" — has collapsed to nothing by then
- * anyway, so the error is unobservable.
- *
- * ⚠ Negative altitudes are clamped: below the reference surface is either
- * underground or, for a gas giant, deeper than the 1-bar level this model is
- * anchored to. Neither is somewhere audio needs to be correct.
- */
-export function densityAtAltitude(
-  atm: AcousticAtmosphere,
-  altitudeKm: number,
-): number {
-  const h = Math.max(0, altitudeKm);
-  return atm.surfaceDensityKgM3 * Math.exp(-h / atm.scaleHeightKm);
-}
+export { densityAtAltitude };
 
 /**
  * ACOUSTIC IMPEDANCE COUPLING — the amplitude multiplier for a world sound,

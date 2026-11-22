@@ -67,12 +67,44 @@ export interface ResourceTuning {
   repairPerS: number;
   /** fe_ni_metal units per 1 % of max hull. */
   repairUnitsPerPct: number;
+
+  // ── Variable-Isp drive in atmosphere (docs/VFX_REALISM_PLAN.md §5.6.5) ──
+  /** Density at/below which the torch runs at full v_e, kg/m³. */
+  atmoHandoffRhoKgM3: number;
+  /** Density above which v_e stops falling (the 4 km/s floor at 20 t), kg/m³. */
+  atmoFloorRhoKgM3: number;
+  /** v_e/v_vac = (ρ_hand/ρ)^exponent; ½ is a game choice (power ∝ 1/√ρ). */
+  atmoPowerExponent: number;
+  /** Static intake capture, m³/s. */
+  atmoIntakeM3PerS: number;
+  /** Ram capture area, m² (× airspeed). */
+  atmoIntakeAreaM2: number;
+  /** Fuel multiplier while air covers the need (1 = vacuum price). */
+  atmoBreathingFuelMult: number;
+  /** Soft cap of the water multiplier; the rest of the shortfall becomes overdrive heat. */
+  atmoFuelMultMax: number;
+  /** Heat at full thrust and 4× overdrive, kW. */
+  atmoOverdriveHeatKW: number;
+  /** Fraction of the atmosphere's height over which the drive fades to vacuum. */
+  atmoTopFadeFrac: number;
+  /** Reference ship mass for v_e / plume regimes, kg (the fuel model itself is mass-free). */
+  driveRefMassKg: number;
 }
 
 export const DEFAULT_RESOURCE_TUNING: Readonly<ResourceTuning> = Object.freeze({
   tankKg: PROPELLANT_TANK_KG,
   recoveryAllowanceKg: RECOVERY_ALLOWANCE_KG,
   propellantKgPerMps: 0.008,
+  atmoHandoffRhoKgM3: 3.1e-6,
+  atmoFloorRhoKgM3: 1.225,
+  atmoPowerExponent: 0.5,
+  atmoIntakeM3PerS: 700,
+  atmoIntakeAreaM2: 3.5,
+  atmoBreathingFuelMult: 1,
+  atmoFuelMultMax: 10,
+  atmoOverdriveHeatKW: 150,
+  atmoTopFadeFrac: 0.15,
+  driveRefMassKg: 20000,
   rotationKgPerRadps: 0.02,
   thrustDeadbandMps: 0.001,
   exhaustedAngularScale: 0.25,
@@ -135,9 +167,9 @@ export function getEffectiveTuning(): Readonly<ResourceTuning> {
 }
 
 const POSITIVE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>([
-  "tankKg", "heatCapacityKJ", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS",
+  "tankKg", "heatCapacityKJ", "atmoHandoffRhoKgM3", "atmoFloorRhoKgM3", "atmoBreathingFuelMult", "atmoFuelMultMax", "driveRefMassKg", "processingKgPerUnit", "processingKgPerS", "heatMax01", "transitMaxTripS",
 ]);
-const UNIT_RANGE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["exhaustedAngularScale", "heatWarn01", "heatThrottle01"]);
+const UNIT_RANGE: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["atmoTopFadeFrac", "exhaustedAngularScale", "heatWarn01", "heatThrottle01"]);
 const INTEGER: ReadonlySet<keyof ResourceTuning> = new Set<keyof ResourceTuning>(["processingMaxBatchUnits", "repairUnitsPerPct"]);
 
 /** Patch the live table; non-finite values and unknown keys are ignored, values clamped to range. */

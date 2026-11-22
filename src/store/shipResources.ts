@@ -9,6 +9,7 @@ import { hullRepairable } from "@/sim/ship/hull";
 import { REPAIR_MATERIAL_ID, SUSTAINED_BEAM_S, getProcessingRecipe } from "@/data/content";
 import { getActiveSave, getLocalPlayerState, registerCollector, samplePlayerSlice } from "@/save/activeSave";
 import type { PlayerState } from "@/save/types";
+import { atmoFuel, createAtmoFuel } from "@/sim/ship/atmoDrive";
 import {
   createResourceRequests,
   createShipResourceState,
@@ -152,6 +153,12 @@ export interface ShipResourcesHud {
   /** One line: why an action is throttled or refused right now, else null. */
   reason: string | null;
   processing: { id: string; units: number; committedKg: number; totalKg: number; scale: number } | null;
+  /**
+   * Drive reaction mass at full thrust here (VFX plan §5.6.4): vacuum, breathing air, or
+   * burning tank water at `driveMult`× the vacuum price. Hysteresis 1.2/1.5 on the glyph only.
+   */
+  drive: "vacuum" | "air" | "water";
+  driveMult: number;
 }
 
 export const shipResourcesHudAtom = atom<ShipResourcesHud>({
@@ -170,7 +177,21 @@ export const shipResourcesHudAtom = atom<ShipResourcesHud>({
   repairing: false,
   reason: null,
   processing: null,
+  drive: "vacuum",
+  driveMult: 1,
 });
+
+const _drivePreview = createAtmoFuel();
+let _driveGlyph: ShipResourcesHud["drive"] = "vacuum";
+
+/** Full-thrust drive preview from the current air (never charged; the step owns charging). */
+function driveGlyph(): ShipResourcesHud["drive"] {
+  const a = atmoFuel(shipReq.atmo, shipReq.altitudeKm, shipReq.airspeedMps, 120, 1 / 60, shipTuning, _drivePreview);
+  if (a.powerFrac >= 1) _driveGlyph = "vacuum";
+  else if (a.fuelMult <= 1.2) _driveGlyph = "air";
+  else if (a.fuelMult > 1.5 || _driveGlyph === "vacuum") _driveGlyph = "water";
+  return _driveGlyph;
+}
 
 function reasonLine(): string | null {
   const s = shipRes;
@@ -205,6 +226,8 @@ export function buildShipResourcesHud(): ShipResourcesHud {
     processing: run.active
       ? { id: run.id, units: run.units, committedKg: run.committedKg, totalKg: run.units * t.processingKgPerUnit, scale: s.processingScale }
       : null,
+    drive: driveGlyph(),
+    driveMult: _drivePreview.fuelMult,
   };
 }
 

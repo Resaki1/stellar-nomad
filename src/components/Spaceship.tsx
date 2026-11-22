@@ -17,6 +17,9 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { collectShipPose, holdSavedPose, loadShipState } from "@/sim/shipPersistence";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { frameOriginKm } from "@/sim/frames";
+import { ambientAt } from "@/sim/atmosphere";
+import { playerAir } from "@/sim/ship/playerAir";
+import { drivePowerFrac, driveRhoEff } from "@/sim/ship/atmoDrive";
 import { updateShipFrame } from "@/sim/ship/shipFrame";
 import type { CelestialCollider } from "@/sim/celestialCollision";
 import { LOCAL_PLAYER_ID, localRenderPose, registerEntity, unregisterEntity } from "@/sim/entities";
@@ -389,7 +392,14 @@ const SpaceShip = memo(() => {
     updateShipRequests(store, devSpeed !== null, miningBeamRequest.on);
     updateTransitInputs(store, _input);
     const rt = getShipTuning();
-    const worstKg = worstStepKg(_env.tuning, rt, cfg.accelerationMult, cfg.decelerationMult, FIXED_DT);
+    // Variable-Isp drive (VFX plan §5.6): last frame's air; vacuum leaves every charge unchanged.
+    const amb = playerAir.ambient;
+    shipReq.atmo = amb.model;
+    shipReq.altitudeKm = amb.altitudeKm;
+    shipReq.airspeedMps = playerAir.airspeedMps;
+    const inThickAir = amb.model !== null && drivePowerFrac(driveRhoEff(amb.model, amb.altitudeKm, rt), rt) < 1;
+    const worstKg = worstStepKg(_env.tuning, rt, cfg.accelerationMult, cfg.decelerationMult, FIXED_DT,
+      inThickAir ? rt.atmoFuelMultMax : 1);
 
     // ── Fixed-timestep physics loop ────────────────────────────────────
     if (isSimPaused()) physicsAcc.current = 0;
@@ -536,6 +546,17 @@ const SpaceShip = memo(() => {
       rp.throttle = exhaustIntensity.current;
     }
     _localRel.add(_frameOrigin);
+    {
+      // Air the ship is in, and its velocity relative to the co-rotating atmosphere (VFX §6).
+      // velKmps is relative to the ship's frame body, which is the atmosphere's body whenever
+      // there is air (atmospheres sit deep inside their SOI).
+      const amb = ambientAt(_localRel.x, _localRel.y, _localRel.z, playerAir.ambient);
+      const v = ship.velKmps;
+      playerAir.relVelX = v.x * 1000 - amb.airVelX;
+      playerAir.relVelY = v.y * 1000 - amb.airVelY;
+      playerAir.relVelZ = v.z * 1000 - amb.airVelZ;
+      playerAir.airspeedMps = Math.hypot(playerAir.relVelX, playerAir.relVelY, playerAir.relVelZ);
+    }
     worldOrigin.setShipPosKm(ship.absPosKm);
     worldOrigin.setWorldOriginKm(_localRel);
     shipRef.current.position.set(0, 0, 0);
@@ -584,6 +605,10 @@ const SpaceShip = memo(() => {
     // must stay driven during a bench run. Same definition as the HUD speed (transit
     // included) so the bed never disagrees with the on-screen number.
     audioShipBuffer.speedMps = Math.max(normalSpeedMps, transitSpeedMps);
+    // Wind is driven by AIRspeed (transit never runs inside an atmosphere).
+    audioShipBuffer.airspeedMps = Math.max(playerAir.airspeedMps, transitSpeedMps);
+    audioShipBuffer.atmoBodyId = playerAir.ambient.bodyId;
+    audioShipBuffer.altitudeKm = playerAir.ambient.altitudeKm;
     hudAcc.current += delta;
     if (!benchMode && hudAcc.current >= HUD_PUBLISH_S) {
       hudAcc.current = 0;

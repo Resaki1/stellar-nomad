@@ -55,6 +55,7 @@ export function applyDifficulty(base: Readonly<ResourceTuning>, m: Readonly<Diff
   out.repairHeatKW = base.repairHeatKW * m.heat;
   out.transitSpoolHeatKW = base.transitSpoolHeatKW * m.heat;
   out.transitBurnHeatKW = base.transitBurnHeatKW * m.heat;
+  out.atmoOverdriveHeatKW = base.atmoOverdriveHeatKW * m.heat;
   out.recoveryAllowanceKg = base.recoveryAllowanceKg * m.allowance;
   return out;
 }

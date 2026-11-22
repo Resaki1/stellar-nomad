@@ -26,6 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import { activeSystem } from "@/sim/systemRegistry";
+import { GAS_PROPS } from "@/sim/atmosphere";
 import type { AtmosphereGasId, CelestialBodyDef } from "@/sim/systemTypes";
 import { sunIlluminanceAt } from "@/components/space/photometry";
 import type { AtmosphereParams, Vec3Tuple } from "../types";
@@ -123,28 +124,23 @@ export type GasProps = {
 };
 
 /**
- * ⚠ EXPORTED FOR THE ACOUSTIC MODEL (`src/audio/acoustics.ts`), which needs the
- * same mean molar mass this table already carries in order to compute a body's
- * speed of sound and gas density. Exported rather than duplicated: a second
- * molar-mass table would silently drift from this one.
- *
- * The acoustic module adds the properties THIS table has no reason to hold
- * (heat-capacity ratio, viscosity), so only the molar masses are shared.
+ * Optical gas properties. Molar masses come from `GAS_PROPS` in
+ * `src/sim/atmosphere.ts` (the one table the drive, audio and renderer share).
  */
 export const GASES: Record<AtmosphereGasId, GasProps> = {
-  n2: { molarKgPerMol: 0.028014, rayleighRel: 1.027 },
-  o2: { molarKgPerMol: 0.031999, rayleighRel: 0.907 },
-  co2: { molarKgPerMol: 0.04401, rayleighRel: 2.57 },
-  ar: { molarKgPerMol: 0.039948, rayleighRel: 0.883 },
+  n2: { molarKgPerMol: GAS_PROPS.n2.molarKgPerMol, rayleighRel: 1.027 },
+  o2: { molarKgPerMol: GAS_PROPS.o2.molarKgPerMol, rayleighRel: 0.907 },
+  co2: { molarKgPerMol: GAS_PROPS.co2.molarKgPerMol, rayleighRel: 2.57 },
+  ar: { molarKgPerMol: GAS_PROPS.ar.molarKgPerMol, rayleighRel: 0.883 },
   ch4: {
-    molarKgPerMol: 0.016043,
+    molarKgPerMol: GAS_PROPS.ch4.molarKgPerMol,
     rayleighRel: 2.2,
     absorption: [9.0e-4, 1.5e-4, 5.0e-6],
   },
-  h2: { molarKgPerMol: 0.002016, rayleighRel: 0.199 },
-  he: { molarKgPerMol: 0.004003, rayleighRel: 0.0137 },
-  h2o: { molarKgPerMol: 0.018015, rayleighRel: 0.7 },
-  so2: { molarKgPerMol: 0.064066, rayleighRel: 5.5 },
+  h2: { molarKgPerMol: GAS_PROPS.h2.molarKgPerMol, rayleighRel: 0.199 },
+  he: { molarKgPerMol: GAS_PROPS.he.molarKgPerMol, rayleighRel: 0.0137 },
+  h2o: { molarKgPerMol: GAS_PROPS.h2o.molarKgPerMol, rayleighRel: 0.7 },
+  so2: { molarKgPerMol: GAS_PROPS.so2.molarKgPerMol, rayleighRel: 5.5 },
 };
 
 // ── Derivation ─────────────────────────────────────────────────────────

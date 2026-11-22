@@ -96,6 +96,8 @@ export interface TransitInputs {
 
 /** Refusal for a target the ship already stands at (the HUD hides it; no toast). */
 export const ALREADY_THERE = "Already at the destination";
+/** A full-power torch can't light inside air (VFX plan §5.6.4): climb above the drive's fade first. */
+export const IN_ATMOSPHERE = "Climb out of the atmosphere";
 
 /** A clearance waypoint may lengthen the route at most this much over the direct line (+ 10 clearance radii, so a short hop round a body keeps working: M3.5's standoff → lunar field hop). */
 const ROUTE_MAX_DETOUR = 1.5;
@@ -696,6 +698,7 @@ export function planTransit(
   out.peakHeat01 = out.endHeat01 = res.heat01;
   out.fuelLimited = false;
   if (res.ordinaryKg <= 0 && !inp.freeFlight) return refuse(out, "No fuel (reserve is for manoeuvring)");
+  if (res.drive.powerFrac < 1 && !inp.freeFlight) return refuse(out, IN_ATMOSPHERE);
   if (!target) {
     out.ok = true;
     return true;

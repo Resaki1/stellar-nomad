@@ -51,7 +51,7 @@ const mocks = {
     distanceToListener: () => 0, CULL_ENTER_GAIN: 0.01, CULL_EXIT_GAIN: 0.005,
   },
   "./acoustics": { acousticsForBody: () => null, propagationFor: () => ({ gain: 0, cutoffHz: 100 }) },
-  "@/components/space/atmospherePass": { getDominantAtmosphereBody: () => null },
+  "./shipBuffer": { audioShipBuffer: { atmoBodyId: null, altitudeKm: 0 } },
 };
 function load(file, extra = {}) {
   const loaded = { exports: {} };

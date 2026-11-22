@@ -1,7 +1,7 @@
 import "./ShipDashboard.scss";
 import { useAtomValue } from "jotai";
 import { useEffect, useState, type ReactNode } from "react";
-import { Wrench } from "lucide-react";
+import { Droplet, Wind, Wrench } from "lucide-react";
 import { hudInfoAtom, shipHealthAtom } from "@/store/store";
 import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { formatSpeed } from "@/sim/units";
@@ -96,7 +96,21 @@ const ShipDashboard = () => {
       <Row label={hudInfo.decoupled ? "ASSIST" : ""} value={hudInfo.decoupled ? "DECOUPLED" : ""} tone="warn" />
       <Row
         label="FUEL"
-        value={empty ? "EMPTY" : onReserve ? `RSV ${res.protectedKg.toFixed(0)} kg` : `${res.ordinaryKg.toFixed(0)} kg`}
+        value={
+          <>
+            {res.drive === "air" && (
+              <Wind size={11} strokeWidth={2} aria-label="breathing air" className="ship-dashboard__icon ship-dashboard__icon--air" data-testid="drive-air" />
+            )}
+            {res.drive === "water" && (
+              <Droplet
+                size={11} strokeWidth={2} aria-label={`burning water ×${res.driveMult.toFixed(0)}`}
+                className="ship-dashboard__icon ship-dashboard__icon--water" data-testid="drive-water"
+                style={{ animationDuration: `${(1.6 / Math.max(1, Math.log2(res.driveMult) + 1)).toFixed(2)}s` }}
+              />
+            )}
+            {empty ? "EMPTY" : onReserve ? `RSV ${res.protectedKg.toFixed(0)} kg` : `${res.ordinaryKg.toFixed(0)} kg`}
+          </>
+        }
         tone={fuelTone}
         bar={
           <span className="ship-dashboard__fuel">

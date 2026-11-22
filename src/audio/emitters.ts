@@ -35,7 +35,7 @@ import {
 } from "./spatial";
 import { dbToGain } from "./engine";
 import { acousticsForBody, propagationFor } from "./acoustics";
-import { getDominantAtmosphereBody } from "@/components/space/atmospherePass";
+import { audioShipBuffer } from "./shipBuffer";
 import { setVoicePropagation } from "./voices";
 
 export type EmitterHandle = {
@@ -179,11 +179,11 @@ function baseGain(em: Emitter): number {
 export function updateEmitters(): void {
   // Local atmosphere, resolved ONCE per tick rather than per emitter.
   //
-  // ⚠ `null` means vacuum, not "unknown" (trap T7): a body drops out of this map
-  // when its LOD hides it, and at that distance vacuum is the correct answer.
-  const dom = getDominantAtmosphereBody();
-  const atm = dom ? acousticsForBody(dom.id) : null;
-  const altitudeKm = dom ? dom.distanceKm - dom.params.groundRadiusKm : 0;
+  // ⚠ `null` means vacuum (trap T7). The ship's air from the sim (`ambientAt`), which
+  // only ever names a body whose atmosphere actually contains the ship.
+  const bodyId = audioShipBuffer.atmoBodyId;
+  const atm = bodyId ? acousticsForBody(bodyId) : null;
+  const altitudeKm = audioShipBuffer.altitudeKm;
 
   for (const em of Array.from(emitters.values())) {
     if (em.stopped) continue;

@@ -119,6 +119,9 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `PHYS_PARTS=sim,damage,hull,asteroids pnpm drive -- --keep run:scripts/drive-examples/physics-check.mjs` — collisions (deterministic contact gates + live asteroid hits); design in `docs/PHYSICS_PLAN.md` §7
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
+- `pnpm check:atmo` — sim atmosphere + variable-Isp drive under plain Node (`scripts/atmo-check.mjs`):
+  co-rotating air vs the rendered surface (Earth/Mars/Venus/Jupiter), body pick, fuel multiplier
+  table, plume regimes (VFX_REALISM_PLAN §5.6, §6)
 - `pnpm coop:transcript [scenario,...]` — M4 co-op session core under plain Node (no browser): host/guest
   sessions over the memory transport + repository; shared-rock race both orders, dropped reply + retry,
   host restart, remote lunar mine, receipt eviction, old generation, storage failure, activity bounds.
