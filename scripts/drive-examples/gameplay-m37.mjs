@@ -858,7 +858,7 @@ export async function sessionCGates(d, ctx) {
     const pF = await player();
     const sF = await ev(`${R}.ship()`);
     const starter = await ev(`${R}.starter()`);
-    const em = await ev(`${R}.emergence(${JSON.stringify(starter.positionKm)}, ${JSON.stringify(starter.quaternion)}, 0)`);
+    const em = await ev(`${R}.emergence(${JSON.stringify(starter.positionKm)}, ${JSON.stringify(starter.quaternion)}, 0, true)`);
     const w = await world();
     st.fallback = { lastRecovery: await ev(`${R}.lastRecovery()`), atStarterKm: r2(Math.hypot(...sF.posKm.map((v, i) => v - em.positionKm[i]))), frame: sF.frameId, fuel: pF.propellant, usableBeforeKg: r2(usable0), activeStill: pF.replication.activeId, wrecks: w.wrecks.length,
       owned: pF.modules.ownedModules, research: w.research.completedNodes };

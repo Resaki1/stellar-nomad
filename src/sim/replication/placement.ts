@@ -125,12 +125,18 @@ export interface RecoveryDestination {
   fallback: RecoveryFallback | null;
 }
 
-function emergeAt(point: ReplicationPoint, destroyed: DestroyedLookup | null, occupied?: OccupiedPoseCheck): RecoveryDestination | null {
+// A 55 m sphere covers the station's farthest projection and the ship's hull radius.
+const OTHER_STATION_CLEARANCE_KM = 0.055;
+
+function emergeAt(point: ReplicationPoint, points: readonly ReplicationPoint[], destroyed: DestroyedLookup | null, occupied?: OccupiedPoseCheck): RecoveryDestination | null {
   if (!validPose(point.frameId, point.positionKm, point.quaternion)) return null;
   if (probeClearance && probeClearance(point.frameId, point.positionKm, 0, null, _probe).bodyAltKm < 0) return null;
   for (let i = 0; i < EMERGENCE_CANDIDATES; i++) {
     const e = emergencePose(point, i);
-    if (occupied?.({ frameId: point.frameId, positionKm: e.positionKm }) || !emergenceClear(point.frameId, e.positionKm, destroyed)) continue;
+    if (occupied?.({ frameId: point.frameId, positionKm: e.positionKm }) ||
+        points.some(other => other.id !== point.id && !other.starter && isFrameId(other.frameId) &&
+          poseDistanceKm(point.frameId, e.positionKm, other.frameId, other.positionKm) < OTHER_STATION_CLEARANCE_KM) ||
+        !emergenceClear(point.frameId, e.positionKm, destroyed)) continue;
     return { pointId: point.id, pointName: point.name, frameId: point.frameId, positionKm: e.positionKm, quaternion: e.quaternion, candidate: i, fallback: null };
   }
   return null;
@@ -152,12 +158,12 @@ export function resolveRecovery(
     if (!active) fallback = "missing";
     else if (!validPose(active.frameId, active.positionKm, active.quaternion)) fallback = "invalid";
     else {
-      const d = emergeAt(active, destroyed, occupied);
+      const d = emergeAt(active, points, destroyed, occupied);
       if (d) return d;
       fallback = "obstructed";
     }
   }
-  const d = emergeAt(starter, destroyed, occupied);
+  const d = emergeAt(starter, points, destroyed, occupied);
   if (d) return { ...d, fallback };
   // The starter is protected: emerge at its default offset even if something drifted into it.
   const e = emergencePose(starter, 0);

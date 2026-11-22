@@ -72,9 +72,10 @@ export default function PhysicsDebugView() {
       if (shape.kind === "ball") r = shape.radiusM;
       else if (shape.kind === "box") r = Math.max(shape.halfX, shape.halfY, shape.halfZ);
       else {
-        const p = shape.points;
         let r2 = 0;
-        for (let k = 0; k < p.length; k += 3) r2 = Math.max(r2, p[k] * p[k] + p[k + 1] * p[k + 1] + p[k + 2] * p[k + 2]);
+        for (const p of shape.kind === "compoundHull" ? shape.pieces : [shape.points]) {
+          for (let k = 0; k < p.length; k += 3) r2 = Math.max(r2, p[k] * p[k] + p[k + 1] * p[k + 1] + p[k + 2] * p[k + 2]);
+        }
         r = Math.sqrt(r2);
       }
       m.scale.setScalar(r);

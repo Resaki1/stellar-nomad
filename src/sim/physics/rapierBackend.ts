@@ -11,7 +11,6 @@ import type {
   PhysicsWorldStats,
   ShapeBounds,
   ShipBodyConfig,
-  ShipColliderShape,
 } from "./types";
 
 type Rapier = typeof import("@dimforge/rapier3d-simd-compat");
@@ -64,6 +63,8 @@ function rotate(q: { x: number; y: number; z: number; w: number }, v: V, out: V)
 
 function shapeDesc(R: Rapier, shape: ColliderShape): RColliderDesc {
   switch (shape.kind) {
+    case "compoundHull":
+      return compoundHullDesc(R, shape.pieces);
     case "ball":
       return R.ColliderDesc.ball(shape.radiusM);
     case "box":
@@ -80,11 +81,10 @@ function shapeDesc(R: Rapier, shape: ColliderShape): RColliderDesc {
   }
 }
 
-function shipShapeDesc(R: Rapier, shape: ShipColliderShape): RColliderDesc {
-  if (shape.kind !== "compoundHull") return shapeDesc(R, shape);
-  const hulls = shape.pieces.map((points, index) => {
+function compoundHullDesc(R: Rapier, pieces: readonly Float32Array[]): RColliderDesc {
+  const hulls = pieces.map((points, index) => {
     const hull = R.ColliderDesc.convexHull(points);
-    if (!hull) throw new Error(`Invalid ship collision hull piece ${index + 1}`);
+    if (!hull) throw new Error(`Invalid collision hull piece ${index + 1}`);
     return hull.shape;
   });
   const origin = { x: 0, y: 0, z: 0 };
@@ -94,7 +94,7 @@ function shipShapeDesc(R: Rapier, shape: ShipColliderShape): RColliderDesc {
   );
 }
 
-function bounds(shape: ShipColliderShape): ShapeBounds {
+function bounds(shape: ColliderShape): ShapeBounds {
   if (shape.kind === "ball") {
     const r = shape.radiusM;
     return { min: [-r, -r, -r], max: [r, r, r] };
@@ -287,7 +287,7 @@ class RapierWorld implements PhysicsWorld {
   }
 
   setShipBody(config: ShipBodyConfig): void {
-    const d = this.material(shipShapeDesc(this.R, config.shape)).setCollisionGroups(SHIP_GROUP);
+    const d = this.material(shapeDesc(this.R, config.shape)).setCollisionGroups(SHIP_GROUP);
     if (!this.body) {
       const bd = this.R.RigidBodyDesc.dynamic()
         .setCcdEnabled(true)

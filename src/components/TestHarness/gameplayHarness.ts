@@ -11,7 +11,7 @@ import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
-import { Mesh, MeshBasicMaterial, Vector3 } from "three";
+import { Mesh, MeshBasicMaterial, MeshStandardMaterial, Vector3 } from "three";
 import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/cargo";
 import { devTeleportAtom } from "@/store/dev";
@@ -60,7 +60,7 @@ import { bodyTransitTarget, computeTransitPreview, targetedPOIAtom, transitDrive
 import { allBodyDefs } from "@/sim/celestialConstants";
 import { nearField } from "@/sim/physics/nearField";
 import { poiBuffer } from "@/store/poi";
-import { replicationPointStats } from "@/components/Replication/ReplicationPoints";
+import { replicationPointStats } from "@/components/Replication/ReplicationPointModel";
 import { probeClearance, absoluteKm, type Obstruction } from "@/sim/replication/clearance";
 import { checkPlacement, resolveRecovery, type PlacementCheck } from "@/sim/replication/placement";
 import { REPLICATION_TUNING, emergencePose, starterPoint } from "@/sim/replication/points";
@@ -607,7 +607,7 @@ export function createGameplayHarness(store: Store) {
         worldAuthority.world();
         return probeClearance(frameId, positionKm, searchM, worldAuthority.asteroids, { bodyAltKm: 0, bodyId: null, rockClearM: 0 });
       },
-      emergence: (positionKm: [number, number, number], quaternion: [number, number, number, number], i = 0) => emergencePose({ positionKm, quaternion }, i),
+      emergence: (positionKm: [number, number, number], quaternion: [number, number, number, number], i = 0, starter = false) => emergencePose({ positionKm, quaternion, starter }, i),
       abs: (frameId: string, positionKm: number[]): number[] => absoluteKm(frameId, positionKm, new Vector3()).toArray(),
       /** Ship pose now: frame, relative km, quaternion. */
       ship() {
@@ -682,6 +682,26 @@ export function createGameplayHarness(store: Store) {
       },
       /** Replication point instances drawn last frame (the origin point draws none, D1). */
       drawn: () => replicationPointStats.drawn,
+      lods: () => [...replicationPointStats.lods],
+      lights() {
+        const intensities: Record<string, number> = {};
+        testProbe.scene?.getObjectByName("replicationPointLOD0")?.traverse(object => {
+          if (object instanceof Mesh && object.material instanceof MeshStandardMaterial &&
+              (object.material.name === "Amber indicators" || object.material.name === "Amber mast beacons")) {
+            intensities[object.material.name] = object.material.emissiveIntensity;
+          }
+        });
+        return intensities;
+      },
+      colliders() {
+        const out: { id: number; pieces: number; inEngine: boolean }[] = [];
+        nearField.forEachCollider((id, shape, _frame, _pos, tag) => {
+          if (tag === "replicationPoint") {
+            out.push({ id, pieces: shape.kind === "compoundHull" ? shape.pieces.length : 1, inEngine: nearField.colliderInEngine(id) });
+          }
+        });
+        return out;
+      },
       /** Projected POI markers (id, name) the HUD shows now. */
       pois: (prefix = "") => poiBuffer.pois.filter((p) => p.id.startsWith(prefix)).map((p) => ({ id: p.id, name: p.name, distanceKm: p.distanceKm, focused: p.focused })),
       /** The death screen's recover action. */

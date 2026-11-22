@@ -4,7 +4,8 @@ import { useFrame } from "@react-three/fiber";
 import { LOD, Mesh, Vector3, type Group } from "three";
 import { FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import EngineExhaust, { type ExhaustConfig } from "@/components/VFX/EngineExhaust";
-import type { ShipColliderShape } from "@/sim/physics/types";
+import { readCollisionMeshes } from "../collisionMeshes";
+import type { ColliderShape } from "@/sim/physics/types";
 
 const BASE = "/models/ships/starter-survey";
 const HERO = BASE + ".glb";
@@ -15,7 +16,7 @@ const NOZZLE_RADIUS_M = 0.455;
 
 type SurveyProps = Omit<JSX.IntrinsicElements["group"], "children"> & {
   thrust: RefObject<number>;
-  onCollisionShape: (shape: ShipColliderShape) => void;
+  onCollisionShape: (shape: ColliderShape) => void;
 };
 
 function hullInstance(source: Group): Group {
@@ -40,22 +41,7 @@ export function StarterSurvey({ thrust, onCollisionShape, ...props }: SurveyProp
   const hull = useMemo(() => hullInstance(hero.scene), [hero.scene]);
   const nozzles = useMemo(() => nozzleConfigs(hero.scene), [hero.scene]);
   useEffect(() => {
-    const pieces: Float32Array[] = [];
-    const vertex = new Vector3();
-    collision.scene.updateMatrixWorld(true);
-    collision.scene.traverse((part) => {
-      if (!(part instanceof Mesh)) return;
-      const position = part.geometry.getAttribute("position");
-      const points = new Float32Array(position.count * 3);
-      for (let i = 0; i < position.count; i++) {
-        vertex.fromBufferAttribute(position, i).applyMatrix4(part.matrixWorld);
-        vertex.toArray(points, i * 3);
-      }
-      pieces.push(points);
-    });
-    const [first, ...rest] = pieces;
-    if (!first) throw new Error("Starter survey ship has no collision meshes");
-    onCollisionShape(rest.length ? { kind: "compoundHull", pieces: [first, ...rest] } : { kind: "hull", points: first });
+    onCollisionShape(readCollisionMeshes(collision.scene));
   }, [collision.scene, onCollisionShape]);
   return (
     <group {...props} dispose={null}>

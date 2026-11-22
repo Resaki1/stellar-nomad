@@ -12,8 +12,10 @@ export const REPLICATION_TUNING = {
   placeDistanceKm: 0.8,
   /** Accepted placements are at most this far from the ship. */
   placeRangeKm: 2,
-  /** The ship emerges this far from the point, on the point's −Z side, facing it. */
+  /** Offset step for alternate emergence positions and the protected origin. */
   emergenceKm: 0.5,
+  /** Transit still needs a wide approach to placed stations from any direction. */
+  transitStandOffKm: 0.5,
   /** Rock surface clearance around the point / the emergence position, m. */
   pointRockClearanceM: 200,
   emergenceRockClearanceM: 120,
@@ -22,6 +24,13 @@ export const REPLICATION_TUNING = {
   /** "Make active" needs the ship this close to the point. */
   activateRangeKm: 2,
 };
+
+/** Match the centre of the closed door at socket_launch in the station GLB. */
+export const REPLICATION_BERTH = {
+  yM: -16.55,
+  faceZM: -18.3,
+  spawnClearanceM: 20,
+} as const;
 
 export const MAX_POINTS = 64;
 export const MAX_POINT_NAME = 32;
@@ -60,28 +69,38 @@ export function starterPoint(): ReplicationPoint {
   };
 }
 
-/**
- * Emergence candidates around a point, in the point's frame: the default (index 0) on the
- * −Z side, then the other five axes, then the same at 2× and 3× the distance.
- */
+/** Outer fallbacks preserve the legacy half-kilometre steps for obstacle avoidance. */
 const CANDIDATE_AXES: readonly Vec3Tuple[] = [[0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1]];
 export const EMERGENCE_CANDIDATES = CANDIDATE_AXES.length * 3;
 
-/** Emergence position (frame-relative km) and facing (towards the point) for candidate `i`. */
-export function emergencePose(point: Pick<ReplicationPoint, "positionKm" | "quaternion">, i: number): { positionKm: Vec3Tuple; quaternion: QuatTuple } {
+type EmergencePoint = Pick<ReplicationPoint, "positionKm" | "quaternion"> & Partial<Pick<ReplicationPoint, "starter">>;
+
+/** Emergence position and attitude in the point's frame. Deployed points face the ship outward. */
+export function emergencePose(point: EmergencePoint, i: number): { positionKm: Vec3Tuple; quaternion: QuatTuple } {
+  const q = point.quaternion;
+  const p = point.positionKm;
+  if (i === 0 && !point.starter) {
+    const { yM, faceZM, spawnClearanceM } = REPLICATION_BERTH;
+    rotate(q, 0, yM / 1000, (faceZM - spawnClearanceM) / 1000, _v);
+    return {
+      positionKm: [p[0] + _v[0], p[1] + _v[1], p[2] + _v[2]],
+      // Postmultiply by a half-turn around the station's up axis.
+      quaternion: [-q[2], q[3], q[0], -q[1]],
+    };
+  }
+
   const axis = CANDIDATE_AXES[i % CANDIDATE_AXES.length];
   const k = REPLICATION_TUNING.emergenceKm * (1 + Math.floor(i / CANDIDATE_AXES.length));
-  const pq = point.quaternion;
-  rotate(pq, axis[0], axis[1], axis[2], _v);
-  const p = point.positionKm;
+  rotate(q, axis[0], axis[1], axis[2], _v);
   const positionKm: Vec3Tuple = [p[0] + _v[0] * k, p[1] + _v[1] * k, p[2] + _v[2] * k];
-  if (i === 0) return { positionKm, quaternion: [pq[0], pq[1], pq[2], pq[3]] };
-  // Face the point: the rotation taking +Z to −axis (unit, so the half-way formula applies).
-  const dx = -_v[0], dy = -_v[1], dz = -_v[2];
-  const w = 1 + dz;
+  if (i === 0) return { positionKm, quaternion: [q[0], q[1], q[2], q[3]] };
+  const [x, y, z] = _v;
+  const sign = point.starter ? -1 : 1;
+  // Shortest rotation from the ship's +Z nose to the chosen world direction.
+  const w = 1 + sign * z;
   if (w < 1e-9) return { positionKm, quaternion: [0, 1, 0, 0] };
-  const qx = -dy, qy = dx, l = Math.hypot(qx, qy, w);
-  return { positionKm, quaternion: [qx / l, qy / l, 0, w / l] };
+  const qx = -sign * y, qy = sign * x, length = Math.hypot(qx, qy, w);
+  return { positionKm, quaternion: [qx / length, qy / length, 0, w / length] };
 }
 
 export function cleanPointName(name: unknown, fallback: string): string {

@@ -9,7 +9,7 @@ import type { ShipState } from "@/sim/ship/shipState";
 import { FIXED_DT } from "@/sim/ship/shipConstants";
 import type { PhysicsWorld, PhysicsWorldFactory } from "./PhysicsWorld";
 import { getPhysicsTuning } from "./physicsTuning";
-import { createPose, createVelocity, type ColliderHandle, type ColliderShape, type ConvexHullData, type PhysicsContact, type ShapeBounds, type ShipColliderShape } from "./types";
+import { createPose, createVelocity, type ColliderHandle, type ColliderShape, type ConvexHullData, type PhysicsContact, type ShapeBounds } from "./types";
 
 /** Re-anchor once the ship is this far from the physics origin. */
 export const PHYSICS_REBASE_KM = 2;
@@ -110,7 +110,7 @@ export class NearField {
   private nextId = 1;
   /** Colliders registered in a frame other than the physics origin's; repositioned every step. */
   private foreign = 0;
-  private shipShape: ShipColliderShape;
+  private shipShape: ColliderShape;
   private shipShapeSource: "fallback" | "mesh" = "fallback";
 
   /** Physics origin: frame + f64 km anchor in it. */
@@ -240,7 +240,7 @@ export class NearField {
     return this.debris.size;
   }
 
-  setShipShape(shape: ShipColliderShape, source: "fallback" | "mesh"): void {
+  setShipShape(shape: ColliderShape, source: "fallback" | "mesh"): void {
     this.world?.setShipBody({ shape, massKg: SHIP_MASS_KG, gyrationRadiusM: SHIP_GYRATION_RADIUS_M, comM: SHIP_COM_M });
     this.shipShape = shape;
     this.shipShapeSource = source;
@@ -258,7 +258,7 @@ export class NearField {
     };
   }
 
-  shipShapeDesc(): ShipColliderShape {
+  shipShapeDesc(): ColliderShape {
     return this.shipShape;
   }
 

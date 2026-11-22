@@ -40,7 +40,7 @@ import { isSimPaused } from "@/sim/simPause";
 import { beginArrival, repositionState, resetReposition, takeReposition } from "@/sim/ship/reposition";
 import { resetTimedEffectsAtom } from "@/store/timedEffects";
 import { nearField, type NearFieldContact } from "@/sim/physics/nearField";
-import type { ShipColliderShape } from "@/sim/physics/types";
+import type { ColliderShape } from "@/sim/physics/types";
 import { clearPilotContacts, drainPilotContacts } from "@/sim/physics/pilotContactInbox";
 import { getPhysicsTuning } from "@/sim/physics/physicsTuning";
 import { ImpactTracker, impactDamageFractionOf, impactDamageHp, logImpact, type Impact } from "@/sim/physics/impactDamage";
@@ -187,7 +187,7 @@ const SpaceShip = memo(() => {
     worldOrigin.setWorldOriginKm(ship.absPosKm);
   }
 
-  const onCollisionShape = useCallback((shape: ShipColliderShape) => {
+  const onCollisionShape = useCallback((shape: ColliderShape) => {
     nearField.setShipShape(shape, "mesh");
   }, []);
 
@@ -281,7 +281,8 @@ const SpaceShip = memo(() => {
     localRenderPose.motion++;
     clearPilotContacts();
     _impacts.reset();
-    shipView.forward.set(0, 0, 1).applyQuaternion(ship.quat);
+    shipView.quaternion.copy(ship.quat);
+    shipView.forward.set(0, 0, 1).applyQuaternion(shipView.quaternion);
     holdSavedPose(false);
     publishShipPose(ship);
     repositionState.applied++;
@@ -539,7 +540,8 @@ const SpaceShip = memo(() => {
     worldOrigin.setWorldOriginKm(_localRel);
     shipRef.current.position.set(0, 0, 0);
     shipView.position.set(0, 0, 0);
-    shipView.forward.set(0, 0, 1).applyQuaternion(shipRef.current.quaternion);
+    shipView.quaternion.copy(shipRef.current.quaternion);
+    shipView.forward.set(0, 0, 1).applyQuaternion(shipView.quaternion);
 
     // ── Asteroid impacts: damage + feedback, once per impact (after the origin moved) ──
     _impactsThisFrame.length = 0;

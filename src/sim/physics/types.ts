@@ -7,10 +7,8 @@ export type ColliderShape =
   | { kind: "ball"; radiusM: number }
   /** Local-space points, xyz interleaved; with `indices` (triangles) they are taken as an already convex mesh. */
   | { kind: "hull"; points: Float32Array; indices?: Uint32Array }
-  | { kind: "box"; halfX: number; halfY: number; halfZ: number };
-
-/** Multiple convex pieces in ship-body metres, attached to one dynamic body. */
-export type ShipColliderShape = ColliderShape
+  | { kind: "box"; halfX: number; halfY: number; halfZ: number }
+  /** Multiple convex pieces in the same local metre frame, attached as one collider. */
   | { kind: "compoundHull"; pieces: readonly [Float32Array, ...Float32Array[]] };
 
 /** Position (m, physics-local) + orientation. Mutable scratch-friendly struct. */
@@ -47,7 +45,7 @@ export interface ConvexHullData {
 }
 
 export interface ShipBodyConfig {
-  shape: ShipColliderShape;
+  shape: ColliderShape;
   massKg: number;
   /** Isotropic inertia = mass · k². */
   gyrationRadiusM: number;

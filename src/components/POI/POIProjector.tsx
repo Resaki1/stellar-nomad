@@ -230,7 +230,7 @@ function usePOIDefs(): POIDef[] {
       });
     }
 
-    // Replication points: transit destinations; arrival at the emergence distance
+    // Replication points: transit destinations with room to brake
     for (const pt of points) {
       // D1: the origin point is the recovery fallback (world spawn), not a place: no marker.
       if (pt.starter || !isFrameId(pt.frameId)) continue;
@@ -241,7 +241,7 @@ function usePOIDefs(): POIDef[] {
         frameId: pt.frameId,
         minDistanceKm: 0,
         maxDistanceKm: 2e6,
-        arrivalOffsetKm: REPLICATION_TUNING.emergenceKm,
+        arrivalOffsetKm: REPLICATION_TUNING.transitStandOffKm,
         objectRadiusKm: POINT_OBJECT_RADIUS_KM,
       });
     }

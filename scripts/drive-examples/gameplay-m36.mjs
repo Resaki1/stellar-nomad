@@ -141,13 +141,16 @@ export async function placeGates(d, ctx) {
   await d.frames(10);
   const qU = quatTo(u);
   ref.nearRock = await refuse("rock", { frameId: rock.frameId, positionKm: at(rock, rock.radiusM / 1000 + 0.1), quaternion: qU });
-  // Emergence: the point 560 m off the rock, its default emergence (−Z = −u) 60 m off it.
-  const emPos = at(rock, rock.radiusM / 1000 + 0.56);
-  const probe = await ev(`${R}.check(${JSON.stringify(rock.frameId)}, ${JSON.stringify(emPos)}, ${JSON.stringify(qU)})`);
-  ref.emergence = await refuse("emerge", { frameId: rock.frameId, positionKm: emPos, quaternion: qU });
-  ref.emergence.pointClearM = r3(probe.rockClearM);
-  // Body: ship and point 100 km above Earth.
   const earth = (await ev(`${G}.transit.bodies(["earth"])`)).earth;
+  // Point is 20 m above the altitude floor, but its planet-facing berth emerges below it.
+  const high = [earth.radiusKm + 151, 0, 0];
+  const emPos = [earth.radiusKm + 150.02, 0, 0];
+  await ev(`${R}.teleportRel("earth", ${JSON.stringify(high)})`);
+  await d.frames(10);
+  const probe = await ev(`${R}.check("earth", ${JSON.stringify(emPos)}, ${JSON.stringify(qU)})`);
+  ref.emergence = await refuse("emerge", { frameId: "earth", positionKm: emPos, quaternion: qU });
+  ref.emergence.pointAltitudeKm = r3(probe.bodyAltKm);
+  // Body: ship and point 100 km above Earth.
   await ev(`__test.gameplay.nudgeKm(${earth.posKm[0] + earth.radiusKm + 101} - __test.gameplay.rep.ship().absKm[0], ${earth.posKm[1]} - __test.gameplay.rep.ship().absKm[1], ${earth.posKm[2]} - __test.gameplay.rep.ship().absKm[2])`);
   await d.frames(10);
   const sb = await ev(`${R}.ship()`);
@@ -156,7 +159,7 @@ export async function placeGates(d, ctx) {
   out.refusals = {
     ...ref,
     pass: ref.nonFinite.reason === "invalid" && ref.badFrame.reason === "invalid" && ref.tooFar.reason === "too_far" && ref.nearRock.reason === "near_rock" &&
-      ref.emergence.reason === "emergence_blocked" && ref.emergence.pointClearM >= 200 && ref.nearBody.reason === "near_body" &&
+      ref.emergence.reason === "emergence_blocked" && ref.emergence.pointAltitudeKm >= 150 && ref.nearBody.reason === "near_body" &&
       Object.values(ref).every((r) => r.spent === 0 && r.points === 0) && new Set(reasons.filter((r) => r !== "invalid")).size === 4,
   };
 
@@ -312,7 +315,7 @@ export async function deathGates(d, ctx) {
   const pr = await player();
   const w2 = (await world()).wrecks;
   const st = await ev(`${R}.starter()`);
-  const em = await ev(`${R}.emergence(${JSON.stringify(st.positionKm)}, ${JSON.stringify(st.quaternion)}, 0)`);
+  const em = await ev(`${R}.emergence(${JSON.stringify(st.positionKm)}, ${JSON.stringify(st.quaternion)}, 0, true)`);
   out.reloadRecovered = {
     clicked, savedAlive: rec.players[me].isDead === false, wrecks: w2.length, alive: !pr.isDead, frameId: pr.ship?.frameId, offStarterKm: pr.ship ? r3(dist(pr.ship.positionKm, em.positionKm)) : null,
     pass: clicked && rec.players[me].isDead === false && rec.players[me].lastLoss === null && w2.length === 1 && eq(w2[0], k1.wreck) && !pr.isDead && eq(pr.cargo.items, {}) && pr.propellant.ordinaryKg === 0 && pr.propellant.protectedKg === 60 &&
@@ -406,7 +409,7 @@ export async function recoverGates(d, ctx) {
     clicked: r1.clicked, arrivalMs: Math.round(r1.rt.lastArrivalMs), point: r1.rec?.pointName, fallback: r1.rec?.fallback ?? null, frameId: s1.frameId,
     offEmergenceKm: r3(dist(s1.posKm, em.positionKm)), fromPointKm: r3(dist(s1.posKm, home.positionKm)), speedMps: r3(Math.hypot(...s1.velKmps) * 1000), angVel: r3(Math.hypot(...s1.angVel)),
     hull: [p1.health, hp0.max], cargo: p1.cargo.items, fuel: p1.propellant, nearField: { suspended: rt1.nearField.suspended, owner: rt1.nearField.owner, reseeds: rt1.nearField.reseeds },
-    pass: r1.clicked && r1.rec?.pointId === home.id && !r1.rec?.fallback && s1.frameId === home.frameId && dist(s1.posKm, em.positionKm) < 1e-3 && dist(s1.posKm, home.positionKm) <= 0.5 + 1e-6 &&
+    pass: r1.clicked && r1.rec?.pointId === home.id && !r1.rec?.fallback && s1.frameId === home.frameId && dist(s1.posKm, em.positionKm) < 1e-3 && Math.abs(dist(s1.posKm, home.positionKm) - Math.hypot(0.0383, 0.01655)) < 1e-3 &&
       Math.hypot(...s1.velKmps) === 0 && Math.hypot(...s1.angVel) === 0 && p1.health === hp0.max && eq(p1.cargo.items, {}) && p1.propellant.ordinaryKg === 0 && p1.propellant.protectedKg === 60 &&
       eq(p1.modules.ownedModules, pre.modules.ownedModules) && eq(p1.modules.equippedModules, pre.modules.equippedModules) && eq(w1.research, wPre.research) && eq(w1.discoveries, wPre.discoveries),
   };
@@ -419,20 +422,18 @@ export async function recoverGates(d, ctx) {
     pass: rt1.shake === 0 && rt1.throttle === 0 && rt1.mouseYaw === 0 && rt1.mousePitch === 0 && rt1.stickX === 0 && rt1.stickY === 0 && rt1.transitPhase === "idle" && rt1.transitSpeed === 0 && !rt1.paused && rt1.timedEffects === 0,
   };
 
-  // Obstructed default emergence: a point whose −Z offset sits 60 m off a rock.
+  // A previously deployed point whose berth is approached by a rock after placement.
   const rocks = await ev(`${R}.rocks(400)`);
   let obst = null;
   for (const rock of rocks.filter((r) => r.radiusM > 20 && r.radiusM < 400)) {
     const u = [0, 1, 0];
-    const pos = [0, 1, 2].map((k) => rock.posKm[k] + u[k] * (rock.radiusM / 1000 + 0.56));
+    const pos = [0, 1, 2].map((k) => rock.posKm[k] + u[k] * (rock.radiusM / 1000 + 0.09));
     const q = quatTo(u);
-    const c = await ev(`${R}.check(${JSON.stringify(rock.frameId)}, ${JSON.stringify(pos)}, ${JSON.stringify(q)})`);
-    if (c.refusal === "emergence_blocked" || c.refusal === "too_far") {
-      const pr = await ev(`${R}.probe(${JSON.stringify(rock.frameId)}, ${JSON.stringify(pos)})`);
-      if (pr.rockClearM >= 200) {
-        obst = { id: "rp-obstructed", name: "Crowded", frameId: rock.frameId, positionKm: pos, quaternion: q, by: ctx.me, createdAt: 1, starter: false };
-        break;
-      }
+    const e = await ev(`${R}.emergence(${JSON.stringify(pos)}, ${JSON.stringify(q)}, 0)`);
+    const pr = await ev(`${R}.probe(${JSON.stringify(rock.frameId)}, ${JSON.stringify(e.positionKm)})`);
+    if (pr.bodyAltKm >= 150 && pr.rockClearM < 120) {
+      obst = { id: "rp-obstructed", name: "Crowded", frameId: rock.frameId, positionKm: pos, quaternion: q, by: ctx.me, createdAt: 1, starter: false };
+      break;
     }
   }
   if (obst) {
@@ -450,7 +451,7 @@ export async function recoverGates(d, ctx) {
 
   // Missing and invalid active points fall back to the starter with a reason.
   const st = await ev(`${R}.starter()`);
-  const stEm = await ev(`${R}.emergence(${JSON.stringify(st.positionKm)}, ${JSON.stringify(st.quaternion)}, 0)`);
+  const stEm = await ev(`${R}.emergence(${JSON.stringify(st.positionKm)}, ${JSON.stringify(st.quaternion)}, 0, true)`);
   await ev(`${R}.devSetActive("rp-gone")`);
   const r3m = await dieAndRecover(d, ctx);
   const s4 = await ev(`${R}.ship()`);

@@ -1,4 +1,4 @@
-import { Vector3 } from "three";
+import { Quaternion, Vector3 } from "three";
 
 /**
  * The rendered ship's nose ray in local scene space (metres, floating origin), written by the
@@ -7,5 +7,6 @@ import { Vector3 } from "three";
  */
 export const shipView = {
   position: new Vector3(),
+  quaternion: new Quaternion(),
   forward: new Vector3(0, 0, 1),
 };

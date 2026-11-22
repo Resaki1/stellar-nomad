@@ -282,11 +282,15 @@ export const EMITTERS = {
 
   replication_beacon: {
     kind: "design",
-    nits: 1800,
-    hue: [0.55, 0.85, 1.0],
-    why:
-      "Replication point beacon band (M3.6 placeholder). Design value at navigation-light " +
-      "level, so a point reads from a few km in shadow without becoming a light source.",
+    nits: 18_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "High-visibility amber replication point approach and status lamps.",
+  },
+  replication_mast_beacon: {
+    kind: "design",
+    nits: 65_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "Amber mast beacons at their peak during the 450 ms flash every two seconds.",
   },
   replication_preview: {
     kind: "design",
