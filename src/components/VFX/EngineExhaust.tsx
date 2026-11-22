@@ -7,26 +7,24 @@ import { NodeMaterial, type Node } from "three/webgpu";
 import {
   Fn,
   If,
-  Loop,
-  ceil,
-  clamp as tslClamp,
   int,
+  Loop,
+  clamp as tslClamp,
   cameraPosition,
   cos,
   dot,
   exp,
   float,
-  fract,
   max,
   min,
   modelWorldMatrixInverse,
   normalize,
   positionLocal,
-  screenCoordinate,
   sin,
   sqrt,
+  tan,
+  atan,
   uniform,
-  vec2,
   vec3,
   vec4,
 } from "three/tsl";
@@ -160,9 +158,16 @@ const LIGHT_COLOR_HALF = LIGHT_COLOR.clone().multiplyScalar(0.5);
 // ⚠ Radiance is normalised so the vacuum core seen side-on at the nozzle is PLUME_HDR × θ,
 // as before; air regimes are ARTISTIC gains relative to that anchor (stated, not derived).
 
-const STEPS = 14;
 
 /** erf(x) ≈ tanh(1.202x), with tanh from exp (TSL has none); clamped so exp cannot overflow. */
+/** TSL smoothstep(a, b, x) with node or number edges. */
+const smoothstepN = (a: ReturnType<typeof float> | number, b: ReturnType<typeof float> | number, x: ReturnType<typeof float>) => {
+  const A = typeof a === "number" ? float(a) : a;
+  const B = typeof b === "number" ? float(b) : b;
+  const t = tslClamp(x.sub(A).div(B.sub(A)), 0, 1);
+  return t.mul(t).mul(float(3).sub(t.mul(2)));
+};
+
 const erfApprox = (x: ReturnType<typeof float>) => {
   const e = exp(x.mul(2.404).clamp(-20, 20));
   return e.sub(1).div(e.add(1));
@@ -203,7 +208,7 @@ const lerp3 = (a: V3, b: V3, t: number, out: V3): V3 => {
 
 /** Target plume parameters for one frame (CPU), smoothed into the uniforms. */
 type PlumeParams = {
-  R: number; L: number; spread: number; coreLen: number; core: number;
+  R: number; L: number; torch: number; falloff: number; spread: number; coreLen: number; core: number;
   cell: number; diamond: number; diamondW: number;
   machZ: number; machR: number; mach: number;
   streakLen: number; streak: number; disc: number; turb: number;
@@ -213,7 +218,7 @@ type PlumeParams = {
 
 function createParams(): PlumeParams {
   return {
-    R: 1, L: 6, spread: 0.25, coreLen: 1.2, core: 1, cell: 4, diamond: 0, diamondW: 0.3,
+    R: 1, L: 6, torch: 1, falloff: 4, spread: 0.25, coreLen: 1.2, core: 1, cell: 4, diamond: 0, diamondW: 0.3,
     machZ: 5, machR: 0.5, mach: 0, streakLen: 20, streak: 0, disc: 1, turb: 0.15,
     haloA: 2, haloZ: 1, halo: 0, light: 1,
     colCore: [...PAL.torchCore], colBody: [...PAL.torchBody], colTip: [...PAL.torchTip],
@@ -238,11 +243,15 @@ function plumeParams(pl: ReturnType<typeof createDrivePlume>, rn: number, out: P
   const jetLen = clamp(6 * pl.cellLenM + 2 * machZ * mach01, 10, 90) * (1 - 0.75 * crushed);
   const streakLen = clamp(pl.stopLenM, 15, 400);
 
-  out.L = torch * 6 * (rn / 0.455) + jet * jetLen + air * rare * streakLen * 1.6;
+  out.L = torch * 4.5 * (rn / 0.455) + jet * jetLen + air * rare * streakLen * 1.6;
+  // Emission ∝ n²: a freely expanding plasma falls as r⁻⁴ (§5.3); a mixing hot-air jet slower.
+  out.torch = torch;
+  out.falloff = torch * 4 + air * 3;
   out.coreLen = torch * 1.2 * (rn / 0.455) + jet * jetLen * 0.35 + air * rare * 2;
   out.spread = torch * 0.25 + jet * (0.04 + 0.02 * Math.log10(Math.max(1, ratio)) + 0.4 * crushed) + air * rare * 0.12;
   // Tight bounds (they set the march's pixel footprint): each term's own visible reach.
-  const coreReach = Math.min(out.L, 4 * out.coreLen);
+  // 2.5 coreLen: past that the r⁻⁴·e^(−d/ℓ) core is < 1e-4 of its peak (bounds = pixel cost).
+  const coreReach = Math.min(out.L, 2.5 * out.coreLen, torch * 99 + air * 15);
   const jetR = Math.max(pl.jetDiaM * 0.6, 0.4 * machZ * mach01);
   out.R = Math.max(rn * 1.5, 1.6 * (rn + out.spread * coreReach), jet * jetR * 1.4, air * rare * 2.5 * (0.8 * rn + 0.006 * out.L));
   // Hot air is nearly transparent; its plasma band is bright (artistic gains vs the torch).
@@ -251,20 +260,22 @@ function plumeParams(pl: ReturnType<typeof createDrivePlume>, rn: number, out: P
   out.diamond = jet * (1 - mach01) * (1 - crushed) * 0.8;
   out.diamondW = Math.max(0.2, pl.jetDiaM * 0.45);
   out.machZ = machZ;
-  out.machR = Math.max(0.3, 0.22 * machZ);
-  out.R = Math.max(out.R, jet * mach01 * out.machR * 1.6);
+  out.machR = Math.max(0.25, 0.16 * machZ);
+  if (out.mach > 1e-4) out.R = Math.max(out.R, 1.7 * out.machR);
   out.mach = jet * mach01 * (1 - smoothstep(30, 75, machZ)) * 0.35;
   out.streakLen = streakLen;
   out.streak = air * rare * 0.12;
   out.disc = torch * 1.5 + jet * 0.4;
-  out.turb = torch * 0.15 + air * 0.4;
+  // Under-resolved modulation is noise, not detail: kept low enough that 18 samples converge.
+  out.turb = torch * 0.12 + air * 0.15;
 
   // Scattering halo ∝ local scattering (≈ ρ), only where the plume is bright and dense.
   const scatter = Math.min(1, Math.sqrt(pl.rhoAmb / 1.225));
-  out.haloA = 2 + 0.12 * out.L * (1 + 2 * crushed);
+  out.haloA = 2 + 0.12 * out.L * (1 + crushed);
   out.haloZ = Math.min(out.L * 0.3, 10);
-  out.halo = air * scatter * (0.012 + 0.2 * crushed);
-  out.light = torch + air * (0.6 + 0.8 * out.core + out.halo * 4);
+  // Peak halo radiance as a FRACTION of the plume's (shader divides out the chord length).
+  out.halo = air * scatter * (0.01 + 0.04 * crushed);
+  out.light = torch + air * (0.5 + 0.5 * out.core);
 
   // Colour by regime and gas.
   const gas = pl.gas;
@@ -289,7 +300,18 @@ function clamp(x: number, a: number, b: number): number {
 }
 
 const SMOOTH_TAU_S = 0.35;
-const NUM_KEYS = ["R", "L", "spread", "coreLen", "core", "cell", "diamond", "diamondW", "machZ", "machR", "mach", "streakLen", "streak", "disc", "turb", "haloA", "haloZ", "halo", "light"] as const;
+const SNAP_KEYS = ["diamond", "mach", "streak", "halo", "disc"] as const;
+const NUM_KEYS = ["R", "L", "torch", "falloff", "spread", "coreLen", "core", "cell", "diamond", "diamondW", "machZ", "machR", "mach", "streakLen", "streak", "disc", "turb", "haloA", "haloZ", "halo", "light"] as const;
+
+/**
+ * The volume starts this far downstream of the nozzle exit, m. ⚠ A cap ON the exit plane is
+ * coplanar with the nacelle's rear face: BackSide depth test z-fought there (a noisy ring
+ * around the bells). The exit disc is analytic, so nothing is lost by stepping off the plane.
+ */
+const CAP_M = 0.04;
+
+/** Samples per nozzle axis (plus PER_AXIS at the nozzle exit in vacuum); balance heuristic. */
+const PER_AXIS = 3;
 
 function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   const m = new NodeMaterial();
@@ -299,6 +321,7 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   m.blending = THREE.AdditiveBlending;
 
   m.fragmentNode = Fn(() => {
+    // Mesh frame: volume z ∈ [−L, 0]; the nozzle exit plane is at z = +CAP_M.
     const S = vec3(u.R, u.R, u.L);
     const camL = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz.mul(S).toVar();
     const pExit = positionLocal.mul(S).toVar();
@@ -307,79 +330,140 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     const rd = normalize(seg).toVar();
 
     // Entry: the later of the infinite-cylinder entry and the z-slab entry, never behind the eye.
-    const a = max(rd.x.mul(rd.x).add(rd.y.mul(rd.y)), 1e-6);
-    const b = camL.x.mul(rd.x).add(camL.y.mul(rd.y));
-    const c = camL.x.mul(camL.x).add(camL.y.mul(camL.y)).sub(u.R.mul(u.R));
-    const tCyl = b.negate().sub(sqrt(max(b.mul(b).sub(a.mul(c)), 0))).div(a);
+    const aC = max(rd.x.mul(rd.x).add(rd.y.mul(rd.y)), 1e-6);
+    const bC = camL.x.mul(rd.x).add(camL.y.mul(rd.y));
+    const cC = camL.x.mul(camL.x).add(camL.y.mul(camL.y)).sub(u.R.mul(u.R));
+    const tCyl = bC.negate().sub(sqrt(max(bC.mul(bC).sub(aC.mul(cC)), 0))).div(aC);
     const rdz = rd.z.sign().mul(max(rd.z.abs(), 1e-5)).add(rd.z.equal(0).select(1e-5, 0));
     const tz0 = u.L.negate().sub(camL.z).div(rdz);
     const tz1 = camL.z.negate().div(rdz);
     const tNear = max(max(tCyl, min(tz0, tz1)), 0).toVar();
-    const span = max(tExit.sub(tNear), 0);
-    // Steps ∝ the ray's share of the plume length: side-on rays through a long thin plume need
-    // few, a ray down the axis gets all STEPS.
-    const nSteps = int(tslClamp(ceil(span.div(u.L).mul(STEPS)), 3, STEPS)).toVar();
-    const ds = span.div(float(nSteps)).toVar();
-    const jitter = fract(float(52.9829189).mul(fract(dot(screenCoordinate.xy, vec2(0.06711056, 0.00583715)))));
+    const span = max(tExit.sub(tNear), 1e-4).toVar();
 
     const rn = u.rn;
+    const zN = float(CAP_M);
     const acc = vec3(0).toVar();
-    // Squared distance to the NEARER nozzle axis (±off in xy): twin jets in one march.
+    // Squared distance to the NEARER nozzle axis (±off in xy): twin jets in one volume.
     const axisR2 = (q: ReturnType<typeof vec3>) => {
       const ax = q.xy.sub(u.off), bx = q.xy.add(u.off);
       return min(dot(ax, ax), dot(bx, bx));
     };
-    Loop({ start: int(0), end: nSteps, type: "int", condition: "<" }, ({ i }: { i: Node }) => {
-      const t = tNear.add(float(i).add(jitter).mul(ds));
+
+    // ── Importance sampling (equi-angular / Cauchy proposals, Kulla & Fajardo 2012) ──
+    // A uniform 14-step march put 3 jittered samples across a side-on jet: visible static noise.
+    // Proposals: closest approach to axis A, to axis B, and the nozzle-exit crossing (where the
+    // r⁻⁴ core lives). Any centre/scale is a valid proposal, so both are clamped freely.
+    const sin2 = max(rd.x.mul(rd.x).add(rd.y.mul(rd.y)), 1e-6);
+    const wMin2 = rn.mul(rn).mul(0.5);
+    const axisProposal = (sx: number) => {
+      const ox = camL.x.sub(u.off.x.mul(sx)), oy = camL.y.sub(u.off.y.mul(sx));
+      const bq = ox.mul(rd.x).add(oy.mul(rd.y));
+      const tStar = bq.negate().div(sin2);
+      const r2min = max(ox.mul(ox).add(oy.mul(oy)).sub(bq.mul(bq).div(sin2)), 0);
+      const h = tslClamp(sqrt(r2min.add(wMin2).div(sin2)), 0.05, span.mul(4));
+      return { c: tslClamp(tStar, tNear, tExit).toVar(), h: h.toVar() };
+    };
+    const pA = axisProposal(1);
+    const pB = axisProposal(-1);
+    const tNoz = tslClamp(zN.sub(u.coreLen.mul(0.5)).sub(camL.z).div(rdz), tNear, tExit);
+    const pN = { c: tNoz.toVar(), h: tslClamp(u.coreLen.div(max(rd.z.abs(), 0.15)), 0.05, span.mul(4)).toVar() };
+    const props = [pA, pB, pN].map((pp) => ({
+      ...pp,
+      th0: atan(tNear.sub(pp.c).div(pp.h)).toVar(),
+      th1: atan(tExit.sub(pp.c).div(pp.h)).toVar(),
+    }));
+    const pdf = (pp: (typeof props)[number], t: ReturnType<typeof float>) => {
+      const x = t.sub(pp.c);
+      return pp.h.div(max(pp.th1.sub(pp.th0), 1e-6).mul(pp.h.mul(pp.h).add(x.mul(x))));
+    };
+    // Soft window: emission → exactly 0 at the bounds, so no silhouette survives a dark-sky
+    // pre-exposure of ~1e4 (the "bright polygon" bug).
+    // Measured from the NEARER axis with the per-jet radius Rp (the cylinder is Rp + |off|),
+    // so it reaches 0 before any wall, including for the analytic Mach disk.
+    const radialWin = (r2: ReturnType<typeof float>) => float(1).sub(smoothstepN(u.Rp.mul(0.4), u.Rp.mul(0.98), sqrt(r2)));
+    const axialWin = (z: ReturnType<typeof float>) => float(1).sub(smoothstepN(u.L.mul(0.7), u.L, z.negate()));
+
+    const emit = (t: ReturnType<typeof float>) => {
       const p = camL.add(rd.mul(t)).toVar();
-      const d = max(p.z.negate(), 0).toVar();
+      const d = max(p.z.negate().add(zN), 0).toVar();
       const r2 = axisR2(p).toVar();
       const w = rn.add(d.mul(u.spread));
-      // Core: r⁻² expansion × axial decay × Gaussian cross-section.
-      const core = rn.div(w).pow(2).mul(exp(d.div(u.coreLen).negate())).mul(exp(r2.div(w.mul(w).mul(0.5)).negate()));
-      // Flow structure: fast axial streaks (vacuum) / turbulence (air), never a smooth gradient.
-      // Two cheap sines (no atan): cross-stream streaks scaled to the local width, racing downstream.
+      const win = radialWin(r2).mul(axialWin(p.z));
+      // Core: (r_n/w)^p expansion (p = 4 for a plasma, n² emission) × axial decay × Gaussian.
+      const core = rn.div(w).pow(u.falloff).mul(exp(d.div(u.coreLen).negate())).mul(exp(r2.div(w.mul(w).mul(0.5)).negate()));
+      // Flow structure: cross-stream streaks scaled to the local width, racing downstream.
       const q = p.x.mul(0.8).add(p.y.mul(0.6)).div(w);
       const n = float(1).sub(u.turb).add(u.turb.mul(
-        sin(q.mul(9).add(d.mul(0.9)).sub(u.time.mul(23))).mul(0.4).add(1)
+        sin(q.mul(3.5).add(d.mul(0.9)).sub(u.time.mul(23))).mul(0.4).add(1)
           .mul(sin(d.mul(2.3).sub(u.time.mul(41)).add(q.mul(3))).mul(0.3).add(0.8)),
       ));
       const axialT = min(d.div(max(u.L.mul(0.5), 0.5)), 1);
       const coreE = core.mul(u.core);
-      acc.addAssign(u.colBody.mul(coreE.mul(n))
+      const e = vec3(u.colBody.mul(coreE.mul(n))
         .add(u.colCore.mul(coreE.mul(float(1).sub(axialT)).mul(0.6)))
-        .add(u.colTip.mul(coreE.mul(axialT).mul(0.5))).mul(ds));
-      // Regime-only terms behind uniform branches (coherent, so skipped terms cost nothing).
-      If(u.diamond.greaterThan(1e-3), () => {
-        const cellC = cos(d.div(u.cell).mul(6.2831853)).mul(0.5).add(0.5);
+        .add(u.colTip.mul(coreE.mul(axialT).mul(0.5)))).toVar();
+      If(u.diamond.greaterThan(0), () => {
+        // max(·,0): fast-math cos can dip below −1, and pow() of a negative base is NaN.
+        const cellC = max(cos(d.div(u.cell).mul(6.2831853)).mul(0.5).add(0.5), 0);
+        const c2 = cellC.mul(cellC);
         // Lozenge per cell: narrow and bright where the oblique shocks cross the axis.
         const dw = u.diamondW.mul(float(1).sub(cellC.mul(0.7)));
-        const diamonds = cellC.pow(6).mul(exp(d.div(u.cell.mul(6)).negate()))
-          .mul(exp(r2.div(dw.mul(dw)).negate())).mul(u.diamond);
-        acc.addAssign(u.colCore.mul(diamonds.mul(ds)));
+        e.addAssign(u.colCore.mul(c2.mul(c2).mul(c2).mul(exp(d.div(u.cell.mul(6)).negate()))
+          .mul(exp(r2.div(dw.mul(dw)).negate())).mul(u.diamond)));
       });
-      If(u.streak.greaterThan(1e-3), () => {
+      If(u.streak.greaterThan(0), () => {
         const sw = rn.mul(0.8).add(d.mul(0.006));
-        const streak = exp(d.div(u.streakLen).negate()).mul(exp(r2.div(sw.mul(sw)).negate())).mul(u.streak).mul(n);
-        acc.addAssign(u.colTip.mul(streak.mul(ds)));
+        e.addAssign(u.colTip.mul(exp(d.div(u.streakLen).negate()).mul(exp(r2.div(sw.mul(sw)).negate())).mul(u.streak).mul(n)));
       });
-    });
+      return e.mul(win);
+    };
+
+    // Sample counts: PER_AXIS on each nozzle axis; the nozzle-exit proposal only where the
+    // r⁻⁴ core is short (vacuum torch, u.nNoz = PER_AXIS) — in air it spans tens of metres and
+    // the axis proposals cover it (u.nNoz = 0 skips the loop, a uniform branch).
+    const nNoz = u.nNoz;
+    const mixPdf = (t: ReturnType<typeof float>) =>
+      pdf(props[0], t).add(pdf(props[1], t)).mul(PER_AXIS).add(pdf(props[2], t).mul(nNoz));
+    const strategy = (pp: (typeof props)[number], n: ReturnType<typeof float> | number, offset: number) => {
+      const nf = typeof n === "number" ? float(n) : n;
+      Loop({ start: 0, end: typeof n === "number" ? n : int(n), type: "int", condition: "<" }, ({ i }: { i: Node }) => {
+        // Deterministic stratified quadrature (offset per strategy), no per-pixel jitter: with
+        // these proposals the integrand is smooth in u, and a screen-space dither left a visible
+        // dot grid on the nozzle glow at the sample counts we can afford.
+        const uu = float(i).add(0.5 + offset).div(nf);
+        // Clamped: tan() near ±π/2 overflows, and an Inf sample gives Inf/Inf = NaN in the
+        // Gaussian, which the glare pass then smears over the whole screen.
+        const t = tslClamp(pp.c.add(pp.h.mul(tan(pp.th0.add(pp.th1.sub(pp.th0).mul(uu))))), tNear, tExit).toVar();
+        // Balance heuristic over the proposals, weighted by their sample counts.
+        acc.addAssign(emit(t).div(max(mixPdf(t), 1e-12)));
+      });
+    };
+    strategy(props[0], PER_AXIS, -0.25);
+    strategy(props[1], PER_AXIS, 0.25);
+    strategy(props[2], nNoz, 0);
 
     // Mach disk, analytic: a thin luminous slab at z = −z_m crossed once by the ray, so its
-    // radiance is (slab column)/|rd.z| — exact at any step count (a 14-step march would miss it).
-    const tm = u.machZ.negate().sub(camL.z).div(rdz);
+    // radiance is (slab column)/|rd.z| — exact at any sample count.
+    const tm = u.machZ.negate().add(zN).sub(camL.z).div(rdz);
     const pm = camL.add(rd.mul(tm));
     const inSeg = tm.greaterThan(tNear).and(tm.lessThan(tExit)).select(1, 0);
-    const slab = u.machZ.mul(0.03).add(0.08).mul(1.7725);
+    const slab = u.machZ.mul(0.02).add(0.06).mul(1.7725);
     const machDisk = exp(axisR2(pm).div(u.machR.mul(u.machR)).negate())
-      .mul(slab).div(max(rd.z.abs(), 0.05)).mul(u.mach).mul(inSeg);
-    // Nozzle disc, analytic the same way: a 0.12 m slab at the exit plane z = 0.
-    const t0 = camL.z.negate().div(rdz);
-    const p0 = camL.add(rd.mul(t0));
-    const in0 = t0.greaterThan(tNear).and(t0.lessThanEqual(tExit.add(1e-3))).select(1, 0);
-    const disc = exp(axisR2(p0).div(rn.mul(rn)).negate())
-      .mul(0.2127).div(max(rd.z.abs(), 0.05)).mul(u.disc).mul(in0);
-    const rgb = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).mul(u.intensity);
+      .mul(slab).div(max(rd.z.abs(), 0.05)).mul(u.mach).mul(inSeg)
+      .mul(radialWin(axisR2(pm))).mul(axialWin(u.machZ.negate()));
+    // Nozzle-exit disc: the bell mouth seen down the axis. Super-Gaussian confined INSIDE the
+    // mouth (r < r_n) and faded at grazing angles, where the bell wall hides it — its old
+    // Gaussian tail painted the nacelle face around each bell.
+    const tE = zN.sub(camL.z).div(rdz);
+    const pE = camL.add(rd.mul(tE));
+    const reachesExit = tE.greaterThan(tNear).and(rd.z.greaterThan(0)).select(1, 0);
+    const rr = axisR2(pE).div(rn.mul(rn).mul(0.55));
+    const disc = exp(rr.mul(rr).negate()).mul(0.2127).mul(smoothstepN(0.25, 0.6, rd.z))
+      .div(max(rd.z, 0.25)).mul(u.disc).mul(reachesExit);
+    const raw = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).mul(u.intensity);
+    // Sanitise: one NaN/Inf pixel is smeared over the whole screen by the glare pass.
+    const finite = raw.x.equal(raw.x).and(raw.y.equal(raw.y)).and(raw.z.equal(raw.z));
+    const rgb = finite.select(tslClamp(raw, 0, 1.0e6), vec3(0));
     // AdditiveBlending is src·srcAlpha + dst, so alpha must be 1 (0 drew nothing).
     return vec4(rgb, 1);
   })();
@@ -397,18 +481,22 @@ function makeHaloMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   m.transparent = true;
   m.blending = THREE.AdditiveBlending;
   m.fragmentNode = Fn(() => {
-    // Unit sphere scaled by 2.5a: work in units of a.
-    const camL = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz.mul(2.5).toVar();
-    const pExit = positionLocal.mul(2.5).toVar();
-    const seg = pExit.sub(camL);
-    const tExit = seg.length().toVar();
-    const rd = normalize(seg).toVar();
+    // Mesh = unit sphere × 2.5a × HALO_MESH_PAD, so its facets strictly ENCLOSE the analytic
+    // r = 2.5a sphere; entry and exit are analytic, the mesh only supplies the ray direction
+    // (a faceted exit put a per-facet residual at the silhouette).
+    const camL = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz.mul(2.5 * HALO_MESH_PAD).toVar();
+    const rd = normalize(positionLocal.mul(2.5 * HALO_MESH_PAD).sub(camL)).toVar();
     const s0 = dot(camL, rd).negate();
     const dperp2 = max(dot(camL, camL).sub(s0.mul(s0)), 0);
-    const tNear = max(s0.sub(sqrt(max(float(6.25).sub(dperp2), 0))), 0);
-    const g = exp(dperp2.negate()).mul(0.8862).mul(erfApprox(tExit.sub(s0)).sub(erfApprox(tNear.sub(s0))));
-    // ×a: the integral is in metres; radiance is normalised like the plume (÷1.25 r_n).
-    const rgb = u.colHalo.mul(g.mul(u.haloA).mul(u.halo).div(u.rn.mul(1.25))).mul(u.intensity);
+    const half = sqrt(max(float(6.25).sub(dperp2), 0));
+    const tNear = max(s0.sub(half), 0);
+    const tExit = max(s0.add(half), tNear);
+    // Minus the kernel's rim value e^(−6.25) over the chord: exactly 0 at the sphere's edge.
+    const g = max(exp(dperp2.negate()).mul(0.8862).mul(erfApprox(tExit.sub(s0)).sub(erfApprox(tNear.sub(s0))))
+      .sub(tExit.sub(tNear).mul(0.00193)), 0);
+    // g ≤ √π through the centre: u.halo is the peak halo radiance as a fraction of the plume's
+    // PLUME_HDR (it was ×a/r_n, ~4× brighter than the plume itself with a crushed Venus jet).
+    const rgb = u.colHalo.mul(g.div(1.7725).mul(u.halo)).mul(u.intensity);
     return vec4(rgb, 1);
   })();
   return m;
@@ -416,7 +504,7 @@ function makeHaloMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
 
 function makeUniforms() {
   return {
-    R: uniform(1), L: uniform(6), rn: uniform(0.455), spread: uniform(0.25), coreLen: uniform(1.2), core: uniform(1),
+    R: uniform(1), Rp: uniform(1), nNoz: uniform(3), L: uniform(6), rn: uniform(0.455), falloff: uniform(4), spread: uniform(0.25), coreLen: uniform(1.2), core: uniform(1),
     cell: uniform(4), diamond: uniform(0), diamondW: uniform(0.3), machZ: uniform(5), machR: uniform(0.5), mach: uniform(0),
     streakLen: uniform(20), streak: uniform(0), disc: uniform(1), turb: uniform(0.15),
     haloA: uniform(2), haloZ: uniform(1), halo: uniform(0), light: uniform(1),
@@ -430,6 +518,8 @@ function makeUniforms() {
   };
 }
 
+/** Mesh/analytic radius ratio: > 1/cos(π/12) so 16×12 facets enclose the sphere. */
+const HALO_MESH_PAD = 1.06;
 let _unitSphere: THREE.SphereGeometry | null = null;
 function unitSphere(): THREE.SphereGeometry {
   if (!_unitSphere) _unitSphere = new THREE.SphereGeometry(1, 16, 12);
@@ -505,12 +595,16 @@ const EngineExhaust = memo(function EngineExhaust({
     st.primed = true;
     const tgt = st.target, cur = st.cur;
     for (const key of NUM_KEYS) cur[key] += (tgt[key] - cur[key]) * k;
+    for (const key of SNAP_KEYS) if (tgt[key] === 0 && cur[key] < 1e-6) cur[key] = 0;
     for (let j = 0; j < 3; j++) {
       cur.colCore[j] += (tgt.colCore[j] - cur.colCore[j]) * k;
       cur.colBody[j] += (tgt.colBody[j] - cur.colBody[j]) * k;
       cur.colTip[j] += (tgt.colTip[j] - cur.colTip[j]) * k;
     }
-    u.R.value = cur.R + (twin ? halfSpacing : 0); u.L.value = cur.L; u.rn.value = rn; u.spread.value = cur.spread;
+    u.R.value = cur.R + (twin ? halfSpacing : 0);
+    u.Rp.value = cur.R;
+    u.nNoz.value = cur.torch > 0.5 ? PER_AXIS : 0;
+    u.falloff.value = cur.falloff; u.L.value = cur.L; u.rn.value = rn; u.spread.value = cur.spread;
     u.coreLen.value = cur.coreLen; u.core.value = cur.core; u.cell.value = Math.max(0.5, cur.cell);
     u.diamond.value = cur.diamond; u.diamondW.value = cur.diamondW; u.machZ.value = Math.max(0.5, cur.machZ);
     u.machR.value = cur.machR; u.mach.value = cur.mach; u.streakLen.value = cur.streakLen; u.streak.value = cur.streak;
@@ -528,25 +622,32 @@ const EngineExhaust = memo(function EngineExhaust({
 
     const halo = haloRef.current;
     if (halo) {
-      halo.visible = intensity > 0.001 && cur.halo > 1e-4;
-      halo.scale.setScalar(2.5 * cur.haloA);
+      const haloOn = intensity > 1e-5 && cur.halo > 0;
+      halo.visible = true; // compiled at mount, collapsed when off (see the plume mesh below)
+      halo.scale.setScalar(haloOn ? 2.5 * HALO_MESH_PAD * cur.haloA : 1e-4);
       halo.position.set(0, 0, -cur.haloZ);
     }
     for (let i = 0; i < configs.length; i++) {
       const mesh = meshRefs.current[i];
       if (mesh) {
-        const R = cur.R + (twin ? halfSpacing : 0);
-        mesh.scale.set(R, R, cur.L);
-        mesh.visible = intensity > 0.001 && (!twin || i === 0);
-        if (twin && i === 0) mesh.position.set(haloAt[0] - configs[0].position[0], haloAt[1] - configs[0].position[1], haloAt[2] - configs[0].position[2]);
+        // Idle: stay visible but collapse to ~0 pixels, so the pipeline is compiled at mount.
+        // Hidden-until-thrust compiled on the first throttle-up, and the plume then appeared
+        // late into a dark-adapted exposure: a whole-screen white flash.
+        const on = intensity > 1e-5;
+        const R = on ? cur.R + (twin ? halfSpacing : 0) : 1e-4;
+        mesh.scale.set(R, R, on ? cur.L : 1e-4);
+        mesh.visible = !twin || i === 0;
+        if (twin && i === 0) mesh.position.set(haloAt[0] - configs[0].position[0], haloAt[1] - configs[0].position[1], haloAt[2] - configs[0].position[2] - CAP_M);
+        else mesh.position.set(0, 0, -CAP_M);
       }
       const light = lightRefs.current[i];
       if (light) {
         // × preExposure like every light (D25). ⚠ NEVER toggle light.visible: it changes the
         // lights hash and recompiles every lit material (measured ~1 s stall per throttle cycle).
         light.intensity = intensity * plumeLightIntensity(configs[i].radius) * cur.light * getPreExposure();
-        light.distance = LIGHT_DISTANCE * Math.max(1, Math.sqrt(cur.light) * Math.min(4, cur.L / PLUME_MAX_LENGTH));
-        light.position.set(0, 0, -Math.min(cur.L * 0.2, 6));
+        light.distance = LIGHT_DISTANCE * Math.min(2, Math.max(1, cur.L / PLUME_MAX_LENGTH));
+        // ≥ 1 m downstream: closer, the 1/d² near field blew out bell walls and struts.
+        light.position.set(0, 0, -Math.max(1, Math.min(cur.L * 0.2, 6)));
         light.color.setRGB(cur.colBody[0], cur.colBody[1], cur.colBody[2]).multiplyScalar(0.5).add(LIGHT_COLOR_HALF);
       }
     }
@@ -555,7 +656,7 @@ const EngineExhaust = memo(function EngineExhaust({
   return (
     <>
       <group position={haloAt}>
-        <mesh ref={haloRef} geometry={unitSphere()} material={haloMat} frustumCulled={false} visible={false} />
+        <mesh ref={haloRef} geometry={unitSphere()} material={haloMat} frustumCulled={false} />
       </group>
       {configs.map((cfg, i) => (
         <group key={i} position={cfg.position}>

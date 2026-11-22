@@ -661,6 +661,21 @@ atmospheres"); this section is its spec.
   DEFAULT tuning. Measured A/B (local-scene pass, 1280×720 headless Metal): vacuum ≈ 0,
   1 km +0.15–0.3 ms, 40 km (camera inside the bell) +0.4–0.5 ms, 80 km ≈ 0.
   Not done: nozzle-bell heat glow (needs a model material hook), E5 shimmer, E6, E7.
+- **Exhaust artefact fixes (2026-11-22, owner report: bright polygon across the screen,
+  noise at the bells).** Causes, all MEASURED headless: (1) emission tails reached the
+  bounding cylinder's wall and pre-exposure (~1e3–1e4 in dark space) made the silhouette
+  visible → emission now windowed to exactly 0 inside the bounds (per nozzle axis, incl. the
+  analytic Mach disk), vacuum core r⁻⁴; (2) the end cap was coplanar with the nacelle face →
+  z-fight ring → volume starts 4 cm downstream; nozzle disc confined to the bell mouth;
+  (3) 3 jittered samples across a side-on jet → equi-angular importance sampling (two
+  nozzle axes + nozzle exit, balance heuristic), deterministic strata (a screen dither left
+  a dot grid); (4) the plume shader compiled on first throttle-up and appeared into a
+  dark-adapted exposure → whole-screen white flash → meshes stay compiled, collapsed when
+  idle; (5) halo amplitude scaled with its own radius (~4× the plume) and its faceted sphere
+  showed → bounded fraction of plume radiance, analytic entry/exit, zero at the rim; NaN guard
+  on output (one NaN pixel is smeared over the screen by the glare pass). Cost A/B: vacuum
+  ≈ 0, 3 km +0.2–0.6 ms. Not done: depth-clipping the volume against hull/terrain (needs a
+  scene-depth read; today an occluder inside the volume drops that whole ray).
 
 ---
 
