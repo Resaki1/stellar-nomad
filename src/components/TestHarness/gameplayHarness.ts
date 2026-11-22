@@ -179,12 +179,16 @@ export function createGameplayHarness(store: Store) {
             lights[part.material.name] = part.material.emissiveIntensity;
           }
         });
-        return { level, lights };
+        const refinery = object.getObjectByName("depotRefinery");
+        return { level, lights, refinery: refinery ? {
+          level: refinery.children.findIndex(child => child.visible),
+          mountM: new Vector3().setFromMatrixPosition(refinery.matrix).toArray(),
+        } : null };
       },
-      depotColliders() {
+      depotColliders(kind: "depot" | "depotRefinery" = "depot") {
         const out: { id: number; inEngine: boolean; pieces: number }[] = [];
         nearField.forEachCollider((id, shape, _frame, _pos, tag) => {
-          if (tag === "depot") {
+          if (tag === kind) {
             out.push({ id, inEngine: nearField.colliderInEngine(id), pieces: shape.kind === "compoundHull" ? shape.pieces.length : 1 });
           }
         });

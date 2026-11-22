@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { Mesh, MeshStandardMaterial, Vector3, type Group } from "three";
+import { Matrix4, Mesh, MeshStandardMaterial, type Group } from "three";
 import { emitterColor, type EmitterId } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 
@@ -17,8 +17,16 @@ const FLASH_DURATION_S = 0.45;
 
 export type DepotRenderAssets = {
   scenes: Group[];
-  refineryMount: Vector3;
+  refineryMount: Matrix4;
 };
+
+/** The socket exposes +Z out of the rails. The module itself is authored +Y up. */
+export function refineryMountMatrix(scene: Group): Matrix4 {
+  scene.updateMatrixWorld(true);
+  const socket = scene.getObjectByName("socket_upgrade_refinery");
+  if (!socket) throw new Error("Base depot is missing its refinery mount socket");
+  return socket.matrixWorld.clone().multiply(new Matrix4().makeRotationX(Math.PI / 2));
+}
 
 /** Share calibrated materials and geometry across every depot instance. */
 export function useDepotRenderAssets(): DepotRenderAssets {
@@ -47,11 +55,7 @@ export function useDepotRenderAssets(): DepotRenderAssets {
       });
       return template;
     });
-    const mount = scenes[0].getObjectByName("socket_upgrade_refinery");
-    if (!mount) throw new Error("Base depot is missing its refinery mount socket");
-    const refineryMount = mount.getWorldPosition(new Vector3());
-    refineryMount.y += 0.18;
-    return { assets: { scenes, refineryMount }, lights, beacons };
+    return { assets: { scenes, refineryMount: refineryMountMatrix(scenes[0]) }, lights, beacons };
   }, [models]);
 
   useEffect(() => {

@@ -63,9 +63,10 @@ export default async function depotModel(d) {
     data.world.industry.depots = [{
       id: ${j(ID)}, name: "Depot Flight Review", frameId: ${j(FRAME)}, positionKm: ${j(CENTER)},
       quaternion: ${j(ROTATION)}, by, createdAt: Date.now(), refinery: false, refineProgressS: 0,
-      storage: { items: {}, consumables: {}, fuelKg: 0 },
+      storage: { items: { fe_ni_metal: 75, silicates: 50 }, consumables: {}, fuelKg: 0 },
     }];
     data.world.industry.drones = [];
+    data.world.research.completedNodes = ["lg1_bulk_handling", "lg2_station_refining"];
     data.world.replication.points = data.world.replication.points.filter(point => point.starter);
     const player = data.players[by];
     player.replication.activeId = "starter";
@@ -87,6 +88,9 @@ export default async function depotModel(d) {
     assert.equal((await ev("__phys.stats()")).ship.source, "mesh");
     await until("Close depot LOD never loaded", async () => (await model())?.level === 0);
     await d.settle(420);
+    assert.equal((await model()).refinery, null);
+    assert.deepEqual(await ev(G + '.industry.depotColliders("depotRefinery")'), []);
+    assert.equal(await ev('performance.getEntriesByType("resource").some(entry => entry.name.includes("/models/stations/depot-refinery"))'), false);
     const approachShot = await d.canvas("depot-docking-approach-20m");
 
     const oblique = [-34, 19, 57];
@@ -158,9 +162,54 @@ export default async function depotModel(d) {
         ([x,y,z]) => sign*x > 9 && sign*x <= 13.4 && y < 0.6 && Math.abs(z+15.5) < 1.8));
     }
     const overPanel = await clearFlight("over the solar tray", [14.8, 3.2, -25], [0,0,11], ([,,z]) => z > -8);
+    const bayView = oblique;
+    const bayAim = lookAtDepot(bayView);
+    await teleport(bayView, bayAim);
+    await d.settle(420);
+    const emptyBay = await d.canvas("depot-refinery-empty-rails");
+    const outcome = await ev(`${G}.settled({type:"depot.fabricate", depotId:${j(ID)}, recipeId:"refinery"})`);
+    assert.equal(outcome.status, "accepted");
+    const mounted = await until("Fabrication did not attach the refinery", async () => (await model())?.refinery);
+    assert.equal(mounted.level, 0);
+    assert.deepEqual(mounted.mountM.map(n => Math.round(n * 100) / 100), [0, 3.39, -9.8]);
+    const refineryColliders = () => ev(G + '.industry.depotColliders("depotRefinery")');
+    const [refineryCollider] = await until("Fabricated refinery has no Rapier collider", async () => {
+      const list = await refineryColliders();
+      return list.length === 1 && list[0].inEngine && list;
+    });
+    assert.equal(refineryCollider.pieces, 27);
+    assert.equal((await colliders())[0].id, installed.id, "Installing an upgrade leaves the base collider registered");
+    await d.settle(420);
+    const installedBay = await d.canvas("depot-refinery-installed");
+
+    await teleport([0, 15, -9.4]);
+    await ev("__phys.drainContacts()");
+    await coast([0, -10, 0]);
+    const refineryHit = await until("Starter ship missed the mounted radiator", async () => {
+      const contacts = await ev("__phys.drainContacts()");
+      return contacts.find(contact => contact.colliderId === refineryCollider.id && contact.hasPoint && contact.impulseNs > 0);
+    }, 4_000);
+    await coast([0,0,0]);
+    const impactM = localMetres([refineryHit.pxKm, refineryHit.pyKm, refineryHit.pzKm]);
+    assert.ok(impactM[1] > 6.8 && impactM[1] < 7.2 && Math.abs(impactM[2] + 9.8) < 1.8, `Unexpected refinery impact at ${impactM}`);
+
+    for (const [distance, level] of [[850, 1], [3800, 2]]) {
+      await teleport([0,0,distance], lookAtDepot(initial));
+      await until(`Module did not follow depot LOD ${level}`, async () => {
+        const current = await model();
+        return current?.level === level && current.refinery?.level === level;
+      });
+    }
+    await until("Refinery collider stayed loaded out of range", async () => !(await refineryColliders()).length);
+
+    await ev("__test.save.flush()");
+    await d.reload();
+    await teleport(bayView, bayAim);
+    await until("Saved refinery did not mount on reload", async () => (await model())?.refinery?.level === 0);
     return {
       pass: true, lods: { 500: 0, 850: 1, 3800: 2 }, pieces: installed.pieces, dockingClear,
       backing, panels, overPanel, flashIntervalMs, approachShot, closeShot,
+      refinery: { mounted, impactM, emptyBay, installedBay, persisted: true },
     };
   } finally {
     await ev(`__phys.tuning.set(${j(tuning)}); ${G}.fixtures.activate(${j(previous)})`);

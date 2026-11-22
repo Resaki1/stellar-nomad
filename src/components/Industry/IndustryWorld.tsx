@@ -30,7 +30,11 @@ import { replicationPointsAtom } from "@/store/replicationMirror";
 import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, trackedDronePoiAtom } from "@/store/industryHud";
 import { poiBuffer } from "@/store/poi";
 import { DroneMotion, MiningLegClock, smoothProgress } from "./droneMotion";
-import { DEPOT_COLLISION_ASSET, DEPOT_LOD_ASSETS, DEPOT_LOD_DISTANCES_M, useDepotRenderAssets, type DepotRenderAssets } from "./DepotModel";
+import { DEPOT_COLLISION_ASSET, DEPOT_LOD_ASSETS, DEPOT_LOD_DISTANCES_M, refineryMountMatrix, useDepotRenderAssets, type DepotRenderAssets } from "./DepotModel";
+
+const REFINERY_BASE = "/models/stations/depot-refinery";
+const REFINERY_LOD_ASSETS = [REFINERY_BASE + ".glb", REFINERY_BASE + "-lod1.glb", REFINERY_BASE + "-lod2.glb"];
+const REFINERY_COLLISION_ASSET = REFINERY_BASE + "-collision.glb";
 
 const DEPOT_RENDER_KM = 14;
 const DEPOT_COLLISION_KM = 3;
@@ -84,6 +88,23 @@ function scenePosition(pose: Position, worldOrigin: Readonly<Vector3>, into: Vec
   return into.set((into.x + p[0]) * 1000, (into.y + p[1]) * 1000, (into.z + p[2]) * 1000);
 }
 
+function DepotRefinery({ mount, depotLod }: { mount: DepotRenderAssets["refineryMount"]; depotLod: LOD }) {
+  const models = useGLTF(REFINERY_LOD_ASSETS, false, false);
+  const instances = useMemo(() => models.map(({ scene }) => scene.clone(true)), [models]);
+  const ref = useRef<Group>(null!);
+  useFrame(() => {
+    const group = ref.current;
+    if (!group) return;
+    const level = depotLod.getCurrentLevel();
+    group.children.forEach((child, i) => { child.visible = i === level; });
+  }, FRAME_PRIORITY_REMOTE_SHIPS + 0.1);
+  return <group ref={ref} name="depotRefinery" matrix={mount} matrixAutoUpdate={false} dispose={null}>
+    {instances.map((object, level) => (
+      <primitive key={level} object={object} name={`refineryLOD${level}`} visible={level === 0} />
+    ))}
+  </group>;
+}
+
 const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; assets: DepotRenderAssets }) {
   const ref = useRef<Group>(null!);
   const worldOrigin = useWorldOrigin();
@@ -109,7 +130,9 @@ const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; a
   }, FRAME_PRIORITY_REMOTE_SHIPS);
   return <group ref={ref} name={`depot:${depot.id}`} quaternion={depot.quaternion} visible={false} dispose={null}>
     <primitive object={lod} name="depotLOD" />
-    {depot.refinery && <mesh geometry={BOX} material={AMBER} position={assets.refineryMount} scale={[1.2, 0.22, 0.48]} />}
+    {depot.refinery && <Suspense fallback={null}>
+      <DepotRefinery mount={assets.refineryMount} depotLod={lod} />
+    </Suspense>}
   </group>;
 });
 
@@ -171,6 +194,21 @@ function samePose(a: ShipPose, b: ShipPose): boolean {
 function DepotColliders({ depots }: { depots: readonly DepotRecord[] }) {
   const { scene } = useGLTF(DEPOT_COLLISION_ASSET, false, false);
   const shape = useMemo(() => readCollisionMeshes(scene), [scene]);
+  return <DepotColliderSet depots={depots} shape={shape} tag="depot" />;
+}
+
+function RefineryColliders({ depots }: { depots: readonly DepotRecord[] }) {
+  const [base] = useGLTF(DEPOT_LOD_ASSETS, false, false);
+  const { scene } = useGLTF(REFINERY_COLLISION_ASSET, false, false);
+  const shape = useMemo(() => readCollisionMeshes(scene, refineryMountMatrix(base.scene)), [scene, base.scene]);
+  return <DepotColliderSet depots={depots} shape={shape} tag="depotRefinery" />;
+}
+
+function DepotColliderSet({ depots, shape, tag }: {
+  depots: readonly DepotRecord[];
+  shape: ColliderShape;
+  tag: "depot" | "depotRefinery";
+}) {
   const entries = useRef(new Map<string, StationEntry>());
   const byId = useMemo(() => new Map(depots.map(depot => [depot.id, depot])), [depots]);
 
@@ -195,7 +233,7 @@ function DepotColliders({ depots }: { depots: readonly DepotRecord[] }) {
     for (const depot of depots) {
       if (all.has(depot.id) || !withinColliderRange(depot, ship, DEPOT_COLLISION_KM)) continue;
       const handle = nearField.addCollider(
-        shape, depot.frameId, _offset.fromArray(depot.positionKm), _orientation.fromArray(depot.quaternion), "depot",
+        shape, depot.frameId, _offset.fromArray(depot.positionKm), _orientation.fromArray(depot.quaternion), tag,
       );
       all.set(depot.id, { pose: depot, handle });
     }
@@ -416,12 +454,14 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
 export default function IndustryWorld() {
   const { depots, drones } = useAtomValue(industryAtom);
   const points = useAtomValue(replicationPointsAtom);
+  const upgradedDepots = useMemo(() => depots.filter(depot => depot.refinery), [depots]);
   const prospects = useMemo(() => INDUSTRY_SOURCES.map(source => prospectWorksite(source, depots)), [depots]);
   return <>
     {depots.length > 0 && <>
       <Suspense fallback={null}><DepotColliders depots={depots} /></Suspense>
       <Suspense fallback={null}><DepotStations depots={depots} /></Suspense>
     </>}
+    {upgradedDepots.length > 0 && <Suspense fallback={null}><RefineryColliders depots={upgradedDepots} /></Suspense>}
     <DepotPreview />
     {prospects.map(source => <Prospect key={source.id} source={source} />)}
     {drones.map((drone, index) => {

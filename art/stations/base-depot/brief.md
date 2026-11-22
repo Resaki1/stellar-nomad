@@ -1,6 +1,6 @@
 # Base orbital depot
 
-The deployable station receives cargo and propellant. Its structural truss, transfer head, paired side tanks, dorsal and ventral cargo cassettes, and aft power and comms equipment make up the base configuration. The aft truss has an empty keyed mounting bay for a future refinery.
+The deployable station receives cargo and propellant. Its structural truss, transfer head, paired side tanks, dorsal and ventral cargo cassettes, and aft power and comms equipment make up the base configuration. The aft truss accepts the separate [hydrate refinery](../depot-refinery/brief.md). The keyed bay is empty on the base configuration.
 
 ## Reference and scale
 
@@ -36,7 +36,7 @@ The Blender recipe reuses the replication station's packed base color, metallic-
 | `socket_nav_0` | (−2.91, 5.9, −16.7) | +Y |
 | `socket_nav_1` | (2.79, 6.28, −15.12) | +Y |
 
-Mount future refinery geometry at `socket_upgrade_refinery` with its own render asset and collision pieces. Keep utilities reachable from the aft side and preserve access to both cargo cassettes and the forward collar.
+The hydrate refinery attaches at `socket_upgrade_refinery` with its own render asset and collision pieces. Keep utilities reachable from the aft side and preserve access to both cargo cassettes and the forward collar.
 
 ```sh
 blender -b --factory-startup --disable-autoexec --python-exit-code 1 --python art/stations/base-depot/build.py -- art/stations/base-depot/base-depot.blend
@@ -55,7 +55,7 @@ pnpm model build art/stations/base-depot/base-depot.blend --asset base-depot-col
 | LOD2 | 5,336 | 4 | 372,100 |
 | Collision | 4,310 | 89 | 290,120 |
 
-The runtime GLBs live in `public/models/stations/`. All four passed Khronos validation with zero warnings. The three visual LODs preserve matching metre bounds and all eight socket transforms. LOD1 removes the bolts and fine bevels and reduces the trim map resolution. LOD2 simplifies the tank jackets and leaves out the tiny service fittings. Visible stations share geometry and materials, with camera-distance thresholds of 600 m and 1,100 m and 12% hysteresis on approach. The placement ghost draws pre-exposed edges from LOD2 so the truss and solar trays read through the end-on view. The existing refinery status marker sits on the authored mount socket.
+The runtime GLBs live in `public/models/stations/`. All four passed Khronos validation with zero warnings. The three visual LODs preserve matching metre bounds and all eight socket transforms. LOD1 removes the bolts and fine bevels and reduces the trim map resolution. LOD2 simplifies the tank jackets and leaves out the tiny service fittings. Visible stations share geometry and materials, with camera-distance thresholds of 600 m and 1,100 m and 12% hysteresis on approach. The placement ghost draws pre-exposed edges from LOD2 so the truss and solar trays read through the end-on view. The installed refinery follows the base depot’s selected LOD.
 
 Each nearby depot registers one fixed, 89-piece Rapier compound inside 3 km and unloads it beyond 3.6 km. The collar uses separate lip pieces and a recessed backing, preserving the capture recess and the approach off its edges. The fixed proxy also covers the thin solar trays and masts while keeping space around them open. The workshop's proxy gate covers 12 positive hits and nine clear paths. Latest model reviews are under `.captures/models/latest/`.
 
