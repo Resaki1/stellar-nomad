@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
+import { useStore } from "jotai";
 import { Matrix4, Mesh, MeshStandardMaterial, type Group } from "three";
+import type { MeshStandardNodeMaterial } from "three/webgpu";
 import { emitterColor, type EmitterId } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { beaconFlash, fadingLampMaterial, readLightTemplate, type LightTemplate } from "@/components/space/lightPoints";
+import { simEpochMsAtom } from "@/store/simTime";
 
 const BASE = "/models/stations/base-depot";
 export const DEPOT_LOD_ASSETS = [BASE + ".glb", BASE + "-lod1.glb", BASE + "-lod2.glb"];
@@ -12,12 +16,14 @@ export const DEPOT_LOD_DISTANCES_M = [0, 600, 1_100];
 
 const GUIDE_MATERIAL = "Amber depot guides";
 const BEACON_MATERIAL = "Amber depot mast beacons";
-const FLASH_PERIOD_S = 2;
-const FLASH_DURATION_S = 0.45;
+/** Lamp size for the mesh ↔ light-point crossfade, m (build.py: lamps 0.26–0.30, lens ⌀0.28). */
+const LAMP_SIZE_M = 0.28;
 
 export type DepotRenderAssets = {
   scenes: Group[];
   refineryMount: Matrix4;
+  /** Lamp light points (VFX plan §1), depot space. */
+  lights: LightTemplate;
 };
 
 /** The socket exposes +Z out of the rails. The module itself is authored +Y up. */
@@ -31,10 +37,11 @@ export function refineryMountMatrix(scene: Group): Matrix4 {
 /** Share calibrated materials and geometry across every depot instance. */
 export function useDepotRenderAssets(): DepotRenderAssets {
   const models = useGLTF(DEPOT_LOD_ASSETS, false, false);
-  const animatedLights = useRef<MeshStandardMaterial[]>([]);
+  const store = useStore();
+  const animatedLights = useRef<MeshStandardNodeMaterial[]>([]);
   const { assets, lights, beacons } = useMemo(() => {
-    const lights = new Map<MeshStandardMaterial, MeshStandardMaterial>();
-    const beacons: MeshStandardMaterial[] = [];
+    const lights = new Map<MeshStandardMaterial, MeshStandardNodeMaterial>();
+    const beacons: MeshStandardNodeMaterial[] = [];
     const scenes = models.map(({ scene }) => {
       const template = scene.clone(true);
       template.traverse((object) => {
@@ -45,7 +52,7 @@ export function useDepotRenderAssets(): DepotRenderAssets {
         if (id === null) return;
         let light = lights.get(source);
         if (!light) {
-          light = source.clone();
+          light = fadingLampMaterial(source, LAMP_SIZE_M);
           emitterColor(id, light.emissive);
           light.emissiveIntensity = 1;
           lights.set(source, light);
@@ -55,7 +62,8 @@ export function useDepotRenderAssets(): DepotRenderAssets {
       });
       return template;
     });
-    return { assets: { scenes, refineryMount: refineryMountMatrix(scenes[0]) }, lights, beacons };
+    const template = readLightTemplate(scenes[0]);
+    return { assets: { scenes, refineryMount: refineryMountMatrix(scenes[0]), lights: template }, lights, beacons };
   }, [models]);
 
   useEffect(() => {
@@ -68,8 +76,8 @@ export function useDepotRenderAssets(): DepotRenderAssets {
     };
   }, [lights, beacons]);
 
-  useFrame(({ clock }) => {
-    const intensity = clock.elapsedTime % FLASH_PERIOD_S < FLASH_DURATION_S ? 1 : 0;
+  useFrame(() => {
+    const intensity = beaconFlash(store.get(simEpochMsAtom));
     for (const beacon of animatedLights.current) beacon.emissiveIntensity = intensity;
   });
 

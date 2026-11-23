@@ -642,6 +642,39 @@ const sleepFrames = (n: number) =>
 export class LumHarness {
   constructor(private readonly store: Store) {}
 
+  /** Pin (true) or release the global exposure, so on/off pairs share one pre-exposure. */
+  holdExposure(on = true): void {
+    setManualExposure(on);
+  }
+
+  /**
+   * Summed Rec709 luminance over a region of the HDR target (normalised 0..1, top-left),
+   * absolute game units per pixel summed — ∝ flux. For on/off differences (VFX plan §1 gates).
+   */
+  async region(x0 = 0, y0 = 0, x1 = 1, y1 = 1): Promise<{ sum: number; max: number; lit: number; px: number } | null> {
+    if (!_source) return null;
+    const { renderer, target } = _source;
+    const ax = Math.floor(x0 * target.width), ay = Math.floor(y0 * target.height);
+    const w = Math.max(1, Math.floor(x1 * target.width) - ax), h = Math.max(1, Math.floor(y1 * target.height) - ay);
+    const buf = await renderer.readRenderTargetPixelsAsync(target, ax, ay, w, h);
+    const isHalf = buf instanceof Uint16Array;
+    const isByte = buf instanceof Uint8Array;
+    const a = buf as unknown as ArrayLike<number>;
+    const stride = rowStrideElements(w, isHalf ? 2 : isByte ? 1 : 4);
+    let sum = 0, max = 0, lit = 0;
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const [r, g, b] = decodeRgb(a, row * stride + col * 4, isHalf, isByte);
+        const l = REC709[0] * r + REC709[1] * g + REC709[2] * b;
+        if (!Number.isFinite(l)) continue;
+        sum += l;
+        if (l > max) max = l;
+        if (l > 1e-3) lit++;
+      }
+    }
+    return { sum, max, lit, px: w * h };
+  }
+
   /** Whether a probe target is registered, and how many times it was published. */
   status(): ReturnType<typeof lumSourceStatus> & { exposure: number } {
     return { ...lumSourceStatus(), exposure: getExposure() };

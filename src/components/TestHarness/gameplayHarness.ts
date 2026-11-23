@@ -174,7 +174,7 @@ export function createGameplayHarness(store: Store) {
         const level = model.getCurrentLevel();
         const lights: Record<string, number> = {};
         model.levels[level].object.traverse(part => {
-          if (part instanceof Mesh && part.material instanceof MeshStandardMaterial &&
+          if (part instanceof Mesh && "emissiveIntensity" in part.material &&
               (part.material.name === "Amber depot guides" || part.material.name === "Amber depot mast beacons")) {
             lights[part.material.name] = part.material.emissiveIntensity;
           }
@@ -727,7 +727,8 @@ export function createGameplayHarness(store: Store) {
       lights() {
         const intensities: Record<string, number> = {};
         testProbe.scene?.getObjectByName("replicationPointLOD0")?.traverse(object => {
-          if (object instanceof Mesh && object.material instanceof MeshStandardMaterial &&
+          // Lamps are MeshStandardNodeMaterials since VFX plan §1 (fading emissive): duck-type.
+          if (object instanceof Mesh && "emissiveIntensity" in object.material &&
               (object.material.name === "Amber indicators" || object.material.name === "Amber mast beacons")) {
             intensities[object.material.name] = object.material.emissiveIntensity;
           }

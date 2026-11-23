@@ -119,6 +119,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `PHYS_PARTS=sim,damage,hull,asteroids pnpm drive -- --keep run:scripts/drive-examples/physics-check.mjs` — collisions (deterministic contact gates + live asteroid hits); design in `docs/PHYSICS_PLAN.md` §7
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
+- `LIGHTS_PARTS=drift,xfade,ladder,beacon pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-lights.mjs` — station lamps as flux-conserving light points (VFX plan §1; `perf` part with `--perf`)
 - `pnpm check:atmo` — sim atmosphere + variable-Isp drive under plain Node (`scripts/atmo-check.mjs`):
   co-rotating air vs the rendered surface (Earth/Mars/Venus/Jupiter), body pick, fuel multiplier
   table, plume regimes (VFX_REALISM_PLAN §5.6, §6)

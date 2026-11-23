@@ -147,6 +147,29 @@ def socket(name, position, direction, export):
     obj.empty_display_size = 1.4
 
 
+def light(position, direction, emitter, area, size, blink=0, cosine=1):
+    """Runtime light point (docs/VFX_REALISM_PLAN.md §1, L3): one empty per lamp, read by the
+    game's LightPoints. Custom props reach the GLB as extras; +Z in glTF is `direction`.
+    `area` m² of emitting face × the emitter's cd/m² = intensity; `cosine` 1 = flat lens (|cos|)."""
+    global light_index
+    name = f"light_{light_index:03d}"
+    light_index += 1
+    if existing := bpy.data.objects.get(name):
+        export.objects.link(existing)
+        return
+    obj = bpy.data.objects.new(name, None)
+    export.objects.link(obj)
+    obj.location = position
+    obj.rotation_euler = Vector(direction).to_track_quat("-Y", "Z").to_euler()
+    obj.empty_display_type = "SINGLE_ARROW"
+    obj.empty_display_size = 0.5
+    obj["emitter"] = emitter
+    obj["area_m2"] = round(area, 4)
+    obj["size_m"] = round(size, 3)
+    obj["blink"] = blink
+    obj["cosine"] = cosine
+
+
 def seams_and_fasteners(normal, radius, z, width, height, inset=(0.72, 0.68)):
     if lod != 0:
         return
@@ -164,6 +187,12 @@ def signal(normal, radius, z, shift=0, count=4, vertical=False):
     width, height = (w+0.27, h*count*1.4+0.20) if vertical else (w*count*1.4+0.20, h+0.24)
     if lod < 2:
         panel("Recessed lamp housing", normal, radius, z, (width,0.55,height), "graphite", 0.10, shift)
+    # Per-lens light points at every LOD (the far LODs merge lenses into a bar; the points don't).
+    for i in range(count):
+        step = i - (count-1)/2
+        at = normal*(radius+0.35) + right_of(normal)*(shift + (0 if vertical else step*w*1.37)) \
+            + UP*(z + (step*h*1.37 if vertical else 0))
+        light(at, normal, "replication_beacon", w*h, math.sqrt(w*h))
     if lod > 0:
         lens_size = (w,0.10,height-0.28) if vertical else (width-0.30,0.10,h)
         panel("Amber light bar", normal, radius+0.28, z, lens_size, "lamp", 0.06, shift)
@@ -404,6 +433,8 @@ def comms():
         if i >= 3:
             radial("Amber mast lamp", (x,y,z+height-0.65), UP, [(0,0.32),(1.13,0.32),(1.32,0.17)],
                    "beacon", 10, f"mast_{i}")
+            # Side-on silhouette of the lamp (0.64 m × 1.13 m + cone); near-isotropic in azimuth.
+            light((x,y,z+height-0.05), UP, "replication_mast_beacon", 0.8, 0.64, blink=1, cosine=0)
 
 
 def project_trim(data, band, seed):
@@ -533,6 +564,7 @@ if __name__ == "__main__":
     for lod in range(3):
         parts = collection("Replication point editable assemblies" if lod == 0 else f"LOD{lod} construction")
         export = collection(f"EXPORT_LOD{lod}")
+        light_index = 0
         materials["pv"] = glass[lod]
         core()
         berth_door()

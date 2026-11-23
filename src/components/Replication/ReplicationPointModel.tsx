@@ -3,13 +3,14 @@ import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
 import {
-  DynamicDrawUsage, Group, InstancedMesh, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
+  DynamicDrawUsage, Group, InstancedMesh, type Material, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
 } from "three";
 import { shipView } from "@/components/Camera/shipView";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
 import { readCollisionMeshes } from "@/components/models/collisionMeshes";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { beaconFlash, emitLightPoints, fadingLampMaterial, readLightTemplate, type LightTemplate } from "@/components/space/lightPoints";
 import type { ReplicationPoint } from "@/save/types";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { frameOriginKm, isFrameId } from "@/sim/frames";
@@ -17,15 +18,18 @@ import { nearField, type NearFieldColliderId } from "@/sim/physics/nearField";
 import { MAX_POINTS, REPLICATION_TUNING } from "@/sim/replication/points";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { placementPreview, replicationPointsAtom } from "@/store/replication";
+import { simEpochMsAtom } from "@/store/simTime";
 
 const BASE = "/models/stations/replication-r4";
 const RENDER_ASSETS = [BASE + ".glb", BASE + "-lod1.glb", BASE + "-lod2.glb"];
 const COLLISION_ASSET = BASE + "-collision.glb";
 const DRAW_RANGE_M = 400_000;
 const LOD_DISTANCE_M = [600, 1_100];
-const MAST_LIGHT_PERIOD_S = 2;
-const MAST_LIGHT_ON_S = 0.45;
+/** Lamps stay visible as light points far past the mesh draw range (VFX plan §1.2: ~mag 2 at 400 km). */
+const LIGHT_RANGE_M = 3_000_000;
 const MAST_LIGHT_MATERIAL = "Amber mast beacons";
+/** Characteristic lamp size per material, m (build.py: lens 0.73×0.58, mast lamp ⌀0.64) — the crossfade's px. */
+const LAMP_SIZE_M: Record<string, number> = { "Amber indicators": 0.65, [MAST_LIGHT_MATERIAL]: 0.64 };
 const HYSTERESIS = 0.12;
 const COLLIDER_RANGE_KM = 2;
 const COLLIDER_KEEP_KM = COLLIDER_RANGE_KM * 1.2;
@@ -49,19 +53,22 @@ function newBatch(scene: Group) {
   scene.updateMatrixWorld(true);
   const group = new Group();
   const draws: { mesh: InstancedMesh; local: Matrix4 }[] = [];
-  const lamps: MeshStandardMaterial[] = [];
-  const beacons: MeshStandardMaterial[] = [];
+  const lamps: Material[] = [];
+  const beacons: Material[] = [];
   scene.traverse((part) => {
     if (!(part instanceof Mesh)) return;
     const material = part.material;
     const emissive = material instanceof MeshStandardMaterial && material.emissive.getHex() !== 0;
-    const surface = emissive ? material.clone() : material;
-    if (surface instanceof MeshStandardMaterial && emissive) {
-      const blinks = surface.name === MAST_LIGHT_MATERIAL;
-      surface.emissive.copy(emitterColor(blinks ? "replication_mast_beacon" : "replication_beacon"));
-      surface.emissiveIntensity = 1;
-      lamps.push(surface);
-      if (blinks) beacons.push(surface);
+    let surface: Material = material;
+    if (material instanceof MeshStandardMaterial && emissive) {
+      const blinks = material.name === MAST_LIGHT_MATERIAL;
+      // Fades out below a few px while its light points (L2) take over the flux.
+      const lamp = fadingLampMaterial(material, LAMP_SIZE_M[material.name] ?? 0.65);
+      lamp.emissive.copy(emitterColor(blinks ? "replication_mast_beacon" : "replication_beacon"));
+      lamp.emissiveIntensity = 1;
+      surface = lamp;
+      lamps.push(lamp);
+      if (blinks) beacons.push(lamp);
     }
     const mesh = new InstancedMesh(part.geometry, surface, MAX_POINTS);
     mesh.count = 0;
@@ -84,6 +91,8 @@ export function ReplicationPointModels() {
   const worldOrigin = useWorldOrigin();
   const models = useGLTF(RENDER_ASSETS, false, false);
   const batches = useMemo(() => models.map(({ scene }) => newBatch(scene)), [models]);
+  // One lamp set for every LOD: points don't merge into light bars.
+  const lights = useMemo<LightTemplate>(() => readLightTemplate(models[0].scene), [models]);
   const previous = useRef(new Map<string, number>());
   const previousPoints = useRef<readonly ReplicationPoint[] | null>(null);
 
@@ -100,7 +109,7 @@ export function ReplicationPointModels() {
     };
   }, [batches]);
 
-  useFrame(({ camera, clock }) => {
+  useFrame(({ camera }) => {
     const points = store.get(replicationPointsAtom);
     const levels = previous.current;
     if (previousPoints.current !== points) {
@@ -110,28 +119,29 @@ export function ReplicationPointModels() {
     const counts = replicationPointStats.lods;
     counts.fill(0);
     let total = 0;
+    const flash = beaconFlash(store.get(simEpochMsAtom));
     camera.getWorldPosition(_camera);
     for (const point of points) {
-      if (total === MAX_POINTS) break;
       if (point.starter || !isFrameId(point.frameId)) continue;
       const [x, y, z] = point.positionKm;
       frameOriginKm(point.frameId, _position);
       _position.set(_position.x + x, _position.y + y, _position.z + z)
         .sub(worldOrigin.worldOriginKm).multiplyScalar(1000);
       const distance = _position.distanceTo(_camera);
-      if (distance > DRAW_RANGE_M) continue;
+      if (distance > LIGHT_RANGE_M) continue;
+      _transform.compose(_position, _quat.fromArray(point.quaternion), _one);
+      emitLightPoints(lights, _transform, flash);
+      if (distance > DRAW_RANGE_M || total === MAX_POINTS) continue;
       const level = lodFor(distance, levels.get(point.id));
       levels.set(point.id, level);
-      _transform.compose(_position, _quat.fromArray(point.quaternion), _one);
       for (const { mesh, local } of batches[level].draws) {
         mesh.setMatrixAt(counts[level], _matrix.multiplyMatrices(_transform, local));
       }
       counts[level]++;
       total++;
     }
-    const flash = clock.elapsedTime % MAST_LIGHT_PERIOD_S < MAST_LIGHT_ON_S ? 1 : 0;
     batches.forEach(({ draws, beacons }, level) => {
-      for (const beacon of beacons) beacon.emissiveIntensity = flash;
+      for (const beacon of beacons) (beacon as MeshStandardMaterial).emissiveIntensity = flash;
       for (const { mesh } of draws) {
         mesh.count = counts[level];
         if (mesh.count) mesh.instanceMatrix.needsUpdate = true;

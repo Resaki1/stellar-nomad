@@ -6,11 +6,13 @@ import { useAtomValue, useStore } from "jotai";
 import { memo, Suspense, useEffect, useMemo, useRef } from "react";
 import {
   BoxGeometry, Color, DodecahedronGeometry, EdgesGeometry, Euler, Group, IcosahedronGeometry, LineBasicMaterial, LineSegments, LOD, Mesh,
-  MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
+  Matrix4, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
 } from "three";
 import { FRAME_PRIORITY_PLAYER_SHIP, FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { beaconFlash, emitLightPoints } from "@/components/space/lightPoints";
+import { simEpochMsAtom } from "@/store/simTime";
 import type { ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
@@ -37,6 +39,10 @@ const REFINERY_LOD_ASSETS = [REFINERY_BASE + ".glb", REFINERY_BASE + "-lod1.glb"
 const REFINERY_COLLISION_ASSET = REFINERY_BASE + "-collision.glb";
 
 const DEPOT_RENDER_KM = 14;
+/** Depot lamps stay visible as light points well past the mesh range (VFX plan §1). */
+const DEPOT_LIGHT_RANGE_KM = 1_000;
+const _depotMatrix = new Matrix4();
+const _unit = new Vector3(1, 1, 1);
 const DEPOT_COLLISION_KM = 3;
 const DRONE_RENDER_KM = 3;
 const SOURCE_RENDER_KM = 3;
@@ -107,6 +113,7 @@ function DepotRefinery({ mount, depotLod }: { mount: DepotRenderAssets["refinery
 
 const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; assets: DepotRenderAssets }) {
   const ref = useRef<Group>(null!);
+  const store = useStore();
   const worldOrigin = useWorldOrigin();
   const lod = useMemo(() => {
     const model = new LOD();
@@ -123,7 +130,12 @@ const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; a
     const group = ref.current;
     if (!group) return;
     scenePosition(depot, worldOrigin.worldOriginKm, group.position);
-    group.visible = group.position.lengthSq() <= (DEPOT_RENDER_KM * 1000) ** 2;
+    const distSq = group.position.lengthSq();
+    if (distSq <= (DEPOT_LIGHT_RANGE_KM * 1000) ** 2) {
+      _depotMatrix.compose(group.position, group.quaternion, _unit);
+      emitLightPoints(assets.lights, _depotMatrix, beaconFlash(store.get(simEpochMsAtom)));
+    }
+    group.visible = distSq <= (DEPOT_RENDER_KM * 1000) ** 2;
     if (!group.visible) return;
     lod.updateWorldMatrix(true, false);
     lod.update(camera);

@@ -91,6 +91,34 @@ visible from far away, never shimmering.
 drift (today: 2 → 10 px); beacons visible at 8 km during the ON phase; no step in total
 flux across 600/1100 m LOD switches. Perf: local scene + points ≤ +0.1 ms.
 
+**Status (2026-11-23): L1–L3 landed, L4 not needed.**
+- `src/components/space/lightPoints.ts` (buffer, templates, crossfade weight, `fadingLampMaterial`),
+  `LightPointsRenderer.tsx` (one instanced draw, StarField's Gaussian and normalisation,
+  additive colour / untouched alpha, depth-tested). Producers push in their `useFrame`;
+  the renderer uploads at priority 0.9. Crossfade: points own the flux below 2 px, the mesh
+  above 4 px, both from the lamp's size (`PX_POINT`/`PX_MESH`).
+- L3: `light_*` empties in `replication-r4/build.py` (100 lamps) and `base-depot/build.py`
+  (8), custom props `emitter`, `area_m2`, `size_m`, `blink`, `cosine`; the export preset now
+  writes extras. Intensity = the EMITTERS radiance × area, so the table stays the one source.
+  Points are LOD-independent (per lens even where the far LODs merge lenses into a bar).
+  Beacons blink on SIM time (`beaconFlash`), so co-op peers agree; points reach 3,000 km
+  (stations) / 1,000 km (depots), past the mesh draw range.
+- **Measured** (`vfx-lights.mjs`, 1280×720, lamp flux = lamps on − off in the HDR target at
+  one pose, exposure pinned): drift CV **1.9 % at 250 m, 0.4–4.5 % at 2 km** (gate < 5 %);
+  E·d² flat to ±1.5 % from 250 m to 2.4 km with the beacons off, steps 0.95 / 0.98 across the
+  600 / 1100 m LOD switches; beacon visible at 8 km on flash; points vs mesh at the same pose
+  1.03 at 60 m (mesh resolved), 0.84–0.89 at 90–200 m (mesh 1.5–3 px). Cost: local pass
+  within noise (≤ 0.01 ms) at 250 m and 2 km (`--perf`).
+- ⚠ **Trap found:** three's WebGPU log depth is `log2(−z/near)/log2(far/near)`, not the WebGL
+  `log2(w+1)·2/log2(far+1)·½` that `StellarPoint` copies. With the WebGL form the far-side
+  lamps shone through the hull (points measured 2× the mesh flux on a symmetric station).
+  Use `viewZToLogarithmicDepth`. `StellarPoint` still has the WebGL form (follow-up).
+- Known limit: the sprite is depth-tested per fragment, so a lamp just above nearer hull
+  loses part of its PSF tail (±12 % in E·d² with the mast beacons on). A centre-only
+  occlusion test needs the local depth as a texture.
+- L4: not needed. At mid range the lamps read as an amber rim on the sunlit hull, which is
+  what a real lamp does against a sunlit hull; no artistic gain added.
+
 ---
 
 ## 2. Mining beam (B-series)

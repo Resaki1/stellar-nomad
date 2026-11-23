@@ -122,12 +122,15 @@ export default async function replicationModel(d) {
         return lights["Amber mast beacons"] === intensity && Date.now();
       }, 3_500);
     }
+    // Beacons blink on SIM time since VFX plan §1 (co-op peers agree): let it run.
+    await ev("__test.simRate(1)");
     await waitForBeacon(0);
     const firstFlash = await waitForBeacon(1);
     const close = await d.canvas("replication-door-and-beacons");
     await waitForBeacon(0);
     const flashPeriodMs = (await waitForBeacon(1)) - firstFlash;
     assert.ok(flashPeriodMs > 1_650 && flashPeriodMs < 2_350, `Unexpected mast beacon period ${flashPeriodMs} ms`);
+    await ev("__test.simRate(0)");
 
     await teleport([0, 0, -810]);
     await until("Mid LOD did not render at 810 m", async () => (await lods())[1] === 1);

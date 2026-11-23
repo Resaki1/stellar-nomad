@@ -154,6 +154,27 @@ def socket(name, position, direction):
     obj.empty_display_size = 0.9
 
 
+def light(position, direction, emitter, area, size, blink=0, cosine=1):
+    """Runtime light point (docs/VFX_REALISM_PLAN.md §1, L3); see replication-r4/build.py light()."""
+    global light_index
+    name = f"depot_light_{light_index:03d}"
+    light_index += 1
+    if existing := bpy.data.objects.get(name):
+        export.objects.link(existing)
+        return
+    obj = bpy.data.objects.new(name, None)
+    export.objects.link(obj)
+    obj.location = position
+    obj.rotation_euler = Vector(direction).to_track_quat("-Y","Z").to_euler()
+    obj.empty_display_type = "SINGLE_ARROW"
+    obj.empty_display_size = 0.3
+    obj["emitter"] = emitter
+    obj["area_m2"] = round(area, 4)
+    obj["size_m"] = round(size, 3)
+    obj["blink"] = blink
+    obj["cosine"] = cosine
+
+
 def screw(name, at, axis, radius=0.099):
     if lod == 0:
         turned(name, at, axis, [(0,radius), (0.055,radius*0.84)], "alloy", sides=6)
@@ -335,6 +356,8 @@ def docking():
                 "alloy",bevel=0.075,basis=(tangent,Y,radial))
             box("Approach lamp", Vector(collar)+Y*0.234+radial*3.15, (0.35,0.063,0.19),
                 "lamp",bevel=0.023,basis=(tangent,Y,radial))
+        if i % 2 == 0:
+            light(Vector(collar)+Y*0.234+radial*3.15, Y, "depot_guide", 0.35*0.19, 0.26)
     for s in ((-1,1) if lod < 2 else ()):
         for i,y in enumerate((-16.98,-15.41)):
             for z in (-0.94,0.94):
@@ -362,6 +385,7 @@ def bus_and_power():
         box("Aft electronics removable shielding", (s*3.44,y,0), (0.31,2.68,2.72),
             "patched",bevel=0.105,hit="bus")
         box("Telemetry lamp", (s*2.15,17.82,1.72), (0.49,0.13,0.18), "lamp",bevel=0.027)
+        light((s*2.15,17.82,1.72), Y, "depot_guide", 0.49*0.18, 0.30)
         box("Refinery mount slide rail", (s*2.59,9.8,2.98), (0.66,6.68,0.43), "alloy",bevel=0.067,
             hit=f"mount_rail_{s}")
         for ly in (6.5,13.05):
@@ -431,6 +455,7 @@ def comms():
             turned("Amber guide light lens", at,UP,[(h-0.15,0.14),(h+0.18,0.14),(h+0.26,0.08)],
                    "beacon",sides=10,hit=key)
             socket(f"nav_{i}",(xx,yy,2.96+h+0.26),UP)
+            light((xx,yy,2.96+h+0.05), UP, "depot_mast_beacon", 0.28*0.4, 0.28, blink=1, cosine=0)
 
 
 def map_trim(data, material, i):
@@ -557,6 +582,7 @@ if __name__ == "__main__":
     for lod in range(3):
         parts=collection("Base orbital depot | editable assemblies" if lod == 0 else f"LOD{lod} construction")
         export=collection(f"EXPORT_LOD{lod}")
+        light_index=0
         materials["pv"]=glass[lod]
         truss()
         cassette(1)

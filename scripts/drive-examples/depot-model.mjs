@@ -103,12 +103,15 @@ export default async function depotModel(d) {
         return lights?.["Amber depot mast beacons"] === intensity && Date.now();
       }, 4_000);
     }
+    // Beacons blink on SIM time since VFX plan §1 (co-op peers agree): let it run.
+    await ev("__test.simRate(1)");
     await beacon(0);
     const firstFlash = await beacon(1);
     const closeShot = await d.canvas("depot-close-beacons");
     await beacon(0);
     const flashIntervalMs = (await beacon(1)) - firstFlash;
     assert.ok(flashIntervalMs > 1600 && flashIntervalMs < 2400, `Flash interval was ${flashIntervalMs} ms`);
+    await ev("__test.simRate(0)");
 
     for (const [distance, expected] of [[500, 0], [850, 1], [3800, 2]]) {
       await teleport([0,0,distance], lookAtDepot(initial));

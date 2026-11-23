@@ -92,7 +92,8 @@ def export(source, name, destination):
                 check_images(slot.material.node_tree, seen)
     bpy.ops.export_scene.gltf(filepath=destination, export_format="GLB", collection=name,
                               export_yup=True, export_apply=True, export_tangents=True,
-                              export_animations=False, export_cameras=False, export_lights=False)
+                              export_animations=False, export_cameras=False, export_lights=False,
+                              export_extras=True)
 
 
 def inspect_geometry(objects):
