@@ -3,7 +3,7 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
-import { NodeMaterial, type Node } from "three/webgpu";
+import { NodeMaterial, NodeUpdateType, type Node } from "three/webgpu";
 import {
   Fn,
   If,
@@ -742,6 +742,41 @@ function stepSparks(tv: Temporal, cur: PlumeParams, rho: number, throttle: numbe
   return n;
 }
 
+// ── Shared materials ─────────────────────────────────────────────────
+// ONE plume and ONE halo material for every ship (local and co-op): each new material is a fresh
+// CPU graph build (~0.45 s even after the setLayout fix), and remote slots built theirs on the
+// first co-op frame (the resume hitch). Each ship keeps its own uniform VALUES and copies them
+// into the shared nodes in its meshes' onBeforeRender, right before its own draw: plain uniforms
+// sit in objectGroup, whose bindings three clones per render object, so every draw keeps its own.
+type Uniforms = ReturnType<typeof makeUniforms>;
+type AnyUniform = { value: unknown; array?: unknown[] };
+let _shared: { u: Uniforms; plume: NodeMaterial; halo: NodeMaterial } | null = null;
+function sharedExhaust(): { u: Uniforms; plume: NodeMaterial; halo: NodeMaterial } {
+  if (_shared) return _shared;
+  const u = makeUniforms();
+  // Uniform ARRAYS copy array → buffer once per render by default: per object here, or every
+  // ship would draw the last ship's sparks.
+  u.sparkA.updateType = NodeUpdateType.OBJECT;
+  u.sparkB.updateType = NodeUpdateType.OBJECT;
+  _shared = { u, plume: makePlumeMaterial(u), halo: makeHaloMaterial(u) };
+  return _shared;
+}
+const U_KEYS = Object.keys(makeUniforms()) as (keyof Uniforms)[];
+
+/** Copy one ship's uniform values into the shared nodes (allocation-free). */
+function loadUniforms(src: Uniforms, dst: Uniforms): void {
+  for (const k of U_KEYS) {
+    const s = src[k] as unknown as AnyUniform, d = dst[k] as unknown as AnyUniform;
+    if (s.array && d.array) {
+      for (let i = 0; i < s.array.length; i++) (d.array[i] as THREE.Vector4).copy(s.array[i] as THREE.Vector4);
+    } else if (typeof s.value === "number") {
+      d.value = s.value;
+    } else {
+      (d.value as THREE.Vector3).copy(s.value as THREE.Vector3);
+    }
+  }
+}
+
 // ── Component ────────────────────────────────────────────────────────
 const EngineExhaust = memo(function EngineExhaust({
   configs,
@@ -767,8 +802,11 @@ const EngineExhaust = memo(function EngineExhaust({
   }), []);
   // Dev-only readout for scripted checks (`__plumeState.cur`, `.plume`). Never read by the game.
   if (process.env.NODE_ENV !== "production") (globalThis as unknown as { __plumeState?: unknown }).__plumeState = st;
-  const mat = useMemo(() => makePlumeMaterial(st.u), [st]);
-  const haloMat = useMemo(() => makeHaloMaterial(st.u), [st]);
+  const shared = sharedExhaust();
+  const mat = shared.plume;
+  const haloMat = shared.halo;
+  // This ship's values into the shared uniforms just before each of its draws.
+  const loadMine = useMemo(() => () => loadUniforms(st.u, shared.u), [st, shared]);
   const haloRef = useRef<THREE.Mesh | null>(null);
   const geo = unitCylinder();
   const rn = configs[0]?.radius ?? 0.455;
@@ -880,7 +918,7 @@ const EngineExhaust = memo(function EngineExhaust({
   return (
     <>
       <group position={haloAt}>
-        <mesh ref={haloRef} geometry={unitSphere()} material={haloMat} frustumCulled={false} />
+        <mesh ref={haloRef} geometry={unitSphere()} material={haloMat} frustumCulled={false} onBeforeRender={loadMine} />
       </group>
       {configs.map((cfg, i) => (
         <group key={i} position={cfg.position}>
@@ -889,6 +927,7 @@ const EngineExhaust = memo(function EngineExhaust({
             geometry={geo}
             material={mat}
             frustumCulled={false}
+            onBeforeRender={loadMine}
           />
           {castLight && <pointLight
             ref={(l) => { lightRefs.current[i] = l; }}
