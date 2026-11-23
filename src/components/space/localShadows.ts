@@ -169,6 +169,15 @@ export function localSunVisibility(px: number, py: number, pz: number): number {
   return vis;
 }
 
+let _camVis = 1;
+/** Rock shadows at the camera (scene metres): the eye, for the sun's analytic glare. */
+export function setLocalCameraVisibility(x: number, y: number, z: number): void {
+  _camVis = _enabled ? localSunVisibility(x, y, z) : 1;
+}
+export function localCameraVisibility(): number {
+  return _camVis;
+}
+
 /** Last frame's visibility at the ship (drives the hull bounce fill). */
 export function localShipVisibility(): number {
   return _shipVis;

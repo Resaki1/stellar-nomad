@@ -121,7 +121,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `LIGHTS_PARTS=drift,xfade,ladder,beacon pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-lights.mjs` — station lamps as flux-conserving light points (VFX plan §1; `perf` part with `--perf`)
 - `BEAM_PARTS=orbit,miss,hold,impact,shots pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-beam.mjs` — straight mining beam: mesh hit, nose axis, halt on miss, laser interlock and safety hold, impact captures (VFX plan §2–§3; `perf` part with `--perf`)
-- `SHADOW_PARTS=umbra,lit,penumbra pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-shadows.mjs` — analytic rock shadows on the key light (VFX plan §4 S1): umbra at the floor, no self-shadow, penumbra width vs the 0.53° rule (`perf` part with `--perf`). After editing shader code, `pnpm drive -- --stop` first: a kept page wedged twice after the hot-reload recompile
+- `SHADOW_PARTS=umbra,lit,penumbra,glare pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-shadows.mjs` — analytic rock shadows on the key light (VFX plan §4 S1): umbra at the floor, no self-shadow, penumbra width vs the 0.53° rule (`perf` part with `--perf`). After editing shader code, `pnpm drive -- --stop` first: a kept page wedged twice after the hot-reload recompile
 - `pnpm check:atmo` — sim atmosphere + variable-Isp drive under plain Node (`scripts/atmo-check.mjs`):
   co-rotating air vs the rendered surface (Earth/Mars/Venus/Jupiter), body pick, fuel multiplier
   table, plume regimes (VFX_REALISM_PLAN §5.6, §6)

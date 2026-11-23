@@ -46,6 +46,7 @@ import {
 import { starCompressionForIlluminance } from "@/components/Stars/StarField";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import { sunVisibility } from "@/components/space/sunOcclusion";
+import { localCameraVisibility } from "@/components/space/localShadows";
 import { SCALED_CAMERA_FAR } from "@/components/space/cameraPlanes";
 import { getStarLift } from "@/components/space/starVisibility";
 import {
@@ -638,7 +639,8 @@ function Star({
       // × starVis: an occluded star scatters less. ⚠ The ONLY attenuation available
       // here — the analytic term is not depth-tested, so unlike the disc it cannot
       // be occluded geometrically.
-      _deficitRgb[ch] = Math.max(0, t - w) * starVis;
+      // × rock shadows at the eye (S1): a rock hides the drawn disc, never this term.
+      _deficitRgb[ch] = Math.max(0, t - w) * starVis * localCameraVisibility();
       trueFlux += t;
       writtenFlux += w;
     }

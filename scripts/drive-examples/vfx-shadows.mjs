@@ -10,6 +10,8 @@
  * - lit:      ship on the rock's sun side → on/off 1 ± 1 % for the hull AND the rock (no self-shadow).
  * - penumbra: lateral sweep across the edge 8 km behind the rock → 10–90 % width within 20 % of
  *             0.626 · 2 L tan(a_sun) (half-plane over the 0.53° disc); GPU luma tracks the CPU twin.
+ * - glare:    umbra, sun just off-screen: the eye's rock-shadow visibility is 0 and the frame's
+ *             luma drops with shadows on (the analytic sun glare is not depth-tested).
  * - shots:    chase view in the umbra and at the edge.
  * - perf:     (--perf) local-scene GPU ms, occluders uploaded vs none (the loop's real work); gather CPU ms.
  */
@@ -136,6 +138,28 @@ export default async function vfxShadows(d) {
       out.penumbra = { L, W: +W.toFixed(2), width: +w.toFixed(2), expect: +expect.toFixed(2), err: +(w / expect - 1).toFixed(3), gpuVsCpu: +maxDiff.toFixed(3), rows,
         pass: Math.abs(w / expect - 1) <= 0.2 && maxDiff < 0.1 };
       console.log("penumbra", j(out.penumbra));
+    }
+    if (PARTS.includes("glare")) {
+      // Owner report: in the umbra with the sun just off-screen its glare shone through the rock.
+      // The analytic glare is not depth-tested, so it must follow the rock shadow at the eye.
+      await parkAt(s.map((v) => -v * rock.radiusM * 3));
+      const rows = [];
+      for (const deg of [30, 38, 46, 54]) {
+        await ev(`${G}.res.faceOffset(${j(rock)}, ${deg})`);
+        await d.frames(20);
+        const st = await ev("__shadow.status()");
+        await ev("__lum.holdExposure(true)");
+        await ev("__shadow.enable(true)"); await d.frames(6);
+        const on = (await ev("__lum.region(0,0,1,1)")).sum;
+        await ev("__shadow.enable(false)"); await d.frames(6);
+        const off = (await ev("__lum.region(0,0,1,1)")).sum;
+        await ev("__shadow.enable(true)");
+        await ev("__lum.holdExposure(false)");
+        rows.push({ deg, camVis: +st.cameraVisibility.toFixed(3), on: +on.toFixed(1), off: +off.toFixed(1), r: +(on / off).toFixed(3) });
+        if (deg === 46) await d.canvas("shadow-glare-edge");
+      }
+      out.glare = { rows, pass: rows.every((r) => r.camVis < 0.01) };
+      console.log("glare", j(out.glare));
     }
     if (PARTS.includes("shots")) {
       await parkAt(s.map((v) => -v * rock.radiusM * 2.5));

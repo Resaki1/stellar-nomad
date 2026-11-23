@@ -349,6 +349,10 @@ dimmer on the whole key light. Choices and measurements:
   **45.3 m vs 46.3 m** predicted (−2.2 %), GPU hull luma vs CPU twin ≤ 0.012 over 17
   steps. Cost: local-scene pass 1.68/1.75 ms with occluders vs 1.70/1.77 ms without
   (noise; 1 slot live at the test spot).
+- **Sun glare at the eye:** the analytic glare for the sun's clipped flux (Star.tsx R3b) is not
+  depth-tested, so with the sun just off-screen it shone "through" a rock (owner report). It now
+  scales with the rock visibility at the camera: umbra, sun 30–54° off axis → frame luma 1.6–7 %
+  of the unshadowed value. (On screen, the rock already hides the drawn disc.)
 - Not covered: stations, drones and ships as **occluders** (they only receive): their
   shapes are not spheres, which is S2's job. Far-tier (LOD1) rocks don't receive.
 

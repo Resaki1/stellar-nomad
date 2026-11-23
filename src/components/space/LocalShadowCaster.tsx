@@ -18,6 +18,8 @@ import {
   localSunVisibility,
   offerShadowOccluder,
   setLocalShadowsEnabled,
+  localCameraVisibility,
+  setLocalCameraVisibility,
   setLocalSun,
 } from "./localShadows";
 
@@ -49,7 +51,7 @@ export default function LocalShadowCaster() {
     (window as unknown as { __shadow: unknown }).__shadow = {
       status: () => {
         const wo = worldOrigin.worldOriginKm;
-        return { ...localShadowStatus(), gatherMs: _gatherMs, originKm: [wo.x, wo.y, wo.z] };
+        return { ...localShadowStatus(), gatherMs: _gatherMs, originKm: [wo.x, wo.y, wo.z], cameraVisibility: localCameraVisibility() };
       },
       enable: (on: boolean) => setLocalShadowsEnabled(on),
       force: (dark: boolean) => forceLocalShadow(dark),
@@ -113,7 +115,7 @@ export default function LocalShadowCaster() {
     };
   }, [worldOrigin, runtime, anchors]);
 
-  useFrame(() => {
+  useFrame((state) => {
     const t0 = performance.now();
     const wo = worldOrigin.worldOriginKm;
     const sp = worldOrigin.shipPosKm;
@@ -185,6 +187,8 @@ export default function LocalShadowCaster() {
       });
     });
     commitShadowOccluders(shx, shy, shz);
+    const cp = state.camera.position;
+    setLocalCameraVisibility(cp.x, cp.y, cp.z);
     _gatherMs = performance.now() - t0;
   });
 
