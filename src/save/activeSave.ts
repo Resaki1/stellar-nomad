@@ -280,7 +280,7 @@ export async function releaseToHost(): Promise<void> {
   releaseLock = null;
 }
 
-/** Hosting failed to start: take the lock back and resume solo saving from the in-memory record. */
+/** Hosting ended (or failed to start): take the lock back and resume solo saving from the in-memory record. */
 export async function reclaimFromHost(): Promise<void> {
   const rec = active;
   if (!rec) return;

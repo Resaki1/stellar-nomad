@@ -281,7 +281,12 @@ async function onSignal(h: Hosting, signaling: Signaling, peer: string, data: { 
 }
 
 /** Close the session (worker drains + saves + releases the lock), then reload into solo. */
-export async function stopHosting(signaling: Signaling = gameSignaling, reload = true): Promise<void> {
+/**
+ * Close the room and keep playing solo in the same world: the worker has saved and closed, our
+ * record is the session's live mirror, so authority and saving come back to this tab without a
+ * reload (it used to reload to the title screen). `reload` stays for tests.
+ */
+export async function stopHosting(signaling: Signaling = gameSignaling, reload = false): Promise<void> {
   const h = hosting;
   if (!h) return;
   h.stopPoll = true;
@@ -300,6 +305,8 @@ export async function stopHosting(signaling: Signaling = gameSignaling, reload =
   h.worker.terminate();
   await signaling.close(h.code);
   hosting = null;
+  worldAuthority.setRemote(null);
+  await reclaimFromHost();
   setCoop({ role: "solo", status: "closed", code: null, players: 1 });
   if (reload) window.location.reload();
 }

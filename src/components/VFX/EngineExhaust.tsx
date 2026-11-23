@@ -186,7 +186,7 @@ function additiveKeepAlpha(m: NodeMaterial): void {
 const smoothstepN = (a: ReturnType<typeof float> | number, b: ReturnType<typeof float> | number, x: ReturnType<typeof float>) => {
   const A = typeof a === "number" ? float(a) : a;
   const B = typeof b === "number" ? float(b) : b;
-  const t = tslClamp(x.sub(A).div(B.sub(A)), 0, 1);
+  const t = tslClamp(x.sub(A).div(B.sub(A)), 0, 1).toVar();
   return t.mul(t).mul(float(3).sub(t.mul(2)));
 };
 
@@ -438,17 +438,22 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     const radialWin = (r2: ReturnType<typeof float>) => float(1).sub(smoothstepN(u.Rp.mul(0.4), u.Rp.mul(0.98), sqrt(r2)));
     const axialWin = (z: ReturnType<typeof float>) => float(1).sub(smoothstepN(u.L.mul(0.7), u.L, z.negate()));
 
-    const emit = (t: ReturnType<typeof float>) => {
-      const p = camL.add(rd.mul(t)).toVar();
+    // ⚠ A real WGSL function (setLayout), NOT a JS helper: inlined at its three call sites, the
+    // emit graph's shared intermediates were re-walked by three's recursive getNodeType at every
+    // use. MEASURED: a 16–17 s main-thread stall building this material (the co-op freeze, when
+    // the first remote plume drew) and the same cost inside the game's load. Depends only on the
+    // sample point and uniforms, so it compiles once and each call is typed by its layout.
+    const emitFn = Fn(([pIn]: [ReturnType<typeof vec3>]) => {
+      const p = vec3(pIn).toVar();
       const d = max(p.z.negate().add(zN), 0).toVar();
       const r2 = axisR2(p).toVar();
       // Vacuum: conical spread. Jet: grows to the model's expanded radius over barrelLen.
-      const w = rn.add(d.mul(u.spread)).add(u.barrelW.mul(smoothstepN(0, u.barrelLen, d)));
-      const win = radialWin(r2).mul(axialWin(p.z));
+      const w = rn.add(d.mul(u.spread)).add(u.barrelW.mul(smoothstepN(0, u.barrelLen, d))).toVar();
+      const win = radialWin(r2).mul(axialWin(p.z)).toVar();
       // Core: (r_n/w)^p expansion (p = 4 for a plasma, n² emission) × axial decay × Gaussian.
-      const core = rn.div(w).pow(u.falloff).mul(exp(d.div(u.coreLen).negate())).mul(exp(r2.div(w.mul(w).mul(0.5)).negate()));
+      const core = rn.div(w).pow(u.falloff).mul(exp(d.div(u.coreLen).negate())).mul(exp(r2.div(w.mul(w).mul(0.5)).negate())).toVar();
       // Flow structure: cross-stream streaks scaled to the local width, racing downstream.
-      const q = p.x.mul(0.8).add(p.y.mul(0.6)).div(w);
+      const q = p.x.mul(0.8).add(p.y.mul(0.6)).div(w).toVar();
       // Phases are re-drawn EVERY FRAME (u.seed): the flow moves 67 m (air jet) to thousands
       // of metres (torch) per 16 ms frame, so real structure is uncorrelated frame to frame.
       // A smoothly sliding pattern was the "identical every frame" look.
@@ -456,9 +461,9 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
         sin(q.mul(3.5).add(d.mul(0.9)).add(u.seed.x)).mul(0.4).add(1)
           .mul(sin(d.mul(2.3).add(q.mul(3)).add(u.seed.y)).mul(0.3).add(0.8))
           .mul(sin(q.mul(7.0).sub(d.mul(1.7)).add(u.seed.z)).mul(0.25).add(0.85)),
-      ));
-      const axialT = min(d.div(max(u.L.mul(0.5), 0.5)), 1);
-      const coreE = core.mul(u.core);
+      )).toVar();
+      const axialT = min(d.div(max(u.L.mul(0.5), 0.5)), 1).toVar();
+      const coreE = core.mul(u.core).toVar();
       const e = vec3(u.colBody.mul(coreE.mul(n))
         .add(u.colCore.mul(coreE.mul(float(1).sub(axialT)).mul(u.accent.mul(0.6))))
         .add(u.colTip.mul(coreE.mul(axialT).mul(u.accent.mul(0.5))))).toVar();
@@ -477,7 +482,8 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
         e.addAssign(u.colTip.mul(exp(d.div(u.streakLen).negate()).mul(exp(r2.div(sw.mul(sw)).negate())).mul(u.streak).mul(n)));
       });
       return e.mul(win);
-    };
+    }).setLayout({ name: "plumeEmit", type: "vec3", inputs: [{ name: "p", type: "vec3" }] });
+    const emit = (t: ReturnType<typeof float>) => emitFn(camL.add(rd.mul(t)));
 
     // Sample counts: PER_AXIS on each nozzle axis; the nozzle-exit proposal only where the
     // r⁻⁴ core is short (vacuum torch, u.nNoz = PER_AXIS) — in air it spans tens of metres and
@@ -496,7 +502,7 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
         // Gaussian, which the glare pass then smears over the whole screen.
         const t = tslClamp(pp.c.add(pp.h.mul(tan(pp.th0.add(pp.th1.sub(pp.th0).mul(uu))))), tNear, tExit).toVar();
         // Balance heuristic over the proposals, weighted by their sample counts.
-        acc.addAssign(emit(t).div(max(mixPdf(t), 1e-12)));
+        acc.addAssign(emit(t).div(max(mixPdf(t).toVar(), 1e-12)));
       });
     };
     strategy(props[0], PER_AXIS, -0.25);
@@ -506,21 +512,22 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     // Mach disk, analytic: a thin luminous slab at z = −z_m crossed once by the ray, so its
     // radiance is (slab column)/|rd.z| — exact at any sample count.
     const tm = u.machZ.negate().add(zN).sub(camL.z).div(rdz);
-    const pm = camL.add(rd.mul(tm));
+    const pm = camL.add(rd.mul(tm)).toVar();
+    const pmR2 = axisR2(pm).toVar();
     const inSeg = tm.greaterThan(tNear).and(tm.lessThan(tExit)).select(1, 0);
     const slab = u.machZ.mul(0.02).add(0.06).mul(1.7725);
     // Super-Gaussian: a flat disc with a crisp rim, not a soft blob.
-    const mr = axisR2(pm).div(u.machR.mul(u.machR));
+    const mr = pmR2.div(u.machR.mul(u.machR)).toVar();
     const machDisk = exp(mr.mul(mr).negate())
       .mul(slab).div(max(rd.z.abs(), 0.05)).mul(u.mach).mul(inSeg)
-      .mul(radialWin(axisR2(pm))).mul(axialWin(u.machZ.negate()));
+      .mul(radialWin(pmR2)).mul(axialWin(u.machZ.negate()));
     // Nozzle-exit disc: the bell mouth seen down the axis. Super-Gaussian confined INSIDE the
     // mouth (r < r_n) and faded at grazing angles, where the bell wall hides it — its old
     // Gaussian tail painted the nacelle face around each bell.
     const tE = zN.sub(camL.z).div(rdz);
-    const pE = camL.add(rd.mul(tE));
+    const pE = camL.add(rd.mul(tE)).toVar();
     const reachesExit = tE.greaterThan(tNear).and(rd.z.greaterThan(0)).select(1, 0);
-    const rr = axisR2(pE).div(rn.mul(rn).mul(0.55));
+    const rr = axisR2(pE).div(rn.mul(rn).mul(0.55)).toVar();
     const disc = exp(rr.mul(rr).negate()).mul(0.2127).mul(smoothstepN(0.25, 0.6, rd.z))
       .div(max(rd.z, 0.25)).mul(u.disc).mul(reachesExit);
     // Sparks: hot grains (nozzle/feed particulates, ingested dust) as motion-blurred segments,
@@ -530,18 +537,19 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
       const a = vec4(u.sparkA.element(i)).toVar();
       const b = vec4(u.sparkB.element(i)).toVar();
       If(a.w.greaterThan(0), () => {
-        const e = b.xyz.sub(a.xyz);
-        const w0 = camL.sub(a.xyz);
-        const B = dot(rd, e), C = max(dot(e, e), 1e-8), D = dot(rd, w0), E = dot(e, w0);
-        const den = max(C.sub(B.mul(B)), 1e-8);
-        const s0 = tslClamp(E.sub(B.mul(D)).div(den), 0, 1);
-        const tt = tslClamp(dot(a.xyz.add(e.mul(s0)).sub(camL), rd), tNear, tExit);
-        const s1 = tslClamp(dot(camL.add(rd.mul(tt)).sub(a.xyz), e).div(C), 0, 1);
-        const dv = camL.add(rd.mul(tt)).sub(a.xyz.add(e.mul(s1)));
+        // Every reused intermediate is a var: inline, type inference re-walked them per use.
+        const e = b.xyz.sub(a.xyz).toVar();
+        const w0 = camL.sub(a.xyz).toVar();
+        const B = dot(rd, e).toVar(), C = max(dot(e, e), 1e-8).toVar(), D = dot(rd, w0).toVar(), E = dot(e, w0).toVar();
+        const den = max(C.sub(B.mul(B)), 1e-8).toVar();
+        const s0 = tslClamp(E.sub(B.mul(D)).div(den), 0, 1).toVar();
+        const tt = tslClamp(dot(a.xyz.add(e.mul(s0)).sub(camL), rd), tNear, tExit).toVar();
+        const s1 = tslClamp(dot(camL.add(rd.mul(tt)).sub(a.xyz), e).div(C), 0, 1).toVar();
+        const dv = camL.add(rd.mul(tt)).sub(a.xyz.add(e.mul(s1))).toVar();
         sparks.addAssign(u.colSpark.mul(exp(dot(dv, dv).div(b.w.mul(b.w)).negate()).mul(a.w)));
       });
     });
-    const raw = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).add(sparks).mul(u.intensity);
+    const raw = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).add(sparks).mul(u.intensity).toVar();
     // Sanitise: one NaN/Inf pixel is smeared over the whole screen by the glare pass.
     const finite = raw.x.equal(raw.x).and(raw.y.equal(raw.y)).and(raw.z.equal(raw.z));
     const rgb = finite.select(tslClamp(raw, 0, 1.0e6), vec3(0));
