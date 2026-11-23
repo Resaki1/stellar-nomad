@@ -1191,6 +1191,98 @@ not claim a universal physical sound for every drive or atmospheric entry.
 
 ---
 
+### 6.10 The drive, heard from inside — planned and prototyped 2026-11-23
+
+**Premise (hard sci-fi):** the crew hears only what reaches the cabin air.
+Vacuum carries nothing, so in space every engine sound is **structure-borne**:
+the drive shakes its thrust frame, the hull carries it, panels radiate it. A
+perfectly steady thrust is silent; only its *fluctuations* and the machinery
+feeding it make sound. Crew accounts agree: upper-stage burns are a push, a
+thump at ignition and cutoff, and machinery — not a roar. In air a second path
+opens: the jet itself is a huge noise source and its sound reaches the hull
+**from outside**.
+
+| Layer | Path | Driven by | Vacuum | Air |
+|---|---|---|---|---|
+| Thrust rumble (`ship.engine.idle/mid/high`, existing) | structure | throttle · plume breathing | ✔ | ✔ |
+| Feed machinery (`ship.engine.pump`) | structure | throttle, reaction-mass flow 1/powerFrac (water pumps + intake compression) | quiet whine | +6 dB, log-load, +1 oct at ≥ 100× flow |
+| Ignition / cutoff (`ship.engine.ignite/cutoff`) | structure | throttle edges | ✔ | ✔ |
+| Thermal ticking (`ship.hull.tick`) | structure | heat soaked during a burn, decays τ 25 s | ✔ | ✔ |
+| Jet roar + crackle (`ship.engine.roar`) | air → hull | jet acoustic power, ambient ρc | silent | §6.10.1 |
+| Shock-cell noise (`ship.engine.shock`) | air → hull | cell spacing from `drivePlume` | silent | only while diamonds exist |
+
+#### 6.10.1 Exterior model (`src/audio/engineAcoustics.ts`)
+
+1. Jet power `W_j = ½·F·v_e`, F = 20 t × 120 m/s² × throttle, v_e from the
+   variable-Isp drive (`drivePlume`). Acoustic power `W_a = η·W_j·(1 − rarefied01)`,
+   η = 0.5 % (rockets measure 0.2–1 %). Earth sea level, full thrust: v_e 4.0 km/s
+   → W_a 24 MW → L_W ≈ 194 dB. The 80 km+ collisionless beam is silent.
+2. Incident level on the hull: spherical spreading from the mixing region,
+   `r = max(12, 4 + 5·D_jet)` m — the plume widens as √(p_e/p_a), so the source
+   recedes with altitude; −10 dB forward-arc directivity (jet noise beams aft);
+   medium term `10·log10(ρc / 415)` (fixed source power ⇒ p ∝ √(ρc)).
+3. **Ceiling p_rms ≤ ½·p_amb**: a linear wave cannot swing the air below vacuum.
+   Without it the first build put 135 dB (5× ambient) at 60 km (review F1).
+4. +10 dB acoustic-vs-boundary-layer coupling (`JET_ACOUSTIC_COUPLING_DB`): a
+   propagating sound field excites hull panels far more efficiently than the
+   convective wall pressure the wind bed is calibrated on. Then mapped by
+   **`windLevelDb`** — the wind bed's calibration — so jet and wind share one scale.
+5. Shock-cell noise peaks at the forward-arc broadband-shock frequency
+   `f = U_c / (L_s(1 + M_c))`, U_c = 0.7·v_e; with M_c ≫ 1 that is ≈ c/L_s.
+   Gated like the visible diamonds (not torch/rarefied/crushed, p_e/p_a < 300),
+   scaled by shock strength `((p_e/p_a − 1)/4)²` (a plausibility law: shock noise
+   vanishes at ideal expansion), and faded outside 20–96 Hz — below is
+   infrasound (felt, not heard), above the loop can't follow (emitter pitch
+   clamp ±1 oct of 48 Hz).
+6. Roar colour: Strouhal pitch shift `∝ v_e / D_jet`, clamped ±7 semitones
+   (nearly flat on Earth; the crushed Venus jet sits high).
+
+| Earth, full thrust | 0 km | 5 km | 15 km | 30 km | 45 km | 60 km | 80 km |
+|---|---|---|---|---|---|---|---|
+| incident dB | 151 | 150 | 144 | 134 | 123 | 111 | — |
+| roar game dB | −5.0 | −5.8 | −9.1 | −15 | −21 | −28 | silent |
+| shock Hz (weight) | 68 (0.01) | 52 (0.16) | 30 (1.0) | 13 (0) | — | — | — |
+
+Mars surface: 124 dB (27 dB under Earth; Perseverance measured ~20 dB for its
+sources). Venus surface: 170 dB, game −1.3 (in the knee). Jupiter 1 bar: like
+Earth, shock at 185 Hz is out of the loop's range and faded.
+
+Not modelled (stated, not hidden): hull transmission loss (mass law, would
+add a ρc³ tilt — must change the wind bed too, so it is one later change for
+both), ground reflection while hovering (needs terrain height, not the
+reference sphere), and a separate air-intake layer from `airFrac`.
+
+#### 6.10.2 Variance
+
+The local ship's plume "breathing" (the slow OU mode of `EngineExhaust`'s
+temporal model) is written to `audioShipBuffer.plumeBreath` and multiplies
+rumble and roar, so what you see swell is what you hear swell. Only the
+exhaust mounted with `audioOwner` writes it (co-op peers mount the same
+component; review F2). Crackle is baked into the roar loop as sparse,
+positively skewed pressure spikes (the measured signature of crackle).
+
+#### 6.10.3 Transients
+
+Ignition/cutoff detect edges on the **unsmoothed** thrust command
+(`audioShipBuffer.thrustCmd`): the smoothed throttle lags a cutoff by ~0.8 s
+(review F3). Thermal ticks are a Poisson process whose rate (1.2/s × soak)
+follows heat soaked during burns (fills over ~30 s at full throttle, relaxes
+τ 25 s), only while not burning.
+
+#### 6.10.4 Status
+
+Prototype: six workshop presets, model + Node gate (`pnpm check:engine-audio`,
+19 checks incl. the ½·p_amb ceiling), emitters in `GameAudioTriggers`,
+transients on the tick. Reviewed (reviewer + adversarial verifier): F1–F4, F10
+confirmed and fixed; F5 (shock strength) rejected as "documented choice" but
+adopted on physics. Rejected and kept: the feed-machinery law is an artistic
+compression (log load, +1 oct cap), not centrifugal affinity laws, and uses
+total reaction-mass flow (water pumps + intake compression); the crackle is a
+fixed 6 s pattern. **Timbre and levels are not signed off** — they need a
+listening pass. The roar's catalogue `gainDb +3` is a mix trim (sea-level
+roar ≈ rumble), not physics: the structure-borne rumble has no physical
+anchor yet, so the interior/exterior balance is a judgement.
+
 ## 7. Music
 
 ### 7.1 Model — the Minecraft scheduler, and why it deletes most of the work

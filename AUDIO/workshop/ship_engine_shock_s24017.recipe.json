@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.shock",
+    "seed": 24017,
+    "duration": 4,
+    "pitch": 0,
+    "brightness": 0.3,
+    "motion": 0.4,
+    "body": 1,
+    "texture": 0.35,
+    "detail": 0.4
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 192000
+  },
+  "trigger": "In air while shock diamonds exist; pitch follows the cell spacing (~20–80 Hz).",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -12.000000253286988,
+    "rmsDb": -19.887541915669424,
+    "dc": -2.288927458090247e-9,
+    "seamDelta": 0.0015147309750318527,
+    "maxDelta": 0.002892572432756424,
+    "finite": true,
+    "silent": false
+  }
+}

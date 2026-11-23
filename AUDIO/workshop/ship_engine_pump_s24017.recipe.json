@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.pump",
+    "seed": 24017,
+    "duration": 3,
+    "pitch": 0,
+    "brightness": 0.55,
+    "motion": 0.3,
+    "body": 0.55,
+    "texture": 0.5,
+    "detail": 0.6
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 144000
+  },
+  "trigger": "While thrusting; pitch follows commanded water flow (up to +1 oct in thick air).",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -13.999999827421785,
+    "rmsDb": -24.057281653982695,
+    "dc": -1.3708373202013668e-11,
+    "seamDelta": 0.006109190173447132,
+    "maxDelta": 0.017244635615497828,
+    "finite": true,
+    "silent": false
+  }
+}

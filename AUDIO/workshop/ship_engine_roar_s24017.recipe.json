@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.roar",
+    "seed": 24017,
+    "duration": 6,
+    "pitch": 0,
+    "brightness": 0.35,
+    "motion": 0.5,
+    "body": 1,
+    "texture": 0.55,
+    "detail": 0.6
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 288000
+  },
+  "trigger": "Thrusting in air: the jet's own noise arriving through the hull; silent in vacuum.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -7.999999988978489,
+    "rmsDb": -20.687209441483407,
+    "dc": -1.399128266675752e-9,
+    "seamDelta": 0.0014725998044013977,
+    "maxDelta": 0.023600533604621887,
+    "finite": true,
+    "silent": false
+  }
+}

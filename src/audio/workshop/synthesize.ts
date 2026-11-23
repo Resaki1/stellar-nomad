@@ -219,6 +219,18 @@ export function renderSound(input: Recipe): RenderedSound {
     decay: 0.004 + rng() * 0.014,
     gain: (0.25 + rng() * 0.5) / (1 + i * 0.5),
   }));
+  // Crackle: sparse, positively skewed pressure spikes (the measured signature of a
+  // supersonic jet's crackle). Kept out of the last 20 ms so the loop seam stays clean.
+  const crackle = preset.family === "roar" ? new Float32Array(n) : null;
+  if (crackle) {
+    const count = Math.round(duration * (18 + 40 * recipe.detail));
+    for (let k = 0; k < count; k++) {
+      const at = Math.floor(rng() * Math.max(1, n - 0.02 * rate));
+      const amp = 0.25 + rng() ** 2 * 0.75;
+      const tau = (0.0006 + rng() * 0.0012) * rate;
+      for (let j = 0; j < 6 * tau && at + j < n; j++) crackle[at + j] += amp * (1 - Math.exp(-j / 4)) * Math.exp(-j / tau);
+    }
+  }
   let phase = 0;
   const bright = recipe.brightness;
   // Ship hardware one-shots are modal/flow models with their own structure.
@@ -348,6 +360,14 @@ export function renderSound(input: Recipe): RenderedSound {
         texture = (noise.air[i] * (1 - opening * 0.72) + noise.airTop[i] * opening)
           * (0.86 + 0.14 * gust);
         detail = noise.airTop[i] * opening * (0.1 + bright * 0.2);
+      } else if (preset.family === "roar") {
+        // Jet noise heard through a hull: the low band carries it, the mid air is
+        // already attenuated, crackle rides on top. No carrier — a tone reads as a motor.
+        const cycles = (count: number) => count / duration;
+        const surge = 0.85 + 0.09 * Math.cos(TAU * cycles(5) * t) + 0.06 * Math.sin(TAU * cycles(11) * t + phaseOffset);
+        body = noise.low[i] * surge * 1.3;
+        texture = noise.air[i] * (0.7 + 0.3 * surge) * (0.5 + bright);
+        detail = (crackle ? crackle[i] : 0) * (0.4 + bright * 0.6);
       } else if (preset.family === "jet") {
         body = noise.low[i] * 0.8 + Math.sin(p) * Math.exp(-t * 35) * 0.12;
         texture = noise.wide[i] * 1.2;

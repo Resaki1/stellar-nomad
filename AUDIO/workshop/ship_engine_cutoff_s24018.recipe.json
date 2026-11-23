@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.cutoff",
+    "seed": 24018,
+    "duration": 1,
+    "pitch": 0,
+    "brightness": 0.2,
+    "motion": 0.2,
+    "body": 0.9,
+    "texture": 0.25,
+    "detail": 0.25
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Throttle back to zero after a burn.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -13.000000140032197,
+    "rmsDb": -28.854160368438315,
+    "dc": 2.0895064418494667e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.006905626505613327,
+    "finite": true,
+    "silent": false
+  }
+}

@@ -26,6 +26,7 @@ import { atom, useAtomValue, useStore } from "jotai";
 
 import { playAudio, registerEmitter, stopVoiceBySerial, voiceEndTime } from "@/audio";
 import { engineLayerGain } from "@/audio/engineLayers";
+import { engineState, levelGain, resetEngineTransients, setEngineTransientsEnabled, SHOCK_BASE_HZ } from "@/audio/engineAcoustics";
 import { CUTTER_HANDOFF_S, CUTTER_ATTACK_MS, CUTTER_RELEASE_MS, cutterPitchCents, targetFeedbackCue } from "@/audio/miningFeedback";
 import { activeCommsMessageAtom } from "@/store/comms";
 import { audioActionCountsAtom, isShipAISpeaker, type AudioAction } from "@/store/audioSignals";
@@ -76,10 +77,43 @@ export default function GameAudioTriggers() {
     const engines = (["ship.engine.idle", "ship.engine.mid", "ship.engine.high"] as const)
       .map((event, layer) => registerEmitter({
         event,
-        intensity: () => engineLayerGain(layer as 0 | 1 | 2, audioShipBuffer.throttle),
+        // × the plume's slow "breathing" (§6.10.2): the rumble swells with what you see.
+        intensity: () => engineLayerGain(layer as 0 | 1 | 2, audioShipBuffer.throttle) * audioShipBuffer.plumeBreath,
       }));
-    return () => engines.forEach((e) => e.stop());
+    // Drive machinery and the jet's own noise, AUDIO_PLAN §6.10. Levels come from
+    // engineAcoustics (updated on the tick before the emitters); roar/shock are 0 in
+    // vacuum or a collisionless beam, so they cull themselves there.
+    const pump = registerEmitter({
+      event: "ship.engine.pump",
+      intensity: () => engineState.pumpLevel,
+      pitchCents: () => engineState.pumpCents,
+    });
+    const roar = registerEmitter({
+      event: "ship.engine.roar",
+      intensity: () => levelGain(engineState.roarDb) * audioShipBuffer.plumeBreath,
+      pitchCents: () => engineState.roarCents,
+      fadeInMs: 120,
+    });
+    const shock = registerEmitter({
+      event: "ship.engine.shock",
+      intensity: () => levelGain(engineState.roarDb - 6) * engineState.shockWeight,
+      pitchCents: () => engineState.shockHz > 0
+        ? Math.max(-1200, Math.min(1200, 1200 * Math.log2(engineState.shockHz / SHOCK_BASE_HZ))) : 0,
+      fadeInMs: 120,
+    });
+    return () => [...engines, pump, roar, shock].forEach((e) => e.stop());
   }, [isDead]);
+
+  // Ignition/cutoff thumps and post-burn thermal ticks run on the audio tick; off while dead
+  // or in settings so a respawn or menu never reads as an ignition edge.
+  useEffect(() => {
+    if (isDead || settingsPaused) {
+      setEngineTransientsEnabled(false);
+      return;
+    }
+    resetEngineTransients();
+    setEngineTransientsEnabled(true);
+  }, [isDead, settingsPaused]);
 
   // Aerodynamic wind, AUDIO_PLAN §12.3. Registered unconditionally in flight:
   // the bed is silent in vacuum because `q = ½ρv²` goes to zero there and the

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { NodeMaterial, type Node } from "three/webgpu";
@@ -34,6 +34,7 @@ import { ambientAt, createAmbient } from "@/sim/atmosphere";
 import { createDrivePlume, drivePlume } from "@/sim/ship/atmoDrive";
 import { DEFAULT_RESOURCE_TUNING } from "@/sim/ship/resourceTuning";
 import { getPreExposure } from "@/components/space/photometry";
+import { audioShipBuffer } from "@/audio/shipBuffer";
 
 // ── Types ────────────────────────────────────────────────────────────
 export type ExhaustConfig = {
@@ -57,6 +58,8 @@ type Props = {
    * a session starts, and each costs every lit fragment for the session. Their plume still draws.
    */
   castLight?: boolean;
+  /** The local player's ship: its slow "breathing" drives the engine audio (AUDIO_PLAN §6.10.2). */
+  audioOwner?: boolean;
 };
 
 // ── Tuning ───────────────────────────────────────────────────────────
@@ -640,6 +643,8 @@ type Spark = { d: number; v: number; x: number; y: number; vx: number; vy: numbe
 type Temporal = {
   fast: OU; slow: OU; diamond: OU; cellJit: OU; machJit: OU; wander: OU;
   sparks: Spark[]; spawnAcc: number; dt: number;
+  /** 1 + the slow mode, for the local ship's engine audio (AUDIO_PLAN §6.10.2). */
+  breath: number;
 };
 
 function createTemporal(): Temporal {
@@ -647,7 +652,7 @@ function createTemporal(): Temporal {
   return {
     fast: o(), slow: o(), diamond: o(), cellJit: o(), machJit: o(), wander: o(),
     sparks: Array.from({ length: SPARKS }, () => ({ d: 0, v: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0, I: 0, on: false })),
-    spawnAcc: 0, dt: 1 / 60,
+    spawnAcc: 0, dt: 1 / 60, breath: 1,
   };
 }
 
@@ -677,6 +682,7 @@ function stepTemporal(tv: Temporal, cur: PlumeParams, rho: number, dt: number): 
   ou(tv.wander, 0.3, 0.1, dt);
   cur.breathe = jetW > 0.5 && rho > 0 ? 1 : 0.5;
   tv.dt = dt;
+  tv.breath = 1 + slow;
   return Math.max(0.3, (1 + fast) * (1 + slow));
 }
 
@@ -733,7 +739,9 @@ const EngineExhaust = memo(function EngineExhaust({
   configs,
   intensityRef,
   castLight = true,
+  audioOwner = false,
 }: Props) {
+  useEffect(() => (audioOwner ? () => { audioShipBuffer.plumeBreath = 1; } : undefined), [audioOwner]);
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
   const lightRefs = useRef<(THREE.PointLight | null)[]>([]);
   const worldOrigin = useWorldOrigin();
@@ -812,6 +820,8 @@ const EngineExhaust = memo(function EngineExhaust({
     const tv = st.tv;
     const on = intensity > 1e-5;
     const gain = stepTemporal(tv, cur, st.plume.rhoAmb, Math.min(delta, 0.1));
+    // Only the local ship: co-op peers mount this too, and the last writer would win.
+    if (audioOwner) audioShipBuffer.plumeBreath = tv.breath;
     u.seed.value.set(Math.random() * 6.2832, Math.random() * 6.2832, Math.random() * 6.2832);
     u.L.value = cur.L * (1 + 0.5 * tv.slow.x * (cur.breathe ?? 1));
     u.diamond.value = cur.diamond * Math.max(0, 1 + tv.diamond.x);

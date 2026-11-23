@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.hull.tick",
+    "seed": 24018,
+    "duration": 0.2,
+    "pitch": 0,
+    "brightness": 0.6,
+    "motion": 0.2,
+    "body": 0.4,
+    "texture": 0.3,
+    "detail": 0.7
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "After a burn, as heat soaked into the structure relaxes; rate decays with the soak.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -22.000000077474585,
+    "rmsDb": -37.05200082005417,
+    "dc": -5.877900452391088e-11,
+    "seamDelta": 0,
+    "maxDelta": 0.018006170634180307,
+    "finite": true,
+    "silent": false
+  }
+}

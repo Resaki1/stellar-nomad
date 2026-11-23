@@ -39,6 +39,10 @@ export const audioShipBuffer = {
   atmoBodyId: null as string | null,
   /** Ship altitude above that body's reference surface, km. */
   altitudeKm: 0,
+  /** Main-engine thrust command of the last physics step, 0..1, UNSMOOTHED (engine ignition/cutoff edges). */
+  thrustCmd: 0,
+  /** Plume "breathing" gain (≈1 ± 0.05–0.15), the exhaust's slow OU mode; AUDIO_PLAN §6.10.2. */
+  plumeBreath: 1,
   /** Salvage tractor beams currently holding a wreck. Written by WreckCollector. */
   tractorBeams: 0,
 };

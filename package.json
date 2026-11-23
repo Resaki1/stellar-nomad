@@ -21,6 +21,7 @@
     "check:music": "node scripts/process-music.mjs --check",
     "coop:transcript": "node --no-warnings=ExperimentalWarning scripts/coop-transcript.mjs",
     "check:atmo": "node --no-warnings=ExperimentalWarning scripts/atmo-check.mjs",
+    "check:engine-audio": "node --no-warnings=ExperimentalWarning scripts/engine-audio-check.mjs",
     "drive": "node --experimental-websocket --no-warnings=ExperimentalWarning scripts/drive.mjs",
     "drive:coop": "node --experimental-websocket --no-warnings=ExperimentalWarning scripts/drive-coop.mjs"
   },

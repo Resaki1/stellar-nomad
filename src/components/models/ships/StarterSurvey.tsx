@@ -46,7 +46,7 @@ export function StarterSurvey({ thrust, onCollisionShape, ...props }: SurveyProp
   return (
     <group {...props} dispose={null}>
       <primitive object={hull} />
-      <EngineExhaust configs={nozzles} intensityRef={thrust} />
+      <EngineExhaust configs={nozzles} intensityRef={thrust} audioOwner />
     </group>
   );
 }

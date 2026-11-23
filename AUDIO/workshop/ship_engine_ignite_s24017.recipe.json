@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.engine.ignite",
+    "seed": 24017,
+    "duration": 1.4,
+    "pitch": 0,
+    "brightness": 0.25,
+    "motion": 0.2,
+    "body": 1,
+    "texture": 0.35,
+    "detail": 0.3
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "Throttle up from zero.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -8.999999811573272,
+    "rmsDb": -23.876924446809507,
+    "dc": 3.046912683915234e-10,
+    "seamDelta": 0,
+    "maxDelta": 0.011451169848442078,
+    "finite": true,
+    "silent": false
+  }
+}

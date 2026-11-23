@@ -23,6 +23,7 @@
 
 import { updateEmitters } from "./emitters";
 import { updateWind } from "./wind";
+import { updateEngineAcoustics } from "./engineAcoustics";
 import { pumpAlerts } from "./alerts";
 import { pumpMusic } from "./music";
 
@@ -43,6 +44,8 @@ export function startAudioTick(): void {
       // Before the emitters, so all three wind layers read one computation of
       // the atmosphere rather than each repeating the body and density lookup.
       updateWind();
+      // After the wind: the roar maps through the same windLevelDb scale (§6.10.1).
+      updateEngineAcoustics();
       updateEmitters();
       // A12's reminder schedule. Must be clock-driven, not value-driven — see
       // the warning on `pumpAlerts`.

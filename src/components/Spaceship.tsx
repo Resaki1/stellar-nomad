@@ -514,6 +514,8 @@ const SpaceShip = memo(() => {
       // Plain buffer write, not an atom: frame-rate writer, 15 Hz reader
       // (docs/AUDIO_PLAN.md A5). Plume and engine sound share one value.
       audioShipBuffer.throttle = exhaustIntensity.current;
+      // Unsmoothed command: ignition/cutoff edges (AUDIO_PLAN §6.10) must not lag the 6/s follower.
+      audioShipBuffer.thrustCmd = thrust;
     }
 
     // ── Interpolation ──────────────────────────────────────────────────

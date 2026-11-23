@@ -220,6 +220,45 @@ export const AUDIO_EVENTS = [
     loop: true,
     syncLoop: true
   },
+  // Drive heard from inside, AUDIO_PLAN §6.10: pumps/transients are structure-borne;
+  // roar/shock are the jet's own noise through the hull, silent in vacuum by the model.
+  {
+    id: "ship.engine.pump", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_engine_pump_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
+  {
+    id: "ship.engine.roar", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_engine_roar_s24017.wav"],
+    // ⚠ +3 is a MIX trim (§6.10.3), not physics: puts the sea-level roar at parity with the rumble.
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: 3,
+    loop: true, syncLoop: true
+  },
+  {
+    id: "ship.engine.shock", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_engine_shock_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
+  {
+    id: "ship.engine.ignite", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_engine_ignite_s24017.opus", "/audio/workshop/ship_engine_ignite_s24018.opus"],
+    priority: 60, maxInstances: 2, cooldownMs: 800, preloadTier: 1, gainDb: 0,
+    pitchJitterCents: 40, gainJitterDb: 1
+  },
+  {
+    id: "ship.engine.cutoff", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_engine_cutoff_s24017.opus", "/audio/workshop/ship_engine_cutoff_s24018.opus"],
+    priority: 60, maxInstances: 2, cooldownMs: 800, preloadTier: 1, gainDb: 0,
+    pitchJitterCents: 40, gainJitterDb: 1
+  },
+  {
+    id: "ship.hull.tick", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_hull_tick_s24017.opus", "/audio/workshop/ship_hull_tick_s24018.opus", "/audio/workshop/ship_hull_tick_s24019.opus"],
+    priority: 60, maxInstances: 2, cooldownMs: 90, preloadTier: 1, gainDb: 0,
+    pitchJitterCents: 40, gainJitterDb: 1
+  },
   {
     id: "transit.spool",
     bus: "sfxShip",
