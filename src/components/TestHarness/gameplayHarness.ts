@@ -392,6 +392,8 @@ export function createGameplayHarness(store: Store) {
         store.set(devTeleportAtom, { positionKm: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] });
         return true;
       },
+      /** System-frame km of a rock / point (the same resolution the warps use). */
+      rockKm: (target: number[] | RockRef): number[] | null => resolveKm(target),
       /** Dev aiming: face a rock, then yaw the nose `deg` off it (beam miss checks). */
       faceOffset(target: number[] | RockRef, deg: number): boolean {
         const ship = getLocalPlayerShip();

@@ -218,6 +218,13 @@ mining rate 0 within one test tick. Perf: beam pass ≤ 0.1 ms at 3 beams.
   over 600 ms), beam drawn to full range, resumes on re-aim. Cost: local pass unchanged within
   noise (1.233–1.238 ms on vs 1.234–1.239 off); the cast is 0.10–0.11 ms CPU per frame while
   the beam fires (near-chunk instance loop). Co-op `remoteFx` passes.
+- **Interlock (2026-11-23, owner request):** off target (or held) for 1.5 s, the ship's AI
+  cuts the laser: mining stops, one-time hint "Beam off the rock: I cut the laser". Safety
+  hold: the beam is not fired while its path crosses a station (40 m), depot (24 m) or pilot
+  (12 m) guard sphere. Progress still resets on a stop: keeping it would let a pilot look away
+  to cool and dodge the over-temperature trip. Verified (`vfx-beam.mjs` miss, hold): beam on at
+  0.6 s off target, cut at 1.5 s with the hint; a station fixture crossing the beam mid-mine
+  holds it (progress frozen) and the interlock then cuts it.
 - Not run: `GAME_PARTS=pace` (25–50 min bot); its aiming faces rock centres, which always hit.
   `m32.reloadBatch` is flaky before and after (1 of 2 on the committed baseline).
 

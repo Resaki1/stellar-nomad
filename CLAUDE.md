@@ -120,7 +120,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `LIGHTS_PARTS=drift,xfade,ladder,beacon pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-lights.mjs` — station lamps as flux-conserving light points (VFX plan §1; `perf` part with `--perf`)
-- `BEAM_PARTS=orbit,miss,shots pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-beam.mjs` — straight mining beam: mesh hit, nose axis, halt on miss (VFX plan §2; `perf` part with `--perf`)
+- `BEAM_PARTS=orbit,miss,hold,impact,shots pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-beam.mjs` — straight mining beam: mesh hit, nose axis, halt on miss, laser interlock and safety hold, impact captures (VFX plan §2–§3; `perf` part with `--perf`)
 - `pnpm check:atmo` — sim atmosphere + variable-Isp drive under plain Node (`scripts/atmo-check.mjs`):
   co-rotating air vs the rendered surface (Earth/Mars/Venus/Jupiter), body pick, fuel multiplier
   table, plume regimes (VFX_REALISM_PLAN §5.6, §6)

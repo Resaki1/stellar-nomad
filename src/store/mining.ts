@@ -95,6 +95,7 @@ export const startMiningAtom = atom(null, (get, set) => {
   const cargoFull = get(isCargoFullAtom);
   if (!state.isFocused || state.isMining || cargoFull || state.isOverheated) return;
   set(miningStateAtom, { ...state, isMining: true, miningProgress: 0 });
+  set(laserInterlockAtom, false);
 });
 
 /** Action atom: cancel mining */
@@ -177,12 +178,17 @@ export const pulseCycleBuffer: {
  * axis from the mining socket, ending on the first rock surface it meets. Read by the HUD
  * (miss feedback) and the impact VFX (§3). Local-scene metres.
  */
+/** Set when the ship's AI cut the laser (beam off target too long); cleared when mining restarts. */
+export const laserInterlockAtom = atom(false);
+
 export const miningBeamView = {
   on: false,
   /** Ends on a rock surface (any rock). */
   hit: { value: false },
   /** That surface is the locked target: mining progresses. */
   onTarget: false,
+  /** Safety hold: the path crosses a station, depot or pilot, so the laser is not firing. */
+  hold: false,
   start: [0, 0, 0] as [number, number, number],
   end: [0, 0, 0] as [number, number, number],
   /** Outward surface normal at the hit. */

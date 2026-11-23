@@ -129,6 +129,7 @@ export default async function vfxBeam(d) {
       await stopMining();
     }
     if (PARTS.includes("miss")) {
+      await park(20, 10, 90);
       await startMining();
       await d.frames(30);
       if (PARTS.includes("shots")) await d.shot("beam-hud-hit");
@@ -146,6 +147,55 @@ export default async function vfxBeam(d) {
       await wait(600);
       out.miss.resumed = (await mining()).progress;
       console.log("miss", j(out.miss));
+      // Interlock: held off target past the grace, the AI cuts the laser (mining stops).
+      await ev(`${G}.res.faceOffset(${j(rock)}, 70)`);
+      await wait(2200);
+      const hint = await ev(`[...document.querySelectorAll(".notif-stack__item, [class*=hint]")].map(e => e.innerText).find(t => /cut the laser/i.test(t)) ?? null`);
+      out.interlock = { mining: (await mining()).mining, beamOn: (await beam()).on, hint };
+      console.log("interlock", j(out.interlock));
+    }
+    if (PARTS.includes("hold")) {
+      // Safety hold: a station fixture placed ON the line between ship and rock.
+      const bearing = [20, 10], standoff = 300;
+      const yr = bearing[0] * Math.PI / 180, pr = bearing[1] * Math.PI / 180;
+      const dir = [Math.cos(pr) * Math.cos(yr), Math.sin(pr), Math.cos(pr) * Math.sin(yr)];
+      const k = (rock.radiusM + 150) / 1000;
+      const rockKm = await ev(`${G}.res.rockKm(${j(rock)})`);
+      const at = rockKm.map((v, i) => v + dir[i] * k);
+      const previous = await ev("__test.save.info().id");
+      const fixture = await ev(`(async () => {
+        const game = ${G};
+        const data = JSON.parse(await game.fixtures.export(${j(previous)})).data;
+        data.world.replication.points.push({ id: "beam-hold", name: "Hold trial", frameId: "system", positionKm: ${j(at)},
+          quaternion: [0, 0, 0, 1], by: game.localId(), starter: false, createdAt: Date.now() });
+        return game.fixtures.create("beam-hold", data);
+      })()`);
+      try {
+        await ev(`${G}.fixtures.activate(${j(fixture)})`);
+        await d.reload();
+        await ev(`__test.simRate(0); ${G}.m37.comms.dismiss?.()`);
+        // Start on a clear line (opposite bearing), then move, still mining, onto the blocked one.
+        await park(bearing[0] + 180, -bearing[1], standoff);
+        await startMining();
+        await d.frames(10);
+        const clear = await beam();
+        await ev(`${G}.res.parkAround(${j(rock)}, ${bearing[0]}, ${bearing[1]}, ${(rock.radiusM + standoff) / 1000})`);
+        await d.frames(4);
+        await ev(`${G}.res.face(${j(rock)})`);
+        await d.frames(6);
+        const b = await beam();
+        out.hold = { clearHold: clear.hold, clearOnTarget: clear.onTarget, hold: b.hold, mining: (await mining()).mining, progress0: (await mining()).progress };
+        await wait(500);
+        out.hold.progressAfter500ms = (await mining()).progress;
+        await wait(2000);
+        out.hold.afterGrace = { mining: (await mining()).mining };
+        console.log("hold", j(out.hold));
+      } finally {
+        await stopMining().catch(() => {});
+        await ev(`${G}.fixtures.activate(${j(previous)})`);
+        await d.reload();
+        await ev(`${G}.fixtures.remove(${j(fixture)})`);
+      }
     }
   } finally {
     await stopMining().catch(() => {});

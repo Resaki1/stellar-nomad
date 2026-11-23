@@ -17,6 +17,7 @@ import {
   miningBeamRequest,
   pulseCycleBuffer,
   miningBeamView,
+  laserInterlockAtom,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
   inspectControl,
@@ -47,7 +48,10 @@ import { buildInspectOperation } from "@/sim/asteroids/inspectOperation";
 import { localBeamPose, localRenderPose } from "@/sim/entities";
 import { getLocalPlayerId } from "@/save/playerId";
 import { onLoadedRockDestroyed } from "@/sim/asteroids/runtimeContext";
-import { isFrameId, SYSTEM_FRAME_ID } from "@/sim/frames";
+import { frameOriginKm, isFrameId, SYSTEM_FRAME_ID } from "@/sim/frames";
+import { replicationPointsAtom } from "@/store/replicationMirror";
+import { industryAtom } from "@/store/industry";
+import { pilotPOIsAtom } from "@/store/poi";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -72,6 +76,16 @@ const TARGET_LOCK_GRACE_S = 0.18;
 // Requiring aim during mining
 /** VFX plan §2 B1 (open question 3): a miss halts progress after one ray tick; no bending. */
 const MINING_MISS_GRACE_S = 0.05;
+/**
+ * Interlock: the ship's AI cuts the laser after this long off target (sweeps and re-aims stay
+ * natural). A probe light-years from its makers does not lase empty space. Progress resets as
+ * before: keeping it would let a pilot look away to cool and dodge the over-temperature trip.
+ */
+const INTERLOCK_GRACE_S = 1.5;
+/** Safety hold: the beam never fires through a station, depot or pilot (guard radii, m). */
+const GUARD_STATION_M = 40;
+const GUARD_DEPOT_M = 24;
+const GUARD_PILOT_M = 12;
 
 // Targeting assist
 const TARGET_HIT_RADIUS_SCALE = 1.25;
@@ -115,6 +129,16 @@ if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
     surfOverR: Math.hypot(_beamHit.point[0] - _beamHit.center[0], _beamHit.point[1] - _beamHit.center[1],
       _beamHit.point[2] - _beamHit.center[2]) / Math.max(_beamHit.radiusM, 1e-9),
   });
+}
+const _guardO = new THREE.Vector3();
+const _guardC = new THREE.Vector3();
+/** Does segment a→b pass within r of c? */
+function segmentNearSphere(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, r: number): boolean {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const l2 = abx * abx + aby * aby + abz * abz;
+  const t = l2 > 0 ? Math.min(1, Math.max(0, ((c.x - a.x) * abx + (c.y - a.y) * aby + (c.z - a.z) * abz) / l2)) : 0;
+  const dx = a.x + abx * t - c.x, dy = a.y + aby * t - c.y, dz = a.z + abz * t - c.z;
+  return dx * dx + dy * dy + dz * dz <= r * r;
 }
 /** Nearest beam hit this frame, and the field anchor (km) its field-local metres are relative to. */
 const _beamHit = createAsteroidRayHit();
@@ -329,6 +353,7 @@ function pulseEnvelope(): number {
 export const MiningBeam = ({ start, end, remote, hit, power = 1, impact = true }: MiningBeamProps) => {
   useFrame(() => {
     if (remote && !remote.on) return;
+    if (!remote && miningBeamView.hold) return;
     const intensity = remote ? (remote.dim ? 0 : 1) : pulseEnvelope();
     if (intensity <= 0.002) return;
     pushBeam(start.x, start.y, start.z, end.x, end.y, end.z, intensity, power);
@@ -898,6 +923,21 @@ const MiningSystem = () => {
     return found;
   }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
 
+  /** Safety hold: true when the beam segment passes through a station, depot or another pilot. */
+  const beamBlocked = useCallback((a: THREE.Vector3, b: THREE.Vector3): boolean => {
+    const wo = worldOrigin.worldOriginKm;
+    const near = (frameId: string | undefined, p: readonly number[], r: number): boolean => {
+      if (!frameId || !isFrameId(frameId)) return false;
+      frameOriginKm(frameId, _guardO);
+      _guardC.set((_guardO.x + p[0] - wo.x) * 1000, (_guardO.y + p[1] - wo.y) * 1000, (_guardO.z + p[2] - wo.z) * 1000);
+      return segmentNearSphere(a, b, _guardC, r);
+    };
+    for (const pt of store.get(replicationPointsAtom)) if (!pt.starter && near(pt.frameId, pt.positionKm, GUARD_STATION_M)) return true;
+    for (const dp of store.get(industryAtom).depots) if (near(dp.frameId, dp.positionKm, GUARD_DEPOT_M)) return true;
+    for (const pl of store.get(pilotPOIsAtom)) if (near(pl.frameId, pl.positionKm, GUARD_PILOT_M)) return true;
+    return false;
+  }, [store, worldOrigin]);
+
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
     // Dev micro-benchmark: average ms of `n` beam casts from the current pose (headless timers are 0.1 ms).
@@ -1086,9 +1126,14 @@ const MiningSystem = () => {
           miningDurationSRef.current = computeMiningDurationS(snapshot.radiusM) / cfg.miningSpeedMult;
         }
 
-        // A miss halts mining after one ray tick (grazing the outline must not stutter).
-        miningAimLostTimeRef.current = onTarget ? 0 : miningAimLostTimeRef.current + delta;
+        // Safety hold: never fire through a station, depot or pilot (the beam is not drawn).
+        const blocked = beamBlocked(start, beamEndLocalRef.current);
+        v.hold = blocked;
+        // A miss halts mining after one ray tick (grazing the outline must not stutter); the
+        // interlock cuts the laser once it has been off target (or held) for INTERLOCK_GRACE_S.
+        miningAimLostTimeRef.current = onTarget && !blocked ? 0 : miningAimLostTimeRef.current + delta;
         const hitting = miningAimLostTimeRef.current <= MINING_MISS_GRACE_S;
+        const interlock = miningAimLostTimeRef.current > INTERLOCK_GRACE_S;
 
         {
           // --- Pulse mining cycle logic
@@ -1113,7 +1158,7 @@ const MiningSystem = () => {
 
           // Heat and extraction rate come from the ship resource step (one thermal store,
           // reactor-throttled work on executed time): request the beam, consume granted seconds.
-          miningBeamRequest.on = beamFiring;
+          miningBeamRequest.on = beamFiring && !blocked;
           shipResControl.beamTargetId = snapshot.instanceId;
           const work = takeMiningWork();
 
@@ -1127,6 +1172,12 @@ const MiningSystem = () => {
             targetLostTimeRef.current = 0;
             currentSnapshotRef.current = null;
             pulseCycleTimerRef.current = 0;
+          } else if (interlock) {
+            cancelMining = true;
+            miningProgressRef.current = 0;
+            miningAimLostTimeRef.current = 0;
+            pulseCycleTimerRef.current = 0;
+            store.set(laserInterlockAtom, true);
           } else if (hitting) {
             miningProgressRef.current += work / miningDurationSRef.current;
           }
@@ -1173,7 +1224,10 @@ const MiningSystem = () => {
       pulseCycleBuffer.beamOn = true;
       pulseCycleBuffer.pulsing = false;
     }
-    if (!isMiningNow || cancelMining) miningBeamView.on = false;
+    if (!isMiningNow || cancelMining) {
+      miningBeamView.on = false;
+      miningBeamView.hold = false;
+    }
     if (!isMiningNow || cancelMining) miningBeamRequest.on = false;
     if (!miningBeamRequest.on) takeMiningWork();
 

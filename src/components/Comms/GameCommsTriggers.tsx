@@ -15,7 +15,7 @@ import { cargoAtom, isCargoFullAtom } from "@/store/cargo";
 import { enqueueCommsAtom, playedMessageIdsAtom, retireHintAtom, showHintAtom } from "@/store/comms";
 import { toastStackFullAtom } from "@/store/toast";
 import { isDeadAtom } from "@/store/death";
-import { miningStateAtom } from "@/store/mining";
+import { laserInterlockAtom, miningStateAtom } from "@/store/mining";
 import { modulesAtom } from "@/store/modules";
 import { trackedProjectAtom } from "@/store/projects";
 import { lastRecoveryAtom } from "@/store/replication";
@@ -77,6 +77,7 @@ export default function GameCommsTriggers() {
   const hasHydrates = useAtomValue(hasHydratesAtom);
   useHint(HINTS.hydrates, hasHydrates, dead);
   useHint(HINTS.heat, useAtomValue(heatWarnAtom), dead);
+  useHint(HINTS.interlock, useAtomValue(laserInterlockAtom), dead);
   useHint(HINTS.thinAir, useAtomValue(burningWaterAtom), dead);
   useHint(HINTS.cargoFull, useAtomValue(isCargoFullAtom), dead);
   // Only actionable with hydrates aboard (after a respawn the hold is empty: the wreck hint applies).
