@@ -250,6 +250,33 @@ mining rate 0 within one test tick. Perf: beam pass ≤ 0.1 ms at 3 beams.
 **Gates:** no hard edge along the rock outline `[cap 1]` regression shot; hot-spot trail
 visible for ≥ 2 s after the beam moves; ≤ 0.15 ms at one active impact.
 
+**Status (2026-11-23): I1–I4 landed** (`src/components/VFX/impactVfx.ts`, `MiningImpact.tsx`).
+- I1: 8-slot ring of spots in FIELD-local metres. The near-tier asteroid material is a node
+  copy of the GLB material whose emissive is the blackbody radiance (ε 0.9, LUT 600–3300 K)
+  of T(p) = 650 K + Σ(peak − 650)·e^(−d²/r²) (max over slots), r 12 cm·√power, ±6 % crack
+  noise in TEMPERATURE. A fed spot heats to 2,700 K in ~0.15 s; unfed it relaxes with τ 2.5 s
+  (1,570 K at 2 s, gone below 760 K). New spot every 0.6 r of beam travel; cleared when the
+  rock is destroyed. Each spot is also a light point of its integrated intensity (size 2r),
+  and the rock emissive fades by the same size rule, so trails stay visible as points far off.
+- I2: droplets 0.8–2.5 mm, 2,300–2,800 K, 3–25 m/s in a 60° cone round the normal, 45/s ×
+  power, straight lines, radiative cooling T0(1 + 3kT0³t)^(−1/3) with k = 3εσ/(ρcr); drawn as
+  light points of ε L_v(T) π r² (no new renderer).
+- I3: one permanent PointLight (decay 2), 0.4 m off the surface, intensity = (fed spot +
+  plasma) cd → game units × pre-exposure; 0 when idle, never toggled.
+- I4: plasma core = a Gaussian billboard (σ 12 cm·√power, 25 kcd × power, near-white blue)
+  centred 1.2 σ off the surface, so the rock cuts only its faint tail: no hard outline. It
+  hands its flux to a light point below 2–4 px. Kept drawn (dark) when idle: no first-hit
+  shader build.
+- Player beam only; co-op and drone impacts keep the B4 light point.
+- **Measured / seen** (`vfx-beam.mjs` part `impact`, 45 m, shaded face): white impact with
+  a soft plasma glow, orange droplets, the impact light picking out rock relief, an orange
+  trail behind a sweep, a red ember after the beam stops. On a SUNLIT face the scar vanishes
+  within ~1 s: a 1,300 K scar is ~600 cd/m² against ~20,000 cd/m² of sunlit rock, which is
+  physically right. ⚠ Gate NOT met as written: on shaded rock the ember and a faint red trail
+  are clear at 1 s after the beam stops but no longer read at 2.5 s (exposure is still
+  adapted to the beam). Meeting it would need hotter or larger scars than the melt physics
+  here gives; left as an owner call rather than an unstated gain.
+
 ---
 
 ## 4. Shadows and local light (S-series)

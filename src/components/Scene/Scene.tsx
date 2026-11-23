@@ -65,6 +65,7 @@ import IndustryWorld from "@/components/Industry/IndustryWorld";
 import SurveySite from "@/components/Sites/SurveySite";
 import LightPoints from "@/components/space/LightPointsRenderer";
 import BeamRenderer from "@/components/VFX/BeamRenderer";
+import ImpactVFX from "@/components/VFX/MiningImpact";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe, { TestLocalSceneProbe } from "../TestHarness/TestFrameProbe";
 import LoadingGate from "../Loading/LoadingGate";
@@ -241,6 +242,8 @@ const Scene = () => {
         <LightPoints />
         {/* Every mining beam (player, co-op, drones) in one draw (VFX plan §2). */}
         <BeamRenderer />
+        {/* Mining impact: melt spots, sparks, impact light, plasma core (VFX plan §3). */}
+        <ImpactVFX />
       </>
     ),
     [],

@@ -78,8 +78,9 @@ export default async function vfxBeam(d) {
       await d.frames(10);
     }
     if (PARTS.includes("perf")) {
-      // Run with --perf: local-scene GPU ms with the beam on vs off, and the cast's CPU time.
-      await park(20, 10, 120);
+      // Run with --perf: local-scene GPU ms with the beam (and its impact) on vs off at 45 m,
+      // and the cast's CPU time.
+      await park(20, 10, 45);
       const local = async () => {
         await ev("__bench.reset()");
         await d.frames(150);
@@ -101,6 +102,31 @@ export default async function vfxBeam(d) {
       rows.castMs = { targetFirst: await ev("__beamBench(400, true)"), fullScan: await ev("__beamBench(400, false)") };
       out.perf = rows;
       console.log("perf", j(rows));
+    }
+    if (PARTS.includes("impact")) {
+      // §3: close range, a slow sweep (trail), then the cooling after the beam stops.
+      await park(Number(process.env.IMPACT_YAW ?? 20), 10, 45);
+      await startMining();
+      await d.frames(60);
+      console.log("impact: mining"); await d.canvas("impact-on");
+      for (let a = 0; a <= 8; a += 1) {
+        await ev(`${G}.res.faceOffset(${j(rock)}, ${a})`);
+        await d.frames(6);
+      }
+      console.log("impact: sweep"); await d.canvas("impact-sweep");
+      await stopMining();
+      await wait(1000);
+      await d.canvas("impact-cool-1s");
+      await wait(1500);
+      await d.canvas("impact-cool-2_5s"); console.log("impact: cooled");
+      await ev("__test.input.freeLook(true)");
+      await ev(`${G}.res.face(${j(rock)})`);
+      await startMining();
+      await ev("__test.input.mouse(-700, -60)");
+      await d.frames(40);
+      await d.canvas("impact-side"); console.log("impact: side");
+      await ev("__test.input.mouse(700, 60); __test.input.freeLook(false)");
+      await stopMining();
     }
     if (PARTS.includes("miss")) {
       await startMining();

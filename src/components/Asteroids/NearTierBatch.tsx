@@ -8,6 +8,7 @@ import type { AsteroidModelAsset } from "@/sim/asteroids/modelRegistry";
 import { GpuSlotAllocator, MAX_INSTANCES_PER_MODEL } from "./GpuSlotAllocator";
 import { renderDebug } from "@/sim/physics/asteroidColliders";
 import { useWorldOrigin } from "@/sim/worldOrigin";
+import { hotRockMaterial } from "@/components/VFX/impactVfx";
 import {
   createCullComputeNode,
   createCullUniforms,
@@ -90,7 +91,9 @@ const ModelBatch = memo(function ModelBatch({
     const geo = asset.geometry.clone();
     geo.setIndirect(indirectAttr, 0);
 
-    const m = new THREE.InstancedMesh(geo, asset.material, MAX_NEAR_INSTANCES);
+    // Close range only: laser hot spots glow in the rock (VFX plan §3 I1); far tiers are sub-pixel.
+    const material = asset.material instanceof THREE.MeshStandardMaterial ? hotRockMaterial(asset.material) : asset.material;
+    const m = new THREE.InstancedMesh(geo, material, MAX_NEAR_INSTANCES);
     m.instanceMatrix = outputAttr;
     m.count = MAX_NEAR_INSTANCES; // Needed for three.js internals; actual count comes from indirect
     m.frustumCulled = false;

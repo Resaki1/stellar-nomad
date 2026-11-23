@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 import { pushBeam, pushBeamLights } from "@/components/VFX/beams";
+import { clearHotSpotsOn } from "@/components/VFX/impactVfx";
 
 import {
   miningStateAtom,
@@ -310,6 +311,8 @@ type MiningBeamProps = {
   hit?: { value: boolean };
   /** Laser power multiplier (B3): core radiance ∝ power, width ∝ power^¼. */
   power?: number;
+  /** Draw the generic impact light point (false: ImpactVFX owns the player's impact, §3). */
+  impact?: boolean;
 };
 
 /** Pulse-train envelope: sharp rise (τ 15 ms), quick fall (τ 40 ms) — B3's visible pulses. */
@@ -323,13 +326,13 @@ function pulseEnvelope(): number {
  * One mining beam, drawn by the shared BeamRenderer (VFX plan §2 B2) with its muzzle and
  * impact as light points (B4). Player, co-op pilots and drones all go through `pushBeam`.
  */
-export const MiningBeam = ({ start, end, remote, hit, power = 1 }: MiningBeamProps) => {
+export const MiningBeam = ({ start, end, remote, hit, power = 1, impact = true }: MiningBeamProps) => {
   useFrame(() => {
     if (remote && !remote.on) return;
     const intensity = remote ? (remote.dim ? 0 : 1) : pulseEnvelope();
     if (intensity <= 0.002) return;
     pushBeam(start.x, start.y, start.z, end.x, end.y, end.z, intensity, power);
-    pushBeamLights(start.x, start.y, start.z, end.x, end.y, end.z, hit ? hit.value : true, intensity, power);
+    pushBeamLights(start.x, start.y, start.z, end.x, end.y, end.z, impact && (hit ? hit.value : true), intensity, power);
   });
   return null;
 };
@@ -508,6 +511,7 @@ const MiningSystem = () => {
   useEffect(
     () =>
       onLoadedRockDestroyed((r) => {
+        clearHotSpotsOn(`${r.chunkKey}:${r.instanceId}`);
         if (r.by === "") return;
         const field = systemConfig.asteroidFields?.find(f => f.id === r.fieldId);
         if (!field) return;
@@ -1071,6 +1075,7 @@ const MiningSystem = () => {
         if (hit) {
           v.normal[0] = _beamHit.normal[0]; v.normal[1] = _beamHit.normal[1]; v.normal[2] = _beamHit.normal[2];
           v.rock.fieldId = _beamHit.fieldId; v.rock.chunkKey = _beamHit.chunkKey; v.rock.instanceId = _beamHit.instanceId;
+          v.pointField[0] = _beamHit.point[0]; v.pointField[1] = _beamHit.point[1]; v.pointField[2] = _beamHit.point[2];
         } else {
           v.rock.instanceId = -1;
         }
@@ -1299,6 +1304,7 @@ const MiningSystem = () => {
           end={beamEndLocalRef.current}
           hit={miningBeamView.hit}
           power={shipConfig.miningPowerMult}
+          impact={false}
         />
       )}
     </>

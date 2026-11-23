@@ -189,5 +189,7 @@ export const miningBeamView = {
   normal: [0, 0, 1] as [number, number, number],
   /** The rock hit (any), for impact VFX that ride the rock. */
   rock: { fieldId: "", chunkKey: "", instanceId: -1 },
+  /** Hit point in FIELD-local metres (static for a rock; scene metres drift with the origin). */
+  pointField: [0, 0, 0] as [number, number, number],
   power: 1,
 };
