@@ -67,24 +67,28 @@ export default function ImpactVFX() {
     return m;
   }, [uL0]);
 
+  // Anchors resolved once per frame (refreshed below), not one find() per spot and spark.
+  const anchors = useMemo(() => new Map<string, readonly number[]>(), []);
   const toScene = useMemo(() => {
     const out = (fieldId: string, x: number, y: number, z: number, o: number[]): boolean => {
-      const field = store.get(systemConfigAtom).asteroidFields?.find((f) => f.id === fieldId);
-      if (!field) return false;
-      const a = field.anchorKm, wo = worldOrigin.worldOriginKm;
+      const a = anchors.get(fieldId);
+      if (!a) return false;
+      const wo = worldOrigin.worldOriginKm;
       o[0] = (a[0] - wo.x) * 1000 + x;
       o[1] = (a[1] - wo.y) * 1000 + y;
       o[2] = (a[2] - wo.z) * 1000 + z;
       return true;
     };
     return out;
-  }, [store, worldOrigin]);
+  }, [anchors, worldOrigin]);
 
   const _pos = useMemo(() => [0, 0, 0], []);
   const _v = useMemo(() => new THREE.Vector3(), []);
 
   useFrame((_, delta) => {
     const dt = isSimPaused() ? 0 : Math.min(delta, 0.1);
+    anchors.clear();
+    for (const f of store.get(systemConfigAtom).asteroidFields ?? []) anchors.set(f.id, f.anchorKm);
     const v = miningBeamView;
     const on = v.on && v.hit.value && v.rock.instanceId >= 0 && pulseCycleBuffer.beamOn;
     _impact.on = on;

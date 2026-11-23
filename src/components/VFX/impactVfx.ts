@@ -15,7 +15,7 @@
 import { ClampToEdgeWrapping, DataTexture, FloatType, LinearFilter, type MeshStandardMaterial, Vector4 } from "three";
 import { MeshStandardNodeMaterial } from "three/webgpu";
 import {
-  float, Fn, Loop, materialEmissive, max, mx_noise_float, positionWorld, select, texture, uniform, uniformArray, vec2, vec3, vec4,
+  float, Fn, If, Loop, materialEmissive, max, mx_noise_float, positionWorld, select, texture, uniform, uniformArray, vec2, vec3, vec4,
 } from "three/tsl";
 import { blackbodyLinearSrgb, blackbodyLuminanceNits, HALF_FLOAT_WRITE_MAX, nitsToGameUnits } from "@/components/space/photometry";
 import { lampMeshWeight, pushLightPoint } from "@/components/space/lightPoints";
@@ -25,7 +25,7 @@ export const HOT_SLOTS = 8;
 const EPS = 0.9;
 /** Melt core peak while the beam feeds it, K (silicate melt + superheat, plan §3.1: 2,000–3,000 K). */
 export const MELT_PEAK_K = 2700;
-/** Profile radius at stock power, m: the visible scar; the white core is its inner ~third. */
+/** Profile radius, m: the visible scar; the white core is its inner ~third. */
 const SPOT_R_M = 0.12;
 /** Peak temperature relaxes to this with τ once unfed (dark glass below ~800 K). */
 const AMBIENT_K = 650;
@@ -109,6 +109,8 @@ export const uSpotPos = uniformArray(_spotVecs, "vec4");
 /** x: peak temperature K. */
 export const uSpotT = uniformArray(new Array(HOT_SLOTS).fill(0), "float");
 export const uHotPre = uniform(1);
+/** 1 while any spot is live: idle rocks skip the slot loop, noise and LUT entirely. */
+export const uHotAny = uniform(0);
 
 export type BeamImpact = {
   on: boolean;
@@ -121,7 +123,9 @@ export type BeamImpact = {
 
 /** Feed / spawn / cool the spots for this frame. */
 export function stepHotSpots(beam: BeamImpact, dt: number): void {
-  const r = SPOT_R_M * Math.sqrt(Math.max(0.2, beam.power));
+  // Fixed radius: the rock emissive's crossfade is baked for 2·SPOT_R_M, so a power-scaled
+  // radius would break flux at the handover (review finding). Power raises the temperature.
+  const r = SPOT_R_M;
   let fed = -1;
   if (beam.on) {
     const cur = fedSlot >= 0 ? spots[fedSlot] : null;
@@ -172,6 +176,7 @@ export function uploadHotSpots(toScene: (fieldId: string, x: number, y: number, 
     }
   }
   uHotPre.value = preExposure;
+  uHotAny.value = spots.some((sp) => sp.live) ? 1 : 0;
 }
 const _p = [0, 0, 0];
 const _hue = [1, 1, 1];
@@ -242,13 +247,13 @@ export function hotRockMaterial(src: MeshStandardMaterial): MeshStandardNodeMate
   const tex = lutTexture();
   m.emissiveNode = Fn(() => {
     const T = float(0).toVar();
-    Loop(HOT_SLOTS, ({ i }) => {
+    If(uHotAny.greaterThan(0.5), () => Loop(HOT_SLOTS, ({ i }) => {
       const s = vec4(uSpotPos.element(i));
       const r = s.w;
       const d2 = positionWorld.sub(s.xyz).lengthSq();
       const t = float(uSpotT.element(i)).sub(AMBIENT_K).max(0).mul(d2.div(r.mul(r).max(1e-6)).negate().exp()).add(AMBIENT_K);
       T.assign(max(T, t.mul(select(r.greaterThan(0), float(1), float(0)))));
-    });
+    }));
     const crack = float(1).add(mx_noise_float(positionWorld.mul(9)).mul(0.06));
     const Tn = T.mul(crack);
     const u = Tn.sub(LUT_MIN_K).div(LUT_MAX_K - LUT_MIN_K).clamp(0, 1);

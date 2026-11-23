@@ -253,7 +253,7 @@ visible for ≥ 2 s after the beam moves; ≤ 0.15 ms at one active impact.
 **Status (2026-11-23): I1–I4 landed** (`src/components/VFX/impactVfx.ts`, `MiningImpact.tsx`).
 - I1: 8-slot ring of spots in FIELD-local metres. The near-tier asteroid material is a node
   copy of the GLB material whose emissive is the blackbody radiance (ε 0.9, LUT 600–3300 K)
-  of T(p) = 650 K + Σ(peak − 650)·e^(−d²/r²) (max over slots), r 12 cm·√power, ±6 % crack
+  of T(p) = 650 K + Σ(peak − 650)·e^(−d²/r²) (max over slots), r 12 cm (power raises the peak), ±6 % crack
   noise in TEMPERATURE. A fed spot heats to 2,700 K in ~0.15 s; unfed it relaxes with τ 2.5 s
   (1,570 K at 2 s, gone below 760 K). New spot every 0.6 r of beam travel; cleared when the
   rock is destroyed. Each spot is also a light point of its integrated intensity (size 2r),

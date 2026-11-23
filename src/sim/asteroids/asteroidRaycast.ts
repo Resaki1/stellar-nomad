@@ -20,6 +20,12 @@ type RayModel = {
   /** scale = radiusM · invBaseRadius · baseScale (= radiusM / geometry radius). */
   invBaseRadius: number;
   baseScale: number;
+  /**
+   * Farthest vertex from the model ORIGIN over the bounding radius (≥ 1). three's bounding
+   * sphere is centred on the bbox, not the origin the instance transform rotates about:
+   * asteroid01/03 sit ~13 % off-centre, so their limb pokes out past `r` (review finding).
+   */
+  reach: number;
 };
 
 const models = new Map<string, RayModel>();
@@ -34,6 +40,8 @@ export function registerAsteroidRayModel(
   baseScale: number,
 ): void {
   const n = index ? index.length : positions.length / 3;
+  let maxLen = 0;
+  for (let v = 0; v < positions.length; v += 3) maxLen = Math.max(maxLen, Math.hypot(positions[v], positions[v + 1], positions[v + 2]));
   const tris = new Float32Array(n * 3);
   for (let k = 0; k < n; k++) {
     const v = index ? index[k] : k;
@@ -41,8 +49,13 @@ export function registerAsteroidRayModel(
     tris[k * 3 + 1] = positions[v * 3 + 1];
     tris[k * 3 + 2] = positions[v * 3 + 2];
   }
-  models.set(modelId, { tris, baseQuat: [...baseQuat], invBaseRadius: 1 / baseRadiusM, baseScale });
+  const reach = Math.max(1, (maxLen * baseScale) / baseRadiusM);
+  models.set(modelId, { tris, baseQuat: [...baseQuat], invBaseRadius: 1 / baseRadiusM, baseScale, reach });
+  maxReach = Math.max(maxReach, reach);
 }
+
+/** Largest `reach` over registered models: pads every bound built from a rock's radius. */
+let maxReach = 1;
 
 export function hasAsteroidRayModels(): boolean {
   return models.size > 0;
@@ -142,8 +155,8 @@ export function rayHitInstance(
   const cx = chunk.originKm[0] * 1000 + inst.positionsM[i * 3];
   const cy = chunk.originKm[1] * 1000 + inst.positionsM[i * 3 + 1];
   const cz = chunk.originKm[2] * 1000 + inst.positionsM[i * 3 + 2];
-  const r = inst.radiiM[i];
-  // Sphere early-out (the geometry fits its bounding sphere, which is the radius).
+  // Sphere early-out on the mesh's true reach from its origin, not the bbox-centred radius.
+  const r = inst.radiiM[i] * (m ? m.reach : 1);
   const lx = cx - ox, ly = cy - oy, lz = cz - oz;
   const tc = lx * dx + ly * dy + lz * dz;
   const d2 = lx * lx + ly * ly + lz * lz - tc * tc;
@@ -162,7 +175,7 @@ export function rayHitInstance(
     const ql = Math.hypot(qx, qy, qz, qw) || 1;
     qx /= ql; qy /= ql; qz /= ql; qw /= ql;
     _q[0] = qx; _q[1] = qy; _q[2] = qz; _q[3] = qw;
-    const scale = r * m.invBaseRadius * m.baseScale;
+    const scale = inst.radiiM[i] * m.invBaseRadius * m.baseScale;
     // Model-space ray with the SAME parameter t: o' = q⁻¹(o − c)/s, d' = q⁻¹d/s.
     rotateInv(_q, -lx, -ly, -lz, _o);
     rotateInv(_q, dx, dy, dz, _d);
@@ -187,7 +200,7 @@ export function rayHitInstance(
   out.modelId = modelId;
   out.localIndex = i;
   out.instanceId = inst.instanceIds[i] >>> 0;
-  out.radiusM = r;
+  out.radiusM = inst.radiiM[i];
   out.point[0] = ox + dx * tHit; out.point[1] = oy + dy * tHit; out.point[2] = oz + dz * tHit;
   out.normal[0] = _r[0] / nl; out.normal[1] = _r[1] / nl; out.normal[2] = _r[2] / nl;
   out.center[0] = cx; out.center[1] = cy; out.center[2] = cz;
@@ -211,7 +224,7 @@ export function castAsteroidRayInField(
   let found = false;
   chunks.forEach((chunk) => {
     // Chunk AABB (km, field-local) vs the segment's bounding box, padded by the largest rock.
-    const pad = chunk.maxRadiusM;
+    const pad = chunk.maxRadiusM * maxReach;
     const ex = ox + dx * best, ey = oy + dy * best, ez = oz + dz * best;
     if (Math.min(ox, ex) - pad > chunk.aabbMaxKm[0] * 1000 || Math.max(ox, ex) + pad < chunk.aabbMinKm[0] * 1000 ||
         Math.min(oy, ey) - pad > chunk.aabbMaxKm[1] * 1000 || Math.max(oy, ey) + pad < chunk.aabbMinKm[1] * 1000 ||
