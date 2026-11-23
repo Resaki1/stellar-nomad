@@ -683,6 +683,24 @@ atmospheres"); this section is its spec.
   plume/halo blend colour only (`additiveKeepAlpha`), and the final output is opaque
   (alpha pinned to 1 in SpaceRenderer, which also covers every other additive effect).
   Reproduced and verified headless with `--query hdr=1` + `shot:` (old vs fixed A/B).
+- **Physics review of the regimes + temporal model (2026-11-23).** Captured Earth 100→3 km,
+  Mars, Venus, Jupiter (rear + side) against `drivePlume` predictions; an independent
+  reviewer + adversarial verifier confirmed five mismatches, all fixed: (1) 60 km / Mars
+  20 km camera-filling white wall = shock diamonds left on at p_e/p_a ~2000, now gated to
+  ratio < 30–300 and to cells that fit the jet; (2) rarefied beam now tracks Σ/ρ (no 15 m
+  floor) and brightens ∝ 1/stopLen (90 km 29 m → 80 km 9 m → 70 km 3 m); (3) hot-gas jets
+  below the plasma band are warm white with an orange tip (pink N₂ 1P only in the plasma
+  band); (4) jet width follows the model's expanded diameter, Mach disk is a flat
+  super-Gaussian disc, diamonds widest at the shock crossing; (5) crushed (Venus) halo
+  white-orange. Hot H₂ is dimmed below the plasma band. Rejected by the verifier: brightness
+  claims from eyeballed numbers and an n² throttle law (the plan chose linear).
+  **Temporal model** (render-side only): at 60 fps a 4 km/s jet moves ~67 m per frame, so
+  structure decorrelates every frame. Per-frame random flow-structure phases, OU processes
+  for turbulent flicker (τ 40 ms; torch 6 %, air 10 %, beam 25 %), breathing (τ 0.6 s),
+  shock-cell screech (diamond ±30 %, cell ±5 %), Mach-disk wobble (±5 %), beam stopping-point
+  wander (±10 %), and hot-grain sparks (analytic motion-blurred segments, 150–600 m/s, torch
+  ~1/s, dense air up to ~6/s). Measured: plume pixels change 5–50× more than the sky between
+  consecutive frames; cost vacuum +0.1–0.2 ms, 3 km +0.4–0.6 ms (local scene pass).
 
 ---
 

@@ -23,6 +23,7 @@ import {
   sin,
   sqrt,
   tan,
+  uniformArray,
   atan,
   uniform,
   vec3,
@@ -203,6 +204,8 @@ const PAL = {
   torchTip: lumNorm(0.6, 0.38, 1.0),
   // Hot air jet (~5 kK): white-violet shocks, O+NO afterglow yellow-orange.
   airCore: lumNorm(0.95, 0.9, 1.0),
+  // ~5 kK hot-gas core (no ionisation yet): warm white.
+  airCoreHot: lumNorm(1.0, 0.88, 0.7),
   airBody: lumNorm(1.0, 0.6, 0.3),
   // Few-eV air plasma: N₂⁺ violet core, N₂ 1P pink fringe.
   plasmaBody: lumNorm(0.62, 0.45, 1.0),
@@ -226,7 +229,8 @@ const lerp3 = (a: V3, b: V3, t: number, out: V3): V3 => {
 
 /** Target plume parameters for one frame (CPU), smoothed into the uniforms. */
 type PlumeParams = {
-  R: number; L: number; torch: number; falloff: number; spread: number; coreLen: number; core: number;
+  breathe?: number;
+  R: number; L: number; torch: number; falloff: number; spread: number; barrelW: number; barrelLen: number; accent: number; haloTint: number; coreLen: number; core: number;
   cell: number; diamond: number; diamondW: number;
   machZ: number; machR: number; mach: number;
   streakLen: number; streak: number; disc: number; turb: number;
@@ -236,7 +240,7 @@ type PlumeParams = {
 
 function createParams(): PlumeParams {
   return {
-    R: 1, L: 6, torch: 1, falloff: 4, spread: 0.25, coreLen: 1.2, core: 1, cell: 4, diamond: 0, diamondW: 0.3,
+    R: 1, L: 6, torch: 1, falloff: 4, spread: 0.25, barrelW: 0, barrelLen: 1, accent: 1, haloTint: 0, coreLen: 1.2, core: 1, cell: 4, diamond: 0, diamondW: 0.3,
     machZ: 5, machR: 0.5, mach: 0, streakLen: 20, streak: 0, disc: 1, turb: 0.15,
     haloA: 2, haloZ: 1, halo: 0, light: 1,
     colCore: [...PAL.torchCore], colBody: [...PAL.torchBody], colTip: [...PAL.torchTip],
@@ -253,59 +257,85 @@ function plumeParams(pl: ReturnType<typeof createDrivePlume>, rn: number, out: P
   const rare = pl.rarefied01;
   const jet = air * (1 - rare);
   const crushed = pl.crushed01;
+  const plasma = pl.plasma01;
   const ratio = Math.min(1e4, pl.peOverPa);
 
   // Dense jet geometry: shock cells (p_e/p_a < ~3), then barrel + Mach disk, bell above ~30.
   const mach01 = smoothstep(2.2, 5, ratio) * (1 - smoothstep(800, 3000, ratio));
   const machZ = Math.min(80, pl.machDiskM);
   const jetLen = clamp(6 * pl.cellLenM + 2 * machZ * mach01, 10, 90) * (1 - 0.75 * crushed);
-  const streakLen = clamp(pl.stopLenM, 15, 400);
+  // Rarefied beam: the glow IS the stopping column Σ/ρ (§5.4: shortens and brightens as ρ
+  // rises). A 15 m floor and ×1.6 had drawn 80 and 90 km as the same long searchlight.
+  const streakLen = clamp(pl.stopLenM, 0.5, 400);
 
-  out.L = torch * 4.5 * (rn / 0.455) + jet * jetLen + air * rare * streakLen * 1.6;
+  out.L = torch * 4.5 * (rn / 0.455) + jet * jetLen + air * rare * Math.max(1.4 * streakLen, 2);
   // Emission ∝ n²: a freely expanding plasma falls as r⁻⁴ (§5.3); a mixing hot-air jet slower.
   out.torch = torch;
   out.falloff = torch * 4 + air * 3;
-  out.coreLen = torch * 1.2 * (rn / 0.455) + jet * jetLen * 0.35 + air * rare * 2;
-  out.spread = torch * 0.25 + jet * (0.04 + 0.02 * Math.log10(Math.max(1, ratio)) + 0.4 * crushed) + air * rare * 0.12;
+  out.coreLen = torch * 1.2 * (rn / 0.455) + jet * jetLen * 0.35 + air * rare * Math.min(2, 0.5 * streakLen);
+  // Width: the vacuum core spreads conically; a gas-dynamic jet's width follows the MODEL's
+  // fully expanded diameter (it had followed a log-ratio cone, a third of jetDia at 40 km),
+  // reached over 0.6 z_m (or a couple of cells when no Mach disk forms).
+  out.spread = torch * 0.25 + jet * 0.03 * (1 - crushed) + jet * 0.4 * crushed + air * rare * 0.12;
+  out.barrelW = jet * (1 - crushed) * Math.max(0, pl.jetDiaM / 2 - rn);
+  out.barrelLen = Math.max(0.5, mach01 > 0.5 ? 0.6 * machZ : 2 * pl.cellLenM);
   // Tight bounds (they set the march's pixel footprint): each term's own visible reach.
   // 2.5 coreLen: past that the r⁻⁴·e^(−d/ℓ) core is < 1e-4 of its peak (bounds = pixel cost).
   const coreReach = Math.min(out.L, 2.5 * out.coreLen, torch * 99 + air * 15);
-  const jetR = Math.max(pl.jetDiaM * 0.6, 0.4 * machZ * mach01);
-  out.R = Math.max(rn * 1.5, 1.6 * (rn + out.spread * coreReach), jet * jetR * 1.4, air * rare * 2.5 * (0.8 * rn + 0.006 * out.L));
+  out.R = Math.min(18, Math.max(rn * 1.5, 1.6 * (rn + out.spread * coreReach + out.barrelW),
+    air * rare * 2.5 * (0.8 * rn + 0.006 * out.L)));
   // Hot air is nearly transparent; its plasma band is bright (artistic gains vs the torch).
-  out.core = torch + jet * (0.1 + 0.35 * pl.plasma01) * (1 + crushed) + air * rare * 0.08;
+  // Hot H₂ at ~5 kK barely radiates until it dissociates/ionises (Hα): dim it below plasma.
+  const gasVis = pl.gas === "h2" ? 0.3 + 0.7 * plasma : 1;
+  out.core = torch + jet * gasVis * (0.1 + 0.35 * plasma) * (1 + crushed) + air * rare * 0.08;
   out.cell = pl.cellLenM;
-  out.diamond = jet * (1 - mach01) * (1 - crushed) * 0.8;
-  out.diamondW = Math.max(0.2, pl.jetDiaM * 0.45);
+  // Diamonds are a LOW-ratio shock-cell feature, visible only while several cells fit in the
+  // jet. Left on at p_e/p_a ~2000 they were 17 m wide and filled the camera (60 km, Mars 20 km).
+  out.diamond = jet * (1 - mach01) * (1 - crushed) * 0.8
+    * (1 - smoothstep(30, 300, ratio)) * (1 - smoothstep(0.5, 1, pl.cellLenM / jetLen));
+  out.diamondW = Math.min(2, Math.max(0.25, pl.jetDiaM * 0.4));
   out.machZ = machZ;
-  out.machR = Math.max(0.25, 0.16 * machZ);
-  if (out.mach > 1e-4) out.R = Math.max(out.R, 1.7 * out.machR);
-  out.mach = jet * mach01 * (1 - smoothstep(30, 75, machZ)) * 0.35;
+  // A flat disc, ~0.35 of the expanded jet diameter across (super-Gaussian in the shader).
+  out.machR = Math.max(0.25, 0.35 * pl.jetDiaM);
+  // Brightest feature of an under-expanded jet, but not a blown-out sprite.
+  out.mach = jet * mach01 * (1 - smoothstep(30, 75, machZ)) * 0.2;
+  if (out.mach > 1e-4) out.R = Math.min(18, Math.max(out.R, 1.3 * out.machR));
+  // Stopped beam: power P is deposited in a column of length Σ/ρ, so glow per metre ∝ 1/Σ/ρ,
+  // normalised at 90 km (29 m) and soft-capped.
   out.streakLen = streakLen;
-  out.streak = air * rare * 0.12;
+  out.streak = air * rare * 0.12 * clamp(28.8 / streakLen, 0.5, 6);
   out.disc = torch * 1.5 + jet * 0.4;
-  // Under-resolved modulation is noise, not detail: kept low enough that 18 samples converge.
-  out.turb = torch * 0.12 + air * 0.15;
+  // Flow structure amplitude; the per-frame decorrelated pattern is what makes it read as
+  // turbulence rather than a sliding texture (see the temporal model in the component).
+  out.turb = torch * 0.25 + air * 0.25;
+  // Extra white core/violet tip weights: hot-gas jets below the plasma band are body-coloured.
+  out.accent = torch + air * (0.3 + 0.7 * plasma);
 
   // Scattering halo ∝ local scattering (≈ ρ), only where the plume is bright and dense.
   const scatter = Math.min(1, Math.sqrt(pl.rhoAmb / 1.225));
-  out.haloA = 2 + 0.12 * out.L * (1 + crushed);
+  out.haloA = 2 + 0.12 * out.L * (1 + crushed) + 4 * crushed;
   out.haloZ = Math.min(out.L * 0.3, 10);
   // Peak halo radiance as a FRACTION of the plume's (shader divides out the chord length).
-  out.halo = air * scatter * (0.01 + 0.04 * crushed);
+  out.halo = air * scatter * (0.01 + 0.19 * crushed);
   out.light = torch + air * (0.5 + 0.5 * out.core);
 
   // Colour by regime and gas.
   const gas = pl.gas;
   const airBody = gas === "co2" ? PAL.co2Body : gas === "h2" ? PAL.h2Body : PAL.airBody;
   const plasmaBody = gas === "h2" ? PAL.h2Body : gas === "co2" ? PAL.co2Body : PAL.plasmaBody;
-  lerp3(airBody as V3, plasmaBody as V3, pl.plasma01, _c1);
+  lerp3(airBody as V3, plasmaBody as V3, plasma, _c1);
   lerp3(_c1, PAL.crushed as V3, crushed, _c1);
   lerp3(_c1, PAL.streak as V3, rare, _c1);
   lerp3(_c1, PAL.torchBody as V3, torch, out.colBody);
-  lerp3(PAL.airCore as V3, PAL.torchCore as V3, torch, out.colCore);
-  lerp3(PAL.plasmaTip as V3, PAL.streak as V3, rare, _c2);
+  // Hot-air core white-yellow; white-violet only once the jet is a plasma (plan §5.6.7).
+  lerp3(PAL.airCoreHot as V3, PAL.airCore as V3, plasma, _c2);
+  lerp3(_c2, PAL.torchCore as V3, torch, out.colCore);
+  // Tip: O+NO afterglow orange for a hot-gas jet, N₂ 1P pink fringe only in the plasma band.
+  lerp3(airBody as V3, PAL.plasmaTip as V3, plasma, _c2);
+  lerp3(_c2, PAL.streak as V3, rare, _c2);
   lerp3(_c2, PAL.torchTip as V3, torch, out.colTip);
+  // Crushed jet: the fog glows the fireball's own white-orange.
+  out.haloTint = crushed;
   return out;
 }
 
@@ -319,7 +349,7 @@ function clamp(x: number, a: number, b: number): number {
 
 const SMOOTH_TAU_S = 0.35;
 const SNAP_KEYS = ["diamond", "mach", "streak", "halo", "disc"] as const;
-const NUM_KEYS = ["R", "L", "torch", "falloff", "spread", "coreLen", "core", "cell", "diamond", "diamondW", "machZ", "machR", "mach", "streakLen", "streak", "disc", "turb", "haloA", "haloZ", "halo", "light"] as const;
+const NUM_KEYS = ["R", "L", "torch", "falloff", "spread", "barrelW", "barrelLen", "accent", "haloTint", "coreLen", "core", "cell", "diamond", "diamondW", "machZ", "machR", "mach", "streakLen", "streak", "disc", "turb", "haloA", "haloZ", "halo", "light"] as const;
 
 /**
  * The volume starts this far downstream of the nozzle exit, m. ⚠ A cap ON the exit plane is
@@ -330,6 +360,10 @@ const CAP_M = 0.04;
 
 /** Samples per nozzle axis (plus PER_AXIS at the nozzle exit in vacuum); balance heuristic. */
 const PER_AXIS = 3;
+/** Concurrent spark streaks per ship (uniform array; inactive slots cost a branch). */
+const SPARKS = 6;
+/** ~2,800 K grain: warm white-orange. */
+const SPARK_COLOR = lumNorm(1.0, 0.64, 0.34);
 
 function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
   const m = new NodeMaterial();
@@ -405,27 +439,33 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
       const p = camL.add(rd.mul(t)).toVar();
       const d = max(p.z.negate().add(zN), 0).toVar();
       const r2 = axisR2(p).toVar();
-      const w = rn.add(d.mul(u.spread));
+      // Vacuum: conical spread. Jet: grows to the model's expanded radius over barrelLen.
+      const w = rn.add(d.mul(u.spread)).add(u.barrelW.mul(smoothstepN(0, u.barrelLen, d)));
       const win = radialWin(r2).mul(axialWin(p.z));
       // Core: (r_n/w)^p expansion (p = 4 for a plasma, n² emission) × axial decay × Gaussian.
       const core = rn.div(w).pow(u.falloff).mul(exp(d.div(u.coreLen).negate())).mul(exp(r2.div(w.mul(w).mul(0.5)).negate()));
       // Flow structure: cross-stream streaks scaled to the local width, racing downstream.
       const q = p.x.mul(0.8).add(p.y.mul(0.6)).div(w);
+      // Phases are re-drawn EVERY FRAME (u.seed): the flow moves 67 m (air jet) to thousands
+      // of metres (torch) per 16 ms frame, so real structure is uncorrelated frame to frame.
+      // A smoothly sliding pattern was the "identical every frame" look.
       const n = float(1).sub(u.turb).add(u.turb.mul(
-        sin(q.mul(3.5).add(d.mul(0.9)).sub(u.time.mul(23))).mul(0.4).add(1)
-          .mul(sin(d.mul(2.3).sub(u.time.mul(41)).add(q.mul(3))).mul(0.3).add(0.8)),
+        sin(q.mul(3.5).add(d.mul(0.9)).add(u.seed.x)).mul(0.4).add(1)
+          .mul(sin(d.mul(2.3).add(q.mul(3)).add(u.seed.y)).mul(0.3).add(0.8))
+          .mul(sin(q.mul(7.0).sub(d.mul(1.7)).add(u.seed.z)).mul(0.25).add(0.85)),
       ));
       const axialT = min(d.div(max(u.L.mul(0.5), 0.5)), 1);
       const coreE = core.mul(u.core);
       const e = vec3(u.colBody.mul(coreE.mul(n))
-        .add(u.colCore.mul(coreE.mul(float(1).sub(axialT)).mul(0.6)))
-        .add(u.colTip.mul(coreE.mul(axialT).mul(0.5)))).toVar();
+        .add(u.colCore.mul(coreE.mul(float(1).sub(axialT)).mul(u.accent.mul(0.6))))
+        .add(u.colTip.mul(coreE.mul(axialT).mul(u.accent.mul(0.5))))).toVar();
       If(u.diamond.greaterThan(0), () => {
         // max(·,0): fast-math cos can dip below −1, and pow() of a negative base is NaN.
         const cellC = max(cos(d.div(u.cell).mul(6.2831853)).mul(0.5).add(0.5), 0);
         const c2 = cellC.mul(cellC);
-        // Lozenge per cell: narrow and bright where the oblique shocks cross the axis.
-        const dw = u.diamondW.mul(float(1).sub(cellC.mul(0.7)));
+        // Diamond per cell: WIDEST where the oblique shocks cross the axis, tapering both ways
+        // (the old width shrank at the peak, so side-on the diamonds read as thin dashes).
+        const dw = u.diamondW.mul(cellC.mul(0.75).add(0.25));
         e.addAssign(u.colCore.mul(c2.mul(c2).mul(c2).mul(exp(d.div(u.cell.mul(6)).negate()))
           .mul(exp(r2.div(dw.mul(dw)).negate())).mul(u.diamond)));
       });
@@ -466,7 +506,9 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     const pm = camL.add(rd.mul(tm));
     const inSeg = tm.greaterThan(tNear).and(tm.lessThan(tExit)).select(1, 0);
     const slab = u.machZ.mul(0.02).add(0.06).mul(1.7725);
-    const machDisk = exp(axisR2(pm).div(u.machR.mul(u.machR)).negate())
+    // Super-Gaussian: a flat disc with a crisp rim, not a soft blob.
+    const mr = axisR2(pm).div(u.machR.mul(u.machR));
+    const machDisk = exp(mr.mul(mr).negate())
       .mul(slab).div(max(rd.z.abs(), 0.05)).mul(u.mach).mul(inSeg)
       .mul(radialWin(axisR2(pm))).mul(axialWin(u.machZ.negate()));
     // Nozzle-exit disc: the bell mouth seen down the axis. Super-Gaussian confined INSIDE the
@@ -478,7 +520,25 @@ function makePlumeMaterial(u: ReturnType<typeof makeUniforms>): NodeMaterial {
     const rr = axisR2(pE).div(rn.mul(rn).mul(0.55));
     const disc = exp(rr.mul(rr).negate()).mul(0.2127).mul(smoothstepN(0.25, 0.6, rd.z))
       .div(max(rd.z, 0.25)).mul(u.disc).mul(reachesExit);
-    const raw = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).mul(u.intensity);
+    // Sparks: hot grains (nozzle/feed particulates, ingested dust) as motion-blurred segments,
+    // exact closest-approach to the view ray, so a 2 cm streak is never missed by sampling.
+    const sparks = vec3(0).toVar();
+    Loop({ start: 0, end: int(u.sparkN), type: "int", condition: "<" }, ({ i }: { i: Node }) => {
+      const a = vec4(u.sparkA.element(i)).toVar();
+      const b = vec4(u.sparkB.element(i)).toVar();
+      If(a.w.greaterThan(0), () => {
+        const e = b.xyz.sub(a.xyz);
+        const w0 = camL.sub(a.xyz);
+        const B = dot(rd, e), C = max(dot(e, e), 1e-8), D = dot(rd, w0), E = dot(e, w0);
+        const den = max(C.sub(B.mul(B)), 1e-8);
+        const s0 = tslClamp(E.sub(B.mul(D)).div(den), 0, 1);
+        const tt = tslClamp(dot(a.xyz.add(e.mul(s0)).sub(camL), rd), tNear, tExit);
+        const s1 = tslClamp(dot(camL.add(rd.mul(tt)).sub(a.xyz), e).div(C), 0, 1);
+        const dv = camL.add(rd.mul(tt)).sub(a.xyz.add(e.mul(s1)));
+        sparks.addAssign(u.colSpark.mul(exp(dot(dv, dv).div(b.w.mul(b.w)).negate()).mul(a.w)));
+      });
+    });
+    const raw = acc.add(u.colCore.mul(machDisk.add(disc))).div(rn.mul(1.25)).add(sparks).mul(u.intensity);
     // Sanitise: one NaN/Inf pixel is smeared over the whole screen by the glare pass.
     const finite = raw.x.equal(raw.x).and(raw.y.equal(raw.y)).and(raw.z.equal(raw.z));
     const rgb = finite.select(tslClamp(raw, 0, 1.0e6), vec3(0));
@@ -527,6 +587,15 @@ function makeUniforms() {
     streakLen: uniform(20), streak: uniform(0), disc: uniform(1), turb: uniform(0.15),
     haloA: uniform(2), haloZ: uniform(1), halo: uniform(0), light: uniform(1),
     time: uniform(0), intensity: uniform(0),
+    /** Per-frame random phases for the flow structure. */
+    seed: uniform(new THREE.Vector3(0, 0, 0)),
+    barrelW: uniform(0), barrelLen: uniform(1), accent: uniform(1),
+    /** Spark segments in plume-mesh space: A = (start, radiance), B = (end, radius). */
+    sparkA: uniformArray(Array.from({ length: SPARKS }, () => new THREE.Vector4(0, 0, 0, 0)), "vec4"),
+    sparkB: uniformArray(Array.from({ length: SPARKS }, () => new THREE.Vector4(0, 0, 0, 0.02)), "vec4"),
+    colSpark: uniform(new THREE.Vector3(...SPARK_COLOR)),
+    /** Live sparks, packed to the front of the arrays (the loop runs only over these). */
+    sparkN: uniform(0),
     /** Half the nozzle spacing in plume-local xy, m (0 for a single nozzle). */
     off: uniform(new THREE.Vector2(0, 0)),
     colCore: uniform(new THREE.Vector3(...PAL.torchCore)),
@@ -557,6 +626,108 @@ function unitCylinder(): THREE.CylinderGeometry {
 
 const _wp = new THREE.Vector3();
 
+// ── Temporal model (render-side randomness; never in the sim) ──────────────────────────────
+// Physical basis (review 2026-11-23): at 60 fps a 4 km/s jet moves ~67 m per frame, so all
+// fine structure decorrelates between frames; what the eye sees is broadband flicker plus a
+// few slow modes. Each is an Ornstein–Uhlenbeck process (x' = −x/τ + σ√(2/τ)·ξ):
+//   fast   τ 40 ms  — turbulent mixing-layer luminosity (air 10 %, torch 4 %, aurora 25 %)
+//   slow   τ 0.6 s  — core "breathing" (length/brightness ~5 %; aurora-like beam 15 %)
+//   diamond/cellJit/machJit τ 20 ms — shock-cell screech (diamond brightness ±30 %, cell ±5 %,
+//          Mach disk ±5 % of z_m): kHz in reality, aliased to per-frame jitter
+//   wander τ 0.3 s — stopping point of the rarefied beam (±10 %)
+type OU = { x: number };
+type Spark = { d: number; v: number; x: number; y: number; vx: number; vy: number; life: number; I: number; on: boolean };
+type Temporal = {
+  fast: OU; slow: OU; diamond: OU; cellJit: OU; machJit: OU; wander: OU;
+  sparks: Spark[]; spawnAcc: number; dt: number;
+};
+
+function createTemporal(): Temporal {
+  const o = (): OU => ({ x: 0 });
+  return {
+    fast: o(), slow: o(), diamond: o(), cellJit: o(), machJit: o(), wander: o(),
+    sparks: Array.from({ length: SPARKS }, () => ({ d: 0, v: 0, x: 0, y: 0, vx: 0, vy: 0, life: 0, I: 0, on: false })),
+    spawnAcc: 0, dt: 1 / 60,
+  };
+}
+
+function gauss(): number {
+  const u = 1 - Math.random(), v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(6.2831853 * v);
+}
+
+/** Exact OU update for step dt (stationary std σ). */
+function ou(p: OU, tau: number, sigma: number, dt: number): number {
+  const a = Math.exp(-dt / tau);
+  p.x = p.x * a + sigma * Math.sqrt(1 - a * a) * gauss();
+  return p.x;
+}
+
+/** Advance the noise processes; returns the brightness gain for this frame. */
+function stepTemporal(tv: Temporal, cur: PlumeParams, rho: number, dt: number): number {
+  const torch = cur.torch, air = 1 - torch;
+  const streakW = Math.min(1, cur.streak / 0.05);
+  const jetW = air * (1 - streakW);
+  const crushed = cur.haloTint;
+  const fast = ou(tv.fast, 0.04, 0.06 * torch + 0.10 * jetW + 0.25 * air * streakW + 0.15 * crushed, dt);
+  const slow = ou(tv.slow, 0.6, 0.05 * torch + 0.05 * jetW + 0.15 * air * streakW + 0.15 * crushed, dt);
+  ou(tv.diamond, 0.02, 0.3, dt);
+  ou(tv.cellJit, 0.02, 1, dt);
+  ou(tv.machJit, 0.02, 0.05, dt);
+  ou(tv.wander, 0.3, 0.1, dt);
+  cur.breathe = jetW > 0.5 && rho > 0 ? 1 : 0.5;
+  tv.dt = dt;
+  return Math.max(0.3, (1 + fast) * (1 + slow));
+}
+
+/**
+ * Sparks: hot grains streaking down the jet. Rates (per s, full throttle): torch ~1 (feed-water
+ * particulates), dense air jet up to ~6 (ingested dust/aerosol, more near the ground), crushed
+ * ~3; none in the collisionless beam. Grains lag the gas: 150–600 m/s, so a 60 fps frame blurs
+ * each into a 2.5–10 m streak that lives a handful of frames.
+ */
+function stepSparks(tv: Temporal, cur: PlumeParams, rho: number, throttle: number, dt: number,
+  off: THREE.Vector2 | null, rn: number, A: THREE.Vector4[], B: THREE.Vector4[]): number {
+  const torch = cur.torch, air = 1 - torch;
+  const rareW = Math.min(1, cur.streak / 0.05);
+  const rate = throttle * (1.0 * torch + air * (1 - rareW) * (6 * Math.min(1, rho / 0.3) + 0.5) + 3 * cur.haloTint);
+  tv.spawnAcc += rate * dt;
+  for (const sp of tv.sparks) {
+    if (!sp.on && tv.spawnAcc >= 1) {
+      tv.spawnAcc -= 1;
+      const ang = Math.random() * 6.2832, r = Math.sqrt(Math.random()) * 0.6 * rn;
+      const side = off && Math.random() < 0.5 ? -1 : 1;
+      sp.x = (off ? off.x * side : 0) + r * Math.cos(ang);
+      sp.y = (off ? off.y * side : 0) + r * Math.sin(ang);
+      sp.v = 150 + Math.random() * 450;
+      sp.vx = gauss() * 0.04 * sp.v; sp.vy = gauss() * 0.04 * sp.v;
+      sp.d = Math.random() * 0.3;
+      sp.life = 0;
+      // ~0.2–0.6 of the plume's peak radiance: at 1–2 px they read as warm sparks, not white lines.
+      sp.I = 0.2 + Math.random() * 0.4;
+      sp.on = true;
+    }
+  }
+  tv.spawnAcc = Math.min(tv.spawnAcc, 2);
+  let n = 0;
+  for (let k = 0; k < SPARKS; k++) {
+    const sp = tv.sparks[k];
+    if (sp.on) {
+      sp.d += sp.v * dt; sp.x += sp.vx * dt; sp.y += sp.vy * dt; sp.life += dt;
+      if (sp.d > cur.L * 0.85 || sp.life > 0.3) sp.on = false;
+    }
+    if (!sp.on) continue;
+    const i = n++;
+    // Mesh frame: exit plane at z = +CAP_M, flow toward −z. Motion blur over one frame.
+    const fade = 1 - smoothstep(0.5 * cur.L, 0.85 * cur.L, sp.d);
+    const zEnd = CAP_M - sp.d, zStart = CAP_M - Math.max(0, sp.d - sp.v * dt);
+    A[i].set(sp.x - sp.vx * dt, sp.y - sp.vy * dt, zStart, sp.I * fade);
+    B[i].set(sp.x, sp.y, zEnd, 0.012);
+  }
+  for (let i = n; i < SPARKS; i++) A[i].w = 0;
+  return n;
+}
+
 // ── Component ────────────────────────────────────────────────────────
 const EngineExhaust = memo(function EngineExhaust({
   configs,
@@ -576,7 +747,10 @@ const EngineExhaust = memo(function EngineExhaust({
     target: createParams(),
     cur: createParams(),
     primed: false,
+    tv: createTemporal(),
   }), []);
+  // Dev-only readout for scripted checks (`__plumeState.cur`, `.plume`). Never read by the game.
+  if (process.env.NODE_ENV !== "production") (globalThis as unknown as { __plumeState?: unknown }).__plumeState = st;
   const mat = useMemo(() => makePlumeMaterial(st.u), [st]);
   const haloMat = useMemo(() => makeHaloMaterial(st.u), [st]);
   const haloRef = useRef<THREE.Mesh | null>(null);
@@ -630,13 +804,27 @@ const EngineExhaust = memo(function EngineExhaust({
     u.colCore.value.set(cur.colCore[0], cur.colCore[1], cur.colCore[2]);
     u.colBody.value.set(cur.colBody[0], cur.colBody[1], cur.colBody[2]);
     u.colTip.value.set(cur.colTip[0], cur.colTip[1], cur.colTip[2]);
-    u.colHalo.value.set(0.5 + 0.5 * cur.colBody[0], 0.5 + 0.5 * cur.colBody[1], 0.5 + 0.5 * cur.colBody[2]);
+    lerp3([0.5 + 0.5 * cur.colBody[0], 0.5 + 0.5 * cur.colBody[1], 0.5 + 0.5 * cur.colBody[2]], PAL.crushed as V3, cur.haloTint, _c1);
+    u.colHalo.value.set(_c1[0], _c1[1], _c1[2]);
+    u.barrelW.value = cur.barrelW; u.barrelLen.value = cur.barrelLen; u.accent.value = cur.accent;
+
+    // ── Temporal model (the 0.35 s smoothing above is for REGIME changes; these ride on top) ──
+    const tv = st.tv;
+    const on = intensity > 1e-5;
+    const gain = stepTemporal(tv, cur, st.plume.rhoAmb, Math.min(delta, 0.1));
+    u.seed.value.set(Math.random() * 6.2832, Math.random() * 6.2832, Math.random() * 6.2832);
+    u.L.value = cur.L * (1 + 0.5 * tv.slow.x * (cur.breathe ?? 1));
+    u.diamond.value = cur.diamond * Math.max(0, 1 + tv.diamond.x);
+    u.cell.value = Math.max(0.5, cur.cell * (1 + 0.05 * tv.cellJit.x));
+    u.machZ.value = Math.max(0.5, cur.machZ * (1 + tv.machJit.x));
+    u.streakLen.value = cur.streakLen * Math.max(0.5, 1 + tv.wander.x);
+    u.sparkN.value = stepSparks(tv, cur, st.plume.rhoAmb, on ? intensity : 0, Math.min(delta, 0.1), twin ? u.off.value : null, rn, u.sparkA.array as THREE.Vector4[], u.sparkB.array as THREE.Vector4[]);
 
     // × preExposure (D25) — the plume is emissive, so nothing else scales it.
     // Throttle changes brightness, not length, in vacuum (§5.3); air regimes scale via p_e ∝ θ.
     // Twin nozzles share ONE march (the shader takes the nearer axis), so overlapping wide
     // plumes cost one volume, not two.
-    u.intensity.value = intensity * PLUME_HDR * getPreExposure();
+    u.intensity.value = intensity * PLUME_HDR * getPreExposure() * gain;
 
     const halo = haloRef.current;
     if (halo) {
@@ -662,7 +850,7 @@ const EngineExhaust = memo(function EngineExhaust({
       if (light) {
         // × preExposure like every light (D25). ⚠ NEVER toggle light.visible: it changes the
         // lights hash and recompiles every lit material (measured ~1 s stall per throttle cycle).
-        light.intensity = intensity * plumeLightIntensity(configs[i].radius) * cur.light * getPreExposure();
+        light.intensity = intensity * plumeLightIntensity(configs[i].radius) * cur.light * getPreExposure() * gain;
         light.distance = LIGHT_DISTANCE * Math.min(2, Math.max(1, cur.L / PLUME_MAX_LENGTH));
         // ≥ 1 m downstream: closer, the 1/d² near field blew out bell walls and struts.
         light.position.set(0, 0, -Math.max(1, Math.min(cur.L * 0.2, 6)));
