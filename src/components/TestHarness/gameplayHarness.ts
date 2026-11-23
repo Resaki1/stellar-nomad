@@ -297,14 +297,15 @@ export function createGameplayHarness(store: Store) {
         const r = shipRes;
         return {
           ordinaryKg: r.ordinaryKg, protectedKg: r.protectedKg, heat01: r.heat01, capacitor01: r.capacitor01, tripped: r.miningTripped,
-          processing: { ...r.processing }, meter: { ...r.meter }, drive: { ...r.drive }, powerScale: r.powerScale, heatScale: r.heatScale,
+          processing: { ...r.processing }, meter: { ...r.meter }, drive: { ...r.drive }, thermal: { ...r.thermal, sources: { ...r.thermal.sources } }, powerScale: r.powerScale, heatScale: r.heatScale,
           miningScale: r.miningScale, processingScale: r.processingScale, repairScale: r.repairScale, tankFull: r.tankFull,
           req: { ...shipReq }, control: { ...shipResControl }, hud: store.get(shipResourcesHudAtom),
           boostCharge: getLocalPlayerShip()?.boostCharge ?? null, health: store.get(shipHealthAtom), maxHealth: store.get(effectiveShipConfigAtom).maxHealth,
         };
       },
       /** Dev: overwrite runtime stores (test setup only). */
-      set(p: { ordinaryKg?: number; protectedKg?: number; heat01?: number }): void {
+      set(p: { ordinaryKg?: number; protectedKg?: number; heat01?: number; bellK?: number }): void {
+        if (p.bellK !== undefined) shipRes.thermal.bellK = p.bellK;
         if (p.ordinaryKg !== undefined) shipRes.ordinaryKg = p.ordinaryKg;
         if (p.protectedKg !== undefined) shipRes.protectedKg = p.protectedKg;
         if (p.heat01 !== undefined) shipRes.heat01 = p.heat01;

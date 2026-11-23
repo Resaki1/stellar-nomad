@@ -41,6 +41,12 @@ export const audioShipBuffer = {
   altitudeKm: 0,
   /** Main-engine thrust command of the last physics step, 0..1, UNSMOOTHED (engine ignition/cutoff edges). */
   thrustCmd: 0,
+  /** Thermal network (HEAT_SYSTEM_PLAN §3), from shipRes.thermal: bell temperature (K) and the
+   *  bells'/loop's rates of change (K/s, signed), plus the heat store 0..1.3. */
+  bellK: 0,
+  bellRateKps: 0,
+  loopRateKps: 0,
+  heat01: 0,
   /** Plume "breathing" gain (≈1 ± 0.05–0.15), the exhaust's slow OU mode; AUDIO_PLAN §6.10.2. */
   plumeBreath: 1,
   /** Salvage tractor beams currently holding a wreck. Written by WreckCollector. */

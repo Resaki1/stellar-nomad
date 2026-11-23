@@ -516,6 +516,11 @@ const SpaceShip = memo(() => {
       audioShipBuffer.throttle = exhaustIntensity.current;
       // Unsmoothed command: ignition/cutoff edges (AUDIO_PLAN §6.10) must not lag the 6/s follower.
       audioShipBuffer.thrustCmd = thrust;
+      const th = shipRes.thermal;
+      audioShipBuffer.bellK = th.bellK;
+      audioShipBuffer.bellRateKps = th.bellRateKps;
+      audioShipBuffer.loopRateKps = th.loopRateKps;
+      audioShipBuffer.heat01 = shipRes.heat01;
     }
 
     // ── Interpolation ──────────────────────────────────────────────────

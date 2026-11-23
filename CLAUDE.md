@@ -122,6 +122,8 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 - `pnpm check:atmo` — sim atmosphere + variable-Isp drive under plain Node (`scripts/atmo-check.mjs`):
   co-rotating air vs the rendered surface (Earth/Mars/Venus/Jupiter), body pick, fuel multiplier
   table, plume regimes (VFX_REALISM_PLAN §5.6, §6)
+- `pnpm check:thermal` — ship thermal network (HEAT_SYSTEM_PLAN §3) through the real resource step: bell heat-up /
+  cool-down times, air vs vacuum, radiator/loop temperature, thrust-alone heat, mining trip with/without thrust
 - `pnpm check:engine-audio` — the drive heard from inside (AUDIO_PLAN §6.10) under plain Node: exterior jet noise
   silent in vacuum/beam, impedance-ordered across bodies on the wind scale, shock-cell pitch + gate, pump law
 - `pnpm coop:transcript [scenario,...]` — M4 co-op session core under plain Node (no browser): host/guest

@@ -8,6 +8,8 @@ import type { ResourceTuning } from "./resourceTuning";
 import type { ShipState } from "./shipState";
 import type { AtmosphereModel } from "@/sim/atmosphere";
 import { atmoFuel, createAtmoFuel, type AtmoFuel } from "./atmoDrive";
+import { DEFAULT_RESOURCE_TUNING } from "./resourceTuning";
+import { createThermal, stepBells, updateLoop, type ThermalState } from "./thermal";
 
 export interface ProcessingRuntime {
   active: boolean;
@@ -39,6 +41,8 @@ export interface ResourceMeter {
 }
 
 export interface ShipResourceState {
+  /** Bells + coolant-loop temperatures and per-source heat (HEAT_SYSTEM_PLAN §3). Not saved: bells cool in ~1 min. */
+  thermal: ThermalState;
   ordinaryKg: number;
   protectedKg: number;
   heat01: number;
@@ -98,6 +102,7 @@ export function createProcessingRuntime(): ProcessingRuntime {
 
 export function createShipResourceState(ordinaryKg: number, protectedKg: number): ShipResourceState {
   return {
+    thermal: createThermal(DEFAULT_RESOURCE_TUNING),
     drive: createAtmoFuel(),
     ordinaryKg,
     protectedKg,
@@ -250,13 +255,27 @@ export function stepShipResources(
   // and cool = 10 s / coolingMult as before M3; at 1/1 this is plain miningHeatKW input.
   const rej0 = t.radiatorBaseKW + t.radiatorPerHeatKW * h;
   const miningQ = Math.max(0, req.miningHeatMult * (t.miningHeatKW - rej0) + req.coolingMult * rej0);
-  const qKW = miningQ * s.miningScale
-    + (ship.boosting ? t.boostHeatKW : 0)
-    + t.processingHeatKW * s.processingScale
-    + t.repairHeatKW * s.repairScale
-    + req.transitHeatKW
-    + s.drive.heatKW;
+  // Drive bells (HEAT_SYSTEM_PLAN §3): plasma load, shed mostly by glowing; the excess they
+  // conduct joins the loop. Only the excess: the loop law already covers passive losses, so an
+  // idle ship (bells colder than the loop) behaves exactly as before.
+  const th = s.thermal;
+  const bellsRaw = stepBells(th, req.freeFlight ? 0 : ship.thrustMain, s.drive.veKmps,
+    s.drive.rhoEffKgM3, req.airspeedMps, req.atmo ? req.atmo.surfaceTemperatureK : 0, th.loopK, dt);
+  // ⚠ Held out while the transit drive heats the loop: its predictor (transitDrive rolloutLeg) plans
+  // from heat01 alone, and prediction must equal execution (review F1, 2026-11-23).
+  const bellsKW = req.transitHeatKW > 0 || !Number.isFinite(bellsRaw) ? 0 : Math.max(0, bellsRaw);
+  const src = th.sources;
+  src.mining = miningQ * s.miningScale;
+  src.boost = ship.boosting ? t.boostHeatKW : 0;
+  src.processing = t.processingHeatKW * s.processingScale;
+  src.repair = t.repairHeatKW * s.repairScale;
+  src.transit = req.transitHeatKW;
+  src.overdrive = s.drive.heatKW;
+  src.bells = bellsKW;
+  th.bellToLoopKW = bellsKW;
+  const qKW = src.mining + src.boost + src.processing + src.repair + src.transit + src.overdrive + src.bells;
   s.heat01 = heatAfter(h, qKW, t, req.coolingMult, dt);
+  updateLoop(th, s.heat01, t, dt);
   if (s.miningScale > 0 && s.heat01 >= 1) s.miningTripped = true;
   else if (s.miningTripped && !req.miningBeam && s.heat01 < 1) s.miningTripped = false;
   if (s.heat01 > 1) {

@@ -1,0 +1,38 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.coolant.loop",
+    "seed": 24017,
+    "duration": 4,
+    "pitch": 0,
+    "brightness": 0.25,
+    "motion": 0.45,
+    "body": 0.7,
+    "texture": 0.75,
+    "detail": 0.3
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": {
+    "startFrame": 0,
+    "endFrameExclusive": 192000
+  },
+  "trigger": "While the heat store is above idle; level and pump speed follow heat01.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -16.99999999789091,
+    "rmsDb": -25.465908098857053,
+    "dc": 7.173387486976897e-10,
+    "seamDelta": 0.0018506702035665512,
+    "maxDelta": 0.0035443808883428574,
+    "finite": true,
+    "silent": false
+  }
+}

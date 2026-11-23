@@ -425,7 +425,9 @@ def propulsion():
                nickel,36,closed=True)
         radial("Recessed thrust bell",origin,direction,
                [(2.81,0.28),(3.245,0.477),(3.25,0.455),(3.12,0.385),(2.95,0.275),(2.81,0.21)],
-               hot_liner if lod == 0 else graphite,36,closed=True)
+               # Own material at every LOD: the bell glow (HEAT_SYSTEM_PLAN H1) must
+               # reach co-op viewers at 90-240 m, so it can't merge into trim/graphite.
+               hot_liner if lod == 0 else bell_far,36,closed=True)
         # The drive housing closes the forward side. A recessed refractory cup
         # covers the shiny centre and gives the throat an opaque rear-facing floor.
         radial("Sealed refractory throat chamber",origin,direction,
@@ -560,6 +562,7 @@ if __name__ == "__main__":
     nickel = material("Machined titanium and nickel", (0.25,0.22,0.18), 0.92, 0.37)
     hot_liner = material("Oxidized liner", (0.10,0.085,0.068), 0.85, 0.52)
     refractory = material("Carbon refractory throat", (0.009,0.008,0.007), 0.0, 0.93)
+    bell_far = material("Distant drive liner", (0.10,0.085,0.068), 0.85, 0.52)
     throat_shader = refractory.node_tree.nodes.get("Principled BSDF")
     throat_shader.inputs["Specular IOR Level"].default_value = 0.035
     hot_liner.node_tree.nodes.get("Principled BSDF").inputs["Specular IOR Level"].default_value = 0.065
@@ -571,7 +574,7 @@ if __name__ == "__main__":
     trim_lanes = {frame: 0, graphite: 1, nickel: 2, ochre: 3}
     machinery_trim(machinery, machinery_medium)
     exhaust_liner(hot_liner)
-    far_materials = {refractory: graphite, nickel: frame, ivory: far_ceramic, pale: far_ceramic, lens: graphite}
+    far_materials = {refractory: bell_far, nickel: frame, ivory: far_ceramic, pale: far_ceramic, lens: graphite}
     wing_surfaces(wing_finish, wing_medium, wing_far)
     ceramic_finish()
     for lod in range(3):

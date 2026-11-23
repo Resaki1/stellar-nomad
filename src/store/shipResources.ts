@@ -26,6 +26,7 @@ import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { shipHealthAtom } from "@/store/store";
 import { addToastAtom } from "@/store/toast";
 import { getLocalPlayerShip } from "@/sim/entities";
+import { createThermal } from "@/sim/ship/thermal";
 
 type Store = ReturnType<typeof createStore>;
 
@@ -63,6 +64,8 @@ export function adoptShipResources(keys?: readonly (keyof PlayerState)[]): void 
   if (!getActiveSave()) return;
   if (keys && !keys.some((k) => RESOURCE_KEYS.has(k))) return;
   const p = getLocalPlayerState();
+  // A loaded world starts with cold bells (they are not saved; HEAT_SYSTEM_PLAN §3).
+  if (!keys) Object.assign(shipRes.thermal, createThermal(DEFAULT_RESOURCE_TUNING));
   if (!keys || keys.includes("propellant")) {
     shipRes.ordinaryKg = p.propellant.ordinaryKg;
     shipRes.protectedKg = p.propellant.protectedKg;

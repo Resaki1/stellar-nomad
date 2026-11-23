@@ -62,5 +62,12 @@ check("pump: sea-level reaction flow (~630×) = +1 oct, +3 dB", Math.abs(pa.cent
 check("pump: 45 km between vacuum and sea level", p40.cents > 300 && p40.cents < 1200, `${f1(p40.cents)} cents`);
 check("pump: half throttle is lower", ph.cents < 0, `${f1(ph.cents)} cents`);
 
+const hot = ea.thermalTickRates(1400, -31, 0), warm = ea.thermalTickRates(900, -5.3, 0), idle = ea.thermalTickRates(365, -0.01, 0);
+check("bell pings densest right after cutoff, sparse when warm, none at idle", hot.bell > 3 && warm.bell > 0.3 && warm.bell < 1 && idle.bell === 0,
+  `${hot.bell.toFixed(2)} / ${warm.bell.toFixed(2)} / ${idle.bell}/s`);
+check("bell pings on heat-up too (|dT/dt|, both signs)", ea.thermalTickRates(900, 25, 0).bell > 2);
+check("loop ticks follow the loop's |dT/dt|", ea.thermalTickRates(365, 0, -6).loop > 1 && ea.thermalTickRates(365, 0, 0).loop === 0);
+check("coolant bed silent at idle, rises with heat01", ea.coolantVoice(0).level === 0 && ea.coolantVoice(1).level === 1 && ea.coolantVoice(0.5).cents === 250);
+
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS");
 process.exit(fails ? 1 : 0);

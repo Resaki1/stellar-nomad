@@ -1,6 +1,6 @@
 /**
  * M4.0 exit gate in two real browsers (docs/M4_COOP_PLAN.md §1). Run with drive-coop.mjs:
- *   COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
+ *   COOP_PARTS=settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,remoteBells,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave \
  *     pnpm drive:coop -- --url http://127.0.0.1:3001/ run:scripts/drive-examples/coop-check.mjs
  * The host opens a fresh disposable `[gc] coop` world to friends; the guest joins through the join
  * card (invite link, Join button). cancelJoin, handoff, hostFail and leave change the session: keep them last. Mining
@@ -135,7 +135,7 @@ async function waitFor(fn, ms, step = 200) {
 }
 
 export default async function coopCheck({ host, guest, extraGuests = [], log }) {
-  const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
+  const parts = (process.env.COOP_PARTS ?? "settingsSpawn,presence,jitter,race,raceRev,dropReply,restart,lunar,joinCard,reloadPose,lateName,remoteFx,remoteBells,crash,pilotMarker,rename,pilotActions,joinLifecycle,writeGate,exportHidden,cancelJoin,handoff,hostFail,leave").split(",");
   const results = {};
   const t0 = Date.now();
   let worldId = null;
@@ -652,6 +652,36 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
    * guest's beam from its ship to the rock, the guest's plume while it thrusts, and a destruction
    * burst at the rock when the guest's mine commits (no loot for the host).
    */
+  /** HEAT_SYSTEM_PLAN H1: the host integrates the guest's bells from the synced thrust and lights them. */
+  async function remoteBells() {
+    const p0 = Date.now();
+    const probe = (who, remote) => who.evaluate(`(() => { const out = []; for (const p of globalThis.__bellGlows ?? []) if (p.remote === ${remote}) out.push({ k: +p.bellK().toFixed(0), e: Math.max(0, ...p.hot().map((h) => h.mat.emissive.r)), mats: p.hot().map((h) => h.mat.name) }); return out; })()`);
+    await guest.evaluate(`${R}.set({ ordinaryKg: 5000 })`);
+    await guest.evaluate(`__test.flight.tuning({ stopDistanceKm: 500 })`);
+    await guest.keyDown("w");
+    await guest.sleep(25_000);
+    await guest.keyUp("w");
+    const guestK = Number((await guest.evaluate(`${R}.state().thermal.bellK`)).toFixed(0));
+    const hostView = await probe(host, true);
+    await host.evaluate(`${C}.meetRemote(0.15)`);
+    await host.frames(20);
+    await host.evaluate(`${C}.faceRemote()`);
+    await host.frames(5);
+    const lit = await probe(host, true);
+    const shot = await host.shot("coop/remotebells-host");
+    await guest.evaluate(`__test.flight.tuning("reset")`);
+    // The host also mounts idle remote instances (warm-up/pool); the guest's is the hot one.
+    const hottest = (list) => list.reduce((a, b) => (b.k > (a?.k ?? -1) ? b : a), null);
+    const hv = hottest(hostView), lt = hottest(lit);
+    const checks = {
+      guestHot: guestK > 1000,
+      hostIntegratesSame: !!hv && Math.abs(hv.k - guestK) < 120,
+      allLodsClaimed: (lt?.mats ?? []).includes("Distant drive liner") && (lt?.mats ?? []).includes("Oxidized liner"),
+      hostLit: (lt?.e ?? 0) > 0,
+    };
+    return { pass: Object.values(checks).every(Boolean), checks, guestK, hostView, lit, shot, ms: Date.now() - p0 };
+  }
+
   async function remoteFx() {
     const p0 = Date.now();
     const r = await pickRock(host, undefined, 6);
@@ -1556,6 +1586,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       reloadPose,
       lateName,
       remoteFx,
+      remoteBells,
       crash,
       pilotContact: async () => {
         const { pilotContactGate } = await import("./m5-physics.mjs");

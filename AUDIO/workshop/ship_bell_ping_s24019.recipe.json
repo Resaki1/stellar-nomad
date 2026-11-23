@@ -1,0 +1,35 @@
+{
+  "tool": "Stellar Nomad Audio Workshop",
+  "rendererVersion": 6,
+  "recipe": {
+    "version": 1,
+    "presetId": "ship.bell.ping",
+    "seed": 24019,
+    "duration": 0.35,
+    "pitch": 0,
+    "brightness": 0.75,
+    "motion": 0.2,
+    "body": 0.3,
+    "texture": 0.2,
+    "detail": 0.9
+  },
+  "format": {
+    "sampleRate": 48000,
+    "channels": 1,
+    "bitDepth": 24
+  },
+  "loop": null,
+  "trigger": "While the drive bells heat or cool fast (rate ∝ |dT/dt|, HEAT_SYSTEM_PLAN §4): densest right after a long burn's cutoff.",
+  "bus": "sfxShip",
+  "experimental": false,
+  "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+  "stats": {
+    "peakDb": -19.99999987057016,
+    "rmsDb": -41.95470162534246,
+    "dc": 7.516847762723682e-12,
+    "seamDelta": 0,
+    "maxDelta": 0.030326012667501345,
+    "finite": true,
+    "silent": false
+  }
+}

@@ -109,8 +109,12 @@ export const engineState = {
   fuelMult: 1,
   pumpCents: 0,
   pumpLevel: 0,
-  /** Heat soaked into the structure by burning, 0..1 (drives thermal ticks). */
-  soak: 0,
+  /** Thermal ticking rates, events/s (HEAT_SYSTEM_PLAN §4): bell pings and loop/hull ticks. */
+  bellPingRate: 0,
+  loopTickRate: 0,
+  /** Coolant-loop bed level (0..1) and pitch, from the ship's heat store. */
+  coolantLevel: 0,
+  coolantCents: 0,
 };
 
 const plume = createDrivePlume();
@@ -124,19 +128,32 @@ export function levelGain(db: number): number {
 // ── Transients (clock-driven on the tick, like pumpAlerts) ─────────────────
 const IGNITE_ON = 0.05;
 const CUTOFF_OFF = 0.02;
-const SOAK_TAU_S = 25;
-const SOAK_FILL_S = 30;
+/** Ticks per kelvin/s of node temperature change (thermoelastic slip ∝ |dT/dt|, both signs). */
+const BELL_PINGS_PER_KPS = 0.12;
+const LOOP_TICKS_PER_KPS = 0.25;
+/** Below this the bells are near their idle equilibrium: no pings from slow drift. */
+const BELL_PING_MIN_K = 420;
 let burning = false;
 let burnS = 0;
 let lastMs = 0;
-let nextTickS = 0;
-let clockS = 0;
+
+/** Bell pings and loop ticks follow the thermal network's |dT/dt| (HEAT_SYSTEM_PLAN §4). */
+export function thermalTickRates(bellK: number, bellRateKps: number, loopRateKps: number): { bell: number; loop: number } {
+  const bell = bellK > BELL_PING_MIN_K ? Math.min(5, BELL_PINGS_PER_KPS * Math.abs(bellRateKps)) : 0;
+  const loop = Math.min(3, LOOP_TICKS_PER_KPS * Math.abs(loopRateKps));
+  return { bell, loop };
+}
+
+/** Coolant pumps run up with the heat store; silent when the loop is idle (coasting stays silent). */
+export function coolantVoice(heat01: number): { level: number; cents: number } {
+  const h = Math.max(0, Math.min(1.3, heat01));
+  return { level: h > 0.01 ? 0.2 + 0.8 * Math.min(1, h) : 0, cents: 500 * Math.min(1, h) };
+}
 
 /** Reset edges and heat after a respawn/teleport. */
 export function resetEngineTransients(): void {
   burning = audioShipBuffer.thrustCmd > IGNITE_ON;
   burnS = 0;
-  engineState.soak = 0;
   lastMs = 0;
 }
 
@@ -152,7 +169,6 @@ export function updateEngineAcoustics(): void {
   const now = performance.now();
   const dt = lastMs === 0 ? 0 : Math.min(0.5, (now - lastMs) / 1000);
   lastMs = now;
-  clockS += dt;
   const throttle = audioShipBuffer.throttle;
   const bodyId = audioShipBuffer.atmoBodyId;
   const m = bodyId ? acousticsForBody(bodyId) : null;
@@ -174,11 +190,14 @@ export function updateEngineAcoustics(): void {
   const pump = pumpVoice(throttle, 1 / Math.max(1e-6, fuel.powerFrac));
   engineState.pumpCents = pump.cents;
   engineState.pumpLevel = pump.level;
+  const ticks = thermalTickRates(audioShipBuffer.bellK, audioShipBuffer.bellRateKps, audioShipBuffer.loopRateKps);
+  engineState.bellPingRate = ticks.bell;
+  engineState.loopTickRate = ticks.loop;
+  const coolant = coolantVoice(audioShipBuffer.heat01);
+  engineState.coolantLevel = coolant.level;
+  engineState.coolantCents = coolant.cents;
 
   if (!transientsEnabled || dt === 0) return;
-  // Heat soak: fills with throttle while burning, relaxes after.
-  engineState.soak += (throttle / SOAK_FILL_S) * dt;
-  engineState.soak = Math.min(1, engineState.soak * Math.exp(-dt / SOAK_TAU_S));
   // Edges on the UNSMOOTHED command: the smoothed throttle lags cutoff by ~0.8 s.
   const cmd = audioShipBuffer.thrustCmd;
   if (!burning && cmd > IGNITE_ON) {
@@ -192,18 +211,18 @@ export function updateEngineAcoustics(): void {
       if (burnS > 0.4) playAudio("ship.engine.cutoff", { queueOnUnlock: false });
     }
   }
-  // Thermal ticks: a Poisson process whose rate follows the soak, only while not burning.
-  if (!burning && engineState.soak > 0.02 && clockS >= nextTickS) {
-    if (nextTickS > 0) playAudio("ship.hull.tick", {
-      queueOnUnlock: false,
-      gainDb: 10 * Math.log10(engineState.soak) * 0.5,
-      pitchCents: (Math.random() - 0.5) * 900,
-    });
-    const rate = 1.2 * engineState.soak;
-    nextTickS = clockS + -Math.log(1 - Math.random()) / Math.max(1e-3, rate);
-  } else if (burning || engineState.soak <= 0.02) {
-    nextTickS = clockS + 1 + Math.random() * 2;
-  }
+  // Thermal ticks: Poisson, rate from the network's |dT/dt| (at most one per source per tick).
+  const bellRate = Math.abs(audioShipBuffer.bellRateKps);
+  if (Math.random() < 1 - Math.exp(-ticks.bell * dt)) playAudio("ship.bell.ping", {
+    queueOnUnlock: false,
+    gainDb: -6 + 6 * Math.min(1, bellRate / 30),
+    pitchCents: (Math.random() - 0.5) * 1000,
+  });
+  if (Math.random() < 1 - Math.exp(-ticks.loop * dt)) playAudio("ship.hull.tick", {
+    queueOnUnlock: false,
+    gainDb: -4 + 4 * Math.min(1, Math.abs(audioShipBuffer.loopRateKps) / 8),
+    pitchCents: (Math.random() - 0.5) * 900,
+  });
 }
 
 if (process.env.NODE_ENV === "development" && typeof globalThis !== "undefined") {

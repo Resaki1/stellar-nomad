@@ -51,7 +51,7 @@ Blender −Y nose and +Z up become glTF +Z nose and +Y up. Coordinates are metre
 
 The hero uses a 1024 × 512 dorsal and ventral atlas with panel-specific color, metallic/roughness and normal maps. The ceramic remains dielectric across the panel faces. Chips expose the alloy at local edges and deeper scuffs. Normal maps carry the micro-relief and the cooling channels inside the heat-tinted nozzle liners. The wings share an atlas that gives the dorsal solar coverglass and the ventral radiator coating different appearances. Four machinery finishes share a packed trim sheet so the four finishes render together. The refractory chamber uses its own low-specular material.
 
-LOD1 keeps the panel and trim pattern in smaller maps and omits the close-up normals and fasteners. LOD2 uses flat material factors and a 32 × 16 wing atlas to preserve the dorsal and ventral distinction. Both reduce bevels, radial segments and mechanical detail while preserving span, length and all four socket transforms.
+The thrust bells keep a material of their own at every LOD ("Oxidized liner" at LOD0, "Distant drive liner" at LOD1/2, which also takes the LOD2 throat): `bellGlow.ts` drives their blackbody emissive from the thermal network, so the glow must not merge into trim or graphite (docs/HEAT_SYSTEM_PLAN.md H1). LOD1 keeps the panel and trim pattern in smaller maps and omits the close-up normals and fasteners. LOD2 uses flat material factors and a 32 × 16 wing atlas to preserve the dorsal and ventral distinction. Both reduce bevels, radial segments and mechanical detail while preserving span, length and all four socket transforms.
 
 | Export | Triangles | Vertices | Primitives | Bytes |
 | --- | ---: | ---: | ---: | ---: |

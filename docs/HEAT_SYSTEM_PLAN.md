@@ -5,8 +5,8 @@
 > scientifically accurate way (bells, radiators), so that *what produces heat,
 > where, how much, and what it looks and sounds like* is one model.
 >
-> Status: **design only, nothing built.** Numbers below are computed
-> (Stefan–Boltzmann, lumped capacities), not measured in game.
+> Status (2026-11-23): **H0–H2 built** (owner: thrust heat OK, radiators stay
+> visually inert, bell glow must reach co-op viewers at distance). See §7.
 
 ## 1. What exists (audited 2026-11-23)
 
@@ -152,3 +152,47 @@ Euler, Planck × V(λ)) on 2026-11-23; corrections from that pass are folded in.
 1. Is a small thrust heat into the loop OK (invisible alone, adds to mining)?
 2. Radiators: leave visually inert (honest), or plan the thermal-imaging overlay?
 3. Bell glow LOD0-only, or also split the liner for LOD1 (Blender work)?
+
+## 7. As built (H0–H2, 2026-11-23)
+
+- **H0** `src/sim/ship/thermal.ts`, stepped inside `stepShipResources`. One bell
+  node (both bells see the same thrust; the shader could split them by sign(x)),
+  C 15 kJ/K, 3 m² radiating, 556 kW plasma load at full vacuum thrust ×
+  (0.3 + 0.7·plasma01), convection ∝ √(ρ·(1+v/50)), conduction 16.5 W/K into the
+  loop. **The radiator law is unchanged**; the loop temperature is derived from
+  the rejection (Stefan–Boltzmann on 22 m²), so balance is bit-identical except
+  the bells' conducted excess (only the excess: an idle ship behaves exactly as
+  before). Per-source heat kept in `thermal.sources`. Bells are not saved; a
+  loaded world starts cold. `pnpm check:thermal` (14 checks), measured:
+  equilibrium 1,391 K; 900 K after 15 s; after cutoff 1,200 K in 7 s, 900 K in
+  33 s, Draper in 52 s; a 3 s tap 475 K; Earth sea level 1,023 K; thrust alone
+  heat01 stays 0 (28.8 kW conducted < 77 kW base); mining trip 15.0 s → 14.2 s
+  with full thrust.
+- **H1** `src/components/models/ships/bellGlow.ts`: per-ship cloned liner/throat
+  materials, emissive = ε·blackbody luminance (cd/m² → game units) × blackbody
+  hue × pre-exposure, half-float clamp, zero below 700 K; LOD0 liner gets a
+  throat→lip radiance gradient on its wrap UV (×1.7 → ×0.3); the throat runs
+  8 % hotter. Remote ships integrate `stepBells` locally from the synced thrust
+  and the air at their position — no protocol change. **Model**: `build.py`
+  gives the bell (and the LOD2 throat) its own "Distant drive liner" material at
+  LOD1/LOD2 (was merged into machinery/graphite), +1 primitive each; LOD0
+  unchanged. Verified headless: glow orange at 1,400 K, dull red at 1,150 K,
+  gone at 880 K; co-op gate `remoteBells`: host integrates the guest's bells at
+  1,136 K vs the guest's own 1,146 K, lit on all LOD materials.
+  ⚠ Trap: the material claim must be in an effect — a StrictMode double-invoked
+  `useMemo` left the mesh holding one set of clones while the loop lit the other.
+- **H2** bell pings (`ship.bell.ping`, new preset) and loop ticks
+  (`ship.hull.tick`) are Poisson processes at 0.12 / 0.25 events per K/s of
+  |dT/dt|, both signs (≈3.7/s right after a hot cutoff, 0.6/s at 900 K, none at
+  idle). Coolant loop bed (`ship.coolant.loop`, new preset): silent at idle,
+  level 0.2→1 and +500 cents with heat01. The audio's private `soak` is gone.
+- Review (reviewer + adversarial verifier): confirmed and fixed — bells held out of
+  the loop during transit burns (its predictor plans from heat01 alone), the
+  half-float clamp now leaves room for the gradient's ×1.7 peak, a per-frame
+  closure removed; plus a NaN guard on the bell inputs (heat01 is saved).
+  Rejected/documented: remote bells use airspeed 0 and start cold on mount
+  (cosmetic divergence, measured 10 K in the co-op gate); the gradient's mean is
+  0.8× the lumped radiance (taste); load/heat-sink steps make a one-step loop-rate
+  spike (≤ 3 ticks/s cap).
+- Not done: a visual co-op capture with the remote ship close (numbers verified,
+  frame not), and the listening pass.

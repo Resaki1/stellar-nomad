@@ -1,12 +1,12 @@
 {
   "rendererVersion": 6,
-  "assertions": 641,
-  "files": 76,
-  "elapsedMs": 2336,
+  "assertions": 675,
+  "files": 80,
+  "elapsedMs": 2335,
   "results": [
     {
       "file": "mining_laser_loop_s24017.wav",
-      "renderMs": 77,
+      "renderMs": 76,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -194,7 +194,7 @@
     },
     {
       "file": "mining_complete_s24017.wav",
-      "renderMs": 19,
+      "renderMs": 18,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -379,7 +379,7 @@
     },
     {
       "file": "ship_engine_idle_s24017.wav",
-      "renderMs": 105,
+      "renderMs": 106,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -459,7 +459,7 @@
     },
     {
       "file": "ship_engine_high_s24017.wav",
-      "renderMs": 102,
+      "renderMs": 101,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -499,7 +499,7 @@
     },
     {
       "file": "ship_engine_pump_s24017.wav",
-      "renderMs": 45,
+      "renderMs": 44,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -539,7 +539,7 @@
     },
     {
       "file": "ship_engine_roar_s24017.wav",
-      "renderMs": 74,
+      "renderMs": 72,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -579,7 +579,7 @@
     },
     {
       "file": "ship_engine_shock_s24017.wav",
-      "renderMs": 40,
+      "renderMs": 39,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -619,7 +619,7 @@
     },
     {
       "file": "ship_engine_ignite_s24017.wav",
-      "renderMs": 58,
+      "renderMs": 57,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -730,7 +730,7 @@
     },
     {
       "file": "ship_engine_cutoff_s24018.wav",
-      "renderMs": 52,
+      "renderMs": 54,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -766,8 +766,159 @@
       }
     },
     {
+      "file": "ship_bell_ping_s24017.wav",
+      "renderMs": 15,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 6,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.bell.ping",
+        "seed": 24017,
+        "duration": 0.35,
+        "pitch": 0,
+        "brightness": 0.75,
+        "motion": 0.2,
+        "body": 0.3,
+        "texture": 0.2,
+        "detail": 0.9
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "While the drive bells heat or cool fast (rate ∝ |dT/dt|, HEAT_SYSTEM_PLAN §4): densest right after a long burn's cutoff.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -19.99999987057016,
+        "rmsDb": -39.353405639398666,
+        "dc": -3.825170421338872e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.03475342644378543,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_bell_ping_s24018.wav",
+      "renderMs": 7,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 6,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.bell.ping",
+        "seed": 24018,
+        "duration": 0.35,
+        "pitch": 0,
+        "brightness": 0.75,
+        "motion": 0.2,
+        "body": 0.3,
+        "texture": 0.2,
+        "detail": 0.9
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "While the drive bells heat or cool fast (rate ∝ |dT/dt|, HEAT_SYSTEM_PLAN §4): densest right after a long burn's cutoff.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -19.99999987057016,
+        "rmsDb": -41.11275147390519,
+        "dc": -2.7780913329688317e-11,
+        "seamDelta": 0,
+        "maxDelta": 0.028219292871654034,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_bell_ping_s24019.wav",
+      "renderMs": 7,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 6,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.bell.ping",
+        "seed": 24019,
+        "duration": 0.35,
+        "pitch": 0,
+        "brightness": 0.75,
+        "motion": 0.2,
+        "body": 0.3,
+        "texture": 0.2,
+        "detail": 0.9
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": null,
+      "trigger": "While the drive bells heat or cool fast (rate ∝ |dT/dt|, HEAT_SYSTEM_PLAN §4): densest right after a long burn's cutoff.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -19.99999987057016,
+        "rmsDb": -41.95470162534246,
+        "dc": 7.516847762723682e-12,
+        "seamDelta": 0,
+        "maxDelta": 0.030326012667501345,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
+      "file": "ship_coolant_loop_s24017.wav",
+      "renderMs": 71,
+      "tool": "Stellar Nomad Audio Workshop",
+      "rendererVersion": 6,
+      "recipe": {
+        "version": 1,
+        "presetId": "ship.coolant.loop",
+        "seed": 24017,
+        "duration": 4,
+        "pitch": 0,
+        "brightness": 0.25,
+        "motion": 0.45,
+        "body": 0.7,
+        "texture": 0.75,
+        "detail": 0.3
+      },
+      "format": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 24
+      },
+      "loop": {
+        "startFrame": 0,
+        "endFrameExclusive": 192000
+      },
+      "trigger": "While the heat store is above idle; level and pump speed follow heat01.",
+      "bus": "sfxShip",
+      "experimental": false,
+      "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
+      "stats": {
+        "peakDb": -16.99999999789091,
+        "rmsDb": -25.465908098857053,
+        "dc": 7.173387486976897e-10,
+        "seamDelta": 0.0018506702035665512,
+        "maxDelta": 0.0035443808883428574,
+        "finite": true,
+        "silent": false
+      }
+    },
+    {
       "file": "ship_hull_tick_s24017.wav",
-      "renderMs": 9,
+      "renderMs": 8,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -878,7 +1029,7 @@
     },
     {
       "file": "transit_spool_s24017.wav",
-      "renderMs": 59,
+      "renderMs": 26,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -915,7 +1066,7 @@
     },
     {
       "file": "transit_engage_s24017.wav",
-      "renderMs": 47,
+      "renderMs": 27,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -952,7 +1103,7 @@
     },
     {
       "file": "transit_loop_s24017.wav",
-      "renderMs": 71,
+      "renderMs": 51,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -992,7 +1143,7 @@
     },
     {
       "file": "transit_decel_s24017.wav",
-      "renderMs": 26,
+      "renderMs": 27,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1140,7 +1291,7 @@
     },
     {
       "file": "hover_tick_s24017.wav",
-      "renderMs": 1,
+      "renderMs": 2,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1214,7 +1365,7 @@
     },
     {
       "file": "ui_reject_s24018.wav",
-      "renderMs": 12,
+      "renderMs": 13,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1436,7 +1587,7 @@
     },
     {
       "file": "mining_target_lost_s24017.wav",
-      "renderMs": 3,
+      "renderMs": 2,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1732,7 +1883,7 @@
     },
     {
       "file": "comms_chirp_dismiss_s24017.wav",
-      "renderMs": 3,
+      "renderMs": 2,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1769,7 +1920,7 @@
     },
     {
       "file": "world_impact_small_s24017.wav",
-      "renderMs": 33,
+      "renderMs": 32,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1880,7 +2031,7 @@
     },
     {
       "file": "world_impact_large_s24017.wav",
-      "renderMs": 31,
+      "renderMs": 30,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1917,7 +2068,7 @@
     },
     {
       "file": "world_impact_large_s24018.wav",
-      "renderMs": 31,
+      "renderMs": 30,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1954,7 +2105,7 @@
     },
     {
       "file": "world_impact_large_s24019.wav",
-      "renderMs": 31,
+      "renderMs": 30,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -1991,7 +2142,7 @@
     },
     {
       "file": "ship_damage_impact_s24017.wav",
-      "renderMs": 19,
+      "renderMs": 18,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2028,7 +2179,7 @@
     },
     {
       "file": "ship_damage_impact_s24018.wav",
-      "renderMs": 19,
+      "renderMs": 18,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2065,7 +2216,7 @@
     },
     {
       "file": "ship_damage_impact_s24019.wav",
-      "renderMs": 19,
+      "renderMs": 18,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2102,7 +2253,7 @@
     },
     {
       "file": "ship_hull_stress_s24017.wav",
-      "renderMs": 38,
+      "renderMs": 37,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2176,7 +2327,7 @@
     },
     {
       "file": "ship_wind_low_s24017.wav",
-      "renderMs": 125,
+      "renderMs": 124,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2216,7 +2367,7 @@
     },
     {
       "file": "ship_wind_mid_s24017.wav",
-      "renderMs": 131,
+      "renderMs": 122,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2256,7 +2407,7 @@
     },
     {
       "file": "ship_wind_high_s24017.wav",
-      "renderMs": 111,
+      "renderMs": 105,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2296,7 +2447,7 @@
     },
     {
       "file": "mining_heatsink_vent_s24017.wav",
-      "renderMs": 27,
+      "renderMs": 26,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2333,7 +2484,7 @@
     },
     {
       "file": "mining_heatsink_vent_s24018.wav",
-      "renderMs": 13,
+      "renderMs": 12,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2370,7 +2521,7 @@
     },
     {
       "file": "mining_purge_vent_s24017.wav",
-      "renderMs": 16,
+      "renderMs": 15,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2666,7 +2817,7 @@
     },
     {
       "file": "ship_respawn_s24017.wav",
-      "renderMs": 65,
+      "renderMs": 66,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2780,7 +2931,7 @@
     },
     {
       "file": "ship_destroyed_s24017.wav",
-      "renderMs": 52,
+      "renderMs": 53,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {
@@ -2817,7 +2968,7 @@
     },
     {
       "file": "death_bed_s24017.wav",
-      "renderMs": 81,
+      "renderMs": 78,
       "tool": "Stellar Nomad Audio Workshop",
       "rendererVersion": 6,
       "recipe": {

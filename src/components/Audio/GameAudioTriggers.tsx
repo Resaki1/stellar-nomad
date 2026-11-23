@@ -101,7 +101,14 @@ export default function GameAudioTriggers() {
         ? Math.max(-1200, Math.min(1200, 1200 * Math.log2(engineState.shockHz / SHOCK_BASE_HZ))) : 0,
       fadeInMs: 120,
     });
-    return () => [...engines, pump, roar, shock].forEach((e) => e.stop());
+    // Coolant loop (HEAT_SYSTEM_PLAN §4): audible heat management before the bar is critical.
+    const coolant = registerEmitter({
+      event: "ship.coolant.loop",
+      intensity: () => engineState.coolantLevel,
+      pitchCents: () => engineState.coolantCents,
+      fadeInMs: 300,
+    });
+    return () => [...engines, pump, roar, shock, coolant].forEach((e) => e.stop());
   }, [isDead]);
 
   // Ignition/cutoff thumps and post-burn thermal ticks run on the audio tick; off while dead

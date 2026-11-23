@@ -254,6 +254,19 @@ export const AUDIO_EVENTS = [
     priority: 60, maxInstances: 2, cooldownMs: 800, preloadTier: 1, gainDb: 0,
     pitchJitterCents: 40, gainJitterDb: 1
   },
+  // Thermal network sounds (HEAT_SYSTEM_PLAN §4): rates/levels from the ship's heat state.
+  {
+    id: "ship.bell.ping", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_bell_ping_s24017.opus", "/audio/workshop/ship_bell_ping_s24018.opus", "/audio/workshop/ship_bell_ping_s24019.opus"],
+    priority: 55, maxInstances: 3, cooldownMs: 60, preloadTier: 1, gainDb: 0,
+    pitchJitterCents: 60, gainJitterDb: 2
+  },
+  {
+    id: "ship.coolant.loop", bus: "sfxShip", tier: "ship",
+    variants: ["/audio/workshop/ship_coolant_loop_s24017.wav"],
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: -3,
+    loop: true, syncLoop: true
+  },
   {
     id: "ship.hull.tick", bus: "sfxShip", tier: "ship",
     variants: ["/audio/workshop/ship_hull_tick_s24017.opus", "/audio/workshop/ship_hull_tick_s24018.opus", "/audio/workshop/ship_hull_tick_s24019.opus"],
