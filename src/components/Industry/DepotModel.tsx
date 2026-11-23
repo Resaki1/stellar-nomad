@@ -45,6 +45,7 @@ export function useDepotRenderAssets(): DepotRenderAssets {
     const scenes = models.map(({ scene }) => {
       const template = scene.clone(true);
       template.traverse((object) => {
+        if (object instanceof Mesh) object.receiveShadow = true;
         if (!(object instanceof Mesh) || !(object.material instanceof MeshStandardMaterial)) return;
         const source = object.material;
         const id: EmitterId | null = source.name === GUIDE_MATERIAL ? "depot_guide"

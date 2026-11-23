@@ -26,6 +26,18 @@ type RayModel = {
    * asteroid01/03 sit ~13 % off-centre, so their limb pokes out past `r` (review finding).
    */
   reach: number;
+  shadow: AsteroidShadowModel;
+};
+
+/** S1 shadow sphere of one model, as ratios of the instance radius r. */
+export type AsteroidShadowModel = {
+  /** Area-equivalent radius / r (Cauchy: a convex body's mean silhouette = surface area / 4). */
+  eq: number;
+  /** Farthest vertex from the origin / r. */
+  reach: number;
+  /** Surface centroid offset from the instance origin / r, before rotation by q = instanceQuat × baseQuat. */
+  off: readonly [number, number, number];
+  baseQuat: readonly [number, number, number, number];
 };
 
 const models = new Map<string, RayModel>();
@@ -50,12 +62,32 @@ export function registerAsteroidRayModel(
     tris[k * 3 + 2] = positions[v * 3 + 2];
   }
   const reach = Math.max(1, (maxLen * baseScale) / baseRadiusM);
-  models.set(modelId, { tris, baseQuat: [...baseQuat], invBaseRadius: 1 / baseRadiusM, baseScale, reach });
+  // Area and area-weighted centroid of the surface (S1 shadow sphere).
+  let area = 0, mx = 0, my = 0, mz = 0;
+  for (let k = 0; k < tris.length; k += 9) {
+    const ax = tris[k + 3] - tris[k], ay = tris[k + 4] - tris[k + 1], az = tris[k + 5] - tris[k + 2];
+    const bx = tris[k + 6] - tris[k], by = tris[k + 7] - tris[k + 1], bz = tris[k + 8] - tris[k + 2];
+    const a = 0.5 * Math.hypot(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx);
+    area += a;
+    mx += a * (tris[k] + tris[k + 3] + tris[k + 6]) / 3;
+    my += a * (tris[k + 1] + tris[k + 4] + tris[k + 7]) / 3;
+    mz += a * (tris[k + 2] + tris[k + 5] + tris[k + 8]) / 3;
+  }
+  const k = baseScale / baseRadiusM;
+  const shadowEq = Math.sqrt(area / (4 * Math.PI)) * k;
+  const shadowOff: [number, number, number] = area > 0 ? [(mx / area) * k, (my / area) * k, (mz / area) * k] : [0, 0, 0];
+  models.set(modelId, { tris, baseQuat: [...baseQuat], invBaseRadius: 1 / baseRadiusM, baseScale, reach,
+    shadow: { eq: shadowEq, reach, off: shadowOff, baseQuat: [...baseQuat] } });
   maxReach = Math.max(maxReach, reach);
 }
 
 /** Largest `reach` over registered models: pads every bound built from a rock's radius. */
 let maxReach = 1;
+
+/** S1 shadow sphere of one model; null before load. */
+export function asteroidShadowModel(modelId: string): AsteroidShadowModel | null {
+  return models.get(modelId)?.shadow ?? null;
+}
 
 export function hasAsteroidRayModels(): boolean {
   return models.size > 0;

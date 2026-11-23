@@ -49,6 +49,7 @@ import {
   systemStars,
 } from "@/sim/celestialConstants";
 import SunLight from "../Star/SunLight";
+import LocalShadowCaster from "../space/LocalShadowCaster";
 import StarLights from "../Star/StarLights";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
@@ -227,6 +228,8 @@ const Scene = () => {
         {process.env.NODE_ENV === "development" ? <TestLocalSceneProbe /> : null}
         <AsteroidField />
         <MiningSystem />
+        {/* S1 analytic sun shadows: picks the occluding rocks each frame (VFX plan §4). */}
+        <LocalShadowCaster />
         <InteractFocus />
         <PingBrackets3D />
         <AsteroidVFX />
@@ -253,6 +256,8 @@ const Scene = () => {
     <Canvas
       style={{ background: "black" }}
       camera={{ near: 0.01, far: 20_000 }}
+      // S1: R3F owns shadowMap.enabled. The key light's analytic shadow node needs it; no map is rendered.
+      shadows={{ enabled: true }}
       frameloop={settingsPause !== "running" ? "never" : "always"}
       // `?dpr=N` pins the resolution for a measurement; otherwise the usual clamp
       // (1.5 on a Retina M-series). See dprOverride() for what it is for.

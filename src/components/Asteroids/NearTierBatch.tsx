@@ -97,6 +97,7 @@ const ModelBatch = memo(function ModelBatch({
     m.instanceMatrix = outputAttr;
     m.count = MAX_NEAR_INSTANCES; // Needed for three.js internals; actual count comes from indirect
     m.frustumCulled = false;
+    m.receiveShadow = true; // S1 analytic sun shadows
     return m;
      
   }, [asset.geometry, asset.material, outputAttr, indirectAttr]);

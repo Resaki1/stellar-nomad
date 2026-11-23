@@ -470,9 +470,9 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
   }, FRAME_PRIORITY_REMOTE_SHIPS);
   return <>
     <group ref={ship} name={`drone:${drone.id}`} visible={false}>
-      <mesh geometry={DRONE_GEOMETRY} material={FRAME} scale={[1.6, 1.25, 2.7]} />
-      <mesh geometry={BOX} material={TANK} position={[-1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
-      <mesh geometry={BOX} material={TANK} position={[1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
+      <mesh receiveShadow geometry={DRONE_GEOMETRY} material={FRAME} scale={[1.6, 1.25, 2.7]} />
+      <mesh receiveShadow geometry={BOX} material={TANK} position={[-1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
+      <mesh receiveShadow geometry={BOX} material={TANK} position={[1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
       <mesh geometry={BOX} material={LIGHT} position={[0, 0.12, 2.13]} scale={[0.85, 0.22, 0.24]} />
       <mesh geometry={BOX} material={AMBER} position={[0, 0, -2.13]} scale={[0.95, 0.7, 0.25]} />
     </group>

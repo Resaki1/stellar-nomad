@@ -12,6 +12,7 @@
 // anchor), resolved to scene metres each frame.
 // ---------------------------------------------------------------------------
 
+import { SHADOW_SELF_ROCK } from "@/components/space/localShadows";
 import { ClampToEdgeWrapping, DataTexture, FloatType, LinearFilter, type MeshStandardMaterial, Vector4 } from "three";
 import { MeshStandardNodeMaterial } from "three/webgpu";
 import {
@@ -229,6 +230,7 @@ export function hotRockMaterial(src: MeshStandardMaterial): MeshStandardNodeMate
   if (cached) return cached;
   const m = new MeshStandardNodeMaterial();
   m.name = src.name;
+  m.userData[SHADOW_SELF_ROCK] = true;
   m.color.copy(src.color);
   m.roughness = src.roughness;
   m.metalness = src.metalness;

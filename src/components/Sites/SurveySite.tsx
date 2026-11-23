@@ -81,8 +81,8 @@ const SurveySite = memo(function SurveySite() {
 
   return (
     <group ref={groupRef} visible={false}>
-      <mesh geometry={INSTALL_GEO} material={INSTALL_MAT} />
-      <mesh ref={canisterRef} geometry={CANISTER_GEO} material={CANISTER_MAT} position={[0, -75, 0]} />
+      <mesh receiveShadow geometry={INSTALL_GEO} material={INSTALL_MAT} />
+      <mesh receiveShadow ref={canisterRef} geometry={CANISTER_GEO} material={CANISTER_MAT} position={[0, -75, 0]} />
     </group>
   );
 });

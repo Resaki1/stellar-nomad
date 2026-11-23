@@ -324,6 +324,34 @@ model emissives light nothing.
 **Gates:** S1 — umbra luma drops to the sky-light floor, penumbra width within 20 % of
 the 0.53° rule. S2 — no shadow acne/swim in a slow orbit capture; pass ms reported.
 
+**Status (2026-11-23): S1 landed** (`src/components/space/localShadows.ts`,
+`LocalShadowCaster.tsx`). The key light carries a custom `light.shadow.shadowNode` (no shadow
+map; R3F's `shadows` prop only switches the shadow path on). Every `receiveShadow` fragment
+(ship, remote ships, near rocks, stations, drones, wrecks, survey site) tests the sun's disc
+against ≤ 8 occluder spheres: angular-disc overlap with exact width and a smoothstep in place
+of the lens-area curve. Rocks outside the umbra stay lit, so this is per fragment, not a
+dimmer on the whole key light. Choices and measurements:
+- **Shadow radius = Cauchy area-equivalent sphere** (a convex body's mean silhouette is its
+  surface area / 4), centred on the surface centroid. Checked against the rendered mesh by
+  ray-casting the silhouette over 24 directions: asteroid_01 0.555 r vs 0.569 r (−2.4 %).
+  The rock's own radius is 1.8× too big for a shadow.
+- **Self-shadow guard:** a rock fragment skips the sphere whose mesh reach contains it (the
+  branch is chosen at material build from `userData.shadowSelfRock`); ship-class receivers
+  fade in over 1–1.1 R_eq.
+- **Slot choice per frame:** rocks whose penumbra cone holds the ship come first, then the
+  nearest by surface distance within 3 km; chunks culled by box vs near sphere and the sun
+  segment (≤ 250 km). Gather 0.2–0.4 ms CPU.
+- **Hull bounce fill** (`SunLight`) scales with the ship's CPU visibility (same maths), so
+  the umbra reaches the floor instead of keeping 1/60 of the sun.
+- Gates (`vfx-shadows.mjs`): umbra 3 R behind a 71 m rock → sun fraction **0.000** of the
+  hull (floor = key light forced off: sky light, planetshine, own lamps); sunlit control
+  hull 1.0001, rock 1.0007 (no self-shadow); penumbra 8 km behind, 10–90 % width
+  **45.3 m vs 46.3 m** predicted (−2.2 %), GPU hull luma vs CPU twin ≤ 0.012 over 17
+  steps. Cost: local-scene pass 1.68/1.75 ms with occluders vs 1.70/1.77 ms without
+  (noise; 1 slot live at the test spot).
+- Not covered: stations, drones and ships as **occluders** (they only receive): their
+  shapes are not spheres, which is S2's job. Far-tier (LOD1) rocks don't receive.
+
 ---
 
 ## 5. Engine exhaust (E-series)
@@ -827,7 +855,7 @@ simulation stays instant; chat never delayed by default.
 | 5 | **I1–I4** impact | 2 | |
 | 6 | **L3** Blender light empties | 3 | Needs the owner's model pipeline; coordinate with uncommitted model work |
 | 7 | **E1** vacuum plume | 3 | |
-| 8 | **S1** analytic occluders | — | Near-free, big visible win |
+| 8 | ~~**S1** analytic occluders~~ done | — | Near-free, big visible win |
 | 9 | **E2** atmosphere inputs | 1, 7 | |
 | 10 | **V1–V5** variable-Isp drive (§5.6) | 1 (V1 hosts `airVelocityAt`) | Sim-core + fuel change; full gate re-run |
 | 11 | **E3–E4** regimes + halo | 9, 10 | |

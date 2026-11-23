@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { STAR_POSITION_KM } from "./Star";
@@ -9,6 +9,7 @@ import {
   getAtmosphereLighting,
   getDominantAtmosphereBody,
 } from "@/components/space/atmospherePass";
+import { localShadowNode, localShipVisibility } from "@/components/space/localShadows";
 import {
   publishDirectSunState,
   sunOccluderCenterKm,
@@ -102,6 +103,11 @@ const SunLight = ({
   color,
 }: SunLightProps) => {
   const ref = useRef<THREE.DirectionalLight>(null!);
+  const keyRef = useCallback((light: THREE.DirectionalLight | null) => {
+    if (!light) return;
+    ref.current = light;
+    (light.shadow as unknown as { shadowNode: unknown }).shadowNode = localShadowNode();
+  }, []);
   const fillRef = useRef<THREE.AmbientLight>(null!);
   // Phase 9 (P9e): planetshine on the HULL. Two lights, because the emitter
   // ranking falls off a cliff — Jupiter delivers 385,000× the starlight floor to
@@ -155,7 +161,8 @@ const SunLight = ({
     // between bodies lit by that, and a mismatch would be a visible seam.
     const preExp = getPreExposure();
     ref.current.intensity = illuminance * preExp;
-    fillRef.current.intensity = illuminance * preExp * BOUNCE_FILL_FRACTION;
+    // S1: the hull bounce goes with the direct sun the ship actually receives (rock shadows).
+    fillRef.current.intensity = illuminance * preExp * BOUNCE_FILL_FRACTION * localShipVisibility();
 
     _dir.normalize();
     ref.current.position.copy(_dir);
@@ -371,7 +378,8 @@ const SunLight = ({
   // Intensities start at 0 and are set on the first frame from the live distance.
   return (
     <>
-      <directionalLight ref={ref} intensity={0} />
+      {/* S1: castShadow only enables the analytic shadow node; no shadow map is rendered. */}
+      <directionalLight ref={keyRef} intensity={0} castShadow />
       <ambientLight ref={fillRef} intensity={0} />
       {/* D28 refracted limb light — off until the ship is inside a shadow. */}
       <directionalLight ref={limbRef} intensity={0} visible={false} />
