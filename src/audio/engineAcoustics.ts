@@ -14,6 +14,7 @@ import { WIND_RANGE_DB, windLevelDb } from "./wind";
 import type { AtmosphereModel } from "@/sim/atmosphere";
 import { atmoFuel, createAtmoFuel, createDrivePlume, drivePlume, type DrivePlume } from "@/sim/ship/atmoDrive";
 import { getResourceTuning } from "@/sim/ship/resourceTuning";
+import { idleBellK, radiatorTempK } from "@/sim/ship/thermal";
 
 /** Jet acoustic efficiency; rockets measure 0.2–1 %. */
 export const JET_ACOUSTIC_EFFICIENCY = 0.005;
@@ -131,15 +132,26 @@ const CUTOFF_OFF = 0.02;
 /** Ticks per kelvin/s of node temperature change (thermoelastic slip ∝ |dT/dt|, both signs). */
 const BELL_PINGS_PER_KPS = 0.12;
 const LOOP_TICKS_PER_KPS = 0.25;
-/** Below this the bells are near their idle equilibrium: no pings from slow drift. */
-const BELL_PING_MIN_K = 420;
+/**
+ * Stick-slip needs STORED thermal stress: a joint only slips once the part's expansion against its
+ * mount beats friction. So bells ping only well above their idle temperature (fading in 250-450 K
+ * above it), and mostly while CONTRACTING: a heating part expands freely, the classic tick is the
+ * hot part cooling after a long run. MEASURED (owner, 2026-11-23): without this, a 5 s tap that
+ * never moved the heat bar pinged ~15× during the burn and ~9× after.
+ */
+const BELL_STRESS_FROM_K = 250;
+const BELL_STRESS_FULL_K = 450;
+const HEATING_PING_WEIGHT = 0.3;
+const BELL_IDLE_K = idleBellK(radiatorTempK(getResourceTuning().radiatorBaseKW, 1));
 let burning = false;
 let burnS = 0;
 let lastMs = 0;
 
 /** Bell pings and loop ticks follow the thermal network's |dT/dt| (HEAT_SYSTEM_PLAN §4). */
 export function thermalTickRates(bellK: number, bellRateKps: number, loopRateKps: number): { bell: number; loop: number } {
-  const bell = bellK > BELL_PING_MIN_K ? Math.min(5, BELL_PINGS_PER_KPS * Math.abs(bellRateKps)) : 0;
+  const stress = smoothstep(BELL_STRESS_FROM_K, BELL_STRESS_FULL_K, bellK - BELL_IDLE_K);
+  const dir = bellRateKps > 0 ? HEATING_PING_WEIGHT : 1;
+  const bell = Math.min(5, BELL_PINGS_PER_KPS * Math.abs(bellRateKps) * stress * dir);
   const loop = Math.min(3, LOOP_TICKS_PER_KPS * Math.abs(loopRateKps));
   return { bell, loop };
 }

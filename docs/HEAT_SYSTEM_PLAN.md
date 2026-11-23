@@ -184,7 +184,12 @@ Euler, Planck × V(λ)) on 2026-11-23; corrections from that pass are folded in.
 - **H2** bell pings (`ship.bell.ping`, new preset) and loop ticks
   (`ship.hull.tick`) are Poisson processes at 0.12 / 0.25 events per K/s of
   |dT/dt|, both signs (≈3.7/s right after a hot cutoff, 0.6/s at 900 K, none at
-  idle). Coolant loop bed (`ship.coolant.loop`, new preset): silent at idle,
+  idle). **Revised after listening (owner, 2026-11-23):** a 5 s tap pinged ~15×
+  during and ~9× after while the heat bar never moved. Stick-slip needs stored
+  thermal stress, so bell pings now fade in only 250–450 K above the bell's idle
+  temperature and heating pings at 0.3× (a heating part expands freely; the
+  classic tick is contraction after a long run). Expected pings during/after:
+  5 s burn 0/0, 15 s 6/21, 30 s 19/62, 90 s 24/81. Coolant loop bed (`ship.coolant.loop`, new preset): silent at idle,
   level 0.2→1 and +500 cents with heat01. The audio's private `soak` is gone.
 - Review (reviewer + adversarial verifier): confirmed and fixed — bells held out of
   the loop during transit burns (its predictor plans from heat01 alone), the

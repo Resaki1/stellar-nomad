@@ -65,7 +65,8 @@ check("pump: half throttle is lower", ph.cents < 0, `${f1(ph.cents)} cents`);
 const hot = ea.thermalTickRates(1400, -31, 0), warm = ea.thermalTickRates(900, -5.3, 0), idle = ea.thermalTickRates(365, -0.01, 0);
 check("bell pings densest right after cutoff, sparse when warm, none at idle", hot.bell > 3 && warm.bell > 0.3 && warm.bell < 1 && idle.bell === 0,
   `${hot.bell.toFixed(2)} / ${warm.bell.toFixed(2)} / ${idle.bell}/s`);
-check("bell pings on heat-up too (|dT/dt|, both signs)", ea.thermalTickRates(900, 25, 0).bell > 2);
+check("heating pings weaker than cooling at the same rate", ea.thermalTickRates(1200, 25, 0).bell < 0.4 * ea.thermalTickRates(1200, -25, 0).bell);
+check("no pings below ~250 K over idle (a short tap stores no slip stress)", ea.thermalTickRates(548, -2, 0).bell === 0 && ea.thermalTickRates(548, 35, 0).bell === 0);
 check("loop ticks follow the loop's |dT/dt|", ea.thermalTickRates(365, 0, -6).loop > 1 && ea.thermalTickRates(365, 0, 0).loop === 0);
 check("coolant bed silent at idle, rises with heat01", ea.coolantVoice(0).level === 0 && ea.coolantVoice(1).level === 1 && ea.coolantVoice(0.5).cents === 250);
 
