@@ -168,4 +168,26 @@ export const togglePulseMiningAtom = atom(null, (get, set) => {
 export const pulseCycleBuffer: {
   timer: number;
   beamOn: boolean;
-} = { timer: 0, beamOn: true };
+  /** Pulse mode is cycling this frame (the beam draws a real pulse train, VFX plan B3). */
+  pulsing: boolean;
+} = { timer: 0, beamOn: true, pulsing: false };
+
+/**
+ * The player's beam as fired this frame (VFX plan §2 B1): straight along the ship's forward
+ * axis from the mining socket, ending on the first rock surface it meets. Read by the HUD
+ * (miss feedback) and the impact VFX (§3). Local-scene metres.
+ */
+export const miningBeamView = {
+  on: false,
+  /** Ends on a rock surface (any rock). */
+  hit: { value: false },
+  /** That surface is the locked target: mining progresses. */
+  onTarget: false,
+  start: [0, 0, 0] as [number, number, number],
+  end: [0, 0, 0] as [number, number, number],
+  /** Outward surface normal at the hit. */
+  normal: [0, 0, 1] as [number, number, number],
+  /** The rock hit (any), for impact VFX that ride the rock. */
+  rock: { fieldId: "", chunkKey: "", instanceId: -1 },
+  power: 1,
+};

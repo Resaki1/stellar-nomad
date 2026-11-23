@@ -1,5 +1,6 @@
 "use client";
 
+import { registerAsteroidRayModel } from "@/sim/asteroids/asteroidRaycast";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useAtomValue } from "jotai";
@@ -111,6 +112,14 @@ function registerColliderModels(registries: AsteroidModelRegistries): void {
       pts[i * 3] = pos.getX(i); pts[i * 3 + 1] = pos.getY(i); pts[i * 3 + 2] = pos.getZ(i);
     }
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(near.baseRotationRad[0], near.baseRotationRad[1], near.baseRotationRad[2]));
+    // The mining beam ends on the drawn LOD0 surface (VFX plan §2 B1).
+    const nearPos = near.geometry.getAttribute("position");
+    const raw = new Float32Array(nearPos.count * 3);
+    for (let i = 0; i < nearPos.count; i++) {
+      raw[i * 3] = nearPos.getX(i); raw[i * 3 + 1] = nearPos.getY(i); raw[i * 3 + 2] = nearPos.getZ(i);
+    }
+    const index = near.geometry.getIndex();
+    registerAsteroidRayModel(id, raw, index ? Array.from(index.array) : null, [q.x, q.y, q.z, q.w], near.baseRadiusM, near.baseScale);
     registerAsteroidColliderModel(id, pts, mesh ? "lod1" : "lod0", [q.x, q.y, q.z, q.w], near.baseRadiusM, near.baseScale, {
       vertices: pos.count,
       lod0Vertices: near.geometry.getAttribute("position").count,

@@ -16,6 +16,8 @@ export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
 /** A ship in transit, paused or flying with a dev speed override is ineligible for contact. */
 export const POSE_NO_CONTACT = 8;
+/** Pose flag: the mining beam runs past every rock (no impact spot; VFX plan §2 B1). */
+export const POSE_BEAM_MISS = 16;
 /** Part size allows UTF-8 names and JSON escaping within a 16 KiB command packet. */
 export const SNAPSHOT_PART_CHARS = 5_000;
 const MAX_SNAPSHOT_PARTS = 6_500;

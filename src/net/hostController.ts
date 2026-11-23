@@ -99,6 +99,11 @@ export async function startHosting(signaling: Signaling = gameSignaling, hostNam
 async function openSession(worker: Worker, worldId: string, signaling: Signaling, hostName: string, held: WorldOperation[]): Promise<string> {
   const ready = new Promise<Extract<HostWorkerToMain, { t: "ready" }>>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("host worker did not start")), READY_TIMEOUT_MS);
+    // A worker that fails to load or throws at module evaluation only fires "error": surface it.
+    worker.addEventListener("error", (ev: ErrorEvent) => {
+      clearTimeout(t);
+      reject(new Error(`host worker failed: ${ev.message || "load error"}${ev.filename ? ` (${ev.filename}:${ev.lineno})` : ""}`));
+    }, { once: true });
     worker.addEventListener("message", function once(ev: MessageEvent<HostWorkerToMain>) {
       if (ev.data.t === "ready" || ev.data.t === "error") {
         clearTimeout(t);

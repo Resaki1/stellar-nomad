@@ -193,6 +193,34 @@ sci-fi. Make it a believable one:
 irregular rock; beam direction equals ship forward to < 0.01° every frame; miss ⇒
 mining rate 0 within one test tick. Perf: beam pass ≤ 0.1 ms at 3 beams.
 
+**Status (2026-11-23): B1–B4 landed.**
+- B1: `src/sim/asteroids/asteroidRaycast.ts` — Möller–Trumbore on the LOD0 triangles under the
+  rendered instance transform (`x + q·(v·r/geomRadius)`), sphere early-out, no BVH (≤ 1,000
+  triangles). Registered where the asteroid registry loads. The beam fires from
+  `socket_mining` along `shipView.forward` every frame, ends on the first rock surface, and
+  mining progresses only while that surface is the locked target (miss grace 0.05 s = one ray
+  tick; open question 3 answered). Mining no longer cancels on a lost aim: the laser keeps
+  firing (heat, power) and progress holds. Reticle: brackets open and go cold on a miss.
+  `lockedEndOffsetFromCenterRef` and the inflated aim sphere are gone. Co-op: the end point is
+  replicated as before; a new pose bit (`POSE_BEAM_MISS`) says whether it is a surface.
+- B2: `beams.ts` + `BeamRenderer.tsx` — every beam (player, co-op, drones) in one instanced
+  draw: camera-facing ribbon, Gaussian core σ 3 cm + sheath σ 14 cm, σ under 0.7 px drawn at
+  0.7 px with radiance × σ/σ_drawn (flux per metre conserved), 1/sin θ path gain capped at 3×,
+  low shimmer streaming toward the rock. No travelling blobs. Drones fire along their own axis
+  to the mesh hit; their centre aim and sine wobble are gone.
+- B3: core radiance ∝ `miningPowerMult`, widths ∝ power^¼; pulse mode is a real pulse train
+  (rise τ 15 ms, fall τ 40 ms). One colour (open question 2: brightness only). Emitter housing
+  glow skipped: the loop runs 519–605 K, below the ~700 K visible threshold.
+- B4: muzzle (1.5 kcd) and impact (85 kcd, the old glow's flux) are light points (§1).
+- **Measured** (`vfx-beam.mjs`): 12 bearings round a 70 m rock — all on target, axis error
+  0°, hit at 0.46–0.71 R from the centre (the old bounding-sphere end sat at 1.0 R, i.e. up to
+  half a radius in front of the surface); miss at 70° off: progress frozen (0.4736 → 0.4736
+  over 600 ms), beam drawn to full range, resumes on re-aim. Cost: local pass unchanged within
+  noise (1.233–1.238 ms on vs 1.234–1.239 off); the cast is 0.10–0.11 ms CPU per frame while
+  the beam fires (near-chunk instance loop). Co-op `remoteFx` passes.
+- Not run: `GAME_PARTS=pace` (25–50 min bot); its aiming faces rock centres, which always hit.
+  `m32.reloadBatch` is flaky before and after (1 of 2 on the committed baseline).
+
 ---
 
 ## 3. Mining impact VFX (I-series)

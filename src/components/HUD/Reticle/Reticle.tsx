@@ -3,6 +3,7 @@
 import { useAtomValue } from "jotai";
 import { useEffect, useRef } from "react";
 import {
+  miningBeamView,
   miningStateAtom,
   showTargetingIndicatorAtom,
   targetingProgressAtom,
@@ -27,6 +28,7 @@ export default function Reticle() {
   const poiRingProgressRef = useRef<SVGCircleElement>(null);
   const poiHintRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const bracketsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     flightHud.els.nose = rootRef.current;
@@ -52,6 +54,8 @@ export default function Reticle() {
           circle.style.strokeDashoffset = `${RING_C * (1 - poiBuffer.gazeProgress)}`;
         }
       }
+      // Beam off the target (VFX plan §2 B1): brackets open out and go cold; mining is halted.
+      bracketsRef.current?.classList.toggle("reticle__brackets--miss", miningBeamView.on && !miningBeamView.onTarget);
       if (hint) {
         const locked =
           poiBuffer.targetedId !== null && poiBuffer.gazeProgress >= 0.99;
@@ -130,6 +134,7 @@ export default function Reticle() {
 
       {/* Mining brackets */}
       <div
+        ref={bracketsRef}
         className={`reticle__brackets ${
           isMining ? "reticle__brackets--visible" : ""
         }`}

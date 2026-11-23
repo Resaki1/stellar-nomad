@@ -46,6 +46,8 @@ export const localBeamPose = {
   on: false,
   /** Pulse mining's off phase: the beam is drawn dim. */
   dim: false,
+  /** The beam ends at its full range, on no rock (VFX plan §2 B1). */
+  miss: false,
   atMs: -1,
   frameId: "",
   relKm: [0, 0, 0] as [number, number, number],

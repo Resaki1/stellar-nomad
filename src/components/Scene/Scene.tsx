@@ -64,6 +64,7 @@ import ReplicationPoints from "@/components/Replication/ReplicationPoints";
 import IndustryWorld from "@/components/Industry/IndustryWorld";
 import SurveySite from "@/components/Sites/SurveySite";
 import LightPoints from "@/components/space/LightPointsRenderer";
+import BeamRenderer from "@/components/VFX/BeamRenderer";
 import WreckCollector from "../WreckCollector";
 import TestFrameProbe, { TestLocalSceneProbe } from "../TestHarness/TestFrameProbe";
 import LoadingGate from "../Loading/LoadingGate";
@@ -238,6 +239,8 @@ const Scene = () => {
         <SurveySite />
         {/* Flux-conserving sub-pixel lamps (VFX plan §1): after every producer. */}
         <LightPoints />
+        {/* Every mining beam (player, co-op, drones) in one draw (VFX plan §2). */}
+        <BeamRenderer />
       </>
     ),
     [],

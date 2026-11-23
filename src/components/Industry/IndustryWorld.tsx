@@ -12,6 +12,11 @@ import { FRAME_PRIORITY_PLAYER_SHIP, FRAME_PRIORITY_REMOTE_SHIPS } from "@/compo
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 import { beaconFlash, emitLightPoints } from "@/components/space/lightPoints";
+import { pushBeam, pushBeamLights } from "@/components/VFX/beams";
+import { castAsteroidRayInField, copyHit, createAsteroidRayHit } from "@/sim/asteroids/asteroidRaycast";
+import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
+import { systemConfigAtom } from "@/store/system";
+import type { SystemConfig } from "@/sim/systemTypes";
 import { simEpochMsAtom } from "@/store/simTime";
 import type { ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
@@ -57,7 +62,35 @@ const RADIATOR = new MeshStandardMaterial({ color: "#244661", metalness: 0.7, ro
 const PROSPECT = new MeshStandardMaterial({ color: "#9da2a5", metalness: 0.2, roughness: 0.94 });
 const LIGHT = new MeshBasicMaterial({ color: new Color(0.22, 0.66, 1.45), toneMapped: false });
 const AMBER = new MeshBasicMaterial({ color: new Color(1.8, 0.66, 0.08), toneMapped: false });
-const BEAM = new MeshBasicMaterial({ color: new Color(0.05, 0.7, 1.7), transparent: true, opacity: 0.75, depthWrite: false, toneMapped: false });
+/** Drone laser power relative to the stock ship laser (beam radiance ∝ power, VFX plan B3). */
+const DRONE_BEAM_POWER = 0.5;
+const _beamEnd = new Vector3();
+const _droneHit = createAsteroidRayHit();
+const _droneFieldHit = createAsteroidRayHit();
+
+/** First rock surface along a drone's beam (VFX plan §2 B1/B2), into `out` (scene metres). */
+function castDroneBeam(system: SystemConfig, wo: Vector3, origin: Vector3, dir: Vector3, maxM: number, out: Vector3): boolean {
+  const runtime = getActiveAsteroidRuntime();
+  if (!runtime) return false;
+  let best = maxM;
+  let anchor: readonly number[] | null = null;
+  for (const field of system.asteroidFields ?? []) {
+    if (field.enabled === false) continue;
+    const fr = runtime.getFieldRuntime(field.id);
+    if (!fr) continue;
+    const a = field.anchorKm;
+    if (castAsteroidRayInField(fr.chunks, (wo.x - a[0]) * 1000 + origin.x, (wo.y - a[1]) * 1000 + origin.y,
+      (wo.z - a[2]) * 1000 + origin.z, dir.x, dir.y, dir.z, best, _droneFieldHit)) {
+      best = _droneFieldHit.t;
+      copyHit(_droneFieldHit, _droneHit);
+      anchor = a;
+    }
+  }
+  if (!anchor) return false;
+  out.set((anchor[0] - wo.x) * 1000 + _droneHit.point[0], (anchor[1] - wo.y) * 1000 + _droneHit.point[1],
+    (anchor[2] - wo.z) * 1000 + _droneHit.point[2]);
+  return true;
+}
 const PREVIEW_GOOD = new LineBasicMaterial({ name: "Clear depot outline", color: emitterColor("replication_preview"), transparent: true, opacity: 0.8, depthWrite: false });
 const PREVIEW_BAD = new LineBasicMaterial({ name: "Blocked depot outline", color: emitterColor("replication_preview_bad"), transparent: true, opacity: 0.8, depthWrite: false });
 for (const material of [LIGHT, AMBER, PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(material);
@@ -301,8 +334,6 @@ const Prospect = memo(function Prospect({ source }: { source: IndustrySource }) 
 
 function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: DepotRecord; dest: Destination | undefined; index: number }) {
   const ship = useRef<Group>(null!);
-  const beam = useRef<Mesh<BoxGeometry, MeshBasicMaterial>>(null!);
-  const beamMaterial = useMemo(() => BEAM.clone(), []);
   const motion = useMemo(() => new DroneMotion(), []);
   const clock = useMemo(() => new MiningLegClock(), []);
   const pose = useMemo(() => ({
@@ -314,18 +345,9 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
   const drawn = useRef(false);
   const worldOrigin = useWorldOrigin();
   const lane = index % 2 === 0 ? 1 : -1;
-  useEffect(() => {
-    const unregister = registerPreExposedEmissive(beamMaterial);
-    return () => {
-      unregister();
-      beamMaterial.dispose();
-    };
-  }, [beamMaterial]);
-
   useFrame((_, delta) => {
     const g = ship.current;
-    const ray = beam.current;
-    if (!g || !ray) return;
+    if (!g) return;
     const w = worldOrigin.worldOriginKm;
     const dt = isSimPaused() ? 0 : Math.min(delta, 0.15);
     if (!drone.sortie && (dt > 0 || !drawn.current)) motion.advance(drone, dt);
@@ -369,10 +391,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       if (drone.phase === "working" && workRock && !worldAuthority.asteroids.has(workRock.fieldId, workRock.chunkKey, workRock.instanceId)) {
         const t = clock.elapsed;
         strength = smoothProgress(t / BEAM_FADE_S) * smoothProgress((drone.durationS - t) / BEAM_FADE_S);
-        g.position.y += Math.sin(t * 2.5 + index) * 0.35 * strength;
         scenePosition(workRock, w, _to);
-        _to.x += Math.sin(t / 0.84 + index) * 2 * strength;
-        _to.z += Math.cos(t / 0.69 + index) * 1.5 * strength;
         _orientation.setFromUnitVectors(_forward, _direction.subVectors(_to, g.position).normalize());
       }
     } else if (!onTrip || !destination || motion.via || home.frameId !== destination.frameId) {
@@ -403,10 +422,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
           if (!rock || !worldAuthority.asteroids.has(rock.fieldId, rock.chunkKey, rock.instanceId)) {
             strength = smoothProgress(workS / BEAM_FADE_S) * smoothProgress((motion.workS - workS) / BEAM_FADE_S);
           }
-          g.position.y += Math.sin(workS * 2.5 + index) * 0.35 * strength;
           scenePosition(destination, w, _to);
-          _to.x += Math.sin(workS / 0.84 + index) * 2 * strength;
-          _to.z += Math.cos(workS / 0.69 + index) * 1.5 * strength;
           _direction.subVectors(_to, g.position).normalize();
           _orientation.setFromUnitVectors(_forward, _direction);
         }
@@ -440,15 +456,16 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     }
 
     g.visible = visibleFlight && g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
-    ray.visible = g.visible && strength > 0.001;
-    if (ray.visible) {
+    if (g.visible && strength > 0.001) {
+      // VFX plan §2 B2: the shared beam, from the emitter along the drone's own axis to the
+      // first rock surface (never bent onto the rock's centre).
       _droneOffset.copy(_forward).multiplyScalar(2.25).applyQuaternion(g.quaternion).add(g.position);
-      _direction.subVectors(_to, _droneOffset);
-      ray.position.copy(_droneOffset).addScaledVector(_direction, 0.5);
-      const width = 0.16 * Math.sqrt(strength);
-      ray.scale.set(width, width, _direction.length());
-      ray.quaternion.setFromUnitVectors(_forward, _direction.normalize());
-      ray.material.opacity = BEAM.opacity * strength;
+      _direction.copy(_forward).applyQuaternion(g.quaternion);
+      const reach = _to.distanceTo(_droneOffset) + 60;
+      const hit = castDroneBeam(store.get(systemConfigAtom), w, _droneOffset, _direction, reach, _beamEnd);
+      if (!hit) _beamEnd.copy(_droneOffset).addScaledVector(_direction, Math.max(0, _to.distanceTo(_droneOffset)));
+      pushBeam(_droneOffset.x, _droneOffset.y, _droneOffset.z, _beamEnd.x, _beamEnd.y, _beamEnd.z, strength, DRONE_BEAM_POWER, index);
+      pushBeamLights(_droneOffset.x, _droneOffset.y, _droneOffset.z, _beamEnd.x, _beamEnd.y, _beamEnd.z, hit, strength, DRONE_BEAM_POWER);
     }
   }, FRAME_PRIORITY_REMOTE_SHIPS);
   return <>
@@ -459,7 +476,6 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       <mesh geometry={BOX} material={LIGHT} position={[0, 0.12, 2.13]} scale={[0.85, 0.22, 0.24]} />
       <mesh geometry={BOX} material={AMBER} position={[0, 0, -2.13]} scale={[0.95, 0.7, 0.25]} />
     </group>
-    <mesh ref={beam} geometry={BOX} material={beamMaterial} name={`droneBeam:${drone.id}`} visible={false} />
   </>;
 }
 

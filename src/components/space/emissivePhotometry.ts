@@ -237,22 +237,22 @@ export const EMITTERS = {
   },
   mining_beam_core: {
     kind: "design",
-    nits: 5823,
+    nits: 15_000,
     hue: [0.9, 0.98, 1.0],
     why:
-      "Beam core. ⚠ NO physical referent exists: a beam in vacuum is invisible " +
-      "(there is nothing to scatter), so every visible-beam value in every space " +
-      "game is a design decision. Stated in cd/m² so it is at least on the same " +
-      "scale as everything else, and so pre-exposure can be verified against it. " +
-      "⚠ Site envelope: × opacity ≤ 0.78 (peak 4,542 cd/m²).",
+      "Beam core, a Gaussian of σ 3 cm (VFX plan §2 B2, `beams.ts`), peak radiance at stock " +
+      "power. ⚠ NO physical referent exists: a beam in vacuum is invisible (there is nothing " +
+      "to scatter), so every visible-beam value is a design decision. Was 5,823 × opacity " +
+      "0.78 on a 1 px line at every distance; now a real width with flux per metre conserved " +
+      "below a pixel, so it is brighter close up (a near-white core) and fainter far away.",
   },
   mining_beam_halo: {
     kind: "design",
-    nits: 4556,
+    nits: 900,
     hue: [0.35, 0.85, 1.0],
     why:
-      "Beam halo — see mining_beam_core; design value, no physical referent. " +
-      "⚠ Site envelope: × opacity ≤ 0.16 (peak 729 cd/m²).",
+      "Beam sheath, a Gaussian of σ 14 cm round the core — see mining_beam_core. Was 4,556 × " +
+      "opacity 0.16 on a 7 px line.",
   },
   mining_muzzle: {
     kind: "design",
@@ -262,14 +262,6 @@ export const EMITTERS = {
       "Aperture scatter at the ship's laser head. Optics scatter, not a melt " +
       "pool — no thermal derivation applies. ⚠ Site envelope: × opacity ≤ 0.14 " +
       "(peak 722 cd/m²).",
-  },
-  mining_pulse: {
-    kind: "design",
-    nits: 5501,
-    hue: [0.75, 0.95, 1.0],
-    why:
-      "Material-transfer pulses travelling the beam. Design value. ⚠ Site " +
-      "envelope: × opacity ≤ 0.38 (peak 2,090 cd/m²).",
   },
   wreck_beam: {
     kind: "design",

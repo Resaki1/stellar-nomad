@@ -154,13 +154,30 @@
     height: 40px;
     transform: translate(-50%, -50%);
     opacity: 0;
-    transition: opacity s.$dur-fast s.$ease-out;
+    transition: opacity s.$dur-fast s.$ease-out, width s.$dur-fast s.$ease-out, height s.$dur-fast s.$ease-out;
     visibility: hidden;
 
     &--visible {
       opacity: 1;
       visibility: visible;
       animation: reticleBracketPulse 1s ease-in-out infinite alternate;
+    }
+
+    // The beam runs past the target: corners spread and drop to a cold neutral, no pulse.
+    &--miss {
+      width: 64px;
+      height: 64px;
+      transition: width s.$dur-fast s.$ease-out, height s.$dur-fast s.$ease-out;
+
+      &.reticle__brackets--visible {
+        animation: none;
+        opacity: 0.7;
+      }
+
+      .reticle__bracket {
+        border-color: s.$text-tertiary;
+        filter: none;
+      }
     }
   }
 

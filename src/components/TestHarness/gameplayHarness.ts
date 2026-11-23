@@ -381,6 +381,30 @@ export function createGameplayHarness(store: Store) {
         store.set(devTeleportAtom, { positionKm: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] });
         return true;
       },
+      /** Dev warp: park `standoffKm` from a rock's centre on bearing (yaw, pitch °), facing it (VFX beam orbit). */
+      parkAround(target: number[] | RockRef, yawDeg: number, pitchDeg: number, standoffKm: number): boolean {
+        const t = resolveKm(target);
+        if (!t) return false;
+        const y = (yawDeg * Math.PI) / 180, pt = (pitchDeg * Math.PI) / 180;
+        const out = new Vector3(Math.cos(pt) * Math.cos(y), Math.sin(pt), Math.cos(pt) * Math.sin(y));
+        const p = new Vector3(t[0], t[1], t[2]).addScaledVector(out, standoffKm);
+        const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), out.negate());
+        store.set(devTeleportAtom, { positionKm: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] });
+        return true;
+      },
+      /** Dev aiming: face a rock, then yaw the nose `deg` off it (beam miss checks). */
+      faceOffset(target: number[] | RockRef, deg: number): boolean {
+        const ship = getLocalPlayerShip();
+        const targetKm = resolveKm(target);
+        if (!ship || !targetKm) return false;
+        const d = new Vector3(targetKm[0] - ship.absPosKm.x, targetKm[1] - ship.absPosKm.y, targetKm[2] - ship.absPosKm.z).normalize();
+        const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), d);
+        q.multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), (deg * Math.PI) / 180));
+        ship.quat.copy(q);
+        ship.prevQuat.copy(q);
+        ship.angVel.set(0, 0, 0);
+        return true;
+      },
       /** Distance (km) and speed (m/s) to a system-frame point; closing speed > 0 when approaching. */
       nav(target: number[] | RockRef) {
         const ship = getLocalPlayerShip();

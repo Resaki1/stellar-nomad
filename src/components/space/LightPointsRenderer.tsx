@@ -142,18 +142,20 @@ export default function LightPoints() {
     uTanPerPx.value = (2 * Math.tan(fovRad / 2)) / h;
     // E·(1/(2πσ²Ω_px)) is the Gaussian's peak; × pre-exposure (D25).
     uNorm.value = _pointsOn ? psfNormForBuffer(fovRad, h) * getPreExposure() * uLampGain.value : 0;
-    const n = B.count;
+    // Never an empty draw: one dark point keeps the pipeline compiled (no first-use stall).
+    if (B.count === 0) {
+      B.rgb.fill(0, 0, 3);
+      B.size[0] = 0;
+    }
+    const n = Math.max(B.count, 1);
     for (const a of Object.values(attrs)) {
       a.clearUpdateRanges();
       a.addUpdateRange(0, n * a.itemSize);
-      a.needsUpdate = n > 0;
+      a.needsUpdate = true;
     }
     const mesh = meshRef.current;
-    if (mesh) {
-      mesh.count = n;
-      mesh.visible = n > 0;
-    }
-    B.drawn = n;
+    if (mesh) mesh.count = n;
+    B.drawn = B.count;
     B.count = 0;
     B.dropped = 0;
   }, FRAME_PRIORITY_LIGHT_POINTS);

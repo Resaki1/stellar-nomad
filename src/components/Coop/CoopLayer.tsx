@@ -5,7 +5,7 @@
  * with their plume and mining beam, their POI markers, and the host clock follower. Renders
  * nothing while solo.
  */
-import { HOST_SILENCE_MS } from "@/sim/session/protocol";
+import { HOST_SILENCE_MS, POSE_BEAM_MISS } from "@/sim/session/protocol";
 import { Suspense, memo, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import * as THREE from "three";
@@ -94,7 +94,7 @@ export const remoteFxProbe = {
 };
 
 /** Per-slot beam endpoints (scene metres) and state, mutated each frame. */
-const slotBeams = Array.from({ length: SLOTS }, () => ({ start: new THREE.Vector3(), end: new THREE.Vector3(), remote: { on: false, dim: false } }));
+const slotBeams = Array.from({ length: SLOTS }, () => ({ start: new THREE.Vector3(), end: new THREE.Vector3(), remote: { on: false, dim: false }, hit: { value: true } }));
 
 function memberName(id: string): string {
   return getActiveSave()?.data.world.members[id]?.name || "Replicant";
@@ -160,6 +160,7 @@ const RemoteShip = memo(function RemoteShip({ slot, slots, defs, ready }: { slot
       frameOriginKm(bs.f, _b);
       beam.end.set((_b.x + bs.b[0] - wo.x) * 1000, (_b.y + bs.b[1] - wo.y) * 1000, (_b.z + bs.b[2] - wo.z) * 1000);
       beam.remote.dim = (bs.fl & 4) !== 0;
+      beam.hit.value = (bs.fl & POSE_BEAM_MISS) === 0;
     }
     beam.remote.on = beamRef.current.visible = beamOn;
     probe.beam = beamOn;
@@ -182,7 +183,7 @@ const RemoteShip = memo(function RemoteShip({ slot, slots, defs, ready }: { slot
         <RemoteStarterSurvey thrust={throttle} />
       </group>
       <group ref={beamRef} visible={false}>
-        <MiningBeam start={slotBeams[slot].start} end={slotBeams[slot].end} progress01={0.8} remote={slotBeams[slot].remote} />
+        <MiningBeam start={slotBeams[slot].start} end={slotBeams[slot].end} remote={slotBeams[slot].remote} hit={slotBeams[slot].hit} />
       </group>
     </group>
   );

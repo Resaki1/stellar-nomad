@@ -8,13 +8,14 @@ import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import * as THREE from "three";
 import { Billboard } from "@react-three/drei";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
-import { emitterColor } from "@/components/space/emissivePhotometry";
+import { pushBeam, pushBeamLights } from "@/components/VFX/beams";
 
 import {
   miningStateAtom,
   pingWorldBuffer,
   miningBeamRequest,
   pulseCycleBuffer,
+  miningBeamView,
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
   inspectControl,
@@ -31,6 +32,7 @@ import { signalAudioActionAtom } from "@/store/audioSignals";
 import { useWorldOrigin } from "@/sim/worldOrigin";
 import type { AsteroidChunkData } from "@/sim/asteroids/runtimeTypes";
 import { distancePointToAabbKm } from "@/sim/asteroids/shapes";
+import { castAsteroidRayInField, copyHit, createAsteroidRayHit, rayHitInstance } from "@/sim/asteroids/asteroidRaycast";
 import { getAsteroidMiningReward, computeMiningDurationS } from "@/sim/asteroids/resources";
 import { remoteBurstLog, spawnVFXEventAtom } from "@/store/vfx";
 import { shipConfigAtom, effectiveShipConfigAtom } from "@/store/shipConfig";
@@ -67,24 +69,14 @@ const STATE_COMMIT_INTERVAL_S = 1 / 30; // 30 Hz UI commits
 const TARGET_LOCK_GRACE_S = 0.18;
 
 // Requiring aim during mining
-const MINING_AIM_GRACE_S = 0.15; // small forgiveness for jitter
-const MINING_AIM_RADIUS_SCALE = 1.08;
-const MINING_AIM_RADIUS_BONUS_M = 0.75;
+/** VFX plan §2 B1 (open question 3): a miss halts progress after one ray tick; no bending. */
+const MINING_MISS_GRACE_S = 0.05;
 
 // Targeting assist
 const TARGET_HIT_RADIUS_SCALE = 1.25;
 const TARGET_HIT_RADIUS_BONUS_M = 4;
 
-// Beam visuals
-const BEAM_CORE_WIDTH_PX = 2.0;
-const BEAM_HALO_WIDTH_PX = 7.0;
-const BEAM_PULSE_COUNT = 6; // more noticeable and still cheap
-const BEAM_PULSE_SPEED = 1.1; // cycles per second
-const BEAM_PULSE_SIZE_M = 10;
-
-// Reduced muzzle glow
-const MUZZLE_GLOW_SIZE_M = 4.5;
-const IMPACT_GLOW_SIZE_M = 14;
+// Beam visuals: the shared BeamRenderer (`src/components/VFX/beams.ts`, VFX plan §2 B2).
 
 // Highlight visuals
 const HIGHLIGHT_SEGMENTS = 96;
@@ -101,28 +93,6 @@ const MAX_PING_INDICATORS = 128;
 // --------------------
 // Colors (no arrays in JSX)
 // --------------------
-// ── Beam radiances on the photometric scale (LIGHTING_PLAN D26 step 1) ──────
-// MATERIAL radiance in game units, from `emissivePhotometry.ts` — each sprite's
-// own `opacity` envelope still applies on top. ⚠ Every magnitude here is
-// UNCHANGED from the authored triples (5,823 / 4,556 / 5,157 / 4,684 / 5,501
-// cd/m² at the material; 4,542 / 729 / 722 / 2,810 / 2,090 as rendered peaks).
-// What changed is that they are now STATED in cd/m² in one auditable table
-// instead of being bare RGB triples, so `__lum.emissives()` can check them and
-// Phase 8's energy-conserving glare can read them.
-//
-// 🔑 The most useful thing the audit found: matched on FLUX, the impact glow
-// emits 8.54e4 cd (effective area 18.2 m² once the alpha gradient and the 0.6
-// opacity are accounted for), which is a real ablation spot **6.3 cm across at
-// 3000 K** — or 14.6 cm at 2500 K. The authored number was already physically
-// right; it just never said so. ⚠ Do NOT "calibrate" it to the melt pool's own
-// 2.7e7 cd/m²; that asserts a centimetre-scale pool fills a 14 m sprite and
-// lands ~5,800× hot.
-const COLOR_BEAM_HALO = emitterColor("mining_beam_halo");
-const COLOR_BEAM_CORE = emitterColor("mining_beam_core");
-const COLOR_GLOW_MUZZLE = emitterColor("mining_muzzle");
-const COLOR_GLOW_IMPACT = emitterColor("mining_spot");
-const COLOR_PULSE = emitterColor("mining_pulse");
-
 const COLOR_HIGHLIGHT_HALO = new THREE.Color(0.35, 0.85, 1.0);
 const COLOR_HIGHLIGHT_CORE = new THREE.Color(0.85, 0.97, 1.0);
 const COLOR_HIGHLIGHT_ARC = new THREE.Color(0.7, 0.95, 1.0);
@@ -134,10 +104,23 @@ const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
 const _cameraKm = new THREE.Vector3();
 
-const _centerLocal = new THREE.Vector3();
-const _toCenter = new THREE.Vector3();
-const _beamEnd = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
+if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
+  // Dev probe for vfx-beam.mjs: the player's beam this frame, plus the nose axis it must follow.
+  (window as unknown as { __beam: unknown }).__beam = () => ({
+    ...miningBeamView, hit: miningBeamView.hit.value,
+    forward: shipView.forward.toArray(), radiusM: _beamHit.radiusM, t: _beamHit.t, castMs: _castMs,
+    // Hit point's distance from the rock centre / radius: 1.000 would be the bounding sphere.
+    surfOverR: Math.hypot(_beamHit.point[0] - _beamHit.center[0], _beamHit.point[1] - _beamHit.center[1],
+      _beamHit.point[2] - _beamHit.center[2]) / Math.max(_beamHit.radiusM, 1e-9),
+  });
+}
+/** Nearest beam hit this frame, and the field anchor (km) its field-local metres are relative to. */
+const _beamHit = createAsteroidRayHit();
+const _fieldHit = createAsteroidRayHit();
+let _beamHitAnchor: readonly number[] = [0, 0, 0];
+/** Last beam cast's CPU time, ms (dev probe). */
+let _castMs = 0;
 
 // Ship nose compute temps
 const _shipBox = new THREE.Box3();
@@ -271,61 +254,6 @@ function clamp01(x: number) {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
-function raySphereIntersectT(
-  origin: THREE.Vector3,
-  dir: THREE.Vector3,
-  center: THREE.Vector3,
-  radius: number
-): number | null {
-  _toCenter.copy(center).sub(origin);
-  const tca = _toCenter.dot(dir);
-  if (tca < 0) return null;
-
-  const d2 = _toCenter.lengthSq() - tca * tca;
-  const r2 = radius * radius;
-  if (d2 > r2) return null;
-
-  const thc = Math.sqrt(Math.max(r2 - d2, 0));
-  const t0 = tca - thc;
-  const t1 = tca + thc;
-
-  if (t0 >= 0) return t0;
-  if (t1 >= 0) return t1;
-  return null;
-}
-
-/**
- * Returns a point ON the true sphere surface if the ray hits either:
- * - true sphere (exact), or
- * - inflated aim sphere (approx; maps to true sphere in that direction)
- */
-function computeRayToAsteroidSurfacePoint(
-  origin: THREE.Vector3,
-  dir: THREE.Vector3,
-  center: THREE.Vector3,
-  trueRadius: number,
-  aimRadius: number,
-  outPoint: THREE.Vector3
-): boolean {
-  const tTrue = raySphereIntersectT(origin, dir, center, trueRadius);
-  if (tTrue !== null) {
-    outPoint.copy(origin).addScaledVector(dir, tTrue);
-    return true;
-  }
-
-  const tAim = raySphereIntersectT(origin, dir, center, aimRadius);
-  if (tAim !== null) {
-    _tmp.copy(origin).addScaledVector(dir, tAim);
-    _tmp.sub(center);
-    if (_tmp.lengthSq() < 1e-6) _tmp.set(0, 0, 1);
-    else _tmp.normalize();
-    outPoint.copy(center).addScaledVector(_tmp, trueRadius);
-    return true;
-  }
-
-  return false;
-}
-
 /**
  * Computes a stable "nose point" in the ship root's local space.
  * Ship forward is assumed to be +Z in model space.
@@ -376,222 +304,34 @@ export function computeShipNoseLocal(root: THREE.Object3D, out: THREE.Vector3): 
 type MiningBeamProps = {
   start: THREE.Vector3;
   end: THREE.Vector3;
-  progress01: number;
   /** Another pilot's beam (mutable): skipped while off; its pulse phase rides in `dim`. */
   remote?: { on: boolean; dim: boolean };
+  /** The beam ends on a surface (impact spot drawn); false = it runs to its full range. */
+  hit?: { value: boolean };
+  /** Laser power multiplier (B3): core radiance ∝ power, width ∝ power^¼. */
+  power?: number;
 };
 
-export const MiningBeam = ({ start, end, progress01, remote }: MiningBeamProps) => {
-  const coreRef = useRef<NativeLineHandle>(null);
-  const haloRef = useRef<NativeLineHandle>(null);
+/** Pulse-train envelope: sharp rise (τ 15 ms), quick fall (τ 40 ms) — B3's visible pulses. */
+function pulseEnvelope(): number {
+  const t = pulseCycleBuffer.timer;
+  if (!pulseCycleBuffer.pulsing) return 1;
+  return t < PULSE_ON_S ? 1 - Math.exp(-t / 0.015) : Math.exp(-(t - PULSE_ON_S) / 0.04);
+}
 
-  const muzzleRef = useRef<THREE.Sprite | null>(null);
-  const impactRef = useRef<THREE.Sprite | null>(null);
-  const pulseRefs = useRef<Array<THREE.Sprite | null>>([]);
-
-  const glowTexture = useMemo(() => {
-    const size = 64;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      const tex = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-      tex.needsUpdate = true;
-      return tex;
-    }
-
-    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    g.addColorStop(0.0, "rgba(255,255,255,1)");
-    g.addColorStop(0.2, "rgba(255,255,255,0.7)");
-    g.addColorStop(0.6, "rgba(255,255,255,0.15)");
-    g.addColorStop(1.0, "rgba(255,255,255,0)");
-
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, size, size);
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.needsUpdate = true;
-    return tex;
-  }, []);
-
-  const placeholderPoints = useMemo(
-    () => new Float32Array([0, 0, 0, 0, 0, 0]),
-    []
-  );
-
-  // ── Sprite materials, built imperatively (LIGHTING_PLAN D25 + D26) ─────────
-  // ⚠⚠ NOT `<spriteMaterial color={…}>`. The pre-exposure registry MUTATES
-  // `mat.color` every frame, and this component re-renders whenever
-  // `miningProgress01` ticks — so R3F would re-apply the declarative `color`
-  // prop and stamp the AUTHORED value back over this frame's pre-exposed one,
-  // several times a second. The visible result would be a beam that flickers
-  // between correct and 1/p× too dark, worst in exactly the dark scenes where
-  // pre-exposure is largest. A material under registry control must not also be
-  // under JSX control.
-  //
-  // Each pulse needs its OWN material because each animates its own opacity.
-  const spriteMats = useMemo(() => {
-    const make = (color: THREE.Color, opacity: number) =>
-      new THREE.SpriteMaterial({
-        map: glowTexture,
-        color,
-        transparent: true,
-        opacity,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: true,
-        toneMapped: false,
-      });
-    return {
-      muzzle: make(COLOR_GLOW_MUZZLE, 0.12),
-      impact: make(COLOR_GLOW_IMPACT, 0.45),
-      pulses: Array.from({ length: BEAM_PULSE_COUNT }, () =>
-        make(COLOR_PULSE, 0.2),
-      ),
-    };
-  }, [glowTexture]);
-
-  useEffect(() => {
-    const all = [spriteMats.muzzle, spriteMats.impact, ...spriteMats.pulses];
-    const unregister = all.map((m) => registerPreExposedEmissive(m));
-    return () => {
-      unregister.forEach((u) => u());
-      all.forEach((m) => m.dispose());
-    };
-  }, [spriteMats]);
-
-  useFrame(({ clock }) => {
+/**
+ * One mining beam, drawn by the shared BeamRenderer (VFX plan §2 B2) with its muzzle and
+ * impact as light points (B4). Player, co-op pilots and drones all go through `pushBeam`.
+ */
+export const MiningBeam = ({ start, end, remote, hit, power = 1 }: MiningBeamProps) => {
+  useFrame(() => {
     if (remote && !remote.on) return;
-    const t = clock.elapsedTime;
-
-    // Update line geometry every frame
-    const positions = [start.x, start.y, start.z, end.x, end.y, end.z];
-
-    coreRef.current?.setPositions(positions);
-    haloRef.current?.setPositions(positions);
-
-    // Vector start->end (for general beam metrics)
-    const sx = start.x, sy = start.y, sz = start.z;
-    const ex = end.x, ey = end.y, ez = end.z;
-
-    const dxSE = ex - sx;
-    const dySE = ey - sy;
-    const dzSE = ez - sz;
-    const len = Math.sqrt(dxSE * dxSE + dySE * dySE + dzSE * dzSE);
-
-    // Pulse mining: fade beam during "off" phase
-    const pulseOn = remote ? !remote.dim : pulseCycleBuffer.beamOn;
-    const pulseFade = pulseOn ? 1.0 : 0.08; // dim but visible during off-phase
-
-    // Beam intensity (keep subtle flicker for the beam itself)
-    const ramp = 0.65 + 0.35 * clamp01(progress01 * 1.25);
-    const flicker = 0.9 + 0.1 * Math.sin(t * 16.0 + len * 0.01);
-    const beamIntensity = ramp * flicker * pulseFade;
-
-    // Muzzle glow (small + dim)
-    if (muzzleRef.current) {
-      muzzleRef.current.position.copy(start);
-      const s = MUZZLE_GLOW_SIZE_M * (0.92 + 0.08 * Math.sin(t * 10.0));
-      muzzleRef.current.scale.set(s, s, 1);
-
-      const mat = muzzleRef.current.material as THREE.SpriteMaterial;
-      mat.opacity = 0.14 * beamIntensity;
-    }
-
-    // Impact glow (stronger)
-    if (impactRef.current) {
-      impactRef.current.position.copy(end);
-      const s = IMPACT_GLOW_SIZE_M * (0.9 + 0.2 * Math.sin(t * 11.0 + 1.7));
-      impactRef.current.scale.set(s, s, 1);
-
-      const mat = impactRef.current.material as THREE.SpriteMaterial;
-      mat.opacity = 0.6 * beamIntensity;
-    }
-
-    // Pulses: asteroid -> ship, linear and stable (no random jitter).
-    // Use end->start direction.
-    const dxES = sx - ex;
-    const dyES = sy - ey;
-    const dzES = sz - ez;
-
-    // Pulse alpha should NOT inherit the flicker; keep it clean.
-    const pulseBase = 0.38 * ramp;
-
-    for (let i = 0; i < BEAM_PULSE_COUNT; i++) {
-      const spr = pulseRefs.current[i];
-      if (!spr) continue;
-
-      // phase: 0 at asteroid (end), 1 at ship (start)
-      const phase = (t * BEAM_PULSE_SPEED + i / BEAM_PULSE_COUNT) % 1;
-
-      spr.position.set(ex + dxES * phase, ey + dyES * phase, ez + dzES * phase);
-
-      // Smooth fade-in/out near endpoints (prevents popping without “random flicker”)
-      const fadeIn = phase < 0.12 ? phase / 0.12 : 1;
-      const fadeOut = phase > 0.88 ? (1 - phase) / 0.12 : 1;
-      const alpha = Math.max(0, Math.min(1, fadeIn * fadeOut));
-
-      const s = BEAM_PULSE_SIZE_M * (0.9 + 0.25 * alpha);
-      spr.scale.set(s, s, 1);
-
-      const mat = spr.material as THREE.SpriteMaterial;
-      mat.opacity = pulseBase * alpha;
-    }
-
-    coreRef.current?.setOpacity(0.78 * beamIntensity);
-    haloRef.current?.setOpacity(0.16 * beamIntensity);
+    const intensity = remote ? (remote.dim ? 0 : 1) : pulseEnvelope();
+    if (intensity <= 0.002) return;
+    pushBeam(start.x, start.y, start.z, end.x, end.y, end.z, intensity, power);
+    pushBeamLights(start.x, start.y, start.z, end.x, end.y, end.z, hit ? hit.value : true, intensity, power);
   });
-
-  return (
-    <group renderOrder={2000}>
-      <NativeLineSegment
-        ref={haloRef}
-        points={placeholderPoints}
-        color={COLOR_BEAM_HALO}
-        opacity={0.16}
-        depthTest
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-        frustumCulled={false}
-      />
-
-      <NativeLineSegment
-        ref={coreRef}
-        points={placeholderPoints}
-        color={COLOR_BEAM_CORE}
-        opacity={0.78}
-        depthTest
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-        frustumCulled={false}
-      />
-
-      <sprite ref={muzzleRef}>
-        <primitive object={spriteMats.muzzle} attach="material" />
-      </sprite>
-
-      <sprite ref={impactRef}>
-        <primitive object={spriteMats.impact} attach="material" />
-      </sprite>
-
-      {spriteMats.pulses.map((mat, i) => (
-        <sprite
-          key={i}
-          ref={(el) => {
-            pulseRefs.current[i] = el;
-          }}
-        >
-          <primitive object={mat} attach="material" />
-        </sprite>
-      ))}
-    </group>
-  );
+  return null;
 };
 
 type AsteroidHighlightProps = {
@@ -739,10 +479,6 @@ const MiningSystem = () => {
   const beamStartLocalRef = useRef(new THREE.Vector3());
   const beamEndLocalRef = useRef(new THREE.Vector3());
 
-  // FIX: lock beam endpoint on the asteroid once mining starts
-  // Store as offset from asteroid center so it remains correct under world-origin recentering.
-  const lockedEndOffsetFromCenterRef = useRef(new THREE.Vector3(0, 0, 0));
-  const lockedEndForAsteroidIdRef = useRef<number | null>(null);
 
   const miningDurationSRef = useRef<number>(5);
   const miningDurationForAsteroidIdRef = useRef<number | null>(null);
@@ -1122,8 +858,55 @@ const MiningSystem = () => {
     return locked ?? best;
   }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
 
+  /** B1: nearest rock surface along a ray from `originLocal` (scene metres) → `_beamHit`. */
+  const castBeam = useCallback((originLocal: THREE.Vector3, dir: THREE.Vector3, maxM: number, target: TargetedAsteroid | null): boolean => {
+    const t0 = performance.now();
+    let best = maxM;
+    let found = false;
+    const wo = worldOrigin.worldOriginKm;
+    // The locked target first: its hit distance shortens the segment, so the field scan below
+    // culls almost every chunk (0.2–0.3 ms → measured below when on target).
+    if (target) {
+      const loc = target.location;
+      const chunk = asteroidRuntime.getFieldRuntime(loc.fieldId)?.getChunk(loc.chunkKey);
+      const a = fieldAnchorMap.get(loc.fieldId) ?? [0, 0, 0];
+      if (chunk && rayHitInstance((wo.x - a[0]) * 1000 + originLocal.x, (wo.y - a[1]) * 1000 + originLocal.y,
+        (wo.z - a[2]) * 1000 + originLocal.z, dir.x, dir.y, dir.z, chunk, loc.modelId, loc.localIndex, best, _fieldHit) < best) {
+        best = _fieldHit.t;
+        found = true;
+        copyHit(_fieldHit, _beamHit);
+        _beamHitAnchor = a;
+      }
+    }
+    asteroidRuntime.forEachField((fieldRuntime, fieldId) => {
+      const a = fieldAnchorMap.get(fieldId) ?? [0, 0, 0];
+      const ox = (wo.x - a[0]) * 1000 + originLocal.x;
+      const oy = (wo.y - a[1]) * 1000 + originLocal.y;
+      const oz = (wo.z - a[2]) * 1000 + originLocal.z;
+      if (castAsteroidRayInField(fieldRuntime.chunks, ox, oy, oz, dir.x, dir.y, dir.z, best, _fieldHit)) {
+        best = _fieldHit.t;
+        found = true;
+        copyHit(_fieldHit, _beamHit);
+        _beamHitAnchor = a;
+      }
+    });
+    _castMs = performance.now() - t0;
+    return found;
+  }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    // Dev micro-benchmark: average ms of `n` beam casts from the current pose (headless timers are 0.1 ms).
+    (window as unknown as { __beamBench: unknown }).__beamBench = (n = 200, withTarget = true) => {
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) castBeam(beamStartLocalRef.current, shipView.forward, MAX_TARGETING_DISTANCE_M, withTarget ? currentSnapshotRef.current : null);
+      return (performance.now() - t0) / n;
+    };
+  }, [castBeam]);
+
   useEffect(() => () => {
     miningBeamRequest.on = false;
+    miningBeamView.on = false;
   }, []);
 
   useFrame((_, delta) => {
@@ -1261,58 +1044,48 @@ const MiningSystem = () => {
         cancelMining = true;
         miningProgressRef.current = 0;
         miningAimLostTimeRef.current = 0;
-        lockedEndForAsteroidIdRef.current = null;
       } else {
-        _rayOrigin.copy(shipView.position);
-        _rayDir.copy(shipView.forward);
-
-        _centerLocal.set(
-          snapshot.positionLocal[0],
-          snapshot.positionLocal[1],
-          snapshot.positionLocal[2]
-        );
-
-        const aimRadius = snapshot.radiusM * MINING_AIM_RADIUS_SCALE + MINING_AIM_RADIUS_BONUS_M;
-
-        // FIX: lock a beam endpoint ONCE (when mining starts / target changes), then keep it fixed.
-        if (lockedEndForAsteroidIdRef.current !== snapshot.instanceId) {
-          const ok = computeRayToAsteroidSurfacePoint(
-            _rayOrigin,
-            _rayDir,
-            _centerLocal,
-            snapshot.radiusM,
-            aimRadius,
-            _beamEnd
+        // B1: the beam fires straight along the ship's forward axis from the mining socket and
+        // ends on the first rock SURFACE it meets (the drawn LOD0 mesh). It never bends;
+        // mining progresses only while that surface is the locked target.
+        const cfg = shipConfigRef.current;
+        const rangeM = MAX_TARGETING_DISTANCE_M * cfg.scannerRangeMult;
+        const start = beamStartLocalRef.current;
+        const hit = castBeam(start, shipView.forward, rangeM, snapshot);
+        const onTarget = hit && _beamHit.instanceId === snapshot.instanceId && _beamHit.chunkKey === snapshot.location.chunkKey;
+        if (hit) {
+          beamEndLocalRef.current.set(
+            (_beamHitAnchor[0] - worldOrigin.worldOriginKm.x) * 1000 + _beamHit.point[0],
+            (_beamHitAnchor[1] - worldOrigin.worldOriginKm.y) * 1000 + _beamHit.point[1],
+            (_beamHitAnchor[2] - worldOrigin.worldOriginKm.z) * 1000 + _beamHit.point[2],
           );
+        } else {
+          beamEndLocalRef.current.copy(start).addScaledVector(shipView.forward, rangeM);
+        }
+        const v = miningBeamView;
+        v.on = true;
+        v.hit.value = hit;
+        v.onTarget = onTarget;
+        start.toArray(v.start);
+        beamEndLocalRef.current.toArray(v.end);
+        if (hit) {
+          v.normal[0] = _beamHit.normal[0]; v.normal[1] = _beamHit.normal[1]; v.normal[2] = _beamHit.normal[2];
+          v.rock.fieldId = _beamHit.fieldId; v.rock.chunkKey = _beamHit.chunkKey; v.rock.instanceId = _beamHit.instanceId;
+        } else {
+          v.rock.instanceId = -1;
+        }
+        v.power = cfg.miningPowerMult;
 
-          if (ok) {
-            lockedEndOffsetFromCenterRef.current.copy(_beamEnd).sub(_centerLocal);
-          } else {
-            // Fallback: point facing the ship nose (still fixed once set)
-            lockedEndOffsetFromCenterRef.current.copy(beamStartLocalRef.current).sub(_centerLocal);
-            if (lockedEndOffsetFromCenterRef.current.lengthSq() < 1e-6) {
-              lockedEndOffsetFromCenterRef.current.set(0, 0, 1);
-            } else {
-              lockedEndOffsetFromCenterRef.current.normalize();
-            }
-            lockedEndOffsetFromCenterRef.current.multiplyScalar(snapshot.radiusM);
-          }
-
-          lockedEndForAsteroidIdRef.current = snapshot.instanceId;
-          // Apply mining speed multiplier to duration
-          miningDurationSRef.current =
-            computeMiningDurationS(snapshot.radiusM) / shipConfigRef.current.miningSpeedMult;
+        if (miningDurationForAsteroidIdRef.current !== snapshot.instanceId) {
+          miningDurationForAsteroidIdRef.current = snapshot.instanceId;
+          miningDurationSRef.current = computeMiningDurationS(snapshot.radiusM) / cfg.miningSpeedMult;
         }
 
-        // Always place beam end at the locked point (NOT at the camera ray each frame)
-        beamEndLocalRef.current.copy(_centerLocal).add(lockedEndOffsetFromCenterRef.current);
+        // A miss halts mining after one ray tick (grazing the outline must not stutter).
+        miningAimLostTimeRef.current = onTarget ? 0 : miningAimLostTimeRef.current + delta;
+        const hitting = miningAimLostTimeRef.current <= MINING_MISS_GRACE_S;
 
-        // Aim gating (must keep asteroid under reticle)
-        const aimed = raySphereIntersectT(_rayOrigin, _rayDir, _centerLocal, aimRadius) !== null;
-
-        if (aimed) {
-          miningAimLostTimeRef.current = 0;
-
+        {
           // --- Pulse mining cycle logic
           const isPulseMode = pulseMiningActiveRef.current &&
             getFlag(modifiersRef.current, "ability.pulseMiningEnabled");
@@ -1327,8 +1100,10 @@ const MiningSystem = () => {
             // Update shared buffer for beam visual
             pulseCycleBuffer.timer = pulseCycleTimerRef.current;
             pulseCycleBuffer.beamOn = beamFiring;
+            pulseCycleBuffer.pulsing = true;
           } else {
             pulseCycleBuffer.beamOn = true;
+            pulseCycleBuffer.pulsing = false;
           }
 
           // Heat and extraction rate come from the ship resource step (one thermal store,
@@ -1346,9 +1121,8 @@ const MiningSystem = () => {
             targetingTimeRef.current = 0;
             targetLostTimeRef.current = 0;
             currentSnapshotRef.current = null;
-            lockedEndForAsteroidIdRef.current = null;
             pulseCycleTimerRef.current = 0;
-          } else {
+          } else if (hitting) {
             miningProgressRef.current += work / miningDurationSRef.current;
           }
 
@@ -1384,34 +1158,17 @@ const MiningSystem = () => {
             targetLostTimeRef.current = 0;
             currentSnapshotRef.current = null;
 
-            lockedEndForAsteroidIdRef.current = null;
-          }
-        } else {
-          miningBeamRequest.on = false;
-          miningAimLostTimeRef.current += delta;
-
-          if (miningAimLostTimeRef.current > MINING_AIM_GRACE_S) {
-            // Lost aim => cancel mining and clear target
-            cancelMining = true;
-            miningProgressRef.current = 0;
-            miningAimLostTimeRef.current = 0;
-
-            targetIdRef.current = null;
-            targetingTimeRef.current = 0;
-            targetLostTimeRef.current = 0;
-            currentSnapshotRef.current = null;
-
-            lockedEndForAsteroidIdRef.current = null;
           }
         }
       }
     } else {
       miningProgressRef.current = 0;
       miningAimLostTimeRef.current = 0;
-      lockedEndForAsteroidIdRef.current = null;
       pulseCycleTimerRef.current = 0;
       pulseCycleBuffer.beamOn = true;
+      pulseCycleBuffer.pulsing = false;
     }
+    if (!isMiningNow || cancelMining) miningBeamView.on = false;
     if (!isMiningNow || cancelMining) miningBeamRequest.on = false;
     if (!miningBeamRequest.on) takeMiningWork();
 
@@ -1421,6 +1178,7 @@ const MiningSystem = () => {
       bp.on = isMiningNow && !cancelMining && miningStateRef.current.targetedAsteroid !== null && rp.atMs >= 0;
       if (bp.on) {
         bp.dim = !pulseCycleBuffer.beamOn;
+        bp.miss = !miningBeamView.hit.value;
         bp.atMs = rp.atMs;
         bp.frameId = rp.frameId;
         bp.relKm[0] = rp.relKm[0] + e.x / 1000;
@@ -1539,7 +1297,8 @@ const MiningSystem = () => {
         <MiningBeam
           start={beamStartLocalRef.current}
           end={beamEndLocalRef.current}
-          progress01={clamp01(miningState.miningProgress)}
+          hit={miningBeamView.hit}
+          power={shipConfig.miningPowerMult}
         />
       )}
     </>
