@@ -519,6 +519,7 @@ const SpaceShip = memo(() => {
       const th = shipRes.thermal;
       audioShipBuffer.bellK = th.bellK;
       audioShipBuffer.bellRateKps = th.bellRateKps;
+      audioShipBuffer.loopK = th.loopK;
       audioShipBuffer.loopRateKps = th.loopRateKps;
       audioShipBuffer.heat01 = shipRes.heat01;
     }

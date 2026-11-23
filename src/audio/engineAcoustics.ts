@@ -110,9 +110,9 @@ export const engineState = {
   fuelMult: 1,
   pumpCents: 0,
   pumpLevel: 0,
-  /** Thermal ticking rates, events/s (HEAT_SYSTEM_PLAN §4): bell pings and loop/hull ticks. */
-  bellPingRate: 0,
-  loopTickRate: 0,
+  /** Thermal ticking (HEAT_SYSTEM_PLAN §4): slips so far, for dev readouts. */
+  bellPings: 0,
+  hullTicks: 0,
   /** Coolant-loop bed level (0..1) and pitch, from the ship's heat store. */
   coolantLevel: 0,
   coolantCents: 0,
@@ -129,32 +129,58 @@ export function levelGain(db: number): number {
 // ── Transients (clock-driven on the tick, like pumpAlerts) ─────────────────
 const IGNITE_ON = 0.05;
 const CUTOFF_OFF = 0.02;
-/** Ticks per kelvin/s of node temperature change (thermoelastic slip ∝ |dT/dt|, both signs). */
-const BELL_PINGS_PER_KPS = 0.12;
-const LOOP_TICKS_PER_KPS = 0.25;
 /**
- * Stick-slip needs STORED thermal stress: a joint only slips once the part's expansion against its
- * mount beats friction. So bells ping only well above their idle temperature (fading in 250-450 K
- * above it), and mostly while CONTRACTING: a heating part expands freely, the classic tick is the
- * hot part cooling after a long run. MEASURED (owner, 2026-11-23): without this, a 5 s tap that
- * never moved the heat bar pinged ~15× during the burn and ~9× after.
+ * Thermal ticking as STICK-SLIP with hysteresis: a joint stores strain as its part changes
+ * temperature, slips once the stored change beats friction, then starts over; reversing direction
+ * relaxes it, so a heat level that merely hovers never ticks. MEASURED (owner, 2026-11-23): the
+ * first law (Poisson ∝ |dT/dt|) ticked ~75/min through two minutes of pulsed mining and ~140/min
+ * mining to trip — "too many ticks everywhere". Thresholds are per node, larger for heating
+ * (a heating part expands freely; the classic tick is contraction after a run), jittered ±40 %.
+ */
+export type Slip = { lastK: number; acc: number; jitter: number };
+export function createSlip(): Slip {
+  return { lastK: NaN, acc: 0, jitter: 1 };
+}
+
+/** One sample of a node; true when a joint slips. `gate` 0..1 scales how much strain is stored. */
+export function stepSlip(sl: Slip, tempK: number, heatK: number, coolK: number, gate = 1, rand: () => number = Math.random): boolean {
+  if (!Number.isFinite(tempK)) return false;
+  if (!Number.isFinite(sl.lastK)) {
+    sl.lastK = tempK;
+    return false;
+  }
+  const d = (tempK - sl.lastK) * Math.max(0, Math.min(1, gate));
+  sl.lastK = tempK;
+  if (d === 0) return false;
+  if (d * sl.acc < 0) sl.acc = 0;
+  sl.acc += d;
+  if (Math.abs(sl.acc) < (sl.acc > 0 ? heatK : coolK) * sl.jitter) return false;
+  sl.acc = 0;
+  sl.jitter = 0.6 + 0.8 * rand();
+  return true;
+}
+
+/** Bell (refractory shell at its mounts) and coolant-loop/hull slip thresholds, K. */
+export const BELL_SLIP_HEAT_K = 100;
+export const BELL_SLIP_COOL_K = 35;
+export const LOOP_SLIP_HEAT_K = 25;
+export const LOOP_SLIP_COOL_K = 14;
+/**
+ * The bells store slip strain only well above their idle temperature (fading in 250–450 K above
+ * it): a 5 s tap expands the shell freely and must not ping (owner listening pass, 2026-11-23).
  */
 const BELL_STRESS_FROM_K = 250;
 const BELL_STRESS_FULL_K = 450;
-const HEATING_PING_WEIGHT = 0.3;
 const BELL_IDLE_K = idleBellK(radiatorTempK(getResourceTuning().radiatorBaseKW, 1));
+export function bellStressGate(bellK: number): number {
+  return smoothstep(BELL_STRESS_FROM_K, BELL_STRESS_FULL_K, bellK - BELL_IDLE_K);
+}
+
 let burning = false;
 let burnS = 0;
 let lastMs = 0;
-
-/** Bell pings and loop ticks follow the thermal network's |dT/dt| (HEAT_SYSTEM_PLAN §4). */
-export function thermalTickRates(bellK: number, bellRateKps: number, loopRateKps: number): { bell: number; loop: number } {
-  const stress = smoothstep(BELL_STRESS_FROM_K, BELL_STRESS_FULL_K, bellK - BELL_IDLE_K);
-  const dir = bellRateKps > 0 ? HEATING_PING_WEIGHT : 1;
-  const bell = Math.min(5, BELL_PINGS_PER_KPS * Math.abs(bellRateKps) * stress * dir);
-  const loop = Math.min(3, LOOP_TICKS_PER_KPS * Math.abs(loopRateKps));
-  return { bell, loop };
-}
+const bellSlip = createSlip();
+const loopSlip = createSlip();
 
 /** Coolant pumps run up with the heat store; silent when the loop is idle (coasting stays silent). */
 export function coolantVoice(heat01: number): { level: number; cents: number } {
@@ -167,6 +193,9 @@ export function resetEngineTransients(): void {
   burning = audioShipBuffer.thrustCmd > IGNITE_ON;
   burnS = 0;
   lastMs = 0;
+  // A teleport/respawn is not a temperature change: re-seed the joints.
+  bellSlip.lastK = loopSlip.lastK = NaN;
+  bellSlip.acc = loopSlip.acc = 0;
 }
 
 let transientsEnabled = true;
@@ -202,9 +231,6 @@ export function updateEngineAcoustics(): void {
   const pump = pumpVoice(throttle, 1 / Math.max(1e-6, fuel.powerFrac));
   engineState.pumpCents = pump.cents;
   engineState.pumpLevel = pump.level;
-  const ticks = thermalTickRates(audioShipBuffer.bellK, audioShipBuffer.bellRateKps, audioShipBuffer.loopRateKps);
-  engineState.bellPingRate = ticks.bell;
-  engineState.loopTickRate = ticks.loop;
   const coolant = coolantVoice(audioShipBuffer.heat01);
   engineState.coolantLevel = coolant.level;
   engineState.coolantCents = coolant.cents;
@@ -223,18 +249,23 @@ export function updateEngineAcoustics(): void {
       if (burnS > 0.4) playAudio("ship.engine.cutoff", { queueOnUnlock: false });
     }
   }
-  // Thermal ticks: Poisson, rate from the network's |dT/dt| (at most one per source per tick).
-  const bellRate = Math.abs(audioShipBuffer.bellRateKps);
-  if (Math.random() < 1 - Math.exp(-ticks.bell * dt)) playAudio("ship.bell.ping", {
-    queueOnUnlock: false,
-    gainDb: -6 + 6 * Math.min(1, bellRate / 30),
-    pitchCents: (Math.random() - 0.5) * 1000,
-  });
-  if (Math.random() < 1 - Math.exp(-ticks.loop * dt)) playAudio("ship.hull.tick", {
-    queueOnUnlock: false,
-    gainDb: -4 + 4 * Math.min(1, Math.abs(audioShipBuffer.loopRateKps) / 8),
-    pitchCents: (Math.random() - 0.5) * 900,
-  });
+  // Thermal ticks: stick-slip on the sampled node temperatures (at most one per node per tick).
+  if (stepSlip(bellSlip, audioShipBuffer.bellK, BELL_SLIP_HEAT_K, BELL_SLIP_COOL_K, bellStressGate(audioShipBuffer.bellK))) {
+    engineState.bellPings++;
+    playAudio("ship.bell.ping", {
+      queueOnUnlock: false,
+      gainDb: -6 + 6 * Math.min(1, Math.abs(audioShipBuffer.bellRateKps) / 30),
+      pitchCents: (Math.random() - 0.5) * 1000,
+    });
+  }
+  if (stepSlip(loopSlip, audioShipBuffer.loopK, LOOP_SLIP_HEAT_K, LOOP_SLIP_COOL_K)) {
+    engineState.hullTicks++;
+    playAudio("ship.hull.tick", {
+      queueOnUnlock: false,
+      gainDb: -4 + 4 * Math.min(1, Math.abs(audioShipBuffer.loopRateKps) / 8),
+      pitchCents: (Math.random() - 0.5) * 900,
+    });
+  }
 }
 
 if (process.env.NODE_ENV === "development" && typeof globalThis !== "undefined") {

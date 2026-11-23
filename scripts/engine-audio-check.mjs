@@ -10,6 +10,7 @@ const atmo = await import("../src/sim/atmosphere.ts");
 const drive = await import("../src/sim/ship/atmoDrive.ts");
 const { DEFAULT_RESOURCE_TUNING: T } = await import("../src/sim/ship/resourceTuning.ts");
 
+const J = JSON.stringify;
 let fails = 0;
 const check = (name, ok, detail) => {
   if (!ok) fails++;
@@ -62,12 +63,36 @@ check("pump: sea-level reaction flow (~630×) = +1 oct, +3 dB", Math.abs(pa.cent
 check("pump: 45 km between vacuum and sea level", p40.cents > 300 && p40.cents < 1200, `${f1(p40.cents)} cents`);
 check("pump: half throttle is lower", ph.cents < 0, `${f1(ph.cents)} cents`);
 
-const hot = ea.thermalTickRates(1400, -31, 0), warm = ea.thermalTickRates(900, -5.3, 0), idle = ea.thermalTickRates(365, -0.01, 0);
-check("bell pings densest right after cutoff, sparse when warm, none at idle", hot.bell > 3 && warm.bell > 0.3 && warm.bell < 1 && idle.bell === 0,
-  `${hot.bell.toFixed(2)} / ${warm.bell.toFixed(2)} / ${idle.bell}/s`);
-check("heating pings weaker than cooling at the same rate", ea.thermalTickRates(1200, 25, 0).bell < 0.4 * ea.thermalTickRates(1200, -25, 0).bell);
-check("no pings below ~250 K over idle (a short tap stores no slip stress)", ea.thermalTickRates(548, -2, 0).bell === 0 && ea.thermalTickRates(548, 35, 0).bell === 0);
-check("loop ticks follow the loop's |dT/dt|", ea.thermalTickRates(365, 0, -6).loop > 1 && ea.thermalTickRates(365, 0, 0).loop === 0);
+// Stick-slip ticking, sampled at the 15 Hz audio tick through real thermal histories.
+{
+  const rs = await import("../src/sim/ship/resourceStep.ts");
+  const { createShipState } = await import("../src/sim/ship/shipState.ts");
+  const DT = 1 / 120;
+  const count = (activeS, setup, tail = 60) => {
+    const s = rs.createShipResourceState(T.tankKg, 0), ship = createShipState(), req = rs.createResourceRequests();
+    const b = ea.createSlip(), l = ea.createSlip();
+    let n = 0, bell = 0, loop = 0, rnd = 0.5;
+    const rand = () => (rnd = (rnd * 9301 + 49297) % 233280 / 233280);
+    for (let t = 0; t < activeS + tail; t += DT, n++) {
+      setup(t < activeS, ship, req, s);
+      rs.stepShipResources(s, ship, req, T, DT);
+      if (n % 8 === 0) {
+        if (ea.stepSlip(b, s.thermal.bellK, ea.BELL_SLIP_HEAT_K, ea.BELL_SLIP_COOL_K, ea.bellStressGate(s.thermal.bellK), rand)) bell++;
+        if (ea.stepSlip(l, s.thermal.loopK, ea.LOOP_SLIP_HEAT_K, ea.LOOP_SLIP_COOL_K, 1, rand)) loop++;
+      }
+    }
+    return { bell, loop };
+  };
+  const tap = count(5, (on, sh) => { sh.thrustMain = on ? 1 : 0; });
+  const burn = count(90, (on, sh) => { sh.thrustMain = on ? 1 : 0; });
+  const mine = count(14, (on, sh, rq) => { rq.miningBeam = on; });
+  const hover = count(120, (on, sh, rq, s) => { rq.miningBeam = on && s.heat01 < 0.85; });
+  console.log(`  ticks — 5 s tap ${J(tap)}, 90 s burn ${J(burn)}, mine-to-trip ${J(mine)}, 2 min mining held at 85 % ${J(hover)}`);
+  check("a 5 s tap neither pings nor ticks", tap.bell === 0 && tap.loop === 0);
+  check("a 90 s burn pings, sparingly (10–35)", burn.bell >= 10 && burn.bell <= 35, `${burn.bell}`);
+  check("mining to trip and cooling: a handful of hull ticks (3–10)", mine.loop >= 3 && mine.loop <= 10, `${mine.loop}`);
+  check("a heat level that hovers does not keep ticking (2 min, ≤ 10)", hover.loop <= 10, `${hover.loop}`);
+}
 check("coolant bed silent at idle, rises with heat01", ea.coolantVoice(0).level === 0 && ea.coolantVoice(1).level === 1 && ea.coolantVoice(0.5).cents === 250);
 
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS");

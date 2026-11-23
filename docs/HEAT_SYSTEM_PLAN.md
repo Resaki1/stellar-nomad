@@ -189,7 +189,16 @@ Euler, Planck × V(λ)) on 2026-11-23; corrections from that pass are folded in.
   thermal stress, so bell pings now fade in only 250–450 K above the bell's idle
   temperature and heating pings at 0.3× (a heating part expands freely; the
   classic tick is contraction after a long run). Expected pings during/after:
-  5 s burn 0/0, 15 s 6/21, 30 s 19/62, 90 s 24/81. Coolant loop bed (`ship.coolant.loop`, new preset): silent at idle,
+  5 s burn 0/0, 15 s 6/21, 30 s 19/62, 90 s 24/81. **Second revision (owner:
+  "too many ticks in general"):** the Poisson-∝-|dT/dt| law ticked ~140/min
+  mining to trip and ~75/min forever while heat hovered. Ticking is now
+  stick-slip with hysteresis (`stepSlip`): each node stores its temperature
+  change since the last slip, slips past a threshold (bells 100 K heating /
+  35 K cooling, loop 25 / 14 K, jittered ±40 %), and a reversal relaxes it.
+  Totals: 5 s tap 0; 90 s burn 30 pings; mining to trip + cool-down 9 ticks;
+  2 min of mining held near 85 % 7 ticks (was ~150). Live: hot bells
+  1,400 → 923 K in 30 s gave 15 pings; a full heat bar cooling gave 6 ticks.
+  Coolant loop bed (`ship.coolant.loop`, new preset): silent at idle,
   level 0.2→1 and +500 cents with heat01. The audio's private `soak` is gone.
 - Review (reviewer + adversarial verifier): confirmed and fixed — bells held out of
   the loop during transit burns (its predictor plans from heat01 alone), the

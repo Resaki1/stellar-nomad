@@ -45,6 +45,7 @@ export const audioShipBuffer = {
    *  bells'/loop's rates of change (K/s, signed), plus the heat store 0..1.3. */
   bellK: 0,
   bellRateKps: 0,
+  loopK: 0,
   loopRateKps: 0,
   heat01: 0,
   /** Plume "breathing" gain (≈1 ± 0.05–0.15), the exhaust's slow OU mode; AUDIO_PLAN §6.10.2. */
