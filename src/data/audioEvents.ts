@@ -231,8 +231,9 @@ export const AUDIO_EVENTS = [
   {
     id: "ship.engine.roar", bus: "sfxShip", tier: "ship",
     variants: ["/audio/workshop/ship_engine_roar_s24017.wav"],
-    // ⚠ +3 is a MIX trim (§6.10.3), not physics: puts the sea-level roar at parity with the rumble.
-    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: 3,
+    // ⚠ +8 is a MIX trim (§6.10.4), not physics: the sea-level roar must clearly dominate the
+    // rumble and the air-mode pump (first trim +3 was inaudible on earbuds, owner 2026-11-23).
+    priority: 50, maxInstances: 1, cooldownMs: 0, preloadTier: 1, gainDb: 8,
     loop: true, syncLoop: true
   },
   {

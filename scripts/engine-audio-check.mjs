@@ -58,7 +58,7 @@ const p0 = ea.pumpVoice(0, 1), pv = ea.pumpVoice(1, 1), pa = ea.pumpVoice(1, 1 /
 const p40 = ea.pumpVoice(1, 1 / R.earth45.pl.powerFrac);
 check("pump silent at zero throttle", p0.level === 0);
 check("pump: vacuum full throttle at base pitch, quiet", pv.cents === 0 && pv.level > 0.3 && pv.level < 0.4, `${pv.level.toFixed(2)}`);
-check("pump: sea-level reaction flow (~630×) = +1 oct, +6 dB", Math.abs(pa.cents - 1200) < 1e-6 && Math.abs(pa.level - 0.7) < 1e-9);
+check("pump: sea-level reaction flow (~630×) = +1 oct, +3 dB", Math.abs(pa.cents - 1200) < 1e-6 && Math.abs(pa.level - 0.5) < 1e-9);
 check("pump: 45 km between vacuum and sea level", p40.cents > 300 && p40.cents < 1200, `${f1(p40.cents)} cents`);
 check("pump: half throttle is lower", ph.cents < 0, `${f1(ph.cents)} cents`);
 

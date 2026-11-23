@@ -28,10 +28,10 @@
   "provenance": "Original procedural synthesis. No recordings, models, or third-party audio used.",
   "stats": {
     "peakDb": -7.999999988978489,
-    "rmsDb": -20.687209441483407,
-    "dc": -1.399128266675752e-9,
-    "seamDelta": 0.0014725998044013977,
-    "maxDelta": 0.023600533604621887,
+    "rmsDb": -20.52973260743752,
+    "dc": 1.2055937666449128e-9,
+    "seamDelta": 0.0010866224765777588,
+    "maxDelta": 0.039477682672441006,
     "finite": true,
     "silent": false
   }

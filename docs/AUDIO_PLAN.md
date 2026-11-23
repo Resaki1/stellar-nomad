@@ -1205,7 +1205,7 @@ opens: the jet itself is a huge noise source and its sound reaches the hull
 | Layer | Path | Driven by | Vacuum | Air |
 |---|---|---|---|---|
 | Thrust rumble (`ship.engine.idle/mid/high`, existing) | structure | throttle · plume breathing | ✔ | ✔ |
-| Feed machinery (`ship.engine.pump`) | structure | throttle, reaction-mass flow 1/powerFrac (water pumps + intake compression) | quiet whine | +6 dB, log-load, +1 oct at ≥ 100× flow |
+| Feed machinery (`ship.engine.pump`) | structure | throttle, reaction-mass flow 1/powerFrac (water pumps + intake compression) | quiet whine | +3 dB, log-load, +1 oct at ≥ 100× flow |
 | Ignition / cutoff (`ship.engine.ignite/cutoff`) | structure | throttle edges | ✔ | ✔ |
 | Thermal ticking (`ship.hull.tick`) | structure | heat soaked during a burn, decays τ 25 s | ✔ | ✔ |
 | Jet roar + crackle (`ship.engine.roar`) | air → hull | jet acoustic power, ambient ρc | silent | §6.10.1 |
@@ -1279,8 +1279,13 @@ adopted on physics. Rejected and kept: the feed-machinery law is an artistic
 compression (log load, +1 oct cap), not centrifugal affinity laws, and uses
 total reaction-mass flow (water pumps + intake compression); the crackle is a
 fixed 6 s pattern. **Timbre and levels are not signed off** — they need a
-listening pass. The roar's catalogue `gainDb +3` is a mix trim (sea-level
-roar ≈ rumble), not physics: the structure-borne rumble has no physical
+listening pass. The roar's catalogue `gainDb +8` is a mix trim, not physics.
+**Listening pass 1 (owner, AirPods Pro, 2026-11-23):** pump rise clearly heard,
+roar inaudible. MEASURED cause: the roar loop's energy was all < 80 Hz (−24 dB
+there, −45…−80 dB above), under the rumble (5 dB louder in that band), and the
+octave-up pump owned the mids. Fix: roar rebuilt around the hull-filtered band
+(100–250 Hz −25 dB, 250–700 Hz −28 dB), trim +3 → +8, pump air boost +6 → +3 dB.
+The trim is still a judgement: the structure-borne rumble has no physical
 anchor yet, so the interior/exterior balance is a judgement.
 
 ## 7. Music

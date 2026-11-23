@@ -87,14 +87,14 @@ export function shockBandWeight(hz: number): number {
 /**
  * Feed machinery pitch (cents) and level (0..1) from throttle and the reaction-mass flow ratio
  * (1/powerFrac: water pumps in thin air, intake compression in thick air). Load is logarithmic
- * in flow and saturates at 100× (+1 octave, full level).
+ * in flow and saturates at 100× (+1 octave, +3 dB — kept under the roar).
  */
 export function pumpVoice(throttle: number, flowRatio: number): { cents: number; level: number } {
   const t = Math.min(1, Math.max(0, throttle));
   const load = Math.min(1, Math.log10(Math.max(1, flowRatio)) / 2);
   const onset = smoothstep(0, 0.15, t);
   const cents = 1200 * Math.log2(0.5 + 0.5 * t) + 1200 * load;
-  return { cents, level: onset * (0.35 + 0.35 * load) };
+  return { cents, level: onset * (0.35 + 0.15 * load) };
 }
 
 export const engineState = {

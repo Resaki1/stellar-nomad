@@ -361,12 +361,14 @@ export function renderSound(input: Recipe): RenderedSound {
           * (0.86 + 0.14 * gust);
         detail = noise.airTop[i] * opening * (0.1 + bright * 0.2);
       } else if (preset.family === "roar") {
-        // Jet noise heard through a hull: the low band carries it, the mid air is
-        // already attenuated, crackle rides on top. No carrier — a tone reads as a motor.
+        // Jet noise heard through a hull: broadband mid roar over a lighter low band,
+        // crackle on top. No carrier — a tone reads as a motor.
         const cycles = (count: number) => count / duration;
         const surge = 0.85 + 0.09 * Math.cos(TAU * cycles(5) * t) + 0.06 * Math.sin(TAU * cycles(11) * t + phaseOffset);
-        body = noise.low[i] * surge * 1.3;
-        texture = noise.air[i] * (0.7 + 0.3 * surge) * (0.5 + bright);
+        // ⚠ The roar lives at ~150–600 Hz (pink, two-pole top): MEASURED, the first build put it
+        // all under 80 Hz, where the thrust rumble is 5 dB louder and buried it on earbuds.
+        body = noise.low[i] * surge * 0.45;
+        texture = (noise.airTop[i] * 1.1 + noise.air[i] * 0.35) * (0.75 + 0.25 * surge);
         detail = (crackle ? crackle[i] : 0) * (0.4 + bright * 0.6);
       } else if (preset.family === "jet") {
         body = noise.low[i] * 0.8 + Math.sin(p) * Math.exp(-t * 35) * 0.12;
