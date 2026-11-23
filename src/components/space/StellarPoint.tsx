@@ -16,8 +16,8 @@
 // Depth: when the renderer uses logarithmicDepthBuffer, THREE.js
 // derives log depth from its internal position pipeline — which
 // doesn't account for the runtime uniform scaling in our custom
-// vertexNode. We fix this by passing clip.w from the vertex shader
-// via a varying and computing log depth explicitly in depthNode.
+// vertexNode. We pass view z through a varying and compute three's
+// WebGPU log depth (viewZToLogarithmicDepth) explicitly in depthNode.
 //
 // Brightness is normalized so Jupiter at opposition from Earth
 // produces a comfortable HDR intensity (~magnitude −2.5).
@@ -44,8 +44,9 @@ import {
   exp,
   length,
   varying,
-  log2,
+  cameraNear,
   cameraFar,
+  viewZToLogarithmicDepth,
 } from "three/tsl";
 import { bodyIlluminanceAtCamera, getPreExposure } from "./photometry";
 import {
@@ -185,6 +186,8 @@ function StellarPoint({
 
   // Billboard half-extent (scaled units). Updated per frame.
   const uScale = useMemo(() => uniform(0.001), []);
+  // Body radius in scaled units: the point is pulled to the near limb (see the vertex node).
+  const uPull = useMemo(() => uniform(0), []);
   // HDR intensity multiplier. Updated per frame from physics.
   const uBrightness = useMemo(() => uniform(0.0), []);
   // Planet tint colour (constant per body).
@@ -247,12 +250,17 @@ function StellarPoint({
 
     const worldCenter = modelWorldMatrix.mul(vec4(0, 0, 0, 1));
 
-    // Varying to forward clip W to the fragment shader for log depth.
-    const vLogZ = varying(float(1.0), "v_stellarLogZ");
+    // View-space z to the fragment shader for log depth.
+    const vViewZ = varying(float(-1.0), "v_stellarViewZ");
 
     // ── Vertex: view-aligned billboard scaled by uniform ──
     m.vertexNode = Fn(() => {
-      const viewCenter = cameraViewMatrix.mul(worldCenter);
+      // At the body's NEAR LIMB, not its centre: the point stands in for the whole disc, and
+      // with correct depth the body's own billboard would hide a centred point. Nearer bodies
+      // still occlude it.
+      const vc = cameraViewMatrix.mul(worldCenter);
+      const dc = length(vc.xyz).max(1e-9);
+      const viewCenter = vec4(vc.xyz.mul(dc.sub(uPull).max(dc.mul(0.01)).div(dc)), 1);
       const viewPos = viewCenter.add(
         vec4(
           positionGeometry.x.mul(uScale),
@@ -262,17 +270,14 @@ function StellarPoint({
         ),
       );
       const clip = cameraProjectionMatrix.mul(viewPos);
-      // Pass W+1 for logarithmic depth — must match THREE.js internal
-      // formula: gl_FragDepth = log2(w+1) * 2/(log2(far+1)) * 0.5
-      vLogZ.assign(clip.w.add(1.0));
+      vViewZ.assign(viewPos.z);
       return clip;
     })();
 
-    // Explicit logarithmic depth output. Without this, the renderer's
-    // log depth uses the internal position pipeline which doesn't see
-    // the uniform scaling applied in our custom vertexNode.
-    const logDepthBufFC = float(2.0).div(log2(cameraFar.add(1.0)));
-    m.depthNode = log2(vLogZ).mul(logDepthBufFC).mul(0.5);
+    // Explicit logarithmic depth (the custom vertexNode bypasses three's). ⚠ three's WebGPU
+    // formula, log2(−z/near)/log2(far/near): this used WebGL's log2(w+1)·2/log2(far+1)·½, a
+    // different scale, so occlusion by nearer bodies was wrong (same trap as LightPoints).
+    m.depthNode = viewZToLogarithmicDepth(vViewZ, cameraNear, cameraFar);
 
     // ── Fragment: bright HDR core, alpha falls off for alphaHash ──
     m.fragmentNode = Fn(() => {
@@ -309,7 +314,7 @@ function StellarPoint({
     })();
 
     return m;
-  }, [uScale, uBrightness, uColor]);
+  }, [uScale, uPull, uBrightness, uColor]);
 
   const meshRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
 
@@ -411,6 +416,7 @@ function StellarPoint({
     const tanPerPx = (2 * Math.tan(fovRad / 2)) / screenH;
     const minHalf = distScaled * (MIN_SCREEN_PX * 0.5) * tanPerPx;
     uScale.value = minHalf * 2; // PlaneGeometry spans ±0.5
+    uPull.value = radiusKm * 0.001 * 1.01;
 
     // ── Illuminance → sprite radiance, flux-conserving ────────────────────────
     // `E / (θ_h² · I)` — the same shape `StarField` uses for stars, whose gate
