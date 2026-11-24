@@ -356,6 +356,23 @@ dimmer on the whole key light. Choices and measurements:
 - Not covered: stations, drones and ships as **occluders** (they only receive): their
   shapes are not spheres, which is S2's job. Far-tier (LOD1) rocks don't receive.
 
+**S3 measurements (2026-11-24, not landed; code on local branch `s3-spill-experiment`).**
+Fixture: replication point at 80 m, key light forced off (`vfx-spill.mjs`), local-scene pass
+`--perf`, baseline 3.2–3.6 ms. Every lamp, beacon, beam impact and (pushed) remote exhaust
+already flows through `lightPointBuffer` with a calibrated intensity, so source selection is
+trivial (top-N by I/d² from the camera, local impact claims its spot); the cost is the hard part:
+- **PointLight pool:** 1 light +0.2 ms, 3 lights **+1.7 ms**, 6 lights +1.4 ms: a cliff on top
+  of the scene's ~9 existing lights, not a per-light cost. Visually right: the lamps light the
+  hull panels round them (+48 luma in the box, identical in sun and shadow: additive, 0.3 % of
+  a sunlit station).
+- **Material-side Lambert term** (uniform array, added to the receivers' emissive): copies of
+  the materials are free, the loop is not: ~0.13 ms per source (station overdraw); 8 sources
+  range-culled to 1 lux: +0.43 ms. And ~20× weaker than the point lights: the hulls are
+  metallic, so lamp spill is mostly specular, which a diffuse term drops.
+- **Next (owner decision):** bake static lamp spill in Blender (the plan's original S3 line:
+  zero runtime cost, occlusion included) + at most one pooled PointLight (+0.2 ms) for dynamic
+  sources (impacts, remote exhausts, beacons' flash), crossfaded on handover.
+
 **Status (2026-11-24): S2 landed** (`src/components/space/keyShadowMap.ts`). three's own
 `ShadowNode` on the key light, multiplied into the S1 node: 2048², orthographic ±150 m
 (0.15 m texels), 3 km depth slab, centred on the ship and snapped to whole texels in light
@@ -893,7 +910,7 @@ Gates per phase: `vfx-lights.mjs` (§1), `vfx-beam.mjs` (§2–§3), `vfx-shadow
 | 11 | **E3–E4** regimes + halo | 9, 10 | |
 | 12 | ~~**S2** shadow map~~ done (+0.3 ms) | measure | 0.3–1 ms budget item |
 | 13 | **E5** shimmer pass | 11, measure | New full-screen pass |
-| 14 | **S3** emissive spill | 12 | Light only matters in shadow, which S1/S2 now make dark |
+| 14 | **S3** emissive spill (measured, see §4: bake + 1 light) | 12 | Light only matters in shadow, which S1/S2 now make dark |
 | — | E5 shimmer, E6 contrails, E7 re-entry plasma | landings milestone | Owner, 2026-11-24: deferred to planetary landings, with the in-atmosphere flight model and its fuel use |
 | — | §7 light delay, B3 tier colours | later | B3 deferred by the owner 2026-11-24 |
 
