@@ -68,10 +68,16 @@ export function installWorldBridge(store: Store): void {
         if (e.to === local) store.set(addToastAtom, { kind: "success", message: "Supplies received",
           detail: getWorldState().members[e.by]?.name, values: [{ id: e.itemId, amount: e.amount, unit: e.kind === "fuel" ? "kg" : undefined }] });
         break;
-      case "expedition.marked":
-        store.set(rendezvousAtom, getWorldState().rendezvous);
+      case "expedition.marked": {
+        const fixes = getWorldState().rendezvous;
+        // A crewmate's new ping announces itself (the sound comes from the notification).
+        if (e.by && e.by !== local && fixes[e.by] && JSON.stringify(fixes[e.by]) !== JSON.stringify(store.get(rendezvousAtom)[e.by])) {
+          store.set(addToastAtom, { kind: "info", message: "Crew ping", detail: `${getWorldState().members[e.by]?.name || "Replicant"} · ${fixes[e.by].name}` });
+        }
+        store.set(rendezvousAtom, fixes);
         refreshFixTarget();
         break;
+      }
       case "wreck.created":
       case "wreck.changed":
       case "wreck.removed":

@@ -45,7 +45,7 @@ export interface Telemetry {
   propellant?: { ordinaryKg: number; protectedKg: number };
   power?: { capacitor01: number; heat01: number };
   processing?: { id: string; elapsedS: number; committedKg: number };
-  prefs?: { commsPlayed?: string[]; starMarkers?: string[]; aiName?: string | null; trackedProject?: string | null };
+  prefs?: { commsPlayed?: string[]; starMarkers?: string[]; aiName?: string | null; trackedProject?: string | null; trackedMarkers?: string[] };
 }
 
 export interface PoseMsg {
@@ -221,6 +221,7 @@ export function decodeTelemetry(v: unknown): Telemetry | null {
       if (p.trackedProject !== null && !isStr(p.trackedProject, 64)) return null;
       prefs.trackedProject = p.trackedProject as string | null;
     }
+    if (p.trackedMarkers !== undefined && !(prefs.trackedMarkers = strList(p.trackedMarkers, 8))) return null;
     out.prefs = prefs;
   }
   return out;

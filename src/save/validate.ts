@@ -167,7 +167,7 @@ function sanitizeRendezvous(v: unknown): WorldState["rendezvous"] {
   const entries = Object.entries(v).slice(0, MAX_MEMBERS).flatMap(([id, fix]) => {
     if (!isObj(fix) || typeof fix.frameId !== "string" || typeof fix.name !== "string") return [];
     const positionKm = position(fix.positionKm);
-    return positionKm ? [[id, { frameId: fix.frameId, positionKm, name: fix.name.slice(0, 40), sourceId: typeof fix.sourceId === "string" ? fix.sourceId : null }]] : [];
+    return positionKm ? [[id, { frameId: fix.frameId, positionKm, name: fix.name.slice(0, 40), sourceId: typeof fix.sourceId === "string" ? fix.sourceId : null, ...(fix.bearing === true && { bearing: true }) }]] : [];
   });
   return Object.fromEntries(entries);
 }
@@ -392,6 +392,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
     replication: { activeId: isObj(v.replication) && typeof v.replication.activeId === "string" && v.replication.activeId !== "" ? v.replication.activeId : STARTER_POINT_ID },
     lastLoss: sanitizeLoss(v.lastLoss),
     trackedProject: typeof v.trackedProject === "string" && v.trackedProject.length <= 64 ? v.trackedProject : null,
+    trackedMarkers: strArray(v.trackedMarkers).filter((id) => id.length <= 200).slice(0, 8),
     stream: sanitizeStream(v.stream),
   };
 }

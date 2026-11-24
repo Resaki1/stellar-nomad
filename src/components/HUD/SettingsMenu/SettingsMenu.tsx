@@ -68,11 +68,13 @@ import {
 
 import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import CoopSettings from "@/components/Coop/CoopSettings";
+import MarkerSettings from "./MarkerSettings";
 
 enum SubMenu {
   Graphics = "graphics",
   Audio = "audio",
   Controls = "controls",
+  Markers = "markers",
   Friends = "friends",
   Dev = "dev",
 }
@@ -110,6 +112,8 @@ const renderSubMenu = (
       return <AudioSettings />;
     case SubMenu.Friends:
       return <CoopSettings />;
+    case SubMenu.Markers:
+      return <MarkerSettings />;
     case SubMenu.Controls:
       return <ControlsSettings settings={settings} setSettings={setSettings} onResetKeybinds={onResetKeybinds} />;
     case SubMenu.Dev:

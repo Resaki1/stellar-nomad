@@ -32,8 +32,7 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { industryAtom } from "@/store/industry";
 import { replicationPointsAtom } from "@/store/replicationMirror";
-import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, trackedDronePoiAtom } from "@/store/industryHud";
-import { poiBuffer } from "@/store/poi";
+import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, droneLiveKm } from "@/store/industryHud";
 import { DroneMotion, MiningLegClock, smoothProgress } from "./droneMotion";
 import { DRONE_LOD_DISTANCES_M, useDroneRenderAssets, type DroneRenderAssets } from "./DroneModel";
 import { DEPOT_COLLISION_ASSET, DEPOT_LOD_ASSETS, DEPOT_LOD_DISTANCES_M, refineryMountMatrix, useDepotRenderAssets, type DepotRenderAssets } from "./DepotModel";
@@ -392,13 +391,11 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
       pose.correction.set(0, 0, 0);
       clock.reset();
     }
-    if (poiBuffer.pinnedId === g.name) {
-      const bearing = store.get(trackedDronePoiAtom);
-      if (bearing?.id === g.name) {
-        scenePosition(home, w, _origin);
-        _direction.subVectors(g.position, _origin).multiplyScalar(0.001)
-          .add(_offset.fromArray(home.positionKm)).toArray(bearing.positionKm);
-      }
+    const live = droneLiveKm.get(g.name);
+    if (live && live.frameId === home.frameId) {
+      scenePosition(home, w, _origin);
+      _direction.subVectors(g.position, _origin).multiplyScalar(0.001)
+        .add(_offset.fromArray(home.positionKm)).toArray(live.positionKm);
     }
     if (!drawn.current) {
       g.quaternion.copy(_orientation);

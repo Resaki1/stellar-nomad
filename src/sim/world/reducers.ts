@@ -209,10 +209,16 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       } else {
         const source = op.sourceId === null ? null : world.discoveries.sources.find(s => s.id === op.sourceId && !s.depleted);
         if (op.sourceId !== null && !source) return reject("not_found");
-        const location = source ?? p.ship;
+        const at = op.at;
+        if (at !== undefined && (typeof at !== "object" || at === null || !isFrameId(at.frameId) || !Array.isArray(at.positionKm) ||
+            at.positionKm.length !== 3 || !at.positionKm.every(x => typeof x === "number" && Number.isFinite(x) && Math.abs(x) <= 1e12))) {
+          return reject("invalid");
+        }
+        const location = source ?? at ?? p.ship;
         if (!location || !isFrameId(location.frameId) || p.isDead) return reject("not_active");
         fixes[by] = { name: op.name.trim().slice(0, 40) || "Rendezvous", frameId: location.frameId,
-          positionKm: [...location.positionKm], sourceId: op.sourceId };
+          positionKm: [location.positionKm[0], location.positionKm[1], location.positionKm[2]], sourceId: op.sourceId,
+          ...(!source && at?.bearing === true && { bearing: true }) };
       }
       return { result: { type: op.type }, apply: () => { world.rendezvous = fixes; },
         events: [{ type: "expedition.marked", by }], playerKeys: [] };

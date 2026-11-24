@@ -66,7 +66,7 @@ const PILL_LAYOUT = `(() => {
   if (!p) return { pill: null, overlaps: [] };
   const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   const onScreen = r => r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
-  const sel = [".hud__panel-btn", ".cargo-hud", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".poi-marker--pilot"];
+  const sel = [".hud__panel-btn", ".cargo-hud", ".objective-tracker", ".settings__open-button", ".notif-stack__item", ".hint-strip", ".mk--pilot"];
   const overlaps = [];
   for (const s of sel) for (const el of document.querySelectorAll(s)) {
     const r = vis(el);
@@ -826,12 +826,14 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     }
     await host.send("Emulation.setDeviceMetricsOverride", DESKTOP);
     await host.sleep(300);
-    const green = (c) => /^rgba?\(95, 211, 138/.test(c ?? "");
+    // Pilots wear their slot tint (data/markerCategories.ts PILOT_TINTS, Okabe–Ito).
+    const TINTS = ["86, 180, 233", "230, 159, 0", "0, 158, 115", "204, 121, 167", "213, 94, 0"];
+    const tinted = (c) => TINTS.some((t) => (c ?? "").startsWith(`rgb(${t}`) || (c ?? "").startsWith(`rgba(${t}`));
     const checks = {};
     for (const [label, o] of Object.entries(out)) {
       checks[`name${label}`] = !!o.marker && o.marker.name === guestName;
       checks[`distance${label}`] = !!o.marker && /\d/.test(o.marker.distance) && /(m|km|AU|ly)$/.test(o.marker.distance.trim());
-      checks[`green${label}`] = !!o.marker && green(o.marker.color) && !!o.arrow && green(o.arrow.color);
+      checks[`tint${label}`] = !!o.marker && tinted(o.marker.color) && !!o.arrow && o.arrow.color === o.marker.color;
       checks[`edge${label}`] = o.arrowOnEdge;
       checks[`notTargeted${label}`] = !String(o.targeted ?? "").startsWith("pilot:");
     }

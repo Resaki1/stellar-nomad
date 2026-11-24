@@ -5,6 +5,7 @@
  * The POIMarkers (HUD component) reads them via rAF for smooth updates.
  */
 
+import type { MarkerCategory } from "@/data/markerCategories";
 import type { FrameId } from "@/sim/frames";
 import type { TransitFieldArrival } from "@/sim/ship/transitDrive";
 import { atom } from "jotai";
@@ -18,6 +19,8 @@ export function isStructurePoi(id: string): boolean {
 
 export type POIDef = {
   id: string;
+  /** Shape, priority, filter group and scope come from `MARKER_CATEGORIES`. */
+  category: MarkerCategory;
   name: string;
   /** System-frame km, or relative to `frameId` when set. A LIVE array for bodies/fields. */
   positionKm: [number, number, number];
@@ -34,8 +37,14 @@ export type POIDef = {
   field?: TransitFieldArrival;
   /** Drawn object's radius (km): the marker label sits below its on-screen disc, not on its glow. */
   objectRadiusKm?: number;
-  /** "pilot": another player's ship (green, name always shown). */
-  kind?: "pilot" | "depot" | "drone";
+  /** Owner colour (pilot slot tint) for pilots and pings. */
+  tint?: string;
+  /** One-letter owner tag drawn inside the glyph (pilots, pings). */
+  initial?: string;
+  /** Your active replication point (a state, never a suffix on the name). */
+  active?: boolean;
+  /** A direction, not a place: no distance shown (a ping into empty space). */
+  bearing?: boolean;
   /** False: gaze never makes it a transit destination. */
   targetable?: boolean;
   /** Bodies: the marker yields once the disc's on-screen radius passes this fraction of the viewport height. */
@@ -59,7 +68,21 @@ export type ProjectedPOI = {
   focused: boolean;
   /** On-screen radius of the drawn object as a fraction of viewport height (0 when none). */
   objectRadiusFrac: number;
-  kind?: "pilot" | "depot" | "drone";
+  category: MarkerCategory;
+  tint: string | null;
+  initial: string | null;
+  active: boolean;
+  bearing: boolean;
+  /** Tracked by this pilot (edge arrow, any range). */
+  tracked: boolean;
+  /** Behind a celestial body (drawn dimmed, no label). */
+  occluded: boolean;
+  /** Show the name without focus (category rule, density, or the reveal key). */
+  labelled: boolean;
+  /** Draw an edge arrow while off screen. */
+  edge: boolean;
+  /** Your structures in this body's frame, hidden here by their local scope. */
+  badge: number;
 };
 
 /**
@@ -88,6 +111,8 @@ export const poiBuffer = {
   ignoreGazeUntilLookAway: null as string | null,
   /** Transit ETA in seconds for the targeted POI (null if not targeted). */
   targetedEtaS: null as number | null,
+  /** The marker nearest the nose this frame (any, targetable or not): what a ping points at. */
+  aimed: null as { id: string; name: string; frameId?: FrameId; positionKm: [number, number, number] } | null,
   /** Gaze progress 0..1 toward locking a new POI target. */
   gazeProgress: 0,
   /** True while the player is actively gazing at a POI that isn't yet targeted. */

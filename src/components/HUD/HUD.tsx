@@ -28,6 +28,7 @@ import Hotbar from "./Hotbar/Hotbar";
 import ObjectiveTracker from "./ObjectiveTracker/ObjectiveTracker";
 import ProjectsPanel from "./ProjectsPanel/ProjectsPanel";
 import { sampleGlanceAtom } from "@/store/sites";
+import MarkerControls from "./POIMarkers/MarkerControls";
 import POIMarkers from "./POIMarkers/POIMarkers";
 import DeathScreen from "./DeathScreen/DeathScreen";
 import { isDeadAtom } from "@/store/death";
@@ -232,6 +233,7 @@ export default function HUD() {
     <div className={`hud${hudHidden ? " hud--hidden" : ""}${dead ? " hud--dead" : ""}`}>
       <DamageVignette />
       <POIMarkers />
+      <MarkerControls />
       <ShipDashboard />
       <FlightHud />
       <Reticle />

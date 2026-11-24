@@ -5,6 +5,7 @@
  * with their plume and mining beam, their POI markers, and the host clock follower. Renders
  * nothing while solo.
  */
+import { pilotTint } from "@/data/markerCategories";
 import { HOST_SILENCE_MS, POSE_BEAM_MISS } from "@/sim/session/protocol";
 import { Suspense, memo, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
@@ -316,11 +317,14 @@ function RemoteShips() {
         const d = defs.get(id);
         if (d) {
           d.name = memberName(id);
+          d.initial = d.name.trim().charAt(0).toUpperCase() || "?";
           continue;
         }
         const l = remotePoses.get(id)!.at(-1)!;
+        const name = memberName(id);
         defs.set(id, {
-          id: `pilot:${id}`, name: memberName(id), kind: "pilot", targetable: false,
+          id: `pilot:${id}`, name, category: "pilot", targetable: false,
+          tint: pilotTint(id, Object.keys(getActiveSave()?.data.world.members ?? {})), initial: name.trim().charAt(0).toUpperCase() || "?",
           positionKm: [l.p[0], l.p[1], l.p[2]], frameId: l.f as FrameId,
           // No objectRadiusKm: the label stays under the diamond like every POI (a hull radius pushed it onto our own ship up close).
           minDistanceKm: 0, maxDistanceKm: PILOT_MAX_KM,

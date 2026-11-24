@@ -1,5 +1,6 @@
 import { atom } from "jotai";
 import { selectAtom } from "jotai/utils";
+import { trackedMarkersAtom } from "@/store/markerPrefs";
 import { Vector3 } from "three";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
@@ -100,38 +101,51 @@ export function depotPoi(depot: DepotRecord): POIDef {
     minDistanceKm: 0,
     maxDistanceKm: 2e6,
     arrivalOffsetKm: 0.8,
-    kind: "depot",
+    objectRadiusKm: 0.06,
+    category: "depot",
   };
 }
 
-/** The projector and the rendered drone share this frame-relative tuple while pinned. */
+/**
+ * Live frame-relative positions of tracked drones, keyed by marker id: IndustryWorld writes the
+ * rendered drone into its tuple every frame, and the marker def holds the same tuple.
+ */
+export const droneLiveKm = new Map<string, { frameId: string; positionKm: [number, number, number] }>();
+
 export function dronePoi(drone: DroneRecord, home: DepotRecord, number: number): POIDef {
+  const id = `drone:${drone.id}`;
+  let live = droneLiveKm.get(id);
+  if (!live || live.frameId !== home.frameId) {
+    live = { frameId: home.frameId, positionKm: [...home.positionKm] };
+    droneLiveKm.set(id, live);
+  }
   return {
-    id: `drone:${drone.id}`,
+    id,
     name: `${home.name} · Drone ${number}`,
-    positionKm: [...home.positionKm],
+    positionKm: live.positionKm,
     frameId: isFrameId(home.frameId) ? home.frameId : undefined,
     minDistanceKm: 0,
     maxDistanceKm: Infinity,
-    kind: "drone",
+    category: "drone",
     targetable: false,
   };
 }
 
-const droneBearingAtom = atom(get => {
-  const target = get(targetedPOIAtom);
-  if (!target?.id.startsWith("drone:")) return null;
+/** Markers for the drones this pilot tracks (Industry → Drones → Track). */
+const trackedDronePoisRawAtom = atom((get): POIDef[] => {
+  const tracked = get(trackedMarkersAtom);
+  if (!tracked.some((id) => id.startsWith("drone:"))) return [];
   const { depots, drones } = get(industryAtom);
-  const drone = drones.find(d => d.id === target.id.slice(6));
-  const home = drone && depots.find(d => d.id === drone.homeId);
-  if (!home || !drone) return null;
-  const number = drones.filter(d => d.homeId === home.id).indexOf(drone) + 1;
-  const poi = dronePoi(drone, home, number);
-  poi.positionKm = target.positionKm as POIDef["positionKm"];
-  return poi;
+  const out: POIDef[] = [];
+  for (const drone of drones) {
+    if (!tracked.includes(`drone:${drone.id}`)) continue;
+    const home = depots.find(d => d.id === drone.homeId);
+    if (home) out.push(dronePoi(drone, home, drones.filter(d => d.homeId === home.id).indexOf(drone) + 1));
+  }
+  return out;
 });
-export const trackedDronePoiAtom = selectAtom(droneBearingAtom, poi => poi, (a, b) =>
-  a?.id === b?.id && a?.positionKm === b?.positionKm && a?.name === b?.name && a?.frameId === b?.frameId);
+export const trackedDronePoisAtom = selectAtom(trackedDronePoisRawAtom, (pois) => pois, (a, b) => a.length === b.length &&
+  a.every((p, i) => p.id === b[i].id && p.name === b[i].name && p.frameId === b[i].frameId && p.positionKm === b[i].positionKm));
 
 export const depotPoisAtom = selectAtom(industryAtom, state => state.depots.map(depotPoi), (before, after) =>
   before.length === after.length && before.every((poi, i) => poi.id === after[i].id && poi.name === after[i].name &&

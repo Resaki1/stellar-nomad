@@ -630,6 +630,7 @@ export class HostSession {
       if (t.prefs.starMarkers) p.starMarkers = t.prefs.starMarkers;
       if (t.prefs.aiName !== undefined) p.aiName = t.prefs.aiName;
       if (t.prefs.trackedProject !== undefined) p.trackedProject = t.prefs.trackedProject;
+      if (t.prefs.trackedMarkers) p.trackedMarkers = t.prefs.trackedMarkers;
     }
     const member = this.conns.get(this.bound.get(pid) ?? "");
     // An in-flight sample from the destroyed hull must not replace the committed recovery pose or fuel.

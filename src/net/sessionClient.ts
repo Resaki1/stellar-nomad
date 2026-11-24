@@ -32,7 +32,7 @@ export function collectTelemetry(): Telemetry | undefined {
     health: p.health, receivedFuelKg: p.receivedFuelKg, depositedFuelKg: p.depositedFuelKg, reservedFuelKg: shipReq.reservedKg,
     propellant: { ordinaryKg: p.propellant.ordinaryKg, protectedKg: p.propellant.protectedKg },
     power: { capacitor01: p.power.capacitor01, heat01: p.power.heat01 },
-    prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject },
+    prefs: { commsPlayed: p.commsPlayed.slice(-512), starMarkers: p.starMarkers.slice(-256), aiName: p.aiName, trackedProject: p.trackedProject, trackedMarkers: p.trackedMarkers },
   };
   if (p.ship) tel.pose = { frameId: p.ship.frameId, positionKm: [...p.ship.positionKm], quaternion: [...p.ship.quaternion] };
   // A finished runtime retains the batch ID and final yield until the next batch starts.

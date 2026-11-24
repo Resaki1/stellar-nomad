@@ -165,6 +165,8 @@ export interface Rendezvous {
   positionKm: Vec3Tuple;
   name: string;
   sourceId: string | null;
+  /** A direction, not a place (a ping into empty space): drawn without a distance. */
+  bearing?: boolean;
 }
 
 export interface WorldMember {
@@ -324,6 +326,8 @@ export interface PlayerState {
   lastLoss: LossRecord | null;
   /** Schema 5: the player's tracked project id (src/data/projects.ts), or null. */
   trackedProject: string | null;
+  /** Marker ids this pilot tracks (edge arrow at any range), at most MAX_TRACKED_MARKERS. */
+  trackedMarkers: string[];
   stream: CommandStream;
 }
 

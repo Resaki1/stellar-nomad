@@ -34,6 +34,7 @@ export const sitePOIsAtom = atom((get): POIDef[] => {
     if (!announced && !disc.inspectedSites[s.id] && !revealAll) continue;
     out.push({
       id: `site:${s.id}`,
+      category: "site",
       name: disc.inspectedSites[s.id] ? s.name : s.signalName,
       positionKm: s.positionKm,
       frameId: s.frameId as FrameId,

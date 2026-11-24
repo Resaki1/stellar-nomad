@@ -56,12 +56,13 @@ export default async function structureNames(page) {
     // Offset the ship sideways to keep the depot name outside the reticle exclusion zone.
     const at = src.positionKm.map((n,i) => n + [0.07,0,-0.32][i]);
     await ev(`${G}.rep.teleportRel(${j(src.frameId)}, ${j(at)}, [0,0,0,1])`);
-    const marker = '.poi-marker[data-id="depot:naming-test"]';
+    const marker = '.mk[data-id="depot:naming-test"]';
     const gap = await until(`(() => {
       const m = document.querySelector(${j(marker)});
-      const label = m?.querySelector(".poi-marker__name");
-      if (!m || !Number(m.style.opacity) || !label || getComputedStyle(label).visibility === "hidden") return null;
-      return { px: label.getBoundingClientRect().top - m.firstElementChild.getBoundingClientRect().bottom };
+      const label = m?.querySelector(".mk__name");
+      if (!m || m.classList.contains("mk--hidden") || !label || label.style.display === "none" || getComputedStyle(label).visibility === "hidden") return null;
+      const box = (m.querySelector(m.classList.contains("mk--bracket") ? ".mk__brackets" : ".mk__glyph")).getBoundingClientRect();
+      return { px: label.getBoundingClientRect().top - box.bottom };
     })()`, "visible depot marker and name");
     assert.ok(gap.px >= 0 && gap.px <= 12, `label-to-marker gap ${gap.px}px`);
     await page.press("b");
@@ -71,7 +72,7 @@ export default async function structureNames(page) {
     await click("[data-industry-points]");
     await edit('[aria-label="Rename replication point Point 1"]', "Lunar refuge");
     await page.press("Escape");
-    await until(`document.querySelector(${j(marker + " .poi-marker__name")})?.textContent === "Kiln"`);
+    await until(`document.querySelector(${j(marker + " .mk__name")})?.textContent === "Kiln"`);
     await page.reload();
     assert.equal(await ev(`${G}.world().industry.depots.find(d => d.id === "naming-test").name`), "Kiln");
     assert.equal(await ev(`${G}.rep.points().find(p => p.id === "point-test").name`), "Lunar refuge");

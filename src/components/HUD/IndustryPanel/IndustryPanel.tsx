@@ -20,6 +20,7 @@ import { activeSystem } from "@/sim/systemRegistry";
 import type { WorldOperation } from "@/sim/world/commands";
 import { cargoAtom, cargoRemainingUnitsAtom } from "@/store/cargo";
 import { industryAtom } from "@/store/industry";
+import { toggleTrackedMarkerAtom, trackedMarkersAtom } from "@/store/markerPrefs";
 import { depotPoi, dronePoi, nextDepotName, trackIndustryPoiAtom } from "@/store/industryHud";
 import { modulesAtom } from "@/store/modules";
 import { newOpId, runOperation } from "@/store/operations";
@@ -157,6 +158,8 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   const track = useSetAtom(trackIndustryPoiAtom);
+  const trackedMarkers = useAtomValue(trackedMarkersAtom);
+  const toggleTracked = useSetAtom(toggleTrackedMarkerAtom);
   const selectedTarget = useAtomValue(targetedPOIAtom);
   const driveOwned = useAtomValue(transitDriveOwnedAtom);
   const content = useRef<HTMLDivElement>(null);
@@ -194,6 +197,10 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
     window.addEventListener("keydown", cycleFocus);
     return () => window.removeEventListener("keydown", cycleFocus);
   }, [renaming]);
+  // A drone is a moving bearing, never a destination: tracking marks it without touching the transit target.
+  const trackDrone = (poi: POIDef) => {
+    if (toggleTracked(poi.id)) onClose();
+  };
   const navigate = (poi: POIDef) => {
     if (track(poi)) {
       if (selectedTarget?.id !== poi.id) onClose();
@@ -321,7 +328,7 @@ export default function IndustryPanel({ initialDepotId, renamePointId, pointFuel
               {view === "fabrication" && <Fabrication depot={depot} inRange={inRange} droneCount={drones.filter(drone => drone.homeId === depot.id).length} disabled={pending} submit={submit} />}
               {view === "drones" && <DepotDrones depot={depot} depots={depots} targets={deliveryTargets} drones={drones} drafts={droneDrafts} focusedDrone={focusedDrone}
                 saveDraft={saveDroneDraft} disabled={pending} submit={submit} onFabricate={() => setView("fabrication")}
-                trackedId={selectedTarget?.id} onTrack={navigate} />}
+                trackedIds={trackedMarkers} onTrack={trackDrone} />}
             </div> : <BuildDepot depots={depots} initialName={initialName ?? nextDepotName(depots)} position={position} pending={pending} canTransit={driveOwned} trackedId={selectedTarget?.id} submit={submit} onAim={onAim} navigate={navigate} />}
               {operationFeedback}
             </>}
@@ -352,7 +359,7 @@ function BuildDepot({ depots, initialName, position, pending, canTransit, tracke
   const fields = activeSystem().asteroidFields.filter(field => field.enabled !== false && field.resources).map(field => {
     const frameId = field.anchorBody && field.anchorOffsetKm && isFrameId(field.anchorBody) ? field.anchorBody : undefined;
     const positionKm = frameId && field.anchorOffsetKm ? field.anchorOffsetKm : field.anchorKm;
-    const poi: POIDef = { id: `field:${field.id}`, name: field.name, frameId, positionKm, minDistanceKm: 0, maxDistanceKm: Infinity };
+    const poi: POIDef = { id: `field:${field.id}`, category: "field", name: field.name, frameId, positionKm, minDistanceKm: 0, maxDistanceKm: Infinity };
     const km = distance(position, { frameId: frameId ?? "system", positionKm });
     const classes = [...(field.resources?.classes ?? []), ...(field.resources?.pockets ?? []).flatMap(pocket => pocket.classes)];
     const hydrates = classes.some(group => group.resources.some(entry => entry.resourceId === "hydrates" && entry.max > 0));
@@ -529,9 +536,9 @@ const DRONE_STATUS: Record<DroneStatus, string> = {
   mining: "Mining asteroid",
 };
 
-function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, saveDraft, disabled, submit, onFabricate, trackedId, onTrack }: DepotControls & {
+function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, saveDraft, disabled, submit, onFabricate, trackedIds, onTrack }: DepotControls & {
   depots: DepotRecord[]; targets: DeliveryTarget[]; drones: DroneRecord[]; drafts: ReadonlyMap<string, DroneDraft>;
-  focusedDrone: string | null; saveDraft: SaveDroneDraft; onFabricate: () => void; trackedId?: string; onTrack: (poi: POIDef) => void;
+  focusedDrone: string | null; saveDraft: SaveDroneDraft; onFabricate: () => void; trackedIds: readonly string[]; onTrack: (poi: POIDef) => void;
 }) {
   const miningUnlocked = useAtomValue(completedNodeSetAtom).has(industryResearchNode("mining").id);
   const homeDrones = drones.filter(drone => drone.homeId === depot.id);
@@ -544,7 +551,7 @@ function DepotDrones({ depot, depots, targets, drones, drafts, focusedDrone, sav
   return <div className="industry__fleet">{homeDrones.map((drone, i) => <DroneControl
     key={drone.id} index={i + 1} drone={drone} draft={drafts.get(drone.id)} saveDraft={saveDraft}
     depot={depot} depots={depots} targets={targets} fields={fields} miningUnlocked={miningUnlocked} focusRequested={focusedDrone === drone.id}
-    disabled={disabled} submit={submit} tracked={trackedId === `drone:${drone.id}`} onTrack={() => onTrack(dronePoi(drone, depot, i + 1))}
+    disabled={disabled} submit={submit} tracked={trackedIds.includes(`drone:${drone.id}`)} onTrack={() => onTrack(dronePoi(drone, depot, i + 1))}
   />)}</div>;
 }
 

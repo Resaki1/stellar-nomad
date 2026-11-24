@@ -72,7 +72,7 @@ export function readPlayerSlice<K extends keyof PlayerState>(key: K): PlayerStat
  * lastLoss, stream, legacy) and every world slice changes only through a command.
  */
 export const PILOT_KEYS: ReadonlySet<keyof PlayerState> = new Set<keyof PlayerState>([
-  "ship", "health", "propellant", "power", "processing", "commsPlayed", "starMarkers", "aiName", "trackedProject",
+  "ship", "health", "propellant", "power", "processing", "commsPlayed", "starMarkers", "aiName", "trackedProject", "trackedMarkers",
 ]);
 
 /** A co-op session (host's own tab or guest) holds the active record as a mirror. */

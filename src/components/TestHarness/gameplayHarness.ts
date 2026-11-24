@@ -37,6 +37,7 @@ import { testProbe } from "./testProbe";
 import { beamBuffer } from "@/components/VFX/beams";
 import { createM37Harness } from "./m37Harness";
 import { DEPOT_RECIPES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { trackedMarkersAtom } from "@/store/markerPrefs";
 import { activeSystem } from "@/sim/systemRegistry";
 import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
@@ -169,6 +170,8 @@ export function createGameplayHarness(store: Store) {
 
   return {
     localId: (): string => getLocalPlayerId(),
+    /** Marker ids this pilot tracks (store/markerPrefs.ts). */
+    trackedMarkers: (): string[] => [...store.get(trackedMarkersAtom)],
     industry: {
       catalog: () => structuredClone({ spots: fieldSpots(), recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
       drone: sampleDrone,

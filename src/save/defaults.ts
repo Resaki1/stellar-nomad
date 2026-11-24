@@ -95,6 +95,7 @@ export function defaultPlayerState(difficulty: Difficulty = "standard"): PlayerS
     replication: { activeId: STARTER_POINT_ID },
     lastLoss: null,
     trackedProject: null,
+    trackedMarkers: [],
     stream: { seq: 0, opId: null, outcome: null },
   };
 }

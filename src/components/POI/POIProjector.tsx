@@ -1,6 +1,10 @@
 "use client";
 
-import { depotPoisAtom, trackedDronePoiAtom } from "@/store/industryHud";
+import { depotPoisAtom, trackedDronePoisAtom } from "@/store/industryHud";
+import { LOCAL_MARKER_RANGE_KM, MARKER_CATEGORIES } from "@/data/markerCategories";
+import { markerPrefsAtom, markerRevealAtom, trackedMarkersAtom } from "@/store/markerPrefs";
+import { getLocalPlayerShip } from "@/sim/entities";
+import type { CelestialBodyDef } from "@/sim/systemTypes";
 import { INTERACT_LOCK_KM, isInteractFocusBlocked } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -174,7 +178,7 @@ function usePOIDefs(): POIDef[] {
   const sitePois = useAtomValue(sitePOIsAtom);
   const pilotPois = useAtomValue(pilotPOIsAtom);
   const target = useAtomValue(targetedPOIAtom);
-  const droneBearing = useAtomValue(trackedDronePoiAtom);
+  const dronePois = useAtomValue(trackedDronePoisAtom);
   const depotPois = useAtomValue(depotPoisAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
@@ -200,6 +204,7 @@ function usePOIDefs(): POIDef[] {
       const t = bodyTransitTarget(body, system.asteroidFields);
       pois.push({
         id: t.id,
+        category: "body",
         name: t.name,
         positionKm: body.positionKm,
         minDistanceKm: body.marker.minDistanceKm ?? CELESTIAL_BODY_DEFAULTS.minDistanceKm,
@@ -220,6 +225,7 @@ function usePOIDefs(): POIDef[] {
       const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
         id,
+        category: "field",
         name: field.name,
         positionKm: field.anchorKm,
         minDistanceKm: tracked ? 0 : Math.max(outerKm, field.marker?.minDistanceKm ?? ASTEROID_FIELD_DEFAULTS.minDistanceKm),
@@ -232,6 +238,7 @@ function usePOIDefs(): POIDef[] {
       // Contents are on the Target Card when focused (§1.11).
       pois.push({
         id: `wreck:${wreck.id}`,
+        category: "wreck",
         name: "Wreck",
         positionKm: wreck.positionKm,
         frameId: wreck.frameId,
@@ -246,7 +253,9 @@ function usePOIDefs(): POIDef[] {
       if (pt.starter || !isFrameId(pt.frameId)) continue;
       pois.push({
         id: `point:${pt.id}`,
-        name: pt.id === activePointId ? `${pt.name} ◆` : pt.name,
+        category: "point",
+        name: pt.name,
+        active: pt.id === activePointId,
         positionKm: pt.positionKm,
         frameId: pt.frameId,
         minDistanceKm: 0,
@@ -265,13 +274,14 @@ function usePOIDefs(): POIDef[] {
     // Other pilots (co-op): live frame-relative positions
     for (const p of pilotPois) pois.push(p);
 
-    if (droneBearing) pois.push(droneBearing);
+    for (const p of dronePois) pois.push(p);
     for (const p of depotPois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
 
     // B3: the current destination always has a marker, even when nothing else lists it.
     if (target && !target.id.startsWith("drone:") && !pois.some((p) => p.id === target.id)) {
       pois.push({
         id: target.id,
+        category: "waypoint",
         name: target.name,
         positionKm: target.positionKm as [number, number, number],
         frameId: target.frameId,
@@ -292,6 +302,7 @@ function usePOIDefs(): POIDef[] {
       if (star) {
         pois.push({
           id: `star:sol`,
+          category: "star",
           name: star.name,
           positionKm: star.positionKm,
           minDistanceKm: 0,
@@ -309,6 +320,7 @@ function usePOIDefs(): POIDef[] {
         if (!revealAll && !revealedSet.has(s.id)) continue;
         pois.push({
           id: `star:${s.id}`,
+          category: "star",
           name: s.name,
           positionKm: s.positionKm,
           minDistanceKm: 0,
@@ -322,7 +334,25 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, knowledge, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, droneBearing, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, knowledge, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, dronePois, target, starsOn, revealAll, revealed, nearestStars]);
+}
+
+/**
+ * Is a celestial body between the ship and this marker? Analytic ray–sphere against the
+ * system's bodies (every radius is known), so no scene raycast. A body never hides itself.
+ */
+function occluded(bodies: readonly CelestialBodyDef[], id: string, ship: THREE.Vector3, px: number, py: number, pz: number, distKm: number): boolean {
+  if (distKm <= 0) return false;
+  const ux = (px - ship.x) / distKm, uy = (py - ship.y) / distKm, uz = (pz - ship.z) / distKm;
+  for (const b of bodies) {
+    if (id.length === b.id.length + 5 && id.endsWith(b.id) && id.startsWith("body:")) continue;
+    const cx = b.positionKm[0] - ship.x, cy = b.positionKm[1] - ship.y, cz = b.positionKm[2] - ship.z;
+    const t = cx * ux + cy * uy + cz * uz;
+    if (t <= 0 || t - b.radiusKm >= distKm) continue;
+    const d2 = cx * cx + cy * cy + cz * cz - t * t;
+    if (d2 < b.radiusKm * b.radiusKm && cx * cx + cy * cy + cz * cz > b.radiusKm * b.radiusKm) return true;
+  }
+  return false;
 }
 
 /**
@@ -334,18 +364,14 @@ const POIProjector = memo(function POIProjector() {
   const camera = useThree((s) => s.camera as THREE.PerspectiveCamera);
   const worldOrigin = useWorldOrigin();
   const pois = usePOIDefs();
+  const system = useAtomValue(systemConfigAtom);
   const store = useStore();
 
   // A renamed station or recovery point keeps its current navigation lock and bearing.
   useEffect(() => {
     const target = store.get(targetedPOIAtom);
-    if (!target || !(isStructurePoi(target.id) || target.id.startsWith("drone:"))) return;
+    if (!target || !isStructurePoi(target.id)) return;
     const poi = pois.find(p => p.id === target.id);
-    if (!poi && target.id.startsWith("drone:")) {
-      poiBuffer.pinnedId = null;
-      poiBuffer.targetedId = null;
-      store.set(targetedPOIAtom, null);
-    }
     if (poi && poi.name !== target.name) store.set(targetedPOIAtom, { ...target, name: poi.name });
   }, [pois, store]);
 
@@ -356,17 +382,41 @@ const POIProjector = memo(function POIProjector() {
   const untargetGraceRef = useRef(0);
   // Bodies whose marker yielded to their own disc (hysteresis between the two fractions).
   const largeHiddenRef = useRef(new Set<string>());
+  // Markers inside their range last frame: they leave only 5% beyond it (no create/destroy flicker at a boundary).
+  const inRangeRef = useRef(new Set<string>());
+  // Last edge angle per marker: a point straight behind the camera keeps its arrow still.
+  const edgeAngleRef = useRef(new Map<string, number>());
+  // Pooled per-frame records (no allocation per marker per frame).
+  const poolRef = useRef<ProjectedPOI[]>([]);
+  const outRef = useRef<ProjectedPOI[]>([]);
+  const badgeRef = useRef(new Map<string, number>());
 
   useFrame((_, delta) => {
-    const projected: ProjectedPOI[] = [];
+    // The chase camera moved earlier this frame; three refreshes matrixWorldInverse only at render.
+    camera.updateMatrixWorld();
+    const pool = poolRef.current;
+    const projected = outRef.current;
+    projected.length = 0;
     const shipKm = worldOrigin.shipPosKm;
     const originKm = worldOrigin.worldOriginKm;
     const driveOwned = store.get(transitDriveOwnedAtom);
+    const prefs = store.get(markerPrefsAtom);
+    const reveal = store.get(markerRevealAtom);
+    const tracked = store.get(trackedMarkersAtom);
+    const targetId = store.get(targetedPOIAtom)?.id ?? null;
+    const shipFrame = getLocalPlayerShip()?.frameId ?? null;
+    const bodies = system.celestialBodies ?? [];
+    const badges = badgeRef.current;
+    badges.clear();
+    const inRange = inRangeRef.current;
+    const angles = edgeAngleRef.current;
 
     let focusedPoiId: string | null = null;
     let focusedPoiDef: POIDef | null = null;
     let focusedDistKm = 0;
     let focusedNoseOff = Infinity;
+    let aimedOff = Infinity;
+    poiBuffer.aimed = null;
 
     // Gaze is measured at the reticle (ship nose), which the lagging chase camera moves off centre.
     _noseNdc.copy(shipView.forward).multiplyScalar(camera.far * 0.5).add(shipView.position).project(camera);
@@ -374,6 +424,17 @@ const POIProjector = memo(function POIProjector() {
 
     for (let i = 0; i < pois.length; i++) {
       const poi = pois[i];
+      const def = MARKER_CATEGORIES[poi.category];
+      const isTarget = poi.id === targetId;
+      const isTracked = tracked.includes(poi.id);
+      const exempt = isTarget || isTracked;
+      // Player filters and density (the destination and tracked markers always stay).
+      if (!exempt && (prefs.density === "off" || (prefs.density === "essential" && !def.essential) ||
+          (def.group !== null && prefs.hidden.includes(def.group)))) {
+        inRange.delete(poi.id);
+        continue;
+      }
+
       resolveFramePositionKm(poi.positionKm, poi.frameId, _poiKm);
       const px = _poiKm.x, py = _poiKm.y, pz = _poiKm.z;
 
@@ -383,8 +444,21 @@ const POIProjector = memo(function POIProjector() {
       const dz = pz - shipKm.z;
       const distanceKm = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      // Skip POIs outside their configured visibility range.
-      if (distanceKm < poi.minDistanceKm || distanceKm > poi.maxDistanceKm) continue;
+      // Range, with 5% hysteresis once shown. Tracked markers ignore range.
+      const was = inRange.has(poi.id);
+      const minKm = was ? poi.minDistanceKm * 0.95 : poi.minDistanceKm;
+      const maxKm = was ? poi.maxDistanceKm * 1.05 : poi.maxDistanceKm;
+      if (!isTracked && (distanceKm < minKm || distanceKm > maxKm)) {
+        inRange.delete(poi.id);
+        continue;
+      }
+      inRange.add(poi.id);
+
+      // Local scope: your structures elsewhere become a count on their body's marker.
+      if (!exempt && def.scope === "local" && poi.frameId !== shipFrame && distanceKm > LOCAL_MARKER_RANGE_KM) {
+        if ((poi.category === "depot" || poi.category === "point") && poi.frameId) badges.set(poi.frameId, (badges.get(poi.frameId) ?? 0) + 1);
+        continue;
+      }
 
       // projectionMatrix[5] = 1/tan(fov/2): radius over distance → fraction of the half-height.
       const radiusFracPerKm = 0.5 * camera.projectionMatrix.elements[5] / Math.max(1e-3, distanceKm);
@@ -393,7 +467,7 @@ const POIProjector = memo(function POIProjector() {
         const hidden = largeHiddenRef.current;
         if (frac > poi.hideAboveScreenFrac) hidden.add(poi.id);
         else if (frac < poi.hideAboveScreenFrac * (BODY_SHOW_SCREEN_FRAC / BODY_HIDE_SCREEN_FRAC)) hidden.delete(poi.id);
-        if (hidden.has(poi.id) && poi.id !== store.get(targetedPOIAtom)?.id) continue;
+        if (hidden.has(poi.id) && !isTarget) continue;
       }
 
       // Local render-space position (meters, relative to floating origin).
@@ -434,6 +508,10 @@ const POIProjector = memo(function POIProjector() {
 
       // Nearest the nose wins: in an eclipse the Moon and the Sun share the focus box.
       const noseOff = focused ? Math.hypot(_ndc.x - _noseNdc.x, _ndc.y - _noseNdc.y) : Infinity;
+      if (noseOff < aimedOff) {
+        aimedOff = noseOff;
+        poiBuffer.aimed = poi;
+      }
       if (focused && poi.targetable !== false && noseOff < focusedNoseOff) {
         focusedNoseOff = noseOff;
         focusedPoiId = poi.id;
@@ -441,17 +519,20 @@ const POIProjector = memo(function POIProjector() {
         focusedDistKm = distanceKm;
       }
 
-      // Edge arrow angle: direction from screen center to POI in screen space.
-      // For behind-camera POIs, invert so the arrow points "back."
-      let edgeAngle = 0;
+      // Edge arrow angle in SCREEN pixels (NDC x is stretched by the aspect ratio).
+      // Behind the camera the projection flips, so invert; straight behind it keeps its last angle.
+      let edgeAngle = angles.get(poi.id) ?? 0;
       if (!inView) {
-        let ex = _ndc.x;
+        let ex = _ndc.x * camera.aspect;
         let ey = -_ndc.y; // flip Y for screen convention
         if (!inFront) {
           ex = -ex;
           ey = -ey;
         }
-        edgeAngle = Math.atan2(ey, ex);
+        if (inFront || Math.hypot(ex, ey) > 1e-3) {
+          edgeAngle = Math.atan2(ey, ex);
+          angles.set(poi.id, edgeAngle);
+        }
       }
 
       // Measured before the far-plane normalisation above, which would shrink a distant disc to ~0.
@@ -459,18 +540,31 @@ const POIProjector = memo(function POIProjector() {
         ? (0.5 * camera.projectionMatrix.elements[5] * poi.objectRadiusKm * 1000) / Math.max(1, camDistM)
         : 0;
 
-      projected.push({
-        id: poi.id,
-        name: poi.name,
-        inView,
-        sx,
-        sy,
-        distanceKm,
-        edgeAngle,
-        focused,
-        objectRadiusFrac,
-        kind: poi.kind,
-      });
+      const rec = pool[projected.length] ??= {} as ProjectedPOI;
+      rec.id = poi.id;
+      rec.name = poi.name;
+      rec.inView = inView;
+      rec.sx = sx;
+      rec.sy = sy;
+      rec.distanceKm = distanceKm;
+      rec.edgeAngle = edgeAngle;
+      rec.focused = focused;
+      rec.objectRadiusFrac = objectRadiusFrac;
+      rec.category = poi.category;
+      rec.tint = poi.tint ?? null;
+      rec.initial = poi.initial ?? null;
+      rec.active = poi.active === true;
+      rec.bearing = poi.bearing === true;
+      rec.tracked = isTracked;
+      rec.occluded = occluded(bodies, poi.id, shipKm, px, py, pz, distanceKm);
+      rec.labelled = reveal || def.alwaysLabel || (prefs.celestialLabels && (poi.category === "body" || poi.category === "field"));
+      rec.edge = reveal || exempt || def.edge;
+      rec.badge = 0;
+      projected.push(rec);
+    }
+    for (let i = 0; i < projected.length; i++) {
+      const rec = projected[i];
+      if (rec.category === "body") rec.badge = badges.get(rec.id.slice(5)) ?? 0;
     }
 
     // ── Gaze-based POI targeting (only when transit drive is owned and idle) ───

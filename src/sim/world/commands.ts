@@ -12,7 +12,9 @@ export type GiftKind = "cargo" | "consumable" | "fuel";
 export type WorldOperation =
   | IndustryOperation
   | { type: "expedition.give"; opId: string; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
-  | { type: "expedition.mark"; opId: string; sourceId: string | null; name: string; clear?: boolean }
+  | { type: "expedition.mark"; opId: string; sourceId: string | null; name: string; clear?: boolean;
+      /** Aimed ping: this frame-relative point instead of the ship (ignored with a sourceId). */
+      at?: { frameId: string; positionKm: [number, number, number]; bearing?: boolean } }
   | { type: "cargo.jettison"; opId: string; resourceId: string; amount?: number }
   | { type: "item.consume"; opId: string; itemId: string }
   | { type: "hotbar.assign"; opId: string; index: number; itemId: string | null }

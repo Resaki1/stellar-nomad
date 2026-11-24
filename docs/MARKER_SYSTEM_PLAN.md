@@ -1,12 +1,7 @@
 # Marker system plan (POI markers, edge arrows, pings)
 
-**Status, 2026-11-24.** Review plus phased plan. **P4 (progression) is done** (§2.7 as built), the
-hydrate-site markers are removed (§1.1 R2) and two cost fixes landed (§1.6). Owner decisions are
-recorded in §4. Next: P0/P1.
-Files today: `src/store/poi.ts`, `src/components/POI/POIProjector.tsx` (defs + projection +
-gaze), `src/components/HUD/POIMarkers/POIMarkers.{tsx,scss}` (DOM overlay). Producers live in
-`store/industryHud.ts`, `store/discoveries.ts`, `store/sites.ts`, `store/starMarkers.ts`,
-`Coop/CoopLayer.tsx`, `sim/systems/sol.json`.
+**Status, 2026-11-24.** P0–P5 are built (P4 progression, then the rest); §5 records what was
+built, how it was verified and what is left. Owner decisions are in §4.
 
 ---
 
@@ -277,3 +272,21 @@ P0 and P1 can start now. P4 and P5 need the decisions below.
    wrecks off wants that in every world.
 5. **Keys:** Z ping, F hold-reveal, N density.
 6. **Order:** P4 first (done) for the playtest.
+
+---
+
+## 5. As built (2026-11-24)
+
+| Area | What landed | Where |
+|---|---|---|
+| Categories | One table: shape, priority, filter group, label rule, edge rule, scope, essential flag. Producers name a `category`; `kind` is gone. | `data/markerCategories.ts` |
+| Visuals | Shape = category (circle body, dashed field, spark star, square depot, ring-with-core point (filled = active), triangle drone, cross wreck, diamond site/waypoint, dotted diamond rock, tint badge pilot, tint ring ping). Colour = relationship: world `$accent-info`, yours `$text-primary`, crew/pings per-pilot Okabe–Ito tint by join order, destination `$accent-signal` with carets. Occluded = 40% and no label. | `HUD/POIMarkers/POIMarkers.scss` |
+| Overlay | One element per marker: glyph, corner brackets once the object is ≥12 px (Earth/depots are framed, not covered), or edge arrow (glyph + pointer + distance). `transform` only, diffed writes, `contain: strict`; HUD rects sampled on a 100 ms timer between frames (no forced layout); glyphs avoid HUD panels too; clustering "+N"; label hysteresis (250 ms / 120 ms); "▪N" badge on a body for your structures there. | `HUD/POIMarkers/POIMarkers.tsx` |
+| Projector | Camera matrix refreshed before projecting (F1); aspect-correct edge angle with a still arrow straight behind (C4); 5% range hysteresis (F5); pooled records; analytic body occlusion (C5); local scope (100,000 km or same body frame); filters, density, reveal, tracked. | `POI/POIProjector.tsx` |
+| Control | N: All / Essential / Off. Hold F: every marker named, every edge arrow (stacked along the edge). Settings → Markers: density, 8 filter groups, celestial labels, size 75–160%. Tracked markers in the player save (`trackedMarkers`, max 8, co-op prefs). Industry → drone Track uses it (a drone is never a destination). | `store/markerPrefs.ts`, `HUD/POIMarkers/MarkerControls.tsx`, `SettingsMenu/MarkerSettings.tsx` |
+| Ping | Z tap pings what the nose points at (nearest marker; a body → its near surface; the aimed rock; else a bearing with no distance). Z hold (0.45 s) clears. One persistent ping per pilot = `world.rendezvous` (`expedition.mark` with `at`), solo and co-op; crewmates get a "Crew ping" notification. | `MarkerControls.tsx`, `sim/world/reducers.ts`, `store/worldBridge.ts` |
+
+**Verified (headless):** fresh world shows no markers; near Luna: Luna bracketed, survey signal + lunar field "+1"; facing away the ping is an edge arrow with tint, initial and distance; reveal names everything; N cycles All → Essential (ping only) → Off → All. Gates: structure-names, structure-targeting, placement-controls, industry-ui, save-check, gameplay `marks,repairEdge`, `hudTransit`, `site`, `regions`, coop-check `presence,pilotMarker,rename` (tint and edge at 1280 and 390), `coop:transcript` all pass. Pre-existing failures, identical on the baseline: gameplay `hud` → `wreckG`, `m5-physics`. `m5-drone-motion` now passes drone-card tracking and fails later on drone flight speed (not marker code).
+
+**Left / deliberately not built:** ping acknowledgement ("on my way"), a radial ping menu, a Track button on the Target Card and Discoveries, a compass band or system map, a sound of its own for pings (they reuse `notify.info` through the notification), wreck owner/age (WreckRecord has no owner). Pings stay gaze-targetable so a crew ping can be flown to.
+

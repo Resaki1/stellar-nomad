@@ -437,7 +437,7 @@ export default async function industryUi(d) {
     captures.push(await capture("mining-recall"));
     const droneTarget = `drone:${minerDrone.id}`;
     await click(trackDrone);
-    await find("tracking opens flight for the drone", () => tracked(droneTarget));
+    await find("tracking opens flight for the drone", async () => (await ev(`${G}.trackedMarkers()`)).includes(droneTarget) && !(await shown(".industry")));
     await find("the drone bearing is projected", () => ev(`${G}.rep.pois(${J(droneTarget)}).some(poi => poi.id === ${J(droneTarget)} && poi.name.endsWith("Drone 1"))`));
     assert.equal(await shown(".industry"), false);
     captures.push(await capture("tracked-drone"));
@@ -445,7 +445,7 @@ export default async function industryUi(d) {
     await click(tab("drones"));
     assert.equal(await text(trackDrone), "Untrack");
     await click(trackDrone);
-    await find("drone tracking clears from Industry", () => tracked(null));
+    await find("drone tracking clears from Industry", async () => !(await ev(`${G}.trackedMarkers()`)).includes(droneTarget));
     await find("untracked drone bearing is removed", () => ev(`${G}.rep.pois(${J(droneTarget)}).length === 0`));
     assert.equal(await shown(".industry"), true);
     await find("recalled miner pauses at its depot", async () => (await state()).drones[0].status === "paused", 30000);

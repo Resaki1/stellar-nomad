@@ -10,6 +10,9 @@ export type KeybindAction =
   | "toggleCrafting"
   | "toggleLoadout"
   | "toggleHud"
+  | "markerDensity"
+  | "markerReveal"
+  | "ping"
   | "toggleCrew"
   | "toggleProjects"
   | "toggleIndustry"
@@ -61,6 +64,9 @@ export const KEYBIND_ACTIONS: KeybindActionMeta[] = [
   { id: "togglePulseMining", label: "Toggle Pulse Mining", category: "actions" },
   { id: "transitDrive", label: "Transit Drive (Hold)", category: "actions" },
   { id: "placePoint", label: "Replication Point: Place", category: "actions" },
+  { id: "ping", label: "Ping (tap) / clear ping (hold)", category: "actions" },
+  { id: "markerReveal", label: "Show all markers (Hold)", category: "actions" },
+  { id: "markerDensity", label: "Markers: all / essential / off", category: "menu" },
   { id: "toggleHud", label: "Show / hide HUD", category: "menu" },
   { id: "toggleSettings", label: "Ship menu", category: "menu" },
 ];
@@ -104,6 +110,9 @@ export const DEFAULT_KEYBINDS: KeybindConfig = {
   // The kit is used from the hotbar (D16); kept for rebinding.
   placePoint: [],
   toggleHud: ["h"],
+  markerDensity: ["n"],
+  markerReveal: ["f"],
+  ping: ["z"],
   toggleSettings: ["o", "escape"],
 };
 

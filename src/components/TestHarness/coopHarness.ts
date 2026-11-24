@@ -37,18 +37,18 @@ function remoteAbsKm(id?: string): Vector3 | null {
 
 type Store = ReturnType<typeof createStore>;
 
-/** Green pilot POI markers in the DOM (POIMarkers). */
+/** Pilot markers drawn on screen (POIMarkers `.mk--pilot` in glyph or bracket mode), in the pilot's tint. */
 function pilotMarkers() {
-  return Array.from(document.querySelectorAll<HTMLElement>(".poi-marker--pilot")).map((el) => {
-    const name = el.querySelector<HTMLElement>(".poi-marker__name");
-    const r = el.getBoundingClientRect();
+  return Array.from(document.querySelectorAll<HTMLElement>(".mk--pilot:not(.mk--edge)")).map((el) => {
+    const name = el.querySelector<HTMLElement>(".mk__name");
+    const r = el.querySelector(".mk__glyph")!.getBoundingClientRect();
     return {
       id: el.dataset.id ?? "",
-      shown: el.style.opacity === "1",
+      shown: !el.classList.contains("mk--hidden"),
       name: name && name.style.display !== "none" ? name.textContent ?? "" : "",
-      distance: el.querySelector(".poi-marker__distance")?.textContent ?? "",
+      distance: el.querySelector(".mk__dist")?.textContent ?? "",
       x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
-      color: name ? getComputedStyle(name).color : "",
+      color: getComputedStyle(el).color,
     };
   });
 }
@@ -242,9 +242,9 @@ export function createCoopHarness(store: Store) {
     markers: () => ({
       targetedId: poiBuffer.targetedId,
       markers: pilotMarkers(),
-      arrows: Array.from(document.querySelectorAll<HTMLElement>(".poi-arrow--pilot")).map((el) => {
-        const r = el.getBoundingClientRect();
-        return { id: el.dataset.id ?? "", shown: el.style.opacity === "1", x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), color: getComputedStyle(el).borderLeftColor };
+      arrows: Array.from(document.querySelectorAll<HTMLElement>(".mk--pilot.mk--edge")).map((el) => {
+        const r = el.querySelector(".mk__glyph")!.getBoundingClientRect();
+        return { id: el.dataset.id ?? "", shown: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), color: getComputedStyle(el).color };
       }),
     }),
     /** Remote slots' drawn plume/beam over `ms` (CoopLayer remoteFxProbe). */

@@ -4,6 +4,8 @@
  */
 import { atom } from "jotai";
 import { SOURCE_CLASS_NAMES } from "@/data/content";
+import { pilotTint } from "@/data/markerCategories";
+import { getWorldState } from "@/save/activeSave";
 import type { SourceFinding, WorldState } from "@/save/types";
 import { isFrameId, type FrameId } from "@/sim/frames";
 import { computeLoadoutPreview, type LoadoutPreview } from "@/sim/ship/loadoutPreview";
@@ -30,6 +32,7 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
     if (!s || s.depleted) continue;
     out.push({
       id: `source:${s.id}`,
+      category: "source",
       name: sourceLabel(s, b.name),
       positionKm: s.positionKm,
       frameId: s.frameId as FrameId,
@@ -38,11 +41,16 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
       arrivalOffsetKm: standoffKm(s),
     });
   }
+  // One persistent ping per pilot (world.rendezvous), in that pilot's tint.
+  const members = getWorldState().members;
+  const memberIds = Object.keys(members);
   for (const [owner, fix] of Object.entries(get(rendezvousAtom))) {
     const source = fix.sourceId ? sources.find(s => s.id === fix.sourceId) : null;
     if (!isFrameId(fix.frameId) || (fix.sourceId && (!source || source.depleted))) continue;
-    out.push({ id: `rendezvous:${owner}`, name: fix.name, positionKm: fix.positionKm, frameId: fix.frameId,
-      minDistanceKm: 0, maxDistanceKm: Infinity, arrivalOffsetKm: source ? standoffKm(source) : 0.1 });
+    const ownerName = members[owner]?.name || "Replicant";
+    out.push({ id: `rendezvous:${owner}`, category: "ping", name: fix.name, positionKm: fix.positionKm, frameId: fix.frameId,
+      minDistanceKm: 0, maxDistanceKm: Infinity, arrivalOffsetKm: source ? standoffKm(source) : 0.1,
+      tint: pilotTint(owner, memberIds), initial: ownerName.trim().charAt(0).toUpperCase() || "?", bearing: fix.bearing === true });
   }
   return out;
 });

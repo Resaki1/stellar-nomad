@@ -1,123 +1,223 @@
 @use '../../../styles' as s;
 
+// Navigation markers (docs/MARKER_SYSTEM_PLAN.md §2.2): SHAPE says what it is, COLOUR says whose.
+// world = $accent-info, yours = $text-primary, crew/pings = the pilot's tint, destination = $accent-signal.
+
 .poi-markers {
   position: fixed;
   inset: 0;
-  z-index: 85; // below ping brackets (90), above 3D canvas — TODO(phase-3): normalize to $z scale
+  z-index: 85; // above the 3D canvas, below panels
   pointer-events: none;
   overflow: hidden;
-}
-
-// ─── In-view marker ──────────────────────────────────────────────
-
-.poi-marker {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  will-change: left, top, opacity;
-  transition: opacity s.$dur-fast ease-out;
+  contain: strict;
   font-family: s.$font-ui;
+  --mk-scale: 1;
 }
 
-.poi-marker__diamond {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid rgba(160, 215, 245, 0.7); // light info-blue stroke; keep raw to preserve visuals
-  transform: rotate(45deg);
-  background: rgba(160, 215, 245, 0.1); // light info-blue fill; keep raw to preserve visuals
-  transition: border-color s.$dur-base, background s.$dur-base, box-shadow s.$dur-base;
+.mk {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  will-change: transform;
+  --mk-color: #{s.$accent-info};
+  --mk-size: calc(10px * var(--mk-scale));
+  color: var(--mk-color);
 
-  &--targeted {
-    border-color: rgba(255, 200, 60, 0.9); // $accent-signal-tinted stroke; keep raw to preserve visuals
-    background: rgba(255, 200, 60, 0.25); // $accent-signal-tinted fill; keep raw to preserve visuals
-    box-shadow: 0 0 8px rgba(255, 200, 60, 0.4); // $accent-signal-like glow; keep raw to preserve visuals
+  &--hidden { display: none; }
+  &--occluded { opacity: 0.4; }
+}
+
+// Yours: depots, replication points, drones.
+.mk--depot, .mk--point, .mk--drone { --mk-color: #{s.$text-primary}; }
+// Crew and pings: the owner's slot tint.
+.mk--pilot, .mk--ping { --mk-color: var(--mk-tint, #{s.$accent-ok}); }
+// The destination wins over every relationship colour.
+.mk--target { --mk-color: #{s.$accent-signal}; }
+
+// ─── Glyphs (centred on the point) ──────────────────────────────────────────
+
+.mk__glyph {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--mk-size);
+  height: var(--mk-size);
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+  transition: width s.$dur-fast, height s.$dur-fast;
+}
+
+.mk--target .mk__glyph { --mk-size: calc(14px * var(--mk-scale)); filter: drop-shadow(0 0 6px #{s.$glow-signal}); }
+
+// Planet / moon: hollow circle.
+.mk--body .mk__glyph { border: 1.25px solid var(--mk-color); border-radius: 50%; }
+// Asteroid field: dashed circle.
+.mk--field .mk__glyph { --mk-size: calc(12px * var(--mk-scale)); border: 1.25px dashed var(--mk-color); border-radius: 50%; }
+// Star: four-point spark.
+.mk--star .mk__glyph {
+  background: var(--mk-color);
+  clip-path: polygon(50% 0, 60% 40%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0 50%, 40% 40%);
+}
+// Depot: square.
+.mk--depot .mk__glyph { --mk-size: calc(9px * var(--mk-scale)); border: 1.5px solid var(--mk-color); }
+// Replication point: ring with a core; your active point is filled.
+.mk--point .mk__glyph {
+  border: 1.25px solid var(--mk-color);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--mk-color) 0 22%, transparent 26%);
+}
+.mk--point.mk--active .mk__glyph { background: radial-gradient(circle, var(--mk-color) 0 48%, transparent 52%); }
+// Drone: small triangle.
+.mk--drone .mk__glyph { --mk-size: calc(9px * var(--mk-scale)); background: var(--mk-color); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+// Wreck: a cross.
+.mk--wreck .mk__glyph {
+  background:
+    linear-gradient(45deg, transparent 42%, var(--mk-color) 42% 58%, transparent 58%),
+    linear-gradient(-45deg, transparent 42%, var(--mk-color) 42% 58%, transparent 58%);
+}
+// Signal (site) and destination fallback: diamond. Bookmarked rock: small diamond with a dot.
+.mk--site .mk__glyph, .mk--waypoint .mk__glyph { border: 1.25px solid var(--mk-color); transform: translate(-50%, -50%) rotate(45deg); }
+.mk--source .mk__glyph {
+  --mk-size: calc(8px * var(--mk-scale));
+  border: 1.25px solid var(--mk-color);
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: radial-gradient(circle, var(--mk-color) 0 20%, transparent 26%);
+}
+// Pilot: a filled tint badge with the pilot's initial. Ping: a tint ring with the owner's initial.
+.mk--pilot .mk__glyph, .mk--ping .mk__glyph { --mk-size: calc(15px * var(--mk-scale)); border-radius: 50%; }
+.mk--pilot .mk__glyph { background: var(--mk-color); }
+.mk--ping .mk__glyph { border: 1.75px solid var(--mk-color); animation: mk-ping 900ms ease-out 1; }
+.mk__initial {
+  display: none;
+  font-size: calc(9px * var(--mk-scale));
+  font-weight: 700;
+  line-height: 1;
+}
+.mk--pilot .mk__initial, .mk--ping .mk__initial { display: block; }
+.mk--pilot .mk__initial { color: rgba(0, 0, 0, 0.85); }
+.mk--ping .mk__initial { color: var(--mk-color); }
+
+@keyframes mk-ping {
+  0% { box-shadow: 0 0 0 0 var(--mk-color); }
+  100% { box-shadow: 0 0 0 14px transparent; }
+}
+
+// The destination: carets above and below (colour AND shape, style guide §Accessibility).
+.mk__carets { display: none; }
+.mk--target .mk__carets {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  &::before, &::after {
+    content: '';
+    position: absolute;
+    left: -4px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+  }
+  &::before { top: calc(-14px * var(--mk-scale)); border-top: 5px solid var(--mk-color); }
+  &::after { top: calc(9px * var(--mk-scale)); border-bottom: 5px solid var(--mk-color); }
+}
+
+// ─── Brackets round a resolved object (the glyph would sit on it) ───────────
+
+.mk__brackets { display: none; }
+.mk--bracket {
+  .mk__glyph, .mk__carets { display: none; }
+  .mk__brackets {
+    display: block;
+    position: absolute;
+    left: calc(-1 * var(--mk-r));
+    top: calc(-1 * var(--mk-r));
+    width: calc(2 * var(--mk-r));
+    height: calc(2 * var(--mk-r));
+    --c: var(--mk-color);
+    --l: min(10px, calc(var(--mk-r) * 0.5));
+    background:
+      linear-gradient(var(--c), var(--c)) top left / var(--l) 1.5px,
+      linear-gradient(var(--c), var(--c)) top left / 1.5px var(--l),
+      linear-gradient(var(--c), var(--c)) top right / var(--l) 1.5px,
+      linear-gradient(var(--c), var(--c)) top right / 1.5px var(--l),
+      linear-gradient(var(--c), var(--c)) bottom left / var(--l) 1.5px,
+      linear-gradient(var(--c), var(--c)) bottom left / 1.5px var(--l),
+      linear-gradient(var(--c), var(--c)) bottom right / var(--l) 1.5px,
+      linear-gradient(var(--c), var(--c)) bottom right / 1.5px var(--l);
+    background-repeat: no-repeat;
+    opacity: 0.85;
   }
 }
 
-.poi-marker__label {
-  margin-top: s.$space-2;
+// ─── Edge arrow: the category glyph plus a pointer toward the object ───────
+
+.mk__pointer { display: none; }
+.mk--edge {
+  .mk__glyph { --mk-size: calc(9px * var(--mk-scale)); }
+  &.mk--pilot .mk__glyph, &.mk--ping .mk__glyph { --mk-size: calc(13px * var(--mk-scale)); }
+  .mk__pointer {
+    display: block;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    &::after {
+      content: '';
+      position: absolute;
+      left: 11px;
+      top: -5px;
+      border-top: 5px solid transparent;
+      border-bottom: 5px solid transparent;
+      border-left: 7px solid var(--mk-color);
+    }
+  }
+  .mk__name { display: none !important; }
+}
+
+// ─── Label, cluster count, badges ───────────────────────────────────────────
+
+.mk__label {
+  position: absolute;
+  left: 0;
+  top: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
+  white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
 }
 
-.poi-marker__name {
-  font-size: 10px;
+.mk__name {
+  font-size: calc(10px * var(--mk-scale));
   font-weight: 600;
-  color: rgba(160, 215, 245, 0.9); // light info-blue text; keep raw to preserve visuals
-  white-space: nowrap;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); // black shadow; keep raw to preserve visuals
+  letter-spacing: 0.4px;
+  color: var(--mk-color);
 }
+.mk--body .mk__name, .mk--star .mk__name, .mk--field .mk__name { text-transform: uppercase; }
 
-.poi-marker__distance {
-  font-size: 10px;
-  font-weight: 500;
-  color: rgba(200, 220, 240, 0.6); // muted light-blue text; keep raw to preserve visuals
-  white-space: nowrap;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); // black shadow; keep raw to preserve visuals
+.mk__dist {
+  font-family: s.$font-mono;
+  font-size: calc(9.5px * var(--mk-scale));
+  color: s.$text-tertiary;
 }
+.mk--target .mk__dist, .mk--focus .mk__dist { color: s.$text-secondary; }
 
-// ─── Off-screen edge arrow ───────────────────────────────────────
-
-.poi-arrow {
+.mk__extra {
   position: absolute;
-  width: 0;
-  height: 0;
-  // CSS triangle pointing right; rotated via inline transform
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 10px solid rgba(160, 215, 245, 0.5); // light info-blue stroke; keep raw to preserve visuals
-  will-change: left, top, transform, opacity;
-  transition: opacity s.$dur-fast ease-out;
-}
-
-// ─── Other pilots (co-op): the session's green ───────────────────
-
-$pilot: #5fd38a; // the co-op pill's colour
-
-.poi-marker--pilot {
-  .poi-marker__diamond {
-    border-color: rgba($pilot, 0.85);
-    background: rgba($pilot, 0.15);
-  }
-  .poi-marker__name {
-    color: rgba($pilot, 0.95);
-    text-transform: none;
-  }
-  .poi-marker__distance {
-    color: rgba($pilot, 0.65);
-  }
-}
-
-.poi-arrow--pilot {
-  border-left-color: rgba($pilot, 0.75);
-}
-
-.poi-marker--depot {
-  .poi-marker__diamond {
-    width: 12px;
-    height: 8px;
-    border-style: double;
-    transform: none;
-  }
-  .poi-marker__name { text-transform: none; }
-}
-
-.poi-marker--drone {
-  .poi-marker__diamond {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-  .poi-marker__name { text-transform: none; }
-}
-
-.poi-arrow--industry-targeted {
-  border-left-color: s.$accent-signal;
-  filter: drop-shadow(0 0 5px s.$glow-signal);
+  left: calc(9px * var(--mk-scale));
+  top: calc(-14px * var(--mk-scale));
+  font-family: s.$font-mono;
+  font-size: calc(9px * var(--mk-scale));
+  color: s.$text-secondary;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  &:empty { display: none; }
 }
