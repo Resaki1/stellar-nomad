@@ -30,8 +30,8 @@ export default function POIMarkers() {
     const el = containerRef.current;
     if (!el) return;
 
-    // Pool of managed DOM elements, keyed by POI id.
-    const markerEls = new Map<string, HTMLElement>();
+    // Pool of managed DOM elements, keyed by POI id (child refs cached: no per-frame querySelector).
+    const markerEls = new Map<string, MarkerEls>();
     const arrowEls = new Map<string, HTMLElement>();
     // Flat [l, t, r, b] boxes: HUD homes (rects read every 100 ms, not per frame) and placed labels.
     const avoid: number[] = [];
@@ -57,10 +57,7 @@ export default function POIMarkers() {
         if (!poi.inView || !marker) continue;
         const r0 = poiBuffer.targetedId === poi.id ? 0 : poi.focused ? 1 : 2;
         if (r0 !== rank) continue;
-        const label = marker.lastElementChild as HTMLElement | null;
-        if (!label) continue;
-        const name = label.firstElementChild as HTMLElement;
-        const dist = label.lastElementChild as HTMLElement;
+        const { label, name, dist } = marker;
         const named = name.style.display !== "none";
         // Estimated box (10 px caps ≈ 7 px per glyph, + 4 px margin): no layout reads per frame.
         const chars = Math.max(named ? (name.textContent ?? "").length : 0, (dist.textContent ?? "").length);
@@ -113,7 +110,7 @@ export default function POIMarkers() {
       // Remove stale elements.
       markerEls.forEach((child, id) => {
         if (!activeIds.has(id)) {
-          child.remove();
+          child.el.remove();
           markerEls.delete(id);
         }
       });
@@ -136,49 +133,44 @@ export default function POIMarkers() {
           let marker = markerEls.get(poi.id);
           if (!marker) {
             marker = createMarkerElement(poi.id, poi.kind);
-            el.appendChild(marker);
+            el.appendChild(marker.el);
             markerEls.set(poi.id, marker);
             // Fade in next frame.
-            const m = marker;
+            const m = marker.el;
             requestAnimationFrame(() => { m.style.opacity = "1"; });
             continue;
           }
 
-          marker.style.opacity = "1";
-          marker.style.left = `${poi.sx * 100}%`;
-          marker.style.top = `${poi.sy * 100}%`;
+          const { label, name: nameEl, dist: distEl, diamond } = marker;
+          marker.el.style.opacity = "1";
+          marker.el.style.left = `${poi.sx * 100}%`;
+          marker.el.style.top = `${poi.sy * 100}%`;
 
           const isTargeted = poiBuffer.targetedId === poi.id;
 
-          const label = marker.lastElementChild as HTMLElement;
           const shift = objectLabelOffsetPx(poi.objectRadiusFrac, h);
           const tf = shift ? `translateY(${shift}px)` : "";
           if (label.style.transform !== tf) label.style.transform = tf;
 
           // Distance label (the ETA lives in the transit panel only, R3).
-          const distEl = marker.querySelector(".poi-marker__distance") as HTMLElement;
-          if (distEl) {
-            const text = formatDistance(poi.distanceKm);
-            if (distEl.textContent !== text) distEl.textContent = text;
-          }
+          const text = formatDistance(poi.distanceKm);
+          if (distEl.textContent !== text) distEl.textContent = text;
 
           // Name label — show when focused OR targeted; a pilot's always (who is that?).
-          const nameEl = marker.querySelector(".poi-marker__name") as HTMLElement;
-          if (nameEl) {
-            nameEl.style.display = (poi.focused || isTargeted || (poi.kind === "pilot" || poi.kind === "depot")) ? "" : "none";
-            if (nameEl.textContent !== poi.name) nameEl.textContent = poi.name;
-          }
+          const display = (poi.focused || isTargeted || (poi.kind === "pilot" || poi.kind === "depot")) ? "" : "none";
+          if (nameEl.style.display !== display) nameEl.style.display = display;
+          if (nameEl.textContent !== poi.name) nameEl.textContent = poi.name;
 
           // Diamond highlight when targeted.
-          const diamond = marker.querySelector(".poi-marker__diamond") as HTMLElement;
-          if (diamond) {
+          if (marker.targeted !== isTargeted) {
+            marker.targeted = isTargeted;
             diamond.classList.toggle("poi-marker__diamond--targeted", isTargeted);
           }
         } else {
           // ── Off-screen arrow ─────────────────────────────────────
           // Hide marker if it exists.
           const marker = markerEls.get(poi.id);
-          if (marker) marker.style.opacity = "0";
+          if (marker) marker.el.style.opacity = "0";
 
           let arrow = arrowEls.get(poi.id);
           if (!arrow) {
@@ -252,7 +244,9 @@ export default function POIMarkers() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function createMarkerElement(id: string, kind?: ProjectedPOI["kind"]): HTMLDivElement {
+type MarkerEls = { el: HTMLDivElement; diamond: HTMLDivElement; label: HTMLDivElement; name: HTMLDivElement; dist: HTMLDivElement; targeted: boolean };
+
+function createMarkerElement(id: string, kind?: ProjectedPOI["kind"]): MarkerEls {
   const el = document.createElement("div");
   el.className = kind ? `poi-marker poi-marker--${kind}` : "poi-marker";
   el.dataset.id = id;
@@ -275,7 +269,7 @@ function createMarkerElement(id: string, kind?: ProjectedPOI["kind"]): HTMLDivEl
   label.appendChild(dist);
 
   el.appendChild(label);
-  return el;
+  return { el, diamond, label, name, dist, targeted: false };
 }
 
 function createArrowElement(id: string, kind?: ProjectedPOI["kind"]): HTMLDivElement {

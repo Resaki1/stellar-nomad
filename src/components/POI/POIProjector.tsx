@@ -98,7 +98,7 @@ const BODY_SHOW_SCREEN_FRAC = 0.1;
  * every frame. It writes React state, so the gate is doing double duty — it also
  * keeps this from re-rendering the HUD 120 times a second.
  */
-function useNearestStars(): NearestCandidate[] {
+function useNearestStars(enabled: boolean): NearestCandidate[] {
   const worldOrigin = useWorldOrigin();
   const [nearest, setNearest] = useState<NearestCandidate[]>([]);
   const gate = useRef(makeTierGate());
@@ -115,7 +115,8 @@ function useNearestStars(): NearestCandidate[] {
     //
     // 🔑 "Not loaded yet" and "loaded, nothing in range" are different states and I
     // collapsed them. Only the second one justifies taking a budget.
-    if (!getStarCandidates()) return;
+    // Gated off (no interstellar travel yet): no 8,848-candidate scans for markers nobody sees.
+    if (!enabled || !getStarCandidates()) return;
     const sx = worldOrigin.shipPosKm.x;
     const sy = worldOrigin.shipPosKm.y;
     const sz = worldOrigin.shipPosKm.z;
@@ -182,7 +183,7 @@ function usePOIDefs(): POIDef[] {
   const revealAll = useAtomValue(revealAllStarMarkersAtom);
   const revealed = useAtomValue(revealedStarMarkerIdsAtom);
   // The nearest stars to the SHIP, gated — see useNearestStars.
-  const nearestStars = useNearestStars();
+  const nearestStars = useNearestStars(starsOn);
   // Kick the nearby catalogue's fetch: `starCandidates` needs it to build the union,
   // and nothing else in this component does.
   useEffect(() => {
