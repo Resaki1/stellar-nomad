@@ -52,12 +52,21 @@ only at the same size and DPR.
 
 ### Perf runs: always `--perf`
 
-`--perf` loads `?perf` (per-pass GPU timers) **and switches Chrome to vsync pacing**.
-Without `--perf`, frames are uncapped (~110 rAF/s) for speed, and in that mode
-three's timestamp query pool overflows ("Maximum number of queries exceeded"), so GPU
-samples stop arriving or come back corrupt. MEASURED 2026-11-13: an uncapped
-headless run reported 11.0 ms GPU at `earth_horizon_8` from that broken state. A kept
-Chrome is relaunched automatically when the mode changes.
+`--perf` loads `?perf` (per-pass GPU timers). Chrome is paced by **vsync by default**
+(59.9 rAF/s MEASURED); `--uncapped` opts into unpaced frames (173 rAF/s MEASURED
+2026-11-24) for frame-bound scripts, and is refused with `--perf`: in that mode three's
+timestamp query pool overflows ("Maximum number of queries exceeded"), so GPU samples
+stop arriving or come back corrupt (MEASURED 2026-11-13: 11.0 ms GPU at
+`earth_horizon_8` from that broken state). A kept Chrome is relaunched automatically
+when the pacing changes.
+
+Pacing and heat (VFX plan §8):
+- `--fps N` throttles the page's `requestAnimationFrame` to N/s (`--fps 30` → 30.3
+  rAF/s MEASURED) for long unattended loops where frame count, not speed, matters.
+- With `--keep`, the page is **frozen** (`Page.setWebLifecycleState`) when a run ends
+  and thawed by the next call, so an idle kept Chrome renders nothing (MEASURED: 2
+  frames across a 3 s gap). `--no-freeze` leaves it running; co-op profiles
+  (`DRIVE_PROFILE`) are never frozen, since that would drop the session.
 
 ```bash
 pnpm drive -- --perf bench:earth_650,earth_750

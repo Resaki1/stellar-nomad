@@ -5,7 +5,8 @@
  *
  * Why headless: the in-app browser pane throttles rAF to ~2/s whenever it is hidden,
  * so unattended loops can't rely on it. MEASURED 2026-11-13: headless Chrome gets an
- * apple/metal-3 adapter with timestamp-query and runs the game uncapped (~110 rAF/s).
+ * apple/metal-3 adapter with timestamp-query. Paced by vsync (60 rAF/s) by default; uncapped
+ * (~110 rAF/s) heats the machine over long loops and drifts timings (VFX plan §0, §8).
  *
  *   node --experimental-websocket scripts/drive.mjs [options] <step> <step> …
  *   pnpm drive -- scene:earth_horizon_8 settle canvas:horizon stats
@@ -15,6 +16,10 @@
  *   --size WxH      viewport, CSS px (default 1280x720)
  *   --dpr N         pins render resolution via ?dpr (default 1)
  *   --perf          load with ?perf (per-pass GPU timers)
+ *   --uncapped      unpaced rAF (~110/s): faster frame-bound scripts, more heat; not with --perf
+ *   --fps N         throttle the page's rAF to N/s (e.g. 30) for long unattended loops
+ *   --no-freeze     with --keep, leave the page rendering after the run (default: frozen
+ *                   until the next drive call, so an idle kept Chrome costs nothing)
  *   --keep          leave Chrome running; the next call reuses the loaded page (fast)
  *   --stop          kill a kept Chrome and exit
  *   --fresh         wipe the test profile (localStorage etc.) before launch
@@ -64,13 +69,16 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 
 // ── args ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
-const opt = { size: "1280x720", dpr: "1", out: ".captures", url: null, perf: false, keep: false, stop: false, fresh: false, isolate: true, title: false, query: [] };
+const opt = { size: "1280x720", dpr: "1", out: ".captures", url: null, perf: false, uncapped: false, fps: 0, freeze: true, keep: false, stop: false, fresh: false, isolate: true, title: false, query: [] };
 const steps = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--") continue;
   if (a === "--perf") opt.perf = true;
   else if (a === "--keep") opt.keep = true;
+  else if (a === "--uncapped") opt.uncapped = true;
+  else if (a === "--fps") opt.fps = Number(argv[++i]);
+  else if (a === "--no-freeze") opt.freeze = false;
   else if (a === "--stop") opt.stop = true;
   else if (a === "--fresh") opt.fresh = true;
   else if (a === "--no-isolate") opt.isolate = false;
@@ -78,6 +86,10 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--query") opt.query.push(argv[++i]);
   else if (["--url", "--size", "--dpr", "--out"].includes(a)) opt[a.slice(2)] = argv[++i];
   else steps.push(a);
+}
+if (opt.perf && opt.uncapped) {
+  console.error("--uncapped with --perf: uncapped submission overflows the GPU timestamp pool; drop one.");
+  process.exit(2);
 }
 const OUT = path.resolve(ROOT, opt.out);
 // DRIVE_PROFILE runs a second, isolated Chrome (co-op: host + guest); pair it with DRIVE_CDP_PORT.
@@ -99,7 +111,8 @@ async function cdpAlive() {
   }
 }
 
-const MODE = opt.perf ? "perf" : "fast";
+// Launch flags differ by pacing only; ?perf is a URL parameter (a reload, not a relaunch).
+const MODE = opt.uncapped ? "uncapped" : "vsync";
 function keptMode() {
   return existsSync(PIDFILE) ? readFileSync(PIDFILE, "utf8").split(" ")[1] : null;
 }
@@ -173,10 +186,10 @@ if (!reused) {
       "--headless=new",
       "--enable-unsafe-webgpu",
       "--use-angle=metal",
-      // Uncapped pacing (~110 rAF/s MEASURED) — but NOT under --perf: submitting faster
-      // than the GPU completes overflows three's timestamp query pool ("Maximum number
-      // of queries exceeded") and per-pass GPU samples silently stop arriving.
-      ...(opt.perf ? [] : ["--disable-gpu-vsync", "--disable-frame-rate-limit"]),
+      // Vsync by default. --uncapped (~110 rAF/s MEASURED) is opt-in: it heats the machine
+      // over long loops, and under --perf it overflows three's timestamp query pool
+      // ("Maximum number of queries exceeded") so per-pass GPU samples stop arriving.
+      ...(opt.uncapped ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
       "--disable-backgrounding-occluded-windows",
@@ -251,7 +264,35 @@ async function evaluate(expression, timeoutMs = 600_000) {
 }
 
 await send("Page.enable");
+// A kept page is frozen between runs (see the end of this file): thaw it before anything else.
+await send("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
 await send("Runtime.enable");
+// --fps: throttle rAF in the page (installed before every navigation; reads ?drivefps).
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: `(() => {
+    const n = Number(new URLSearchParams(location.search).get("drivefps"));
+    if (!(n > 0)) return;
+    const raf = window.requestAnimationFrame.bind(window);
+    const step = 1000 / n;
+    let next = 0, id = 0, pumping = false;
+    const q = new Map();
+    const pump = (t) => {
+      pumping = false;
+      if (t + 0.5 >= next) {
+        next = Math.max(next + step, t);
+        const run = [...q.values()]; q.clear();
+        for (const f of run) f(t);
+      }
+      if (q.size && !pumping) { pumping = true; raf(pump); }
+    };
+    window.requestAnimationFrame = (f) => {
+      q.set(++id, f);
+      if (!pumping) { pumping = true; raf(pump); }
+      return id;
+    };
+    window.cancelAnimationFrame = (k) => { q.delete(k); };
+  })();`,
+});
 await send("Emulation.setDeviceMetricsOverride", { width: VW, height: VH, deviceScaleFactor: 1, mobile: false });
 // Headless pages have no focus by default; keyboard handlers on window need it.
 await send("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -261,6 +302,7 @@ async function load() {
   const u = new URL(base);
   u.searchParams.set("dpr", opt.dpr);
   if (opt.perf) u.searchParams.set("perf", "");
+  if (opt.fps > 0) u.searchParams.set("drivefps", String(opt.fps));
   // Every script but a --title one skips the title screen (it still passes the loading gate).
   if (!opt.title) u.searchParams.set("autostart", "1");
   for (const q of opt.query) {
@@ -308,7 +350,8 @@ async function enterGame() {
 let currentUrl = page.url;
 const hasHarness = reused ? await evaluate("!!window.__test?.settled", 5000).catch(() => false) : false;
 const perfMatches = reused ? currentUrl.includes("perf") === opt.perf : true;
-const queryMatches = opt.query.every((q) => currentUrl.includes(q));
+const queryMatches = opt.query.every((q) => currentUrl.includes(q)) &&
+  (new URL(currentUrl === "about:blank" ? "http://x/" : currentUrl).searchParams.get("drivefps") ?? "0") === String(opt.fps > 0 ? opt.fps : 0);
 if (opt.title || !hasHarness || !perfMatches || !queryMatches) {
   const t0 = Date.now();
   currentUrl = await load();
@@ -521,6 +564,11 @@ for (const s of steps) {
 if (consoleErrors.length) log({ consoleErrors: consoleErrors.slice(0, 20) });
 if (consoleWarnings.length) log({ consoleWarnings: consoleWarnings.slice(0, 20) });
 
+// A kept page keeps rendering (and heating the machine) until the next call: freeze it.
+// Not for a co-op profile (DRIVE_PROFILE): freezing one side would drop the session.
+if (opt.keep && opt.freeze && !PROFILE_NAME) {
+  await send("Page.setWebLifecycleState", { state: "frozen" }).catch(() => {});
+}
 ws.close();
 if (!opt.keep && chrome) chrome.kill();
 process.exit(failed ? 1 : 0);

@@ -57,8 +57,9 @@
 - Run the dev server for testing on **:3001** (`.claude/launch.json` → `preview_start {name:"dev"}`);
   :3000 belongs to the owner. The driver probes `127.0.0.1:3001` (another app answers
   `localhost` over IPv6) and launches Chrome with `--mute-audio`, so tests are never audible.
-- `--perf` for any timing (it switches to vsync pacing; uncapped mode overflows the
-  GPU timestamp pool and the numbers are garbage).
+- `--perf` for any timing. Pacing is vsync by default; `--uncapped` (faster, hotter, refused with
+  `--perf`: it overflows the GPU timestamp pool), `--fps N` throttles rAF. A kept Chrome is frozen
+  between runs (`--no-freeze` to keep it rendering).
 - In-page API `window.__test` (scene / settled / image.stats / audio.record / state).
 - The in-app browser pane renders at ~2 fps while hidden — don't run loops there.
 - Full guide, settle semantics, metrics, traps: [`docs/AUTOMATED_TESTING.md`](docs/AUTOMATED_TESTING.md).

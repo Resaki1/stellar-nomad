@@ -868,6 +868,12 @@ simulation stays instant; chat never delayed by default.
 - Add a reusable VFX capture script under `scripts/drive-examples/` (beam orbit, station
   drift, umbra pair, descent ladder) so every phase's gate is one command.
 
+**Status (2026-11-24): done.** `drive.mjs`/`drive-coop.mjs` pace by vsync by default
+(59.9 rAF/s; `--uncapped` 173 rAF/s, refused with `--perf`), `--fps N` throttles rAF in
+the page (30 → 30.3), and a kept page is frozen between calls (2 frames over a 3 s gap).
+Gates per phase: `vfx-lights.mjs` (§1), `vfx-beam.mjs` (§2–§3), `vfx-shadows.mjs` (§4),
+`pnpm check:atmo` + the descent captures (§5–§6). See docs/AUTOMATED_TESTING.md.
+
 ---
 
 ## 9. Sequencing
@@ -887,7 +893,9 @@ simulation stays instant; chat never delayed by default.
 | 11 | **E3–E4** regimes + halo | 9, 10 | |
 | 12 | ~~**S2** shadow map~~ done (+0.3 ms) | measure | 0.3–1 ms budget item |
 | 13 | **E5** shimmer pass | 11, measure | New full-screen pass |
-| — | E6 contrails, E7 re-entry plasma, §7 light delay, S3 | later | |
+| 14 | **S3** emissive spill | 12 | Light only matters in shadow, which S1/S2 now make dark |
+| — | E5 shimmer, E6 contrails, E7 re-entry plasma | landings milestone | Owner, 2026-11-24: deferred to planetary landings, with the in-atmosphere flight model and its fuel use |
+| — | §7 light delay, B3 tier colours | later | B3 deferred by the owner 2026-11-24 |
 
 Budget for everything above at the asteroid-field scenario: ≤ +1.5 ms GPU p50 total,
 with S2 and E5 the only items allowed > 0.2 ms each.
@@ -896,10 +904,18 @@ with S2 and E5 the only items allowed > 0.2 ms each.
 
 ## 10. Open questions
 
+**Owner direction (2026-11-24):** atmospheric flight is its own milestone, tied to fully
+integrated planetary landings: a separate, realistic in-atmosphere flight model (which also
+changes fuel consumption), entry/exit VFX and heat build-up (E7), contrails (E6) and heat
+shimmer (E5). Until then the focus is elsewhere; E5–E7 wait for it.
+
+
 1. ~~Drive behaviour in atmosphere~~ decided: variable-Isp mode (§5.4, design §5.6).
-2. Beam colour per upgrade tier, or one colour with brightness only (B3).
+2. ~~Beam colour per upgrade tier, or one colour with brightness only (B3).~~ Deferred by the
+   owner (2026-11-24).
 3. Silhouette debounce for halt-on-miss: 0 or ≤ 0.15 s (B1).
-4. Mars (CO₂) emission tint: CN violet now looks dominant; confirm before E3.
+4. ~~Mars (CO₂) emission tint: CN violet now looks dominant; confirm before E3.~~ Owner
+   (2026-11-24): looks good. Re-check the physics once planetary landings are in gameplay.
 5. Should breathing air be *cheaper* than vacuum (`atmoBreathingFuelMult` < 1)?
    Recommendation: 1.0 now (no exploit); 0.3–0.5 later as a "breathe to save fuel" reward.
 6. Honest mid-band fuel cost is 30–150×. Recommendation: soft cap 10, excess as overdrive

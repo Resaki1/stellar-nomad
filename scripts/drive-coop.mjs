@@ -107,7 +107,8 @@ async function launch(role) {
       "--headless=new",
       "--enable-unsafe-webgpu",
       "--use-angle=metal",
-      ...(argv.includes("--perf") ? [] : ["--disable-gpu-vsync", "--disable-frame-rate-limit"]),
+      // Vsync unless --uncapped (same rule and pidfile mode names as drive.mjs).
+      ...(argv.includes("--uncapped") ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : []),
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
       "--disable-backgrounding-occluded-windows",
@@ -126,7 +127,7 @@ async function launch(role) {
   );
   if (opt.keep) {
     c.unref();
-    writeFileSync(pidFile(role), `${c.pid} fast`);
+    writeFileSync(pidFile(role), `${c.pid} ${argv.includes("--uncapped") ? "uncapped" : "vsync"}`);
   } else children.push(c);
   for (let i = 0; i < 100 && !(await cdpAlive(port)); i++) await sleep(100);
   if (!(await cdpAlive(port))) throw new Error(`${role} Chrome did not open CDP on :${port}`);
