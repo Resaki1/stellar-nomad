@@ -866,6 +866,14 @@ atmospheres"); this section is its spec.
   1 / 5 / 10 km (deep space); station lamps with the lift held constant fall monotonically
   60 m → 8 km (no pop); with the default adaptive lift they hold ~their 130 m brightness out to
   4 km.
+- **Display ceiling on the lift (owner: lamps read as big fuzzy circles, 2026-11-24).** Lamps
+  are physically far brighter than any star, so the lift drove their PSF peaks to 5–12 (pre-
+  exposed); a saturated Gaussian's visible edge grows with log(peak) and the glare pass rings
+  it, so each lamp became a disc and the replication point's 98 lamps one blob. The lift now
+  raises a point only up to a peak of 1 (≈ display white; stars aim at 0.5), never past it; a
+  point physically brighter keeps its physical value. Station-box peak 1.5 / 4 / 8 km: 11.9 /
+  6.0 / 4.8 → 1.8 / 0.78 / 0.76; halos gone (`vfx-lights.mjs` `farShots`, before/after sheet).
+  Plume at 1–10 km still 200–289× the sky; lift ladder still monotonic.
 - **Exhaust artefact fixes (2026-11-22, owner report: bright polygon across the screen,
   noise at the bells).** Causes, all MEASURED headless: (1) emission tails reached the
   bounding cylinder's wall and pre-exposure (~1e3–1e4 in dark space) made the silhouette

@@ -183,6 +183,27 @@ export default async function vfxLights(d) {
       console.log("ladder", JSON.stringify(out.ladder), "worst step", out.ladderWorstStep, "beacons", out.ladderBeacons);
     }
 
+    if (PARTS.includes("farShots")) {
+      // The look with the display lift (default): the station at range, auto exposure.
+      // Reports the box's peak, pixels over 0.5 (apparent size) and the sum per distance.
+      await ev("__lights.lift(true)");
+      const tag = process.env.FAR_TAG ?? "now";
+      const rows = [];
+      for (const D of [500, 1500, 4000, 8000]) {
+        await teleport([0, 0, -D]);
+        await d.frames(90);
+        const r = crop(D).join(",");
+        const st = await ev(`(async () => { const r = await __lum.region(${r}); return r; })()`);
+        const over = await ev(`(async () => { const t = __lum; return null; })()`);
+        void over;
+        rows.push({ D, peak: +st.max.toFixed(3), sum: +st.sum.toFixed(2) });
+        await d.canvas(`lamps-far-${tag}-${D}`);
+      }
+      await ev("__lights.lift(false)");
+      out.farShots = rows;
+      console.log("farShots", JSON.stringify(rows));
+    }
+
     if (PARTS.includes("liftLadder")) {
       // With the star display lift on unresolved points: lamp flux must never rise as the
       // station recedes (no pop at the mesh ↔ point hand-over). The taper is tested with the

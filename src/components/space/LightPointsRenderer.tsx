@@ -24,6 +24,13 @@ import { LIGHT_POINT_CAPACITY, PX_POINT, lightPointBuffer, pointShare, uForcePoi
 
 /** Dev: 0 drops the star display lift (physics gates measure true flux; `__lights.lift(false)`). */
 const uLiftOn = uniform(1);
+/**
+ * The lift may raise a point's PSF peak to this, pre-exposed (≈ display white), never past it.
+ * MEASURED without it: lifted lamps peaked at 5–12, and a saturated Gaussian's visible edge
+ * grows with log(peak) while the glare pass rings it, so lamps read as big fuzzy discs (the
+ * replication point's 98 lamps merged into one blob). Stars aim their lift at a 0.5 peak.
+ */
+const uLiftPeak = uniform(1);
 
 /** Sprite edge in px; holds 4.7σ of the Gaussian (same as StarField / StellarPoint). */
 const QUAD_PX = 8;
@@ -56,6 +63,8 @@ if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
     force(share = -1) { uForcePointShare.value = share; },
     /** Star display lift on unresolved points (default on); off for physical-flux gates. */
     lift(on = true) { uLiftOn.value = on ? 1 : 0; },
+    /** Dev: the lift's display-peak ceiling (pre-exposed). */
+    liftPeak(v = 1) { uLiftPeak.value = v; },
     stats: () => ({ drawn: lightPointBuffer.drawn, tanPerPx: uTanPerPx.value }),
   };
 }
@@ -126,7 +135,11 @@ export default function LightPoints() {
       const comp = STAR_DISPLAY_COMPRESSION.identity ? float(1)
         : pow(float(STAR_DISPLAY_COMPRESSION.anchorIllum).div(E), float(1 - STAR_DISPLAY_COMPRESSION.gamma));
       const cap = float(PX_POINT).div(px.max(1e-6)).pow(2);
-      const lift = mix(float(1), max(float(1), min(uStarLift.mul(comp), cap)), uLiftOn.mul(aLift));
+      // Display ceiling: the lift only brings a point UP to ~white, never past it (a point that
+      // is physically brighter keeps its physical value through the floor of 1).
+      const peak = E.mul(w).mul(uNorm).max(1e-30);
+      const ceil = uLiftPeak.div(peak);
+      const lift = mix(float(1), max(float(1), min(min(uStarLift.mul(comp), cap), ceil)), uLiftOn.mul(aLift));
       vRgb.assign(Erb.mul(w.mul(uNorm).mul(lift)).min(HALF_FLOAT_WRITE_MAX));
       const pull = aSize.mul(0.5).mul(float(1).sub(step(0.5, length(aDir)))).add(PULL_M).min(d.mul(0.5));
       const vc = viewC.xyz.mul(d.sub(pull).div(d));
