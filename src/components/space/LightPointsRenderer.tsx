@@ -15,11 +15,15 @@ import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import {
   abs, attribute, cameraFar, cameraNear, cameraPosition, cameraProjectionMatrix, cameraViewMatrix, dot, exp,
-  float, Fn, length, mix, positionGeometry, step, uniform, uv, varying, vec3, vec4, viewZToLogarithmicDepth,
+  float, Fn, length, max, min, mix, positionGeometry, pow, step, uniform, uv, varying, vec3, vec4, viewZToLogarithmicDepth,
 } from "three/tsl";
-import { STAR_PSF_SIGMA_PX, psfNormForBuffer } from "@/components/Stars/StarField";
+import { STAR_DISPLAY_COMPRESSION, STAR_PSF_SIGMA_PX, psfNormForBuffer } from "@/components/Stars/StarField";
+import { uStarLift } from "./starVisibility";
 import { getPreExposure, HALF_FLOAT_WRITE_MAX } from "./photometry";
-import { LIGHT_POINT_CAPACITY, lightPointBuffer, pointShare, uForcePointShare, uLampGain, uTanPerPx } from "./lightPoints";
+import { LIGHT_POINT_CAPACITY, PX_POINT, lightPointBuffer, pointShare, uForcePointShare, uLampGain, uTanPerPx } from "./lightPoints";
+
+/** Dev: 0 drops the star display lift (physics gates measure true flux; `__lights.lift(false)`). */
+const uLiftOn = uniform(1);
 
 /** Sprite edge in px; holds 4.7σ of the Gaussian (same as StarField / StellarPoint). */
 const QUAD_PX = 8;
@@ -50,6 +54,8 @@ if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
     points(on = true) { _pointsOn = on; },
     /** Force the point share of the crossfade (0 mesh only … 1 points only); no arg = by size. */
     force(share = -1) { uForcePointShare.value = share; },
+    /** Star display lift on unresolved points (default on); off for physical-flux gates. */
+    lift(on = true) { uLiftOn.value = on ? 1 : 0; },
     stats: () => ({ drawn: lightPointBuffer.drawn, tanPerPx: uTanPerPx.value }),
   };
 }
@@ -91,7 +97,10 @@ export default function LightPoints() {
     const aPos = vec3(attribute("aPos", "vec3"));
     const aDir = vec3(attribute("aDir", "vec3"));
     const aRgb = vec3(attribute("aRgb", "vec3"));
-    const aSize = float(attribute("aSize", "float"));
+    // Sign of the size carries the lift opt-out (lightPoints.ts pushLightPoint).
+    const aSizeRaw = float(attribute("aSize", "float"));
+    const aSize = abs(aSizeRaw);
+    const aLift = step(0, aSizeRaw);
     // Instanced attributes are vertex-only in WebGPU: the fragment gets varyings.
     const vRgb = varying(vec3(0), "v_lpRgb");
     const vViewZ = varying(float(-1), "v_lpViewZ");
@@ -107,7 +116,18 @@ export default function LightPoints() {
       const c = abs(dot(aDir, toPoint));
       const flat = c.add(float(1).sub(c.mul(c)).max(0).sqrt().mul(LENS_RIM));
       const cosF = mix(float(1), flat, step(0.5, length(aDir)));
-      vRgb.assign(aRgb.mul(cosF.mul(w).mul(uNorm).div(d.mul(d))).min(HALF_FLOAT_WRITE_MAX));
+      // ── Display lift, as the stars get it (VFX plan §5 far plumes; R7b/R7f) ──────────────
+      // An unresolved point is read like a star of equal illuminance: × uStarLift × the
+      // magnitude compression (A/E)^(1−γ). Capped at (PX_POINT/px)² and floored at 1, so it is
+      // physical while ≥ PX_POINT (continuous through the mesh crossfade) and, farther out,
+      // holds the brightness it had at PX_POINT until the lift runs out: never dimmer on approach.
+      const Erb = aRgb.mul(cosF).div(d.mul(d));
+      const E = dot(Erb, vec3(0.2126, 0.7152, 0.0722)).max(1e-30);
+      const comp = STAR_DISPLAY_COMPRESSION.identity ? float(1)
+        : pow(float(STAR_DISPLAY_COMPRESSION.anchorIllum).div(E), float(1 - STAR_DISPLAY_COMPRESSION.gamma));
+      const cap = float(PX_POINT).div(px.max(1e-6)).pow(2);
+      const lift = mix(float(1), max(float(1), min(uStarLift.mul(comp), cap)), uLiftOn.mul(aLift));
+      vRgb.assign(Erb.mul(w.mul(uNorm).mul(lift)).min(HALF_FLOAT_WRITE_MAX));
       const pull = aSize.mul(0.5).mul(float(1).sub(step(0.5, length(aDir)))).add(PULL_M).min(d.mul(0.5));
       const vc = viewC.xyz.mul(d.sub(pull).div(d));
       // Quad of QUAD_PX at its view depth; collapsed when the point carries nothing.

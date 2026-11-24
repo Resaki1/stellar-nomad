@@ -503,6 +503,9 @@ const COMPRESSION_ANCHOR_ILLUM =
   (LUX_AT_MAG_0 * Math.pow(10, -0.4 * STAR_COMPRESSION_ANCHOR_MAG)) /
   NITS_PER_GAME_UNIT;
 
+/** The display compression's anchor and exponent, for other unresolved point sources (light points). */
+export const STAR_DISPLAY_COMPRESSION = { anchorIllum: COMPRESSION_ANCHOR_ILLUM, gamma: STAR_MAGNITUDE_COMPRESSION, identity: COMPRESSION_IS_IDENTITY };
+
 
 // ── Equatorial J2000 → the game's frame (plan §8.2 gap 2) ───────────────────
 // The catalogue is in HYG's equatorial J2000 axes: +x to the vernal equinox,

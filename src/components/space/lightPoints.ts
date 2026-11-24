@@ -128,6 +128,8 @@ export function pushLightPoint(
   dir: Vector3 | null = null,
   /** false: the spill light must skip it (a source that lights the scene another way). */
   spill = true,
+  /** false: no star display lift (tiny, always-unresolved effects such as sparks). */
+  lift = true,
 ): void {
   const B = lightPointBuffer;
   if (B.count >= LIGHT_POINT_CAPACITY) { B.dropped++; return; }
@@ -135,7 +137,8 @@ export function pushLightPoint(
   B.pos[i * 3] = x; B.pos[i * 3 + 1] = y; B.pos[i * 3 + 2] = z;
   B.rgb[i * 3] = r; B.rgb[i * 3 + 1] = g; B.rgb[i * 3 + 2] = b;
   B.dir[i * 3] = dir ? dir.x : 0; B.dir[i * 3 + 1] = dir ? dir.y : 0; B.dir[i * 3 + 2] = dir ? dir.z : 0;
-  B.size[i] = sizeM;
+  // Negative size = no star display lift (packed: the instanced mesh is at WebGPU's 8 vertex buffers).
+  B.size[i] = lift ? sizeM : -sizeM;
   B.baked[i] = spill ? 0 : 1;
 }
 

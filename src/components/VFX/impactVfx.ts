@@ -211,7 +211,8 @@ export function drawSpotPoints(toScene: (fieldId: string, x: number, y: number, 
     // Hue of the flux-weighted temperature, close to the peak (luminance runs ~T¹²).
     hotHue(sp.peakK * 0.97, _hue);
     const g = nitsToGameUnits(cd);
-    pushLightPoint(_p[0], _p[1], _p[2], _hue[0] * g, _hue[1] * g, _hue[2] * g, 2 * sp.r);
+    // A surface glow, not a light to see from afar: no star display lift.
+    pushLightPoint(_p[0], _p[1], _p[2], _hue[0] * g, _hue[1] * g, _hue[2] * g, 2 * sp.r, null, true, false);
   }
 }
 
@@ -335,7 +336,8 @@ export function drawSparks(toScene: (fieldId: string, x: number, y: number, z: n
     const cd = hotNits(T) * Math.PI * s.r * s.r;
     hotHue(T, _hue);
     const g = nitsToGameUnits(cd);
-    pushLightPoint(_p[0], _p[1], _p[2], _hue[0] * g, _hue[1] * g, _hue[2] * g, 0.004);
+    // Sparks are always sub-pixel: no star display lift (it would turn a spray into a star field).
+    pushLightPoint(_p[0], _p[1], _p[2], _hue[0] * g, _hue[1] * g, _hue[2] * g, 0.004, null, true, false);
     n++;
   }
   return n;

@@ -852,12 +852,20 @@ atmospheres"); this section is its spec.
   ~half its flux at ~5 px, so the plume's crossfade starts ~3× earlier than a lamp's (≈12 px).
   Ladder 80 m → 15 km, E·d² within ±14 % of its median (no dip, still lit at 15 km; before:
   gone). Calibrated in vacuum only; air regimes ride on the same R²·L × radiance law, unmeasured.
-  **Open (display, owner decision):** at 5 km the point is ~16,000 cd (mag ≈ −6, ~78× Sirius)
-  yet renders no brighter than the background stars, because stars get the adaptation display
-  lift (`uStarLift`: 65,536× in deep space, clamped) and light points get none. The same holds
-  for distant station lamps (L1). Sharing the lift with unresolved light points would make them
-  read like stars of equal magnitude, but needs a taper so the mesh ↔ point crossfade stays
-  continuous.
+  At 5 km the point is ~16,000 cd (mag ≈ −6, ~78× Sirius) yet rendered no brighter than the
+  background stars: stars get the adaptation display lift (`uStarLift`: 65,536× in deep space,
+  clamped) and light points got none. Same for distant station lamps (L1).
+- **Star display lift on light points (owner: "yes, with a taper", 2026-11-24).**
+  `LightPointsRenderer` multiplies an unresolved point by `uStarLift × (A/E)^(1−γ)` (the stars'
+  lift and magnitude compression, `STAR_DISPLAY_COMPRESSION`), capped at `(PX_POINT/px)²` and
+  floored at 1: physical while ≥ 2 px (continuous through the mesh crossfade), then it holds the
+  brightness it had at 2 px until the lift runs out, so it never dims on approach. Sparks and
+  melt-spot points opt out (negative size: always sub-pixel effects would become a star field;
+  the instanced mesh is at WebGPU's 8 vertex buffers, so no extra attribute). Physics gates turn
+  it off (`__lights.lift(false)`). MEASURED: plume peak 289× / 246× / 194× the sky background at
+  1 / 5 / 10 km (deep space); station lamps with the lift held constant fall monotonically
+  60 m → 8 km (no pop); with the default adaptive lift they hold ~their 130 m brightness out to
+  4 km.
 - **Exhaust artefact fixes (2026-11-22, owner report: bright polygon across the screen,
   noise at the bells).** Causes, all MEASURED headless: (1) emission tails reached the
   bounding cylinder's wall and pre-exposure (~1e3–1e4 in dark space) made the silhouette

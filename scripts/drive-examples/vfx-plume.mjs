@@ -9,7 +9,9 @@
  *           volume's flux (prints the K to put in EngineExhaust's PLUME_POINT_K).
  * - ladder: natural crossfade from 80 m to 15 km: E·d² (flux × d²) stays within ±30 % of its
  *           median, and the far end is still lit (the old plume vanished at a few km).
- * - shots:  1 km and 5 km captures.
+ * - visible: with the star display lift, the plume's peak pixel beats the background > 3× at
+ *           1, 5 and 10 km.
+ * - shots:  1 km and 5 km captures (lift on).
  */
 const PARTS = (process.env.PLUME_PARTS ?? "calib,ladder,shots").split(",");
 const j = JSON.stringify;
@@ -27,7 +29,8 @@ export default async function vfxPlume(d) {
     }
     return prev;
   };
-  await ev("__test.simRate(0); __test.hud(false)");
+  // Physical flux for calib/ladder (the star display lift is a look); `visible` turns it on.
+  await ev("__test.simRate(0); __test.hud(false); __lights.lift(false)");
   const out = {};
   const cam = await ev("__spill.cam()");
   const fwd = [-cam[8], -cam[9], -cam[10]];
@@ -84,16 +87,33 @@ export default async function vfxPlume(d) {
       out.ladder = { rows, median: med, maxDev: +dev.toFixed(3), pass: dev < 0.3 && rows.at(-1).flux > 0 };
       console.log("ladder", j(out.ladder));
     }
+    if (PARTS.includes("visible")) {
+      // With the star display lift (the default look): the probe's peak pixel vs the same box
+      // without it (background stars). A friend's plume must stand out well past a few km.
+      await ev("__lights.lift(true)");
+      const rows = [];
+      for (const D of [1000, 5000, 10000]) {
+        await place(D, 1); await d.frames(60);
+        const on = (await ev(`__lum.region(${box(D)})`)).max;
+        await ev("__plumeProbe.hide()"); await d.frames(30);
+        const off = (await ev(`__lum.region(${box(D)})`)).max;
+        rows.push({ D, peak: +on.toExponential(3), background: +off.toExponential(3), ratio: +(on / off).toFixed(1) });
+      }
+      await ev("__lights.lift(false)");
+      out.visible = { rows, pass: rows.every((r) => r.ratio > 3) };
+      console.log("visible", j(out.visible));
+    }
     if (PARTS.includes("shots")) {
+      await ev("__lights.lift(true)");
       for (const D of [1000, 5000]) {
         await place(D, 1); await d.frames(40);
         await d.canvas(`plume-far-${D}`);
       }
     }
   } finally {
-    await ev("__plumeProbe.hide(); __lights.force(); __test.simRate(1)").catch(() => {});
+    await ev("__plumeProbe.hide(); __lights.force(); __lights.lift(true); __test.simRate(1)").catch(() => {});
   }
-  out.pass = !out.ladder || out.ladder.pass;
+  out.pass = (!out.ladder || out.ladder.pass) && (!out.visible || out.visible.pass);
   console.log(j(out));
   return out;
 }

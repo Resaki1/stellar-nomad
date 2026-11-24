@@ -92,7 +92,8 @@ export default async function vfxLights(d) {
   try {
     await ev(`${G}.fixtures.activate(${j(fixture)})`);
     await d.reload();
-    await ev(`__test.simRate(0); ${G}.m37.comms.dismiss(); __test.hud(false)`);
+    // Physical flux: the star display lift on unresolved points is a look, not photometry.
+    await ev(`__test.simRate(0); ${G}.m37.comms.dismiss(); __test.hud(false); __lights.lift(false)`);
     await teleport([0, 0, -400]);
     await d.settle(900);
     out.tanPerPx = tan = await tanPerPx();
@@ -182,6 +183,30 @@ export default async function vfxLights(d) {
       console.log("ladder", JSON.stringify(out.ladder), "worst step", out.ladderWorstStep, "beacons", out.ladderBeacons);
     }
 
+    if (PARTS.includes("liftLadder")) {
+      // With the star display lift on unresolved points: lamp flux must never rise as the
+      // station recedes (no pop at the mesh ↔ point hand-over). The taper is tested with the
+      // lift held constant ("legacy" 1024×); "auto" follows eye adaptation, which brightens
+      // points as the lit station leaves the view (reported, not gated).
+      const run = async (mode) => {
+        await ev(`__lum.starLift(${JSON.stringify(mode)})`);
+        const rows = [];
+        for (const D of [60, 90, 130, 200, 300, 500, 1000, 2000, 4000, 8000]) {
+          await teleport([0, 0, -D]);
+          await d.frames(6);
+          rows.push({ D, flux: +(await lampFlux(D)).flux.toExponential(3) });
+        }
+        return rows;
+      };
+      await ev("__lights.lift(true)");
+      const held = await run("legacy");
+      const auto = await run("auto");
+      await ev("__lights.lift(false)");
+      const rises = held.slice(1).map((r, i) => +(r.flux / held[i].flux).toFixed(3)).filter((x) => x > 1.05);
+      out.liftLadder = { held, auto, rises, pass: rises.length === 0 };
+      console.log("liftLadder", JSON.stringify(out.liftLadder));
+    }
+
     if (PARTS.includes("beacon")) {
       await teleport([0, 0, -8000]);
       await ev("__test.simRate(1)");
@@ -202,6 +227,7 @@ export default async function vfxLights(d) {
     }
     console.log(JSON.stringify(out, null, 1));
   } finally {
+    await ev("__lights.lift(true); __lum.starLift('auto'); __test.simRate(1)").catch(() => {});
     await ev(`${G}.fixtures.activate(${j(previous)})`);
     await d.reload();
     await ev(`${G}.fixtures.remove(${j(fixture)})`);
