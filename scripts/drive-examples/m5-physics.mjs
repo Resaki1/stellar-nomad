@@ -107,7 +107,7 @@ async function stationDebrisGate(page) {
   assert.ok(speedGate.suspensionLog.some(row => row.reason === "over-speed"), "physics surrenders over its speed gate");
   assert.equal(speedGate.impacts.length, 0, "the station solver does not handle a suspended flight");
 
-  const source = await ev(`${G}.industry.catalog().sources.find(s => s.id === "earth_hydrates")`);
+  const source = await ev(`${G}.industry.catalog().spots.find(s => s.id === "earth_pocket")`);
   await warp(page, source.frameId, source.positionKm);
   const rock = await waitFor(async () => (await ev(`${P}.asteroids.nearest(1)`))[0], 30000);
   assert.ok(rock, "a real mineable rock is loaded in the volatile pocket");

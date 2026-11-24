@@ -36,7 +36,8 @@ import { runOperation } from "@/store/operations";
 import { testProbe } from "./testProbe";
 import { beamBuffer } from "@/components/VFX/beams";
 import { createM37Harness } from "./m37Harness";
-import { DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { DEPOT_RECIPES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { activeSystem } from "@/sim/systemRegistry";
 import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
 import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { getLocalPlayerShip } from "@/sim/entities";
@@ -89,6 +90,18 @@ import { mouseState } from "@/input/mouse";
 import { activeTimedEffectsAtom } from "@/store/timedEffects";
 
 type Store = ReturnType<typeof createStore>;
+
+
+/** Test spots inside the authored fields (the retired hydrate sites' coordinates, so gate scripts keep their pockets). */
+function fieldSpots(): { id: string; fieldId: string; frameId: string; positionKm: [number, number, number] }[] {
+  const spots: [string, string, [number, number, number]][] = [["earth_pocket", "origin_belt", [-2810, 170, -190]], ["luna_field", "luna_belt", [530, 1485, 167]]];
+  return spots.flatMap(([id, fieldId, [dx, dy, dz]]) => {
+    const f = activeSystem().asteroidFields.find((x) => x.id === fieldId);
+    if (!f?.anchorBody || !f.anchorOffsetKm) return [];
+    const [x, y, z] = f.anchorOffsetKm;
+    return [{ id, fieldId, frameId: f.anchorBody, positionKm: [x + dx, y + dy, z + dz] as [number, number, number] }];
+  });
+}
 
 export const FIXTURE_PREFIX = "[gc] ";
 
@@ -157,7 +170,7 @@ export function createGameplayHarness(store: Store) {
   return {
     localId: (): string => getLocalPlayerId(),
     industry: {
-      catalog: () => structuredClone({ sources: INDUSTRY_SOURCES, recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
+      catalog: () => structuredClone({ spots: fieldSpots(), recipes: DEPOT_RECIPES, tuning: INDUSTRY_TUNING }),
       drone: sampleDrone,
       rockPresent({ fieldId, chunkKey, instanceId }: RockRef): boolean {
         const chunk = getActiveAsteroidRuntime()?.getFieldRuntime(fieldId)?.getChunk(chunkKey);
@@ -217,26 +230,6 @@ export function createGameplayHarness(store: Store) {
           }
         });
         return out;
-      },
-      prospect(id: string) {
-        const model = testProbe.scene?.getObjectByName(`industrySource:${id}`);
-        if (!model) return null;
-        const colliders: { id: number; pose: ReturnType<typeof nearField.enginePose>; points: number[] }[] = [];
-        nearField.forEachCollider((id, _, __, ___, tag) => {
-          if (tag === "prospect") colliders.push({ id, pose: nearField.enginePose(id), points: Array.from(nearField.engineHull(id) ?? []) });
-        });
-        return {
-          visible: model.visible, positionM: model.position.toArray(), colliders,
-          parts: model.children.flatMap(mesh => {
-            if (!(mesh instanceof Mesh)) return [];
-            const geometry = mesh.geometry.getAttribute("position");
-            const points: number[] = [];
-            for (let i = 0; i < geometry.count; i++) {
-              points.push(geometry.getX(i) * mesh.scale.x, geometry.getY(i) * mesh.scale.y, geometry.getZ(i) * mesh.scale.z);
-            }
-            return [{ positionM: mesh.position.toArray(), quaternion: mesh.quaternion.toArray(), points }];
-          }),
-        };
       },
     },
     /** Wait for this exact operation even when another pilot action settles in the same frame. */

@@ -99,8 +99,8 @@ export default async function industryUi(d) {
     await ev(`${G}.m37.comms.nameAi("Vega"); ${G}.m37.comms.dismiss()`);
     await d.frames(30);
     const catalog = await ev(`${G}.industry.catalog()`);
-    const source = catalog.sources.find(s => s.id === "earth_hydrates");
-    const lunar = catalog.sources.find(s => s.id === "luna_hydrates");
+    const source = catalog.spots.find(s => s.id === "earth_pocket");
+    const lunar = catalog.spots.find(s => s.id === "luna_field");
     assert.ok(source && lunar);
     // The Earth field has a finite hydrate-bearing rock here, just west of the fixture depot.
     const earthSite = { ...source, positionKm: [-7821.917849609375, 183.50833422851562, 14810.796959960937] };
@@ -658,12 +658,12 @@ export default async function industryUi(d) {
     await click("[data-industry-build]");
     assert.doesNotMatch(await text(".industry__build"), /Add a Transit Drive/);
     await click(prospect);
-    await find("hydrate site tracked with transit drive", () => tracked(prospectId));
+    await find("asteroid field tracked with transit drive", () => tracked(prospectId));
     await openIndustry();
     await click("[data-industry-build]");
     assert.equal(await text(prospect), "Untrack");
     await click(prospect);
-    await find("hydrate site cleared with transit drive", () => tracked(null));
+    await find("asteroid field cleared with transit drive", () => tracked(null));
     await click(inPanel(relay.id));
     await click(action("track-depot"));
     const relayTarget = `depot:${relay.id}`;

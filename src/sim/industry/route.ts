@@ -5,10 +5,9 @@ import { frameOriginXyzKm, SYSTEM_FRAME_ID } from "@/sim/frames";
 import { REPLICATION_TUNING } from "@/sim/replication/points";
 import { DEFAULT_RESOURCE_TUNING } from "@/sim/ship/resourceTuning";
 import { activeSystem } from "@/sim/systemRegistry";
-import { DRONE_FUEL_ID, INDUSTRY_TUNING as T, type IndustrySource } from "./catalog";
-import { canExtractAt, depotDistanceKm } from "./placement";
-import { prospectWorksite } from "./prospects";
-import type { DepotRecord, DroneFlightProfile } from "./types";
+import { DRONE_FUEL_ID, INDUSTRY_TUNING as T } from "./catalog";
+import { depotDistanceKm } from "./placement";
+import type { DroneFlightProfile } from "./types";
 
 type Position = Pick<ShipPose, "frameId" | "positionKm">;
 
@@ -25,7 +24,7 @@ export interface DroneRoute {
 type RejectedRoute = "different_frame" | "out_of_field" | "blocked" | "tank";
 type RouteCheck = { route: DroneRoute; reason: null } | { route: null; reason: RejectedRoute };
 
-// Allow for the rendered berths and the extractor's worksite approach offset.
+// Allow for the rendered berths.
 const ENDPOINT_MARGIN_KM = 0.05;
 const frameOrigin = { x: 0, y: 0, z: 0 };
 const ACCEL = T.accelerationKmPerS2;
@@ -184,11 +183,6 @@ export function checkDroneRoute(home: Position, destination: Position): RouteChe
 
 export function estimateDroneRoute(home: Position, destination: Position): DroneRoute | null {
   return checkDroneRoute(home, destination).route;
-}
-
-export function estimateDroneExtractionRoute(home: Position, source: IndustrySource, depots: readonly DepotRecord[]): DroneRoute | null {
-  if (!canExtractAt(home, source.id)) return null;
-  return estimateDroneWorkRoute(home, prospectWorksite(source, depots));
 }
 
 export function estimateDroneWorkRoute(home: Position, target: Position): DroneRoute | null {

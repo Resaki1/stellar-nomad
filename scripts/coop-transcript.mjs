@@ -9,6 +9,11 @@ import { earthMiningLoot, earthMiningRock, earthMiningSite } from "./lib/industr
 register(new URL("./lib/ts-hooks.mjs", import.meta.url));
 
 const S = (p) => import(new URL(`../src/${p}`, import.meta.url).href);
+/** The retired hydrate sites (field anchor + offset), for saves that still name them and as handy in-field spots. */
+const LEGACY_SITES = {
+  earth_hydrates: { id: "earth_hydrates", fieldId: "origin_belt", frameId: "earth", positionKm: [-7810, 170, 14810] },
+  luna_hydrates: { id: "luna_hydrates", fieldId: "luna_belt", frameId: "luna", positionKm: [1660, 4680, 440] },
+};
 const [{ HostSession }, { GuestSession }, { MemoryNetwork }, { MemoryRepository }, { systemClock }, fp, defaults, reg, hc, mr, mo, frames, cc, eph] = await Promise.all([
   S("sim/session/hostSession.ts"),
   S("sim/session/guestSession.ts"),
@@ -775,7 +780,7 @@ async function industryResearch() {
 }
 
 async function industry() {
-  const [{ getIndustrySource, INDUSTRY_TUNING }, { estimateDroneRoute }, { parseSaveData }, { emergencePose, starterPoint }, { advanceIndustry }] = await Promise.all([
+  const [{ INDUSTRY_TUNING }, { estimateDroneRoute }, { parseSaveData }, { emergencePose, starterPoint }, { advanceIndustry }] = await Promise.all([
     S("sim/industry/catalog.ts"), S("sim/industry/route.ts"), S("save/validate.ts"), S("sim/replication/points.ts"), S("sim/industry/simulation.ts"),
   ]);
   let ms = 0;
@@ -813,7 +818,7 @@ async function industry() {
     }
   };
 
-  const lunar = getIndustrySource("luna_hydrates");
+  const lunar = LEGACY_SITES.luna_hydrates;
   const originSite = earthMiningSite(1.9);
   const relaySite = earthMiningSite(5.9);
   const pose = s => ({ frameId: s.frameId, positionKm: [...s.positionKm], quaternion: [0,0,0,1] });
@@ -957,7 +962,7 @@ async function industry() {
 }
 
 async function industryBounds() {
-  const [{ LocalAuthority }, { getIndustrySource, INDUSTRY_TUNING: T }, { parseSaveData }] = await Promise.all([
+  const [{ LocalAuthority }, { INDUSTRY_TUNING: T }, { parseSaveData }] = await Promise.all([
     S("sim/world/authority.ts"), S("sim/industry/catalog.ts"), S("save/validate.ts"),
   ]);
   const save = defaults.defaultSaveData(HOST_ID);
@@ -966,7 +971,7 @@ async function industryBounds() {
   p.modules.consumables.consumable_hull_patch_kit = 10;
   p.propellant = { ordinaryKg: 7, protectedKg: 100 };
   p.processing = { id: "batch", recipeId: "hydrate_propellant", reserved: { hydrates: 30 }, elapsedS: 0, committedKg: 0 };
-  const source = getIndustrySource("earth_hydrates");
+  const source = LEGACY_SITES.earth_hydrates;
   p.ship = poseAt(source, 0.8);
   const depot = { id: "depot", ...source, by: HOST_ID, quaternion: [0, 0, 0, 1], refinery: false, refineProgressS: 0,
     storage: { items: { silicates: T.cargoCapacity - 1 }, consumables: { consumable_hull_patch_kit: 1 }, fuelKg: T.fuelCapacityKg } };
@@ -1007,45 +1012,11 @@ async function industryBounds() {
   return { pass: true };
 }
 
-async function industryProspects() {
-  const [{ getIndustrySource, DEPOT_KIT_ID }, { prospectWorksite }, { parseSaveData }, { LocalAuthority }] = await Promise.all([
-    S("sim/industry/catalog.ts"), S("sim/industry/prospects.ts"), S("save/validate.ts"), S("sim/world/authority.ts"),
-  ]);
-  const source = getIndustrySource("earth_hydrates");
-  const [x, y, z] = source.positionKm;
-  const site = [x, y + 0.085, z];
-  const data = defaults.defaultSaveData(HOST_ID);
-  const depot = { id: "old-depot", by: HOST_ID, name: "Works", frameId: source.frameId,
-    positionKm: [x, y + 0.15, z], quaternion: [0, 0, 0, 1] };
-  data.world.industry.depots = [depot];
-  const saved = parseSaveData(data);
-  assert.equal(saved.world.industry.depots.length, 1);
-  assert.deepEqual(prospectWorksite(source, saved.world.industry.depots).positionKm, site,
-    "a saved Earth depot at the legacy 65 m boundary keeps the worksite in place");
-
-  cc.updateEphemerisPositions(eph.jdFromUnixMs(data.world.simEpochMs));
-  const p = data.players[HOST_ID];
-  p.ship = poseAt(source, 0.8);
-  p.modules.consumables[DEPOT_KIT_ID] = 1;
-  data.world.industry.depots = [];
-  const authority = new LocalAuthority({ getWorld: () => data.world, getPlayer: () => p, getPlayers: () => [p], markDirty: () => {} });
-  const { name, frameId, quaternion } = depot;
-  const place = positionKm => authority.submit({ type: "depot.place", opId: `prospect-${++opN}`, name, frameId, quaternion, positionKm }, HOST_ID);
-  // From the rendered centre this candidate rounds just above 65 m. The legacy offset
-  // calculation rounds below 65 m, so allowing it would move the prospect.
-  const nearThreshold = [x + 0.00000003, y + 0.02, z];
-  assert.notDeepEqual(prospectWorksite(source, [{ ...depot, positionKm: nearThreshold }]).positionKm, site);
-  assert.equal(place(nearThreshold).reason, "near_rock");
-  assert.equal(place(source.positionKm).status, "accepted", "the source marker remains clear for a depot");
-  assert.deepEqual(prospectWorksite(source, data.world.industry.depots).positionKm, site);
-  return { pass: true };
-}
-
 async function industryDroneBounds() {
-  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { advanceIndustry, planDroneHaul }, { emptyIndustry, emptyStorage }, { estimateDroneRoute }] = await Promise.all([
-    S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"), S("sim/industry/types.ts"), S("sim/industry/route.ts"),
+  const [{ INDUSTRY_TUNING: T }, { advanceIndustry, planDroneHaul }, { emptyIndustry, emptyStorage }, { estimateDroneRoute }, { sanitizeIndustry }] = await Promise.all([
+    S("sim/industry/catalog.ts"), S("sim/industry/simulation.ts"), S("sim/industry/types.ts"), S("sim/industry/route.ts"), S("sim/industry/validate.ts"),
   ]);
-  const source = getIndustrySource("earth_hydrates");
+  const source = LEGACY_SITES.earth_hydrates;
   const depot = (id, offsetKm, fuelKg = 0, items = {}) => ({
     ...source, id, name: id, by: HOST_ID, positionKm: [source.positionKm[0] + offsetKm, ...source.positionKm.slice(1)],
     quaternion: [0, 0, 0, 1], refinery: false, refineProgressS: 0, storage: { ...emptyStorage(), fuelKg, items },
@@ -1102,19 +1073,20 @@ async function industryDroneBounds() {
   assert.deepEqual(ship().cargo.items, { silicates: 20 });
   assert.equal(world.depots[0].storage.items.hydrates, 50);
 
-  // The already-funded synthetic trip can return one last payload and then converts to a finite job.
+  // A saved trip to a retired hydrate site loads as a funded return home, then mines hydrates in that field.
   const config = { kind: "extract", targetId: source.id, priorities: ["hydrates"], reserveKg: 0, stopAt: T.cargoCapacity };
   const legacy = { ...drone("legacy-extract", home.id, config), phase: "working", status: "extracting",
-    remainingS: 1, durationS: T.extractSeconds, returnS: 12, fuelKg: 1 };
-  world = { ...emptyIndustry(), depots: [depot(home.id, 1, 100)], drones: [legacy] };
-  step();
-  assert.equal(ship().job.kind, "extract");
-  assert.equal(ship().cargo.items.hydrates, T.extractUnits);
-  step(ship().remainingS);
-  assert.equal(world.depots[0].storage.items.hydrates, T.extractUnits);
+    remainingS: 1, durationS: 6, returnS: 12, fuelKg: 1 };
+  world = sanitizeIndustry({ ...emptyIndustry(), depots: [depot(home.id, 1, 100)], drones: [legacy] });
+  assert.equal(ship().phase, "returning");
+  assert.equal(ship().status, "returning");
+  assert.equal(ship().remainingS, 12);
   assert.deepEqual(ship().job.mineFilter, { mode: "resource", ids: ["hydrates"] });
   assert.equal(ship().job.targetId, source.fieldId);
   assert.equal(ship().job.kind, "mine");
+  step(12);
+  assert.equal(ship().phase, "idle");
+  assert.equal(world.depots[0].storage.items.hydrates ?? 0, 0, "the recalled trip brings nothing back");
   return { pass: true };
 }
 
@@ -1125,7 +1097,7 @@ async function industryDroneClock() {
   const motion = new DroneMotion();
   const report = elapsedS => ({
     phase: "outbound", remainingS: legS - elapsedS, durationS: legS, returnS: legS, via: null,
-    job: { kind: "extract", targetId: "earth_hydrates" },
+    job: { kind: "haul", targetId: "relay" },
   });
   let stoppedS = 0, longestStopS = 0, peakRate = 0;
   for (let frame = 0; frame <= 600; frame++) {
@@ -1532,10 +1504,10 @@ async function industryMiningSortie() {
 }
 
 async function industryWire() {
-  const [{ getIndustrySource, INDUSTRY_TUNING: T }, { RELIABLE_UPDATE_BYTES }] = await Promise.all([
+  const [{ INDUSTRY_TUNING: T }, { RELIABLE_UPDATE_BYTES }] = await Promise.all([
     S("sim/industry/catalog.ts"), S("sim/session/protocol.ts"),
   ]);
-  const source = getIndustrySource("earth_hydrates");
+  const source = LEGACY_SITES.earth_hydrates;
   const seeded = newWorld().peek();
   const industry = seeded.data.world.industry;
   const longId = (prefix, i) => `${prefix}:${i}:${"x".repeat(120)}`;
@@ -1596,9 +1568,8 @@ async function industryWire() {
 }
 
 async function industrySaveFailure() {
-  const { getIndustrySource } = await S("sim/industry/catalog.ts");
   const stored = newWorld().peek();
-  const source = getIndustrySource("earth_hydrates");
+  const source = LEGACY_SITES.earth_hydrates;
   stored.data.world.industry.depots = [{
     ...source, id: "refinery", by: HOST_ID, quaternion: [0,0,0,1], refinery: true,
     storage: { items: { hydrates: 1 }, fuelKg: 0, consumables: {} }, refineProgressS: 1,
@@ -1915,7 +1886,6 @@ const SCENARIOS = {
   industry,
   industrySaveFailure,
   industryBounds,
-  industryProspects,
   industryDroneBounds,
   industryDroneClock,
   industryNearest,

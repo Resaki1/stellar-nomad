@@ -6,9 +6,9 @@ import type { ChunkCoord } from "@/sim/asteroids/runtimeTypes";
 import { SYSTEM_FRAME_ID } from "@/sim/frames";
 import { planExtraction, sourceIdOf } from "@/sim/research/discoveries";
 import { activeSystem } from "@/sim/systemRegistry";
-import { getIndustrySource, INDUSTRY_TUNING as T } from "./catalog";
+import { INDUSTRY_TUNING as T } from "./catalog";
 import { estimateDroneWorkRoute, type DroneRoute } from "./route";
-import type { DroneJob, DroneMineFilter, DroneRockId, DroneRockTarget } from "./types";
+import type { DroneMineFilter, DroneRockId, DroneRockTarget } from "./types";
 
 type Position = Pick<ShipPose, "frameId" | "positionKm">;
 const CHUNKS_PER_TICK = 4;
@@ -67,13 +67,6 @@ export function decodeMineFilter(fieldId: string, value: unknown): DroneMineFilt
   if (!options || !Array.isArray(ids) || !ids.length || ids.length > options.length ||
       !ids.every(id => typeof id === "string" && options.includes(id)) || new Set(ids).size !== ids.length) return null;
   return { mode: mode as "class" | "resource", ids: [...ids] };
-}
-
-/** Keeping the old assignment during an active trip preserves its funded payload and schedule. */
-export function finiteMiningJob(job: DroneJob): DroneJob {
-  const source = job.kind === "extract" && getIndustrySource(job.targetId);
-  return source ? { ...job, kind: "mine", targetId: source.fieldId, priorities: [],
-    mineFilter: { mode: "resource", ids: [source.materialId] } } : job;
 }
 
 export const droneRockKey = (rock: DroneRockId): string => `${rock.chunkKey}:${rock.instanceId}`;

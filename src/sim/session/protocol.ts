@@ -341,7 +341,7 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
         isStr(raw.json, SNAPSHOT_PART_CHARS) ? raw as unknown as HostMsg : null;
     case "industry": {
       const d = raw.delta;
-      if (!isInt(raw.gen) || !isObj(d) || !Array.isArray(d.depots) || !Array.isArray(d.drones) || !isObj(d.sources) ||
+      if (!isInt(raw.gen) || !isObj(d) || !Array.isArray(d.depots) || !Array.isArray(d.drones) ||
           d.depots.length > INDUSTRY_TUNING.maxDepots || d.drones.length > INDUSTRY_TUNING.maxDepots * INDUSTRY_TUNING.dronesPerDepot ||
           !d.depots.every(x => isObj(x) && isStr(x.id, 160)) || !d.drones.every(x => isObj(x) && isStr(x.id, 160))) return null;
       if (d.pointTanks !== undefined) {

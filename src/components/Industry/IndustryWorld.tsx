@@ -5,8 +5,8 @@ import { useFrame } from "@react-three/fiber";
 import { useAtomValue, useStore } from "jotai";
 import { memo, Suspense, useEffect, useMemo, useRef } from "react";
 import {
-  DodecahedronGeometry, EdgesGeometry, Euler, Group, LineBasicMaterial, LineSegments, LOD, Matrix4,
-  Mesh, MeshStandardMaterial, Quaternion, Vector3,
+  EdgesGeometry, Group, LineBasicMaterial, LineSegments, LOD, Matrix4,
+  Mesh, Quaternion, Vector3,
 } from "three";
 import { FRAME_PRIORITY_PLAYER_SHIP, FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import { emitterColor } from "@/components/space/emissivePhotometry";
@@ -21,8 +21,6 @@ import { simEpochMsAtom } from "@/store/simTime";
 import type { ReplicationPoint, ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
-import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
-import { PROSPECT_PARTS, PROSPECT_RADIUS_M, prospectWorksite } from "@/sim/industry/prospects";
 import { miningLegPosition, miningLegVelocity } from "@/sim/industry/sortie";
 import { droneFlightProgress, minimumDroneFlightS } from "@/sim/industry/route";
 import type { DepotRecord, DroneRecord } from "@/sim/industry/types";
@@ -51,12 +49,8 @@ const _lampMatrix = new Matrix4();
 const _unit = new Vector3(1, 1, 1);
 const DEPOT_COLLISION_KM = 3;
 const DRONE_RENDER_KM = 3;
-const SOURCE_RENDER_KM = 3;
 const BEAM_FADE_S = 0.6;
-const SOURCE_GEOMETRY = new DodecahedronGeometry(1, 0);
 
-const RADIATOR = new MeshStandardMaterial({ color: "#244661", metalness: 0.7, roughness: 0.46 });
-const PROSPECT = new MeshStandardMaterial({ color: "#9da2a5", metalness: 0.2, roughness: 0.94 });
 /** Drone laser power relative to the stock ship laser (beam radiance ∝ power, VFX plan B3). */
 const DRONE_BEAM_POWER = 0.5;
 const _beamEnd = new Vector3();
@@ -89,18 +83,6 @@ function castDroneBeam(system: SystemConfig, wo: Vector3, origin: Vector3, dir: 
 const PREVIEW_GOOD = new LineBasicMaterial({ name: "Clear depot outline", color: emitterColor("replication_preview"), transparent: true, opacity: 0.8, depthWrite: false });
 const PREVIEW_BAD = new LineBasicMaterial({ name: "Blocked depot outline", color: emitterColor("replication_preview_bad"), transparent: true, opacity: 0.8, depthWrite: false });
 for (const material of [PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(material);
-
-const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
-  const vertices = SOURCE_GEOMETRY.getAttribute("position");
-  const points = new Float32Array(vertices.count * 3);
-  for (let i = 0; i < vertices.count; i++) {
-    points[3 * i] = vertices.getX(i) * scale[0];
-    points[3 * i + 1] = vertices.getY(i) * scale[1];
-    points[3 * i + 2] = vertices.getZ(i) * scale[2];
-  }
-  const shape: ColliderShape = { kind: "hull", points };
-  return { position, orientation: new Quaternion().setFromEuler(new Euler(...rotation)), shape };
-});
 
 const _from = new Vector3(), _to = new Vector3();
 const _origin = new Vector3(), _droneOffset = new Vector3(), _direction = new Vector3(), _offset = new Vector3();
@@ -289,44 +271,6 @@ function withinColliderRange(pose: Position, ship: NonNullable<ReturnType<typeof
   return (p[0] - s.x + _origin.x) ** 2 + (p[1] - s.y + _origin.y) ** 2 + (p[2] - s.z + _origin.z) ** 2 <= km ** 2;
 }
 
-const Prospect = memo(function Prospect({ source }: { source: IndustrySource }) {
-  const ref = useRef<Group>(null!);
-  const colliders = useRef<NearFieldColliderId[]>([]);
-  const worldOrigin = useWorldOrigin();
-  const [x, y, z] = source.positionKm;
-  useEffect(() => {
-    const handles = colliders.current;
-    return () => {
-      handles.forEach(id => nearField.removeCollider(id));
-      handles.length = 0;
-    };
-  }, [source.frameId, x, y, z]);
-  useFrame(() => {
-    const g = ref.current;
-    if (!g) return;
-    scenePosition(source, worldOrigin.worldOriginKm, g.position);
-    g.visible = g.position.lengthSq() <= (SOURCE_RENDER_KM * 1000) ** 2;
-    const ship = getLocalPlayerShip();
-    const handles = colliders.current;
-    const range = SOURCE_RENDER_KM * (handles.length ? 1.2 : 1);
-    if (!ship || !withinColliderRange(source, ship, range)) {
-      handles.forEach(id => nearField.removeCollider(id));
-      handles.length = 0;
-    } else if (handles.length === 0) {
-      for (const { position, orientation, shape } of PROSPECT_HULLS) {
-        _offset.set(x + position[0] / 1000, y + position[1] / 1000, z + position[2] / 1000);
-        handles.push(nearField.addCollider(shape, source.frameId, _offset, orientation, "prospect"));
-      }
-    }
-  }, FRAME_PRIORITY_REMOTE_SHIPS);
-  return <group ref={ref} name={`industrySource:${source.id}`} visible={false}>
-    {PROSPECT_PARTS.map(({ position, rotation, scale, deposit }, i) => (
-      <mesh key={i} geometry={SOURCE_GEOMETRY} material={deposit ? RADIATOR : PROSPECT}
-        position={position} rotation={rotation} scale={scale} />
-    ))}
-  </group>;
-});
-
 function UtilityDrone({ drone, home, dest, index, assets }: {
   drone: DroneRecord; home: DepotRecord; dest: Destination | undefined; index: number; assets: DroneRenderAssets;
 }) {
@@ -406,12 +350,12 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
       g.position.copy(_from);
     } else {
       scenePosition(destination, w, _to);
-      if (motion.extracting) {
-        // Approach from the near side of the rocks, keeping both drone lanes out of the hulls.
+      if (rock) {
+        // Approach from the near side of the rock, keeping both drone lanes out of the hulls.
         _direction.subVectors(_from, _to).normalize();
         _droneOffset.crossVectors(_up, _direction);
         if (_droneOffset.lengthSq() < 1e-6) _droneOffset.set(1, 0, 0);
-        _to.addScaledVector(_direction, rock ? rock.radiusM + 14 : PROSPECT_RADIUS_M + 6)
+        _to.addScaledVector(_direction, rock.radiusM + 14)
           .addScaledVector(_droneOffset.normalize(), lane * 5);
       } else if (destination.quaternion) {
         _orientation.fromArray(destination.quaternion);
@@ -425,9 +369,9 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
         g.position.copy(_from);
       } else if (timeS >= motion.legS && !returning) {
         g.position.copy(_to);
-        if (motion.extracting) {
+        if (rock) {
           const workS = timeS - motion.legS;
-          if (!rock || !worldAuthority.asteroids.has(rock.fieldId, rock.chunkKey, rock.instanceId)) {
+          if (!worldAuthority.asteroids.has(rock.fieldId, rock.chunkKey, rock.instanceId)) {
             strength = smoothProgress(workS / BEAM_FADE_S) * smoothProgress((motion.workS - workS) / BEAM_FADE_S);
           }
           scenePosition(destination, w, _to);
@@ -486,17 +430,16 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
   </group>;
 }
 
-function UtilityDrones({ depots, drones, points, prospects }: {
+function UtilityDrones({ depots, drones, points }: {
   depots: readonly DepotRecord[];
   drones: readonly DroneRecord[];
   points: readonly ReplicationPoint[];
-  prospects: readonly IndustrySource[];
 }) {
   const assets = useDroneRenderAssets();
   return drones.map((drone, index) => {
     const home = depots.find(d => d.id === drone.homeId);
     const job = drone.job;
-    const dest = !job || job.kind === "mine" ? undefined : job.kind === "extract" ? prospects.find(s => s.id === job.targetId)
+    const dest = !job || job.kind === "mine" ? undefined
       : job.targetKind === "point" ? points.find(p => p.id === job.targetId && !p.starter)
       : depots.find(d => d.id === job.targetId);
     return home ? <UtilityDrone key={drone.id} drone={drone} home={home} dest={dest} index={index} assets={assets} /> : null;
@@ -507,7 +450,6 @@ export default function IndustryWorld() {
   const { depots, drones } = useAtomValue(industryAtom);
   const points = useAtomValue(replicationPointsAtom);
   const upgradedDepots = useMemo(() => depots.filter(depot => depot.refinery), [depots]);
-  const prospects = useMemo(() => INDUSTRY_SOURCES.map(source => prospectWorksite(source, depots)), [depots]);
   return <>
     {depots.length > 0 && <>
       <Suspense fallback={null}><DepotColliders depots={depots} /></Suspense>
@@ -515,9 +457,8 @@ export default function IndustryWorld() {
     </>}
     {upgradedDepots.length > 0 && <Suspense fallback={null}><RefineryColliders depots={upgradedDepots} /></Suspense>}
     <DepotPreview />
-    {prospects.map(source => <Prospect key={source.id} source={source} />)}
     {drones.length > 0 && <Suspense fallback={null}>
-      <UtilityDrones depots={depots} drones={drones} points={points} prospects={prospects} />
+      <UtilityDrones depots={depots} drones={drones} points={points} />
     </Suspense>}
   </>;
 }

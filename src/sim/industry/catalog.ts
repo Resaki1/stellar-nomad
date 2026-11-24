@@ -1,6 +1,4 @@
 import type { IndustryBlueprint } from "@/data/content";
-import type { Vec3Tuple } from "@/save/types";
-import { loadSystem } from "@/sim/systemRegistry";
 
 export const DEPOT_KIT_ID = "consumable_depot_kit";
 export const DRONE_FUEL_ID = "propellant";
@@ -18,10 +16,6 @@ export const INDUSTRY_TUNING = {
   fuelCapacityKg: 3000,
   refineSeconds: 2,
   refineKgPerHydrate: 20,
-  sourceCapacity: 12,
-  sourceSecondsPerUnit: 4,
-  extractUnits: 8,
-  extractSeconds: 6,
   loadUnits: 40,
   loadFuelKg: 120,
   deliverySeconds: 2,
@@ -40,36 +34,6 @@ export const INDUSTRY_TUNING = {
   /** Drop long timer gaps instead of awarding production after sleep or a suspended page. */
   maxTickGapS: 3,
 };
-
-export interface IndustrySource {
-  id: string;
-  name: string;
-  frameId: string;
-  fieldId: string;
-  positionKm: Vec3Tuple;
-  materialId: string;
-  rangeKm: number;
-}
-
-function fieldSource(id: string, name: string, fieldId: string, offsetKm: Vec3Tuple): IndustrySource {
-  const field = loadSystem("sol").asteroidFields.find(f => f.id === fieldId);
-  if (!field?.anchorBody || !field.anchorOffsetKm) throw new Error(`Missing field anchor for ${id}`);
-  const [x, y, z] = field.anchorOffsetKm;
-  const positionKm: Vec3Tuple = [x + offsetKm[0], y + offsetKm[1], z + offsetKm[2]];
-  return { id, name, fieldId, frameId: field.anchorBody, positionKm, materialId: "hydrates", rangeKm: INDUSTRY_TUNING.extractionRangeKm };
-}
-
-/** Navigation landmarks in volatile-rich regions. Older saved extractor trips also refer to their IDs. */
-export const INDUSTRY_SOURCES: IndustrySource[] = [
-  // Center of the authored origin_volatile pocket's first 20 km chunk.
-  fieldSource("earth_hydrates", "Earth hydrate site", "origin_belt", [-2810, 170, -190]),
-  // Beyond lunar transit clearance, near the outer edge of the denser part of the belt.
-  fieldSource("luna_hydrates", "Lunar hydrate site", "luna_belt", [530, 1485, 167]),
-];
-
-export function getIndustrySource(id: unknown): IndustrySource | undefined {
-  return INDUSTRY_SOURCES.find(s => s.id === id);
-}
 
 export interface DepotRecipe {
   blueprint?: IndustryBlueprint;

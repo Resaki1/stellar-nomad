@@ -9,7 +9,7 @@ export default async function structureNames(page) {
   const fixture = await ev(`(async () => {
     const g = ${G};
     const data = JSON.parse(await g.fixtures.export(${j(previous)})).data;
-    const origin = g.industry.catalog().sources[0];
+    const origin = g.industry.catalog().spots[0];
     const pose = { frameId: origin.frameId, positionKm: origin.positionKm, quaternion: [0,0,0,1] };
     data.world.industry.depots = [{ ...pose, id: "naming-test", name: "Depot 1", by: g.localId() }];
     data.world.industry.drones = [];
@@ -52,7 +52,7 @@ export default async function structureNames(page) {
     await ev(`${G}.fixtures.activate(${j(fixture)})`);
     await page.reload();
     await ev(`${G}.m37.comms.nameAi("Vega"); ${G}.m37.comms.dismiss()`);
-    const src = await ev(`${G}.industry.catalog().sources[0]`);
+    const src = await ev(`${G}.industry.catalog().spots[0]`);
     // Offset the ship sideways to keep the depot name outside the reticle exclusion zone.
     const at = src.positionKm.map((n,i) => n + [0.07,0,-0.32][i]);
     await ev(`${G}.rep.teleportRel(${j(src.frameId)}, ${j(at)}, [0,0,0,1])`);

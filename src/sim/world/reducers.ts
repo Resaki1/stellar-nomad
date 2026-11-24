@@ -646,7 +646,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       const stock = dest.pointId !== STARTER_POINT_ID && pointTanks && Object.hasOwn(pointTanks, dest.pointId) ? pointTanks[dest.pointId] : 0;
       const ordinaryKg = Math.min(stock, tankCapacityKg(p, world));
       const tankDelta: IndustryDelta | null = ordinaryKg > 0
-        ? { depots: [], drones: [], sources: {}, pointTanks: { [dest.pointId]: stock - ordinaryKg } } : null;
+        ? { depots: [], drones: [], pointTanks: { [dest.pointId]: stock - ordinaryKg } } : null;
       const propellant = { ordinaryKg, protectedKg };
       const power = { capacitor01: 1, heat01: 0 };
       // A vanished point is forgotten; an obstructed or explicitly bypassed one stays selected.

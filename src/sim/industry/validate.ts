@@ -2,9 +2,8 @@ import type { QuatTuple, ReplicationPoint, Vec3Tuple } from "@/save/types";
 import { isFrameId } from "@/sim/frames";
 import { cleanPointName } from "@/sim/replication/points";
 import type { Transfer } from "@/sim/world/commands";
-import { getIndustrySource, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from "./catalog";
+import { INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG } from "./catalog";
 import { decodeDroneJob } from "./reducer";
-import { finiteMiningJob } from "./mining";
 import { maxDroneLegSeconds } from "./route";
 import { DRONE_STATUSES, emptyIndustry, type DepotRecord, type DroneFlight, type DroneMiningSortie,
   type DroneRecord, type DroneRockTarget, type DroneWaypoint, type IndustryState } from "./types";
@@ -18,6 +17,14 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
 const position = (v: unknown): v is Vec3Tuple =>
   Array.isArray(v) && v.length === 3 && v.every(x => finite(x) && Math.abs(x) <= 1e12);
 const safeKey = (v: string): boolean => id(v) && !Object.hasOwn(Object.prototype, v);
+
+/** Retired hydrate-site extraction (pre-cleanup saves): the same hydrates, mined in the site's field. */
+const LEGACY_EXTRACT_FIELDS: Readonly<Record<string, string>> = { earth_hydrates: "origin_belt", luna_hydrates: "luna_belt" };
+function legacyJob(v: unknown): unknown {
+  if (!obj(v) || v.kind !== "extract" || typeof v.targetId !== "string") return v;
+  const fieldId = LEGACY_EXTRACT_FIELDS[v.targetId];
+  return fieldId ? { ...v, kind: "mine", targetId: fieldId, priorities: [], mineFilter: { mode: "resource", ids: ["hydrates"] } } : null;
+}
 
 function storage(v: unknown, capacity: number, tankKg: number): Transfer {
   const items: Transfer["items"] = {};
@@ -67,10 +74,8 @@ function fundedFlight(v: unknown): DroneFlight | null | undefined {
   if (v === null) return null;
   if (!obj(v) || (v.profile !== "local" && v.profile !== "field") ||
       !finite(v.returnFuelAtDryKg) || v.returnFuelAtDryKg < 0 || v.returnFuelAtDryKg > T.droneTankKg) return undefined;
-  const extractUnits = finite(v.extractUnits) ? Math.floor(num(v.extractUnits, T.extractUnits)) : undefined;
   const rock = rockTarget(v.rock);
-  return { profile: v.profile, returnFuelAtDryKg: v.returnFuelAtDryKg,
-    ...(extractUnits === undefined ? {} : { extractUnits }), ...(rock && { rock }) };
+  return { profile: v.profile, returnFuelAtDryKg: v.returnFuelAtDryKg, ...(rock && { rock }) };
 }
 
 function waypoint(v: unknown): DroneWaypoint | null {
@@ -100,26 +105,29 @@ function drone(v: unknown, depots: Map<string, DepotRecord>, pointTanks: Industr
   if (!obj(v) || !id(v.id) || !id(v.homeId)) return null;
   const home = depots.get(v.homeId);
   if (!home) return null;
-  const configured = decodeDroneJob(v.job);
+  const extracting = obj(v.job) && v.job.kind === "extract";
+  const configured = decodeDroneJob(legacyJob(v.job));
   const validDelivery = configured?.targetKind === "point" ? Object.hasOwn(pointTanks, configured.targetId)
     : !!configured && depots.has(configured.targetId) && v.homeId !== configured.targetId;
   const returnS = num(v.returnS, maxLegS);
   const durationS = num(v.durationS, maxLegS);
   const sortie = configured?.kind === "mine" ? miningSortie(v.sortie, home) : undefined;
-  const phase = v.phase === "scouting" && sortie ? "scouting" : returnS >= T.minLegSeconds && durationS > 0 &&
+  const saved = v.phase === "scouting" && sortie ? "scouting" : returnS >= T.minLegSeconds && durationS > 0 &&
       (v.phase === "outbound" || v.phase === "working" || v.phase === "returning")
     ? v.phase : "idle";
-  const valid = configured && (configured.kind !== "haul" || validDelivery) ? configured : null;
-  const job = valid && phase === "idle" ? finiteMiningJob(valid) : valid;
+  // A retired extraction trip in flight heads home on its funded return; the site no longer exists.
+  const recalled = extracting && (saved === "outbound" || saved === "working");
+  const phase = recalled ? "returning" : saved;
+  const job = configured && (configured.kind !== "haul" || validDelivery) ? configured : null;
   const restored = DRONE_STATUSES.find(s => s === v.status) ?? (job ? "paused" : "unassigned");
-  const status = !job && phase !== "idle" && phase !== "returning" ? "returning" : restored;
+  const status = recalled || (!job && phase !== "idle" && phase !== "returning") ? "returning" : restored;
   const flight = fundedFlight(v.flight);
   return {
     id: v.id, homeId: v.homeId, job, phase, status, returnS, durationS, via: waypoint(v.via),
     ...(flight === undefined ? {} : { flight }),
     ...(sortie === undefined ? {} : { sortie }),
-    remainingS: num(v.remainingS, durationS), fuelKg: num(v.fuelKg, flight ? T.droneTankKg : maxLegacyLegKg),
-    cargo: storage(v.cargo, Math.max(T.loadUnits, T.extractUnits), T.loadFuelKg),
+    remainingS: recalled ? returnS : num(v.remainingS, durationS), fuelKg: num(v.fuelKg, flight ? T.droneTankKg : maxLegacyLegKg),
+    cargo: storage(v.cargo, T.loadUnits, T.loadFuelKg),
   };
 }
 
@@ -151,16 +159,5 @@ export function sanitizeIndustry(v: unknown, points: readonly ReplicationPoint[]
     droneIds.add(next.id);
     drones.push(next);
   }
-  const sources: IndustryState["sources"] = {};
-  if (obj(v.sources)) {
-    for (const [key, stock] of Object.entries(v.sources)) {
-      if (getIndustrySource(key) && obj(stock)) {
-        sources[key] = {
-          available: Math.floor(num(stock.available, T.sourceCapacity)),
-          replenishProgressS: Math.floor(num(stock.replenishProgressS, T.sourceSecondsPerUnit - 1)),
-        };
-      }
-    }
-  }
-  return { depots: Array.from(depots.values()), drones, sources, pointTanks, remainderS: num(v.remainderS, 1 - Number.EPSILON) };
+  return { depots: Array.from(depots.values()), drones, pointTanks, remainderS: num(v.remainderS, 1 - Number.EPSILON) };
 }

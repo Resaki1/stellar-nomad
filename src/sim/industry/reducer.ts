@@ -4,11 +4,11 @@ import { isFrameId } from "@/sim/frames";
 import { cleanPointName, emergencePose } from "@/sim/replication/points";
 import type { RejectReason } from "@/sim/world/commands";
 import type { Commit, ReduceCtx, Reduction } from "@/sim/world/reducers";
-import { DEPOT_KIT_ID, DEPOT_RECIPES, DRONE_FUEL_ID, getIndustrySource, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG, POINT_TANK_RECIPE } from "./catalog";
+import { DEPOT_KIT_ID, DEPOT_RECIPES, DRONE_FUEL_ID, INDUSTRY_TUNING as T, POINT_TANK_CAPACITY_KG, POINT_TANK_RECIPE } from "./catalog";
 import { planFabricationMaterials } from "./fabrication";
 import { checkDepotPlacement, depotDistanceKm } from "./placement";
 import { canMineField, decodeMineFilter } from "./mining";
-import { estimateDroneExtractionRoute, estimateDroneRoute } from "./route";
+import { estimateDroneRoute } from "./route";
 import { applyIndustryDelta, changedCount, payloadMassKg, storageUnits } from "./simulation";
 import { beginMiningReturn } from "./sortie";
 import { emptyStorage, sameDroneAssignment, type DepotRecord, type DroneJob, type DroneRecord, type IndustryDelta, type IndustryOperation, type IndustryResult } from "./types";
@@ -26,7 +26,7 @@ export function isMaterial(id: string): boolean {
 export function decodeDroneJob(v: unknown): DroneJob | null {
   if (!v || typeof v !== "object") return null;
   const { kind, targetId, targetKind, priorities, mineFilter, keepResourceIds, reserveKg, stopAt, enabled } = v as Partial<DroneJob>;
-  if ((kind !== "extract" && kind !== "haul" && kind !== "mine") ||
+  if ((kind !== "haul" && kind !== "mine") ||
       typeof targetId !== "string" || targetId.length > 160 || !targetId ||
       typeof enabled !== "boolean" || typeof reserveKg !== "number" || !Number.isFinite(reserveKg) || reserveKg < 0 || reserveKg > T.fuelCapacityKg ||
       typeof stopAt !== "number" || !Number.isSafeInteger(stopAt) || stopAt < 1 || stopAt > Math.max(T.cargoCapacity, T.fuelCapacityKg) ||
@@ -44,8 +44,6 @@ export function decodeDroneJob(v: unknown): DroneJob | null {
   if (priorities.length === 0 || mineFilter !== undefined || keepResourceIds !== undefined) return null;
   if (targetKind !== undefined && (targetKind !== "point" || kind !== "haul" ||
       priorities.length !== 1 || priorities[0] !== DRONE_FUEL_ID || stopAt > POINT_TANK_CAPACITY_KG)) return null;
-  const source = kind === "extract" ? getIndustrySource(targetId) : undefined;
-  if (kind === "extract" && (!source || priorities.length !== 1 || priorities[0] !== source.materialId)) return null;
   return { kind, targetId, ...(targetKind && { targetKind }), priorities: [...priorities], reserveKg, stopAt, enabled };
 }
 
@@ -57,7 +55,7 @@ function commit(
   ctx: IndustryContext, result: IndustryResult, depots: DepotRecord[], drones: DroneRecord[],
   playerKeys: Commit["playerKeys"] = [], updatePlayer?: () => void,
 ): Commit {
-  const delta: IndustryDelta = { depots, drones, sources: {} };
+  const delta: IndustryDelta = { depots, drones };
   const next = applyIndustryDelta(ctx.world.industry, delta);
   return {
     result,
@@ -191,10 +189,6 @@ function fabricate(
 function validateTarget(job: DroneJob, home: DepotRecord, world: WorldState): RejectReason | null {
   const { depots, pointTanks } = world.industry;
   if (job.kind === "mine") return canMineField(home, job.targetId) ? null : "source_out_of_range";
-  if (job.kind === "extract") {
-    const source = getIndustrySource(job.targetId);
-    return source && estimateDroneExtractionRoute(home, source, depots) ? null : "source_out_of_range";
-  }
   if (job.targetKind === "point") {
     const target = Object.hasOwn(pointTanks, job.targetId) && world.replication.points.find(p => p.id === job.targetId && !p.starter && isFrameId(p.frameId));
     return !target ? "not_found" : estimateDroneRoute(home, target) ? null : "route_out_of_range";
@@ -216,7 +210,7 @@ function changePointTank(
   if (!canAccessStorage(player, point)) return { reason: "too_far" };
   const installed = Object.hasOwn(world.industry.pointTanks, pointId);
   const stock = installed ? world.industry.pointTanks[pointId] : 0;
-  const tankDelta = (fuelKg: number): IndustryDelta => ({ depots: [], drones: [], sources: {}, pointTanks: { [pointId]: fuelKg } });
+  const tankDelta = (fuelKg: number): IndustryDelta => ({ depots: [], drones: [], pointTanks: { [pointId]: fuelKg } });
 
   if (op.type === "replication.tank.install") {
     if (installed) return { reason: "already_done" };
@@ -278,7 +272,6 @@ export function reduceIndustry(op: IndustryOperation, ctx: IndustryContext, limi
     if (!job) return { reason: "invalid" };
     const sameAssignment = sameDroneAssignment(drone.job, job);
     if (drone.phase !== "idle" && !sameAssignment) return { reason: "busy" };
-    if (job.kind === "extract" && !sameAssignment) return { reason: "locked" };
     if (job.kind === "mine" && !sameAssignment && !world.research.completedNodes.includes(industryResearchNode("mining").id)) return { reason: "locked" };
     // A crew can stop an existing assignment even if it can no longer dispatch.
     const stopping = sameAssignment && !job.enabled;

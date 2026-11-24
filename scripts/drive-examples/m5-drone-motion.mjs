@@ -8,7 +8,6 @@ const I = G + ".industry";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const offset = (a, b) => a.map((x, i) => x + b[i]);
 const distance = (a, b) => Math.hypot(...a.map((x, i) => x - b[i]));
-const tuples = points => Array.from({ length: points.length / 3 }, (_, i) => points.slice(i * 3, i * 3 + 3));
 
 async function waitFor(sample, timeout = 8000) {
   const start = Date.now();
@@ -23,59 +22,6 @@ async function waitFor(sample, timeout = 8000) {
 async function warp(page, frameId, positionKm, quaternion = [0, 0, 0, 1]) {
   await page.evaluate(`${G}.rep.teleportRel(${J(frameId)}, ${J(positionKm)}, ${J(quaternion)})`);
   await page.frames(8);
-}
-
-async function verifyProspect(page, source, site) {
-  const ev = page.evaluate;
-  const rendered = () => ev(`${I}.prospect(${J(source.id)})`);
-  const contact = () => ev("__phys.impacts.log()");
-  const observer = offset(site, [0, 0, 0.055]);
-
-  // Still inside the 30 km extraction range.
-  await warp(page, source.frameId, offset(site, [0, 0, 5]));
-  const far = await waitFor(rendered);
-  assert.ok(far, "prospect group exists in the local render scene");
-  assert.equal(far.visible, false);
-  assert.equal(far.colliders.length, 0, "the extraction radius carries no collision hull");
-
-  await warp(page, source.frameId, observer, [0, 1, 0, 0]);
-  const near = await waitFor(async () => {
-    const geometry = await rendered();
-    return geometry?.visible && geometry.colliders.every(c => c.pose) && geometry.colliders.length === 3 && geometry;
-  });
-  assert.ok(near, "all three rendered rocks share the near-field solver");
-  const poseErrorM = Math.max(...near.parts.map((mesh, i) => {
-    const collider = near.colliders[i];
-    const colliderM = collider.pose.relKm.map((x, k) => (x - observer[k]) * 1000);
-    const drawM = offset(near.positionM, mesh.positionM);
-    const dot = mesh.quaternion.reduce((sum, q, k) => sum + q * collider.pose.quat[k], 0);
-    assert.ok(Math.abs(dot) > 0.99999, "Rapier and renderer use the same mesh rotation");
-    const engineVertices = tuples(collider.points);
-    const meshVertices = tuples(mesh.points);
-    assert.ok(engineVertices.length >= 20, "rock uses a convex hull");
-    const vertexErrorM = Math.max(...engineVertices.map(p => Math.min(...meshVertices.map(m => distance(p, m)))));
-    assert.ok(vertexErrorM < 0.001, "convex hull vertices match the scaled rock mesh");
-    return distance(colliderM, drawM);
-  }));
-  assert.ok(poseErrorM < 0.02, `prospect's meshes align with Rapier to 2 cm, measured ${poseErrorM} m`);
-
-  // Validate both placement authorities where the visible rocks are the obstruction.
-  const place = { name: "Blocked trial", frameId: source.frameId, positionKm: site, quaternion: [0, 0, 0, 1] };
-  await warp(page, source.frameId, offset(site, [0, 0, 0.8]));
-  const depotBlocked = await ev(`${G}.settled(${J({ type: "depot.place", ...place })})`);
-  assert.equal(depotBlocked.reason, "near_rock");
-  const pointBlocked = await ev(`${G}.settled(${J({ type: "replication.place", ...place })})`);
-  assert.equal(pointBlocked.reason, "near_rock");
-
-  await warp(page, source.frameId, observer, [0, 1, 0, 0]);
-  await ev("__phys.impacts.clear(); __phys.m5.coast([0,0,-0.035])");
-  const hit = await waitFor(async () => (await contact()).find(i => near.colliders.some(c => c.id === i.colliderId)));
-  assert.ok(hit?.damageHp > 0, "35 m/s approach hits the rendered prospect");
-  const ship = await ev(`${G}.rep.ship()`);
-  assert.ok(ship.posKm[2] - site[2] > 0.003, "the approaching ship does not tunnel through the rock");
-  await warp(page, source.frameId, offset(site, [0, 0, 5]));
-  assert.equal((await rendered()).colliders.length, 0, "prospect collision unloads outside the near field");
-  return { poseErrorM, impactMps: hit.dvMps };
 }
 
 async function trackFromDroneCard(page, droneId, homeId) {
@@ -311,9 +257,7 @@ async function verifyRestoredFieldFlight(page, fixture, home, relay, droneId) {
 export default async function m5DroneMotion(page) {
   const ev = page.evaluate;
   const { id: old, schemaVersion } = await ev("__test.save.info()");
-  const { sources, tuning } = await ev(`${I}.catalog()`);
-  const source = sources.find(s => s.id === "earth_hydrates");
-  const site = offset(source.positionKm, [0, 0.085, 0]);
+  const { tuning } = await ev(`${I}.catalog()`);
   const me = await ev(`${G}.localId()`);
   const home = { id: "home", name: "Hydrate Works", by: me, ...earthMiningSite(1.9),
     quaternion: [0, 0, 0, 1], storage: { fuelKg: 100, items: { carbon: 20 } } };
@@ -329,12 +273,10 @@ export default async function m5DroneMotion(page) {
     await ev(`${G}.fixtures.activate(${J(fixture)})`);
     await page.reload();
     assert.equal(await ev("__test.save.info().id"), fixture);
-    const prospect = await verifyProspect(page, source, site);
-    console.log(J({ stage: "prospect contact", ...prospect }));
     const flight = await verifyFlight(page, earthMiningRock, home, drone.id, tuning);
     console.log(J({ stage: "terminal flight", ...flight }));
     const fieldFlight = await verifyRestoredFieldFlight(page, fixture, home, relay, hauler.id);
-    return { pass: true, prospect, flight, fieldFlight };
+    return { pass: true, flight, fieldFlight };
   } finally {
     await ev(`${G}.fixtures.activate(${J(old)})`);
     await page.reload();

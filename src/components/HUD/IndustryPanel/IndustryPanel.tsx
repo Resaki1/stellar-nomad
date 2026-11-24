@@ -7,10 +7,10 @@ import { getItemDef, industryResearchNode, MATERIAL_NAMES, materialName } from "
 import { playAudio } from "@/audio/voices";
 import { getLocalPlayerShip } from "@/sim/entities";
 import { isFrameId } from "@/sim/frames";
-import { DRONE_FUEL_ID, DEPOT_KIT_ID, DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING, POINT_TANK_CAPACITY_KG } from "@/sim/industry/catalog";
+import { DRONE_FUEL_ID, DEPOT_KIT_ID, DEPOT_RECIPES, INDUSTRY_TUNING, POINT_TANK_CAPACITY_KG } from "@/sim/industry/catalog";
 import { planFabricationMaterials } from "@/sim/industry/fabrication";
 import { sameDroneAssignment, type DepotRecord, type DroneJob, type DroneRecord, type DroneStatus } from "@/sim/industry/types";
-import { checkDroneRoute, estimateDroneExtractionRoute } from "@/sim/industry/route";
+import { checkDroneRoute } from "@/sim/industry/route";
 import { depotDistanceKm } from "@/sim/industry/placement";
 import { miningFieldsAt } from "@/sim/industry/mining";
 import { planDroneHaul, planDronePointDelivery, storageUnits } from "@/sim/industry/simulation";
@@ -48,7 +48,7 @@ type OperationArgs<Op = IndustryOp> = Op extends IndustryOp ? Omit<Op, "opId"> :
 type Submit = (op: OperationArgs, success?: string, onAccepted?: () => void) => void;
 type Coordinates = Pick<ShipPose, "frameId" | "positionKm">;
 type DeliveryTargetRef = Pick<DeliveryTarget, "kind" | "id">;
-type JobKind = Exclude<DroneJob["kind"], "extract">;
+type JobKind = DroneJob["kind"];
 
 type DroneDraft = {
   baseJob: DroneJob | null;
@@ -87,7 +87,7 @@ function usePosition(): Coordinates | null {
 }
 
 function depotRole(depot: DepotRecord, drones: DroneRecord[]): string {
-  const mines = drones.some(drone => drone.homeId === depot.id && (drone.job?.kind === "mine" || drone.job?.kind === "extract"));
+  const mines = drones.some(drone => drone.homeId === depot.id && drone.job?.kind === "mine");
   if (depot.refinery) return mines ? "Refinery · Asteroid mining" : "Refinery";
   return mines ? "Asteroid mining" : "Storage depot";
 }
@@ -520,7 +520,6 @@ const DRONE_STATUS: Record<DroneStatus, string> = {
   destination_full: "The receiving depot has no room for this delivery.",
   no_cargo: "Nothing to deliver. Add a listed item to this depot.",
   route_out_of_range: "The drone can't reach this destination. Edit the job to choose another.",
-  extracting: "Collecting hydrates",
   delivering: "Delivering cargo",
   returning: "Returning to depot",
   unload_blocked: "Make room at this depot so the drone can unload.",
@@ -553,18 +552,17 @@ const defaultReserve = (kind: DroneJob["kind"]): number => kind === "haul" ? 10 
 const maxJobLimit = Math.max(INDUSTRY_TUNING.cargoCapacity, INDUSTRY_TUNING.fuelCapacityKg);
 
 function newDroneDraft(job: DroneJob | null, preferMining: boolean): DroneDraft {
-  const legacySource = job?.kind === "extract" ? INDUSTRY_SOURCES.find(source => source.id === job.targetId) : undefined;
   const mineFilter = job?.mineFilter;
-  const kind = job?.kind === "extract" ? "mine" : job?.kind ?? (preferMining ? "mine" : "haul");
+  const kind = job?.kind ?? (preferMining ? "mine" : "haul");
   const destinationKind = job?.targetKind ?? "depot";
   return {
     baseJob: job,
     kind,
-    fieldId: job?.kind === "mine" ? job.targetId : legacySource?.fieldId ?? "",
+    fieldId: job?.kind === "mine" ? job.targetId : "",
     mineFilter: {
-      mode: mineFilter?.mode ?? (legacySource ? "resource" : "all"),
+      mode: mineFilter?.mode ?? "all",
       classes: mineFilter?.mode === "class" ? mineFilter.ids : [],
-      resources: mineFilter?.mode === "resource" ? mineFilter.ids : legacySource ? [legacySource.materialId] : [],
+      resources: mineFilter?.mode === "resource" ? mineFilter.ids : [],
       keepMode: job?.keepResourceIds ? "only" : "all",
       keepResources: job?.keepResourceIds ?? [],
     },
@@ -581,29 +579,20 @@ function droneStatus(drone: DroneRecord, depot: DepotRecord, depots: DepotRecord
   const { job, status } = drone;
   if (!job) return DRONE_STATUS[status];
   if (job.kind === "mine" && drone.phase === "outbound") return "Flying to asteroid";
-  if (job.kind === "extract" && drone.phase === "outbound") return "Flying to hydrate site";
   if (drone.phase === "scouting") return "Searching for another asteroid";
   if (status === "route_out_of_range" && destination) {
     const { reason } = checkDroneRoute(depot, destination);
     if (reason) return `${DELIVERY_ROUTE_REASON[reason]}. Edit the job to choose another destination.`;
   }
   if (status === "needs_fuel") {
-    const source = job.kind === "extract" ? INDUSTRY_SOURCES.find(source => source.id === job.targetId) : undefined;
-    const route = source ? estimateDroneExtractionRoute(depot, source, depots) : destination && checkDroneRoute(depot, destination).route;
+    const route = destination && checkDroneRoute(depot, destination).route;
     if (route) {
       const shortKg = Math.ceil(job.reserveKg + route.roundTripFuelKg - depot.storage.fuelKg);
       if (shortKg > 0) return `Add ${quantity(shortKg)} kg of propellant to this depot or lower the fuel reserve.`;
     }
   }
-  if (status === "no_cargo" && job.kind === "extract") return "The site is short on hydrates. The drone will try again as more become available.";
   if (status === "no_cargo" && job.priorities.length === 1 && job.priorities[0] === propellantId) {
     return "No spare fuel to deliver. Add propellant or lower the fuel reserve.";
-  }
-  if (status === "destination_full" && job.kind === "extract") {
-    if (job.stopAt < INDUSTRY_TUNING.cargoCapacity && (depot.storage.items.hydrates ?? 0) >= job.stopAt) {
-      return `Hydrate limit reached (${quantity(job.stopAt)} units). Withdraw hydrates or edit the job to change the limit.`;
-    }
-    return "Depot cargo hold is full. Withdraw cargo to collect more hydrates.";
   }
   if (status === "destination_full" && destination) {
     if (destination.kind === "point") return destination.fuelKg >= POINT_TANK_CAPACITY_KG
@@ -680,10 +669,8 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
   const canStart = editable && !stale && !!nextJob && !overDepotCapacity;
   const destination = job?.kind === "haul" ? targets.find(target => target.id === job.targetId && target.kind === (job.targetKind ?? "depot")) : undefined;
   const savedField = job?.kind === "mine" ? fields.find(entry => entry.id === job.targetId) : undefined;
-  const legacySite = job?.kind === "extract" ? INDUSTRY_SOURCES.find(source => source.id === job.targetId) : undefined;
-  const targetName = (destination ?? savedField ?? legacySite)?.name ?? "Destination unavailable";
-  const canResume = job && !job.enabled && (savedField || (legacySite && estimateDroneExtractionRoute(depot, legacySite, depots)) ||
-    (destination && checkDroneRoute(depot, destination).route));
+  const targetName = (destination ?? savedField)?.name ?? "Destination unavailable";
+  const canResume = job && !job.enabled && (savedField || (destination && checkDroneRoute(depot, destination).route));
   const savedFilter = job?.mineFilter;
   const miningSummary = savedFilter && savedFilter.mode !== "all"
     ? savedFilter.ids.map(id => savedFilter.mode === "class" ? savedField?.classes.find(entry => entry.id === id)?.name ?? id : stockName(id)).join(", ")
@@ -692,13 +679,13 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
     ...(drone.cargo.fuelKg > 0 ? [`${quantity(drone.cargo.fuelKg)} kg propellant`] : []),
     ...Object.entries(drone.cargo.items).map(([id, n]) => `${quantity(n)} ${stockName(id)}`),
   ];
-  const miningJob = job?.kind === "mine" || job?.kind === "extract";
+  const miningJob = job?.kind === "mine";
   const recall = job?.kind === "mine" && !!drone.sortie && activeTrip && drone.phase !== "returning";
   const stopLabel = miningJob ? recall ? "Recall to depot" : activeTrip ? "Pause at depot" : "Stop mining"
     : activeTrip ? "Stop after trip" : "Stop job";
   const remaining = Math.ceil(drone.remainingS);
   const phaseTime = drone.phase === "outbound" ? "Arrival in" : drone.phase === "returning" ? "Docking in"
-    : drone.phase === "working" ? job?.kind === "extract" ? "Collection finishes in" : "Mining finishes in" : "";
+    : drone.phase === "working" ? "Mining finishes in" : "";
   const fuelLabel = drone.sortie ? "flight fuel aboard" : drone.flight && drone.phase === "returning" ? "unused flight fuel" : "reserved for return";
   const send = (next: DroneJob, message: string, onAccepted?: () => void) =>
     submit({ type: "drone.configure", droneId: drone.id, job: next }, message, onAccepted);
@@ -724,15 +711,13 @@ function DroneControl({ index, drone, depot, depots, targets, fields, miningUnlo
     </header>
     {job && <div className="industry__route">
       <span>{job.kind === "mine" ? savedFilter?.mode === "resource" ? "Mine asteroids containing" : "Mine"
-        : job.kind === "extract" ? "Collect" : "Deliver"} <strong>{job.kind === "mine" ? miningSummary : job.priorities.map(stockName).join(", ")}</strong></span>
-      <span>{job.kind === "mine" ? "in" : job.kind === "extract" ? "from" : "to"} <strong>{targetName}</strong></span>
+        : "Deliver"} <strong>{job.kind === "mine" ? miningSummary : job.priorities.map(stockName).join(", ")}</strong></span>
+      <span>{job.kind === "mine" ? "in" : "to"} <strong>{targetName}</strong></span>
       {job.kind === "mine" && <span>{job.keepResourceIds ? <>
         Keep only <strong>{job.keepResourceIds.map(stockName).join(", ")}</strong>
       </> : "Keep all resources"}</span>}
       <span>{job.kind === "mine"
         ? job.stopAt < INDUSTRY_TUNING.cargoCapacity ? `Storage limit: ${quantity(job.stopAt)} units per resource` : "Uses all free cargo space"
-        : job.kind === "extract"
-        ? job.stopAt < INDUSTRY_TUNING.cargoCapacity ? `Hydrate limit: ${quantity(job.stopAt)} units` : "Uses all free cargo space"
         : job.targetKind === "point" ? job.stopAt < POINT_TANK_CAPACITY_KG ? `Tank delivery limit: ${quantity(job.stopAt)} kg` : "Uses all free space in the receiving tank"
         : job.stopAt < maxJobLimit ? `Delivery limit: ${quantity(job.stopAt)} per item (units or kg)` : "Uses all free space at the receiving depot"}</span>
       {!job.enabled && activeTrip && <span>{miningJob ? "Pauses at the depot" : "Stopping after this trip"}</span>}

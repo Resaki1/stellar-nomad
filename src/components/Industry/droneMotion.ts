@@ -29,7 +29,6 @@ export class DroneMotion {
   via: DroneRecord["via"] = null;
   profile: DroneFlightProfile = "local";
   targetId: string | null = null;
-  extracting = false;
   rock: DroneRockTarget | null = null;
 
   private snapshot: DroneRecord | null = null;
@@ -51,9 +50,8 @@ export class DroneMotion {
     if (newTrip) {
       this.legS = drone.returnS;
       this.rock = drone.flight?.rock ?? null;
-      this.extracting = drone.job?.kind === "extract" || !!this.rock;
       this.targetId = drone.job?.targetId ?? null;
-      this.workS = this.rock?.workSeconds ?? (this.extracting ? INDUSTRY_TUNING.extractSeconds : INDUSTRY_TUNING.deliverySeconds);
+      this.workS = this.rock?.workSeconds ?? INDUSTRY_TUNING.deliverySeconds;
       this.via = drone.via;
       this.profile = drone.flight?.profile ?? "local";
       this.timeS = this.filteredS = 0;

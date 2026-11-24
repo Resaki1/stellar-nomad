@@ -120,7 +120,7 @@ export default async function placementControls(d) {
     assert.ok(depotSlot >= 0 && pointSlot >= 0);
     const key = slot => d.press(String((slot + 1) % 10));
     const slotButton = slot => `.hotbar__slot:nth-child(${slot + 1})`;
-    const source = (await ev(`${G}.industry.catalog().sources`)).find(s => s.id === "earth_hydrates");
+    const source = (await ev(`${G}.industry.catalog().spots`)).find(s => s.id === "earth_pocket");
     assert.ok(source);
     const near = offset => source.positionKm.map((axis, i) => axis + (i === 0 ? offset : 0));
     await shipAt(source.frameId, near(2));

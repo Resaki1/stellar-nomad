@@ -11,9 +11,9 @@ export interface DepotRecord extends ShipPose {
 }
 
 export interface DroneJob {
-  kind: "extract" | "haul" | "mine";
+  kind: "haul" | "mine";
   targetId: string;
-  /** Fuel-only haul to a replication tank. Omitted for depots and prospects. */
+  /** Fuel-only haul to a replication tank. Omitted for depots. */
   targetKind?: "point";
   /** Accepted resources, in selection order. Ordinary propellant is "propellant". */
   priorities: string[];
@@ -59,7 +59,7 @@ export interface DroneRockTarget extends DroneRockId {
 export type DronePhase = "idle" | "outbound" | "working" | "scouting" | "returning";
 export const DRONE_STATUSES = [
   "unassigned", "paused", "needs_fuel", "source_out_of_range", "destination_full", "no_cargo",
-  "route_out_of_range", "extracting", "delivering", "returning", "unload_blocked", "departing",
+  "route_out_of_range", "delivering", "returning", "unload_blocked", "departing",
   "searching", "no_matching_rock", "mining",
 ] as const;
 export type DroneStatus = (typeof DRONE_STATUSES)[number];
@@ -69,8 +69,6 @@ export interface DroneFlight {
   profile: DroneFlightProfile;
   /** Base return burn before adding the actual payload mass. */
   returnFuelAtDryKg: number;
-  /** Largest amount of hydrates already funded for the return. */
-  extractUnits?: number;
   rock?: DroneRockTarget;
 }
 
@@ -116,15 +114,9 @@ export interface DroneRecord {
   cargo: Transfer;
 }
 
-export interface SourceStock {
-  available: number;
-  replenishProgressS: number;
-}
-
 export interface IndustryState {
   depots: DepotRecord[];
   drones: DroneRecord[];
-  sources: Record<string, SourceStock>;
   /** Ordinary propellant by installed replication point ID. An installed tank can hold zero. */
   pointTanks: Record<string, number>;
   /** Active-time remainder under one second. No calendar or wall-clock timestamp is persisted. */
@@ -135,7 +127,6 @@ export interface IndustryState {
 export interface IndustryDelta {
   depots: DepotRecord[];
   drones: DroneRecord[];
-  sources: Record<string, SourceStock>;
   /** Deplete the shared asteroid and change drone cargo in the same published update. */
   mined?: DroneRockId[];
   pointTanks?: Record<string, number>;
@@ -159,5 +150,5 @@ export type IndustryResult =
   | { type: "replication.tank.transfer"; pointId: string; direction: "deposit" | "withdraw"; amount: number }
   | { type: "drone.configure"; droneId: string };
 
-export const emptyIndustry = (): IndustryState => ({ depots: [], drones: [], sources: {}, pointTanks: {}, remainderS: 0 });
+export const emptyIndustry = (): IndustryState => ({ depots: [], drones: [], pointTanks: {}, remainderS: 0 });
 export const emptyStorage = (): Transfer => ({ items: {}, consumables: {}, fuelKg: 0 });
