@@ -1,0 +1,28 @@
+{
+ "uv": "Spill lightmap",
+ "units": "irradiance, game units (cd/6037.7 per m^2), before pre-exposure",
+ "lods": [
+  {
+   "file": "replication-r4-spill-lod0.hdr",
+   "size": 512,
+   "lamps": 98,
+   "peakE": 0.9648163914680481
+  },
+  {
+   "file": "replication-r4-spill-lod1.hdr",
+   "size": 256,
+   "lamps": 98,
+   "peakE": 0.8155277371406555
+  },
+  {
+   "file": "replication-r4-spill-lod2.hdr",
+   "size": 128,
+   "lamps": 98,
+   "peakE": 0.7998411655426025
+  }
+ ],
+ "calibration": {
+  "point": 39.581026760740194,
+  "disk": 9.90347104608878
+ }
+}

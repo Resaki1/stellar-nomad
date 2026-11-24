@@ -1,0 +1,28 @@
+{
+ "uv": "Spill lightmap",
+ "units": "irradiance, game units (cd/6037.7 per m^2), before pre-exposure",
+ "lods": [
+  {
+   "file": "base-depot-spill-lod0.hdr",
+   "size": 512,
+   "lamps": 6,
+   "peakE": 1.7633287906646729
+  },
+  {
+   "file": "base-depot-spill-lod1.hdr",
+   "size": 256,
+   "lamps": 6,
+   "peakE": 4.953776836395264
+  },
+  {
+   "file": "base-depot-spill-lod2.hdr",
+   "size": 128,
+   "lamps": 6,
+   "peakE": 5.229455947875977
+  }
+ ],
+ "calibration": {
+  "point": 39.581026760740194,
+  "disk": 9.90347104608878
+ }
+}

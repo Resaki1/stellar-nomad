@@ -1,5 +1,6 @@
 "use client";
 
+import { pushSpillSource } from "@/components/space/spillLights";
 import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
@@ -149,6 +150,8 @@ const LIGHT_COLOR = (() => {
   return c.multiplyScalar(1 / lum);
 })();
 const LIGHT_COLOR_HALF = LIGHT_COLOR.clone().multiplyScalar(0.5);
+const _spillCol = new THREE.Color();
+const _spillPos = new THREE.Vector3();
 
 // ── Plume volume (VFX_REALISM_PLAN §5.3–5.6.7) ───────────────────────
 //
@@ -911,6 +914,16 @@ const EngineExhaust = memo(function EngineExhaust({
         // ≥ 1 m downstream: closer, the 1/d² near field blew out bell walls and struts.
         light.position.set(0, 0, -Math.max(1, Math.min(cur.L * 0.2, 6)));
         light.color.setRGB(cur.colBody[0], cur.colBody[1], cur.colBody[2]).multiplyScalar(0.5).add(LIGHT_COLOR_HALF);
+      } else if (!castLight && mesh?.parent && intensity > 1e-5) {
+        // S3: remote ships have no light of their own; the spill pool may light them in.
+        const v = intensity * plumeLightIntensity(configs[i].radius) * cur.light * gain;
+        _spillCol.setRGB(cur.colBody[0], cur.colBody[1], cur.colBody[2]).multiplyScalar(0.5).add(LIGHT_COLOR_HALF);
+        const lum = 0.2126 * _spillCol.r + 0.7152 * _spillCol.g + 0.0722 * _spillCol.b;
+        _spillPos.set(0, 0, -Math.max(1, Math.min(cur.L * 0.2, 6)));
+        // matrixWorld is refreshed at render, after every useFrame: update it or the source lags a frame.
+        mesh.parent.updateWorldMatrix(true, false);
+        mesh.parent.localToWorld(_spillPos);
+        if (lum > 0 && v > 0) pushSpillSource(_spillPos.x, _spillPos.y, _spillPos.z, (_spillCol.r / lum) * v, (_spillCol.g / lum) * v, (_spillCol.b / lum) * v);
       }
     }
   });

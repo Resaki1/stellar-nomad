@@ -3,13 +3,14 @@ import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
 import {
-  DynamicDrawUsage, Group, InstancedMesh, type Material, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
+  DynamicDrawUsage, Group, InstancedMesh, type Material, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3, type Texture,
 } from "three";
 import { shipView } from "@/components/Camera/shipView";
 import { FRAME_PRIORITY_PLAYER_SHIP } from "@/components/frameOrder";
 import { readCollisionMeshes } from "@/components/models/collisionMeshes";
 import { emitterColor } from "@/components/space/emissivePhotometry";
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
+import { useSpillLightmaps, withSpillLightmap } from "@/components/space/spillBake";
 import { beaconFlash, emitLightPoints, fadingLampMaterial, readLightTemplate, type LightTemplate } from "@/components/space/lightPoints";
 import type { ReplicationPoint } from "@/save/types";
 import { getLocalPlayerShip } from "@/sim/entities";
@@ -49,7 +50,7 @@ const _shipOrigin = new Vector3();
 /** Visible station counts for the dev harness. */
 export const replicationPointStats = { drawn: 0, lods: [0, 0, 0] };
 
-function newBatch(scene: Group) {
+function newBatch(scene: Group, spill: Texture | undefined) {
   scene.updateMatrixWorld(true);
   const group = new Group();
   const draws: { mesh: InstancedMesh; local: Matrix4 }[] = [];
@@ -59,7 +60,8 @@ function newBatch(scene: Group) {
     if (!(part instanceof Mesh)) return;
     const material = part.material;
     const emissive = material instanceof MeshStandardMaterial && material.emissive.getHex() !== 0;
-    let surface: Material = material;
+    // S3: hull surfaces carry their LOD's baked lamp spill (TEXCOORD_1).
+    let surface: Material = emissive ? material : withSpillLightmap(material, spill);
     if (material instanceof MeshStandardMaterial && emissive) {
       const blinks = material.name === MAST_LIGHT_MATERIAL;
       // Fades out below a few px while its light points (L2) take over the flux.
@@ -91,9 +93,11 @@ export function ReplicationPointModels() {
   const store = useStore();
   const worldOrigin = useWorldOrigin();
   const models = useGLTF(RENDER_ASSETS, false, false);
-  const batches = useMemo(() => models.map(({ scene }) => newBatch(scene)), [models]);
+  const spill = useSpillLightmaps(BASE, RENDER_ASSETS.length);
+  const batches = useMemo(() => models.map(({ scene }, lod) => newBatch(scene, spill[lod])), [models, spill]);
   // One lamp set for every LOD: points don't merge into light bars.
-  const lights = useMemo<LightTemplate>(() => readLightTemplate(models[0].scene), [models]);
+  // S3: steady lamps' spill is baked into the station textures; the spill lights skip them.
+  const lights = useMemo<LightTemplate>(() => ({ ...readLightTemplate(models[0].scene), bakedSpill: true }), [models]);
   const previous = useRef(new Map<string, number>());
   const previousPoints = useRef<readonly ReplicationPoint[] | null>(null);
 

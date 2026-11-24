@@ -53,6 +53,8 @@ export type LightTemplate = {
   size: Float32Array;
   /** 1 = follows the blink phase, 0 = steady. */
   blink: Uint8Array;
+  /** S3: steady lamps' spill is baked into the model's textures, so the spill lights skip them. */
+  bakedSpill?: boolean;
 };
 
 const _p = new Vector3();
@@ -105,6 +107,8 @@ export const lightPointBuffer = {
   dir: new Float32Array(LIGHT_POINT_CAPACITY * 3),
   rgb: new Float32Array(LIGHT_POINT_CAPACITY * 3),
   size: new Float32Array(LIGHT_POINT_CAPACITY),
+  /** 1 = this point's spill is baked (S3): the spill lights skip it. */
+  baked: new Uint8Array(LIGHT_POINT_CAPACITY),
   /** Points dropped for lack of capacity, and the count drawn, last frame (diagnostics). */
   dropped: 0,
   drawn: 0,
@@ -127,6 +131,7 @@ export function pushLightPoint(
   B.rgb[i * 3] = r; B.rgb[i * 3 + 1] = g; B.rgb[i * 3 + 2] = b;
   B.dir[i * 3] = dir ? dir.x : 0; B.dir[i * 3 + 1] = dir ? dir.y : 0; B.dir[i * 3 + 2] = dir ? dir.z : 0;
   B.size[i] = sizeM;
+  B.baked[i] = 0;
 }
 
 /**
@@ -153,6 +158,7 @@ export function emitLightPoints(t: LightTemplate, m: Matrix4, blinkGain: number,
     B.rgb[j * 3 + 1] = t.rgb[i * 3 + 1] * k;
     B.rgb[j * 3 + 2] = t.rgb[i * 3 + 2] * k;
     B.size[j] = t.size[i];
+    B.baked[j] = t.bakedSpill && !t.blink[i] ? 1 : 0;
   }
 }
 

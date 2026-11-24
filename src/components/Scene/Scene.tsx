@@ -50,6 +50,7 @@ import {
 } from "@/sim/celestialConstants";
 import SunLight from "../Star/SunLight";
 import LocalShadowCaster from "../space/LocalShadowCaster";
+import SpillLights from "../space/SpillLightsRenderer";
 import StarLights from "../Star/StarLights";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
@@ -243,6 +244,8 @@ const Scene = () => {
         <SurveySite />
         {/* Flux-conserving sub-pixel lamps (VFX plan §1): after every producer. */}
         <LightPoints />
+        {/* S3: pooled spill lights for impacts, remote exhausts and flashes (VFX plan §4). */}
+        <SpillLights />
         {/* Every mining beam (player, co-op, drones) in one draw (VFX plan §2). */}
         <BeamRenderer />
         {/* Mining impact: melt spots, sparks, impact light, plasma core (VFX plan §3). */}

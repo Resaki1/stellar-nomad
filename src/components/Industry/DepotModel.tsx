@@ -8,6 +8,7 @@ import { emitterColor, type EmitterId } from "@/components/space/emissivePhotome
 import { registerPreExposedEmissive } from "@/components/space/preExposedEmissive";
 import { beaconFlash, fadingLampMaterial, readLightTemplate, type LightTemplate } from "@/components/space/lightPoints";
 import { simEpochMsAtom } from "@/store/simTime";
+import { useSpillLightmaps, withSpillLightmap } from "@/components/space/spillBake";
 
 const BASE = "/models/stations/base-depot";
 export const DEPOT_LOD_ASSETS = [BASE + ".glb", BASE + "-lod1.glb", BASE + "-lod2.glb"];
@@ -37,12 +38,14 @@ export function refineryMountMatrix(scene: Group): Matrix4 {
 /** Share calibrated materials and geometry across every depot instance. */
 export function useDepotRenderAssets(): DepotRenderAssets {
   const models = useGLTF(DEPOT_LOD_ASSETS, false, false);
+  // S3: each LOD's baked lamp spill (TEXCOORD_1), tools/models/spill-bake.mjs.
+  const spill = useSpillLightmaps(BASE, DEPOT_LOD_ASSETS.length);
   const store = useStore();
   const animatedLights = useRef<MeshStandardNodeMaterial[]>([]);
   const { assets, lights, beacons } = useMemo(() => {
     const lights = new Map<MeshStandardMaterial, MeshStandardNodeMaterial>();
     const beacons: MeshStandardNodeMaterial[] = [];
-    const scenes = models.map(({ scene }) => {
+    const scenes = models.map(({ scene }, lod) => {
       const template = scene.clone(true);
       template.traverse((object) => {
         if (object instanceof Mesh) object.receiveShadow = object.castShadow = true;
@@ -50,7 +53,7 @@ export function useDepotRenderAssets(): DepotRenderAssets {
         const source = object.material;
         const id: EmitterId | null = source.name === GUIDE_MATERIAL ? "depot_guide"
           : source.name === BEACON_MATERIAL ? "depot_mast_beacon" : null;
-        if (id === null) return;
+        if (id === null) { withSpillLightmap(source, spill[lod]); return; }
         let light = lights.get(source);
         if (!light) {
           light = fadingLampMaterial(source, LAMP_SIZE_M);
@@ -63,9 +66,10 @@ export function useDepotRenderAssets(): DepotRenderAssets {
       });
       return template;
     });
-    const template = readLightTemplate(scenes[0]);
+    // S3: steady lamps' spill is baked into the depot textures; the spill lights skip them.
+    const template = { ...readLightTemplate(scenes[0]), bakedSpill: true };
     return { assets: { scenes, refineryMount: refineryMountMatrix(scenes[0]), lights: template }, lights, beacons };
-  }, [models]);
+  }, [models, spill]);
 
   useEffect(() => {
     const unregister = Array.from(lights.values(), light => registerPreExposedEmissive(light));

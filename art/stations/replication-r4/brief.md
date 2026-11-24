@@ -43,6 +43,17 @@ pnpm model build art/stations/replication-r4/replication-r4.blend --asset replic
 pnpm model build art/stations/replication-r4/replication-r4.blend --asset replication-r4-collision --collection COLLISION --light clay --views rear,side,top,chase
 ```
 
+## Lamp spill bake (VFX plan §4, S3)
+
+After `build.py`, bake the steady lamps' diffuse light, then re-export the three render LODs:
+
+```sh
+node tools/models/spill-bake.mjs art/stations/replication-r4/replication-r4.blend replication-r4
+pnpm model build art/stations/replication-r4/replication-r4.blend --collection EXPORT_LOD0   # and LOD1, LOD2; copy to public/models/stations/
+```
+
+The bake adds a second UV map, "Spill lightmap" (glTF `TEXCOORD_1`, lightmap-packed, one atlas per LOD), and writes `public/models/stations/replication-r4-spill-lod{0,1,2}.hdr` (512/256/128 px; irradiance in game units before pre-exposure) plus `replication-r4-spill.json`. Blinking beacons are not baked; the game's pooled spill light handles flashes. Re-run it whenever lamps or geometry change: a stale lightmap puts light in the wrong places. Measured 2026-11-24: 98 steady lamps per LOD, peak E 0.96 game units at LOD0, maps 637/176/40 KB; GLBs +17 % for the extra UV.
+
 ## Runtime and review
 
 | Export | GLB dimensions X × Y × Z | Triangles | Primitives | Bytes |

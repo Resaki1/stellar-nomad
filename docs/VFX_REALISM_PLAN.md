@@ -373,6 +373,28 @@ trivial (top-N by I/d² from the camera, local impact claims its spot); the cost
   zero runtime cost, occlusion included) + at most one pooled PointLight (+0.2 ms) for dynamic
   sources (impacts, remote exhausts, beacons' flash), crossfaded on handover.
 
+**Status (2026-11-24): S3 landed as bake + one pooled light.**
+- **Bake** (`tools/models/spill-bake.mjs` → `bake_spill.py`; runtime `src/components/space/spillBake.ts`):
+  per render LOD a second UV map ("Spill lightmap", `TEXCOORD_1`) and a Cycles DIFFUSE bake of
+  the steady `light_*` lamps only (black world, other LODs and proxies hidden, lamp-mesh emission
+  off). Calibrated on a reference plane: Cycles returns E/π (0.3175 for E = 1, point and disk
+  alike), so a texel holds E in game units and three's light map (irradiance × diffuse/π) needs
+  only `lightMapIntensity` = pre-exposure. MEASURED trap: Blender writes the `.hdr` bottom row
+  first; unflipped, the pools land on other UV islands (bright blocks far from any lamp), so the
+  loader flips V. Depot 6 and replication point 98 lamps per LOD; maps 0.95 MB in total; GLBs
+  +15–17 %. Gate (`vfx-spill.mjs` `shadow`,`sun`): additive (+1.97 luma in sun, +1.95 in
+  shadow at the same pose, 0.01 % of a sunlit station); visible as amber light on the ledges,
+  rims and arm round the lamp band once the eye adapts to a shadow (`shots`). Refinery not baked
+  (no lamps of its own; the depot's lamps don't reach its own lightmap).
+- **Pooled light** (`spillLights.ts`, `SpillLightsRenderer.tsx`): impacts (co-op, drones), remote
+  exhausts (light-only sources), drone lamps and beacon flashes; brightest I/d² from the camera;
+  the local impact claims its spot. **One light**: MEASURED on the station fixture, 6 runs each,
+  0 lights 3.50 ms, 1 light 3.98 (+0.48), 2 lights 4.66 (+1.16) on the local pass, so two were
+  too expensive. Hysteresis 1.5×; a handover fades out, moves and fades in (gate `pool`: kept
+  under a 1.2× swap; dip to 0 and back in 384–403 ms on a 3× swap).
+- Over the plan's 0.2 ms line: the one light (+0.48 ms at this worst-case pose, station
+  filling the screen). The bake is one texture fetch (not separately measured).
+
 **Status (2026-11-24): S2 landed** (`src/components/space/keyShadowMap.ts`). three's own
 `ShadowNode` on the key light, multiplied into the S1 node: 2048², orthographic ±150 m
 (0.15 m texels), 3 km depth slab, centred on the ship and snapped to whole texels in light
@@ -910,7 +932,7 @@ Gates per phase: `vfx-lights.mjs` (§1), `vfx-beam.mjs` (§2–§3), `vfx-shadow
 | 11 | **E3–E4** regimes + halo | 9, 10 | |
 | 12 | ~~**S2** shadow map~~ done (+0.3 ms) | measure | 0.3–1 ms budget item |
 | 13 | **E5** shimmer pass | 11, measure | New full-screen pass |
-| 14 | **S3** emissive spill (measured, see §4: bake + 1 light) | 12 | Light only matters in shadow, which S1/S2 now make dark |
+| 14 | ~~**S3** emissive spill~~ done (bake + 1 light, +0.5 ms) | 12 | Light only matters in shadow, which S1/S2 now make dark |
 | — | E5 shimmer, E6 contrails, E7 re-entry plasma | landings milestone | Owner, 2026-11-24: deferred to planetary landings, with the in-atmosphere flight model and its fuel use |
 | — | §7 light delay, B3 tier colours | later | B3 deferred by the owner 2026-11-24 |
 

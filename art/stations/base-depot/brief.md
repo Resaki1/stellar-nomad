@@ -46,6 +46,17 @@ pnpm model build art/stations/base-depot/base-depot.blend --asset base-depot-lod
 pnpm model build art/stations/base-depot/base-depot.blend --asset base-depot-collision --collection COLLISION --views front,side,top,bow --light clay
 ```
 
+## Lamp spill bake (VFX plan §4, S3)
+
+After `build.py`, bake the steady lamps' diffuse light, then re-export the three render LODs:
+
+```sh
+node tools/models/spill-bake.mjs art/stations/base-depot/base-depot.blend base-depot
+pnpm model build art/stations/base-depot/base-depot.blend --collection EXPORT_LOD0   # and LOD1, LOD2; copy to public/models/stations/
+```
+
+The bake adds a second UV map, "Spill lightmap" (glTF `TEXCOORD_1`, lightmap-packed, one atlas per LOD), and writes `public/models/stations/base-depot-spill-lod{0,1,2}.hdr` (512/256/128 px; irradiance in game units before pre-exposure) plus `base-depot-spill.json`. Blinking beacons are not baked; the game's pooled spill light handles flashes. Re-run it whenever lamps or geometry change: a stale lightmap puts light in the wrong places. Measured 2026-11-24: 6 steady lamps per LOD, peak E 1.8 game units at LOD0, maps 74/15/5 KB; GLBs +16 % for the extra UV.
+
 ## Review
 
 | Export | Triangles | Primitives | Bytes |

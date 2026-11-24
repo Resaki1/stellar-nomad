@@ -10,6 +10,7 @@
 //     handing its flux to a light point below a few px by the §1 rule.
 // ---------------------------------------------------------------------------
 
+import { claimSpill } from "@/components/space/spillLights";
 import { useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useStore } from "jotai";
@@ -118,6 +119,8 @@ export default function ImpactVFX() {
     // I3: the melt spot and the plasma light the rock round the hit and the ship's nose.
     L.position.set(_pos[0] + n[0] * 0.4, _pos[1] + n[1] * 0.4, _pos[2] + n[2] * 0.4);
     L.intensity = nitsToGameUnits(fedSpotCandela() + plasmaCd) * pre;
+    // S3: this light already carries the spot and plasma; keep the spill pool off them.
+    claimSpill(L.position.x, L.position.y, L.position.z, 3);
 
     // I4: plasma core centre one σ off the surface; Gaussian, so the rock's cut is soft.
     const cx = _pos[0] + n[0] * sigma * 1.2, cy = _pos[1] + n[1] * sigma * 1.2, cz = _pos[2] + n[2] * sigma * 1.2;

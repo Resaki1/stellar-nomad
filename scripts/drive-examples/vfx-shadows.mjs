@@ -26,10 +26,13 @@ export default async function vfxShadows(d) {
   const ev = (x) => d.evaluate(x);
   const wait = (ms) => d.sleep(ms);
   // A read can lag a switch by several frames: re-read until two consecutive reads agree.
+  // Region reads can lag a switch by several frames (longer at vsync pacing): wait, then
+  // require two equal reads 4 frames apart.
   const reg = async (box) => {
+    await d.frames(6);
     let prev = (await ev(`__lum.region(${box})`)).sum;
     for (let k = 0; k < 12; k++) {
-      await d.frames(2);
+      await d.frames(4);
       const v = (await ev(`__lum.region(${box})`)).sum;
       if (Math.abs(v - prev) <= 1e-3 * Math.max(Math.abs(v), 1e-9)) return v;
       prev = v;

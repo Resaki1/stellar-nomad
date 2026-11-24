@@ -300,6 +300,13 @@ Thresholds in the example are illustrative, not calibrated.
   dev toggle sometimes landed on the old state (exact repeats of the other state's value,
   in a pose whose per-frame luma was constant). Re-read until two consecutive reads agree
   (`reg()` in `vfx-shadows.mjs`); a median of three was not enough (2026-11-24).
+- **At vsync pacing, A/B reads can return transitional frames.** After a uniform switch the
+  HDR readback held a mixed value (e.g. 2,261 between 1,266 and 2,563) for 1–3 frames, and in
+  long A/B sequences it slipped past a 6 + 4 frame stability check; the same gate is clean with
+  `--uncapped` (2026-11-24). Run exact A/B gates (`vfx-shadows.mjs`) with `--uncapped`.
+- **`--no-isolate` saves the sim rate into the world.** A script that sets `__test.simRate(0)`
+  leaves the test profile's save frozen, and fixtures copied from it inherit a stopped clock
+  (a drone beacon that never flashed). Restore `__test.simRate(1)` in `finally`.
 - **A kept Chrome can wedge after a shader edit.** The hot-reload recompile of every lit
   material hung `run:` steps twice; `pnpm drive -- --stop` before re-running.
 - **`scene:` warps move the save's ship.** After an `earth_650` bench the next field gate found
