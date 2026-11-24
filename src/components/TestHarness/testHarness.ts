@@ -24,6 +24,9 @@
  * (`hasPendingCloudBakes`, `isStbnLoaded`, `CLOUD_TEMPORAL_CYCLE`), not copies of them.
  */
 
+import { getLocalPlayerShip } from "@/sim/entities";
+import { pingCueOptions, playPingCue } from "@/store/pingSound";
+import { Quaternion, Vector3 } from "three";
 import type { createStore } from "jotai";
 
 import { benchModeAtom, devTeleportAtom } from "@/store/dev";
@@ -924,6 +927,59 @@ export function createTestHarness(store: Store) {
           rmsDb: db(rms),
           base64: keep ? await blobToBase64(blob) : undefined,
         };
+      },
+      /**
+       * Where a positioned one-shot is heard: plays `eventId` 20 m out along a CAMERA-relative
+       * direction and records the master bus per channel. balance = (R−L)/(R+L) RMS: −1 hard left,
+       * +1 hard right, ~0 ahead or behind (equal-power panning has no front/back cue).
+       */
+      async pan(dir: "ahead" | "behind" | "left" | "right" | "up", eventId = "hud.ping", ms = 700) {
+        const stream = armCapture();
+        const e = getEngine();
+        const cam = testProbe.camera;
+        if (!stream || !e || !cam) throw new Error("[test] audio engine or camera not ready — __test.audio.unlock()");
+        const local = { ahead: [0, 0, -1], behind: [0, 0, 1], left: [-1, 0, 0], right: [1, 0, 0], up: [0, 1, 0] }[dir];
+        cam.updateMatrixWorld();
+        const q = cam.getWorldQuaternion(new Quaternion());
+        const w = new Vector3(local[0], local[1], local[2]).applyQuaternion(q).multiplyScalar(20);
+        const mime = ["audio/webm;codecs=opus", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m))!;
+        const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 256_000 });
+        const chunks: Blob[] = [];
+        rec.ondataavailable = (ev) => chunks.push(ev.data);
+        const stopped = new Promise<void>((r) => (rec.onstop = () => r()));
+        rec.start();
+        await new Promise((r) => setTimeout(r, 60));
+        if (eventId === "ping-cue") {
+          // The real crew-ping path: a frame-relative place 5 km out along that view direction.
+          const ship = getLocalPlayerShip();
+          if (!ship) throw new Error("[test] no ship");
+          const u = w.clone().setLength(5);
+          playPingCue(ship.frameId, [ship.posKm.x + u.x, ship.posKm.y + u.y, ship.posKm.z + u.z]);
+        } else {
+          const opts = eventId === "hud.ping" ? pingCueOptions(w) : { positionM: { x: w.x, y: w.y, z: w.z } };
+          playAudio(eventId, { ...opts, ignoreLimits: true });
+        }
+        await new Promise((r) => setTimeout(r, ms));
+        rec.stop();
+        await stopped;
+        const buf = await e.ctx.decodeAudioData(await new Blob(chunks, { type: mime }).arrayBuffer());
+        const rmsOf = (c: number): number => {
+          const d = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1));
+          let s = 0;
+          for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+          return Math.sqrt(s / Math.max(1, d.length));
+        };
+        const l = rmsOf(0), r = rmsOf(1);
+        // Brightness: RMS of the first difference over RMS (a crude high-frequency share), both channels.
+        let diff = 0, all = 0;
+        for (let c = 0; c < buf.numberOfChannels; c++) {
+          const d = buf.getChannelData(c);
+          for (let i = 1; i < d.length; i++) { diff += (d[i] - d[i - 1]) ** 2; all += d[i] * d[i]; }
+        }
+        const db = (v: number) => Math.round(20 * Math.log10(Math.max(v, 1e-9)) * 10) / 10;
+        return { dir, worldM: [w.x, w.y, w.z].map((x) => Math.round(x * 10) / 10), lDb: db(l), rDb: db(r),
+          balance: Math.round(((r - l) / Math.max(1e-9, r + l)) * 100) / 100,
+          brightness: Math.round(Math.sqrt(diff / Math.max(1e-18, all)) * 1000) / 1000 };
       },
       /** Record and save to `.captures/<name>.webm` (dev API route). */
       async save(name: string, ms = 2000, playEvent?: string): Promise<string> {

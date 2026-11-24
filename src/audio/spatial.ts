@@ -122,6 +122,44 @@ export function distanceToListener(p: Vec3): number {
 }
 
 /**
+ * Chase-mode listener ORIENTATION (A2). Emitter positions are ship-relative metres in WORLD axes,
+ * so the listener must turn with the view camera or panning follows the world's −Z instead.
+ * MEASURED before this existed: a ping straight ahead panned −0.68 (hard left) in one pose and
+ * +0.26 in another. The camera rig writes the quaternion every render frame (buffer pattern,
+ * tick.ts); the 15 Hz tick applies it, and a one-shot that must be placed exactly applies it first.
+ */
+export const listenerOrientationBuffer = { x: 0, y: 0, z: 0, w: 1 };
+const _applied = { x: NaN, y: NaN, z: NaN, w: NaN };
+/** Listener turns faster than the tick: τ short enough to follow a look-around, long enough not to zipper. */
+const LISTENER_TAU_S = 0.02;
+
+export function applyListenerOrientation(ctx: BaseAudioContext, immediate = false): void {
+  const q = listenerOrientationBuffer;
+  if (!immediate && q.x === _applied.x && q.y === _applied.y && q.z === _applied.z && q.w === _applied.w) return;
+  _applied.x = q.x; _applied.y = q.y; _applied.z = q.z; _applied.w = q.w;
+  // forward = q·(0,0,−1), up = q·(0,1,0), from the rotation matrix's columns.
+  const { x, y, z, w } = q;
+  const fx = -(2 * (x * z + w * y)), fy = -(2 * (y * z - w * x)), fz = -(1 - 2 * (x * x + y * y));
+  const ux = 2 * (x * y - w * z), uy = 1 - 2 * (x * x + z * z), uz = 2 * (y * z + w * x);
+  const l = ctx.listener;
+  if (l.forwardX) {
+    const t = ctx.currentTime;
+    const params = [l.forwardX, l.forwardY, l.forwardZ, l.upX, l.upY, l.upZ];
+    const values = [fx, fy, fz, ux, uy, uz];
+    for (let i = 0; i < 6; i++) {
+      // Cancel-then-schedule keeps each param's event list at one entry (M1).
+      params[i].cancelScheduledValues(t);
+      if (immediate) params[i].setValueAtTime(values[i], t);
+      else params[i].setTargetAtTime(values[i], t, LISTENER_TAU_S);
+    }
+  } else {
+    // Older Safari/Firefox: the deprecated setter is the only path.
+    (l as unknown as { setOrientation(a: number, b: number, c: number, d: number, e: number, f: number): void })
+      .setOrientation(fx, fy, fz, ux, uy, uz);
+  }
+}
+
+/**
  * Feed a panner from a world position.
  *
  * Uses the AudioParam form (`positionX.value`) rather than the deprecated

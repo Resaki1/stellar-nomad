@@ -1,5 +1,6 @@
 import { Quaternion, Vector3, type PerspectiveCamera } from "three";
 import { getCameraTuning } from "./cameraTuning";
+import { listenerOrientationBuffer } from "@/audio/spatial";
 
 /** What a camera rig sees of the ship each frame (docs/FLIGHT_MODEL_PLAN.md §4). */
 export interface ShipPose {
@@ -196,6 +197,11 @@ export class ChaseRig implements CameraRig {
     _viewQ.multiply(_tmpQ.setFromAxisAngle(_yAxis, -this.orbitYaw));
     _viewQ.multiply(_tmpQ.setFromAxisAngle(_xAxis, -this.orbitPitch));
     camera.quaternion.copy(_viewQ).multiply(_flip);
+    // The audio listener faces where the camera faces (audio/spatial.ts, applied by the audio tick).
+    listenerOrientationBuffer.x = camera.quaternion.x;
+    listenerOrientationBuffer.y = camera.quaternion.y;
+    listenerOrientationBuffer.z = camera.quaternion.z;
+    listenerOrientationBuffer.w = camera.quaternion.w;
 
     _offset.set(0, -4, 11 + m.speedFrac * t.speedPullbackM).applyQuaternion(_viewQ);
     camera.position.copy(pose.position).sub(_offset);

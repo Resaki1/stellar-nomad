@@ -1,4 +1,4 @@
-import type { Scene } from "three";
+import type { Camera, Scene } from "three";
 
 /**
  * Shared state between the in-Canvas `TestFrameProbe` and the `__test` harness.
@@ -12,6 +12,8 @@ export const testProbe: {
   /** The live renderer, for resident-resource counts. Null until the Canvas mounts. */
   renderer: { info: { memory: { textures: number; geometries: number } } } | null;
   scene: Scene | null;
+  /** The rendered view camera (local scene), for camera-relative audio probes. */
+  camera: Camera | null;
   /** Player ship sim pose (system-frame km, frame-relative km, quaternion xyzw), fixed steps run. */
   ship: {
     posKm: [number, number, number];
@@ -33,4 +35,5 @@ export const testProbe: {
   frameHooks: new Set(),
   renderer: null,
   scene: null,
+  camera: null,
 };

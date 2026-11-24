@@ -29,9 +29,11 @@ export default function TestFrameProbe(): null {
 /** Run inside the local-content portal so the harness can sample actual rendered meshes. */
 export function TestLocalSceneProbe(): null {
   const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
   useEffect(() => {
     testProbe.scene = scene;
-    return () => { testProbe.scene = null; };
-  }, [scene]);
+    testProbe.camera = camera;
+    return () => { testProbe.scene = null; testProbe.camera = null; };
+  }, [scene, camera]);
   return null;
 }

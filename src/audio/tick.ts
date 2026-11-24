@@ -22,6 +22,8 @@
 // ---------------------------------------------------------------------------
 
 import { updateEmitters } from "./emitters";
+import { getEngine } from "./engine";
+import { applyListenerOrientation } from "./spatial";
 import { updateWind } from "./wind";
 import { updateEngineAcoustics } from "./engineAcoustics";
 import { pumpAlerts } from "./alerts";
@@ -43,6 +45,9 @@ export function startAudioTick(): void {
     try {
       // Before the emitters, so all three wind layers read one computation of
       // the atmosphere rather than each repeating the body and density lookup.
+      // The listener turns with the view before any emitter is placed this tick.
+      const e = getEngine();
+      if (e) applyListenerOrientation(e.ctx);
       updateWind();
       // After the wind: the roar maps through the same windLevelDb scale (§6.10.1).
       updateEngineAcoustics();

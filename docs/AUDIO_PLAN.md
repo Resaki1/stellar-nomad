@@ -422,9 +422,14 @@ site that has independently baked in "camera-relative" maths.
 
 | Mode | Listener | Ship-tier sounds | Panning |
 |---|---|---|---|
-| `chase` (today) | identity; ship at origin | flat 2D, unpanned | `equalpower` |
+| `chase` (today) | ship at origin; **orientation = the view camera** (`listenerOrientationBuffer`, applied each tick) | flat 2D, unpanned | `equalpower` |
 | `cockpit` (later) | pilot head in ship-local space | **positioned** via `localOffsetM` | `equalpower` |
 | `xr` (later) | `XRViewerPose`, updated **every compositor frame** | positioned | **HRTF forced** |
+
+**MEASURED 2026-11-24:** the chase listener's orientation was never set, so world-tier sounds panned
+against the world's −Z, not the view: a sound straight ahead measured −0.68 (hard left) in one pose.
+Emitter positions are ship-relative metres in WORLD axes, so the listener must turn with the camera.
+`__test.audio.pan(dir)` measures it (ahead 0, left −1, right +1 after the fix, in every pose).
 
 Three notes for whoever builds `xr`, so the reasoning isn't lost:
 
