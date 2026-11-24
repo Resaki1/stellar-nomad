@@ -51,6 +51,7 @@ import {
 import SunLight from "../Star/SunLight";
 import LocalShadowCaster from "../space/LocalShadowCaster";
 import SpillLights from "../space/SpillLightsRenderer";
+import PlumeProbe from "../VFX/PlumeProbe";
 import StarLights from "../Star/StarLights";
 import AtmosphereSkyLight from "../Star/AtmosphereSkyLight";
 import SkyLight from "../Star/SkyLight";
@@ -227,6 +228,7 @@ const Scene = () => {
         <SpaceShip />
         {process.env.NODE_ENV === "development" ? <PhysicsDebugView /> : null}
         {process.env.NODE_ENV === "development" ? <TestLocalSceneProbe /> : null}
+        {process.env.NODE_ENV === "development" ? <PlumeProbe /> : null}
         <AsteroidField />
         <MiningSystem />
         {/* S1 analytic sun shadows: picks the occluding rocks each frame (VFX plan §4). */}

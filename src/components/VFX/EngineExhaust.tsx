@@ -1,6 +1,7 @@
 "use client";
 
 import { pushSpillSource } from "@/components/space/spillLights";
+import { PX_MESH, PX_POINT, pushLightPoint, uForcePointShare, uTanPerPx } from "@/components/space/lightPoints";
 import { memo, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
@@ -150,6 +151,21 @@ const LIGHT_COLOR = (() => {
   return c.multiplyScalar(1 / lum);
 })();
 const LIGHT_COLOR_HALF = LIGHT_COLOR.clone().multiplyScalar(0.5);
+const _farPos = new THREE.Vector3();
+const _camW = new THREE.Vector3();
+/** Point flux per (peak radiance × R²·L), calibrated against the drawn volume (vfx-plume.mjs). */
+let PLUME_POINT_K = 0.024;
+/** Plume's crossfade starts this many times earlier (in px) than a lamp's. */
+const PLUME_XFADE_SCALE = 3;
+/** Fraction of the plume length from the nozzle to the point (the bright core sits near it). */
+const FAR_CENTROID = 0.25;
+let plumePointGain = 1;
+/** Dev: calibration knob and A/B gain for the plume's far point. */
+export const plumePointDev = {
+  setK: (k: number) => { PLUME_POINT_K = k; },
+  getK: () => PLUME_POINT_K,
+  gain: (g: number) => { plumePointGain = g; },
+};
 const _spillCol = new THREE.Color();
 const _spillPos = new THREE.Vector3();
 
@@ -804,7 +820,7 @@ const EngineExhaust = memo(function EngineExhaust({
     tv: createTemporal(),
   }), []);
   // Dev-only readout for scripted checks (`__plumeState.cur`, `.plume`). Never read by the game.
-  if (process.env.NODE_ENV !== "production") (globalThis as unknown as { __plumeState?: unknown }).__plumeState = st;
+  if (process.env.NODE_ENV !== "production" && audioOwner) (globalThis as unknown as { __plumeState?: unknown }).__plumeState = st;
   const shared = sharedExhaust();
   const mat = shared.plume;
   const haloMat = shared.halo;
@@ -825,7 +841,7 @@ const EngineExhaust = memo(function EngineExhaust({
   const halfSpacing = twin ? Math.hypot(configs[1].position[0] - configs[0].position[0], configs[1].position[1] - configs[0].position[1]) / 2 : 0;
   if (twin) st.u.off.value.set((configs[1].position[0] - configs[0].position[0]) / 2, (configs[1].position[1] - configs[0].position[1]) / 2);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const intensity = intensityRef.current ?? 0;
     const u = st.u;
     u.time.value += delta;
@@ -884,6 +900,29 @@ const EngineExhaust = memo(function EngineExhaust({
     // Twin nozzles share ONE march (the shader takes the nearer axis), so overlapping wide
     // plumes cost one volume, not two.
     u.intensity.value = intensity * PLUME_HDR * getPreExposure() * gain;
+
+    // ── Far: a flux-conserving light point (VFX plan §1 L1, §5 E1) ──────────────────────
+    // Below a few px the volume under-samples and vanishes; the point carries its flux and
+    // the volume fades by the complement (the LightPoints renderer weights the point by the
+    // same pointShare of the same size).
+    const halo0 = haloRef.current;
+    if (intensity > 1e-5 && halo0?.parent) {
+      // Crossfade size: the volume already loses ~half its flux at ~5 px (MEASURED, 400 m dip),
+      // so the hand-over starts near 12 px rather than the lamps' 4.
+      const size = Math.sqrt(2 * cur.R * cur.L) / PLUME_XFADE_SCALE;
+      _farPos.set(0, 0, -FAR_CENTROID * cur.L);
+      halo0.parent.updateWorldMatrix(true, false);
+      halo0.parent.localToWorld(_farPos);
+      const d = Math.max(1e-3, _camW.setFromMatrixPosition(state.camera.matrixWorld).distanceTo(_farPos));
+      const px = size / (d * uTanPerPx.value);
+      const forced = uForcePointShare.value;
+      const share = forced >= 0 ? forced : Math.min(1, Math.max(0, (PX_MESH - px) / (PX_MESH - PX_POINT)));
+      u.intensity.value *= 1 - share;
+      // Intensity: optically thin volume, flux ∝ peak radiance × R²·L (calibrated, vfx-plume.mjs).
+      const I = intensity * PLUME_HDR * gain * PLUME_POINT_K * cur.R * cur.R * cur.L * (twin ? 2 : 1) * plumePointGain;
+      const c = cur.colBody, lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+      if (lum > 0 && I > 0) pushLightPoint(_farPos.x, _farPos.y, _farPos.z, (c[0] / lum) * I, (c[1] / lum) * I, (c[2] / lum) * I, size, null, false);
+    }
 
     const halo = haloRef.current;
     if (halo) {

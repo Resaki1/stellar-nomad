@@ -844,6 +844,20 @@ atmospheres"); this section is its spec.
   DEFAULT tuning. Measured A/B (local-scene pass, 1280×720 headless Metal): vacuum ≈ 0,
   1 km +0.15–0.3 ms, 40 km (camera inside the bell) +0.4–0.5 ms, 80 km ≈ 0.
   Not done: nozzle-bell heat glow (needs a model material hook), E5 shimmer, E6, E7.
+- **Far plume point (2026-11-24, owner report: friends' plumes vanished a few km out).** The
+  volume under-samples below a few px; each plume now also pushes a flux-conserving light point
+  (`EngineExhaust`, kept out of the spill pool) and the volume fades by the complement. Point
+  intensity = peak radiance × R²·L × K, K = 0.024 calibrated volume vs point at 60–250 m
+  (`vfx-plume.mjs`, a dev `__plumeProbe` remote-style ship). MEASURED: the volume already loses
+  ~half its flux at ~5 px, so the plume's crossfade starts ~3× earlier than a lamp's (≈12 px).
+  Ladder 80 m → 15 km, E·d² within ±14 % of its median (no dip, still lit at 15 km; before:
+  gone). Calibrated in vacuum only; air regimes ride on the same R²·L × radiance law, unmeasured.
+  **Open (display, owner decision):** at 5 km the point is ~16,000 cd (mag ≈ −6, ~78× Sirius)
+  yet renders no brighter than the background stars, because stars get the adaptation display
+  lift (`uStarLift`: 65,536× in deep space, clamped) and light points get none. The same holds
+  for distant station lamps (L1). Sharing the lift with unresolved light points would make them
+  read like stars of equal magnitude, but needs a taper so the mesh ↔ point crossfade stays
+  continuous.
 - **Exhaust artefact fixes (2026-11-22, owner report: bright polygon across the screen,
   noise at the bells).** Causes, all MEASURED headless: (1) emission tails reached the
   bounding cylinder's wall and pre-exposure (~1e3–1e4 in dark space) made the silhouette
