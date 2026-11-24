@@ -7,6 +7,8 @@
  * Three independent gates, so progression can be layered on later without
  * touching the renderer or the projector:
  *
+ *  0. `markerKnowledgeAtom.interstellar` (store/markerKnowledge.ts) — no star or Sun marker
+ *     until interstellar travel exists; checked before the gates below.
  *  1. `starMarkersEnabledAtom` — the PLAYER's toggle. Off hides all of them.
  *  2. `revealAllStarMarkersAtom` — a DEV/testing override that bypasses (3).
  *     ⚠ Default **true** today so the R2b work is testable. **Flip this to false

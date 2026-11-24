@@ -2,7 +2,7 @@ import { atom } from "jotai";
 import { selectAtom } from "jotai/utils";
 import { Vector3 } from "three";
 import { getLocalPlayerShip } from "@/sim/entities";
-import { INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
+import { INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { industryAtom } from "@/store/industry";
 import { isFrameId } from "@/sim/frames";
 import type { DepotRecord, DroneRecord } from "@/sim/industry/types";
@@ -132,16 +132,6 @@ const droneBearingAtom = atom(get => {
 });
 export const trackedDronePoiAtom = selectAtom(droneBearingAtom, poi => poi, (a, b) =>
   a?.id === b?.id && a?.positionKm === b?.positionKm && a?.name === b?.name && a?.frameId === b?.frameId);
-
-export const industrySourcePois: POIDef[] = INDUSTRY_SOURCES.map(source => ({
-  id: `industry-source:${source.id}`,
-  name: source.name,
-  positionKm: source.positionKm,
-  frameId: isFrameId(source.frameId) ? source.frameId : undefined,
-  minDistanceKm: 0,
-  maxDistanceKm: source.rangeKm * 3,
-  arrivalOffsetKm: 3,
-}));
 
 export const depotPoisAtom = selectAtom(industryAtom, state => state.depots.map(depotPoi), (before, after) =>
   before.length === after.length && before.every((poi, i) => poi.id === after[i].id && poi.name === after[i].name &&

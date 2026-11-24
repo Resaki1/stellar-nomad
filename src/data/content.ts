@@ -113,6 +113,8 @@ export type SiteDef = {
   positionKm: [number, number, number];
   /** Regional indication: the marker shows within this distance, km. */
   signalRangeKm: number;
+  /** The marker waits for this comms line to show ("I marked it"); inspected sites skip the wait. */
+  revealCommsId?: string;
   /** Close inspection within this range, km (one [G] inspects and recovers: keep it = recoverRangeKm). */
   inspectRangeKm: number;
   /** Recovery (one accepted operation) within this range, km. */
@@ -136,6 +138,7 @@ export const SITES: SiteDef[] = [
     frameId: "luna",
     positionKm: [1629, 4605, 393],
     signalRangeKm: 120_000,
+    revealCommsId: "lunar_signal_001",
     inspectRangeKm: 2,
     recoverRangeKm: 2,
     reward: { titanium: 30 },

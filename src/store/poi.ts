@@ -38,6 +38,8 @@ export type POIDef = {
   kind?: "pilot" | "depot" | "drone";
   /** False: gaze never makes it a transit destination. */
   targetable?: boolean;
+  /** Bodies: the marker yields once the disc's on-screen radius passes this fraction of the viewport height. */
+  hideAboveScreenFrac?: number;
 };
 
 export type ProjectedPOI = {

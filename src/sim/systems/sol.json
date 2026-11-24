@@ -47,7 +47,7 @@
       "positionKm": [58000000, 0, 0],
       "radiusKm": 2440,
       "massKg": 3.3011e23,
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "venus",
@@ -70,7 +70,7 @@
         "mieG": 0.75,
         "groundAlbedo": [0.55, 0.5, 0.4]
       },
-      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "earth",
@@ -89,7 +89,7 @@
         "surfaceTemperatureK": 288,
         "composition": { "n2": 0.781, "o2": 0.209, "ar": 0.0093, "co2": 0.0004 }
       },
-      "marker": { "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 5000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "luna",
@@ -101,7 +101,7 @@
       "positionKm": [-130379400, 0, -65015000],
       "radiusKm": 1737,
       "massKg": 7.342e22,
-      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 500000 }
+      "marker": { "unlock": "transitDrive", "minDistanceKm": 2000, "maxDistanceKm": 500000 }
     },
     {
       "id": "mars",
@@ -124,7 +124,7 @@
         "mieG": 0.75,
         "groundAlbedo": [0.25, 0.16, 0.1]
       },
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 3000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "uranus",
@@ -144,7 +144,7 @@
         "mieG": 0.7,
         "groundAlbedo": [0.35, 0.48, 0.5]
       },
-      "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "neptune",
@@ -164,7 +164,7 @@
         "mieG": 0.7,
         "groundAlbedo": [0.25, 0.35, 0.55]
       },
-      "marker": { "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 30000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "saturn",
@@ -186,7 +186,7 @@
         "mieG": 0.7,
         "groundAlbedo": [0.57, 0.52, 0.42]
       },
-      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "jupiter",
@@ -208,7 +208,7 @@
         "mieG": 0.7,
         "groundAlbedo": [0.52, 0.47, 0.41]
       },
-      "marker": { "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 50000, "maxDistanceKm": 50000000000 }
     },
     {
       "id": "europa",
@@ -220,7 +220,7 @@
       "positionKm": [90671000, 0, -779000000],
       "radiusKm": 1561,
       "massKg": 4.7998e22,
-      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
     },
     {
       "id": "io",
@@ -232,7 +232,7 @@
       "positionKm": [90421700, 0, -779000000],
       "radiusKm": 1822,
       "massKg": 8.9319e22,
-      "marker": { "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 2000, "maxDistanceKm": 2000000 }
     },
     {
       "id": "callisto",
@@ -244,7 +244,7 @@
       "positionKm": [91883000, 0, -779000000],
       "radiusKm": 2405,
       "massKg": 1.0759e23,
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
     },
     {
       "id": "ganymede",
@@ -256,7 +256,7 @@
       "positionKm": [91070000, 0, -779000000],
       "radiusKm": 2634,
       "massKg": 1.4819e23,
-      "marker": { "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
+      "marker": { "unlock": "warpDrive", "minDistanceKm": 3000, "maxDistanceKm": 2000000 }
     }
   ],
 
@@ -314,7 +314,7 @@
       "shape": { "type": "sphere", "radiusKm": 3000, "edgeFalloffKm": 3000 },
       "population": { "mode": "density", "densityPerKm3": 0.004, "jitter": 0.2, "maxPerChunk": 10000 },
       "size": { "minRadiusM": 8, "maxRadiusM": 1024, "distribution": "logNormal", "params": { "mu": 1.2, "sigma": 1.0 } },
-      "marker": { "minDistanceKm": 2500, "maxDistanceKm": 10000 },
+      "marker": { "minDistanceKm": 2500, "maxDistanceKm": 2000000 },
       "models": [
         { "modelId": "asteroid_01", "weight": 0.6 },
         { "modelId": "asteroid_02", "weight": 0.25 },
@@ -464,7 +464,7 @@
       "shape": { "type": "sphere", "radiusKm": 2000, "edgeFalloffKm": 2000 },
       "population": { "mode": "density", "densityPerKm3": 0.003, "jitter": 0.2, "maxPerChunk": 8000 },
       "size": { "minRadiusM": 10, "maxRadiusM": 1200, "distribution": "logNormal", "params": { "mu": 1.4, "sigma": 1.1 } },
-      "marker": { "minDistanceKm": 4000, "maxDistanceKm": 50000 },
+      "marker": { "unlock": "transitDrive", "minDistanceKm": 4000, "maxDistanceKm": 50000 },
       "models": [
         { "modelId": "asteroid_01", "weight": 0.5 },
         { "modelId": "asteroid_02", "weight": 0.3 },

@@ -140,6 +140,11 @@ const renderSubMenu = (
             // constructed, so this only takes effect on the next page load.
             label="perf profiler (reload)"
           />
+          <SettingsCheckbox
+            active={!!settings.revealAllMarkers}
+            onChange={() => setSettings((prev) => ({ ...prev, revealAllMarkers: !prev.revealAllMarkers }))}
+            label="show all markers (ignore progression)"
+          />
           <BodyWarpControls />
           <PerfSweepButton />
           <a className="settings-menu__button" href="/dev/audio" target="_blank" rel="noopener noreferrer">

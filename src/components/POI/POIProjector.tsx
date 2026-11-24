@@ -1,6 +1,6 @@
 "use client";
 
-import { depotPoisAtom, industrySourcePois, trackedDronePoiAtom } from "@/store/industryHud";
+import { depotPoisAtom, trackedDronePoiAtom } from "@/store/industryHud";
 import { INTERACT_LOCK_KM, isInteractFocusBlocked } from "@/store/interact";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -12,6 +12,7 @@ import { useWorldOrigin } from "@/sim/worldOrigin";
 import { shipView } from "@/components/Camera/shipView";
 import { isStructurePoi, pilotPOIsAtom, poiBuffer, STRUCTURE_FOCUS_TIME_S, type POIDef, type ProjectedPOI } from "@/store/poi";
 import { bookmarkPOIsAtom } from "@/store/discoveries";
+import { markerKnowledgeAtom, markerUnlocked } from "@/store/markerKnowledge";
 import { sitePOIsAtom } from "@/store/sites";
 import {
   STAR_MARKER_MAX_LY,
@@ -83,6 +84,10 @@ const STAR_MARKER_MAX_DISTANCE_KM = 1e15;
 
 /** Arrival stand-off for a star: 5 stellar radii, so autopilot stops outside it. */
 const STAR_ARRIVAL_RADII = 5;
+
+/** A body nearly filling a quarter of the view needs no marker; it shows again below 0.10 (hysteresis). */
+const BODY_HIDE_SCREEN_FRAC = 0.12;
+const BODY_SHOW_SCREEN_FRAC = 0.1;
 
 /**
  * The nearest stars to the SHIP, re-selected only when the ship has moved far enough
@@ -172,7 +177,8 @@ function usePOIDefs(): POIDef[] {
   const depotPois = useAtomValue(depotPoisAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
-  const starsOn = useAtomValue(starMarkersEnabledAtom);
+  const knowledge = useAtomValue(markerKnowledgeAtom);
+  const starsOn = useAtomValue(starMarkersEnabledAtom) && knowledge.interstellar;
   const revealAll = useAtomValue(revealAllStarMarkersAtom);
   const revealed = useAtomValue(revealedStarMarkerIdsAtom);
   // The nearest stars to the SHIP, gated — see useNearestStars.
@@ -189,7 +195,7 @@ function usePOIDefs(): POIDef[] {
     // Celestial bodies (planets, moons — stars are excluded)
     for (const body of system.celestialBodies ?? []) {
       if (body.type === "star") continue;
-      if (!body.marker) continue;
+      if (!body.marker || !markerUnlocked(body.marker.unlock, knowledge)) continue;
       const t = bodyTransitTarget(body, system.asteroidFields);
       pois.push({
         id: t.id,
@@ -199,6 +205,8 @@ function usePOIDefs(): POIDef[] {
         maxDistanceKm: body.marker.maxDistanceKm ?? CELESTIAL_BODY_DEFAULTS.maxDistanceKm,
         arrivalOffsetKm: t.arrivalOffsetKm,
         field: t.field,
+        objectRadiusKm: body.radiusKm,
+        hideAboveScreenFrac: BODY_HIDE_SCREEN_FRAC,
       });
     }
 
@@ -207,6 +215,7 @@ function usePOIDefs(): POIDef[] {
       if (field.enabled === false) continue;
       const id = `field:${field.id}`;
       const tracked = target?.id === id && poiBuffer.pinnedId === id;
+      if (!tracked && !markerUnlocked(field.marker?.unlock, knowledge)) continue;
       const outerKm = field.shape.type === "sphere" ? field.shape.radiusKm + (field.shape.edgeFalloffKm ?? 0) : 0;
       pois.push({
         id,
@@ -257,7 +266,6 @@ function usePOIDefs(): POIDef[] {
 
     if (droneBearing) pois.push(droneBearing);
     for (const p of depotPois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
-    for (const p of industrySourcePois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
 
     // B3: the current destination always has a marker, even when nothing else lists it.
     if (target && !target.id.startsWith("drone:") && !pois.some((p) => p.id === target.id)) {
@@ -313,7 +321,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, droneBearing, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, knowledge, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, droneBearing, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -345,6 +353,8 @@ const POIProjector = memo(function POIProjector() {
   const gazeTimeRef = useRef(0);
   // Grace timer: how long the player has been looking away from the current target.
   const untargetGraceRef = useRef(0);
+  // Bodies whose marker yielded to their own disc (hysteresis between the two fractions).
+  const largeHiddenRef = useRef(new Set<string>());
 
   useFrame((_, delta) => {
     const projected: ProjectedPOI[] = [];
@@ -375,6 +385,16 @@ const POIProjector = memo(function POIProjector() {
       // Skip POIs outside their configured visibility range.
       if (distanceKm < poi.minDistanceKm || distanceKm > poi.maxDistanceKm) continue;
 
+      // projectionMatrix[5] = 1/tan(fov/2): radius over distance → fraction of the half-height.
+      const radiusFracPerKm = 0.5 * camera.projectionMatrix.elements[5] / Math.max(1e-3, distanceKm);
+      if (poi.hideAboveScreenFrac !== undefined && poi.objectRadiusKm) {
+        const frac = poi.objectRadiusKm * radiusFracPerKm;
+        const hidden = largeHiddenRef.current;
+        if (frac > poi.hideAboveScreenFrac) hidden.add(poi.id);
+        else if (frac < poi.hideAboveScreenFrac * (BODY_SHOW_SCREEN_FRAC / BODY_HIDE_SCREEN_FRAC)) hidden.delete(poi.id);
+        if (hidden.has(poi.id) && poi.id !== store.get(targetedPOIAtom)?.id) continue;
+      }
+
       // Local render-space position (meters, relative to floating origin).
       _pos.set(
         (px - originKm.x) * 1000,
@@ -386,6 +406,7 @@ const POIProjector = memo(function POIProjector() {
       // distance so the projection matrix doesn't clip them. We only
       // need the screen-space direction, not depth accuracy.
       const len = _pos.length();
+      const camDistM = _pos.distanceTo(camera.position);
       const farPlane = camera.far * 0.5;
       if (len > farPlane) {
         _pos.multiplyScalar(farPlane / len);
@@ -432,9 +453,9 @@ const POIProjector = memo(function POIProjector() {
         edgeAngle = Math.atan2(ey, ex);
       }
 
-      // projectionMatrix[5] = 1/tan(fov/2): radius over distance → fraction of the half-height.
+      // Measured before the far-plane normalisation above, which would shrink a distant disc to ~0.
       const objectRadiusFrac = inView && poi.objectRadiusKm
-        ? (0.5 * camera.projectionMatrix.elements[5] * poi.objectRadiusKm * 1000) / Math.max(1, _pos.distanceTo(camera.position))
+        ? (0.5 * camera.projectionMatrix.elements[5] * poi.objectRadiusKm * 1000) / Math.max(1, camDistM)
         : 0;
 
       projected.push({
@@ -556,7 +577,7 @@ const POIProjector = memo(function POIProjector() {
       poiBuffer.gazeProgress = 0;
       poiBuffer.gazeActive = false;
       const targeted = store.get(targetedPOIAtom);
-      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|drone|field|industry-source):/.test(targeted.id);
+      const industryBearing = !!targeted && targeted.id === poiBuffer.pinnedId && /^(depot|drone|field):/.test(targeted.id);
       if (!industryBearing && poiBuffer.targetedId) store.set(targetedPOIAtom, null);
       poiBuffer.targetedId = industryBearing ? targeted.id : null;
       poiBuffer.targetedEtaS = null;

@@ -80,6 +80,8 @@ export type Settings = {
   hdrPeakStops: number;
   /** S2 ship-following sun shadow map (~0.3 ms GPU). Read at startup: it changes every lit pipeline. */
   shadowMap?: boolean;
+  /** Dev: show every navigation marker regardless of progression (markerKnowledge.ts). */
+  revealAllMarkers?: boolean;
   initial: boolean;
 };
 

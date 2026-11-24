@@ -192,7 +192,7 @@ export default function POIMarkers() {
 
           arrow.style.opacity = "1";
           arrow.classList.toggle("poi-arrow--industry-targeted", poi.id === poiBuffer.targetedId &&
-            (poi.kind === "depot" || poi.kind === "drone" || poi.id.startsWith("industry-source:")));
+            (poi.kind === "depot" || poi.kind === "drone"));
 
           // Position arrow at viewport edge in the direction of the POI.
           const angle = poi.edgeAngle;

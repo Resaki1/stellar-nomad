@@ -306,6 +306,10 @@ export function createM37Harness(store: Store) {
       played: () => [...store.get(playedMessageIdsAtom)],
       hint: () => store.get(activeHintAtom)?.id ?? null,
       dismiss: (): void => store.set(dismissCommsAtom),
+      /** Record a line as read without showing it (e.g. the survey signal's marker gate). */
+      markPlayed(id: string): void {
+        store.set(playedMessageIdsAtom, (ids) => (ids.includes(id) ? ids : [...ids, id]));
+      },
       nextHint: (): void => store.set(nextHintAtom),
       nameAi: (name: string | null): void => store.set(aiNameAtom, name),
       /** New-world state for the opening (the driver names the AI on every load). */

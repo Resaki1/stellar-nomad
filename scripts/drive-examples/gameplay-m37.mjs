@@ -122,6 +122,8 @@ export async function siteGates(d, ctx) {
   const out = {};
 
   // Marker follows the Moon at rate 1e4 (before recovery hides it): sampled in one evaluate.
+  // The signal's marker waits for its comms line, which a fresh world's opening queue delays.
+  await ev(`${M}.comms.markPlayed("lunar_signal_001")`);
   await nearSite(d, ctx, 40);
   const sample = `(() => { const l = ${R}.abs("luna", [0, 0, 0]); const a = ${M}.site.absKm(${JSON.stringify(SITE)}); const s = ${R}.ship(); const p = ${M}.site.projected().find((x) => x.id === "site:${SITE}"); return { l, a, ship: s.absKm, proj: p ? p.distanceKm : null }; })()`;
   const m0 = await ev(sample);

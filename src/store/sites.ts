@@ -11,6 +11,8 @@ import { TRANSIT_ACCEL_KMPS2 } from "@/sim/ship/transitDrive";
 import { getEffectiveTuning } from "@/sim/ship/resourceTuning";
 import type { POIDef } from "@/store/poi";
 import { poiBuffer } from "@/store/poi";
+import { activeCommsMessageAtom, playedMessageIdsAtom } from "@/store/comms";
+import { markerKnowledgeAtom } from "@/store/markerKnowledge";
 import { discoveriesMirrorAtom } from "@/store/research";
 import { activePointAtom } from "@/store/replication";
 import { systemConfigAtom } from "@/store/system";
@@ -22,9 +24,14 @@ const SITE_ARRIVAL_KM = 1.5;
 /** Site signals as POI markers. Debris pockets have none (B1: a pocket re-classes chunks, it is not a place). */
 export const sitePOIsAtom = atom((get): POIDef[] => {
   const disc = get(discoveriesMirrorAtom);
+  const played = get(playedMessageIdsAtom);
+  const showing = get(activeCommsMessageAtom)?.messageId;
+  const revealAll = get(markerKnowledgeAtom).revealAll;
   const out: POIDef[] = [];
   for (const s of SITES) {
     if (disc.sites[s.id]) continue;
+    const announced = !s.revealCommsId || played.includes(s.revealCommsId) || showing === s.revealCommsId;
+    if (!announced && !disc.inspectedSites[s.id] && !revealAll) continue;
     out.push({
       id: `site:${s.id}`,
       name: disc.inspectedSites[s.id] ? s.name : s.signalName,
