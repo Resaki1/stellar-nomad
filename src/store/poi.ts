@@ -94,6 +94,14 @@ export type ProjectedPOI = {
 export const pilotPOIsAtom = atom<POIDef[]>([]);
 
 /**
+ * Rock under the nose for a ping, far beyond the 10 km mining lock: MiningSystem installs the
+ * caster (it owns the streamed fields). Returns the hit in scene metres, or null.
+ */
+export const pingProbe = {
+  castRock: null as ((maxM: number) => { localM: [number, number, number]; distM: number; fieldId: string; chunkKey: string; instanceId: number } | null) | null,
+};
+
+/**
  * Mutable shared buffer — written by POIProjector every frame.
  * POIMarkers registers a `flush` callback that POIProjector invokes
  * immediately after writing, so DOM updates happen in the same frame

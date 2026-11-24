@@ -7,6 +7,7 @@ import { getActiveSave, getWorldState, inSession, registerCollector } from "@/sa
 import { getLocalPlayerId } from "@/save/playerId";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { hydrateSavedAtoms, refreshPlayerAtoms } from "@/store/savedAtom";
+import { playPingCue } from "@/store/pingSound";
 import { addToastAtom } from "@/store/toast";
 import { wrecksMirrorAtom } from "@/store/death";
 import { rendezvousAtom } from "@/store/discoveries";
@@ -72,7 +73,8 @@ export function installWorldBridge(store: Store): void {
         const fixes = getWorldState().rendezvous;
         // A crewmate's new ping announces itself (the sound comes from the notification).
         if (e.by && e.by !== local && fixes[e.by] && JSON.stringify(fixes[e.by]) !== JSON.stringify(store.get(rendezvousAtom)[e.by])) {
-          store.set(addToastAtom, { kind: "info", message: "Crew ping", detail: `${getWorldState().members[e.by]?.name || "Replicant"} · ${fixes[e.by].name}` });
+          store.set(addToastAtom, { kind: "info", audio: "silent", message: "Crew ping", detail: `${getWorldState().members[e.by]?.name || "Replicant"} · ${fixes[e.by].name}` });
+          playPingCue(fixes[e.by].frameId, fixes[e.by].positionKm);
         }
         store.set(rendezvousAtom, fixes);
         refreshFixTarget();

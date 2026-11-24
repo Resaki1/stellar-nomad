@@ -2,7 +2,7 @@
 
 /**
  * Marker keys (docs/MARKER_SYSTEM_PLAN.md §2.5, §2.8): density cycle, hold-to-reveal, and the ping.
- * Tap the ping key to ping what the nose points at (a marker, a rock, else a bearing); hold it to
+ * Tap the ping key to ping what the nose points at (a marker, a rock, else a direction); hold it to
  * clear your ping. One persistent ping per pilot (`world.rendezvous`), solo or in co-op.
  */
 import { useEffect } from "react";
@@ -18,27 +18,36 @@ import { keybindsAtom } from "@/store/keybinds";
 import { MARKER_DENSITIES, markerPrefsAtom, markerRevealAtom } from "@/store/markerPrefs";
 import { miningStateAtom } from "@/store/mining";
 import { describeRejection, newOpId, runOperation } from "@/store/operations";
-import { poiBuffer } from "@/store/poi";
+import { pingProbe, poiBuffer } from "@/store/poi";
+import { playPingCue } from "@/store/pingSound";
+import { getAsteroidClass } from "@/sim/asteroids/resources";
 import { settingsIsOpenAtom } from "@/store/store";
 import { systemConfigAtom } from "@/store/system";
 import { addToastAtom } from "@/store/toast";
 
 /** Holding the ping key this long clears your ping instead of placing one. */
 const PING_HOLD_MS = 450;
-/** A bearing ping sits this far along the nose: a direction, with no meaningful distance. */
+/** A ping that hits nothing sits this far along the nose: a direction, with no meaningful distance. */
 const BEARING_KM = 1e9;
+/** Rocks stream in out to tens of km; the ping looks this far. */
+const PING_ROCK_RANGE_M = 200_000;
 const DENSITY_LABEL = { full: "All markers", essential: "Essential markers", off: "Markers off" } as const;
 
 const _rel = new Vector3();
 
 type At = NonNullable<Extract<WorldOperation, { type: "expedition.mark" }>["at"]>;
 
-/** What the ping lands on, frame-relative: the nose's marker, the aimed rock, else a bearing. */
+/** What the ping lands on, frame-relative: the nose's marker, a rock along the nose, else a direction. */
 function pingTarget(store: ReturnType<typeof useStore>): { at: At; name: string } | null {
   const ship = getLocalPlayerShip();
   if (!ship || !isFrameId(ship.frameId)) return null;
-  const aimed = poiBuffer.aimed;
-  if (aimed && !aimed.id.startsWith("rendezvous:")) {
+  // A rock along the nose, out to the edge of the streamed fields (the mining lock stops at 10 km).
+  const hit = pingProbe.castRock?.(PING_ROCK_RANGE_M);
+  const aimedRaw = poiBuffer.aimed;
+  const aimedKm = aimedRaw ? poiBuffer.pois.find((p) => p.id === aimedRaw.id)?.distanceKm ?? Infinity : Infinity;
+  // The nearer of the two: a rock in front of a distant marker gets the ping.
+  const aimed = aimedRaw && !aimedRaw.id.startsWith("rendezvous:") && !(hit && hit.distM / 1000 < aimedKm) ? aimedRaw : null;
+  if (aimed) {
     if (aimed.id.startsWith("body:")) {
       // A body: just above its surface on our side, in its own frame (its centre is inside it).
       const id = aimed.id.slice(5);
@@ -51,15 +60,19 @@ function pingTarget(store: ReturnType<typeof useStore>): { at: At; name: string 
     }
     return { at: { frameId: aimed.frameId ?? SYSTEM_FRAME_ID, positionKm: [...aimed.positionKm] }, name: aimed.name };
   }
-  const rock = store.get(miningStateAtom).targetedAsteroid;
-  if (rock) {
-    _rel.fromArray(rock.positionLocal).sub(shipView.position).multiplyScalar(0.001);
-    return { at: { frameId: ship.frameId, positionKm: [ship.posKm.x + _rel.x, ship.posKm.y + _rel.y, ship.posKm.z + _rel.z] }, name: "Asteroid" };
+  const locked = store.get(miningStateAtom).targetedAsteroid;
+  const rockLocal = hit?.localM ?? locked?.positionLocal;
+  if (rockLocal) {
+    const cls = hit ? getAsteroidClass(store.get(systemConfigAtom), hit.fieldId, hit.instanceId, hit.chunkKey) : null;
+    _rel.fromArray(rockLocal).sub(shipView.position).multiplyScalar(0.001);
+    return { at: { frameId: ship.frameId, positionKm: [ship.posKm.x + _rel.x, ship.posKm.y + _rel.y, ship.posKm.z + _rel.z] },
+      name: cls ? `${cls.name} rock` : "Asteroid" };
   }
+  // Nothing hit: a marker in that direction (no distance, and never a transit destination).
   const f = shipView.forward;
   return {
     at: { frameId: ship.frameId, positionKm: [ship.posKm.x + f.x * BEARING_KM, ship.posKm.y + f.y * BEARING_KM, ship.posKm.z + f.z * BEARING_KM], bearing: true },
-    name: "Bearing",
+    name: "Marker",
   };
 }
 
@@ -69,11 +82,11 @@ export default function MarkerControls(): null {
   useEffect(() => {
     let pingDownAt = 0;
     let pingTimer = 0;
-    const toast = (message: string, detail?: string, kind: "info" | "warn" = "info"): void =>
-      store.set(addToastAtom, { kind, message, detail, ...(kind === "warn" && { audio: "reject" as const }) });
-    const submit = (op: Extract<WorldOperation, { type: "expedition.mark" }>, done: string, detail?: string): void => {
+    const toast = (message: string, detail?: string, kind: "info" | "warn" = "info", silent = false): void =>
+      store.set(addToastAtom, { kind, message, detail, ...(kind === "warn" ? { audio: "reject" as const } : silent ? { audio: "silent" as const } : {}) });
+    const submit = (op: Extract<WorldOperation, { type: "expedition.mark" }>, done: string, detail?: string, silent = false): void => {
       runOperation(op, (o) => {
-        if (o.status === "accepted") toast(done, detail);
+        if (o.status === "accepted") toast(done, detail, "info", silent);
         else if (o.status === "rejected") toast("Ping refused", describeRejection(o), "warn");
       });
     };
@@ -118,7 +131,9 @@ export default function MarkerControls(): null {
         pingTimer = 0;
         const target = pingTarget(store);
         if (!target) return;
-        submit({ type: "expedition.mark", sourceId: null, name: target.name.slice(0, 40), at: target.at, opId: newOpId() }, "Ping placed", target.name);
+        // The cue plays now, from the ping's direction (the notification stays silent).
+        playPingCue(target.at.frameId, target.at.positionKm);
+        submit({ type: "expedition.mark", sourceId: null, name: target.name.slice(0, 40), at: target.at, opId: newOpId() }, "Ping placed", target.name, true);
       }
     };
     const onBlur = (): void => {

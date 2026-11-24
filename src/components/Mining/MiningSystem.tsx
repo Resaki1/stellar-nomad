@@ -51,7 +51,7 @@ import { onLoadedRockDestroyed } from "@/sim/asteroids/runtimeContext";
 import { frameOriginKm, isFrameId, SYSTEM_FRAME_ID } from "@/sim/frames";
 import { replicationPointsAtom } from "@/store/replicationMirror";
 import { industryAtom } from "@/store/industry";
-import { pilotPOIsAtom } from "@/store/poi";
+import { pilotPOIsAtom, pingProbe } from "@/store/poi";
 
 let _miningWorkSeen = 0;
 /** Beam seconds the resource step granted since the last call (power-throttled, executed time). */
@@ -922,6 +922,18 @@ const MiningSystem = () => {
     _castMs = performance.now() - t0;
     return found;
   }, [asteroidRuntime, fieldAnchorMap, worldOrigin]);
+
+  // The ping casts the same field ray as the beam, to any streamed rock along the nose.
+  useEffect(() => {
+    pingProbe.castRock = (maxM) => {
+      if (!castBeam(shipView.position, shipView.forward, maxM, null)) return null;
+      const t = _beamHit.t;
+      const p = shipView.position, f = shipView.forward;
+      return { localM: [p.x + f.x * t, p.y + f.y * t, p.z + f.z * t], distM: t,
+        fieldId: _beamHit.fieldId, chunkKey: _beamHit.chunkKey, instanceId: _beamHit.instanceId };
+    };
+    return () => { pingProbe.castRock = null; };
+  }, [castBeam]);
 
   /** Safety hold: true when the beam segment passes through a station, depot or another pilot. */
   const beamBlocked = useCallback((a: THREE.Vector3, b: THREE.Vector3): boolean => {

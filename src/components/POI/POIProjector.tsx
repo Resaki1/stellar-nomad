@@ -556,7 +556,8 @@ const POIProjector = memo(function POIProjector() {
       rec.active = poi.active === true;
       rec.bearing = poi.bearing === true;
       rec.tracked = isTracked;
-      rec.occluded = occluded(bodies, poi.id, shipKm, px, py, pz, distanceKm);
+      // A direction marker is not a place: nothing can stand in front of it.
+      rec.occluded = !rec.bearing && occluded(bodies, poi.id, shipKm, px, py, pz, distanceKm);
       rec.labelled = reveal || def.alwaysLabel || (prefs.celestialLabels && (poi.category === "body" || poi.category === "field"));
       rec.edge = reveal || exempt || def.edge;
       rec.badge = 0;

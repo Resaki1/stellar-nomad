@@ -50,7 +50,9 @@ export const bookmarkPOIsAtom = atom((get): POIDef[] => {
     const ownerName = members[owner]?.name || "Replicant";
     out.push({ id: `rendezvous:${owner}`, category: "ping", name: fix.name, positionKm: fix.positionKm, frameId: fix.frameId,
       minDistanceKm: 0, maxDistanceKm: Infinity, arrivalOffsetKm: source ? standoffKm(source) : 0.1,
-      tint: pilotTint(owner, memberIds), initial: ownerName.trim().charAt(0).toUpperCase() || "?", bearing: fix.bearing === true });
+      tint: pilotTint(owner, memberIds), initial: ownerName.trim().charAt(0).toUpperCase() || "?", bearing: fix.bearing === true,
+      // A direction has no place to arrive at (transit would plan a 1e9 km trip).
+      ...(fix.bearing === true && { targetable: false }) });
   }
   return out;
 });

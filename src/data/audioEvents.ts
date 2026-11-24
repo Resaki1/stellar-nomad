@@ -408,6 +408,22 @@ export const AUDIO_EVENTS = [
     gainDb: 0
   },
   {
+    // A ping, panned toward the pinged place (MarkerControls / worldBridge play it a few metres out in
+    // that direction). Contact-coupled: a HUD cue, never silenced by vacuum. Mono (spatialised).
+    id: "hud.ping",
+    bus: "ui",
+    tier: "world",
+    coupling: "contact",
+    variants: [
+      "/audio/workshop/hud_ping_s24017.opus"
+    ],
+    priority: 88,
+    maxInstances: 2,
+    cooldownMs: 150,
+    preloadTier: 0,
+    gainDb: 0
+  },
+  {
     id: "notify.warn",
     bus: "ui",
     tier: "ui",

@@ -21,7 +21,10 @@ export interface MarkerCategoryDef {
   group: MarkerGroup | null;
   /** Name shown without focus. */
   alwaysLabel: boolean;
-  /** Off-screen edge arrow without being tracked or the destination. */
+  /**
+   * Off-screen edge arrow without being tracked or the destination. Bodies, fields and signals
+   * have one: progression keeps them few, and arrows sharing a spot merge into "+N".
+   */
   edge: boolean;
   scope: MarkerScope;
   /** Shown in the "essential" density. */
@@ -35,11 +38,11 @@ export const MARKER_CATEGORIES: Readonly<Record<MarkerCategory, MarkerCategoryDe
   drone: { priority: 4, group: "drones", alwaysLabel: true, edge: true, scope: "system", essential: true },
   depot: { priority: 5, group: "structures", alwaysLabel: true, edge: false, scope: "local", essential: false },
   point: { priority: 5, group: "structures", alwaysLabel: false, edge: false, scope: "local", essential: false },
-  site: { priority: 6, group: "signals", alwaysLabel: false, edge: false, scope: "local", essential: false },
+  site: { priority: 6, group: "signals", alwaysLabel: false, edge: true, scope: "local", essential: false },
   wreck: { priority: 6, group: "wrecks", alwaysLabel: false, edge: false, scope: "local", essential: false },
   source: { priority: 7, group: "signals", alwaysLabel: false, edge: false, scope: "local", essential: false },
-  body: { priority: 8, group: "celestial", alwaysLabel: false, edge: false, scope: "system", essential: false },
-  field: { priority: 9, group: "celestial", alwaysLabel: false, edge: false, scope: "system", essential: false },
+  body: { priority: 8, group: "celestial", alwaysLabel: false, edge: true, scope: "system", essential: false },
+  field: { priority: 9, group: "celestial", alwaysLabel: false, edge: true, scope: "system", essential: false },
   star: { priority: 10, group: "stars", alwaysLabel: false, edge: false, scope: "system", essential: false },
 };
 
