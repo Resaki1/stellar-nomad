@@ -281,6 +281,8 @@ export default async function vfxShadows(d) {
     }
   } finally {
     await ev("__shadow.enable(true); __shadow.force(false); __shadow.clear(false); __shadow.map(true)");
+    // --no-isolate: the world save keeps the sim rate, and fixtures copied from it inherit a frozen clock.
+    await ev("__test.simRate(1)");
   }
   out.pass = ["umbra", "lit", "penumbra", "glare", "swim"].every((p) => !out[p] || out[p].pass);
   console.log(j(out));

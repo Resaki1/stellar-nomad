@@ -132,6 +132,8 @@ async function verifyFlight(page, rock, home, droneId, tuning) {
   assert.equal(working.flight.rock.chunkKey, rock.chunkKey);
   const liveShip = await ev(`${G}.rep.ship()`);
   const miningPose = await rendered();
+  assert.ok(miningPose.beamStartM && distance(miningPose.beamStartM, miningPose.muzzleM) < 0.001,
+    "the shared mining beam starts at the imported optic");
   const bearing = await ev(`${G}.rep.pois(${J("drone:" + droneId)})[0]`);
   assert.ok(Math.abs(bearing.distanceKm - Math.hypot(...miningPose.positionM) / 1000) < 0.01,
     "the projected bearing follows the rendered miner to its worksite");

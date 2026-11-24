@@ -5,8 +5,8 @@ import { useFrame } from "@react-three/fiber";
 import { useAtomValue, useStore } from "jotai";
 import { memo, Suspense, useEffect, useMemo, useRef } from "react";
 import {
-  BoxGeometry, Color, DodecahedronGeometry, EdgesGeometry, Euler, Group, IcosahedronGeometry, LineBasicMaterial, LineSegments, LOD, Mesh,
-  Matrix4, MeshBasicMaterial, MeshStandardMaterial, Quaternion, Vector3,
+  DodecahedronGeometry, EdgesGeometry, Euler, Group, LineBasicMaterial, LineSegments, LOD, Matrix4,
+  Mesh, MeshStandardMaterial, Quaternion, Vector3,
 } from "three";
 import { FRAME_PRIORITY_PLAYER_SHIP, FRAME_PRIORITY_REMOTE_SHIPS } from "@/components/frameOrder";
 import { emitterColor } from "@/components/space/emissivePhotometry";
@@ -18,7 +18,7 @@ import { getActiveAsteroidRuntime } from "@/sim/asteroids/runtimeContext";
 import { systemConfigAtom } from "@/store/system";
 import type { SystemConfig } from "@/sim/systemTypes";
 import { simEpochMsAtom } from "@/store/simTime";
-import type { ShipPose, Vec3Tuple } from "@/save/types";
+import type { ReplicationPoint, ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
 import { frameOriginKm } from "@/sim/frames";
 import { INDUSTRY_SOURCES, type IndustrySource } from "@/sim/industry/catalog";
@@ -37,6 +37,7 @@ import { replicationPointsAtom } from "@/store/replicationMirror";
 import { depotPlacementAtom, depotPlacementPreview, sampleDepotPlacementPose, trackedDronePoiAtom } from "@/store/industryHud";
 import { poiBuffer } from "@/store/poi";
 import { DroneMotion, MiningLegClock, smoothProgress } from "./droneMotion";
+import { DRONE_LOD_DISTANCES_M, useDroneRenderAssets, type DroneRenderAssets } from "./DroneModel";
 import { DEPOT_COLLISION_ASSET, DEPOT_LOD_ASSETS, DEPOT_LOD_DISTANCES_M, refineryMountMatrix, useDepotRenderAssets, type DepotRenderAssets } from "./DepotModel";
 
 const REFINERY_BASE = "/models/stations/depot-refinery";
@@ -46,22 +47,16 @@ const REFINERY_COLLISION_ASSET = REFINERY_BASE + "-collision.glb";
 const DEPOT_RENDER_KM = 14;
 /** Depot lamps stay visible as light points well past the mesh range (VFX plan §1). */
 const DEPOT_LIGHT_RANGE_KM = 1_000;
-const _depotMatrix = new Matrix4();
+const _lampMatrix = new Matrix4();
 const _unit = new Vector3(1, 1, 1);
 const DEPOT_COLLISION_KM = 3;
 const DRONE_RENDER_KM = 3;
 const SOURCE_RENDER_KM = 3;
 const BEAM_FADE_S = 0.6;
-const BOX = new BoxGeometry();
 const SOURCE_GEOMETRY = new DodecahedronGeometry(1, 0);
-const DRONE_GEOMETRY = new IcosahedronGeometry(1, 0);
 
-const FRAME = new MeshStandardMaterial({ color: "#293745", metalness: 0.75, roughness: 0.62 });
-const TANK = new MeshStandardMaterial({ color: "#986532", metalness: 0.38, roughness: 0.8 });
 const RADIATOR = new MeshStandardMaterial({ color: "#244661", metalness: 0.7, roughness: 0.46 });
 const PROSPECT = new MeshStandardMaterial({ color: "#9da2a5", metalness: 0.2, roughness: 0.94 });
-const LIGHT = new MeshBasicMaterial({ color: new Color(0.22, 0.66, 1.45), toneMapped: false });
-const AMBER = new MeshBasicMaterial({ color: new Color(1.8, 0.66, 0.08), toneMapped: false });
 /** Drone laser power relative to the stock ship laser (beam radiance ∝ power, VFX plan B3). */
 const DRONE_BEAM_POWER = 0.5;
 const _beamEnd = new Vector3();
@@ -93,7 +88,7 @@ function castDroneBeam(system: SystemConfig, wo: Vector3, origin: Vector3, dir: 
 }
 const PREVIEW_GOOD = new LineBasicMaterial({ name: "Clear depot outline", color: emitterColor("replication_preview"), transparent: true, opacity: 0.8, depthWrite: false });
 const PREVIEW_BAD = new LineBasicMaterial({ name: "Blocked depot outline", color: emitterColor("replication_preview_bad"), transparent: true, opacity: 0.8, depthWrite: false });
-for (const material of [LIGHT, AMBER, PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(material);
+for (const material of [PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(material);
 
 const PROSPECT_HULLS = PROSPECT_PARTS.map(({ position, rotation, scale }) => {
   const vertices = SOURCE_GEOMETRY.getAttribute("position");
@@ -165,8 +160,8 @@ const Station = memo(function Station({ depot, assets }: { depot: DepotRecord; a
     scenePosition(depot, worldOrigin.worldOriginKm, group.position);
     const distSq = group.position.lengthSq();
     if (distSq <= (DEPOT_LIGHT_RANGE_KM * 1000) ** 2) {
-      _depotMatrix.compose(group.position, group.quaternion, _unit);
-      emitLightPoints(assets.lights, _depotMatrix, beaconFlash(store.get(simEpochMsAtom)));
+      _lampMatrix.compose(group.position, group.quaternion, _unit);
+      emitLightPoints(assets.lights, _lampMatrix, beaconFlash(store.get(simEpochMsAtom)));
     }
     group.visible = distSq <= (DEPOT_RENDER_KM * 1000) ** 2;
     if (!group.visible) return;
@@ -332,8 +327,21 @@ const Prospect = memo(function Prospect({ source }: { source: IndustrySource }) 
   </group>;
 });
 
-function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: DepotRecord; dest: Destination | undefined; index: number }) {
+function UtilityDrone({ drone, home, dest, index, assets }: {
+  drone: DroneRecord; home: DepotRecord; dest: Destination | undefined; index: number; assets: DroneRenderAssets;
+}) {
   const ship = useRef<Group>(null!);
+  const lod = useMemo(() => {
+    const model = new LOD();
+    model.autoUpdate = false;
+    assets.scenes.forEach((scene, level) => {
+      const instance = scene.clone(true);
+      instance.name = `droneLOD${level}`;
+      instance.visible = level === 0;
+      model.addLevel(instance, DRONE_LOD_DISTANCES_M[level], 0.12);
+    });
+    return model;
+  }, [assets]);
   const motion = useMemo(() => new DroneMotion(), []);
   const clock = useMemo(() => new MiningLegClock(), []);
   const pose = useMemo(() => ({
@@ -345,7 +353,7 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
   const drawn = useRef(false);
   const worldOrigin = useWorldOrigin();
   const lane = index % 2 === 0 ? 1 : -1;
-  useFrame((_, delta) => {
+  useFrame(({ camera }, delta) => {
     const g = ship.current;
     if (!g) return;
     const w = worldOrigin.worldOriginKm;
@@ -456,11 +464,16 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
     }
 
     g.visible = visibleFlight && g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
-    if (g.visible && strength > 0.001) {
+    if (!g.visible) return;
+    lod.updateWorldMatrix(true, false);
+    lod.update(camera);
+    _lampMatrix.compose(g.position, g.quaternion, _unit);
+    emitLightPoints(assets.lights, _lampMatrix, beaconFlash(store.get(simEpochMsAtom)));
+    if (strength > 0.001) {
       // VFX plan §2 B2: the shared beam, from the emitter along the drone's own axis to the
       // first rock surface (never bent onto the rock's centre).
-      _droneOffset.copy(_forward).multiplyScalar(2.25).applyQuaternion(g.quaternion).add(g.position);
-      _direction.copy(_forward).applyQuaternion(g.quaternion);
+      _droneOffset.copy(assets.miningPosition).applyMatrix4(_lampMatrix);
+      _direction.copy(assets.miningDirection).applyQuaternion(g.quaternion);
       const reach = _to.distanceTo(_droneOffset) + 60;
       const hit = castDroneBeam(store.get(systemConfigAtom), w, _droneOffset, _direction, reach, _beamEnd);
       if (!hit) _beamEnd.copy(_droneOffset).addScaledVector(_direction, Math.max(0, _to.distanceTo(_droneOffset)));
@@ -468,15 +481,26 @@ function UtilityDrone({ drone, home, dest, index }: { drone: DroneRecord; home: 
       pushBeamLights(_droneOffset.x, _droneOffset.y, _droneOffset.z, _beamEnd.x, _beamEnd.y, _beamEnd.z, hit, strength, DRONE_BEAM_POWER);
     }
   }, FRAME_PRIORITY_REMOTE_SHIPS);
-  return <>
-    <group ref={ship} name={`drone:${drone.id}`} visible={false}>
-      <mesh castShadow receiveShadow geometry={DRONE_GEOMETRY} material={FRAME} scale={[1.6, 1.25, 2.7]} />
-      <mesh castShadow receiveShadow geometry={BOX} material={TANK} position={[-1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
-      <mesh castShadow receiveShadow geometry={BOX} material={TANK} position={[1.47, 0, -0.23]} scale={[0.74, 0.9, 2.5]} />
-      <mesh geometry={BOX} material={LIGHT} position={[0, 0.12, 2.13]} scale={[0.85, 0.22, 0.24]} />
-      <mesh geometry={BOX} material={AMBER} position={[0, 0, -2.13]} scale={[0.95, 0.7, 0.25]} />
-    </group>
-  </>;
+  return <group ref={ship} name={`drone:${drone.id}`} visible={false} dispose={null}>
+    <primitive object={lod} name="droneLOD" />
+  </group>;
+}
+
+function UtilityDrones({ depots, drones, points, prospects }: {
+  depots: readonly DepotRecord[];
+  drones: readonly DroneRecord[];
+  points: readonly ReplicationPoint[];
+  prospects: readonly IndustrySource[];
+}) {
+  const assets = useDroneRenderAssets();
+  return drones.map((drone, index) => {
+    const home = depots.find(d => d.id === drone.homeId);
+    const job = drone.job;
+    const dest = !job || job.kind === "mine" ? undefined : job.kind === "extract" ? prospects.find(s => s.id === job.targetId)
+      : job.targetKind === "point" ? points.find(p => p.id === job.targetId && !p.starter)
+      : depots.find(d => d.id === job.targetId);
+    return home ? <UtilityDrone key={drone.id} drone={drone} home={home} dest={dest} index={index} assets={assets} /> : null;
+  });
 }
 
 export default function IndustryWorld() {
@@ -492,13 +516,8 @@ export default function IndustryWorld() {
     {upgradedDepots.length > 0 && <Suspense fallback={null}><RefineryColliders depots={upgradedDepots} /></Suspense>}
     <DepotPreview />
     {prospects.map(source => <Prospect key={source.id} source={source} />)}
-    {drones.map((drone, index) => {
-      const home = depots.find(d => d.id === drone.homeId);
-      const job = drone.job;
-      const dest = !job || job.kind === "mine" ? undefined : job.kind === "extract" ? prospects.find(s => s.id === job.targetId)
-        : job.targetKind === "point" ? points.find(p => p.id === job.targetId && !p.starter)
-        : depots.find(d => d.id === job.targetId);
-      return home ? <UtilityDrone key={drone.id} drone={drone} home={home} dest={dest} index={index} /> : null;
-    })}
+    {drones.length > 0 && <Suspense fallback={null}>
+      <UtilityDrones depots={depots} drones={drones} points={points} prospects={prospects} />
+    </Suspense>}
   </>;
 }

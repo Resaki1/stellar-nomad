@@ -11,7 +11,7 @@ import { parseSaveData } from "@/save/validate";
 import { buildMineOperation } from "@/sim/asteroids/mineOperation";
 import type { OperationOutcome, WorldOperation } from "@/sim/world/commands";
 import { newOpId, worldAuthority } from "@/sim/world/worldAuthority";
-import { Box3, LineBasicMaterial, LineSegments, LOD, Mesh, MeshBasicMaterial, MeshStandardMaterial, Vector3 } from "three";
+import { Box3, LineBasicMaterial, LineSegments, LOD, Mesh, Vector3 } from "three";
 import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { cargoAtom, cargoCapacityUnitsAtom, removeCargoAtom } from "@/store/cargo";
 import { devTeleportAtom } from "@/store/dev";
@@ -34,6 +34,7 @@ import { shipHealthAtom } from "@/store/store";
 import { systemConfigAtom } from "@/store/system";
 import { runOperation } from "@/store/operations";
 import { testProbe } from "./testProbe";
+import { beamBuffer } from "@/components/VFX/beams";
 import { createM37Harness } from "./m37Harness";
 import { DEPOT_RECIPES, INDUSTRY_SOURCES, INDUSTRY_TUNING } from "@/sim/industry/catalog";
 import { computeMiningDurationS, getAsteroidMiningReward } from "@/sim/asteroids/resources";
@@ -102,13 +103,36 @@ type TransitRecord = {
 let transitRecorder: { rec: TransitRecord; stop: () => TransitRecord } | null = null;
 
 export function createGameplayHarness(store: Store) {
-  const sampleDrone = (id: string) => {
+  const sampleDrone = (id: string, inFrame = false) => {
     const model = testProbe.scene?.getObjectByName(`drone:${id}`);
-    const beam = testProbe.scene?.getObjectByName(`droneBeam:${id}`);
-    if (!model || !(beam instanceof Mesh) || !(beam.material instanceof MeshBasicMaterial)) return null;
+    const lod = model?.getObjectByName("droneLOD");
+    if (!model || !(lod instanceof LOD)) return null;
+    const level = lod.getCurrentLevel();
+    const visibleModel = lod.levels[level].object;
+    const muzzle = visibleModel.getObjectByName("socket_mining")?.getWorldPosition(new Vector3());
+    const lights: Record<string, number> = {};
+    visibleModel.traverse(child => {
+      if (child instanceof Mesh && "emissiveIntensity" in child.material && child.material.name.startsWith("Amber drone")) {
+        lights[child.material.name] = child.material.emissiveIntensity;
+      }
+    });
+    let beam = 0;
+    let beamStartM: number[] | null = null;
+    if (muzzle && model.visible) {
+      // Frame probes run before the beam renderer submits and resets its queue.
+      const count = inFrame ? beamBuffer.count : beamBuffer.drawn;
+      for (let i = 0; i < count; i++) {
+        const j = i * 6;
+        const x = beamBuffer.seg[j], y = beamBuffer.seg[j + 1], z = beamBuffer.seg[j + 2];
+        if ((muzzle.x - x) ** 2 + (muzzle.y - y) ** 2 + (muzzle.z - z) ** 2 > 1e-6) continue;
+        beam = beamBuffer.params[i * 4];
+        beamStartM = [x, y, z];
+        break;
+      }
+    }
     return {
       positionM: model.position.toArray(), quaternion: model.quaternion.toArray(),
-      visible: model.visible, beam: beam.visible ? beam.material.opacity : 0,
+      visible: model.visible, level, lights, beam, beamStartM, muzzleM: muzzle?.toArray(),
     };
   };
 
@@ -143,7 +167,7 @@ export function createGameplayHarness(store: Store) {
         return new Promise<(NonNullable<ReturnType<typeof sampleDrone>> & { atMs: number; frameMs: number; phase: string; remainingS: number })[]>(resolve => {
           const samples: Parameters<typeof resolve>[0] = [];
           const record = (frameMs: number) => {
-            const drawn = sampleDrone(id);
+            const drawn = sampleDrone(id, true);
             const drone = getActiveSave()?.data.world.industry.drones.find(d => d.id === id);
             if (drawn && drone) samples.push({ ...drawn, atMs: performance.now(), frameMs, phase: drone.phase, remainingS: drone.remainingS });
           };

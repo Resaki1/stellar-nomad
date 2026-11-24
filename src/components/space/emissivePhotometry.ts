@@ -296,6 +296,18 @@ export const EMITTERS = {
     hue: [1.0, 0.34, 0.04],
     why: "Depot mast beacons at peak during the 450 ms flash every two seconds.",
   },
+  drone_status: {
+    kind: "design",
+    nits: 18_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "Steady ready indicators on the face of the utility drone's mining head.",
+  },
+  drone_beacon: {
+    kind: "design",
+    nits: 65_000,
+    hue: [1.0, 0.34, 0.04],
+    why: "Utility drone identification beacons, synchronized to the station flash cadence.",
+  },
   replication_preview: {
     kind: "design",
     nits: 1200,
