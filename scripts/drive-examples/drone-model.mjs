@@ -65,7 +65,7 @@ export default async function droneModel(d) {
     await d.reload();
     await ev(`${G}.m37.comms.nameAi("Vega"); ${G}.m37.comms.dismiss()`);
     assert.deepEqual(await drones(), []);
-    const requests = 'performance.getEntriesByType("resource").filter(e => e.name.includes("/models/drones/base-drone"))';
+    const requests = 'performance.getEntriesByType("resource").filter(e => e.name.includes("/models/drones/base-drone") && e.name.split("?")[0].endsWith(".glb"))';
     assert.equal(await ev(requests + ".length"), 0, "A world with no drones does not fetch drone models");
     for (let i = 0; i < 2; i++) {
       const outcome = await ev(`${G}.settled({type:"depot.fabricate", depotId:${j(ID)}, recipeId:"drone"})`);

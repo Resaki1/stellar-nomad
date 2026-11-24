@@ -67,7 +67,7 @@ export function useDepotRenderAssets(): DepotRenderAssets {
       return template;
     });
     // S3: steady lamps' spill is baked into the depot textures; the spill lights skip them.
-    const template = { ...readLightTemplate(scenes[0]), bakedSpill: true };
+    const template = readLightTemplate(scenes[0], true);
     return { assets: { scenes, refineryMount: refineryMountMatrix(scenes[0]), lights: template }, lights, beacons };
   }, [models, spill]);
 

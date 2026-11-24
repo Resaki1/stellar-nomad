@@ -53,8 +53,8 @@ export type LightTemplate = {
   size: Float32Array;
   /** 1 = follows the blink phase, 0 = steady. */
   blink: Uint8Array;
-  /** S3: steady lamps' spill is baked into the model's textures, so the spill lights skip them. */
-  bakedSpill?: boolean;
+  /** S3: steady lamps' spill is baked into the model's lightmaps, so the spill light skips them. */
+  bakedSpill: boolean;
 };
 
 const _p = new Vector3();
@@ -66,8 +66,10 @@ function isEmitter(id: unknown): id is EmitterId {
 /**
  * Collect every node carrying light extras (`emitter`, `area_m2`, `size_m`, `blink`,
  * `cosine`) under `root`, in root space. Intensity = the emitter's radiance × area.
+ * `bakedSpill` is required on purpose (S3): a model with steady lamps either ships baked
+ * lightmaps (tools/models/spill-bake.mjs, enforced by `pnpm check:spill`) or says it doesn't.
  */
-export function readLightTemplate(root: Object3D): LightTemplate {
+export function readLightTemplate(root: Object3D, bakedSpill: boolean): LightTemplate {
   root.updateMatrixWorld(true);
   const nodes: Object3D[] = [];
   root.traverse((n) => {
@@ -80,6 +82,7 @@ export function readLightTemplate(root: Object3D): LightTemplate {
     rgb: new Float32Array(nodes.length * 3),
     size: new Float32Array(nodes.length),
     blink: new Uint8Array(nodes.length),
+    bakedSpill,
   };
   const inv = root.matrixWorld.clone().invert();
   nodes.forEach((n, i) => {

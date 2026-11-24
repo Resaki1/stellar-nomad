@@ -97,7 +97,7 @@ export function ReplicationPointModels() {
   const batches = useMemo(() => models.map(({ scene }, lod) => newBatch(scene, spill[lod])), [models, spill]);
   // One lamp set for every LOD: points don't merge into light bars.
   // S3: steady lamps' spill is baked into the station textures; the spill lights skip them.
-  const lights = useMemo<LightTemplate>(() => ({ ...readLightTemplate(models[0].scene), bakedSpill: true }), [models]);
+  const lights = useMemo<LightTemplate>(() => readLightTemplate(models[0].scene, true), [models]);
   const previous = useRef(new Map<string, number>());
   const previousPoints = useRef<readonly ReplicationPoint[] | null>(null);
 

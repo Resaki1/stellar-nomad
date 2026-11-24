@@ -15,6 +15,7 @@
 - `pnpm typecheck` (`tsc --noEmit`)
 - `pnpm build`
 - `pnpm check:audio` — when you touch anything under `src/audio/`, `src/data/audioEvents.ts`, or `public/audio/`
+- `pnpm check:spill` — when you touch `public/models/` or `art/`: every GLB with steady lamps needs a current lamp-spill bake (`node tools/models/spill-bake.mjs`, see docs/MODEL_WORKFLOW.md). Also runs as `prebuild`, so `pnpm build` fails on a forgotten bake
 
 > ⚠ Read `pnpm lint`'s **`N problems (X errors, Y warnings)`** summary line, not a
 > positional tail of the output. There is a standing baseline of ~130 warnings

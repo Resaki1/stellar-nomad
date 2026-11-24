@@ -47,6 +47,12 @@ pnpm model build art/drones/base-drone/base-drone.blend --asset base-drone-colli
 pnpm drive -- --perf --no-isolate --url http://127.0.0.1:3001/ run:scripts/drive-examples/drone-model.mjs
 ```
 
+Lamp spill (VFX plan §4 S3): after `build.py` and before the LOD exports above, bake the two steady ready lamps into each LOD's lightmap (second UV map, glTF `TEXCOORD_1`; the beacons blink and stay with the pooled spill light). `pnpm check:spill`, which `pnpm build` runs first, fails if a re-export forgets it. Measured 2026-11-24: peak E 0.058 game units at LOD0, maps 11/3/1 KB, GLBs +9–21 % for the extra UV.
+
+```sh
+node tools/models/spill-bake.mjs art/drones/base-drone/base-drone.blend base-drone --sizes 256,128,64 --out public/models/drones
+```
+
 All four exports passed Khronos validation with zero warnings. The close model rendered in the isolated WebGPU probe. A reimport of the collision GLB registered hits on both wing tips and left clear space above and just outboard of the tips. In the 1280 × 720 Metal WebGPU flight check, a depot fabricated two drones using three shared LOD downloads. Their beacons flashed 2,000 ms apart, both ready windows stayed lit, and the LODs switched and culled at the expected ranges. Peak fleet frame time remains unmeasured.
 
 A live asteroid sortie confirmed that the rendered beam starts within 1 mm of the imported mining socket. The broader motion script stopped later at its end-of-work beam fade assertion, before it reached the field-haul check.

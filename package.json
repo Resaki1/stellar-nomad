@@ -5,6 +5,7 @@
   "scripts": {
     "start": "next dev -H 0.0.0.0",
     "dev": "next dev -H 0.0.0.0",
+    "prebuild": "node scripts/spill-check.mjs",
     "build": "next build",
     "serve": "next start",
     "model": "node tools/models/model.mjs",
@@ -21,6 +22,7 @@
     "check:music": "node scripts/process-music.mjs --check",
     "coop:transcript": "node --no-warnings=ExperimentalWarning scripts/coop-transcript.mjs",
     "check:atmo": "node --no-warnings=ExperimentalWarning scripts/atmo-check.mjs",
+    "check:spill": "node scripts/spill-check.mjs",
     "check:thermal": "node --no-warnings=ExperimentalWarning scripts/thermal-check.mjs",
     "check:engine-audio": "node --no-warnings=ExperimentalWarning scripts/engine-audio-check.mjs",
     "drive": "node --experimental-websocket --no-warnings=ExperimentalWarning scripts/drive.mjs",

@@ -172,6 +172,16 @@ for k, size in enumerate(cfg["sizes"]):
                              PREF_BOX_DIV=12, PREF_MARGIN_DIV=0.3)
     bpy.ops.object.mode_set(mode="OBJECT")
 
+    # For scripts/spill-check.mjs: what this bake belongs to (a changed GLB makes it stale).
+    dg = bpy.context.evaluated_depsgraph_get()
+    triangles = 0
+    for o in objs:
+        ev = o.evaluated_get(dg)
+        me = ev.to_mesh()
+        me.calc_loop_triangles()
+        triangles += len(me.loop_triangles)
+        ev.to_mesh_clear()
+    lamp_list = []
     lamps = []
     for e in coll.all_objects:
         if e.type != "EMPTY" or "emitter" not in e.keys() or int(e.get("blink", 0)) > 0:
@@ -185,6 +195,8 @@ for k, size in enumerate(cfg["sizes"]):
         direction = (m.to_3x3() @ Vector((0, -1, 0))).normalized()
         kind = "disk" if float(e.get("cosine", 1)) > 0 else "point"
         lamp_size = float(e.get("size_m", math.sqrt(area)))
+        t = m.translation  # Blender Z-up -> glTF Y-up: (x, z, -y)
+        lamp_list.append([e["emitter"], round(area, 4), round(t.x, 3), round(t.z, 3), round(-t.y, 3)])
         lamps.append(add_lamp(f"Spill lamp {e.name}", kind, m.translation + direction * 0.01, direction, rgb, lamp_size, power_per_unit))
     only(objs)
     image = bake_into(objs, size, f"{cfg['name']}-spill-lod{k}")
@@ -195,7 +207,8 @@ for k, size in enumerate(cfg["sizes"]):
     px = list(image.pixels)
     peak = max(px[i] for i in range(0, len(px), 4))
     print(f"[spill] LOD{k}: {len(objs)} meshes, {len(lamps)} lamps, {size}² → {path.name} (peak E {peak:.4g} game units)")
-    lods.append({"file": path.name, "size": size, "lamps": len(lamps), "peakE": peak})
+    lods.append({"file": path.name, "size": size, "lamps": len(lamps), "peakE": peak,
+                 "triangles": triangles, "lampList": sorted(lamp_list)})
     for o in lamps:
         bpy.data.objects.remove(o, do_unlink=True)
     for o in objs:

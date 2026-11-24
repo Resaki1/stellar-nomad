@@ -1,0 +1,79 @@
+{
+ "uv": "Spill lightmap",
+ "units": "irradiance, game units (cd/6037.7 per m^2), before pre-exposure",
+ "lods": [
+  {
+   "file": "base-drone-spill-lod0.hdr",
+   "size": 256,
+   "lamps": 2,
+   "peakE": 0.058200687170028687,
+   "triangles": 9872,
+   "lampList": [
+    [
+     "drone_status",
+     0.0106,
+     -0.462,
+     0.19,
+     2.192
+    ],
+    [
+     "drone_status",
+     0.0106,
+     0.462,
+     0.19,
+     2.192
+    ]
+   ]
+  },
+  {
+   "file": "base-drone-spill-lod1.hdr",
+   "size": 128,
+   "lamps": 2,
+   "peakE": 0.09230856597423553,
+   "triangles": 5072,
+   "lampList": [
+    [
+     "drone_status",
+     0.0106,
+     -0.462,
+     0.19,
+     2.192
+    ],
+    [
+     "drone_status",
+     0.0106,
+     0.462,
+     0.19,
+     2.192
+    ]
+   ]
+  },
+  {
+   "file": "base-drone-spill-lod2.hdr",
+   "size": 64,
+   "lamps": 2,
+   "peakE": 0.04742792993783951,
+   "triangles": 1956,
+   "lampList": [
+    [
+     "drone_status",
+     0.0106,
+     -0.462,
+     0.19,
+     2.192
+    ],
+    [
+     "drone_status",
+     0.0106,
+     0.462,
+     0.19,
+     2.192
+    ]
+   ]
+  }
+ ],
+ "calibration": {
+  "point": 39.581026760740194,
+  "disk": 9.90347104608878
+ }
+}
