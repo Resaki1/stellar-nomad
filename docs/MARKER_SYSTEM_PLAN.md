@@ -191,10 +191,10 @@ sensibly travel there.** As built (`store/markerKnowledge.ts`, `marker.unlock` i
 
 | Unlock | Markers |
 |---|---|
-| Always | own structures, crew, rendezvous, bookmarks, wrecks; home field (`origin_belt`) once outside its shell, now out to 2×10⁶ km so it is findable from the Moon |
+| Always | own structures, crew, rendezvous, bookmarks, wrecks; **Earth** (hidden near Earth by the disc rule below, back beyond ~50,000 km, so it is the way home from the Moon; its trip ends in the home field); home field (`origin_belt`) from outside its shell to 100,000 km |
 | `transitDrive` (owned module) | Luna, lunar field |
 | Comms `lunar_signal_001` showing or read (`SiteDef.revealCommsId`) | survey signal; an inspected site skips the wait |
-| `warpDrive` (no item yet → never) | Earth, all planets, Jovian moons |
+| `warpDrive` (no item yet → never) | other planets, Jovian moons |
 | `interstellar` (none yet → never) | Sun and stars (the old `starMarkers` seam still applies after it) |
 | Any body | marker yields when its disc radius passes 12% of the view height (back at 10%); body labels sit below the disc |
 
