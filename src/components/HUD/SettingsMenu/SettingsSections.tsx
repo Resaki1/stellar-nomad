@@ -50,6 +50,12 @@ export function GraphicsSettings({ settings, setSettings }: SectionProps) {
         }
         label="anti-aliasing (4× MSAA)"
       />
+      {/* VFX plan §4 S2: ship, station and drone shadows (~0.3 ms). Rock shadows stay on. */}
+      <SettingsCheckbox
+        active={settings.shadowMap ?? true}
+        onChange={() => setSettings((prev) => ({ ...prev, shadowMap: !(prev.shadowMap ?? true) }))}
+        label="ship & station shadows (reload)"
+      />
       <SettingsCheckbox
         active={settings.toneMapping}
         onChange={() =>

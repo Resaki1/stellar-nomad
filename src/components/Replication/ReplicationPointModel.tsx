@@ -73,7 +73,7 @@ function newBatch(scene: Group) {
     const mesh = new InstancedMesh(part.geometry, surface, MAX_POINTS);
     mesh.count = 0;
     mesh.frustumCulled = false;
-    mesh.receiveShadow = true;
+    mesh.receiveShadow = mesh.castShadow = true;
     mesh.instanceMatrix.setUsage(DynamicDrawUsage);
     group.add(mesh);
     draws.push({ mesh, local: part.matrixWorld.clone() });

@@ -356,6 +356,28 @@ dimmer on the whole key light. Choices and measurements:
 - Not covered: stations, drones and ships as **occluders** (they only receive): their
   shapes are not spheres, which is S2's job. Far-tier (LOD1) rocks don't receive.
 
+**Status (2026-11-24): S2 landed** (`src/components/space/keyShadowMap.ts`). three's own
+`ShadowNode` on the key light, multiplied into the S1 node: 2048², orthographic ±150 m
+(0.15 m texels), 3 km depth slab, centred on the ship and snapped to whole texels in light
+space; normal bias 0.12 m, PCF (5 Vogel taps). Casters: ship, remote ships, stations,
+drones, wrecks, survey site; rocks do NOT cast into it (S1 owns them, nothing counted
+twice) but receive it. Settings → Graphics "ship & station shadows (reload)" /
+`?shadows=0` (read at startup: it changes every lit pipeline).
+- Gates (`vfx-shadows.mjs` parts `map`, `swim`): hull luma with the map term on vs
+  bypassed: sun 70°/110° off the nose 0.49/0.54 (nacelle undersides, bell interiors, centre
+  deck), head-on/behind 0.98/0.92; no acne in the A/B captures. Swim: 12 sideways steps of
+  3 cm (1/5 texel), shadow ratio 0.494 at every step (0 deviation); per-frame luma constant
+  over 50 frames when still. S1 gates unchanged (umbra 0.002 of the sun, penumbra −2.3 %).
+- Cost (local-scene pass, `--perf`, two runs each): belt 1.28/1.25 ms vs 0.99 ms without
+  (+0.27); `earth_650` 1.36/1.21 vs 0.88/1.10 (+0.29). Kill line was 1 ms.
+- **Not done: the off-screen sun's glare vs map casters.** Sampling the map at the eye from
+  the glare pass (own `DepthTexture` via a `ShadowNode` subclass) read "shadowed" almost
+  everywhere, including 30 m sunward on the sun line, and so deleted real glare: reverted.
+  The on-screen case is covered (the glare pass already depth-tests the sun's pixel), rock
+  shadows at the eye are covered (S1); what is left is a station/ship hiding an off-screen
+  sun from the camera. Likely cause to check first: the post graph binds the depth texture
+  before the shadow pass has created/filled its GPU resource.
+
 ---
 
 ## 5. Engine exhaust (E-series)
@@ -863,7 +885,7 @@ simulation stays instant; chat never delayed by default.
 | 9 | **E2** atmosphere inputs | 1, 7 | |
 | 10 | **V1–V5** variable-Isp drive (§5.6) | 1 (V1 hosts `airVelocityAt`) | Sim-core + fuel change; full gate re-run |
 | 11 | **E3–E4** regimes + halo | 9, 10 | |
-| 12 | **S2** shadow map | measure | 0.3–1 ms budget item |
+| 12 | ~~**S2** shadow map~~ done (+0.3 ms) | measure | 0.3–1 ms budget item |
 | 13 | **E5** shimmer pass | 11, measure | New full-screen pass |
 | — | E6 contrails, E7 re-entry plasma, §7 light delay, S3 | later | |
 

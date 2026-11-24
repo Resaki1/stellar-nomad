@@ -9,7 +9,8 @@ import {
   getAtmosphereLighting,
   getDominantAtmosphereBody,
 } from "@/components/space/atmospherePass";
-import { localShadowNode, localShipVisibility } from "@/components/space/localShadows";
+import { localShipVisibility } from "@/components/space/localShadows";
+import { configureKeyShadow, followWithShadow } from "@/components/space/keyShadowMap";
 import {
   publishDirectSunState,
   sunOccluderCenterKm,
@@ -45,6 +46,7 @@ type SunLightProps = {
 };
 
 const _dir = new THREE.Vector3();
+const _shipScene = new THREE.Vector3();
 // D28 scratch — refracted-limb geometry, resolved on the CPU once per frame.
 const _toPlanet = new THREE.Vector3();
 const _antiSun = new THREE.Vector3();
@@ -106,7 +108,8 @@ const SunLight = ({
   const keyRef = useCallback((light: THREE.DirectionalLight | null) => {
     if (!light) return;
     ref.current = light;
-    (light.shadow as unknown as { shadowNode: unknown }).shadowNode = localShadowNode();
+    // S1 analytic rock spheres × S2 ship-following map.
+    (light.shadow as unknown as { shadowNode: unknown }).shadowNode = configureKeyShadow(light);
   }, []);
   const fillRef = useRef<THREE.AmbientLight>(null!);
   // Phase 9 (P9e): planetshine on the HULL. Two lights, because the emitter
@@ -165,7 +168,9 @@ const SunLight = ({
     fillRef.current.intensity = illuminance * preExp * BOUNCE_FILL_FRACTION * localShipVisibility();
 
     _dir.normalize();
-    ref.current.position.copy(_dir);
+    // S2: the light sits sunward of the ship so its shadow camera follows it (direction unchanged).
+    _shipScene.copy(worldOrigin.shipPosKm).sub(worldOrigin.worldOriginKm).multiplyScalar(1000);
+    followWithShadow(ref.current, _shipScene, _dir);
 
     // Phase 2: tint the key light by the atmospheric transmittance reaching the
     // camera (sunset reddening + planet-shadow darkening on the ship). White
@@ -378,7 +383,7 @@ const SunLight = ({
   // Intensities start at 0 and are set on the first frame from the live distance.
   return (
     <>
-      {/* S1: castShadow only enables the analytic shadow node; no shadow map is rendered. */}
+      {/* S1 analytic rock shadows + S2 shadow map (keyShadowMap.ts). */}
       <directionalLight ref={keyRef} intensity={0} castShadow />
       <ambientLight ref={fillRef} intensity={0} />
       {/* D28 refracted limb light — off until the ship is inside a shadow. */}

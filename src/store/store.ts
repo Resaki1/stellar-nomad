@@ -78,6 +78,8 @@ export type Settings = {
    * it must not recompile shaders.
    */
   hdrPeakStops: number;
+  /** S2 ship-following sun shadow map (~0.3 ms GPU). Read at startup: it changes every lit pipeline. */
+  shadowMap?: boolean;
   initial: boolean;
 };
 
@@ -104,6 +106,7 @@ export const settingsAtom = atomWithStorage<Settings>("settings", {
   // 2 stops = 4x reference white. See the doc comment: measured as where the benefit
   // saturates on an XDR panel, and conservative for anything dimmer.
   hdrPeakStops: 2,
+  shadowMap: true,
   initial: true,
 });
 

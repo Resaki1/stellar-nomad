@@ -232,6 +232,7 @@ const WreckCollector = memo(function WreckCollector() {
         args={[WRECK_GEO, WRECK_MAT, MAX_WRECKS]}
         frustumCulled={false}
         receiveShadow
+        castShadow
       />
       <lineSegments ref={beamLinesRef} geometry={BEAM_GEO} material={BEAM_MAT} frustumCulled={false} />
     </>

@@ -392,6 +392,14 @@ export function createGameplayHarness(store: Store) {
         store.set(devTeleportAtom, { positionKm: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] });
         return true;
       },
+      /** Dev warp: move the ship by (dx, dy, dz) metres, keeping its exact orientation (S2 swim gate). */
+      nudge(dxM: number, dyM: number, dzM: number): boolean {
+        const ship = getLocalPlayerShip();
+        if (!ship) return false;
+        const p = ship.absPosKm;
+        store.set(devTeleportAtom, { positionKm: [p.x + dxM / 1000, p.y + dyM / 1000, p.z + dzM / 1000], quaternion: [ship.quat.x, ship.quat.y, ship.quat.z, ship.quat.w] });
+        return true;
+      },
       /** System-frame km of a rock / point (the same resolution the warps use). */
       rockKm: (target: number[] | RockRef): number[] | null => resolveKm(target),
       /** Dev aiming: face a rock, then yaw the nose `deg` off it (beam miss checks). */

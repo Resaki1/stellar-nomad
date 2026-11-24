@@ -22,6 +22,7 @@ import {
   setLocalCameraVisibility,
   setLocalSun,
 } from "./localShadows";
+import { isShadowMapRequested, setShadowMapTermEnabled } from "./keyShadowMap";
 
 /** Rocks within this surface distance of the ship compete for the slots (beyond: only one shading the ship). */
 const NEAR_M = 3000;
@@ -56,6 +57,8 @@ export default function LocalShadowCaster() {
       enable: (on: boolean) => setLocalShadowsEnabled(on),
       force: (dark: boolean) => forceLocalShadow(dark),
       clear: (on: boolean) => clearLocalShadows(on),
+      map: (on: boolean) => setShadowMapTermEnabled(on),
+      mapRequested: () => isShadowMapRequested(),
       /** CPU visibility at a system-frame km point (this frame's occluder set). */
       /**
        * Calibration: the nearest rock's mean silhouette area over `dirs` random directions,
@@ -187,7 +190,9 @@ export default function LocalShadowCaster() {
       });
     });
     commitShadowOccluders(shx, shy, shz);
-    const cp = state.camera.position;
+    // World position from matrixWorld (`.position` is local if the camera is ever parented).
+    const cm = state.camera.matrixWorld.elements;
+    const cp = { x: cm[12], y: cm[13], z: cm[14] };
     setLocalCameraVisibility(cp.x, cp.y, cp.z);
     _gatherMs = performance.now() - t0;
   });

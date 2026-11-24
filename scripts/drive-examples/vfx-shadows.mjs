@@ -12,6 +12,9 @@
  *             0.626 · 2 L tan(a_sun) (half-plane over the 0.53° disc); GPU luma tracks the CPU twin.
  * - glare:    umbra, sun just off-screen: the eye's rock-shadow visibility is 0 and the frame's
  *             luma drops with shadows on (the analytic sun glare is not depth-tested).
+ * - map:      (S2) hull luma, shadow-map term on vs bypassed, sun at 0/70/110/180° off the nose.
+ * - swim:     (S2) 12 sideways steps of 3 cm vs 12 re-measures of one pose: the hull's shadow
+ *             ratio may not spread more than 2× the noise floor (or 2 %).
  * - shots:    chase view in the umbra and at the edge.
  * - perf:     (--perf) local-scene GPU ms, occluders uploaded vs none (the loop's real work); gather CPU ms.
  */
@@ -22,6 +25,17 @@ const j = JSON.stringify;
 export default async function vfxShadows(d) {
   const ev = (x) => d.evaluate(x);
   const wait = (ms) => d.sleep(ms);
+  // A read can lag a switch by several frames: re-read until two consecutive reads agree.
+  const reg = async (box) => {
+    let prev = (await ev(`__lum.region(${box})`)).sum;
+    for (let k = 0; k < 12; k++) {
+      await d.frames(2);
+      const v = (await ev(`__lum.region(${box})`)).sum;
+      if (Math.abs(v - prev) <= 1e-3 * Math.max(Math.abs(v), 1e-9)) return v;
+      prev = v;
+    }
+    return prev;
+  };
   await ev(`__test.simRate(0); ${G}.m37.comms.dismiss?.(); __phys.tuning.set({ noDamageSpeedMps: 1e5, lethalSpeedMps: 2e5 })`);
   if (await ev("__phys.game.isDead()")) await ev("__phys.game.respawn()");
   let rocks = [];
@@ -63,15 +77,15 @@ export default async function vfxShadows(d) {
     await ev("__lum.holdExposure(true)");
     for (let k = 0; k < pairs; k++) {
       await ev("__shadow.enable(true)"); await d.frames(6);
-      on += (await ev(`__lum.region(${box})`)).sum;
+      on += await reg(box);
       await ev("__shadow.enable(false)"); await d.frames(6);
-      off += (await ev(`__lum.region(${box})`)).sum;
+      off += await reg(box);
     }
     await ev("__shadow.enable(true)");
     let floor = null;
     if (withFloor) {
       await ev("__shadow.force(true)"); await d.frames(6);
-      floor = (await ev(`__lum.region(${box})`)).sum * pairs;
+      floor = await reg(box) * pairs;
       await ev("__shadow.force(false)");
     }
     await ev("__lum.holdExposure(false)");
@@ -150,9 +164,9 @@ export default async function vfxShadows(d) {
         const st = await ev("__shadow.status()");
         await ev("__lum.holdExposure(true)");
         await ev("__shadow.enable(true)"); await d.frames(6);
-        const on = (await ev("__lum.region(0,0,1,1)")).sum;
+        const on = await reg("0,0,1,1");
         await ev("__shadow.enable(false)"); await d.frames(6);
-        const off = (await ev("__lum.region(0,0,1,1)")).sum;
+        const off = await reg("0,0,1,1");
         await ev("__shadow.enable(true)");
         await ev("__lum.holdExposure(false)");
         rows.push({ deg, camVis: +st.cameraVisibility.toFixed(3), on: +on.toFixed(1), off: +off.toFixed(1), r: +(on / off).toFixed(3) });
@@ -161,11 +175,89 @@ export default async function vfxShadows(d) {
       out.glare = { rows, pass: rows.every((r) => r.camVis < 0.01) };
       console.log("glare", j(out.glare));
     }
+    if (PARTS.includes("map")) {
+      // S2: ship on the rock's sun side, nose 90° off the sun → hull self-shadowing in profile.
+      // Hull luma with the map term on vs bypassed (exposure held): < 1 where the hull shades itself.
+      await parkAt(s.map((v) => v * rock.radiusM * 3));
+      const rows = [];
+      for (const deg of [0, 70, 110, 180]) {
+        await ev(`${G}.res.faceOffset(${j(rock)}, ${180 + deg})`);
+        await d.frames(30);
+        await ev("__lum.holdExposure(true)");
+        await ev("__shadow.map(false)"); await d.frames(6);
+        const off = await reg(HULL);
+        await d.canvas(`shadow-map-${deg}-off`);
+        await ev("__shadow.map(true)"); await d.frames(6);
+        const on = await reg(HULL);
+        await d.canvas(`shadow-map-${deg}`);
+        await ev("__lum.holdExposure(false)");
+        rows.push({ deg, r: +(on / off).toFixed(3) });
+      }
+      out.map = { requested: await ev("__shadow.mapRequested()"), rows };
+      console.log("map", j(out.map));
+    }
+    if (PARTS.includes("swim")) {
+      // Texel-snapped map: step the ship sideways in 1/5-texel steps (0.15 m texels), sun from the
+      // side, and compare the spread of the hull's shadow ratio with the same pose re-measured
+      // (noise floor). Swimming shows as a spread well above the floor.
+      const base = s.map((v) => v * rock.radiusM * 3);
+      const measure = async (k) => {
+        if (k === 0) {
+          await parkAt(base);
+          await ev(`${G}.res.faceOffset(${j(rock)}, 250)`);
+          await d.frames(30);
+        } else if (k === "step") {
+          await ev(`${G}.res.nudge(${e[0] * 0.03}, ${e[1] * 0.03}, ${e[2] * 0.03})`);
+          await d.frames(30);
+        } else await d.frames(10);
+        // Median of three A/B reads: one read now and then lands on a frame from before the switch.
+        const rs = [];
+        await ev("__lum.holdExposure(true)");
+        for (let t = 0; t < 3; t++) {
+          await ev("__shadow.map(false)"); await d.frames(6);
+          const off = await reg(HULL);
+          await ev("__shadow.map(true)"); await d.frames(6);
+          rs.push(await reg(HULL) / off);
+        }
+        await ev("__lum.holdExposure(false)");
+        return rs.sort((a, b) => a - b)[1];
+      };
+      const spread = (rows) => {
+        const mean = rows.reduce((a, b) => a + b, 0) / rows.length;
+        return { mean: +mean.toFixed(3), maxDev: +Math.max(...rows.map((r) => Math.abs(r / mean - 1))).toFixed(4), rows: rows.map((r) => +r.toFixed(3)) };
+      };
+      const still = [], step = [];
+      await measure(0);
+      for (let k = 0; k < 12; k++) still.push(await measure(null));
+      // A point 1 km along e: its distance shrinks by the lateral move (proves the nudges land).
+      const probe = C.map((v, i) => v + e[i]);
+      const d0 = (await ev(`${G}.res.nav(${j(probe)})`)).distKm;
+      for (let k = 0; k < 12; k++) step.push(await measure("step"));
+      const movedM = (d0 - (await ev(`${G}.res.nav(${j(probe)})`)).distKm) * 1000;
+      out.swim = { movedM: +movedM.toFixed(3), still: spread(still), step: spread(step) };
+      // A/B reads now and then land on a stale frame (seen in the still set too; per-frame luma with
+      // nothing toggled is constant), so: ≥ 10 of 12 stepped reads within 2 % of the median.
+      const med = [...step].sort((a, b) => a - b)[6];
+      out.swim.within2pct = step.filter((r) => Math.abs(r / med - 1) < 0.02).length;
+      out.swim.pass = movedM > 0.3 && out.swim.within2pct >= 10;
+      console.log("swim", j(out.swim));
+    }
     if (PARTS.includes("shots")) {
       await parkAt(s.map((v) => -v * rock.radiusM * 2.5));
       await ev(`${G}.res.faceOffset(${j(rock)}, 150)`);
       await d.frames(30);
       await d.canvas("shadow-umbra-away");
+    }
+    if (PARTS.includes("bench")) {
+      // Run twice with --perf: default and --query shadows=0. Every pass's GPU p50 here.
+      await parkAt(s.map((v) => v * rock.radiusM * 3));
+      await ev(`${G}.res.faceOffset(${j(rock)}, 250)`);
+      await d.frames(60);
+      await ev("__bench.reset()");
+      await d.frames(200);
+      const snap = await ev("JSON.parse(JSON.stringify(__bench.report()))");
+      out.bench = { map: await ev("__shadow.mapRequested()"), passes: (snap.passes ?? []).map((p) => [p.label, +p.gpu.p50.toFixed(3)]) };
+      console.log("bench", j(out.bench));
     }
     if (PARTS.includes("perf")) {
       await parkAt(s.map((v) => -v * rock.radiusM * 3));
@@ -188,9 +280,9 @@ export default async function vfxShadows(d) {
       console.log("perf", j(r));
     }
   } finally {
-    await ev("__shadow.enable(true); __shadow.force(false); __shadow.clear(false)");
+    await ev("__shadow.enable(true); __shadow.force(false); __shadow.clear(false); __shadow.map(true)");
   }
-  out.pass = ["umbra", "lit", "penumbra"].every((p) => !out[p] || out[p].pass);
+  out.pass = ["umbra", "lit", "penumbra", "glare", "swim"].every((p) => !out[p] || out[p].pass);
   console.log(j(out));
   return out;
 }

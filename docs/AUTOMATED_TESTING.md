@@ -287,6 +287,15 @@ Thresholds in the example are illustrative, not calibrated.
   anything blended, also take `shot:` with `--query hdr=1` (the headless HDR canvas is
   active: `__lum.hdr()`), and read alpha with `__lum.probeAlpha(x, y)`.
 
+- **`__lum.region` can lag a uniform switch by several frames.** A/B reads 6 frames after a
+  dev toggle sometimes landed on the old state (exact repeats of the other state's value,
+  in a pose whose per-frame luma was constant). Re-read until two consecutive reads agree
+  (`reg()` in `vfx-shadows.mjs`); a median of three was not enough (2026-11-24).
+- **A kept Chrome can wedge after a shader edit.** The hot-reload recompile of every lit
+  material hung `run:` steps twice; `pnpm drive -- --stop` before re-running.
+- **`scene:` warps move the save's ship.** After an `earth_650` bench the next field gate found
+  no rocks; `scene:belt` puts the ship back in the origin belt.
+
 - **The hidden pane runs at ~2 fps.** `frames()` will look like a slow scene. Use
   the driver for anything unattended.
 - **Pane screenshots can lag the DOM by a frame or more**: one showed an overlay
