@@ -219,6 +219,11 @@ export type ModulesState = {
   consumableCooldowns: Record<string, number>;
   /** Hotbar: index 0-9 → consumable item ID (or null). */
   hotbar: (string | null)[];
+  /**
+   * Per slot: the player placed this item there. A pinned slot keeps its item when the stack runs out
+   * (shown as reserved); an automatic slot whose stack ran out is free for the next crafted item.
+   */
+  hotbarPinned: boolean[];
 };
 
 export type ShipConfig = {

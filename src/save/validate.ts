@@ -357,6 +357,9 @@ export function sanitizePlayer(v: unknown): PlayerState {
     ? modules.hotbar.slice(0, 10).map((x) => (typeof x === "string" ? x : null))
     : d.modules.hotbar;
   while (hotbar.length < 10) hotbar.push(null);
+  // Saves before FIRST_EXPEDITION WP4 have no pins: every slot counts as automatic.
+  const pinnedIn: unknown[] = Array.isArray(modules.hotbarPinned) ? modules.hotbarPinned : [];
+  const hotbarPinned = hotbar.map((id, i) => id !== null && pinnedIn[i] === true);
   const equipped: Obj = isObj(modules.equippedModules) ? modules.equippedModules : {};
   const propellant = isObj(v.propellant) ? v.propellant : {};
   const power = isObj(v.power) ? v.power : {};
@@ -373,6 +376,7 @@ export function sanitizePlayer(v: unknown): PlayerState {
       consumables: countRecord(modules.consumables),
       consumableCooldowns: numRecord(modules.consumableCooldowns),
       hotbar,
+      hotbarPinned,
     },
     shipConfig: sanitizeShipConfig(v.shipConfig),
     aiName: typeof v.aiName === "string" ? v.aiName : null,

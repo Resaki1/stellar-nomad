@@ -46,6 +46,7 @@ export const defaultModules = (): ModulesState => ({
   consumables: {},
   consumableCooldowns: {},
   hotbar: Array<string | null>(10).fill(null),
+  hotbarPinned: Array<boolean>(10).fill(false),
 });
 
 export const defaultShipConfig = (): ShipConfig => ({

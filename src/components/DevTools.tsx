@@ -34,6 +34,7 @@ import { getBenchRunner, type BenchRunner } from "./space/perf/benchRunner";
 import { getLumHarness, type LumHarness } from "./space/perf/lumHarness";
 import { createTestHarness, type TestHarness } from "./TestHarness/testHarness";
 import { createPhysicsHarness, type PhysicsHarness } from "./TestHarness/physicsHarness";
+import { defaultModules } from "@/save/defaults";
 
 export default function DevTools() {
   const store = useStore();
@@ -72,13 +73,7 @@ export default function DevTools() {
       /** Reset research + modules to defaults. */
       resetProgress() {
         runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
-        store.set(modulesAtom, {
-          ownedModules: [],
-          equippedModules: {},
-          consumables: {},
-          consumableCooldowns: {},
-          hotbar: Array(10).fill(null),
-        });
+        store.set(modulesAtom, defaultModules());
         console.log("[Dev] Progress reset.");
       },
 

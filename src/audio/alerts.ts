@@ -76,8 +76,26 @@ type AlertState = {
   nextDueMs: number;
   currentGapS: number;
   acknowledged: boolean;
+  /** Value when acknowledged: losing REALERT_DROP more re-arms the alarm within the tier. */
+  ackValue: number;
   lastValue: number;
 };
+
+/** An acknowledged alert sounds again once the stat falls this much further (FIRST_EXPEDITION WP4). */
+const REALERT_DROP = 0.05;
+
+type AlertListener = (snapshot: AlertSnapshot) => void;
+const listeners = new Set<AlertListener>();
+/** Tier and acknowledgement changes, for the HUD's visible state (audio may be muted). */
+export function onAlertChange(fn: AlertListener): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+function notify(st: AlertState): void {
+  if (listeners.size === 0) return;
+  const snap = snapshotOf(st, performance.now());
+  listeners.forEach((fn) => fn(snap));
+}
 
 const alerts = new Map<AlertId, AlertState>();
 
@@ -98,12 +116,19 @@ export function registerAlert(
     nextDueMs: 0,
     currentGapS: 0,
     acknowledged: false,
+    ackValue: 1,
     lastValue: 1,
   });
 }
 
 export function unregisterAlert(id: AlertId): void {
+  const st = alerts.get(id);
   alerts.delete(id);
+  if (st && (st.activeTier >= 0 || st.acknowledged)) {
+    st.activeTier = -1;
+    st.acknowledged = false;
+    notify(st);
+  }
 }
 
 /**
@@ -141,8 +166,10 @@ export function updateAlert(id: AlertId, value01: number): void {
 
   if (want === -1) {
     // Recovered. Re-arm so the next episode is heard.
+    const changed = st.activeTier !== -1 || st.acknowledged;
     st.activeTier = -1;
     st.acknowledged = false;
+    if (changed) notify(st);
     return;
   }
 
@@ -157,10 +184,18 @@ export function updateAlert(id: AlertId, value01: number): void {
       playAlarm(st.tiers[want].tier);
       st.nextDueMs = now + st.currentGapS * 1000;
     }
+    notify(st);
     return;
   }
 
-  if (st.acknowledged) return;
+  if (st.acknowledged) {
+    // Worse within the same tier: the player silenced the state they saw, not this one.
+    if (v > st.ackValue - REALERT_DROP) return;
+    st.acknowledged = false;
+    st.currentGapS = st.tiers[st.activeTier].repeatS;
+    st.nextDueMs = now;
+    notify(st);
+  }
 
   if (now >= st.nextDueMs) {
     const spec = st.tiers[st.activeTier];
@@ -193,17 +228,19 @@ export function pumpAlerts(): void {
 /**
  * Silence the current episode. Re-arms automatically on recovery or escalation.
  *
- * Nothing calls this yet — there is no acknowledge control in the HUD. It exists
- * because retrofitting acknowledgement into five separate alarm implementations
- * is exactly the cost A12 is here to avoid.
+ * The HUD calls it through `acknowledgeHullAlertAtom` (store/hullAlert.ts). Losing
+ * REALERT_DROP more of the stat re-arms it within the same tier.
  */
 export function acknowledgeAlert(id: AlertId): void {
   const st = alerts.get(id);
-  if (st) st.acknowledged = true;
+  if (!st || st.activeTier < 0 || st.acknowledged) return;
+  st.acknowledged = true;
+  st.ackValue = st.lastValue;
+  notify(st);
 }
 
 export function acknowledgeAllAlerts(): void {
-  for (const st of Array.from(alerts.values())) st.acknowledged = true;
+  for (const st of Array.from(alerts.values())) acknowledgeAlert(st.id);
 }
 
 export type AlertSnapshot = {
@@ -217,7 +254,11 @@ export type AlertSnapshot = {
 
 export function alertSnapshots(): AlertSnapshot[] {
   const now = performance.now();
-  return Array.from(alerts.values()).map((st) => ({
+  return Array.from(alerts.values()).map((st) => snapshotOf(st, now));
+}
+
+function snapshotOf(st: AlertState, now: number): AlertSnapshot {
+  return {
     id: st.id,
     value: Math.round(st.lastValue * 1000) / 1000,
     tier: st.activeTier >= 0 ? st.tiers[st.activeTier].tier : "none",
@@ -227,5 +268,5 @@ export function alertSnapshots(): AlertSnapshot[] {
         ? Math.max(0, Math.round((st.nextDueMs - now) / 100) / 10)
         : null,
     gapS: Math.round(st.currentGapS * 10) / 10,
-  }));
+  };
 }

@@ -298,9 +298,12 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
     case "hotbar.assign": {
       if (!isCount(op.index) || op.index >= p.modules.hotbar.length) return reject("invalid");
       if (op.itemId !== null && getItemDef(op.itemId)?.type !== "consumable") return reject("unknown_item");
+      // An item lives in one slot: moving it frees (and unpins) its old one. The player's slot is pinned.
       const hotbar = p.modules.hotbar.map(id => id === op.itemId ? null : id);
+      const hotbarPinned = hotbar.map((id, i) => id !== null && (p.modules.hotbarPinned[i] ?? false));
       hotbar[op.index] = op.itemId;
-      return { result: { type: op.type }, apply: () => { p.modules = { ...p.modules, hotbar }; }, events: [], playerKeys: ["modules"] };
+      hotbarPinned[op.index] = op.itemId !== null;
+      return { result: { type: op.type }, apply: () => { p.modules = { ...p.modules, hotbar, hotbarPinned }; }, events: [], playerKeys: ["modules"] };
     }
 
     case "item.consume": {
@@ -419,13 +422,16 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (def.type === "consumable") {
         const hotbar = [...m.hotbar];
         if (!hotbar.includes(def.id)) {
-          const i = hotbar.indexOf(null);
+          // The first slot that LOOKS free: empty, or automatic with its stack used up (WP4: a used-up
+          // heat sink in slot 1 must not push the next kit to slot 2). Pinned slots stay reserved.
+          const i = hotbar.findIndex((id, k) => id === null || (!m.hotbarPinned[k] && !(m.consumables[id] > 0)));
           if (i !== -1) {
             hotbar[i] = def.id;
             hotbarIndex = i;
           }
         }
-        modules = { ...m, consumables: { ...m.consumables, [def.id]: (m.consumables[def.id] ?? 0) + 1 }, hotbar };
+        const hotbarPinned = hotbarIndex === null ? m.hotbarPinned : m.hotbarPinned.map((x, k) => k === hotbarIndex ? false : x);
+        modules = { ...m, consumables: { ...m.consumables, [def.id]: (m.consumables[def.id] ?? 0) + 1 }, hotbar, hotbarPinned };
       } else if (def.type === "module") {
         const owned = { ...m, ownedModules: [...m.ownedModules, def.id] };
         const fitted = { ...owned, equippedModules: { ...m.equippedModules, [def.slot]: def.id } };

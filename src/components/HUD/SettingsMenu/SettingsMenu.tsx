@@ -69,6 +69,7 @@ import {
 import FullscreenControl from "@/components/AppShell/FullscreenControl";
 import CoopSettings from "@/components/Coop/CoopSettings";
 import MarkerSettings from "./MarkerSettings";
+import { defaultModules } from "@/save/defaults";
 
 enum SubMenu {
   Graphics = "graphics",
@@ -985,13 +986,7 @@ const SettingsMenu = ({ children }: { children: ReactNode }) => {
             },
             onResetProgress: () => {
               runOperation({ type: "research.devSet", opId: newOpId(), nodeIds: [] });
-              setModules({
-                ownedModules: [],
-                equippedModules: {},
-                consumables: {},
-                consumableCooldowns: {},
-                hotbar: Array(10).fill(null),
-              });
+              setModules(defaultModules());
             },
             onResetComms: () => resetComms(),
           }

@@ -14,6 +14,7 @@ import { rendezvousAtom } from "@/store/discoveries";
 import { announceResearchAtom, discoveriesMirrorAtom, sharedResearchMirrorAtom } from "@/store/research";
 import { simEpochMsAtom, simRateAtom } from "@/store/simTime";
 import { adoptShipResources, installShipResources, shipReq } from "@/store/shipResources";
+import { installHullAlert } from "@/store/hullAlert";
 import { replicationPointsAtom } from "@/store/replicationMirror";
 import { resetReposition } from "@/sim/ship/reposition";
 import { targetedPOIAtom } from "@/store/transit";
@@ -29,6 +30,7 @@ export function installWorldBridge(store: Store): void {
   teardown?.();
   hydrateSavedAtoms(store);
   const uninstallResources = installShipResources();
+  const uninstallHullAlert = installHullAlert(store);
   const world = getWorldState();
   store.set(simEpochMsAtom, world.simEpochMs);
   store.set(simRateAtom, world.simRate);
@@ -133,5 +135,6 @@ export function installWorldBridge(store: Store): void {
     unsubscribe();
     unregister();
     uninstallResources();
+    uninstallHullAlert();
   };
 }

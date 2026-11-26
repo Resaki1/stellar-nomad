@@ -6,9 +6,13 @@
 // registry (player save, `commsPlayed`) prevents replays across reloads.
 // ---------------------------------------------------------------------------
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import { COMMS_MESSAGES } from "@/data/commsMessages";
+import { flightInputActive } from "@/input/playerInput";
+import { isSimPaused } from "@/sim/simPause";
+import { getActiveSave } from "@/save/activeSave";
+import { settingsIsOpenAtom } from "@/store/store";
 import { HINTS, type HintDef } from "@/data/guidance";
 import { aiNameAtom } from "@/store/aiName";
 import { cargoAtom, isCargoFullAtom } from "@/store/cargo";
@@ -52,6 +56,11 @@ function useHint(hint: HintDef, when: boolean, dead: boolean): void {
   }, [hint, when, dead, busy, show, retire]);
 }
 
+/** The opening premise waits this long after the first steering/thrust input... */
+const OPENING_AFTER_INPUT_S = 8;
+/** ...or this long with no input at all (the pilot may still be looking for the controls). */
+const OPENING_IDLE_S = 30;
+
 export default function GameCommsTriggers() {
   const enqueue = useSetAtom(enqueueCommsAtom);
   const aiName = useAtomValue(aiNameAtom);
@@ -60,9 +69,30 @@ export default function GameCommsTriggers() {
   const playedSet = useMemo(() => new Set(played), [played]);
 
   // ── Opening premise, naming, first opportunity ──
+  // Fly first (FIRST_EXPEDITION WP3): the premise waits for a beat after the pilot's first deliberate
+  // input, or for an idle spell from someone still finding the controls. Paused/menu time does not count.
+  const settingsOpen = useAtomValue(settingsIsOpenAtom);
+  // Due per world, so a new world started in the same session waits for its own first flight.
+  const worldId = getActiveSave()?.meta.id ?? "";
+  const [dueWorld, setDueWorld] = useState<string | null>(null);
+  const openingDue = dueWorld === worldId;
   useEffect(() => {
-    if (!aiName) enqueue(COMMS_MESSAGES.opening_001);
-  }, [aiName, enqueue]);
+    if (aiName || openingDue || playedSet.has("opening_001")) return;
+    let activeS = 0, flownAtS = -1, last = performance.now();
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      const dt = Math.min(0.5, (now - last) / 1000);
+      last = now;
+      if (isSimPaused() || settingsOpen || dead) return;
+      activeS += dt;
+      if (flownAtS < 0 && flightInputActive()) flownAtS = activeS;
+      if ((flownAtS >= 0 && activeS - flownAtS >= OPENING_AFTER_INPUT_S) || (flownAtS < 0 && activeS >= OPENING_IDLE_S)) setDueWorld(worldId);
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [aiName, openingDue, playedSet, settingsOpen, dead, worldId]);
+  useEffect(() => {
+    if (!aiName && (openingDue || playedSet.has("opening_001"))) enqueue(COMMS_MESSAGES.opening_001);
+  }, [aiName, openingDue, playedSet, enqueue]);
   const openedHere = playedSet.has("opening_001");
   useEffect(() => {
     if (aiName && openedHere) enqueue(COMMS_MESSAGES.opening_002);

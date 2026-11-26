@@ -30,6 +30,7 @@ const [{ HostSession }, { GuestSession }, { MemoryNetwork }, { MemoryRepository 
   S("sim/celestialConstants.ts"),
   S("sim/ephemeris.ts"),
 ]);
+const validate = await S("save/validate.ts");
 
 const system = reg.activeSystem();
 const CONTENT = fp.contentFingerprint(system);
@@ -553,6 +554,44 @@ async function placeCrossing() {
   };
   return { pass: Object.values(checks).every(Boolean), refused, accepted, ...checks };
 }
+
+// FIRST_EXPEDITION WP4: a crafted consumable takes the first slot that looks free; the player's pins hold.
+async function hotbarSlots() {
+  const { rig, h, g } = await joinedPair();
+  const gid = g.session.playerId;
+  const SINK = "consumable_heat_sink_cartridge", PATCH = "consumable_hull_patch_kit", REP = "consumable_replication_kit";
+  for (const id of [HOST_ID, gid]) rig.host.data.players[id].cargo.items = { fe_ni_metal: 500, silicates: 500 };
+  const run = async (c, op) => { c.session.submit({ opId: `hb-${++opN}`, ...op }); await rig.settle(); return c.settled.at(-1); };
+  const bar = id => rig.host.player(id).modules.hotbar.slice(0, 3);
+  const usedUp = (id, item) => { rig.host.data.players[id].modules.consumables[item] = 0; }; // the last cartridge used
+  const checks = {};
+  // Automatic slot: the used-up sink in slot 1 is reused by the next craft (guest's own bar).
+  await run(g, { type: "item.craft", itemId: SINK });
+  usedUp(gid, SINK);
+  const reuse = await run(g, { type: "item.craft", itemId: PATCH });
+  checks.autoSlotReused = reuse.result?.hotbarIndex === 0 && bar(gid)[0] === PATCH;
+  checks.hostUntouched = bar(HOST_ID).every(x => x === null);
+  // Pinned slot: the player put the sink in slot 1, so it stays reserved when empty.
+  await run(h, { type: "item.craft", itemId: SINK });
+  await run(h, { type: "hotbar.assign", index: 0, itemId: SINK });
+  usedUp(HOST_ID, SINK);
+  const pinned = await run(h, { type: "item.craft", itemId: PATCH });
+  checks.pinnedKept = pinned.result?.hotbarIndex === 1 && bar(HOST_ID)[0] === SINK && rig.host.player(HOST_ID).modules.hotbarPinned[0] === true;
+  // Moving an item frees and unpins its old slot.
+  await run(h, { type: "hotbar.assign", index: 2, itemId: SINK });
+  checks.movedUnpins = bar(HOST_ID)[0] === null && !rig.host.player(HOST_ID).modules.hotbarPinned[0] && rig.host.player(HOST_ID).modules.hotbarPinned[2];
+  // Full bar of pinned, stocked items: the craft still succeeds, unslotted.
+  const full = rig.host.data.players[gid].modules;
+  full.hotbar = Array.from({ length: 10 }, (_, i) => `pin-${i}`);
+  full.hotbarPinned = Array(10).fill(true);
+  const crowded = await run(g, { type: "item.craft", itemId: REP });
+  checks.fullBarCrafts = crowded.status === "accepted" && crowded.result.hotbarIndex === null && rig.host.player(gid).modules.consumables[REP] === 1;
+  // The pins survive a save round-trip (host restart path).
+  const saved = repoRoundTrip(rig.host.player(HOST_ID));
+  checks.pinsPersist = saved.modules.hotbarPinned[2] === true && saved.modules.hotbarPinned[1] === false;
+  return { pass: Object.values(checks).every(Boolean), ...checks };
+}
+const repoRoundTrip = (player) => validate.sanitizePlayer(JSON.parse(JSON.stringify(player)));
 
 async function pilotActions() {
   const repo = newWorld();
@@ -1984,6 +2023,7 @@ const SCENARIOS = {
   shipLifecycle,
   recoverTogether,
   placeCrossing,
+  hotbarSlots,
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),
   dropReplyRetry,

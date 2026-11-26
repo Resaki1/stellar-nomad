@@ -41,6 +41,14 @@ export const playerInput = {
   invertPitch: false,
 };
 
+/** The pilot is steering or thrusting right now (any device). Free look is looking, not flying. */
+export function flightInputActive(): boolean {
+  const p = playerInput;
+  for (const a of FLIGHT_ACTIONS) if (a !== "freeLook" && p.held[a]) return true;
+  return p.throttle > 0 || Math.abs(p.stickYaw) + Math.abs(p.stickPitch) + Math.abs(p.mouseYaw) + Math.abs(p.mousePitch) +
+    Math.abs(p.aimYaw) + Math.abs(p.aimPitch) > 0.05;
+}
+
 export function releaseHeldActions(): void {
   for (const a of FLIGHT_ACTIONS) playerInput.held[a] = false;
   playerInput.stickYaw = 0;

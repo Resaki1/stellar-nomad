@@ -88,6 +88,7 @@ import {
 import { checkDepotPlacement } from "@/sim/industry/placement";
 import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
 import { depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
+import { acknowledgeHullAlertAtom, hullAlertAtom } from "@/store/hullAlert";
 import { lastLossAtom } from "@/store/death";
 import { cameraShakeIntensityAtom } from "@/store/vfx";
 import { playerInput } from "@/input/playerInput";
@@ -851,6 +852,12 @@ export function createGameplayHarness(store: Store) {
           nearField: { ...nearField.counters, suspended: nearField.suspended, owner: nearField.lastOwner },
         };
       },
+    },
+
+    /** WP4 hull alert: the state the HUD renders, and the acknowledgement it offers. */
+    hullAlert: {
+      state: () => ({ ...store.get(hullAlertAtom) }),
+      ack: (): void => store.set(acknowledgeHullAlertAtom),
     },
 
     fixtures: {

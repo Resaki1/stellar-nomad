@@ -21,6 +21,7 @@
 // inside a dependency-tracked effect — the same shape `DamageVignette.tsx`
 // already uses.
 //
+import { effectiveShipConfigAtom } from "@/store/shipConfig";
 import { useEffect, useRef } from "react";
 import { atom, useAtomValue, useStore } from "jotai";
 
@@ -66,6 +67,7 @@ const timedEffectCountAtom = atom((get) => get(activeTimedEffectsAtom).length);
 export default function GameAudioTriggers() {
   const store = useStore();
   const health = useAtomValue(shipHealthAtom);
+  const maxHealth = useAtomValue(effectiveShipConfigAtom).maxHealth;
   const dead = useAtomValue(isDeadAtom);
   const isDead = dead || health <= 0;
   const settingsPaused = useSettingsPause() !== "running";
@@ -299,8 +301,8 @@ export default function GameAudioTriggers() {
     return () => bed.stop();
   }, [isDead]);
   useEffect(() => {
-    if (!isDead) updateAlert("hull", health / 100);
-  }, [health, isDead]);
+    if (!isDead) updateAlert("hull", maxHealth > 0 ? health / maxHealth : 1);
+  }, [health, isDead, maxHealth]);
 
   // ── Transit drive ────────────────────────────────────────────────────────
   const phase = useAtomValue(transitPhaseAtom);
