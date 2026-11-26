@@ -89,6 +89,7 @@ import { checkDepotPlacement } from "@/sim/industry/placement";
 import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
 import { depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
 import { acknowledgeHullAlertAtom, hullAlertAtom } from "@/store/hullAlert";
+import { dismissFirstLeadAtom, firstLeadAtom } from "@/store/firstLead";
 import { lastLossAtom } from "@/store/death";
 import { cameraShakeIntensityAtom } from "@/store/vfx";
 import { playerInput } from "@/input/playerInput";
@@ -852,6 +853,12 @@ export function createGameplayHarness(store: Store) {
           nearField: { ...nearField.counters, suspended: nearField.suspended, owner: nearField.lastOwner },
         };
       },
+    },
+
+    /** WP3 first-rock lead: the pilot's current lead (or null), and its dismissal. */
+    lead: {
+      state: () => store.get(firstLeadAtom),
+      dismiss: (): void => store.set(dismissFirstLeadAtom),
     },
 
     /** WP4 hull alert: the state the HUD renders, and the acknowledgement it offers. */

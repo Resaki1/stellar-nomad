@@ -1,5 +1,6 @@
 "use client";
 
+import { firstLeadPOIsAtom } from "@/store/firstLead";
 import { depotPoisAtom, trackedDronePoisAtom } from "@/store/industryHud";
 import { LOCAL_MARKER_RANGE_KM, MARKER_CATEGORIES } from "@/data/markerCategories";
 import { markerPrefsAtom, markerRevealAtom, trackedMarkersAtom } from "@/store/markerPrefs";
@@ -180,6 +181,7 @@ function usePOIDefs(): POIDef[] {
   const target = useAtomValue(targetedPOIAtom);
   const dronePois = useAtomValue(trackedDronePoisAtom);
   const depotPois = useAtomValue(depotPoisAtom);
+  const leadPois = useAtomValue(firstLeadPOIsAtom);
   const points = useAtomValue(replicationPointsAtom);
   const activePointId = useAtomValue(playerReplicationAtom).activeId;
   const knowledge = useAtomValue(markerKnowledgeAtom);
@@ -275,6 +277,7 @@ function usePOIDefs(): POIDef[] {
     for (const p of pilotPois) pois.push(p);
 
     for (const p of dronePois) pois.push(p);
+    for (const p of leadPois) pois.push(p);
     for (const p of depotPois) pois.push(p.id === target?.id ? { ...p, maxDistanceKm: STAR_MARKER_MAX_DISTANCE_KM } : p);
 
     // B3: the current destination always has a marker, even when nothing else lists it.
@@ -334,7 +337,7 @@ function usePOIDefs(): POIDef[] {
     }
 
     return pois;
-  }, [system, knowledge, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, dronePois, target, starsOn, revealAll, revealed, nearestStars]);
+  }, [system, knowledge, wrecks, points, activePointId, bookmarkPois, sitePois, pilotPois, depotPois, dronePois, leadPois, target, starsOn, revealAll, revealed, nearestStars]);
 }
 
 /**
@@ -427,7 +430,7 @@ const POIProjector = memo(function POIProjector() {
       const def = MARKER_CATEGORIES[poi.category];
       const isTarget = poi.id === targetId;
       const isTracked = tracked.includes(poi.id);
-      const exempt = isTarget || isTracked;
+      const exempt = isTarget || isTracked || poi.guide === true;
       // Player filters and density (the destination and tracked markers always stay).
       if (!exempt && (prefs.density === "off" || (prefs.density === "essential" && !def.essential) ||
           (def.group !== null && prefs.hidden.includes(def.group)))) {

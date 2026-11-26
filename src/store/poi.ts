@@ -49,6 +49,8 @@ export type POIDef = {
   targetable?: boolean;
   /** Bodies: the marker yields once the disc's on-screen radius passes this fraction of the viewport height. */
   hideAboveScreenFrac?: number;
+  /** Guidance (the first-rock lead): shown like a tracked marker, past filters, with an edge arrow. */
+  guide?: boolean;
 };
 
 export type ProjectedPOI = {
