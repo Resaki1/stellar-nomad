@@ -83,7 +83,11 @@ import {
   replicationPointsAtom,
   updateNearbyPoint,
   updatePlacementPreview,
+  localPlacementMotion,
 } from "@/store/replication";
+import { checkDepotPlacement } from "@/sim/industry/placement";
+import { DEPOT_KIT_ID } from "@/sim/industry/catalog";
+import { depotPlacementPreview, sampleDepotPlacementPose } from "@/store/industryHud";
 import { lastLossAtom } from "@/store/death";
 import { cameraShakeIntensityAtom } from "@/store/vfx";
 import { playerInput } from "@/input/playerInput";
@@ -721,6 +725,38 @@ export function createGameplayHarness(store: Store) {
         return { ...structuredClone({ frameId: placementPreview.frameId, positionKm: placementPreview.positionKm, quaternion: placementPreview.quaternion, emergenceKm: placementPreview.emergenceKm, valid: placementPreview.valid, check: placementPreview.check }), status: store.get(placementStatusAtom) };
       },
       place: (name: string, opId?: string): OperationOutcome => store.set(placePointAtom, { name, opId }),
+      /**
+       * FIRST_EXPEDITION WP1: give the ship `velKmS` (frame-relative), read both previews, then submit
+       * `commit` ("point" | "depot") at its preview pose through the authority, twice with one op id.
+       */
+      motionCheck(velKmS: [number, number, number], commit: "point" | "depot") {
+        const ship = getLocalPlayerShip();
+        if (!ship) return null;
+        ship.velKmps.set(velKmS[0], velKmS[1], velKmS[2]);
+        updatePlacementPreview(store);
+        const point = placementPreview.check.refusal;
+        sampleDepotPlacementPose();
+        worldAuthority.world();
+        const save = getActiveSave()!.data;
+        const me = save.players[getLocalPlayerId()];
+        const occupied = save.world.replication.points.flatMap(pt => [pt, { frameId: pt.frameId, positionKm: emergencePose(pt, 0).positionKm }]);
+        const depot = checkDepotPlacement(depotPlacementPreview, { frameId: ship.frameId, positionKm: ship.posKm.toArray() },
+          me.modules.consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, save.world.industry.depots, occupied, localPlacementMotion());
+        const counts = () => ({ points: save.world.replication.points.length, depots: save.world.industry.depots.length,
+          kits: (me.modules.consumables[DEPOT_KIT_ID] ?? 0) + (me.modules.consumables.consumable_replication_kit ?? 0) });
+        const before = counts();
+        const src = commit === "point" ? placementPreview : depotPlacementPreview;
+        const pose = { frameId: src.frameId, positionKm: [...src.positionKm] as [number, number, number], quaternion: [...src.quaternion] as [number, number, number, number] };
+        const op = commit === "point"
+          ? { type: "replication.place" as const, opId: newOpId(), name: "WP1", ...pose }
+          : { type: "depot.place" as const, opId: newOpId(), name: "WP1", ...pose };
+        const first = worldAuthority.submit(op, getLocalPlayerId());
+        const afterFirst = counts();
+        const retry = worldAuthority.submit(op, getLocalPlayerId());
+        ship.velKmps.set(0, 0, 0);
+        const reason = (o: OperationOutcome) => (o.status === "rejected" ? o.reason : o.status === "accepted" ? null : o.status);
+        return { point, depot, authority: reason(first), retry: retry.status, before, afterFirst, afterRetry: counts() };
+      },
       nearby() {
         updateNearbyPoint(store);
         return store.get(nearbyPointAtom);

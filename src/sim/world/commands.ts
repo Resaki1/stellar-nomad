@@ -134,6 +134,8 @@ export type RejectReason =
   | "near_body"
   | "near_rock"
   | "near_ship"
+  /** The placing ship's stopping path crosses the site: brake first. */
+  | "moving"
   | "near_depot"
   | "depot_limit"
   | "drone_limit"

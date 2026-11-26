@@ -2,11 +2,29 @@
  * Placement validation and recovery-destination resolution (M3.6). One code path for the
  * preview, the authority's placement check and the recovery transaction.
  */
-import type { QuatTuple, ReplicationPoint, Vec3Tuple } from "@/save/types";
+import type { PlayerState, QuatTuple, ReplicationPoint, Vec3Tuple } from "@/save/types";
 import { frameOriginXyzKm, isFrameId, selectFrame } from "@/sim/frames";
 import { EMERGENCE_CANDIDATES, REPLICATION_TUNING as T, STARTER_POINT_ID, emergencePose, starterPoint } from "./points";
 
-export type PlacementRefusal = "near_depot" | "invalid" | "no_kit" | "too_far" | "near_body" | "near_rock" | "emergence_blocked";
+export type PlacementRefusal = "near_depot" | "invalid" | "no_kit" | "too_far" | "near_body" | "near_rock" | "emergence_blocked" | "moving" | "near_ship";
+
+/** A pilot's last known pose and frame-relative velocity (km/s). */
+export interface PilotMotion {
+  frameId: string;
+  positionKm: readonly number[];
+  velocityKmS: readonly number[];
+}
+
+/** The placing ship's velocity, and every other live pilot (FIRST_EXPEDITION_PLAN WP1). */
+export interface PlacementMotion {
+  velocityKmS: readonly number[] | null;
+  peers: readonly PilotMotion[];
+}
+
+/** Straight-line braking at the retro thrusters' default authority (90 m/s²). */
+const PATH_DECEL_KMPS2 = 0.09;
+/** A stopping path must stay this far from a new structure's centre (55 m station + 50 m hull + margin). */
+export const PATH_CLEARANCE_KM = 0.12;
 
 export interface DestroyedLookup {
   has(fieldId: string, chunkKey: string, id: number): boolean;
@@ -56,7 +74,37 @@ export function poseDistanceKm(fa: string, pa: readonly number[], fb: string, pb
   return Math.hypot(_a.x - _b.x, _a.y - _b.y, _a.z - _b.z);
 }
 
-type OccupiedPoseCheck = (pose: { frameId: string; positionKm: Vec3Tuple }) => "near_depot" | "near_rock" | null;
+/**
+ * Closest approach, km, of a pilot braking now in a straight line along its velocity to a
+ * frame-relative site. At rest this is the plain distance. Frame velocities are ignored: the
+ * ship and the site share a frame in every placement.
+ */
+export function stoppingPathClearanceKm(m: PilotMotion, frameId: string, pos: readonly number[]): number {
+  absXyz(m.frameId, m.positionKm, _a);
+  absXyz(frameId, pos, _b);
+  const [vx, vy, vz] = m.velocityKmS;
+  const s = Math.hypot(vx, vy, vz);
+  const dx = _b.x - _a.x, dy = _b.y - _a.y, dz = _b.z - _a.z;
+  if (!(s > 1e-9)) return Math.hypot(dx, dy, dz);
+  const t = Math.min(Math.max((dx * vx + dy * vy + dz * vz) / s, 0), (s * s) / (2 * PATH_DECEL_KMPS2));
+  return Math.hypot(dx - (vx / s) * t, dy - (vy / s) * t, dz - (vz / s) * t);
+}
+
+/** The placing ship's velocity and every other live pilot's motion (an unknown one counts as at rest). */
+export function placementMotion(
+  ctx: { players?: () => readonly PlayerState[]; pilotMotion?: (player: Readonly<PlayerState>) => PilotMotion | null },
+  player: Readonly<PlayerState>,
+): PlacementMotion {
+  const peers: PilotMotion[] = [];
+  for (const peer of ctx.players?.() ?? []) {
+    if (peer === player || peer.isDead) continue;
+    const m = ctx.pilotMotion?.(peer) ?? (peer.ship && { ...peer.ship, velocityKmS: [0, 0, 0] });
+    if (m) peers.push(m);
+  }
+  return { velocityKmS: ctx.pilotMotion?.(player)?.velocityKmS ?? null, peers };
+}
+
+type OccupiedPoseCheck = (pose: { frameId: string; positionKm: Vec3Tuple }) => "near_depot" | "near_rock" | "near_ship" | null;
 
 export interface PlacementCheck {
   refusal: PlacementRefusal | null;
@@ -77,6 +125,7 @@ export function checkPlacement(
   destroyed: DestroyedLookup | null,
   out: PlacementCheck,
   occupied?: OccupiedPoseCheck,
+  motion?: PlacementMotion,
 ): PlacementCheck {
   out.refusal = null;
   out.bodyAltKm = Infinity;
@@ -97,6 +146,11 @@ export function checkPlacement(
   out.rockClearM = _probe.rockClearM;
   if (_probe.bodyAltKm < T.minBodyAltitudeKm) return ((out.refusal = "near_body"), out);
   if (_probe.rockClearM < T.pointRockClearanceM) return ((out.refusal = "near_rock"), out);
+  if (motion) {
+    // A ship that cannot stop short of the site would fly into what it just built.
+    if (motion.velocityKmS && stoppingPathClearanceKm({ ...ship, velocityKmS: motion.velocityKmS }, frameId, p) < PATH_CLEARANCE_KM) return ((out.refusal = "moving"), out);
+    if (motion.peers.some(m => stoppingPathClearanceKm(m, frameId, p) < PATH_CLEARANCE_KM)) return ((out.refusal = "near_ship"), out);
+  }
   const obstruction = occupied?.({ frameId, positionKm: p as Vec3Tuple });
   if (obstruction) return ((out.refusal = obstruction), out);
   const e = emergencePose({ positionKm: p as Vec3Tuple, quaternion: pose.quaternion as QuatTuple }, 0);

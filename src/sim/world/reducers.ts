@@ -17,10 +17,13 @@ import { cargoUsedUnits, equipTuning, persistentShipConfig } from "@/sim/ship/lo
 import { unconvertedUnits } from "@/sim/ship/resourceStep";
 import { DEFAULT_RESOURCE_TUNING, getEffectiveTuning, type ResourceTuning } from "@/sim/ship/resourceTuning";
 import type { AsteroidDeltaIndex } from "./asteroidDeltas";
-import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, type PlacementCheck } from "@/sim/replication/placement";
+import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, placementMotion, type PilotMotion, type PlacementCheck } from "@/sim/replication/placement";
 import { MAX_POINTS, REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, cleanPointName } from "@/sim/replication/points";
 import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
+
+/** A recovering ship emerges at least this far from any live pilot (two 50 m hulls, room to fly clear). */
+const RECOVERY_PILOT_CLEARANCE_KM = 0.15;
 
 export interface ReduceCtx {
   players?: () => readonly PlayerState[];
@@ -37,6 +40,8 @@ export interface ReduceCtx {
   resolveMine?: MineResolver;
   nearbyPilot?: (id: PlayerId) => PlayerState | null;
   reservedFuel?: (id: PlayerId) => number;
+  /** Last known pose and velocity of a live pilot (placement stopping paths); null when unknown. */
+  pilotMotion?: (player: Readonly<PlayerState>) => PilotMotion | null;
 }
 
 export interface Commit {
@@ -644,7 +649,18 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (op.mode !== "active" && op.mode !== "starter") return reject("invalid");
       if (!p.isDead) return reject("not_dead");
       const health = persistentShipConfig(p, completedSet(world)).maxHealth;
-      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose => industryObstruction(world.industry.depots, pose));
+      // Live pilots hold their berth: a crewmate recovered a moment ago may not have sent a pose yet,
+      // so its committed pose counts as well as its latest one.
+      const pilots: { frameId: string; positionKm: readonly number[] }[] = [];
+      for (const peer of ctx.players?.() ?? []) {
+        if (peer === p || peer.isDead) continue;
+        if (peer.ship) pilots.push(peer.ship);
+        const m = ctx.pilotMotion?.(peer);
+        if (m) pilots.push(m);
+      }
+      const dest = resolveRecovery(world.replication.points, p.replication.activeId, op.mode, asteroids, pose =>
+        industryObstruction(world.industry.depots, pose) ??
+        (pilots.some(s => poseDistanceKm(s.frameId, s.positionKm, pose.frameId, pose.positionKm) < RECOVERY_PILOT_CLEARANCE_KM) ? "near_ship" : null));
       const ship = { frameId: dest.frameId, positionKm: dest.positionKm, quaternion: dest.quaternion };
       // Recover the protected allowance and draw any ordinary fuel from the actual destination.
       const protectedKg = getEffectiveTuning().recoveryAllowanceKg;
@@ -683,7 +699,7 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (points.some((x) => x.id === id)) return reject("already_done");
       if (points.length >= MAX_POINTS) return reject("no_capacity");
       const kits = Math.floor(p.modules.consumables[REPLICATION_KIT_ID] ?? 0);
-      const check = checkPlacement(op, p.ship, kits, asteroids, _placement, pose => industryObstruction(world.industry.depots, pose));
+      const check = checkPlacement(op, ctx.pilotMotion?.(p) ?? p.ship, kits, asteroids, _placement, pose => industryObstruction(world.industry.depots, pose), placementMotion(ctx, p));
       if (check.refusal) return reject(check.refusal);
       const pos = op.positionKm, q = op.quaternion;
       const point = {

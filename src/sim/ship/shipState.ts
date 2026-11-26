@@ -34,6 +34,12 @@ export interface ShipState {
   speedLimitKmps: number;
   /** World-forward (+Z rotated by quat) as of the last step. */
   forward: Vector3;
+  /**
+   * Hull bank into yaw (about body Z) and lean into pitch (about body X), rad, on top of `quat`.
+   * Sim state, not presentation: the drawn hull and the near-field collider both carry it (WP2).
+   */
+  bankRad: number;
+  leanRad: number;
 }
 
 export type AssistMode = "coupled" | "decoupled";
@@ -64,6 +70,8 @@ export function createShipState(): ShipState {
     boosting: false,
     speedLimitKmps: 0,
     forward: new Vector3(0, 0, 1).applyQuaternion(new Quaternion(q[0], q[1], q[2], q[3])),
+    bankRad: 0,
+    leanRad: 0,
   };
 }
 
@@ -71,6 +79,7 @@ export function createShipState(): ShipState {
 export function resetShipMotion(state: ShipState): void {
   state.velKmps.set(0, 0, 0);
   state.angVel.set(0, 0, 0);
+  state.bankRad = state.leanRad = 0;
   state.boostCharge = 1;
   state.boostIdleS = 0;
   state.thrustMain = 0;

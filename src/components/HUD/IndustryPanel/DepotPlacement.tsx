@@ -16,7 +16,7 @@ import { miningStateAtom } from "@/store/mining";
 import { modulesAtom } from "@/store/modules";
 import { newOpId, runOperation } from "@/store/operations";
 import { pilotPOIsAtom } from "@/store/poi";
-import { replicationPointsAtom } from "@/store/replication";
+import { localPlacementMotion, replicationPointsAtom } from "@/store/replication";
 import { settingsIsOpenAtom } from "@/store/store";
 import { transitDriveBuffer } from "@/store/transit";
 import { PlacementCard } from "../shared/PlacementControls";
@@ -37,7 +37,7 @@ function readPreview(store: Store) {
   const obstruction = transitDriveBuffer.phase !== "idle" ? "Finish transit before deploying."
     : store.get(miningStateAtom).isMining ? "Stop mining before deploying."
     : checkDepotPlacement(preview, { frameId: ship.frameId, positionKm: ship.posKm.toArray() },
-      store.get(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, depots, occupied);
+      store.get(modulesAtom).consumables[DEPOT_KIT_ID] ?? 0, worldAuthority.asteroids, depots, occupied, localPlacementMotion());
   preview.valid = obstruction === null;
   const field = miningFieldsAt(preview)[0]?.name ?? null;
   return { obstruction: obstruction && industryMessage(obstruction), field };

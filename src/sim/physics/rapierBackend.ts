@@ -16,6 +16,7 @@ import type {
 type Rapier = typeof import("@dimforge/rapier3d-simd-compat");
 type RWorld = InstanceType<Rapier["World"]>;
 type RCollider = ReturnType<RWorld["createCollider"]>;
+type RRigidBody = ReturnType<RWorld["createRigidBody"]>;
 type RBody = ReturnType<RWorld["createRigidBody"]>;
 type RColliderDesc = InstanceType<Rapier["ColliderDesc"]>;
 type RManifold = Parameters<Parameters<RWorld["contactPair"]>[2]>[0];
@@ -26,12 +27,17 @@ const CLAMP_TOL_M = 1e-3;
 const CLAMP_TOL_FRAC = 0.005;
 /** A speculative manifold that changed the ship's velocity by more than this along its normal was a touch. */
 const SPECULATIVE_DV_MPS = 0.05;
+/** Penetration left after a CCD clamp that the solver did not answer; beyond the 1 cm allowed error. */
+const CCD_UNRESOLVED_PEN_M = 0.05;
+const ZERO_VEL = { x: 0, y: 0, z: 0 };
 /**
  * ⚠ Rapier silently caps body speed at 400 × lengthUnit m/s (MEASURED: 500 and 2000 m/s both
  * read back 400; 4000 with lengthUnit 10). 10 lifts it past the 0.9 km/s speed gate; tolerances
- * scale with it (allowed error 1 cm, prediction 0.2 m), fine for an 8 m hull.
+ * scale with it: prediction 0.2 m, and allowed error 5 cm by default, which is why it is set below.
  */
 const LENGTH_UNIT = 10;
+/** Allowed linear error × LENGTH_UNIT = 1 cm. Rapier's 0.005 (5 cm) let a hull 3–5 cm clear register a hit (MEASURED). */
+const ALLOWED_LINEAR_ERROR = 0.001;
 /** Below this closing speed along the last contact normal, no bounce: thrust adds 1–2 m/s per step, and e > 0 turned resting contact into ±0.3 m/s chatter (MEASURED). */
 const RESTITUTION_MIN_SPEED = 2.5;
 // Debris bounces off fixed geometry but transfers no local-only impulse to a pilot or another fragment.
@@ -121,6 +127,13 @@ class RapierWorld implements PhysicsWorld {
   private readonly debris = new Map<ColliderHandle, RBody>();
   private body: RBody | null = null;
   private shipCollider: RCollider | null = null;
+  private shipMassKg = 0;
+  /** First collider paired with the ship this step (also when its manifold is empty). */
+  private pairSeen: RCollider | null = null;
+  /** The ship body's rotation as set before the step (the CCD sweep's start). */
+  private readonly preRot = { x: 0, y: 0, z: 0, w: 1 };
+  /** The collider's attitude in the body frame (hull bank/lean). */
+  private readonly shipAttitude = { x: 0, y: 0, z: 0, w: 1 };
   private shipExtents: ShapeBounds | null = null;
 
   private readonly _v: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 };
@@ -150,6 +163,7 @@ class RapierWorld implements PhysicsWorld {
     this.world = new R.World({ x: 0, y: 0, z: 0 });
     this.world.timestep = config.dt;
     this.world.lengthUnit = LENGTH_UNIT;
+    this.world.integrationParameters.normalizedAllowedLinearError = ALLOWED_LINEAR_ERROR;
     // MEASURED: with 1 substep the step after a CCD clamp missed a hull rock at 603 m/s.
     this.world.maxCcdSubsteps = 4;
     this._t = new R.Vector3(0, 0, 0);
@@ -303,9 +317,15 @@ class RapierWorld implements PhysicsWorld {
     this._q.x = 0; this._q.y = 0; this._q.z = 0; this._q.w = 1;
     const [cx, cy, cz] = config.comM;
     this.com.x = cx; this.com.y = cy; this.com.z = cz;
-    d.setMassProperties(config.massKg, { x: cx, y: cy, z: cz }, this._v, this._q);
+    // Mass lives on the body, not the collider: the collider turns with the hull's bank (WP2)
+    // and must not carry the centre of mass with it.
+    d.setDensity(0);
+    this.shipMassKg = config.massKg;
+    this.body.setAdditionalMassProperties(config.massKg, { x: cx, y: cy, z: cz }, this._v, this._q, true);
     if (this.shipCollider) this.world.removeCollider(this.shipCollider, false);
     this.shipCollider = this.world.createCollider(d, this.body);
+    this.shipAttitude.x = this.shipAttitude.y = this.shipAttitude.z = 0;
+    this.shipAttitude.w = 1;
     this.shipRestitution = this.config.restitution;
     this.shipExtents = bounds(config.shape);
   }
@@ -316,6 +336,18 @@ class RapierWorld implements PhysicsWorld {
 
   shipBounds(): ShapeBounds | null {
     return this.shipExtents;
+  }
+
+  setShipAttitude(qx: number, qy: number, qz: number, qw: number): void {
+    const sc = this.shipCollider, a = this.shipAttitude;
+    if (!sc || (a.x === qx && a.y === qy && a.z === qz && a.w === qw)) return;
+    a.x = qx; a.y = qy; a.z = qz; a.w = qw;
+    sc.setRotationWrtParent(a);
+  }
+
+  readShipAttitude(): [number, number, number, number] | null {
+    const r = this.shipCollider?.rotationWrtParent();
+    return r ? [r.x, r.y, r.z, r.w] : null;
   }
 
   setShipState(pose: Readonly<BodyPose>, vel: Readonly<BodyVelocity>): void {
@@ -332,6 +364,7 @@ class RapierWorld implements PhysicsWorld {
       b.setTranslation(this._v, true);
     }
     this._q.x = pose.qx; this._q.y = pose.qy; this._q.z = pose.qz; this._q.w = pose.qw;
+    this.preRot.x = pose.qx; this.preRot.y = pose.qy; this.preRot.z = pose.qz; this.preRot.w = pose.qw;
     const r = b.rotation(this._r);
     if (r.x !== Math.fround(pose.qx) || r.y !== Math.fround(pose.qy) || r.z !== Math.fround(pose.qz) || r.w !== Math.fround(pose.qw)) {
       b.setRotation(this._q, true);
@@ -398,10 +431,79 @@ class RapierWorld implements PhysicsWorld {
     if (ex * ex + ey * ey + ez * ez > tol * tol) {
       this.touched = true;
     }
+    this.pairSeen = null;
     this.world.contactPairsWith(sc, this.onPair);
+    // A hit resolved inside CCD leaves the pair's manifold empty: the velocity changed but nothing was
+    // reported, so no damage (MEASURED: 603 → 333 m/s on a wing, 0 contacts). Report it from the Δv.
+    if (this.nContacts === 0 && this.touched && this.pairSeen && !this.resolveCcdPenetration(sc, b, this.pairSeen)) this.reportCcdHit(this.pairSeen);
+  }
+
+  /**
+   * A CCD clamp can stop the hull INSIDE a thin piece with no solver response, and the next step carries it
+   * through (MEASURED: a 0.26 m wing 1.72 m deep at 891 m/s, then out the far side). Apply the collision
+   * response the solver skipped: the normal velocity reverses with the material restitution. True when applied.
+   */
+  private resolveCcdPenetration(sc: RCollider, b: RRigidBody, other: RCollider): boolean {
+    const deep = sc.contactCollider(other, 0);
+    if (!deep || !(deep.distance < -CCD_UNRESOLVED_PEN_M)) return false;
+    // Deep in a thin piece the exit direction runs across it, not against the motion. The response
+    // belongs to the first touch: sweep the hull from its pre-step pose for the time-of-impact normal.
+    const s = this.set, q = this.preRot, a = this.shipAttitude;
+    const r = this._r;
+    r.w = q.w * a.w - q.x * a.x - q.y * a.y - q.z * a.z;
+    r.x = q.w * a.x + q.x * a.w + q.y * a.z - q.z * a.y;
+    r.y = q.w * a.y - q.x * a.z + q.y * a.w + q.z * a.x;
+    r.z = q.w * a.z + q.x * a.y - q.y * a.x + q.z * a.w;
+    this._p.x = s.x; this._p.y = s.y; this._p.z = s.z;
+    this._t.x = s.vx; this._t.y = s.vy; this._t.z = s.vz;
+    const hit = other.castShape(ZERO_VEL, sc.shape, this._p, r, this._t, 0, this.config.dt, true);
+    if (!hit) return false;
+    // normal1 points out of the rock: the direction the rock pushes the ship.
+    const nx = hit.normal1.x, ny = hit.normal1.y, nz = hit.normal1.z;
+    const v = this.after;
+    const closing = -(v.vx * nx + v.vy * ny + v.vz * nz);
+    if (!(closing > SPECULATIVE_DV_MPS)) return false;
+    const dv = (1 + this.shipRestitution) * closing;
+    v.vx += nx * dv; v.vy += ny * dv; v.vz += nz * dv;
+    this._v.x = v.vx; this._v.y = v.vy; this._v.z = v.vz;
+    b.setLinvel(this._v, true);
+    const c = this.pool[this.nContacts++];
+    c.collider = other.handle as ColliderHandle;
+    c.nx = nx; c.ny = ny; c.nz = nz;
+    c.penetrationM = -deep.distance;
+    c.dvNormalMps = dv;
+    c.impulseNs = this.shipMassKg * dv;
+    c.hasPoint = false;
+    c.px = 0; c.py = 0; c.pz = 0;
+    if (!this.hasLastNormal) {
+      this.lastN.x = nx; this.lastN.y = ny; this.lastN.z = nz;
+      this.hasLastNormal = true;
+    }
+    return true;
+  }
+
+  private reportCcdHit(other: RCollider): void {
+    const a = this.after, s = this.set;
+    const dx = a.vx - s.cx, dy = a.vy - s.cy, dz = a.vz - s.cz;
+    const dv = Math.hypot(dx, dy, dz);
+    if (!(dv > SPECULATIVE_DV_MPS)) return;
+    const c = this.pool[this.nContacts++];
+    c.collider = other.handle as ColliderHandle;
+    // The surface pushed the ship along its velocity change: that is the contact normal.
+    c.nx = dx / dv; c.ny = dy / dv; c.nz = dz / dv;
+    c.penetrationM = 0;
+    c.dvNormalMps = dv;
+    c.impulseNs = this.shipMassKg * dv;
+    c.hasPoint = false;
+    c.px = 0; c.py = 0; c.pz = 0;
+    if (!this.hasLastNormal) {
+      this.lastN.x = c.nx; this.lastN.y = c.ny; this.lastN.z = c.nz;
+      this.hasLastNormal = true;
+    }
   }
 
   private readonly onPair = (other: RCollider): void => {
+    this.pairSeen ??= other;
     if (!this.shipCollider || this.nContacts >= MAX_CONTACTS) return;
     this.pairOther = other;
     this.pairIndex = -1;

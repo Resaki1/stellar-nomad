@@ -10,6 +10,10 @@ export interface ShipStepEnv {
   tuning: Readonly<FlightTuning>;
   /** Steering multiplier (reduced during transit drive). */
   steerMult: number;
+  /** Hull bank at full yaw rate / lean at full pitch rate, rad, and their lag (s). 0 = none. */
+  bankMaxRad: number;
+  leanMaxRad: number;
+  bankLagS: number;
   /** Autopilot heading override; ignored unless `hasDesiredForward`. */
   hasDesiredForward: boolean;
   desiredForwardX: number;
@@ -40,6 +44,9 @@ export function createShipStepEnv(tuning: Readonly<FlightTuning> = DEFAULT_FLIGH
   return {
     tuning,
     steerMult: 1,
+    bankMaxRad: 0,
+    leanMaxRad: 0,
+    bankLagS: 0.15,
     hasDesiredForward: false,
     desiredForwardX: 0,
     desiredForwardY: 0,
@@ -112,6 +119,15 @@ export function stepShip(state: ShipState, input: ShipInput, env: ShipStepEnv, d
     _axis.copy(w).divideScalar(wLen);
     _quat.setFromAxisAngle(_axis, wLen * dt);
     state.quat.multiply(_quat).normalize();
+  }
+
+  // Bank into yaw, lean into pitch (same sign as the pitch rate, so the lean leads the turn).
+  {
+    const k = 1 - Math.exp(-dt / Math.max(1e-3, env.bankLagS));
+    const yawFrac = t.maxYawRateDegS > 0 ? -w.y / (t.maxYawRateDegS * DEG) : 0;
+    const pitchFrac = t.maxPitchRateDegS > 0 ? w.x / (t.maxPitchRateDegS * DEG) : 0;
+    state.bankRad += (Math.max(-1, Math.min(1, yawFrac)) * env.bankMaxRad - state.bankRad) * k;
+    state.leanRad += (Math.max(-1, Math.min(1, pitchFrac)) * env.leanMaxRad - state.leanRad) * k;
   }
 
   const fwd = state.forward;

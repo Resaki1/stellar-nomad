@@ -258,6 +258,11 @@ export class NearField {
     };
   }
 
+  /** The engine's ship-collider attitude in the body frame (harness). */
+  shipAttitude(): [number, number, number, number] | null {
+    return this.world?.readShipAttitude() ?? null;
+  }
+
   shipShapeDesc(): ColliderShape {
     return this.shipShape;
   }
@@ -276,6 +281,19 @@ export class NearField {
     if (this.frameId !== null && frameId !== this.frameId) this.foreign++;
     if (this.world) this.createInWorld(this.world, e);
     return id;
+  }
+
+  /** Move a registered collider (a drone following its visible route). */
+  setColliderPose(id: NearFieldColliderId, frameId: FrameId, relKm: { x: number; y: number; z: number }, quat: Quaternion): void {
+    const e = this.entries.get(id);
+    if (!e) return;
+    if (e.frameId !== frameId && this.frameId !== null) this.foreign += (frameId !== this.frameId ? 1 : 0) - (e.frameId !== this.frameId ? 1 : 0);
+    e.frameId = frameId;
+    e.relKm.set(relKm.x, relKm.y, relKm.z);
+    e.quat.copy(quat);
+    if (e.handle === null || !this.world) return;
+    this.localPose(e);
+    this.world.setFixedColliderPose(e.handle, _pose);
   }
 
   removeCollider(id: NearFieldColliderId): void {
@@ -425,6 +443,12 @@ export class NearField {
     _w.copy(ship.angVel).applyQuaternion(q0);
     _vel.wx = _w.x; _vel.wy = _w.y; _vel.wz = _w.z;
     world.setShipState(_pose, _vel);
+    // The drawn hull's bank/lean (model Euler XYZ with y = 0: q = Rx(lean)·Rz(bank)).
+    {
+      const hx = ship.leanRad / 2, hz = ship.bankRad / 2;
+      const cx = Math.cos(hx), sx = Math.sin(hx), cz = Math.cos(hz), sz = Math.sin(hz);
+      world.setShipAttitude(sx * cz, -sx * sz, cx * sz, cx * cz);
+    }
     world.step();
     if (this.debris.size > 0) {
       this.debris.forEach((left, h) => {

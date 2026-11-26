@@ -53,7 +53,8 @@ async function stationDebrisGate(page) {
   assert.equal(crafted.status, "accepted", J(crafted));
   const placed = await ev(`${G}.settled({type:"depot.place",name:"P4 Contact Gate",frameId:"earth",positionKm:[0,10000,0],quaternion:[0,0,0,1]})`);
   assert.equal(placed.status, "accepted", J(placed));
-  assert.ok(await waitFor(() => ev(`${P}.stats().collidersByTag.depot === 9`)), "station geometry registered in Rapier");
+  // One compound collider per depot (its convex pieces travel together), not one per piece.
+  assert.ok(await waitFor(() => ev(`${P}.stats().collidersByTag.depot === 1`)), "station geometry registered in Rapier");
   const after = perf ? await bench() : null;
   const scenario = "Earth frame [0,10000,0], stationary ship 800 m from station";
   if (perf) console.log(J({ stage: "physics.step", scenario, before, after }));

@@ -1,4 +1,6 @@
 import { getPlayerState, getPlayerStates, getWorldState, markDirty } from "@/save/activeSave";
+import { getLocalPlayerId } from "@/save/playerId";
+import { getLocalPlayerShip } from "@/sim/entities";
 import { makeMineResolver } from "@/sim/asteroids/mineResolve";
 import { getDifficulty } from "@/sim/difficulty";
 import { activeSystem } from "@/sim/systemRegistry";
@@ -26,6 +28,11 @@ class AuthorityFacade implements Authority {
     getPlayers: getPlayerStates,
     markDirty,
     reservedFuel: () => this.localFuelReserveKg(),
+    // Solo: only the local ship moves; its live state is the truth.
+    pilotMotion: (player) => {
+      const ship = player === getPlayerState(getLocalPlayerId()) ? getLocalPlayerShip() : null;
+      return ship ? { frameId: ship.frameId, positionKm: ship.posKm.toArray(), velocityKmS: ship.velKmps.toArray() } : null;
+    },
     getDifficulty,
     resolveMine: makeMineResolver(activeSystem, getDifficulty),
   });

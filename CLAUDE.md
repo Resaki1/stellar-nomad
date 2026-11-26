@@ -119,6 +119,7 @@ cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.{js,wasm} public/
 **Regression gates for the sim core (headless, each prints pass/fail JSON)**
 - `FLIGHT_PARTS=sim,live,mouse,camera,reticle pnpm drive -- --keep run:scripts/drive-examples/flight-trace.mjs` — flight model (deterministic sim gates + live input, camera, reticle); design in `docs/FLIGHT_MODEL_PLAN.md`
 - `PHYS_PARTS=sim,damage,hull,asteroids pnpm drive -- --keep run:scripts/drive-examples/physics-check.mjs` — collisions (deterministic contact gates + live asteroid hits); design in `docs/PHYSICS_PLAN.md` §7
+- `node scripts/physics-node.mjs <scenario.mjs> [args]` — the same headless `simulatePhysics` (Rapier WASM, starter-ship collision proxy) under plain Node, no Chrome; reproduces the browser sim gates' numbers exactly, so iterate on contact physics here first
 - `FRAMES_PARTS=ride,switch pnpm drive -- --keep run:scripts/drive-examples/frames-check.mjs` — reference frames
 - `pnpm drive -- --keep --no-isolate run:scripts/drive-examples/save-check.mjs` — save system
 - `LIGHTS_PARTS=drift,xfade,ladder,beacon pnpm drive -- --keep --no-isolate run:scripts/drive-examples/vfx-lights.mjs` — station lamps as flux-conserving light points (VFX plan §1; `perf` part with `--perf`; `liftLadder`: with the star display lift on light points, flux never rises with distance; `farShots`: the station at 0.5–8 km with the lift, peak per distance)

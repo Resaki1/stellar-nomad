@@ -1,10 +1,10 @@
 import type { ShipPose } from "@/save/types";
 import type { RejectReason } from "@/sim/world/commands";
-import { checkPlacement, poseDistanceKm, type DestroyedLookup, type PlacementCheck } from "@/sim/replication/placement";
+import { checkPlacement, poseDistanceKm, type DestroyedLookup, type PlacementCheck, type PlacementMotion } from "@/sim/replication/placement";
 import { INDUSTRY_TUNING as T } from "./catalog";
 import type { DepotRecord } from "./types";
 
-type Position = Pick<ShipPose, "frameId" | "positionKm">;
+type Position = { frameId: string; positionKm: readonly number[] };
 const clearance: PlacementCheck = { refusal: null, bodyAltKm: 0, bodyId: null, rockClearM: 0 };
 
 export function depotDistanceKm(a: Position, b: Position): number {
@@ -15,10 +15,10 @@ export function depotDistanceKm(a: Position, b: Position): number {
 /** Exactly the same spatial clearance rules drive the preview and accepted placement. */
 export function checkDepotPlacement(
   pose: ShipPose, ship: Position | null, kits: number, destroyed: DestroyedLookup | null,
-  depots: readonly DepotRecord[], otherPositions: readonly Position[] = [],
+  depots: readonly DepotRecord[], otherPositions: readonly Position[] = [], motion?: PlacementMotion,
 ): RejectReason | null {
   if (depots.length >= T.maxDepots) return "depot_limit";
-  const { refusal } = checkPlacement(pose, ship, kits, destroyed, clearance);
+  const { refusal } = checkPlacement(pose, ship, kits, destroyed, clearance, undefined, motion);
   // A depot only needs its own clearance; a replication point checks an additional spawn offset.
   if (refusal && refusal !== "emergence_blocked") return refusal;
   if (ship && depotDistanceKm(pose, ship) < T.shipClearanceKm) return "near_ship";

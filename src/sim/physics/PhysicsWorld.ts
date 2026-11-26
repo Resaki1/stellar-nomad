@@ -40,6 +40,10 @@ export interface PhysicsWorld {
   setShipBody(config: ShipBodyConfig): void;
   hasShipBody(): boolean;
   setShipState(pose: Readonly<BodyPose>, vel: Readonly<BodyVelocity>): void;
+  /** The ship collider's rotation in the body frame: the drawn hull's bank and lean. */
+  setShipAttitude(qx: number, qy: number, qz: number, qw: number): void;
+  /** The engine's ship-collider rotation in the body frame [x,y,z,w] (harness), null without a body. */
+  readShipAttitude(): [number, number, number, number] | null;
   readShipState(pose: BodyPose, vel: BodyVelocity): void;
   /** The ship collider's local AABB, or null without a body. */
   shipBounds(): ShapeBounds | null;

@@ -357,6 +357,12 @@ const SpaceShip = memo(() => {
     _env.colliders = celestialColliders;
     nearField.angularAuthority = _env.tuning.angularAccelDegS2 * MathUtils.DEG2RAD * FIXED_DT;
     _env.hullRadiusKm = SHIP_HULL_RADIUS_KM;
+    {
+      const ct = getCameraTuning();
+      _env.bankMaxRad = ct.bankMaxDeg * MathUtils.DEG2RAD;
+      _env.leanMaxRad = ct.pitchLeanMaxDeg * MathUtils.DEG2RAD;
+      _env.bankLagS = ct.bankLagS;
+    }
 
     // Refresh colliders from the live ephemeris arrays, relative to the ship's frame.
     const fo = frameOriginKm(ship.frameId, _frameOrigin);
@@ -433,7 +439,17 @@ const SpaceShip = memo(() => {
     let stepsRun = 0;
     while (physicsAcc.current >= FIXED_DT) {
       // Transit first: its speed this step feeds stepShip; the resource step bills it.
+      const arrivedBefore = tBuf.ev.arrived, wasIdle = tBuf.phase === "idle";
       stepTransit(tBuf, ship, transitInputs, shipRes, rt, FIXED_DT);
+      // Targeted transit owns the approach: a throttle set before engaging (MEASURED: 402 m/s into
+      // the point after arrival, 14 rad/s contact spin) must not carry through. Arrival holds station.
+      if ((wasIdle && tBuf.phase === "spooling" && tBuf.autopilot) || tBuf.ev.arrived !== arrivedBefore) {
+        playerInput.throttle = _input.throttle = 0;
+        if (tBuf.ev.arrived !== arrivedBefore) {
+          ship.velKmps.set(0, 0, 0);
+          ship.angVel.set(0, 0, 0);
+        }
+      }
       const burning = isTransitBurning(tBuf.phase);
       _env.transitVelX = tBuf.velX;
       _env.transitVelY = tBuf.velY;
@@ -529,18 +545,9 @@ const SpaceShip = memo(() => {
 
     shipRef.current.quaternion.slerpQuaternions(ship.prevQuat, ship.quat, alpha);
 
-    // Visual only: the model rolls into yaw and leans into pitch, in proportion to turn rate.
-    {
-      const ct = getCameraTuning();
-      const ft = _env.tuning;
-      const yawFrac = ft.maxYawRateDegS > 0 ? -ship.angVel.y / (ft.maxYawRateDegS * MathUtils.DEG2RAD) : 0;
-      // Same sign as the real pitch rate (the model shares the ship's x axis), so the lean leads the turn.
-      const pitchFrac = ft.maxPitchRateDegS > 0 ? ship.angVel.x / (ft.maxPitchRateDegS * MathUtils.DEG2RAD) : 0;
-      const k = 1 - Math.exp(-delta / ct.bankLagS);
-      const rot = modelRef.current.rotation;
-      rot.z += (MathUtils.clamp(yawFrac, -1, 1) * ct.bankMaxDeg * MathUtils.DEG2RAD - rot.z) * k;
-      rot.x += (MathUtils.clamp(pitchFrac, -1, 1) * ct.pitchLeanMaxDeg * MathUtils.DEG2RAD - rot.x) * k;
-    }
+    // The hull's bank/lean is sim state (stepShip): the collider carries the same attitude.
+    modelRef.current.rotation.z = ship.bankRad;
+    modelRef.current.rotation.x = ship.leanRad;
 
     // Interpolate in frame-relative km, add the CURRENT frame origin, and put the world
     // origin there so the ship sits at local (0,0,0).

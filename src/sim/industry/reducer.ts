@@ -1,6 +1,7 @@
 import { getItemDef, industryResearchNode, MATERIAL_NAMES } from "@/data/content";
 import type { PlayerState, WorldState } from "@/save/types";
 import { isFrameId } from "@/sim/frames";
+import { placementMotion } from "@/sim/replication/placement";
 import { cleanPointName, emergencePose } from "@/sim/replication/points";
 import type { RejectReason } from "@/sim/world/commands";
 import type { Commit, ReduceCtx, Reduction } from "@/sim/world/reducers";
@@ -81,7 +82,7 @@ function placeDepot(op: Extract<IndustryOperation, { type: "depot.place" }>, ctx
     p, { frameId: p.frameId, positionKm: emergencePose(p, 0).positionKm },
   ]);
   for (const peer of ctx.players?.() ?? []) if (peer !== player && !peer.isDead && peer.ship) occupied.push(peer.ship);
-  const reason = checkDepotPlacement(op, player.ship, kits, ctx.asteroids, world.industry.depots, occupied);
+  const reason = checkDepotPlacement(op, ctx.pilotMotion?.(player) ?? player.ship, kits, ctx.asteroids, world.industry.depots, occupied, placementMotion(ctx, player));
   if (reason) return { reason };
   const depot: DepotRecord = {
     id, by, name: cleanPointName(op.name, "Depot"), frameId: op.frameId, positionKm: [...op.positionKm], quaternion: [...op.quaternion],

@@ -186,6 +186,17 @@ export class HostSession {
         return peer ?? null;
       },
       reservedFuel: id => this.conns.get(this.bound.get(id) ?? "")?.reservedFuelKg ?? 0,
+      // Placement stopping paths: each pilot's latest pose (cleared on death/recovery) while fresh.
+      pilotMotion: player => {
+        for (const [pid, state] of Object.entries(this.data.players)) {
+          if (state !== player) continue;
+          const m = this.conns.get(this.bound.get(pid) ?? "");
+          const pose = m?.lastPose;
+          if (!pose || this.o.clock.monoMs() - (m.poseAt ?? -Infinity) > 2000) return null;
+          return { frameId: pose.f, positionKm: pose.p, velocityKmS: pose.v };
+        }
+        return null;
+      },
     });
     this.authority.subscribe((e) => this.captured.push(e));
     this.epoch0 = w.simEpochMs;

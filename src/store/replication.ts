@@ -11,7 +11,8 @@ import { industryObstruction } from "@/sim/industry/placement";
 import { isFrameId } from "@/sim/frames";
 import { holdSavedPose } from "@/sim/shipPersistence";
 import { absoluteKm } from "@/sim/replication/clearance";
-import { checkPlacement, resolveRecovery, type PlacementCheck, type RecoveryDestination } from "@/sim/replication/placement";
+import { checkPlacement, resolveRecovery, type PilotMotion, type PlacementCheck, type PlacementMotion, type RecoveryDestination } from "@/sim/replication/placement";
+import { remotePoses } from "@/net/coopState";
 import { REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, emergencePose } from "@/sim/replication/points";
 import { requestReposition } from "@/sim/ship/reposition";
 import { worldAuthority } from "@/sim/world/worldAuthority";
@@ -55,6 +56,8 @@ export const REFUSAL_TEXT: Record<string, string> = {
   near_rock: "Too close to a rock",
   near_depot: "Too close to a depot",
   emergence_blocked: "Emergence blocked",
+  moving: "Brake to deploy",
+  near_ship: "Pilot in the way",
   no_capacity: "Point limit reached",
   dead: "Ship destroyed",
 };
@@ -103,6 +106,25 @@ function nearestSourceKm(sources: readonly SourceFinding[], material: string): n
   return best;
 }
 
+const _motion: PlacementMotion = { velocityKmS: null, peers: [] };
+const _peers: PilotMotion[] = [];
+/** Pose age past which a crewmate's motion is unknown (the host applies the same window). */
+const PEER_MOTION_MAX_AGE_MS = 2000;
+
+/** The local ship's velocity and the crew's latest poses: the preview's half of the stopping-path rule. */
+export function localPlacementMotion(): PlacementMotion {
+  const ship = getLocalPlayerShip();
+  _motion.velocityKmS = ship ? [ship.velKmps.x, ship.velKmps.y, ship.velKmps.z] : null;
+  _peers.length = 0;
+  const now = performance.now();
+  remotePoses.forEach(buf => {
+    const last = buf[buf.length - 1];
+    if (last && now - last.at <= PEER_MOTION_MAX_AGE_MS) _peers.push({ frameId: last.f, positionKm: last.p, velocityKmS: last.v });
+  });
+  _motion.peers = _peers;
+  return _motion;
+}
+
 /** Recompute the preview pose and its check (HUD rate, preview mode only). */
 export function updatePlacementPreview(store: Store): PlacementStatus | null {
   const ship = getLocalPlayerShip();
@@ -124,7 +146,7 @@ export function updatePlacementPreview(store: Store): PlacementStatus | null {
   p.emergenceKm[2] = e[2];
   worldAuthority.world();
   const kits = store.get(kitCountAtom);
-  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check, pose => industryObstruction(getWorldState().industry.depots, pose));
+  checkPlacement(p, { frameId: ship.frameId, positionKm: [ship.posKm.x, ship.posKm.y, ship.posKm.z] }, kits, worldAuthority.asteroids, p.check, pose => industryObstruction(getWorldState().industry.depots, pose), localPlacementMotion());
   p.valid = p.check.refusal === null;
   const sources = getWorldState().discoveries.sources;
   const status: PlacementStatus = {

@@ -471,6 +471,89 @@ async function shipLifecycle() {
   return { pass: sparks && hidden && noOldLife && recovered, sparks, hidden, noOldLife, recovered };
 }
 
+// FIRST_EXPEDITION WP1: two pilots recovering in the same update emerge in distinct, clear berths.
+async function recoverTogether() {
+  const runs = {};
+  for (const where of ["starter", "point"]) for (const order of ["hostFirst", "guestFirst"]) {
+    const data = defaults.defaultSaveData(HOST_ID, "standard");
+    data.world.members[HOST_ID].name = "Host";
+    const pointId = "rp-wp1";
+    if (where === "point") {
+      data.world.replication.points.push({ id: pointId, name: "Berth", frameId: "earth", positionKm: [0, 10_000, 0], quaternion: [0, 0, 0, 1], by: HOST_ID, createdAt: 0, starter: false });
+      data.world.industry.pointTanks = { [pointId]: 300 };
+    }
+    const now = Date.now();
+    const repo = new MemoryRepository({ meta: { id: `world-${where}-${order}`, name: "WP1", seed: 1, difficulty: "standard", createdAt: now, lastPlayedAt: now, playTimeS: 0, schemaVersion: defaults.SCHEMA_VERSION }, data });
+    const { rig, h, g } = await joinedPair(repo);
+    const gid = g.session.playerId;
+    if (where === "point") for (const id of [HOST_ID, gid]) rig.host.data.players[id].replication = { activeId: pointId };
+    for (const c of [h, g]) c.session.submit({ type: "ship.destroy", opId: `crash-${c.name}`, frameId: "earth", positionKm: [5, 10_000, 0] });
+    await rig.settle();
+    const wrecks = rig.host.world.wrecks.length;
+    const [first, second] = order === "hostFirst" ? [h, g] : [g, h];
+    const mode = where === "point" ? "active" : "starter";
+    const ops = [first, second].map(c => ({ type: "ship.respawn", opId: `recover-${c.name}`, mode }));
+    // The second pilot's reply is lost: it retries on reconnect and must not move or refuel twice.
+    rig.net.dropNextToClient(second.conn, m => m.t === "settled");
+    first.session.submit(ops[0]);
+    second.session.submit(ops[1]);
+    await rig.settle();
+    const pose = id => structuredClone(rig.host.player(id).ship);
+    const before = { h: pose(HOST_ID), g: pose(gid), fuel: [HOST_ID, gid].map(id => rig.host.player(id).propellant.ordinaryKg) };
+    rig.net.disconnect(second.conn);
+    await rig.settle();
+    const again = rig.client(second.name, { store: second.store, local: second.local });
+    again.join();
+    await rig.settle();
+    const sepKm = frames.isFrameId(before.h.frameId) ? (await S("sim/replication/placement.ts")).poseDistanceKm(before.h.frameId, before.h.positionKm, before.g.frameId, before.g.positionKm) : NaN;
+    const stock = rig.host.world.industry.pointTanks?.[pointId] ?? 0;
+    const granted = [HOST_ID, gid].map(id => rig.host.player(id).propellant.ordinaryKg);
+    const checks = {
+      bothAlive: !rig.host.player(HOST_ID).isDead && !rig.host.player(gid).isDead,
+      disjoint: sepKm >= 0.15,
+      retryStill: JSON.stringify(pose(HOST_ID)) === JSON.stringify(before.h) && JSON.stringify(pose(gid)) === JSON.stringify(before.g),
+      fuelConserved: where !== "point" || (stock + granted[0] + granted[1] === 300 && JSON.stringify(granted) === JSON.stringify(before.fuel)),
+      noNewWrecks: rig.host.world.wrecks.length === wrecks,
+    };
+    runs[`${where}/${order}`] = { pass: Object.values(checks).every(Boolean), sepM: Math.round(sepKm * 1000), ...checks };
+  }
+  return { pass: Object.values(runs).every(r => r.pass), runs };
+}
+
+// FIRST_EXPEDITION WP1: the host revalidates a placement against a crewmate flying through the site.
+async function placeCrossing() {
+  const { rig, h, g } = await joinedPair();
+  rig.host.data.players[HOST_ID].modules.consumables = { consumable_replication_kit: 2, consumable_depot_kit: 2 };
+  const site = [0, 10_000, 0.8];
+  h.pose = { frameId: "earth", positionKm: [0, 10_000, 0], quaternion: [0, 0, 0, 1] };
+  h.telemetry = { pose: h.pose };
+  h.session.sendTelemetry();
+  const guestPose = (seq, p, v) => g.session.sendPose({ seq, tick: seq, f: "earth", p, v, q: [0, 0, 0, 1], fl: 0 });
+  const place = (type, opId) => ({ type, opId, name: "X", frameId: "earth", positionKm: site, quaternion: [0, 0, 0, 1] });
+  const counts = () => ({ points: rig.host.world.replication.points.length, depots: rig.host.world.industry.depots.length });
+  // Guest 600 m out, closing on the site at 300 m/s: it needs 500 m to stop, so it crosses the site.
+  guestPose(1, [0.6, 10_000, 0.8], [-0.3, 0, 0]);
+  await rig.settle();
+  const before = counts();
+  h.session.submit(place("replication.place", "cross-point"));
+  h.session.submit(place("depot.place", "cross-depot"));
+  await rig.settle();
+  const refused = h.settled.slice(-2).map(o => o.reason);
+  // Guest stopped well clear: the same placement goes through, once.
+  guestPose(2, [0.6, 10_000, 0.8], [0, 0, 0]);
+  await rig.settle();
+  h.session.submit(place("replication.place", "clear-point"));
+  await rig.settle();
+  const accepted = h.settled.at(-1).status;
+  const checks = {
+    refusedNearShip: refused.every(r => r === "near_ship"),
+    countsKept: counts().depots === before.depots && counts().points === before.points + 1,
+    accepted: accepted === "accepted",
+    kitsSpentOnce: rig.host.player(HOST_ID).modules.consumables.consumable_replication_kit === 1 && rig.host.player(HOST_ID).modules.consumables.consumable_depot_kit === 2,
+  };
+  return { pass: Object.values(checks).every(Boolean), refused, accepted, ...checks };
+}
+
 async function pilotActions() {
   const repo = newWorld();
   const seed = repo.peek();
@@ -1899,6 +1982,8 @@ const SCENARIOS = {
   sharedLoop,
   pilotActions,
   shipLifecycle,
+  recoverTogether,
+  placeCrossing,
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),
   dropReplyRetry,

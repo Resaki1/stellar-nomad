@@ -10,6 +10,7 @@ export function industryMessage(reason: string): string {
     case "near_rock": return "Aim away from nearby rocks.";
     case "near_depot": return "Aim farther from the nearest depot.";
     case "near_ship": return "Aim away from nearby ships.";
+    case "moving": return "Brake to deploy.";
     case "depot_full": return "The depot cargo hold needs more room. Withdraw cargo first.";
     case "drone_limit": return "All drone bays are in use.";
     case "drone_assigned": return "This drone already has a job. Choose another drone for the request.";

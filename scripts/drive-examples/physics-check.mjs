@@ -247,41 +247,43 @@ export default async function physicsCheck(d) {
       };
     }
 
-    // 6. Resting: full throttle against a rock for 10 s (ball and hull).
+    // 6. Resting: full throttle against a rock for 10 s (flat wall and lumpy hull), from three start gaps.
+    //    Vibration is kicks that keep reversing. A flat nose settling 0.3° tilted can roll onto another
+    //    corner once (MEASURED 2026-11-25: one 0.05 m/s kick, never reversing), which is physics, not chatter;
+    //    a moving-mean metric scored that single event as 0.0585 "jitter" and passed or failed by start gap.
     {
-      // Start at rest 0.3 m off the face (found by a 1 m/s probe), then full throttle for 10 s.
-      const rest = async (rock) => {
+      const rest = async (rock, offM) => {
         const probe = await sim({ sampleEvery: 1, startVelocityBodyMps: [0, 0, 1], rocks: [rock], segments: [{ decoupled: true, seconds: 120 }] });
         const pc = touches(probe.segments[0])[0];
         const zTouch = probe.segments[0].trace.find((s) => s.step >= pc.step - 1).posM[2];
-        const r = await sim({ sampleEvery: 1, startPosM: [0, 0, zTouch - 0.3], rocks: [rock], segments: [{ throttle: 1, seconds: 10 }] });
+        const r = await sim({ sampleEvery: 1, startPosM: [0, 0, zTouch - offM], rocks: [rock], segments: [{ throttle: 1, seconds: 10 }] });
         const tr = r.segments[0].trace;
         const firstTouch = touches(r.segments[0])[0];
         const settled = firstTouch ? tr.filter((s) => s.t >= firstTouch.t + 2) : [];
-        const zs = settled.map((s) => s.posM[2]);
-        // Jitter = velocity minus its ±0.125 s moving mean (vibration); drift = the mean itself.
-        let jitter = 0, drift = 0;
-        for (let k = 15; k < settled.length - 15; k++) {
-          const m = [0, 0, 0];
-          for (let j = k - 15; j <= k + 15; j++) for (let a = 0; a < 3; a++) m[a] += settled[j].velMps[a] / 31;
-          jitter = Math.max(jitter, len(sub(settled[k].velMps, m)));
-          drift = Math.max(drift, len(m));
+        const dv = settled.slice(1).map((s, i) => sub(s.velMps, settled[i].velMps));
+        let reversals = 0, maxKick = 0;
+        for (let k = 1; k < dv.length; k++) {
+          maxKick = Math.max(maxKick, len(dv[k]));
+          if (len(dv[k - 1]) > 0.01 && len(dv[k]) > 0.01 && dv[k - 1][0] * dv[k][0] + dv[k - 1][1] * dv[k][1] + dv[k - 1][2] * dv[k][2] < 0) reversals++;
         }
         return {
-          maxJitterMps: r4(jitter), maxDriftMps: r4(drift),
-          maxYawRateDegS: r4(Math.max(0, ...settled.map((s) => Math.abs(s.angVelDegS[1])))),
-          firstContactS: r4(firstTouch?.t), impactSpeedMps: r4(firstTouch?.speedBeforeMps),
-          maxPenetrationM: r4(Math.max(0, ...settled.map((s) => s.penetrationM))),
-          maxSpeedAfter1sMps: r4(Math.max(0, ...settled.map((s) => s.speedMps))),
-          positionSpreadM: r4(zs.length ? Math.max(...zs) - Math.min(...zs) : null),
+          startGapM: offM, reversals, maxKickMps: r4(maxKick),
+          maxSlideMps: r4(Math.max(0, ...settled.map((s) => s.speedMps))),
+          maxSpinDegS: r4(Math.max(0, ...settled.map((s) => len(s.angVelDegS)))),
+          firstContactS: r4(firstTouch?.t), maxPenetrationM: r4(Math.max(0, ...settled.map((s) => s.penetrationM))),
           nan: r.hasNaN,
         };
       };
-      // Flat faces: a ship shoved into a round rock slides off it (that is correct, not jitter).
-      const wall = await rest({ kind: "box", half: [60, 60, 20], posM: [0, 0, 80] });
-      const hull = await rest({ kind: "hull", radiusM: 60, lumps: 0.2, seed: 5, posM: [0, 0, 80] });
-      const ok = (x) => x.firstContactS !== undefined && x.maxPenetrationM < 0.2 && x.maxJitterMps < 0.05 && !x.nan;
-      g.g6_resting = { wall, lumpyHull60m: hull, pass: ok(wall) && ok(hull) };
+      const wallRock = { kind: "box", half: [60, 60, 20], posM: [0, 0, 80] };
+      const hullRock = { kind: "hull", radiusM: 60, lumps: 0.2, seed: 5, posM: [0, 0, 80] };
+      const wall = [], hull = [];
+      for (const off of [0.1, 0.3, 0.7]) {
+        wall.push(await rest(wallRock, off));
+        hull.push(await rest(hullRock, off));
+      }
+      const ok = (x) => x.firstContactS !== undefined && x.reversals <= 2 && x.maxKickMps < 0.1 && x.maxSlideMps < 0.5 &&
+        x.maxSpinDegS < 3 && x.maxPenetrationM < 0.2 && !x.nan;
+      g.g6_resting = { wall, lumpyHull60m: hull, pass: [...wall, ...hull].every(ok) };
     }
 
     // 6b. Autopilot heading pull (spool phase: desiredForward without transit) survives contact
@@ -694,10 +696,14 @@ async function m2b(d, parts, out, { ev, sim, state, vLim }) {
       headOn, headOnHull, headOn60, wingtip60, glancing, lethal, bump, resting: rest,
       pass: headOn.damageApplications === 1 && Math.abs(headOn.impacts[0].damagePct - headOn.impacts[0].curvePct) < 1e-6 && headOn.contactEvents >= 1 &&
         headOnHull.damageApplications === 1 &&
-        glancing.damageApplications === 1 && glancing.totalDamagePct > 0 && glancing.totalDamagePct < 10 && !glancing.lethal &&
+        // The winged hull can clip a wing, spin, then hit nose-first inside one episode (MEASURED 2026-11-25:
+        // 20.2 then 35.0 m/s, 0.15 s apart): the episode may charge twice but its total is curve(peak), once.
+        glancing.damageApplications >= 1 && Math.abs(glancing.totalDamagePct - Math.max(...glancing.impacts.map((i) => i.curvePct))) < 0.01 &&
+        glancing.impacts.every((x, i) => i === 0 || x.dvMps > glancing.impacts[i - 1].dvMps) &&
+        glancing.totalDamagePct > 0 && glancing.totalDamagePct < 10 && !glancing.lethal &&
         lethal.lethal && bump.damageApplications === 0 && rest.damageApplications === 0 && rest.totalDamagePct === 0 && !rest.nan &&
         headOn60.damageApplications === 1 && Math.abs(headOn60.impacts[0].damagePct - headOn60.impacts[0].curvePct) < 1e-6 && wingtip60.damageApplications === 1 &&
-        [headOn, headOnHull, headOn60, wingtip60, glancing, lethal].every(once),
+        [headOn, headOnHull, headOn60, wingtip60, lethal].every(once),
     };
   }
 
@@ -732,7 +738,9 @@ async function m2b(d, parts, out, { ev, sim, state, vLim }) {
     await ev("__phys.game.setHealth(__phys.game.health().max)");
     await ev("__phys.drainContacts()");
     const slow = await approach(d, ev, state, id, 100, 15000);
-    const firstContact = (await ev("__phys.drainContacts()")).find((c) => c.impulseNs > 0);
+    // A speculative/CCD-resolved hit carries Δv with zero solver impulse (MEASURED 2026-11-25: impulse 0,
+    // Δv_n 20.4 m/s at 23 m/s), so count a contact the way `touches` does.
+    const firstContact = (await ev("__phys.drainContacts()")).find((c) => c.impulseNs > 0 || c.dvNormalMps > 0.05);
     await d.press("x");
     await d.frames(30);
     const stAfter = await ev(`__phys.asteroids.state(${id})`);

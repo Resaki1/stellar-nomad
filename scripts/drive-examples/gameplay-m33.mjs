@@ -445,7 +445,7 @@ export async function inspectClass(d, ctx, rocks, used, cls) {
 
 /**
  * The shared path from any start to an owned transit drive (playtest-1 matrix, plan §13 WP2):
- * sustained beam, C-type, first batch (the 200 kg start tank has room), Heat Rejection, Bulk
+ * sustained beam, C-type, first batch (the fixture tank is set to 200 kg so it has room), Heat Rejection, Bulk
  * Handling + Cargo Rack, Transit Drive Calibration, the drive, then the Auxiliary Tank fitted
  * (playtest 2: the Moon needs more than the base tank). `accept(label, outcome)` logs.
  */
@@ -516,7 +516,7 @@ export async function topUp(ctx, rocks, used, accept) {
 async function playthrough(d, ctx, path) {
   const { ev } = ctx;
   await freshWorld(d, ctx, `m33-play-${path}`);
-  // A v1 fixture migrates with a full tank; a new world starts at 200 kg (§13 WP2).
+  // New worlds start full (FIRST_EXPEDITION_PLAN); 200 kg stands for a pilot who has flown, so the first batch has room.
   await ev(`${G}.res.set({ ordinaryKg: 200 })`);
   const w0 = await ctx.world();
   const p0 = await ctx.player();

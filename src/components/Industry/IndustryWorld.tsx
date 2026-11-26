@@ -20,7 +20,7 @@ import type { SystemConfig } from "@/sim/systemTypes";
 import { simEpochMsAtom } from "@/store/simTime";
 import type { ReplicationPoint, ShipPose, Vec3Tuple } from "@/save/types";
 import { getLocalPlayerShip, localRenderPose } from "@/sim/entities";
-import { frameOriginKm } from "@/sim/frames";
+import { frameOriginKm, type FrameId } from "@/sim/frames";
 import { miningLegPosition, miningLegVelocity } from "@/sim/industry/sortie";
 import { droneFlightProgress, minimumDroneFlightS } from "@/sim/industry/route";
 import type { DepotRecord, DroneRecord } from "@/sim/industry/types";
@@ -48,6 +48,8 @@ const _lampMatrix = new Matrix4();
 const _unit = new Vector3(1, 1, 1);
 const DEPOT_COLLISION_KM = 3;
 const DRONE_RENDER_KM = 3;
+/** A visible drone this close to the local ship carries a collider at its drawn pose (WP2). */
+const DRONE_COLLISION_KM = 0.4;
 const BEAM_FADE_S = 0.6;
 
 /** Drone laser power relative to the stock ship laser (beam radiance ∝ power, VFX plan B3). */
@@ -86,6 +88,7 @@ for (const material of [PREVIEW_GOOD, PREVIEW_BAD]) registerPreExposedEmissive(m
 const _from = new Vector3(), _to = new Vector3();
 const _origin = new Vector3(), _droneOffset = new Vector3(), _direction = new Vector3(), _offset = new Vector3();
 const _orientation = new Quaternion();
+const _colliderKm = new Vector3();
 const _forward = new Vector3(0, 0, 1);
 const _up = new Vector3(0, 1, 0);
 
@@ -296,6 +299,11 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
   const drawn = useRef(false);
   const worldOrigin = useWorldOrigin();
   const lane = index % 2 === 0 ? 1 : -1;
+  const collider = useRef<NearFieldColliderId | null>(null);
+  useEffect(() => () => {
+    if (collider.current !== null) nearField.removeCollider(collider.current);
+    collider.current = null;
+  }, []);
   useFrame(({ camera }, delta) => {
     const g = ship.current;
     if (!g) return;
@@ -405,6 +413,7 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
     }
 
     g.visible = visibleFlight && g.position.lengthSq() <= (DRONE_RENDER_KM * 1000) ** 2;
+    syncDroneCollider(collider, assets.shape, g, home, w);
     if (!g.visible) return;
     lod.updateWorldMatrix(true, false);
     lod.update(camera);
@@ -425,6 +434,22 @@ function UtilityDrone({ drone, home, dest, index, assets }: {
   return <group ref={ship} name={`drone:${drone.id}`} visible={false} dispose={null}>
     <primitive object={lod} name="droneLOD" />
   </group>;
+}
+
+/** Keep the drone's contact surface on its drawn pose while it is visible and near the local ship. */
+function syncDroneCollider(handle: { current: NearFieldColliderId | null }, shape: ColliderShape, g: Group, home: DepotRecord, w: Vector3): void {
+  // The world origin sits on the local ship, so scene metres are ship-relative.
+  const near = g.visible && g.position.lengthSq() <= (DRONE_COLLISION_KM * 1000) ** 2;
+  if (!near) {
+    if (handle.current !== null) nearField.removeCollider(handle.current);
+    handle.current = null;
+    return;
+  }
+  scenePosition(home, w, _origin);
+  _colliderKm.subVectors(g.position, _origin).multiplyScalar(0.001).add(_offset.fromArray(home.positionKm));
+  const frameId = home.frameId as FrameId;
+  if (handle.current === null) handle.current = nearField.addCollider(shape, frameId, _colliderKm, g.quaternion, "drone");
+  else nearField.setColliderPose(handle.current, frameId, _colliderKm, g.quaternion);
 }
 
 function UtilityDrones({ depots, drones, points }: {

@@ -3,6 +3,8 @@ import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useStore } from "jotai";
 import { Mesh, MeshStandardMaterial, Vector3, type Group } from "three";
+import type { ColliderShape } from "@/sim/physics/types";
+import { readCollisionMeshes } from "@/components/models/collisionMeshes";
 import type { MeshStandardNodeMaterial } from "three/webgpu";
 import { emitterColor, type EmitterId } from "@/components/space/emissivePhotometry";
 import { beaconFlash, fadingLampMaterial, readLightTemplate, type LightTemplate } from "@/components/space/lightPoints";
@@ -12,6 +14,7 @@ import { simEpochMsAtom } from "@/store/simTime";
 
 const BASE = "/models/drones/base-drone";
 const DRONE_LOD_ASSETS = [BASE + ".glb", BASE + "-lod1.glb", BASE + "-lod2.glb"];
+const DRONE_COLLISION_ASSET = BASE + "-collision.glb";
 export const DRONE_LOD_DISTANCES_M = [0, 100, 320];
 
 const LAMPS = {
@@ -24,11 +27,14 @@ export type DroneRenderAssets = {
   lights: LightTemplate;
   miningPosition: Vector3;
   miningDirection: Vector3;
+  /** Contact surface: the authored convex proxies (base-drone-collision.glb), model metres. */
+  shape: ColliderShape;
 };
 
 /** Share the uploaded geometry, textures and synchronized lamp materials across the fleet. */
 export function useDroneRenderAssets(): DroneRenderAssets {
   const models = useGLTF(DRONE_LOD_ASSETS, false, false);
+  const collision = useGLTF(DRONE_COLLISION_ASSET, false, false);
   // S3: each LOD's baked lamp spill (TEXCOORD_1), tools/models/spill-bake.mjs.
   const spill = useSpillLightmaps(BASE, DRONE_LOD_ASSETS.length);
   const store = useStore();
@@ -63,8 +69,10 @@ export function useDroneRenderAssets(): DroneRenderAssets {
     const setBeaconIntensity = (intensity: number) => {
       for (const material of beacons) material.emissiveIntensity = intensity;
     };
-    return { assets: { scenes, lights, miningPosition, miningDirection }, lamps, setBeaconIntensity };
-  }, [models, spill]);
+    // The artist's convex proxies (32 pieces: hull, wings, drives, masts, pods), same frame as LOD0.
+    const shape = readCollisionMeshes(collision.scene);
+    return { assets: { scenes, lights, miningPosition, miningDirection, shape }, lamps, setBeaconIntensity };
+  }, [models, spill, collision]);
 
   useEffect(() => {
     const unregister = lamps.map(material => registerPreExposedEmissive(material));

@@ -308,6 +308,17 @@ export function createPhysicsHarness(store: Store) {
       if (shape.kind === "compoundHull") return shape.pieces.map((points) => Array.from(points));
       return [this.shipHull()];
     },
+    /** WP2: registered colliders with `tag`, frame-relative km. */
+    tagged(tag: string) {
+      const out: { id: number; frameId: string; relKm: number[] }[] = [];
+      nearField.forEachCollider((id, _shape, frameId, relKm, t) => { if (t === tag) out.push({ id, frameId, relKm: relKm.toArray() }); });
+      return out;
+    },
+    /** WP2: the ship collider's attitude in Rapier vs the drawn model's local rotation. */
+    attitude() {
+      const ship = getLocalPlayerShip();
+      return { engine: nearField.shipAttitude(), bankDeg: (ship?.bankRad ?? 0) * 180 / Math.PI, leanDeg: (ship?.leanRad ?? 0) * 180 / Math.PI };
+    },
     /** Drain the live contact queue (and keep a copy in `contactLog`). */
     drainContacts() {
       const out: (NearFieldContact & { t: number })[] = [];
