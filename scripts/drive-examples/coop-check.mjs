@@ -358,7 +358,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     return { pass: Object.values(checks).every(Boolean), checks, stillMaxDevM: still, moving, ms: Date.now() - p0 };
   }
 
-  /** Both pilots beam the same rock; `first` starts OFFSET_MS earlier and must win. */
+  /** Both pilots beam the same rock (`first` OFFSET_MS earlier): one claim finishes it, the yield is shared (WP5). */
   async function race(firstRole, name) {
     const p0 = Date.now();
     // ≥ 5 s: on a 3.9 s beam the first pilot's 300 ms head start once lost to frame jitter
@@ -367,12 +367,28 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     const t = ref(r);
     await warpTo(host, r);
     await guestTo(r);
+    // 90° apart around the rock: on one approach line the rear ship's beam crossed the front ship,
+    // and the safety hold (correctly) cut it (MEASURED 2026-11-26: guest own progress 0, held from 0.5 s).
+    const standoff = Math.max(0.6, (r.radiusM / 1000) * 4);
+    for (const [page, yaw] of [[host, 0], [guest, 90]]) await page.evaluate(`${R}.parkAround(${J(t)}, ${yaw}, 0, ${standoff})`);
+    await Promise.all([host.frames(30), guest.frames(30)]);
     await Promise.all([aim(host, r), aim(guest, r)]);
     const predicted = await host.evaluate(`${C}.predict(${J({ ...t, radiusM: r.radiusM })})`);
     const before = await snapshot();
     const shotsBefore = { host: await host.shot(`coop/${name}-host-before`), guest: await guest.shot(`coop/${name}-guest-before`) };
     const [first, second] = firstRole === "host" ? [host, guest] : [guest, host];
     const m0 = Date.now();
+    // Both beams as they ran: [ms, mining, progress (own + partners), beams seen, partners' share].
+    const trace = { first: [], second: [] };
+    let tracing = true;
+    const sample = async (page, out) => {
+      while (tracing && out.length < 120) {
+        const [m, sh] = await page.evaluate(`[${R}.mining(), ${C}.sharedMining()]`);
+        out.push([Date.now() - m0, m.mining ? 1 : 0, +m.progress.toFixed(2), sh.beams, +sh.partnersFraction.toFixed(2)]);
+        await page.sleep(150);
+      }
+    };
+    const tracer = Promise.all([sample(first, trace.first), sample(second, trace.second)]);
     await first.press("m");
     await first.sleep(OFFSET_MS);
     await second.press("m");
@@ -381,16 +397,7 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
       await second.sleep(Math.max(0, m0 + r.mineS * 1000 - 800 - Date.now()));
       if (!(await second.evaluate(`${C}.holdIncoming(${HOLD_MS})`))) throw new Error("no link to delay");
     }
-    // Loser's beam as it ran (diagnostic: progress, focus, its pending claim).
-    const trace = [];
-    let tracing = true;
-    const tracer = (async () => {
-      while (tracing && trace.length < 120) {
-        const m = await second.evaluate(`[${R}.mining(), ${C}.pending()]`);
-        trace.push([Date.now() - m0, m[0].mining ? 1 : 0, +m[0].progress.toFixed(2), m[0].targetId === r.instanceId ? 1 : 0, m[1] ? m[1].seq : null]);
-        await second.sleep(150);
-      }
-    })();
+
     const settled = await Promise.all([settle(host), settle(guest)]);
     tracing = false;
     await tracer;
@@ -404,6 +411,9 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     const rock = { host: await host.evaluate(`${C}.rockState(${J(t)})`), guest: await guest.evaluate(`${C}.rockState(${J(t)})`) };
     const grants = { host: delta(after.host.record, before.host.record), guest: delta(after.guest.record, before.guest.record) };
     const winner = !empty(grants.host) && empty(grants.guest) ? "host" : empty(grants.host) && !empty(grants.guest) ? "guest" : null;
+    const total = {};
+    for (const g of [grants.host, grants.guest]) for (const [k, n] of Object.entries(g)) total[k] = (total[k] ?? 0) + n;
+    const units = (g) => Object.values(g).reduce((a, b) => a + b, 0);
     const loser = firstRole === "host" ? "guest" : "host";
     // How the loser ended: a claim the host rejected, or a beam cut when the rock vanished.
     const loserStream = after[loser].stream;
@@ -414,9 +424,12 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     const depletions = after.destroyed.length - before.destroyed.length;
     const checks = {
       settled: settled.every(Boolean),
-      oneWinner: winner === firstRole,
-      loserRejected: HOLD_MS > 0 ? loserClaim === "rejected:already_done" : true,
-      yieldOk: winner ? sameItems(grants[winner], predicted.solo) : false,
+      // WP5: both pilots beamed the rock, so one claim finishes it and the yield is shared.
+      oneFinisher: [firstClaim, loserClaim].filter((c) => c.startsWith("accepted")).length === 1,
+      secondClaimRejected: !loserClaim.startsWith("rejected") || loserClaim === "rejected:already_done",
+      wholeConserved: sameItems(total, predicted.solo),
+      bothShared: !empty(grants.host) && !empty(grants.guest),
+      bothSawTwoBeams: trace.first.some((x) => x[3] >= 2) && trace.second.some((x) => x[3] >= 2),
       oneDepletion: depletions === 1 && after.destroyed.includes(key),
       guestSawDepletion: after.guestDestroyed - before.guestDestroyed === 1,
       vanishedBoth: !rock.host.loaded && !rock.guest.loaded && rock.host.destroyed && rock.guest.destroyed,
@@ -427,10 +440,11 @@ export default async function coopCheck({ host, guest, extraGuests = [], log }) 
     };
     return {
       pass: Object.values(checks).every(Boolean), checks, rock: { ...t, radiusM: r.radiusM, mineS: r.mineS }, first: firstRole, winner, loserClaim, firstClaim,
-      grants, predicted: predicted.solo, depletions, revision: [before.revision, after.revision], clientRevision: after.clientRevision,
+      grants, shareOfUnits: { host: +(units(grants.host) / Math.max(1, units(total))).toFixed(2), guest: +(units(grants.guest) / Math.max(1, units(total))).toFixed(2) },
+      predicted: predicted.solo, depletions, revision: [before.revision, after.revision], clientRevision: after.clientRevision,
       cargo: { hostRecord: after.host.record, hostMirror: after.host.mirror, guestRecord: after.guest.record, guestMirror: after.guest.mirror },
       shots: { before: shotsBefore, after: shotsAfter }, mineMs, ms: Date.now() - p0,
-      loserTrace: checks.loserRejected ? undefined : trace,
+      trace,
     };
   }
 

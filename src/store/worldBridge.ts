@@ -73,6 +73,17 @@ export function installWorldBridge(store: Store): void {
         if (e.to === local) store.set(addToastAtom, { kind: "success", message: "Supplies received",
           detail: getWorldState().members[e.by]?.name, values: [{ id: e.itemId, amount: e.amount, unit: e.kind === "fuel" ? "kg" : undefined }] });
         break;
+      case "mine.shared": {
+        // WP5: a crewmate finished a rock this pilot helped mine (the finisher's own toast is the "Mined" one).
+        const mine = e.shares[local];
+        if (!mine || e.by === local) break;
+        const values = Object.entries(mine.granted).sort((a, b) => b[1] - a[1]).map(([id, amount]) => ({ id, amount }));
+        const lost = Object.values(mine.overflow).reduce((a, n) => a + n, 0);
+        const by = getWorldState().members[e.by]?.name || "Replicant";
+        store.set(addToastAtom, { kind: values.length ? "success" : "info", message: "Shared haul", values,
+          detail: lost > 0 ? `with ${by} · hold full, ${lost} left behind` : `with ${by}` });
+        break;
+      }
       case "expedition.marked": {
         const fixes = getWorldState().rendezvous;
         // A crewmate's new ping announces itself (the sound comes from the notification).

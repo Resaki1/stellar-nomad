@@ -10,7 +10,8 @@ import { MAX_HEAT_FRACTION } from "@/sim/ship/shipResources";
 import type { Difficulty, PlayerId, QuatTuple, SaveData, Vec3Tuple } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
 
-export const PROTOCOL_VERSION = 9;
+/** 10: WP5 shared mining (pose rock id, `mining` feed, `beamS` = the pilot's own work seconds). */
+export const PROTOCOL_VERSION = 10;
 /** Three missed worker heartbeats suspend prediction and new resource spends. */
 export const HOST_SILENCE_MS = 3000;
 export const MAX_PLAYERS = 4;
@@ -68,7 +69,18 @@ export interface PoseMsg {
   th?: number;
   /** Beam endpoint on the rock, sender's frame km (with fl bit 0). */
   b?: Vec3Tuple;
+  /** The locked rock (WP5): the host credits beam work to it and feeds back partners' progress. */
+  r?: RockRef;
 }
+
+/** A rock by field, chunk key and instance id. */
+export type RockRef = [fieldId: string, chunkKey: string, instanceId: number];
+
+/**
+ * WP5 progress feed, host → one pilot at ~5 Hz on the pose channel: the other pilots' share of
+ * the rock this pilot has locked (fraction of the rock) and the beams on it now (self included).
+ */
+export interface MiningFeedMsg { t: "mining"; gen: number; r: RockRef; partners: number; beams: number }
 
 /** A beam endpoint farther than this from the sender is dropped (wire sanity bound above base and upgraded mining ranges, including surface offsets). */
 export const MAX_BEAM_KM = 50;
@@ -130,6 +142,7 @@ export type HostMsg =
   | { t: "members"; gen: number; names: Record<PlayerId, string> }
   | ImpactMsg
   | PilotContactMsg
+  | MiningFeedMsg
   | PoseMsg;
 
 type ReliableUpdate = Extract<HostMsg, { t: "commit" | "industry" }>;
@@ -235,6 +248,12 @@ function decodeImpact(raw: Obj): ImpactMsg | null {
   return { t: "impact", gen: raw.gen, by: raw.by, contact: { frameId: c.frameId, positionKm: c.positionKm as Vec3Tuple, direction: c.direction as Vec3Tuple, dvMps: c.dvMps } };
 }
 
+const ROCK_KEY = 160;
+function decodeRock(v: unknown): RockRef | null {
+  if (!Array.isArray(v) || v.length !== 3 || !isStr(v[0], ROCK_KEY) || !v[0] || !isStr(v[1], ROCK_KEY) || !v[1] || !isInt(v[2], 0xffffffff)) return null;
+  return [v[0], v[1], v[2]];
+}
+
 export function decodePose(v: Obj): PoseMsg | null {
   if (!isStr(v.id) || !isInt(v.seq) || !isInt(v.revision) || !isInt(v.gen) || !isNum(v.tick) || !isStr(v.f, 32)) return null;
   if (!vec(v.p, 3, BIG_KM) || !vec(v.v, 3, 1e6) || !vec(v.q, 4, 1.01) || !isInt(v.fl, 255)) return null;
@@ -246,6 +265,8 @@ export function decodePose(v: Obj): PoseMsg | null {
     const b = v.b as Vec3Tuple;
     if (Math.hypot(b[0] - out.p[0], b[1] - out.p[1], b[2] - out.p[2]) <= MAX_BEAM_KM) out.b = [b[0], b[1], b[2]];
   }
+  const r = v.r === undefined ? null : decodeRock(v.r);
+  if (r) out.r = r;
   return out;
 }
 
@@ -379,6 +400,11 @@ export function decodeHostMsg(raw: unknown): HostMsg | null {
       if (!impact || impact.contact.dvMps > 200 || Math.abs(Math.hypot(...impact.contact.direction) - 1) > 1e-3) return null;
       return { t: "pilotContact", gen: impact.gen, id: raw.id, other: raw.other, motion: raw.motion, tick: raw.tick,
         contact: impact.contact, correctionM: raw.correctionM, damage: raw.damage };
+    }
+    case "mining": {
+      const r = decodeRock(raw.r);
+      if (!r || !isInt(raw.gen) || !isNum(raw.partners) || raw.partners < 0 || !isInt(raw.beams, MAX_PLAYERS)) return null;
+      return { t: "mining", gen: raw.gen, r, partners: Math.min(1, raw.partners), beams: raw.beams };
     }
     case "pose":
       return decodePose(raw);

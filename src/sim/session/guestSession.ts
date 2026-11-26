@@ -7,7 +7,7 @@ import { depleteDroneDiscoveries } from "@/sim/industry/mining";
 import { applyIndustryDelta } from "@/sim/industry/simulation";
 import type { PlayerId, SaveData, SaveMeta } from "@/save/types";
 import type { OperationOutcome, ShipContact, WorldEvent, WorldOperation } from "@/sim/world/commands";
-import { HOST_SILENCE_MS, PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type PilotContactMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
+import { HOST_SILENCE_MS, PROTOCOL_VERSION, decodeHostMsg, type Channel, type HostMsg, type MiningFeedMsg, type PilotContactMsg, type PoseMsg, type RefuseReason, type Telemetry, type WelcomeMsg } from "./protocol";
 import type { ClientLink, Clock } from "./ports";
 
 export { HOST_SILENCE_MS } from "./protocol";
@@ -49,6 +49,8 @@ export interface GuestSessionOptions {
   onPose?: (p: PoseMsg) => void;
   onPilotContact?: (c: PilotContactMsg) => void;
   onClock?: (c: Extract<HostMsg, { t: "clock" }>) => void;
+  /** WP5 shared-mining progress for this pilot's locked rock (~5 Hz while it is being mined). */
+  onMining?: (m: MiningFeedMsg) => void;
 }
 
 export class GuestSession {
@@ -169,6 +171,9 @@ export class GuestSession {
         return;
       case "pilotContact":
         if (this.state === "joined" && !this.storageFailed && !this.hostClosing && channel === "cmd") this.o.onPilotContact?.(msg);
+        return;
+      case "mining":
+        if (this.state === "joined") this.o.onMining?.(msg);
         return;
       case "pose": {
         if (this.state !== "joined" || channel !== "pose" || msg.id === this.playerId) return;

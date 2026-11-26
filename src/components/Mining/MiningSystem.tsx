@@ -21,6 +21,9 @@ import {
   pulseMiningActiveAtom,
   asteroidMinedSignalAtom,
   inspectControl,
+  sharedMiningAtom,
+  sharedMiningFeed,
+  SHARED_FEED_FRESH_MS,
   type TargetedAsteroid,
   TARGET_FOCUS_TIME_S,
   PULSE_ON_S,
@@ -491,7 +494,14 @@ const MiningSystem = () => {
   const miningAimLostTimeRef = useRef(0);
 
   const currentSnapshotRef = useRef<TargetedAsteroid | null>(null);
+  /** This pilot's own work on the locked rock (0..1); the partners' share comes from the host feed. */
   const miningProgressRef = useRef(0);
+  const partnersRef = useRef(0);
+  const sharedBeamsRef = useRef(0);
+  /** Own executed beam seconds at completion (the op's `beamS`, WP5). */
+  const ownBeamSRef = useRef(0);
+  /** The safety hold is cutting the beam this frame (a station, depot or pilot in its path). */
+  const beamHeldRef = useRef(false);
 
   // One frame delay to remove the asteroid after state update is committed
   const pendingRemovalIdRef = useRef<{ instanceId: number; fieldId: string; chunkKey: string } | null>(null);
@@ -1053,6 +1063,15 @@ const MiningSystem = () => {
 
     currentSnapshotRef.current = snapshot;
 
+    // WP5: the partners' share of this rock while the host's feed for it is fresh.
+    {
+      const f = sharedMiningFeed;
+      const fresh = !!snapshot && f.instanceId === snapshot.instanceId && f.chunkKey === snapshot.location.chunkKey &&
+        f.fieldId === snapshot.location.fieldId && performance.now() - f.atMs < SHARED_FEED_FRESH_MS;
+      partnersRef.current = fresh ? f.partners : 0;
+      sharedBeamsRef.current = fresh ? f.beams : 0;
+    }
+
     // Keep beam-end ref warm so it's never stale when the beam first appears.
     // Without this, MiningBeam can mount (React state says isMining=true) one
     // frame before the mining block below writes a real endpoint — causing the
@@ -1141,6 +1160,7 @@ const MiningSystem = () => {
         // Safety hold: never fire through a station, depot or pilot (the beam is not drawn).
         const blocked = beamBlocked(start, beamEndLocalRef.current);
         v.hold = blocked;
+        beamHeldRef.current = blocked;
         // A miss halts mining after one ray tick (grazing the outline must not stutter); the
         // interlock cuts the laser once it has been off target (or held) for INTERLOCK_GRACE_S.
         miningAimLostTimeRef.current = onTarget && !blocked ? 0 : miningAimLostTimeRef.current + delta;
@@ -1194,7 +1214,9 @@ const MiningSystem = () => {
             miningProgressRef.current += work / miningDurationSRef.current;
           }
 
-          if (miningProgressRef.current >= 1) {
+          // Complete at own + partners' work; the claim carries only this pilot's own seconds.
+          if (hitting && !shipRes.miningTripped && !interlock && miningProgressRef.current + partnersRef.current >= 1) {
+            ownBeamSRef.current = Math.min(1, miningProgressRef.current) * miningDurationSRef.current;
             miningProgressRef.current = 1;
             pendingRemovalIdRef.current = {
               instanceId: snapshot.instanceId,
@@ -1246,7 +1268,9 @@ const MiningSystem = () => {
     // The beam as drawn, in the ship's frame: co-op poses show it to the other pilots.
     {
       const bp = localBeamPose, rp = localRenderPose, e = beamEndLocalRef.current;
-      bp.on = isMiningNow && !cancelMining && miningStateRef.current.targetedAsteroid !== null && rp.atMs >= 0;
+      // A held beam (a ship in its path) is not fired: crewmates must neither see nor credit it (WP5).
+      bp.on = isMiningNow && !cancelMining && !beamHeldRef.current && miningStateRef.current.targetedAsteroid !== null && rp.atMs >= 0;
+      beamHeldRef.current = false;
       if (bp.on) {
         bp.dim = !pulseCycleBuffer.beamOn;
         bp.miss = !miningBeamView.hit.value;
@@ -1255,6 +1279,14 @@ const MiningSystem = () => {
         bp.relKm[0] = rp.relKm[0] + e.x / 1000;
         bp.relKm[1] = rp.relKm[1] + e.y / 1000;
         bp.relKm[2] = rp.relKm[2] + e.z / 1000;
+      }
+      const lock = currentSnapshotRef.current;
+      if (lock && (isFocused || isMiningNow)) {
+        bp.lock.fieldId = lock.location.fieldId;
+        bp.lock.chunkKey = lock.location.chunkKey;
+        bp.lock.instanceId = lock.instanceId;
+      } else {
+        bp.lock.instanceId = -1;
       }
     }
 
@@ -1278,7 +1310,7 @@ const MiningSystem = () => {
         if (cancelMining) nextIsMining = false;
         if (nextIsMining && (!snapshotForState || !nextFocused)) nextIsMining = false;
 
-        const nextMiningProgress = nextIsMining ? clamp01(miningProgressRef.current) : 0;
+        const nextMiningProgress = nextIsMining ? clamp01(miningProgressRef.current + partnersRef.current) : 0;
 
         return {
           targetedAsteroid: snapshotForState,
@@ -1291,6 +1323,12 @@ const MiningSystem = () => {
           inspectProgress: inspectControl.requested ? Math.max(0.001, inspectControl.progress) : 0,
         };
       });
+
+      const shared = store.get(sharedMiningAtom);
+      const beams = sharedBeamsRef.current, partnersFraction = clamp01(partnersRef.current);
+      if (shared.beams !== beams || Math.abs(shared.partnersFraction - partnersFraction) > 0.005) {
+        store.set(sharedMiningAtom, { beams, partnersFraction });
+      }
 
     }
 
@@ -1319,8 +1357,8 @@ const MiningSystem = () => {
           { ...removal, radiusM: reward.radiusM },
           { miningEfficiencyMult: cfg.miningEfficiencyMult },
           newOpId(),
-          // Executed beam seconds: progress only grows by granted work, so a finished rock took its duration.
-          miningDurationSRef.current,
+          // This pilot's executed beam seconds (solo: the full duration). The host adds partners' credited work.
+          ownBeamSRef.current,
         );
         runOperation(op, (o) => {
           if (o.status !== "accepted" || o.result.type !== "asteroid.mine") return;

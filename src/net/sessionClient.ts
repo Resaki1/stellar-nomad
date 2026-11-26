@@ -9,10 +9,11 @@ import { isSimPaused, setSimPaused } from "@/sim/simPause";
 import { repositionState } from "@/sim/ship/reposition";
 import { GuestSession, type GuestState, type GuestStore } from "@/sim/session/guestSession";
 import { systemClock } from "@/sim/session/ports";
-import { POSE_BEAM_MISS, POSE_NO_CONTACT, type RefuseReason, type Telemetry, type WelcomeMsg } from "@/sim/session/protocol";
+import { POSE_BEAM_MISS, POSE_NO_CONTACT, type RefuseReason, type RockRef, type Telemetry, type WelcomeMsg } from "@/sim/session/protocol";
 import { worldAuthority } from "@/sim/world/worldAuthority";
 import { getLocalPlayerId } from "@/save/playerId";
 import { shipRes, shipReq } from "@/store/shipResources";
+import { sharedMiningFeed } from "@/store/mining";
 import { transitDriveBuffer, isTransitBurning } from "@/store/transit";
 import { nearField } from "@/sim/physics/nearField";
 import { clearPilotContacts, receivePilotContact, resetPilotContactInbox } from "@/sim/physics/pilotContactInbox";
@@ -82,6 +83,13 @@ export function createSessionClient(h: SessionClientHooks): GuestSession {
     },
     onPose: pushRemotePose,
     onPilotContact: receivePilotContact,
+    onMining: (m) => {
+      const f = sharedMiningFeed;
+      [f.fieldId, f.chunkKey, f.instanceId] = m.r;
+      f.partners = m.partners;
+      f.beams = m.beams;
+      f.atMs = performance.now();
+    },
     onClock: (c) => {
       updateCrew(c.roster);
       hostClock.epochMs = c.epochMs;
@@ -137,6 +145,7 @@ export function startSessionLoops(gs: GuestSession): () => void {
       motion: localRenderPose.motion,
       th: Math.round(Math.min(1, Math.max(0, drawn ? rp.throttle : 0)) * 255),
       ...(beam ? { b: [b.relKm[0], b.relKm[1], b.relKm[2]] as [number, number, number] } : {}),
+      ...(b.lock.instanceId >= 0 ? { r: [b.lock.fieldId, b.lock.chunkKey, b.lock.instanceId] as RockRef } : {}),
     });
   }, POSE_MS);
   const tel = setInterval(() => gs.sendTelemetry(), TELEMETRY_MS);

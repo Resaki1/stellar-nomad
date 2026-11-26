@@ -1,4 +1,5 @@
 /** `__test.coop` — co-op session control and inspection for the headless two-browser gates. */
+import { sharedMiningAtom } from "@/store/mining";
 import { getActiveSave, inSession, saveInfo, sessionBlocked } from "@/save/activeSave";
 import { getLocalPlayerId } from "@/save/playerId";
 import { coopLog, coopSnapshot, remotePoses } from "@/net/coopState";
@@ -203,6 +204,8 @@ export function createCoopHarness(store: Store) {
       }
       return { chunkLoaded: !!chunk, loaded, destroyed: worldAuthority.destroyedAsteroids.chunk(r.fieldId, r.chunkKey).has(r.instanceId >>> 0) };
     },
+    /** WP5: beams on the locked rock and the partners' share (the host's feed, as the HUD reads it). */
+    sharedMining: () => ({ ...store.get(sharedMiningAtom) }),
     /** Depleted rocks in this page's world view. */
     destroyedCount(): number {
       const d = getActiveSave()?.data.world.asteroidDeltas ?? {};

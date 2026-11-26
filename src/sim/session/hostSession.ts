@@ -12,7 +12,8 @@ import { isFrameId } from "@/sim/frames";
 import { defaultPlayerState } from "@/save/defaults";
 import type { PlayerId, PlayerState, ShipPose, SaveData, SaveMeta, WorldState } from "@/save/types";
 import { parseSaveData } from "@/save/validate";
-import { makeMineResolver, type MineResolver } from "@/sim/asteroids/mineResolve";
+import { makeMineResolver, mineYield, type MineResolver } from "@/sim/asteroids/mineResolve";
+import { eligibleContributions, splitYield, weightedEfficiency, type MineContribution, type MineSplit } from "@/sim/asteroids/mineShare";
 import { updateEphemerisPositions } from "@/sim/celestialConstants";
 import { jdFromUnixMs } from "@/sim/ephemeris";
 import { emergencePose, starterPoint } from "@/sim/replication/points";
@@ -43,12 +44,19 @@ import {
 } from "./protocol";
 import type { Clock, ConnId, HostTransport, WorldRepository } from "./ports";
 import { PilotContacts, type PilotTrack } from "./pilotContact";
+import { CREDIT_DT_CAP_S, MineLedger, rockKey } from "./mineLedger";
 
-/** Beam time a mine claim must show, as a share of the rock's required duration. */
+/** Work a mine claim must show, as a fraction of the rock: the finisher's own plus partners' credited (WP5). */
 const MIN_BEAM_SHARE = 0.8;
 /** Targeting range (MiningSystem's MAX_TARGETING_DISTANCE_M) plus slack for pose age. */
 const MINE_RANGE_KM = 10;
 const MINE_SLACK_KM = 5;
+/** A credited beam endpoint lies within the rock's radius plus this (km). */
+const BEAM_ON_ROCK_SLACK_KM = 0.1;
+/** Shared-mining feed period per pilot (~5 Hz). */
+const MINING_FEED_MS = 200;
+/** Pose flags that stop beam credit: pulse off-phase, miss. */
+const BEAM_IDLE_FLAGS = 4 | 16;
 const CHECKPOINT_MS = 10_000;
 /** A pilot's renames closer together than this are coalesced (the last one lands on the 1 Hz tick). */
 const RENAME_MIN_MS = 1_000;
@@ -94,6 +102,9 @@ interface Member {
   pingMs?: number;
   pingAt?: number;
   reservedFuelKg?: number;
+  /** Arrival of the last pose considered for beam credit, and of the last mining feed sent. */
+  creditAt?: number;
+  feedAt?: number;
 }
 
 function b64url(bytes: Uint8Array): string {
@@ -134,6 +145,7 @@ export class HostSession {
   private readonly pendingNames = new Map<PlayerId, string>();
   private readonly pilotContacts = new PilotContacts();
   private pilotContactId = 0;
+  private readonly ledger = new MineLedger();
 
   constructor(private readonly o: HostSessionOptions) {}
 
@@ -197,6 +209,7 @@ export class HostSession {
         }
         return null;
       },
+      mineShares: (op, by) => this.mineShares(op, by),
     });
     this.authority.subscribe((e) => this.captured.push(e));
     this.epoch0 = w.simEpochMs;
@@ -233,6 +246,7 @@ export class HostSession {
     });
     if (this.pendingNames.size > 0) this.flushRenames();
     const now = this.o.clock.monoMs();
+    this.ledger.expire(now);
     const elapsedS = (now - this.lastIndustryTick) / 1000;
     this.lastIndustryTick = now;
     if (elapsedS > 0 && this.state === "open" && !this.clockPaused && this.world.industry.depots.length) {
@@ -246,6 +260,8 @@ export class HostSession {
         const backup = stepped.economic ? structuredClone(this.data) : null;
         this.authority.applyIndustry(stepped);
         if (backup && !(await this.persist(backup))) return;
+        // A drone finished a rock first: partial player work is lost, as solo progress is.
+        for (const rock of stepped.delta.mined ?? []) this.ledger.forget(rock.fieldId, rock.chunkKey, rock.instanceId);
         if (hasIndustryDelta(stepped.delta)) this.broadcast("cmd", { t: "industry", gen: this.gen, delta: stepped.delta });
       });
     }
@@ -527,7 +543,7 @@ export class HostSession {
     this.captured.length = 0;
     const op = msg.op.type === "survey.inspect" ? this.resolveInspection(msg.op) : msg.op;
     let outcome: OperationOutcome;
-    const refusal = !op ? "not_found" : pid !== this.o.hostPlayerId && HOST_ONLY.has(op.type) ? "not_allowed" : this.checkActivity(op, player);
+    const refusal = !op ? "not_found" : pid !== this.o.hostPlayerId && HOST_ONLY.has(op.type) ? "not_allowed" : this.checkActivity(op, player, pid);
     if (!op || refusal) {
       outcome = { status: "rejected", opId: msg.opId, by: pid, reason: refusal ?? "not_found" };
     } else {
@@ -543,6 +559,7 @@ export class HostSession {
     if (!(await this.persist(backup))) return;
 
     if (outcome.status === "accepted") {
+      if (op?.type === "asteroid.mine") this.ledger.forget(op.fieldId, op.chunkKey, op.instanceId);
       const shared = events.filter((e) => e.type !== "op.settled" && e.type !== "player.changed");
       if (shared.some(e => e.type === "ship.destroyed" || e.type === "ship.respawned")) {
         m.previousPose = m.lastPose = undefined;
@@ -583,7 +600,7 @@ export class HostSession {
   }
 
   /** Activity bounds for a mine claim (friends-only: bounds, not anti-cheat). */
-  private checkActivity(op: WorldOperation, player: PlayerState): "no_activity" | "too_far" | "not_found" | "dead" | null {
+  private checkActivity(op: WorldOperation, player: PlayerState, pid: PlayerId): "no_activity" | "too_far" | "not_found" | "dead" | null {
     if (SPATIAL_OPS.has(op.type)) updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
     if (player.isDead && op.type === "asteroid.mine") return "dead";
     if (op.type === "wreck.collect" || op.type === "survey.inspect") {
@@ -599,8 +616,12 @@ export class HostSession {
     }
     if (op.type !== "asteroid.mine") return null;
     const rock = this.resolver(op.fieldId, op.chunkKey, op.instanceId, player);
-    if (!rock) return null; // the reducer answers not_found
-    if (!(typeof op.beamS === "number" && op.beamS >= MIN_BEAM_SHARE * rock.requiredBeamS)) return "no_activity";
+    // The reducer answers not_found, and already_done for a rock someone (or a drone) finished first.
+    if (!rock || this.authority.asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return null;
+    // WP5: partners' credited work plus the finisher's own (ledger or claim, whichever is larger).
+    const key = rockKey(op.fieldId, op.chunkKey, op.instanceId);
+    const own = typeof op.beamS === "number" ? Math.max(this.ledger.own(key, pid), op.beamS / rock.requiredBeamS) : NaN;
+    if (!(own + this.ledger.partners(key, pid) >= MIN_BEAM_SHARE)) return "no_activity";
     const pose = player.ship;
     if (!pose) return "too_far";
     const d = poseDistanceKm(pose.frameId, pose.positionKm, rock.frameId, rock.positionKm);
@@ -671,11 +692,80 @@ export class HostSession {
     }
   }
 
+  /**
+   * WP5 split of a shared rock (called by the reducer inside the accepted op): ledger fractions,
+   * the finisher at max(ledger, claim). Null when nobody but the finisher earns a share (solo path).
+   */
+  private mineShares(op: Extract<WorldOperation, { type: "asteroid.mine" }>, by: PlayerId): MineSplit | null {
+    const entry = this.ledger.get(rockKey(op.fieldId, op.chunkKey, op.instanceId));
+    const finisher = this.data.players[by];
+    if (!entry || !finisher) return null;
+    const rock = this.resolver(op.fieldId, op.chunkKey, op.instanceId, finisher);
+    if (!rock) return null;
+    const claimed = typeof op.beamS === "number" && op.beamS >= 0 ? op.beamS / rock.requiredBeamS : 0;
+    const list: MineContribution[] = [];
+    const add = (pid: PlayerId, fraction: number): void => {
+      const p = this.data.players[pid];
+      if (p && !p.isDead) list.push({ playerId: pid, fraction, efficiencyMult: persistentShipConfig(p).miningEfficiencyMult });
+    };
+    add(by, Math.max(entry.work.get(by) ?? 0, claimed));
+    entry.work.forEach((w, pid) => { if (pid !== by) add(pid, w); });
+    const eligible = eligibleContributions(list);
+    if (!eligible.some(c => c.playerId !== by)) return null;
+    const whole = mineYield(this.o.system(), op.fieldId, op.chunkKey, op.instanceId, rock.radiusM, weightedEfficiency(eligible), this.meta.difficulty);
+    return { whole, shares: splitYield(whole, eligible) };
+  }
+
+  /** Credit this pose's beam to its rock: on, firing, hitting, endpoint on the rock, ship in range. */
+  private creditBeam(m: Member, pid: PlayerId, pose: PoseMsg, now: number): void {
+    const prevAt = m.creditAt;
+    m.creditAt = now;
+    const r = pose.r;
+    if (!r || prevAt === undefined || !pose.b || !(pose.fl & 1) || pose.fl & BEAM_IDLE_FLAGS) return;
+    if (this.state !== "open" || this.clockPaused || this.authority.asteroids.has(r[0], r[1], r[2])) return;
+    const player = this.data.players[pid];
+    const entry = this.ledger.open(r, now, () => {
+      const res = this.resolver(r[0], r[1], r[2], player);
+      return res && { frameId: res.frameId, positionKm: res.positionKm, radiusM: res.radiusM };
+    });
+    const rock = entry.rock;
+    if (!rock) return;
+    let required = entry.required.get(pid);
+    if (required === undefined) {
+      required = this.resolver(r[0], r[1], r[2], player)?.requiredBeamS ?? 0;
+      entry.required.set(pid, required);
+    }
+    if (!(required > 0)) return;
+    if (pose.f !== rock.frameId) {
+      if (!isFrameId(pose.f)) return;
+      updateEphemerisPositions(jdFromUnixMs(this.epochMs()));
+    }
+    const radiusKm = rock.radiusM / 1000;
+    if (poseDistanceKm(pose.f, pose.b, rock.frameId, rock.positionKm) > radiusKm + BEAM_ON_ROCK_SLACK_KM) return;
+    const range = MINE_RANGE_KM * player.shipConfig.scannerRangeMult + MINE_SLACK_KM + radiusKm;
+    if (poseDistanceKm(pose.f, pose.p, rock.frameId, rock.positionKm) > range) return;
+    this.ledger.credit(entry, pid, Math.min(CREDIT_DT_CAP_S, Math.max(0, now - prevAt) / 1000) / required, now);
+  }
+
+  /** ~5 Hz: the partners' share of the sender's locked rock, and the beams on it. */
+  private sendMiningFeed(m: Member, pid: PlayerId, pose: PoseMsg, now: number): void {
+    const r = pose.r;
+    if (!r || now - (m.feedAt ?? -Infinity) < MINING_FEED_MS) return;
+    const key = rockKey(r[0], r[1], r[2]);
+    const entry = this.ledger.get(key);
+    if (!entry?.rock) return;
+    m.feedAt = now;
+    this.o.transport.send(m.conn, "pose", { t: "mining", gen: this.gen, r, partners: Math.min(1, this.ledger.partners(key, pid)),
+      beams: this.ledger.beams(entry, now) } satisfies HostMsg);
+  }
+
   private relayPose(m: Member, pid: PlayerId, pose: PoseMsg): void {
     if (this.data.players[pid]?.isDead || pose.id !== pid || pose.revision < (m.poseFloor ?? 0) || pose.seq <= (m.lastPose?.seq ?? -1)) return;
     m.previousPose = m.lastPose;
     m.lastPose = pose;
     m.poseAt = this.o.clock.monoMs();
+    this.creditBeam(m, pid, pose, m.poseAt);
+    this.sendMiningFeed(m, pid, pose, m.poseAt);
     this.conns.forEach((other, conn) => {
       if (conn !== m.conn && other.playerId && !other.fenced) {
         this.o.transport.send(conn, "pose", pose);

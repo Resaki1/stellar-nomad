@@ -5,7 +5,7 @@ import type { MineResolver } from "@/sim/asteroids/mineResolve";
 import type { AsteroidDeltas, Difficulty, PlayerId, PlayerState, WorldState } from "@/save/types";
 import { AsteroidDeltaIndex } from "./asteroidDeltas";
 import type { OperationOutcome, OperationType, WorldEvent, WorldOperation } from "./commands";
-import { reduce } from "./reducers";
+import { reduce, type MineSharesFn } from "./reducers";
 import type { PilotMotion } from "@/sim/replication/placement";
 
 export type WorldListener = (event: WorldEvent) => void;
@@ -70,6 +70,8 @@ export class LocalAuthority implements Authority {
       nearbyPilot?: (id: PlayerId) => PlayerState | null;
       reservedFuel?: (id: PlayerId) => number;
       pilotMotion?: (player: Readonly<PlayerState>) => PilotMotion | null;
+      /** Co-op host only (WP5): solo provides none, so a solo mine is unchanged. */
+      mineShares?: MineSharesFn;
     },
   ) {}
 
@@ -160,7 +162,8 @@ export class LocalAuthority implements Authority {
       const now = Date.now();
       const getPlayers = this.deps.getPlayers;
       const bookmarked = (): Set<string> => new Set(getPlayers().flatMap((p) => p.bookmarks.map((b) => b.sourceId)));
-      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, players: getPlayers, nearbyPilot: this.deps.nearbyPilot, reservedFuel: this.deps.reservedFuel, pilotMotion: this.deps.pilotMotion, resolveMine: this.deps.resolveMine });
+      const r = reduce(op, { world: w, player: this.deps.getPlayer(by), by, asteroids: this.asteroids, now, bookmarked, players: getPlayers, nearbyPilot: this.deps.nearbyPilot, reservedFuel: this.deps.reservedFuel, pilotMotion: this.deps.pilotMotion, resolveMine: this.deps.resolveMine,
+        getPlayer: this.deps.getPlayer, mineShares: this.deps.mineShares });
       if ("reason" in r) {
         outcome = { status: "rejected", opId: op.opId, by, reason: r.reason, missing: r.missing, evidence: r.evidence };
       } else {

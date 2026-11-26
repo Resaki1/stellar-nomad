@@ -9,6 +9,7 @@ import { earthMiningLoot, earthMiningRock, earthMiningSite } from "./lib/industr
 register(new URL("./lib/ts-hooks.mjs", import.meta.url));
 
 const S = (p) => import(new URL(`../src/${p}`, import.meta.url).href);
+const S_ = S;
 /** The retired hydrate sites (field anchor + offset), for saves that still name them and as handy in-field spots. */
 const LEGACY_SITES = {
   earth_hydrates: { id: "earth_hydrates", fieldId: "origin_belt", frameId: "earth", positionKm: [-7810, 170, 14810] },
@@ -85,6 +86,7 @@ class Rig {
       clock: systemClock, name, content: CONTENT, store: st, local, playerId: local ? HOST_ID : undefined,
       telemetry: () => c.telemetry ?? (c.pose ? { pose: c.pose } : undefined),
       onPose: (p) => c.poses.push(p),
+      onMining: (m) => { c.feed = m; c.feedAt = c.clockMs?.() ?? 0; },
       onEvent: (e) => { c.events.push(e); if (e.type === "op.settled") c.settled.push(e.outcome); },
     });
     c.join = () => {
@@ -155,6 +157,260 @@ async function race(first) {
     grantW === expect && grantL === 0 && destroyed(rig.host.world, rock) && mirrorsGone && mirrorCargo &&
     rig.host.world.revision === before.rev + 1;
   return { pass, winner: first, outcomes: [winOut?.status, `${loseOut?.status}:${loseOut?.reason}`], grant: grantW, expect, loserGrant: grantL, mirrorsGone, mirrorCargo, revision: rig.host.world.revision };
+}
+
+// ── WP5 shared mining ────────────────────────────────────────────────────────
+
+/**
+ * Two pilots (plus an idle observer near the rock) beam one rock with real poses on a fake
+ * clock at 10 Hz. Each client models MiningSystem: own progress grows while hitting, and it
+ * completes at own + the host feed's partners' fraction (fresh < 1 s), claiming its own seconds.
+ */
+async function sharedRig(repo) {
+  let ms = 0;
+  const clock = { monoMs: () => ms, nowMs: () => Date.UTC(2026, 0, 1) + ms };
+  const rig = new Rig(repo);
+  await rig.startHost(clock);
+  const mk = (name, opts) => {
+    const c = rig.client(name, opts);
+    c.clockMs = () => ms;
+    c.seq = 0;
+    return c;
+  };
+  const h = mk("Host", { local: true }), g = mk("Guest"), o = mk("Observer");
+  for (const c of [h, g, o]) c.join();
+  await rig.settle();
+  return { rig, h, g, o, mk, clock, advance: (dt) => { ms += dt; }, now: () => ms };
+}
+
+const SHARED_ROCK = () => rocks("origin_belt", 60).sort((a, b) => b.radiusM - a.radiusM)[0];
+const rockRef = (rock) => [rock.fieldId, rock.chunkKey, rock.instanceId];
+const idOf = (c) => (c.local ? HOST_ID : c.session.playerId);
+
+/**
+ * Drive the pilots until one completes (or `untilS`). `plan[name]` → (t) => "beam" | "miss" | "off" | "gone".
+ * Returns { finisher, tS, outcome, feeds }.
+ */
+async function driveMine(S, rock, res, pilots, plan, { untilS = 60, stopAt } = {}) {
+  const { rig, advance, now } = S;
+  const ref = rockRef(rock);
+  const required = res.requiredBeamS;
+  const t0 = now();
+  for (const c of pilots) { c.own ??= 0; c.maxBeams ??= 0; }
+  let finisher = null;
+  for (let step = 0; step < untilS * 10 && !finisher; step++) {
+    advance(100);
+    const t = (now() - t0) / 1000;
+    if (stopAt !== undefined && t > stopAt) break;
+    if (step % 10 === 9) rig.host.tick();
+    for (const c of pilots) {
+      const mode = plan[c.name]?.(t) ?? "off";
+      if (mode === "gone" || c.session.status !== "joined") continue;
+      const fl = mode === "beam" ? 1 : mode === "miss" ? 1 | 16 : 0;
+      c.session.sendPose({ seq: ++c.seq, tick: now(), f: res.frameId, p: c.pose.positionKm, v: [0, 0, 0], q: [0, 0, 0, 1], fl,
+        ...(fl & 1 ? { b: mode === "miss" ? c.pose.positionKm.map((x, i) => x + (i === 1 ? 2 : 0)) : res.positionKm } : {}), r: ref });
+      if (mode === "beam") c.own += 0.1 / required;
+    }
+    await rig.net.settle();
+    for (const c of pilots) {
+      if (c.session.status !== "joined" || (plan[c.name]?.(t) ?? "off") !== "beam") continue;
+      const fresh = c.feed && now() - c.feedAt < 1000 && c.feed.r[2] === rock.instanceId;
+      const partners = fresh ? c.feed.partners : 0;
+      if (fresh) c.maxBeams = Math.max(c.maxBeams, c.feed.beams);
+      if (c.own + partners >= 1) {
+        finisher = c;
+        c.session.submit(mineOp(rock, Math.min(1, c.own) * required));
+        break;
+      }
+    }
+  }
+  await rig.settle();
+  return { finisher, tS: +((now() - t0) / 1000).toFixed(1), outcome: finisher?.settled.at(-1) };
+}
+
+/** One depletion, conservation against `whole`, host == saved == own mirror, observer untouched. */
+function shareChecks(S, rock, before, whole, { mirrors = [S.h, S.g] } = {}) {
+  const { rig, o } = S;
+  const durable = rig.repo.peek().data;
+  const count = (w) => (w.asteroidDeltas[rock.fieldId]?.[rock.chunkKey] ?? []).filter((id) => id === rock.instanceId).length;
+  const ids = Object.keys(before);
+  const grants = Object.fromEntries(ids.map((id) => [id, Object.fromEntries(Object.entries(rig.host.player(id).cargo.items)
+    .map(([k, v]) => [k, v - (before[id][k] ?? 0)]).filter(([, v]) => v))]));
+  const ev = mirrors.flatMap((c) => c.events).find((e) => e.type === "mine.shared" && e.instanceId === rock.instanceId);
+  const overflow = {};
+  for (const sh of Object.values(ev?.shares ?? {})) for (const [k, v] of Object.entries(sh.overflow)) overflow[k] = (overflow[k] ?? 0) + v;
+  const total = {};
+  for (const g of Object.values(grants)) for (const [k, v] of Object.entries(g)) total[k] = (total[k] ?? 0) + v;
+  for (const [k, v] of Object.entries(overflow)) total[k] = (total[k] ?? 0) + v;
+  const checks = {
+    oneDepletion: count(rig.host.world) === 1 && count(durable.world) === 1,
+    conserved: same(total, whole),
+    saved: ids.every((id) => same(durable.players[id].cargo.items, rig.host.player(id).cargo.items)),
+    mirrors: mirrors.every((c) => same(c.session.mirror.data.players[idOf(c)].cargo.items, rig.host.player(idOf(c)).cargo.items)),
+    observerNothing: sum(grants[idOf(o)] ?? {}) === 0 && !ev?.shares?.[idOf(o)],
+  };
+  return { checks, grants, overflow, shares: ev?.shares ?? null };
+}
+
+async function sharedMine() {
+  const rock = SHARED_ROCK();
+  const all = {};
+  const fresh = async (repo) => {
+    const S = await sharedRig(repo);
+    const res = soloResolver(rock.fieldId, rock.chunkKey, rock.instanceId, S.rig.host.player(HOST_ID));
+    S.h.pose = poseAt(res, 0.5); S.g.pose = poseAt(res, -0.5); S.o.pose = poseAt(res, 0.3);
+    for (const c of [S.h, S.g, S.o]) c.session.sendTelemetry();
+    await S.rig.settle();
+    const before = Object.fromEntries([S.h, S.g, S.o].map((c) => [idOf(c), cargoOf(S.rig.host.player(idOf(c)))]));
+    return { S, res, before };
+  };
+  const always = () => "beam";
+  const passAll = (r) => Object.values(r.checks).every(Boolean);
+
+  // 1. One beam (a lone pilot in co-op keeps the solo curve and yield).
+  {
+    const { S, res, before } = await fresh();
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Guest: always });
+    const c = shareChecks(S, rock, before, res.yield);
+    const soloExact = same(c.grants[idOf(S.g)], res.yield) && !r.outcome?.result?.shares;
+    all.oneBeam = { pass: passAll(c) && r.finisher === S.g && r.outcome?.status === "accepted" && soloExact && S.g.maxBeams === 1,
+      tS: r.tS, requiredS: +res.requiredBeamS.toFixed(2), grant: sum(c.grants[idOf(S.g)] ?? {}), whole: sum(res.yield), soloExact, beamsSeen: S.g.maxBeams, ...c.checks };
+  }
+  // 2. Two beams continuously on target: sooner, both see 2 beams, ~even split.
+  {
+    const { S, res, before } = await fresh();
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Host: always, Guest: always });
+    const c = shareChecks(S, rock, before, res.yield);
+    const [gh, gg] = [sum(c.grants[HOST_ID] ?? {}), sum(c.grants[idOf(S.g)] ?? {})];
+    all.twoBeams = { pass: passAll(c) && r.outcome?.status === "accepted" && r.tS < all.oneBeam.tS * 0.6 && S.h.maxBeams === 2 && S.g.maxBeams === 2 &&
+      Math.abs(gh - gg) <= 0.1 * (gh + gg) && gh > 0 && gg > 0,
+    tS: r.tS, finisher: r.finisher?.name, grants: { host: gh, guest: gg }, beamsSeen: [S.h.maxBeams, S.g.maxBeams], ...c.checks };
+  }
+  // 3. Join halfway: the guest starts, the host joins at half the solo time.
+  {
+    const { S, res, before } = await fresh();
+    const half = res.requiredBeamS / 2;
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Guest: always, Host: (t) => (t >= half ? "beam" : "off") });
+    const c = shareChecks(S, rock, before, res.yield);
+    const [gh, gg] = [sum(c.grants[HOST_ID] ?? {}), sum(c.grants[idOf(S.g)] ?? {})];
+    all.joinHalfway = { pass: passAll(c) && r.tS > all.twoBeams.tS && r.tS < all.oneBeam.tS && gg > 2 * gh && gh > 0,
+      tS: r.tS, grants: { host: gh, guest: gg }, ...c.checks };
+  }
+  // 4. Lose aim: the host's beam misses for the middle of the run (miss bit): no credit while it misses.
+  {
+    const { S, res, before } = await fresh();
+    const q = res.requiredBeamS / 4;
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Guest: always, Host: (t) => (t > q * 0.4 && t < q * 1.6 ? "miss" : "beam") });
+    const c = shareChecks(S, rock, before, res.yield);
+    const [gh, gg] = [sum(c.grants[HOST_ID] ?? {}), sum(c.grants[idOf(S.g)] ?? {})];
+    all.loseAim = { pass: passAll(c) && r.tS > all.twoBeams.tS && gg > gh && gh > 0, tS: r.tS, grants: { host: gh, guest: gg }, ...c.checks };
+  }
+  // 5. One hold nearly full: that pilot's excess is recorded as their overflow only.
+  {
+    const repo = newWorld();
+    const seed = repo.peek();
+    const cap = seed.data.players[HOST_ID].cargo.capacityUnits;
+    seed.data.players[HOST_ID].cargo.items = { silicates: cap - 3 };
+    await repo.commit(seed.meta, seed.data);
+    const { S, res, before } = await fresh(repo);
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Host: always, Guest: always });
+    const c = shareChecks(S, rock, before, res.yield);
+    const sh = c.shares ?? {};
+    all.holdFull = { pass: passAll(c) && r.outcome?.status === "accepted" && sum(sh[HOST_ID]?.overflow ?? {}) > 0 &&
+      sum(sh[HOST_ID]?.granted ?? {}) === 3 && sum(sh[idOf(S.g)]?.overflow ?? {}) === 0,
+    host: sh[HOST_ID], guest: sh[idOf(S.g)], ...c.checks };
+  }
+  // 6. A contributor disconnects before completion and still gets their share (mirror after rejoin).
+  {
+    const { S, res, before } = await fresh();
+    const leaveAt = res.requiredBeamS * 0.3;
+    // Both beam until the guest leaves; the host finishes alone.
+    const r1 = await driveMine(S, rock, res, [S.h, S.g, S.o], { Host: always, Guest: always }, { stopAt: leaveAt - 0.1 });
+    S.rig.net.disconnect(S.g.conn);
+    await S.rig.settle();
+    const r2 = await driveMine(S, rock, res, [S.h, S.o], { Host: always });
+    const g2 = S.mk("Guest", { store: S.g.store });
+    g2.join();
+    await S.rig.settle();
+    S.g = g2;
+    const c = shareChecks(S, rock, before, res.yield, { mirrors: [S.h, g2] });
+    c.checks.mirrors = same(g2.session.mirror.data.players[g2.session.playerId].cargo.items, S.rig.host.player(g2.session.playerId).cargo.items) &&
+      same(S.h.session.mirror.data.players[HOST_ID].cargo.items, S.rig.host.player(HOST_ID).cargo.items);
+    c.shares = S.h.events.find((e) => e.type === "mine.shared")?.shares;
+    const gg = sum(c.grants[g2.session.playerId] ?? {});
+    all.disconnect = { pass: passAll(c) && r2.finisher === S.h && r2.outcome?.status === "accepted" && gg > 0 && !r1.finisher,
+      grants: { host: sum(c.grants[HOST_ID] ?? {}), guest: gg }, ...c.checks };
+  }
+  // 7. A drone completes the rock first: players get already_done and nothing; accounting unchanged.
+  {
+    const { S, res, before } = await fresh();
+    await driveMine(S, rock, res, [S.h, S.g, S.o], { Host: always, Guest: always }, { stopAt: res.requiredBeamS * 0.3 });
+    const world = S.rig.host.world;
+    S.rig.host.authority.applyIndustry({ state: world.industry, delta: { depots: [], drones: [], mined: [{ fieldId: rock.fieldId, chunkKey: rock.chunkKey, instanceId: rock.instanceId }] }, economic: true });
+    await S.rig.host.checkpoint();
+    S.h.session.submit(mineOp(rock, S.h.own * res.requiredBeamS));
+    S.g.session.submit(mineOp(rock, S.g.own * res.requiredBeamS));
+    await S.rig.settle();
+    const reasons = [S.h, S.g].map((c) => c.settled.at(-1)?.reason);
+    const c = shareChecks(S, rock, before, {});
+    all.droneFirst = { pass: passAll(c) && reasons.every((x) => x === "already_done") && sum(c.grants[HOST_ID] ?? {}) === 0 &&
+      sum(c.grants[idOf(S.g)] ?? {}) === 0, reasons, ...c.checks };
+  }
+  // 8. The finisher's settled reply is dropped; the retry replays, nothing is granted twice.
+  {
+    const { S, res, before } = await fresh();
+    S.rig.net.dropNextToClient(S.g.conn, (m) => m.t === "settled");
+    const r = await driveMine(S, rock, res, [S.h, S.g, S.o], { Guest: always, Host: (t) => (t > 0.3 ? "beam" : "off") });
+    const finisherIsGuest = r.finisher === S.g;
+    const after1 = Object.fromEntries(Object.keys(before).map((id) => [id, cargoOf(S.rig.host.player(id))]));
+    S.rig.net.disconnect(S.g.conn);
+    await S.rig.settle();
+    const g2 = S.mk("Guest", { store: S.g.store });
+    g2.join();
+    await S.rig.settle();
+    const replayed = S.rig.net.toClientLog.some(([conn, m]) => conn === g2.conn && m.t === "settled" && m.replay === true);
+    const noDouble = Object.keys(before).every((id) => same(after1[id], S.rig.host.player(id).cargo.items));
+    S.g = g2;
+    const c = shareChecks(S, rock, before, res.yield, { mirrors: [S.h, g2] });
+    c.checks.mirrors = same(g2.session.mirror.data.players[g2.session.playerId].cargo.items, S.rig.host.player(g2.session.playerId).cargo.items);
+    all.dropReply = { pass: passAll(c) && finisherIsGuest && replayed && noDouble && g2.settled.at(-1)?.status === "accepted" &&
+      sum(c.grants[HOST_ID] ?? {}) > 0, replayed, noDouble, finisherIsGuest, ...c.checks };
+  }
+  // 9. Host restart mid-contribution: the ledger is in memory, so partial shared work is forgotten
+  // (like a reload's solo progress); the rock finishes once and every balance agrees with the save.
+  {
+    const { S, res, before } = await fresh();
+    await driveMine(S, rock, res, [S.h, S.g, S.o], { Host: always, Guest: always }, { stopAt: res.requiredBeamS * 0.3 });
+    S.rig.net.detachHost();
+    await S.rig.settle();
+    await S.rig.startHost(S.clock);
+    const h2 = S.mk("Host", { local: true, store: S.h.store }), g2 = S.mk("Guest", { store: S.g.store }), o2 = S.mk("Observer", { store: S.o.store });
+    h2.pose = S.h.pose; g2.pose = S.g.pose; o2.pose = S.o.pose;
+    // Each client keeps its own local progress across the host's restart.
+    h2.own = S.h.own; g2.own = S.g.own;
+    for (const c of [h2, g2, o2]) c.join();
+    await S.rig.settle();
+    for (const c of [h2, g2, o2]) c.session.sendTelemetry();
+    await S.rig.settle();
+    Object.assign(S, { h: h2, g: g2, o: o2 });
+    const r = await driveMine(S, rock, res, [h2, g2, o2], { Host: always, Guest: always });
+    const c = shareChecks(S, rock, before, res.yield);
+    all.hostRestart = { pass: passAll(c) && r.outcome?.status === "accepted", tS: r.tS, finisher: r.finisher?.name,
+      grants: { host: sum(c.grants[HOST_ID] ?? {}), guest: sum(c.grants[idOf(g2)] ?? {}) }, ...c.checks };
+  }
+  // 10. Mixed upgrades: one documented rule (whole at the contribution-weighted efficiency, largest remainder).
+  {
+    const [{ splitYield, weightedEfficiency, eligibleContributions }] = await Promise.all([S_("sim/asteroids/mineShare.ts")]);
+    const list = [{ playerId: "b", fraction: 0.5, efficiencyMult: 1.5 }, { playerId: "a", fraction: 0.5, efficiencyMult: 1 }, { playerId: "c", fraction: 0.04, efficiencyMult: 3 }];
+    const eff = weightedEfficiency(eligibleContributions(list));
+    const whole = mr.mineYield(system, rock.fieldId, rock.chunkKey, rock.instanceId, rock.radiusM, eff, "standard");
+    const shares = splitYield(whole, list);
+    const summed = {};
+    for (const s of Object.values(shares)) for (const [k, v] of Object.entries(s)) summed[k] = (summed[k] ?? 0) + v;
+    const odd = splitYield({ x: 3 }, [{ playerId: "b", fraction: 1, efficiencyMult: 1 }, { playerId: "a", fraction: 1, efficiencyMult: 1 }]);
+    all.mixedRule = { pass: eff === 1.25 && same(summed, whole) && !shares.c && odd.a.x === 2 && odd.b.x === 1, eff, whole: sum(whole), shares };
+  }
+  return { pass: Object.values(all).every((r) => r.pass), ...all };
 }
 
 async function dropReplyRetry() {
@@ -2024,6 +2280,7 @@ const SCENARIOS = {
   recoverTogether,
   placeCrossing,
   hotbarSlots,
+  sharedMine,
   raceHostFirst: () => race("host"),
   raceGuestFirst: () => race("guest"),
   dropReplyRetry,

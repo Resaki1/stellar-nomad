@@ -86,7 +86,8 @@ export type OperationResult =
   | { type: "item.consume"; itemId: string }
   | { type: "hotbar.assign" }
   | { type: "asteroid.destroy" }
-  | { type: "asteroid.mine"; granted: Record<string, number>; overflow: Record<string, number>; newFamilies: string[]; depletedSource: string | null }
+  /** `granted`/`overflow` are the actor's own; `shares` (WP5) lists every contributor's when the rock was shared. */
+  | { type: "asteroid.mine"; granted: Record<string, number>; overflow: Record<string, number>; newFamilies: string[]; depletedSource: string | null; shares?: Record<PlayerId, MineShareResult> }
   | { type: "item.craft"; itemId: string; spent: Record<string, number>; autoEquipped: boolean; hotbarIndex: number | null; newTrial: boolean }
   | { type: "survey.inspect"; sourceId: string; newFamilies: string[]; upgraded: string[]; evicted: string | null }
   | { type: "research.unlock"; nodeId: string; unlockedItems: string[]; spent: Record<string, number> }
@@ -107,6 +108,9 @@ export type OperationResult =
   | { type: "processing.cancel"; batchId: string; refunded: Record<string, number>; committedKg: number }
   | { type: "ship.repair"; pct: number; spent: Record<string, number>; health: number }
   | { type: "time.set" };
+
+/** One contributor's part of a shared rock: what entered the hold and what the full hold left behind. */
+export interface MineShareResult { granted: Record<string, number>; overflow: Record<string, number> }
 
 export type RejectReason =
   | "invalid"
@@ -179,6 +183,8 @@ export type WorldEvent =
   | { type: "expedition.marked"; by: PlayerId }
   | { type: "expedition.given"; by: PlayerId; to: PlayerId; kind: GiftKind; itemId: string; amount: number }
   | { type: "replication.changed"; by: PlayerId }
+  /** WP5: a rock mined by several pilots; `by` finished it. Each contributor's feedback ("your share"). */
+  | { type: "mine.shared"; by: PlayerId; fieldId: string; chunkKey: string; instanceId: number; shares: Record<PlayerId, MineShareResult> }
   /** The listed slices of `playerId` were replaced by a committed operation. */
   | { type: "player.changed"; by: PlayerId; playerId: PlayerId; keys: readonly (keyof PlayerState)[] }
   /** Carries only the fields the command set: the live clock is ahead of the stored epoch. */

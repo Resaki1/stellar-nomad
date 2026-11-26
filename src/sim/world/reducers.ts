@@ -20,7 +20,8 @@ import type { AsteroidDeltaIndex } from "./asteroidDeltas";
 import { checkPlacement, poseDistanceKm, resolveRecovery, validPose, placementMotion, type PilotMotion, type PlacementCheck } from "@/sim/replication/placement";
 import { MAX_POINTS, REPLICATION_KIT_ID, REPLICATION_TUNING, STARTER_POINT_ID, cleanPointName } from "@/sim/replication/points";
 import type { MineResolver } from "@/sim/asteroids/mineResolve";
-import type { OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
+import type { MineSplit } from "@/sim/asteroids/mineShare";
+import type { MineShareResult, OperationResult, RejectReason, Transfer, WorldEvent, WorldOperation } from "./commands";
 
 /** A recovering ship emerges at least this far from any live pilot (two 50 m hulls, room to fly clear). */
 const RECOVERY_PILOT_CLEARANCE_KM = 0.15;
@@ -42,7 +43,13 @@ export interface ReduceCtx {
   reservedFuel?: (id: PlayerId) => number;
   /** Last known pose and velocity of a live pilot (placement stopping paths); null when unknown. */
   pilotMotion?: (player: Readonly<PlayerState>) => PilotMotion | null;
+  /** Any player of this world by id (shared-rock contributors, connected or not). */
+  getPlayer?: (id: PlayerId) => PlayerState | null;
+  /** Co-op host (WP5): the contribution split of a shared rock; null mines solo. */
+  mineShares?: MineSharesFn;
 }
+
+export type MineSharesFn = (op: Extract<WorldOperation, { type: "asteroid.mine" }>, by: PlayerId) => MineSplit | null;
 
 export interface Commit {
   result: OperationResult;
@@ -344,12 +351,15 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       if (!validAsteroid(op)) return reject("invalid");
       if (op.beamS !== undefined && !(isNum(op.beamS) && op.beamS >= 0)) return reject("invalid");
       let yieldUnits: Record<string, number>;
+      let split: MineSplit | null = null;
       if (ctx.resolveMine) {
         if (p.isDead) return reject("dead");
         if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
         const rock = ctx.resolveMine(op.fieldId, op.chunkKey, op.instanceId, p);
         if (!rock) return reject("not_found");
-        yieldUnits = rock.yield;
+        // WP5: several pilots beamed this rock; the host's ledger splits one finite yield.
+        split = ctx.mineShares?.(op, by) ?? null;
+        yieldUnits = split ? split.whole : rock.yield;
       } else {
         if (typeof op.yield !== "object" || op.yield === null) return reject("invalid");
         yieldUnits = op.yield;
@@ -357,38 +367,67 @@ export function reduce(op: WorldOperation, ctx: ReduceCtx): Reduction {
       for (const k of Object.keys(yieldUnits)) if (!has(MATERIAL_NAMES, k) || !isCount(yieldUnits[k])) return reject("invalid");
       if (p.isDead) return reject("dead");
       if (asteroids.has(op.fieldId, op.chunkKey, op.instanceId)) return reject("already_done");
-      let room = cargoRemaining(p, world);
-      const granted: Record<string, number> = {};
-      const overflow: Record<string, number> = {};
-      const items = { ...p.cargo.items };
-      for (const k of Object.keys(yieldUnits)) {
-        const want = yieldUnits[k];
-        if (want <= 0) continue;
-        const n = Math.min(want, room);
-        room -= n;
-        if (n > 0) {
-          granted[k] = n;
-          items[k] = (items[k] ?? 0) + n;
-        }
-        if (want > n) overflow[k] = want - n;
-      }
-      const cargo = { ...p.cargo, items };
-      const minedLifetime = p.minedLifetime + 1;
-      // Evidence from what was actually extracted (overflow left behind still confirms the rock).
       const sourceId = sourceIdOf(op.fieldId, op.chunkKey, op.instanceId);
+      const events: WorldEvent[] = [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: "mined" }];
+      // Each pilot's share into their own hold, in the yield's key order; the rest is their overflow.
+      const intoHold = (q: PlayerState, want: Readonly<Record<string, number>>) => {
+        let room = cargoRemaining(q, world);
+        const granted: Record<string, number> = {};
+        const overflow: Record<string, number> = {};
+        const items = { ...q.cargo.items };
+        for (const k of Object.keys(yieldUnits)) {
+          const n0 = want[k] ?? 0;
+          if (n0 <= 0) continue;
+          const n = Math.min(n0, room);
+          room -= n;
+          if (n > 0) {
+            granted[k] = n;
+            items[k] = (items[k] ?? 0) + n;
+          }
+          if (n0 > n) overflow[k] = n0 - n;
+        }
+        return { granted, overflow, cargo: { ...q.cargo, items } };
+      };
+      const own = intoHold(p, split ? split.shares[by] ?? {} : yieldUnits);
+      const { granted, overflow, cargo } = own;
+      const minedLifetime = p.minedLifetime + 1;
+      const peers: { q: PlayerState; cargo: PlayerState["cargo"] }[] = [];
+      let shares: Record<PlayerId, MineShareResult> | undefined;
+      if (split) {
+        shares = { [by]: { granted, overflow } };
+        for (const pid of Object.keys(split.shares)) {
+          if (pid === by) continue;
+          const q = ctx.getPlayer?.(pid) ?? null;
+          // The host drops dead or unknown pilots before splitting; never grant into a missing hold.
+          if (!q || q.isDead) {
+            shares[pid] = { granted: {}, overflow: { ...split.shares[pid] } };
+            continue;
+          }
+          const share = intoHold(q, split.shares[pid]);
+          shares[pid] = { granted: share.granted, overflow: share.overflow };
+          peers.push({ q, cargo: share.cargo });
+          events.push({ type: "player.changed", by, playerId: pid, keys: ["cargo", "minedLifetime"] });
+        }
+        events.push({ type: "mine.shared", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, shares });
+      }
+      // Evidence from what was actually extracted (overflow left behind still confirms the rock).
       const plan = planExtraction(world.discoveries, sourceId, yieldUnits, by, now);
       // B4: a mined rock is gone; the miner's bookmark of it goes in the same transaction.
       const dropMark = p.bookmarks.some((b) => b.sourceId === sourceId);
       const bookmarks = dropMark ? p.bookmarks.filter((b) => b.sourceId !== sourceId) : p.bookmarks;
-      const events: WorldEvent[] = [{ type: "asteroid.destroyed", by, fieldId: op.fieldId, chunkKey: op.chunkKey, instanceId: op.instanceId, cause: "mined" }];
       if (plan) events.push(discoveriesEvent(by));
       return {
-        result: { type: "asteroid.mine", granted, overflow, newFamilies: plan?.newFamilies ?? [], depletedSource: plan?.depletedSource ?? null },
+        result: { type: "asteroid.mine", granted, overflow, newFamilies: plan?.newFamilies ?? [], depletedSource: plan?.depletedSource ?? null,
+          ...(shares ? { shares } : {}) },
         apply: () => {
           asteroids.add(op.fieldId, op.chunkKey, op.instanceId);
           p.cargo = cargo;
           p.minedLifetime = minedLifetime;
           p.bookmarks = bookmarks;
+          for (const peer of peers) {
+            peer.q.cargo = peer.cargo;
+            peer.q.minedLifetime += 1;
+          }
           if (plan) world.discoveries = plan.next;
         },
         events,

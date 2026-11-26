@@ -51,4 +51,6 @@ export const localBeamPose = {
   atMs: -1,
   frameId: "",
   relKm: [0, 0, 0] as [number, number, number],
+  /** The locked rock (instance -1: none), sent with co-op poses for shared mining (WP5). */
+  lock: { fieldId: "", chunkKey: "", instanceId: -1 },
 };

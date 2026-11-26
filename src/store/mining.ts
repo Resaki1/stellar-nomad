@@ -199,3 +199,25 @@ export const miningBeamView = {
   pointField: [0, 0, 0] as [number, number, number],
   power: 1,
 };
+
+// ---------------------------------------------------------------------------
+// Shared mining (FIRST_EXPEDITION_PLAN WP5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The host's latest progress feed for this pilot's locked rock (written by the session client,
+ * read by MiningSystem each frame). `partners`: the other pilots' work as a fraction of the rock.
+ */
+export const sharedMiningFeed = { fieldId: "", chunkKey: "", instanceId: -1, partners: 0, beams: 0, atMs: -Infinity };
+/** An older feed counts for nothing (the host sends ~5 Hz while the rock is being mined). */
+export const SHARED_FEED_FRESH_MS = 1000;
+
+export interface SharedMining {
+  /** Beams on the locked rock now, this pilot's included (0 outside a shared mine). */
+  beams: number;
+  /** The partners' share of the locked rock, 0..1. */
+  partnersFraction: number;
+}
+
+/** HUD state for shared mining, committed at the mining UI rate only when it changes. */
+export const sharedMiningAtom = atom<SharedMining>({ beams: 0, partnersFraction: 0 });
