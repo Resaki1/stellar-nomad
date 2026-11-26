@@ -37,5 +37,6 @@ export function markerUnlocked(unlock: MarkerUnlock | undefined, k: MarkerKnowle
     case "transitDrive": return k.transitDrive;
     case "warpDrive": return k.warpDrive;
     case "interstellar": return k.interstellar;
+    case "never": return false;
   }
 }

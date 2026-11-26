@@ -178,7 +178,7 @@ export type SizeDef = {
  * What the player must have before a marker is relevant (docs/MARKER_SYSTEM_PLAN.md §2.7).
  * The object itself is always drawn; only its marker waits. Omitted = always.
  */
-export type MarkerUnlock = "always" | "transitDrive" | "warpDrive" | "interstellar";
+export type MarkerUnlock = "always" | "transitDrive" | "warpDrive" | "interstellar" | "never";
 
 export type POIMarkerConfig = {
   unlock?: MarkerUnlock;

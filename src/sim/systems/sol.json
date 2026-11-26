@@ -453,6 +453,31 @@
       }
     },
     {
+      "id": "departure_cluster",
+      "anchorBody": "earth",
+      "anchorOffsetKm": [-7818.262, 171.838, 14809.468],
+      "name": "Debris cluster",
+      "seed": 2718,
+      "enabled": true,
+      "frame": "system",
+      "anchorKm": [-130002818.262, 171.838, -65000190.532],
+      "shape": { "type": "sphere", "radiusKm": 3.5, "edgeFalloffKm": 1.5 },
+      "population": { "mode": "density", "densityPerKm3": 0.08, "jitter": 0.3, "maxPerChunk": 3000 },
+      "streaming": { "chunkSizeKm": 4 },
+      "size": { "minRadiusM": 15, "maxRadiusM": 250, "distribution": "logNormal", "params": { "sigma": 0.8 } },
+      "marker": { "unlock": "never" },
+      "models": [{"modelId": "asteroid_01", "weight": 0.6}, {"modelId": "asteroid_02", "weight": 0.25}, {"modelId": "asteroid_03", "weight": 0.15}],
+      "resources": {
+        "seedSalt": "sol-departure-cluster-v1",
+        "classes": [
+            {"id": "s_type", "name": "S-Type", "weight": 0.25, "resources": [{"resourceId": "silicates", "min": 0.65, "max": 0.8}, {"resourceId": "fe_ni_metal", "min": 0.12, "max": 0.25}, {"resourceId": "sulfur", "min": 0.02, "max": 0.06}, {"resourceId": "carbon", "min": 0.0, "max": 0.02}, {"resourceId": "hydrates", "min": 0.0, "max": 0.01}]},
+            {"id": "c_type", "name": "C-Type", "weight": 0.6, "resources": [{"resourceId": "silicates", "min": 0.45, "max": 0.65}, {"resourceId": "hydrates", "min": 0.05, "max": 0.15}, {"resourceId": "carbon", "min": 0.02, "max": 0.06}, {"resourceId": "fe_ni_metal", "min": 0.05, "max": 0.15}, {"resourceId": "sulfur", "min": 0.02, "max": 0.07}]},
+            {"id": "x_type", "name": "X-Type", "weight": 0.15, "resources": [{"resourceId": "fe_ni_metal", "min": 0.6, "max": 0.9}, {"resourceId": "silicates", "min": 0.08, "max": 0.3}, {"resourceId": "sulfur", "min": 0.01, "max": 0.06}, {"resourceId": "carbon", "min": 0.0, "max": 0.03}, {"resourceId": "hydrates", "min": 0.0, "max": 0.01}]}
+        ],
+        "yield": {"referenceRadiusM": 50, "baseAmount": 15, "exponent": 1.6, "variance": 0.15, "minAmount": 1, "maxAmount": 2500, "throughputPerS": 6}
+      }
+    },
+    {
       "id": "luna_belt",
       "anchorBody": "luna",
       "anchorOffsetKm": [1130, 3195, 273],

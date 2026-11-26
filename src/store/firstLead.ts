@@ -43,6 +43,8 @@ export const FIRST_LEAD_TUNING = {
   maxMineS: 14,
   /** Pilot time per km of approach, s (≈ 200 m/s average with braking). */
   travelSPerKm: 5,
+  /** Enough water for a tank rise the pilot can see: 3 units = 60 kg of propellant. */
+  minHydrates: 3,
 };
 
 /** Recorded in the per-pilot comms/hints registry when dismissed: the lead never returns. */
@@ -83,7 +85,8 @@ function eligible(store: Store): boolean {
 }
 
 /**
- * Best loaded candidate: hydrate units per second of the pilot's time (approach + one cold pass).
+ * Best loaded candidate: the QUICKEST rock (approach + one cold pass) that still carries enough water for
+ * a visible batch. Rewarding total hydrates picked a 24-unit rock 23.9 km away over the departure cluster.
  * Streamed chunks only: the lead must be a rock the pilot can see now.
  */
 export function pickFirstLead(store: Store, t = FIRST_LEAD_TUNING): FirstLead | null {
@@ -94,7 +97,7 @@ export function pickFirstLead(store: Store, t = FIRST_LEAD_TUNING): FirstLead | 
   const speedMult = store.get(effectiveShipConfigAtom).miningSpeedMult || 1;
   const s = ship.absPosKm;
   let best: FirstLead | null = null;
-  let bestValue = 0;
+  let bestS = Infinity;
   for (const f of system.asteroidFields ?? []) {
     const fr = rt.getFieldRuntime(f.id);
     if (!fr || !f.anchorBody || !f.anchorOffsetKm) continue;
@@ -115,10 +118,10 @@ export function pickFirstLead(store: Store, t = FIRST_LEAD_TUNING): FirstLead | 
           if (worldAuthority.asteroids.has(f.id, chunkKey, id)) continue;
           const reward = getAsteroidMiningReward(system, f.id, id, radiusM, chunkKey);
           const hydrates = reward?.resources.find((r) => r.resourceId === "hydrates")?.amount ?? 0;
-          if (!reward || hydrates <= 0) continue;
-          const value = hydrates / (distKm * t.travelSPerKm + mineS);
-          if (value <= bestValue) continue;
-          bestValue = value;
+          if (!reward || hydrates < t.minHydrates) continue;
+          const pilotS = distKm * t.travelSPerKm + mineS;
+          if (pilotS >= bestS) continue;
+          bestS = pilotS;
           best = {
             fieldId: f.id, chunkKey, instanceId: id, frameId: f.anchorBody as FrameId,
             positionKm: [off[0] + lx, off[1] + ly, off[2] + lz], radiusM,
